@@ -90,6 +90,17 @@ pub fn run(workgraph_dir: &Path) -> Result<()> {
         config_changed = true;
     }
 
+    // Default assign/eval to haiku — these are lightweight tasks that don't need
+    // a full reasoning model. Using haiku reduces cost and rate limit pressure.
+    if config.agency.assigner_model.is_none() {
+        config.agency.assigner_model = Some("haiku".to_string());
+        config_changed = true;
+    }
+    if config.agency.evaluator_model.is_none() {
+        config.agency.evaluator_model = Some("haiku".to_string());
+        config_changed = true;
+    }
+
     if config_changed {
         config
             .save(workgraph_dir)

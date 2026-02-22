@@ -169,9 +169,9 @@ pub fn run() -> Result<()> {
 
     let (evaluator_model, assigner_model) = if agency_enabled {
         // Evaluator model
-        let eval_options = &["sonnet (recommended)", "haiku", "same as default"];
+        let eval_options = &["haiku (recommended, lightweight)", "sonnet", "same as default"];
         let current_eval_idx = match existing.agency.evaluator_model.as_deref() {
-            Some("haiku") => 1,
+            Some("sonnet") => 1,
             Some(m) if m == model => 2,
             _ => 0,
         };
@@ -181,8 +181,8 @@ pub fn run() -> Result<()> {
             .default(current_eval_idx)
             .interact()?;
         let eval_model = match eval_idx {
-            0 => Some("sonnet".to_string()),
-            1 => Some("haiku".to_string()),
+            0 => Some("haiku".to_string()),
+            1 => Some("sonnet".to_string()),
             _ => None, // same as default = don't set, falls through to agent.model
         };
 
