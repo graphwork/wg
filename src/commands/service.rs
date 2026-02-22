@@ -673,7 +673,7 @@ fn build_auto_evaluate_tasks(
 
         let desc = format!(
             "Evaluate the completed task '{}'.\n\n\
-             Run `wg evaluate {}` to produce a structured evaluation.\n\
+             Run `wg evaluate run {}` to produce a structured evaluation.\n\
              This reads the task output from `.workgraph/output/{}/` and \
              the task definition via `wg show {}`.",
             task_id, task_id, task_id, task_id,
@@ -694,7 +694,7 @@ fn build_auto_evaluate_tasks(
             inputs: vec![],
             deliverables: vec![],
             artifacts: vec![],
-            exec: Some(format!("wg evaluate {}", task_id)),
+            exec: Some(format!("wg evaluate run {}", task_id)),
             not_before: None,
             created_at: Some(Utc::now().to_rfc3339()),
             started_at: None,
@@ -784,11 +784,11 @@ fn spawn_eval_inline(
         anyhow::bail!("Eval task '{}' is not open (status: {:?})", eval_task_id, task.status);
     }
 
-    // Extract source task ID from the exec command ("wg evaluate <source-id>")
+    // Extract source task ID from the exec command ("wg evaluate run <source-id>")
     let source_task_id = task
         .exec
         .as_deref()
-        .and_then(|e| e.strip_prefix("wg evaluate "))
+        .and_then(|e| e.strip_prefix("wg evaluate run ").or_else(|| e.strip_prefix("wg evaluate ")))
         .unwrap_or_else(|| {
             eval_task_id
                 .strip_prefix("evaluate-")
@@ -808,7 +808,7 @@ fn spawn_eval_inline(
     let output_file_str = output_file.to_string_lossy().to_string();
 
     // Build the eval command with explicit model
-    let mut eval_cmd = format!("wg evaluate '{}'", source_task_id.replace('\'', "'\\''"));
+    let mut eval_cmd = format!("wg evaluate run '{}'", source_task_id.replace('\'', "'\\''"));
     if let Some(model) = evaluator_model {
         eval_cmd.push_str(&format!(" --model '{}'", model.replace('\'', "'\\''")));
     }
@@ -4323,10 +4323,10 @@ poll_interval = 120
     fn test_eval_inline_extracts_source_task_from_exec() {
         // spawn_eval_inline extracts the source task ID from exec command
         // This tests the extraction logic used in the function
-        let exec = Some("wg evaluate my-source-task".to_string());
+        let exec = Some("wg evaluate run my-source-task".to_string());
         let source_id = exec
             .as_deref()
-            .and_then(|e| e.strip_prefix("wg evaluate "))
+            .and_then(|e| e.strip_prefix("wg evaluate run ").or_else(|| e.strip_prefix("wg evaluate ")))
             .unwrap_or("fallback");
         assert_eq!(source_id, "my-source-task");
     }
@@ -4338,7 +4338,7 @@ poll_interval = 120
         let eval_task_id = "evaluate-some-task";
         let source_id = exec
             .as_deref()
-            .and_then(|e| e.strip_prefix("wg evaluate "))
+            .and_then(|e| e.strip_prefix("wg evaluate run ").or_else(|| e.strip_prefix("wg evaluate ")))
             .unwrap_or_else(|| {
                 eval_task_id
                     .strip_prefix("evaluate-")
@@ -4353,7 +4353,7 @@ poll_interval = 120
         let mut task = Task::default();
         task.id = "evaluate-t1".to_string();
         task.tags = vec!["evaluation".to_string(), "agency".to_string()];
-        task.exec = Some("wg evaluate t1".to_string());
+        task.exec = Some("wg evaluate run t1".to_string());
 
         let is_inline_eval = task.tags.iter().any(|t| t == "evaluation") && task.exec.is_some();
         assert!(is_inline_eval);
