@@ -12,7 +12,9 @@ Complete reference for all `wg` commands. All commands support `--json` for mach
 - [Agent and Resource Management](#agent-and-resource-management)
 - [Agency Commands](#agency-commands)
 - [Agent Commands](#agent-commands)
+- [Peer Commands](#peer-commands)
 - [Service Commands](#service-commands)
+- [Monitoring Commands](#monitoring-commands)
 - [Utility Commands](#utility-commands)
 
 ---
@@ -349,6 +351,38 @@ wg show <ID>
 ```
 
 Shows all task fields including description, logs, timestamps, dependencies, model, and agent assignment.
+
+---
+
+### `wg pause`
+
+Pause a task so the coordinator skips it until resumed.
+
+```bash
+wg pause <ID>
+```
+
+**Example:**
+```bash
+wg pause implement-api
+# Coordinator will skip this task until it is resumed
+```
+
+---
+
+### `wg resume`
+
+Resume a paused task.
+
+```bash
+wg resume <ID>
+```
+
+**Example:**
+```bash
+wg resume implement-api
+# Task is eligible for coordinator dispatch again
+```
 
 ---
 
@@ -990,7 +1024,7 @@ Export trace data filtered by visibility zone.
 wg trace export [OPTIONS]
 ```
 
-Produces a JSON bundle containing tasks, evaluations, operations, and trace functions, filtered and redacted according to the visibility level.
+Produces a JSON bundle containing tasks, evaluations, operations, and functions, filtered and redacted according to the visibility level.
 
 **Options:**
 | Option | Description |
@@ -1309,17 +1343,34 @@ wg agent create "Erik" \
 
 ### `wg evaluate`
 
-Trigger evaluation of a completed task.
+Evaluate tasks: trigger LLM-based evaluation, record external scores, or view evaluation history.
 
 ```bash
-wg evaluate <TASK> [--evaluator-model <MODEL>] [--dry-run]
+wg evaluate <SUBCOMMAND>
+```
+
+**Subcommands:**
+| Subcommand | Description |
+|------------|-------------|
+| `run` | Trigger LLM-based evaluation of a completed task |
+| `record` | Record an evaluation from an external source |
+| `show` | Show evaluation history |
+
+---
+
+#### `wg evaluate run`
+
+Trigger LLM-based evaluation of a completed task.
+
+```bash
+wg evaluate run <TASK> [--evaluator-model <MODEL>] [--dry-run]
 ```
 
 **Options:**
 | Option | Description |
 |--------|-------------|
 | `--evaluator-model <MODEL>` | Model for the evaluator (overrides config) |
-| `--dry-run` | Show the evaluator prompt without executing |
+| `--dry-run` | Show what would be evaluated without spawning the evaluator |
 
 The task must be done or failed. Spawns an evaluator agent that scores the task across four dimensions:
 - **correctness** (40%) — output matches desired outcome
@@ -1328,6 +1379,62 @@ The task must be done or failed. Spawns an evaluator agent that scores the task 
 - **style_adherence** (15%) — project conventions and constraints followed
 
 Scores propagate to the agent, role, and motivation performance records.
+
+**Example:**
+```bash
+wg evaluate run my-task
+wg evaluate run my-task --evaluator-model opus --dry-run
+```
+
+---
+
+#### `wg evaluate record`
+
+Record an evaluation from an external source (human review, CI metrics, outcome signals).
+
+```bash
+wg evaluate record --task <TASK> --score <SCORE> --source <SOURCE> [OPTIONS]
+```
+
+**Options:**
+| Option | Description |
+|--------|-------------|
+| `--task <TASK>` | Task ID (required) |
+| `--score <SCORE>` | Overall score, 0.0–1.0 (required) |
+| `--source <SOURCE>` | Source identifier, e.g. `"outcome:sharpe"`, `"manual"` (required) |
+| `--notes <NOTES>` | Optional notes |
+| `--dim <DIM=SCORE>` | Optional dimensional scores (repeatable, format: `dimension=score`) |
+
+**Example:**
+```bash
+wg evaluate record --task deploy-prod --score 0.85 --source "manual" \
+  --notes "Clean deploy" --dim correctness=0.9 --dim efficiency=0.8
+```
+
+---
+
+#### `wg evaluate show`
+
+Show evaluation history with optional filters.
+
+```bash
+wg evaluate show [OPTIONS]
+```
+
+**Options:**
+| Option | Description |
+|--------|-------------|
+| `--task <TASK>` | Filter by task ID (prefix match) |
+| `--agent <AGENT>` | Filter by agent ID (prefix match) |
+| `--source <SOURCE>` | Filter by source (exact match or glob, e.g. `"outcome:*"`) |
+| `--limit <N>` | Show only the N most recent evaluations |
+
+**Example:**
+```bash
+wg evaluate show
+wg evaluate show --task deploy --limit 10
+wg evaluate show --source "outcome:*"
+```
 
 ---
 
@@ -1610,6 +1717,79 @@ wg dead-agents --remove
 
 ---
 
+## Peer Commands
+
+Manage peer workgraph instances for cross-repo communication and function sharing.
+
+### `wg peer add`
+
+Register a peer workgraph instance.
+
+```bash
+wg peer add <NAME> <PATH> [-d <DESCRIPTION>]
+```
+
+**Arguments:**
+- `NAME` — Peer name (used as shorthand reference)
+- `PATH` — Path to the peer project (containing `.workgraph/`)
+
+**Options:**
+| Option | Description |
+|--------|-------------|
+| `-d, --description <TEXT>` | Description of this peer |
+
+**Example:**
+```bash
+wg peer add alice /home/alice/project -d "Alice's frontend repo"
+```
+
+---
+
+### `wg peer remove`
+
+Remove a registered peer.
+
+```bash
+wg peer remove <NAME>
+```
+
+**Example:**
+```bash
+wg peer remove alice
+```
+
+---
+
+### `wg peer list`
+
+List all configured peers with service status.
+
+```bash
+wg peer list
+```
+
+---
+
+### `wg peer show`
+
+Show detailed info about a peer.
+
+```bash
+wg peer show <NAME>
+```
+
+---
+
+### `wg peer status`
+
+Quick health check of all peers.
+
+```bash
+wg peer status
+```
+
+---
+
 ## Service Commands
 
 ### `wg service start`
@@ -1772,6 +1952,37 @@ wg service install
 ```bash
 wg service install
 # Outputs a systemd unit file; follow instructions to enable auto-start
+```
+
+---
+
+## Monitoring Commands
+
+### `wg watch`
+
+Stream workgraph events as JSON lines. Useful for live monitoring, external dashboards, or piping into other tools.
+
+```bash
+wg watch [OPTIONS]
+```
+
+**Options:**
+| Option | Description |
+|--------|-------------|
+| `--event <TYPE>` | Filter by event type (repeatable): `task_state`, `evaluation`, `agent`, `all` (default: `all`) |
+| `--task <TASK>` | Filter events to a specific task ID (prefix match) |
+| `--replay <N>` | Include N most recent historical events before streaming (default: 0) |
+
+**Examples:**
+```bash
+wg watch
+# Stream all events as JSON lines
+
+wg watch --event task_state --event evaluation
+# Only task state changes and evaluations
+
+wg watch --task deploy --replay 20
+# Stream events for tasks matching "deploy", including 20 historical events
 ```
 
 ---
@@ -2009,6 +2220,119 @@ wg tui
 
 wg tui --refresh-rate 500
 # Open TUI with faster 500ms refresh rate
+```
+
+---
+
+### `wg setup`
+
+Interactive configuration wizard for first-time setup. Walks through executor, model, agency, and service configuration.
+
+```bash
+wg setup
+```
+
+**Example:**
+```bash
+wg setup
+# Launches interactive prompts to configure your workgraph project
+```
+
+---
+
+### `wg replay`
+
+Replay tasks: snapshot the current graph, selectively reset tasks, and re-execute with a different model.
+
+```bash
+wg replay [OPTIONS]
+```
+
+**Options:**
+| Option | Description |
+|--------|-------------|
+| `--model <MODEL>` | Model to use for replayed tasks |
+| `--failed-only` | Only reset failed/abandoned tasks |
+| `--below-score <SCORE>` | Only reset tasks with evaluation score below this threshold |
+| `--tasks <IDS>` | Reset specific tasks (comma-separated) plus their transitive dependents |
+| `--keep-done <SCORE>` | Preserve done tasks scoring above this threshold (default: 0.9) |
+| `--plan-only` | Dry run: show what would be reset without making changes |
+| `--subgraph <TASK>` | Only replay tasks in this subgraph (rooted at given task) |
+
+**Examples:**
+```bash
+wg replay --failed-only --model opus
+# Re-run all failed tasks with Opus
+
+wg replay --below-score 0.7 --model sonnet
+# Reset tasks scoring below 0.7 and replay with Sonnet
+
+wg replay --tasks auth-impl,auth-test --plan-only
+# Preview which tasks would be reset
+
+wg replay --subgraph deploy-pipeline --failed-only
+# Only replay failed tasks under the deploy-pipeline subtree
+```
+
+---
+
+### `wg runs`
+
+Manage run snapshots — saved states of the graph for comparison and rollback.
+
+```bash
+wg runs <SUBCOMMAND>
+```
+
+**Subcommands:**
+| Subcommand | Description |
+|------------|-------------|
+| `list` | List all run snapshots |
+| `show <ID>` | Show details of a specific run |
+| `restore <ID>` | Restore graph from a run snapshot |
+| `diff <ID>` | Diff current graph against a run snapshot |
+
+**Examples:**
+```bash
+wg runs list
+# List all saved snapshots
+
+wg runs show run-001
+# Show details of a specific snapshot
+
+wg runs diff run-001
+# Compare current graph state against the snapshot
+
+wg runs restore run-001
+# Restore the graph to the snapshot state
+```
+
+---
+
+### `wg gc`
+
+Garbage collect terminal tasks (failed, abandoned) from the graph.
+
+```bash
+wg gc [OPTIONS]
+```
+
+**Options:**
+| Option | Description |
+|--------|-------------|
+| `--dry-run` | Show what would be removed without actually removing |
+| `--include-done` | Also remove done tasks (by default only failed + abandoned) |
+
+**Examples:**
+```bash
+wg gc --dry-run
+# Preview which tasks would be removed
+
+wg gc
+# Remove all failed and abandoned tasks
+
+wg gc --include-done
+# Also remove completed tasks
 ```
 
 ---

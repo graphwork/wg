@@ -128,11 +128,21 @@ EXECUTORS & MODELS
 
   Model hierarchy: task --model > executor model > coordinator model > 'default'
 
-  Model registry (catalog available models with cost/capability metadata):
+REUSABLE FUNCTIONS
+─────────────────────────────────────────
+  Functions capture proven workflow patterns for reuse:
 
-  wg models init                      # Seed registry with defaults
-  wg models list                      # Show available models and tiers
-  wg models add <id> --tier <tier>    # Add a custom model entry
+  wg func list                        # Discover available functions
+  wg func show <id>                   # View function details and inputs
+  wg func apply <id> --input k=v      # Instantiate a function into tasks
+  wg func extract --tasks a,b,c       # Extract a pattern from completed tasks
+
+EVALUATION & MONITORING
+─────────────────────────────────────────
+  wg evaluate run <task-id>           # Trigger LLM evaluation of a completed task
+  wg evaluate show                    # View evaluation history
+  wg watch                            # Stream workgraph events as JSON lines
+  wg watch --task <id>                # Stream events for a specific task
 "#;
 
 fn json_output() -> serde_json::Value {
@@ -209,8 +219,22 @@ fn json_output() -> serde_json::Value {
             "set_model_cli": "wg service start --model anthropic/claude-sonnet-4",
             "set_model_config": "[coordinator] model = \"anthropic/claude-sonnet-4\"",
             "per_task_model": "wg add \"task\" --model google/gemini-2.5-flash",
-            "hierarchy": "task --model > executor model > coordinator model > 'default'",
-            "model_registry": ["wg models init", "wg models list", "wg models add <id> --tier <tier>"]
+            "hierarchy": "task --model > executor model > coordinator model > 'default'"
+        },
+        "functions": {
+            "description": "Reusable workflow patterns extracted from completed tasks.",
+            "commands": {
+                "list": "wg func list",
+                "show": "wg func show <id>",
+                "apply": "wg func apply <id> --input k=v",
+                "extract": "wg func extract --tasks a,b,c"
+            }
+        },
+        "evaluation_and_monitoring": {
+            "evaluate_run": "wg evaluate run <task-id>",
+            "evaluate_show": "wg evaluate show",
+            "watch": "wg watch",
+            "watch_task": "wg watch --task <id>"
         }
     })
 }
@@ -340,7 +364,15 @@ mod tests {
         assert!(em.get("switch_executor").is_some());
         assert!(em.get("per_task_model").is_some());
         assert!(em.get("hierarchy").is_some());
-        assert!(em.get("model_registry").is_some());
+
+        // Check functions section
+        let funcs = output.get("functions").unwrap();
+        assert!(funcs.get("commands").is_some());
+
+        // Check evaluation_and_monitoring section
+        let eval = output.get("evaluation_and_monitoring").unwrap();
+        assert!(eval.get("evaluate_run").is_some());
+        assert!(eval.get("watch").is_some());
     }
 
     #[test]
@@ -348,7 +380,20 @@ mod tests {
         assert!(QUICKSTART_TEXT.contains("EXECUTORS & MODELS"));
         assert!(QUICKSTART_TEXT.contains("--coordinator-executor amplifier"));
         assert!(QUICKSTART_TEXT.contains("--model"));
-        assert!(QUICKSTART_TEXT.contains("wg models"));
+    }
+
+    #[test]
+    fn test_quickstart_text_contains_functions() {
+        assert!(QUICKSTART_TEXT.contains("REUSABLE FUNCTIONS"));
+        assert!(QUICKSTART_TEXT.contains("wg func list"));
+        assert!(QUICKSTART_TEXT.contains("wg func apply"));
+    }
+
+    #[test]
+    fn test_quickstart_text_contains_evaluation_and_monitoring() {
+        assert!(QUICKSTART_TEXT.contains("EVALUATION & MONITORING"));
+        assert!(QUICKSTART_TEXT.contains("wg evaluate run"));
+        assert!(QUICKSTART_TEXT.contains("wg watch"));
     }
 
     #[test]
@@ -400,6 +445,8 @@ mod tests {
             "CYCLES",
             "TIPS",
             "EXECUTORS & MODELS",
+            "REUSABLE FUNCTIONS",
+            "EVALUATION & MONITORING",
         ];
         for section in &required_sections {
             assert!(text.contains(section), "Missing section: {}", section);

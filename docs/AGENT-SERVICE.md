@@ -67,7 +67,7 @@ Each tick does:
      Unblock eval tasks whose source task is Failed (so failures get evaluated too)
 
 8. Spawn agents on ready tasks:
-     Resolve effective model: task.model > coordinator.model > agent.model
+     Resolve effective model: task.model > executor.model > coordinator.model
      Register agent in AgentRegistry
      Detach with setsid()
 
@@ -153,12 +153,42 @@ Generate a systemd user service file.
 wg service install
 ```
 
+## Executor Types
+
+The coordinator spawns agents via a configurable executor. Built-in executors:
+
+| Executor | Command | Use case |
+|----------|---------|----------|
+| **claude** | `claude --print --model <M>` | Default — Anthropic Claude CLI agents |
+| **amplifier** | `amplifier run --mode single -m <M>` | OpenRouter-backed models, supports `provider:model` syntax (e.g., `provider-openai:gpt-4o`) |
+| **shell** | Custom command from task `exec` field | Non-LLM tasks, scripts, builds |
+
+```bash
+wg config --coordinator-executor claude      # default
+wg config --coordinator-executor amplifier   # switch to amplifier
+```
+
+Custom executors can be defined in `.workgraph/executors/<name>.toml`.
+
+### Environment variables injected into spawned agents
+
+Every spawned agent receives these environment variables:
+
+| Variable | Description |
+|----------|-------------|
+| `WG_TASK_ID` | The task ID being worked on |
+| `WG_AGENT_ID` | The agent registry ID (e.g., `agent-7`) |
+| `WG_EXECUTOR_TYPE` | The executor type (e.g., `claude`, `amplifier`) |
+| `WG_MODEL` | The effective model selected for this agent (set only when a model is resolved) |
+
+Agents can read these to adapt behavior based on their runtime context.
+
 ## Spawning
 
 When the coordinator spawns an agent for a task:
 
 1. **Claim**: The task is claimed (status → `in-progress`)
-2. **Model resolution**: task.model > coordinator.model > agent.model
+2. **Model resolution**: task.model > executor.model > coordinator.model/CLI --model
 3. **Identity injection**: If the task has an `agent` field, the agent's role and motivation are loaded from `.workgraph/agency/` and rendered into an identity prompt section
 4. **Cycle context injection**: If the task is part of a structural cycle, the prompt includes:
    - The current `loop_iteration` (which pass this is)
@@ -260,8 +290,8 @@ auto_triage = false      # triage dead agents with LLM before respawning
 triage_model = "haiku"   # model for triage (default: haiku)
 triage_timeout = 30      # seconds before triage call times out (default: 30)
 triage_max_log_bytes = 50000  # max bytes of agent output to send to triage (default: 50000)
-assigner_model = "haiku" # model for assigner agents
-evaluator_model = "opus" # model for evaluator agents
+assigner_model = "haiku" # model for assigner agents (default via wg agency init)
+evaluator_model = "haiku" # model for evaluator agents (default via wg agency init)
 evolver_model = "opus"   # model for evolver agents
 assigner_agent = ""      # content-hash of assigner agent identity
 evaluator_agent = ""     # content-hash of evaluator agent identity
@@ -270,16 +300,16 @@ evolver_agent = ""       # content-hash of evolver agent identity
 
 ### Model hierarchy
 
-For regular tasks:
-1. CLI `--model` on `wg spawn` (highest)
-2. `task.model` (per-task override)
-3. `coordinator.model`
+For regular tasks (resolution order, highest priority wins):
+1. `task.model` — per-task override (highest)
+2. Executor config model — model field in the executor's config file
+3. CLI `--model` on `wg spawn` / `coordinator.model` in service mode
 4. `agent.model` (lowest)
 
 For agency meta-tasks:
-- Assignment: `agency.assigner_model` > `agent.model`
-- Evaluation: `agency.evaluator_model` > `task.model` > `agent.model`
-- Evolution: `agency.evolver_model` > `agent.model`
+- Assignment: `agency.assigner_model` (defaults to `haiku` after `wg agency init`)
+- Evaluation: `agency.evaluator_model` (defaults to `haiku` after `wg agency init`)
+- Evolution: `agency.evolver_model`
 
 ## IPC Protocol
 

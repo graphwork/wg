@@ -44,6 +44,7 @@ wg agents --alive        # Only alive agents
 wg agents --working      # Only working agents
 wg service status        # Service health
 wg status                # Quick one-screen overview
+wg watch                 # Stream events as JSON lines (live tail)
 wg viz                   # ASCII dependency graph
 wg tui                   # Interactive TUI dashboard
 ```
@@ -202,6 +203,15 @@ wg service resume           # Resume dispatching
 | `wg viz --dot -o graph.png` | Render to file |
 | `wg tui` | Interactive TUI dashboard |
 
+### Monitoring & event streaming
+
+| Command | Purpose |
+|---------|---------|
+| `wg watch` | Stream workgraph events as JSON lines |
+| `wg watch --event task_state` | Filter by event type (task_state, evaluation, agent, all) |
+| `wg watch --task <id>` | Filter events to a specific task (prefix match) |
+| `wg watch --replay 10` | Include N recent historical events before streaming |
+
 ### Analysis & metrics
 
 | Command | Purpose |
@@ -251,7 +261,6 @@ wg service resume           # Resume dispatching
 | `wg agency init` | Bootstrap agency with starter roles, motivations, and agents |
 | `wg agency stats` | Performance analytics |
 | `wg agency stats --by-model` | Per-model score breakdown |
-| `wg models` | List known models and usage stats |
 | `wg role add <id>` | Create a role |
 | `wg role list` | List roles |
 | `wg role show <id>` | Show role details |
@@ -270,9 +279,62 @@ wg service resume           # Resume dispatching
 | `wg agent performance <hash>` | Show agent performance |
 | `wg assign <task> <agent-hash>` | Assign agent to task |
 | `wg assign <task> --clear` | Clear assignment |
-| `wg evaluate <task>` | Trigger task evaluation |
+| `wg evaluate run <task>` | Trigger LLM-based evaluation of a completed task |
+| `wg evaluate record --task <id> --score <n> --source <tag>` | Record evaluation from external source |
+| `wg evaluate show` | Show evaluation history (filter by `--task`, `--agent`, `--source`) |
 | `wg evolve` | Trigger evolution cycle |
 | `wg evolve --strategy mutation --budget 3` | Targeted evolution |
+
+### Federation (cross-repo agency sharing)
+
+| Command | Purpose |
+|---------|---------|
+| `wg agency remote add <name> <path>` | Add a named remote agency store |
+| `wg agency remote remove <name>` | Remove a named remote |
+| `wg agency remote list` | List configured remotes |
+| `wg agency remote show <name>` | Show remote details and entity counts |
+| `wg agency scan <root>` | Scan filesystem for agency stores |
+| `wg agency pull <source>` | Pull entities from another agency store |
+| `wg agency push <target>` | Push local entities to another agency store |
+| `wg agency merge <sources...>` | Merge entities from multiple stores |
+
+### Peer workgraphs (cross-repo communication)
+
+| Command | Purpose |
+|---------|---------|
+| `wg peer add <name> <path>` | Register a peer workgraph instance |
+| `wg peer remove <name>` | Remove a registered peer |
+| `wg peer list` | List all configured peers with service status |
+| `wg peer show <name>` | Show detailed info about a peer |
+| `wg peer status` | Quick health check of all peers |
+
+### Run snapshots
+
+| Command | Purpose |
+|---------|---------|
+| `wg runs list` | List all run snapshots |
+| `wg runs show <id>` | Show details of a specific run |
+| `wg runs restore <id>` | Restore graph from a run snapshot |
+| `wg runs diff <id>` | Diff current graph against a run snapshot |
+
+### Functions (reusable workflow patterns)
+
+| Command | Purpose |
+|---------|---------|
+| `wg func list` | List available functions |
+| `wg func show <id>` | Show function details and required inputs |
+| `wg func extract --task <id>` | Extract a function from completed task(s) |
+| `wg func apply <id> --input key=value` | Create tasks from a function with provided inputs |
+| `wg func bootstrap` | Bootstrap the extract-function meta-function |
+| `wg func make-adaptive <id>` | Upgrade a generative function to adaptive (adds run memory) |
+
+### Traces (execution history & sharing)
+
+| Command | Purpose |
+|---------|---------|
+| `wg trace show <id>` | Show the execution history of a task |
+| `wg trace export --zone <zone>` | Export trace data filtered by visibility zone |
+| `wg trace import <file>` | Import a trace export file as read-only context |
 
 ### Artifacts & resources
 
@@ -297,11 +359,16 @@ wg service resume           # Resume dispatching
 | `wg reschedule <id> --after 24` | Delay task 24 hours |
 | `wg reschedule <id> --at "2025-01-15T09:00:00Z"` | Schedule at specific time |
 | `wg plan --budget 500 --hours 20` | Plan within constraints |
+| `wg replay` | Snapshot graph, selectively reset tasks, re-execute with different model |
+| `wg replay --failed-only` | Only reset failed/abandoned tasks |
+| `wg replay --tasks a,b,c` | Reset specific tasks plus transitive dependents |
+| `wg replay --plan-only` | Dry run: show what would be reset |
 
-### Configuration
+### Setup & configuration
 
 | Command | Purpose |
 |---------|---------|
+| `wg setup` | Interactive configuration wizard for first-time setup |
 | `wg config --show` | Show current config |
 | `wg config --init` | Create default config |
 | `wg config --executor claude` | Set executor |

@@ -250,7 +250,13 @@ After work accumulates, evaluate and evolve roles:
 
 ```bash
 # Evaluate completed work
-wg evaluate my-task
+wg evaluate run my-task
+
+# Record an external evaluation (e.g., from a human reviewer)
+wg evaluate record --task my-task --score 0.85 --source "manual"
+
+# View evaluation history
+wg evaluate show --task my-task
 
 # Preview evolution proposals
 wg evolve --dry-run
@@ -278,7 +284,7 @@ Escalate from single to double loop when the same task type fails repeatedly.
 | **Monolithic task** | One giant task with no decomposition → no parallelism, no feedback | Break into diamond or pipeline |
 | **Over-specialization** | Too many roles → coordination overhead exceeds benefit | `wg evolve --strategy retirement` |
 | **Under-specialization** | Generalist role for all tasks → poor quality | `wg evolve --strategy gap-analysis` |
-| **Skipping evaluation** | No feedback signal → no evolution → performance plateau | Enable `--auto-evaluate` or run `wg evaluate` manually |
+| **Skipping evaluation** | No feedback signal → no evolution → performance plateau | Enable `--auto-evaluate` or run `wg evaluate run` manually |
 
 ---
 
@@ -332,6 +338,25 @@ wg status                      # one-screen summary
 wg analyze                     # comprehensive health report
 ```
 
+### Executor types
+
+The coordinator spawns agents via an executor. Two built-in executors:
+
+| Executor | What it does | When to use |
+|----------|-------------|-------------|
+| **claude** | Pipes prompt into `claude --print` (Anthropic CLI) | Default — Claude Code agents |
+| **amplifier** | Pipes prompt into `amplifier run --mode single` | OpenRouter-backed models, multi-provider setups |
+
+```bash
+wg config --coordinator-executor claude      # default
+wg config --coordinator-executor amplifier   # switch to amplifier
+```
+
+Spawned agents receive environment variables indicating their runtime context:
+- `WG_EXECUTOR_TYPE` — the executor that spawned them (e.g., `claude`, `amplifier`)
+- `WG_MODEL` — the effective model selected for this agent
+- `WG_TASK_ID` — the task ID being worked on
+
 ### Configuration
 
 ```toml
@@ -348,11 +373,23 @@ heartbeat_timeout = 5   # minutes before agent is considered dead
 [agency]
 auto_evaluate = false
 auto_assign = false
+assigner_model = "haiku"    # lightweight model for assignment (default via wg agency init)
+evaluator_model = "haiku"   # lightweight model for evaluation (default via wg agency init)
 ```
 
 ### Model selection
 
-Priority order: `--model` flag > task's `model` field > `coordinator.model` > `agent.model`.
+Model resolution follows a priority chain (highest wins):
+
+1. `task.model` — per-task override set via `wg add --model` or `wg edit --model`
+2. Executor config model — model field in the executor's config
+3. `coordinator.model` — from `[coordinator]` in config.toml
+4. `agent.model` — from `[agent]` in config.toml (lowest)
+
+For agency meta-tasks (assignment, evaluation, evolution), dedicated model settings apply:
+- Assignment: `agency.assigner_model` (defaults to `haiku` after `wg agency init`)
+- Evaluation: `agency.evaluator_model` (defaults to `haiku` after `wg agency init`)
+- Evolution: `agency.evolver_model`
 
 ```bash
 wg add "Simple fix" --model haiku      # cheap model for simple work

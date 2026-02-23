@@ -97,7 +97,7 @@ wg assign my-task a3f7c21d
 wg service start
 
 # 3. Evaluate
-wg evaluate my-task
+wg evaluate run my-task
 
 # 4. Evolve
 wg evolve
@@ -206,9 +206,27 @@ Working, tested code
 After a task completes, evaluate the agent's work:
 
 ```bash
-wg evaluate <task-id>
-wg evaluate <task-id> --evaluator-model opus
-wg evaluate <task-id> --dry-run    # preview the evaluator prompt
+wg evaluate run <task-id>
+wg evaluate run <task-id> --evaluator-model opus
+wg evaluate run <task-id> --dry-run    # preview the evaluator prompt
+```
+
+You can also record evaluations from external sources (outcome metrics, peer reviews, manual scoring):
+
+```bash
+wg evaluate record --task <task-id> --score 0.9 --source "manual"
+wg evaluate record --task <task-id> --score 0.85 --source "outcome:sharpe" \
+  --dim correctness=0.9 --dim completeness=0.8 --notes "Strong on accuracy"
+```
+
+And view evaluation history with filters:
+
+```bash
+wg evaluate show                          # all evaluations
+wg evaluate show --task <task-id>         # filter by task (prefix match)
+wg evaluate show --agent <agent-id>       # filter by agent (prefix match)
+wg evaluate show --source "outcome:*"     # filter by source (glob)
+wg evaluate show --limit 10               # most recent N
 ```
 
 The evaluator scores across four dimensions:
@@ -316,8 +334,16 @@ wg assign <task-id> --clear         # remove assignment
 ### `wg evaluate`
 
 ```bash
-wg evaluate <task-id> [--evaluator-model <model>] [--dry-run]
+wg evaluate run <task-id> [--evaluator-model <model>] [--dry-run]
+wg evaluate record --task <id> --score <0.0-1.0> --source <tag> [--notes <text>] [--dim <dim>=<score>]...
+wg evaluate show [--task <id>] [--agent <id>] [--source <glob>] [--limit <N>]
 ```
+
+| Subcommand | Description |
+|------------|-------------|
+| `run` | Trigger LLM-based evaluation of a completed task |
+| `record` | Record an evaluation from an external source (outcome metrics, peer reviews, manual scores) |
+| `show` | View evaluation history with optional filters (task, agent, source, limit) |
 
 ### `wg evolve`
 
@@ -328,10 +354,15 @@ wg evolve [--strategy <name>] [--budget <N>] [--model <model>] [--dry-run]
 ### `wg agency stats`
 
 ```bash
-wg agency stats [--min-evals <N>]
+wg agency stats [--min-evals <N>] [--by-model]
 ```
 
 Shows: role leaderboard, motivation leaderboard, synergy matrix, tag breakdown, under-explored combinations.
+
+| Flag | Description |
+|------|-------------|
+| `--min-evals <N>` | Minimum evaluations to consider a pair "explored" (default: 3) |
+| `--by-model` | Group stats by model, showing per-model score breakdown |
 
 ## Skill System
 
@@ -424,7 +455,7 @@ evolver_model = "opus"           # model for the evolver agent
 evolver_agent = "abc123..."      # content-hash of evolver agent identity
 assigner_model = "haiku"         # model for assigner agents
 assigner_agent = "def456..."     # content-hash of assigner agent identity
-evaluator_model = "opus"         # model for evaluator agents
+evaluator_model = "haiku"        # model for evaluator agents
 evaluator_agent = "ghi789..."    # content-hash of evaluator agent identity
 retention_heuristics = "Retire roles scoring below 0.3 after 10 evaluations"
 ```
@@ -542,6 +573,57 @@ wg agent lineage <id>        # shows agent + role + motivation ancestry
 
 Roles, motivations, and agents are stored as YAML. Evaluations are stored as YAML. All filenames are based on the entity's content-hash ID.
 
+## Federation
+
+Federation lets you share agency entities (roles, motivations, agents) and their performance data across workgraph projects. Because entities use content-hash IDs, the same role in two projects has the same ID — pull/push merges performance records automatically.
+
+### Remotes
+
+Named references to other agency stores:
+
+```bash
+wg agency remote add <name> <path>       # add a named remote
+wg agency remote list                     # list all configured remotes
+wg agency remote show <name>             # show remote details and entity counts
+wg agency remote remove <name>           # remove a named remote
+```
+
+### Discovering stores
+
+Scan a directory tree for workgraph agency stores:
+
+```bash
+wg agency scan <root-dir>                 # find all .workgraph/agency/ stores
+wg agency scan <root-dir> --max-depth 5   # limit recursion depth (default: 10)
+```
+
+### Pull, push, and merge
+
+```bash
+# Pull entities from another store into local
+wg agency pull <source>                              # pull all from path or named remote
+wg agency pull <source> --type role                  # only roles
+wg agency pull <source> --entity <id-prefix>         # specific entities
+wg agency pull <source> --dry-run                    # preview without writing
+wg agency pull <source> --no-performance             # definitions only, skip scores
+wg agency pull <source> --no-evaluations             # skip evaluation JSON files
+wg agency pull <source> --global                     # pull into ~/.workgraph/agency/
+
+# Push local entities to another store
+wg agency push <target>                              # push all to path or named remote
+wg agency push <target> --type motivation            # only motivations
+wg agency push <target> --entity <id-prefix>         # specific entities
+wg agency push <target> --dry-run                    # preview without writing
+wg agency push <target> --global                     # push from ~/.workgraph/agency/
+
+# Merge multiple stores
+wg agency merge <source1> <source2> ...              # merge into local project
+wg agency merge <source1> <source2> --into <path>    # merge into specific target
+wg agency merge <source1> <source2> --dry-run        # preview
+```
+
+For the full federation design (conflict resolution, global store, trust propagation), see `docs/design/agency-federation.md`.
+
 ## Configuration Reference
 
 ```toml
@@ -549,7 +631,7 @@ Roles, motivations, and agents are stored as YAML. Evaluations are stored as YAM
 auto_evaluate = false              # auto-create evaluation tasks on completion
 auto_assign = false                # auto-create assignment tasks for ready work
 assigner_model = "haiku"           # model for assigner agents
-evaluator_model = "opus"           # model for evaluator agents
+evaluator_model = "haiku"          # model for evaluator agents
 evolver_model = "opus"             # model for evolver agents
 assigner_agent = ""                # content-hash of assigner agent
 evaluator_agent = ""               # content-hash of evaluator agent

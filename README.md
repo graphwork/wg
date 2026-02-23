@@ -46,6 +46,8 @@ wg --help
 
 ```bash
 cd your-project
+wg setup    # interactive wizard — configures executor, model, agency
+# or manually:
 wg init
 ```
 
@@ -296,7 +298,7 @@ auto_evaluate = false    # auto-create evaluation tasks on completion
 auto_assign = false      # auto-create identity assignment tasks
 auto_triage = false      # auto-triage dead agents using LLM
 assigner_model = "haiku" # model for assigner agents
-evaluator_model = "opus" # model for evaluator agents
+evaluator_model = "haiku" # model for evaluator agents
 evolver_model = "opus"   # model for evolver agents
 ```
 
@@ -521,7 +523,10 @@ wg assign my-task <agent-hash>
 2. **Motivations** define trade-offs and constraints ("Careful" → prioritizes reliability, rejects untested code)
 3. **Agents** pair one role + one motivation into a named identity
 4. **Assignment** binds an agent to a task — its identity is injected at spawn time
-5. **Evaluation** scores completed tasks across four dimensions, with a `source` field distinguishing internal LLM assessments from external signals (CI results, outcome data, peer reviews)
+5. **Evaluation** scores completed tasks across four dimensions:
+   - `wg evaluate run <task>` — trigger LLM-based evaluation
+   - `wg evaluate record --task <id> --score <n> --source <tag>` — record external signals (CI, peer review)
+   - `wg evaluate show` — view evaluation history
 6. **Evolution** uses performance data to create new roles/motivations and retire weak ones
 
 ### Automation
@@ -558,6 +563,16 @@ wg agency push partner              # export yours to them
 ```
 
 Performance records merge during transfer — evaluations are deduplicated and averages recalculated. Content-hash IDs make this natural: the same entity has the same ID everywhere.
+
+### Peer workgraphs
+
+For cross-repo task coordination (separate from agency federation):
+
+```bash
+wg peer add partner /path/to/other/project
+wg peer list                        # list configured peers with status
+wg peer status                      # quick health check of all peers
+```
 
 See [docs/AGENCY.md](docs/AGENCY.md) for the full agency system documentation.
 
@@ -787,6 +802,10 @@ wg viz --graph            # 2D spatial layout with box-drawing characters
 wg archive                # archive completed tasks
 wg check                  # check graph for cycles and issues
 wg trajectory <id>        # optimal task claim order for agents
+wg runs list              # list run snapshots
+wg runs diff <snapshot>   # diff current graph against a snapshot
+wg runs restore <snapshot> # restore graph from a snapshot
+wg replay --failed-only   # re-execute failed tasks (optionally with --model)
 ```
 
 ## Storage
@@ -818,7 +837,7 @@ auto_assign = false
 name = "My Project"
 ```
 
-Agency data lives in `.workgraph/agency/`, with federation config and trace functions alongside:
+Agency data lives in `.workgraph/agency/`, with federation config and functions alongside:
 
 ```
 .workgraph/
@@ -841,6 +860,7 @@ Agency data lives in `.workgraph/agency/`, with federation config and trace func
 - [docs/AGENT-GUIDE.md](docs/AGENT-GUIDE.md) - Deep dive on agent operation
 - [docs/AGENT-SERVICE.md](docs/AGENT-SERVICE.md) - Service architecture and coordinator lifecycle
 - [docs/AGENCY.md](docs/AGENCY.md) - Agency system: roles, motivations, evaluation, evolution
+- [docs/LOGGING.md](docs/LOGGING.md) - Provenance logging and the operations log
 
 ## License
 
