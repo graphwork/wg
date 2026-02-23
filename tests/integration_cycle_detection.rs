@@ -1702,3 +1702,194 @@ fn test_normal_ready_tasks_no_cycle_exemption() {
         "Non-cycle-aware ready_tasks should not exempt back-edges"
     );
 }
+
+// ===========================================================================
+// 7. Implicit cycle tests (--max-iterations without back-edges)
+// ===========================================================================
+
+#[test]
+fn test_implicit_cycle_fires_on_done() {
+    // Scenario from BUG_REPORT_CYCLE_NOT_FIRING.md:
+    // Task A (worker), Task B --after A --max-iterations 3 (evaluator/header).
+    // No back-edge. When both are Done and B completes, cycle should fire.
+    let a = make_task_with_status("a", "Worker", Status::Done);
+    let mut b = make_task_with_status("b", "Evaluator", Status::Done);
+    b.after = vec!["a".to_string()];
+    b.cycle_config = Some(CycleConfig {
+        max_iterations: 3,
+        guard: None,
+        delay: None,
+    });
+
+    let mut graph = build_graph(vec![a, b]);
+    let analysis = graph.compute_cycle_analysis();
+
+    // No SCC — A and B don't form a cycle in the graph (no back-edge)
+    assert!(analysis.cycles.is_empty(), "Should have no SCC cycles");
+
+    // But evaluate_cycle_iteration should still fire for the implicit cycle
+    let reactivated = evaluate_cycle_iteration(&mut graph, "b", &analysis);
+
+    assert!(
+        !reactivated.is_empty(),
+        "Implicit cycle should re-activate tasks. Got: {:?}",
+        reactivated
+    );
+
+    let reactivated_set: HashSet<&str> = reactivated.iter().map(|s| s.as_str()).collect();
+    assert!(reactivated_set.contains("a"), "Worker A should be re-activated");
+    assert!(reactivated_set.contains("b"), "Evaluator B should be re-activated");
+
+    // Verify both are Open with iteration 1
+    assert_eq!(graph.get_task("a").unwrap().status, Status::Open);
+    assert_eq!(graph.get_task("b").unwrap().status, Status::Open);
+    assert_eq!(graph.get_task("a").unwrap().loop_iteration, 1);
+    assert_eq!(graph.get_task("b").unwrap().loop_iteration, 1);
+}
+
+#[test]
+fn test_implicit_cycle_respects_max_iterations() {
+    // At max_iterations, should NOT re-activate
+    let mut a = make_task_with_status("a", "Worker", Status::Done);
+    a.loop_iteration = 3;
+    let mut b = make_task_with_status("b", "Evaluator", Status::Done);
+    b.after = vec!["a".to_string()];
+    b.loop_iteration = 3;
+    b.cycle_config = Some(CycleConfig {
+        max_iterations: 3,
+        guard: None,
+        delay: None,
+    });
+
+    let mut graph = build_graph(vec![a, b]);
+    let analysis = graph.compute_cycle_analysis();
+
+    let reactivated = evaluate_cycle_iteration(&mut graph, "b", &analysis);
+    assert!(
+        reactivated.is_empty(),
+        "Should NOT iterate at max_iterations"
+    );
+}
+
+#[test]
+fn test_implicit_cycle_respects_converged() {
+    // Converged tag should prevent re-activation
+    let a = make_task_with_status("a", "Worker", Status::Done);
+    let mut b = make_task_with_status("b", "Evaluator", Status::Done);
+    b.after = vec!["a".to_string()];
+    b.cycle_config = Some(CycleConfig {
+        max_iterations: 3,
+        guard: None,
+        delay: None,
+    });
+    b.tags = vec!["converged".to_string()];
+
+    let mut graph = build_graph(vec![a, b]);
+    let analysis = graph.compute_cycle_analysis();
+
+    let reactivated = evaluate_cycle_iteration(&mut graph, "b", &analysis);
+    assert!(
+        reactivated.is_empty(),
+        "Converged tag should prevent iteration"
+    );
+}
+
+#[test]
+fn test_implicit_cycle_partial_done_no_fire() {
+    // If worker A is not done yet, cycle should NOT fire
+    let a = make_task("a", "Worker"); // Open, not done
+    let mut b = make_task_with_status("b", "Evaluator", Status::Done);
+    b.after = vec!["a".to_string()];
+    b.cycle_config = Some(CycleConfig {
+        max_iterations: 3,
+        guard: None,
+        delay: None,
+    });
+
+    let mut graph = build_graph(vec![a, b]);
+    let analysis = graph.compute_cycle_analysis();
+
+    let reactivated = evaluate_cycle_iteration(&mut graph, "b", &analysis);
+    assert!(
+        reactivated.is_empty(),
+        "Should NOT iterate when deps aren't done"
+    );
+}
+
+#[test]
+fn test_implicit_cycle_multiple_deps() {
+    // Task C --after A,B --max-iterations 2. All three should be re-activated.
+    let a = make_task_with_status("a", "Worker A", Status::Done);
+    let b = make_task_with_status("b", "Worker B", Status::Done);
+    let mut c = make_task_with_status("c", "Evaluator", Status::Done);
+    c.after = vec!["a".to_string(), "b".to_string()];
+    c.cycle_config = Some(CycleConfig {
+        max_iterations: 2,
+        guard: None,
+        delay: None,
+    });
+
+    let mut graph = build_graph(vec![a, b, c]);
+    let analysis = graph.compute_cycle_analysis();
+
+    let reactivated = evaluate_cycle_iteration(&mut graph, "c", &analysis);
+
+    assert_eq!(reactivated.len(), 3, "All 3 tasks should be re-activated");
+    let set: HashSet<&str> = reactivated.iter().map(|s| s.as_str()).collect();
+    assert!(set.contains("a"));
+    assert!(set.contains("b"));
+    assert!(set.contains("c"));
+}
+
+#[test]
+fn test_implicit_cycle_non_config_task_no_fire() {
+    // Completing a task WITHOUT cycle_config should not trigger implicit cycle
+    let mut a = make_task_with_status("a", "Worker", Status::Done);
+    a.after = vec!["b".to_string()];
+    let b = make_task_with_status("b", "Other", Status::Done);
+
+    let mut graph = build_graph(vec![a, b]);
+    let analysis = graph.compute_cycle_analysis();
+
+    let reactivated = evaluate_cycle_iteration(&mut graph, "a", &analysis);
+    assert!(
+        reactivated.is_empty(),
+        "Task without cycle_config should not trigger implicit cycle"
+    );
+}
+
+#[test]
+fn test_cli_implicit_cycle_via_max_iterations() {
+    // End-to-end CLI test: wg add A, wg add B --after A --max-iterations 3,
+    // wg done A, wg done B → verify A is re-opened with iteration 1.
+    let tmp = TempDir::new().unwrap();
+    let wg_dir = setup_workgraph(&tmp, vec![]);
+
+    // Add task A
+    wg_ok(&wg_dir, &["add", "Worker", "--id", "a"]);
+    // Add task B --after A --max-iterations 3
+    wg_ok(
+        &wg_dir,
+        &["add", "Evaluator", "--id", "b", "--after", "a", "--max-iterations", "3"],
+    );
+
+    // Complete A first
+    wg_ok(&wg_dir, &["done", "a"]);
+
+    // Complete B (plain, not converged) → should trigger cycle
+    let output = wg_ok(&wg_dir, &["done", "b"]);
+    assert!(
+        output.contains("re-activated"),
+        "Should report cycle re-activation. Output: {}",
+        output
+    );
+
+    // Verify both tasks are re-opened
+    let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
+    let task_a = graph.get_task("a").unwrap();
+    let task_b = graph.get_task("b").unwrap();
+    assert_eq!(task_a.status, Status::Open, "A should be re-opened");
+    assert_eq!(task_b.status, Status::Open, "B should be re-opened");
+    assert_eq!(task_a.loop_iteration, 1, "A iteration should be 1");
+    assert_eq!(task_b.loop_iteration, 1, "B iteration should be 1");
+}

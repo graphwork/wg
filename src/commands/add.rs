@@ -194,6 +194,8 @@ pub fn run(
         }
     }
 
+
+
     // Save atomically (temp file + rename)
     save_graph(&graph, &path).context("Failed to save graph")?;
     super::notify_graph_changed(dir);

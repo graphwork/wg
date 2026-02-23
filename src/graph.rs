@@ -720,14 +720,19 @@ fn evaluate_guard(guard: &Option<LoopGuard>, graph: &WorkGraph) -> bool {
 
 /// Evaluate structural cycle iteration after a task transitions to Done.
 ///
-/// Checks if the completed task is part of a structural cycle (detected via
-/// `CycleAnalysis`). If ALL cycle members are Done, and the cycle header has
-/// a `CycleConfig`, evaluates whether to iterate:
-/// 1. Check convergence tag on header (any member can set it via --converged)
-/// 2. Check `max_iterations` on header's `CycleConfig`
-/// 3. Check guard condition
-/// 4. If iterating: re-open all cycle members, increment `loop_iteration`,
-///    optionally set `ready_after` if delay is configured.
+/// Two modes:
+/// 1. **SCC cycle**: The completed task is part of a structural cycle detected via
+///    `CycleAnalysis`. If ALL cycle members are Done, evaluates iteration.
+/// 2. **Implicit cycle**: The completed task has `cycle_config` but is NOT in an SCC
+///    (e.g., created with `--max-iterations` + `--after` without explicit back-edges).
+///    Treats the task and its `after` deps as a virtual cycle.
+///
+/// In both cases, checks:
+/// - Convergence tag on the config owner
+/// - `max_iterations` limit
+/// - Guard condition
+/// - If iterating: re-opens all cycle members, increments `loop_iteration`,
+///   optionally sets `ready_after` if delay is configured.
 ///
 /// Returns the list of task IDs that were re-activated.
 pub fn evaluate_cycle_iteration(
@@ -735,55 +740,80 @@ pub fn evaluate_cycle_iteration(
     completed_task_id: &str,
     cycle_analysis: &CycleAnalysis,
 ) -> Vec<String> {
-    // 1. Check if the completed task is in a cycle
-    let cycle_idx = match cycle_analysis.task_to_cycle.get(completed_task_id) {
-        Some(&idx) => idx,
-        None => return vec![],
-    };
+    // Determine cycle members and config owner.
+    // Mode 1: SCC-detected cycle
+    if let Some(&cycle_idx) = cycle_analysis.task_to_cycle.get(completed_task_id) {
+        let cycle = &cycle_analysis.cycles[cycle_idx];
 
-    let cycle = &cycle_analysis.cycles[cycle_idx];
+        // Find the cycle member with CycleConfig
+        let (config_owner_id, cycle_config) = {
+            let mut found = None;
+            for member_id in &cycle.members {
+                if let Some(task) = graph.get_task(member_id)
+                    && let Some(ref config) = task.cycle_config {
+                        found = Some((member_id.clone(), config.clone()));
+                        break;
+                    }
+            }
+            match found {
+                Some(pair) => pair,
+                None => return vec![], // No config = no cycle iteration
+            }
+        };
 
-    // 2. Find the cycle member with CycleConfig (may differ from SCC header).
-    //    The spec requires exactly one member to have it; wg check enforces this.
-    let (config_owner_id, cycle_config) = {
-        let mut found = None;
-        for member_id in &cycle.members {
-            if let Some(task) = graph.get_task(member_id)
-                && let Some(ref config) = task.cycle_config {
-                    found = Some((member_id.clone(), config.clone()));
-                    break;
-                }
+        return reactivate_cycle(graph, &cycle.members, &config_owner_id, &cycle_config);
+    }
+
+    // Mode 2: Implicit cycle — completed task has cycle_config but no SCC back-edge.
+    // This handles `wg add B --after A --max-iterations 3` where no explicit
+    // back-edge was created. Treat B + its after deps as the cycle members.
+    if let Some(task) = graph.get_task(completed_task_id)
+        && let Some(ref config) = task.cycle_config
+    {
+        let config = config.clone();
+        let mut members: Vec<String> = task.after.clone();
+        let config_owner_id = completed_task_id.to_string();
+        if !members.contains(&config_owner_id) {
+            members.push(config_owner_id.clone());
         }
-        match found {
-            Some(pair) => pair,
-            None => return vec![], // No config = no cycle iteration
-        }
-    };
 
-    // 3. Check if ALL cycle members are Done
-    for member_id in &cycle.members {
+        return reactivate_cycle(graph, &members, &config_owner_id, &config);
+    }
+
+    vec![]
+}
+
+/// Shared logic: check conditions and re-open cycle members.
+fn reactivate_cycle(
+    graph: &mut WorkGraph,
+    members: &[String],
+    config_owner_id: &str,
+    cycle_config: &CycleConfig,
+) -> Vec<String> {
+    // Check if ALL members are Done
+    for member_id in members {
         match graph.get_task(member_id) {
             Some(t) if t.status == Status::Done => {}
             _ => return vec![], // Not all done yet
         }
     }
 
-    // 4. Check convergence tag on config owner (or any member)
-    if let Some(owner) = graph.get_task(&config_owner_id)
+    // Check convergence tag on config owner
+    if let Some(owner) = graph.get_task(config_owner_id)
         && owner.tags.contains(&"converged".to_string()) {
             return vec![];
         }
 
-    // 5. Check max_iterations (using config owner's loop_iteration)
+    // Check max_iterations
     let current_iter = graph
-        .get_task(&config_owner_id)
+        .get_task(config_owner_id)
         .map(|t| t.loop_iteration)
         .unwrap_or(0);
     if current_iter >= cycle_config.max_iterations {
         return vec![];
     }
 
-    // 6. Check guard condition
+    // Check guard condition
     if !evaluate_guard(&cycle_config.guard, graph) {
         return vec![];
     }
@@ -792,7 +822,7 @@ pub fn evaluate_cycle_iteration(
             return vec![];
         }
 
-    // 7. All checks passed — re-open all cycle members
+    // All checks passed — re-open all members
     let new_iteration = current_iter + 1;
     let ready_after = cycle_config
         .delay
@@ -806,7 +836,7 @@ pub fn evaluate_cycle_iteration(
 
     let mut reactivated = Vec::new();
 
-    for member_id in &cycle.members {
+    for member_id in members {
         if let Some(task) = graph.get_task_mut(member_id) {
             task.status = Status::Open;
             task.assigned = None;

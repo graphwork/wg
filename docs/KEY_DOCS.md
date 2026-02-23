@@ -1,0 +1,101 @@
+# Key Documentation Files
+
+Canonical list of all key documentation files and their purpose. Used as the reference for future doc-sync runs.
+
+Last updated: 2026-02-23
+
+---
+
+## User-Facing Documentation
+
+| File | Purpose | Audience |
+|------|---------|----------|
+| `README.md` | Project overview, install, setup, usage patterns, feature summary | Everyone (entry point) |
+| `.claude/skills/wg/SKILL.md` | Claude Code skill definition — teaches AI agents to use workgraph | AI agents (Claude Code) |
+| `docs/COMMANDS.md` | Complete CLI command reference with examples | Users, agents |
+| `docs/AGENT-GUIDE.md` | How spawned agents should think about task graphs: patterns, structures, anti-patterns | AI agents, advanced users |
+| `docs/AGENT-SERVICE.md` | Service daemon architecture: coordinator tick, dispatch cycle, agent lifecycle | Operators, contributors |
+| `docs/AGENCY.md` | Agency system: roles, motivations, evaluation, evolution, skill system | Users setting up agency |
+| `docs/LOGGING.md` | Logging and provenance system: operation log, agent archives, rotation | Operators, integrators |
+
+## Embedded Documentation
+
+| File | Purpose | Audience |
+|------|---------|----------|
+| `src/commands/quickstart.rs` | Quickstart text shown by `wg quickstart` — onboarding cheat sheet | AI agents, new users |
+| `CLAUDE.md` | Project-level Claude Code instructions | AI agents |
+| `~/.claude/CLAUDE.md` | Global Claude Code instructions | AI agents |
+
+## Manual (Typst)
+
+| File | Purpose | Audience |
+|------|---------|----------|
+| `docs/manual/01-overview.typ` | System overview: graph, agency, core loop, agency loop | Deep readers |
+| `docs/manual/02-task-graph.typ` | Task graph: nodes, status, dependencies, cycles, readiness, analysis | Deep readers |
+| `docs/manual/03-agency.typ` | Agency model: roles, motivations, agents, content-hash IDs, skills, trust, federation | Deep readers |
+| `docs/manual/04-coordination.typ` | Coordination & execution: daemon, tick, dispatch, wrapper, IPC, watch, custom executors | Deep readers |
+| `docs/manual/05-evolution.typ` | Evolution & improvement: evaluation, performance, strategies, lineage, autopoiesis | Deep readers |
+| `docs/manual/workgraph-manual.typ` | Manual entry point (imports all chapters) | Deep readers |
+| `docs/manual/README.md` | Manual build instructions | Contributors |
+| `docs/manual/PLAN.md` | Manual chapter planning notes | Contributors |
+| `docs/manual/UPDATE-SPEC.md` | Spec for manual updates | Contributors |
+
+## Design Documents
+
+| File | Purpose | Status |
+|------|---------|--------|
+| `docs/design/trace-function-protocol.md` | Three-layer function protocol (static/generative/adaptive) | Implemented |
+| `docs/design/agency-federation.md` | Agency federation: scan/pull/push/remote/merge | Implemented (except global store) |
+| `docs/design/cycle-aware-graph.md` | Cycle-aware graph design | Implemented |
+| `docs/design/loop-convergence.md` | Loop convergence design | Implemented |
+| `docs/design/cross-repo-communication.md` | Cross-repo peer communication | Implemented |
+| `docs/design/provenance-system.md` | Provenance system design | Implemented |
+| `docs/design/spec-patterns-vocab.md` | Pattern vocabulary spec (referenced by AGENT-GUIDE.md) | Reference |
+| `docs/design/spec-cycle-integration.md` | Cycle integration spec | Implemented |
+| `docs/design/spec-edge-rename.md` | Edge rename spec (blocked_by → after) | Implemented |
+| `docs/design/func-rename-spec.md` | Function rename spec (trace → func) | Implemented |
+| `docs/design/doc-sync-system.md` | Doc sync system design | Reference |
+| `docs/design/smooth-integration.md` | Smooth integration design | Reference |
+| `docs/design/vx-integration-response.md` | Veracity exchange integration | Design |
+| `docs/design/spec-vx-integration-impl.md` | VX integration implementation spec | Design |
+
+## Research Documents
+
+| File | Purpose | Status |
+|------|---------|--------|
+| `docs/research/arena-evaluation/spec.md` | FLIP-style backward-inference evaluation research | Research (not shipped) |
+| `docs/research/arena-evaluation/arena-evaluation-report.typ` | Arena evaluation research report | Research |
+| `docs/research/amplifier-integration-proposal.md` | Amplifier executor integration | Research |
+| `docs/research/amplifier-architecture.md` | Amplifier architecture deep dive | Research |
+| `docs/research/amplifier-executor-gap.md` | Amplifier executor gap analysis | Research |
+| `docs/research/amplifier-context-transfer.md` | Amplifier context transfer research | Research |
+| `docs/research/logging-gaps.md` | Logging gap analysis | Research |
+| `docs/research/logging-veracity-gap-analysis.md` | Logging veracity gap analysis | Research |
+| `docs/research/cyclic-processes.md` | Cyclic processes research | Research |
+| `docs/research/cycle-detection-algorithms.md` | Cycle detection algorithm survey | Research |
+| `docs/research/file-locking-audit.md` | File locking audit | Research |
+| `docs/research/veracity-exchange-integration.md` | Veracity exchange integration research | Research |
+| `docs/research/veracity-exchange-deep-dive.md` | Veracity exchange deep dive | Research |
+| `docs/research/agent-context-awareness.md` | Agent context awareness research | Research |
+
+## Other Documentation
+
+| File | Purpose |
+|------|---------|
+| `docs/README.md` | Docs directory overview |
+| `docs/ADR-actor-vs-agent-identity.md` | Architecture decision record |
+| `docs/REVIEW-SYNTHESIS.md` | Review synthesis |
+| `docs/task-id-namespacing.md` | Task ID namespacing notes |
+| `docs/cycle-support-audit.md` | Cycle support audit |
+| `docs/spec-bugfixes.md` | Bug fix specs |
+| `docs/fix-dag-terminology.md` | DAG terminology fix notes |
+| `docs/design-cyclic-workgraph.md` | Cyclic workgraph design |
+| `docs/survey-context-management.md` | Context management survey |
+| `docs/test-specs/trace-replay-test-spec.md` | Test specifications |
+
+## Archive
+
+| Directory | Purpose |
+|-----------|---------|
+| `docs/archive/research/` | Historical research documents |
+| `docs/archive/reviews/` | Historical review documents |
