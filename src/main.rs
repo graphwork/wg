@@ -311,6 +311,10 @@ enum Commands {
 
     /// Visualize the dependency graph (ASCII tree by default)
     Viz {
+        /// Task IDs to focus on — shows only their containing subgraphs
+        #[arg(value_name = "TASK_ID")]
+        focus: Vec<String>,
+
         /// Show all tasks including fully-done trees (default: active trees only)
         #[arg(long)]
         all: bool,
@@ -2408,6 +2412,7 @@ fn main() -> Result<()> {
             commands::list::run(&workgraph_dir, status.as_deref(), paused, cli.json)
         }
         Commands::Viz {
+            focus,
             all,
             status,
             critical_path,
@@ -2433,6 +2438,7 @@ fn main() -> Result<()> {
                 format: fmt,
                 output,
                 show_internal,
+                focus,
             };
             commands::viz::run(&workgraph_dir, &options)
         }

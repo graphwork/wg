@@ -41,6 +41,8 @@ pub struct VizOptions {
     pub output: Option<String>,
     /// Show internal tasks (assign-*, evaluate-*) that are normally hidden
     pub show_internal: bool,
+    /// Focus on specific task IDs — show only their containing subgraphs
+    pub focus: Vec<String>,
 }
 
 impl Default for VizOptions {
@@ -52,6 +54,7 @@ impl Default for VizOptions {
             format: OutputFormat::Ascii,
             output: None,
             show_internal: false,
+            focus: Vec::new(),
         }
     }
 }
@@ -148,86 +151,67 @@ pub fn run(dir: &Path, options: &VizOptions) -> Result<()> {
         active
     };
 
-    // Compute connected components (undirected) to find "active trees":
-    // trees where at least one task is not done. All members of active trees
-    // are shown (done tasks included for context); fully-done trees are hidden.
-    let active_tree_ids: HashSet<&str> = if options.all || options.status.is_some() {
-        HashSet::new() // not used when --all or --status is set
-    } else {
-        // Build undirected adjacency from after/before edges
-        let mut components: HashMap<&str, usize> = HashMap::new();
-        let mut num_components = 0usize;
+    // Compute weakly connected components via union-find.
+    // Used for both active-tree filtering and --focus subgraph selection.
+    fn uf_find<'a>(comp: &mut HashMap<&'a str, usize>, merged: &mut Vec<Option<usize>>, id: &'a str) -> usize {
+        let mut c = comp[id];
+        while let Some(parent) = merged[c] { c = parent; }
+        let root = c;
+        let mut c2 = comp[id];
+        while let Some(parent) = merged[c2] { merged[c2] = Some(root); c2 = parent; }
+        comp.insert(id, root);
+        root
+    }
 
-        // Assign each task to its own component initially
-        for task in graph.tasks() {
-            components.insert(task.id.as_str(), num_components);
-            num_components += 1;
+    let mut components: HashMap<&str, usize> = HashMap::new();
+    let mut num_components = 0usize;
+    for task in graph.tasks() {
+        components.insert(task.id.as_str(), num_components);
+        num_components += 1;
+    }
+    let mut merged: Vec<Option<usize>> = vec![None; num_components];
+
+    let edge_pairs: Vec<(String, String)> = graph.tasks().flat_map(|task| {
+        let id = task.id.clone();
+        task.after.iter().chain(task.before.iter())
+            .map(move |neighbor| (id.clone(), neighbor.clone()))
+    }).collect();
+
+    for (task_id, neighbor_id) in &edge_pairs {
+        if components.contains_key(neighbor_id.as_str()) {
+            let a = uf_find(&mut components, &mut merged, task_id.as_str());
+            let b = uf_find(&mut components, &mut merged, neighbor_id.as_str());
+            if a != b { merged[b] = Some(a); }
         }
+    }
 
-        // Merge components along edges (union-find with path compression)
-        fn find<'a>(comp: &mut HashMap<&'a str, usize>, merged: &mut Vec<Option<usize>>, id: &'a str) -> usize {
-            let mut c = comp[id];
-            while let Some(parent) = merged[c] {
-                c = parent;
-            }
-            // Path compression
-            let root = c;
-            let mut c = comp[id];
-            while let Some(parent) = merged[c] {
-                merged[c] = Some(root);
-                c = parent;
-            }
-            comp.insert(id, root);
-            root
-        }
+    // Precompute task_id → root mapping so we don't need mutable borrows in the filter
+    let task_roots: HashMap<&str, usize> = graph.tasks()
+        .map(|t| (t.id.as_str(), uf_find(&mut components, &mut merged, t.id.as_str())))
+        .collect();
 
-        let mut merged: Vec<Option<usize>> = vec![None; num_components];
+    // For focus mode: collect the roots of focused task IDs
+    let focus_roots: HashSet<usize> = options.focus.iter()
+        .filter_map(|f| task_roots.get(f.as_str()).copied())
+        .collect();
 
-        // Collect edges first to avoid borrow conflicts with graph
-        let edge_pairs: Vec<(String, String)> = graph.tasks().flat_map(|task| {
-            let id = task.id.clone();
-            task.after.iter().chain(task.before.iter())
-                .map(move |neighbor| (id.clone(), neighbor.clone()))
-        }).collect();
-
-        for (task_id, neighbor_id) in &edge_pairs {
-            if components.contains_key(neighbor_id.as_str()) {
-                let a = find(&mut components, &mut merged, task_id.as_str());
-                let b = find(&mut components, &mut merged, neighbor_id.as_str());
-                if a != b {
-                    merged[b] = Some(a);
-                }
-            }
-        }
-
-        // Find which root components have active (non-done, non-internal) tasks.
-        // Internal tasks (assign-*, evaluate-*) don't count — otherwise failed
-        // evaluations would make every tree appear "active."
-        let mut active_roots: HashSet<usize> = HashSet::new();
-        for task in graph.tasks() {
-            if task.status != Status::Done && task.status != Status::Abandoned
-                && !is_internal_task(task)
-            {
-                let root = find(&mut components, &mut merged, task.id.as_str());
-                active_roots.insert(root);
-            }
-        }
-
-        // Collect all task IDs in active components
-        let mut result: HashSet<&str> = HashSet::new();
-        for task in graph.tasks() {
-            let root = find(&mut components, &mut merged, task.id.as_str());
-            if active_roots.contains(&root) {
-                result.insert(task.id.as_str());
-            }
-        }
-        result
-    };
+    // For default mode: find roots with active (non-done, non-internal) tasks
+    let active_roots: HashSet<usize> = graph.tasks()
+        .filter(|t| t.status != Status::Done && t.status != Status::Abandoned && !is_internal_task(t))
+        .filter_map(|t| task_roots.get(t.id.as_str()).copied())
+        .collect();
 
     // Determine which tasks to include
     let tasks_to_show: Vec<_> = graph
         .tasks()
         .filter(|t| {
+            let root = task_roots[t.id.as_str()];
+
+            // Focus mode: show only WCCs containing the focused task IDs
+            if !options.focus.is_empty() {
+                return focus_roots.contains(&root);
+            }
+
             // If --all, show everything
             if options.all {
                 return true;
@@ -246,13 +230,9 @@ pub fn run(dir: &Path, options: &VizOptions) -> Result<()> {
                 return task_status == status_filter.to_lowercase();
             }
 
-            // Default: show tasks in "active trees" — trees that have at least
-            // one non-done task. Done tasks in active trees show for context (green).
-            // Fully completed trees are hidden. Abandoned always hidden.
-            if t.status == Status::Abandoned {
-                return false;
-            }
-            active_tree_ids.contains(t.id.as_str())
+            // Default: show tasks in active WCCs
+            if t.status == Status::Abandoned { return false; }
+            active_roots.contains(&root)
         })
         .collect();
 
@@ -2509,6 +2489,7 @@ mod tests {
             output: None,
             show_internal: true,
             critical_path: false,
+            focus: Vec::new(),
         };
         // We test via run() output by checking generate_ascii directly
         // with the same filter logic
