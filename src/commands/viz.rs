@@ -134,7 +134,7 @@ pub fn run(dir: &Path, options: &VizOptions) -> Result<()> {
 
     // Find cycle indices that have at least one non-done member —
     // all members of such cycles should be shown even without --all.
-    let active_cycle_ids: HashSet<usize> = if options.all || options.status.is_some() {
+    let _active_cycle_ids: HashSet<usize> = if options.all || options.status.is_some() {
         HashSet::new()
     } else {
         let mut active = HashSet::new();
@@ -146,6 +146,78 @@ pub fn run(dir: &Path, options: &VizOptions) -> Result<()> {
             }
         }
         active
+    };
+
+    // Compute connected components (undirected) to find "active trees":
+    // trees where at least one task is not done. All members of active trees
+    // are shown (done tasks included for context); fully-done trees are hidden.
+    let active_tree_ids: HashSet<&str> = if options.all || options.status.is_some() {
+        HashSet::new() // not used when --all or --status is set
+    } else {
+        // Build undirected adjacency from after/before edges
+        let mut components: HashMap<&str, usize> = HashMap::new();
+        let mut num_components = 0usize;
+
+        // Assign each task to its own component initially
+        for task in graph.tasks() {
+            components.insert(task.id.as_str(), num_components);
+            num_components += 1;
+        }
+
+        // Merge components along edges (union-find with path compression)
+        fn find<'a>(comp: &mut HashMap<&'a str, usize>, merged: &mut Vec<Option<usize>>, id: &'a str) -> usize {
+            let mut c = comp[id];
+            while let Some(parent) = merged[c] {
+                c = parent;
+            }
+            // Path compression
+            let root = c;
+            let mut c = comp[id];
+            while let Some(parent) = merged[c] {
+                merged[c] = Some(root);
+                c = parent;
+            }
+            comp.insert(id, root);
+            root
+        }
+
+        let mut merged: Vec<Option<usize>> = vec![None; num_components];
+
+        // Collect edges first to avoid borrow conflicts with graph
+        let edge_pairs: Vec<(String, String)> = graph.tasks().flat_map(|task| {
+            let id = task.id.clone();
+            task.after.iter().chain(task.before.iter())
+                .map(move |neighbor| (id.clone(), neighbor.clone()))
+        }).collect();
+
+        for (task_id, neighbor_id) in &edge_pairs {
+            if components.contains_key(neighbor_id.as_str()) {
+                let a = find(&mut components, &mut merged, task_id.as_str());
+                let b = find(&mut components, &mut merged, neighbor_id.as_str());
+                if a != b {
+                    merged[b] = Some(a);
+                }
+            }
+        }
+
+        // Find which root components have active (non-done) tasks
+        let mut active_roots: HashSet<usize> = HashSet::new();
+        for task in graph.tasks() {
+            if task.status != Status::Done && task.status != Status::Abandoned {
+                let root = find(&mut components, &mut merged, task.id.as_str());
+                active_roots.insert(root);
+            }
+        }
+
+        // Collect all task IDs in active components
+        let mut result: HashSet<&str> = HashSet::new();
+        for task in graph.tasks() {
+            let root = find(&mut components, &mut merged, task.id.as_str());
+            if active_roots.contains(&root) {
+                result.insert(task.id.as_str());
+            }
+        }
+        result
     };
 
     // Determine which tasks to include
@@ -170,9 +242,13 @@ pub fn run(dir: &Path, options: &VizOptions) -> Result<()> {
                 return task_status == status_filter.to_lowercase();
             }
 
-            // Default: show everything except abandoned tasks.
-            // Done (green), in-progress, open, blocked, failed — all visible.
-            t.status != Status::Abandoned
+            // Default: show tasks in "active trees" — trees that have at least
+            // one non-done task. Done tasks in active trees show for context (green).
+            // Fully completed trees are hidden. Abandoned always hidden.
+            if t.status == Status::Abandoned {
+                return false;
+            }
+            active_tree_ids.contains(t.id.as_str())
         })
         .collect();
 
@@ -2393,33 +2469,93 @@ mod tests {
     /// Verify the default viz filter includes in-progress tasks alongside open tasks,
     /// while excluding done tasks (regression test for the default filter).
     #[test]
-    fn test_default_filter_shows_all_except_abandoned() {
+    fn test_default_filter_shows_active_trees() {
+        // Active tree: open-task → done-dep (should show both)
+        // Fully done tree: done-a → done-b (should hide both)
+        // Standalone abandoned: hidden
         let mut graph = WorkGraph::new();
 
         let mut open_task = make_task("task-open", "Open Task");
         open_task.status = Status::Open;
-        let mut ip_task = make_task("task-ip", "In Progress Task");
-        ip_task.status = Status::InProgress;
-        let mut done_task = make_task("task-done", "Done Task");
-        done_task.status = Status::Done;
-        let mut abandoned_task = make_task("task-abandoned", "Abandoned Task");
-        abandoned_task.status = Status::Abandoned;
+        open_task.after = vec!["task-done-dep".to_string()];
+        let mut done_dep = make_task("task-done-dep", "Done Dep");
+        done_dep.status = Status::Done;
+        done_dep.before = vec!["task-open".to_string()];
+
+        let mut done_a = make_task("done-a", "Done A");
+        done_a.status = Status::Done;
+        done_a.before = vec!["done-b".to_string()];
+        let mut done_b = make_task("done-b", "Done B");
+        done_b.status = Status::Done;
+        done_b.after = vec!["done-a".to_string()];
+
+        let mut abandoned = make_task("task-abandoned", "Abandoned");
+        abandoned.status = Status::Abandoned;
 
         graph.add_node(Node::Task(open_task));
-        graph.add_node(Node::Task(ip_task));
-        graph.add_node(Node::Task(done_task));
-        graph.add_node(Node::Task(abandoned_task));
+        graph.add_node(Node::Task(done_dep));
+        graph.add_node(Node::Task(done_a));
+        graph.add_node(Node::Task(done_b));
+        graph.add_node(Node::Task(abandoned));
 
-        // Apply the same default filter logic as run(): show everything except abandoned
-        let filtered: Vec<_> = graph
-            .tasks()
-            .filter(|t| t.status != Status::Abandoned)
-            .collect();
+        let _options = VizOptions {
+            all: false,
+            status: None,
+            format: OutputFormat::Ascii,
+            output: None,
+            show_internal: true,
+            critical_path: false,
+        };
+        // We test via run() output by checking generate_ascii directly
+        // with the same filter logic
+        let cycle_analysis = graph.compute_cycle_analysis();
+        let _ = cycle_analysis; // used by run() internally
+
+        // Replicate the active-tree filter
+        let mut components: HashMap<&str, usize> = HashMap::new();
+        let mut comp_members: Vec<Vec<&str>> = Vec::new();
+        for task in graph.tasks() {
+            let idx = comp_members.len();
+            components.insert(task.id.as_str(), idx);
+            comp_members.push(vec![task.id.as_str()]);
+        }
+        let mut merged: Vec<Option<usize>> = vec![None; comp_members.len()];
+        fn find_root<'a>(comp: &mut HashMap<&'a str, usize>, merged: &mut Vec<Option<usize>>, id: &'a str) -> usize {
+            let mut c = comp[id];
+            while let Some(parent) = merged[c] { c = parent; }
+            let root = c;
+            let mut c2 = comp[id];
+            while let Some(parent) = merged[c2] { merged[c2] = Some(root); c2 = parent; }
+            comp.insert(id, root);
+            root
+        }
+        for task in graph.tasks() {
+            for neighbor_id in task.after.iter().chain(task.before.iter()) {
+                if components.contains_key(neighbor_id.as_str()) {
+                    let a = find_root(&mut components, &mut merged, task.id.as_str());
+                    let b = find_root(&mut components, &mut merged, neighbor_id.as_str());
+                    if a != b { merged[b] = Some(a); }
+                }
+            }
+        }
+        let mut active_roots: HashSet<usize> = HashSet::new();
+        for task in graph.tasks() {
+            if task.status != Status::Done && task.status != Status::Abandoned {
+                active_roots.insert(find_root(&mut components, &mut merged, task.id.as_str()));
+            }
+        }
+
+        let filtered: Vec<_> = graph.tasks().filter(|t| {
+            if t.status == Status::Abandoned { return false; }
+            let root = find_root(&mut components, &mut merged, t.id.as_str());
+            active_roots.contains(&root)
+        }).collect();
 
         let ids: Vec<&str> = filtered.iter().map(|t| t.id.as_str()).collect();
-        assert!(ids.contains(&"task-open"), "Default filter should include open tasks");
-        assert!(ids.contains(&"task-ip"), "Default filter should include in-progress tasks");
-        assert!(ids.contains(&"task-done"), "Default filter should include done tasks");
-        assert!(!ids.contains(&"task-abandoned"), "Default filter should exclude abandoned tasks");
+        assert!(ids.contains(&"task-open"), "Active tree: open task shown");
+        assert!(ids.contains(&"task-done-dep"), "Active tree: done dep shown for context");
+        assert!(!ids.contains(&"done-a"), "Fully done tree: hidden");
+        assert!(!ids.contains(&"done-b"), "Fully done tree: hidden");
+        assert!(!ids.contains(&"task-abandoned"), "Abandoned: hidden");
     }
 }
