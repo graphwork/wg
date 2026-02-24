@@ -405,12 +405,12 @@ fn generate_dot(
 
                 if edge_style.is_empty() {
                     lines.push(format!(
-                        "  \"{}\" -> \"{}\" [label=\"blocks\"];",
+                        "  \"{}\" -> \"{}\";",
                         after, task.id
                     ));
                 } else {
                     lines.push(format!(
-                        "  \"{}\" -> \"{}\" [label=\"blocks\", {}];",
+                        "  \"{}\" -> \"{}\" [{}];",
                         after, task.id, edge_style
                     ));
                 }
@@ -419,7 +419,7 @@ fn generate_dot(
 
         if let Some(ref assigned) = task.assigned {
             lines.push(format!(
-                "  \"{}\" -> \"{}\" [style=dashed, label=\"assigned\"];",
+                "  \"{}\" -> \"{}\" [style=dashed];",
                 task.id, assigned
             ));
         }
