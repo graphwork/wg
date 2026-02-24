@@ -223,6 +223,11 @@ pub struct CoordinatorConfig {
     /// Overrides agent.model when set. Can be further overridden by CLI --model.
     #[serde(default)]
     pub model: Option<String>,
+
+    /// Default context scope for spawned agents (clean, task, graph, full).
+    /// Overridden by role.default_context_scope and task.context_scope.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_context_scope: Option<String>,
 }
 
 fn default_max_agents() -> usize {
@@ -245,6 +250,7 @@ impl Default for CoordinatorConfig {
             poll_interval: default_poll_interval(),
             executor: default_executor(),
             model: None,
+            default_context_scope: None,
         }
     }
 }

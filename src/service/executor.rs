@@ -10,7 +10,208 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::agency;
+use crate::context_scope::ContextScope;
 use crate::graph::Task;
+
+// --- Prompt section constants for scope-based assembly ---
+
+/// Required Workflow section: wg log/artifact/done/fail instructions + Important bullets.
+/// Contains {{task_id}} placeholders for variable substitution.
+pub const REQUIRED_WORKFLOW_SECTION: &str = "\
+## Required Workflow
+
+You MUST use these commands to track your work:
+
+1. **Log progress** as you work (helps recovery if interrupted):
+   ```bash
+   wg log {{task_id}} \"Starting implementation...\"
+   wg log {{task_id}} \"Completed X, now working on Y\"
+   ```
+
+2. **Record artifacts** if you create/modify files:
+   ```bash
+   wg artifact {{task_id}} path/to/file
+   ```
+
+3. **Complete the task** when done:
+   ```bash
+   wg done {{task_id}}
+   wg done {{task_id}} --converged  # Use this if task has loop edges and work is complete
+   ```
+
+4. **Mark as failed** if you cannot complete:
+   ```bash
+   wg fail {{task_id}} --reason \"Specific reason why\"
+   ```
+
+## Important
+- Run `wg log` commands BEFORE doing work to track progress
+- Run `wg done` BEFORE you finish responding
+- If the task description is unclear, do your best interpretation
+- Focus only on this specific task\n";
+
+/// Graph Patterns section: vocabulary, golden rule, subtask guidance.
+pub const GRAPH_PATTERNS_SECTION: &str = "\
+## Graph Patterns (see docs/AGENT-GUIDE.md for details)
+
+**Vocabulary:** pipeline (A\u{2192}B\u{2192}C), diamond (A\u{2192}[B,C,D]\u{2192}E), scatter-gather (heterogeneous reviewers of same artifact), loop (A\u{2192}B\u{2192}C\u{2192}A with `--max-iterations`).
+
+**Golden rule: same files = sequential edges.** NEVER parallelize tasks that modify the same files \u{2014} one will overwrite the other. When unsure, default to pipeline.
+
+**When creating subtasks:**
+- Always include an integrator task at join points: `wg add \"Integrate\" --after worker-a,worker-b`
+- List each worker's file scope in the task description
+- Run `wg quickstart` for full command reference
+
+**After code changes:** Run `cargo install --path .` to update the global binary.\n";
+
+/// Reusable Workflow Functions section: wg func list/apply/show.
+pub const REUSABLE_FUNCTIONS_SECTION: &str = "\
+## Reusable Workflow Functions
+- `wg func list` \u{2014} discover reusable workflow patterns extracted from past tasks
+- `wg func apply <id> --input key=value` \u{2014} instantiate a function to create pre-wired tasks
+- `wg func show <id>` \u{2014} view function details and required inputs\n";
+
+/// Critical warning about using wg CLI instead of built-in tools.
+/// Contains {{task_id}} placeholders for variable substitution.
+pub const CRITICAL_WG_CLI_SECTION: &str = "\
+## CRITICAL: Use wg CLI, NOT built-in tools
+- You MUST use `wg` CLI commands for ALL task management
+- NEVER use built-in TaskCreate, TaskUpdate, TaskList, or TaskGet tools \u{2014} they are a completely separate system that does NOT interact with workgraph
+- If you need to create subtasks: `wg add \"title\" --after {{task_id}}`
+- To check task status: `wg show <task-id>`
+- To list tasks: `wg list`\n";
+
+/// System awareness preamble for full scope (~300 tokens).
+const SYSTEM_AWARENESS_PREAMBLE: &str = "\
+## System Awareness
+
+You are working within **workgraph**, a task orchestration system. Key concepts:
+
+- **Coordinator**: A daemon (`wg service start`) that polls for ready tasks and spawns agents.
+- **Agency**: An evolutionary identity system with roles, motivations, and agents. Agents are assigned to tasks based on skills, performance, and fit.
+- **Cycles/Loops**: Tasks can form cycles with `--max-iterations`. Use `wg done --converged` when a cycle's work is complete.
+- **Trace Functions**: Reusable workflow patterns (`wg func list/apply/show`) that can instantiate pre-wired task subgraphs.
+- **Context Scopes**: Agents receive different amounts of context (clean < task < graph < full) based on task requirements.\n";
+
+/// Hint for task+ scopes about using wg context/show to get more info (R2).
+const WG_CONTEXT_HINT: &str = "\
+## Additional Context
+- Use `wg show <task-id>` to inspect any task's details, status, artifacts, and logs
+- Use `wg context` to view the current task's full context
+- Use `wg list` to see all tasks and their statuses\n";
+
+/// Additional context for scope-based prompt assembly beyond TemplateVars.
+#[derive(Debug, Default, Clone)]
+pub struct ScopeContext {
+    /// Downstream task IDs + titles (R1, task+ scope)
+    pub downstream_info: String,
+    /// Task tags and skills (R4, task+ scope)
+    pub tags_skills_info: String,
+    /// Project description from config.toml (graph+ scope)
+    pub project_description: String,
+    /// 1-hop subgraph summary (graph+ scope)
+    pub graph_summary: String,
+    /// Full graph summary (full scope)
+    pub full_graph_summary: String,
+    /// CLAUDE.md content (full scope)
+    pub claude_md_content: String,
+}
+
+/// Build a scope-aware prompt for built-in executors.
+///
+/// Assembles prompt sections based on the context scope:
+/// - `clean`: skills_preamble + identity + task info + upstream context + loop info only
+/// - `task`: + workflow commands + graph patterns + reusable functions + wg cli warning + R1/R2/R4
+/// - `graph`: + project description + subgraph summary (1-hop neighborhood)
+/// - `full`: + system awareness preamble + full graph summary + CLAUDE.md content
+pub fn build_prompt(vars: &TemplateVars, scope: ContextScope, ctx: &ScopeContext) -> String {
+    let mut parts: Vec<String> = Vec::new();
+
+    // Full scope: system awareness preamble (at the top for orientation)
+    if scope >= ContextScope::Full {
+        parts.push(SYSTEM_AWARENESS_PREAMBLE.to_string());
+    }
+
+    // All scopes: skills preamble
+    if !vars.skills_preamble.is_empty() {
+        parts.push(vars.skills_preamble.clone());
+    }
+
+    // All scopes: task assignment header
+    parts.push(
+        "# Task Assignment\n\nYou are an AI agent working on a task in a workgraph project.\n"
+            .to_string(),
+    );
+
+    // All scopes: agent identity
+    if !vars.task_identity.is_empty() {
+        parts.push(vars.task_identity.clone());
+    }
+
+    // All scopes: task details
+    parts.push(format!(
+        "## Your Task\n- **ID:** {}\n- **Title:** {}\n- **Description:** {}",
+        vars.task_id, vars.task_title, vars.task_description
+    ));
+
+    // Task+ scope: tags and skills (R4)
+    if scope >= ContextScope::Task && !ctx.tags_skills_info.is_empty() {
+        parts.push(ctx.tags_skills_info.clone());
+    }
+
+    // All scopes: context from dependencies
+    parts.push(format!(
+        "## Context from Dependencies\n{}",
+        vars.task_context
+    ));
+
+    // Task+ scope: downstream awareness (R1)
+    if scope >= ContextScope::Task && !ctx.downstream_info.is_empty() {
+        parts.push(ctx.downstream_info.clone());
+    }
+
+    // All scopes: loop info
+    if !vars.task_loop_info.is_empty() {
+        parts.push(vars.task_loop_info.clone());
+    }
+
+    // Task+ scope: workflow sections (with {{task_id}} substitution)
+    if scope >= ContextScope::Task {
+        parts.push(vars.apply(REQUIRED_WORKFLOW_SECTION));
+        parts.push(GRAPH_PATTERNS_SECTION.to_string());
+        parts.push(REUSABLE_FUNCTIONS_SECTION.to_string());
+        parts.push(vars.apply(CRITICAL_WG_CLI_SECTION));
+        parts.push(WG_CONTEXT_HINT.to_string());
+    }
+
+    // Graph+ scope: project description
+    if scope >= ContextScope::Graph && !ctx.project_description.is_empty() {
+        parts.push(format!("## Project\n\n{}", ctx.project_description));
+    }
+
+    // Graph+ scope: subgraph summary (1-hop neighborhood)
+    if scope >= ContextScope::Graph && !ctx.graph_summary.is_empty() {
+        parts.push(ctx.graph_summary.clone());
+    }
+
+    // Full scope: full graph summary
+    if scope >= ContextScope::Full && !ctx.full_graph_summary.is_empty() {
+        parts.push(ctx.full_graph_summary.clone());
+    }
+
+    // Full scope: CLAUDE.md content
+    if scope >= ContextScope::Full && !ctx.claude_md_content.is_empty() {
+        parts.push(format!(
+            "## Project Instructions (CLAUDE.md)\n\n{}",
+            ctx.claude_md_content
+        ));
+    }
+
+    parts.push("Begin working on the task now.".to_string());
+
+    parts.join("\n\n")
+}
 
 /// Template variables that can be used in executor configurations.
 #[derive(Debug, Clone)]
@@ -368,81 +569,11 @@ impl ExecutorRegistry {
                         "stream-json".to_string(),
                     ],
                     env: HashMap::new(),
-                    prompt_template: Some(PromptTemplate {
-                        template: r#"{{skills_preamble}}# Task Assignment
-
-You are an AI agent working on a task in a workgraph project.
-
-{{task_identity}}
-## Your Task
-- **ID:** {{task_id}}
-- **Title:** {{task_title}}
-- **Description:** {{task_description}}
-
-## Context from Dependencies
-{{task_context}}
-
-{{task_loop_info}}
-
-## Required Workflow
-
-You MUST use these commands to track your work:
-
-1. **Log progress** as you work (helps recovery if interrupted):
-   ```bash
-   wg log {{task_id}} "Starting implementation..."
-   wg log {{task_id}} "Completed X, now working on Y"
-   ```
-
-2. **Record artifacts** if you create/modify files:
-   ```bash
-   wg artifact {{task_id}} path/to/file
-   ```
-
-3. **Complete the task** when done:
-   ```bash
-   wg done {{task_id}}
-   wg done {{task_id}} --converged  # Use this if task has loop edges and work is complete
-   ```
-
-4. **Mark as failed** if you cannot complete:
-   ```bash
-   wg fail {{task_id}} --reason "Specific reason why"
-   ```
-
-## Important
-- Run `wg log` commands BEFORE doing work to track progress
-- Run `wg done` BEFORE you finish responding
-- If the task description is unclear, do your best interpretation
-- Focus only on this specific task
-
-## Graph Patterns (see docs/AGENT-GUIDE.md for details)
-
-**Vocabulary:** pipeline (A→B→C), diamond (A→[B,C,D]→E), scatter-gather (heterogeneous reviewers of same artifact), loop (A→B→C→A with `--max-iterations`).
-
-**Golden rule: same files = sequential edges.** NEVER parallelize tasks that modify the same files — one will overwrite the other. When unsure, default to pipeline.
-
-**When creating subtasks:**
-- Always include an integrator task at join points: `wg add "Integrate" --after worker-a,worker-b`
-- List each worker's file scope in the task description
-- Run `wg quickstart` for full command reference
-
-**After code changes:** Run `cargo install --path .` to update the global binary.
-
-## Reusable Workflow Functions
-- `wg func list` — discover reusable workflow patterns extracted from past tasks
-- `wg func apply <id> --input key=value` — instantiate a function to create pre-wired tasks
-- `wg func show <id>` — view function details and required inputs
-
-## CRITICAL: Use wg CLI, NOT built-in tools
-- You MUST use `wg` CLI commands for ALL task management
-- NEVER use built-in TaskCreate, TaskUpdate, TaskList, or TaskGet tools — they are a completely separate system that does NOT interact with workgraph
-- If you need to create subtasks: `wg add "title" --after {{task_id}}`
-- To check task status: `wg show <task-id>`
-- To list tasks: `wg list`
-
-Begin working on the task now."#.to_string(),
-                    }),
+                    // No default template — built-in executors use scope-based
+                    // build_prompt() assembly. Custom configs in
+                    // .workgraph/executors/*.toml can still define a template
+                    // to override this behavior.
+                    prompt_template: None,
                     working_dir: Some("{{working_dir}}".to_string()),
                     timeout: None,
                     model: None,
@@ -481,68 +612,8 @@ Begin working on the task now."#.to_string(),
                         env.insert("WG_TASK_ID".to_string(), "{{task_id}}".to_string());
                         env
                     },
-                    prompt_template: Some(PromptTemplate {
-                        template: r#"{{skills_preamble}}# Task Assignment
-
-You are an AI agent working on a task in a workgraph project.
-
-{{task_identity}}
-## Your Task
-- **ID:** {{task_id}}
-- **Title:** {{task_title}}
-- **Description:** {{task_description}}
-
-## Context from Dependencies
-{{task_context}}
-
-{{task_loop_info}}
-
-## Required Workflow
-
-You MUST use these commands to track your work:
-
-1. **Log progress** as you work (helps recovery if interrupted):
-   ```bash
-   wg log {{task_id}} "Starting implementation..."
-   wg log {{task_id}} "Completed X, now working on Y"
-   ```
-
-2. **Record artifacts** if you create/modify files:
-   ```bash
-   wg artifact {{task_id}} path/to/file
-   ```
-
-3. **Complete the task** when done:
-   ```bash
-   wg done {{task_id}}
-   wg done {{task_id}} --converged  # Use this if task has loop edges and work is complete
-   ```
-
-4. **Mark as failed** if you cannot complete:
-   ```bash
-   wg fail {{task_id}} --reason "Specific reason why"
-   ```
-
-## Important
-- Run `wg log` commands BEFORE doing work to track progress
-- Run `wg done` BEFORE you finish responding
-- If the task description is unclear, do your best interpretation
-- Focus only on this specific task
-
-## Reusable Workflow Functions
-- `wg func list` — discover reusable workflow patterns extracted from past tasks
-- `wg func apply <id> --input key=value` — instantiate a function to create pre-wired tasks
-- `wg func show <id>` — view function details and required inputs
-
-## CRITICAL: Use wg CLI, NOT built-in tools
-- You MUST use `wg` CLI commands for ALL task management
-- NEVER use built-in TaskCreate, TaskUpdate, TaskList, or TaskGet tools — they are a completely separate system that does NOT interact with workgraph
-- If you need to create subtasks: `wg add "title" --after {{task_id}}`
-- To check task status: `wg show <task-id>`
-- To list tasks: `wg list`
-
-Begin working on the task now."#.to_string(),
-                    }),
+                    // No default template — uses scope-based build_prompt() assembly.
+                    prompt_template: None,
                     working_dir: Some("{{working_dir}}".to_string()),
                     timeout: Some(600),
                     model: None,
@@ -632,6 +703,7 @@ mod tests {
             ready_after: None,
             paused: false,
             visibility: "internal".to_string(),
+            context_scope: None,
             cycle_config: None,
         }
     }
@@ -1116,18 +1188,16 @@ args = ["--custom-flag"]
     }
 
     #[test]
-    fn test_registry_default_config_claude_has_prompt_template() {
+    fn test_registry_default_config_claude_no_prompt_template() {
+        // Built-in claude executor uses scope-based build_prompt() instead of a template
         let temp_dir = TempDir::new().unwrap();
         let registry = ExecutorRegistry::new(temp_dir.path());
         let config = registry.load_config("claude").unwrap();
 
-        assert!(config.executor.prompt_template.is_some());
-        let template = config.executor.prompt_template.unwrap().template;
-        assert!(template.contains("{{task_id}}"));
-        assert!(template.contains("{{task_title}}"));
-        assert!(template.contains("{{task_description}}"));
-        assert!(template.contains("{{task_context}}"));
-        assert!(template.contains("{{task_identity}}"));
+        assert!(
+            config.executor.prompt_template.is_none(),
+            "Built-in claude config should have no prompt_template (uses build_prompt)"
+        );
     }
 
     #[test]
@@ -1371,34 +1441,51 @@ args = ["--custom-flag"]
     }
 
     #[test]
-    fn test_default_prompt_contains_converged() {
-        let temp_dir = TempDir::new().unwrap();
-        let registry = ExecutorRegistry::new(temp_dir.path());
-        let config = registry.load_config("claude").unwrap();
-        let template = config.executor.prompt_template.unwrap().template;
+    fn test_build_prompt_contains_converged_for_task_scope() {
+        // build_prompt with task scope should include --converged in workflow section
+        let task = make_test_task("task-1", "Looping Task");
+        let vars = TemplateVars::from_task(&task, Some("dep context"), None);
+        let ctx = ScopeContext::default();
+        let prompt = build_prompt(&vars, ContextScope::Task, &ctx);
         assert!(
-            template.contains("--converged"),
-            "Default claude prompt should mention --converged"
-        );
-        assert!(
-            template.contains("{{task_loop_info}}"),
-            "Default claude prompt should contain {{task_loop_info}} placeholder"
+            prompt.contains("--converged"),
+            "Task-scope prompt should mention --converged"
         );
     }
 
     #[test]
-    fn test_default_amplifier_prompt_contains_converged() {
+    fn test_build_prompt_no_workflow_for_clean_scope() {
+        // build_prompt with clean scope should NOT include workflow sections
+        let task = make_test_task("task-1", "Clean Task");
+        let vars = TemplateVars::from_task(&task, Some("dep context"), None);
+        let ctx = ScopeContext::default();
+        let prompt = build_prompt(&vars, ContextScope::Clean, &ctx);
+        assert!(
+            !prompt.contains("## Required Workflow"),
+            "Clean-scope prompt should not include Required Workflow"
+        );
+        assert!(
+            !prompt.contains("## Graph Patterns"),
+            "Clean-scope prompt should not include Graph Patterns"
+        );
+        assert!(
+            !prompt.contains("## CRITICAL"),
+            "Clean-scope prompt should not include CRITICAL CLI section"
+        );
+        // But should still have task info
+        assert!(prompt.contains("task-1"));
+        assert!(prompt.contains("Clean Task"));
+    }
+
+    #[test]
+    fn test_default_amplifier_no_prompt_template() {
+        // Built-in amplifier executor uses scope-based build_prompt() instead of a template
         let temp_dir = TempDir::new().unwrap();
         let registry = ExecutorRegistry::new(temp_dir.path());
         let config = registry.load_config("amplifier").unwrap();
-        let template = config.executor.prompt_template.unwrap().template;
         assert!(
-            template.contains("--converged"),
-            "Default amplifier prompt should mention --converged"
-        );
-        assert!(
-            template.contains("{{task_loop_info}}"),
-            "Default amplifier prompt should contain {{task_loop_info}} placeholder"
+            config.executor.prompt_template.is_none(),
+            "Built-in amplifier config should have no prompt_template (uses build_prompt)"
         );
     }
 
@@ -1419,5 +1506,198 @@ args = ["--custom-flag"]
         assert!(result.contains("Before"));
         assert!(result.contains("After"));
         assert!(!result.contains("{{task_loop_info}}"));
+    }
+
+    // --- build_prompt scope tests ---
+
+    #[test]
+    fn test_build_prompt_clean_scope_minimal() {
+        let task = make_test_task("task-1", "Clean Task");
+        let vars = TemplateVars::from_task(&task, Some("dep context"), None);
+        let ctx = ScopeContext::default();
+        let prompt = build_prompt(&vars, ContextScope::Clean, &ctx);
+
+        // Should include task info
+        assert!(prompt.contains("# Task Assignment"));
+        assert!(prompt.contains("task-1"));
+        assert!(prompt.contains("Clean Task"));
+        assert!(prompt.contains("Test description"));
+        assert!(prompt.contains("dep context"));
+        assert!(prompt.contains("Begin working on the task now."));
+
+        // Should NOT include workflow/graph sections
+        assert!(!prompt.contains("## Required Workflow"));
+        assert!(!prompt.contains("## Graph Patterns"));
+        assert!(!prompt.contains("## Reusable Workflow Functions"));
+        assert!(!prompt.contains("## CRITICAL"));
+        assert!(!prompt.contains("## Additional Context"));
+        assert!(!prompt.contains("## System Awareness"));
+    }
+
+    #[test]
+    fn test_build_prompt_task_scope_includes_workflow() {
+        let task = make_test_task("task-1", "Task Scope");
+        let vars = TemplateVars::from_task(&task, Some("dep context"), None);
+        let ctx = ScopeContext {
+            downstream_info: "## Downstream\n- dt-1: \"Consumer\"".to_string(),
+            tags_skills_info: "- **Tags:** rust, impl".to_string(),
+            ..Default::default()
+        };
+        let prompt = build_prompt(&vars, ContextScope::Task, &ctx);
+
+        // Should include workflow sections
+        assert!(prompt.contains("## Required Workflow"));
+        assert!(prompt.contains("wg log task-1")); // {{task_id}} substituted
+        assert!(prompt.contains("wg done task-1"));
+        assert!(prompt.contains("## Graph Patterns"));
+        assert!(prompt.contains("## Reusable Workflow Functions"));
+        assert!(prompt.contains("## CRITICAL: Use wg CLI"));
+        assert!(prompt.contains("wg add \"title\" --after task-1")); // {{task_id}} substituted
+        assert!(prompt.contains("## Additional Context")); // R2
+
+        // Should include R1 and R4
+        assert!(prompt.contains("## Downstream"));
+        assert!(prompt.contains("Consumer"));
+        assert!(prompt.contains("rust, impl"));
+
+        // Should NOT include graph/full sections
+        assert!(!prompt.contains("## System Awareness"));
+        assert!(!prompt.contains("## Project\n"));
+        assert!(!prompt.contains("## Full Graph Summary"));
+        assert!(!prompt.contains("CLAUDE.md"));
+    }
+
+    #[test]
+    fn test_build_prompt_graph_scope_includes_project_and_summary() {
+        let task = make_test_task("task-1", "Graph Scope");
+        let vars = TemplateVars::from_task(&task, Some("dep context"), None);
+        let ctx = ScopeContext {
+            project_description: "A project for testing.".to_string(),
+            graph_summary: "## Graph Status\n\n5 tasks".to_string(),
+            ..Default::default()
+        };
+        let prompt = build_prompt(&vars, ContextScope::Graph, &ctx);
+
+        // Should include task+ sections
+        assert!(prompt.contains("## Required Workflow"));
+        assert!(prompt.contains("## Graph Patterns"));
+
+        // Should include graph sections
+        assert!(prompt.contains("## Project\n\nA project for testing."));
+        assert!(prompt.contains("## Graph Status\n\n5 tasks"));
+
+        // Should NOT include full sections
+        assert!(!prompt.contains("## System Awareness"));
+        assert!(!prompt.contains("## Full Graph Summary"));
+        assert!(!prompt.contains("CLAUDE.md"));
+    }
+
+    #[test]
+    fn test_build_prompt_full_scope_includes_everything() {
+        let task = make_test_task("task-1", "Full Scope");
+        let vars = TemplateVars::from_task(&task, Some("dep context"), None);
+        let ctx = ScopeContext {
+            downstream_info: "## Downstream\n- dt-1".to_string(),
+            tags_skills_info: "- **Tags:** meta".to_string(),
+            project_description: "My project".to_string(),
+            graph_summary: "## Graph Status\n\n10 tasks".to_string(),
+            full_graph_summary: "## Full Graph Summary\n\n- task-a [done]".to_string(),
+            claude_md_content: "Always use bun.".to_string(),
+        };
+        let prompt = build_prompt(&vars, ContextScope::Full, &ctx);
+
+        // Should include all sections
+        assert!(prompt.contains("## System Awareness"));
+        assert!(prompt.contains("## Required Workflow"));
+        assert!(prompt.contains("## Graph Patterns"));
+        assert!(prompt.contains("## Project\n\nMy project"));
+        assert!(prompt.contains("## Graph Status"));
+        assert!(prompt.contains("## Full Graph Summary"));
+        assert!(prompt.contains("## Project Instructions (CLAUDE.md)\n\nAlways use bun."));
+        assert!(prompt.contains("## Downstream"));
+        assert!(prompt.contains("meta"));
+    }
+
+    #[test]
+    fn test_build_prompt_includes_loop_info() {
+        let mut task = make_test_task("task-1", "Loop Task");
+        task.loop_iteration = 2;
+        task.cycle_config = Some(crate::graph::CycleConfig {
+            max_iterations: 5,
+            guard: None,
+            delay: None,
+        });
+
+        let vars = TemplateVars::from_task(&task, None, None);
+        let ctx = ScopeContext::default();
+        let prompt = build_prompt(&vars, ContextScope::Clean, &ctx);
+
+        // Loop info should appear even at clean scope
+        assert!(prompt.contains("iteration 2"));
+        assert!(prompt.contains("--converged"));
+    }
+
+    #[test]
+    fn test_build_prompt_includes_identity() {
+        let task = make_test_task("task-1", "Identity Task");
+        let mut vars = TemplateVars::from_task(&task, None, None);
+        vars.task_identity = "## Agent Identity\n\nRole: implementer\n".to_string();
+
+        let ctx = ScopeContext::default();
+        let prompt = build_prompt(&vars, ContextScope::Clean, &ctx);
+
+        assert!(prompt.contains("## Agent Identity"));
+        assert!(prompt.contains("Role: implementer"));
+    }
+
+    #[test]
+    fn test_build_prompt_includes_skills_preamble() {
+        let task = make_test_task("task-1", "Skills Task");
+        let mut vars = TemplateVars::from_task(&task, None, None);
+        vars.skills_preamble = "<EXTREMELY_IMPORTANT>\nUse skills.\n</EXTREMELY_IMPORTANT>\n".to_string();
+
+        let ctx = ScopeContext::default();
+        let prompt = build_prompt(&vars, ContextScope::Clean, &ctx);
+
+        assert!(prompt.contains("EXTREMELY_IMPORTANT"));
+        assert!(prompt.contains("Use skills."));
+    }
+
+    #[test]
+    fn test_build_prompt_empty_scope_context_omits_sections() {
+        let task = make_test_task("task-1", "Test");
+        let vars = TemplateVars::from_task(&task, Some("dep ctx"), None);
+        let ctx = ScopeContext::default(); // all empty
+
+        let prompt = build_prompt(&vars, ContextScope::Full, &ctx);
+
+        // Should still have system preamble and workflow even with empty ctx
+        assert!(prompt.contains("## System Awareness"));
+        assert!(prompt.contains("## Required Workflow"));
+
+        // But should NOT have empty project/graph sections
+        assert!(!prompt.contains("## Project\n"));
+        assert!(!prompt.contains("## Graph Status"));
+        assert!(!prompt.contains("## Full Graph Summary"));
+        assert!(!prompt.contains("CLAUDE.md"));
+    }
+
+    #[test]
+    fn test_section_constants_contain_expected_content() {
+        assert!(REQUIRED_WORKFLOW_SECTION.contains("wg log {{task_id}}"));
+        assert!(REQUIRED_WORKFLOW_SECTION.contains("wg done {{task_id}}"));
+        assert!(REQUIRED_WORKFLOW_SECTION.contains("wg fail {{task_id}}"));
+        assert!(REQUIRED_WORKFLOW_SECTION.contains("wg artifact {{task_id}}"));
+        assert!(REQUIRED_WORKFLOW_SECTION.contains("--converged"));
+
+        assert!(GRAPH_PATTERNS_SECTION.contains("Golden rule"));
+        assert!(GRAPH_PATTERNS_SECTION.contains("pipeline"));
+        assert!(GRAPH_PATTERNS_SECTION.contains("cargo install --path"));
+
+        assert!(REUSABLE_FUNCTIONS_SECTION.contains("wg func list"));
+        assert!(REUSABLE_FUNCTIONS_SECTION.contains("wg func apply"));
+
+        assert!(CRITICAL_WG_CLI_SECTION.contains("NEVER use built-in TaskCreate"));
+        assert!(CRITICAL_WG_CLI_SECTION.contains("wg add \"title\" --after {{task_id}}"));
     }
 }

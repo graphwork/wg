@@ -25,6 +25,7 @@ pub fn run(
     cycle_guard: Option<&str>,
     cycle_delay: Option<&str>,
     visibility: Option<&str>,
+    context_scope: Option<&str>,
 ) -> Result<()> {
     let path = graph_path(dir);
 
@@ -216,6 +217,17 @@ pub fn run(
                 ),
             }
         }
+
+        // Update context scope
+        if let Some(scope) = context_scope {
+            // Validate
+            scope.parse::<workgraph::context_scope::ContextScope>().map_err(|e| anyhow::anyhow!("{}", e))?;
+            let old = task.context_scope.clone();
+            task.context_scope = Some(scope.to_string());
+            field_changes.push(serde_json::json!({"field": "context_scope", "old": old, "new": scope}));
+            println!("Updated context_scope: {}", scope);
+            changed = true;
+        }
     } // task borrow released here
 
     // Maintain bidirectional consistency: update `blocks` on referenced tasks
@@ -292,6 +304,7 @@ mod tests {
             None,
             None,
             "internal",
+            None,
         )?;
 
         Ok(())
@@ -323,6 +336,7 @@ mod tests {
             None,
             None,
             "internal",
+            None,
         )?;
 
         crate::commands::add::run(
@@ -345,6 +359,7 @@ mod tests {
             None,
             None,
             "internal",
+            None,
         )?;
 
         Ok(())
@@ -367,6 +382,7 @@ mod tests {
             None,
             &[],
             &[],
+            None,
             None,
             None,
             None,
@@ -401,6 +417,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         assert!(result.is_ok());
 
@@ -427,6 +444,7 @@ mod tests {
             None,
             &[],
             &[],
+            None,
             None,
             None,
             None,
@@ -462,6 +480,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         assert!(result.is_ok());
 
@@ -488,6 +507,7 @@ mod tests {
             None,
             &[],
             &[],
+            None,
             None,
             None,
             None,
@@ -523,6 +543,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         assert!(result.is_ok());
 
@@ -553,6 +574,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         assert!(result.is_ok());
 
@@ -579,6 +601,7 @@ mod tests {
             None,
             &["skill2".to_string()],
             &[],
+            None,
             None,
             None,
             None,
@@ -614,6 +637,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         assert!(result.is_ok());
 
@@ -644,6 +668,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("not found"));
@@ -670,6 +695,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         assert!(result.is_ok());
     }
@@ -691,6 +717,7 @@ mod tests {
             None,
             &[],
             &[],
+            None,
             None,
             None,
             None,
@@ -723,6 +750,7 @@ mod tests {
             None,
             &[],
             &[],
+            None,
             None,
             None,
             None,
@@ -763,6 +791,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .unwrap();
 
@@ -779,6 +808,7 @@ mod tests {
             None,
             &[],
             &[],
+            None,
             None,
             None,
             None,

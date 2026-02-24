@@ -118,6 +118,9 @@ pub struct Role {
     pub performance: PerformanceRecord,
     #[serde(default)]
     pub lineage: Lineage,
+    /// Default context scope for agents in this role (clean, task, graph, full)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_context_scope: Option<String>,
 }
 
 /// A motivation defines why an agent acts: its goals and ethical boundaries.
@@ -1287,6 +1290,7 @@ pub fn build_role(
             evaluations: vec![],
         },
         lineage: Lineage::default(),
+        default_context_scope: None,
     }
 }
 
@@ -1457,6 +1461,7 @@ pub(crate) fn mutate_role(
             evaluations: vec![],
         },
         lineage: Lineage::mutation(&parent.id, parent.lineage.generation, run_id),
+        default_context_scope: parent.default_context_scope.clone(),
     }
 }
 

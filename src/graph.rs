@@ -228,6 +228,9 @@ pub struct Task {
     /// "peer" (richer view for credentialed peers).
     #[serde(default = "default_visibility", skip_serializing_if = "is_default_visibility")]
     pub visibility: String,
+    /// Context scope for prompt assembly: clean, task, graph, full
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_scope: Option<String>,
 }
 
 fn default_visibility() -> String {
@@ -358,6 +361,8 @@ struct TaskHelper {
     paused: bool,
     #[serde(default = "default_visibility")]
     visibility: String,
+    #[serde(default)]
+    context_scope: Option<String>,
     /// Old format: inline identity object. Migrated to `agent` hash on read.
     #[serde(default)]
     identity: Option<LegacyIdentity>,
@@ -412,6 +417,7 @@ impl<'de> Deserialize<'de> for Task {
             ready_after: helper.ready_after,
             paused: helper.paused,
             visibility: helper.visibility,
+            context_scope: helper.context_scope,
         })
     }
 }

@@ -62,6 +62,7 @@ pub fn run(
     cycle_guard: Option<&str>,
     cycle_delay: Option<&str>,
     visibility: &str,
+    context_scope: Option<&str>,
 ) -> Result<()> {
     if title.trim().is_empty() {
         anyhow::bail!("Task title cannot be empty");
@@ -74,6 +75,11 @@ pub fn run(
             "Invalid visibility '{}'. Valid values: internal, public, peer",
             visibility
         ),
+    }
+
+    // Validate context_scope if provided
+    if let Some(scope) = context_scope {
+        scope.parse::<workgraph::context_scope::ContextScope>().map_err(|e| anyhow::anyhow!("{}", e))?;
     }
 
     let path = graph_path(dir);
@@ -176,6 +182,7 @@ pub fn run(
         ready_after: None,
         paused: false,
         visibility: visibility.to_string(),
+        context_scope: context_scope.map(String::from),
     };
 
     // Add task to graph
@@ -400,6 +407,7 @@ fn add_task_directly(
         ready_after: None,
         paused: false,
         visibility: "internal".to_string(),
+        context_scope: None,
         cycle_config: None,
     };
 
@@ -770,6 +778,7 @@ mod tests {
             None,
             None,
             "internal",
+            None,
         );
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("cannot be empty"));
@@ -804,6 +813,7 @@ mod tests {
             None,
             None,
             "internal",
+            None,
         );
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("cannot be empty"));
@@ -838,6 +848,7 @@ mod tests {
             None,
             None,
             "internal",
+            None,
         );
         assert!(result.is_err());
         assert!(
@@ -879,6 +890,7 @@ mod tests {
             None,
             None,
             "internal",
+            None,
         );
         assert!(result.is_ok());
     }
@@ -917,6 +929,7 @@ mod tests {
             None,
             None,
             "internal",
+            None,
         );
         assert!(result.is_ok());
 

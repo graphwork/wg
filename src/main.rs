@@ -119,6 +119,10 @@ enum Commands {
         /// Task visibility zone for trace exports (internal, public, peer)
         #[arg(long, default_value = "internal")]
         visibility: String,
+
+        /// Context scope for prompt assembly (clean, task, graph, full)
+        #[arg(long = "context-scope")]
+        context_scope: Option<String>,
     },
 
     /// Edit an existing task
@@ -177,6 +181,10 @@ enum Commands {
         /// Set task visibility zone (internal, public, peer)
         #[arg(long)]
         visibility: Option<String>,
+
+        /// Set context scope for prompt assembly (clean, task, graph, full)
+        #[arg(long = "context-scope")]
+        context_scope: Option<String>,
     },
 
     /// Mark a task as done
@@ -2280,6 +2288,7 @@ fn main() -> Result<()> {
             cycle_guard,
             cycle_delay,
             visibility,
+            context_scope,
         } => {
             if let Some(ref peer_ref) = repo {
                 commands::add::run_remote(
@@ -2316,6 +2325,7 @@ fn main() -> Result<()> {
                     cycle_guard.as_deref(),
                     cycle_delay.as_deref(),
                     &visibility,
+                    context_scope.as_deref(),
                 )
             }
         }
@@ -2334,6 +2344,7 @@ fn main() -> Result<()> {
             cycle_guard,
             cycle_delay,
             visibility,
+            context_scope,
         } => commands::edit::run(
             &workgraph_dir,
             &id,
@@ -2350,6 +2361,7 @@ fn main() -> Result<()> {
             cycle_guard.as_deref(),
             cycle_delay.as_deref(),
             visibility.as_deref(),
+            context_scope.as_deref(),
         ),
         Commands::Done { id, converged } => commands::done::run(&workgraph_dir, &id, converged),
         Commands::Fail { id, reason } => {

@@ -76,6 +76,8 @@ struct TaskDetails {
     paused: bool,
     #[serde(skip_serializing_if = "is_default_visibility")]
     visibility: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    context_scope: Option<String>,
 }
 
 fn is_default_visibility(val: &str) -> bool {
@@ -183,6 +185,7 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
         ready_after: task.ready_after.clone(),
         paused: task.paused,
         visibility: task.visibility.clone(),
+        context_scope: task.context_scope.clone(),
     };
 
     if json {
@@ -205,6 +208,10 @@ fn print_human_readable(details: &TaskDetails) {
 
     if details.visibility != "internal" {
         println!("Visibility: {}", details.visibility);
+    }
+
+    if let Some(ref scope) = details.context_scope {
+        println!("Context scope: {}", scope);
     }
 
     if let Some(ref assigned) = details.assigned {
@@ -462,7 +469,8 @@ mod tests {
             ready_after: None,
             paused: false,
             visibility: "internal".to_string(),
-        cycle_config: None,
+            context_scope: None,
+            cycle_config: None,
         };
 
         let json = serde_json::to_string(&details).unwrap();

@@ -69,6 +69,7 @@ DISCOVERING & ADDING WORK
   wg show <task-id>           # View task details and context
   wg add "Title" -d "Desc"    # Add new task
   wg add "X" --after Y   # Add task blocked by another
+  wg add "X" --context-scope clean  # Set prompt context level (clean/task/graph/full)
 
 TASK STATE COMMANDS
 ─────────────────────────────────────────

@@ -429,12 +429,14 @@ fn build_auto_assign_tasks(graph: &mut workgraph::graph::WorkGraph, config: &Con
                     t.agent.clone(),
                     t.assigned.clone(),
                     t.tags.clone(),
+                    t.after.clone(),
+                    t.context_scope.clone(),
                 )
             })
             .collect()
     };
 
-    for (task_id, task_title, task_desc, task_skills, task_agent, task_assigned, task_tags) in
+    for (task_id, task_title, task_desc, task_skills, task_agent, task_assigned, task_tags, task_after, task_context_scope) in
         ready_task_data
     {
         // Skip tasks that already have an agent or are already claimed
@@ -469,6 +471,12 @@ fn build_auto_assign_tasks(graph: &mut workgraph::graph::WorkGraph, config: &Con
         }
         if !task_skills.is_empty() {
             desc.push_str(&format!("**Skills:** {}\n", task_skills.join(", ")));
+        }
+        if !task_after.is_empty() {
+            desc.push_str(&format!("**Dependencies ({}):** {}\n", task_after.len(), task_after.join(", ")));
+        }
+        if let Some(ref scope) = task_context_scope {
+            desc.push_str(&format!("**Context scope (pre-set):** {}\n", scope));
         }
         desc.push_str(&format!(
             "\n## Instructions\n\n\
@@ -543,8 +551,35 @@ fn build_auto_assign_tasks(graph: &mut workgraph::graph::WorkGraph, config: &Con
              If no suitable agent exists for this task, report why:\n\
              ```\n\
              wg fail {} --reason \"No agent with matching skills for: <explanation>\"\n\
+             ```\n\n\
+             ### Step 6b: Set Context Scope\n\n\
+             After assigning the agent, determine the appropriate context scope for \
+             the task. The context scope controls how much workgraph context the \
+             spawned agent receives in its prompt.\n\n\
+             - **clean**: Pure computation, translation, summarization, writing tasks \
+             where the agent needs no workgraph interaction. The task description is \
+             self-contained input, the output is the deliverable.\n\
+               Signals: task has no `after` dependencies with artifacts to inspect, \
+             task skills include \"writing\", \"translation\", or \"computation\", task \
+             description doesn't reference other tasks.\n\n\
+             - **task** (default): Standard implementation, bug fixes, code changes, \
+             test writing. The agent needs `wg` CLI for logging and completion.\n\
+               Signals: most tasks. If unsure, use this.\n\n\
+             - **graph**: Integration tasks, review tasks spanning multiple components, \
+             tasks that join outputs from multiple parallel workers.\n\
+               Signals: task has 3+ dependencies (`after` edges), task title/description \
+             mentions \"integrate\", \"merge\", \"review across\", \"combine\", \"synthesize\", \
+             \"harmonize\", or \"coordinate\". Task tags include \"integration\" or \"review\".\n\n\
+             - **full**: Meta-tasks about workgraph itself, workflow design, debugging \
+             coordination failures, writing specs about the orchestration system.\n\
+               Signals: task description references workgraph internals, coordinator, \
+             agency system, or \"workflow\". Task tags include \"meta\" or \"system\".\n\n\
+             Set the scope (skip if `task` is appropriate, or if a scope is already pre-set \
+             on the task):\n\
+             ```\n\
+             wg edit {} --context-scope <scope>\n\
              ```",
-            task_id, assign_task_id, assign_task_id,
+            task_id, assign_task_id, assign_task_id, task_id,
         ));
 
         // Create the assignment task (blocks the original)
@@ -580,6 +615,7 @@ fn build_auto_assign_tasks(graph: &mut workgraph::graph::WorkGraph, config: &Con
             ready_after: None,
             paused: false,
             visibility: "internal".to_string(),
+            context_scope: None,
             cycle_config: None,
         };
 
@@ -711,6 +747,7 @@ fn build_auto_evaluate_tasks(
             ready_after: None,
             paused: false,
             visibility: "internal".to_string(),
+            context_scope: None,
             cycle_config: None,
         };
 
@@ -2815,6 +2852,7 @@ fn handle_add_task(
         ready_after: None,
         paused: false,
         visibility: "internal".to_string(),
+        context_scope: None,
         cycle_config: None,
     };
 
@@ -3771,6 +3809,7 @@ poll_interval = 120
             ready_after: None,
             paused: false,
             visibility: "internal".to_string(),
+            context_scope: None,
             cycle_config: None,
         };
         let prompt = build_triage_prompt(&task, "some log output");
@@ -3945,6 +3984,7 @@ poll_interval = 120
             ready_after: None,
             paused: false,
             visibility: "internal".to_string(),
+            context_scope: None,
         cycle_config: None,
         };
         let verdict = TriageVerdict {
@@ -3992,6 +4032,7 @@ poll_interval = 120
             ready_after: None,
             paused: false,
             visibility: "internal".to_string(),
+            context_scope: None,
         cycle_config: None,
         };
         let verdict = TriageVerdict {
@@ -4037,6 +4078,7 @@ poll_interval = 120
             ready_after: None,
             paused: false,
             visibility: "internal".to_string(),
+            context_scope: None,
         cycle_config: None,
         };
         let verdict = TriageVerdict {
@@ -4096,6 +4138,7 @@ poll_interval = 120
             ready_after: None,
             paused: false,
             visibility: "internal".to_string(),
+            context_scope: None,
         cycle_config: None,
         };
         let verdict = TriageVerdict {
@@ -4145,6 +4188,7 @@ poll_interval = 120
             ready_after: None,
             paused: false,
             visibility: "internal".to_string(),
+            context_scope: None,
         cycle_config: None,
         };
         let verdict = TriageVerdict {
@@ -4198,6 +4242,7 @@ poll_interval = 120
             ready_after: None,
             paused: false,
             visibility: "internal".to_string(),
+            context_scope: None,
         cycle_config: None,
         };
         let verdict = TriageVerdict {
