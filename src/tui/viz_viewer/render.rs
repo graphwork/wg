@@ -212,6 +212,43 @@ fn draw_status_bar(frame: &mut Frame, app: &VizApp, area: Rect) {
             }
         }
 
+        // Keybinding hints for search mode.
+        spans.push(Span::styled(
+            "  [Tab: next  Shift-Tab: prev  Enter: go to  Esc: cancel]",
+            Style::default().fg(Color::Rgb(100, 100, 100)),
+        ));
+
+        let bar = Paragraph::new(Line::from(spans))
+            .style(Style::default().bg(Color::DarkGray));
+        frame.render_widget(bar, area);
+        return;
+    }
+
+    // Filter locked: search accepted, highlights visible, navigating matches.
+    if !app.search_input.is_empty() && !app.fuzzy_matches.is_empty() {
+        let idx = app.current_match.unwrap_or(0);
+        let mut spans = vec![
+            Span::styled(
+                format!(" /{}", app.search_input),
+                Style::default().fg(Color::Yellow),
+            ),
+            Span::styled(
+                format!("  [Match {}/{}]", idx + 1, app.fuzzy_matches.len()),
+                Style::default().fg(Color::Green),
+            ),
+            Span::styled(
+                "  [Tab: next  Shift-Tab: prev  /: new search  Esc: clear]",
+                Style::default().fg(Color::Rgb(100, 100, 100)),
+            ),
+        ];
+
+        // Scroll position
+        spans.push(Span::styled("  ", Style::default()));
+        spans.push(Span::styled(
+            format!("L{}/{}", app.scroll.offset_y + 1, app.scroll.content_height),
+            Style::default().fg(Color::DarkGray),
+        ));
+
         let bar = Paragraph::new(Line::from(spans))
             .style(Style::default().bg(Color::DarkGray));
         frame.render_widget(bar, area);
