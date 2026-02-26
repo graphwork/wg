@@ -55,11 +55,11 @@ fn handle_search_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers)
             app.clear_search();
         }
         KeyCode::Enter => {
-            // Accept search: exit search mode, show all lines, keep highlights.
+            // Accept search: exit search mode, show all lines, jump to match.
             if app.search_input.is_empty() {
                 app.clear_search();
             } else {
-                app.accept_search();
+                app.accept_search_and_jump();
             }
         }
         KeyCode::Backspace | KeyCode::Delete => {

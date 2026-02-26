@@ -949,37 +949,49 @@ fn generate_ascii(
     let mut component_list: Vec<Vec<&str>> = components.into_values().collect();
     component_list.retain(|c| !c.is_empty());
     if tui_mode {
-        // LRU: sort by most-recently-updated timestamp (descending)
+        // Two-level sort: active WCCs (with in-progress tasks) first, then LRU
         component_list.sort_by(|a, b| {
-            let latest = |ids: &[&str]| -> Option<String> {
-                ids.iter()
-                    .filter_map(|id| task_map.get(id))
-                    .flat_map(|t| {
-                        let mut timestamps: Vec<&str> = Vec::new();
-                        if let Some(ts) = t.completed_at.as_deref() {
-                            timestamps.push(ts);
-                        }
-                        if let Some(ts) = t.started_at.as_deref() {
-                            timestamps.push(ts);
-                        }
-                        for entry in &t.log {
-                            timestamps.push(entry.timestamp.as_str());
-                        }
-                        if let Some(ts) = t.created_at.as_deref() {
-                            timestamps.push(ts);
-                        }
-                        timestamps
-                    })
-                    .max()
-                    .map(String::from)
+            let has_active = |ids: &[&str]| -> bool {
+                ids.iter().any(|id| {
+                    task_map
+                        .get(id)
+                        .map(|t| t.status == Status::InProgress)
+                        .unwrap_or(false)
+                })
             };
-            let a_latest = latest(a);
-            let b_latest = latest(b);
-            // Reverse: most recent first
-            b_latest.cmp(&a_latest).then_with(|| {
-                let a_min = a.iter().min().unwrap_or(&"");
-                let b_min = b.iter().min().unwrap_or(&"");
-                a_min.cmp(b_min)
+            let a_active = has_active(a);
+            let b_active = has_active(b);
+            // Active WCCs first, then by most-recently-updated timestamp
+            b_active.cmp(&a_active).then_with(|| {
+                let latest = |ids: &[&str]| -> Option<String> {
+                    ids.iter()
+                        .filter_map(|id| task_map.get(id))
+                        .flat_map(|t| {
+                            let mut timestamps: Vec<&str> = Vec::new();
+                            if let Some(ts) = t.completed_at.as_deref() {
+                                timestamps.push(ts);
+                            }
+                            if let Some(ts) = t.started_at.as_deref() {
+                                timestamps.push(ts);
+                            }
+                            for entry in &t.log {
+                                timestamps.push(entry.timestamp.as_str());
+                            }
+                            if let Some(ts) = t.created_at.as_deref() {
+                                timestamps.push(ts);
+                            }
+                            timestamps
+                        })
+                        .max()
+                        .map(String::from)
+                };
+                let a_latest = latest(a);
+                let b_latest = latest(b);
+                b_latest.cmp(&a_latest).then_with(|| {
+                    let a_min = a.iter().min().unwrap_or(&"");
+                    let b_min = b.iter().min().unwrap_or(&"");
+                    a_min.cmp(b_min)
+                })
             })
         });
     } else {

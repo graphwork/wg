@@ -81,6 +81,11 @@ pub struct VizApp {
     // ── Help overlay ──
     pub show_help: bool,
 
+    // ── Jump target (transient highlight after Enter) ──
+    /// After pressing Enter on a search match, stores (original_line_index, when_set).
+    /// Render code applies a transient yellow highlight that fades after ~2 seconds.
+    pub jump_target: Option<(usize, Instant)>,
+
     // ── Live refresh ──
     /// Last observed modification time of graph.jsonl.
     last_graph_mtime: Option<SystemTime>,
@@ -132,6 +137,7 @@ impl VizApp {
             total_tokens: 0,
             total_cost: 0.0,
             show_help: false,
+            jump_target: None,
             last_graph_mtime: graph_mtime,
             last_refresh: Instant::now(),
             last_refresh_display: chrono::Local::now().format("%H:%M:%S").to_string(),
@@ -274,6 +280,24 @@ impl VizApp {
         self.filtered_indices = None;
         self.update_scroll_bounds();
         // Keep search_input, fuzzy_matches, current_match for highlights + navigation.
+    }
+
+    /// Accept search and jump to the current match with a transient highlight.
+    /// Called when the user presses Enter on a search match.
+    pub fn accept_search_and_jump(&mut self) {
+        // Capture the current match's original line index before clearing filter.
+        let target_line = self.current_match_line();
+        self.accept_search();
+
+        if let Some(orig_line) = target_line {
+            // Set the transient highlight target.
+            self.jump_target = Some((orig_line, Instant::now()));
+
+            // Scroll to center on the target line in the full (unfiltered) view.
+            let half = self.scroll.viewport_height / 2;
+            self.scroll.offset_y = orig_line.saturating_sub(half);
+            self.scroll.clamp();
+        }
     }
 
     /// Jump to the next search match.

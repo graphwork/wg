@@ -8,6 +8,13 @@ use ratatui::widgets::{
 use super::state::VizApp;
 
 pub fn draw(frame: &mut Frame, app: &mut VizApp) {
+    // Clear expired jump targets (>2 seconds old).
+    if let Some((_, when)) = app.jump_target {
+        if when.elapsed() > std::time::Duration::from_secs(2) {
+            app.jump_target = None;
+        }
+    }
+
     let area = frame.area();
 
     // Layout: main content area + status bar (1 line).
@@ -54,6 +61,7 @@ fn draw_viz_content(frame: &mut Frame, app: &VizApp, area: Rect) {
 
     let has_search = app.has_active_search() && !app.fuzzy_matches.is_empty();
     let current_match_orig_line = app.current_match_line();
+    let jump_target_line = app.jump_target.map(|(line, _)| line);
 
     // Build lines for the visible range.
     // Each visible row maps to an original line index via visible_to_original.
@@ -76,13 +84,19 @@ fn draw_viz_content(frame: &mut Frame, app: &VizApp, area: Rect) {
             if let Some(fuzzy_match) = app.match_for_line(orig_idx) {
                 // This line has a fuzzy match — highlight matched characters.
                 let is_current = current_match_orig_line == Some(orig_idx);
-                let highlighted = highlight_fuzzy_match(base_line, &fuzzy_match.char_positions, is_current);
+                let mut highlighted = highlight_fuzzy_match(base_line, &fuzzy_match.char_positions, is_current);
+                if is_current {
+                    highlighted = highlighted.style(Style::default().bg(Color::Yellow));
+                }
                 text_lines.push(highlighted);
             } else {
                 // Non-matching line in filtered view: show dimmed.
                 let dimmed = base_line.style(Style::default().fg(Color::DarkGray));
                 text_lines.push(dimmed);
             }
+        } else if jump_target_line == Some(orig_idx) {
+            // Transient highlight on the line we jumped to after Enter.
+            text_lines.push(base_line.style(Style::default().bg(Color::Yellow)));
         } else {
             text_lines.push(base_line);
         }
