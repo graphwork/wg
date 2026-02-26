@@ -148,6 +148,9 @@ fn handle_normal_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
         // Manual refresh
         KeyCode::Char('r') => app.force_refresh(),
 
+        // Cycle layout mode (tree ↔ diamond)
+        KeyCode::Char('L') => app.cycle_layout(),
+
         // Horizontal scroll
         KeyCode::Left | KeyCode::Char('h') => app.scroll.scroll_left(4),
         KeyCode::Right | KeyCode::Char('l') => app.scroll.scroll_right(4),

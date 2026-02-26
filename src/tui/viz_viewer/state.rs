@@ -519,6 +519,26 @@ impl VizApp {
         self.last_refresh = Instant::now();
     }
 
+    /// Cycle through layout modes (tree ↔ diamond).
+    pub fn cycle_layout(&mut self) {
+        use crate::commands::viz::LayoutMode;
+        self.viz_options.layout = match self.viz_options.layout {
+            LayoutMode::Tree => LayoutMode::Diamond,
+            LayoutMode::Diamond => LayoutMode::Tree,
+        };
+        self.force_refresh();
+    }
+
+    /// Get the current layout mode name for display.
+    #[allow(dead_code)]
+    pub fn layout_name(&self) -> &'static str {
+        use crate::commands::viz::LayoutMode;
+        match self.viz_options.layout {
+            LayoutMode::Tree => "tree",
+            LayoutMode::Diamond => "diamond",
+        }
+    }
+
     /// Force an immediate refresh (manual `r` key).
     pub fn force_refresh(&mut self) {
         self.last_graph_mtime = std::fs::metadata(self.workgraph_dir.join("graph.jsonl"))

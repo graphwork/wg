@@ -2,7 +2,9 @@ use anyhow::Result;
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use std::path::Path;
-use workgraph::graph::{CycleConfig, LogEntry, LoopGuard, Status, TokenUsage};
+use workgraph::graph::{
+    format_tokens, parse_token_usage_live, CycleConfig, LogEntry, LoopGuard, Status, TokenUsage,
+};
 use workgraph::query::build_reverse_index;
 
 /// Blocker info with status
@@ -155,6 +157,13 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
         })
         .unwrap_or_default();
 
+    // Resolve token usage: stored data first, then live data for in-progress tasks
+    let token_usage = task.token_usage.clone().or_else(|| {
+        let agent_id = task.assigned.as_deref()?;
+        let log_path = dir.join("agents").join(agent_id).join("output.log");
+        parse_token_usage_live(&log_path)
+    });
+
     let details = TaskDetails {
         id: task.id.clone(),
         title: task.title.clone(),
@@ -188,7 +197,7 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
         paused: task.paused,
         visibility: task.visibility.clone(),
         context_scope: task.context_scope.clone(),
-        token_usage: task.token_usage.clone(),
+        token_usage,
     };
 
     if json {
@@ -358,12 +367,23 @@ fn print_human_readable(details: &TaskDetails) {
     if let Some(ref usage) = details.token_usage {
         println!();
         println!("Token usage:");
-        println!("  Input tokens: {}", usage.input_tokens);
-        println!("  Output tokens: {}", usage.output_tokens);
-        println!("  Cache read: {}", usage.cache_read_input_tokens);
-        println!("  Cache creation: {}", usage.cache_creation_input_tokens);
-        println!("  Total output: {}", usage.output_tokens);
-        println!("  Cost: ${:.4}", usage.cost_usd);
+        println!("  Input tokens: {}", format_tokens(usage.input_tokens));
+        println!("  Output tokens: {}", format_tokens(usage.output_tokens));
+        if usage.cache_read_input_tokens > 0 {
+            println!(
+                "  Cache read: {}",
+                format_tokens(usage.cache_read_input_tokens)
+            );
+        }
+        if usage.cache_creation_input_tokens > 0 {
+            println!(
+                "  Cache creation: {}",
+                format_tokens(usage.cache_creation_input_tokens)
+            );
+        }
+        if usage.cost_usd > 0.0 {
+            println!("  Cost: ${:.2}", usage.cost_usd);
+        }
     }
 
     // Log entries

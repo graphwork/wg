@@ -354,6 +354,11 @@ enum Commands {
         /// Force static output even when stdout is an interactive terminal
         #[arg(long, alias = "static", conflicts_with = "tui")]
         no_tui: bool,
+
+        /// Layout strategy: 'diamond' (default) places fan-in nodes under their
+        /// common ancestor with arcs flowing down; 'tree' uses classic DFS order
+        #[arg(long, default_value = "diamond")]
+        layout: String,
     },
 
     /// Output the full graph data (DOT format with archive support)
@@ -2477,7 +2482,9 @@ fn main() -> Result<()> {
             show_internal,
             tui: tui_mode,
             no_tui: _no_tui,
+            layout,
         } => {
+            let layout_mode: commands::viz::LayoutMode = layout.parse().unwrap_or_default();
             let _explicit_static_format = dot || mermaid || graph || output.is_some();
             let use_tui = if tui_mode {
                 true
@@ -2495,6 +2502,7 @@ fn main() -> Result<()> {
                     show_internal,
                     focus,
                     tui_mode: true,
+                    layout: layout_mode,
                 };
                 tui::viz_viewer::run(workgraph_dir, options)
             } else {
@@ -2516,6 +2524,7 @@ fn main() -> Result<()> {
                     show_internal,
                     focus,
                     tui_mode: false,
+                    layout: layout_mode,
                 };
                 commands::viz::run(&workgraph_dir, &options)
             }
@@ -3414,6 +3423,7 @@ fn main() -> Result<()> {
                     show_internal: false,
                     focus: vec![],
                     tui_mode: true,
+                    layout: commands::viz::LayoutMode::default(),
                 };
                 tui::viz_viewer::run(workgraph_dir, options)
             }
