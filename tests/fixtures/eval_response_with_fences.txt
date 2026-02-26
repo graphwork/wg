@@ -1,0 +1,16 @@
+Here is my evaluation of the task:
+
+```json
+{
+  "score": 0.82,
+  "dimensions": {
+    "correctness": 0.9,
+    "completeness": 0.75,
+    "efficiency": 0.8,
+    "style_adherence": 0.85
+  },
+  "notes": "Good implementation but missing some edge case handling."
+}
+```
+
+I hope this evaluation is helpful.

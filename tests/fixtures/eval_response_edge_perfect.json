@@ -1,0 +1,10 @@
+{
+  "score": 1.0,
+  "dimensions": {
+    "correctness": 1.0,
+    "completeness": 1.0,
+    "efficiency": 1.0,
+    "style_adherence": 1.0
+  },
+  "notes": "Perfect implementation."
+}

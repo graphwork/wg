@@ -1,0 +1,10 @@
+{
+  "score": 0.85,
+  "dimensions": {
+    "correctness": 0.9,
+    "completeness": 0.8,
+    "efficiency": 0.85,
+    "style_adherence": 0.82
+  },
+  "notes": "Well implemented with good test coverage. Minor efficiency improvements possible."
+}

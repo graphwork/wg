@@ -1,0 +1,94 @@
+---
+source: tests/prompt_snapshots.rs
+assertion_line: 181
+expression: output
+---
+# Evaluator Instructions
+
+You are an evaluator assessing the quality of work performed by an AI agent.
+Review the task definition, the agent identity that was used, the produced artifacts,
+and the task log. Then produce a JSON evaluation.
+
+## Task Definition
+
+**Title:** Implement widget factory
+
+**Description:**
+Build a widget factory with full test coverage.
+
+**Required Skills:**
+- rust
+- testing
+
+**Verification Criteria:**
+All tests pass. No compiler warnings.
+
+## Agent Identity
+
+**Role:** Builder (61de9fc513bfd19d5364f92f71b325cdcb868821f7693953db5cee37ec4a8880)
+Builds features from specifications with clean, tested code.
+
+**Desired Outcome:** Working, tested code merged to main.
+
+**Motivation:** Quality First (6cf38ebb124246101daa33f66143e2e25616daaca56886e2ddb06995113a86b2)
+Prioritise correctness and maintainability over speed.
+
+**Acceptable Trade-offs:**
+- Slower delivery for higher quality
+- More verbose code for clarity
+
+**Non-negotiable Constraints:**
+- Skipping tests
+- Ignoring error handling
+
+## Task Artifacts
+
+- `src/widget.rs`
+- `tests/test_widget.rs`
+
+## Task Log
+
+- [2025-01-15T10:00:00Z] (agent-abc): Starting implementation of feature X
+- [2025-01-15T10:30:00Z] (system): Completed core logic, writing tests
+
+## Timing
+
+- Started: 2025-01-15T10:00:00Z
+- Completed: 2025-01-15T11:00:00Z
+
+## Evaluation Criteria
+
+Assess the agent's work on these dimensions (each scored 0.0 to 1.0):
+
+1. **correctness** — Does the output match the desired outcome? Are verification
+criteria satisfied? Is the implementation functionally correct?
+2. **completeness** — Were all aspects of the task addressed? Are there missing
+pieces, unhandled edge cases, or incomplete deliverables?
+3. **efficiency** — Was the work done efficiently within the allowed parameters?
+Minimal unnecessary steps, no wasted effort, appropriate scope.
+4. **style_adherence** — Does the output follow project conventions, coding
+standards, and the constraints set by the motivation (trade-offs respected,
+non-negotiable constraints honoured)?
+
+Compute an overall **score** as a weighted average:
+- correctness: 40%
+- completeness: 30%
+- efficiency: 15%
+- style_adherence: 15%
+
+## Required Output
+
+Respond with **only** a JSON object (no markdown fences, no commentary):
+
+```
+{
+  "score": <0.0-1.0>,
+  "dimensions": {
+    "correctness": <0.0-1.0>,
+    "completeness": <0.0-1.0>,
+    "efficiency": <0.0-1.0>,
+    "style_adherence": <0.0-1.0>
+  },
+  "notes": "<brief explanation of strengths, weaknesses, and suggestions>"
+}
+```

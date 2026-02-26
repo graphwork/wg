@@ -1,0 +1,16 @@
+{
+  "run_id": "evolve-run-001",
+  "target": null,
+  "operations": [
+    {
+      "op": "wording_mutation",
+      "entity_type": "role",
+      "target_id": "abc123def456",
+      "new_name": "Senior Builder",
+      "new_description": "Builds complex features with architectural awareness and comprehensive testing.",
+      "rationale": "Clarify that the role handles complex features, not just simple ones."
+    }
+  ],
+  "deferred_operations": [],
+  "summary": "Refined Builder role description for clarity."
+}

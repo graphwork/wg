@@ -1,0 +1,20 @@
+---
+source: tests/prompt_snapshots.rs
+assertion_line: 131
+expression: output
+---
+## Agent Identity
+
+### Role: Builder
+Builds features from specifications with clean, tested code.
+
+#### Skills
+- **Rust**
+Write idiomatic Rust code with proper error handling.
+- **Testing**
+Write comprehensive unit and integration tests.
+
+#### Desired Outcome
+Working, tested code merged to main.
+
+---

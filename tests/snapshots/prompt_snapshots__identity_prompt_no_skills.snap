@@ -1,0 +1,23 @@
+---
+source: tests/prompt_snapshots.rs
+assertion_line: 122
+expression: output
+---
+## Agent Identity
+
+### Role: Reviewer
+Reviews code for quality and correctness.
+
+#### Desired Outcome
+All code reviewed and approved.
+
+### Operational Parameters
+#### Acceptable Trade-offs
+- Slower delivery for higher quality
+- More verbose code for clarity
+
+#### Non-negotiable Constraints
+- Skipping tests
+- Ignoring error handling
+
+---

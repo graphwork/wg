@@ -1,0 +1,21 @@
+{
+  "operations": [
+    {"op": "create_role", "new_name": "Architect", "new_description": "Designs systems", "component_ids": ["design"], "outcome_id": "Clean architecture"},
+    {"op": "modify_role", "target_id": "role-1", "new_description": "Updated description"},
+    {"op": "retire_role", "target_id": "role-2", "rationale": "No longer needed"},
+    {"op": "create_motivation", "new_name": "Thorough", "new_description": "Be thorough", "new_acceptable_tradeoffs": ["Slower"], "new_unacceptable_tradeoffs": ["Sloppy"]},
+    {"op": "modify_motivation", "target_id": "mot-1", "new_acceptable_tradeoffs": ["Updated tradeoff"]},
+    {"op": "retire_motivation", "target_id": "mot-2", "rationale": "Replaced"},
+    {"op": "wording_mutation", "entity_type": "role", "target_id": "role-3", "new_description": "Mutated wording"},
+    {"op": "component_substitution", "target_id": "role-4", "remove_component_id": "old-comp", "add_component_id": "new-comp"},
+    {"op": "config_add_component", "target_id": "role-5", "add_component_id": "extra-comp"},
+    {"op": "config_remove_component", "target_id": "role-6", "remove_component_id": "unused-comp"},
+    {"op": "config_swap_outcome", "target_id": "role-7", "new_outcome_id": "better-outcome"},
+    {"op": "config_swap_tradeoff", "target_id": "agent-1", "new_tradeoff_id": "stricter-tradeoff"},
+    {"op": "random_compose_role", "new_name": "RandomRole", "component_ids": ["a", "b"], "outcome_id": "random-outcome", "selection_method": "uniform_random"},
+    {"op": "random_compose_agent", "role_id": "role-8", "tradeoff_id": "tradeoff-1", "selection_method": "performance_weighted_inverse"},
+    {"op": "bizarre_ideation", "entity_type": "component", "new_name": "Quantum Debugging", "new_content": "Debug by observing quantum states", "ideation_prompt": "Invent a novel debugging technique"}
+  ],
+  "deferred_operations": [],
+  "summary": "Exercising all operation types."
+}

@@ -1,0 +1,36 @@
+{
+  "run_id": "evolve-run-002",
+  "operations": [
+    {
+      "op": "create_role",
+      "new_name": "Security Auditor",
+      "new_description": "Reviews code for security vulnerabilities and compliance.",
+      "component_ids": ["security-scanning", "owasp-top-10"],
+      "outcome_id": "All code passes security audit.",
+      "rationale": "Gap analysis identified missing security review capability."
+    },
+    {
+      "op": "modify_motivation",
+      "target_id": "def789",
+      "new_acceptable_tradeoffs": ["Slower reviews for thorough security coverage"],
+      "new_unacceptable_tradeoffs": ["Skipping OWASP checks", "Ignoring dependency vulnerabilities"],
+      "rationale": "Tighten security constraints on the careful motivation."
+    },
+    {
+      "op": "component_substitution",
+      "entity_type": "role",
+      "target_id": "role123",
+      "remove_component_id": "basic-testing",
+      "add_component_id": "comprehensive-testing",
+      "rationale": "Upgrade testing component for better coverage."
+    }
+  ],
+  "deferred_operations": [
+    {
+      "op": "retire_role",
+      "target_id": "legacy-role-456",
+      "rationale": "This role has poor performance and overlaps with Security Auditor."
+    }
+  ],
+  "summary": "Added security auditor role, tightened motivation constraints, upgraded testing component."
+}

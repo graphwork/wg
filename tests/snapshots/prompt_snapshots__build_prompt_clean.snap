@@ -1,0 +1,23 @@
+---
+source: tests/prompt_snapshots.rs
+assertion_line: 272
+expression: output
+---
+# Task Assignment
+
+You are an AI agent working on a task in a workgraph project.
+
+
+## Agent Identity
+
+You are a Builder agent.
+
+## Your Task
+- **ID:** test-task-123
+- **Title:** Implement widget factory
+- **Description:** Build a widget factory that produces widgets from specs.
+
+## Context from Dependencies
+From prerequisite-task: Widget spec is defined in docs/spec.md
+
+Begin working on the task now.

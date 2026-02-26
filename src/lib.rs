@@ -2,6 +2,7 @@ pub mod agency;
 pub mod check;
 pub mod config;
 pub mod context_scope;
+pub mod json_extract;
 pub mod cycle;
 pub mod federation;
 pub mod graph;
