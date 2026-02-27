@@ -72,6 +72,8 @@ struct EvolverOperation {
     #[serde(default)]
     unacceptable_tradeoffs: Option<Vec<String>>,
     #[serde(default)]
+    meta_role: Option<String>,
+    #[serde(default)]
     rationale: Option<String>,
     #[serde(default)]
     ideation_prompt: Option<String>,
@@ -285,7 +287,7 @@ fn evolver_output_multi_operations_fixture() {
 fn evolver_output_all_operation_types() {
     let raw = include_str!("fixtures/evolver_output_all_op_types.json");
     let parsed: EvolverOutput = serde_json::from_str(raw).unwrap();
-    assert_eq!(parsed.operations.len(), 15);
+    assert_eq!(parsed.operations.len(), 18);
 
     let op_types: Vec<&str> = parsed.operations.iter().map(|o| o.op.as_str()).collect();
     assert!(op_types.contains(&"create_role"));
@@ -303,6 +305,14 @@ fn evolver_output_all_operation_types() {
     assert!(op_types.contains(&"random_compose_role"));
     assert!(op_types.contains(&"random_compose_agent"));
     assert!(op_types.contains(&"bizarre_ideation"));
+    assert!(op_types.contains(&"meta_swap_role"));
+    assert!(op_types.contains(&"meta_swap_tradeoff"));
+    assert!(op_types.contains(&"meta_compose_agent"));
+
+    // Verify meta_role field is populated for meta ops
+    let meta_swap = parsed.operations.iter().find(|o| o.op == "meta_swap_role").unwrap();
+    assert_eq!(meta_swap.meta_role.as_deref(), Some("assigner"));
+    assert!(meta_swap.role_id.is_some());
 }
 
 #[test]

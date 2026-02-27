@@ -240,6 +240,7 @@ fn build_assign_subgraph(dir: &Path) {
             paused: false,
             visibility: "internal".to_string(),
             context_scope: None,
+            exec_mode: None,
             cycle_config: None,
             token_usage: None,
         };

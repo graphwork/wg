@@ -13,7 +13,7 @@ fn archive_path(dir: &Path) -> std::path::PathBuf {
 }
 
 /// Parse a duration string like "30d", "7d", "1w" into a chrono Duration
-fn parse_duration(s: &str) -> Result<Duration> {
+pub fn parse_duration(s: &str) -> Result<Duration> {
     let s = s.trim();
     if s.is_empty() {
         anyhow::bail!("Empty duration string");

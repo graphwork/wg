@@ -63,6 +63,7 @@ pub fn run(
     cycle_delay: Option<&str>,
     visibility: &str,
     context_scope: Option<&str>,
+    exec_mode: Option<&str>,
 ) -> Result<()> {
     if title.trim().is_empty() {
         anyhow::bail!("Task title cannot be empty");
@@ -80,6 +81,17 @@ pub fn run(
     // Validate context_scope if provided
     if let Some(scope) = context_scope {
         scope.parse::<workgraph::context_scope::ContextScope>().map_err(|e| anyhow::anyhow!("{}", e))?;
+    }
+
+    // Validate exec_mode if provided
+    if let Some(mode) = exec_mode {
+        match mode {
+            "full" | "bare" => {}
+            _ => anyhow::bail!(
+                "Invalid exec_mode '{}'. Valid values: full, bare",
+                mode
+            ),
+        }
     }
 
     let path = graph_path(dir);
@@ -183,6 +195,7 @@ pub fn run(
         paused: false,
         visibility: visibility.to_string(),
         context_scope: context_scope.map(String::from),
+        exec_mode: exec_mode.map(String::from),
         token_usage: None,
     };
 
@@ -410,6 +423,7 @@ fn add_task_directly(
         visibility: "internal".to_string(),
         context_scope: None,
         cycle_config: None,
+        exec_mode: None,
         token_usage: None,
     };
 
@@ -781,6 +795,7 @@ mod tests {
             None,
             "internal",
             None,
+            None,
         );
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("cannot be empty"));
@@ -816,6 +831,7 @@ mod tests {
             None,
             "internal",
             None,
+            None,
         );
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("cannot be empty"));
@@ -850,6 +866,7 @@ mod tests {
             None,
             None,
             "internal",
+            None,
             None,
         );
         assert!(result.is_err());
@@ -893,6 +910,7 @@ mod tests {
             None,
             "internal",
             None,
+            None,
         );
         assert!(result.is_ok());
     }
@@ -931,6 +949,7 @@ mod tests {
             None,
             None,
             "internal",
+            None,
             None,
         );
         assert!(result.is_ok());

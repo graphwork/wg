@@ -231,6 +231,11 @@ pub struct Task {
     /// Context scope for prompt assembly: clean, task, graph, full
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_scope: Option<String>,
+    /// Execution mode: "full" (default, full Claude Code session with all tools)
+    /// or "bare" (lightweight --system-prompt path, no file I/O tools).
+    /// Use "bare" for pure-reasoning tasks: synthesis, triage, summarization, abstract reasoning.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exec_mode: Option<String>,
     /// Token usage and cost data extracted from agent output.log
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token_usage: Option<TokenUsage>,
@@ -274,6 +279,15 @@ impl TokenUsage {
     /// Total tokens (all input + output)
     pub fn total_tokens(&self) -> u64 {
         self.total_input() + self.output_tokens
+    }
+
+    /// Accumulate another TokenUsage into this one (component-wise addition).
+    pub fn accumulate(&mut self, other: &TokenUsage) {
+        self.cost_usd += other.cost_usd;
+        self.input_tokens += other.input_tokens;
+        self.output_tokens += other.output_tokens;
+        self.cache_read_input_tokens += other.cache_read_input_tokens;
+        self.cache_creation_input_tokens += other.cache_creation_input_tokens;
     }
 }
 
@@ -597,6 +611,8 @@ struct TaskHelper {
     #[serde(default)]
     context_scope: Option<String>,
     #[serde(default)]
+    exec_mode: Option<String>,
+    #[serde(default)]
     token_usage: Option<TokenUsage>,
     /// Old format: inline identity object. Migrated to `agent` hash on read.
     #[serde(default)]
@@ -653,6 +669,7 @@ impl<'de> Deserialize<'de> for Task {
             paused: helper.paused,
             visibility: helper.visibility,
             context_scope: helper.context_scope,
+            exec_mode: helper.exec_mode,
             token_usage: helper.token_usage,
         })
     }

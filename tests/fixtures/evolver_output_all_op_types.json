@@ -14,7 +14,10 @@
     {"op": "config_swap_tradeoff", "target_id": "agent-1", "new_tradeoff_id": "stricter-tradeoff"},
     {"op": "random_compose_role", "new_name": "RandomRole", "component_ids": ["a", "b"], "outcome_id": "random-outcome", "selection_method": "uniform_random"},
     {"op": "random_compose_agent", "role_id": "role-8", "tradeoff_id": "tradeoff-1", "selection_method": "performance_weighted_inverse"},
-    {"op": "bizarre_ideation", "entity_type": "component", "new_name": "Quantum Debugging", "new_content": "Debug by observing quantum states", "ideation_prompt": "Invent a novel debugging technique"}
+    {"op": "bizarre_ideation", "entity_type": "component", "new_name": "Quantum Debugging", "new_content": "Debug by observing quantum states", "ideation_prompt": "Invent a novel debugging technique"},
+    {"op": "meta_swap_role", "meta_role": "assigner", "role_id": "role-9", "rationale": "Try a different role for the assigner"},
+    {"op": "meta_swap_tradeoff", "meta_role": "evaluator", "tradeoff_id": "tradeoff-2", "rationale": "Tighter tradeoff for evaluator"},
+    {"op": "meta_compose_agent", "meta_role": "assigner", "role_id": "role-10", "tradeoff_id": "tradeoff-3", "new_name": "New Assigner Agent"}
   ],
   "deferred_operations": [],
   "summary": "Exercising all operation types."

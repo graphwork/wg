@@ -265,6 +265,7 @@ pub fn run(
                 context_scope: None,
                 cycle_config: None,
                 token_usage: None,
+        exec_mode: None,
             };
 
             graph.add_node(Node::Task(task));

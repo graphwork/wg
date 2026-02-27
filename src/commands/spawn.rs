@@ -577,6 +577,8 @@ fn spawn_agent_inner(
     let task_exec = task.exec.clone();
     // Get task model preference
     let task_model = task.model.clone();
+    // Get task exec mode (bare = lightweight, no tools; full = default Claude Code session)
+    let task_exec_mode = task.exec_mode.clone();
     // Load executor config using the registry
     let executor_registry = ExecutorRegistry::new(dir);
     let executor_config = executor_registry.load_config(executor_name)?;
@@ -628,9 +630,53 @@ fn spawn_agent_inner(
         });
     }
 
+    // Determine if this is a bare execution (lightweight, no file I/O tools)
+    let is_bare = task_exec_mode.as_deref() == Some("bare");
+
     // Build the inner command string first
     let inner_command = match settings.executor_type.as_str() {
+        "claude" if is_bare => {
+            // Bare mode: lightweight execution with --system-prompt and no tools.
+            // Used for pure-reasoning tasks (synthesis, triage, summarization).
+            // The prompt is passed via --system-prompt and stdin provides the task input.
+            let prompt_file = output_dir.join("prompt.txt");
+            let prompt_content = settings
+                .prompt_template
+                .as_ref()
+                .map(|pt| pt.template.clone())
+                .unwrap_or_default();
+            fs::write(&prompt_file, &prompt_content)
+                .with_context(|| format!("Failed to write prompt file: {:?}", prompt_file))?;
+
+            let mut cmd_parts = vec![shell_escape(&settings.command)];
+            cmd_parts.push("--print".to_string());
+            cmd_parts.push("--verbose".to_string());
+            cmd_parts.push("--output-format".to_string());
+            cmd_parts.push("stream-json".to_string());
+            cmd_parts.push("--tools".to_string());
+            cmd_parts.push(shell_escape("Bash(wg:*)"));
+            cmd_parts.push("--system-prompt".to_string());
+            cmd_parts.push(shell_escape(&prompt_content));
+            // Add model flag if specified
+            if let Some(ref m) = effective_model {
+                cmd_parts.push("--model".to_string());
+                cmd_parts.push(shell_escape(m));
+            }
+            let claude_cmd = cmd_parts.join(" ");
+
+            // In bare mode, pipe the task title+description as the user message
+            let user_message = format!(
+                "Complete this task:\n\nTitle: {}\n\n{}",
+                vars.task_id,
+                vars.task_description
+            );
+            let user_msg_file = output_dir.join("user_message.txt");
+            fs::write(&user_msg_file, &user_message)
+                .with_context(|| format!("Failed to write user message file: {:?}", user_msg_file))?;
+            prompt_file_command(&user_msg_file.to_string_lossy(), &claude_cmd)
+        }
         "claude" => {
+            // Full mode: standard Claude Code session with all tools
             // Write prompt to file and pipe to claude - avoids all quoting issues
             let mut cmd_parts = vec![shell_escape(&settings.command)];
             for arg in &settings.args {

@@ -81,6 +81,8 @@ struct TaskDetails {
     #[serde(skip_serializing_if = "Option::is_none")]
     context_scope: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    exec_mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     token_usage: Option<TokenUsage>,
 }
 
@@ -197,6 +199,7 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
         paused: task.paused,
         visibility: task.visibility.clone(),
         context_scope: task.context_scope.clone(),
+        exec_mode: task.exec_mode.clone(),
         token_usage,
     };
 
@@ -224,6 +227,10 @@ fn print_human_readable(details: &TaskDetails) {
 
     if let Some(ref scope) = details.context_scope {
         println!("Context scope: {}", scope);
+    }
+
+    if let Some(ref mode) = details.exec_mode {
+        println!("Exec mode: {}", mode);
     }
 
     if let Some(ref assigned) = details.assigned {
@@ -492,6 +499,7 @@ mod tests {
             paused: false,
             visibility: "internal".to_string(),
             context_scope: None,
+            exec_mode: None,
             cycle_config: None,
             token_usage: None,
         };

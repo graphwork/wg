@@ -123,6 +123,10 @@ enum Commands {
         /// Context scope for prompt assembly (clean, task, graph, full)
         #[arg(long = "context-scope")]
         context_scope: Option<String>,
+
+        /// Execution mode: full (default, full Claude Code session) or bare (lightweight, no file I/O tools)
+        #[arg(long = "exec-mode")]
+        exec_mode: Option<String>,
     },
 
     /// Edit an existing task
@@ -186,6 +190,10 @@ enum Commands {
         /// Set context scope for prompt assembly (clean, task, graph, full)
         #[arg(long = "context-scope")]
         context_scope: Option<String>,
+
+        /// Set execution mode: full (default) or bare (lightweight, no file I/O tools)
+        #[arg(long = "exec-mode")]
+        exec_mode: Option<String>,
     },
 
     /// Mark a task as done
@@ -488,6 +496,10 @@ enum Commands {
         /// Also remove done tasks (by default only failed+abandoned)
         #[arg(long)]
         include_done: bool,
+
+        /// Only remove tasks older than this duration (e.g., 30d, 7d, 1w, 24h)
+        #[arg(long)]
+        older: Option<String>,
     },
 
     /// Show detailed information about a single task
@@ -734,23 +746,10 @@ enum Commands {
         command: EvaluateCommands,
     },
 
-    /// Trigger an evolution cycle on agency roles and motivations
+    /// Trigger an evolution cycle, or review deferred operations
     Evolve {
-        /// Show proposed changes without applying them
-        #[arg(long)]
-        dry_run: bool,
-
-        /// Evolution strategy: mutation, crossover, gap-analysis, retirement, motivation-tuning, all (default: all)
-        #[arg(long)]
-        strategy: Option<String>,
-
-        /// Maximum number of operations to apply
-        #[arg(long)]
-        budget: Option<u32>,
-
-        /// Model to use for the evolver agent
-        #[arg(long)]
-        model: Option<String>,
+        #[command(subcommand)]
+        command: EvolveCommands,
     },
 
     /// View or modify project configuration
@@ -1061,6 +1060,60 @@ enum EvaluateCommands {
         /// Show what would be computed without saving
         #[arg(long)]
         dry_run: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum EvolveCommands {
+    /// Trigger an evolution cycle on agency roles and tradeoffs
+    Run {
+        /// Show proposed changes without applying them
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Evolution strategy: mutation, crossover, gap-analysis, retirement, tradeoff-tuning, all (default: all)
+        #[arg(long)]
+        strategy: Option<String>,
+
+        /// Maximum number of operations to apply
+        #[arg(long)]
+        budget: Option<u32>,
+
+        /// Model to use for the evolver agent
+        #[arg(long)]
+        model: Option<String>,
+    },
+
+    /// Review deferred evolver operations (list, approve, reject)
+    Review {
+        #[command(subcommand)]
+        command: EvolveReviewCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum EvolveReviewCommands {
+    /// List pending deferred operations awaiting human review
+    List,
+
+    /// Approve a deferred evolver operation and apply it
+    Approve {
+        /// Deferred operation ID
+        id: String,
+
+        /// Optional note explaining approval
+        #[arg(long, short = 'n')]
+        note: Option<String>,
+    },
+
+    /// Reject a deferred evolver operation
+    Reject {
+        /// Deferred operation ID
+        id: String,
+
+        /// Optional note explaining rejection
+        #[arg(long, short = 'n')]
+        note: Option<String>,
     },
 }
 
@@ -2371,6 +2424,7 @@ fn main() -> Result<()> {
             cycle_delay,
             visibility,
             context_scope,
+            exec_mode,
         } => {
             if let Some(ref peer_ref) = repo {
                 commands::add::run_remote(
@@ -2408,6 +2462,7 @@ fn main() -> Result<()> {
                     cycle_delay.as_deref(),
                     &visibility,
                     context_scope.as_deref(),
+                    exec_mode.as_deref(),
                 )
             }
         }
@@ -2427,6 +2482,7 @@ fn main() -> Result<()> {
             cycle_delay,
             visibility,
             context_scope,
+            exec_mode,
         } => commands::edit::run(
             &workgraph_dir,
             &id,
@@ -2444,6 +2500,7 @@ fn main() -> Result<()> {
             cycle_delay.as_deref(),
             visibility.as_deref(),
             context_scope.as_deref(),
+            exec_mode.as_deref(),
         ),
         Commands::Done { id, converged } => commands::done::run(&workgraph_dir, &id, converged),
         Commands::Fail { id, reason } => {
@@ -2562,7 +2619,8 @@ fn main() -> Result<()> {
         Commands::Gc {
             dry_run,
             include_done,
-        } => commands::gc::run(&workgraph_dir, dry_run, include_done),
+            older,
+        } => commands::gc::run(&workgraph_dir, dry_run, include_done, older.as_deref()),
         Commands::Show { id } => commands::show::run(&workgraph_dir, &id, cli.json),
         Commands::Trace { command } => match command {
             TraceCommands::Show { id, full, ops_only, recursive, timeline, graph, animate, speed } => {
@@ -3156,19 +3214,40 @@ fn main() -> Result<()> {
             task.as_deref(),
             replay,
         ),
-        Commands::Evolve {
-            dry_run,
-            strategy,
-            budget,
-            model,
-        } => commands::evolve::run(
-            &workgraph_dir,
-            dry_run,
-            strategy.as_deref(),
-            budget,
-            model.as_deref(),
-            cli.json,
-        ),
+        Commands::Evolve { command } => match command {
+            EvolveCommands::Run {
+                dry_run,
+                strategy,
+                budget,
+                model,
+            } => commands::evolve::run(
+                &workgraph_dir,
+                dry_run,
+                strategy.as_deref(),
+                budget,
+                model.as_deref(),
+                cli.json,
+            ),
+            EvolveCommands::Review { command: review_cmd } => match review_cmd {
+                EvolveReviewCommands::List => {
+                    commands::evolve::run_deferred_list(&workgraph_dir, cli.json)
+                }
+                EvolveReviewCommands::Approve { id, note } => {
+                    commands::evolve::run_deferred_approve(
+                        &workgraph_dir,
+                        &id,
+                        note.as_deref(),
+                    )
+                }
+                EvolveReviewCommands::Reject { id, note } => {
+                    commands::evolve::run_deferred_reject(
+                        &workgraph_dir,
+                        &id,
+                        note.as_deref(),
+                    )
+                }
+            },
+        },
         Commands::Config {
             show,
             init,

@@ -383,6 +383,7 @@ fn build_auto_assign_tasks(graph: &mut workgraph::graph::WorkGraph, config: &Con
             context_scope: None,
             cycle_config: None,
             token_usage: None,
+        exec_mode: None,
         };
 
         graph.add_node(Node::Task(assign_task));
@@ -551,6 +552,7 @@ fn build_auto_evaluate_tasks(
             visibility: "internal".to_string(),
             context_scope: None,
             cycle_config: None,
+        exec_mode: None,
             token_usage: None,
         };
 

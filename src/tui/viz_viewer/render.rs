@@ -6,6 +6,7 @@ use ratatui::widgets::{
 };
 
 use super::state::VizApp;
+use workgraph::graph::{format_tokens, TokenUsage};
 
 pub fn draw(frame: &mut Frame, app: &mut VizApp) {
     // Clear expired jump targets (>2 seconds old).
@@ -275,21 +276,17 @@ fn draw_status_bar(frame: &mut Frame, app: &VizApp, area: Rect) {
 
     spans.push(Span::styled(") ", Style::default().fg(Color::White)));
 
-    // Token counts
-    if app.total_tokens > 0 {
+    // Token breakdown: input/output/cache with view/total toggle
+    let visible_usage;
+    let (usage, label) = if app.show_total_tokens {
+        (&app.total_usage, "total")
+    } else {
+        visible_usage = app.visible_token_usage();
+        (&visible_usage, "view")
+    };
+    if usage.total_tokens() > 0 {
         spans.push(Span::styled("| ", Style::default().fg(Color::DarkGray)));
-        let token_str = workgraph::graph::format_tokens(app.total_tokens);
-        if app.total_cost > 0.0 {
-            spans.push(Span::styled(
-                format!("{} tokens (${:.2}) ", token_str, app.total_cost),
-                Style::default().fg(Color::Cyan),
-            ));
-        } else {
-            spans.push(Span::styled(
-                format!("{} tokens ", token_str),
-                Style::default().fg(Color::Cyan),
-            ));
-        }
+        render_token_breakdown(&mut spans, usage, label);
     }
 
     // Scroll position
@@ -342,7 +339,7 @@ fn draw_status_bar(frame: &mut Frame, app: &VizApp, area: Rect) {
 fn draw_help_overlay(frame: &mut Frame) {
     let size = frame.area();
     let width = 56.min(size.width.saturating_sub(4));
-    let height = 26.min(size.height.saturating_sub(4));
+    let height = 27.min(size.height.saturating_sub(4));
     let x = (size.width.saturating_sub(width)) / 2;
     let y = (size.height.saturating_sub(height)) / 2;
     let area = Rect::new(x, y, width, height);
@@ -400,6 +397,7 @@ fn draw_help_overlay(frame: &mut Frame) {
         binding("Ctrl-u", "Clear search input"),
         blank(),
         heading("General"),
+        binding("t", "Toggle view/total tokens"),
         binding("r", "Force refresh"),
         binding("?", "Toggle this help"),
         binding("q", "Quit"),
@@ -415,4 +413,38 @@ fn draw_help_overlay(frame: &mut Frame) {
 
     frame.render_widget(block, area);
     frame.render_widget(paragraph, inner);
+}
+
+/// Render token breakdown spans: "in/out[/cache] (label) [$cost]"
+fn render_token_breakdown<'a>(spans: &mut Vec<Span<'a>>, usage: &TokenUsage, label: &str) {
+    let input = format_tokens(usage.total_input());
+    let output = format_tokens(usage.output_tokens);
+
+    // Show cache only when significant
+    let cache_total = usage.cache_read_input_tokens + usage.cache_creation_input_tokens;
+    let token_str = if cache_total > 0 {
+        let cache = format_tokens(cache_total);
+        format!("{}/{}/{}", input, output, cache)
+    } else {
+        format!("{}/{}", input, output)
+    };
+
+    spans.push(Span::styled(
+        token_str,
+        Style::default().fg(Color::Cyan),
+    ));
+
+    // Label: "view" or "total" — dim to avoid clutter
+    spans.push(Span::styled(
+        format!(" {} ", label),
+        Style::default().fg(Color::DarkGray),
+    ));
+
+    // Cost if available
+    if usage.cost_usd > 0.0 {
+        spans.push(Span::styled(
+            format!("${:.2} ", usage.cost_usd),
+            Style::default().fg(Color::Cyan),
+        ));
+    }
 }

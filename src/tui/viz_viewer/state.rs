@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::{Instant, SystemTime};
 
@@ -7,7 +7,7 @@ use fuzzy_matcher::skim::SkimMatcherV2;
 use fuzzy_matcher::FuzzyMatcher;
 
 use crate::commands::viz::VizOptions;
-use workgraph::graph::{parse_token_usage_live, Status};
+use workgraph::graph::{parse_token_usage_live, Status, TokenUsage};
 use workgraph::parser::load_graph;
 use workgraph::{AgentRegistry, AgentStatus};
 
@@ -73,10 +73,14 @@ pub struct VizApp {
 
     // ── Task stats ──
     pub task_counts: TaskCounts,
-    /// Total output tokens consumed across all tasks.
-    pub total_tokens: u64,
-    /// Total cost across all tasks.
-    pub total_cost: f64,
+    /// Aggregate token usage across all tasks in the graph.
+    pub total_usage: TokenUsage,
+    /// Per-task token usage keyed by task ID (for computing visible-task totals).
+    pub task_token_map: HashMap<String, TokenUsage>,
+
+    // ── Token display toggle ──
+    /// When true, show total workgraph token usage; when false, show visible-tasks only.
+    pub show_total_tokens: bool,
 
     // ── Help overlay ──
     pub show_help: bool,
@@ -134,8 +138,15 @@ impl VizApp {
             filtered_indices: None,
             matcher: SkimMatcherV2::default(),
             task_counts: TaskCounts::default(),
-            total_tokens: 0,
-            total_cost: 0.0,
+            total_usage: TokenUsage {
+                cost_usd: 0.0,
+                input_tokens: 0,
+                output_tokens: 0,
+                cache_read_input_tokens: 0,
+                cache_creation_input_tokens: 0,
+            },
+            task_token_map: HashMap::new(),
+            show_total_tokens: false,
             show_help: false,
             jump_target: None,
             last_graph_mtime: graph_mtime,
@@ -446,15 +457,41 @@ impl VizApp {
             Ok(g) => g,
             Err(_) => {
                 self.task_counts = TaskCounts::default();
-                self.total_tokens = 0;
-                self.total_cost = 0.0;
+                self.total_usage = TokenUsage {
+                    cost_usd: 0.0,
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    cache_read_input_tokens: 0,
+                    cache_creation_input_tokens: 0,
+                };
+                self.task_token_map.clear();
                 return;
             }
         };
 
         let mut counts = TaskCounts::default();
-        let mut total_tokens: u64 = 0;
-        let mut total_cost: f64 = 0.0;
+        let mut total_usage = TokenUsage {
+            cost_usd: 0.0,
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: 0,
+        };
+        let mut task_token_map: HashMap<String, TokenUsage> = HashMap::new();
+
+        // Build a map of agent_id -> live token usage for in-progress agents
+        let mut live_agent_usage: HashMap<String, TokenUsage> = HashMap::new();
+        if let Ok(registry) = AgentRegistry::load(&self.workgraph_dir) {
+            for (id, agent) in &registry.agents {
+                if agent.status != AgentStatus::Working || agent.output_file.is_empty() {
+                    continue;
+                }
+                let path = std::path::Path::new(&agent.output_file);
+                if let Some(usage) = parse_token_usage_live(path) {
+                    live_agent_usage.insert(id.clone(), usage);
+                }
+            }
+        }
 
         for task in graph.tasks() {
             counts.total += 1;
@@ -466,29 +503,21 @@ impl VizApp {
                 Status::Blocked => counts.blocked += 1,
                 Status::Abandoned => counts.done += 1, // count with done
             }
-            if let Some(ref usage) = task.token_usage {
-                total_tokens += usage.output_tokens;
-                total_cost += usage.cost_usd;
-            }
-        }
 
-        // Pull live token counts from in-progress agent output.log files
-        if let Ok(registry) = AgentRegistry::load(&self.workgraph_dir) {
-            for (_id, agent) in &registry.agents {
-                if agent.status != AgentStatus::Working || agent.output_file.is_empty() {
-                    continue;
-                }
-                let path = std::path::Path::new(&agent.output_file);
-                if let Some(usage) = parse_token_usage_live(path) {
-                    total_tokens += usage.output_tokens;
-                    total_cost += usage.cost_usd;
-                }
+            // Use stored token_usage if available, otherwise check live agent data
+            let usage = task.token_usage.as_ref().or_else(|| {
+                task.assigned.as_ref().and_then(|aid| live_agent_usage.get(aid))
+            });
+
+            if let Some(usage) = usage {
+                total_usage.accumulate(usage);
+                task_token_map.insert(task.id.clone(), usage.clone());
             }
         }
 
         self.task_counts = counts;
-        self.total_tokens = total_tokens;
-        self.total_cost = total_cost;
+        self.total_usage = total_usage;
+        self.task_token_map = task_token_map;
     }
 
     /// Check if the graph has changed on disk and refresh if needed.
@@ -537,6 +566,34 @@ impl VizApp {
             LayoutMode::Tree => "tree",
             LayoutMode::Diamond => "diamond",
         }
+    }
+
+    /// Compute aggregate token usage for tasks currently visible on screen.
+    /// Extracts task IDs from the plain_lines visible in the viewport.
+    pub fn visible_token_usage(&self) -> TokenUsage {
+        let mut usage = TokenUsage {
+            cost_usd: 0.0,
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: 0,
+        };
+        // Collect unique task IDs from all visible lines (not just viewport)
+        let visible_count = self.visible_line_count();
+        let mut seen = HashSet::new();
+        for visible_idx in 0..visible_count {
+            let orig_idx = self.visible_to_original(visible_idx);
+            if let Some(plain) = self.plain_lines.get(orig_idx) {
+                if let Some(task_id) = extract_task_id(plain) {
+                    if seen.insert(task_id.clone()) {
+                        if let Some(task_usage) = self.task_token_map.get(&task_id) {
+                            usage.accumulate(task_usage);
+                        }
+                    }
+                }
+            }
+        }
+        usage
     }
 
     /// Force an immediate refresh (manual `r` key).
@@ -651,6 +708,40 @@ fn compute_filtered_indices(
     let mut result: Vec<usize> = visible.into_iter().collect();
     result.sort();
     result
+}
+
+/// Extract a task ID from a plain (ANSI-stripped) viz line.
+/// Task lines look like: `  ├→ task-id  (status · tokens)` or `task-id  (status)`.
+/// Returns None for non-task lines (summaries, blanks, box-drawing-only lines).
+fn extract_task_id(plain: &str) -> Option<String> {
+    // Skip summary/separator lines
+    if is_summary_line(plain) {
+        return None;
+    }
+    // Find the first alphanumeric/hyphen/underscore sequence (the task ID).
+    // Task IDs consist of [a-zA-Z0-9_-].
+    let trimmed = plain.trim_start();
+    // Strip leading tree connectors (box-drawing + arrows + spaces)
+    let after_connectors: &str = trimmed
+        .trim_start_matches(|c: char| is_box_drawing(c) || c == ' ');
+    if after_connectors.is_empty() {
+        return None;
+    }
+    // The task ID is the first "word" — characters that are alphanumeric, hyphen, or underscore.
+    let id: String = after_connectors
+        .chars()
+        .take_while(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
+        .collect();
+    if id.is_empty() {
+        return None;
+    }
+    // Verify it looks like a task line: after the ID there should be whitespace then '('
+    let rest = &after_connectors[id.len()..];
+    if rest.trim_start().starts_with('(') {
+        Some(id)
+    } else {
+        None
+    }
 }
 
 /// Replace box-drawing and arrow characters with spaces so fuzzy search

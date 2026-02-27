@@ -139,6 +139,7 @@ HOUSEKEEPING
   wg gc                         # Garbage collect failed/abandoned tasks
   wg gc --dry-run               # Preview what would be removed
   wg gc --include-done          # Also remove done tasks (default: only failed+abandoned)
+  wg gc --older 7d              # Only gc tasks older than 7 days
 
 GROWING THE GRAPH
 ─────────────────────────────────────────
@@ -380,7 +381,8 @@ fn json_output() -> serde_json::Value {
             "archive_list": "wg archive --list",
             "gc": "wg gc",
             "gc_dry_run": "wg gc --dry-run",
-            "gc_include_done": "wg gc --include-done"
+            "gc_include_done": "wg gc --include-done",
+            "gc_older": "wg gc --older 7d"
         },
         "functions": {
             "description": "Reusable workflow patterns extracted from completed tasks.",

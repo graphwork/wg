@@ -148,6 +148,9 @@ fn handle_normal_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
         // Manual refresh
         KeyCode::Char('r') => app.force_refresh(),
 
+        // Toggle token display: view ↔ total
+        KeyCode::Char('t') => app.show_total_tokens = !app.show_total_tokens,
+
         // Cycle layout mode (tree ↔ diamond)
         KeyCode::Char('L') => app.cycle_layout(),
 

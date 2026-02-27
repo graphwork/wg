@@ -26,6 +26,7 @@ pub fn run(
     cycle_delay: Option<&str>,
     visibility: Option<&str>,
     context_scope: Option<&str>,
+    exec_mode: Option<&str>,
 ) -> Result<()> {
     let path = graph_path(dir);
 
@@ -228,6 +229,23 @@ pub fn run(
             println!("Updated context_scope: {}", scope);
             changed = true;
         }
+
+        // Update exec mode
+        if let Some(mode) = exec_mode {
+            match mode {
+                "full" | "bare" => {
+                    let old = task.exec_mode.clone();
+                    task.exec_mode = Some(mode.to_string());
+                    field_changes.push(serde_json::json!({"field": "exec_mode", "old": old, "new": mode}));
+                    println!("Updated exec_mode: {}", mode);
+                    changed = true;
+                }
+                _ => anyhow::bail!(
+                    "Invalid exec_mode '{}'. Valid values: full, bare",
+                    mode
+                ),
+            }
+        }
     } // task borrow released here
 
     // Maintain bidirectional consistency: update `blocks` on referenced tasks
@@ -305,6 +323,7 @@ mod tests {
             None,
             "internal",
             None,
+            None,
         )?;
 
         Ok(())
@@ -337,6 +356,7 @@ mod tests {
             None,
             "internal",
             None,
+            None,
         )?;
 
         crate::commands::add::run(
@@ -360,6 +380,7 @@ mod tests {
             None,
             "internal",
             None,
+            None,
         )?;
 
         Ok(())
@@ -382,6 +403,7 @@ mod tests {
             None,
             &[],
             &[],
+            None,
             None,
             None,
             None,
@@ -418,6 +440,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         assert!(result.is_ok());
 
@@ -444,6 +467,7 @@ mod tests {
             None,
             &[],
             &[],
+            None,
             None,
             None,
             None,
@@ -481,6 +505,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         assert!(result.is_ok());
 
@@ -507,6 +532,7 @@ mod tests {
             None,
             &[],
             &[],
+            None,
             None,
             None,
             None,
@@ -544,6 +570,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         assert!(result.is_ok());
 
@@ -575,6 +602,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         assert!(result.is_ok());
 
@@ -601,6 +629,7 @@ mod tests {
             None,
             &["skill2".to_string()],
             &[],
+            None,
             None,
             None,
             None,
@@ -638,6 +667,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         assert!(result.is_ok());
 
@@ -664,6 +694,7 @@ mod tests {
             None,
             &[],
             &[],
+            None,
             None,
             None,
             None,
@@ -696,6 +727,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         assert!(result.is_ok());
     }
@@ -717,6 +749,7 @@ mod tests {
             None,
             &[],
             &[],
+            None,
             None,
             None,
             None,
@@ -750,6 +783,7 @@ mod tests {
             None,
             &[],
             &[],
+            None,
             None,
             None,
             None,
@@ -792,6 +826,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .unwrap();
 
@@ -808,6 +843,7 @@ mod tests {
             None,
             &[],
             &[],
+            None,
             None,
             None,
             None,
