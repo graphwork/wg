@@ -1,6 +1,6 @@
 ---
 source: tests/prompt_snapshots.rs
-assertion_line: 203
+assertion_line: 205
 expression: output
 ---
 # Evaluator Instructions
@@ -31,6 +31,8 @@ and the task log. Then produce a JSON evaluation.
 
 Assess the agent's work on these dimensions (each scored 0.0 to 1.0):
 
+### Individual Quality (70% of overall score)
+
 1. **correctness** — Does the output match the desired outcome? Are verification
 criteria satisfied? Is the implementation functionally correct?
 2. **completeness** — Were all aspects of the task addressed? Are there missing
@@ -41,11 +43,30 @@ Minimal unnecessary steps, no wasted effort, appropriate scope.
 standards, and the constraints set by the motivation (trade-offs respected,
 non-negotiable constraints honoured)?
 
+### Organizational Impact (30% of overall score)
+
+5. **downstream_usability** — Is the output structured, documented, and formatted
+so that downstream tasks can consume it without rework? Are interfaces clean,
+artifacts well-named, and context properly handed off?
+6. **coordination_overhead** — Did the agent work autonomously without creating
+unnecessary work for others? Low overhead = high score. Deduct for: leaving
+ambiguous state, requiring manual cleanup, creating confusion in the task log.
+7. **blocking_impact** — Was the work completed in a timely manner relative to
+the task scope? Did it avoid unnecessarily blocking downstream work? Consider
+the task complexity and whether the time taken was proportionate.
+
 Compute an overall **score** as a weighted average:
-- correctness: 40%
-- completeness: 30%
-- efficiency: 15%
-- style_adherence: 15%
+- correctness: 30%
+- completeness: 20%
+- efficiency: 10%
+- style_adherence: 10%
+- downstream_usability: 15%
+- coordination_overhead: 10%
+- blocking_impact: 5%
+
+Note: No downstream tasks are listed. Score organizational dimensions based
+on general output quality: is the work self-contained, well-documented, and
+ready for potential future consumers? Default to 0.7 if insufficient signal.
 
 ## Required Output
 
@@ -58,7 +79,10 @@ Respond with **only** a JSON object (no markdown fences, no commentary):
     "correctness": <0.0-1.0>,
     "completeness": <0.0-1.0>,
     "efficiency": <0.0-1.0>,
-    "style_adherence": <0.0-1.0>
+    "style_adherence": <0.0-1.0>,
+    "downstream_usability": <0.0-1.0>,
+    "coordination_overhead": <0.0-1.0>,
+    "blocking_impact": <0.0-1.0>
   },
   "notes": "<brief explanation of strengths, weaknesses, and suggestions>"
 }

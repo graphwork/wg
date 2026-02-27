@@ -6,6 +6,12 @@ use std::fs;
 use std::path::Path;
 
 use workgraph::agency;
+use workgraph::agency::run_mode::{self, AssignmentPath};
+use workgraph::agency::{
+    AssignerModeContext, AssignmentMode, TaskAssignmentRecord,
+    render_assigner_mode_context, count_assignment_records,
+    find_cached_agent, save_assignment_record,
+};
 use workgraph::config::Config;
 use workgraph::graph::{LogEntry, Node, Status, Task};
 use workgraph::parser::{load_graph, save_graph};
@@ -128,6 +134,10 @@ fn build_auto_assign_tasks(graph: &mut workgraph::graph::WorkGraph, config: &Con
             .collect()
     };
 
+    // Compute total assignments for run mode routing
+    let agency_dir = dir.join("agency");
+    let total_assignments = count_assignment_records(&agency_dir.join("assignments")) as u32;
+
     for (task_id, task_title, task_desc, task_skills, task_agent, task_assigned, task_tags, task_after, task_context_scope) in
         ready_task_data
     {
@@ -153,6 +163,64 @@ fn build_auto_assign_tasks(graph: &mut workgraph::graph::WorkGraph, config: &Con
             continue;
         }
 
+        // Determine assignment path via run mode continuum
+        let rng_value: f64 = {
+            // Simple deterministic pseudo-random from task_id hash to avoid
+            // requiring rand crate. Provides adequate entropy for routing.
+            let hash = task_id.bytes().fold(0u64, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u64));
+            (hash % 10000) as f64 / 10000.0
+        };
+        let assignment_path = run_mode::determine_assignment_path(
+            &config.agency,
+            total_assignments,
+            rng_value,
+        );
+
+        // Build mode-specific context for the assigner
+        let experiment = match assignment_path {
+            AssignmentPath::Learning | AssignmentPath::ForcedExploration => {
+                let learning_count = count_assignment_records(&agency_dir.join("assignments")) as u32;
+                Some(run_mode::design_experiment(&agency_dir, &config.agency, learning_count))
+            }
+            AssignmentPath::Performance => None,
+        };
+
+        let cached_agents: Vec<(String, f64)> = if assignment_path == AssignmentPath::Performance {
+            // Gather top cached agents for the performance mode context
+            let agents_dir = agency_dir.join("cache/agents");
+            let mut agents_with_scores: Vec<(String, f64)> = agency::load_all_agents_or_warn(&agents_dir)
+                .into_iter()
+                .filter_map(|a| {
+                    let score = a.performance.avg_score?;
+                    if a.staleness_flags.is_empty() {
+                        Some((format!("{} ({})", a.name, agency::short_hash(&a.id)), score))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            agents_with_scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+            agents_with_scores.truncate(5); // Top 5
+            agents_with_scores
+        } else {
+            vec![]
+        };
+
+        let effective_rate = config.agency.run_mode.max(config.agency.min_exploration_rate);
+        let mode_context = render_assigner_mode_context(&AssignerModeContext {
+            run_mode: config.agency.run_mode,
+            effective_exploration_rate: effective_rate,
+            assignment_path,
+            experiment: experiment.as_ref(),
+            cached_agents: &cached_agents,
+            total_assignments,
+        });
+
+        eprintln!(
+            "[coordinator] Assignment path for '{}': {:?} (run_mode={:.2}, total_assignments={})",
+            task_id, assignment_path, config.agency.run_mode, total_assignments,
+        );
+
         // Build description for the assigner with the original task's context
         let mut desc = format!(
             "Assign an agent to task '{}'.\n\n## Original Task\n**Title:** {}\n",
@@ -170,9 +238,13 @@ fn build_auto_assign_tasks(graph: &mut workgraph::graph::WorkGraph, config: &Con
         if let Some(ref scope) = task_context_scope {
             desc.push_str(&format!("**Context scope (pre-set):** {}\n", scope));
         }
+
+        // Include run mode context so the assigner knows which path to follow
+        desc.push_str(&format!("\n{}\n", mode_context));
+
         desc.push_str(&format!(
             "\n## Instructions\n\n\
-             Pick the best agent for this task and assign them.\n\n\
+             Use the assignment mode context above to guide your decision.\n\n\
              ### Step 1: Gather Information\n\n\
              Run these commands to understand the available agents and their track records:\n\
              ```\n\
@@ -184,7 +256,20 @@ fn build_auto_assign_tasks(graph: &mut workgraph::graph::WorkGraph, config: &Con
              ```\n\
              wg agent performance <agent-hash> --json\n\
              ```\n\n\
-             ### Step 2: Match Agent to Task\n\n\
+             ### Step 2: Follow Assignment Path\n\n\
+             The mode context above specifies which assignment path to follow:\n\n\
+             - **Performance (cache-first)**: Pick the highest-scoring cached agent \
+             whose skills match the task. Do NOT vary composition dimensions — \
+             deterministic selection only. If no cached agents meet the threshold, \
+             fall back to best-guess role+motivation matching.\n\n\
+             - **Learning (structured experiment)**: The experiment specification above \
+             tells you which composition dimension to vary. Compose a new agent by \
+             applying the experiment (e.g., swap a role component) using UCB1-selected \
+             primitives. Use `wg agent create` if a matching agent doesn't exist yet.\n\n\
+             - **Forced Exploration**: Try novel or unconventional agent compositions. \
+             Combine roles and motivations that haven't been paired before. Maximise \
+             diversity of signal.\n\n\
+             ### Step 3: Match Agent to Task\n\n\
              Compare each agent's capabilities to the task requirements:\n\n\
              1. **Role fit**: The agent's role skills should overlap with the task's \
              required skills. A Programmer (code-writing, testing, debugging) fits \
@@ -198,7 +283,7 @@ fn build_auto_assign_tasks(graph: &mut workgraph::graph::WorkGraph, config: &Con
              3. **Capabilities**: Check the agent's `capabilities` list for specific \
              technology or domain tags that match the task (e.g., \"rust\", \"python\", \
              \"kubernetes\").\n\n\
-             ### Step 3: Use Performance Data\n\n\
+             ### Step 4: Use Performance Data\n\n\
              Each agent has a `performance` record with `task_count`, `avg_score` \
              (0.0–1.0), and individual evaluation entries. Each evaluation has \
              dimension scores: `correctness` (40% weight), `completeness` (30%), \
@@ -211,7 +296,7 @@ fn build_auto_assign_tasks(graph: &mut workgraph::graph::WorkGraph, config: &Con
              - **Consider dimension strengths**: If the task demands correctness above \
              all else, prefer agents who score highest on `correctness` even if their \
              overall average is slightly lower.\n\n\
-             ### Step 4: Handle Cold Start\n\n\
+             ### Step 5: Handle Cold Start\n\n\
              When agents have 0 evaluations (new agency, or new agents), you cannot \
              rely on performance data. In this case:\n\n\
              - **Match on role and motivation** — this is the primary signal. Pick the \
@@ -222,18 +307,6 @@ fn build_auto_assign_tasks(graph: &mut workgraph::graph::WorkGraph, config: &Con
              diverse signal.\n\
              - **Default to Careful motivation** for high-stakes tasks and Fast \
              motivation for routine work when there's no data to differentiate.\n\n\
-             ### Step 5: Balance Exploration vs Exploitation\n\n\
-             - **Exploitation (default)**: Assign the highest-scoring agent whose \
-             skills match. This maximizes expected quality.\n\
-             - **Exploration**: Occasionally assign a less-proven agent to gather new \
-             performance data. Do this when:\n\
-               - A newer agent (higher generation, or fewer evaluations) has relevant \
-             skills but limited history.\n\
-               - The top performer's score advantage is small (< 0.1 difference).\n\
-               - The task is lower-risk (not blocking many other tasks, not tagged as \
-             critical).\n\
-             - **Never explore with agents whose avg_score is below 0.4** — that \
-             signals consistent poor performance.\n\n\
              ### Step 6: Assign\n\n\
              Once you've chosen an agent, run:\n\
              ```\n\
@@ -319,6 +392,42 @@ fn build_auto_assign_tasks(graph: &mut workgraph::graph::WorkGraph, config: &Con
             && !t.after.contains(&assign_task_id)
         {
             t.after.push(assign_task_id.clone());
+        }
+
+        // Persist preliminary TaskAssignmentRecord with the chosen mode.
+        // agent_id will be "pending" until `wg assign` fills it in.
+        let assignment_mode = match assignment_path {
+            AssignmentPath::Performance => {
+                // Check if there's a cached agent above threshold
+                match find_cached_agent(&agency_dir, config.agency.performance_threshold) {
+                    Some((_, score)) => AssignmentMode::CacheHit { cache_score: score },
+                    None => AssignmentMode::CacheMiss,
+                }
+            }
+            AssignmentPath::Learning => {
+                // experiment is always Some for Learning path
+                AssignmentMode::Learning(experiment.clone().expect("experiment required for Learning path"))
+            }
+            AssignmentPath::ForcedExploration => {
+                AssignmentMode::ForcedExploration(experiment.clone().expect("experiment required for ForcedExploration path"))
+            }
+        };
+
+        let record = TaskAssignmentRecord {
+            task_id: task_id.clone(),
+            agent_id: "pending".to_string(),
+            composition_id: "pending".to_string(),
+            timestamp: Utc::now().to_rfc3339(),
+            run_mode_value: config.agency.run_mode,
+            mode: assignment_mode,
+        };
+
+        let assignments_dir = agency_dir.join("assignments");
+        if let Err(e) = save_assignment_record(&record, &assignments_dir) {
+            eprintln!(
+                "[coordinator] Warning: failed to save assignment record for '{}': {}",
+                task_id, e,
+            );
         }
 
         eprintln!(
@@ -489,143 +598,10 @@ fn build_auto_evaluate_tasks(
     modified
 }
 
-/// Auto-org-evaluate: create deferred org-evaluation tasks for terminal tasks.
-///
-/// An org-evaluation task `org-evaluate-{task-id}` is created once ALL of a
-/// completed task's direct downstream dependents (`task.before`) have also
-/// reached a terminal state (Done, Failed, or Abandoned).  If the task has no
-/// downstream dependents the org-eval task is created immediately after the
-/// task itself completes.
-///
-/// The org-eval task runs `wg evaluate org <task-id>`, which computes the
-/// three organisational reward dimensions (downstream usability, coordination
-/// overhead, blocking behaviour) and persists an `OrgEvaluation` record.
-///
-/// Tasks tagged "evaluation", "assignment", "evolution", or "org-evaluation"
-/// are excluded to prevent infinite regress.
-///
-/// Returns `true` if the graph was modified.
-fn build_auto_org_evaluate_tasks(
-    dir: &Path,
-    graph: &mut workgraph::graph::WorkGraph,
-    config: &Config,
-) -> bool {
-    let mut modified = false;
-
-    // Load agents so we can skip human-assigned tasks (no meaningful org reward
-    // for a human operator whose throughput isn't controlled by a role prompt).
-    let agents_dir = dir.join("agency").join("cache/agents");
-    let all_agents = agency::load_all_agents_or_warn(&agents_dir);
-    let human_agent_ids: std::collections::HashSet<&str> = all_agents
-        .iter()
-        .filter(|a| a.is_human())
-        .map(|a| a.id.as_str())
-        .collect();
-
-    // Collect data for tasks that may need an org-eval task.
-    let candidate_data: Vec<_> = graph
-        .tasks()
-        .filter(|t| {
-            // Only completed tasks
-            if !matches!(t.status, Status::Done | Status::Failed) {
-                return false;
-            }
-            // Skip tasks tagged evaluation/assignment/evolution/org-evaluation
-            let excluded_tags = ["evaluation", "assignment", "evolution", "org-evaluation"];
-            if t.tags.iter().any(|tag| excluded_tags.contains(&tag.as_str())) {
-                return false;
-            }
-            // Skip tasks assigned to human agents
-            if let Some(ref agent_id) = t.agent
-                && human_agent_ids.contains(agent_id.as_str())
-            {
-                return false;
-            }
-            // Skip if org-eval task already exists
-            let org_eval_id = format!("org-evaluate-{}", t.id);
-            if graph.get_task(&org_eval_id).is_some() {
-                return false;
-            }
-            true
-        })
-        .map(|t| (t.id.clone(), t.title.clone(), t.before.clone()))
-        .collect();
-
-    for (task_id, task_title, task_before) in &candidate_data {
-        // Check that all downstream dependents are terminal
-        let all_downstream_terminal = task_before.iter().all(|dep_id| {
-            graph
-                .get_task(dep_id)
-                .map(|dep| dep.status.is_terminal())
-                .unwrap_or(true) // missing dep treated as terminal
-        });
-
-        if !all_downstream_terminal {
-            continue;
-        }
-
-        let org_eval_task_id = format!("org-evaluate-{}", task_id);
-
-        // Double-check idempotency
-        if graph.get_task(&org_eval_task_id).is_some() {
-            continue;
-        }
-
-        let desc = format!(
-            "Compute organisational evaluation for completed task '{}'.\n\n\
-             Run `wg evaluate org {}` to measure downstream usability, \
-             coordination overhead, and blocking behaviour.",
-            task_id, task_id,
-        );
-
-        let org_eval_task = Task {
-            id: org_eval_task_id.clone(),
-            title: format!("Org-evaluate: {}", task_title),
-            description: Some(desc),
-            status: Status::Open,
-            assigned: None,
-            estimate: None,
-            before: vec![],
-            after: vec![],
-            requires: vec![],
-            tags: vec!["org-evaluation".to_string(), "agency".to_string()],
-            skills: vec![],
-            inputs: vec![],
-            deliverables: vec![],
-            artifacts: vec![],
-            exec: Some(format!("wg evaluate org {}", task_id)),
-            not_before: None,
-            created_at: Some(Utc::now().to_rfc3339()),
-            started_at: None,
-            completed_at: None,
-            log: vec![],
-            retry_count: 0,
-            max_retries: None,
-            failure_reason: None,
-            model: config.agency.evaluator_model.clone(),
-            verify: None,
-            agent: config.agency.evaluator_agent.clone(),
-
-            loop_iteration: 0,
-            ready_after: None,
-            paused: false,
-            visibility: "internal".to_string(),
-            context_scope: None,
-            cycle_config: None,
-            token_usage: None,
-        };
-
-        graph.add_node(Node::Task(org_eval_task));
-
-        eprintln!(
-            "[coordinator] Created org-eval task '{}' for completed '{}'",
-            org_eval_task_id, task_id,
-        );
-        modified = true;
-    }
-
-    modified
-}
+// NOTE: org-evaluate system was removed. Organizational evaluation dimensions
+// (downstream usability, coordination overhead, blocking behaviour) should be
+// folded into the regular evaluate system as additional scoring dimensions.
+// See: Vaughn Tan's Agency spec on two-level reward signals.
 
 /// Spawn an evaluation task directly without the full agent spawn machinery.
 ///
@@ -663,7 +639,6 @@ fn spawn_eval_inline(
     } else {
         let source_task_id = eval_task_id
             .strip_prefix("evaluate-")
-            .or_else(|| eval_task_id.strip_prefix("org-evaluate-"))
             .unwrap_or(eval_task_id);
         format!("wg evaluate run '{}'", source_task_id.replace('\'', "'\\''"))
     };
@@ -786,10 +761,10 @@ fn spawn_agents_for_ready_tasks(
             continue;
         }
 
-        // Evaluation and org-evaluation tasks run inline: fork `wg evaluate`
+        // Evaluation tasks run inline: fork `wg evaluate`
         // directly instead of going through the full spawn machinery
         // (run.sh, executor config, etc.)
-        let is_eval_task = task.tags.iter().any(|t| t == "evaluation" || t == "org-evaluation")
+        let is_eval_task = task.tags.iter().any(|t| t == "evaluation")
             && task.exec.is_some();
         if is_eval_task {
             let eval_model = task.model.as_deref();
@@ -877,8 +852,6 @@ pub fn coordinator_tick(
     // Phase 4: Auto-evaluate tasks
     if config.agency.auto_evaluate {
         graph_modified |= build_auto_evaluate_tasks(dir, &mut graph, &config);
-        // Phase 4b: Deferred org-evaluate tasks (fire when all downstream complete)
-        graph_modified |= build_auto_org_evaluate_tasks(dir, &mut graph, &config);
     }
 
     // Save graph once if it was modified during auto-assign or auto-evaluate.

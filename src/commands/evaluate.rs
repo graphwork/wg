@@ -7,7 +7,8 @@ use workgraph::agency::{
     self, Evaluation, EvaluatorInput, OrgEvaluation, ObservationWindow,
     load_all_evaluations_or_warn, load_all_org_evaluations_or_warn,
     load_tradeoff, load_role,
-    record_evaluation, record_org_evaluation, render_evaluator_prompt,
+    record_evaluation, record_evaluation_with_inference,
+    record_org_evaluation, render_evaluator_prompt,
     render_identity_prompt, resolve_all_skills, eval_source,
 };
 use workgraph::config::Config;
@@ -214,6 +215,19 @@ pub fn run(
         Some(render_identity_prompt(&eval_role, &eval_tradeoff, &resolved_skills))
     });
 
+    // Step 3.7: Collect downstream task context for organizational impact scoring.
+    // `task.before` lists task IDs that depend on this task's output.
+    let downstream_tasks: Vec<(String, String, Option<String>)> = task
+        .before
+        .iter()
+        .filter_map(|dep_id| {
+            let dep = graph.get_task(dep_id)?;
+            let status_str = format!("{:?}", dep.status);
+            let desc = dep.description.clone();
+            Some((dep.title.clone(), status_str, desc))
+        })
+        .collect();
+
     // Step 4: Build evaluator prompt
     let evaluator_input = EvaluatorInput {
         task_title: &task.title,
@@ -229,6 +243,7 @@ pub fn run(
         completed_at: task.completed_at.as_deref(),
         artifact_diff: artifact_diff.as_deref(),
         evaluator_identity: evaluator_identity.as_deref(),
+        downstream_tasks: &downstream_tasks,
     };
 
     let prompt = render_evaluator_prompt(&evaluator_input);
@@ -330,10 +345,11 @@ pub fn run(
         source: "llm".to_string(),
     };
 
-    // Step 8: Save evaluation and update performance records
+    // Step 8: Save evaluation, update performance records, and trigger retrospective inference
     if role_id != "unknown" && motivation_id != "unknown" {
         let eval_path =
-            record_evaluation(&evaluation, &agency_dir).context("Failed to record evaluation")?;
+            record_evaluation_with_inference(&evaluation, &agency_dir, &config.agency)
+                .context("Failed to record evaluation")?;
 
         if json {
             let out = serde_json::json!({
@@ -354,17 +370,28 @@ pub fn run(
                 println!("Model:      {}", m);
             }
             println!("Score:      {:.2}", evaluation.score);
+            // Individual quality dimensions
             if let Some(c) = evaluation.dimensions.get("correctness") {
-                println!("  correctness:      {:.2}", c);
+                println!("  correctness:            {:.2}", c);
             }
             if let Some(c) = evaluation.dimensions.get("completeness") {
-                println!("  completeness:     {:.2}", c);
+                println!("  completeness:           {:.2}", c);
             }
             if let Some(e) = evaluation.dimensions.get("efficiency") {
-                println!("  efficiency:       {:.2}", e);
+                println!("  efficiency:             {:.2}", e);
             }
             if let Some(s) = evaluation.dimensions.get("style_adherence") {
-                println!("  style_adherence:  {:.2}", s);
+                println!("  style_adherence:        {:.2}", s);
+            }
+            // Organizational impact dimensions
+            if let Some(d) = evaluation.dimensions.get("downstream_usability") {
+                println!("  downstream_usability:   {:.2}", d);
+            }
+            if let Some(c) = evaluation.dimensions.get("coordination_overhead") {
+                println!("  coordination_overhead:  {:.2}", c);
+            }
+            if let Some(b) = evaluation.dimensions.get("blocking_impact") {
+                println!("  blocking_impact:        {:.2}", b);
             }
             println!("Notes:      {}", evaluation.notes);
             println!("Evaluator:  {}", evaluation.evaluator);
@@ -522,10 +549,12 @@ pub fn run_record(
         source: source.to_string(),
     };
 
-    // Save evaluation
+    // Save evaluation and trigger retrospective inference for learning assignments
+    let config = Config::load_or_default(dir);
     if !role_id.is_empty() && !motivation_id.is_empty() {
         let eval_path =
-            record_evaluation(&evaluation, &agency_dir).context("Failed to record evaluation")?;
+            record_evaluation_with_inference(&evaluation, &agency_dir, &config.agency)
+                .context("Failed to record evaluation")?;
 
         if json {
             let out = serde_json::json!({

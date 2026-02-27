@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use std::path::Path;
 use workgraph::agency;
+use workgraph::config::Config;
 use workgraph::parser::{load_graph, save_graph};
 
 use super::graph_path;
@@ -54,7 +55,7 @@ fn run_explicit_assign(dir: &Path, path: &Path, task_id: &str, agent_hash: &str)
     super::notify_graph_changed(dir);
 
     // Record operation
-    let config = workgraph::config::Config::load_or_default(dir);
+    let config = Config::load_or_default(dir);
     let _ = workgraph::provenance::record(
         dir,
         "assign",
@@ -63,6 +64,31 @@ fn run_explicit_assign(dir: &Path, path: &Path, task_id: &str, agent_hash: &str)
         serde_json::json!({ "agent_hash": agent.id, "role_id": agent.role_id }),
         config.log.rotation_threshold,
     );
+
+    // Update preliminary TaskAssignmentRecord (created by coordinator) with actual agent info.
+    // If no preliminary record exists, create one with CacheMiss mode.
+    let assignments_dir = agency_dir.join("assignments");
+    let record = match agency::load_assignment_record_by_task(&assignments_dir, task_id) {
+        Ok(mut existing) => {
+            existing.agent_id = agent.id.clone();
+            existing.composition_id = agent.id.clone();
+            existing
+        }
+        Err(_) => {
+            // No preliminary record — create a basic one
+            agency::TaskAssignmentRecord {
+                task_id: task_id.to_string(),
+                agent_id: agent.id.clone(),
+                composition_id: agent.id.clone(),
+                timestamp: chrono::Utc::now().to_rfc3339(),
+                run_mode_value: config.agency.run_mode,
+                mode: agency::AssignmentMode::CacheMiss,
+            }
+        }
+    };
+    if let Err(e) = agency::save_assignment_record(&record, &assignments_dir) {
+        eprintln!("Warning: failed to save assignment record for '{}': {}", task_id, e);
+    }
 
     // Resolve role/motivation names for display
     let roles_dir = agency_dir.join("cache/roles");

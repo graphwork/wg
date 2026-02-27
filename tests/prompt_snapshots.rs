@@ -175,6 +175,7 @@ fn snapshot_evaluator_prompt_full() {
         completed_at: Some("2025-01-15T11:00:00Z"),
         artifact_diff: Some("diff --git a/src/widget.rs\n+pub fn create_widget() {}"),
         evaluator_identity: None,
+        downstream_tasks: &[],
     };
 
     let output = render_evaluator_prompt(&input);
@@ -197,6 +198,7 @@ fn snapshot_evaluator_prompt_minimal() {
         completed_at: None,
         artifact_diff: None,
         evaluator_identity: None,
+        downstream_tasks: &[],
     };
 
     let output = render_evaluator_prompt(&input);
@@ -219,6 +221,7 @@ fn snapshot_evaluator_prompt_with_evaluator_identity() {
         completed_at: None,
         artifact_diff: None,
         evaluator_identity: Some("## Custom Evaluator\n\nYou are a specialized code quality evaluator."),
+        downstream_tasks: &[],
     };
 
     let output = render_evaluator_prompt(&input);

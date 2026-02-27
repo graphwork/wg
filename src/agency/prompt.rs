@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 
 use super::hash::short_hash;
 use super::run_mode::AssignmentPath;
+use super::store;
 use super::types::*;
 
 /// Expand `~` at the start of a path to the user's home directory.
@@ -116,6 +117,109 @@ fn parse_component_id(id: &str) -> ContentRef {
     }
 }
 
+/// Returns true if a component ID looks like a content-ref (inline:, file:///, http(s)://)
+/// rather than a hash-based primitives store ID.
+fn is_content_ref_id(id: &str) -> bool {
+    id.starts_with("inline:")
+        || id.starts_with("file:///")
+        || id.starts_with("https://")
+        || id.starts_with("http://")
+}
+
+/// Resolve all component IDs in a role, loading rich `RoleComponent` data from the
+/// primitives store when available. Falls back to `ContentRef` resolution for IDs
+/// that are content refs (inline:, file:///, http(s)://) or not found in the store.
+///
+/// `agency_dir` is the `.workgraph/agency/` directory containing `primitives/components/`.
+pub fn resolve_all_components(
+    role: &Role,
+    workgraph_root: &Path,
+    agency_dir: &Path,
+) -> Vec<ResolvedSkill> {
+    let components_dir = agency_dir.join("primitives/components");
+    role.component_ids
+        .iter()
+        .filter_map(|id| {
+            // First: if it's a content-ref prefix, use existing resolution
+            if is_content_ref_id(id) {
+                let content_ref = parse_component_id(id);
+                return match resolve_skill(&content_ref, workgraph_root) {
+                    Ok(resolved) => Some(resolved),
+                    Err(warning) => {
+                        eprintln!("Warning: {}", warning);
+                        None
+                    }
+                };
+            }
+
+            // Second: try loading from the primitives store as a RoleComponent
+            let component_path = components_dir.join(format!("{}.yaml", id));
+            if let Ok(comp) = store::load_component(&component_path) {
+                // Resolve the component's inner content ref to get actual content
+                let content = match resolve_skill(&comp.content, workgraph_root) {
+                    Ok(resolved) => resolved.content,
+                    Err(_) => comp.description.clone(),
+                };
+                let category_label = match comp.category {
+                    ComponentCategory::Translated => "Translated",
+                    ComponentCategory::Enhanced => "Enhanced",
+                    ComponentCategory::Novel => "Novel",
+                };
+                return Some(ResolvedSkill {
+                    name: comp.name,
+                    content: format!("[{}] {}\n{}", category_label, comp.description, content),
+                });
+            }
+
+            // Third: try prefix match in the store
+            if let Ok(comp) = store::find_component_by_prefix(&components_dir, id) {
+                let content = match resolve_skill(&comp.content, workgraph_root) {
+                    Ok(resolved) => resolved.content,
+                    Err(_) => comp.description.clone(),
+                };
+                let category_label = match comp.category {
+                    ComponentCategory::Translated => "Translated",
+                    ComponentCategory::Enhanced => "Enhanced",
+                    ComponentCategory::Novel => "Novel",
+                };
+                return Some(ResolvedSkill {
+                    name: comp.name,
+                    content: format!("[{}] {}\n{}", category_label, comp.description, content),
+                });
+            }
+
+            // Fourth: fall back to ContentRef-based resolution (name/inline)
+            let content_ref = parse_component_id(id);
+            match resolve_skill(&content_ref, workgraph_root) {
+                Ok(resolved) => Some(resolved),
+                Err(warning) => {
+                    eprintln!("Warning: {}", warning);
+                    None
+                }
+            }
+        })
+        .collect()
+}
+
+/// Resolve an outcome_id to a `DesiredOutcome` from the primitives store.
+///
+/// Returns `None` if the outcome cannot be found (graceful fallback).
+pub fn resolve_outcome(outcome_id: &str, agency_dir: &Path) -> Option<DesiredOutcome> {
+    if outcome_id.is_empty() {
+        return None;
+    }
+    let outcomes_dir = agency_dir.join("primitives/outcomes");
+
+    // Try exact match first
+    let outcome_path = outcomes_dir.join(format!("{}.yaml", outcome_id));
+    if let Ok(outcome) = store::load_outcome(&outcome_path) {
+        return Some(outcome);
+    }
+
+    // Try prefix match
+    store::find_outcome_by_prefix(&outcomes_dir, outcome_id).ok()
+}
+
 // ---------------------------------------------------------------------------
 // Prompt rendering
 // ---------------------------------------------------------------------------
@@ -123,10 +227,26 @@ fn parse_component_id(id: &str) -> ContentRef {
 /// Render the identity section to inject into agent prompts.
 ///
 /// The output is placed between system context and task description in the prompt.
+///
+/// When `outcome` is provided, its `success_criteria` are rendered under the
+/// Desired Outcome section. Otherwise, `role.outcome_id` is rendered as raw text.
 pub fn render_identity_prompt(
     role: &Role,
     tradeoff: &TradeoffConfig,
     resolved_skills: &[ResolvedSkill],
+) -> String {
+    render_identity_prompt_rich(role, tradeoff, resolved_skills, None)
+}
+
+/// Render the identity section with optional resolved outcome for richer output.
+///
+/// This is the full-featured version that renders `DesiredOutcome.success_criteria`
+/// when the outcome primitive is available.
+pub fn render_identity_prompt_rich(
+    role: &Role,
+    tradeoff: &TradeoffConfig,
+    resolved_skills: &[ResolvedSkill],
+    outcome: Option<&DesiredOutcome>,
 ) -> String {
     let mut out = String::new();
 
@@ -147,7 +267,19 @@ pub fn render_identity_prompt(
     }
 
     out.push_str("#### Desired Outcome\n");
-    let _ = writeln!(out, "{}\n", role.outcome_id);
+    if let Some(resolved_outcome) = outcome {
+        let _ = writeln!(out, "**{}**", resolved_outcome.name);
+        let _ = writeln!(out, "{}\n", resolved_outcome.description);
+        if !resolved_outcome.success_criteria.is_empty() {
+            out.push_str("**Success Criteria:**\n");
+            for criterion in &resolved_outcome.success_criteria {
+                let _ = writeln!(out, "- {}", criterion);
+            }
+            out.push('\n');
+        }
+    } else {
+        let _ = writeln!(out, "{}\n", role.outcome_id);
+    }
 
     let has_tradeoffs = !tradeoff.acceptable_tradeoffs.is_empty();
     let has_constraints = !tradeoff.unacceptable_tradeoffs.is_empty();
@@ -207,6 +339,9 @@ pub struct EvaluatorInput<'a> {
     /// When present, replaces the generic system instruction with the evaluator's
     /// own role components and tradeoff configuration.
     pub evaluator_identity: Option<&'a str>,
+    /// Downstream task context for organizational impact scoring.
+    /// Each entry: (task_title, status_str, description_snippet).
+    pub downstream_tasks: &'a [(String, String, Option<String>)],
 }
 
 /// Render the evaluator prompt that an LLM evaluator will receive.
@@ -331,10 +466,30 @@ pub fn render_evaluator_prompt(input: &EvaluatorInput) -> String {
         out.push('\n');
     }
 
+    // -- Downstream context (for organizational impact scoring) --
+    if !input.downstream_tasks.is_empty() {
+        out.push_str("## Downstream Tasks\n\n");
+        out.push_str(
+            "These tasks depend on this task's output. Consider whether the output\n\
+             is structured, documented, and usable enough for downstream consumers.\n\n",
+        );
+        for (title, status, desc) in input.downstream_tasks {
+            let _ = write!(out, "- **{}** ({})", title, status);
+            if let Some(d) = desc {
+                // Truncate long descriptions to save tokens
+                let snippet = if d.len() > 120 { &d[..120] } else { d.as_str() };
+                let _ = write!(out, " — {}", snippet);
+            }
+            out.push('\n');
+        }
+        out.push('\n');
+    }
+
     // -- Evaluation rubric & output format --
     out.push_str("## Evaluation Criteria\n\n");
     out.push_str(
         "Assess the agent's work on these dimensions (each scored 0.0 to 1.0):\n\n\
+         ### Individual Quality (70% of overall score)\n\n\
          1. **correctness** — Does the output match the desired outcome? Are verification\n\
             criteria satisfied? Is the implementation functionally correct?\n\
          2. **completeness** — Were all aspects of the task addressed? Are there missing\n\
@@ -343,16 +498,37 @@ pub fn render_evaluator_prompt(input: &EvaluatorInput) -> String {
             Minimal unnecessary steps, no wasted effort, appropriate scope.\n\
          4. **style_adherence** — Does the output follow project conventions, coding\n\
             standards, and the constraints set by the motivation (trade-offs respected,\n\
-            non-negotiable constraints honoured)?\n\n",
+            non-negotiable constraints honoured)?\n\n\
+         ### Organizational Impact (30% of overall score)\n\n\
+         5. **downstream_usability** — Is the output structured, documented, and formatted\n\
+            so that downstream tasks can consume it without rework? Are interfaces clean,\n\
+            artifacts well-named, and context properly handed off?\n\
+         6. **coordination_overhead** — Did the agent work autonomously without creating\n\
+            unnecessary work for others? Low overhead = high score. Deduct for: leaving\n\
+            ambiguous state, requiring manual cleanup, creating confusion in the task log.\n\
+         7. **blocking_impact** — Was the work completed in a timely manner relative to\n\
+            the task scope? Did it avoid unnecessarily blocking downstream work? Consider\n\
+            the task complexity and whether the time taken was proportionate.\n\n",
     );
 
     out.push_str(
         "Compute an overall **score** as a weighted average:\n\
-         - correctness: 40%\n\
-         - completeness: 30%\n\
-         - efficiency: 15%\n\
-         - style_adherence: 15%\n\n",
+         - correctness: 30%\n\
+         - completeness: 20%\n\
+         - efficiency: 10%\n\
+         - style_adherence: 10%\n\
+         - downstream_usability: 15%\n\
+         - coordination_overhead: 10%\n\
+         - blocking_impact: 5%\n\n",
     );
+
+    if input.downstream_tasks.is_empty() {
+        out.push_str(
+            "Note: No downstream tasks are listed. Score organizational dimensions based\n\
+             on general output quality: is the work self-contained, well-documented, and\n\
+             ready for potential future consumers? Default to 0.7 if insufficient signal.\n\n",
+        );
+    }
 
     out.push_str("## Required Output\n\n");
     out.push_str(
@@ -364,7 +540,10 @@ pub fn render_evaluator_prompt(input: &EvaluatorInput) -> String {
              \"correctness\": <0.0-1.0>,\n    \
              \"completeness\": <0.0-1.0>,\n    \
              \"efficiency\": <0.0-1.0>,\n    \
-             \"style_adherence\": <0.0-1.0>\n  \
+             \"style_adherence\": <0.0-1.0>,\n    \
+             \"downstream_usability\": <0.0-1.0>,\n    \
+             \"coordination_overhead\": <0.0-1.0>,\n    \
+             \"blocking_impact\": <0.0-1.0>\n  \
            },\n  \
            \"notes\": \"<brief explanation of strengths, weaknesses, and suggestions>\"\n\
          }\n\
@@ -819,6 +998,7 @@ mod tests {
             completed_at: Some("2025-05-01T11:00:00Z"),
             artifact_diff: None,
             evaluator_identity: None,
+            downstream_tasks: &[],
         };
 
         let output = render_evaluator_prompt(&input);
@@ -864,23 +1044,36 @@ mod tests {
         assert!(output.contains("- Started: 2025-05-01T10:00:00Z"));
         assert!(output.contains("- Completed: 2025-05-01T11:00:00Z"));
 
-        // Evaluation criteria
+        // Evaluation criteria — individual quality
         assert!(output.contains("## Evaluation Criteria"));
+        assert!(output.contains("### Individual Quality"));
         assert!(output.contains("**correctness**"));
         assert!(output.contains("**completeness**"));
         assert!(output.contains("**efficiency**"));
         assert!(output.contains("**style_adherence**"));
 
+        // Evaluation criteria — organizational impact
+        assert!(output.contains("### Organizational Impact"));
+        assert!(output.contains("**downstream_usability**"));
+        assert!(output.contains("**coordination_overhead**"));
+        assert!(output.contains("**blocking_impact**"));
+
         // Weights
-        assert!(output.contains("correctness: 40%"));
-        assert!(output.contains("completeness: 30%"));
-        assert!(output.contains("efficiency: 15%"));
+        assert!(output.contains("correctness: 30%"));
+        assert!(output.contains("completeness: 20%"));
+        assert!(output.contains("efficiency: 10%"));
+        assert!(output.contains("downstream_usability: 15%"));
+        assert!(output.contains("coordination_overhead: 10%"));
+        assert!(output.contains("blocking_impact: 5%"));
 
         // Output format
         assert!(output.contains("## Required Output"));
         assert!(output.contains("\"score\""));
         assert!(output.contains("\"dimensions\""));
         assert!(output.contains("\"notes\""));
+        assert!(output.contains("\"downstream_usability\""));
+        assert!(output.contains("\"coordination_overhead\""));
+        assert!(output.contains("\"blocking_impact\""));
     }
 
     #[test]
@@ -899,6 +1092,7 @@ mod tests {
             completed_at: None,
             artifact_diff: None,
             evaluator_identity: None,
+            downstream_tasks: &[],
         };
 
         let output = render_evaluator_prompt(&input);
@@ -937,6 +1131,7 @@ mod tests {
             completed_at: Some("2025-01-01T01:00:00Z"),
             artifact_diff: None,
             evaluator_identity: None,
+            downstream_tasks: &[],
         };
 
         let output = render_evaluator_prompt(&input);
@@ -957,5 +1152,207 @@ mod tests {
         assert!(log_pos < timing_pos);
         assert!(timing_pos < criteria_pos);
         assert!(criteria_pos < required_pos);
+    }
+
+    // -- Rich component resolution tests ------------------------------------
+
+    use super::super::starters::{build_component, build_outcome};
+    use super::super::store::{save_component, save_outcome};
+
+    fn setup_agency_dir(dir: &TempDir) -> PathBuf {
+        let agency_dir = dir.path().join("agency");
+        fs::create_dir_all(agency_dir.join("primitives/components")).unwrap();
+        fs::create_dir_all(agency_dir.join("primitives/outcomes")).unwrap();
+        agency_dir
+    }
+
+    #[test]
+    fn resolve_all_components_loads_from_store() {
+        let dir = TempDir::new().unwrap();
+        let agency_dir = setup_agency_dir(&dir);
+
+        // Create and save a component to the primitives store
+        let comp = build_component(
+            "Rust Expert",
+            "Deep knowledge of Rust idioms and patterns.",
+            ComponentCategory::Translated,
+            ContentRef::Name("rust-expertise".into()),
+        );
+        save_component(&comp, &agency_dir.join("primitives/components")).unwrap();
+
+        // Build a role that references this component by its hash ID
+        let role = build_role(
+            "Coder",
+            "Writes code.",
+            vec![comp.id.clone()],
+            "Code works.",
+        );
+
+        let resolved = resolve_all_components(&role, dir.path(), &agency_dir);
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].name, "Rust Expert");
+        assert!(resolved[0].content.contains("[Translated]"));
+        assert!(resolved[0].content.contains("Deep knowledge of Rust idioms and patterns."));
+    }
+
+    #[test]
+    fn resolve_all_components_falls_back_to_content_ref() {
+        let dir = TempDir::new().unwrap();
+        let agency_dir = setup_agency_dir(&dir);
+
+        // Use inline: and plain name IDs — no store entries needed
+        let role = build_role(
+            "Worker",
+            "Does work.",
+            vec![
+                "inline:write clean code".to_string(),
+                "plain-tag".to_string(),
+            ],
+            "Done.",
+        );
+
+        let resolved = resolve_all_components(&role, dir.path(), &agency_dir);
+        assert_eq!(resolved.len(), 2);
+        // inline: gets resolved to its content
+        assert_eq!(resolved[0].name, "inline");
+        assert_eq!(resolved[0].content, "write clean code");
+        // plain name falls back to name-as-content
+        assert_eq!(resolved[1].name, "plain-tag");
+        assert_eq!(resolved[1].content, "plain-tag");
+    }
+
+    #[test]
+    fn resolve_all_components_mixed_store_and_fallback() {
+        let dir = TempDir::new().unwrap();
+        let agency_dir = setup_agency_dir(&dir);
+
+        // One component in store
+        let comp = build_component(
+            "Testing",
+            "Write comprehensive tests.",
+            ComponentCategory::Enhanced,
+            ContentRef::Inline("Always test edge cases.".into()),
+        );
+        save_component(&comp, &agency_dir.join("primitives/components")).unwrap();
+
+        // Role with one store component and one inline content ref
+        let role = build_role(
+            "Test Worker",
+            "Tests things.",
+            vec![comp.id.clone(), "inline:extra skill".to_string()],
+            "All tested.",
+        );
+
+        let resolved = resolve_all_components(&role, dir.path(), &agency_dir);
+        assert_eq!(resolved.len(), 2);
+        // Store component
+        assert_eq!(resolved[0].name, "Testing");
+        assert!(resolved[0].content.contains("[Enhanced]"));
+        assert!(resolved[0].content.contains("Always test edge cases."));
+        // Inline fallback
+        assert_eq!(resolved[1].name, "inline");
+        assert_eq!(resolved[1].content, "extra skill");
+    }
+
+    #[test]
+    fn resolve_outcome_loads_from_store() {
+        let dir = TempDir::new().unwrap();
+        let agency_dir = setup_agency_dir(&dir);
+
+        let outcome = build_outcome(
+            "Production Ready",
+            "Code is ready for production deployment.",
+            vec![
+                "All tests pass".into(),
+                "No compiler warnings".into(),
+                "Documentation updated".into(),
+            ],
+        );
+        save_outcome(&outcome, &agency_dir.join("primitives/outcomes")).unwrap();
+
+        let resolved = resolve_outcome(&outcome.id, &agency_dir);
+        assert!(resolved.is_some());
+        let resolved = resolved.unwrap();
+        assert_eq!(resolved.name, "Production Ready");
+        assert_eq!(resolved.success_criteria.len(), 3);
+        assert_eq!(resolved.success_criteria[0], "All tests pass");
+    }
+
+    #[test]
+    fn resolve_outcome_returns_none_for_missing() {
+        let dir = TempDir::new().unwrap();
+        let agency_dir = setup_agency_dir(&dir);
+
+        let resolved = resolve_outcome("nonexistent-hash", &agency_dir);
+        assert!(resolved.is_none());
+    }
+
+    #[test]
+    fn resolve_outcome_returns_none_for_empty_id() {
+        let dir = TempDir::new().unwrap();
+        let agency_dir = setup_agency_dir(&dir);
+
+        let resolved = resolve_outcome("", &agency_dir);
+        assert!(resolved.is_none());
+    }
+
+    // -- render_identity_prompt_rich tests -----------------------------------
+
+    #[test]
+    fn test_render_identity_prompt_rich_with_outcome() {
+        let role = build_role("Coder", "Writes code.", vec![], "some-hash-id");
+        let tradeoff = build_tradeoff("Balanced", "Balance quality and speed.", vec![], vec![]);
+        let outcome = build_outcome(
+            "Working Software",
+            "Deliver working, tested software.",
+            vec![
+                "All tests pass".into(),
+                "No regressions".into(),
+            ],
+        );
+
+        let output = render_identity_prompt_rich(&role, &tradeoff, &[], Some(&outcome));
+
+        assert!(output.contains("#### Desired Outcome\n"));
+        assert!(output.contains("**Working Software**"));
+        assert!(output.contains("Deliver working, tested software."));
+        assert!(output.contains("**Success Criteria:**"));
+        assert!(output.contains("- All tests pass"));
+        assert!(output.contains("- No regressions"));
+        // Should NOT contain the raw hash ID
+        assert!(!output.contains("some-hash-id"));
+    }
+
+    #[test]
+    fn test_render_identity_prompt_rich_without_outcome_matches_original() {
+        let role = sample_role();
+        let tradeoff = sample_tradeoff();
+        let skills = vec![ResolvedSkill {
+            name: "Coding".into(),
+            content: "Write code.".into(),
+        }];
+
+        let original = render_identity_prompt(&role, &tradeoff, &skills);
+        let rich = render_identity_prompt_rich(&role, &tradeoff, &skills, None);
+
+        assert_eq!(original, rich);
+    }
+
+    #[test]
+    fn test_render_identity_prompt_rich_outcome_no_criteria() {
+        let role = build_role("Worker", "Does work.", vec![], "hash-id");
+        let tradeoff = build_tradeoff("Fast", "Be fast.", vec![], vec![]);
+        let outcome = build_outcome(
+            "Work Complete",
+            "All work is complete.",
+            vec![], // no success criteria
+        );
+
+        let output = render_identity_prompt_rich(&role, &tradeoff, &[], Some(&outcome));
+
+        assert!(output.contains("**Work Complete**"));
+        assert!(output.contains("All work is complete."));
+        // No criteria section when empty
+        assert!(!output.contains("**Success Criteria:**"));
     }
 }
