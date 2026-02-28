@@ -91,6 +91,8 @@ pub struct VizOptions {
     pub layout: LayoutMode,
     /// Filter by tags (AND semantics — task must have all specified tags)
     pub tags: Vec<String>,
+    /// Edge color style: "gray", "white", or "mixed"
+    pub edge_color: String,
 }
 
 impl Default for VizOptions {
@@ -106,6 +108,7 @@ impl Default for VizOptions {
             tui_mode: false,
             layout: LayoutMode::default(),
             tags: Vec::new(),
+            edge_color: "gray".to_string(),
         }
     }
 }
@@ -465,7 +468,7 @@ pub fn generate_viz_output_from_graph(
             &critical_path_set,
             &annotations,
         ),
-        OutputFormat::Ascii => ascii::generate_ascii(graph, &tasks_to_show, &task_ids, &annotations, &live_token_usage, &assign_token_usage, &eval_token_usage, options.layout, &context_ids),
+        OutputFormat::Ascii => ascii::generate_ascii(graph, &tasks_to_show, &task_ids, &annotations, &live_token_usage, &assign_token_usage, &eval_token_usage, options.layout, &context_ids, &options.edge_color),
         OutputFormat::Graph => graph::generate_graph(graph, &tasks_to_show, &task_ids, &annotations, &live_token_usage, &assign_token_usage, &eval_token_usage, &context_ids),
     };
 
@@ -813,6 +816,7 @@ mod tests {
             tui_mode: false,
             layout: LayoutMode::default(),
             tags: Vec::new(),
+            edge_color: "gray".to_string(),
         };
         // We test via run() output by checking generate_ascii directly
         // with the same filter logic

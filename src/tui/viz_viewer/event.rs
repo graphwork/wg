@@ -1,7 +1,9 @@
+use std::io;
 use std::time::Duration;
 
 use anyhow::Result;
-use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseEventKind};
+use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseEventKind, EnableMouseCapture, DisableMouseCapture};
+use crossterm::execute;
 use ratatui::DefaultTerminal;
 
 use super::render;
@@ -10,7 +12,29 @@ use super::state::VizApp;
 /// Input poll timeout — short for responsive scrolling.
 const INPUT_POLL: Duration = Duration::from_millis(50);
 
+/// Apply the current mouse capture state to the terminal.
+fn set_mouse_capture(enabled: bool) -> Result<()> {
+    if enabled {
+        execute!(io::stdout(), EnableMouseCapture)?;
+    } else {
+        execute!(io::stdout(), DisableMouseCapture)?;
+    }
+    Ok(())
+}
+
 pub fn run_event_loop(terminal: &mut DefaultTerminal, app: &mut VizApp) -> Result<()> {
+    // Set initial mouse capture state
+    set_mouse_capture(app.mouse_enabled)?;
+
+    let result = run_event_loop_inner(terminal, app);
+
+    // Always disable mouse capture on exit
+    let _ = set_mouse_capture(false);
+
+    result
+}
+
+fn run_event_loop_inner(terminal: &mut DefaultTerminal, app: &mut VizApp) -> Result<()> {
     loop {
         app.maybe_refresh();
         terminal.draw(|frame| render::draw(frame, app))?;
@@ -20,7 +44,7 @@ pub fn run_event_loop(terminal: &mut DefaultTerminal, app: &mut VizApp) -> Resul
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
                     handle_key(app, key.code, key.modifiers);
                 }
-                Event::Mouse(mouse) => {
+                Event::Mouse(mouse) if app.mouse_enabled => {
                     handle_mouse(app, mouse.kind);
                 }
                 Event::Resize(_, _) => {} // re-render on next iteration
@@ -150,6 +174,12 @@ fn handle_normal_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
 
         // Toggle token display: view ↔ total
         KeyCode::Char('t') => app.show_total_tokens = !app.show_total_tokens,
+
+        // Toggle mouse capture
+        KeyCode::Char('m') => {
+            app.toggle_mouse();
+            let _ = set_mouse_capture(app.mouse_enabled);
+        }
 
         // Cycle layout mode (tree ↔ diamond)
         KeyCode::Char('L') => app.cycle_layout(),

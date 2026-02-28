@@ -326,6 +326,15 @@ fn draw_status_bar(frame: &mut Frame, app: &VizApp, area: Rect) {
         ));
     }
 
+    // Mouse state indicator
+    if !app.mouse_enabled {
+        spans.push(Span::styled("| ", Style::default().fg(Color::DarkGray)));
+        spans.push(Span::styled(
+            "MOUSE OFF ",
+            Style::default().fg(Color::Yellow),
+        ));
+    }
+
     // Help hint
     spans.push(Span::styled("| ", Style::default().fg(Color::DarkGray)));
     spans.push(Span::styled("?:help ", Style::default().fg(Color::DarkGray)));
@@ -338,7 +347,7 @@ fn draw_status_bar(frame: &mut Frame, app: &VizApp, area: Rect) {
 fn draw_help_overlay(frame: &mut Frame) {
     let size = frame.area();
     let width = 56.min(size.width.saturating_sub(4));
-    let height = 27.min(size.height.saturating_sub(4));
+    let height = 28.min(size.height.saturating_sub(4));
     let x = (size.width.saturating_sub(width)) / 2;
     let y = (size.height.saturating_sub(height)) / 2;
     let area = Rect::new(x, y, width, height);
@@ -396,6 +405,7 @@ fn draw_help_overlay(frame: &mut Frame) {
         binding("Ctrl-u", "Clear search input"),
         blank(),
         heading("General"),
+        binding("m", "Toggle mouse capture"),
         binding("t", "Toggle view/total tokens"),
         binding("r", "Force refresh"),
         binding("?", "Toggle this help"),

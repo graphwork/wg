@@ -161,6 +161,8 @@ mod tests {
             None,
             "internal",
             None,
+            None,
+            false,
         )
         .unwrap();
 
@@ -185,6 +187,8 @@ mod tests {
             None,
             "internal",
             None,
+            None,
+            false,
         )
         .unwrap();
 
@@ -209,6 +213,8 @@ mod tests {
             None,
             "internal",
             None,
+            None,
+            false,
         )
         .unwrap();
     }

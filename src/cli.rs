@@ -121,6 +121,10 @@ pub enum Commands {
         /// Execution mode: full (default, full Claude Code session) or bare (lightweight, no file I/O tools)
         #[arg(long = "exec-mode")]
         exec_mode: Option<String>,
+
+        /// Create the task in paused state
+        #[arg(long)]
+        paused: bool,
     },
 
     /// Edit an existing task
@@ -361,6 +365,10 @@ pub enum Commands {
         #[arg(long, alias = "static", conflicts_with = "tui")]
         no_tui: bool,
 
+        /// Disable mouse capture in TUI mode (useful in tmux)
+        #[arg(long)]
+        no_mouse: bool,
+
         /// Layout strategy: 'diamond' (default) places fan-in nodes under their
         /// common ancestor with arcs flowing down; 'tree' uses classic DFS order
         #[arg(long, default_value = "diamond")]
@@ -369,6 +377,10 @@ pub enum Commands {
         /// Filter by tag (multiple --tag flags use AND semantics)
         #[arg(long = "tag")]
         tags: Vec<String>,
+
+        /// Edge color style: 'gray' (default), 'white', or 'mixed' (tree=white, arcs=gray)
+        #[arg(long)]
+        edge_color: Option<String>,
     },
 
     /// Output the full graph data (DOT format with archive support)
@@ -899,6 +911,10 @@ pub enum Commands {
         /// Max depth of task dependency chains from root (default: 8)
         #[arg(long)]
         max_task_depth: Option<u32>,
+
+        /// Viz edge color style: 'gray' (default), 'white', or 'mixed'
+        #[arg(long, name = "viz-edge-color")]
+        viz_edge_color: Option<String>,
     },
 
     /// Detect and clean up dead agents
@@ -971,7 +987,11 @@ pub enum Commands {
     },
 
     /// Launch interactive TUI dashboard (same as `wg viz --all --tui`)
-    Tui {},
+    Tui {
+        /// Disable mouse capture (useful in tmux)
+        #[arg(long)]
+        no_mouse: bool,
+    },
 
     /// Interactive configuration wizard for first-time setup
     Setup,

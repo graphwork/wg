@@ -64,6 +64,7 @@ pub fn run(
     visibility: &str,
     context_scope: Option<&str>,
     exec_mode: Option<&str>,
+    paused: bool,
 ) -> Result<()> {
     if title.trim().is_empty() {
         anyhow::bail!("Task title cannot be empty");
@@ -203,6 +204,16 @@ pub fn run(
         None
     };
 
+    let log = if paused {
+        vec![workgraph::graph::LogEntry {
+            timestamp: Utc::now().to_rfc3339(),
+            actor: None,
+            message: "Task paused".to_string(),
+        }]
+    } else {
+        vec![]
+    };
+
     let task = Task {
         id: task_id.clone(),
         title: title.to_string(),
@@ -223,7 +234,7 @@ pub fn run(
         created_at: Some(Utc::now().to_rfc3339()),
         started_at: None,
         completed_at: None,
-        log: vec![],
+        log,
         retry_count: 0,
         max_retries,
         failure_reason: None,
@@ -233,7 +244,7 @@ pub fn run(
         loop_iteration: 0,
         cycle_config,
         ready_after: None,
-        paused: false,
+        paused,
         visibility: visibility.to_string(),
         context_scope: context_scope.map(String::from),
         exec_mode: exec_mode.map(String::from),
@@ -899,6 +910,7 @@ mod tests {
             "internal",
             None,
             None,
+            false,
         );
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("cannot be empty"));
@@ -935,6 +947,7 @@ mod tests {
             "internal",
             None,
             None,
+            false,
         );
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("cannot be empty"));
@@ -971,6 +984,7 @@ mod tests {
             "internal",
             None,
             None,
+            false,
         );
         assert!(result.is_err());
         assert!(
@@ -1014,6 +1028,7 @@ mod tests {
             "internal",
             None,
             None,
+            false,
         );
         assert!(result.is_ok());
     }
@@ -1054,6 +1069,7 @@ mod tests {
             "internal",
             None,
             None,
+            false,
         );
         assert!(result.is_ok());
 

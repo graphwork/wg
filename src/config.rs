@@ -45,6 +45,10 @@ pub struct Config {
     /// Guardrails for autopoietic task creation
     #[serde(default)]
     pub guardrails: GuardrailsConfig,
+
+    /// Visualization settings
+    #[serde(default)]
+    pub viz: VizConfig,
 }
 
 /// Help display configuration
@@ -144,6 +148,26 @@ impl Default for GuardrailsConfig {
     }
 }
 
+
+/// Visualization configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VizConfig {
+    /// Edge color style: "gray" (default), "white", or "mixed" (tree=white, arcs=gray)
+    #[serde(default = "default_edge_color")]
+    pub edge_color: String,
+}
+
+fn default_edge_color() -> String {
+    "gray".to_string()
+}
+
+impl Default for VizConfig {
+    fn default() -> Self {
+        Self {
+            edge_color: default_edge_color(),
+        }
+    }
+}
 
 fn default_auto_create_threshold() -> u32 { 20 }
 fn default_run_mode() -> f64 { 0.2 }

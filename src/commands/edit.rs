@@ -347,6 +347,7 @@ mod tests {
             "internal",
             None,
             None,
+            false,
         )?;
 
         Ok(())
@@ -380,6 +381,7 @@ mod tests {
             "internal",
             None,
             None,
+            false,
         )?;
 
         crate::commands::add::run(
@@ -404,6 +406,7 @@ mod tests {
             "internal",
             None,
             None,
+            false,
         )?;
 
         Ok(())

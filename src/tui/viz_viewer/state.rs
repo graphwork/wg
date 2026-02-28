@@ -85,6 +85,10 @@ pub struct VizApp {
     // ── Help overlay ──
     pub show_help: bool,
 
+    // ── Mouse capture ──
+    /// Whether mouse capture is currently enabled.
+    pub mouse_enabled: bool,
+
     // ── Jump target (transient highlight after Enter) ──
     /// After pressing Enter on a search match, stores (original_line_index, when_set).
     /// Render code applies a transient yellow highlight that fades after ~2 seconds.
@@ -118,7 +122,15 @@ pub struct ViewportScroll {
 }
 
 impl VizApp {
-    pub fn new(workgraph_dir: PathBuf, viz_options: VizOptions) -> Self {
+    /// Create a new VizApp.
+    ///
+    /// `mouse_override`: `Some(false)` forces mouse off (--no-mouse),
+    /// `None` means auto-detect (disable in tmux split panes).
+    pub fn new(workgraph_dir: PathBuf, viz_options: VizOptions, mouse_override: Option<bool>) -> Self {
+        let mouse_enabled = match mouse_override {
+            Some(v) => v,
+            None => !detect_tmux_split(),
+        };
         let graph_mtime = std::fs::metadata(workgraph_dir.join("graph.jsonl"))
             .and_then(|m| m.modified())
             .ok();
@@ -148,6 +160,7 @@ impl VizApp {
             task_token_map: HashMap::new(),
             show_total_tokens: false,
             show_help: false,
+            mouse_enabled,
             jump_target: None,
             last_graph_mtime: graph_mtime,
             last_refresh: Instant::now(),
@@ -592,6 +605,11 @@ impl VizApp {
         usage
     }
 
+    /// Toggle mouse capture on/off.
+    pub fn toggle_mouse(&mut self) {
+        self.mouse_enabled = !self.mouse_enabled;
+    }
+
     /// Force an immediate refresh (manual `r` key).
     pub fn force_refresh(&mut self) {
         self.last_graph_mtime = std::fs::metadata(self.workgraph_dir.join("graph.jsonl"))
@@ -605,6 +623,48 @@ impl VizApp {
         self.last_refresh_display = chrono::Local::now().format("%H:%M:%S").to_string();
         self.last_refresh = Instant::now();
     }
+}
+
+/// Detect if we're running inside a tmux split pane.
+///
+/// Compares the terminal size (from crossterm) with the tmux window size.
+/// If the terminal is smaller than the tmux window, we're in a split pane
+/// and mouse capture should be disabled by default (tmux needs mouse events
+/// for pane selection/resize).
+fn detect_tmux_split() -> bool {
+    // Only applies if TMUX env var is set
+    if std::env::var("TMUX").is_err() {
+        return false;
+    }
+
+    // Get terminal size from crossterm
+    let (term_cols, term_rows) = match crossterm::terminal::size() {
+        Ok(size) => size,
+        Err(_) => return false,
+    };
+
+    // Get tmux window size via `tmux display-message -p '#{window_width} #{window_height}'`
+    let output = match std::process::Command::new("tmux")
+        .args(["display-message", "-p", "#{window_width} #{window_height}"])
+        .output()
+    {
+        Ok(o) if o.status.success() => o,
+        _ => return false,
+    };
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parts: Vec<&str> = stdout.trim().split_whitespace().collect();
+    if parts.len() != 2 {
+        return false;
+    }
+
+    let (tmux_cols, tmux_rows) = match (parts[0].parse::<u16>(), parts[1].parse::<u16>()) {
+        (Ok(c), Ok(r)) => (c, r),
+        _ => return false,
+    };
+
+    // If terminal is smaller than tmux window, we're in a split
+    term_cols < tmux_cols || term_rows < tmux_rows
 }
 
 // ── Tree-aware filtering ──

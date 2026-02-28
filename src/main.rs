@@ -3,6 +3,7 @@
 use anyhow::Result;
 use clap::{CommandFactory, Parser};
 use std::path::{Path, PathBuf};
+use workgraph::config::Config;
 
 mod cli;
 mod commands;
@@ -317,6 +318,7 @@ fn main() -> Result<()> {
             visibility,
             context_scope,
             exec_mode,
+            paused,
         } => {
             if let Some(ref peer_ref) = repo {
                 commands::add::run_remote(
@@ -355,6 +357,7 @@ fn main() -> Result<()> {
                     &visibility,
                     context_scope.as_deref(),
                     exec_mode.as_deref(),
+                    paused,
                 )
             }
         }
@@ -431,12 +434,19 @@ fn main() -> Result<()> {
             show_internal,
             tui: tui_mode,
             no_tui: _no_tui,
+            no_mouse,
             layout,
             tags,
+            edge_color,
         } => {
             let layout_mode: commands::viz::LayoutMode = layout.parse().unwrap_or_default();
             let _explicit_static_format = dot || mermaid || graph || output.is_some();
             let use_tui = tui_mode;
+
+            // Resolve edge color: CLI flag > config > default ("gray")
+            let resolved_edge_color = edge_color.unwrap_or_else(|| {
+                Config::load_or_default(&workgraph_dir).viz.edge_color
+            });
 
             if use_tui {
                 let options = commands::viz::VizOptions {
@@ -450,8 +460,10 @@ fn main() -> Result<()> {
                     tui_mode: true,
                     layout: layout_mode,
                     tags: tags.clone(),
+                    edge_color: resolved_edge_color,
                 };
-                tui::viz_viewer::run(workgraph_dir, options)
+                let mouse_override = if no_mouse { Some(false) } else { None };
+                tui::viz_viewer::run(workgraph_dir, options, mouse_override)
             } else {
                 let fmt = if dot {
                     commands::viz::OutputFormat::Dot
@@ -473,6 +485,7 @@ fn main() -> Result<()> {
                     tui_mode: false,
                     layout: layout_mode,
                     tags,
+                    edge_color: resolved_edge_color,
                 };
                 commands::viz::run(&workgraph_dir, &options)
             }
@@ -1177,6 +1190,7 @@ fn main() -> Result<()> {
             triage_max_log_bytes,
             max_child_tasks,
             max_task_depth,
+            viz_edge_color,
         } => {
             // Derive scope from --global/--local flags
             let scope = if global {
@@ -1240,7 +1254,8 @@ fn main() -> Result<()> {
                     && triage_timeout.is_none()
                     && triage_max_log_bytes.is_none()
                     && max_child_tasks.is_none()
-                    && max_task_depth.is_none())
+                    && max_task_depth.is_none()
+                    && viz_edge_color.is_none())
             {
                 commands::config_cmd::show(&workgraph_dir, scope, cli.json)
             } else {
@@ -1274,6 +1289,7 @@ fn main() -> Result<()> {
                     triage_max_log_bytes,
                     max_child_tasks,
                     max_task_depth,
+                    viz_edge_color.as_deref(),
                 )
             }
         }
@@ -1391,7 +1407,8 @@ fn main() -> Result<()> {
                 model.as_deref(),
             ),
         },
-        Commands::Tui { .. } => {
+        Commands::Tui { no_mouse } => {
+                let resolved_edge_color = Config::load_or_default(&workgraph_dir).viz.edge_color;
                 let options = commands::viz::VizOptions {
                     all: true,
                     status: None,
@@ -1403,8 +1420,10 @@ fn main() -> Result<()> {
                     tui_mode: true,
                     layout: commands::viz::LayoutMode::default(),
                     tags: vec![],
+                    edge_color: resolved_edge_color,
                 };
-                tui::viz_viewer::run(workgraph_dir, options)
+                let mouse_override = if no_mouse { Some(false) } else { None };
+                tui::viz_viewer::run(workgraph_dir, options, mouse_override)
             }
         Commands::Setup => commands::setup::run(),
         Commands::Quickstart => commands::quickstart::run(cli.json),

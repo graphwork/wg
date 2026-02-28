@@ -92,6 +92,9 @@ pub fn show(dir: &Path, scope: Option<ConfigScope>, json: bool) -> Result<()> {
             config.guardrails.max_task_depth
         );
         println!();
+        println!("[viz]");
+        println!("  edge_color = \"{}\"", config.viz.edge_color);
+        println!();
         if config.project.name.is_some() || config.project.description.is_some() {
             println!("[project]");
             if let Some(ref name) = config.project.name {
@@ -153,6 +156,7 @@ pub fn update(
     triage_max_log_bytes: Option<usize>,
     max_child_tasks: Option<u32>,
     max_task_depth: Option<u32>,
+    viz_edge_color: Option<&str>,
 ) -> Result<()> {
     let mut config = match scope {
         ConfigScope::Global => Config::load_global()?.unwrap_or_default(),
@@ -306,6 +310,20 @@ pub fn update(
         config.guardrails.max_task_depth = v;
         println!("Set guardrails.max_task_depth = {}", v);
         changed = true;
+    }
+
+    // Viz settings
+    if let Some(color) = viz_edge_color {
+        match color {
+            "gray" | "white" | "mixed" => {
+                config.viz.edge_color = color.to_string();
+                println!("Set viz.edge_color = \"{}\"", color);
+                changed = true;
+            }
+            _ => {
+                anyhow::bail!("Invalid edge color '{}'. Valid options: gray, white, mixed", color);
+            }
+        }
     }
 
     if changed {
@@ -622,6 +640,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         assert!(result.is_ok());
 
@@ -646,6 +665,7 @@ mod tests {
             Some(60),
             None,
             Some("shell"),
+            None,
             None,
             None,
             None,
@@ -704,6 +724,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         assert!(result.is_ok());
 
@@ -737,6 +758,7 @@ mod tests {
             Some("creator-hash"),
             Some("haiku"),
             Some("Retire below 0.3 after 10 evals"),
+            None,
             None,
             None,
             None,
