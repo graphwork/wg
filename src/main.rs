@@ -315,6 +315,10 @@ enum Commands {
         /// Only show paused tasks
         #[arg(long)]
         paused: bool,
+
+        /// Filter by tag (multiple --tag flags use AND semantics)
+        #[arg(long = "tag")]
+        tags: Vec<String>,
     },
 
     /// Visualize the dependency graph (ASCII tree by default)
@@ -367,6 +371,10 @@ enum Commands {
         /// common ancestor with arcs flowing down; 'tree' uses classic DFS order
         #[arg(long, default_value = "diamond")]
         layout: String,
+
+        /// Filter by tag (multiple --tag flags use AND semantics)
+        #[arg(long = "tag")]
+        tags: Vec<String>,
     },
 
     /// Output the full graph data (DOT format with archive support)
@@ -2147,46 +2155,66 @@ fn print_curated_help(subcommands: &[(String, String)], show_all: bool) {
     use workgraph::usage::{self, MAX_HELP_COMMANDS};
 
     let mut shown = std::collections::HashSet::new();
-    let to_show = if show_all {
-        subcommands.len()
-    } else {
-        MAX_HELP_COMMANDS.min(subcommands.len())
-    };
-
-    println!("Commands:");
     let mut count = 0;
 
-    // First show commands in curated order
-    for &default_cmd in usage::DEFAULT_ORDER {
-        if count >= to_show {
-            break;
-        }
-        if let Some((name, about)) = subcommands.iter().find(|(n, _)| n == default_cmd) {
+    // Always show core commands first — these are never clipped by MAX_HELP_COMMANDS
+    println!("Core commands:");
+    for &cmd_name in usage::CORE_COMMANDS {
+        if let Some((name, about)) = subcommands.iter().find(|(n, _)| n == cmd_name) {
             println!("  {:15} {}", name, about);
             shown.insert(name.clone());
             count += 1;
         }
     }
 
-    // Then show remaining alphabetically
-    let mut remaining: Vec<_> = subcommands
-        .iter()
-        .filter(|(n, _)| !shown.contains(n))
-        .collect();
-    remaining.sort_by(|a, b| a.0.cmp(&b.0));
+    let to_show = if show_all {
+        subcommands.len()
+    } else {
+        MAX_HELP_COMMANDS.min(subcommands.len())
+    };
 
-    for (name, about) in remaining {
-        if count >= to_show {
-            break;
+    // Fill remaining slots from DEFAULT_ORDER, then alphabetically
+    let remaining_slots = to_show.saturating_sub(count);
+    if remaining_slots > 0 || show_all {
+        let mut extra = Vec::new();
+
+        // First pull from DEFAULT_ORDER (preserving curated priority)
+        for &default_cmd in usage::DEFAULT_ORDER {
+            if !shown.contains(&default_cmd.to_string()) {
+                if let Some(entry) = subcommands.iter().find(|(n, _)| n == default_cmd) {
+                    extra.push(entry);
+                    shown.insert(entry.0.clone());
+                }
+            }
         }
-        println!("  {:15} {}", name, about);
-        count += 1;
+
+        // Then any remaining commands alphabetically
+        let mut alpha_rest: Vec<_> = subcommands
+            .iter()
+            .filter(|(n, _)| !shown.contains(n))
+            .collect();
+        alpha_rest.sort_by(|a, b| a.0.cmp(&b.0));
+        extra.extend(alpha_rest);
+
+        let to_print = if show_all {
+            extra.len()
+        } else {
+            remaining_slots
+        };
+
+        if to_print > 0 {
+            println!("\nOther commands:");
+            for (name, about) in extra.iter().take(to_print) {
+                println!("  {:15} {}", name, about);
+                count += 1;
+            }
+        }
     }
 
-    if !show_all && subcommands.len() > MAX_HELP_COMMANDS {
+    if !show_all && subcommands.len() > count {
         println!(
-            "  ... and {} more (--help-all)",
-            subcommands.len() - MAX_HELP_COMMANDS
+            "\n  ... and {} more (--help-all)",
+            subcommands.len() - count
         );
     }
 }
@@ -2535,8 +2563,8 @@ fn main() -> Result<()> {
         Commands::WhyBlocked { id } => commands::why_blocked::run(&workgraph_dir, &id, cli.json),
         Commands::Check => commands::check::run(&workgraph_dir, cli.json),
         Commands::Cycles => commands::cycles::run(&workgraph_dir, cli.json),
-        Commands::List { status, paused } => {
-            commands::list::run(&workgraph_dir, status.as_deref(), paused, cli.json)
+        Commands::List { status, paused, tags } => {
+            commands::list::run(&workgraph_dir, status.as_deref(), paused, &tags, cli.json)
         }
         Commands::Viz {
             focus,
@@ -2551,6 +2579,7 @@ fn main() -> Result<()> {
             tui: tui_mode,
             no_tui: _no_tui,
             layout,
+            tags,
         } => {
             let layout_mode: commands::viz::LayoutMode = layout.parse().unwrap_or_default();
             let _explicit_static_format = dot || mermaid || graph || output.is_some();
@@ -2571,6 +2600,7 @@ fn main() -> Result<()> {
                     focus,
                     tui_mode: true,
                     layout: layout_mode,
+                    tags: tags.clone(),
                 };
                 tui::viz_viewer::run(workgraph_dir, options)
             } else {
@@ -2593,6 +2623,7 @@ fn main() -> Result<()> {
                     focus,
                     tui_mode: false,
                     layout: layout_mode,
+                    tags,
                 };
                 commands::viz::run(&workgraph_dir, &options)
             }
@@ -3522,6 +3553,7 @@ fn main() -> Result<()> {
                     focus: vec![],
                     tui_mode: true,
                     layout: commands::viz::LayoutMode::default(),
+                    tags: vec![],
                 };
                 tui::viz_viewer::run(workgraph_dir, options)
             }

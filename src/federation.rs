@@ -629,7 +629,7 @@ fn access_policy_allows_transfer(policy: &AccessPolicy) -> bool {
 ///
 /// This is the core operation used by both pull (remote→local) and push (local→remote).
 /// Transfers primitives (components, outcomes, tradeoffs), cache entries (roles, agents),
-/// evaluations, and org-evaluations. AccessPolicy is enforced on primitives: Private
+/// evaluations. AccessPolicy is enforced on primitives: Private
 /// primitives are never transferred.
 pub fn transfer(
     source: &LocalStore,

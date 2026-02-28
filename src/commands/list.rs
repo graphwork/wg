@@ -3,7 +3,7 @@ use chrono::{DateTime, Utc};
 use std::path::Path;
 use workgraph::graph::Status;
 
-pub fn run(dir: &Path, status_filter: Option<&str>, paused_only: bool, json: bool) -> Result<()> {
+pub fn run(dir: &Path, status_filter: Option<&str>, paused_only: bool, tags: &[String], json: bool) -> Result<()> {
     let (graph, _path) = super::load_workgraph(dir)?;
 
     let status_filter: Option<Status> = match status_filter {
@@ -24,6 +24,7 @@ pub fn run(dir: &Path, status_filter: Option<&str>, paused_only: bool, json: boo
         .tasks()
         .filter(|t| status_filter.as_ref().is_none_or(|s| &t.status == s))
         .filter(|t| !paused_only || t.paused)
+        .filter(|t| tags.iter().all(|tag| t.tags.contains(tag)))
         .collect();
 
     if json {
@@ -37,6 +38,9 @@ pub fn run(dir: &Path, status_filter: Option<&str>, paused_only: bool, json: boo
                     "assigned": t.assigned,
                     "after": t.after,
                 });
+                if !t.tags.is_empty() {
+                    obj["tags"] = serde_json::json!(t.tags);
+                }
                 if let Some(ref ra) = t.ready_after {
                     obj["ready_after"] = serde_json::json!(ra);
                 }
@@ -61,9 +65,14 @@ pub fn run(dir: &Path, status_filter: Option<&str>, paused_only: bool, json: boo
             };
             let pause_str = if task.paused { " [PAUSED]" } else { "" };
             let delay_str = format_ready_after_hint(task.ready_after.as_deref());
+            let tag_str = if task.tags.is_empty() {
+                String::new()
+            } else {
+                format!(" [{}]", task.tags.join(", "))
+            };
             println!(
-                "{} {} - {}{}{}",
-                status, task.id, task.title, pause_str, delay_str
+                "{} {} - {}{}{}{}",
+                status, task.id, task.title, pause_str, delay_str, tag_str
             );
         }
     }
@@ -182,7 +191,7 @@ mod tests {
     #[test]
     fn test_run_uninitialized() {
         let dir = tempdir().unwrap();
-        let result = run(dir.path(), None, false, false);
+        let result = run(dir.path(), None, false, &[], false);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("not initialized"));
     }
@@ -191,7 +200,7 @@ mod tests {
     fn test_run_no_tasks() {
         let dir = tempdir().unwrap();
         setup_workgraph(dir.path(), vec![]);
-        let result = run(dir.path(), None, false, false);
+        let result = run(dir.path(), None, false, &[], false);
         assert!(result.is_ok());
     }
 
@@ -206,7 +215,7 @@ mod tests {
                 make_task("t3", "In-progress task", Status::InProgress),
             ],
         );
-        let result = run(dir.path(), Some("open"), false, false);
+        let result = run(dir.path(), Some("open"), false, &[], false);
         assert!(result.is_ok());
     }
 
@@ -220,7 +229,7 @@ mod tests {
                 make_task("t2", "Done task", Status::Done),
             ],
         );
-        let result = run(dir.path(), Some("done"), false, false);
+        let result = run(dir.path(), Some("done"), false, &[], false);
         assert!(result.is_ok());
     }
 
@@ -231,7 +240,7 @@ mod tests {
             dir.path(),
             vec![make_task("t1", "IP task", Status::InProgress)],
         );
-        let result = run(dir.path(), Some("in-progress"), false, false);
+        let result = run(dir.path(), Some("in-progress"), false, &[], false);
         assert!(result.is_ok());
     }
 
@@ -242,7 +251,7 @@ mod tests {
             dir.path(),
             vec![make_task("t1", "Blocked task", Status::Blocked)],
         );
-        let result = run(dir.path(), Some("blocked"), false, false);
+        let result = run(dir.path(), Some("blocked"), false, &[], false);
         assert!(result.is_ok());
     }
 
@@ -250,7 +259,7 @@ mod tests {
     fn test_run_unknown_status_filter() {
         let dir = tempdir().unwrap();
         setup_workgraph(dir.path(), vec![make_task("t1", "Task", Status::Open)]);
-        let result = run(dir.path(), Some("nonexistent-status"), false, false);
+        let result = run(dir.path(), Some("nonexistent-status"), false, &[], false);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Unknown status"));
     }
@@ -303,7 +312,7 @@ mod tests {
         task.ready_after = Some(future.to_rfc3339());
         setup_workgraph(dir.path(), vec![task]);
 
-        let result = run(dir.path(), None, false, false);
+        let result = run(dir.path(), None, false, &[], false);
         assert!(result.is_ok());
     }
 
@@ -317,7 +326,7 @@ mod tests {
         task.after = vec!["dep-1".to_string()];
         setup_workgraph(dir.path(), vec![task]);
 
-        let result = run(dir.path(), None, false, true);
+        let result = run(dir.path(), None, false, &[], true);
         assert!(result.is_ok());
     }
 
@@ -389,7 +398,7 @@ mod tests {
                 make_task("t2", "Open task", Status::Open),
             ],
         );
-        let result = run(dir.path(), Some("failed"), false, false);
+        let result = run(dir.path(), Some("failed"), false, &[], false);
         assert!(result.is_ok());
     }
 
@@ -403,7 +412,7 @@ mod tests {
                 make_task("t2", "Open task", Status::Open),
             ],
         );
-        let result = run(dir.path(), Some("abandoned"), false, false);
+        let result = run(dir.path(), Some("abandoned"), false, &[], false);
         assert!(result.is_ok());
     }
 
@@ -411,7 +420,7 @@ mod tests {
     fn test_unknown_status_error_lists_valid_values() {
         let dir = tempdir().unwrap();
         setup_workgraph(dir.path(), vec![make_task("t1", "Task", Status::Open)]);
-        let result = run(dir.path(), Some("bogus"), false, false);
+        let result = run(dir.path(), Some("bogus"), false, &[], false);
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
         assert!(msg.contains("Valid values:"));
@@ -455,7 +464,7 @@ mod tests {
                 make_task("t2", "Done", Status::Done),
             ],
         );
-        let result = run(dir.path(), Some("done"), false, true);
+        let result = run(dir.path(), Some("done"), false, &[], true);
         assert!(result.is_ok());
     }
 
@@ -486,11 +495,109 @@ mod tests {
         assert_eq!(paused_open[0].id, "t-paused");
 
         // run() with paused_only=true should succeed
-        let result = run(dir.path(), None, true, false);
+        let result = run(dir.path(), None, true, &[], false);
         assert!(result.is_ok());
 
         // run() with paused_only=true and status filter should succeed
-        let result = run(dir.path(), Some("open"), true, false);
+        let result = run(dir.path(), Some("open"), true, &[], false);
         assert!(result.is_ok());
+    }
+
+    // --- run() tests: tag filtering ---
+
+    #[test]
+    fn test_tag_filter_single_tag() {
+        let dir = tempdir().unwrap();
+        let mut tagged = make_task("t1", "Tagged task", Status::Open);
+        tagged.tags = vec!["foo".to_string()];
+        let untagged = make_task("t2", "Untagged task", Status::Open);
+        let path = setup_workgraph(dir.path(), vec![tagged, untagged]);
+        let graph = load_graph(&path).unwrap();
+
+        let tags = vec!["foo".to_string()];
+        let filtered: Vec<_> = graph
+            .tasks()
+            .filter(|t| tags.iter().all(|tag| t.tags.contains(tag)))
+            .collect();
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].id, "t1");
+
+        // run() with tag filter should succeed
+        let result = run(dir.path(), None, false, &tags, false);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_tag_filter_and_semantics() {
+        let dir = tempdir().unwrap();
+        let mut both = make_task("t1", "Both tags", Status::Open);
+        both.tags = vec!["foo".to_string(), "bar".to_string()];
+        let mut one = make_task("t2", "One tag", Status::Open);
+        one.tags = vec!["foo".to_string()];
+        let path = setup_workgraph(dir.path(), vec![both, one]);
+        let graph = load_graph(&path).unwrap();
+
+        let tags = vec!["foo".to_string(), "bar".to_string()];
+        let filtered: Vec<_> = graph
+            .tasks()
+            .filter(|t| tags.iter().all(|tag| t.tags.contains(tag)))
+            .collect();
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].id, "t1");
+    }
+
+    #[test]
+    fn test_tag_filter_no_match() {
+        let dir = tempdir().unwrap();
+        let mut task = make_task("t1", "Task", Status::Open);
+        task.tags = vec!["foo".to_string()];
+        setup_workgraph(dir.path(), vec![task]);
+
+        let tags = vec!["nonexistent".to_string()];
+        let result = run(dir.path(), None, false, &tags, false);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_tag_filter_combined_with_status() {
+        let dir = tempdir().unwrap();
+        let mut open_tagged = make_task("t1", "Open tagged", Status::Open);
+        open_tagged.tags = vec!["foo".to_string()];
+        let mut done_tagged = make_task("t2", "Done tagged", Status::Done);
+        done_tagged.tags = vec!["foo".to_string()];
+        let open_untagged = make_task("t3", "Open untagged", Status::Open);
+        let path = setup_workgraph(dir.path(), vec![open_tagged, done_tagged, open_untagged]);
+        let graph = load_graph(&path).unwrap();
+
+        let tags = vec!["foo".to_string()];
+        let filtered: Vec<_> = graph
+            .tasks()
+            .filter(|t| t.status == Status::Open)
+            .filter(|t| tags.iter().all(|tag| t.tags.contains(tag)))
+            .collect();
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].id, "t1");
+
+        // run() with both filters
+        let result = run(dir.path(), Some("open"), false, &tags, false);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_tag_filter_empty_tags_shows_all() {
+        let dir = tempdir().unwrap();
+        let mut tagged = make_task("t1", "Tagged", Status::Open);
+        tagged.tags = vec!["foo".to_string()];
+        let untagged = make_task("t2", "Untagged", Status::Open);
+        let path = setup_workgraph(dir.path(), vec![tagged, untagged]);
+        let graph = load_graph(&path).unwrap();
+
+        // Empty tag filter should show all tasks
+        let tags: Vec<String> = vec![];
+        let filtered: Vec<_> = graph
+            .tasks()
+            .filter(|t| tags.iter().all(|tag| t.tags.contains(tag)))
+            .collect();
+        assert_eq!(filtered.len(), 2);
     }
 }

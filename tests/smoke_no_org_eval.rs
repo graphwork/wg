@@ -456,7 +456,6 @@ fn test_no_active_org_eval_code_paths() {
             // Check for evaluate-org task creation (should not exist)
             if trimmed.contains("evaluate-org-")
                 && !trimmed.contains("evaluate-org-*") // grep pattern in tests is OK
-                && !trimmed.contains(r#""org-evaluation""#) // dominated_tags defensive entry is OK
             {
                 violations.push(format!(
                     "{}:{}: evaluate-org task creation: {}",
@@ -508,10 +507,10 @@ fn test_no_org_evaluation_type_definition() {
     );
 }
 
-/// Verify the dominated_tags arrays still defensively include "org-evaluation"
-/// to prevent any residual org-evaluation tagged tasks from being processed.
+/// Verify the dominated_tags arrays do NOT include "org-evaluation" —
+/// the org-eval infrastructure has been fully removed.
 #[test]
-fn test_defensive_org_evaluation_tag_in_coordinator() {
+fn test_no_org_evaluation_tag_in_coordinator() {
     let coordinator_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("src")
         .join("commands")
@@ -520,13 +519,13 @@ fn test_defensive_org_evaluation_tag_in_coordinator() {
 
     let content = std::fs::read_to_string(&coordinator_path).unwrap();
 
-    // The dominated_tags array should still include "org-evaluation" for defense
+    // No references to org-evaluation should remain
     assert!(
-        content.contains(r#""org-evaluation""#),
-        "Coordinator should retain 'org-evaluation' in dominated_tags for defensive filtering"
+        !content.contains(r#""org-evaluation""#),
+        "Coordinator should not contain 'org-evaluation' — org-eval is fully removed"
     );
 
-    // But there should be no code that CREATES org-evaluation tasks
+    // And no code that CREATES org-evaluation tasks
     assert!(
         !content.contains("evaluate-org-"),
         "Coordinator should not create evaluate-org-* tasks"

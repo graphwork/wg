@@ -150,7 +150,7 @@ fn build_auto_assign_tasks(graph: &mut workgraph::graph::WorkGraph, config: &Con
 
         // Skip tasks tagged with assignment/evaluation/evolution/org-evaluation
         // to prevent infinite regress (assign-assign-assign-...)
-        let dominated_tags = ["assignment", "evaluation", "evolution", "org-evaluation"];
+        let dominated_tags = ["assignment", "evaluation", "evolution"];
         if task_tags
             .iter()
             .any(|tag| dominated_tags.contains(&tag.as_str()))
@@ -532,7 +532,7 @@ fn build_auto_evaluate_tasks(
                 return false;
             }
             // Skip tasks tagged with evaluation/assignment/evolution
-            let dominated_tags = ["evaluation", "assignment", "evolution", "org-evaluation"];
+            let dominated_tags = ["evaluation", "assignment", "evolution"];
             if t.tags
                 .iter()
                 .any(|tag| dominated_tags.contains(&tag.as_str()))

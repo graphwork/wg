@@ -253,6 +253,7 @@ fn render_frame(
         &std::collections::HashMap::new(),
         &std::collections::HashMap::new(),
         &std::collections::HashMap::new(),
+        &std::collections::HashSet::new(),
     );
 
     // Compute elapsed time

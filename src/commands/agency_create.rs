@@ -508,39 +508,6 @@ pub fn run(
     Ok(())
 }
 
-/// Record a creator invocation timestamp so the coordinator can throttle.
-pub fn record_creation_timestamp(dir: &Path) -> Result<()> {
-    let marker_path = dir.join("agency").join("last_create");
-    std::fs::write(&marker_path, chrono::Utc::now().to_rfc3339())?;
-    Ok(())
-}
-
-/// Read the last creation timestamp (if any).
-pub fn last_creation_timestamp(dir: &Path) -> Option<chrono::DateTime<chrono::Utc>> {
-    let marker_path = dir.join("agency").join("last_create");
-    let content = std::fs::read_to_string(&marker_path).ok()?;
-    content.trim().parse().ok()
-}
-
-/// Count completed tasks since a given timestamp.
-pub fn count_completed_since(
-    graph: &workgraph::WorkGraph,
-    since: &chrono::DateTime<chrono::Utc>,
-) -> usize {
-    use workgraph::graph::Status;
-    graph
-        .tasks()
-        .filter(|t| {
-            matches!(t.status, Status::Done | Status::Failed)
-                && t.completed_at
-                    .as_ref()
-                    .and_then(|ts| ts.parse::<chrono::DateTime<chrono::Utc>>().ok())
-                    .map(|ts| ts > *since)
-                    .unwrap_or(false)
-        })
-        .count()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
