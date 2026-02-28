@@ -9,7 +9,7 @@ use workgraph::agency::{
     load_tradeoff, load_role,
     record_evaluation, record_evaluation_with_inference,
     record_org_evaluation, render_evaluator_prompt,
-    render_identity_prompt, resolve_all_skills, eval_source,
+    render_identity_prompt_rich, resolve_all_components, resolve_outcome, eval_source,
 };
 use workgraph::config::Config;
 use workgraph::graph::{LogEntry, Status, WorkGraph};
@@ -211,8 +211,9 @@ pub fn run(
         let eval_tradeoff_path = tradeoffs_dir.join(format!("{}.yaml", eval_agent.tradeoff_id));
         let eval_tradeoff = load_tradeoff(&eval_tradeoff_path).ok()?;
         let workgraph_root = dir;
-        let resolved_skills = resolve_all_skills(&eval_role, workgraph_root);
-        Some(render_identity_prompt(&eval_role, &eval_tradeoff, &resolved_skills))
+        let resolved_skills = resolve_all_components(&eval_role, workgraph_root, &agency_dir);
+        let outcome = resolve_outcome(&eval_role.outcome_id, &agency_dir);
+        Some(render_identity_prompt_rich(&eval_role, &eval_tradeoff, &resolved_skills, outcome.as_ref()))
     });
 
     // Step 3.7: Collect downstream task context for organizational impact scoring.

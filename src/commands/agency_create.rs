@@ -8,7 +8,11 @@ use anyhow::{Context, Result, bail};
 use std::path::Path;
 use std::process::Command;
 
-use workgraph::agency::{self, AgencyStore, LocalStore, StoreCounts};
+use workgraph::agency::{
+    self, AgencyStore, LocalStore, StoreCounts,
+    load_role, load_tradeoff, render_identity_prompt_rich,
+    resolve_all_components, resolve_outcome,
+};
 use workgraph::config::Config;
 
 /// Build the creator prompt that instructs the LLM to propose new primitives.
@@ -16,6 +20,7 @@ fn build_creator_prompt(
     agency_dir: &Path,
     project_context: &str,
     existing_counts: &StoreCounts,
+    config: &Config,
 ) -> String {
     let store = LocalStore::new(agency_dir);
 
@@ -57,10 +62,44 @@ fn build_creator_prompt(
         existing_tradeoffs.join("\n")
     };
 
+    // Creator identity: use component-based rendering when configured, else hardcoded fallback
+    let creator_intro = if let Some(ref creator_hash) = config.agency.creator_agent {
+        let agents_dir = agency_dir.join("cache/agents");
+        let agent_path = agents_dir.join(format!("{}.yaml", creator_hash));
+        if let Ok(agent) = agency::load_agent(&agent_path) {
+            let roles_dir = agency_dir.join("cache/roles");
+            let role_path = roles_dir.join(format!("{}.yaml", agent.role_id));
+            let tradeoffs_dir = agency_dir.join("primitives/tradeoffs");
+            let tradeoff_path = tradeoffs_dir.join(format!("{}.yaml", agent.tradeoff_id));
+            if let (Ok(role), Ok(tradeoff)) = (load_role(&role_path), load_tradeoff(&tradeoff_path)) {
+                let workgraph_root = agency_dir.parent().unwrap_or(agency_dir);
+                let resolved_skills = resolve_all_components(&role, workgraph_root, agency_dir);
+                let outcome = resolve_outcome(&role.outcome_id, agency_dir);
+                let identity = render_identity_prompt_rich(&role, &tradeoff, &resolved_skills, outcome.as_ref());
+                format!(
+                    "{}\n\nYour job is to expand the primitive store by discovering new role \
+                     components, desired outcomes, and tradeoff configurations that are implied \
+                     by the project but not yet captured in the agency.",
+                    identity
+                )
+            } else {
+                "You are the Agency Creator agent. Your job is to expand the primitive store by\n\
+                 discovering new role components, desired outcomes, and tradeoff configurations\n\
+                 that are implied by the project but not yet captured in the agency.".to_string()
+            }
+        } else {
+            "You are the Agency Creator agent. Your job is to expand the primitive store by\n\
+             discovering new role components, desired outcomes, and tradeoff configurations\n\
+             that are implied by the project but not yet captured in the agency.".to_string()
+        }
+    } else {
+        "You are the Agency Creator agent. Your job is to expand the primitive store by\n\
+         discovering new role components, desired outcomes, and tradeoff configurations\n\
+         that are implied by the project but not yet captured in the agency.".to_string()
+    };
+
     format!(
-        r#"You are the Agency Creator agent. Your job is to expand the primitive store by
-discovering new role components, desired outcomes, and tradeoff configurations
-that are implied by the project but not yet captured in the agency.
+        r#"{creator_intro}
 
 ## Current Primitive Store
 
@@ -301,7 +340,7 @@ pub fn run(
     let project_context = gather_project_context(dir);
 
     // Build the creator prompt
-    let prompt = build_creator_prompt(&agency_dir, &project_context, &counts);
+    let prompt = build_creator_prompt(&agency_dir, &project_context, &counts, &config);
 
     if dry_run {
         if json {
@@ -560,7 +599,8 @@ mod tests {
         let store = LocalStore::new(&agency_dir);
         let counts = store.entity_counts();
 
-        let prompt = build_creator_prompt(&agency_dir, "Test project", &counts);
+        let config = Config::default();
+        let prompt = build_creator_prompt(&agency_dir, "Test project", &counts, &config);
         assert!(prompt.contains("Test project"));
         assert!(prompt.contains("Components (0)"));
     }

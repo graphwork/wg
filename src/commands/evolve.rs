@@ -6,7 +6,7 @@ use std::fs;
 use std::path::Path;
 use std::process::Command;
 
-use workgraph::agency::{self, AccessControl, ComponentCategory, Evaluation, Lineage, OrgEvaluation, TradeoffConfig, PerformanceRecord, Role, ContentRef, render_identity_prompt, resolve_all_skills};
+use workgraph::agency::{self, AccessControl, ComponentCategory, Evaluation, Lineage, OrgEvaluation, TradeoffConfig, PerformanceRecord, Role, ContentRef, render_identity_prompt_rich, resolve_all_components, resolve_outcome};
 use workgraph::config::Config;
 use workgraph::graph::{Node, Status, Task};
 use workgraph::{load_graph, save_graph};
@@ -1032,8 +1032,9 @@ fn build_evolver_prompt(
                 if let Some(tradeoff) = tradeoffs.iter().find(|m| m.id == agent.tradeoff_id) {
                     // Use the project root (parent of agency dir) for skill resolution
                     let workgraph_root = agency_dir.parent().unwrap_or(agency_dir);
-                    let resolved_skills = resolve_all_skills(role, workgraph_root);
-                    out.push_str(&render_identity_prompt(role, tradeoff, &resolved_skills));
+                    let resolved_skills = resolve_all_components(role, workgraph_root, agency_dir);
+                    let outcome = resolve_outcome(&role.outcome_id, agency_dir);
+                    out.push_str(&render_identity_prompt_rich(role, tradeoff, &resolved_skills, outcome.as_ref()));
                     out.push_str("\n\n");
                 }
             }

@@ -11,6 +11,8 @@ use workgraph::agency::{
     AssignerModeContext, AssignmentMode, TaskAssignmentRecord,
     render_assigner_mode_context, count_assignment_records,
     find_cached_agent, save_assignment_record,
+    load_agent, load_role, load_tradeoff,
+    render_identity_prompt_rich, resolve_all_components, resolve_outcome,
 };
 use workgraph::config::Config;
 use workgraph::graph::{LogEntry, Node, Status, Task};
@@ -243,11 +245,34 @@ fn build_auto_assign_tasks(graph: &mut workgraph::graph::WorkGraph, config: &Con
             None
         };
 
+        // Resolve assigner agent identity (if configured via assigner_agent hash)
+        let assigner_identity = config.agency.assigner_agent.as_ref().and_then(|agent_hash| {
+            let agents_dir = agency_dir.join("cache/agents");
+            let agent_path = agents_dir.join(format!("{}.yaml", agent_hash));
+            let agent = load_agent(&agent_path).ok()?;
+            let roles_dir = agency_dir.join("cache/roles");
+            let role_path = roles_dir.join(format!("{}.yaml", agent.role_id));
+            let role = load_role(&role_path).ok()?;
+            let tradeoffs_dir = agency_dir.join("primitives/tradeoffs");
+            let tradeoff_path = tradeoffs_dir.join(format!("{}.yaml", agent.tradeoff_id));
+            let tradeoff = load_tradeoff(&tradeoff_path).ok()?;
+            let workgraph_root = dir;
+            let resolved_skills = resolve_all_components(&role, workgraph_root, &agency_dir);
+            let outcome = resolve_outcome(&role.outcome_id, &agency_dir);
+            Some(render_identity_prompt_rich(&role, &tradeoff, &resolved_skills, outcome.as_ref()))
+        });
+
         // Build description for the assigner with the original task's context
-        let mut desc = format!(
+        let mut desc = String::new();
+        // Prepend agent identity when composed assigner is available
+        if let Some(ref identity) = assigner_identity {
+            desc.push_str(identity);
+            desc.push_str("\n\n");
+        }
+        desc.push_str(&format!(
             "Assign an agent to task '{}'.\n\n## Original Task\n**Title:** {}\n",
             task_id, task_title,
-        );
+        ));
         if let Some(ref d) = task_desc {
             desc.push_str(&format!("**Description:** {}\n", d));
         }
@@ -527,6 +552,24 @@ fn build_auto_evaluate_tasks(
         .map(|t| (t.id.clone(), t.title.clone()))
         .collect();
 
+    // Resolve evaluator agent identity once (shared across all eval tasks)
+    let evaluator_identity = config.agency.evaluator_agent.as_ref().and_then(|agent_hash| {
+        let agency_dir = dir.join("agency");
+        let agents_dir = agency_dir.join("cache/agents");
+        let agent_path = agents_dir.join(format!("{}.yaml", agent_hash));
+        let agent = load_agent(&agent_path).ok()?;
+        let roles_dir = agency_dir.join("cache/roles");
+        let role_path = roles_dir.join(format!("{}.yaml", agent.role_id));
+        let role = load_role(&role_path).ok()?;
+        let tradeoffs_dir = agency_dir.join("primitives/tradeoffs");
+        let tradeoff_path = tradeoffs_dir.join(format!("{}.yaml", agent.tradeoff_id));
+        let tradeoff = load_tradeoff(&tradeoff_path).ok()?;
+        let workgraph_root = dir;
+        let resolved_skills = resolve_all_components(&role, workgraph_root, &agency_dir);
+        let outcome = resolve_outcome(&role.outcome_id, &agency_dir);
+        Some(render_identity_prompt_rich(&role, &tradeoff, &resolved_skills, outcome.as_ref()))
+    });
+
     for (task_id, task_title) in &tasks_needing_eval {
         let eval_task_id = format!("evaluate-{}", task_id);
 
@@ -535,13 +578,19 @@ fn build_auto_evaluate_tasks(
             continue;
         }
 
-        let desc = format!(
+        let mut desc = String::new();
+        // Prepend evaluator identity when composed evaluator agent is available
+        if let Some(ref identity) = evaluator_identity {
+            desc.push_str(identity);
+            desc.push_str("\n\n");
+        }
+        desc.push_str(&format!(
             "Evaluate the completed task '{}'.\n\n\
              Run `wg evaluate run {}` to produce a structured evaluation.\n\
              This reads the task output from `.workgraph/output/{}/` and \
              the task definition via `wg show {}`.",
             task_id, task_id, task_id, task_id,
-        );
+        ));
 
         let eval_task = Task {
             id: eval_task_id.clone(),
@@ -635,6 +684,7 @@ fn build_auto_evaluate_tasks(
 ///
 /// Returns `true` if the graph was modified.
 fn build_auto_org_evaluate_tasks(
+    dir: &Path,
     graph: &mut workgraph::graph::WorkGraph,
     config: &Config,
 ) -> bool {
@@ -657,6 +707,24 @@ fn build_auto_org_evaluate_tasks(
         .map(|t| (t.id.clone(), t.title.clone(), t.before.clone()))
         .collect();
 
+    // Resolve evaluator agent identity once (shared across all org-eval tasks)
+    let evaluator_identity = config.agency.evaluator_agent.as_ref().and_then(|agent_hash| {
+        let agency_dir = dir.join("agency");
+        let agents_dir = agency_dir.join("cache/agents");
+        let agent_path = agents_dir.join(format!("{}.yaml", agent_hash));
+        let agent = load_agent(&agent_path).ok()?;
+        let roles_dir = agency_dir.join("cache/roles");
+        let role_path = roles_dir.join(format!("{}.yaml", agent.role_id));
+        let role = load_role(&role_path).ok()?;
+        let tradeoffs_dir = agency_dir.join("primitives/tradeoffs");
+        let tradeoff_path = tradeoffs_dir.join(format!("{}.yaml", agent.tradeoff_id));
+        let tradeoff = load_tradeoff(&tradeoff_path).ok()?;
+        let workgraph_root = dir;
+        let resolved_skills = resolve_all_components(&role, workgraph_root, &agency_dir);
+        let outcome = resolve_outcome(&role.outcome_id, &agency_dir);
+        Some(render_identity_prompt_rich(&role, &tradeoff, &resolved_skills, outcome.as_ref()))
+    });
+
     for (task_id, task_title, downstream_ids) in &candidates {
         let org_eval_id = format!("evaluate-org-{}", task_id);
 
@@ -677,12 +745,18 @@ fn build_auto_org_evaluate_tasks(
             continue;
         }
 
-        let desc = format!(
+        let mut desc = String::new();
+        // Prepend evaluator identity when composed evaluator agent is available
+        if let Some(ref identity) = evaluator_identity {
+            desc.push_str(identity);
+            desc.push_str("\n\n");
+        }
+        desc.push_str(&format!(
             "Org-evaluate task '{}' now that its downstream consumers have completed.\n\n\
              Run `wg evaluate org {}` to compute the organizational reward signal.\n\
              This assesses downstream_usability, coordination_overhead, and blocking_behaviour.",
             task_id, task_id,
-        );
+        ));
 
         let org_eval_task = Task {
             id: org_eval_id.clone(),
@@ -777,6 +851,13 @@ fn spawn_eval_inline(
         format!("wg evaluate run '{}'", source_task_id.replace('\'', "'\\''"))
     };
 
+    // Resolve the special agent (evaluator) hash for performance recording.
+    // After the inline eval completes, we record an Evaluation against this
+    // agent so it accumulates performance history like any other agent.
+    let config = Config::load_or_default(dir);
+    let special_agent_hash = task.agent.clone()
+        .or_else(|| config.agency.evaluator_agent.clone());
+
     // Set up minimal agent tracking
     let mut agent_registry = AgentRegistry::load(dir)?;
     let agent_id = format!("agent-{}", agent_registry.next_agent_id);
@@ -791,9 +872,35 @@ fn spawn_eval_inline(
     let escaped_eval_id = eval_task_id.replace('\'', "'\\''");
     let escaped_output = output_file_str.replace('\'', "'\\''");
 
-    // Single script: run eval, then mark done/failed based on exit code
-    let script = format!(
-        r#"unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT
+    // Build the special agent performance recording command.
+    // After `wg evaluate` completes, record an evaluation against the special
+    // agent (evaluator) entity so it accumulates performance history.
+    // On success: score 1.0. On failure: score 0.0.
+    let special_agent_verified = special_agent_hash.as_ref().and_then(|hash| {
+        let agency_dir = dir.join("agency");
+        let agents_dir = agency_dir.join("cache/agents");
+        agency::find_agent_by_prefix(&agents_dir, hash).ok().map(|a| a.id)
+    });
+
+    // Single script: run eval, record special agent perf, then mark done/failed
+    let script = if let Some(ref sa_id) = special_agent_verified {
+        let escaped_sa_id = sa_id.replace('\'', "'\\''");
+        format!(
+            r#"unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT
+{eval_cmd} >> '{escaped_output}' 2>&1
+EXIT_CODE=$?
+if [ $EXIT_CODE -eq 0 ]; then
+    wg evaluate record '{escaped_eval_id}' 1.0 --source system --notes "Inline evaluation completed successfully (agent: {escaped_sa_id})" 2>> '{escaped_output}' || true
+    wg done '{escaped_eval_id}' 2>> '{escaped_output}'
+else
+    wg evaluate record '{escaped_eval_id}' 0.0 --source system --notes "Inline evaluation failed with exit code $EXIT_CODE (agent: {escaped_sa_id})" 2>> '{escaped_output}' || true
+    wg fail '{escaped_eval_id}' --reason "wg evaluate exited with code $EXIT_CODE" 2>> '{escaped_output}'
+fi
+exit $EXIT_CODE"#,
+        )
+    } else {
+        format!(
+            r#"unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT
 {eval_cmd} >> '{escaped_output}' 2>&1
 EXIT_CODE=$?
 if [ $EXIT_CODE -eq 0 ]; then
@@ -802,7 +909,8 @@ else
     wg fail '{escaped_eval_id}' --reason "wg evaluate exited with code $EXIT_CODE" 2>> '{escaped_output}'
 fi
 exit $EXIT_CODE"#,
-    );
+        )
+    };
 
     // Claim the task before spawning
     task.status = Status::InProgress;
@@ -986,7 +1094,7 @@ pub fn coordinator_tick(
     // Phase 4: Auto-evaluate tasks
     if config.agency.auto_evaluate {
         graph_modified |= build_auto_evaluate_tasks(dir, &mut graph, &config);
-        graph_modified |= build_auto_org_evaluate_tasks(&mut graph, &config);
+        graph_modified |= build_auto_org_evaluate_tasks(dir, &mut graph, &config);
     }
 
     // Save graph once if it was modified during auto-assign or auto-evaluate.
