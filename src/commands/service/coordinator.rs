@@ -221,6 +221,28 @@ fn build_auto_assign_tasks(graph: &mut workgraph::graph::WorkGraph, config: &Con
             task_id, assignment_path, config.agency.run_mode, total_assignments,
         );
 
+        // Detect task underspecification
+        let is_underspecified = task_desc.is_none()
+            || task_desc.as_ref().map(|d| d.len() < 20).unwrap_or(true);
+        let has_no_skills = task_skills.is_empty();
+        let underspec_warning = if is_underspecified || has_no_skills {
+            let mut warnings = Vec::new();
+            if is_underspecified {
+                warnings.push("task has no description or a very short description");
+            }
+            if has_no_skills {
+                warnings.push("task has no skills/capabilities specified");
+            }
+            Some(format!(
+                "\n**⚠ Underspecification Warning:** {}\n\
+                 The assigner should use best-effort heuristics: match on title keywords, \
+                 check dependency context, and default to a generalist agent.\n",
+                warnings.join("; "),
+            ))
+        } else {
+            None
+        };
+
         // Build description for the assigner with the original task's context
         let mut desc = format!(
             "Assign an agent to task '{}'.\n\n## Original Task\n**Title:** {}\n",
@@ -237,6 +259,9 @@ fn build_auto_assign_tasks(graph: &mut workgraph::graph::WorkGraph, config: &Con
         }
         if let Some(ref scope) = task_context_scope {
             desc.push_str(&format!("**Context scope (pre-set):** {}\n", scope));
+        }
+        if let Some(ref warning) = underspec_warning {
+            desc.push_str(warning);
         }
 
         // Include run mode context so the assigner knows which path to follow

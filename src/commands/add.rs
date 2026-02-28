@@ -103,6 +103,47 @@ pub fn run(
         anyhow::bail!("Workgraph not initialized. Run 'wg init' first.");
     };
 
+    // --- Autopoietic guardrails ---
+    let config = workgraph::config::Config::load_or_default(dir);
+    let guardrails = &config.guardrails;
+
+    // 1. Per-agent task creation limit (only enforced in agent context)
+    let agent_id = std::env::var("WG_AGENT_ID").ok();
+    if let Some(ref agent_id) = agent_id {
+        let max_child = guardrails.max_child_tasks_per_agent;
+        // Count add_task operations by this agent in the provenance log
+        let count = count_agent_created_tasks(dir, agent_id);
+        if count >= max_child {
+            anyhow::bail!(
+                "Agent {} has already created {}/{} tasks. \
+                 Use wg fail or wg log to explain why more decomposition is needed.",
+                agent_id,
+                count,
+                max_child
+            );
+        }
+    }
+
+    // 2. Task depth limit (enforced when --after is specified)
+    if !after.is_empty() {
+        let max_depth = guardrails.max_task_depth;
+        // The new task's depth = max(depth of each parent) + 1
+        let max_parent_depth = after
+            .iter()
+            .map(|parent_id| graph.task_depth(parent_id))
+            .max()
+            .unwrap_or(0);
+        let new_depth = max_parent_depth + 1;
+        if new_depth > max_depth {
+            anyhow::bail!(
+                "Task would be at depth {} (max: {}). \
+                 Consider creating tasks at the current level instead.",
+                new_depth,
+                max_depth
+            );
+        }
+    }
+
     // Generate ID if not provided
     let task_id = match id {
         Some(id) => {
@@ -241,14 +282,17 @@ pub fn run(
     save_graph(&graph, &path).context("Failed to save graph")?;
     super::notify_graph_changed(dir);
 
-    // Record operation
-    let config = workgraph::config::Config::load_or_default(dir);
+    // Record operation (include agent_id if running in agent context for guardrail tracking)
+    let mut detail = serde_json::json!({ "title": title });
+    if let Some(ref aid) = agent_id {
+        detail["agent_id"] = serde_json::Value::String(aid.clone());
+    }
     let _ = workgraph::provenance::record(
         dir,
         "add_task",
         Some(&task_id),
         assign,
-        serde_json::json!({ "title": title }),
+        detail,
         config.log.rotation_threshold,
     );
 
@@ -452,6 +496,25 @@ fn add_task_directly(
     );
 
     Ok(task_id)
+}
+
+/// Count how many tasks the given agent has created, by scanning the provenance log
+/// for `add_task` operations with a matching `agent_id` in the detail.
+fn count_agent_created_tasks(dir: &Path, agent_id: &str) -> u32 {
+    let entries = match workgraph::provenance::read_all_operations(dir) {
+        Ok(entries) => entries,
+        Err(_) => return 0,
+    };
+    entries
+        .iter()
+        .filter(|e| {
+            e.op == "add_task"
+                && e.detail
+                    .get("agent_id")
+                    .and_then(|v| v.as_str())
+                    .map_or(false, |id| id == agent_id)
+        })
+        .count() as u32
 }
 
 fn generate_id(title: &str, graph: &workgraph::WorkGraph) -> String {

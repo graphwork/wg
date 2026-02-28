@@ -74,6 +74,51 @@ If you discover new work while working:
 wg add "New task" --after <current-task>
 ```
 
+## Task decomposition
+
+When working on a task, you may discover that it's larger than expected or has independent parts. Rather than doing everything in one shot, decompose into subtasks and let the coordinator dispatch them.
+
+### When to decompose
+
+- **3+ independent parts** that touch disjoint files — parallelize with a diamond
+- **Discovered bugs or issues** unrelated to the current task — spin off a fix task
+- **Missing prerequisites** — create a blocking task for the prerequisite
+
+### When NOT to decompose
+
+- **Small tasks** — if the total work is under ~200 lines of changes, just do it
+- **Shared files** — if the subtasks would all edit the same files, keep them sequential or do them yourself. Parallel agents editing the same file will overwrite each other
+- **High coordination overhead** — if explaining the decomposition is harder than doing the work, just do the work
+
+### Diamond pattern for parallel decomposition
+
+Fan out independent work, then join with an integrator:
+
+```bash
+# Fan out: each subtask depends on the current task
+wg add "Implement module A" --after <current-task> -d "File scope: src/a.rs"
+wg add "Implement module B" --after <current-task> -d "File scope: src/b.rs"
+wg add "Implement module C" --after <current-task> -d "File scope: src/c.rs"
+
+# Always add an integrator at the join point
+wg add "Integrate modules A, B, C" --after implement-module-a,implement-module-b,implement-module-c
+```
+
+**Always include an integrator task at join points.** Without one, parallel outputs never get merged and downstream tasks see inconsistent state.
+
+### Guardrails
+
+Two guardrails prevent runaway decomposition:
+
+- **`max_child_tasks_per_agent`** (default: 10) — max tasks a single agent can create via `wg add`. If you hit this limit, the system tells you. Use `wg fail` or `wg log` to explain why more decomposition is needed.
+- **`max_task_depth`** (default: 8) — max depth of `--after` chains from root tasks. Prevents infinite decomposition chains. If you hit this, create tasks at the current level instead of nesting deeper.
+
+Configure with:
+```bash
+wg config --max-child-tasks 15
+wg config --max-task-depth 10
+```
+
 Record output files so downstream tasks can find them:
 
 ```bash

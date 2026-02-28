@@ -41,6 +41,10 @@ pub struct Config {
     /// Replay configuration
     #[serde(default)]
     pub replay: ReplayConfig,
+
+    /// Guardrails for autopoietic task creation
+    #[serde(default)]
+    pub guardrails: GuardrailsConfig,
 }
 
 /// Help display configuration
@@ -104,6 +108,38 @@ impl Default for ReplayConfig {
         Self {
             keep_done_threshold: default_keep_done_threshold(),
             snapshot_agent_output: false,
+        }
+    }
+}
+
+/// Guardrails for autopoietic task creation by agents.
+/// Prevents task explosion when agents create subtasks autonomously.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GuardrailsConfig {
+    /// Maximum tasks a single agent execution can create via `wg add`.
+    /// Enforced when WG_AGENT_ID env var is set. Default: 10.
+    #[serde(default = "default_max_child_tasks_per_agent")]
+    pub max_child_tasks_per_agent: u32,
+
+    /// Maximum depth of task chains (counting --after hops from root).
+    /// Prevents infinite decomposition chains. Default: 8.
+    #[serde(default = "default_max_task_depth")]
+    pub max_task_depth: u32,
+}
+
+fn default_max_child_tasks_per_agent() -> u32 {
+    10
+}
+
+fn default_max_task_depth() -> u32 {
+    8
+}
+
+impl Default for GuardrailsConfig {
+    fn default() -> Self {
+        Self {
+            max_child_tasks_per_agent: default_max_child_tasks_per_agent(),
+            max_task_depth: default_max_task_depth(),
         }
     }
 }

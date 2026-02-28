@@ -962,6 +962,51 @@ impl WorkGraph {
         }
         self.cycle_analysis.as_ref().unwrap()
     }
+
+    /// Compute the depth of a task by walking its `after` dependency chain.
+    ///
+    /// Depth is the length of the longest path from any root task (a task with
+    /// no `after` dependencies) to this task. A root task has depth 0, its
+    /// direct dependents have depth 1, etc.
+    ///
+    /// Returns 0 for unknown task IDs or tasks with no dependencies.
+    pub fn task_depth(&self, task_id: &str) -> u32 {
+        let mut memo: HashMap<String, u32> = HashMap::new();
+        self.task_depth_inner(task_id, &mut memo, &mut HashSet::new())
+    }
+
+    fn task_depth_inner(
+        &self,
+        task_id: &str,
+        memo: &mut HashMap<String, u32>,
+        visiting: &mut HashSet<String>,
+    ) -> u32 {
+        if let Some(&cached) = memo.get(task_id) {
+            return cached;
+        }
+
+        // Cycle detection: if we're already visiting this node, return 0
+        if !visiting.insert(task_id.to_string()) {
+            return 0;
+        }
+
+        let depth = match self.get_task(task_id) {
+            Some(task) if !task.after.is_empty() => {
+                let max_parent_depth = task
+                    .after
+                    .iter()
+                    .map(|parent_id| self.task_depth_inner(parent_id, memo, visiting))
+                    .max()
+                    .unwrap_or(0);
+                max_parent_depth + 1
+            }
+            _ => 0,
+        };
+
+        visiting.remove(task_id);
+        memo.insert(task_id.to_string(), depth);
+        depth
+    }
 }
 
 /// Evaluate a guard condition against the current graph state.

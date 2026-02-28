@@ -112,17 +112,54 @@ pub const ETHOS_SECTION: &str = "\
 You are not isolated. The graph is a shared medium — artifacts you write are read by other agents, \
 tasks you create get dispatched to other agents. You are one node in a living system.
 
-**Your job is not just to complete your task.** It is to leave the system better than you found it:
-- Found a bug? `wg add \"Fix: ...\" --after {{task_id}} -d \"Found while working on {{task_id}}\"`
-- Documentation wrong? Fix it, or flag it with `wg add`
-- Task too large? Decompose it into subtasks
-- Follow-up needed? `wg add \"Verify: ...\" --after {{task_id}}`
+**Your job is not just to complete your task.** It is to leave the system better than you found it \
+and to grow the graph where it needs growing:
+- **Task too large?** Decompose it — fan out independent parts as parallel subtasks, \
+add a synthesis task to integrate the results
+- **Found a bug or missing doc?** `wg add \"Fix: ...\" --after {{task_id}} -d \"Found while working on {{task_id}}\"`
+- **Prerequisite missing?** Create a blocking task: `wg add \"Prereq: ...\" && wg add \"{{task_id}}\" --after prereq-id`
+- **Follow-up needed?** `wg add \"Verify: ...\" --after {{task_id}}`
 
 The coordinator dispatches anything you add. You don't need permission.
 
 **The loop:** spec \u{2192} implement \u{2192} verify \u{2192} improve \u{2192} spec. \
 You may be any node. Use `wg context` to see what came before. \
 Use `wg add` to create what comes next.\n";
+
+/// Autopoietic guidance section: concrete task decomposition patterns and guardrails.
+/// Injected at task+ scope to teach agents when and how to create subtasks.
+/// Contains {{task_id}}, {{max_child_tasks}}, and {{max_task_depth}} placeholders.
+pub const AUTOPOIETIC_GUIDANCE: &str = "\
+## Task Decomposition
+
+You are encouraged to create new tasks as you discover work. \
+The coordinator will dispatch them automatically.
+
+### When to decompose
+- Your task has 3+ independent parts that could run in parallel
+- You discover a bug, missing doc, or needed refactor outside your scope
+- A prerequisite doesn't exist yet and needs to be created first
+- Your task is too large for a single agent session
+
+### How to decompose
+- **Fan out parallel work**: \
+`wg add 'Part A' --after {{task_id}}` and `wg add 'Part B' --after {{task_id}}`
+- **Create a synthesis task**: After fan-out, add an integrator: \
+`wg add 'Integrate results' --after part-a,part-b`
+- **Pipeline decomposition**: \
+`wg add 'Step 1' --after {{task_id}} && wg add 'Step 2' --after step-1`
+- **Bug/issue found**: \
+`wg add 'Fix: ...' --after {{task_id}} -d 'Found while working on {{task_id}}'`
+
+### Guardrails
+- You can create up to **{{max_child_tasks}}** subtasks per session (configurable via `wg config`)
+- Task chains have a maximum depth of **{{max_task_depth}}** levels
+- Always include an integrator at join points — don't leave parallel work unmerged
+
+### When NOT to decompose
+- The task is small and well-scoped (just do it)
+- Decomposition overhead exceeds the work itself
+- The subtasks would all modify the same files (serialize instead)\n";
 
 /// Hint for task+ scopes about using wg context/show to get more info (R2).
 const WG_CONTEXT_HINT: &str = "\
@@ -218,6 +255,7 @@ pub fn build_prompt(vars: &TemplateVars, scope: ContextScope, ctx: &ScopeContext
     if scope >= ContextScope::Task {
         parts.push(vars.apply(REQUIRED_WORKFLOW_SECTION));
         parts.push(vars.apply(ETHOS_SECTION));
+        parts.push(vars.apply(AUTOPOIETIC_GUIDANCE));
         parts.push(GRAPH_PATTERNS_SECTION.to_string());
         parts.push(REUSABLE_FUNCTIONS_SECTION.to_string());
         parts.push(vars.apply(CRITICAL_WG_CLI_SECTION));
@@ -265,6 +303,8 @@ pub struct TemplateVars {
     pub model: String,
     pub task_loop_info: String,
     pub task_verify: Option<String>,
+    pub max_child_tasks: u32,
+    pub max_task_depth: u32,
 }
 
 impl TemplateVars {
@@ -317,6 +357,12 @@ impl TemplateVars {
             String::new()
         };
 
+        // Load guardrails config for autopoietic limits
+        let guardrails = workgraph_dir
+            .and_then(|dir| crate::config::Config::load(dir).ok())
+            .map(|cfg| cfg.guardrails)
+            .unwrap_or_default();
+
         Self {
             task_id: task.id.clone(),
             task_title: task.title.clone(),
@@ -328,6 +374,8 @@ impl TemplateVars {
             model: task.model.clone().unwrap_or_default(),
             task_loop_info,
             task_verify: task.verify.clone(),
+            max_child_tasks: guardrails.max_child_tasks_per_agent,
+            max_task_depth: guardrails.max_task_depth,
         }
     }
 
@@ -455,6 +503,8 @@ impl TemplateVars {
             .replace("{{model}}", &self.model)
             .replace("{{task_loop_info}}", &self.task_loop_info)
             .replace("{{task_verify}}", self.task_verify.as_deref().unwrap_or(""))
+            .replace("{{max_child_tasks}}", &self.max_child_tasks.to_string())
+            .replace("{{max_task_depth}}", &self.max_task_depth.to_string())
     }
 }
 

@@ -648,6 +648,117 @@ wg func apply impl-feature --from alice:impl-feature --input feature_name=auth
 
 ---
 
+## 12. Autopoietic Task Generation
+
+Agents should leave the system better than they found it. Beyond completing your assigned task, you can — and should — create follow-up work when you discover it. This is **autopoietic task generation**: the graph grows organically as agents encounter reality.
+
+### 12.1 The Philosophy
+
+A task description is a hypothesis. When you start working, you discover truth: missing prerequisites, unexpected complexity, bugs in adjacent code, documentation gaps. Rather than ignoring these discoveries or trying to fix everything yourself, encode them as new tasks. The coordinator will dispatch them to the right agent at the right time.
+
+```bash
+# Found a bug while implementing a feature
+wg add "Fix: race condition in connection pool" --after <current-task> \
+  -d "Found while working on <current-task>: connection pool doesn't handle concurrent close()"
+
+# Documentation is wrong
+wg add "Update API docs for auth endpoint" --after <current-task> \
+  -d "Discovered stale docs during implementation — endpoint signature changed"
+
+# Missing prerequisite
+wg add "Add retry logic to HTTP client" --after <current-task> \
+  -d "Current task needs reliable HTTP calls but client has no retry support"
+```
+
+### 12.2 Decomposition Patterns
+
+#### Simple fan-out (diamond)
+
+When your task has 3+ independent parts touching **disjoint files**:
+
+```bash
+# You're working on current-task. Decompose:
+wg add "Implement parser" --after <current-task> -d "File scope: src/parser.rs"
+wg add "Implement formatter" --after <current-task> -d "File scope: src/formatter.rs"
+wg add "Implement validator" --after <current-task> -d "File scope: src/validator.rs"
+
+# Always add an integrator at the join point
+wg add "Integrate parser + formatter + validator" \
+  --after implement-parser,implement-formatter,implement-validator \
+  -d "Wire modules together in src/lib.rs, run full test suite"
+```
+
+#### Pipeline decomposition
+
+When parts must be sequential (shared files or ordering constraints):
+
+```bash
+wg add "Define data model" --after <current-task> -d "Creates src/models.rs"
+wg add "Implement storage layer" --after define-data-model -d "Uses models in src/storage.rs"
+wg add "Add API endpoints" --after implement-storage-layer -d "Exposes storage via src/api.rs"
+```
+
+#### Discovered work (not decomposition)
+
+When you find issues unrelated to your current task:
+
+```bash
+# Spin off independent work — no --after needed if it's truly independent
+wg add "Fix: typo in error messages" -d "Found across src/errors.rs"
+
+# Or chain it after your task if it should happen later
+wg add "Refactor: extract shared validation logic" --after <current-task> \
+  -d "Three modules duplicate the same validation — extract to src/validate.rs"
+```
+
+### 12.3 Guardrails
+
+Two guardrails prevent runaway task creation:
+
+| Guardrail | Default | What it prevents | Error message |
+|-----------|---------|-----------------|---------------|
+| `max_child_tasks_per_agent` | 10 | A single agent creating unbounded tasks | "Agent {id} has already created {n}/{max} tasks" |
+| `max_task_depth` | 8 | Infinite decomposition chains (tasks creating subtasks creating sub-subtasks...) | "Task would be at depth {d} (max: {max})" |
+
+**Rationale:**
+- **Per-agent limit** catches agents stuck in a decomposition loop. If an agent genuinely needs more than 10 subtasks, it should `wg fail` with an explanation — the human can raise the limit.
+- **Depth limit** prevents vertical explosion. Real work rarely needs more than 8 levels of nesting. If you hit this, create tasks at the current level instead of nesting deeper.
+
+Configure via:
+```bash
+wg config --max-child-tasks 15    # raise per-agent limit
+wg config --max-task-depth 10     # raise depth limit
+```
+
+Guardrails only apply when `WG_AGENT_ID` is set (agent context). Human-initiated `wg add` commands bypass the per-agent limit.
+
+### 12.4 Decision Tree: Should I Decompose?
+
+```
+Is the remaining work small (< ~200 lines of changes)?
+├─ YES → Just do it. Don't decompose.
+└─ NO → Does the work have 3+ independent parts?
+         ├─ NO → Do the parts share files?
+         │        ├─ YES → Pipeline (sequential tasks)
+         │        └─ NO  → Consider diamond if parts are truly independent
+         └─ YES → Do the parts touch disjoint files?
+                   ├─ YES → Diamond pattern (parallel + integrator)
+                   └─ NO  → Pipeline, or do it yourself if coordination
+                            overhead exceeds the work
+```
+
+### 12.5 Anti-Patterns
+
+| Anti-pattern | Problem | Fix |
+|--------------|---------|-----|
+| **Too many tiny tasks** | Coordination overhead exceeds work. 20 tasks for a 50-line change. | Only decompose when the parts are substantial |
+| **Decomposing shared-file work** | Parallel agents edit the same file → overwrites | Use pipeline (sequential) or do it yourself |
+| **Forgetting the integrator** | Diamond with no join → parallel outputs never merged | Always `wg add "Integrate..." --after worker-a,worker-b,...` |
+| **Deep nesting** | Subtasks create sub-subtasks create sub-sub-subtasks | Keep decomposition shallow; create siblings, not descendants |
+| **Decomposing instead of doing** | Creating tasks to avoid doing work you should just do | If total work is small and straightforward, do it |
+
+---
+
 ## Quick Reference
 
 **Build a pipeline:**

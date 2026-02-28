@@ -82,6 +82,8 @@ fn test_template_vars() -> TemplateVars {
         model: "claude-sonnet-4-20250514".into(),
         task_loop_info: "".into(),
         task_verify: None,
+        max_child_tasks: 10,
+        max_task_depth: 8,
     }
 }
 
