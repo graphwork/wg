@@ -76,7 +76,75 @@ pub fn run(workgraph_dir: &Path) -> Result<()> {
         true
     };
 
-    // 3. Enable auto_assign and auto_evaluate in config
+    // 3. Compose special agents from their seeded roles and tradeoffs
+    let special_roles = agency::special_agent_roles();
+    let special_tradeoffs = agency::special_agent_tradeoffs();
+
+    let special_agents: Vec<(&str, &str, &str)> = vec![
+        ("Assigner", "Assigner Balanced", "Default Assigner"),
+        ("Evaluator", "Evaluator Balanced", "Default Evaluator"),
+        ("Evolver", "Evolver Balanced", "Default Evolver"),
+        ("Agent Creator", "Creator Unconstrained", "Default Creator"),
+    ];
+
+    let mut special_agent_ids: Vec<(&str, String)> = Vec::new();
+
+    for (role_name, tradeoff_name, agent_name) in &special_agents {
+        let role = special_roles
+            .iter()
+            .find(|r| r.name == *role_name)
+            .ok_or_else(|| anyhow::anyhow!("{} role missing from special_agent_roles()", role_name))?;
+        let tradeoff = special_tradeoffs
+            .iter()
+            .find(|t| t.name == *tradeoff_name)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "{} tradeoff missing from special_agent_tradeoffs()",
+                    tradeoff_name
+                )
+            })?;
+
+        let sa_id = agency::content_hash_agent(&role.id, &tradeoff.id);
+        let sa_path = agents_dir.join(format!("{}.yaml", sa_id));
+
+        if sa_path.exists() {
+            println!(
+                "Special agent {} already exists ({}).",
+                agent_name,
+                agency::short_hash(&sa_id)
+            );
+        } else {
+            let agent = Agent {
+                id: sa_id.clone(),
+                role_id: role.id.clone(),
+                tradeoff_id: tradeoff.id.clone(),
+                name: agent_name.to_string(),
+                performance: PerformanceRecord::default(),
+                lineage: Lineage::default(),
+                capabilities: vec![],
+                rate: None,
+                capacity: None,
+                trust_level: TrustLevel::default(),
+                contact: None,
+                executor: "claude".to_string(),
+                deployment_history: vec![],
+                attractor_weight: 0.5,
+                staleness_flags: vec![],
+            };
+
+            agency::save_agent(&agent, &agents_dir)
+                .with_context(|| format!("Failed to save special agent {}", agent_name))?;
+            println!(
+                "Created special agent: {} ({}).",
+                agent_name,
+                agency::short_hash(&sa_id)
+            );
+        }
+
+        special_agent_ids.push((role_name, sa_id));
+    }
+
+    // 4. Enable auto_assign and auto_evaluate in config
     let mut config = Config::load(workgraph_dir)?;
     let mut config_changed = false;
 
@@ -100,6 +168,21 @@ pub fn run(workgraph_dir: &Path) -> Result<()> {
         config_changed = true;
     }
 
+    // Wire special agent hashes into config
+    for (role_name, sa_id) in &special_agent_ids {
+        let config_field = match *role_name {
+            "Assigner" => &mut config.agency.assigner_agent,
+            "Evaluator" => &mut config.agency.evaluator_agent,
+            "Evolver" => &mut config.agency.evolver_agent,
+            "Agent Creator" => &mut config.agency.creator_agent,
+            _ => continue,
+        };
+        if config_field.as_deref() != Some(sa_id.as_str()) {
+            *config_field = Some(sa_id.clone());
+            config_changed = true;
+        }
+    }
+
     if config_changed {
         config
             .save(workgraph_dir)
@@ -107,7 +190,7 @@ pub fn run(workgraph_dir: &Path) -> Result<()> {
         println!("Enabled auto_assign and auto_evaluate in config.");
     }
 
-    // 4. Register the creator-pipeline function if it doesn't exist
+    // 5. Register the creator-pipeline function if it doesn't exist
     let func_dir = workgraph::function::functions_dir(workgraph_dir);
     let pipeline_path = func_dir.join("creator-pipeline.yaml");
     if !pipeline_path.exists() {
@@ -120,6 +203,8 @@ pub fn run(workgraph_dir: &Path) -> Result<()> {
     }
 
     // Summary
+    let special_agents_created = special_agent_ids.len();
+    let _ = special_agents_created; // always 4, used for tracking
     if roles_created == 0 && tradeoffs_created == 0 && !agent_created && !config_changed {
         println!("Agency already initialized.");
     } else {
@@ -180,15 +265,52 @@ mod tests {
             outcome_count
         );
 
-        // Verify agent was created
+        // Verify agents were created (1 default + 4 special)
         let agents_dir = wg_dir.join("agency").join("cache/agents");
         let agent_count = std::fs::read_dir(&agents_dir).unwrap().count();
-        assert_eq!(agent_count, 1, "Expected 1 default agent");
+        assert_eq!(
+            agent_count, 5,
+            "Expected 5 agents (1 default + 4 special), got {}",
+            agent_count
+        );
 
         // Verify config was updated
         let config = Config::load(&wg_dir).unwrap();
         assert!(config.agency.auto_assign);
         assert!(config.agency.auto_evaluate);
+
+        // Verify special agent hashes are set in config
+        assert!(
+            config.agency.assigner_agent.is_some(),
+            "assigner_agent should be set"
+        );
+        assert!(
+            config.agency.evaluator_agent.is_some(),
+            "evaluator_agent should be set"
+        );
+        assert!(
+            config.agency.evolver_agent.is_some(),
+            "evolver_agent should be set"
+        );
+        assert!(
+            config.agency.creator_agent.is_some(),
+            "creator_agent should be set"
+        );
+
+        // Verify each special agent hash points to an existing agent file
+        for hash in [
+            config.agency.assigner_agent.as_ref().unwrap(),
+            config.agency.evaluator_agent.as_ref().unwrap(),
+            config.agency.evolver_agent.as_ref().unwrap(),
+            config.agency.creator_agent.as_ref().unwrap(),
+        ] {
+            let agent_path = agents_dir.join(format!("{}.yaml", hash));
+            assert!(
+                agent_path.exists(),
+                "Agent file for hash {} should exist",
+                hash
+            );
+        }
     }
 
     #[test]
@@ -201,9 +323,25 @@ mod tests {
         run(&wg_dir).unwrap();
         run(&wg_dir).unwrap();
 
-        // Should still have exactly 1 agent
+        // Should still have exactly 5 agents (1 default + 4 special)
         let agents_dir = wg_dir.join("agency").join("cache/agents");
         let agent_count = std::fs::read_dir(&agents_dir).unwrap().count();
-        assert_eq!(agent_count, 1);
+        assert_eq!(
+            agent_count, 5,
+            "Expected 5 agents after idempotent re-run, got {}",
+            agent_count
+        );
+
+        // Config hashes should be stable across runs
+        let config1 = Config::load(&wg_dir).unwrap();
+        run(&wg_dir).unwrap();
+        let config2 = Config::load(&wg_dir).unwrap();
+        assert_eq!(config1.agency.assigner_agent, config2.agency.assigner_agent);
+        assert_eq!(
+            config1.agency.evaluator_agent,
+            config2.agency.evaluator_agent
+        );
+        assert_eq!(config1.agency.evolver_agent, config2.agency.evolver_agent);
+        assert_eq!(config1.agency.creator_agent, config2.agency.creator_agent);
     }
 }
