@@ -9,12 +9,12 @@ fn agency_dir(workgraph_dir: &Path) -> Result<std::path::PathBuf> {
     Ok(dir)
 }
 
-/// Get the motivations subdirectory.
-fn motivations_dir(workgraph_dir: &Path) -> Result<std::path::PathBuf> {
+/// Get the tradeoffs subdirectory.
+fn tradeoffs_dir(workgraph_dir: &Path) -> Result<std::path::PathBuf> {
     Ok(agency_dir(workgraph_dir)?.join("primitives/tradeoffs"))
 }
 
-/// `wg motivation add <name> --accept ... --reject ... [--description ...]`
+/// `wg tradeoff add <name> --accept ... --reject ... [--description ...]`
 pub fn run_add(
     workgraph_dir: &Path,
     name: &str,
@@ -22,9 +22,9 @@ pub fn run_add(
     reject: &[String],
     description: Option<&str>,
 ) -> Result<()> {
-    let dir = motivations_dir(workgraph_dir)?;
+    let dir = tradeoffs_dir(workgraph_dir)?;
 
-    let motivation = agency::build_tradeoff(
+    let tradeoff = agency::build_tradeoff(
         name,
         description.unwrap_or(""),
         accept.to_vec(),
@@ -32,31 +32,31 @@ pub fn run_add(
     );
 
     // Check for duplicates (same content = same hash)
-    let mot_path = dir.join(format!("{}.yaml", motivation.id));
-    if mot_path.exists() {
+    let tradeoff_path = dir.join(format!("{}.yaml", tradeoff.id));
+    if tradeoff_path.exists() {
         anyhow::bail!(
-            "Motivation with identical content already exists ({})",
-            agency::short_hash(&motivation.id)
+            "Tradeoff with identical content already exists ({})",
+            agency::short_hash(&tradeoff.id)
         );
     }
 
-    let path = agency::save_tradeoff(&motivation, &dir)?;
+    let path = agency::save_tradeoff(&tradeoff, &dir)?;
     println!(
-        "Created motivation: {} ({})",
+        "Created tradeoff: {} ({})",
         name,
-        agency::short_hash(&motivation.id)
+        agency::short_hash(&tradeoff.id)
     );
     println!("  File: {}", path.display());
     Ok(())
 }
 
-/// `wg motivation list [--json]`
+/// `wg tradeoff list [--json]`
 pub fn run_list(workgraph_dir: &Path, json: bool) -> Result<()> {
-    let dir = motivations_dir(workgraph_dir)?;
-    let motivations = agency::load_all_tradeoffs(&dir)?;
+    let dir = tradeoffs_dir(workgraph_dir)?;
+    let tradeoffs = agency::load_all_tradeoffs(&dir)?;
 
     if json {
-        let output: Vec<serde_json::Value> = motivations
+        let output: Vec<serde_json::Value> = tradeoffs
             .iter()
             .map(|m| {
                 serde_json::json!({
@@ -71,11 +71,11 @@ pub fn run_list(workgraph_dir: &Path, json: bool) -> Result<()> {
             })
             .collect();
         println!("{}", serde_json::to_string_pretty(&output)?);
-    } else if motivations.is_empty() {
-        println!("No motivations defined. Use 'wg motivation add' to create one.");
+    } else if tradeoffs.is_empty() {
+        println!("No tradeoffs defined. Use 'wg tradeoff add' to create one.");
     } else {
-        println!("Motivations:\n");
-        for m in &motivations {
+        println!("Tradeoffs:\n");
+        for m in &tradeoffs {
             let score_str = m
                 .performance
                 .avg_score
@@ -96,39 +96,39 @@ pub fn run_list(workgraph_dir: &Path, json: bool) -> Result<()> {
     Ok(())
 }
 
-/// `wg motivation show <id> [--json]`
+/// `wg tradeoff show <id> [--json]`
 pub fn run_show(workgraph_dir: &Path, id: &str, json: bool) -> Result<()> {
-    let dir = motivations_dir(workgraph_dir)?;
-    let motivation = agency::find_tradeoff_by_prefix(&dir, id)
-        .with_context(|| format!("Failed to find motivation '{}'", id))?;
+    let dir = tradeoffs_dir(workgraph_dir)?;
+    let tradeoff = agency::find_tradeoff_by_prefix(&dir, id)
+        .with_context(|| format!("Failed to find tradeoff '{}'", id))?;
 
     if json {
-        let yaml_str = serde_yaml::to_string(&motivation)?;
+        let yaml_str = serde_yaml::to_string(&tradeoff)?;
         // Convert YAML to JSON for --json output
         let value: serde_json::Value = serde_yaml::from_str(&yaml_str)?;
         println!("{}", serde_json::to_string_pretty(&value)?);
     } else {
         println!(
-            "Motivation: {} ({})",
-            motivation.name,
-            agency::short_hash(&motivation.id)
+            "Tradeoff: {} ({})",
+            tradeoff.name,
+            agency::short_hash(&tradeoff.id)
         );
-        println!("ID: {}", motivation.id);
-        if !motivation.description.is_empty() {
-            println!("Description: {}", motivation.description);
+        println!("ID: {}", tradeoff.id);
+        if !tradeoff.description.is_empty() {
+            println!("Description: {}", tradeoff.description);
         }
         println!();
 
-        if !motivation.acceptable_tradeoffs.is_empty() {
+        if !tradeoff.acceptable_tradeoffs.is_empty() {
             println!("Acceptable tradeoffs:");
-            for t in &motivation.acceptable_tradeoffs {
+            for t in &tradeoff.acceptable_tradeoffs {
                 println!("  + {}", t);
             }
         }
 
-        if !motivation.unacceptable_tradeoffs.is_empty() {
+        if !tradeoff.unacceptable_tradeoffs.is_empty() {
             println!("Unacceptable tradeoffs:");
-            for t in &motivation.unacceptable_tradeoffs {
+            for t in &tradeoff.unacceptable_tradeoffs {
                 println!("  - {}", t);
             }
         }
@@ -136,8 +136,8 @@ pub fn run_show(workgraph_dir: &Path, id: &str, json: bool) -> Result<()> {
         println!();
         println!(
             "Performance: {} tasks, avg score: {}",
-            motivation.performance.task_count,
-            motivation
+            tradeoff.performance.task_count,
+            tradeoff
                 .performance
                 .avg_score
                 .map(|s| format!("{:.2}", s))
@@ -148,18 +148,18 @@ pub fn run_show(workgraph_dir: &Path, id: &str, json: bool) -> Result<()> {
     Ok(())
 }
 
-/// `wg motivation lineage <id> [--json]`
+/// `wg tradeoff lineage <id> [--json]`
 pub fn run_lineage(workgraph_dir: &Path, id: &str, json: bool) -> Result<()> {
-    let dir = motivations_dir(workgraph_dir)?;
+    let dir = tradeoffs_dir(workgraph_dir)?;
 
     // Resolve prefix to full ID first
-    let motivation = agency::find_tradeoff_by_prefix(&dir, id)
-        .with_context(|| format!("Failed to find motivation '{}'", id))?;
+    let tradeoff = agency::find_tradeoff_by_prefix(&dir, id)
+        .with_context(|| format!("Failed to find tradeoff '{}'", id))?;
 
-    let ancestry = agency::tradeoff_ancestry(&motivation.id, &dir)?;
+    let ancestry = agency::tradeoff_ancestry(&tradeoff.id, &dir)?;
 
     if ancestry.is_empty() {
-        anyhow::bail!("Motivation '{}' not found", id);
+        anyhow::bail!("Tradeoff '{}' not found", id);
     }
 
     if json {
@@ -182,7 +182,7 @@ pub fn run_lineage(workgraph_dir: &Path, id: &str, json: bool) -> Result<()> {
 
     let target = &ancestry[0];
     println!(
-        "Lineage for motivation: {} ({})",
+        "Lineage for tradeoff: {} ({})",
         agency::short_hash(&target.id),
         target.name
     );
@@ -220,27 +220,27 @@ pub fn run_lineage(workgraph_dir: &Path, id: &str, json: bool) -> Result<()> {
 
     if ancestry.len() == 1 && ancestry[0].parent_ids.is_empty() {
         println!();
-        println!("This motivation has no evolutionary history (manually created).");
+        println!("This tradeoff has no evolutionary history (manually created).");
     }
 
     Ok(())
 }
 
-/// `wg motivation edit <id>` - opens in $EDITOR
+/// `wg tradeoff edit <id>` - opens in $EDITOR
 ///
-/// After editing, the motivation is re-hashed. If the content changed, the file is
+/// After editing, the tradeoff is re-hashed. If the content changed, the file is
 /// renamed to the new hash and the old file is removed.
 pub fn run_edit(workgraph_dir: &Path, id: &str) -> Result<()> {
-    let dir = motivations_dir(workgraph_dir)?;
-    let motivation = agency::find_tradeoff_by_prefix(&dir, id)
-        .with_context(|| format!("Failed to find motivation '{}'", id))?;
+    let dir = tradeoffs_dir(workgraph_dir)?;
+    let tradeoff = agency::find_tradeoff_by_prefix(&dir, id)
+        .with_context(|| format!("Failed to find tradeoff '{}'", id))?;
 
-    let mot_path = dir.join(format!("{}.yaml", motivation.id));
+    let tradeoff_path = dir.join(format!("{}.yaml", tradeoff.id));
 
     let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
 
     let status = std::process::Command::new(&editor)
-        .arg(&mot_path)
+        .arg(&tradeoff_path)
         .status()
         .with_context(|| format!("Failed to launch editor '{}'", editor))?;
 
@@ -249,8 +249,8 @@ pub fn run_edit(workgraph_dir: &Path, id: &str) -> Result<()> {
     }
 
     // Validate and re-hash
-    let mut edited = agency::load_tradeoff(&mot_path)
-        .context("Edited file is not valid motivation YAML - changes may be malformed")?;
+    let mut edited = agency::load_tradeoff(&tradeoff_path)
+        .context("Edited file is not valid tradeoff YAML - changes may be malformed")?;
 
     let new_id = agency::content_hash_tradeoff(
         &edited.acceptable_tradeoffs,
@@ -259,35 +259,35 @@ pub fn run_edit(workgraph_dir: &Path, id: &str) -> Result<()> {
     );
     if new_id != edited.id {
         // Content changed — rename to new hash
-        let old_path = mot_path;
+        let old_path = tradeoff_path;
         edited.id = new_id;
         agency::save_tradeoff(&edited, &dir)?;
         std::fs::remove_file(&old_path).ok();
         println!(
-            "Motivation content changed, new ID: {}",
+            "Tradeoff content changed, new ID: {}",
             agency::short_hash(&edited.id)
         );
     } else {
         // Mutable fields (name, etc.) may have changed; re-save in place
         agency::save_tradeoff(&edited, &dir)?;
-        println!("Motivation '{}' updated", agency::short_hash(&edited.id));
+        println!("Tradeoff '{}' updated", agency::short_hash(&edited.id));
     }
 
     Ok(())
 }
 
-/// `wg motivation rm <id>`
+/// `wg tradeoff rm <id>`
 pub fn run_rm(workgraph_dir: &Path, id: &str) -> Result<()> {
-    let dir = motivations_dir(workgraph_dir)?;
-    let motivation = agency::find_tradeoff_by_prefix(&dir, id)
-        .with_context(|| format!("Failed to find motivation '{}'", id))?;
+    let dir = tradeoffs_dir(workgraph_dir)?;
+    let tradeoff = agency::find_tradeoff_by_prefix(&dir, id)
+        .with_context(|| format!("Failed to find tradeoff '{}'", id))?;
 
-    let path = dir.join(format!("{}.yaml", motivation.id));
-    std::fs::remove_file(&path).context("Failed to remove motivation file")?;
+    let path = dir.join(format!("{}.yaml", tradeoff.id));
+    std::fs::remove_file(&path).context("Failed to remove tradeoff file")?;
     println!(
-        "Removed motivation: {} ({})",
-        motivation.name,
-        agency::short_hash(&motivation.id)
+        "Removed tradeoff: {} ({})",
+        tradeoff.name,
+        agency::short_hash(&tradeoff.id)
     );
     Ok(())
 }
@@ -326,7 +326,7 @@ mod tests {
         )
         .unwrap();
 
-        let dir = motivations_dir(tmp.path()).unwrap();
+        let dir = tradeoffs_dir(tmp.path()).unwrap();
         let all = agency::load_all_tradeoffs(&dir).unwrap();
         assert_eq!(all.len(), 1);
         // ID is now a content hash, not a slug
@@ -354,6 +354,7 @@ mod tests {
         assert!(
             err.contains("not found")
                 || err.contains("Failed to find")
+                || err.contains("No tradeoff matching")
                 || err.contains("No motivation matching"),
             "unexpected error: {}",
             err
@@ -373,7 +374,7 @@ mod tests {
         .unwrap();
 
         // Look up by full hash
-        let dir = motivations_dir(tmp.path()).unwrap();
+        let dir = tradeoffs_dir(tmp.path()).unwrap();
         let all = agency::load_all_tradeoffs(&dir).unwrap();
         let full_id = &all[0].id;
         let result = run_show(tmp.path(), full_id, false);
@@ -390,7 +391,7 @@ mod tests {
         let tmp = setup();
         run_add(tmp.path(), "Temp Motivation", &[], &[], None).unwrap();
 
-        let dir = motivations_dir(tmp.path()).unwrap();
+        let dir = tradeoffs_dir(tmp.path()).unwrap();
         let all = agency::load_all_tradeoffs(&dir).unwrap();
         assert_eq!(all.len(), 1);
         let full_id = all[0].id.clone();
@@ -408,6 +409,7 @@ mod tests {
         assert!(
             err.contains("not found")
                 || err.contains("Failed to find")
+                || err.contains("No tradeoff matching")
                 || err.contains("No motivation matching"),
             "unexpected error: {}",
             err
@@ -440,7 +442,7 @@ mod tests {
     fn test_show_json() {
         let tmp = setup();
         run_add(tmp.path(), "Test Mot", &[], &[], Some("desc")).unwrap();
-        let dir = motivations_dir(tmp.path()).unwrap();
+        let dir = tradeoffs_dir(tmp.path()).unwrap();
         let all = agency::load_all_tradeoffs(&dir).unwrap();
         let result = run_show(tmp.path(), &all[0].id, true);
         assert!(result.is_ok());

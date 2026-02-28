@@ -314,7 +314,7 @@ pub struct EvolverOutput {
     pub summary: Option<String>,
 }
 
-/// Run `wg evolve` — trigger an evolution cycle on agency roles and motivations.
+/// Run `wg evolve` — trigger an evolution cycle on agency roles and tradeoffs.
 pub fn run(
     dir: &Path,
     dry_run: bool,
@@ -325,12 +325,12 @@ pub fn run(
 ) -> Result<()> {
     let agency_dir = dir.join("agency");
     let roles_dir = agency_dir.join("cache/roles");
-    let motivations_dir = agency_dir.join("primitives/tradeoffs");
+    let tradeoffs_dir = agency_dir.join("primitives/tradeoffs");
     let evals_dir = agency_dir.join("evaluations");
     let skills_dir = agency_dir.join("evolver-skills");
 
     // Validate agency exists
-    if !roles_dir.exists() || !motivations_dir.exists() {
+    if !roles_dir.exists() || !tradeoffs_dir.exists() {
         bail!("Agency not initialized. Run `wg agency init` first.");
     }
 
@@ -356,8 +356,8 @@ pub fn run(
 
     // Load all agency data
     let mut roles = agency::load_all_roles(&roles_dir).context("Failed to load roles")?;
-    let mut motivations =
-        agency::load_all_tradeoffs(&motivations_dir).context("Failed to load motivations")?;
+    let mut tradeoffs =
+        agency::load_all_tradeoffs(&tradeoffs_dir).context("Failed to load tradeoffs")?;
     let all_evaluations =
         agency::load_all_evaluations(&evals_dir).context("Failed to load evaluations")?;
 
@@ -366,7 +366,7 @@ pub fn run(
     let all_org_evaluations = agency::load_all_org_evaluations_or_warn(&org_evals_dir);
 
     // Filter out evaluations from human agents — their work quality isn't a
-    // reflection of a role+motivation prompt, so including them would pollute
+    // reflection of a role+tradeoff prompt, so including them would pollute
     // the evolution signal.
     let agents_dir = agency_dir.join("cache/agents");
     let agents = agency::load_all_agents_or_warn(&agents_dir);
@@ -384,8 +384,8 @@ pub fn run(
         .filter(|e| e.agent_id.is_empty() || !human_agent_ids.contains(e.agent_id.as_str()))
         .collect();
 
-    if roles.is_empty() && motivations.is_empty() {
-        bail!("No roles or motivations found. Run `wg agency init` to seed starters.");
+    if roles.is_empty() && tradeoffs.is_empty() {
+        bail!("No roles or tradeoffs found. Run `wg agency init` to seed starters.");
     }
 
     // Load evolver skill documents
@@ -402,7 +402,7 @@ pub fn run(
 
     // Build performance summary (includes org-level scores blended via org_weight)
     let perf_summary = build_performance_summary(
-        &roles, &motivations, &evaluations, &org_evaluations, &config,
+        &roles, &tradeoffs, &evaluations, &org_evaluations, &config,
     );
 
     // Build the evolver prompt
@@ -413,7 +413,7 @@ pub fn run(
         budget,
         &config,
         &roles,
-        &motivations,
+        &tradeoffs,
         &agency_dir,
     );
 
@@ -429,7 +429,7 @@ pub fn run(
                 "model": model,
                 "run_id": run_id,
                 "roles": roles.len(),
-                "motivations": motivations.len(),
+                "tradeoffs": tradeoffs.len(),
                 "evaluations": evaluations.len(),
                 "skill_documents": skill_docs.len(),
                 "prompt_length": prompt.len(),
@@ -447,7 +447,7 @@ pub fn run(
             println!("Model:           {}", model);
             println!("Run ID:          {}", run_id);
             println!("Roles:           {}", roles.len());
-            println!("Motivations:     {}", motivations.len());
+            println!("Tradeoffs:       {}", tradeoffs.len());
             println!("Evaluations:     {}", evaluations.len());
             println!("Skill docs:      {}", skill_docs.len());
             println!("Prompt length:   {} chars", prompt.len());
@@ -528,7 +528,7 @@ pub fn run(
         return Ok(());
     }
 
-    // Determine evolver's own role/motivation IDs for self-mutation detection
+    // Determine evolver's own role/tradeoff IDs for self-mutation detection
     let evolver_entity_ids: HashSet<String> = {
         let mut ids = HashSet::new();
         if let Some(ref agent_hash) = config.agency.evolver_agent {
@@ -550,7 +550,7 @@ pub fn run(
 
     for op in &operations {
         // Self-mutation safety: operations targeting the evolver's own
-        // role or motivation are deferred to a verified workgraph task
+        // role or tradeoff are deferred to a verified workgraph task
         // that requires human approval.
         if !evolver_entity_ids.is_empty()
             && let Some(ref target) = op.target_id
@@ -636,10 +636,10 @@ pub fn run(
         match apply_operation(
             op,
             &roles,
-            &motivations,
+            &tradeoffs,
             actual_run_id,
             &roles_dir,
-            &motivations_dir,
+            &tradeoffs_dir,
             &agency_dir,
             dir,
         ) {
@@ -650,7 +650,7 @@ pub fn run(
                 }
                 results.push(result);
 
-                // Reload roles/motivations so subsequent operations see newly
+                // Reload roles/tradeoffs so subsequent operations see newly
                 // created entities (e.g. a modify_role targeting a role that
                 // was just created in the same batch).
                 if matches!(
@@ -666,9 +666,9 @@ pub fn run(
                 if matches!(
                     op.op.as_str(),
                     "create_motivation" | "modify_motivation" | "retire_motivation"
-                ) && let Ok(updated) = agency::load_all_tradeoffs(&motivations_dir)
+                ) && let Ok(updated) = agency::load_all_tradeoffs(&tradeoffs_dir)
                 {
-                    motivations = updated;
+                    tradeoffs = updated;
                 }
             }
             Err(e) => {
@@ -691,7 +691,7 @@ pub fn run(
         "budget": budget,
         "input": {
             "roles": roles.len(),
-            "motivations": motivations.len(),
+            "tradeoffs": tradeoffs.len(),
             "evaluations": evaluations.len(),
             "skill_documents": skill_docs.len(),
         },
@@ -780,7 +780,7 @@ pub fn run(
 
 fn build_performance_summary(
     roles: &[Role],
-    motivations: &[TradeoffConfig],
+    tradeoffs: &[TradeoffConfig],
     evaluations: &[Evaluation],
     org_evaluations: &[OrgEvaluation],
     config: &Config,
@@ -799,7 +799,7 @@ fn build_performance_summary(
         if valid.is_empty() { None } else { Some(valid.iter().sum::<f64>() / valid.len() as f64) }
     } else { None };
     out.push_str(&format!("Total roles: {}\n", roles.len()));
-    out.push_str(&format!("Total motivations: {}\n", motivations.len()));
+    out.push_str(&format!("Total tradeoffs: {}\n", tradeoffs.len()));
     out.push_str(&format!("Total evaluations: {} task-level, {} org-level\n", total_evals, total_org_evals));
     if let Some(avg) = overall_avg { out.push_str(&format!("Overall avg task score: {:.3}\n", avg)); }
     if let Some(avg) = overall_org_avg { out.push_str(&format!("Overall avg org score: {:.3}\n", avg)); }
@@ -846,21 +846,21 @@ fn build_performance_summary(
         }
         out.push('\n');
     }
-    out.push_str("### Motivation Performance\n\n");
-    for motivation in motivations {
-        let task_score_str = motivation.performance.avg_score.map(|s| format!("{:.3}", s)).unwrap_or_else(|| "-".to_string());
-        let (org_score_str, blended_str) = if let Some(&(org_avg, org_count)) = mot_org_avgs.get(&motivation.id) {
+    out.push_str("### Tradeoff Performance\n\n");
+    for tradeoff in tradeoffs {
+        let task_score_str = tradeoff.performance.avg_score.map(|s| format!("{:.3}", s)).unwrap_or_else(|| "-".to_string());
+        let (org_score_str, blended_str) = if let Some(&(org_avg, org_count)) = mot_org_avgs.get(&tradeoff.id) {
             let org_s = format!("{:.3} ({} org evals)", org_avg, org_count);
-            let blended = if let Some(task_s) = motivation.performance.avg_score { format!("{:.3}", (1.0 - org_weight) * task_s + org_weight * org_avg) } else { "-".to_string() };
+            let blended = if let Some(task_s) = tradeoff.performance.avg_score { format!("{:.3}", (1.0 - org_weight) * task_s + org_weight * org_avg) } else { "-".to_string() };
             (org_s, blended)
         } else { ("-".to_string(), task_score_str.clone()) };
         out.push_str(&format!("- **{}** (id: `{}`): {} evals, task_score: {}, org_score: {}, blended: {}, gen: {}\n",
-            motivation.name, motivation.id, motivation.performance.task_count, task_score_str, org_score_str, blended_str, motivation.lineage.generation));
-        out.push_str(&format!("  description: {}\n", motivation.description));
-        if !motivation.acceptable_tradeoffs.is_empty() { out.push_str(&format!("  acceptable_tradeoffs: {}\n", motivation.acceptable_tradeoffs.join("; "))); }
-        if !motivation.unacceptable_tradeoffs.is_empty() { out.push_str(&format!("  unacceptable_tradeoffs: {}\n", motivation.unacceptable_tradeoffs.join("; "))); }
-        if !motivation.lineage.parent_ids.is_empty() { out.push_str(&format!("  parents: {}\n", motivation.lineage.parent_ids.join(", "))); }
-        if let Some(dims) = mot_org_dims.get(&motivation.id) {
+            tradeoff.name, tradeoff.id, tradeoff.performance.task_count, task_score_str, org_score_str, blended_str, tradeoff.lineage.generation));
+        out.push_str(&format!("  description: {}\n", tradeoff.description));
+        if !tradeoff.acceptable_tradeoffs.is_empty() { out.push_str(&format!("  acceptable_tradeoffs: {}\n", tradeoff.acceptable_tradeoffs.join("; "))); }
+        if !tradeoff.unacceptable_tradeoffs.is_empty() { out.push_str(&format!("  unacceptable_tradeoffs: {}\n", tradeoff.unacceptable_tradeoffs.join("; "))); }
+        if !tradeoff.lineage.parent_ids.is_empty() { out.push_str(&format!("  parents: {}\n", tradeoff.lineage.parent_ids.join(", "))); }
+        if let Some(dims) = mot_org_dims.get(&tradeoff.id) {
             if !dims.is_empty() {
                 let dim_strs: Vec<String> = dims.iter().map(|(k, v)| format!("{}={:.2}", k, v)).collect();
                 out.push_str(&format!("  org_dimensions: {}\n", dim_strs.join(", ")));
@@ -1011,7 +1011,7 @@ fn build_evolver_prompt(
     budget: Option<u32>,
     config: &Config,
     roles: &[Role],
-    motivations: &[TradeoffConfig],
+    tradeoffs: &[TradeoffConfig],
     agency_dir: &Path,
 ) -> String {
     let mut out = String::new();
@@ -1020,7 +1020,7 @@ fn build_evolver_prompt(
     out.push_str("# Evolver Agent Instructions\n\n");
     out.push_str(
         "You are the evolver agent for a workgraph agency system. Your job is to improve \
-         the agency's performance by evolving roles and motivations based on performance data.\n\n",
+         the agency's performance by evolving roles and tradeoffs based on performance data.\n\n",
     );
 
     // Evolver's own identity (if configured via evolver_agent hash)
@@ -1029,7 +1029,7 @@ fn build_evolver_prompt(
         let agent_path = agents_dir.join(format!("{}.yaml", agent_hash));
         if let Ok(agent) = agency::load_agent(&agent_path) {
             if let Some(role) = roles.iter().find(|r| r.id == agent.role_id) {
-                if let Some(tradeoff) = motivations.iter().find(|m| m.id == agent.tradeoff_id) {
+                if let Some(tradeoff) = tradeoffs.iter().find(|m| m.id == agent.tradeoff_id) {
                     // Use the project root (parent of agency dir) for skill resolution
                     let workgraph_root = agency_dir.parent().unwrap_or(agency_dir);
                     let resolved_skills = resolve_all_skills(role, workgraph_root);
@@ -1055,8 +1055,8 @@ fn build_evolver_prompt(
                     out.push_str("## Meta-Agent Assignments\n\n");
                     out.push_str(
                         "These agents fill coordination roles (assigner, evaluator, evolver). \
-                         Their underlying roles and motivations are valid mutation targets. \
-                         **Evolving the evolver's own role or motivation requires human approval.**\n\n",
+                         Their underlying roles and tradeoffs are valid mutation targets. \
+                         **Evolving the evolver's own role or tradeoff requires human approval.**\n\n",
                     );
                     has_any = true;
                 }
@@ -1067,7 +1067,7 @@ fn build_evolver_prompt(
                         .find(|r| r.id == agent.role_id)
                         .map(|r| r.name.as_str())
                         .unwrap_or("unknown");
-                    let mot_name = motivations
+                    let mot_name = tradeoffs
                         .iter()
                         .find(|m| m.id == agent.tradeoff_id)
                         .map(|m| m.name.as_str())
@@ -1348,10 +1348,10 @@ fn defer_self_mutation(op: &EvolverOperation, dir: &Path, run_id: &str) -> Resul
 fn apply_operation(
     op: &EvolverOperation,
     existing_roles: &[Role],
-    existing_motivations: &[TradeoffConfig],
+    existing_tradeoffs: &[TradeoffConfig],
     run_id: &str,
     roles_dir: &Path,
-    motivations_dir: &Path,
+    tradeoffs_dir: &Path,
     agency_dir: &Path,
     dir: &Path,
 ) -> Result<serde_json::Value> {
@@ -1359,12 +1359,12 @@ fn apply_operation(
         // Legacy operations
         "create_role" => apply_create_role(op, run_id, roles_dir),
         "modify_role" => apply_modify_role(op, existing_roles, run_id, roles_dir),
-        "create_motivation" => apply_create_motivation(op, run_id, motivations_dir),
+        "create_motivation" => apply_create_motivation(op, run_id, tradeoffs_dir),
         "modify_motivation" => {
-            apply_modify_motivation(op, existing_motivations, run_id, motivations_dir)
+            apply_modify_motivation(op, existing_tradeoffs, run_id, tradeoffs_dir)
         }
         "retire_role" => apply_retire_role(op, existing_roles, roles_dir),
-        "retire_motivation" => apply_retire_motivation(op, existing_motivations, motivations_dir),
+        "retire_motivation" => apply_retire_motivation(op, existing_tradeoffs, tradeoffs_dir),
         // New mutation operations
         "wording_mutation" => apply_wording_mutation(op, run_id, agency_dir),
         "component_substitution" => {
@@ -1532,7 +1532,7 @@ fn apply_modify_role(
 fn apply_create_motivation(
     op: &EvolverOperation,
     run_id: &str,
-    motivations_dir: &Path,
+    tradeoffs_dir: &Path,
 ) -> Result<serde_json::Value> {
     let name = op
         .name
@@ -1544,7 +1544,7 @@ fn apply_create_motivation(
     let unacceptable = op.unacceptable_tradeoffs.clone().unwrap_or_default();
     let id = agency::content_hash_tradeoff(&acceptable, &unacceptable, &description);
 
-    let motivation = TradeoffConfig {
+    let tradeoff = TradeoffConfig {
         id: id.clone(),
         name: name.to_string(),
         description,
@@ -1562,8 +1562,8 @@ fn apply_create_motivation(
         former_deployments: vec![],
     };
 
-    let path = agency::save_tradeoff(&motivation, motivations_dir)
-        .context("Failed to save new motivation")?;
+    let path = agency::save_tradeoff(&tradeoff, tradeoffs_dir)
+        .context("Failed to save new tradeoff")?;
 
     Ok(serde_json::json!({
         "op": "create_motivation",
@@ -1576,9 +1576,9 @@ fn apply_create_motivation(
 
 fn apply_modify_motivation(
     op: &EvolverOperation,
-    existing_motivations: &[TradeoffConfig],
+    existing_tradeoffs: &[TradeoffConfig],
     run_id: &str,
-    motivations_dir: &Path,
+    tradeoffs_dir: &Path,
 ) -> Result<serde_json::Value> {
     let target_id = op
         .target_id
@@ -1597,20 +1597,20 @@ fn apply_modify_motivation(
     }
 
     let lineage = if parent_ids.len() == 1 {
-        let parent = existing_motivations
+        let parent = existing_tradeoffs
             .iter()
             .find(|m| m.id == parent_ids[0])
-            .ok_or_else(|| anyhow::anyhow!("Parent motivation '{}' not found", parent_ids[0]))?;
+            .ok_or_else(|| anyhow::anyhow!("Parent tradeoff '{}' not found", parent_ids[0]))?;
         Lineage::mutation(parent_ids[0], parent.lineage.generation, run_id)
     } else {
         for pid in &parent_ids {
-            if !existing_motivations.iter().any(|m| m.id == *pid) {
-                anyhow::bail!("Parent motivation '{}' not found for crossover", pid);
+            if !existing_tradeoffs.iter().any(|m| m.id == *pid) {
+                anyhow::bail!("Parent tradeoff '{}' not found for crossover", pid);
             }
         }
         let max_gen = parent_ids
             .iter()
-            .filter_map(|pid| existing_motivations.iter().find(|m| m.id == *pid))
+            .filter_map(|pid| existing_tradeoffs.iter().find(|m| m.id == *pid))
             .map(|m| m.lineage.generation)
             .max()
             .unwrap_or(0);
@@ -1622,7 +1622,7 @@ fn apply_modify_motivation(
     let unacceptable = op.unacceptable_tradeoffs.clone().unwrap_or_default();
     let id = agency::content_hash_tradeoff(&acceptable, &unacceptable, &description);
 
-    let motivation = TradeoffConfig {
+    let tradeoff = TradeoffConfig {
         id: id.clone(),
         name: op.name.clone().unwrap_or_else(|| id.clone()),
         description,
@@ -1635,16 +1635,16 @@ fn apply_modify_motivation(
         former_deployments: vec![],
     };
 
-    let path = agency::save_tradeoff(&motivation, motivations_dir)
-        .context("Failed to save modified motivation")?;
+    let path = agency::save_tradeoff(&tradeoff, tradeoffs_dir)
+        .context("Failed to save modified tradeoff")?;
 
     Ok(serde_json::json!({
         "op": "modify_motivation",
         "target_id": target_id,
         "new_id": id,
-        "name": motivation.name,
-        "generation": motivation.lineage.generation,
-        "parent_ids": motivation.lineage.parent_ids,
+        "name": tradeoff.name,
+        "generation": tradeoff.lineage.generation,
+        "parent_ids": tradeoff.lineage.parent_ids,
         "path": path.display().to_string(),
         "status": "applied",
     }))
@@ -1694,36 +1694,36 @@ fn apply_retire_role(
 
 fn apply_retire_motivation(
     op: &EvolverOperation,
-    existing_motivations: &[TradeoffConfig],
-    motivations_dir: &Path,
+    existing_tradeoffs: &[TradeoffConfig],
+    tradeoffs_dir: &Path,
 ) -> Result<serde_json::Value> {
     let target_id = op
         .target_id
         .as_deref()
         .ok_or_else(|| anyhow::anyhow!("retire_motivation requires target_id"))?;
 
-    // Verify the motivation exists
-    if !existing_motivations.iter().any(|m| m.id == target_id) {
-        bail!("Motivation '{}' not found", target_id);
+    // Verify the tradeoff exists
+    if !existing_tradeoffs.iter().any(|m| m.id == target_id) {
+        bail!("Tradeoff '{}' not found", target_id);
     }
 
-    // Safety: never retire the last motivation
-    if existing_motivations.len() <= 1 {
+    // Safety: never retire the last tradeoff
+    if existing_tradeoffs.len() <= 1 {
         bail!(
-            "Cannot retire '{}': it is the only remaining motivation. Create a replacement first.",
+            "Cannot retire '{}': it is the only remaining tradeoff. Create a replacement first.",
             target_id
         );
     }
 
     // Rename .yaml to .yaml.retired
-    let yaml_path = motivations_dir.join(format!("{}.yaml", target_id));
-    let retired_path = motivations_dir.join(format!("{}.yaml.retired", target_id));
+    let yaml_path = tradeoffs_dir.join(format!("{}.yaml", target_id));
+    let retired_path = tradeoffs_dir.join(format!("{}.yaml.retired", target_id));
 
     if yaml_path.exists() {
         fs::rename(&yaml_path, &retired_path)
-            .with_context(|| format!("Failed to retire motivation '{}'", target_id))?;
+            .with_context(|| format!("Failed to retire tradeoff '{}'", target_id))?;
     } else {
-        bail!("Motivation file not found: {}", yaml_path.display());
+        bail!("Tradeoff file not found: {}", yaml_path.display());
     }
 
     Ok(serde_json::json!({
@@ -2955,18 +2955,18 @@ pub fn run_deferred_approve(dir: &Path, deferred_id: &str, note: Option<&str>) -
     // Now apply the operation
     let agency_dir = dir.join("agency");
     let roles_dir = agency_dir.join("cache/roles");
-    let motivations_dir = agency_dir.join("primitives/tradeoffs");
+    let tradeoffs_dir = agency_dir.join("primitives/tradeoffs");
 
     let roles = agency::load_all_roles(&roles_dir).unwrap_or_default();
-    let motivations = agency::load_all_tradeoffs(&motivations_dir).unwrap_or_default();
+    let tradeoffs = agency::load_all_tradeoffs(&tradeoffs_dir).unwrap_or_default();
 
     let result = apply_operation(
         &deferred.operation,
         &roles,
-        &motivations,
+        &tradeoffs,
         &deferred.task_id,
         &roles_dir,
-        &motivations_dir,
+        &tradeoffs_dir,
         &agency_dir,
         dir,
     );
@@ -3648,8 +3648,8 @@ Let me know if you'd like me to adjust anything."#;
     #[test]
     fn test_apply_create_motivation() {
         let temp_dir = tempfile::TempDir::new().unwrap();
-        let motivations_dir = temp_dir.path().join("motivations");
-        fs::create_dir_all(&motivations_dir).unwrap();
+        let tradeoffs_dir = temp_dir.path().join("motivations");
+        fs::create_dir_all(&tradeoffs_dir).unwrap();
 
         let op = EvolverOperation {
             op: "create_motivation".into(),
@@ -3665,7 +3665,7 @@ Let me know if you'd like me to adjust anything."#;
             ..Default::default()
         };
 
-        let result = apply_create_motivation(&op, "test-run", &motivations_dir).unwrap();
+        let result = apply_create_motivation(&op, "test-run", &tradeoffs_dir).unwrap();
         assert_eq!(result["status"], "applied");
         assert_eq!(result["op"], "create_motivation");
 
@@ -3675,7 +3675,7 @@ Let me know if you'd like me to adjust anything."#;
         assert_ne!(id, "new-mot");
 
         // Verify the file was created and can be loaded
-        let mot_path = motivations_dir.join(format!("{}.yaml", id));
+        let mot_path = tradeoffs_dir.join(format!("{}.yaml", id));
         assert!(mot_path.exists());
 
         let motivation = agency::load_tradeoff(&mot_path).unwrap();
@@ -3698,8 +3698,8 @@ Let me know if you'd like me to adjust anything."#;
     #[test]
     fn test_apply_create_motivation_missing_name_fails() {
         let temp_dir = tempfile::TempDir::new().unwrap();
-        let motivations_dir = temp_dir.path().join("motivations");
-        fs::create_dir_all(&motivations_dir).unwrap();
+        let tradeoffs_dir = temp_dir.path().join("motivations");
+        fs::create_dir_all(&tradeoffs_dir).unwrap();
 
         let op = EvolverOperation {
             op: "create_motivation".into(),
@@ -3715,7 +3715,7 @@ Let me know if you'd like me to adjust anything."#;
             ..Default::default()
         };
 
-        let result = apply_create_motivation(&op, "test-run", &motivations_dir);
+        let result = apply_create_motivation(&op, "test-run", &tradeoffs_dir);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("requires name"));
     }
@@ -3723,8 +3723,8 @@ Let me know if you'd like me to adjust anything."#;
     #[test]
     fn test_apply_modify_motivation() {
         let temp_dir = tempfile::TempDir::new().unwrap();
-        let motivations_dir = temp_dir.path().join("motivations");
-        fs::create_dir_all(&motivations_dir).unwrap();
+        let tradeoffs_dir = temp_dir.path().join("motivations");
+        fs::create_dir_all(&tradeoffs_dir).unwrap();
 
         let parent = TradeoffConfig {
             id: "parent-mot".into(),
@@ -3763,7 +3763,7 @@ Let me know if you'd like me to adjust anything."#;
             ..Default::default()
         };
 
-        let result = apply_modify_motivation(&op, &[parent], "test-run", &motivations_dir).unwrap();
+        let result = apply_modify_motivation(&op, &[parent], "test-run", &tradeoffs_dir).unwrap();
         assert_eq!(result["status"], "applied");
         assert_eq!(result["op"], "modify_motivation");
         assert_eq!(result["target_id"], "parent-mot");
@@ -3784,7 +3784,7 @@ Let me know if you'd like me to adjust anything."#;
 
         // Load and verify
         let mot =
-            agency::load_tradeoff(&motivations_dir.join(format!("{}.yaml", new_id))).unwrap();
+            agency::load_tradeoff(&tradeoffs_dir.join(format!("{}.yaml", new_id))).unwrap();
         assert_eq!(mot.name, "Carefully Fast");
         assert_eq!(mot.lineage.generation, 1);
         assert_eq!(mot.lineage.parent_ids, vec!["parent-mot"]);
@@ -3794,8 +3794,8 @@ Let me know if you'd like me to adjust anything."#;
     #[test]
     fn test_apply_modify_motivation_missing_target_fails() {
         let temp_dir = tempfile::TempDir::new().unwrap();
-        let motivations_dir = temp_dir.path().join("motivations");
-        fs::create_dir_all(&motivations_dir).unwrap();
+        let tradeoffs_dir = temp_dir.path().join("motivations");
+        fs::create_dir_all(&tradeoffs_dir).unwrap();
 
         let op = EvolverOperation {
             op: "modify_motivation".into(),
@@ -3811,7 +3811,7 @@ Let me know if you'd like me to adjust anything."#;
             ..Default::default()
         };
 
-        let result = apply_modify_motivation(&op, &[], "test-run", &motivations_dir);
+        let result = apply_modify_motivation(&op, &[], "test-run", &tradeoffs_dir);
         assert!(result.is_err());
         assert!(
             result
@@ -3824,8 +3824,8 @@ Let me know if you'd like me to adjust anything."#;
     #[test]
     fn test_apply_modify_motivation_parent_not_found_fails() {
         let temp_dir = tempfile::TempDir::new().unwrap();
-        let motivations_dir = temp_dir.path().join("motivations");
-        fs::create_dir_all(&motivations_dir).unwrap();
+        let tradeoffs_dir = temp_dir.path().join("motivations");
+        fs::create_dir_all(&tradeoffs_dir).unwrap();
 
         let op = EvolverOperation {
             op: "modify_motivation".into(),
@@ -3841,7 +3841,7 @@ Let me know if you'd like me to adjust anything."#;
             ..Default::default()
         };
 
-        let result = apply_modify_motivation(&op, &[], "test-run", &motivations_dir);
+        let result = apply_modify_motivation(&op, &[], "test-run", &tradeoffs_dir);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("not found"));
     }
@@ -3849,8 +3849,8 @@ Let me know if you'd like me to adjust anything."#;
     #[test]
     fn test_apply_modify_motivation_crossover() {
         let temp_dir = tempfile::TempDir::new().unwrap();
-        let motivations_dir = temp_dir.path().join("motivations");
-        fs::create_dir_all(&motivations_dir).unwrap();
+        let tradeoffs_dir = temp_dir.path().join("motivations");
+        fs::create_dir_all(&tradeoffs_dir).unwrap();
 
         let parent_a = TradeoffConfig {
             id: "mot-careful".into(),
@@ -3913,7 +3913,7 @@ Let me know if you'd like me to adjust anything."#;
         };
 
         let result =
-            apply_modify_motivation(&op, &[parent_a, parent_b], "test-run", &motivations_dir)
+            apply_modify_motivation(&op, &[parent_a, parent_b], "test-run", &tradeoffs_dir)
                 .unwrap();
         assert_eq!(result["status"], "applied");
 
@@ -3935,7 +3935,7 @@ Let me know if you'd like me to adjust anything."#;
 
         // Load and verify
         let mot =
-            agency::load_tradeoff(&motivations_dir.join(format!("{}.yaml", new_id))).unwrap();
+            agency::load_tradeoff(&tradeoffs_dir.join(format!("{}.yaml", new_id))).unwrap();
         assert_eq!(mot.name, "Balanced");
         assert_eq!(mot.lineage.generation, 3);
         assert_eq!(mot.lineage.parent_ids, vec!["mot-careful", "mot-fast"]);
@@ -3944,8 +3944,8 @@ Let me know if you'd like me to adjust anything."#;
     #[test]
     fn test_apply_modify_motivation_crossover_missing_parent_fails() {
         let temp_dir = tempfile::TempDir::new().unwrap();
-        let motivations_dir = temp_dir.path().join("motivations");
-        fs::create_dir_all(&motivations_dir).unwrap();
+        let tradeoffs_dir = temp_dir.path().join("motivations");
+        fs::create_dir_all(&tradeoffs_dir).unwrap();
 
         let parent_a = TradeoffConfig {
             id: "mot-a".into(),
@@ -3974,7 +3974,7 @@ Let me know if you'd like me to adjust anything."#;
             ..Default::default()
         };
 
-        let result = apply_modify_motivation(&op, &[parent_a], "test-run", &motivations_dir);
+        let result = apply_modify_motivation(&op, &[parent_a], "test-run", &tradeoffs_dir);
         assert!(result.is_err());
         assert!(
             result
@@ -3987,8 +3987,8 @@ Let me know if you'd like me to adjust anything."#;
     #[test]
     fn test_apply_retire_motivation() {
         let temp_dir = tempfile::TempDir::new().unwrap();
-        let motivations_dir = temp_dir.path().join("motivations");
-        fs::create_dir_all(&motivations_dir).unwrap();
+        let tradeoffs_dir = temp_dir.path().join("motivations");
+        fs::create_dir_all(&tradeoffs_dir).unwrap();
 
         let mot_a = TradeoffConfig {
             id: "mot-a".into(),
@@ -4015,8 +4015,8 @@ Let me know if you'd like me to adjust anything."#;
             former_deployments: vec![],
         };
 
-        agency::save_tradeoff(&mot_a, &motivations_dir).unwrap();
-        agency::save_tradeoff(&mot_b, &motivations_dir).unwrap();
+        agency::save_tradeoff(&mot_a, &tradeoffs_dir).unwrap();
+        agency::save_tradeoff(&mot_b, &tradeoffs_dir).unwrap();
 
         let op = EvolverOperation {
             op: "retire_motivation".into(),
@@ -4032,20 +4032,20 @@ Let me know if you'd like me to adjust anything."#;
             ..Default::default()
         };
 
-        let result = apply_retire_motivation(&op, &[mot_a, mot_b], &motivations_dir).unwrap();
+        let result = apply_retire_motivation(&op, &[mot_a, mot_b], &tradeoffs_dir).unwrap();
         assert_eq!(result["status"], "applied");
         assert_eq!(result["op"], "retire_motivation");
 
         // .yaml should be gone, .yaml.retired should exist
-        assert!(!motivations_dir.join("mot-a.yaml").exists());
-        assert!(motivations_dir.join("mot-a.yaml.retired").exists());
+        assert!(!tradeoffs_dir.join("mot-a.yaml").exists());
+        assert!(tradeoffs_dir.join("mot-a.yaml.retired").exists());
     }
 
     #[test]
     fn test_retire_last_motivation_fails() {
         let temp_dir = tempfile::TempDir::new().unwrap();
-        let motivations_dir = temp_dir.path().join("motivations");
-        fs::create_dir_all(&motivations_dir).unwrap();
+        let tradeoffs_dir = temp_dir.path().join("motivations");
+        fs::create_dir_all(&tradeoffs_dir).unwrap();
 
         let mot = TradeoffConfig {
             id: "only-mot".into(),
@@ -4059,7 +4059,7 @@ Let me know if you'd like me to adjust anything."#;
             former_agents: vec![],
             former_deployments: vec![],
         };
-        agency::save_tradeoff(&mot, &motivations_dir).unwrap();
+        agency::save_tradeoff(&mot, &tradeoffs_dir).unwrap();
 
         let op = EvolverOperation {
             op: "retire_motivation".into(),
@@ -4075,21 +4075,21 @@ Let me know if you'd like me to adjust anything."#;
             ..Default::default()
         };
 
-        let result = apply_retire_motivation(&op, &[mot], &motivations_dir);
+        let result = apply_retire_motivation(&op, &[mot], &tradeoffs_dir);
         assert!(result.is_err());
         assert!(
             result
                 .unwrap_err()
                 .to_string()
-                .contains("only remaining motivation")
+                .contains("only remaining tradeoff")
         );
     }
 
     #[test]
     fn test_retire_motivation_not_found_fails() {
         let temp_dir = tempfile::TempDir::new().unwrap();
-        let motivations_dir = temp_dir.path().join("motivations");
-        fs::create_dir_all(&motivations_dir).unwrap();
+        let tradeoffs_dir = temp_dir.path().join("motivations");
+        fs::create_dir_all(&tradeoffs_dir).unwrap();
 
         let mot = TradeoffConfig {
             id: "mot-x".into(),
@@ -4118,7 +4118,7 @@ Let me know if you'd like me to adjust anything."#;
             ..Default::default()
         };
 
-        let result = apply_retire_motivation(&op, &[mot], &motivations_dir);
+        let result = apply_retire_motivation(&op, &[mot], &tradeoffs_dir);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("not found"));
     }
@@ -4280,9 +4280,9 @@ Let me know if you'd like me to adjust anything."#;
     fn test_apply_operation_dispatches_create_role() {
         let temp_dir = tempfile::TempDir::new().unwrap();
         let roles_dir = temp_dir.path().join("roles");
-        let motivations_dir = temp_dir.path().join("motivations");
+        let tradeoffs_dir = temp_dir.path().join("motivations");
         fs::create_dir_all(&roles_dir).unwrap();
-        fs::create_dir_all(&motivations_dir).unwrap();
+        fs::create_dir_all(&tradeoffs_dir).unwrap();
 
         let op = EvolverOperation {
             op: "create_role".into(),
@@ -4299,7 +4299,7 @@ Let me know if you'd like me to adjust anything."#;
         };
 
         let result =
-            apply_operation(&op, &[], &[], "run-dispatch", &roles_dir, &motivations_dir, temp_dir.path(), temp_dir.path()).unwrap();
+            apply_operation(&op, &[], &[], "run-dispatch", &roles_dir, &tradeoffs_dir, temp_dir.path(), temp_dir.path()).unwrap();
         assert_eq!(result["status"], "applied");
         assert_eq!(result["op"], "create_role");
     }
@@ -4308,9 +4308,9 @@ Let me know if you'd like me to adjust anything."#;
     fn test_apply_operation_unknown_op_fails() {
         let temp_dir = tempfile::TempDir::new().unwrap();
         let roles_dir = temp_dir.path().join("roles");
-        let motivations_dir = temp_dir.path().join("motivations");
+        let tradeoffs_dir = temp_dir.path().join("motivations");
         fs::create_dir_all(&roles_dir).unwrap();
-        fs::create_dir_all(&motivations_dir).unwrap();
+        fs::create_dir_all(&tradeoffs_dir).unwrap();
 
         let op = EvolverOperation {
             op: "delete_everything".into(),
@@ -4326,7 +4326,7 @@ Let me know if you'd like me to adjust anything."#;
             ..Default::default()
         };
 
-        let result = apply_operation(&op, &[], &[], "run-bad", &roles_dir, &motivations_dir, temp_dir.path(), temp_dir.path());
+        let result = apply_operation(&op, &[], &[], "run-bad", &roles_dir, &tradeoffs_dir, temp_dir.path(), temp_dir.path());
         assert!(result.is_err());
         assert!(
             result
@@ -4370,8 +4370,8 @@ Let me know if you'd like me to adjust anything."#;
     #[test]
     fn test_create_motivation_deterministic_id() {
         let temp_dir = tempfile::TempDir::new().unwrap();
-        let motivations_dir = temp_dir.path().join("motivations");
-        fs::create_dir_all(&motivations_dir).unwrap();
+        let tradeoffs_dir = temp_dir.path().join("motivations");
+        fs::create_dir_all(&tradeoffs_dir).unwrap();
 
         let op = EvolverOperation {
             op: "create_motivation".into(),
@@ -4387,8 +4387,8 @@ Let me know if you'd like me to adjust anything."#;
             ..Default::default()
         };
 
-        let result1 = apply_create_motivation(&op, "run-1", &motivations_dir).unwrap();
-        let result2 = apply_create_motivation(&op, "run-2", &motivations_dir).unwrap();
+        let result1 = apply_create_motivation(&op, "run-1", &tradeoffs_dir).unwrap();
+        let result2 = apply_create_motivation(&op, "run-2", &tradeoffs_dir).unwrap();
 
         assert_eq!(result1["id"], result2["id"]);
     }
@@ -4740,7 +4740,7 @@ Let me know if you'd like me to adjust anything."#;
 
         // Overall stats
         assert!(summary.contains("Total roles: 2"));
-        assert!(summary.contains("Total motivations: 1"));
+        assert!(summary.contains("Total tradeoffs: 1"));
         assert!(summary.contains("Total evaluations: 3 task-level, 0 org-level"));
         assert!(summary.contains("Overall avg task score: 0.800"));
 

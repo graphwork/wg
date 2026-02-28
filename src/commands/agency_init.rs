@@ -4,19 +4,19 @@ use workgraph::agency::{self, Agent, Lineage, PerformanceRecord};
 use workgraph::config::Config;
 use workgraph::graph::TrustLevel;
 
-/// `wg agency init` — bootstrap agency with starter roles, motivations, a default
+/// `wg agency init` — bootstrap agency with starter roles, tradeoffs, a default
 /// agent, and enable auto_assign + auto_evaluate in config.
 pub fn run(workgraph_dir: &Path) -> Result<()> {
     let agency_dir = workgraph_dir.join("agency");
 
-    // 1. Seed starter roles and motivations
-    let (roles_created, motivations_created) =
+    // 1. Seed starter roles and tradeoffs
+    let (roles_created, tradeoffs_created) =
         agency::seed_starters(&agency_dir).context("Failed to seed agency starters")?;
 
-    if roles_created > 0 || motivations_created > 0 {
+    if roles_created > 0 || tradeoffs_created > 0 {
         println!(
-            "Seeded {} roles and {} motivations.",
-            roles_created, motivations_created
+            "Seeded {} roles and {} tradeoffs.",
+            roles_created, tradeoffs_created
         );
     }
 
@@ -25,7 +25,7 @@ pub fn run(workgraph_dir: &Path) -> Result<()> {
     std::fs::create_dir_all(&agents_dir).context("Failed to create agents directory")?;
 
     let roles = agency::starter_roles();
-    let motivations = agency::starter_tradeoffs();
+    let tradeoffs = agency::starter_tradeoffs();
 
     let programmer = roles
         .iter()
@@ -33,11 +33,11 @@ pub fn run(workgraph_dir: &Path) -> Result<()> {
         .ok_or_else(|| {
             anyhow::anyhow!("Programmer starter role missing from agency::starter_roles()")
         })?;
-    let careful = motivations
+    let careful = tradeoffs
         .iter()
-        .find(|m| m.name == "Careful")
+        .find(|t| t.name == "Careful")
         .ok_or_else(|| {
-            anyhow::anyhow!("Careful starter motivation missing from agency::starter_motivations()")
+            anyhow::anyhow!("Careful starter tradeoff missing from agency::starter_tradeoffs()")
         })?;
 
     let agent_id = agency::content_hash_agent(&programmer.id, &careful.id);
@@ -120,7 +120,7 @@ pub fn run(workgraph_dir: &Path) -> Result<()> {
     }
 
     // Summary
-    if roles_created == 0 && motivations_created == 0 && !agent_created && !config_changed {
+    if roles_created == 0 && tradeoffs_created == 0 && !agent_created && !config_changed {
         println!("Agency already initialized.");
     } else {
         println!();

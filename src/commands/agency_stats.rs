@@ -5,7 +5,7 @@ use std::path::Path;
 use workgraph::agency::{self, Evaluation, TradeoffConfig, Role};
 use workgraph::parser::load_graph;
 
-/// A (role_id, motivation_id) pair used as a key in the synergy matrix.
+/// A (role_id, tradeoff_id) pair used as a key in the synergy matrix.
 type Pair = (String, String);
 
 /// Per-entity aggregated stats.
@@ -18,7 +18,7 @@ struct EntityStats {
     recent_scores: Vec<f64>,
 }
 
-/// Synergy cell: stats for a specific (role, motivation) pair.
+/// Synergy cell: stats for a specific (role, tradeoff) pair.
 struct SynergyCell {
     role_id: String,
     tradeoff_id: String,
@@ -65,12 +65,12 @@ fn trend(scores: &[f64]) -> &'static str {
 pub fn run(dir: &Path, json: bool, min_evals: u32, by_model: bool) -> Result<()> {
     let agency_dir = dir.join("agency");
     let roles_dir = agency_dir.join("cache/roles");
-    let motivations_dir = agency_dir.join("primitives/tradeoffs");
+    let tradeoffs_dir = agency_dir.join("primitives/tradeoffs");
     let evals_dir = agency_dir.join("evaluations");
 
     let roles = agency::load_all_roles(&roles_dir).context("Failed to load roles")?;
-    let motivations =
-        agency::load_all_tradeoffs(&motivations_dir).context("Failed to load motivations")?;
+    let tradeoffs =
+        agency::load_all_tradeoffs(&tradeoffs_dir).context("Failed to load tradeoffs")?;
     let evaluations =
         agency::load_all_evaluations(&evals_dir).context("Failed to load evaluations")?;
 
@@ -91,7 +91,7 @@ pub fn run(dir: &Path, json: bool, min_evals: u32, by_model: bool) -> Result<()>
     if json {
         output_json(
             &roles,
-            &motivations,
+            &tradeoffs,
             &evaluations,
             &task_tags,
             min_evals,
@@ -100,7 +100,7 @@ pub fn run(dir: &Path, json: bool, min_evals: u32, by_model: bool) -> Result<()>
     } else {
         output_text(
             &roles,
-            &motivations,
+            &tradeoffs,
             &evaluations,
             &task_tags,
             min_evals,
@@ -131,8 +131,8 @@ fn build_role_stats(roles: &[Role]) -> Vec<EntityStats> {
         .collect()
 }
 
-fn build_motivation_stats(motivations: &[TradeoffConfig]) -> Vec<EntityStats> {
-    motivations
+fn build_tradeoff_stats(tradeoffs: &[TradeoffConfig]) -> Vec<EntityStats> {
+    tradeoffs
         .iter()
         .map(|m| EntityStats {
             id: m.id.clone(),
@@ -236,11 +236,11 @@ fn build_model_stats(evaluations: &[Evaluation]) -> Vec<ModelStats> {
 
 fn find_underexplored(
     roles: &[Role],
-    motivations: &[TradeoffConfig],
+    tradeoffs: &[TradeoffConfig],
     evaluations: &[Evaluation],
     min_evals: u32,
 ) -> Vec<(String, String, u32)> {
-    // Count evaluations per (role, motivation) pair
+    // Count evaluations per (role, tradeoff) pair
     let mut counts: HashMap<Pair, u32> = HashMap::new();
     for eval in evaluations {
         *counts
@@ -250,13 +250,13 @@ fn find_underexplored(
 
     let mut under: Vec<(String, String, u32)> = Vec::new();
     for role in roles {
-        for motivation in motivations {
+        for tradeoff in tradeoffs {
             let count = counts
-                .get(&(role.id.clone(), motivation.id.clone()))
+                .get(&(role.id.clone(), tradeoff.id.clone()))
                 .copied()
                 .unwrap_or(0);
             if count < min_evals {
-                under.push((role.id.clone(), motivation.id.clone(), count));
+                under.push((role.id.clone(), tradeoff.id.clone(), count));
             }
         }
     }
@@ -270,7 +270,7 @@ fn find_underexplored(
 
 fn output_text(
     roles: &[Role],
-    motivations: &[TradeoffConfig],
+    tradeoffs: &[TradeoffConfig],
     evaluations: &[Evaluation],
     task_tags: &HashMap<String, Vec<String>>,
     min_evals: u32,
@@ -278,7 +278,7 @@ fn output_text(
 ) {
     // 1. Overall stats
     let total_roles = roles.len();
-    let total_motivations = motivations.len();
+    let total_tradeoffs = tradeoffs.len();
     let total_evaluations = evaluations.len();
     let overall_avg = if evaluations.is_empty() {
         None
@@ -288,7 +288,7 @@ fn output_text(
 
     println!("=== Agency Performance Stats ===\n");
     println!("  Roles:        {}", total_roles);
-    println!("  TradeoffConfigs:  {}", total_motivations);
+    println!("  TradeoffConfigs:  {}", total_tradeoffs);
     println!("  Evaluations:  {}", total_evaluations);
     println!(
         "  Avg score:    {}",
@@ -331,7 +331,7 @@ fn output_text(
     }
 
     // 3. TradeoffConfig leaderboard
-    let mut mot_stats = build_motivation_stats(motivations);
+    let mut mot_stats = build_tradeoff_stats(tradeoffs);
     mot_stats.sort_by(|a, b| {
         b.avg_score
             .partial_cmp(&a.avg_score)
@@ -423,7 +423,7 @@ fn output_text(
     }
 
     // 6. Under-explored combinations
-    let under = find_underexplored(roles, motivations, evaluations, min_evals);
+    let under = find_underexplored(roles, tradeoffs, evaluations, min_evals);
     if !under.is_empty() {
         println!(
             "\n--- Under-explored Combinations (< {} evals) ---\n",
@@ -468,7 +468,7 @@ fn output_text(
 
 fn output_json(
     roles: &[Role],
-    motivations: &[TradeoffConfig],
+    tradeoffs: &[TradeoffConfig],
     evaluations: &[Evaluation],
     task_tags: &HashMap<String, Vec<String>>,
     min_evals: u32,
@@ -504,7 +504,7 @@ fn output_json(
         .collect();
 
     // TradeoffConfig leaderboard
-    let mut mot_stats = build_motivation_stats(motivations);
+    let mut mot_stats = build_tradeoff_stats(tradeoffs);
     mot_stats.sort_by(|a, b| {
         b.avg_score
             .partial_cmp(&a.avg_score)
@@ -537,7 +537,7 @@ fn output_json(
             };
             serde_json::json!({
                 "role_id": c.role_id,
-                "motivation_id": c.tradeoff_id,
+                "tradeoff_id": c.tradeoff_id,
                 "avg_score": c.avg_score,
                 "count": c.count,
                 "rating": rating,
@@ -564,7 +564,7 @@ fn output_json(
         .iter()
         .map(|c| {
             serde_json::json!({
-                "motivation_id": c.entity_id,
+                "tradeoff_id": c.entity_id,
                 "tag": c.tag,
                 "avg_score": c.avg_score,
                 "count": c.count,
@@ -573,13 +573,13 @@ fn output_json(
         .collect();
 
     // Under-explored
-    let under = find_underexplored(roles, motivations, evaluations, min_evals);
+    let under = find_underexplored(roles, tradeoffs, evaluations, min_evals);
     let under_json: Vec<serde_json::Value> = under
         .iter()
         .map(|(r, m, c)| {
             serde_json::json!({
                 "role_id": r,
-                "motivation_id": m,
+                "tradeoff_id": m,
                 "eval_count": c,
             })
         })
@@ -588,16 +588,16 @@ fn output_json(
     let mut output = serde_json::json!({
         "overview": {
             "total_roles": roles.len(),
-            "total_motivations": motivations.len(),
+            "total_tradeoffs": tradeoffs.len(),
             "total_evaluations": total_evaluations,
             "avg_score": overall_avg,
         },
         "role_leaderboard": role_board,
-        "motivation_leaderboard": mot_board,
+        "tradeoff_leaderboard": mot_board,
         "synergy_matrix": synergy_json,
         "tag_breakdown": {
             "by_role": role_tags_json,
-            "by_motivation": mot_tags_json,
+            "by_tradeoff": mot_tags_json,
         },
         "underexplored": under_json,
     });
@@ -702,7 +702,7 @@ mod tests {
             lineage: Lineage::default(),
             default_context_scope: None,
         }];
-        let motivations = vec![TradeoffConfig {
+        let tradeoffs = vec![TradeoffConfig {
             id: "m1".into(),
             name: "Mot 1".into(),
             description: String::new(),
@@ -715,7 +715,7 @@ mod tests {
             former_deployments: vec![],
         }];
 
-        let under = find_underexplored(&roles, &motivations, &[], 3);
+        let under = find_underexplored(&roles, &tradeoffs, &[], 3);
         assert_eq!(under.len(), 1);
         assert_eq!(under[0], ("r1".to_string(), "m1".to_string(), 0));
     }

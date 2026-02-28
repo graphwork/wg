@@ -9,7 +9,7 @@ GETTING STARTED
 ─────────────────────────────────────────
   wg init                     # Create a .workgraph directory
   wg setup                    # Interactive config wizard (executor, model, agency)
-  wg agency init              # Bootstrap roles, motivations, and a default agent
+  wg agency init              # Bootstrap roles, tradeoffs, and a default agent
   wg service start            # Start the coordinator
   wg add "My first task"      # Add work — the service dispatches automatically
 
@@ -40,14 +40,14 @@ AGENCY SETUP
   agents to tasks immediately. It sets up:
 
   • Roles     — what agents do (Programmer, Reviewer, Documenter, Architect)
-  • Motivations — constraints on how (Careful, Fast, Thorough, Balanced)
-  • Agent     — a role+motivation pairing (default: Careful Programmer)
+  • Tradeoffs — constraints on how (Careful, Fast, Thorough, Balanced)
+  • Agent     — a role+tradeoff pairing (default: Careful Programmer)
   • Config    — enables auto_assign and auto_evaluate
 
   You can also set up manually:
     wg role add "Name" --outcome "What it produces" --skill skill-name
-    wg motivation add "Name" --accept "Slow" --reject "Untested"
-    wg agent create "Name" --role <hash> --motivation <hash>
+    wg tradeoff add "Name" --accept "Slow" --reject "Untested"
+    wg agent create "Name" --role <hash> --tradeoff <hash>
     wg config --auto-assign true --auto-evaluate true
 
 ⚠ COORDINATOR SERVICE REMINDER ⚠
@@ -302,13 +302,13 @@ fn json_output() -> serde_json::Value {
             "quick_setup": "wg agency init",
             "concepts": {
                 "roles": "What agents do (skills + desired outcome)",
-                "motivations": "Constraints on how agents work (acceptable/unacceptable trade-offs)",
-                "agents": "A role + motivation pairing that gets assigned to tasks"
+                "tradeoffs": "Constraints on how agents work (acceptable/unacceptable trade-offs)",
+                "agents": "A role + tradeoff pairing that gets assigned to tasks"
             },
             "manual_setup": [
                 "wg role add \"Name\" --outcome \"...\" --skill name",
-                "wg motivation add \"Name\" --accept \"...\" --reject \"...\"",
-                "wg agent create \"Name\" --role <hash> --motivation <hash>",
+                "wg tradeoff add \"Name\" --accept \"...\" --reject \"...\"",
+                "wg agent create \"Name\" --role <hash> --tradeoff <hash>",
                 "wg config --auto-assign true --auto-evaluate true"
             ]
         },
@@ -535,7 +535,7 @@ mod tests {
     fn test_quickstart_text_contains_agency_setup() {
         assert!(QUICKSTART_TEXT.contains("AGENCY SETUP"));
         assert!(QUICKSTART_TEXT.contains("Roles"));
-        assert!(QUICKSTART_TEXT.contains("Motivations"));
+        assert!(QUICKSTART_TEXT.contains("Tradeoffs"));
     }
 
     #[test]

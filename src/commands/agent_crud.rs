@@ -23,7 +23,7 @@ fn parse_trust_level(s: &str) -> Result<TrustLevel> {
     }
 }
 
-/// `wg agent create <name> [--role <hash>] [--motivation <hash>] [--capabilities ...] [--rate N] [--capacity N] [--trust-level L] [--contact C] [--executor E]`
+/// `wg agent create <name> [--role <hash>] [--tradeoff <hash>] [--capabilities ...] [--rate N] [--capacity N] [--trust-level L] [--contact C] [--executor E]`
 #[allow(clippy::too_many_arguments)]
 pub fn run_create(
     workgraph_dir: &Path,
@@ -41,11 +41,11 @@ pub fn run_create(
     agency::init(&agency_dir).context("Failed to initialise agency directory")?;
 
     let roles_dir = agency_dir.join("cache/roles");
-    let motivations_dir = agency_dir.join("primitives/tradeoffs");
+    let tradeoffs_dir = agency_dir.join("primitives/tradeoffs");
 
     let is_human = agency::is_human_executor(executor);
 
-    // Resolve role and motivation if provided
+    // Resolve role and tradeoff if provided
     let resolved_role = match role_id {
         Some(rid) => Some(
             agency::find_role_by_prefix(&roles_dir, rid)
@@ -59,15 +59,15 @@ pub fn run_create(
         }
     };
 
-    let resolved_motivation = match tradeoff_id {
+    let resolved_tradeoff = match tradeoff_id {
         Some(mid) => Some(
-            agency::find_tradeoff_by_prefix(&motivations_dir, mid)
-                .with_context(|| format!("Failed to find motivation '{}'", mid))?,
+            agency::find_tradeoff_by_prefix(&tradeoffs_dir, mid)
+                .with_context(|| format!("Failed to find tradeoff '{}'", mid))?,
         ),
         None => {
             if !is_human {
                 anyhow::bail!(
-                    "--motivation is required for AI agents (executor={})",
+                    "--tradeoff is required for AI agents (executor={})",
                     executor
                 );
             }
@@ -76,13 +76,13 @@ pub fn run_create(
     };
 
     // Compute agent ID based on available identity fields
-    let (agent_role_id, agent_motivation_id, id) = match (&resolved_role, &resolved_motivation) {
+    let (agent_role_id, agent_tradeoff_id, id) = match (&resolved_role, &resolved_tradeoff) {
         (Some(role), Some(mot)) => {
             let id = agency::content_hash_agent(&role.id, &mot.id);
             (role.id.clone(), mot.id.clone(), id)
         }
         _ => {
-            // For human agents without role/motivation, hash the name + executor
+            // For human agents without role/tradeoff, hash the name + executor
             use sha2::{Digest, Sha256};
             let input = format!("human-agent:{}:{}", name, executor);
             let digest = Sha256::digest(input.as_bytes());
@@ -91,7 +91,7 @@ pub fn run_create(
                 .as_ref()
                 .map(|r| r.id.clone())
                 .unwrap_or_default();
-            let mot_id = resolved_motivation
+            let mot_id = resolved_tradeoff
                 .as_ref()
                 .map(|m| m.id.clone())
                 .unwrap_or_default();
@@ -116,7 +116,7 @@ pub fn run_create(
     let agent = Agent {
         id,
         role_id: agent_role_id,
-        tradeoff_id: agent_motivation_id,
+        tradeoff_id: agent_tradeoff_id,
         name: name.to_string(),
         performance: PerformanceRecord::default(),
         lineage: Lineage::default(),
@@ -147,11 +147,11 @@ pub fn run_create(
             agency::short_hash(&role.id)
         );
     }
-    if let Some(mot) = &resolved_motivation {
+    if let Some(t) = &resolved_tradeoff {
         println!(
-            "  motivation: {} ({})",
-            mot.name,
-            agency::short_hash(&mot.id)
+            "  tradeoff:   {} ({})",
+            t.name,
+            agency::short_hash(&t.id)
         );
     }
     println!("  executor:   {}", executor);
@@ -184,7 +184,7 @@ pub fn run_list(workgraph_dir: &Path, json: bool) -> Result<()> {
                     "id": a.id,
                     "name": a.name,
                     "role_id": a.role_id,
-                    "motivation_id": a.tradeoff_id,
+                    "tradeoff_id": a.tradeoff_id,
                     "executor": a.executor,
                     "capabilities": a.capabilities,
                     "avg_score": a.performance.avg_score,
@@ -237,15 +237,15 @@ pub fn run_show(workgraph_dir: &Path, id: &str, json: bool) -> Result<()> {
         .with_context(|| format!("Failed to find agent '{}'", id))?;
 
     if json {
-        // Include resolved role/motivation names in JSON output
+        // Include resolved role/tradeoff names in JSON output
         let roles_dir = agency_dir.join("cache/roles");
-        let motivations_dir = agency_dir.join("primitives/tradeoffs");
+        let tradeoffs_dir = agency_dir.join("primitives/tradeoffs");
 
         let role_name = agency::find_role_by_prefix(&roles_dir, &agent.role_id)
             .map(|r| r.name)
             .unwrap_or_else(|_| "(not found)".to_string());
-        let motivation_name =
-            agency::find_tradeoff_by_prefix(&motivations_dir, &agent.tradeoff_id)
+        let tradeoff_name =
+            agency::find_tradeoff_by_prefix(&tradeoffs_dir, &agent.tradeoff_id)
                 .map(|m| m.name)
                 .unwrap_or_else(|_| "(not found)".to_string());
 
@@ -254,8 +254,8 @@ pub fn run_show(workgraph_dir: &Path, id: &str, json: bool) -> Result<()> {
             "name": agent.name,
             "role_id": agent.role_id,
             "role_name": role_name,
-            "motivation_id": agent.tradeoff_id,
-            "motivation_name": motivation_name,
+            "tradeoff_id": agent.tradeoff_id,
+            "tradeoff_name": tradeoff_name,
             "executor": agent.executor,
             "capabilities": agent.capabilities,
             "rate": agent.rate,
@@ -282,21 +282,21 @@ pub fn run_show(workgraph_dir: &Path, id: &str, json: bool) -> Result<()> {
 
         // Resolve role name
         let roles_dir = agency_dir.join("cache/roles");
-        let motivations_dir = agency_dir.join("primitives/tradeoffs");
+        let tradeoffs_dir = agency_dir.join("primitives/tradeoffs");
 
         match agency::find_role_by_prefix(&roles_dir, &agent.role_id) {
             Ok(role) => println!("Role: {} ({})", role.name, agency::short_hash(&role.id)),
             Err(_) => println!("Role: {} (not found)", agency::short_hash(&agent.role_id)),
         }
 
-        match agency::find_tradeoff_by_prefix(&motivations_dir, &agent.tradeoff_id) {
-            Ok(motivation) => println!(
-                "Motivation: {} ({})",
-                motivation.name,
-                agency::short_hash(&motivation.id)
+        match agency::find_tradeoff_by_prefix(&tradeoffs_dir, &agent.tradeoff_id) {
+            Ok(tradeoff) => println!(
+                "Tradeoff: {} ({})",
+                tradeoff.name,
+                agency::short_hash(&tradeoff.id)
             ),
             Err(_) => println!(
-                "Motivation: {} (not found)",
+                "Tradeoff: {} (not found)",
                 agency::short_hash(&agent.tradeoff_id)
             ),
         }
@@ -370,12 +370,12 @@ pub fn run_rm(workgraph_dir: &Path, id: &str) -> Result<()> {
 
 /// `wg agent lineage <hash> [--json]`
 ///
-/// Shows the agent itself plus the ancestry of its constituent role and motivation.
+/// Shows the agent itself plus the ancestry of its constituent role and tradeoff.
 pub fn run_lineage(workgraph_dir: &Path, id: &str, json: bool) -> Result<()> {
     let agency_dir = workgraph_dir.join("agency");
     let agents_dir = agency_dir.join("cache/agents");
     let roles_dir = agency_dir.join("cache/roles");
-    let motivations_dir = agency_dir.join("primitives/tradeoffs");
+    let tradeoffs_dir = agency_dir.join("primitives/tradeoffs");
 
     let agent = agency::find_agent_by_prefix(&agents_dir, id)
         .with_context(|| format!("Failed to find agent '{}'", id))?;
@@ -387,10 +387,10 @@ pub fn run_lineage(workgraph_dir: &Path, id: &str, json: bool) -> Result<()> {
         );
         Vec::new()
     });
-    let tradeoff_ancestry = agency::tradeoff_ancestry(&agent.tradeoff_id, &motivations_dir)
+    let tradeoff_ancestry = agency::tradeoff_ancestry(&agent.tradeoff_id, &tradeoffs_dir)
         .unwrap_or_else(|e| {
             eprintln!(
-                "Warning: failed to load motivation ancestry for '{}': {}",
+                "Warning: failed to load tradeoff ancestry for '{}': {}",
                 agent.tradeoff_id, e
             );
             Vec::new()
@@ -484,11 +484,11 @@ pub fn run_lineage(workgraph_dir: &Path, id: &str, json: bool) -> Result<()> {
 
     println!();
     println!(
-        "Motivation ancestry ({})",
+        "Tradeoff ancestry ({})",
         agency::short_hash(&agent.tradeoff_id)
     );
     if tradeoff_ancestry.is_empty() {
-        println!("  (motivation not found)");
+        println!("  (tradeoff not found)");
     } else {
         for node in &tradeoff_ancestry {
             let indent = "  ".repeat(node.generation as usize + 1);
@@ -532,7 +532,7 @@ pub fn run_performance(workgraph_dir: &Path, id: &str, json: bool) -> Result<()>
     let agent = agency::find_agent_by_prefix(&agents_dir, id)
         .with_context(|| format!("Failed to find agent '{}'", id))?;
 
-    // Load all evaluations and filter to this agent's role+motivation pair
+    // Load all evaluations and filter to this agent's role+tradeoff pair
     let evals_dir = agency_dir.join("evaluations");
     let all_evals = agency::load_all_evaluations_or_warn(&evals_dir);
 
@@ -662,16 +662,16 @@ mod tests {
         role.id
     }
 
-    fn create_motivation(dir: &Path) -> String {
-        let motivation = agency::build_tradeoff(
-            "Test Motivation",
-            "A test motivation",
+    fn create_tradeoff(dir: &Path) -> String {
+        let tradeoff = agency::build_tradeoff(
+            "Test Tradeoff",
+            "A test tradeoff",
             vec!["Slower delivery".to_string()],
             vec!["Skipping tests".to_string()],
         );
-        let mots_dir = dir.join("agency").join("primitives/tradeoffs");
-        agency::save_tradeoff(&motivation, &mots_dir).unwrap();
-        motivation.id
+        let tradeoffs_dir = dir.join("agency").join("primitives/tradeoffs");
+        agency::save_tradeoff(&tradeoff, &tradeoffs_dir).unwrap();
+        tradeoff.id
     }
 
     /// Helper: create an agent with defaults for the new optional fields.
@@ -694,7 +694,7 @@ mod tests {
     fn test_create_and_list() {
         let tmp = setup();
         let role_id = create_role(tmp.path());
-        let mot_id = create_motivation(tmp.path());
+        let mot_id = create_tradeoff(tmp.path());
 
         create_agent(tmp.path(), "Test Agent", &role_id, &mot_id).unwrap();
 
@@ -710,7 +710,7 @@ mod tests {
     fn test_create_with_operational_fields() {
         let tmp = setup();
         let role_id = create_role(tmp.path());
-        let mot_id = create_motivation(tmp.path());
+        let mot_id = create_tradeoff(tmp.path());
 
         run_create(
             tmp.path(),
@@ -769,7 +769,7 @@ mod tests {
     }
 
     #[test]
-    fn test_create_ai_agent_requires_role_and_motivation() {
+    fn test_create_ai_agent_requires_role_and_tradeoff() {
         let tmp = setup();
 
         // AI agent (executor=claude) without role should fail
@@ -798,7 +798,7 @@ mod tests {
     fn test_create_duplicate_fails() {
         let tmp = setup();
         let role_id = create_role(tmp.path());
-        let mot_id = create_motivation(tmp.path());
+        let mot_id = create_tradeoff(tmp.path());
 
         create_agent(tmp.path(), "Agent 1", &role_id, &mot_id).unwrap();
         let result = create_agent(tmp.path(), "Agent 2", &role_id, &mot_id);
@@ -809,7 +809,7 @@ mod tests {
     #[test]
     fn test_create_with_bad_role() {
         let tmp = setup();
-        let mot_id = create_motivation(tmp.path());
+        let mot_id = create_tradeoff(tmp.path());
         let result = run_create(
             tmp.path(),
             "Bad Agent",
@@ -829,7 +829,7 @@ mod tests {
     fn test_show_and_rm() {
         let tmp = setup();
         let role_id = create_role(tmp.path());
-        let mot_id = create_motivation(tmp.path());
+        let mot_id = create_tradeoff(tmp.path());
 
         create_agent(tmp.path(), "Show Agent", &role_id, &mot_id).unwrap();
 
@@ -877,7 +877,7 @@ mod tests {
     fn test_lineage() {
         let tmp = setup();
         let role_id = create_role(tmp.path());
-        let mot_id = create_motivation(tmp.path());
+        let mot_id = create_tradeoff(tmp.path());
 
         create_agent(tmp.path(), "Lineage Agent", &role_id, &mot_id).unwrap();
 
@@ -906,7 +906,7 @@ mod tests {
     fn test_performance_empty() {
         let tmp = setup();
         let role_id = create_role(tmp.path());
-        let mot_id = create_motivation(tmp.path());
+        let mot_id = create_tradeoff(tmp.path());
 
         create_agent(tmp.path(), "Perf Agent", &role_id, &mot_id).unwrap();
 
