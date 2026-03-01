@@ -473,14 +473,13 @@ impl VizApp {
             Some(&line) => line,
             None => return,
         };
-        if let Some(visible_pos) = self.original_to_visible(orig_line) {
-            if visible_pos < self.scroll.offset_y
-                || visible_pos >= self.scroll.offset_y + self.scroll.viewport_height
-            {
-                let half = self.scroll.viewport_height / 2;
-                self.scroll.offset_y = visible_pos.saturating_sub(half);
-                self.scroll.clamp();
-            }
+        if let Some(visible_pos) = self.original_to_visible(orig_line)
+            && (visible_pos < self.scroll.offset_y
+                || visible_pos >= self.scroll.offset_y + self.scroll.viewport_height)
+        {
+            let half = self.scroll.viewport_height / 2;
+            self.scroll.offset_y = visible_pos.saturating_sub(half);
+            self.scroll.clamp();
         }
     }
 
@@ -905,10 +904,10 @@ impl VizApp {
         };
 
         // Skip reload if already loaded for this task.
-        if let Some(ref detail) = self.hud_detail {
-            if detail.task_id == task_id {
-                return;
-            }
+        if let Some(ref detail) = self.hud_detail
+            && detail.task_id == task_id
+        {
+            return;
         }
 
         self.hud_scroll = 0;
@@ -1010,35 +1009,34 @@ impl VizApp {
                     .filter_map(|e| e.ok())
                     .filter(|e| e.file_name().to_string_lossy().starts_with(&prefix))
                     .collect();
-                eval_files.sort_by(|a, b| b.file_name().cmp(&a.file_name()));
-                if let Some(entry) = eval_files.first() {
-                    if let Ok(content) = std::fs::read_to_string(entry.path()) {
-                        if let Ok(eval) = serde_json::from_str::<serde_json::Value>(&content) {
-                            eval_found = true;
-                            lines.push("── Evaluation ──".to_string());
-                            if let Some(score) = eval.get("score").and_then(|v| v.as_f64()) {
-                                lines.push(format!("  Score: {:.2}", score));
+                eval_files.sort_by_key(|b| std::cmp::Reverse(b.file_name()));
+                if let Some(entry) = eval_files.first()
+                    && let Ok(content) = std::fs::read_to_string(entry.path())
+                    && let Ok(eval) = serde_json::from_str::<serde_json::Value>(&content)
+                {
+                    eval_found = true;
+                    lines.push("── Evaluation ──".to_string());
+                    if let Some(score) = eval.get("score").and_then(|v| v.as_f64()) {
+                        lines.push(format!("  Score: {:.2}", score));
+                    }
+                    if let Some(notes) = eval.get("notes").and_then(|v| v.as_str()) {
+                        // Show first ~3 lines of notes.
+                        for (i, line) in notes.lines().enumerate() {
+                            if i >= 3 {
+                                lines.push("  ...".to_string());
+                                break;
                             }
-                            if let Some(notes) = eval.get("notes").and_then(|v| v.as_str()) {
-                                // Show first ~3 lines of notes.
-                                for (i, line) in notes.lines().enumerate() {
-                                    if i >= 3 {
-                                        lines.push("  ...".to_string());
-                                        break;
-                                    }
-                                    lines.push(format!("  {}", line));
-                                }
-                            }
-                            if let Some(dims) = eval.get("dimensions").and_then(|v| v.as_object()) {
-                                let dim_strs: Vec<String> = dims
-                                    .iter()
-                                    .map(|(k, v)| format!("{}:{:.2}", k, v.as_f64().unwrap_or(0.0)))
-                                    .collect();
-                                lines.push(format!("  Dims: {}", dim_strs.join(", ")));
-                            }
-                            lines.push(String::new());
+                            lines.push(format!("  {}", line));
                         }
                     }
+                    if let Some(dims) = eval.get("dimensions").and_then(|v| v.as_object()) {
+                        let dim_strs: Vec<String> = dims
+                            .iter()
+                            .map(|(k, v)| format!("{}:{:.2}", k, v.as_f64().unwrap_or(0.0)))
+                            .collect();
+                        lines.push(format!("  Dims: {}", dim_strs.join(", ")));
+                    }
+                    lines.push(String::new());
                 }
                 let _ = eval_found;
             }
@@ -1100,17 +1098,17 @@ impl VizApp {
                 lines.push(format!("  Completed: {}", format_timestamp(ts)));
             }
             // Duration
-            if let (Some(start), Some(end)) = (&task.started_at, &task.completed_at) {
-                if let (Ok(s), Ok(e)) = (
+            if let (Some(start), Some(end)) = (&task.started_at, &task.completed_at)
+                && let (Ok(s), Ok(e)) = (
                     chrono::DateTime::parse_from_rfc3339(start),
                     chrono::DateTime::parse_from_rfc3339(end),
-                ) {
-                    let dur = (e - s).num_seconds();
-                    lines.push(format!(
-                        "  Duration:  {}",
-                        workgraph::format_duration(dur, false)
-                    ));
-                }
+                )
+            {
+                let dur = (e - s).num_seconds();
+                lines.push(format!(
+                    "  Duration:  {}",
+                    workgraph::format_duration(dur, false)
+                ));
             }
             lines.push(String::new());
         }
@@ -1257,7 +1255,7 @@ fn detect_tmux_split() -> bool {
     };
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let parts: Vec<&str> = stdout.trim().split_whitespace().collect();
+    let parts: Vec<&str> = stdout.split_whitespace().collect();
     if parts.len() != 2 {
         return false;
     }
