@@ -168,7 +168,7 @@ wg add "arena-probe-{task-id}" --after dependencies --before {task-id} \
   --exec "wg arena-select {task-id} --candidates 3"
 ```
 
-This fits naturally into workgraph's DAG model — the probe task completes, sets the model, then the real task dispatches with the selected model.
+This fits naturally into workgraph's graph model — the probe task completes, sets the model, then the real task dispatches with the selected model.
 
 ### Recommended approach
 

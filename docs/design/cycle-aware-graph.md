@@ -73,7 +73,7 @@ The design follows a four-phase migration path that maintains backward compatibi
 
 ```
 Task {
-    blocked_by: Vec<String>       // forward dependency edges (DAG-only by convention)
+    blocked_by: Vec<String>       // forward dependency edges
     blocks: Vec<String>           // inverse of blocked_by (computed convenience)
     loops_to: Vec<LoopEdge>       // separate back-edges with metadata
     loop_iteration: u32           // per-task iteration counter

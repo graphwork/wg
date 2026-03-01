@@ -28,7 +28,7 @@ Nikete's veracity exchange concept (from the research-veracity-exchange task) pr
 1. **Outcome-scored sub-units**: Each task has measurable real-world outcomes (portfolio P&L, prediction MSE, negative mean squared error). These become veracity scores.
 2. **Trust market**: Public (non-sensitive) prompt sections posted to a market where others suggest improvements. Good suggestions signal credibility.
 3. **Network learning**: Learn which peers to do veracity exchanges with — trust built on demonstrated competence.
-4. **Information flow control**: The DAG structure controls what data leaves your node. Task interfaces define public/private boundaries.
+4. **Information flow control**: The graph structure controls what data leaves your node. Task interfaces define public/private boundaries.
 5. **Latent payoff**: Some sub-units have outcomes that take time to evaluate (e.g., portfolio performance over weeks).
 
 ---
@@ -109,7 +109,7 @@ Nikete's veracity exchange concept (from the research-veracity-exchange task) pr
 ### 3. Information Boundary Control — Score: 1/5
 
 **What supports veracity exchange:**
-- **DAG structure as implicit boundary.** Dependency edges control information flow — a task only receives context from its direct dependencies. This is the foundation the veracity exchange research identified ("DAG as information flow controller").
+- **Graph structure as implicit boundary.** Dependency edges control information flow — a task only receives context from its direct dependencies. This is the foundation the veracity exchange research identified (the graph as information flow controller).
 - **Artifact system as interface.** Tasks communicate through declared artifacts, not shared state. This creates natural interfaces between tasks.
 - **Agent directory isolation.** Each agent runs in its own directory with its own prompt/output.
 
@@ -127,7 +127,7 @@ Nikete's veracity exchange concept (from the research-veracity-exchange task) pr
 3. Add a `wg export` command that respects visibility when generating output for external consumption (~100 lines)
 4. Add visibility filtering to operation log queries (~30 lines)
 
-The veracity exchange research estimated ~300-400 lines of core changes for outcome scoring + visibility. This is the visibility half. The DAG-as-boundary concept is architecturally present but has no enforcement mechanism.
+The veracity exchange research estimated ~300-400 lines of core changes for outcome scoring + visibility. This is the visibility half. The graph-as-boundary concept is architecturally present but has no enforcement mechanism.
 
 ### 4. Replay/Reproducibility — Score: 2/5
 
@@ -184,7 +184,7 @@ This is correctly deferred as the most speculative dimension. Phase 1 alone prov
 |-----------|-------|------------|
 | **Outcome Tracking** | 2/5 | Evaluation infrastructure exists but tracks LLM quality, not real-world outcomes. No latent payoff mechanism. |
 | **Audit Completeness** | 4/5 | Strongest dimension. Full mutation history, actor attribution, agent archives, 29 tests. Missing: structured traces, artifact hashing. |
-| **Information Boundary Control** | 1/5 | Largest gap. No visibility classification at any level. DAG provides implicit boundaries but nothing is enforceable. |
+| **Information Boundary Control** | 1/5 | Largest gap. No visibility classification at any level. Graph provides implicit boundaries but nothing is enforceable. |
 | **Replay/Reproducibility** | 2/5 | Data exists for replay but no mechanism. nikete's fork has reference implementation. |
 | **Exchange Protocol Readiness** | 1/5 | Essentially unstarted. Machine-readable logs exist but no protocol, no peers, no export. |
 

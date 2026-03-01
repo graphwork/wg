@@ -180,10 +180,10 @@ The test suite tests **0 of 66 CLI command modules** directly. All CLI testing i
 |------|-------|-------|
 | `tui/mod.rs` | 1,422 | Interactive terminal UI |
 | `tui/app.rs` | 1,370 | App state/events |
-| `tui/dag_layout.rs` | 1,570 | DAG layout algorithm |
+| `tui/dag_layout.rs` | 1,570 | Graph layout algorithm |
 | **Total** | **4,362** | No tests at all |
 
-The DAG layout algorithm in particular has complex logic (Sugiyama-style layer assignment, crossing reduction) that would benefit from unit tests.
+The graph layout algorithm in particular has complex logic (Sugiyama-style layer assignment, crossing reduction) that would benefit from unit tests.
 
 ### 3.3 Matrix Integration (ZERO coverage)
 

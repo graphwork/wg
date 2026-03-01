@@ -17,7 +17,7 @@ Workgraph is a well-engineered task graph coordinator with a clean core and ambi
 - **Significant code duplication** — `make_task` (duplicated 22+ times), `build_reverse_index` (6 times), `spawn.rs` run/spawn_agent (~250 duplicate lines), Matrix command parser (full copy-paste between features), and more. Conservatively **1,500–2,000 lines** of pure duplication.
 - **Dead and vestigial code** — The `Executor` trait is never used in production, `src/executors/` is dead re-exports, `petgraph` dependency is unused, 4 of 7 `AgentStatus` variants are never set, the old `wg agent` loop coexists with the service daemon without clear demarcation.
 - **Test coverage is deeply uneven** — The agency system has ~3,850 lines of excellent tests, but CLI commands (~23,000 lines), TUI (~4,362 lines), Matrix integration (~2,787 lines), and the evolution module (~2,677 lines) have **zero** test coverage. Only 1 of 9 integration test files runs in CI.
-- **Documentation is stale** — COMMANDS.md documents ~35 of 67 commands. AGENT-SERVICE.md describes a design that doesn't match the implementation. The README is missing significant features (edit, submit/approve/reject, status, dag).
+- **Documentation is stale** — COMMANDS.md documents ~35 of 67 commands. AGENT-SERVICE.md describes a design that doesn't match the implementation. The README is missing significant features (edit, submit/approve/reject, status, viz).
 - **Architectural redundancy** — Two identity systems (Actor vs Agent), two prompt/executor systems (Executor trait vs spawn.rs), two Matrix implementations sharing copy-pasted code.
 
 **Overall codebase health: 6.5/10** — Strong fundamentals, but debt is accumulating faster than it's being paid down. The next phase of work should focus on consolidation over new features.
@@ -98,7 +98,7 @@ Workgraph is a well-engineered task graph coordinator with a clean core and ambi
 |--------|--------|
 | Rewrite COMMANDS.md (add ~30 missing commands) | Most impactful doc improvement |
 | Add verified workflow (submit/approve/reject) to README | Undiscoverable feature becomes visible |
-| Add `wg edit`, `wg status`, `wg dag` to README | Commonly-used commands become documented |
+| Add `wg edit`, `wg status`, `wg viz` to README | Commonly-used commands become documented |
 | Archive stale design docs (AGENT-SERVICE.md, ROLES-IDEA.md, architectural-issues.md) | Reduces confusion |
 | Add `wg evolve` unit tests (mutation, crossover, tournament) | Covers highest-risk untested code (2,677 lines) |
 | Add CLI smoke tests (--help on all commands) | Catches argument parsing regressions |
@@ -175,7 +175,7 @@ The test suite has a dramatic gap: the agency data model is tested at ~3,850 lin
 11. **Refactor `coordinator_tick()`** — Single graph load, extracted sub-functions.
 12. **Atomic file writes in `save_graph`** — Temp file + rename pattern.
 13. **Update COMMANDS.md** — Add all 30+ missing commands.
-14. **Update README** — Add edit, submit/approve/reject, status, dag, link AGENCY.md.
+14. **Update README** — Add edit, submit/approve/reject, status, viz, link AGENCY.md.
 15. **Add `wg evolve` tests** — At minimum: mutation, crossover, tournament selection unit tests.
 
 ### Long-Term (Next Quarter)
@@ -220,7 +220,7 @@ The test suite has a dramatic gap: the agency data model is tested at ~3,850 lin
 
 ### TUI (review-tui.md)
 - **Health:** Production-quality for a monitoring TUI. ~4,362 lines.
-- **Top issues:** Duplicated sort-key logic (MED), Debug-format snapshot diffing (MED), hardcoded viewport_height (MED), zero test coverage (but DAG layout has 8 inline tests).
+- **Top issues:** Duplicated sort-key logic (MED), Debug-format snapshot diffing (MED), hardcoded viewport_height (MED), zero test coverage (but graph layout has 8 inline tests).
 - **Key recommendation:** Minor refactors only; no critical issues.
 
 ### Matrix Integration (review-matrix.md)

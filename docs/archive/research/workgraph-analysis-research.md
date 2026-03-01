@@ -21,7 +21,7 @@ Workgraph is a task coordination CLI with:
 - **Tasks**: Work items with dependencies (`blocked_by`), estimates (hours/cost), status (open/in-progress/done/blocked), and assignments
 - **Actors**: Humans and AI agents who can be assigned to tasks
 - **Resources**: Budgets, compute capacity, and other constraints
-- **Cycles are allowed**: Unlike traditional DAG-based task managers, Workgraph allows cycles for recurring tasks
+- **Cycles are allowed**: Unlike traditional acyclic task managers, Workgraph allows cycles for recurring tasks
 
 The current implementation already provides:
 - `wg check` - Detects cycles (as warnings) and orphan references (as errors)

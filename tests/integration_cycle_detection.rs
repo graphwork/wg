@@ -132,7 +132,7 @@ fn test_cycle_analysis_linear_chain_no_cycles() {
 
 #[test]
 fn test_cycle_analysis_dag_no_cycles() {
-    // Diamond DAG: A → B, A → C, B → D, C → D
+    // Diamond graph (no cycle): A → B, A → C, B → D, C → D
     let a = make_task("a", "A");
     let mut b = make_task("b", "B");
     b.after = vec!["a".to_string()];
@@ -144,7 +144,7 @@ fn test_cycle_analysis_dag_no_cycles() {
     let graph = build_graph(vec![a, b, c, d]);
     let analysis = graph.compute_cycle_analysis();
 
-    assert!(analysis.cycles.is_empty(), "Diamond DAG should have no cycles");
+    assert!(analysis.cycles.is_empty(), "Diamond graph should have no cycles");
 }
 
 #[test]

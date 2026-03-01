@@ -29,7 +29,7 @@ All mutable state lives in a single `App` struct (~20 fields). Sub-views are rep
 
 **Change detection** uses snapshot maps (`prev_task_snapshots`, `prev_agent_snapshots`) that store `format!("{:?}", status)` strings. New items and changed items are tracked separately. The `first_load` flag suppresses highlighting on initial data load.
 
-### DAG Layout Engine (`dag_layout.rs`)
+### Graph Layout Engine (`dag_layout.rs`)
 
 Uses the `ascii-dag` crate for Sugiyama-style layered layout (layer assignment + crossing minimization). The pipeline:
 
@@ -69,11 +69,11 @@ mod.rs::draw()
 
 4. **Selection preservation across refreshes.** Both dashboard and graph explorer preserve selection by task/agent ID through refreshes, which is important for usability.
 
-5. **Robust cycle handling in DAG layout.** The DFS-based back-edge detection with iterative stack (avoids stack overflow on deep graphs), separate back-edge rendering with distinct styling, and clean filtering before passing to ascii-dag all demonstrate careful engineering.
+5. **Robust cycle handling in graph layout.** The DFS-based back-edge detection with iterative stack (avoids stack overflow on deep graphs), separate back-edge rendering with distinct styling, and clean filtering before passing to ascii-dag all demonstrate careful engineering.
 
 6. **Deterministic layout.** Task IDs are sorted before processing to ensure HashMap iteration order doesn't affect layout. Verified by a dedicated test (`test_dag_layout_deterministic_ordering`).
 
-7. **Good test coverage for dag_layout.** Eight tests covering simple chains, diamonds, fan-out, skip-layer edges, cycles, multiple cycles, acyclic verification, and determinism.
+7. **Good test coverage for `dag_layout`.** Eight tests covering simple chains, diamonds, fan-out, skip-layer edges, cycles, multiple cycles, acyclic verification, and determinism.
 
 ### Issues
 
@@ -167,7 +167,7 @@ The back-edge rendering (dashed lines, corner detection, arrows) is interleaved 
 
 ## 5. Summary
 
-The TUI is well-structured for its size. The three-file split (event loop / state / DAG layout) provides good separation of concerns. The ratatui integration follows standard patterns. The DAG layout engine is the most complex component but handles edge cases (cycles, skip-layer edges, deterministic ordering) correctly with good test coverage.
+The TUI is well-structured for its size. The three-file split (event loop / state / graph layout) provides good separation of concerns. The ratatui integration follows standard patterns. The graph layout engine is the most complex component but handles edge cases (cycles, skip-layer edges, deterministic ordering) correctly with good test coverage.
 
 **Key refactoring opportunities:**
 - Consolidate duplicated sort-key functions

@@ -56,7 +56,7 @@ pub struct Scc {
 /// * `adj` — adjacency list: adj[u] = list of successors of u
 ///
 /// # Returns
-/// All SCCs in reverse topological order of the condensation DAG.
+/// All SCCs in reverse topological order of the condensation graph.
 /// Each SCC with >1 member contains at least one cycle.
 /// Single-node SCCs may or may not have self-loops.
 ///

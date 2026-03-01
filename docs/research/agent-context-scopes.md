@@ -83,7 +83,7 @@ Four tiers, ordered by increasing context breadth:
 **What the agent receives:**
 - Everything from `graph`
 - **System awareness preamble:** A ~300-token explanation of workgraph concepts:
-  - What workgraph is (DAG-based task orchestration)
+  - What workgraph is (graph-based task orchestration)
   - How the coordinator works (polls for ready tasks, spawns agents, monitors health)
   - How cycles/loops work
   - How the agency system works (roles, motivations, agents, evaluation, evolution)
@@ -538,7 +538,7 @@ A static string constant:
 ```rust
 const SYSTEM_AWARENESS_PREAMBLE: &str = r#"## About Workgraph
 
-Workgraph is a DAG-based task orchestration system. Tasks have dependencies (edges),
+Workgraph is a directed-graph-based task orchestration system. Tasks have dependencies (edges),
 statuses (open → in-progress → done/failed), and can be assigned to AI agents.
 
 **Coordinator:** A daemon that polls for ready tasks (all dependencies satisfied),

@@ -697,7 +697,7 @@ fn test_cycle_persists_through_save_load() {
 #[test]
 fn test_diamond_dependency_no_false_cycle() {
     // Diamond: a <- b, a <- c, b <- d, c <- d (d depends on b and c, both depend on a)
-    // This is NOT a cycle — it's a valid DAG diamond
+    // This is NOT a cycle — it's a valid diamond (no cycle)
     let mut graph = WorkGraph::new();
 
     let a = make_task("a");

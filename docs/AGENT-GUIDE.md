@@ -351,7 +351,7 @@ wg analyze                     # comprehensive health report
 | `Tab`/`Shift-Tab` | Next/previous match (in search mode) |
 | `q` | Quit |
 
-`wg viz` renders the graph as an ASCII DAG. It accepts optional task IDs to focus on specific subgraphs:
+`wg viz` renders the graph as an ASCII diagram. It accepts optional task IDs to focus on specific subgraphs:
 
 ```bash
 wg viz                          # full graph

@@ -10,7 +10,7 @@ The workgraph codebase has a working first-generation trace function system:
 
 **Core data model** (`src/function.rs`): `TraceFunction`, `TaskTemplate`, `FunctionInput`, `FunctionOutput`, `LoopEdgeTemplate`, `ExtractionSource`. Functions stored as YAML in `.workgraph/functions/<id>.yaml`. The `kind` field is always `"trace-function"` with `version: 1`.
 
-**Extraction** (`src/commands/func_extract.rs`): `wg trace extract <task-id>` extracts a trace function from a completed (Done) task. Supports `--subgraph` to capture the full descendant DAG, `--generalize` (stubbed, prints a warning), `--name`, `--output`, `--force`. Parameter detection is heuristic: scans task text for file paths, URLs, commands, and numbers.
+**Extraction** (`src/commands/func_extract.rs`): `wg trace extract <task-id>` extracts a trace function from a completed (Done) task. Supports `--subgraph` to capture the full descendant subgraph, `--generalize` (stubbed, prints a warning), `--name`, `--output`, `--force`. Parameter detection is heuristic: scans task text for file paths, URLs, commands, and numbers.
 
 **Instantiation** (`src/commands/func_apply.rs`): `wg trace instantiate <function-id>` creates real tasks from a function definition. Supports `--input key=value`, `--input-file`, `--prefix`, `--dry-run`, `--after`, `--model`, `--from` (peer or file path). Template substitution uses `{{input.<name>}}` placeholders via `str::replace()`.
 
@@ -61,7 +61,7 @@ Each layer subsumes the capabilities of the previous one.
 
 ### Layer 1: Static Functions (Fixed Topology)
 
-A parameterized DAG template with a fixed number of tasks, fixed dependency structure, and fixed loop edges. This is what exists today.
+A parameterized directed graph template with a fixed number of tasks, fixed dependency structure, and fixed loop edges. This is what exists today.
 
 **Invariant:** The number of tasks and their dependency edges are determined entirely at extraction time. Instantiation only fills in parameter values. The graph shape is identical across all instantiations.
 

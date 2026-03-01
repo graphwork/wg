@@ -120,7 +120,7 @@ The original library that ratatui forked from. No longer maintained - use ratatu
    - Sorting by priority, age, impact
 
 2. **Dependency Graph View**
-   - ASCII-art DAG visualization
+   - ASCII-art graph visualization
    - Could use `termgraph` or custom rendering
    - Show critical path highlighted
    - Zoom/pan through large graphs

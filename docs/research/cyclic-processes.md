@@ -14,7 +14,7 @@ Workgraph models task dependencies as a directed graph. Many real workflows are 
 
 **Key finding**: The three patterns that emerge across all systems are:
 
-1. **Iteration edges** — explicit back-edges with guards and bounds (keep the DAG for scheduling, add annotated cycle edges for re-activation)
+1. **Iteration edges** — explicit back-edges with guards and bounds (keep the forward graph acyclic for scheduling, add annotated cycle edges for re-activation)
 2. **Template instantiation** — cycles create new instances of task subgraphs rather than mutating existing ones
 3. **Event-driven re-activation** — completion/failure events trigger status resets on upstream tasks
 
@@ -300,7 +300,7 @@ Use **defense in depth** — multiple layers:
 
 ### 5.1 Design Principles
 
-1. **Don't break the DAG** — scheduling, topological sort, critical path, and `wg ready` should keep working. Loop edges are ignored for scheduling purposes.
+1. **Don't break the forward graph** — scheduling, topological sort, critical path, and `wg ready` should keep working. Loop edges are ignored for scheduling purposes.
 2. **Explicit over implicit** — cycles require opt-in. No accidental infinite loops.
 3. **Observable** — every re-activation is logged, with iteration counts visible.
 4. **Bounded by default** — unbounded loops are errors.

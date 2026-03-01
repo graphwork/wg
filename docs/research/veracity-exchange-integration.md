@@ -142,7 +142,7 @@ struct OutcomeRecord {
 
 **Interaction with existing systems:**
 
-The `build_task_context()` function in `spawn.rs` aggregates dependency artifacts and logs into a context string. If upstream tasks are private, their artifacts must not leak into a public downstream task's context. The DAG structure provides natural information boundaries (pillar 4): a task only sees artifacts from its direct dependencies. Making this a _security_ boundary rather than just a _convenience_ boundary requires enforcing visibility at the context-building layer.
+The `build_task_context()` function in `spawn.rs` aggregates dependency artifacts and logs into a context string. If upstream tasks are private, their artifacts must not leak into a public downstream task's context. The graph structure provides natural information boundaries (pillar 4): a task only sees artifacts from its direct dependencies. Making this a _security_ boundary rather than just a _convenience_ boundary requires enforcing visibility at the context-building layer.
 
 ### 3.3 Exchange Protocol
 
@@ -362,9 +362,9 @@ This maps naturally to the existing `TrustLevel` transitions but makes them data
 
 ---
 
-## 7. The DAG as Information Flow Controller
+## 7. The Graph as Information Flow Controller
 
-Pillar 4 — the workflow graph structure controls what data leaves your node — is perhaps the most elegant insight. The DAG is already an information flow controller:
+Pillar 4 — the workflow graph structure controls what data leaves your node — is perhaps the most elegant insight. The graph is already an information flow controller:
 
 - Tasks only see artifacts from their direct dependencies (`build_task_context()` in `spawn.rs`)
 - The `blocked_by` edges define what information flows where
@@ -380,7 +380,7 @@ Designate certain tasks as "boundary tasks" — the interface between private an
 - Consumes private upstream artifacts but produces public outputs
 - Its prompt is the public specification; its internal process may reference private data but its _output_ is public
 
-The DAG naturally supports this: everything upstream of a boundary task is private (internal computation), and the boundary task's output is what gets shared.
+The graph naturally supports this: everything upstream of a boundary task is private (internal computation), and the boundary task's output is what gets shared.
 
 ```
 [private: data-prep] ──► [private: model-train] ──► [boundary: publish-predictions] ──► [public: evaluate-accuracy]
@@ -388,9 +388,9 @@ The DAG naturally supports this: everything upstream of a boundary task is priva
 
 ### 7.2 Graph Slicing for Export
 
-When publishing to the exchange, export a _slice_ of the DAG: the subgraph rooted at boundary tasks, with private upstream tasks replaced by their public interface (output artifact hashes, outcome specs, but not prompts or internal logs).
+When publishing to the exchange, export a _slice_ of the graph: the subgraph rooted at boundary tasks, with private upstream tasks replaced by their public interface (output artifact hashes, outcome specs, but not prompts or internal logs).
 
-This is a read-only operation on the existing graph structure. No core changes needed — just a new `wg exchange export` command that walks the DAG and applies visibility filtering.
+This is a read-only operation on the existing graph structure. No core changes needed — just a new `wg exchange export` command that walks the graph and applies visibility filtering.
 
 ---
 
@@ -446,7 +446,7 @@ These features are useful independently of any exchange.
 
 ### Phase 2: Exchange Primitives (Light External Coupling)
 
-5. **Graph slice export** — `wg exchange export` that produces a redacted DAG slice for sharing. Read-only, no core changes.
+5. **Graph slice export** — `wg exchange export` that produces a redacted graph slice for sharing. Read-only, no core changes.
 
 6. **Suggestion intake** — `wg exchange import-suggestion` that creates a task from an external suggestion with attribution metadata.
 

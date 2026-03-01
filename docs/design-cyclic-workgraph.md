@@ -20,7 +20,7 @@ Real workflows need cycles: review-revise loops, CI retry pipelines, monitor-ale
 
 ## Design Principles
 
-1. **Don't break the DAG.** Scheduling, topological sort, `wg ready`, critical path — all keep working. Loop edges are a separate concept layered on top.
+1. **Don't break the forward graph.** Scheduling, topological sort, `wg ready`, critical path — all keep working. Loop edges are a separate concept layered on top.
 2. **Explicit over implicit.** Cycles require opt-in via `loops_to` edges. No accidental infinite loops.
 3. **Bounded by default.** Every loop edge must have `max_iterations`. No unbounded cycles.
 4. **Observable.** Every re-activation is logged with iteration count.
@@ -150,7 +150,7 @@ Actually, `review-draft` doesn't need explicit re-opening — `ready_tasks()` al
 
 ---
 
-## 3. DAG Assumptions: What Must Change vs. What's Fine
+## 3. Acyclicity Assumptions: What Must Change vs. What's Fine
 
 ### Must Change (Phase 1)
 
@@ -334,7 +334,7 @@ wg edit write-draft --loop-iteration 0
 
 ### Phase 4: Fix Existing Bugs
 
-**Goal:** Fix the unsafe `forecast.rs` traversal found by the DAG assumptions survey.
+**Goal:** Fix the unsafe `forecast.rs` traversal found by the acyclicity assumptions survey.
 
 | File | Change |
 |------|--------|
@@ -346,7 +346,7 @@ wg edit write-draft --loop-iteration 0
 
 - **Recurring templates** (sprint ceremonies, standups): The research proposes a `wg template` system for schedule-based instantiation. This is independently useful but separate from loop edges. Recommend as a follow-up.
 - **Event-driven re-activation via service daemon**: Loop edges fire synchronously in `wg done`. An async event system (signals, webhooks) that fires loops is a future enhancement.
-- **Renaming "DAG" terminology**: The survey found ~15 cosmetic locations. Worth doing but orthogonal to this feature.
+- **Renaming "DAG" terminology**: The survey found ~15 cosmetic locations. Worth doing but orthogonal to this feature. (See `fix-dag-terminology.md`.)
 
 ---
 

@@ -354,7 +354,7 @@ nikete's design doc maps VX concepts to existing workgraph primitives:
 | Peer identity | Agent with content-hash ID + PerformanceRecord | Need cross-node identity, not just local |
 | Credibility history | `RewardHistory` (evaluations list) | Same shape, but scoped to peer, not role/objective |
 | Task interface | `Task.inputs` + `Task.deliverables` + `Task.verify` | Need sanitization for public posting |
-| Information boundary | `Task.skills` + DAG structure | Need Sensitivity field |
+| Information boundary | `Task.skills` + graph structure | Need Sensitivity field |
 | Alternative paths | `RunMeta.parent_run` | Exists but unwired |
 
 ### Key Gaps to Fill (from nikete's analysis)
@@ -412,11 +412,11 @@ This replaces our single-shot `wg evolve` LLM call with GEPA's multi-iteration r
 
 ## 7. Information Flow Control (Updated from Design Doc)
 
-### nikete's Framing: "The DAG as Information Flow Controller"
+### nikete's Framing: "The Graph as Information Flow Controller"
 
-Our original §2.5 identified the DAG as creating natural information boundaries. nikete's design doc goes further, framing the DAG as an explicit *security* boundary:
+Our original §2.5 identified the graph as creating natural information boundaries. nikete's design doc goes further, framing the graph as an explicit *security* boundary:
 
-> The DAG structure already IS an information flow controller. Making it a *security* boundary rather than just a *convenience* boundary requires enforcing sensitivity at the context-building layer.
+> The graph structure already IS an information flow controller. Making it a *security* boundary rather than just a *convenience* boundary requires enforcing sensitivity at the context-building layer.
 
 ### Sensitivity Enforcement (nikete's concrete proposal)
 
@@ -673,7 +673,7 @@ wg veracity peers
 ### Things we got right
 1. **Integration is architecturally natural.** Confirmed by nikete's own mapping table.
 2. **Agent definitions as market goods.** nikete explicitly uses agent identity patterns for peer identity.
-3. **DAG as information flow controller.** nikete goes further, making this a security boundary.
+3. **Graph as information flow controller.** nikete goes further, making this a security boundary.
 4. **Content-hash identity is the right foundation.** Both peer and agent identity use the same pattern.
 5. **Provenance log is essential.** nikete's design treats it as a prerequisite.
 

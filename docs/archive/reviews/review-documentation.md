@@ -75,7 +75,7 @@ This was a good reference when written but has fallen significantly behind the a
 | `wg reject` | Reject pending-review task | High |
 | `wg status` | Quick one-screen overview | High |
 | `wg quickstart` | Agent onboarding cheat sheet | High |
-| `wg dag` | ASCII DAG visualization | High |
+| `wg dag` | ASCII graph visualization | High |
 | `wg reclaim` | Reclaim task from dead agent | Medium |
 | `wg evaluate` | Trigger evaluation of completed task | Medium |
 | `wg evolve` | Trigger evolution cycle | Medium |

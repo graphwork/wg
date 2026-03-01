@@ -23,7 +23,7 @@ Trace functions are complementary to all three. A trace function could reference
 
 A trace function is a parameterized task template extracted from one or more completed task traces. It captures:
 
-1. **The workflow structure** — a DAG of task templates (possibly a single task, possibly a fan-out/fan-in pattern with loops)
+1. **The workflow structure** — a directed graph of task templates (possibly a single task, possibly a fan-out/fan-in pattern with loops)
 2. **Input parameters** — typed slots that are substituted when instantiating
 3. **Agent requirements** — which roles/skills are needed (optional; enables agency matching)
 4. **Extraction provenance** — which traces it was derived from
@@ -261,7 +261,7 @@ extract(task_id, graph, agency_dir, log_dir) -> TraceFunction:
 
     1. task = graph.get_task(task_id)
     2. subgraph = collect_subgraph(task_id, graph)
-       // If task is a root with subtasks, collect the full DAG.
+       // If task is a root with subtasks, collect the full subgraph.
        // If task is standalone, subgraph = [task].
 
     3. For each task t in subgraph:

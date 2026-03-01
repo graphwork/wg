@@ -446,7 +446,7 @@ This keeps the internal/external distinction clear: `wg evaluate` = internal LLM
 | **Custom evaluators (source-aware)** | Record evaluations from non-LLM sources | Add `source` field to `Evaluation`; `record_evaluation()` accepts source param |
 | **Canon generators** | Produce canons from completed tasks | `wg canon export` with pluggable redaction/sanitization |
 | **Canon consumers** | Inject canon context into task execution | `{{task_canon}}` template variable in executor prompts |
-| **Sensitivity enforcement** | Prevent information leakage across zones | `sensitivity` field on Task; `wg veracity check` validates DAG constraints |
+| **Sensitivity enforcement** | Prevent information leakage across zones | `sensitivity` field on Task; `wg veracity check` validates graph constraints |
 
 ### 5.3 What Should Stay in Core vs. External
 
@@ -608,7 +608,7 @@ The changes above should be implemented in this order, each building on the last
 11. **`wg veracity outcome`** — record real-world outcomes
 12. **`wg veracity attribute`** — attribute to sub-tasks
 13. **`wg veracity scores`** — query and display
-14. **`wg veracity check`** — validate sensitivity DAG constraints
+14. **`wg veracity check`** — validate sensitivity graph constraints
 
 ### Phase 4: Exchange (When VX Protocol Stabilizes)
 

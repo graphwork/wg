@@ -43,7 +43,7 @@ The feature flag structure is **clean and well-motivated**:
 | `tokio` | 1 (rt-multi-thread, macros, sync, time) | `src/commands/notify.rs`, `src/commands/matrix.rs`, `src/matrix/` | Async runtime for Matrix integration |
 | `ratatui` | 0.29 | `src/tui/mod.rs` | Terminal UI framework |
 | `crossterm` | 0.28 | `src/tui/mod.rs` | Terminal backend for ratatui |
-| `ascii-dag` | 0.8 | `src/tui/dag_layout.rs` | DAG rendering for TUI |
+| `ascii-dag` | 0.8 | `src/tui/dag_layout.rs` | Graph rendering for TUI |
 
 ### Issues Found
 

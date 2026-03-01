@@ -24,7 +24,7 @@ The agent does **not** receive:
 - **`wg context` output** for its task (the structured inputs/artifacts view)
 - **Upstream task descriptions** (only their artifacts and log tails)
 - **Downstream task awareness** (what tasks depend on this one)
-- **Graph topology** (no sense of where it sits in the DAG)
+- **Graph topology** (no sense of where it sits in the graph)
 - **Project-level purpose/goal** (no top-level description of what the workgraph is for)
 - **wg status / wg list summary** (no sense of overall project progress)
 - **CLAUDE.md content** (this comes via Claude Code's own mechanism, not the prompt template)

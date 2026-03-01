@@ -11,7 +11,7 @@
 |---------|------|-------|---------|
 | `show` | show.rs | 423 | Display full details of a single task (status, blockers, blocks, log, timestamps) |
 | `status` | status.rs | 542 | One-screen dashboard: service status, coordinator config, agents, task summary, recent activity |
-| `viz` | viz.rs | 1,089 | DAG visualization in dot/mermaid/ASCII formats with critical path highlighting |
+| `viz` | viz.rs | 1,089 | Graph visualization in dot/mermaid/ASCII formats with critical path highlighting |
 | `analyze` | analyze.rs | 1,135 | Comprehensive health report: summary, structural health, bottlenecks, workload, aging, recommendations |
 
 **Notes:** These are the most-used commands and each serves a distinct, well-scoped purpose. `show` is the single-task inspector; `status` is the operational dashboard; `viz` generates visual output; `analyze` is the comprehensive health check.
