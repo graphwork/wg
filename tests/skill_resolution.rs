@@ -154,10 +154,7 @@ fn resolve_all_skills_name_refs_always_succeed() {
     let role = agency::build_role(
         "All Names",
         "desc",
-        vec![
-            "component-a".to_string(),
-            "component-b".to_string(),
-        ],
+        vec!["component-a".to_string(), "component-b".to_string()],
         "outcome",
     );
     let resolved = agency::resolve_all_skills(&role, Path::new("/tmp"));

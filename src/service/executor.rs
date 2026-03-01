@@ -358,9 +358,7 @@ impl TemplateVars {
                  ```\n\
                  Using plain `wg done` will cause the cycle to iterate again and re-open tasks.\n\
                  Only use plain `wg done` if you want the next iteration to proceed.",
-                task.loop_iteration,
-                config.max_iterations,
-                task.id
+                task.loop_iteration, config.max_iterations, task.id
             )
         } else if task.loop_iteration > 0 {
             format!(
@@ -370,8 +368,7 @@ impl TemplateVars {
                  ```\n\
                  wg done {} --converged\n\
                  ```",
-                task.loop_iteration,
-                task.id
+                task.loop_iteration, task.id
             )
         } else {
             String::new()
@@ -437,17 +434,17 @@ impl TemplateVars {
             }
         };
 
-        let motivation =
-            match agency::find_tradeoff_by_prefix(&motivations_dir, &agent.tradeoff_id) {
-                Ok(m) => m,
-                Err(e) => {
-                    eprintln!(
-                        "Warning: could not resolve motivation '{}' for agent '{}': {}",
-                        agent.tradeoff_id, agent_hash, e
-                    );
-                    return String::new();
-                }
-            };
+        let motivation = match agency::find_tradeoff_by_prefix(&motivations_dir, &agent.tradeoff_id)
+        {
+            Ok(m) => m,
+            Err(e) => {
+                eprintln!(
+                    "Warning: could not resolve motivation '{}' for agent '{}': {}",
+                    agent.tradeoff_id, agent_hash, e
+                );
+                return String::new();
+            }
+        };
 
         // Resolve skills from the role, using the project root (parent of .workgraph/)
         let workgraph_root = wg_dir.parent().unwrap_or(wg_dir);
@@ -1767,7 +1764,8 @@ args = ["--custom-flag"]
     fn test_build_prompt_includes_skills_preamble() {
         let task = make_test_task("task-1", "Skills Task");
         let mut vars = TemplateVars::from_task(&task, None, None);
-        vars.skills_preamble = "<EXTREMELY_IMPORTANT>\nUse skills.\n</EXTREMELY_IMPORTANT>\n".to_string();
+        vars.skills_preamble =
+            "<EXTREMELY_IMPORTANT>\nUse skills.\n</EXTREMELY_IMPORTANT>\n".to_string();
 
         let ctx = ScopeContext::default();
         let prompt = build_prompt(&vars, ContextScope::Clean, &ctx);

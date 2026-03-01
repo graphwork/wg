@@ -17,16 +17,15 @@ use std::collections::HashMap;
 use std::path::Path;
 use tempfile::TempDir;
 
+use workgraph::function::{
+    self, ExtractionSource, ForbiddenPattern, FunctionInput, FunctionOutput, FunctionVisibility,
+    InputType, InterventionSummary, LoopEdgeTemplate, MemoryInclusions, PlanningConfig, RunSummary,
+    StructuralConstraints, TaskOutcome, TaskTemplate, TraceFunction, TraceMemoryConfig,
+};
+use workgraph::function_memory;
 use workgraph::graph::{Node, Status, Task, WorkGraph};
 use workgraph::parser::{load_graph, save_graph};
 use workgraph::plan_validator::{self, ValidationError};
-use workgraph::function::{
-    self, ExtractionSource, ForbiddenPattern, FunctionInput, FunctionOutput, FunctionVisibility,
-    InputType, InterventionSummary, LoopEdgeTemplate, MemoryInclusions, PlanningConfig,
-    RunSummary, StructuralConstraints, TaskOutcome, TaskTemplate, TraceFunction,
-    TraceMemoryConfig,
-};
-use workgraph::function_memory;
 
 // ===========================================================================
 // Helpers
@@ -472,10 +471,7 @@ fn layer2_v2_yaml_round_trip() {
     );
     assert_eq!(constraints.max_depth, Some(4));
     assert!(!constraints.allow_cycles);
-    assert_eq!(
-        constraints.required_phases,
-        vec!["implement", "test"]
-    );
+    assert_eq!(constraints.required_phases, vec!["implement", "test"]);
     assert_eq!(constraints.forbidden_patterns.len(), 1);
     assert!(loaded.memory.is_none());
 }
@@ -513,10 +509,10 @@ fn layer2_validate_plan_too_few_tasks() {
     };
 
     let errs = plan_validator::validate_plan(&tasks, &constraints).unwrap_err();
-    assert!(errs.iter().any(|e| matches!(
-        e,
-        ValidationError::TooFewTasks { count: 1, min: 3 }
-    )));
+    assert!(
+        errs.iter()
+            .any(|e| matches!(e, ValidationError::TooFewTasks { count: 1, min: 3 }))
+    );
 }
 
 #[test]
@@ -533,10 +529,10 @@ fn layer2_validate_plan_too_many_tasks() {
     };
 
     let errs = plan_validator::validate_plan(&tasks, &constraints).unwrap_err();
-    assert!(errs.iter().any(|e| matches!(
-        e,
-        ValidationError::TooManyTasks { count: 4, max: 2 }
-    )));
+    assert!(
+        errs.iter()
+            .any(|e| matches!(e, ValidationError::TooManyTasks { count: 4, max: 2 }))
+    );
 }
 
 #[test]
@@ -558,10 +554,7 @@ fn layer2_validate_plan_missing_skills() {
 #[test]
 fn layer2_validate_plan_forbidden_pattern_detected() {
     let mut t = make_template("deploy-prod");
-    t.tags = vec![
-        "untested".to_string(),
-        "production".to_string(),
-    ];
+    t.tags = vec!["untested".to_string(), "production".to_string()];
     let tasks = vec![t, make_template("other")];
 
     let constraints = StructuralConstraints {
@@ -613,10 +606,10 @@ fn layer2_validate_plan_depth_exceeded() {
     };
 
     let errs = plan_validator::validate_plan(&[a, b, c, d], &constraints).unwrap_err();
-    assert!(errs.iter().any(|e| matches!(
-        e,
-        ValidationError::DepthExceeded { depth: 3, max: 2 }
-    )));
+    assert!(
+        errs.iter()
+            .any(|e| matches!(e, ValidationError::DepthExceeded { depth: 3, max: 2 }))
+    );
 }
 
 #[test]
@@ -632,9 +625,10 @@ fn layer2_validate_plan_cycles_not_allowed() {
     };
 
     let errs = plan_validator::validate_plan(&[a, b], &constraints).unwrap_err();
-    assert!(errs
-        .iter()
-        .any(|e| matches!(e, ValidationError::CyclesNotAllowed { .. })));
+    assert!(
+        errs.iter()
+            .any(|e| matches!(e, ValidationError::CyclesNotAllowed { .. }))
+    );
 }
 
 #[test]
@@ -726,12 +720,13 @@ fn layer3_save_and_load_run_summary_via_per_run_json() {
 
     let path = function_memory::save_run_summary("my-func", &summary, tmp.path()).unwrap();
     assert!(path.exists());
-    assert!(path
-        .file_name()
-        .unwrap()
-        .to_str()
-        .unwrap()
-        .ends_with(".json"));
+    assert!(
+        path.file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .ends_with(".json")
+    );
 
     let loaded = function_memory::load_recent_summaries("my-func", 10, tmp.path()).unwrap();
     assert_eq!(loaded.len(), 1);
@@ -859,7 +854,10 @@ fn layer3_render_run_summaries_config_aware() {
     let summary = sample_run_summary();
 
     // With all inclusions
-    let text = function_memory::render_run_summaries(std::slice::from_ref(&summary), &default_inclusions());
+    let text = function_memory::render_run_summaries(
+        std::slice::from_ref(&summary),
+        &default_inclusions(),
+    );
     assert!(text.contains("SUCCESS"));
     assert!(text.contains("2/2 succeeded"));
     assert!(text.contains("0.88"));
@@ -956,8 +954,7 @@ fn layer3_memory_dir_path() {
 #[test]
 fn layer3_load_empty_returns_empty() {
     let tmp = TempDir::new().unwrap();
-    let loaded =
-        function_memory::load_recent_summaries("nonexistent", 10, tmp.path()).unwrap();
+    let loaded = function_memory::load_recent_summaries("nonexistent", 10, tmp.path()).unwrap();
     assert!(loaded.is_empty());
 
     let config = TraceMemoryConfig {
@@ -1059,8 +1056,7 @@ fn visibility_serde_kebab_case() {
 #[test]
 fn export_internal_at_internal_no_redaction() {
     let func = sample_v1_with_visibility(FunctionVisibility::Internal);
-    let exported =
-        function::export_function(&func, &FunctionVisibility::Internal).unwrap();
+    let exported = function::export_function(&func, &FunctionVisibility::Internal).unwrap();
 
     assert_eq!(exported.extracted_by, Some("scout-abc123".to_string()));
     assert_eq!(
@@ -1106,18 +1102,14 @@ fn export_peer_at_peer_redacts_correctly() {
 
     // extracted_from: run_id stripped, timestamp kept
     assert!(exported.extracted_from[0].run_id.is_none());
-    assert_eq!(
-        exported.extracted_from[0].timestamp,
-        "2026-02-18T14:30:00Z"
-    );
+    assert_eq!(exported.extracted_from[0].timestamp, "2026-02-18T14:30:00Z");
     assert_eq!(exported.extracted_from[0].task_id, "impl-config");
 }
 
 #[test]
 fn export_peer_at_internal_no_redaction() {
     let func = sample_v1_with_visibility(FunctionVisibility::Peer);
-    let exported =
-        function::export_function(&func, &FunctionVisibility::Internal).unwrap();
+    let exported = function::export_function(&func, &FunctionVisibility::Internal).unwrap();
 
     assert_eq!(exported.extracted_by, Some("scout-abc123".to_string()));
     assert!(exported.extracted_from[0].run_id.is_some());
@@ -1138,8 +1130,7 @@ fn export_public_at_public_strips_provenance() {
         storage_path: Some("/secret/path".to_string()),
     });
 
-    let exported =
-        function::export_function(&func, &FunctionVisibility::Public).unwrap();
+    let exported = function::export_function(&func, &FunctionVisibility::Public).unwrap();
 
     // extracted_by and extracted_at stripped
     assert!(exported.extracted_by.is_none());
@@ -1173,10 +1164,7 @@ fn export_public_at_peer_applies_peer_redaction() {
     // run_id stripped
     assert!(exported.extracted_from[0].run_id.is_none());
     // timestamp preserved at peer level
-    assert_eq!(
-        exported.extracted_from[0].timestamp,
-        "2026-02-18T14:30:00Z"
-    );
+    assert_eq!(exported.extracted_from[0].timestamp, "2026-02-18T14:30:00Z");
 }
 
 #[test]
@@ -1185,8 +1173,7 @@ fn export_public_preserves_non_path_defaults() {
     func.inputs[1].default = Some(serde_yaml::Value::String("cargo test".to_string()));
     func.inputs[1].example = Some(serde_yaml::Value::String("my-feature".to_string()));
 
-    let exported =
-        function::export_function(&func, &FunctionVisibility::Public).unwrap();
+    let exported = function::export_function(&func, &FunctionVisibility::Public).unwrap();
     assert_eq!(
         exported.inputs[1].default,
         Some(serde_yaml::Value::String("cargo test".to_string()))
@@ -1263,10 +1250,7 @@ fn export_v2_function_peer_with_memory() {
 #[test]
 fn export_peer_redacted_fields_strips_tags() {
     let mut func = sample_v1_with_visibility(FunctionVisibility::Peer);
-    func.redacted_fields = vec![
-        "extracted_by".to_string(),
-        "tags".to_string(),
-    ];
+    func.redacted_fields = vec!["extracted_by".to_string(), "tags".to_string()];
 
     let exported = function::export_function(&func, &FunctionVisibility::Peer).unwrap();
     assert!(exported.extracted_by.is_none());
@@ -1370,9 +1354,18 @@ fn cross_layer_validate_generated_plan_against_v2_constraints() {
     // A plan that violates constraints
     let bad_plan = vec![make_template("lonely-task")]; // 1 task < min 2, missing skills/phases
     let errs = plan_validator::validate_plan(&bad_plan, constraints).unwrap_err();
-    assert!(errs.iter().any(|e| matches!(e, ValidationError::TooFewTasks { .. })));
-    assert!(errs.iter().any(|e| matches!(e, ValidationError::MissingSkill(_))));
-    assert!(errs.iter().any(|e| matches!(e, ValidationError::MissingPhase(_))));
+    assert!(
+        errs.iter()
+            .any(|e| matches!(e, ValidationError::TooFewTasks { .. }))
+    );
+    assert!(
+        errs.iter()
+            .any(|e| matches!(e, ValidationError::MissingSkill(_)))
+    );
+    assert!(
+        errs.iter()
+            .any(|e| matches!(e, ValidationError::MissingPhase(_)))
+    );
 }
 
 #[test]

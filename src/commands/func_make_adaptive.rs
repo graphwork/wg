@@ -1,12 +1,10 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use std::collections::HashMap;
 use std::path::Path;
 
-use workgraph::provenance;
-use workgraph::function::{
-    self, MemoryInclusions, RunSummary, TaskOutcome, TraceMemoryConfig,
-};
+use workgraph::function::{self, MemoryInclusions, RunSummary, TaskOutcome, TraceMemoryConfig};
 use workgraph::function_memory;
+use workgraph::provenance;
 
 /// Run the `wg func make-adaptive <function-id>` command.
 ///
@@ -175,10 +173,10 @@ pub fn run(dir: &Path, function_id: &str, max_runs: u32) -> Result<()> {
     if let Some(ref mut planning) = func.planning {
         let marker = "{{memory.run_summaries}}";
         if !planning.planner_template.description.contains(marker) {
-            planning.planner_template.description.push_str(&format!(
-                "\n\nPast run history:\n{}",
-                marker
-            ));
+            planning
+                .planner_template
+                .description
+                .push_str(&format!("\n\nPast run history:\n{}", marker));
         }
     }
 
@@ -189,16 +187,10 @@ pub fn run(dir: &Path, function_id: &str, max_runs: u32) -> Result<()> {
     function::save_function(&func, &func_dir)?;
 
     // Print summary
-    println!(
-        "Upgraded function '{}' to adaptive (version 3)",
-        func.id
-    );
+    println!("Upgraded function '{}' to adaptive (version 3)", func.id);
     println!("  Memory config: max_runs={}", max_runs);
     if !summaries.is_empty() {
-        println!(
-            "  Recorded {} past run summaries",
-            summaries.len()
-        );
+        println!("  Recorded {} past run summaries", summaries.len());
     } else {
         println!("  No past applications found in provenance");
     }
@@ -212,9 +204,9 @@ pub fn run(dir: &Path, function_id: &str, max_runs: u32) -> Result<()> {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+    use workgraph::function::*;
     use workgraph::graph::WorkGraph;
     use workgraph::parser::save_graph;
-    use workgraph::function::*;
 
     fn setup_workgraph(dir: &Path) {
         std::fs::create_dir_all(dir).unwrap();
@@ -329,10 +321,12 @@ mod tests {
 
         // Check that planner template got the memory marker
         let planning = loaded.planning.unwrap();
-        assert!(planning
-            .planner_template
-            .description
-            .contains("{{memory.run_summaries}}"));
+        assert!(
+            planning
+                .planner_template
+                .description
+                .contains("{{memory.run_summaries}}")
+        );
     }
 
     #[test]

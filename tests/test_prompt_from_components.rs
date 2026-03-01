@@ -9,14 +9,10 @@
 use tempfile::TempDir;
 
 use workgraph::agency::{
-    self, Agent, Lineage, PerformanceRecord,
-    content_hash_agent,
-    evaluator_components, evolver_components, creator_components, assigner_components,
-    special_agent_tradeoffs, special_agent_roles,
-    render_identity_prompt_rich, resolve_all_components, resolve_outcome,
-    render_evaluator_prompt, EvaluatorInput,
-    seed_starters,
-    save_agent,
+    self, Agent, EvaluatorInput, Lineage, PerformanceRecord, assigner_components,
+    content_hash_agent, creator_components, evaluator_components, evolver_components,
+    render_evaluator_prompt, render_identity_prompt_rich, resolve_all_components, resolve_outcome,
+    save_agent, seed_starters, special_agent_roles, special_agent_tradeoffs,
 };
 use workgraph::config::Config;
 
@@ -73,7 +69,10 @@ fn evaluator_prompt_contains_all_component_content() {
 
     // Get the matching tradeoff
     let tradeoffs = special_agent_tradeoffs();
-    let evaluator_tradeoff = tradeoffs.iter().find(|t| t.name == "Evaluator Balanced").unwrap();
+    let evaluator_tradeoff = tradeoffs
+        .iter()
+        .find(|t| t.name == "Evaluator Balanced")
+        .unwrap();
 
     // Resolve components
     let workgraph_root = agency_dir.parent().unwrap();
@@ -83,10 +82,18 @@ fn evaluator_prompt_contains_all_component_content() {
     let outcome = resolve_outcome(&evaluator_role.outcome_id, &agency_dir);
 
     // Render prompt
-    let prompt = render_identity_prompt_rich(evaluator_role, evaluator_tradeoff, &resolved, outcome.as_ref());
+    let prompt = render_identity_prompt_rich(
+        evaluator_role,
+        evaluator_tradeoff,
+        &resolved,
+        outcome.as_ref(),
+    );
 
     // Verify the prompt contains the role name and description
-    assert!(prompt.contains("Evaluator"), "Prompt should contain role name 'Evaluator'");
+    assert!(
+        prompt.contains("Evaluator"),
+        "Prompt should contain role name 'Evaluator'"
+    );
     assert!(
         prompt.contains("Grades actor-agents"),
         "Prompt should contain evaluator role description"
@@ -148,13 +155,17 @@ fn evolver_prompt_contains_all_component_content() {
     let evolver_role = roles.iter().find(|r| r.name == "Evolver").unwrap();
 
     let tradeoffs = special_agent_tradeoffs();
-    let evolver_tradeoff = tradeoffs.iter().find(|t| t.name == "Evolver Balanced").unwrap();
+    let evolver_tradeoff = tradeoffs
+        .iter()
+        .find(|t| t.name == "Evolver Balanced")
+        .unwrap();
 
     let workgraph_root = agency_dir.parent().unwrap();
     let resolved = resolve_all_components(evolver_role, workgraph_root, &agency_dir);
     let outcome = resolve_outcome(&evolver_role.outcome_id, &agency_dir);
 
-    let prompt = render_identity_prompt_rich(evolver_role, evolver_tradeoff, &resolved, outcome.as_ref());
+    let prompt =
+        render_identity_prompt_rich(evolver_role, evolver_tradeoff, &resolved, outcome.as_ref());
 
     // Verify all evolver component names
     let components = evolver_components();
@@ -184,13 +195,21 @@ fn assigner_prompt_contains_all_component_content() {
     let assigner_role = roles.iter().find(|r| r.name == "Assigner").unwrap();
 
     let tradeoffs = special_agent_tradeoffs();
-    let assigner_tradeoff = tradeoffs.iter().find(|t| t.name == "Assigner Balanced").unwrap();
+    let assigner_tradeoff = tradeoffs
+        .iter()
+        .find(|t| t.name == "Assigner Balanced")
+        .unwrap();
 
     let workgraph_root = agency_dir.parent().unwrap();
     let resolved = resolve_all_components(assigner_role, workgraph_root, &agency_dir);
     let outcome = resolve_outcome(&assigner_role.outcome_id, &agency_dir);
 
-    let prompt = render_identity_prompt_rich(assigner_role, assigner_tradeoff, &resolved, outcome.as_ref());
+    let prompt = render_identity_prompt_rich(
+        assigner_role,
+        assigner_tradeoff,
+        &resolved,
+        outcome.as_ref(),
+    );
 
     // Verify all assigner component names
     let components = assigner_components();
@@ -220,13 +239,17 @@ fn creator_prompt_contains_all_component_content() {
     let creator_role = roles.iter().find(|r| r.name == "Agent Creator").unwrap();
 
     let tradeoffs = special_agent_tradeoffs();
-    let creator_tradeoff = tradeoffs.iter().find(|t| t.name == "Creator Unconstrained").unwrap();
+    let creator_tradeoff = tradeoffs
+        .iter()
+        .find(|t| t.name == "Creator Unconstrained")
+        .unwrap();
 
     let workgraph_root = agency_dir.parent().unwrap();
     let resolved = resolve_all_components(creator_role, workgraph_root, &agency_dir);
     let outcome = resolve_outcome(&creator_role.outcome_id, &agency_dir);
 
-    let prompt = render_identity_prompt_rich(creator_role, creator_tradeoff, &resolved, outcome.as_ref());
+    let prompt =
+        render_identity_prompt_rich(creator_role, creator_tradeoff, &resolved, outcome.as_ref());
 
     // Verify all creator component names
     let components = creator_components();
@@ -256,7 +279,10 @@ fn evaluator_prompt_no_hardcoded_text_when_agent_configured() {
     let roles = special_agent_roles();
     let evaluator_role = roles.iter().find(|r| r.name == "Evaluator").unwrap();
     let tradeoffs = special_agent_tradeoffs();
-    let evaluator_tradeoff = tradeoffs.iter().find(|t| t.name == "Evaluator Balanced").unwrap();
+    let evaluator_tradeoff = tradeoffs
+        .iter()
+        .find(|t| t.name == "Evaluator Balanced")
+        .unwrap();
 
     // Create and save evaluator agent
     let agent_hash = create_and_save_agent(
@@ -352,7 +378,9 @@ fn evaluator_prompt_falls_back_to_hardcoded_when_no_agent() {
 
     // Should use the hardcoded evaluator instructions
     assert!(
-        prompt.contains("You are an evaluator assessing the quality of work performed by an AI agent."),
+        prompt.contains(
+            "You are an evaluator assessing the quality of work performed by an AI agent."
+        ),
         "Should contain hardcoded evaluator template when no evaluator identity configured"
     );
     assert!(
@@ -382,7 +410,10 @@ fn creator_prompt_uses_components_when_configured() {
     let roles = special_agent_roles();
     let creator_role = roles.iter().find(|r| r.name == "Agent Creator").unwrap();
     let tradeoffs = special_agent_tradeoffs();
-    let creator_tradeoff = tradeoffs.iter().find(|t| t.name == "Creator Unconstrained").unwrap();
+    let creator_tradeoff = tradeoffs
+        .iter()
+        .find(|t| t.name == "Creator Unconstrained")
+        .unwrap();
 
     // Create the agent entity
     let agent_hash = create_and_save_agent(
@@ -479,7 +510,10 @@ fn evolver_prompt_uses_components_when_configured() {
     let roles = special_agent_roles();
     let evolver_role = roles.iter().find(|r| r.name == "Evolver").unwrap();
     let tradeoffs = special_agent_tradeoffs();
-    let evolver_tradeoff = tradeoffs.iter().find(|t| t.name == "Evolver Balanced").unwrap();
+    let evolver_tradeoff = tradeoffs
+        .iter()
+        .find(|t| t.name == "Evolver Balanced")
+        .unwrap();
 
     let agent_hash = create_and_save_agent(
         &agency_dir,
@@ -497,7 +531,8 @@ fn evolver_prompt_uses_components_when_configured() {
     let role = agency::load_role(&roles_dir.join(format!("{}.yaml", agent.role_id))).unwrap();
 
     let tradeoffs_dir = agency_dir.join("primitives/tradeoffs");
-    let tradeoff = agency::load_tradeoff(&tradeoffs_dir.join(format!("{}.yaml", agent.tradeoff_id))).unwrap();
+    let tradeoff =
+        agency::load_tradeoff(&tradeoffs_dir.join(format!("{}.yaml", agent.tradeoff_id))).unwrap();
 
     let workgraph_root = agency_dir.parent().unwrap();
     let resolved = resolve_all_components(&role, workgraph_root, &agency_dir);
@@ -659,7 +694,10 @@ fn agent_roundtrip_produces_same_prompt() {
     let roles = special_agent_roles();
     let evaluator_role = roles.iter().find(|r| r.name == "Evaluator").unwrap();
     let tradeoffs = special_agent_tradeoffs();
-    let evaluator_tradeoff = tradeoffs.iter().find(|t| t.name == "Evaluator Balanced").unwrap();
+    let evaluator_tradeoff = tradeoffs
+        .iter()
+        .find(|t| t.name == "Evaluator Balanced")
+        .unwrap();
 
     let workgraph_root = agency_dir.parent().unwrap();
 
@@ -697,7 +735,8 @@ fn agent_roundtrip_produces_same_prompt() {
     .unwrap();
     let resolved_loaded = resolve_all_components(&role, workgraph_root, &agency_dir);
     let outcome_loaded = resolve_outcome(&role.outcome_id, &agency_dir);
-    let prompt_loaded = render_identity_prompt_rich(&role, &tradeoff, &resolved_loaded, outcome_loaded.as_ref());
+    let prompt_loaded =
+        render_identity_prompt_rich(&role, &tradeoff, &resolved_loaded, outcome_loaded.as_ref());
 
     assert_eq!(
         prompt_direct, prompt_loaded,

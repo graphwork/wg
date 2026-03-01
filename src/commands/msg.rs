@@ -26,7 +26,8 @@ pub fn run_send(
             .context("Failed to read from stdin")?;
         buf.trim_end().to_string()
     } else {
-        body.ok_or_else(|| anyhow::anyhow!("Message body required (or use --stdin)"))?.to_string()
+        body.ok_or_else(|| anyhow::anyhow!("Message body required (or use --stdin)"))?
+            .to_string()
     };
 
     if message_body.is_empty() {
@@ -61,8 +62,15 @@ pub fn run_list(dir: &Path, task_id: &str, json: bool) -> Result<()> {
     println!();
 
     for msg in &msgs {
-        let priority_marker = if msg.priority == "urgent" { " [URGENT]" } else { "" };
-        println!("  #{} [{}] {}{}", msg.id, msg.timestamp, msg.sender, priority_marker);
+        let priority_marker = if msg.priority == "urgent" {
+            " [URGENT]"
+        } else {
+            ""
+        };
+        println!(
+            "  #{} [{}] {}{}",
+            msg.id, msg.timestamp, msg.sender, priority_marker
+        );
         // Indent multi-line bodies
         for line in msg.body.lines() {
             println!("    {}", line);
@@ -87,7 +95,10 @@ pub fn run_read(dir: &Path, task_id: &str, agent_id: &str, json: bool) -> Result
     }
 
     if unread.is_empty() {
-        println!("No unread messages for task '{}' (agent: {})", task_id, agent_id);
+        println!(
+            "No unread messages for task '{}' (agent: {})",
+            task_id, agent_id
+        );
         return Ok(());
     }
 
@@ -101,8 +112,15 @@ pub fn run_read(dir: &Path, task_id: &str, agent_id: &str, json: bool) -> Result
     println!();
 
     for msg in &unread {
-        let priority_marker = if msg.priority == "urgent" { " [URGENT]" } else { "" };
-        println!("  #{} [{}] {}{}", msg.id, msg.timestamp, msg.sender, priority_marker);
+        let priority_marker = if msg.priority == "urgent" {
+            " [URGENT]"
+        } else {
+            ""
+        };
+        println!(
+            "  #{} [{}] {}{}",
+            msg.id, msg.timestamp, msg.sender, priority_marker
+        );
         for line in msg.body.lines() {
             println!("    {}", line);
         }
@@ -124,7 +142,10 @@ pub fn run_poll(dir: &Path, task_id: &str, agent_id: &str, json: bool) -> Result
 
     if new_msgs.is_empty() {
         if !json {
-            println!("No new messages for task '{}' (agent: {})", task_id, agent_id);
+            println!(
+                "No new messages for task '{}' (agent: {})",
+                task_id, agent_id
+            );
         } else {
             println!("[]");
         }
@@ -143,8 +164,15 @@ pub fn run_poll(dir: &Path, task_id: &str, agent_id: &str, json: bool) -> Result
         );
         println!();
         for msg in &new_msgs {
-            let priority_marker = if msg.priority == "urgent" { " [URGENT]" } else { "" };
-            println!("  #{} [{}] {}{}", msg.id, msg.timestamp, msg.sender, priority_marker);
+            let priority_marker = if msg.priority == "urgent" {
+                " [URGENT]"
+            } else {
+                ""
+            };
+            println!(
+                "  #{} [{}] {}{}",
+                msg.id, msg.timestamp, msg.sender, priority_marker
+            );
             for line in msg.body.lines() {
                 println!("    {}", line);
             }
@@ -220,7 +248,15 @@ mod tests {
         setup_graph(&dir);
 
         run_send(&dir, "task-1", Some("First"), "user", "normal", false).unwrap();
-        run_send(&dir, "task-1", Some("Second"), "coordinator", "urgent", false).unwrap();
+        run_send(
+            &dir,
+            "task-1",
+            Some("Second"),
+            "coordinator",
+            "urgent",
+            false,
+        )
+        .unwrap();
 
         // Should not error
         let result = run_list(&dir, "task-1", false);

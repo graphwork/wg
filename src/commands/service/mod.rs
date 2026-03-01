@@ -320,7 +320,6 @@ impl CoordinatorState {
     }
 }
 
-
 /// Generate systemd user service file
 /// Uses `wg service start` as ExecStart; settings come from config.toml
 pub fn generate_systemd_service(dir: &Path) -> Result<()> {
@@ -954,11 +953,12 @@ pub fn run_daemon(
         if !daemon_cfg.paused {
             // Settled tick: the settling deadline has passed after GraphChanged events.
             if let Some(deadline) = settling_deadline
-                && Instant::now() >= deadline {
-                    settling_deadline = None;
-                    should_tick = true;
-                    logger.info("Settling delay elapsed, running coordinator tick now");
-                }
+                && Instant::now() >= deadline
+            {
+                settling_deadline = None;
+                should_tick = true;
+                logger.info("Settling delay elapsed, running coordinator tick now");
+            }
             // Background safety-net tick: runs on poll_interval even without IPC events.
             if last_coordinator_tick.elapsed() >= daemon_cfg.poll_interval {
                 should_tick = true;
@@ -1231,8 +1231,15 @@ pub fn run_status(dir: &Path, json: bool) -> Result<()> {
             output["warning"] =
                 serde_json::json!("No agents defined — run 'wg agency init' or 'wg agent create'");
         }
-        if agency_agents_defined && alive_count == 0 && coord.ticks > 0 && coord.agents_spawned == 0 && coord.tasks_ready > 0 {
-            output["agents"]["note"] = serde_json::json!("tasks are ready but no agents have been spawned — check agent configuration");
+        if agency_agents_defined
+            && alive_count == 0
+            && coord.ticks > 0
+            && coord.agents_spawned == 0
+            && coord.tasks_ready > 0
+        {
+            output["agents"]["note"] = serde_json::json!(
+                "tasks are ready but no agents have been spawned — check agent configuration"
+            );
         }
         if !recent_errors.is_empty() || !recent_fatals.is_empty() {
             let mut all_errors: Vec<String> = recent_fatals;
@@ -1253,8 +1260,14 @@ pub fn run_status(dir: &Path, json: bool) -> Result<()> {
                 idle_count,
                 registry.agents.len()
             );
-            if alive_count == 0 && coord.ticks > 0 && coord.agents_spawned == 0 && coord.tasks_ready > 0 {
-                println!("  Note: tasks are ready but no agents have been spawned — check agent configuration");
+            if alive_count == 0
+                && coord.ticks > 0
+                && coord.agents_spawned == 0
+                && coord.tasks_ready > 0
+            {
+                println!(
+                    "  Note: tasks are ready but no agents have been spawned — check agent configuration"
+                );
             }
         }
         let model_str = coord.model.as_deref().unwrap_or("default");
@@ -1586,7 +1599,6 @@ mod tests {
         assert_eq!(all.len(), 5);
     }
 
-
     #[test]
     fn test_run_start_refuses_if_daemon_alive() {
         // If state.json exists with a PID that is alive, run_start should refuse
@@ -1680,7 +1692,6 @@ mod tests {
         // State file should be removed
         assert!(ServiceState::load(dir).unwrap().is_none());
     }
-
 
     #[test]
     fn test_no_agents_warning_when_auto_assign_enabled() {
@@ -1783,5 +1794,4 @@ mod tests {
         );
         assert!(status_line.contains("0 alive"));
     }
-
 }

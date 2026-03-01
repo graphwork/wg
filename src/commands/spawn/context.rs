@@ -8,12 +8,15 @@ use std::path::Path;
 
 use workgraph::config::Config;
 use workgraph::context_scope::ContextScope;
-use workgraph::graph::{Status, LogEntry};
+use workgraph::graph::{LogEntry, Status};
 
 /// Build context string from dependency artifacts and logs.
 ///
 /// When scope >= Task, includes upstream task titles alongside artifacts (R5).
-pub(crate) fn build_task_context(graph: &workgraph::WorkGraph, task: &workgraph::graph::Task) -> String {
+pub(crate) fn build_task_context(
+    graph: &workgraph::WorkGraph,
+    task: &workgraph::graph::Task,
+) -> String {
     let mut context_parts = Vec::new();
 
     for dep_id in &task.after {
@@ -105,9 +108,10 @@ pub(crate) fn build_scope_context(
     // Graph+ scope: project description
     if scope >= ContextScope::Graph
         && let Some(ref desc) = config.project.description
-            && !desc.is_empty() {
-                ctx.project_description = desc.clone();
-            }
+        && !desc.is_empty()
+    {
+        ctx.project_description = desc.clone();
+    }
 
     // Graph+ scope: 1-hop neighborhood subgraph summary
     if scope >= ContextScope::Graph {
@@ -164,7 +168,10 @@ fn inline_artifact_content(artifacts: &[String], workgraph_dir: &Path) -> String
                 if size <= 500 {
                     match fs::read_to_string(&path) {
                         Ok(content) => {
-                            lines.push(format!("  {} ({} bytes):\n  ```\n{}\n  ```", artifact, size, content));
+                            lines.push(format!(
+                                "  {} ({} bytes):\n  ```\n{}\n  ```",
+                                artifact, size, content
+                            ));
                         }
                         Err(_) => {
                             lines.push(format!("  {} ({} bytes, binary)", artifact, size));
@@ -174,11 +181,8 @@ fn inline_artifact_content(artifacts: &[String], workgraph_dir: &Path) -> String
                     // Large file: first 3 lines + byte count
                     match fs::read_to_string(&path) {
                         Ok(content) => {
-                            let preview: String = content
-                                .lines()
-                                .take(3)
-                                .collect::<Vec<_>>()
-                                .join("\n");
+                            let preview: String =
+                                content.lines().take(3).collect::<Vec<_>>().join("\n");
                             lines.push(format!(
                                 "  {} ({} bytes):\n  ```\n{}\n  ...\n  ```",
                                 artifact, size, preview
@@ -303,10 +307,7 @@ pub(crate) fn build_graph_summary(
         if !siblings.is_empty() {
             let mut lines = vec!["### Siblings (share upstream dependencies)".to_string()];
             for sib in siblings.iter().take(10) {
-                lines.push(format!(
-                    "- **{}** [{}]: {}",
-                    sib.id, sib.status, sib.title
-                ));
+                lines.push(format!("- **{}** [{}]: {}", sib.id, sib.status, sib.title));
             }
             if siblings.len() > 10 {
                 lines.push(format!("- ... and {} more", siblings.len() - 10));
@@ -493,11 +494,20 @@ mod tests {
         graph.add_node(Node::Task(main.clone()));
 
         let summary = build_graph_summary(&graph, &main, wg_dir);
-        assert!(summary.contains("## Graph Status"), "Should have status header");
+        assert!(
+            summary.contains("## Graph Status"),
+            "Should have status header"
+        );
         assert!(summary.contains("4 tasks"), "Should count all tasks");
         assert!(summary.contains("1 done"), "Should count done tasks");
-        assert!(summary.contains("1 in-progress"), "Should count in-progress tasks");
-        assert!(summary.contains("2 open"), "Should count open tasks (main + t2)");
+        assert!(
+            summary.contains("1 in-progress"),
+            "Should count in-progress tasks"
+        );
+        assert!(
+            summary.contains("2 open"),
+            "Should count open tasks (main + t2)"
+        );
     }
 
     #[test]
@@ -523,11 +533,23 @@ mod tests {
         graph.add_node(Node::Task(downstream));
 
         let summary = build_graph_summary(&graph, &main, wg_dir);
-        assert!(summary.contains("### Upstream"), "Should have upstream section");
+        assert!(
+            summary.contains("### Upstream"),
+            "Should have upstream section"
+        );
         assert!(summary.contains("upstream"), "Should list upstream task");
-        assert!(summary.contains("### Downstream"), "Should have downstream section");
-        assert!(summary.contains("downstream"), "Should list downstream task");
-        assert!(summary.contains("Consumes main output"), "Should include description preview");
+        assert!(
+            summary.contains("### Downstream"),
+            "Should have downstream section"
+        );
+        assert!(
+            summary.contains("downstream"),
+            "Should list downstream task"
+        );
+        assert!(
+            summary.contains("Consumes main output"),
+            "Should include description preview"
+        );
     }
 
     #[test]
@@ -550,7 +572,10 @@ mod tests {
         graph.add_node(Node::Task(sibling));
 
         let summary = build_graph_summary(&graph, &main, wg_dir);
-        assert!(summary.contains("### Siblings"), "Should have siblings section");
+        assert!(
+            summary.contains("### Siblings"),
+            "Should have siblings section"
+        );
         assert!(summary.contains("sibling"), "Should list sibling task");
     }
 
@@ -570,8 +595,14 @@ mod tests {
         graph.add_node(Node::Task(main.clone()));
 
         let summary = build_graph_summary(&graph, &main, wg_dir);
-        assert!(summary.contains("<neighbor-context source=\"dep\">"), "Upstream should be XML fenced");
-        assert!(summary.contains("</neighbor-context>"), "Should close XML fence");
+        assert!(
+            summary.contains("<neighbor-context source=\"dep\">"),
+            "Upstream should be XML fenced"
+        );
+        assert!(
+            summary.contains("</neighbor-context>"),
+            "Should close XML fence"
+        );
     }
 
     #[test]
@@ -586,9 +617,15 @@ mod tests {
         for i in 0..200 {
             let mut t = make_task(
                 &format!("task-{:03}", i),
-                &format!("A task with a long title to inflate the summary for task number {}", i),
+                &format!(
+                    "A task with a long title to inflate the summary for task number {}",
+                    i
+                ),
             );
-            t.description = Some(format!("Description for task {} with extra words to pad length", i));
+            t.description = Some(format!(
+                "Description for task {} with extra words to pad length",
+                i
+            ));
             if i > 0 {
                 t.after = vec!["task-000".to_string()];
             }
@@ -597,7 +634,11 @@ mod tests {
 
         let main_task = graph.get_task("task-000").unwrap().clone();
         let summary = build_graph_summary(&graph, &main_task, wg_dir);
-        assert!(summary.len() <= 4100, "Summary should be capped near 4000 chars, got {}", summary.len());
+        assert!(
+            summary.len() <= 4100,
+            "Summary should be capped near 4000 chars, got {}",
+            summary.len()
+        );
         if summary.len() > 3950 {
             assert!(summary.contains("truncated"), "Should indicate truncation");
         }
@@ -615,7 +656,10 @@ mod tests {
         graph.add_node(Node::Task(t2));
 
         let summary = build_full_graph_summary(&graph);
-        assert!(summary.contains("## Full Graph Summary"), "Should have header");
+        assert!(
+            summary.contains("## Full Graph Summary"),
+            "Should have header"
+        );
         assert!(summary.contains("t1"), "Should list first task");
         assert!(summary.contains("[done]"), "Should show status");
         assert!(summary.contains("t2"), "Should list second task");
@@ -635,7 +679,11 @@ mod tests {
         }
 
         let summary = build_full_graph_summary(&graph);
-        assert!(summary.len() <= 4200, "Should be bounded by budget, got {}", summary.len());
+        assert!(
+            summary.len() <= 4200,
+            "Should be bounded by budget, got {}",
+            summary.len()
+        );
         assert!(summary.contains("more tasks"), "Should indicate truncation");
     }
 
@@ -650,12 +698,30 @@ mod tests {
         let config = Config::default();
 
         let ctx = build_scope_context(&graph, &task, ContextScope::Clean, &config, wg_dir);
-        assert!(ctx.downstream_info.is_empty(), "Clean scope should have no downstream info");
-        assert!(ctx.tags_skills_info.is_empty(), "Clean scope should have no tags info");
-        assert!(ctx.project_description.is_empty(), "Clean scope should have no project description");
-        assert!(ctx.graph_summary.is_empty(), "Clean scope should have no graph summary");
-        assert!(ctx.full_graph_summary.is_empty(), "Clean scope should have no full graph summary");
-        assert!(ctx.claude_md_content.is_empty(), "Clean scope should have no CLAUDE.md content");
+        assert!(
+            ctx.downstream_info.is_empty(),
+            "Clean scope should have no downstream info"
+        );
+        assert!(
+            ctx.tags_skills_info.is_empty(),
+            "Clean scope should have no tags info"
+        );
+        assert!(
+            ctx.project_description.is_empty(),
+            "Clean scope should have no project description"
+        );
+        assert!(
+            ctx.graph_summary.is_empty(),
+            "Clean scope should have no graph summary"
+        );
+        assert!(
+            ctx.full_graph_summary.is_empty(),
+            "Clean scope should have no full graph summary"
+        );
+        assert!(
+            ctx.claude_md_content.is_empty(),
+            "Clean scope should have no CLAUDE.md content"
+        );
     }
 
     #[test]
@@ -674,10 +740,19 @@ mod tests {
 
         let config = Config::default();
         let ctx = build_scope_context(&graph, &task, ContextScope::Task, &config, wg_dir);
-        assert!(ctx.downstream_info.contains("d1"), "Task scope should include downstream");
-        assert!(ctx.downstream_info.contains("Dependent task"), "Should include downstream title");
+        assert!(
+            ctx.downstream_info.contains("d1"),
+            "Task scope should include downstream"
+        );
+        assert!(
+            ctx.downstream_info.contains("Dependent task"),
+            "Should include downstream title"
+        );
         // Should NOT include graph-level stuff
-        assert!(ctx.graph_summary.is_empty(), "Task scope should not have graph summary");
+        assert!(
+            ctx.graph_summary.is_empty(),
+            "Task scope should not have graph summary"
+        );
     }
 
     #[test]
@@ -694,7 +769,10 @@ mod tests {
         let config = Config::default();
         let ctx = build_scope_context(&graph, &task, ContextScope::Task, &config, wg_dir);
         assert!(ctx.tags_skills_info.contains("rust"), "Should include tags");
-        assert!(ctx.tags_skills_info.contains("implementation"), "Should include skills");
+        assert!(
+            ctx.tags_skills_info.contains("implementation"),
+            "Should include skills"
+        );
     }
 
     #[test]
@@ -711,11 +789,23 @@ mod tests {
         config.project.description = Some("A test project".to_string());
 
         let ctx = build_scope_context(&graph, &task, ContextScope::Graph, &config, wg_dir);
-        assert!(ctx.project_description.contains("A test project"), "Graph scope should include project description");
-        assert!(!ctx.graph_summary.is_empty(), "Graph scope should have graph summary");
+        assert!(
+            ctx.project_description.contains("A test project"),
+            "Graph scope should include project description"
+        );
+        assert!(
+            !ctx.graph_summary.is_empty(),
+            "Graph scope should have graph summary"
+        );
         // Should NOT include full-scope stuff
-        assert!(ctx.full_graph_summary.is_empty(), "Graph scope should not have full graph summary");
-        assert!(ctx.claude_md_content.is_empty(), "Graph scope should not have CLAUDE.md");
+        assert!(
+            ctx.full_graph_summary.is_empty(),
+            "Graph scope should not have full graph summary"
+        );
+        assert!(
+            ctx.claude_md_content.is_empty(),
+            "Graph scope should not have CLAUDE.md"
+        );
     }
 
     #[test]
@@ -732,9 +822,18 @@ mod tests {
         config.project.description = Some("Test project".to_string());
 
         let ctx = build_scope_context(&graph, &task, ContextScope::Full, &config, wg_dir);
-        assert!(!ctx.graph_summary.is_empty(), "Full scope should have graph summary");
-        assert!(!ctx.full_graph_summary.is_empty(), "Full scope should have full graph summary");
-        assert!(ctx.full_graph_summary.contains("Full Graph Summary"), "Should include full graph summary header");
+        assert!(
+            !ctx.graph_summary.is_empty(),
+            "Full scope should have graph summary"
+        );
+        assert!(
+            !ctx.full_graph_summary.is_empty(),
+            "Full scope should have full graph summary"
+        );
+        assert!(
+            ctx.full_graph_summary.contains("Full Graph Summary"),
+            "Should include full graph summary header"
+        );
     }
 
     #[test]
@@ -760,7 +859,11 @@ mod tests {
         let mut config = Config::default();
         config.coordinator.default_context_scope = Some("full".to_string());
         let scope = resolve_task_scope(&task, &config, wg_dir);
-        assert_eq!(scope, ContextScope::Clean, "Task scope should override config");
+        assert_eq!(
+            scope,
+            ContextScope::Clean,
+            "Task scope should override config"
+        );
     }
 
     #[test]
@@ -773,6 +876,10 @@ mod tests {
         let mut config = Config::default();
         config.coordinator.default_context_scope = Some("graph".to_string());
         let scope = resolve_task_scope(&task, &config, wg_dir);
-        assert_eq!(scope, ContextScope::Graph, "Config scope should be used as fallback");
+        assert_eq!(
+            scope,
+            ContextScope::Graph,
+            "Config scope should be used as fallback"
+        );
     }
 }

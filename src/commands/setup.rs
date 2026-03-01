@@ -2,7 +2,7 @@
 //!
 //! Creates/updates ~/.workgraph/config.toml via guided prompts using dialoguer.
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use dialoguer::{Confirm, Input, Select};
 use std::io::IsTerminal;
 use std::path::PathBuf;
@@ -49,10 +49,7 @@ pub fn format_summary(choices: &SetupChoices) -> String {
     let mut lines = Vec::new();
     lines.push("[coordinator]".to_string());
     lines.push(format!("  executor = \"{}\"", choices.executor));
-    lines.push(format!(
-        "  model = \"{}\"",
-        choices.model
-    ));
+    lines.push(format!("  model = \"{}\"", choices.model));
     lines.push(format!("  max_agents = {}", choices.max_agents));
     lines.push(String::new());
     lines.push("[agent]".to_string());
@@ -157,7 +154,11 @@ pub fn run() -> Result<()> {
 
     let (evaluator_model, assigner_model) = if agency_enabled {
         // Evaluator model
-        let eval_options = &["haiku (recommended, lightweight)", "sonnet", "same as default"];
+        let eval_options = &[
+            "haiku (recommended, lightweight)",
+            "sonnet",
+            "same as default",
+        ];
         let current_eval_idx = match existing.agency.evaluator_model.as_deref() {
             Some("sonnet") => 1,
             Some(m) if m == model => 2,
@@ -282,7 +283,9 @@ fn guide_skill_bundle_install(executor: &str) -> Result<String> {
             if is_claude_skill_installed() {
                 Ok("wg skill installed ✓".to_string())
             } else {
-                println!("Spawned Claude Code agents need the wg skill to understand workgraph commands.");
+                println!(
+                    "Spawned Claude Code agents need the wg skill to understand workgraph commands."
+                );
                 let install = Confirm::new()
                     .with_prompt("Install wg skill for Claude Code? (recommended)")
                     .default(true)
@@ -298,20 +301,29 @@ fn guide_skill_bundle_install(executor: &str) -> Result<String> {
         }
         "amplifier" => {
             if let Some(setup_path) = find_amplifier_bundle_setup() {
-                println!("Found amplifier-bundle-workgraph at: {}", setup_path.parent().unwrap().display());
+                println!(
+                    "Found amplifier-bundle-workgraph at: {}",
+                    setup_path.parent().unwrap().display()
+                );
                 println!("  Run the setup script to install the executor and bundle:");
                 println!("    {}", setup_path.display());
                 println!();
                 println!("  Then start sessions with: amplifier run -B workgraph");
             } else {
-                println!("Spawned Amplifier agents need the workgraph bundle to understand wg commands.");
+                println!(
+                    "Spawned Amplifier agents need the workgraph bundle to understand wg commands."
+                );
                 println!();
                 println!("  Install the bundle:");
-                println!("    git clone https://github.com/graphwork/amplifier-bundle-workgraph ~/amplifier-bundle-workgraph");
+                println!(
+                    "    git clone https://github.com/graphwork/amplifier-bundle-workgraph ~/amplifier-bundle-workgraph"
+                );
                 println!("    cd ~/amplifier-bundle-workgraph && ./setup.sh");
                 println!();
                 println!("  Or add it directly:");
-                println!("    amplifier bundle add git+https://github.com/graphwork/amplifier-bundle-workgraph");
+                println!(
+                    "    amplifier bundle add git+https://github.com/graphwork/amplifier-bundle-workgraph"
+                );
                 println!();
                 println!("  Then start sessions with: amplifier run -B workgraph");
             }
@@ -320,7 +332,10 @@ fn guide_skill_bundle_install(executor: &str) -> Result<String> {
         _ => {
             println!("Custom executor selected. Make sure your agents know about wg commands.");
             println!("  For reference, see: wg quickstart");
-            Ok(format!("custom executor '{}' — manual setup needed", executor))
+            Ok(format!(
+                "custom executor '{}' — manual setup needed",
+                executor
+            ))
         }
     }
 }

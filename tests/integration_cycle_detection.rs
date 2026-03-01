@@ -13,8 +13,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
 use workgraph::graph::{
-    CycleConfig, LoopGuard, Node, Status, Task, WorkGraph,
-    evaluate_cycle_iteration,
+    CycleConfig, LoopGuard, Node, Status, Task, WorkGraph, evaluate_cycle_iteration,
 };
 use workgraph::parser::{load_graph, save_graph};
 use workgraph::query::{ready_tasks, ready_tasks_cycle_aware};
@@ -126,7 +125,10 @@ fn test_cycle_analysis_linear_chain_no_cycles() {
     let graph = build_graph(vec![t1, t2, t3]);
     let analysis = graph.compute_cycle_analysis();
 
-    assert!(analysis.cycles.is_empty(), "Linear chain should have no cycles");
+    assert!(
+        analysis.cycles.is_empty(),
+        "Linear chain should have no cycles"
+    );
     assert!(analysis.task_to_cycle.is_empty());
 }
 
@@ -144,7 +146,10 @@ fn test_cycle_analysis_dag_no_cycles() {
     let graph = build_graph(vec![a, b, c, d]);
     let analysis = graph.compute_cycle_analysis();
 
-    assert!(analysis.cycles.is_empty(), "Diamond graph should have no cycles");
+    assert!(
+        analysis.cycles.is_empty(),
+        "Diamond graph should have no cycles"
+    );
 }
 
 #[test]
@@ -180,7 +185,11 @@ fn test_cycle_analysis_three_node_cycle() {
     let graph = build_graph(vec![spec, imp, review]);
     let analysis = graph.compute_cycle_analysis();
 
-    assert_eq!(analysis.cycles.len(), 1, "Should detect exactly one 3-node cycle");
+    assert_eq!(
+        analysis.cycles.len(),
+        1,
+        "Should detect exactly one 3-node cycle"
+    );
     let cycle = &analysis.cycles[0];
     assert_eq!(cycle.members.len(), 3, "Cycle should have 3 members");
 
@@ -310,7 +319,10 @@ fn test_cycle_analysis_reducible_with_external_entry() {
 
     assert_eq!(analysis.cycles.len(), 1);
     let cycle = &analysis.cycles[0];
-    assert!(cycle.reducible, "Cycle with single entry point should be reducible");
+    assert!(
+        cycle.reducible,
+        "Cycle with single entry point should be reducible"
+    );
     assert_eq!(
         cycle.header, "a",
         "A should be the header (only entry point from external)"
@@ -339,7 +351,9 @@ fn test_cycle_analysis_back_edges_identified() {
     );
     // The back-edge should be (c, a) — c is the predecessor, a is the header
     assert!(
-        analysis.back_edges.contains(&("c".to_string(), "a".to_string())),
+        analysis
+            .back_edges
+            .contains(&("c".to_string(), "a".to_string())),
         "Back-edge should be (c → a). Found: {:?}",
         analysis.back_edges
     );
@@ -395,7 +409,10 @@ fn test_cycle_analysis_single_task_no_cycle() {
     let a = make_task("a", "A");
     let graph = build_graph(vec![a]);
     let analysis = graph.compute_cycle_analysis();
-    assert!(analysis.cycles.is_empty(), "Single task should not form a cycle");
+    assert!(
+        analysis.cycles.is_empty(),
+        "Single task should not form a cycle"
+    );
 }
 
 #[test]
@@ -599,9 +616,21 @@ fn test_dispatch_back_edge_exemption_only_for_iterator_blocker() {
     let ready_ids: Vec<&str> = ready.iter().map(|t| t.id.as_str()).collect();
 
     // Only B should be ready (no deps). C blocked by B. A blocked by C.
-    assert!(ready_ids.contains(&"b"), "B should be ready (no deps). Ready: {:?}", ready_ids);
-    assert!(!ready_ids.contains(&"c"), "C should NOT be ready (B is Open). Ready: {:?}", ready_ids);
-    assert!(!ready_ids.contains(&"a"), "A should NOT be ready (C is Open). Ready: {:?}", ready_ids);
+    assert!(
+        ready_ids.contains(&"b"),
+        "B should be ready (no deps). Ready: {:?}",
+        ready_ids
+    );
+    assert!(
+        !ready_ids.contains(&"c"),
+        "C should NOT be ready (B is Open). Ready: {:?}",
+        ready_ids
+    );
+    assert!(
+        !ready_ids.contains(&"a"),
+        "A should NOT be ready (C is Open). Ready: {:?}",
+        ready_ids
+    );
 }
 
 #[test]
@@ -952,7 +981,10 @@ fn test_completion_guard_always_allows() {
 
     let reactivated = evaluate_cycle_iteration(&mut graph, "b", &analysis);
 
-    assert!(!reactivated.is_empty(), "Always guard should allow iteration");
+    assert!(
+        !reactivated.is_empty(),
+        "Always guard should allow iteration"
+    );
 }
 
 #[test]
@@ -1069,12 +1101,18 @@ fn test_completion_clears_assignment_and_timestamps() {
     evaluate_cycle_iteration(&mut graph, "b", &analysis);
 
     let a = graph.get_task("a").unwrap();
-    assert!(a.assigned.is_none(), "assigned should be cleared on re-open");
+    assert!(
+        a.assigned.is_none(),
+        "assigned should be cleared on re-open"
+    );
     assert!(a.started_at.is_none(), "started_at should be cleared");
     assert!(a.completed_at.is_none(), "completed_at should be cleared");
 
     let b = graph.get_task("b").unwrap();
-    assert!(b.assigned.is_none(), "assigned should be cleared on re-open");
+    assert!(
+        b.assigned.is_none(),
+        "assigned should be cleared on re-open"
+    );
     assert!(b.started_at.is_none(), "started_at should be cleared");
     assert!(b.completed_at.is_none(), "completed_at should be cleared");
 }
@@ -1098,12 +1136,13 @@ fn test_completion_adds_log_entry() {
     evaluate_cycle_iteration(&mut graph, "b", &analysis);
 
     let a = graph.get_task("a").unwrap();
+    assert!(!a.log.is_empty(), "Re-opened task should have a log entry");
     assert!(
-        !a.log.is_empty(),
-        "Re-opened task should have a log entry"
-    );
-    assert!(
-        a.log.last().unwrap().message.contains("Re-activated by cycle iteration"),
+        a.log
+            .last()
+            .unwrap()
+            .message
+            .contains("Re-activated by cycle iteration"),
         "Log entry should mention cycle iteration"
     );
 }
@@ -1116,7 +1155,10 @@ fn test_completion_non_cycle_task_no_effect() {
     let analysis = graph.compute_cycle_analysis();
 
     let reactivated = evaluate_cycle_iteration(&mut graph, "t", &analysis);
-    assert!(reactivated.is_empty(), "Non-cycle task should not trigger iteration");
+    assert!(
+        reactivated.is_empty(),
+        "Non-cycle task should not trigger iteration"
+    );
 }
 
 #[test]
@@ -1203,10 +1245,22 @@ fn test_completion_multiple_independent_cycles() {
     let reactivated = evaluate_cycle_iteration(&mut graph, "b", &analysis);
     let reactivated_set: HashSet<&str> = reactivated.iter().map(|s| s.as_str()).collect();
 
-    assert!(reactivated_set.contains("a"), "Cycle 1 should re-activate A");
-    assert!(reactivated_set.contains("b"), "Cycle 1 should re-activate B");
-    assert!(!reactivated_set.contains("c"), "Cycle 2 should not be affected");
-    assert!(!reactivated_set.contains("d"), "Cycle 2 should not be affected");
+    assert!(
+        reactivated_set.contains("a"),
+        "Cycle 1 should re-activate A"
+    );
+    assert!(
+        reactivated_set.contains("b"),
+        "Cycle 1 should re-activate B"
+    );
+    assert!(
+        !reactivated_set.contains("c"),
+        "Cycle 2 should not be affected"
+    );
+    assert!(
+        !reactivated_set.contains("d"),
+        "Cycle 2 should not be affected"
+    );
 }
 
 #[test]
@@ -1296,7 +1350,14 @@ fn test_cli_add_with_max_iterations() {
 
     wg_ok(
         &wg_dir,
-        &["add", "Cycle Header", "--id", "header", "--max-iterations", "5"],
+        &[
+            "add",
+            "Cycle Header",
+            "--id",
+            "header",
+            "--max-iterations",
+            "5",
+        ],
     );
 
     let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
@@ -1311,10 +1372,7 @@ fn test_cli_add_with_max_iterations() {
 #[test]
 fn test_cli_add_with_cycle_guard() {
     let tmp = TempDir::new().unwrap();
-    let wg_dir = setup_workgraph(
-        &tmp,
-        vec![make_task("sentinel", "Sentinel task")],
-    );
+    let wg_dir = setup_workgraph(&tmp, vec![make_task("sentinel", "Sentinel task")]);
 
     wg_ok(
         &wg_dir,
@@ -1429,11 +1487,14 @@ fn test_cli_cycles_no_cycles() {
     let tmp = TempDir::new().unwrap();
     let wg_dir = setup_workgraph(
         &tmp,
-        vec![{
-            let mut t2 = make_task("t2", "Task 2");
-            t2.after = vec!["t1".to_string()];
-            t2
-        }, make_task("t1", "Task 1")],
+        vec![
+            {
+                let mut t2 = make_task("t2", "Task 2");
+                t2.after = vec!["t1".to_string()];
+                t2
+            },
+            make_task("t1", "Task 1"),
+        ],
     );
 
     let output = wg_ok(&wg_dir, &["cycles"]);
@@ -1482,14 +1543,23 @@ fn test_cli_cycles_json_output() {
     let parsed: serde_json::Value = serde_json::from_str(&output)
         .unwrap_or_else(|e| panic!("Invalid JSON: {}\nOutput: {}", e, output));
 
-    assert!(parsed.get("cycle_count").is_some(), "JSON should have cycle_count");
+    assert!(
+        parsed.get("cycle_count").is_some(),
+        "JSON should have cycle_count"
+    );
     assert_eq!(
         parsed["cycle_count"].as_u64().unwrap(),
         1,
         "Should report 1 cycle"
     );
-    assert!(parsed.get("cycles").is_some(), "JSON should have cycles array");
-    assert!(parsed.get("back_edges").is_some(), "JSON should have back_edges");
+    assert!(
+        parsed.get("cycles").is_some(),
+        "JSON should have cycles array"
+    );
+    assert!(
+        parsed.get("back_edges").is_some(),
+        "JSON should have back_edges"
+    );
 }
 
 #[test]
@@ -1672,7 +1742,11 @@ fn test_convergence_on_non_cycle_task() {
     let tmp = TempDir::new().unwrap();
     let wg_dir = setup_workgraph(
         &tmp,
-        vec![make_task_with_status("solo", "Solo task", Status::InProgress)],
+        vec![make_task_with_status(
+            "solo",
+            "Solo task",
+            Status::InProgress,
+        )],
     );
 
     let output = wg_ok(&wg_dir, &["done", "solo", "--converged"]);
@@ -1703,7 +1777,10 @@ fn test_cycle_with_mixed_statuses_no_iteration() {
     let analysis = graph.compute_cycle_analysis();
 
     let reactivated = evaluate_cycle_iteration(&mut graph, "a", &analysis);
-    assert!(reactivated.is_empty(), "Should not iterate with InProgress member");
+    assert!(
+        reactivated.is_empty(),
+        "Should not iterate with InProgress member"
+    );
 }
 
 #[test]
@@ -1725,7 +1802,10 @@ fn test_cycle_header_removed_breaks_cycle() {
 
     // Cycle should disappear
     let analysis = graph.compute_cycle_analysis();
-    assert!(analysis.cycles.is_empty(), "Cycle should disappear after removing member");
+    assert!(
+        analysis.cycles.is_empty(),
+        "Cycle should disappear after removing member"
+    );
 }
 
 #[test]
@@ -1807,8 +1887,14 @@ fn test_implicit_cycle_fires_on_done() {
     );
 
     let reactivated_set: HashSet<&str> = reactivated.iter().map(|s| s.as_str()).collect();
-    assert!(reactivated_set.contains("a"), "Worker A should be re-activated");
-    assert!(reactivated_set.contains("b"), "Evaluator B should be re-activated");
+    assert!(
+        reactivated_set.contains("a"),
+        "Worker A should be re-activated"
+    );
+    assert!(
+        reactivated_set.contains("b"),
+        "Evaluator B should be re-activated"
+    );
 
     // Verify both are Open with iteration 1
     assert_eq!(graph.get_task("a").unwrap().status, Status::Open);
@@ -1940,7 +2026,16 @@ fn test_cli_implicit_cycle_via_max_iterations() {
     // Add task B --after A --max-iterations 3
     wg_ok(
         &wg_dir,
-        &["add", "Evaluator", "--id", "b", "--after", "a", "--max-iterations", "3"],
+        &[
+            "add",
+            "Evaluator",
+            "--id",
+            "b",
+            "--after",
+            "a",
+            "--max-iterations",
+            "3",
+        ],
     );
 
     // Complete A first
@@ -2080,7 +2175,11 @@ fn test_self_convergence_blocked_by_guard() {
     let output = wg_cmd(&wg_dir, &["done", "b", "--converged"]);
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-    assert!(output.status.success(), "wg done should succeed. stderr: {}", stderr);
+    assert!(
+        output.status.success(),
+        "wg done should succeed. stderr: {}",
+        stderr
+    );
 
     // Should warn about --converged being ignored
     assert!(
@@ -2266,8 +2365,16 @@ fn test_guard_allows_cycle_when_condition_met() {
     );
 
     let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
-    assert_eq!(graph.get_task("a").unwrap().status, Status::Open, "A re-opened");
-    assert_eq!(graph.get_task("b").unwrap().status, Status::Open, "B re-opened");
+    assert_eq!(
+        graph.get_task("a").unwrap().status,
+        Status::Open,
+        "A re-opened"
+    );
+    assert_eq!(
+        graph.get_task("b").unwrap().status,
+        Status::Open,
+        "B re-opened"
+    );
 }
 
 // --- 8.4 Back-edge auto-creation via --max-iterations + --after ---
@@ -2282,9 +2389,14 @@ fn test_max_iterations_creates_back_edge() {
     wg_ok(
         &wg_dir,
         &[
-            "add", "Validator", "--id", "b",
-            "--after", "a",
-            "--max-iterations", "3",
+            "add",
+            "Validator",
+            "--id",
+            "b",
+            "--after",
+            "a",
+            "--max-iterations",
+            "3",
         ],
     );
 
@@ -2326,9 +2438,14 @@ fn test_max_iterations_back_edge_detected_by_scc() {
     wg_ok(
         &wg_dir,
         &[
-            "add", "Step C", "--id", "c",
-            "--after", "b",
-            "--max-iterations", "3",
+            "add",
+            "Step C",
+            "--id",
+            "c",
+            "--after",
+            "b",
+            "--max-iterations",
+            "3",
         ],
     );
 
@@ -2340,9 +2457,10 @@ fn test_max_iterations_back_edge_detected_by_scc() {
         "Should detect cycle from auto back-edge"
     );
 
-    let has_back_edge = analysis.back_edges.iter().any(|(src, tgt)| {
-        (src == "c" && tgt == "b") || (src == "b" && tgt == "c")
-    });
+    let has_back_edge = analysis
+        .back_edges
+        .iter()
+        .any(|(src, tgt)| (src == "c" && tgt == "b") || (src == "b" && tgt == "c"));
     assert!(
         has_back_edge,
         "Back-edge between B and C should be detected. Back-edges: {:?}",
@@ -2373,10 +2491,26 @@ fn test_mixed_deps_setup_not_reopened() {
     let reactivated = evaluate_cycle_iteration(&mut graph, "validate", &analysis);
 
     let set: HashSet<&str> = reactivated.iter().map(|s| s.as_str()).collect();
-    assert!(set.contains("impl"), "impl should be re-activated. Reactivated: {:?}", reactivated);
-    assert!(set.contains("validate"), "validate should be re-activated. Reactivated: {:?}", reactivated);
-    assert!(!set.contains("setup"), "setup should NOT be re-activated. Reactivated: {:?}", reactivated);
-    assert_eq!(graph.get_task("setup").unwrap().status, Status::Done, "Setup should remain Done");
+    assert!(
+        set.contains("impl"),
+        "impl should be re-activated. Reactivated: {:?}",
+        reactivated
+    );
+    assert!(
+        set.contains("validate"),
+        "validate should be re-activated. Reactivated: {:?}",
+        reactivated
+    );
+    assert!(
+        !set.contains("setup"),
+        "setup should NOT be re-activated. Reactivated: {:?}",
+        reactivated
+    );
+    assert_eq!(
+        graph.get_task("setup").unwrap().status,
+        Status::Done,
+        "Setup should remain Done"
+    );
 }
 
 #[test]
@@ -2386,13 +2520,21 @@ fn test_mixed_deps_cli_setup_not_reopened() {
     let wg_dir = setup_workgraph(&tmp, vec![]);
 
     wg_ok(&wg_dir, &["add", "Setup", "--id", "setup"]);
-    wg_ok(&wg_dir, &["add", "Implement", "--id", "impl", "--after", "setup"]);
+    wg_ok(
+        &wg_dir,
+        &["add", "Implement", "--id", "impl", "--after", "setup"],
+    );
     wg_ok(
         &wg_dir,
         &[
-            "add", "Validate", "--id", "validate",
-            "--after", "impl",
-            "--max-iterations", "3",
+            "add",
+            "Validate",
+            "--id",
+            "validate",
+            "--after",
+            "impl",
+            "--max-iterations",
+            "3",
         ],
     );
 
@@ -2400,12 +2542,28 @@ fn test_mixed_deps_cli_setup_not_reopened() {
     wg_ok(&wg_dir, &["done", "impl"]);
     let output = wg_ok(&wg_dir, &["done", "validate"]);
 
-    assert!(output.contains("re-activated"), "Cycle should fire. Output: {}", output);
+    assert!(
+        output.contains("re-activated"),
+        "Cycle should fire. Output: {}",
+        output
+    );
 
     let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
-    assert_eq!(graph.get_task("setup").unwrap().status, Status::Done, "Setup should remain Done");
-    assert_eq!(graph.get_task("impl").unwrap().status, Status::Open, "Impl should be re-opened");
-    assert_eq!(graph.get_task("validate").unwrap().status, Status::Open, "Validate should be re-opened");
+    assert_eq!(
+        graph.get_task("setup").unwrap().status,
+        Status::Done,
+        "Setup should remain Done"
+    );
+    assert_eq!(
+        graph.get_task("impl").unwrap().status,
+        Status::Open,
+        "Impl should be re-opened"
+    );
+    assert_eq!(
+        graph.get_task("validate").unwrap().status,
+        Status::Open,
+        "Validate should be re-opened"
+    );
 }
 
 // --- 8.6 First-iteration exemption ---
@@ -2457,13 +2615,24 @@ fn test_first_iteration_exemption_implicit_cycle() {
     let graph = build_graph(vec![a, b]);
     let analysis = graph.compute_cycle_analysis();
 
-    assert!(analysis.cycles.is_empty(), "No SCC cycle for implicit cycle");
+    assert!(
+        analysis.cycles.is_empty(),
+        "No SCC cycle for implicit cycle"
+    );
 
     let ready = ready_tasks_cycle_aware(&graph, &analysis);
     let ready_ids: Vec<&str> = ready.iter().map(|t| t.id.as_str()).collect();
 
-    assert!(ready_ids.contains(&"a"), "A should be ready (no blockers). Ready: {:?}", ready_ids);
-    assert!(!ready_ids.contains(&"b"), "B should wait for A. Ready: {:?}", ready_ids);
+    assert!(
+        ready_ids.contains(&"a"),
+        "A should be ready (no blockers). Ready: {:?}",
+        ready_ids
+    );
+    assert!(
+        !ready_ids.contains(&"b"),
+        "B should wait for A. Ready: {:?}",
+        ready_ids
+    );
 }
 
 // --- 8.7 Full end-to-end CLI tests ---
@@ -2478,13 +2647,26 @@ fn test_e2e_cycle_via_max_iterations_complete_flow() {
     wg_ok(&wg_dir, &["add", "Worker", "--id", "worker"]);
     wg_ok(
         &wg_dir,
-        &["add", "Validator", "--id", "validator", "--after", "worker", "--max-iterations", "5"],
+        &[
+            "add",
+            "Validator",
+            "--id",
+            "validator",
+            "--after",
+            "worker",
+            "--max-iterations",
+            "5",
+        ],
     );
 
     // Step 2: Complete first iteration
     wg_ok(&wg_dir, &["done", "worker"]);
     let output = wg_ok(&wg_dir, &["done", "validator"]);
-    assert!(output.contains("re-activated"), "First iteration should re-activate. Output: {}", output);
+    assert!(
+        output.contains("re-activated"),
+        "First iteration should re-activate. Output: {}",
+        output
+    );
 
     // Step 3: Verify re-activation
     let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
@@ -2496,7 +2678,11 @@ fn test_e2e_cycle_via_max_iterations_complete_flow() {
     // Step 4: Complete second iteration
     wg_ok(&wg_dir, &["done", "worker"]);
     let output = wg_ok(&wg_dir, &["done", "validator"]);
-    assert!(output.contains("re-activated"), "Second iteration should also re-activate. Output: {}", output);
+    assert!(
+        output.contains("re-activated"),
+        "Second iteration should also re-activate. Output: {}",
+        output
+    );
 
     let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
     assert_eq!(graph.get_task("worker").unwrap().loop_iteration, 2);
@@ -2505,13 +2691,23 @@ fn test_e2e_cycle_via_max_iterations_complete_flow() {
     // Step 5: Complete third iteration with --converged
     wg_ok(&wg_dir, &["done", "worker"]);
     let output = wg_ok(&wg_dir, &["done", "validator", "--converged"]);
-    assert!(!output.contains("re-activated"), "Converged should stop the cycle. Output: {}", output);
+    assert!(
+        !output.contains("re-activated"),
+        "Converged should stop the cycle. Output: {}",
+        output
+    );
 
     // Step 6: Verify final state
     let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
     assert_eq!(graph.get_task("worker").unwrap().status, Status::Done);
     assert_eq!(graph.get_task("validator").unwrap().status, Status::Done);
-    assert!(graph.get_task("validator").unwrap().tags.contains(&"converged".to_string()));
+    assert!(
+        graph
+            .get_task("validator")
+            .unwrap()
+            .tags
+            .contains(&"converged".to_string())
+    );
 }
 
 #[test]
@@ -2525,10 +2721,16 @@ fn test_e2e_guarded_cycle_guard_stops_loop() {
     wg_ok(
         &wg_dir,
         &[
-            "add", "Validator", "--id", "validator",
-            "--after", "worker",
-            "--max-iterations", "5",
-            "--cycle-guard", "task:sentinel=failed",
+            "add",
+            "Validator",
+            "--id",
+            "validator",
+            "--after",
+            "worker",
+            "--max-iterations",
+            "5",
+            "--cycle-guard",
+            "task:sentinel=failed",
         ],
     );
 
@@ -2541,7 +2743,11 @@ fn test_e2e_guarded_cycle_guard_stops_loop() {
     // First iteration: guard met → iterate
     wg_ok(&wg_dir, &["done", "worker"]);
     let output = wg_ok(&wg_dir, &["done", "validator"]);
-    assert!(output.contains("re-activated"), "Guard condition met → should iterate. Output: {}", output);
+    assert!(
+        output.contains("re-activated"),
+        "Guard condition met → should iterate. Output: {}",
+        output
+    );
 
     // Change sentinel to Done → guard condition no longer met
     let mut graph = load_graph(&graph_path).unwrap();
@@ -2551,7 +2757,11 @@ fn test_e2e_guarded_cycle_guard_stops_loop() {
     // Second iteration: guard NOT met → stop
     wg_ok(&wg_dir, &["done", "worker"]);
     let output = wg_ok(&wg_dir, &["done", "validator"]);
-    assert!(!output.contains("re-activated"), "Guard condition not met → should NOT iterate. Output: {}", output);
+    assert!(
+        !output.contains("re-activated"),
+        "Guard condition not met → should NOT iterate. Output: {}",
+        output
+    );
 }
 
 #[test]
@@ -2566,9 +2776,14 @@ fn test_e2e_auto_back_edge_creates_structural_cycle() {
     wg_ok(
         &wg_dir,
         &[
-            "add", "Task B", "--id", "b",
-            "--after", "a",
-            "--max-iterations", "3",
+            "add",
+            "Task B",
+            "--id",
+            "b",
+            "--after",
+            "a",
+            "--max-iterations",
+            "3",
         ],
     );
 
@@ -2585,7 +2800,11 @@ fn test_e2e_auto_back_edge_creates_structural_cycle() {
 
     // Complete B
     let output = wg_ok(&wg_dir, &["done", "b"]);
-    assert!(output.contains("re-activated"), "Structural cycle should fire. Output: {}", output);
+    assert!(
+        output.contains("re-activated"),
+        "Structural cycle should fire. Output: {}",
+        output
+    );
 
     let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
     assert_eq!(graph.get_task("a").unwrap().status, Status::Open);
@@ -2610,24 +2829,49 @@ fn test_deep_basic_cycle_done_a_done_b_reopens() {
     wg_ok(&wg_dir, &["add", "Task A", "--id", "a"]);
     wg_ok(
         &wg_dir,
-        &["add", "Task B", "--id", "b", "--after", "a", "--max-iterations", "3"],
+        &[
+            "add",
+            "Task B",
+            "--id",
+            "b",
+            "--after",
+            "a",
+            "--max-iterations",
+            "3",
+        ],
     );
 
     // Verify auto back-edge created
     let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
     assert!(
-        graph.get_task("a").unwrap().after.contains(&"b".to_string()),
+        graph
+            .get_task("a")
+            .unwrap()
+            .after
+            .contains(&"b".to_string()),
         "Auto back-edge: A.after should contain B"
     );
 
     // Complete A then B
     wg_ok(&wg_dir, &["done", "a"]);
     let output = wg_ok(&wg_dir, &["done", "b"]);
-    assert!(output.contains("re-activated"), "Should re-activate. Output: {}", output);
+    assert!(
+        output.contains("re-activated"),
+        "Should re-activate. Output: {}",
+        output
+    );
 
     let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
-    assert_eq!(graph.get_task("a").unwrap().status, Status::Open, "A re-opened");
-    assert_eq!(graph.get_task("b").unwrap().status, Status::Open, "B re-opened");
+    assert_eq!(
+        graph.get_task("a").unwrap().status,
+        Status::Open,
+        "A re-opened"
+    );
+    assert_eq!(
+        graph.get_task("b").unwrap().status,
+        Status::Open,
+        "B re-opened"
+    );
     assert_eq!(graph.get_task("a").unwrap().loop_iteration, 1);
     assert_eq!(graph.get_task("b").unwrap().loop_iteration, 1);
 }
@@ -2643,27 +2887,45 @@ fn test_deep_multi_iteration_stops_at_max() {
     wg_ok(&wg_dir, &["add", "Task A", "--id", "a"]);
     wg_ok(
         &wg_dir,
-        &["add", "Task B", "--id", "b", "--after", "a", "--max-iterations", "3"],
+        &[
+            "add",
+            "Task B",
+            "--id",
+            "b",
+            "--after",
+            "a",
+            "--max-iterations",
+            "3",
+        ],
     );
 
     // Iteration 0 → 1
     wg_ok(&wg_dir, &["done", "a"]);
     let output = wg_ok(&wg_dir, &["done", "b"]);
-    assert!(output.contains("re-activated"), "Iteration 0→1 should re-activate");
+    assert!(
+        output.contains("re-activated"),
+        "Iteration 0→1 should re-activate"
+    );
     let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
     assert_eq!(graph.get_task("a").unwrap().loop_iteration, 1);
 
     // Iteration 1 → 2
     wg_ok(&wg_dir, &["done", "a"]);
     let output = wg_ok(&wg_dir, &["done", "b"]);
-    assert!(output.contains("re-activated"), "Iteration 1→2 should re-activate");
+    assert!(
+        output.contains("re-activated"),
+        "Iteration 1→2 should re-activate"
+    );
     let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
     assert_eq!(graph.get_task("a").unwrap().loop_iteration, 2);
 
     // Iteration 2 → 3
     wg_ok(&wg_dir, &["done", "a"]);
     let output = wg_ok(&wg_dir, &["done", "b"]);
-    assert!(output.contains("re-activated"), "Iteration 2→3 should re-activate");
+    assert!(
+        output.contains("re-activated"),
+        "Iteration 2→3 should re-activate"
+    );
     let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
     assert_eq!(graph.get_task("a").unwrap().loop_iteration, 3);
 
@@ -2676,8 +2938,16 @@ fn test_deep_multi_iteration_stops_at_max() {
         output
     );
     let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
-    assert_eq!(graph.get_task("a").unwrap().status, Status::Done, "A should stay Done at max");
-    assert_eq!(graph.get_task("b").unwrap().status, Status::Done, "B should stay Done at max");
+    assert_eq!(
+        graph.get_task("a").unwrap().status,
+        Status::Done,
+        "A should stay Done at max"
+    );
+    assert_eq!(
+        graph.get_task("b").unwrap().status,
+        Status::Done,
+        "B should stay Done at max"
+    );
 }
 
 // --- 9.3 Convergence: wg done B --converged stops the cycle ---
@@ -2692,7 +2962,16 @@ fn test_deep_convergence_stops_cycle() {
     wg_ok(&wg_dir, &["add", "Task A", "--id", "a"]);
     wg_ok(
         &wg_dir,
-        &["add", "Task B", "--id", "b", "--after", "a", "--max-iterations", "5"],
+        &[
+            "add",
+            "Task B",
+            "--id",
+            "b",
+            "--after",
+            "a",
+            "--max-iterations",
+            "5",
+        ],
     );
 
     wg_ok(&wg_dir, &["done", "a"]);
@@ -2706,7 +2985,13 @@ fn test_deep_convergence_stops_cycle() {
     let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
     assert_eq!(graph.get_task("a").unwrap().status, Status::Done);
     assert_eq!(graph.get_task("b").unwrap().status, Status::Done);
-    assert!(graph.get_task("b").unwrap().tags.contains(&"converged".to_string()));
+    assert!(
+        graph
+            .get_task("b")
+            .unwrap()
+            .tags
+            .contains(&"converged".to_string())
+    );
 }
 
 // --- 9.4 Guard authority: Worker can't self-converge when guard is set ---
@@ -2768,7 +3053,16 @@ fn test_deep_first_iteration_ordering_b_waits_for_a() {
     wg_ok(&wg_dir, &["add", "Task A", "--id", "a"]);
     wg_ok(
         &wg_dir,
-        &["add", "Task B", "--id", "b", "--after", "a", "--max-iterations", "3"],
+        &[
+            "add",
+            "Task B",
+            "--id",
+            "b",
+            "--after",
+            "a",
+            "--max-iterations",
+            "3",
+        ],
     );
 
     // Both are Open. Auto back-edge: A.after=[B], B.after=[A].
@@ -2776,7 +3070,10 @@ fn test_deep_first_iteration_ordering_b_waits_for_a() {
     let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
     let analysis = graph.compute_cycle_analysis();
 
-    assert!(!analysis.cycles.is_empty(), "Should detect cycle from auto back-edge");
+    assert!(
+        !analysis.cycles.is_empty(),
+        "Should detect cycle from auto back-edge"
+    );
 
     let ready = ready_tasks_cycle_aware(&graph, &analysis);
     let ready_ids: Vec<&str> = ready.iter().map(|t| t.id.as_str()).collect();
@@ -2873,7 +3170,16 @@ fn test_deep_reiteration_ordering_e2e() {
     wg_ok(&wg_dir, &["add", "Task A", "--id", "a"]);
     wg_ok(
         &wg_dir,
-        &["add", "Task B", "--id", "b", "--after", "a", "--max-iterations", "3"],
+        &[
+            "add",
+            "Task B",
+            "--id",
+            "b",
+            "--after",
+            "a",
+            "--max-iterations",
+            "3",
+        ],
     );
 
     // First iteration
@@ -2935,20 +3241,37 @@ fn test_deep_three_task_cycle_reopen_and_ordering() {
     wg_ok(&wg_dir, &["add", "Task B", "--id", "b", "--after", "a"]);
     wg_ok(
         &wg_dir,
-        &["add", "Task C", "--id", "c", "--after", "b", "--max-iterations", "2"],
+        &[
+            "add",
+            "Task C",
+            "--id",
+            "c",
+            "--after",
+            "b",
+            "--max-iterations",
+            "2",
+        ],
     );
 
     // Auto back-edge: B.after should now include "c"
     let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
     assert!(
-        graph.get_task("b").unwrap().after.contains(&"c".to_string()),
+        graph
+            .get_task("b")
+            .unwrap()
+            .after
+            .contains(&"c".to_string()),
         "Auto back-edge: B.after should contain C"
     );
 
     // The SCC should be {B, C}. A is outside (setup).
     let analysis = graph.compute_cycle_analysis();
     assert!(!analysis.cycles.is_empty(), "Should detect cycle");
-    let cycle_members: HashSet<&str> = analysis.cycles[0].members.iter().map(|s| s.as_str()).collect();
+    let cycle_members: HashSet<&str> = analysis.cycles[0]
+        .members
+        .iter()
+        .map(|s| s.as_str())
+        .collect();
     assert!(cycle_members.contains("b"), "B should be in cycle");
     assert!(cycle_members.contains("c"), "C should be in cycle");
 
@@ -2956,13 +3279,29 @@ fn test_deep_three_task_cycle_reopen_and_ordering() {
     wg_ok(&wg_dir, &["done", "a"]);
     wg_ok(&wg_dir, &["done", "b"]);
     let output = wg_ok(&wg_dir, &["done", "c"]);
-    assert!(output.contains("re-activated"), "Cycle should fire. Output: {}", output);
+    assert!(
+        output.contains("re-activated"),
+        "Cycle should fire. Output: {}",
+        output
+    );
 
     // Verify B and C are re-opened (A stays done since it's not in the cycle)
     let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
-    assert_eq!(graph.get_task("a").unwrap().status, Status::Done, "A (setup) should remain Done");
-    assert_eq!(graph.get_task("b").unwrap().status, Status::Open, "B should be re-opened");
-    assert_eq!(graph.get_task("c").unwrap().status, Status::Open, "C should be re-opened");
+    assert_eq!(
+        graph.get_task("a").unwrap().status,
+        Status::Done,
+        "A (setup) should remain Done"
+    );
+    assert_eq!(
+        graph.get_task("b").unwrap().status,
+        Status::Open,
+        "B should be re-opened"
+    );
+    assert_eq!(
+        graph.get_task("c").unwrap().status,
+        Status::Open,
+        "C should be re-opened"
+    );
     assert_eq!(graph.get_task("b").unwrap().loop_iteration, 1);
     assert_eq!(graph.get_task("c").unwrap().loop_iteration, 1);
 
@@ -3018,9 +3357,21 @@ fn test_deep_three_task_cycle_unit() {
     let analysis = graph.compute_cycle_analysis();
     let ready = ready_tasks_cycle_aware(&graph, &analysis);
     let ready_ids: Vec<&str> = ready.iter().map(|t| t.id.as_str()).collect();
-    assert!(ready_ids.contains(&"b"), "B should be ready (exempt from A iterator). Ready: {:?}", ready_ids);
-    assert!(!ready_ids.contains(&"c"), "C should wait for B. Ready: {:?}", ready_ids);
-    assert!(!ready_ids.contains(&"a"), "A should wait for C. Ready: {:?}", ready_ids);
+    assert!(
+        ready_ids.contains(&"b"),
+        "B should be ready (exempt from A iterator). Ready: {:?}",
+        ready_ids
+    );
+    assert!(
+        !ready_ids.contains(&"c"),
+        "C should wait for B. Ready: {:?}",
+        ready_ids
+    );
+    assert!(
+        !ready_ids.contains(&"a"),
+        "A should wait for C. Ready: {:?}",
+        ready_ids
+    );
 }
 
 // --- 9.8 Mixed deps: setup → impl → validate --max-iterations 3 ---
@@ -3036,13 +3387,21 @@ fn test_deep_mixed_deps_setup_included_behavior() {
     let wg_dir = setup_workgraph(&tmp, vec![]);
 
     wg_ok(&wg_dir, &["add", "Setup", "--id", "setup"]);
-    wg_ok(&wg_dir, &["add", "Implement", "--id", "impl", "--after", "setup"]);
+    wg_ok(
+        &wg_dir,
+        &["add", "Implement", "--id", "impl", "--after", "setup"],
+    );
     wg_ok(
         &wg_dir,
         &[
-            "add", "Validate", "--id", "validate",
-            "--after", "impl",
-            "--max-iterations", "3",
+            "add",
+            "Validate",
+            "--id",
+            "validate",
+            "--after",
+            "impl",
+            "--max-iterations",
+            "3",
         ],
     );
 
@@ -3050,10 +3409,20 @@ fn test_deep_mixed_deps_setup_included_behavior() {
     let analysis = graph.compute_cycle_analysis();
 
     // Verify SCC contains only impl and validate, not setup
-    let cycle_members: HashSet<&str> = analysis.cycles[0].members.iter().map(|s| s.as_str()).collect();
+    let cycle_members: HashSet<&str> = analysis.cycles[0]
+        .members
+        .iter()
+        .map(|s| s.as_str())
+        .collect();
     assert!(cycle_members.contains("impl"), "impl should be in cycle");
-    assert!(cycle_members.contains("validate"), "validate should be in cycle");
-    assert!(!cycle_members.contains("setup"), "setup should NOT be in cycle SCC");
+    assert!(
+        cycle_members.contains("validate"),
+        "validate should be in cycle"
+    );
+    assert!(
+        !cycle_members.contains("setup"),
+        "setup should NOT be in cycle SCC"
+    );
 
     // Run the workflow
     wg_ok(&wg_dir, &["done", "setup"]);
@@ -3062,16 +3431,36 @@ fn test_deep_mixed_deps_setup_included_behavior() {
     assert!(output.contains("re-activated"), "Cycle should fire");
 
     let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
-    assert_eq!(graph.get_task("setup").unwrap().status, Status::Done, "Setup stays done");
-    assert_eq!(graph.get_task("impl").unwrap().status, Status::Open, "Impl re-opened");
-    assert_eq!(graph.get_task("validate").unwrap().status, Status::Open, "Validate re-opened");
+    assert_eq!(
+        graph.get_task("setup").unwrap().status,
+        Status::Done,
+        "Setup stays done"
+    );
+    assert_eq!(
+        graph.get_task("impl").unwrap().status,
+        Status::Open,
+        "Impl re-opened"
+    );
+    assert_eq!(
+        graph.get_task("validate").unwrap().status,
+        Status::Open,
+        "Validate re-opened"
+    );
 
     // On re-iteration, impl should be ready (setup is Done, and validate iterator is exempt)
     let analysis = graph.compute_cycle_analysis();
     let ready = ready_tasks_cycle_aware(&graph, &analysis);
     let ready_ids: Vec<&str> = ready.iter().map(|t| t.id.as_str()).collect();
-    assert!(ready_ids.contains(&"impl"), "Impl should be ready on re-iteration. Ready: {:?}", ready_ids);
-    assert!(!ready_ids.contains(&"validate"), "Validate should wait for impl. Ready: {:?}", ready_ids);
+    assert!(
+        ready_ids.contains(&"impl"),
+        "Impl should be ready on re-iteration. Ready: {:?}",
+        ready_ids
+    );
+    assert!(
+        !ready_ids.contains(&"validate"),
+        "Validate should wait for impl. Ready: {:?}",
+        ready_ids
+    );
 }
 
 // --- 9.9 Diamond into cycle ---
@@ -3090,23 +3479,43 @@ fn test_deep_diamond_into_cycle() {
     wg_ok(&wg_dir, &["add", "Task C", "--id", "c", "--after", "a"]);
     wg_ok(
         &wg_dir,
-        &["add", "Task D", "--id", "d", "--after", "b,c", "--max-iterations", "2"],
+        &[
+            "add",
+            "Task D",
+            "--id",
+            "d",
+            "--after",
+            "b,c",
+            "--max-iterations",
+            "2",
+        ],
     );
 
     let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
 
     // Verify auto back-edges
     assert!(
-        graph.get_task("b").unwrap().after.contains(&"d".to_string()),
+        graph
+            .get_task("b")
+            .unwrap()
+            .after
+            .contains(&"d".to_string()),
         "B.after should have D (auto back-edge)"
     );
     assert!(
-        graph.get_task("c").unwrap().after.contains(&"d".to_string()),
+        graph
+            .get_task("c")
+            .unwrap()
+            .after
+            .contains(&"d".to_string()),
         "C.after should have D (auto back-edge)"
     );
 
     let analysis = graph.compute_cycle_analysis();
-    assert!(!analysis.cycles.is_empty(), "Should detect cycle in diamond+cycle");
+    assert!(
+        !analysis.cycles.is_empty(),
+        "Should detect cycle in diamond+cycle"
+    );
 
     // Verify A is not in any cycle
     assert!(
@@ -3119,13 +3528,33 @@ fn test_deep_diamond_into_cycle() {
     wg_ok(&wg_dir, &["done", "b"]);
     wg_ok(&wg_dir, &["done", "c"]);
     let output = wg_ok(&wg_dir, &["done", "d"]);
-    assert!(output.contains("re-activated"), "Cycle should fire. Output: {}", output);
+    assert!(
+        output.contains("re-activated"),
+        "Cycle should fire. Output: {}",
+        output
+    );
 
     let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
-    assert_eq!(graph.get_task("a").unwrap().status, Status::Done, "A stays done");
-    assert_eq!(graph.get_task("b").unwrap().status, Status::Open, "B re-opened");
-    assert_eq!(graph.get_task("c").unwrap().status, Status::Open, "C re-opened");
-    assert_eq!(graph.get_task("d").unwrap().status, Status::Open, "D re-opened");
+    assert_eq!(
+        graph.get_task("a").unwrap().status,
+        Status::Done,
+        "A stays done"
+    );
+    assert_eq!(
+        graph.get_task("b").unwrap().status,
+        Status::Open,
+        "B re-opened"
+    );
+    assert_eq!(
+        graph.get_task("c").unwrap().status,
+        Status::Open,
+        "C re-opened"
+    );
+    assert_eq!(
+        graph.get_task("d").unwrap().status,
+        Status::Open,
+        "D re-opened"
+    );
 }
 
 // --- 9.10 Cycle with no --max-iterations: manual back-edge, no cycle_config ---
@@ -3146,15 +3575,25 @@ fn test_deep_no_max_iterations_no_auto_iteration() {
     // Verify back-edge exists
     let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
     assert!(
-        graph.get_task("a").unwrap().after.contains(&"b".to_string()),
+        graph
+            .get_task("a")
+            .unwrap()
+            .after
+            .contains(&"b".to_string()),
         "Manual back-edge: A.after should contain B"
     );
 
     // Verify cycle detected but no cycle_config
     let analysis = graph.compute_cycle_analysis();
     assert!(!analysis.cycles.is_empty(), "Should detect cycle");
-    assert!(graph.get_task("a").unwrap().cycle_config.is_none(), "A should have no cycle_config");
-    assert!(graph.get_task("b").unwrap().cycle_config.is_none(), "B should have no cycle_config");
+    assert!(
+        graph.get_task("a").unwrap().cycle_config.is_none(),
+        "A should have no cycle_config"
+    );
+    assert!(
+        graph.get_task("b").unwrap().cycle_config.is_none(),
+        "B should have no cycle_config"
+    );
 
     // Both tasks start as Open with cycle deadlock (no exemption without cycle_config)
     // We need to manually set statuses to test iteration behavior
@@ -3191,7 +3630,16 @@ fn test_deep_converged_first_iteration() {
     wg_ok(&wg_dir, &["add", "Task A", "--id", "a"]);
     wg_ok(
         &wg_dir,
-        &["add", "Task B", "--id", "b", "--after", "a", "--max-iterations", "5"],
+        &[
+            "add",
+            "Task B",
+            "--id",
+            "b",
+            "--after",
+            "a",
+            "--max-iterations",
+            "5",
+        ],
     );
 
     wg_ok(&wg_dir, &["done", "a"]);
@@ -3205,8 +3653,16 @@ fn test_deep_converged_first_iteration() {
     let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
     assert_eq!(graph.get_task("a").unwrap().status, Status::Done);
     assert_eq!(graph.get_task("b").unwrap().status, Status::Done);
-    assert_eq!(graph.get_task("a").unwrap().loop_iteration, 0, "A should stay at iteration 0");
-    assert_eq!(graph.get_task("b").unwrap().loop_iteration, 0, "B should stay at iteration 0");
+    assert_eq!(
+        graph.get_task("a").unwrap().loop_iteration,
+        0,
+        "A should stay at iteration 0"
+    );
+    assert_eq!(
+        graph.get_task("b").unwrap().loop_iteration,
+        0,
+        "B should stay at iteration 0"
+    );
 }
 
 #[test]
@@ -3249,14 +3705,32 @@ fn test_deep_parallel_cycles_no_interference() {
     wg_ok(&wg_dir, &["add", "A", "--id", "a"]);
     wg_ok(
         &wg_dir,
-        &["add", "B", "--id", "b", "--after", "a", "--max-iterations", "3"],
+        &[
+            "add",
+            "B",
+            "--id",
+            "b",
+            "--after",
+            "a",
+            "--max-iterations",
+            "3",
+        ],
     );
 
     // Cycle 2
     wg_ok(&wg_dir, &["add", "C", "--id", "c"]);
     wg_ok(
         &wg_dir,
-        &["add", "D", "--id", "d", "--after", "c", "--max-iterations", "2"],
+        &[
+            "add",
+            "D",
+            "--id",
+            "d",
+            "--after",
+            "c",
+            "--max-iterations",
+            "2",
+        ],
     );
 
     // Complete cycle 1
@@ -3266,10 +3740,26 @@ fn test_deep_parallel_cycles_no_interference() {
 
     // Verify cycle 2 unaffected
     let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
-    assert_eq!(graph.get_task("c").unwrap().status, Status::Open, "C should still be Open");
-    assert_eq!(graph.get_task("d").unwrap().status, Status::Open, "D should still be Open");
-    assert_eq!(graph.get_task("c").unwrap().loop_iteration, 0, "C iteration should be 0");
-    assert_eq!(graph.get_task("d").unwrap().loop_iteration, 0, "D iteration should be 0");
+    assert_eq!(
+        graph.get_task("c").unwrap().status,
+        Status::Open,
+        "C should still be Open"
+    );
+    assert_eq!(
+        graph.get_task("d").unwrap().status,
+        Status::Open,
+        "D should still be Open"
+    );
+    assert_eq!(
+        graph.get_task("c").unwrap().loop_iteration,
+        0,
+        "C iteration should be 0"
+    );
+    assert_eq!(
+        graph.get_task("d").unwrap().loop_iteration,
+        0,
+        "D iteration should be 0"
+    );
 
     // Cycle 1 re-opened
     assert_eq!(graph.get_task("a").unwrap().status, Status::Open);
@@ -3282,8 +3772,16 @@ fn test_deep_parallel_cycles_no_interference() {
 
     // Verify cycle 1 unaffected (still at iteration 1, both Open)
     let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
-    assert_eq!(graph.get_task("a").unwrap().loop_iteration, 1, "A still at iteration 1");
-    assert_eq!(graph.get_task("b").unwrap().loop_iteration, 1, "B still at iteration 1");
+    assert_eq!(
+        graph.get_task("a").unwrap().loop_iteration,
+        1,
+        "A still at iteration 1"
+    );
+    assert_eq!(
+        graph.get_task("b").unwrap().loop_iteration,
+        1,
+        "B still at iteration 1"
+    );
     // Cycle 2 re-opened
     assert_eq!(graph.get_task("c").unwrap().loop_iteration, 1);
     assert_eq!(graph.get_task("d").unwrap().loop_iteration, 1);
@@ -3319,15 +3817,35 @@ fn test_deep_parallel_cycles_dispatch_independence() {
     let graph = build_graph(vec![a, b, c, d]);
     let analysis = graph.compute_cycle_analysis();
 
-    assert_eq!(analysis.cycles.len(), 2, "Should have two independent cycles");
+    assert_eq!(
+        analysis.cycles.len(),
+        2,
+        "Should have two independent cycles"
+    );
 
     let ready = ready_tasks_cycle_aware(&graph, &analysis);
     let ready_ids: Vec<&str> = ready.iter().map(|t| t.id.as_str()).collect();
 
-    assert!(ready_ids.contains(&"a"), "A should be ready (exempt from B). Ready: {:?}", ready_ids);
-    assert!(ready_ids.contains(&"c"), "C should be ready (exempt from D). Ready: {:?}", ready_ids);
-    assert!(!ready_ids.contains(&"b"), "B should NOT be ready (A is Open). Ready: {:?}", ready_ids);
-    assert!(!ready_ids.contains(&"d"), "D should NOT be ready (C is Open). Ready: {:?}", ready_ids);
+    assert!(
+        ready_ids.contains(&"a"),
+        "A should be ready (exempt from B). Ready: {:?}",
+        ready_ids
+    );
+    assert!(
+        ready_ids.contains(&"c"),
+        "C should be ready (exempt from D). Ready: {:?}",
+        ready_ids
+    );
+    assert!(
+        !ready_ids.contains(&"b"),
+        "B should NOT be ready (A is Open). Ready: {:?}",
+        ready_ids
+    );
+    assert!(
+        !ready_ids.contains(&"d"),
+        "D should NOT be ready (C is Open). Ready: {:?}",
+        ready_ids
+    );
 }
 
 // --- 9.13 Nested structure: outer cycle contains inner non-cycle tasks ---
@@ -3343,7 +3861,16 @@ fn test_deep_nested_structure_inner_non_cycle() {
     wg_ok(&wg_dir, &["add", "Worker", "--id", "worker"]);
     wg_ok(
         &wg_dir,
-        &["add", "Validator", "--id", "validator", "--after", "worker", "--max-iterations", "3"],
+        &[
+            "add",
+            "Validator",
+            "--id",
+            "validator",
+            "--after",
+            "worker",
+            "--max-iterations",
+            "3",
+        ],
     );
     wg_ok(&wg_dir, &["add", "Helper", "--id", "helper"]);
 
@@ -3355,8 +3882,16 @@ fn test_deep_nested_structure_inner_non_cycle() {
 
     // Verify helper is unaffected
     let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
-    assert_eq!(graph.get_task("helper").unwrap().status, Status::Done, "Helper stays Done");
-    assert_eq!(graph.get_task("helper").unwrap().loop_iteration, 0, "Helper iteration unchanged");
+    assert_eq!(
+        graph.get_task("helper").unwrap().status,
+        Status::Done,
+        "Helper stays Done"
+    );
+    assert_eq!(
+        graph.get_task("helper").unwrap().loop_iteration,
+        0,
+        "Helper iteration unchanged"
+    );
 
     // Cycle members re-opened
     assert_eq!(graph.get_task("worker").unwrap().status, Status::Open);
@@ -3414,7 +3949,16 @@ fn test_deep_cli_add_back_edge_visible_in_show() {
     wg_ok(&wg_dir, &["add", "Worker", "--id", "worker"]);
     wg_ok(
         &wg_dir,
-        &["add", "Validator", "--id", "validator", "--after", "worker", "--max-iterations", "3"],
+        &[
+            "add",
+            "Validator",
+            "--id",
+            "validator",
+            "--after",
+            "worker",
+            "--max-iterations",
+            "3",
+        ],
     );
 
     // wg show worker should mention validator as a dependency
@@ -3433,7 +3977,9 @@ fn test_deep_cli_add_back_edge_visible_in_show() {
         output
     );
     assert!(
-        output.contains("max_iterations") || output.contains("cycle_config") || output.contains("Cycle"),
+        output.contains("max_iterations")
+            || output.contains("cycle_config")
+            || output.contains("Cycle"),
         "wg show validator should mention cycle config. Output:\n{}",
         output
     );
@@ -3449,7 +3995,16 @@ fn test_deep_cli_cycles_detects_auto_cycle() {
     wg_ok(&wg_dir, &["add", "Worker", "--id", "worker"]);
     wg_ok(
         &wg_dir,
-        &["add", "Validator", "--id", "validator", "--after", "worker", "--max-iterations", "3"],
+        &[
+            "add",
+            "Validator",
+            "--id",
+            "validator",
+            "--after",
+            "worker",
+            "--max-iterations",
+            "3",
+        ],
     );
 
     let output = wg_ok(&wg_dir, &["cycles"]);
@@ -3463,7 +4018,11 @@ fn test_deep_cli_cycles_detects_auto_cycle() {
     let output = wg_ok(&wg_dir, &["cycles", "--json"]);
     let parsed: serde_json::Value = serde_json::from_str(&output)
         .unwrap_or_else(|e| panic!("Invalid JSON: {}\nOutput: {}", e, output));
-    assert_eq!(parsed["cycle_count"].as_u64().unwrap(), 1, "Should report 1 cycle");
+    assert_eq!(
+        parsed["cycle_count"].as_u64().unwrap(),
+        1,
+        "Should report 1 cycle"
+    );
 }
 
 // --- 10.16 Full workflow: add → done → cycle fires → repeat ---
@@ -3477,7 +4036,16 @@ fn test_deep_cli_full_workflow_dispatch_cycle() {
     wg_ok(&wg_dir, &["add", "Implement", "--id", "impl"]);
     wg_ok(
         &wg_dir,
-        &["add", "Review", "--id", "review", "--after", "impl", "--max-iterations", "3"],
+        &[
+            "add",
+            "Review",
+            "--id",
+            "review",
+            "--after",
+            "impl",
+            "--max-iterations",
+            "3",
+        ],
     );
 
     // First round
@@ -3501,7 +4069,10 @@ fn test_deep_cli_full_workflow_dispatch_cycle() {
     // Third round: converge
     wg_ok(&wg_dir, &["done", "impl"]);
     let output = wg_ok(&wg_dir, &["done", "review", "--converged"]);
-    assert!(!output.contains("re-activated"), "Converged should stop cycle");
+    assert!(
+        !output.contains("re-activated"),
+        "Converged should stop cycle"
+    );
 
     let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
     assert_eq!(graph.get_task("impl").unwrap().status, Status::Done);
@@ -3528,7 +4099,9 @@ fn test_deep_cli_loops_to_removed() {
 
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     assert!(
-        stderr.contains("unexpected argument") || stderr.contains("error") || stderr.contains("unknown"),
+        stderr.contains("unexpected argument")
+            || stderr.contains("error")
+            || stderr.contains("unknown"),
         "Should report --loops-to as an unrecognized argument. stderr: {}",
         stderr
     );
@@ -3544,7 +4117,16 @@ fn test_deep_cli_viz_back_edge_annotation() {
     wg_ok(&wg_dir, &["add", "Worker", "--id", "worker"]);
     wg_ok(
         &wg_dir,
-        &["add", "Validator", "--id", "validator", "--after", "worker", "--max-iterations", "3"],
+        &[
+            "add",
+            "Validator",
+            "--id",
+            "validator",
+            "--after",
+            "worker",
+            "--max-iterations",
+            "3",
+        ],
     );
 
     let output = wg_ok(&wg_dir, &["viz", "--all"]);
@@ -3575,7 +4157,16 @@ fn test_deep_cli_viz_no_duplicate_nodes() {
     wg_ok(&wg_dir, &["add", "B", "--id", "b", "--after", "a"]);
     wg_ok(
         &wg_dir,
-        &["add", "C", "--id", "c", "--after", "b", "--max-iterations", "2"],
+        &[
+            "add",
+            "C",
+            "--id",
+            "c",
+            "--after",
+            "b",
+            "--max-iterations",
+            "2",
+        ],
     );
 
     let output = wg_ok(&wg_dir, &["viz", "--all"]);
@@ -3621,7 +4212,8 @@ fn test_viz_cycle_back_edge_no_duplicate_node_rendering() {
     );
 
     // Node "a" should appear exactly once as a rendered node (not duplicated by back-edge)
-    let a_node_lines: Vec<&str> = output.lines()
+    let a_node_lines: Vec<&str> = output
+        .lines()
         .filter(|l| l.contains("(open)") && l.trim_start().starts_with("a "))
         .collect();
     assert!(

@@ -23,10 +23,10 @@ pub mod check;
 pub mod claim;
 pub mod config_cmd;
 pub mod context;
-pub mod cycles;
 pub mod coordinate;
 pub mod cost;
 pub mod critical_path;
+pub mod cycles;
 pub mod dead_agents;
 pub mod done;
 pub mod edit;
@@ -35,6 +35,11 @@ pub mod evolve;
 pub mod exec;
 pub mod fail;
 pub mod forecast;
+pub mod func_apply;
+pub mod func_bootstrap;
+pub mod func_cmd;
+pub mod func_extract;
+pub mod func_make_adaptive;
 pub mod gc;
 pub mod graph;
 pub mod heartbeat;
@@ -47,7 +52,6 @@ pub mod match_cmd;
 #[cfg(any(feature = "matrix", feature = "matrix-lite"))]
 pub mod matrix;
 pub mod msg;
-pub mod tradeoff;
 pub mod next;
 #[cfg(any(feature = "matrix", feature = "matrix-lite"))]
 pub mod notify;
@@ -74,13 +78,9 @@ pub mod status;
 pub mod structure;
 pub mod trace;
 pub mod trace_animate;
-pub mod func_bootstrap;
 pub mod trace_export;
-pub mod func_extract;
-pub mod func_cmd;
 pub mod trace_import;
-pub mod func_apply;
-pub mod func_make_adaptive;
+pub mod tradeoff;
 pub mod trajectory;
 pub mod velocity;
 pub mod viz;
@@ -195,9 +195,30 @@ mod provenance_coverage_tests {
         let tmp = setup_dir();
         let dir = tmp.path();
         super::add::run(
-            dir, "Test task", Some("prov-add"), None,
-            &[], None, None, None, &[], &[], &[], &[], None, None, None, None, None, None, "internal", None, None, false,
-        ).unwrap();
+            dir,
+            "Test task",
+            Some("prov-add"),
+            None,
+            &[],
+            None,
+            None,
+            None,
+            &[],
+            &[],
+            &[],
+            &[],
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            "internal",
+            None,
+            None,
+            false,
+        )
+        .unwrap();
 
         let entries = ops_with_type(dir, "add_task");
         assert_eq!(entries.len(), 1);
@@ -209,14 +230,51 @@ mod provenance_coverage_tests {
         let tmp = setup_dir();
         let dir = tmp.path();
         super::add::run(
-            dir, "Edit target", Some("prov-edit"), None,
-            &[], None, None, None, &[], &[], &[], &[], None, None, None, None, None, None, "internal", None, None, false,
-        ).unwrap();
+            dir,
+            "Edit target",
+            Some("prov-edit"),
+            None,
+            &[],
+            None,
+            None,
+            None,
+            &[],
+            &[],
+            &[],
+            &[],
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            "internal",
+            None,
+            None,
+            false,
+        )
+        .unwrap();
 
         super::edit::run(
-            dir, "prov-edit", Some("New Title"), None,
-            &[], &[], &[], &[], None, &[], &[], None, None, None, None, None, None,
-        ).unwrap();
+            dir,
+            "prov-edit",
+            Some("New Title"),
+            None,
+            &[],
+            &[],
+            &[],
+            &[],
+            None,
+            &[],
+            &[],
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
 
         let entries = ops_with_type(dir, "edit");
         assert_eq!(entries.len(), 1);
@@ -231,9 +289,30 @@ mod provenance_coverage_tests {
         let tmp = setup_dir();
         let dir = tmp.path();
         super::add::run(
-            dir, "Claim target", Some("prov-claim"), None,
-            &[], None, None, None, &[], &[], &[], &[], None, None, None, None, None, None, "internal", None, None, false,
-        ).unwrap();
+            dir,
+            "Claim target",
+            Some("prov-claim"),
+            None,
+            &[],
+            None,
+            None,
+            None,
+            &[],
+            &[],
+            &[],
+            &[],
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            "internal",
+            None,
+            None,
+            false,
+        )
+        .unwrap();
 
         super::claim::claim(dir, "prov-claim", Some("agent-1")).unwrap();
         let entries = ops_with_type(dir, "claim");
@@ -252,9 +331,30 @@ mod provenance_coverage_tests {
         let tmp = setup_dir();
         let dir = tmp.path();
         super::add::run(
-            dir, "Done target", Some("prov-done"), None,
-            &[], None, None, None, &[], &[], &[], &[], None, None, None, None, None, None, "internal", None, None, false,
-        ).unwrap();
+            dir,
+            "Done target",
+            Some("prov-done"),
+            None,
+            &[],
+            None,
+            None,
+            None,
+            &[],
+            &[],
+            &[],
+            &[],
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            "internal",
+            None,
+            None,
+            false,
+        )
+        .unwrap();
 
         super::done::run(dir, "prov-done", false).unwrap();
         let entries = ops_with_type(dir, "done");
@@ -267,9 +367,30 @@ mod provenance_coverage_tests {
         let tmp = setup_dir();
         let dir = tmp.path();
         super::add::run(
-            dir, "Fail target", Some("prov-fail"), None,
-            &[], None, None, None, &[], &[], &[], &[], None, None, None, None, None, None, "internal", None, None, false,
-        ).unwrap();
+            dir,
+            "Fail target",
+            Some("prov-fail"),
+            None,
+            &[],
+            None,
+            None,
+            None,
+            &[],
+            &[],
+            &[],
+            &[],
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            "internal",
+            None,
+            None,
+            false,
+        )
+        .unwrap();
 
         super::fail::run(dir, "prov-fail", Some("timeout")).unwrap();
         let entries = ops_with_type(dir, "fail");
@@ -282,9 +403,30 @@ mod provenance_coverage_tests {
         let tmp = setup_dir();
         let dir = tmp.path();
         super::add::run(
-            dir, "Abandon target", Some("prov-abandon"), None,
-            &[], None, None, None, &[], &[], &[], &[], None, None, None, None, None, None, "internal", None, None, false,
-        ).unwrap();
+            dir,
+            "Abandon target",
+            Some("prov-abandon"),
+            None,
+            &[],
+            None,
+            None,
+            None,
+            &[],
+            &[],
+            &[],
+            &[],
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            "internal",
+            None,
+            None,
+            false,
+        )
+        .unwrap();
 
         super::abandon::run(dir, "prov-abandon", Some("no longer needed")).unwrap();
         let entries = ops_with_type(dir, "abandon");
@@ -297,9 +439,30 @@ mod provenance_coverage_tests {
         let tmp = setup_dir();
         let dir = tmp.path();
         super::add::run(
-            dir, "Retry target", Some("prov-retry"), None,
-            &[], None, None, None, &[], &[], &[], &[], None, None, None, None, None, None, "internal", None, None, false,
-        ).unwrap();
+            dir,
+            "Retry target",
+            Some("prov-retry"),
+            None,
+            &[],
+            None,
+            None,
+            None,
+            &[],
+            &[],
+            &[],
+            &[],
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            "internal",
+            None,
+            None,
+            false,
+        )
+        .unwrap();
 
         super::fail::run(dir, "prov-retry", Some("compile error")).unwrap();
         super::retry::run(dir, "prov-retry").unwrap();
@@ -315,9 +478,30 @@ mod provenance_coverage_tests {
         let tmp = setup_dir();
         let dir = tmp.path();
         super::add::run(
-            dir, "Pause target", Some("prov-pause"), None,
-            &[], None, None, None, &[], &[], &[], &[], None, None, None, None, None, None, "internal", None, None, false,
-        ).unwrap();
+            dir,
+            "Pause target",
+            Some("prov-pause"),
+            None,
+            &[],
+            None,
+            None,
+            None,
+            &[],
+            &[],
+            &[],
+            &[],
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            "internal",
+            None,
+            None,
+            false,
+        )
+        .unwrap();
 
         super::pause::run(dir, "prov-pause").unwrap();
         let entries = ops_with_type(dir, "pause");
@@ -335,9 +519,30 @@ mod provenance_coverage_tests {
         let tmp = setup_dir();
         let dir = tmp.path();
         super::add::run(
-            dir, "Artifact target", Some("prov-art"), None,
-            &[], None, None, None, &[], &[], &[], &[], None, None, None, None, None, None, "internal", None, None, false,
-        ).unwrap();
+            dir,
+            "Artifact target",
+            Some("prov-art"),
+            None,
+            &[],
+            None,
+            None,
+            None,
+            &[],
+            &[],
+            &[],
+            &[],
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            "internal",
+            None,
+            None,
+            false,
+        )
+        .unwrap();
 
         super::artifact::run_add(dir, "prov-art", "output.txt").unwrap();
         let entries = ops_with_type(dir, "artifact_add");
@@ -355,9 +560,30 @@ mod provenance_coverage_tests {
         let tmp = setup_dir();
         let dir = tmp.path();
         super::add::run(
-            dir, "Archive target", Some("prov-archive"), None,
-            &[], None, None, None, &[], &[], &[], &[], None, None, None, None, None, None, "internal", None, None, false,
-        ).unwrap();
+            dir,
+            "Archive target",
+            Some("prov-archive"),
+            None,
+            &[],
+            None,
+            None,
+            None,
+            &[],
+            &[],
+            &[],
+            &[],
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            "internal",
+            None,
+            None,
+            false,
+        )
+        .unwrap();
         super::done::run(dir, "prov-archive", false).unwrap();
 
         super::archive::run(dir, false, None, false, false).unwrap();
@@ -372,9 +598,30 @@ mod provenance_coverage_tests {
         let tmp = setup_dir();
         let dir = tmp.path();
         super::add::run(
-            dir, "GC target", Some("prov-gc"), None,
-            &[], None, None, None, &[], &[], &[], &[], None, None, None, None, None, None, "internal", None, None, false,
-        ).unwrap();
+            dir,
+            "GC target",
+            Some("prov-gc"),
+            None,
+            &[],
+            None,
+            None,
+            None,
+            &[],
+            &[],
+            &[],
+            &[],
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            "internal",
+            None,
+            None,
+            false,
+        )
+        .unwrap();
         super::fail::run(dir, "prov-gc", Some("oops")).unwrap();
         super::abandon::run(dir, "prov-gc", Some("giving up")).unwrap();
 
@@ -392,14 +639,51 @@ mod provenance_coverage_tests {
 
         // add
         super::add::run(
-            dir, "Lifecycle task", Some("lifecycle"), None,
-            &[], None, None, None, &[], &[], &[], &[], None, None, None, None, None, None, "internal", None, None, false,
-        ).unwrap();
+            dir,
+            "Lifecycle task",
+            Some("lifecycle"),
+            None,
+            &[],
+            None,
+            None,
+            None,
+            &[],
+            &[],
+            &[],
+            &[],
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            "internal",
+            None,
+            None,
+            false,
+        )
+        .unwrap();
         // edit
         super::edit::run(
-            dir, "lifecycle", Some("Renamed"), None,
-            &[], &[], &["tag1".to_string()], &[], None, &[], &[], None, None, None, None, None, None,
-        ).unwrap();
+            dir,
+            "lifecycle",
+            Some("Renamed"),
+            None,
+            &[],
+            &[],
+            &["tag1".to_string()],
+            &[],
+            None,
+            &[],
+            &[],
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
         // pause
         super::pause::run(dir, "lifecycle").unwrap();
         // resume
@@ -420,12 +704,20 @@ mod provenance_coverage_tests {
         let all = read_all_operations(dir).unwrap();
         let ops: Vec<&str> = all.iter().map(|e| e.op.as_str()).collect();
 
-        assert!(ops.contains(&"add_task"), "missing add_task, got: {:?}", ops);
+        assert!(
+            ops.contains(&"add_task"),
+            "missing add_task, got: {:?}",
+            ops
+        );
         assert!(ops.contains(&"edit"), "missing edit, got: {:?}", ops);
         assert!(ops.contains(&"pause"), "missing pause, got: {:?}", ops);
         assert!(ops.contains(&"resume"), "missing resume, got: {:?}", ops);
         assert!(ops.contains(&"claim"), "missing claim, got: {:?}", ops);
-        assert!(ops.contains(&"artifact_add"), "missing artifact_add, got: {:?}", ops);
+        assert!(
+            ops.contains(&"artifact_add"),
+            "missing artifact_add, got: {:?}",
+            ops
+        );
         assert!(ops.contains(&"unclaim"), "missing unclaim, got: {:?}", ops);
         assert!(ops.contains(&"fail"), "missing fail, got: {:?}", ops);
         assert!(ops.contains(&"retry"), "missing retry, got: {:?}", ops);

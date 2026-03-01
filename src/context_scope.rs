@@ -69,17 +69,29 @@ mod tests {
 
     #[test]
     fn test_parse_valid_scopes() {
-        assert_eq!("clean".parse::<ContextScope>().unwrap(), ContextScope::Clean);
+        assert_eq!(
+            "clean".parse::<ContextScope>().unwrap(),
+            ContextScope::Clean
+        );
         assert_eq!("task".parse::<ContextScope>().unwrap(), ContextScope::Task);
-        assert_eq!("graph".parse::<ContextScope>().unwrap(), ContextScope::Graph);
+        assert_eq!(
+            "graph".parse::<ContextScope>().unwrap(),
+            ContextScope::Graph
+        );
         assert_eq!("full".parse::<ContextScope>().unwrap(), ContextScope::Full);
     }
 
     #[test]
     fn test_parse_case_insensitive() {
-        assert_eq!("Clean".parse::<ContextScope>().unwrap(), ContextScope::Clean);
+        assert_eq!(
+            "Clean".parse::<ContextScope>().unwrap(),
+            ContextScope::Clean
+        );
         assert_eq!("TASK".parse::<ContextScope>().unwrap(), ContextScope::Task);
-        assert_eq!("Graph".parse::<ContextScope>().unwrap(), ContextScope::Graph);
+        assert_eq!(
+            "Graph".parse::<ContextScope>().unwrap(),
+            ContextScope::Graph
+        );
         assert_eq!("FULL".parse::<ContextScope>().unwrap(), ContextScope::Full);
     }
 

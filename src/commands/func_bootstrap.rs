@@ -3,8 +3,8 @@ use chrono::Utc;
 use std::path::Path;
 
 use workgraph::function::{
-    self, ExtractionSource, FunctionInput, FunctionOutput, InputType, PlanningConfig,
-    StructuralConstraints, TaskTemplate, TraceFunction, FunctionVisibility,
+    self, ExtractionSource, FunctionInput, FunctionOutput, FunctionVisibility, InputType,
+    PlanningConfig, StructuralConstraints, TaskTemplate, TraceFunction,
 };
 
 /// Run the `wg func bootstrap` command.
@@ -17,11 +17,10 @@ pub fn run(dir: &Path, force: bool) -> Result<()> {
 
     // Check if it already exists
     if !force
-        && let Ok(_existing) = function::find_function_by_prefix(&func_dir, "extract-function") {
-            anyhow::bail!(
-                "Meta-function 'extract-function' already exists. Use --force to overwrite."
-            );
-        }
+        && let Ok(_existing) = function::find_function_by_prefix(&func_dir, "extract-function")
+    {
+        anyhow::bail!("Meta-function 'extract-function' already exists. Use --force to overwrite.");
+    }
 
     let now = Utc::now().to_rfc3339();
 
@@ -125,8 +124,7 @@ pub fn run(dir: &Path, force: bool) -> Result<()> {
             TaskTemplate {
                 template_id: "export".to_string(),
                 title: "Export {{input.function_name}}".to_string(),
-                description: "Save the validated function to the functions directory."
-                    .to_string(),
+                description: "Save the validated function to the functions directory.".to_string(),
                 skills: vec![],
                 after: vec!["validate".to_string()],
                 loops_to: vec![],
@@ -189,9 +187,7 @@ pub fn run(dir: &Path, force: bool) -> Result<()> {
     println!("    subgraph (string, optional) — Extract full subgraph (default: true)");
     println!();
     println!("  Static fallback tasks: analyze → draft → validate → export");
-    println!(
-        "  Constraints: 2-8 tasks, requires analysis skill, max depth 5"
-    );
+    println!("  Constraints: 2-8 tasks, requires analysis skill, max depth 5");
     println!();
     println!("  Saved to: {}", saved_path.display());
     println!();
@@ -295,6 +291,10 @@ mod tests {
         let constraints = func.constraints.unwrap();
         assert_eq!(constraints.min_tasks, Some(2));
         assert_eq!(constraints.max_tasks, Some(8));
-        assert!(constraints.required_skills.contains(&"analysis".to_string()));
+        assert!(
+            constraints
+                .required_skills
+                .contains(&"analysis".to_string())
+        );
     }
 }

@@ -48,7 +48,9 @@ fn wg_ok(wg_dir: &Path, args: &[&str]) -> String {
     assert!(
         output.status.success(),
         "wg {:?} failed.\nstdout: {}\nstderr: {}",
-        args, stdout, stderr
+        args,
+        stdout,
+        stderr
     );
     stdout
 }
@@ -57,9 +59,8 @@ fn wg_json(wg_dir: &Path, args: &[&str]) -> serde_json::Value {
     let mut full_args = vec!["--json"];
     full_args.extend_from_slice(args);
     let output = wg_ok(wg_dir, &full_args);
-    serde_json::from_str(&output).unwrap_or_else(|e| {
-        panic!("Failed to parse JSON.\nError: {}\nOutput: {}", e, output)
-    })
+    serde_json::from_str(&output)
+        .unwrap_or_else(|e| panic!("Failed to parse JSON.\nError: {}\nOutput: {}", e, output))
 }
 
 fn make_task(id: &str, title: &str, status: Status) -> Task {
@@ -136,31 +137,50 @@ fn test_trace_no_agent_runs_output_content() {
 
     // Record provenance entries
     workgraph::provenance::record(
-        &wg_dir, "add_task", Some("t1"), None,
+        &wg_dir,
+        "add_task",
+        Some("t1"),
+        None,
         serde_json::json!({"title": "Manual task"}),
         workgraph::provenance::DEFAULT_ROTATION_THRESHOLD,
-    ).unwrap();
+    )
+    .unwrap();
     workgraph::provenance::record(
-        &wg_dir, "claim", Some("t1"), Some("human"),
+        &wg_dir,
+        "claim",
+        Some("t1"),
+        Some("human"),
         serde_json::Value::Null,
         workgraph::provenance::DEFAULT_ROTATION_THRESHOLD,
-    ).unwrap();
+    )
+    .unwrap();
     workgraph::provenance::record(
-        &wg_dir, "done", Some("t1"), None,
+        &wg_dir,
+        "done",
+        Some("t1"),
+        None,
         serde_json::Value::Null,
         workgraph::provenance::DEFAULT_ROTATION_THRESHOLD,
-    ).unwrap();
+    )
+    .unwrap();
 
     // Human-readable output
     let output = wg_ok(&wg_dir, &["trace", "show", "t1"]);
-    assert!(output.contains("Agent runs: (none)"), "Should show no agent runs: {}", output);
+    assert!(
+        output.contains("Agent runs: (none)"),
+        "Should show no agent runs: {}",
+        output
+    );
 
     // JSON output
     let json = wg_json(&wg_dir, &["trace", "show", "t1"]);
     assert_eq!(json["agent_runs"].as_array().unwrap().len(), 0);
     assert_eq!(json["summary"]["agent_run_count"], 0);
-    assert!(json["operations"].as_array().unwrap().len() >= 3,
-        "Should have at least 3 operations: {:?}", json["operations"]);
+    assert!(
+        json["operations"].as_array().unwrap().len() >= 3,
+        "Should have at least 3 operations: {:?}",
+        json["operations"]
+    );
 }
 
 // 1.2 trace_multiple_agent_runs_retried_task
@@ -170,11 +190,27 @@ fn test_trace_multiple_agent_runs() {
     let t1 = make_task("t1", "Retried task", Status::Done);
     let wg_dir = setup_workgraph(&tmp, vec![t1]);
 
-    create_agent_archive(&wg_dir, "t1", "2026-02-18T10:00:00Z", "prompt 1", "output 1");
-    create_agent_archive(&wg_dir, "t1", "2026-02-18T11:00:00Z", "prompt 2", "output 2");
+    create_agent_archive(
+        &wg_dir,
+        "t1",
+        "2026-02-18T10:00:00Z",
+        "prompt 1",
+        "output 1",
+    );
+    create_agent_archive(
+        &wg_dir,
+        "t1",
+        "2026-02-18T11:00:00Z",
+        "prompt 2",
+        "output 2",
+    );
 
     let output = wg_ok(&wg_dir, &["trace", "show", "t1"]);
-    assert!(output.contains("Agent runs (2):"), "Should show 2 agent runs: {}", output);
+    assert!(
+        output.contains("Agent runs (2):"),
+        "Should show 2 agent runs: {}",
+        output
+    );
 
     let json = wg_json(&wg_dir, &["trace", "show", "t1"]);
     let runs = json["agent_runs"].as_array().unwrap();
@@ -198,10 +234,14 @@ fn test_trace_json_structure_validation() {
 
     // Record provenance
     workgraph::provenance::record(
-        &wg_dir, "add_task", Some("t1"), None,
+        &wg_dir,
+        "add_task",
+        Some("t1"),
+        None,
         serde_json::json!({"title": "Full task"}),
         workgraph::provenance::DEFAULT_ROTATION_THRESHOLD,
-    ).unwrap();
+    )
+    .unwrap();
 
     // Create agent archive with stream-json output
     let stream_output = r#"{"type":"assistant","message":"hello"}
@@ -210,7 +250,13 @@ fn test_trace_json_structure_validation() {
 {"type":"assistant","message":"done"}
 {"type":"result","cost":{"input":100,"output":50}}
 "#;
-    create_agent_archive(&wg_dir, "t1", "2026-02-18T10:30:00Z", "Test prompt", stream_output);
+    create_agent_archive(
+        &wg_dir,
+        "t1",
+        "2026-02-18T10:30:00Z",
+        "Test prompt",
+        stream_output,
+    );
 
     let json = wg_json(&wg_dir, &["trace", "show", "t1"]);
 
@@ -260,13 +306,35 @@ fn test_trace_full_output_contains_conversation() {
 
     let prompt_text = "This is a multi-line\nprompt for the agent\nwith details.";
     let output_text = "Agent output response\nwith multiple lines\nof content.";
-    create_agent_archive(&wg_dir, "t1", "2026-02-18T10:00:00Z", prompt_text, output_text);
+    create_agent_archive(
+        &wg_dir,
+        "t1",
+        "2026-02-18T10:00:00Z",
+        prompt_text,
+        output_text,
+    );
 
     let output = wg_ok(&wg_dir, &["trace", "show", "t1", "--full"]);
-    assert!(output.contains("[Prompt]"), "Should contain [Prompt] header: {}", output);
-    assert!(output.contains("[Output]"), "Should contain [Output] header: {}", output);
-    assert!(output.contains("multi-line"), "Should contain prompt content: {}", output);
-    assert!(output.contains("Agent output response"), "Should contain output content: {}", output);
+    assert!(
+        output.contains("[Prompt]"),
+        "Should contain [Prompt] header: {}",
+        output
+    );
+    assert!(
+        output.contains("[Output]"),
+        "Should contain [Output] header: {}",
+        output
+    );
+    assert!(
+        output.contains("multi-line"),
+        "Should contain prompt content: {}",
+        output
+    );
+    assert!(
+        output.contains("Agent output response"),
+        "Should contain output content: {}",
+        output
+    );
 }
 
 // 1.5 trace_ops_only_shows_only_provenance
@@ -278,25 +346,49 @@ fn test_trace_ops_only_excludes_agent_runs() {
 
     // Record provenance
     workgraph::provenance::record(
-        &wg_dir, "add_task", Some("t1"), None,
+        &wg_dir,
+        "add_task",
+        Some("t1"),
+        None,
         serde_json::json!({"title": "Ops only task"}),
         workgraph::provenance::DEFAULT_ROTATION_THRESHOLD,
-    ).unwrap();
+    )
+    .unwrap();
     workgraph::provenance::record(
-        &wg_dir, "done", Some("t1"), None,
+        &wg_dir,
+        "done",
+        Some("t1"),
+        None,
         serde_json::Value::Null,
         workgraph::provenance::DEFAULT_ROTATION_THRESHOLD,
-    ).unwrap();
+    )
+    .unwrap();
 
     // Create an agent archive (should be ignored by --ops-only)
     create_agent_archive(&wg_dir, "t1", "2026-02-18T10:00:00Z", "prompt", "output");
 
     let output = wg_ok(&wg_dir, &["trace", "show", "t1", "--ops-only"]);
-    assert!(output.contains("Operations for 't1'"), "Should show operations header: {}", output);
-    assert!(output.contains("add_task"), "Should show add_task op: {}", output);
+    assert!(
+        output.contains("Operations for 't1'"),
+        "Should show operations header: {}",
+        output
+    );
+    assert!(
+        output.contains("add_task"),
+        "Should show add_task op: {}",
+        output
+    );
     assert!(output.contains("done"), "Should show done op: {}", output);
-    assert!(!output.contains("Agent runs"), "Should NOT show agent runs section: {}", output);
-    assert!(!output.contains("Summary"), "Should NOT show summary: {}", output);
+    assert!(
+        !output.contains("Agent runs"),
+        "Should NOT show agent runs section: {}",
+        output
+    );
+    assert!(
+        !output.contains("Summary"),
+        "Should NOT show summary: {}",
+        output
+    );
 }
 
 // 1.7 trace_in_progress_task
@@ -310,16 +402,35 @@ fn test_trace_in_progress_task() {
     let wg_dir = setup_workgraph(&tmp, vec![t1]);
 
     // Create a partial agent archive
-    create_agent_archive(&wg_dir, "t1", "2026-02-18T10:00:00Z", "prompt", "partial output");
+    create_agent_archive(
+        &wg_dir,
+        "t1",
+        "2026-02-18T10:00:00Z",
+        "prompt",
+        "partial output",
+    );
 
     let output = wg_ok(&wg_dir, &["trace", "show", "t1"]);
-    assert!(output.contains("open"), "Should show status as open: {}", output);
+    assert!(
+        output.contains("open"),
+        "Should show status as open: {}",
+        output
+    );
 
     let json = wg_json(&wg_dir, &["trace", "show", "t1"]);
     assert_eq!(json["status"], "open");
-    assert!(json["summary"]["duration_secs"].is_null(), "duration_secs should be absent for in-progress");
-    assert!(json["summary"]["duration_human"].is_null(), "duration_human should be absent");
-    assert_eq!(json["summary"]["agent_run_count"], 1, "Should still list agent runs");
+    assert!(
+        json["summary"]["duration_secs"].is_null(),
+        "duration_secs should be absent for in-progress"
+    );
+    assert!(
+        json["summary"]["duration_human"].is_null(),
+        "duration_human should be absent"
+    );
+    assert_eq!(
+        json["summary"]["agent_run_count"], 1,
+        "Should still list agent runs"
+    );
 }
 
 // 1.9 trace_output_size_accuracy
@@ -331,7 +442,13 @@ fn test_trace_output_size_accuracy() {
 
     // Write exactly 10240 bytes of output
     let output_data = "x".repeat(10240);
-    create_agent_archive(&wg_dir, "t1", "2026-02-18T10:00:00Z", "prompt", &output_data);
+    create_agent_archive(
+        &wg_dir,
+        "t1",
+        "2026-02-18T10:00:00Z",
+        "prompt",
+        &output_data,
+    );
 
     let json = wg_json(&wg_dir, &["trace", "show", "t1"]);
     assert_eq!(json["summary"]["total_output_bytes"], 10240);
@@ -359,7 +476,13 @@ fn test_trace_turn_count_accuracy() {
 {"type":"assistant","message":"turn 3"}
 {"type":"result","cost":{"input":100,"output":50}}
 "#;
-    create_agent_archive(&wg_dir, "t1", "2026-02-18T10:00:00Z", "prompt", stream_output);
+    create_agent_archive(
+        &wg_dir,
+        "t1",
+        "2026-02-18T10:00:00Z",
+        "prompt",
+        stream_output,
+    );
 
     let json = wg_json(&wg_dir, &["trace", "show", "t1"]);
     let run = &json["agent_runs"][0];
@@ -381,11 +504,20 @@ fn test_trace_content_block_tool_use_counting() {
 {"content_block":{"type":"tool_use","name":"Write","id":"2"}}
 {"type":"result","cost":{"input":100,"output":50}}
 "#;
-    create_agent_archive(&wg_dir, "t1", "2026-02-18T10:00:00Z", "prompt", stream_output);
+    create_agent_archive(
+        &wg_dir,
+        "t1",
+        "2026-02-18T10:00:00Z",
+        "prompt",
+        stream_output,
+    );
 
     let json = wg_json(&wg_dir, &["trace", "show", "t1"]);
     let run = &json["agent_runs"][0];
-    assert_eq!(run["tool_calls"], 2, "Should count both top-level and content_block tool_use");
+    assert_eq!(
+        run["tool_calls"], 2,
+        "Should count both top-level and content_block tool_use"
+    );
 }
 
 // ===========================================================================
@@ -405,9 +537,21 @@ fn test_replay_failed_only_with_abandoned() {
     wg_ok(&wg_dir, &["replay", "--failed-only"]);
 
     let graph = load_wg_graph(&wg_dir);
-    assert_eq!(graph.get_task("t1").unwrap().status, Status::Open, "Failed should be reset");
-    assert_eq!(graph.get_task("t2").unwrap().status, Status::Open, "Abandoned should be reset");
-    assert_eq!(graph.get_task("t3").unwrap().status, Status::Done, "Done should be preserved");
+    assert_eq!(
+        graph.get_task("t1").unwrap().status,
+        Status::Open,
+        "Failed should be reset"
+    );
+    assert_eq!(
+        graph.get_task("t2").unwrap().status,
+        Status::Open,
+        "Abandoned should be reset"
+    );
+    assert_eq!(
+        graph.get_task("t3").unwrap().status,
+        Status::Done,
+        "Done should be preserved"
+    );
 }
 
 // 2.3 replay_below_score_various_thresholds
@@ -427,10 +571,26 @@ fn test_replay_below_score_threshold_0_5() {
     wg_ok(&wg_dir, &["replay", "--below-score", "0.5"]);
 
     let graph = load_wg_graph(&wg_dir);
-    assert_eq!(graph.get_task("high").unwrap().status, Status::Done, "0.95 >= 0.5, preserved");
-    assert_eq!(graph.get_task("med").unwrap().status, Status::Done, "0.6 >= 0.5, preserved");
-    assert_eq!(graph.get_task("low").unwrap().status, Status::Open, "0.2 < 0.5, reset");
-    assert_eq!(graph.get_task("no-score").unwrap().status, Status::Open, "no score, reset");
+    assert_eq!(
+        graph.get_task("high").unwrap().status,
+        Status::Done,
+        "0.95 >= 0.5, preserved"
+    );
+    assert_eq!(
+        graph.get_task("med").unwrap().status,
+        Status::Done,
+        "0.6 >= 0.5, preserved"
+    );
+    assert_eq!(
+        graph.get_task("low").unwrap().status,
+        Status::Open,
+        "0.2 < 0.5, reset"
+    );
+    assert_eq!(
+        graph.get_task("no-score").unwrap().status,
+        Status::Open,
+        "no score, reset"
+    );
 }
 
 #[test]
@@ -445,11 +605,22 @@ fn test_replay_below_score_threshold_1_0() {
 
     // Need --keep-done 1.0 to override the default keep_done_threshold (0.9)
     // which would otherwise preserve the high-scored task
-    wg_ok(&wg_dir, &["replay", "--below-score", "1.0", "--keep-done", "1.0"]);
+    wg_ok(
+        &wg_dir,
+        &["replay", "--below-score", "1.0", "--keep-done", "1.0"],
+    );
 
     let graph = load_wg_graph(&wg_dir);
-    assert_eq!(graph.get_task("high").unwrap().status, Status::Open, "0.95 < 1.0, reset");
-    assert_eq!(graph.get_task("low").unwrap().status, Status::Open, "0.2 < 1.0, reset");
+    assert_eq!(
+        graph.get_task("high").unwrap().status,
+        Status::Open,
+        "0.95 < 1.0, reset"
+    );
+    assert_eq!(
+        graph.get_task("low").unwrap().status,
+        Status::Open,
+        "0.2 < 1.0, reset"
+    );
 }
 
 // 2.5 replay_tasks_multiple_explicit
@@ -464,9 +635,21 @@ fn test_replay_tasks_multiple_explicit() {
     wg_ok(&wg_dir, &["replay", "--tasks", "t1,t3"]);
 
     let graph = load_wg_graph(&wg_dir);
-    assert_eq!(graph.get_task("t1").unwrap().status, Status::Open, "t1 explicitly listed, reset");
-    assert_eq!(graph.get_task("t2").unwrap().status, Status::Done, "t2 not listed, preserved");
-    assert_eq!(graph.get_task("t3").unwrap().status, Status::Open, "t3 explicitly listed, reset");
+    assert_eq!(
+        graph.get_task("t1").unwrap().status,
+        Status::Open,
+        "t1 explicitly listed, reset"
+    );
+    assert_eq!(
+        graph.get_task("t2").unwrap().status,
+        Status::Done,
+        "t2 not listed, preserved"
+    );
+    assert_eq!(
+        graph.get_task("t3").unwrap().status,
+        Status::Open,
+        "t3 explicitly listed, reset"
+    );
 }
 
 // 2.6 replay_keep_done_preserves_high_scoring
@@ -487,8 +670,16 @@ fn test_replay_keep_done_preserves_high_scoring() {
     wg_ok(&wg_dir, &["replay", "--failed-only", "--keep-done", "0.9"]);
 
     let graph = load_wg_graph(&wg_dir);
-    assert_eq!(graph.get_task("parent").unwrap().status, Status::Open, "parent reset (failed)");
-    assert_eq!(graph.get_task("child").unwrap().status, Status::Done, "child preserved by keep-done");
+    assert_eq!(
+        graph.get_task("parent").unwrap().status,
+        Status::Open,
+        "parent reset (failed)"
+    );
+    assert_eq!(
+        graph.get_task("child").unwrap().status,
+        Status::Done,
+        "child preserved by keep-done"
+    );
 }
 
 // 2.12 replay_preserves_structure_clears_execution — field clearing
@@ -530,10 +721,16 @@ fn test_replay_field_clearing_and_preservation() {
     assert_eq!(task.status, Status::Open);
     assert!(task.assigned.is_none(), "assigned should be cleared");
     assert!(task.started_at.is_none(), "started_at should be cleared");
-    assert!(task.completed_at.is_none(), "completed_at should be cleared");
+    assert!(
+        task.completed_at.is_none(),
+        "completed_at should be cleared"
+    );
     assert!(task.artifacts.is_empty(), "artifacts should be cleared");
     assert_eq!(task.loop_iteration, 0, "loop_iteration should be 0");
-    assert!(task.failure_reason.is_none(), "failure_reason should be cleared");
+    assert!(
+        task.failure_reason.is_none(),
+        "failure_reason should be cleared"
+    );
     assert!(!task.paused, "paused should be false");
 
     // Preserved fields
@@ -566,7 +763,10 @@ fn test_replay_empty_graph() {
             .unwrap()
             .filter_map(|e| e.ok())
             .collect();
-        assert!(entries.is_empty(), "no run snapshots should exist for empty graph");
+        assert!(
+            entries.is_empty(),
+            "no run snapshots should exist for empty graph"
+        );
     }
 }
 
@@ -577,7 +777,10 @@ fn test_replay_subgraph_nonexistent_root() {
     let t1 = make_task("t1", "Task", Status::Failed);
     let wg_dir = setup_workgraph(&tmp, vec![t1]);
 
-    let output = wg_cmd(&wg_dir, &["replay", "--failed-only", "--subgraph", "nonexistent"]);
+    let output = wg_cmd(
+        &wg_dir,
+        &["replay", "--failed-only", "--subgraph", "nonexistent"],
+    );
     assert!(
         !output.status.success(),
         "Should fail for nonexistent subgraph root"
@@ -605,7 +808,11 @@ fn test_replay_below_score_non_terminal_ignored() {
 
     let graph = load_wg_graph(&wg_dir);
     // done_task is terminal with low score => reset
-    assert_eq!(graph.get_task("done-task").unwrap().status, Status::Open, "terminal low-score task reset");
+    assert_eq!(
+        graph.get_task("done-task").unwrap().status,
+        Status::Open,
+        "terminal low-score task reset"
+    );
     // open_task: the below_score path adds it if score < threshold regardless of terminal status.
     // Document actual behavior here.
     let open_status = graph.get_task("open-task").unwrap().status;
@@ -634,10 +841,26 @@ fn test_replay_transitive_dependents_deep_chain() {
     wg_ok(&wg_dir, &["replay", "--failed-only"]);
 
     let graph = load_wg_graph(&wg_dir);
-    assert_eq!(graph.get_task("a").unwrap().status, Status::Open, "a (failed seed) reset");
-    assert_eq!(graph.get_task("b").unwrap().status, Status::Open, "b (dependent of a) reset");
-    assert_eq!(graph.get_task("c").unwrap().status, Status::Open, "c (dependent of b) reset");
-    assert_eq!(graph.get_task("d").unwrap().status, Status::Open, "d (dependent of c) reset");
+    assert_eq!(
+        graph.get_task("a").unwrap().status,
+        Status::Open,
+        "a (failed seed) reset"
+    );
+    assert_eq!(
+        graph.get_task("b").unwrap().status,
+        Status::Open,
+        "b (dependent of a) reset"
+    );
+    assert_eq!(
+        graph.get_task("c").unwrap().status,
+        Status::Open,
+        "c (dependent of b) reset"
+    );
+    assert_eq!(
+        graph.get_task("d").unwrap().status,
+        Status::Open,
+        "d (dependent of c) reset"
+    );
 }
 
 // 2.23 replay_diamond_dependency
@@ -683,7 +906,11 @@ fn test_replay_keep_done_with_no_evaluations() {
     wg_ok(&wg_dir, &["replay", "--keep-done", "0.8"]);
 
     let graph = load_wg_graph(&wg_dir);
-    assert_eq!(graph.get_task("t1").unwrap().status, Status::Open, "no score, not kept by keep-done");
+    assert_eq!(
+        graph.get_task("t1").unwrap().status,
+        Status::Open,
+        "no score, not kept by keep-done"
+    );
 }
 
 // 2.25 replay_filter_description_in_metadata
@@ -698,13 +925,35 @@ fn test_replay_filter_description_in_metadata() {
     child.failure_reason = Some("err".to_string());
     let wg_dir = setup_workgraph(&tmp, vec![root, child]);
 
-    wg_ok(&wg_dir, &["replay", "--failed-only", "--model", "opus", "--subgraph", "root"]);
+    wg_ok(
+        &wg_dir,
+        &[
+            "replay",
+            "--failed-only",
+            "--model",
+            "opus",
+            "--subgraph",
+            "root",
+        ],
+    );
 
     let json = wg_json(&wg_dir, &["runs", "show", "run-001"]);
     let filter = json["filter"].as_str().unwrap();
-    assert!(filter.contains("--failed-only"), "Filter should contain --failed-only: {}", filter);
-    assert!(filter.contains("--model opus"), "Filter should contain --model opus: {}", filter);
-    assert!(filter.contains("--subgraph root"), "Filter should contain --subgraph root: {}", filter);
+    assert!(
+        filter.contains("--failed-only"),
+        "Filter should contain --failed-only: {}",
+        filter
+    );
+    assert!(
+        filter.contains("--model opus"),
+        "Filter should contain --model opus: {}",
+        filter
+    );
+    assert!(
+        filter.contains("--subgraph root"),
+        "Filter should contain --subgraph root: {}",
+        filter
+    );
 }
 
 // ===========================================================================
@@ -740,8 +989,11 @@ fn test_runs_restore_actual_task_status() {
 
     // Verify t1 is back to Failed
     let graph = load_wg_graph(&wg_dir);
-    assert_eq!(graph.get_task("t1").unwrap().status, Status::Failed,
-        "t1 should be restored to Failed from snapshot");
+    assert_eq!(
+        graph.get_task("t1").unwrap().status,
+        Status::Failed,
+        "t1 should be restored to Failed from snapshot"
+    );
 }
 
 // 3.8 runs_restore_provenance
@@ -760,12 +1012,17 @@ fn test_runs_restore_provenance() {
     // Check provenance
     let ops = workgraph::provenance::read_all_operations(&wg_dir).unwrap();
     let restore_ops: Vec<_> = ops.iter().filter(|o| o.op == "restore").collect();
-    assert!(!restore_ops.is_empty(), "Should have a restore provenance entry");
+    assert!(
+        !restore_ops.is_empty(),
+        "Should have a restore provenance entry"
+    );
 
     let restore_op = &restore_ops[0];
     assert_eq!(restore_op.detail["restored_from"], "run-001");
-    assert!(restore_op.detail["safety_snapshot"].as_str().is_some(),
-        "Should have safety_snapshot in detail");
+    assert!(
+        restore_op.detail["safety_snapshot"].as_str().is_some(),
+        "Should have safety_snapshot in detail"
+    );
 }
 
 // 3.9 runs_restore_nonexistent
@@ -814,7 +1071,10 @@ fn test_runs_diff_with_status_change_added_removed() {
     // JSON diff
     let json = wg_json(&wg_dir, &["runs", "diff", "run-001"]);
     let changes = json["changes"].as_array().unwrap();
-    assert!(json["total_changes"].as_u64().unwrap() >= 2, "Should have at least 2 changes");
+    assert!(
+        json["total_changes"].as_u64().unwrap() >= 2,
+        "Should have at least 2 changes"
+    );
 
     // Find specific changes
     let t1_change = changes.iter().find(|c| c["id"] == "t1");
@@ -847,7 +1107,11 @@ fn test_runs_diff_no_changes() {
     workgraph::runs::snapshot(&wg_dir, "run-001", &meta).unwrap();
 
     let output = wg_ok(&wg_dir, &["runs", "diff", "run-001"]);
-    assert!(output.contains("No differences"), "Should report no differences: {}", output);
+    assert!(
+        output.contains("No differences"),
+        "Should report no differences: {}",
+        output
+    );
 }
 
 // 3.12 runs_diff_json_output
@@ -964,7 +1228,10 @@ fn test_runs_restore_json_output() {
 
     let json = wg_json(&wg_dir, &["runs", "restore", "run-001"]);
     assert_eq!(json["restored_from"], "run-001");
-    assert!(json["safety_snapshot"].is_string(), "Should have safety_snapshot");
+    assert!(
+        json["safety_snapshot"].is_string(),
+        "Should have safety_snapshot"
+    );
     assert!(json["timestamp"].is_string(), "Should have timestamp");
 }
 
@@ -994,10 +1261,16 @@ fn test_full_replay_restore_round_trip() {
 
     // 4. Verify t2 is back to Failed
     let graph = load_wg_graph(&wg_dir);
-    assert_eq!(graph.get_task("t2").unwrap().status, Status::Failed,
-        "t2 should be restored to Failed");
-    assert_eq!(graph.get_task("t1").unwrap().status, Status::Done,
-        "t1 should still be Done");
+    assert_eq!(
+        graph.get_task("t2").unwrap().status,
+        Status::Failed,
+        "t2 should be restored to Failed"
+    );
+    assert_eq!(
+        graph.get_task("t1").unwrap().status,
+        Status::Done,
+        "t1 should still be Done"
+    );
 }
 
 // 4.2 replay_then_diff
@@ -1037,13 +1310,19 @@ fn test_trace_after_replay() {
 
     // Trace the reset task
     let output = wg_ok(&wg_dir, &["trace", "show", "t1"]);
-    assert!(output.contains("open"), "Should show task as open: {}", output);
+    assert!(
+        output.contains("open"),
+        "Should show task as open: {}",
+        output
+    );
 
     let json = wg_json(&wg_dir, &["trace", "show", "t1"]);
     assert_eq!(json["status"], "open");
     // Agent archives from before replay should still be accessible
-    assert_eq!(json["summary"]["agent_run_count"], 1,
-        "Agent archives should survive replay");
+    assert_eq!(
+        json["summary"]["agent_run_count"], 1,
+        "Agent archives should survive replay"
+    );
 }
 
 // ===========================================================================
@@ -1058,7 +1337,13 @@ fn test_trace_result_only_stream_json() {
     let wg_dir = setup_workgraph(&tmp, vec![t1]);
 
     let stream_output = r#"{"type":"result","cost":{"input":100,"output":50}}"#;
-    create_agent_archive(&wg_dir, "t1", "2026-02-18T10:00:00Z", "prompt", stream_output);
+    create_agent_archive(
+        &wg_dir,
+        "t1",
+        "2026-02-18T10:00:00Z",
+        "prompt",
+        stream_output,
+    );
 
     let json = wg_json(&wg_dir, &["trace", "show", "t1"]);
     let run = &json["agent_runs"][0];
@@ -1081,8 +1366,11 @@ fn test_replay_multiple_evals_keeps_highest_score() {
     wg_ok(&wg_dir, &["replay", "--below-score", "0.5"]);
 
     let graph = load_wg_graph(&wg_dir);
-    assert_eq!(graph.get_task("t1").unwrap().status, Status::Done,
-        "Should use highest score (0.8 >= 0.5), task preserved");
+    assert_eq!(
+        graph.get_task("t1").unwrap().status,
+        Status::Done,
+        "Should use highest score (0.8 >= 0.5), task preserved"
+    );
 }
 
 // 5.5 collect_subgraph_deep_tree (via --subgraph)
@@ -1117,8 +1405,11 @@ fn test_replay_subgraph_deep_tree() {
     assert_eq!(graph.get_task("a").unwrap().status, Status::Open);
     assert_eq!(graph.get_task("b").unwrap().status, Status::Open);
     assert_eq!(graph.get_task("c").unwrap().status, Status::Open);
-    assert_eq!(graph.get_task("outside").unwrap().status, Status::Failed,
-        "outside should NOT be reset (not in subgraph)");
+    assert_eq!(
+        graph.get_task("outside").unwrap().status,
+        Status::Failed,
+        "outside should NOT be reset (not in subgraph)"
+    );
 }
 
 // 5.6 collect_subgraph_with_cycles
@@ -1150,9 +1441,27 @@ fn test_trace_agent_runs_sort_order() {
     let wg_dir = setup_workgraph(&tmp, vec![t1]);
 
     // Create archives out of chronological filesystem order
-    create_agent_archive(&wg_dir, "t1", "2026-02-18T12:00:00Z", "prompt 3", "output 3");
-    create_agent_archive(&wg_dir, "t1", "2026-02-18T08:00:00Z", "prompt 1", "output 1");
-    create_agent_archive(&wg_dir, "t1", "2026-02-18T10:00:00Z", "prompt 2", "output 2");
+    create_agent_archive(
+        &wg_dir,
+        "t1",
+        "2026-02-18T12:00:00Z",
+        "prompt 3",
+        "output 3",
+    );
+    create_agent_archive(
+        &wg_dir,
+        "t1",
+        "2026-02-18T08:00:00Z",
+        "prompt 1",
+        "output 1",
+    );
+    create_agent_archive(
+        &wg_dir,
+        "t1",
+        "2026-02-18T10:00:00Z",
+        "prompt 2",
+        "output 2",
+    );
 
     let json = wg_json(&wg_dir, &["trace", "show", "t1"]);
     let runs = json["agent_runs"].as_array().unwrap();
@@ -1279,21 +1588,33 @@ fn test_trace_json_overrides_full_and_ops_only() {
 
     create_agent_archive(&wg_dir, "t1", "2026-02-18T10:00:00Z", "prompt", "output");
     workgraph::provenance::record(
-        &wg_dir, "add_task", Some("t1"), None,
+        &wg_dir,
+        "add_task",
+        Some("t1"),
+        None,
         serde_json::json!({"title": "Override test"}),
         workgraph::provenance::DEFAULT_ROTATION_THRESHOLD,
-    ).unwrap();
+    )
+    .unwrap();
 
     // --json with --full should produce JSON, not full text
     let json_full = wg_json(&wg_dir, &["trace", "show", "t1", "--full"]);
-    assert!(json_full["id"].is_string(), "--json should override --full: {:?}", json_full);
+    assert!(
+        json_full["id"].is_string(),
+        "--json should override --full: {:?}",
+        json_full
+    );
     assert_eq!(json_full["id"], "t1");
     assert!(json_full["agent_runs"].is_array());
     assert!(json_full["summary"].is_object());
 
     // --json with --ops-only should produce JSON, not ops-only text
     let json_ops = wg_json(&wg_dir, &["trace", "show", "t1", "--ops-only"]);
-    assert!(json_ops["id"].is_string(), "--json should override --ops-only: {:?}", json_ops);
+    assert!(
+        json_ops["id"].is_string(),
+        "--json should override --ops-only: {:?}",
+        json_ops
+    );
     assert_eq!(json_ops["id"], "t1");
     assert!(json_ops["agent_runs"].is_array());
     assert!(json_ops["operations"].is_array());
@@ -1318,12 +1639,19 @@ fn test_trace_agent_archive_missing_output() {
 
     // Should succeed without error
     let output = wg_ok(&wg_dir, &["trace", "show", "t1"]);
-    assert!(output.contains("Agent runs (1):"), "Should still list the agent run: {}", output);
+    assert!(
+        output.contains("Agent runs (1):"),
+        "Should still list the agent run: {}",
+        output
+    );
 
     let json = wg_json(&wg_dir, &["trace", "show", "t1"]);
     let run = &json["agent_runs"][0];
     assert!(run["prompt_bytes"].is_number(), "Should have prompt_bytes");
-    assert!(run["output_bytes"].is_null(), "output_bytes should be absent when output.txt missing");
+    assert!(
+        run["output_bytes"].is_null(),
+        "output_bytes should be absent when output.txt missing"
+    );
     // No tool_calls or turns since there's no output to parse
     assert!(run["tool_calls"].is_null(), "tool_calls should be absent");
     assert!(run["turns"].is_null(), "turns should be absent");
@@ -1342,14 +1670,24 @@ fn test_trace_agent_archive_empty_output() {
     let json = wg_json(&wg_dir, &["trace", "show", "t1"]);
     let run = &json["agent_runs"][0];
     assert_eq!(run["output_bytes"], 0, "empty output should have 0 bytes");
-    assert!(run["output_lines"].is_null() || run["output_lines"] == 0,
-        "empty output should have 0 or null lines");
+    assert!(
+        run["output_lines"].is_null() || run["output_lines"] == 0,
+        "empty output should have 0 or null lines"
+    );
     // tool_calls and turns should be absent (0 values are skipped)
-    assert!(run["tool_calls"].is_null(), "tool_calls should be absent for empty output");
-    assert!(run["turns"].is_null(), "turns should be absent for empty output");
+    assert!(
+        run["tool_calls"].is_null(),
+        "tool_calls should be absent for empty output"
+    );
+    assert!(
+        run["turns"].is_null(),
+        "turns should be absent for empty output"
+    );
     // Summary total_output_bytes should be absent (sum is 0)
-    assert!(json["summary"]["total_output_bytes"].is_null(),
-        "total_output_bytes should be absent when sum is 0");
+    assert!(
+        json["summary"]["total_output_bytes"].is_null(),
+        "total_output_bytes should be absent when sum is 0"
+    );
 }
 
 // 1.16 trace_operation_detail_truncation
@@ -1363,30 +1701,52 @@ fn test_trace_operation_detail_truncation() {
     let long_detail = "x".repeat(200);
 
     workgraph::provenance::record(
-        &wg_dir, "short_op", Some("t1"), None,
+        &wg_dir,
+        "short_op",
+        Some("t1"),
+        None,
         serde_json::json!(short_detail),
         workgraph::provenance::DEFAULT_ROTATION_THRESHOLD,
-    ).unwrap();
+    )
+    .unwrap();
     workgraph::provenance::record(
-        &wg_dir, "long_op", Some("t1"), None,
+        &wg_dir,
+        "long_op",
+        Some("t1"),
+        None,
         serde_json::json!(long_detail),
         workgraph::provenance::DEFAULT_ROTATION_THRESHOLD,
-    ).unwrap();
+    )
+    .unwrap();
 
     // Summary mode should truncate long details
     let output = wg_ok(&wg_dir, &["trace", "show", "t1"]);
-    assert!(output.contains(short_detail), "Short detail should appear in full: {}", output);
+    assert!(
+        output.contains(short_detail),
+        "Short detail should appear in full: {}",
+        output
+    );
     // Long detail should be truncated with "..."
-    assert!(output.contains("..."), "Long detail should be truncated with ...: {}", output);
+    assert!(
+        output.contains("..."),
+        "Long detail should be truncated with ...: {}",
+        output
+    );
     // The full 200-char string should NOT appear
-    assert!(!output.contains(&long_detail), "Full long detail should not appear in summary mode");
+    assert!(
+        !output.contains(&long_detail),
+        "Full long detail should not appear in summary mode"
+    );
 
     // JSON mode should have full details (not truncated)
     let json = wg_json(&wg_dir, &["trace", "show", "t1"]);
     let ops = json["operations"].as_array().unwrap();
     let long_op = ops.iter().find(|o| o["op"] == "long_op").unwrap();
-    assert_eq!(long_op["detail"].as_str().unwrap(), long_detail,
-        "JSON should have full untruncated detail");
+    assert_eq!(
+        long_op["detail"].as_str().unwrap(),
+        long_detail,
+        "JSON should have full untruncated detail"
+    );
 }
 
 // 1.20 trace_summary_mode_excludes_content
@@ -1398,23 +1758,44 @@ fn test_trace_summary_mode_excludes_content() {
 
     let unique_prompt = "UNIQUE_PROMPT_MARKER_12345";
     let unique_output = "UNIQUE_OUTPUT_MARKER_67890";
-    create_agent_archive(&wg_dir, "t1", "2026-02-18T10:00:00Z", unique_prompt, unique_output);
+    create_agent_archive(
+        &wg_dir,
+        "t1",
+        "2026-02-18T10:00:00Z",
+        unique_prompt,
+        unique_output,
+    );
 
     // Summary mode (default) should NOT show verbatim prompt/output content
     let summary = wg_ok(&wg_dir, &["trace", "show", "t1"]);
-    assert!(!summary.contains(unique_prompt),
-        "Summary should not contain verbatim prompt text: {}", summary);
-    assert!(!summary.contains(unique_output),
-        "Summary should not contain verbatim output text: {}", summary);
+    assert!(
+        !summary.contains(unique_prompt),
+        "Summary should not contain verbatim prompt text: {}",
+        summary
+    );
+    assert!(
+        !summary.contains(unique_output),
+        "Summary should not contain verbatim output text: {}",
+        summary
+    );
     // Should show size info instead
-    assert!(summary.contains("KB") || summary.contains("bytes"),
-        "Summary should show output size info: {}", summary);
+    assert!(
+        summary.contains("KB") || summary.contains("bytes"),
+        "Summary should show output size info: {}",
+        summary
+    );
 
     // JSON mode should include content
     let json = wg_json(&wg_dir, &["trace", "show", "t1"]);
     let run = &json["agent_runs"][0];
-    assert!(run["prompt"].is_string(), "JSON should include prompt content");
-    assert!(run["output"].is_string(), "JSON should include output content");
+    assert!(
+        run["prompt"].is_string(),
+        "JSON should include prompt content"
+    );
+    assert!(
+        run["output"].is_string(),
+        "JSON should include output content"
+    );
 }
 
 // --- REPLAY GAPS ---
@@ -1433,10 +1814,16 @@ fn test_replay_filter_priority_tasks_over_failed_only() {
     wg_ok(&wg_dir, &["replay", "--tasks", "t2", "--failed-only"]);
 
     let graph = load_wg_graph(&wg_dir);
-    assert_eq!(graph.get_task("t2").unwrap().status, Status::Open,
-        "t2 should be reset (explicitly listed)");
-    assert_eq!(graph.get_task("t1").unwrap().status, Status::Failed,
-        "t1 should NOT be reset (not in explicit list, even though failed)");
+    assert_eq!(
+        graph.get_task("t2").unwrap().status,
+        Status::Open,
+        "t2 should be reset (explicitly listed)"
+    );
+    assert_eq!(
+        graph.get_task("t1").unwrap().status,
+        Status::Failed,
+        "t1 should NOT be reset (not in explicit list, even though failed)"
+    );
 }
 
 #[test]
@@ -1450,13 +1837,22 @@ fn test_replay_filter_priority_failed_only_over_below_score() {
     write_evaluation(&wg_dir, "eval-t2", "t2", 0.1);
 
     // --failed-only --below-score 0.5: --failed-only takes priority
-    wg_ok(&wg_dir, &["replay", "--failed-only", "--below-score", "0.5"]);
+    wg_ok(
+        &wg_dir,
+        &["replay", "--failed-only", "--below-score", "0.5"],
+    );
 
     let graph = load_wg_graph(&wg_dir);
-    assert_eq!(graph.get_task("t1").unwrap().status, Status::Open,
-        "t1 should be reset (failed)");
-    assert_eq!(graph.get_task("t2").unwrap().status, Status::Done,
-        "t2 should NOT be reset (--failed-only takes priority, t2 is Done not Failed)");
+    assert_eq!(
+        graph.get_task("t1").unwrap().status,
+        Status::Open,
+        "t1 should be reset (failed)"
+    );
+    assert_eq!(
+        graph.get_task("t2").unwrap().status,
+        Status::Done,
+        "t2 should NOT be reset (--failed-only takes priority, t2 is Done not Failed)"
+    );
 }
 
 // 2.27 replay_below_score_exact_boundary
@@ -1472,8 +1868,11 @@ fn test_replay_below_score_exact_boundary() {
     wg_ok(&wg_dir, &["replay", "--below-score", "0.7"]);
 
     let graph = load_wg_graph(&wg_dir);
-    assert_eq!(graph.get_task("boundary").unwrap().status, Status::Done,
-        "Task with score exactly at threshold should be preserved (0.7 is NOT < 0.7)");
+    assert_eq!(
+        graph.get_task("boundary").unwrap().status,
+        Status::Done,
+        "Task with score exactly at threshold should be preserved (0.7 is NOT < 0.7)"
+    );
 }
 
 // 2.28 replay_tasks_with_nonexistent_id
@@ -1487,18 +1886,23 @@ fn test_replay_tasks_nonexistent_id() {
     let output = wg_ok(&wg_dir, &["replay", "--tasks", "nonexistent"]);
     assert!(
         output.contains("No tasks match") || output.contains("Nothing to replay"),
-        "Should report no matching tasks: {}", output
+        "Should report no matching tasks: {}",
+        output
     );
 
     // Graph unchanged
     let graph = load_wg_graph(&wg_dir);
-    assert_eq!(graph.get_task("t1").unwrap().status, Status::Done,
-        "t1 should be unchanged");
+    assert_eq!(
+        graph.get_task("t1").unwrap().status,
+        Status::Done,
+        "t1 should be unchanged"
+    );
 
     // No snapshot created
     let runs_dir = wg_dir.join("runs");
     if runs_dir.exists() {
-        let entries: Vec<_> = fs::read_dir(&runs_dir).unwrap()
+        let entries: Vec<_> = fs::read_dir(&runs_dir)
+            .unwrap()
             .filter_map(|e| e.ok())
             .collect();
         assert!(entries.is_empty(), "No snapshot should be created");
@@ -1516,13 +1920,22 @@ fn test_replay_subgraph_single_node() {
     other.failure_reason = Some("err".to_string());
     let wg_dir = setup_workgraph(&tmp, vec![standalone, other]);
 
-    wg_ok(&wg_dir, &["replay", "--failed-only", "--subgraph", "standalone"]);
+    wg_ok(
+        &wg_dir,
+        &["replay", "--failed-only", "--subgraph", "standalone"],
+    );
 
     let graph = load_wg_graph(&wg_dir);
-    assert_eq!(graph.get_task("standalone").unwrap().status, Status::Open,
-        "standalone should be reset (in subgraph + failed)");
-    assert_eq!(graph.get_task("other").unwrap().status, Status::Failed,
-        "other should NOT be reset (outside single-node subgraph)");
+    assert_eq!(
+        graph.get_task("standalone").unwrap().status,
+        Status::Open,
+        "standalone should be reset (in subgraph + failed)"
+    );
+    assert_eq!(
+        graph.get_task("other").unwrap().status,
+        Status::Failed,
+        "other should NOT be reset (outside single-node subgraph)"
+    );
 }
 
 // 2.30 replay_model_override_not_applied_to_preserved
@@ -1535,13 +1948,21 @@ fn test_replay_model_override_not_applied_to_preserved() {
     let wg_dir = setup_workgraph(&tmp, vec![t1, t2]);
 
     // --failed-only --model new-model: only reset tasks get the model
-    wg_ok(&wg_dir, &["replay", "--failed-only", "--model", "new-model"]);
+    wg_ok(
+        &wg_dir,
+        &["replay", "--failed-only", "--model", "new-model"],
+    );
 
     let graph = load_wg_graph(&wg_dir);
-    assert_eq!(graph.get_task("t1").unwrap().model, Some("new-model".to_string()),
-        "t1 (reset) should have model override");
-    assert!(graph.get_task("t2").unwrap().model.is_none(),
-        "t2 (preserved) should NOT have model override");
+    assert_eq!(
+        graph.get_task("t1").unwrap().model,
+        Some("new-model".to_string()),
+        "t1 (reset) should have model override"
+    );
+    assert!(
+        graph.get_task("t2").unwrap().model.is_none(),
+        "t2 (preserved) should NOT have model override"
+    );
 }
 
 // 2.31 replay_below_score_zero_threshold
@@ -1558,10 +1979,16 @@ fn test_replay_below_score_zero_threshold() {
     wg_ok(&wg_dir, &["replay", "--below-score", "0.0"]);
 
     let graph = load_wg_graph(&wg_dir);
-    assert_eq!(graph.get_task("scored").unwrap().status, Status::Done,
-        "scored (0.1 NOT < 0.0) should be preserved");
-    assert_eq!(graph.get_task("unscored").unwrap().status, Status::Open,
-        "unscored (no eval + terminal) should be reset");
+    assert_eq!(
+        graph.get_task("scored").unwrap().status,
+        Status::Done,
+        "scored (0.1 NOT < 0.0) should be preserved"
+    );
+    assert_eq!(
+        graph.get_task("unscored").unwrap().status,
+        Status::Open,
+        "unscored (no eval + terminal) should be reset"
+    );
 }
 
 // --- CROSS-CUTTING GAPS ---
@@ -1576,28 +2003,51 @@ fn test_replay_preserves_agent_archives() {
 
     let archive_prompt = "Pre-replay prompt content";
     let archive_output = "Pre-replay output content";
-    create_agent_archive(&wg_dir, "t1", "2026-02-18T10:00:00Z", archive_prompt, archive_output);
+    create_agent_archive(
+        &wg_dir,
+        "t1",
+        "2026-02-18T10:00:00Z",
+        archive_prompt,
+        archive_output,
+    );
 
     // Verify archive exists before replay
-    let archive_dir = wg_dir.join("log").join("agents").join("t1").join("2026-02-18T10:00:00Z");
-    assert!(archive_dir.join("prompt.txt").exists(), "archive should exist before replay");
+    let archive_dir = wg_dir
+        .join("log")
+        .join("agents")
+        .join("t1")
+        .join("2026-02-18T10:00:00Z");
+    assert!(
+        archive_dir.join("prompt.txt").exists(),
+        "archive should exist before replay"
+    );
 
     // Replay resets t1
     wg_ok(&wg_dir, &["replay", "--failed-only"]);
 
     let graph = load_wg_graph(&wg_dir);
-    assert_eq!(graph.get_task("t1").unwrap().status, Status::Open, "t1 should be reset");
+    assert_eq!(
+        graph.get_task("t1").unwrap().status,
+        Status::Open,
+        "t1 should be reset"
+    );
 
     // Agent archives should still exist on disk
-    assert!(archive_dir.join("prompt.txt").exists(),
-        "prompt.txt should persist after replay");
-    assert!(archive_dir.join("output.txt").exists(),
-        "output.txt should persist after replay");
+    assert!(
+        archive_dir.join("prompt.txt").exists(),
+        "prompt.txt should persist after replay"
+    );
+    assert!(
+        archive_dir.join("output.txt").exists(),
+        "output.txt should persist after replay"
+    );
 
     // Verify wg trace still shows the archived agent runs
     let json = wg_json(&wg_dir, &["trace", "show", "t1"]);
-    assert_eq!(json["summary"]["agent_run_count"], 1,
-        "Agent archives should be accessible via trace after replay");
+    assert_eq!(
+        json["summary"]["agent_run_count"], 1,
+        "Agent archives should be accessible via trace after replay"
+    );
     let run = &json["agent_runs"][0];
     assert_eq!(run["timestamp"], "2026-02-18T10:00:00Z");
 }
@@ -1618,13 +2068,19 @@ fn test_restore_then_diff_shows_no_changes() {
 
     // Diff against run-001 should show no changes
     let output = wg_ok(&wg_dir, &["runs", "diff", "run-001"]);
-    assert!(output.contains("No differences"),
-        "After restoring from a snapshot, diffing same snapshot should show no changes: {}", output);
+    assert!(
+        output.contains("No differences"),
+        "After restoring from a snapshot, diffing same snapshot should show no changes: {}",
+        output
+    );
 
     // JSON diff should confirm
     let json = wg_json(&wg_dir, &["runs", "diff", "run-001"]);
-    assert_eq!(json["total_changes"], 0,
-        "total_changes should be 0 after restore then diff: {:?}", json);
+    assert_eq!(
+        json["total_changes"], 0,
+        "total_changes should be 0 after restore then diff: {:?}",
+        json
+    );
 }
 
 // --- HELPER GAPS ---
@@ -1644,17 +2100,42 @@ fn test_build_filter_desc_all_flags() {
     write_evaluation(&wg_dir, "eval-child", "child", 0.5);
 
     // Use multiple flags together
-    wg_ok(&wg_dir, &[
-        "replay", "--failed-only", "--model", "opus",
-        "--keep-done", "0.9", "--subgraph", "root",
-    ]);
+    wg_ok(
+        &wg_dir,
+        &[
+            "replay",
+            "--failed-only",
+            "--model",
+            "opus",
+            "--keep-done",
+            "0.9",
+            "--subgraph",
+            "root",
+        ],
+    );
 
     let json = wg_json(&wg_dir, &["runs", "show", "run-001"]);
     let filter = json["filter"].as_str().unwrap();
-    assert!(filter.contains("--failed-only"), "filter should contain --failed-only: {}", filter);
-    assert!(filter.contains("--model opus"), "filter should contain --model: {}", filter);
-    assert!(filter.contains("--keep-done"), "filter should contain --keep-done: {}", filter);
-    assert!(filter.contains("--subgraph root"), "filter should contain --subgraph: {}", filter);
+    assert!(
+        filter.contains("--failed-only"),
+        "filter should contain --failed-only: {}",
+        filter
+    );
+    assert!(
+        filter.contains("--model opus"),
+        "filter should contain --model: {}",
+        filter
+    );
+    assert!(
+        filter.contains("--keep-done"),
+        "filter should contain --keep-done: {}",
+        filter
+    );
+    assert!(
+        filter.contains("--subgraph root"),
+        "filter should contain --subgraph: {}",
+        filter
+    );
 }
 
 #[test]
@@ -1668,8 +2149,11 @@ fn test_build_filter_desc_default_all_tasks() {
 
     let json = wg_json(&wg_dir, &["runs", "show", "run-001"]);
     let filter = json["filter"].as_str().unwrap();
-    assert!(filter.contains("--keep-done"),
-        "filter should contain --keep-done: {}", filter);
+    assert!(
+        filter.contains("--keep-done"),
+        "filter should contain --keep-done: {}",
+        filter
+    );
 }
 
 #[test]
@@ -1679,12 +2163,23 @@ fn test_build_filter_desc_tasks_and_below_score() {
     let t2 = make_task("t2", "Task 2", Status::Done);
     let wg_dir = setup_workgraph(&tmp, vec![t1, t2]);
 
-    wg_ok(&wg_dir, &["replay", "--tasks", "t1,t2", "--below-score", "0.5"]);
+    wg_ok(
+        &wg_dir,
+        &["replay", "--tasks", "t1,t2", "--below-score", "0.5"],
+    );
 
     let json = wg_json(&wg_dir, &["runs", "show", "run-001"]);
     let filter = json["filter"].as_str().unwrap();
-    assert!(filter.contains("--tasks"), "filter should contain --tasks: {}", filter);
-    assert!(filter.contains("--below-score"), "filter should contain --below-score: {}", filter);
+    assert!(
+        filter.contains("--tasks"),
+        "filter should contain --tasks: {}",
+        filter
+    );
+    assert!(
+        filter.contains("--below-score"),
+        "filter should contain --below-score: {}",
+        filter
+    );
 }
 
 // ===========================================================================
@@ -1711,15 +2206,27 @@ fn test_replay_tasks_and_subgraph_combined() {
     // child is in subgraph AND in explicit list => reset
     // outside is NOT in subgraph => skipped even though listed
     // root is in subgraph but NOT in explicit list => preserved
-    wg_ok(&wg_dir, &["replay", "--tasks", "outside,child", "--subgraph", "root"]);
+    wg_ok(
+        &wg_dir,
+        &["replay", "--tasks", "outside,child", "--subgraph", "root"],
+    );
 
     let graph = load_wg_graph(&wg_dir);
-    assert_eq!(graph.get_task("child").unwrap().status, Status::Open,
-        "child should be reset (in subgraph + in explicit list)");
-    assert_eq!(graph.get_task("outside").unwrap().status, Status::Done,
-        "outside should be preserved (not in subgraph, even though in --tasks)");
-    assert_eq!(graph.get_task("root").unwrap().status, Status::Done,
-        "root should be preserved (in subgraph but not in explicit task list)");
+    assert_eq!(
+        graph.get_task("child").unwrap().status,
+        Status::Open,
+        "child should be reset (in subgraph + in explicit list)"
+    );
+    assert_eq!(
+        graph.get_task("outside").unwrap().status,
+        Status::Done,
+        "outside should be preserved (not in subgraph, even though in --tasks)"
+    );
+    assert_eq!(
+        graph.get_task("root").unwrap().status,
+        Status::Done,
+        "root should be preserved (in subgraph but not in explicit task list)"
+    );
 }
 
 // 2.34 replay_config_default_keep_done_threshold
@@ -1746,10 +2253,16 @@ fn test_replay_config_default_keep_done_threshold() {
     wg_ok(&wg_dir, &["replay", "--failed-only"]);
 
     let graph = load_wg_graph(&wg_dir);
-    assert_eq!(graph.get_task("parent").unwrap().status, Status::Open,
-        "parent should be reset (failed seed)");
-    assert_eq!(graph.get_task("child").unwrap().status, Status::Done,
-        "child should be preserved by config's default keep_done_threshold (0.95 >= 0.9)");
+    assert_eq!(
+        graph.get_task("parent").unwrap().status,
+        Status::Open,
+        "parent should be reset (failed seed)"
+    );
+    assert_eq!(
+        graph.get_task("child").unwrap().status,
+        Status::Done,
+        "child should be preserved by config's default keep_done_threshold (0.95 >= 0.9)"
+    );
 }
 
 // 2.35 replay_blocked_task_behavior
@@ -1768,12 +2281,21 @@ fn test_replay_blocked_task_behavior() {
     wg_ok(&wg_dir, &["replay", "--failed-only"]);
 
     let graph = load_wg_graph(&wg_dir);
-    assert_eq!(graph.get_task("t2").unwrap().status, Status::Open,
-        "t2 (Failed) should be reset by --failed-only");
-    assert_eq!(graph.get_task("t1").unwrap().status, Status::Blocked,
-        "t1 (Blocked) should NOT be reset by --failed-only");
-    assert_eq!(graph.get_task("t3").unwrap().status, Status::Done,
-        "t3 (Done) should NOT be reset by --failed-only");
+    assert_eq!(
+        graph.get_task("t2").unwrap().status,
+        Status::Open,
+        "t2 (Failed) should be reset by --failed-only"
+    );
+    assert_eq!(
+        graph.get_task("t1").unwrap().status,
+        Status::Blocked,
+        "t1 (Blocked) should NOT be reset by --failed-only"
+    );
+    assert_eq!(
+        graph.get_task("t3").unwrap().status,
+        Status::Done,
+        "t3 (Done) should NOT be reset by --failed-only"
+    );
 }
 
 #[test]
@@ -1789,12 +2311,21 @@ fn test_replay_blocked_task_not_terminal() {
     wg_ok(&wg_dir, &["replay", "--keep-done", "1.0"]);
 
     let graph = load_wg_graph(&wg_dir);
-    assert_eq!(graph.get_task("t2").unwrap().status, Status::Open,
-        "t2 (Failed, terminal) should be reset by default filter");
-    assert_eq!(graph.get_task("t3").unwrap().status, Status::Open,
-        "t3 (Done, terminal) should be reset by default filter");
-    assert_eq!(graph.get_task("t1").unwrap().status, Status::Blocked,
-        "t1 (Blocked, NOT terminal) should NOT be reset by default filter");
+    assert_eq!(
+        graph.get_task("t2").unwrap().status,
+        Status::Open,
+        "t2 (Failed, terminal) should be reset by default filter"
+    );
+    assert_eq!(
+        graph.get_task("t3").unwrap().status,
+        Status::Open,
+        "t3 (Done, terminal) should be reset by default filter"
+    );
+    assert_eq!(
+        graph.get_task("t1").unwrap().status,
+        Status::Blocked,
+        "t1 (Blocked, NOT terminal) should NOT be reset by default filter"
+    );
 }
 
 // 2.36 replay_inprogress_task_behavior
@@ -1813,10 +2344,16 @@ fn test_replay_inprogress_task_not_reset() {
     wg_ok(&wg_dir, &["replay", "--failed-only"]);
 
     let graph = load_wg_graph(&wg_dir);
-    assert_eq!(graph.get_task("t2").unwrap().status, Status::Open,
-        "t2 (Failed) should be reset");
-    assert_eq!(graph.get_task("t1").unwrap().status, Status::InProgress,
-        "t1 (InProgress) should NOT be reset by --failed-only");
+    assert_eq!(
+        graph.get_task("t2").unwrap().status,
+        Status::Open,
+        "t2 (Failed) should be reset"
+    );
+    assert_eq!(
+        graph.get_task("t1").unwrap().status,
+        Status::InProgress,
+        "t1 (InProgress) should NOT be reset by --failed-only"
+    );
 }
 
 #[test]
@@ -1832,10 +2369,16 @@ fn test_replay_inprogress_not_terminal() {
     wg_ok(&wg_dir, &["replay", "--keep-done", "1.0"]);
 
     let graph = load_wg_graph(&wg_dir);
-    assert_eq!(graph.get_task("t2").unwrap().status, Status::Open,
-        "t2 (Failed, terminal) should be reset");
-    assert_eq!(graph.get_task("t1").unwrap().status, Status::InProgress,
-        "t1 (InProgress, NOT terminal) should NOT be reset by default filter");
+    assert_eq!(
+        graph.get_task("t2").unwrap().status,
+        Status::Open,
+        "t2 (Failed, terminal) should be reset"
+    );
+    assert_eq!(
+        graph.get_task("t1").unwrap().status,
+        Status::InProgress,
+        "t1 (InProgress, NOT terminal) should NOT be reset by default filter"
+    );
 }
 
 // 2.37 replay_tasks_with_duplicates_in_list
@@ -1850,13 +2393,19 @@ fn test_replay_tasks_with_duplicates_in_list() {
     let json = wg_json(&wg_dir, &["replay", "--tasks", "t1,t1"]);
 
     let graph = load_wg_graph(&wg_dir);
-    assert_eq!(graph.get_task("t1").unwrap().status, Status::Open,
-        "t1 should be reset");
+    assert_eq!(
+        graph.get_task("t1").unwrap().status,
+        Status::Open,
+        "t1 should be reset"
+    );
 
     // t1 should appear only once in reset_tasks (not duplicated)
     let reset = json["reset_tasks"].as_array().unwrap();
     let t1_count = reset.iter().filter(|t| t.as_str() == Some("t1")).count();
-    assert_eq!(t1_count, 1, "t1 should appear exactly once in reset_tasks (no duplication)");
+    assert_eq!(
+        t1_count, 1,
+        "t1 should appear exactly once in reset_tasks (no duplication)"
+    );
 }
 
 // 2.38 replay_keep_done_only_applies_to_done
@@ -1879,10 +2428,16 @@ fn test_replay_keep_done_only_applies_to_done_status() {
     wg_ok(&wg_dir, &["replay", "--keep-done", "0.9"]);
 
     let graph = load_wg_graph(&wg_dir);
-    assert_eq!(graph.get_task("t1").unwrap().status, Status::Open,
-        "t1 (Failed) should be reset even with high score (keep-done only applies to Done)");
-    assert_eq!(graph.get_task("t2").unwrap().status, Status::Done,
-        "t2 (Done) should be preserved by keep-done (score 0.95 >= 0.9)");
+    assert_eq!(
+        graph.get_task("t1").unwrap().status,
+        Status::Open,
+        "t1 (Failed) should be reset even with high score (keep-done only applies to Done)"
+    );
+    assert_eq!(
+        graph.get_task("t2").unwrap().status,
+        Status::Done,
+        "t2 (Done) should be preserved by keep-done (score 0.95 >= 0.9)"
+    );
 }
 
 // --- CROSS-CUTTING GAPS ---
@@ -1898,10 +2453,14 @@ fn test_trace_after_restore() {
 
     // Record provenance and create agent archive
     workgraph::provenance::record(
-        &wg_dir, "add_task", Some("t1"), None,
+        &wg_dir,
+        "add_task",
+        Some("t1"),
+        None,
         serde_json::json!({"title": "Task"}),
         workgraph::provenance::DEFAULT_ROTATION_THRESHOLD,
-    ).unwrap();
+    )
+    .unwrap();
     create_agent_archive(&wg_dir, "t1", "2026-02-18T10:00:00Z", "prompt", "output");
 
     // Replay to create run-001, resetting t1 to Open
@@ -1914,17 +2473,20 @@ fn test_trace_after_restore() {
 
     // Trace should show restored state
     let json = wg_json(&wg_dir, &["trace", "show", "t1"]);
-    assert_eq!(json["status"], "failed", "Trace should show restored status (failed)");
+    assert_eq!(
+        json["status"], "failed",
+        "Trace should show restored status (failed)"
+    );
 
     // Agent archives should still be accessible
-    assert_eq!(json["summary"]["agent_run_count"], 1,
-        "Agent archives should survive restore");
+    assert_eq!(
+        json["summary"]["agent_run_count"], 1,
+        "Agent archives should survive restore"
+    );
 
     // Provenance should contain all operations (add_task, replay, restore)
     let ops = json["operations"].as_array().unwrap();
-    let op_types: Vec<&str> = ops.iter()
-        .filter_map(|o| o["op"].as_str())
-        .collect();
+    let op_types: Vec<&str> = ops.iter().filter_map(|o| o["op"].as_str()).collect();
     assert!(op_types.contains(&"add_task"), "Should have add_task op");
 }
 
@@ -1938,13 +2500,25 @@ fn test_multiple_replay_cycles_preserve_all_archives() {
     let wg_dir = setup_workgraph(&tmp, vec![t1]);
 
     // Create agent archive #1
-    create_agent_archive(&wg_dir, "t1", "2026-02-18T10:00:00Z", "prompt 1", "output 1");
+    create_agent_archive(
+        &wg_dir,
+        "t1",
+        "2026-02-18T10:00:00Z",
+        "prompt 1",
+        "output 1",
+    );
 
     // First replay (resets t1)
     wg_ok(&wg_dir, &["replay", "--failed-only"]);
 
     // Create agent archive #2 (simulating a new agent run after reset)
-    create_agent_archive(&wg_dir, "t1", "2026-02-18T11:00:00Z", "prompt 2", "output 2");
+    create_agent_archive(
+        &wg_dir,
+        "t1",
+        "2026-02-18T11:00:00Z",
+        "prompt 2",
+        "output 2",
+    );
 
     // Set t1 back to Failed and replay again
     {
@@ -1957,8 +2531,10 @@ fn test_multiple_replay_cycles_preserve_all_archives() {
 
     // Trace should show both agent archives
     let json = wg_json(&wg_dir, &["trace", "show", "t1"]);
-    assert_eq!(json["summary"]["agent_run_count"], 2,
-        "Both agent archives should be visible after multiple replays");
+    assert_eq!(
+        json["summary"]["agent_run_count"], 2,
+        "Both agent archives should be visible after multiple replays"
+    );
 
     let runs = json["agent_runs"].as_array().unwrap();
     assert_eq!(runs.len(), 2);
@@ -1985,12 +2561,24 @@ WARNING: something happened
 more random text
 {"type":"result","cost":{"input":100,"output":50}}
 "#;
-    create_agent_archive(&wg_dir, "t1", "2026-02-18T10:00:00Z", "prompt", mixed_output);
+    create_agent_archive(
+        &wg_dir,
+        "t1",
+        "2026-02-18T10:00:00Z",
+        "prompt",
+        mixed_output,
+    );
 
     let json = wg_json(&wg_dir, &["trace", "show", "t1"]);
     let run = &json["agent_runs"][0];
-    assert_eq!(run["tool_calls"], 1, "Should count 1 tool_use call (skip non-JSON lines)");
-    assert_eq!(run["turns"], 1, "Should count 1 assistant turn (skip non-JSON lines)");
+    assert_eq!(
+        run["tool_calls"], 1,
+        "Should count 1 tool_use call (skip non-JSON lines)"
+    );
+    assert_eq!(
+        run["turns"], 1,
+        "Should count 1 assistant turn (skip non-JSON lines)"
+    );
 }
 
 // 5.14 collect_subgraph_disconnected_blocks
@@ -2016,12 +2604,21 @@ fn test_replay_subgraph_follows_blocks_edges() {
     wg_ok(&wg_dir, &["replay", "--failed-only", "--subgraph", "root"]);
 
     let graph = load_wg_graph(&wg_dir);
-    assert_eq!(graph.get_task("root").unwrap().status, Status::Open,
-        "root should be reset (in subgraph)");
-    assert_eq!(graph.get_task("child").unwrap().status, Status::Open,
-        "child should be reset (reachable via root.before)");
-    assert_eq!(graph.get_task("leaf").unwrap().status, Status::Open,
-        "leaf should be reset (reachable via child.before)");
+    assert_eq!(
+        graph.get_task("root").unwrap().status,
+        Status::Open,
+        "root should be reset (in subgraph)"
+    );
+    assert_eq!(
+        graph.get_task("child").unwrap().status,
+        Status::Open,
+        "child should be reset (reachable via root.before)"
+    );
+    assert_eq!(
+        graph.get_task("leaf").unwrap().status,
+        Status::Open,
+        "leaf should be reset (reachable via child.before)"
+    );
 }
 
 // 2.7 replay_plan_only_no_side_effects (also in integration_trace_replay.rs)
@@ -2036,28 +2633,46 @@ fn test_replay_plan_only_no_side_effects() {
     let wg_dir = setup_workgraph(&tmp, vec![t1, t2]);
 
     let output = wg_ok(&wg_dir, &["replay", "--failed-only", "--plan-only"]);
-    assert!(output.contains("dry run"), "Should mention dry run: {}", output);
+    assert!(
+        output.contains("dry run"),
+        "Should mention dry run: {}",
+        output
+    );
 
     // Graph should be unchanged
     let graph = load_wg_graph(&wg_dir);
-    assert_eq!(graph.get_task("t1").unwrap().status, Status::Failed,
-        "t1 should still be Failed (plan-only, no changes)");
-    assert_eq!(graph.get_task("t2").unwrap().status, Status::Done,
-        "t2 should still be Done (plan-only, no changes)");
+    assert_eq!(
+        graph.get_task("t1").unwrap().status,
+        Status::Failed,
+        "t1 should still be Failed (plan-only, no changes)"
+    );
+    assert_eq!(
+        graph.get_task("t2").unwrap().status,
+        Status::Done,
+        "t2 should still be Done (plan-only, no changes)"
+    );
 
     // No runs/ directory should be created
     let runs_dir = wg_dir.join("runs");
     if runs_dir.exists() {
-        let entries: Vec<_> = fs::read_dir(&runs_dir).unwrap()
+        let entries: Vec<_> = fs::read_dir(&runs_dir)
+            .unwrap()
             .filter_map(|e| e.ok())
             .collect();
-        assert!(entries.is_empty(), "No snapshots should exist for plan-only: {:?}", entries);
+        assert!(
+            entries.is_empty(),
+            "No snapshots should exist for plan-only: {:?}",
+            entries
+        );
     }
 
     // No provenance entries for "replay"
     let ops = workgraph::provenance::read_all_operations(&wg_dir).unwrap();
     let replay_ops: Vec<_> = ops.iter().filter(|o| o.op == "replay").collect();
-    assert!(replay_ops.is_empty(), "No replay provenance should exist for plan-only");
+    assert!(
+        replay_ops.is_empty(),
+        "No replay provenance should exist for plan-only"
+    );
 }
 
 // 2.8 replay_plan_only_json_output
@@ -2074,8 +2689,11 @@ fn test_replay_plan_only_json_output() {
     assert_eq!(json["run_id"], "(dry run)", "run_id should be '(dry run)'");
     assert!(json["reset_tasks"].is_array());
     let reset = json["reset_tasks"].as_array().unwrap();
-    assert!(reset.iter().any(|t| t.as_str() == Some("t1")),
-        "t1 should be in reset_tasks: {:?}", reset);
+    assert!(
+        reset.iter().any(|t| t.as_str() == Some("t1")),
+        "t1 should be in reset_tasks: {:?}",
+        reset
+    );
 }
 
 // 2.11 replay_records_provenance
@@ -2091,18 +2709,29 @@ fn test_replay_records_provenance_entry() {
     // Check provenance for "replay" entry
     let ops = workgraph::provenance::read_all_operations(&wg_dir).unwrap();
     let replay_ops: Vec<_> = ops.iter().filter(|o| o.op == "replay").collect();
-    assert!(!replay_ops.is_empty(), "Should have a replay provenance entry");
+    assert!(
+        !replay_ops.is_empty(),
+        "Should have a replay provenance entry"
+    );
 
     let replay_op = &replay_ops[0];
     // task_id should be None (replay is a graph-level operation)
-    assert!(replay_op.task_id.is_none(),
-        "replay provenance task_id should be None");
-    assert!(replay_op.detail["run_id"].is_string(),
-        "replay provenance should have run_id");
-    assert!(replay_op.detail["reset_count"].is_number(),
-        "replay provenance should have reset_count");
-    assert!(replay_op.detail["reset_tasks"].is_array(),
-        "replay provenance should have reset_tasks");
+    assert!(
+        replay_op.task_id.is_none(),
+        "replay provenance task_id should be None"
+    );
+    assert!(
+        replay_op.detail["run_id"].is_string(),
+        "replay provenance should have run_id"
+    );
+    assert!(
+        replay_op.detail["reset_count"].is_number(),
+        "replay provenance should have reset_count"
+    );
+    assert!(
+        replay_op.detail["reset_tasks"].is_array(),
+        "replay provenance should have reset_tasks"
+    );
 }
 
 // 2.9 replay_model_override (verify model set on all reset tasks including dependents)
@@ -2119,16 +2748,35 @@ fn test_replay_model_override_on_all_reset_tasks() {
     leaf.after = vec!["mid".to_string()];
     let wg_dir = setup_workgraph(&tmp, vec![root, mid, leaf]);
 
-    wg_ok(&wg_dir, &["replay", "--failed-only", "--model", "different-model", "--keep-done", "1.0"]);
+    wg_ok(
+        &wg_dir,
+        &[
+            "replay",
+            "--failed-only",
+            "--model",
+            "different-model",
+            "--keep-done",
+            "1.0",
+        ],
+    );
 
     let graph = load_wg_graph(&wg_dir);
     // All three should be reset and have the model override
     assert_eq!(graph.get_task("root").unwrap().status, Status::Open);
-    assert_eq!(graph.get_task("root").unwrap().model, Some("different-model".to_string()));
+    assert_eq!(
+        graph.get_task("root").unwrap().model,
+        Some("different-model".to_string())
+    );
     assert_eq!(graph.get_task("mid").unwrap().status, Status::Open);
-    assert_eq!(graph.get_task("mid").unwrap().model, Some("different-model".to_string()));
+    assert_eq!(
+        graph.get_task("mid").unwrap().model,
+        Some("different-model".to_string())
+    );
     assert_eq!(graph.get_task("leaf").unwrap().status, Status::Open);
-    assert_eq!(graph.get_task("leaf").unwrap().model, Some("different-model".to_string()));
+    assert_eq!(
+        graph.get_task("leaf").unwrap().model,
+        Some("different-model".to_string())
+    );
 }
 
 // 2.20 replay_json_output_structure
@@ -2144,9 +2792,18 @@ fn test_replay_json_output_structure() {
 
     // Validate JSON structure
     assert!(json["run_id"].is_string(), "Should have run_id");
-    assert!(json["run_id"].as_str().unwrap().starts_with("run-"), "run_id should start with run-");
-    assert!(json["reset_tasks"].is_array(), "Should have reset_tasks array");
-    assert!(json["preserved_tasks"].is_array(), "Should have preserved_tasks array");
+    assert!(
+        json["run_id"].as_str().unwrap().starts_with("run-"),
+        "run_id should start with run-"
+    );
+    assert!(
+        json["reset_tasks"].is_array(),
+        "Should have reset_tasks array"
+    );
+    assert!(
+        json["preserved_tasks"].is_array(),
+        "Should have preserved_tasks array"
+    );
     assert_eq!(json["plan_only"], false, "plan_only should be false");
 
     let reset = json["reset_tasks"].as_array().unwrap();

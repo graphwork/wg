@@ -91,17 +91,13 @@ fn smoke_test_full_lifecycle() {
     // agency init should create roles/tradeoffs/agents
     let agency_dir = wg_dir.join("agency");
     assert!(
-        agency_dir.join("cache/roles").exists()
-            || agency_dir.join("cache").exists(),
+        agency_dir.join("cache/roles").exists() || agency_dir.join("cache").exists(),
         "agency roles cache should be created, got output: {}",
         output
     );
 
     // ── 3. wg add 'Test task' --context-scope task ──────────────────────
-    let output = wg_ok(
-        &wg_dir,
-        &["add", "Test task", "--context-scope", "task"],
-    );
+    let output = wg_ok(&wg_dir, &["add", "Test task", "--context-scope", "task"]);
     assert!(
         output.contains("test-task") || output.contains("Test task"),
         "add should echo the task, got: {}",
@@ -137,10 +133,7 @@ fn smoke_test_full_lifecycle() {
 
     // ── 6. wg status ────────────────────────────────────────────────────
     let output = wg_ok(&wg_dir, &["status"]);
-    assert!(
-        !output.is_empty(),
-        "status should produce output"
-    );
+    assert!(!output.is_empty(), "status should produce output");
 
     // ── 7. wg list ──────────────────────────────────────────────────────
     let output = wg_ok(&wg_dir, &["list"]);
@@ -204,11 +197,7 @@ fn smoke_test_full_lifecycle() {
 
     let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
     let task = graph.get_task("test-task").unwrap();
-    assert_eq!(
-        task.status,
-        Status::Done,
-        "done should set status to done"
-    );
+    assert_eq!(task.status, Status::Done, "done should set status to done");
     assert!(
         task.completed_at.is_some(),
         "done should set completed_at timestamp"
@@ -234,17 +223,16 @@ fn smoke_test_full_lifecycle() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(
-        output.status.success() || combined.contains("No evaluation") || combined.contains("no evaluation"),
+        output.status.success()
+            || combined.contains("No evaluation")
+            || combined.contains("no evaluation"),
         "evaluate show should either succeed or report no evaluations, got: {}",
         combined
     );
 
     // ── 15. wg analyze ──────────────────────────────────────────────────
     let output = wg_ok(&wg_dir, &["analyze"]);
-    assert!(
-        !output.is_empty(),
-        "analyze should produce a health report"
-    );
+    assert!(!output.is_empty(), "analyze should produce a health report");
 }
 
 /// Verify that a dependency chain (add with --after) works through the
@@ -291,7 +279,10 @@ fn smoke_test_dependency_chain() {
 
     // Check should pass
     let output = wg_cmd(&wg_dir, &["check"]);
-    assert!(output.status.success(), "check should pass on completed graph");
+    assert!(
+        output.status.success(),
+        "check should pass on completed graph"
+    );
 
     // Status should show both done
     let output = wg_ok(&wg_dir, &["status"]);

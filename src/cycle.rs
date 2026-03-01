@@ -170,11 +170,7 @@ pub fn tarjan_scc(num_nodes: usize, adj: &[Vec<NodeId>]) -> Vec<Scc> {
 /// # Complexity
 /// * Time: O(V + E)
 /// * Space: O(V)
-pub fn find_cycles(
-    num_nodes: usize,
-    adj: &[Vec<NodeId>],
-    include_self_loops: bool,
-) -> Vec<Scc> {
+pub fn find_cycles(num_nodes: usize, adj: &[Vec<NodeId>], include_self_loops: bool) -> Vec<Scc> {
     let sccs = tarjan_scc(num_nodes, adj);
     sccs.into_iter()
         .filter(|scc| {
@@ -358,10 +354,9 @@ pub fn build_loop_nesting_forest(
 
         while let Some(node) = queue.pop_front() {
             for &pred in &rev_adj[node] {
-                if dfs_num[pred] >= header_dfs && body.insert(pred)
-                    && pred != header {
-                        queue.push_back(pred);
-                    }
+                if dfs_num[pred] >= header_dfs && body.insert(pred) && pred != header {
+                    queue.push_back(pred);
+                }
             }
         }
 
@@ -639,7 +634,10 @@ impl IncrementalCycleDetector {
             }
         }
 
-        assert_eq!(count, num_nodes, "Graph contains cycles — cannot build IncrementalCycleDetector from cyclic graph");
+        assert_eq!(
+            count, num_nodes,
+            "Graph contains cycles — cannot build IncrementalCycleDetector from cyclic graph"
+        );
 
         Self {
             num_nodes,
@@ -946,10 +944,7 @@ pub fn extract_cycle_metadata(
 /// # Complexity
 /// * Time: O(V + E)
 /// * Space: O(V)
-pub fn analyze_graph_cycles(
-    num_nodes: usize,
-    adj: &[Vec<NodeId>],
-) -> Vec<CycleMetadata> {
+pub fn analyze_graph_cycles(num_nodes: usize, adj: &[Vec<NodeId>]) -> Vec<CycleMetadata> {
     let sccs = find_cycles(num_nodes, adj, false);
     extract_cycle_metadata(&sccs, num_nodes, adj)
 }
@@ -1120,12 +1115,12 @@ mod tests {
         // Cycle 2: 2 → 3 → 4 → 2
         // Node 5: no cycle
         let adj = vec![
-            vec![1],    // 0 → 1
-            vec![0],    // 1 → 0
-            vec![3],    // 2 → 3
-            vec![4],    // 3 → 4
-            vec![2],    // 4 → 2
-            vec![],     // 5 (isolated)
+            vec![1], // 0 → 1
+            vec![0], // 1 → 0
+            vec![3], // 2 → 3
+            vec![4], // 3 → 4
+            vec![2], // 4 → 2
+            vec![],  // 5 (isolated)
         ];
         let cycles = find_cycles(6, &adj, false);
         assert_eq!(cycles.len(), 2);
@@ -1141,10 +1136,10 @@ mod tests {
         // 1 → 3 → 1     (inner, shared node 1)
         // Nodes 0,1,2,3 all in one SCC because they're mutually reachable
         let adj = vec![
-            vec![1],       // 0 → 1
-            vec![2, 3],    // 1 → 2, 1 → 3
-            vec![0],       // 2 → 0
-            vec![1],       // 3 → 1
+            vec![1],    // 0 → 1
+            vec![2, 3], // 1 → 2, 1 → 3
+            vec![0],    // 2 → 0
+            vec![1],    // 3 → 1
         ];
         let sccs = find_cycles(4, &adj, false);
         // All 4 nodes form one SCC
@@ -1158,11 +1153,11 @@ mod tests {
         // Inner: 3 → 4 → 3 (completely separate)
         // Connection: 1 → 3 (one-way, so inner is separate SCC)
         let adj = vec![
-            vec![1],       // 0 → 1
-            vec![2, 3],    // 1 → 2, 1 → 3
-            vec![0],       // 2 → 0
-            vec![4],       // 3 → 4
-            vec![3],       // 4 → 3
+            vec![1],    // 0 → 1
+            vec![2, 3], // 1 → 2, 1 → 3
+            vec![0],    // 2 → 0
+            vec![4],    // 3 → 4
+            vec![3],    // 4 → 3
         ];
         let sccs = find_cycles(5, &adj, false);
         assert_eq!(sccs.len(), 2);
@@ -1248,11 +1243,11 @@ mod tests {
         // 0 → 1 → 2 → 3 → 1  (outer loop: 1→2→3→1)
         //          2 → 4 → 2  (inner loop: 2→4→2)
         let adj = vec![
-            vec![1],       // 0 → 1
-            vec![2],       // 1 → 2
-            vec![3, 4],    // 2 → 3, 2 → 4
-            vec![1],       // 3 → 1
-            vec![2],       // 4 → 2
+            vec![1],    // 0 → 1
+            vec![2],    // 1 → 2
+            vec![3, 4], // 2 → 3, 2 → 4
+            vec![1],    // 3 → 1
+            vec![2],    // 4 → 2
         ];
         let forest = build_loop_nesting_forest(5, &adj, 0);
         assert_eq!(forest.loops.len(), 2);
@@ -1432,10 +1427,10 @@ mod tests {
     fn test_metadata_simple_cycle_with_external_entry() {
         // 3 → 0 → 1 → 2 → 0 (cycle is 0,1,2 with external entry from 3)
         let adj = vec![
-            vec![1],    // 0 → 1
-            vec![2],    // 1 → 2
-            vec![0],    // 2 → 0
-            vec![0],    // 3 → 0 (external)
+            vec![1], // 0 → 1
+            vec![2], // 1 → 2
+            vec![0], // 2 → 0
+            vec![0], // 3 → 0 (external)
         ];
         let metadata = analyze_graph_cycles(4, &adj);
         assert_eq!(metadata.len(), 1);
@@ -1452,10 +1447,10 @@ mod tests {
         // 3 → 1 → 2 → 3 (no external entry — isolated cycle)
         // But nodes numbered 1,2,3 — smallest = 1
         let adj = vec![
-            vec![],     // 0 (isolated)
-            vec![2],    // 1 → 2
-            vec![3],    // 2 → 3
-            vec![1],    // 3 → 1
+            vec![],  // 0 (isolated)
+            vec![2], // 1 → 2
+            vec![3], // 2 → 3
+            vec![1], // 3 → 1
         ];
         let metadata = analyze_graph_cycles(4, &adj);
         assert_eq!(metadata.len(), 1);
@@ -1484,11 +1479,11 @@ mod tests {
         // Cycle 1: 0 → 1 → 0
         // Cycle 2: 2 → 3 → 4 → 2
         let adj = vec![
-            vec![1],    // 0 → 1
-            vec![0],    // 1 → 0
-            vec![3],    // 2 → 3
-            vec![4],    // 3 → 4
-            vec![2],    // 4 → 2
+            vec![1], // 0 → 1
+            vec![0], // 1 → 0
+            vec![3], // 2 → 3
+            vec![4], // 3 → 4
+            vec![2], // 4 → 2
         ];
         let metadata = analyze_graph_cycles(5, &adj);
         assert_eq!(metadata.len(), 2);
@@ -1633,11 +1628,11 @@ mod tests {
         // 0 → 3 (dead end)
         // 4 → 1 (joins into cycle)
         let adj = vec![
-            vec![1, 3],    // 0 → 1, 0 → 3
-            vec![2],       // 1 → 2
-            vec![0],       // 2 → 0
-            vec![],        // 3 (dead end)
-            vec![1],       // 4 → 1
+            vec![1, 3], // 0 → 1, 0 → 3
+            vec![2],    // 1 → 2
+            vec![0],    // 2 → 0
+            vec![],     // 3 (dead end)
+            vec![1],    // 4 → 1
         ];
         let cycles = find_cycles(5, &adj, false);
         assert_eq!(cycles.len(), 1);
@@ -1649,9 +1644,9 @@ mod tests {
         // 0 → 1 → 2 → 0 (back edge 2→0)
         // 1 → 0           (additional back edge 1→0)
         let adj = vec![
-            vec![1],       // 0 → 1
-            vec![2, 0],    // 1 → 2, 1 → 0
-            vec![0],       // 2 → 0
+            vec![1],    // 0 → 1
+            vec![2, 0], // 1 → 2, 1 → 0
+            vec![0],    // 2 → 0
         ];
         let cycles = find_cycles(3, &adj, false);
         assert_eq!(cycles.len(), 1);
@@ -1665,12 +1660,12 @@ mod tests {
     fn test_long_tail_then_cycle() {
         // 0 → 1 → 2 → 3 → 4 → 5 → 3 (cycle 3→4→5→3, tail 0→1→2)
         let adj = vec![
-            vec![1],    // 0 → 1
-            vec![2],    // 1 → 2
-            vec![3],    // 2 → 3
-            vec![4],    // 3 → 4
-            vec![5],    // 4 → 5
-            vec![3],    // 5 → 3
+            vec![1], // 0 → 1
+            vec![2], // 1 → 2
+            vec![3], // 2 → 3
+            vec![4], // 3 → 4
+            vec![5], // 4 → 5
+            vec![3], // 5 → 3
         ];
         let cycles = find_cycles(6, &adj, false);
         assert_eq!(cycles.len(), 1);
@@ -1685,11 +1680,11 @@ mod tests {
         // 0 → 3 → 4 → 0 (cycle B)
         // Node 0 is shared — both cycles merge into one SCC
         let adj = vec![
-            vec![1, 3],    // 0 → 1, 0 → 3
-            vec![2],       // 1 → 2
-            vec![0],       // 2 → 0
-            vec![4],       // 3 → 4
-            vec![0],       // 4 → 0
+            vec![1, 3], // 0 → 1, 0 → 3
+            vec![2],    // 1 → 2
+            vec![0],    // 2 → 0
+            vec![4],    // 3 → 4
+            vec![0],    // 4 → 0
         ];
         let cycles = find_cycles(5, &adj, false);
         // All 5 nodes form one SCC since 0 connects both cycles
@@ -1711,13 +1706,13 @@ mod tests {
         //   Level 1: 2 → 4 → 5 → 2      (middle loop: header=2)
         //     Level 2: 4 → 6 → 4          (inner loop: header=4)
         let adj = vec![
-            vec![1],           // 0 → 1
-            vec![2],           // 1 → 2
-            vec![3, 4],        // 2 → 3, 2 → 4
-            vec![1],           // 3 → 1
-            vec![5, 6],        // 4 → 5, 4 → 6
-            vec![2],           // 5 → 2
-            vec![4],           // 6 → 4
+            vec![1],    // 0 → 1
+            vec![2],    // 1 → 2
+            vec![3, 4], // 2 → 3, 2 → 4
+            vec![1],    // 3 → 1
+            vec![5, 6], // 4 → 5, 4 → 6
+            vec![2],    // 5 → 2
+            vec![4],    // 6 → 4
         ];
         let forest = build_loop_nesting_forest(7, &adj, 0);
         assert_eq!(forest.loops.len(), 3);
@@ -1744,11 +1739,11 @@ mod tests {
         // nesting depth should be 0 since SCC-level nesting doesn't happen
         // in a single SCC. True nesting requires separate SCCs.
         let adj = vec![
-            vec![1],    // 0 → 1
-            vec![2],    // 1 → 2
-            vec![0],    // 2 → 0 (cycle: 0,1,2)
-            vec![4],    // 3 → 4
-            vec![3],    // 4 → 3 (cycle: 3,4)
+            vec![1], // 0 → 1
+            vec![2], // 1 → 2
+            vec![0], // 2 → 0 (cycle: 0,1,2)
+            vec![4], // 3 → 4
+            vec![3], // 4 → 3 (cycle: 3,4)
         ];
         let metadata = analyze_graph_cycles(5, &adj);
         assert_eq!(metadata.len(), 2);

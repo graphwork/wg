@@ -366,10 +366,7 @@ fn test_agent_create_list_show_rm() {
     let json_output = wg_ok(&wg_dir, &["--json", "agent", "list"]);
     let parsed: serde_json::Value = serde_json::from_str(&json_output).unwrap();
     let agents = parsed.as_array().unwrap();
-    assert!(
-        agents.len() >= 1,
-        "Expected at least 1 agent in list"
-    );
+    assert!(agents.len() >= 1, "Expected at least 1 agent in list");
     let our_agent = agents
         .iter()
         .find(|a| a["name"] == "Integration Test Agent")
@@ -404,10 +401,7 @@ fn test_agent_create_list_show_rm() {
         .unwrap()
         .iter()
         .any(|a| a["name"] == "Integration Test Agent");
-    assert!(
-        !found,
-        "Removed agent should not appear in list"
-    );
+    assert!(!found, "Removed agent should not appear in list");
 }
 
 #[test]
@@ -498,7 +492,9 @@ fn test_agent_rm_not_found() {
 
     let output = wg_fail(&wg_dir, &["agent", "rm", "nonexistent"]);
     assert!(
-        output.contains("Failed to find agent") || output.contains("not found") || output.contains("No agent matching"),
+        output.contains("Failed to find agent")
+            || output.contains("not found")
+            || output.contains("No agent matching"),
         "Expected not-found error, got: {}",
         output
     );
@@ -851,10 +847,7 @@ lineage:
 
     wg_ok(&wg_dir, &["agency", "init"]);
 
-    let output = wg_ok(
-        &wg_dir,
-        &["agency", "pull", source_dir.to_str().unwrap()],
-    );
+    let output = wg_ok(&wg_dir, &["agency", "pull", source_dir.to_str().unwrap()]);
     assert!(
         output.contains("Pulled") || output.contains("pull"),
         "Expected pull output, got: {}",
@@ -862,9 +855,7 @@ lineage:
     );
 
     // Verify role was pulled
-    assert!(wg_dir
-        .join("agency/cache/roles/pull-role.yaml")
-        .exists());
+    assert!(wg_dir.join("agency/cache/roles/pull-role.yaml").exists());
 }
 
 #[test]
@@ -897,12 +888,7 @@ lineage:
 
     let output = wg_ok(
         &wg_dir,
-        &[
-            "agency",
-            "pull",
-            "--dry-run",
-            source_dir.to_str().unwrap(),
-        ],
+        &["agency", "pull", "--dry-run", source_dir.to_str().unwrap()],
     );
     assert!(
         output.contains("Would pull"),
@@ -911,9 +897,11 @@ lineage:
     );
 
     // Verify nothing was written
-    assert!(!wg_dir
-        .join("agency/cache/roles/dry-pull-role.yaml")
-        .exists());
+    assert!(
+        !wg_dir
+            .join("agency/cache/roles/dry-pull-role.yaml")
+            .exists()
+    );
 }
 
 #[test]
@@ -947,10 +935,7 @@ lineage:
     let target_dir = tmp.path().join("target");
     fs::create_dir_all(&target_dir).unwrap();
 
-    let output = wg_ok(
-        &wg_dir,
-        &["agency", "push", target_dir.to_str().unwrap()],
-    );
+    let output = wg_ok(&wg_dir, &["agency", "push", target_dir.to_str().unwrap()]);
     assert!(
         output.contains("Pushed") || output.contains("push"),
         "Expected push output, got: {}",
@@ -959,7 +944,9 @@ lineage:
 
     // Verify role was pushed (stored under target/agency/)
     assert!(
-        target_dir.join("agency/cache/roles/push-role.yaml").exists(),
+        target_dir
+            .join("agency/cache/roles/push-role.yaml")
+            .exists(),
         "Expected pushed role at target"
     );
 }
@@ -994,12 +981,7 @@ lineage:
 
     let output = wg_ok(
         &wg_dir,
-        &[
-            "agency",
-            "push",
-            "--dry-run",
-            target_dir.to_str().unwrap(),
-        ],
+        &["agency", "push", "--dry-run", target_dir.to_str().unwrap()],
     );
     assert!(
         output.contains("Dry run") || output.contains("dry_run") || output.contains("would push"),
@@ -1008,9 +990,7 @@ lineage:
     );
 
     // Verify nothing was written
-    assert!(!target_dir
-        .join("cache/roles/dry-push-role.yaml")
-        .exists());
+    assert!(!target_dir.join("cache/roles/dry-push-role.yaml").exists());
 }
 
 #[test]
@@ -1022,10 +1002,7 @@ fn test_agency_push_no_local_store_errors() {
     let target_dir = tmp.path().join("target");
     fs::create_dir_all(&target_dir).unwrap();
 
-    let output = wg_fail(
-        &wg_dir,
-        &["agency", "push", target_dir.to_str().unwrap()],
-    );
+    let output = wg_fail(&wg_dir, &["agency", "push", target_dir.to_str().unwrap()]);
     assert!(
         output.contains("No local agency store") || output.contains("agency init"),
         "Expected no-store error, got: {}",
@@ -1073,10 +1050,7 @@ lineage:
     let shared = tmp.path().join("shared");
     fs::create_dir_all(&shared).unwrap();
 
-    wg_ok(
-        &proj_a_dir,
-        &["agency", "push", shared.to_str().unwrap()],
-    );
+    wg_ok(&proj_a_dir, &["agency", "push", shared.to_str().unwrap()]);
 
     // Pull from shared store into B
     let shared_agency = shared.join("agency");
@@ -1086,9 +1060,11 @@ lineage:
     );
 
     // Verify B now has the shared role
-    assert!(proj_b_dir
-        .join("agency/cache/roles/shared-role.yaml")
-        .exists());
+    assert!(
+        proj_b_dir
+            .join("agency/cache/roles/shared-role.yaml")
+            .exists()
+    );
 }
 
 // ===========================================================================
@@ -1098,10 +1074,7 @@ lineage:
 #[test]
 fn test_resources_no_resources() {
     let tmp = TempDir::new().unwrap();
-    let wg_dir = setup_workgraph_with_tasks(
-        &tmp,
-        vec![make_task("t1", "Some task", Status::Open)],
-    );
+    let wg_dir = setup_workgraph_with_tasks(&tmp, vec![make_task("t1", "Some task", Status::Open)]);
 
     let output = wg_ok(&wg_dir, &["resources"]);
     assert!(

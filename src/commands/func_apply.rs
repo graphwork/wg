@@ -2,11 +2,11 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use workgraph::graph::{Node, Status, Task};
-use workgraph::parser::{load_graph, save_graph};
 use workgraph::function::{
     self, FunctionInput, InputType, PlanningConfig, TaskTemplate, TraceFunction,
 };
+use workgraph::graph::{Node, Status, Task};
+use workgraph::parser::{load_graph, save_graph};
 
 use super::graph_path;
 
@@ -44,8 +44,8 @@ fn resolve_function_source(
 /// Expand `~/` and resolve to an absolute path.
 fn resolve_file_path(path_str: &str) -> Result<PathBuf> {
     let expanded = if let Some(suffix) = path_str.strip_prefix("~/") {
-        let home = dirs::home_dir()
-            .ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?;
+        let home =
+            dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?;
         home.join(suffix)
     } else {
         PathBuf::from(path_str)
@@ -104,8 +104,8 @@ pub fn run(
     }
 
     // 3. Validate inputs against function schema
-    let resolved = function::validate_inputs(&func.inputs, &provided)
-        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    let resolved =
+        function::validate_inputs(&func.inputs, &provided).map_err(|e| anyhow::anyhow!("{}", e))?;
 
     // 4. For file_content type: read file at provided path and substitute content
     let final_inputs = resolve_file_contents(&func.inputs, resolved)?;
@@ -190,8 +190,9 @@ pub fn run(
     for template in &task_templates {
         let mut rendered = function::substitute_task_template(template, &final_inputs);
         if !memory_text.is_empty() {
-            rendered.description =
-                rendered.description.replace("{{memory.run_summaries}}", &memory_text);
+            rendered.description = rendered
+                .description
+                .replace("{{memory.run_summaries}}", &memory_text);
         }
         let task_id = id_map[&template.template_id].clone();
 
@@ -229,7 +230,13 @@ pub fn run(
 
         if dry_run {
             // Show plan without creating tasks
-            print_dry_run_task(&task_id, &rendered, &real_after, &tags, task_model.as_deref());
+            print_dry_run_task(
+                &task_id,
+                &rendered,
+                &real_after,
+                &tags,
+                task_model.as_deref(),
+            );
         } else {
             let task = Task {
                 id: task_id.clone(),
@@ -265,7 +272,7 @@ pub fn run(
                 context_scope: None,
                 cycle_config: None,
                 token_usage: None,
-        exec_mode: None,
+                exec_mode: None,
             };
 
             graph.add_node(Node::Task(task));
@@ -399,15 +406,9 @@ fn parse_input_pair(
             if let Ok(i) = value_str.parse::<i64>() {
                 serde_yaml::Value::Number(serde_yaml::Number::from(i))
             } else if let Ok(f) = value_str.parse::<f64>() {
-                serde_yaml::Value::Number(
-                    serde_yaml::Number::from(f),
-                )
+                serde_yaml::Value::Number(serde_yaml::Number::from(f))
             } else {
-                anyhow::bail!(
-                    "Input '{}' should be a number but got '{}'",
-                    key,
-                    value_str
-                );
+                anyhow::bail!("Input '{}' should be a number but got '{}'", key, value_str);
             }
         }
         Some(InputType::FileList) => {
@@ -467,15 +468,16 @@ fn resolve_file_contents(
     for def in input_defs {
         if def.input_type == InputType::FileContent
             && let Some(value) = resolved.get(&def.name)
-                && let Some(path) = value.as_str() {
-                    let contents = std::fs::read_to_string(path).with_context(|| {
-                        format!(
-                            "Failed to read file '{}' for file_content input '{}'",
-                            path, def.name
-                        )
-                    })?;
-                    resolved.insert(def.name.clone(), serde_yaml::Value::String(contents));
-                }
+            && let Some(path) = value.as_str()
+        {
+            let contents = std::fs::read_to_string(path).with_context(|| {
+                format!(
+                    "Failed to read file '{}' for file_content input '{}'",
+                    path, def.name
+                )
+            })?;
+            resolved.insert(def.name.clone(), serde_yaml::Value::String(contents));
+        }
     }
     Ok(resolved)
 }
@@ -540,32 +542,31 @@ fn execute_plan_or_fallback(
     // Check if planner task exists and is Done
     if let Some(task) = graph.get_task(&planner_task_id)
         && task.status == workgraph::graph::Status::Done
-            && let Some(generated) = try_parse_planner_output(task) {
-                // Validate against constraints if enabled
-                if planning.validate_plan
-                    && let Some(ref constraints) = func.constraints {
-                        match workgraph::plan_validator::validate_plan(&generated, constraints) {
-                            Ok(()) => return Ok(generated),
-                            Err(errors) => {
-                                eprintln!(
-                                    "Plan validation failed ({} error(s)):",
-                                    errors.len()
-                                );
-                                for e in &errors {
-                                    eprintln!("  - {}", e);
-                                }
-                                if planning.static_fallback {
-                                    eprintln!("Falling back to static task templates.");
-                                    return Ok(func.tasks.clone());
-                                }
-                                anyhow::bail!(
-                                    "Generated plan failed validation and static_fallback is disabled"
-                                );
-                            }
-                        }
+        && let Some(generated) = try_parse_planner_output(task)
+    {
+        // Validate against constraints if enabled
+        if planning.validate_plan
+            && let Some(ref constraints) = func.constraints
+        {
+            match workgraph::plan_validator::validate_plan(&generated, constraints) {
+                Ok(()) => return Ok(generated),
+                Err(errors) => {
+                    eprintln!("Plan validation failed ({} error(s)):", errors.len());
+                    for e in &errors {
+                        eprintln!("  - {}", e);
                     }
-                return Ok(generated);
+                    if planning.static_fallback {
+                        eprintln!("Falling back to static task templates.");
+                        return Ok(func.tasks.clone());
+                    }
+                    anyhow::bail!(
+                        "Generated plan failed validation and static_fallback is disabled"
+                    );
+                }
             }
+        }
+        return Ok(generated);
+    }
 
     // Planner task not ready — fall back to static templates
     Ok(func.tasks.clone())
@@ -580,19 +581,21 @@ fn try_parse_planner_output(task: &workgraph::graph::Task) -> Option<Vec<TaskTem
     for artifact in &task.artifacts {
         if (artifact.ends_with(".yaml") || artifact.ends_with(".yml"))
             && let Ok(content) = std::fs::read_to_string(artifact)
-                && let Ok(templates) = serde_yaml::from_str::<Vec<TaskTemplate>>(&content)
-                    && !templates.is_empty() {
-                        return Some(templates);
-                    }
+            && let Ok(templates) = serde_yaml::from_str::<Vec<TaskTemplate>>(&content)
+            && !templates.is_empty()
+        {
+            return Some(templates);
+        }
     }
 
     // Check log entries for embedded YAML blocks
     for entry in &task.log {
         if let Some(yaml_str) = extract_yaml_block(&entry.message)
             && let Ok(templates) = serde_yaml::from_str::<Vec<TaskTemplate>>(yaml_str)
-                && !templates.is_empty() {
-                    return Some(templates);
-                }
+            && !templates.is_empty()
+        {
+            return Some(templates);
+        }
     }
 
     None
@@ -605,11 +608,7 @@ fn extract_yaml_block(text: &str) -> Option<&str> {
     let rest = &text[start..];
     let end = rest.find("```")?;
     let block = rest[..end].trim();
-    if block.is_empty() {
-        None
-    } else {
-        Some(block)
-    }
+    if block.is_empty() { None } else { Some(block) }
 }
 
 /// Append a JSON run record to the function's `.runs.jsonl` file.
@@ -634,8 +633,8 @@ fn append_run_record(
 mod tests {
     use super::*;
     use tempfile::TempDir;
-    use workgraph::graph::WorkGraph;
     use workgraph::function::*;
+    use workgraph::graph::WorkGraph;
 
     fn sample_function() -> TraceFunction {
         TraceFunction {
@@ -688,8 +687,7 @@ mod tests {
                 TaskTemplate {
                     template_id: "implement".to_string(),
                     title: "Implement {{input.feature_name}}".to_string(),
-                    description:
-                        "Implement the feature. Run: {{input.test_command}}".to_string(),
+                    description: "Implement the feature. Run: {{input.test_command}}".to_string(),
                     skills: vec!["implementation".to_string()],
                     after: vec!["plan".to_string()],
                     loops_to: vec![],
@@ -853,7 +851,12 @@ mod tests {
         .unwrap();
 
         let graph = load_graph(dir.join("graph.jsonl")).unwrap();
-        for task_id in &["auth-plan", "auth-implement", "auth-validate", "auth-refine"] {
+        for task_id in &[
+            "auth-plan",
+            "auth-implement",
+            "auth-validate",
+            "auth-refine",
+        ] {
             let task = graph.get_task(task_id).unwrap();
             assert_eq!(task.model, Some("sonnet".to_string()));
         }
@@ -960,18 +963,21 @@ mod tests {
         let graph = load_graph(dir.join("graph.jsonl")).unwrap();
         let plan = graph.get_task("auth-plan").unwrap();
         assert_eq!(plan.title, "Plan auth");
-        assert!(plan
-            .description
-            .as_ref()
-            .unwrap()
-            .contains("Plan the implementation of auth"));
+        assert!(
+            plan.description
+                .as_ref()
+                .unwrap()
+                .contains("Plan the implementation of auth")
+        );
 
         let implement = graph.get_task("auth-implement").unwrap();
-        assert!(implement
-            .description
-            .as_ref()
-            .unwrap()
-            .contains("cargo test auth"));
+        assert!(
+            implement
+                .description
+                .as_ref()
+                .unwrap()
+                .contains("cargo test auth")
+        );
     }
 
     #[test]
@@ -1163,11 +1169,12 @@ mod tests {
 
         let graph = load_graph(dir.join("graph.jsonl")).unwrap();
         let plan = graph.get_task("auth-plan").unwrap();
-        assert!(plan
-            .description
-            .as_ref()
-            .unwrap()
-            .contains("This is the API spec content"));
+        assert!(
+            plan.description
+                .as_ref()
+                .unwrap()
+                .contains("This is the API spec content")
+        );
     }
 
     #[test]
@@ -1285,7 +1292,10 @@ mod tests {
         .unwrap();
 
         let result = parse_input_file(path.to_str().unwrap()).unwrap();
-        assert_eq!(result.get("feature_name").unwrap().as_str().unwrap(), "auth");
+        assert_eq!(
+            result.get("feature_name").unwrap().as_str().unwrap(),
+            "auth"
+        );
         assert_eq!(result.get("count").unwrap().as_i64().unwrap(), 5);
         assert_eq!(result.get("files").unwrap().as_sequence().unwrap().len(), 2);
     }
@@ -1294,14 +1304,13 @@ mod tests {
     fn input_file_json() {
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("inputs.json");
-        std::fs::write(
-            &path,
-            r#"{"feature_name": "auth", "count": 5}"#,
-        )
-        .unwrap();
+        std::fs::write(&path, r#"{"feature_name": "auth", "count": 5}"#).unwrap();
 
         let result = parse_input_file(path.to_str().unwrap()).unwrap();
-        assert_eq!(result.get("feature_name").unwrap().as_str().unwrap(), "auth");
+        assert_eq!(
+            result.get("feature_name").unwrap().as_str().unwrap(),
+            "auth"
+        );
         assert_eq!(result.get("count").unwrap().as_i64().unwrap(), 5);
     }
 

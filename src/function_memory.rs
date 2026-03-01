@@ -11,13 +11,13 @@
 //! The JSONL approach (`append_run_summary` / `load_run_summaries`) is the existing
 //! integration point used by `func_apply` and `func_make_adaptive`.
 
-use crate::agency::{load_all_evaluations, Evaluation};
-use crate::graph::WorkGraph;
-use crate::provenance::{read_all_operations, OperationEntry};
+use crate::agency::{Evaluation, load_all_evaluations};
 use crate::function::{
-    InterventionSummary, MemoryInclusions, RunSummary, TaskOutcome, TraceMemoryConfig,
-    FUNCTIONS_DIR,
+    FUNCTIONS_DIR, InterventionSummary, MemoryInclusions, RunSummary, TaskOutcome,
+    TraceMemoryConfig,
 };
+use crate::graph::WorkGraph;
+use crate::provenance::{OperationEntry, read_all_operations};
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::fs;
@@ -50,8 +50,8 @@ pub fn save_run_summary(
     let filename = format!("{}.json", safe_ts);
     let path = dir.join(filename);
 
-    let json = serde_json::to_string_pretty(summary)
-        .context("Failed to serialize RunSummary to JSON")?;
+    let json =
+        serde_json::to_string_pretty(summary).context("Failed to serialize RunSummary to JSON")?;
     fs::write(&path, json).context("Failed to write run summary file")?;
 
     Ok(path)
@@ -248,10 +248,7 @@ pub fn render_summaries_text(summaries: &[RunSummary]) -> String {
                     parts.push(format!("score={:.2}", s));
                 }
                 if let Some(d) = outcome.duration_secs {
-                    parts.push(format!(
-                        "duration={}",
-                        crate::format_duration(d, false)
-                    ));
+                    parts.push(format!("duration={}", crate::format_duration(d, false)));
                 }
                 if outcome.retry_count > 0 {
                     parts.push(format!("retries={}", outcome.retry_count));
@@ -300,13 +297,15 @@ fn compute_wall_clock(task_ids: &[String], graph: &WorkGraph) -> Option<i64> {
     for task_id in task_ids {
         if let Some(task) = graph.get_task(task_id) {
             if let Some(ref s) = task.started_at
-                && earliest_start.is_none_or(|es| s.as_str() < es) {
-                    earliest_start = Some(s.as_str());
-                }
+                && earliest_start.is_none_or(|es| s.as_str() < es)
+            {
+                earliest_start = Some(s.as_str());
+            }
             if let Some(ref c) = task.completed_at
-                && latest_end.is_none_or(|le| c.as_str() > le) {
-                    latest_end = Some(c.as_str());
-                }
+                && latest_end.is_none_or(|le| c.as_str() > le)
+            {
+                latest_end = Some(c.as_str());
+            }
         }
     }
 
@@ -415,8 +414,7 @@ pub fn append_run_summary(
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let line = serde_json::to_string(summary)
-        .map_err(std::io::Error::other)?;
+    let line = serde_json::to_string(summary).map_err(std::io::Error::other)?;
     use std::io::Write;
     let mut file = std::fs::OpenOptions::new()
         .create(true)
@@ -437,7 +435,11 @@ pub fn render_run_summaries(summaries: &[RunSummary], inclusions: &MemoryInclusi
 
     for (i, summary) in summaries.iter().enumerate() {
         lines.push(String::new());
-        lines.push(format!("--- Run {} (prefix: {}) ---", i + 1, summary.prefix));
+        lines.push(format!(
+            "--- Run {} (prefix: {}) ---",
+            i + 1,
+            summary.prefix
+        ));
         lines.push(format!("  Applied: {}", summary.applied_at));
 
         if !summary.inputs.is_empty() {
@@ -483,23 +485,22 @@ pub fn render_run_summaries(summaries: &[RunSummary], inclusions: &MemoryInclusi
         }
 
         if inclusions.scores
-            && let Some(avg) = summary.avg_score {
-                lines.push(format!("  Avg Score: {:.2}", avg));
-            }
+            && let Some(avg) = summary.avg_score
+        {
+            lines.push(format!("  Avg Score: {:.2}", avg));
+        }
 
         if inclusions.duration
-            && let Some(secs) = summary.wall_clock_secs {
-                lines.push(format!(
-                    "  Duration: {}",
-                    crate::format_duration(secs, false)
-                ));
-            }
+            && let Some(secs) = summary.wall_clock_secs
+        {
+            lines.push(format!(
+                "  Duration: {}",
+                crate::format_duration(secs, false)
+            ));
+        }
 
         if inclusions.interventions && !summary.interventions.is_empty() {
-            lines.push(format!(
-                "  Interventions: {}",
-                summary.interventions.len()
-            ));
+            lines.push(format!("  Interventions: {}", summary.interventions.len()));
             for intervention in &summary.interventions {
                 let desc = intervention
                     .description
@@ -513,11 +514,7 @@ pub fn render_run_summaries(summaries: &[RunSummary], inclusions: &MemoryInclusi
         }
 
         if inclusions.retries {
-            let total_retries: u32 = summary
-                .task_outcomes
-                .iter()
-                .map(|t| t.retry_count)
-                .sum();
+            let total_retries: u32 = summary.task_outcomes.iter().map(|t| t.retry_count).sum();
             if total_retries > 0 {
                 lines.push(format!("  Total Retries: {}", total_retries));
             }
@@ -624,11 +621,7 @@ mod tests {
 
         let summary = sample_run_summary();
         let line = serde_json::to_string(&summary).unwrap();
-        std::fs::write(
-            func_dir.join("test-func.runs.jsonl"),
-            format!("{}\n", line),
-        )
-        .unwrap();
+        std::fs::write(func_dir.join("test-func.runs.jsonl"), format!("{}\n", line)).unwrap();
 
         let config = TraceMemoryConfig {
             max_runs: 10,
@@ -990,7 +983,8 @@ mod tests {
 
     #[test]
     fn detect_interventions_from_ops() {
-        let ops = [OperationEntry {
+        let ops = [
+            OperationEntry {
                 timestamp: "2026-02-20T12:01:00Z".to_string(),
                 op: "done".to_string(),
                 task_id: Some("pfx/build".to_string()),
@@ -1010,17 +1004,15 @@ mod tests {
                 task_id: Some("pfx/test".to_string()),
                 actor: Some("human".to_string()),
                 detail: serde_json::json!({"detail": "Updated description"}),
-            }];
+            },
+        ];
 
         let op_refs: Vec<&OperationEntry> = ops.iter().collect();
         let interventions = detect_interventions(&op_refs);
 
         assert_eq!(interventions.len(), 2);
         assert_eq!(interventions[0].kind, "retry");
-        assert_eq!(
-            interventions[0].description,
-            Some("Flaky test".to_string())
-        );
+        assert_eq!(interventions[0].description, Some("Flaky test".to_string()));
         assert_eq!(interventions[1].kind, "edit");
         assert_eq!(
             interventions[1].description,
@@ -1030,7 +1022,8 @@ mod tests {
 
     #[test]
     fn detect_interventions_ignores_normal_ops() {
-        let ops = [OperationEntry {
+        let ops = [
+            OperationEntry {
                 timestamp: "2026-02-20T12:01:00Z".to_string(),
                 op: "add_task".to_string(),
                 task_id: Some("task-1".to_string()),
@@ -1043,7 +1036,8 @@ mod tests {
                 task_id: Some("task-1".to_string()),
                 actor: None,
                 detail: serde_json::Value::Null,
-            }];
+            },
+        ];
 
         let op_refs: Vec<&OperationEntry> = ops.iter().collect();
         let interventions = detect_interventions(&op_refs);

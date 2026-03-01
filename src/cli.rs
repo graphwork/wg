@@ -146,7 +146,11 @@ pub enum Commands {
         add_after: Vec<String>,
 
         /// Remove an after dependency
-        #[arg(long = "remove-after", alias = "remove-blocked-by", value_delimiter = ',')]
+        #[arg(
+            long = "remove-after",
+            alias = "remove-blocked-by",
+            value_delimiter = ','
+        )]
         remove_after: Vec<String>,
 
         /// Add a tag
@@ -1145,7 +1149,6 @@ pub enum EvaluateCommands {
         #[arg(long)]
         limit: Option<usize>,
     },
-
 }
 
 #[derive(Subcommand)]
@@ -1318,9 +1321,7 @@ pub enum TraceCommands {
     },
 
     #[command(name = "show-function", hide = true)]
-    ShowFunctionAlias {
-        id: String,
-    },
+    ShowFunctionAlias { id: String },
 
     #[command(name = "bootstrap", hide = true)]
     BootstrapAlias {

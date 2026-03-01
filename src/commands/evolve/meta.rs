@@ -5,9 +5,9 @@ use std::path::Path;
 use workgraph::agency::{self, AccessControl, Lineage, PerformanceRecord, Role};
 use workgraph::config::Config;
 
-use super::strategy::EvolverOperation;
-use super::deferred::{should_defer, defer_operation};
+use super::deferred::{defer_operation, should_defer};
 use super::operations::parse_category;
+use super::strategy::EvolverOperation;
 
 // ---------------------------------------------------------------------------
 // Randomisation apply functions
@@ -68,9 +68,10 @@ pub(crate) fn apply_random_compose_role(
 
     let new_role = Role {
         id: new_role_id.clone(),
-        name: op.new_name.clone().unwrap_or_else(|| {
-            format!("random-role-{}", &new_role_id[..8.min(new_role_id.len())])
-        }),
+        name: op
+            .new_name
+            .clone()
+            .unwrap_or_else(|| format!("random-role-{}", &new_role_id[..8.min(new_role_id.len())])),
         description: op
             .new_description
             .clone()
@@ -203,10 +204,9 @@ pub(crate) fn apply_bizarre_ideation(
     match entity_type {
         "component" => {
             let components_dir = agency_dir.join("primitives/components");
-            let desc = op
-                .new_description
-                .as_deref()
-                .ok_or_else(|| anyhow::anyhow!("bizarre_ideation component requires new_description"))?;
+            let desc = op.new_description.as_deref().ok_or_else(|| {
+                anyhow::anyhow!("bizarre_ideation component requires new_description")
+            })?;
             let content = if let Some(ref c) = op.new_content {
                 agency::ContentRef::Inline(c.clone())
             } else {
@@ -248,17 +248,13 @@ pub(crate) fn apply_bizarre_ideation(
         }
         "tradeoff" => {
             let tradeoffs_dir = agency_dir.join("primitives/tradeoffs");
-            let desc = op
-                .new_description
-                .as_deref()
-                .ok_or_else(|| {
-                    anyhow::anyhow!("bizarre_ideation tradeoff requires new_description")
-                })?;
+            let desc = op.new_description.as_deref().ok_or_else(|| {
+                anyhow::anyhow!("bizarre_ideation tradeoff requires new_description")
+            })?;
             let acceptable = op.new_acceptable_tradeoffs.clone().unwrap_or_default();
             let unacceptable = op.new_unacceptable_tradeoffs.clone().unwrap_or_default();
 
-            let new_id =
-                agency::content_hash_tradeoff(&acceptable, &unacceptable, desc);
+            let new_id = agency::content_hash_tradeoff(&acceptable, &unacceptable, desc);
             let new_tradeoff = agency::TradeoffConfig {
                 id: new_id.clone(),
                 name: op
@@ -297,7 +293,6 @@ pub(crate) fn apply_bizarre_ideation(
         other => bail!("bizarre_ideation: unsupported entity_type '{}'", other),
     }
 }
-
 
 // ---------------------------------------------------------------------------
 // Meta-agent (AgentConfigurations level) apply functions
@@ -361,10 +356,7 @@ pub(crate) fn apply_meta_swap_role(
     // Verify new role exists
     let roles_dir = agency_dir.join("cache/roles");
     if !roles_dir.join(format!("{}.yaml", new_role_id)).exists() {
-        bail!(
-            "meta_swap_role: role '{}' not found in store",
-            new_role_id
-        );
+        bail!("meta_swap_role: role '{}' not found in store", new_role_id);
     }
 
     if old_agent.role_id == new_role_id {
@@ -397,7 +389,9 @@ pub(crate) fn apply_meta_swap_role(
 
     let path = agency::save_agent(&new_agent, &agents_dir)?;
     update_meta_slot(meta_role, &new_agent_id, &mut config);
-    config.save(dir).context("Failed to save config after meta_swap_role")?;
+    config
+        .save(dir)
+        .context("Failed to save config after meta_swap_role")?;
 
     Ok(serde_json::json!({
         "op": "meta_swap_role",
@@ -426,12 +420,16 @@ pub(crate) fn apply_meta_swap_tradeoff(
         .tradeoff_id
         .as_deref()
         .or(op.new_tradeoff_id.as_deref())
-        .ok_or_else(|| anyhow::anyhow!("meta_swap_tradeoff requires tradeoff_id or new_tradeoff_id"))?;
+        .ok_or_else(|| {
+            anyhow::anyhow!("meta_swap_tradeoff requires tradeoff_id or new_tradeoff_id")
+        })?;
 
     let mut config = Config::load_or_default(dir);
     let (slot_label, current_hash) = resolve_meta_slot(meta_role, &config)?;
     let current_hash = current_hash
-        .ok_or_else(|| anyhow::anyhow!("meta_swap_tradeoff: no {} currently configured", slot_label))?
+        .ok_or_else(|| {
+            anyhow::anyhow!("meta_swap_tradeoff: no {} currently configured", slot_label)
+        })?
         .clone();
 
     // Load current agent
@@ -441,7 +439,10 @@ pub(crate) fn apply_meta_swap_tradeoff(
 
     // Verify new tradeoff exists
     let tradeoffs_dir = agency_dir.join("primitives/tradeoffs");
-    if !tradeoffs_dir.join(format!("{}.yaml", new_tradeoff_id)).exists() {
+    if !tradeoffs_dir
+        .join(format!("{}.yaml", new_tradeoff_id))
+        .exists()
+    {
         bail!(
             "meta_swap_tradeoff: tradeoff '{}' not found in store",
             new_tradeoff_id
@@ -478,7 +479,9 @@ pub(crate) fn apply_meta_swap_tradeoff(
 
     let path = agency::save_agent(&new_agent, &agents_dir)?;
     update_meta_slot(meta_role, &new_agent_id, &mut config);
-    config.save(dir).context("Failed to save config after meta_swap_tradeoff")?;
+    config
+        .save(dir)
+        .context("Failed to save config after meta_swap_tradeoff")?;
 
     Ok(serde_json::json!({
         "op": "meta_swap_tradeoff",
@@ -576,7 +579,9 @@ pub(crate) fn apply_meta_compose_agent(
     let mut config = Config::load_or_default(dir);
     let old_hash = resolve_meta_slot(meta_role, &config)?.1.cloned();
     update_meta_slot(meta_role, &new_agent_id, &mut config);
-    config.save(dir).context("Failed to save config after meta_compose_agent")?;
+    config
+        .save(dir)
+        .context("Failed to save config after meta_compose_agent")?;
 
     Ok(serde_json::json!({
         "op": "meta_compose_agent",

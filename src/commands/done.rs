@@ -41,9 +41,7 @@ pub fn run(dir: &Path, id: &str, converged: bool) -> Result<()> {
                     && cycle_analysis
                         .task_to_cycle
                         .get(&b.id)
-                        .is_some_and(|bc| {
-                            cycle_analysis.task_to_cycle.get(id) == Some(bc)
-                        });
+                        .is_some_and(|bc| cycle_analysis.task_to_cycle.get(id) == Some(bc));
                 !in_same_cycle
             })
             .collect();
@@ -81,17 +79,20 @@ pub fn run(dir: &Path, id: &str, converged: bool) -> Result<()> {
         // a cycle they don't own.
         let cycle_guard = if !own_guard {
             let ca = graph.compute_cycle_analysis();
-            ca.task_to_cycle.get(id).map(|&idx| {
-                let cycle = &ca.cycles[idx];
-                cycle.members.iter().any(|mid| {
-                    graph
-                        .get_task(mid)
-                        .and_then(|t| t.cycle_config.as_ref())
-                        .and_then(|c| c.guard.as_ref())
-                        .map(|g| !matches!(g, workgraph::graph::LoopGuard::Always))
-                        .unwrap_or(false)
+            ca.task_to_cycle
+                .get(id)
+                .map(|&idx| {
+                    let cycle = &ca.cycles[idx];
+                    cycle.members.iter().any(|mid| {
+                        graph
+                            .get_task(mid)
+                            .and_then(|t| t.cycle_config.as_ref())
+                            .and_then(|c| c.guard.as_ref())
+                            .map(|g| !matches!(g, workgraph::graph::LoopGuard::Always))
+                            .unwrap_or(false)
+                    })
                 })
-            }).unwrap_or(false)
+                .unwrap_or(false)
         } else {
             false
         };
@@ -139,18 +140,19 @@ pub fn run(dir: &Path, id: &str, converged: bool) -> Result<()> {
     // Extract token usage from agent output.log if available
     if task.token_usage.is_none()
         && let Ok(registry) = AgentRegistry::load(dir)
-            && let Some(agent) = registry.get_agent_by_task(id) {
-                let output_path = std::path::Path::new(&agent.output_file);
-                // output_file may be relative to the project root (parent of .workgraph)
-                let abs_path = if output_path.is_absolute() {
-                    output_path.to_path_buf()
-                } else {
-                    dir.parent().unwrap_or(dir).join(output_path)
-                };
-                if let Some(usage) = parse_token_usage(&abs_path) {
-                    task.token_usage = Some(usage);
-                }
-            }
+        && let Some(agent) = registry.get_agent_by_task(id)
+    {
+        let output_path = std::path::Path::new(&agent.output_file);
+        // output_file may be relative to the project root (parent of .workgraph)
+        let abs_path = if output_path.is_absolute() {
+            output_path.to_path_buf()
+        } else {
+            dir.parent().unwrap_or(dir).join(output_path)
+        };
+        if let Some(usage) = parse_token_usage(&abs_path) {
+            task.token_usage = Some(usage);
+        }
+    }
 
     // Evaluate structural cycle iteration
     let id_owned = id.to_string();
@@ -208,9 +210,10 @@ pub fn run(dir: &Path, id: &str, converged: bool) -> Result<()> {
 
     // Soft validation nudge: if no log entry mentions validation, print a tip.
     if let Some(task) = graph.get_task(id) {
-        let has_validation = task.log.iter().any(|entry| {
-            entry.message.to_lowercase().contains("validat")
-        });
+        let has_validation = task
+            .log
+            .iter()
+            .any(|entry| entry.message.to_lowercase().contains("validat"));
         if !has_validation {
             eprintln!(
                 "Tip: Log validation steps before wg done (e.g., wg log {} \"Validated: tests pass\")",

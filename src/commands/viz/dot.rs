@@ -101,10 +101,7 @@ pub(crate) fn generate_dot(
                     };
 
                 if edge_style.is_empty() {
-                    lines.push(format!(
-                        "  \"{}\" -> \"{}\";",
-                        after, task.id
-                    ));
+                    lines.push(format!("  \"{}\" -> \"{}\";", after, task.id));
                 } else {
                     lines.push(format!(
                         "  \"{}\" -> \"{}\" [{}];",
@@ -129,7 +126,6 @@ pub(crate) fn generate_dot(
                 ));
             }
         }
-
     }
 
     lines.push("}".to_string());
@@ -187,18 +183,16 @@ pub(crate) fn generate_mermaid(
         for after in &task.after {
             if task_ids.contains(after.as_str()) {
                 // Check if this edge is on critical path
-                let arrow =
-                    if critical_path.contains(&task.id) && critical_path.contains(after) {
-                        "==>" // thick arrow for critical path
-                    } else {
-                        "-->"
-                    };
+                let arrow = if critical_path.contains(&task.id) && critical_path.contains(after) {
+                    "==>" // thick arrow for critical path
+                } else {
+                    "-->"
+                };
 
                 lines.push(format!("  {} {} {}", after, arrow, task.id));
             }
         }
     }
-
 
     // Print actor assignments
     let assigned_actors: HashSet<&str> =
@@ -408,8 +402,11 @@ mod tests {
         graph.add_node(Node::Task(assign));
 
         let annotations = HashMap::new();
-        let (filtered, annots) =
-            crate::commands::viz::filter_internal_tasks(&graph, graph.tasks().collect(), &annotations);
+        let (filtered, annots) = crate::commands::viz::filter_internal_tasks(
+            &graph,
+            graph.tasks().collect(),
+            &annotations,
+        );
         let task_ids: HashSet<&str> = filtered.iter().map(|t| t.id.as_str()).collect();
         let critical_path = HashSet::new();
 
@@ -437,8 +434,11 @@ mod tests {
         graph.add_node(Node::Task(assign));
 
         let annotations = HashMap::new();
-        let (filtered, annots) =
-            crate::commands::viz::filter_internal_tasks(&graph, graph.tasks().collect(), &annotations);
+        let (filtered, annots) = crate::commands::viz::filter_internal_tasks(
+            &graph,
+            graph.tasks().collect(),
+            &annotations,
+        );
         let task_ids: HashSet<&str> = filtered.iter().map(|t| t.id.as_str()).collect();
         let critical_path = HashSet::new();
 

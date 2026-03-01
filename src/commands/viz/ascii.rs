@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::IsTerminal;
-use workgraph::graph::{format_token_display, Status, Task, TokenUsage, WorkGraph};
+use workgraph::graph::{Status, Task, TokenUsage, WorkGraph, format_token_display};
 
 use super::{LayoutMode, VizOutput};
 
@@ -220,8 +220,7 @@ pub(crate) fn generate_ascii(
     }
 
     // Task lookup
-    let task_map: HashMap<&str, &Task> =
-        tasks.iter().map(|t| (t.id.as_str(), *t)).collect();
+    let task_map: HashMap<&str, &Task> = tasks.iter().map(|t| (t.id.as_str(), *t)).collect();
 
     // Color helpers
     let use_color = std::io::stdout().is_terminal();
@@ -273,10 +272,7 @@ pub(crate) fn generate_ascii(
 
         // Context nodes: dimmed, reduced detail (just ID and status, no tokens/phase/loop)
         if is_context {
-            return format!(
-                "{}{}  ({}){}",
-                dim, id, status, reset
-            );
+            return format!("{}{}  ({}){}", dim, id, status, reset);
         }
 
         let color = task.map(|t| status_color(&t.status)).unwrap_or("");
@@ -306,7 +302,7 @@ pub(crate) fn generate_ascii(
         let is_agency_phase = use_color
             && annotations
                 .get(id)
-                .map_or(false, |a| a.contains("assigning") || a.contains("evaluating"));
+                .is_some_and(|a| a.contains("assigning") || a.contains("evaluating"));
         let phase_info = if is_agency_phase {
             annotations
                 .get(id)
@@ -316,15 +312,19 @@ pub(crate) fn generate_ascii(
             phase_info
         };
 
-        let usage = task
-            .and_then(|t| t.token_usage.as_ref().or_else(|| live_token_usage.get(&t.id)));
+        let usage = task.and_then(|t| {
+            t.token_usage
+                .as_ref()
+                .or_else(|| live_token_usage.get(&t.id))
+        });
         let atok_usage = assign_token_usage.get(id);
         let etok_usage = eval_token_usage.get(id);
-        let status_with_tokens = if let Some(tok_str) = format_token_display(usage, atok_usage, etok_usage) {
-            format!("{} · {}", status, tok_str)
-        } else {
-            status.to_string()
-        };
+        let status_with_tokens =
+            if let Some(tok_str) = format_token_display(usage, atok_usage, etok_usage) {
+                format!("{} · {}", status, tok_str)
+            } else {
+                status.to_string()
+            };
         format!(
             "{}{}{}  ({}){}{}",
             color, id, reset, status_with_tokens, phase_info, loop_info
@@ -429,12 +429,12 @@ pub(crate) fn generate_ascii(
             .iter()
             .filter(|&&id| {
                 let parents = reverse.get(id).map(Vec::as_slice).unwrap_or(&[]);
-                parents.iter().all(|&p| {
-                    match cycle_analysis.task_to_cycle.get(id) {
+                parents
+                    .iter()
+                    .all(|&p| match cycle_analysis.task_to_cycle.get(id) {
                         Some(idx) => cycle_analysis.task_to_cycle.get(p) == Some(idx),
                         None => false,
-                    }
-                })
+                    })
             })
             .copied()
             .collect();
@@ -490,7 +490,13 @@ pub(crate) fn generate_ascii(
             }
             let mut sim_rendered: HashSet<&str> = HashSet::new();
             for root in &roots {
-                simulate_dfs(root, None, &mut sim_rendered, &mut invisible_visits, &forward);
+                simulate_dfs(
+                    root,
+                    None,
+                    &mut sim_rendered,
+                    &mut invisible_visits,
+                    &forward,
+                );
             }
         }
 
@@ -527,14 +533,15 @@ pub(crate) fn generate_ascii(
                 if rendered.contains(id) {
                     if let Some(pid) = parent_id
                         && let Some(&blocker_line) = node_line_map.get(pid)
-                            && let Some(&dependent_line) = node_line_map.get(id) {
-                                back_edge_arcs.push(BackEdgeArc {
-                                    blocker_line,
-                                    dependent_line,
-                                    from_id: pid.to_string(),
-                                    to_id: id.to_string(),
-                                });
-                            }
+                        && let Some(&dependent_line) = node_line_map.get(id)
+                    {
+                        back_edge_arcs.push(BackEdgeArc {
+                            blocker_line,
+                            dependent_line,
+                            from_id: pid.to_string(),
+                            to_id: id.to_string(),
+                        });
+                    }
                     return;
                 }
 
@@ -557,9 +564,9 @@ pub(crate) fn generate_ascii(
                 let children = forward.get(id).map(Vec::as_slice).unwrap_or(&[]);
                 for (i, &child) in children.iter().enumerate() {
                     // Effective is_last: skip invisible subsequent siblings
-                    let child_is_last = children[i + 1..].iter().all(|&sib| {
-                        invisible_visits.contains(&(id.to_string(), sib.to_string()))
-                    });
+                    let child_is_last = children[i + 1..]
+                        .iter()
+                        .all(|&sib| invisible_visits.contains(&(id.to_string(), sib.to_string())));
                     render_tree(
                         child,
                         Some(id),
@@ -600,7 +607,6 @@ pub(crate) fn generate_ascii(
                 reset,
             );
         }
-
     }
 
     // Add arcs for fan-in edges that were moved during diamond restructuring
@@ -622,13 +628,20 @@ pub(crate) fn generate_ascii(
         build_tree_char_edge_map(&lines, &node_line_map);
 
     // Phase 2: Draw right-side arcs for all non-tree edges
-    let has_crossings = draw_back_edge_arcs(&mut lines, &back_edge_arcs, use_color, arc_color, &mut char_edge_map);
+    let has_crossings = draw_back_edge_arcs(
+        &mut lines,
+        &back_edge_arcs,
+        use_color,
+        arc_color,
+        &mut char_edge_map,
+    );
 
     // Append legend when crossings are present
     if has_crossings {
         lines.push(String::new());
         lines.push(format!(
-            "{}Legend: ┼ = crossing (vertical arc passes through horizontal){}", dim, reset
+            "{}Legend: ┼ = crossing (vertical arc passes through horizontal){}",
+            dim, reset
         ));
     }
 
@@ -754,13 +767,13 @@ fn build_tree_char_edge_map(
             }
         }
 
-        if node.depth > 0 {
-            if let Some((parent_id, _)) = stack.last() {
-                tree_children
-                    .entry(parent_id.clone())
-                    .or_default()
-                    .push(node.id.clone());
-            }
+        if node.depth > 0
+            && let Some((parent_id, _)) = stack.last()
+        {
+            tree_children
+                .entry(parent_id.clone())
+                .or_default()
+                .push(node.id.clone());
         }
 
         stack.push((node.id.clone(), node.depth));
@@ -794,10 +807,14 @@ fn build_tree_char_edge_map(
             if child_line < plain_lines.len() {
                 let chars: Vec<char> = plain_lines[child_line].chars().collect();
                 if connector_col < chars.len() && is_tree_connector(chars[connector_col]) {
-                    map.entry((child_line, connector_col)).or_default().push(edge.clone());
+                    map.entry((child_line, connector_col))
+                        .or_default()
+                        .push(edge.clone());
                 }
                 if connector_col + 1 < chars.len() && chars[connector_col + 1] == '→' {
-                    map.entry((child_line, connector_col + 1)).or_default().push(edge.clone());
+                    map.entry((child_line, connector_col + 1))
+                        .or_default()
+                        .push(edge.clone());
                 }
             }
 
@@ -967,10 +984,10 @@ fn draw_back_edge_arcs(
             let mut blocker_id_map: HashMap<usize, String> = HashMap::new();
             let mut blockers: Vec<usize> = Vec::new();
             for info in &infos {
-                if !blocker_id_map.contains_key(&info.blocker_line) {
+                blocker_id_map.entry(info.blocker_line).or_insert_with(|| {
                     blockers.push(info.blocker_line);
-                    blocker_id_map.insert(info.blocker_line, info.from_id.clone());
-                }
+                    info.from_id.clone()
+                });
             }
             blockers.sort();
             blockers.dedup();
@@ -1064,7 +1081,8 @@ fn draw_back_edge_arcs(
         let band_margin_start = band_max_width + 2;
 
         // Build node_set for this band's columns (using band-local indices)
-        let node_set: HashSet<(usize, usize)> = band.col_indices
+        let node_set: HashSet<(usize, usize)> = band
+            .col_indices
             .iter()
             .enumerate()
             .flat_map(|(local_idx, &ci)| {
@@ -1092,23 +1110,27 @@ fn draw_back_edge_arcs(
                 // Collect all arcs in this column that span through this line.
                 // An arc from blocker_line → dependent spans through line_idx if
                 // line_idx is between blocker_line and dependent (inclusive).
-                let spanning_edges: Vec<(String, String)> = column.blockers.iter()
+                let spanning_edges: Vec<(String, String)> = column
+                    .blockers
+                    .iter()
                     .filter(|&&b| {
                         let lo = column.dependent.min(b);
                         let hi = column.dependent.max(b);
                         line_idx >= lo && line_idx <= hi
                     })
                     .map(|b| {
-                        let from_id = column.blocker_id_map.get(b)
-                            .cloned().unwrap_or_default();
+                        let from_id = column.blocker_id_map.get(b).cloned().unwrap_or_default();
                         (from_id, column.dependent_id.clone())
                     })
                     .collect();
 
                 // The specific edge for this line's own horizontal connection.
                 let specific_edge = if is_blocker {
-                    let from_id = column.blocker_id_map.get(&line_idx)
-                        .cloned().unwrap_or_default();
+                    let from_id = column
+                        .blocker_id_map
+                        .get(&line_idx)
+                        .cloned()
+                        .unwrap_or_default();
                     Some((from_id, column.dependent_id.clone()))
                 } else {
                     None // Dependent line uses all spanning edges
@@ -1126,7 +1148,11 @@ fn draw_back_edge_arcs(
                         if is_dep { "←┐" } else { "─┐" }
                     } else if is_bottom {
                         if is_dep { "←┘" } else { "─┘" }
-                    } else if is_dep { "←┤" } else { "─┤" };
+                    } else if is_dep {
+                        "←┤"
+                    } else {
+                        "─┤"
+                    };
 
                     let pre_len = visible_len(line);
                     let current = pre_len;
@@ -1145,14 +1171,23 @@ fn draw_back_edge_arcs(
                             line.push_str(&format!("{}{}{}", dim, glyph, reset));
                         } else {
                             fill_line_to(line, col_x + 1, dim, reset);
-                            line.push_str(&format!("{}{}{}", dim, &glyph[glyph.char_indices().last().unwrap().0..], reset));
+                            line.push_str(&format!(
+                                "{}{}{}",
+                                dim,
+                                &glyph[glyph.char_indices().last().unwrap().0..],
+                                reset
+                            ));
                         }
                     }
                     let post_len = visible_len(line);
                     // Record edges for new visible positions (skip leading separator space).
                     // Horizontal chars: specific edge (blocker) or all edges (dependent).
                     // Vertical position (col_x+1): all spanning arcs.
-                    let start = if post_len > pre_len + 1 { pre_len + 1 } else { pre_len };
+                    let start = if post_len > pre_len + 1 {
+                        pre_len + 1
+                    } else {
+                        pre_len
+                    };
                     for pos in start..post_len {
                         let edges = char_edge_map.entry((line_idx, pos)).or_default();
                         if pos == col_x + 1 {
@@ -1186,8 +1221,7 @@ fn draw_back_edge_arcs(
                             let c = &columns[k];
                             line_idx >= c.top
                                 && line_idx <= c.bottom
-                                && (line_idx == c.dependent
-                                    || c.blockers.contains(&line_idx))
+                                && (line_idx == c.dependent || c.blockers.contains(&line_idx))
                         });
 
                         let pre_len = visible_len(line);
@@ -1221,13 +1255,18 @@ fn draw_back_edge_arcs(
                                 let mut horizontal_edges: Vec<(String, String)> = Vec::new();
                                 for &outer_ci in &band.col_indices[local_idx + 1..] {
                                     let outer_col = &columns[outer_ci];
-                                    if line_idx >= outer_col.top && line_idx <= outer_col.bottom
-                                        && (line_idx == outer_col.dependent || outer_col.blockers.contains(&line_idx))
+                                    if line_idx >= outer_col.top
+                                        && line_idx <= outer_col.bottom
+                                        && (line_idx == outer_col.dependent
+                                            || outer_col.blockers.contains(&line_idx))
                                     {
                                         if outer_col.blockers.contains(&line_idx) {
                                             // Blocker line: specific edge
-                                            let from_id = outer_col.blocker_id_map.get(&line_idx)
-                                                .cloned().unwrap_or_default();
+                                            let from_id = outer_col
+                                                .blocker_id_map
+                                                .get(&line_idx)
+                                                .cloned()
+                                                .unwrap_or_default();
                                             let edge = (from_id, outer_col.dependent_id.clone());
                                             if !horizontal_edges.contains(&edge) {
                                                 horizontal_edges.push(edge);
@@ -1238,9 +1277,13 @@ fn draw_back_edge_arcs(
                                                 let lo = outer_col.dependent.min(b);
                                                 let hi = outer_col.dependent.max(b);
                                                 if line_idx >= lo && line_idx <= hi {
-                                                    let from_id = outer_col.blocker_id_map.get(&b)
-                                                        .cloned().unwrap_or_default();
-                                                    let edge = (from_id, outer_col.dependent_id.clone());
+                                                    let from_id = outer_col
+                                                        .blocker_id_map
+                                                        .get(&b)
+                                                        .cloned()
+                                                        .unwrap_or_default();
+                                                    let edge =
+                                                        (from_id, outer_col.dependent_id.clone());
                                                     if !horizontal_edges.contains(&edge) {
                                                         horizontal_edges.push(edge);
                                                     }
@@ -1251,7 +1294,11 @@ fn draw_back_edge_arcs(
                                 }
 
                                 // Dash fill before ┼: map to horizontal arc(s) only
-                                let fill_start = if post_len > pre_len + 1 { pre_len + 1 } else { pre_len };
+                                let fill_start = if post_len > pre_len + 1 {
+                                    pre_len + 1
+                                } else {
+                                    pre_len
+                                };
                                 for pos in fill_start..col_x + 1 {
                                     let edges = char_edge_map.entry((line_idx, pos)).or_default();
                                     for he in &horizontal_edges {
@@ -1325,7 +1372,18 @@ mod tests {
         let tasks: Vec<&Task> = vec![];
         let task_ids: HashSet<&str> = HashSet::new();
         let no_annots = HashMap::new();
-        let result = generate_ascii(&graph, &tasks, &task_ids, &no_annots, &HashMap::new(), &HashMap::new(), &HashMap::new(), LayoutMode::default(), &HashSet::new(), "gray");
+        let result = generate_ascii(
+            &graph,
+            &tasks,
+            &task_ids,
+            &no_annots,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            LayoutMode::default(),
+            &HashSet::new(),
+            "gray",
+        );
         assert_eq!(result.text, "(no tasks to display)");
     }
 
@@ -1341,7 +1399,18 @@ mod tests {
         let tasks: Vec<_> = graph.tasks().collect();
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
         let no_annots = HashMap::new();
-        let result = generate_ascii(&graph, &tasks, &task_ids, &no_annots, &HashMap::new(), &HashMap::new(), &HashMap::new(), LayoutMode::default(), &HashSet::new(), "gray");
+        let result = generate_ascii(
+            &graph,
+            &tasks,
+            &task_ids,
+            &no_annots,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            LayoutMode::default(),
+            &HashSet::new(),
+            "gray",
+        );
 
         // Tree output: src is root, tgt is child
         assert!(result.text.contains("src"));
@@ -1365,7 +1434,18 @@ mod tests {
         let tasks: Vec<_> = graph.tasks().collect();
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
         let no_annots = HashMap::new();
-        let result = generate_ascii(&graph, &tasks, &task_ids, &no_annots, &HashMap::new(), &HashMap::new(), &HashMap::new(), LayoutMode::default(), &HashSet::new(), "gray");
+        let result = generate_ascii(
+            &graph,
+            &tasks,
+            &task_ids,
+            &no_annots,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            LayoutMode::default(),
+            &HashSet::new(),
+            "gray",
+        );
 
         // a is root with two children
         assert!(result.text.contains("├→"));
@@ -1389,7 +1469,18 @@ mod tests {
         let tasks: Vec<_> = graph.tasks().collect();
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
         let no_annots = HashMap::new();
-        let result = generate_ascii(&graph, &tasks, &task_ids, &no_annots, &HashMap::new(), &HashMap::new(), &HashMap::new(), LayoutMode::default(), &HashSet::new(), "gray");
+        let result = generate_ascii(
+            &graph,
+            &tasks,
+            &task_ids,
+            &no_annots,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            LayoutMode::default(),
+            &HashSet::new(),
+            "gray",
+        );
 
         // c should appear, and the fan-in edge should be shown as a right-side arc
         assert!(result.text.contains('c'));
@@ -1410,7 +1501,18 @@ mod tests {
         let tasks: Vec<_> = graph.tasks().collect();
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
         let no_annots = HashMap::new();
-        let result = generate_ascii(&graph, &tasks, &task_ids, &no_annots, &HashMap::new(), &HashMap::new(), &HashMap::new(), LayoutMode::default(), &HashSet::new(), "gray");
+        let result = generate_ascii(
+            &graph,
+            &tasks,
+            &task_ids,
+            &no_annots,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            LayoutMode::default(),
+            &HashSet::new(),
+            "gray",
+        );
 
         assert!(result.text.contains("solo"));
         assert!(!result.text.contains("(independent)"));
@@ -1430,7 +1532,18 @@ mod tests {
         let tasks: Vec<_> = graph.tasks().collect();
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
         let no_annots = HashMap::new();
-        let result = generate_ascii(&graph, &tasks, &task_ids, &no_annots, &HashMap::new(), &HashMap::new(), &HashMap::new(), LayoutMode::default(), &HashSet::new(), "gray");
+        let result = generate_ascii(
+            &graph,
+            &tasks,
+            &task_ids,
+            &no_annots,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            LayoutMode::default(),
+            &HashSet::new(),
+            "gray",
+        );
 
         assert!(result.text.contains("(in-progress)"));
         assert!(result.text.contains("(blocked)"));
@@ -1451,7 +1564,18 @@ mod tests {
         let tasks: Vec<_> = graph.tasks().collect();
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
         let no_annots = HashMap::new();
-        let result = generate_ascii(&graph, &tasks, &task_ids, &no_annots, &HashMap::new(), &HashMap::new(), &HashMap::new(), LayoutMode::default(), &HashSet::new(), "gray");
+        let result = generate_ascii(
+            &graph,
+            &tasks,
+            &task_ids,
+            &no_annots,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            LayoutMode::default(),
+            &HashSet::new(),
+            "gray",
+        );
 
         // Should show indented chain: a -> b -> c
         assert!(result.text.contains("a"));
@@ -1483,11 +1607,25 @@ mod tests {
         graph.add_node(Node::Task(assign));
 
         let annotations = HashMap::new();
-        let (filtered, annots) =
-            crate::commands::viz::filter_internal_tasks(&graph, graph.tasks().collect(), &annotations);
+        let (filtered, annots) = crate::commands::viz::filter_internal_tasks(
+            &graph,
+            graph.tasks().collect(),
+            &annotations,
+        );
         let task_ids: HashSet<&str> = filtered.iter().map(|t| t.id.as_str()).collect();
 
-        let result = generate_ascii(&graph, &filtered, &task_ids, &annots, &HashMap::new(), &HashMap::new(), &HashMap::new(), LayoutMode::default(), &HashSet::new(), "gray");
+        let result = generate_ascii(
+            &graph,
+            &filtered,
+            &task_ids,
+            &annots,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            LayoutMode::default(),
+            &HashSet::new(),
+            "gray",
+        );
 
         // Internal task should NOT appear
         assert!(!result.text.contains("assign-my-task"));
@@ -1512,11 +1650,25 @@ mod tests {
         graph.add_node(Node::Task(eval));
 
         let annotations = HashMap::new();
-        let (filtered, annots) =
-            crate::commands::viz::filter_internal_tasks(&graph, graph.tasks().collect(), &annotations);
+        let (filtered, annots) = crate::commands::viz::filter_internal_tasks(
+            &graph,
+            graph.tasks().collect(),
+            &annotations,
+        );
         let task_ids: HashSet<&str> = filtered.iter().map(|t| t.id.as_str()).collect();
 
-        let result = generate_ascii(&graph, &filtered, &task_ids, &annots, &HashMap::new(), &HashMap::new(), &HashMap::new(), LayoutMode::default(), &HashSet::new(), "gray");
+        let result = generate_ascii(
+            &graph,
+            &filtered,
+            &task_ids,
+            &annots,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            LayoutMode::default(),
+            &HashSet::new(),
+            "gray",
+        );
 
         assert!(!result.text.contains("evaluate-my-task"));
         assert!(result.text.contains("my-task"));
@@ -1543,7 +1695,18 @@ mod tests {
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
         let annots = HashMap::new();
 
-        let result = generate_ascii(&graph, &tasks, &task_ids, &annots, &HashMap::new(), &HashMap::new(), &HashMap::new(), LayoutMode::default(), &HashSet::new(), "gray");
+        let result = generate_ascii(
+            &graph,
+            &tasks,
+            &task_ids,
+            &annots,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            LayoutMode::default(),
+            &HashSet::new(),
+            "gray",
+        );
 
         // Both tasks should be visible
         assert!(result.text.contains("assign-my-task"));
@@ -1573,7 +1736,18 @@ mod tests {
         let tasks: Vec<_> = graph.tasks().collect();
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
         let no_annots = HashMap::new();
-        let result = generate_ascii(&graph, &tasks, &task_ids, &no_annots, &HashMap::new(), &HashMap::new(), &HashMap::new(), LayoutMode::default(), &HashSet::new(), "gray");
+        let result = generate_ascii(
+            &graph,
+            &tasks,
+            &task_ids,
+            &no_annots,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            LayoutMode::default(),
+            &HashSet::new(),
+            "gray",
+        );
 
         // The source task (which has cycle_config) should show the ↺ symbol
         assert!(
@@ -1606,7 +1780,18 @@ mod tests {
         let tasks: Vec<_> = graph.tasks().collect();
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
         let no_annots = HashMap::new();
-        let result = generate_ascii(&graph, &tasks, &task_ids, &no_annots, &HashMap::new(), &HashMap::new(), &HashMap::new(), LayoutMode::default(), &HashSet::new(), "gray");
+        let result = generate_ascii(
+            &graph,
+            &tasks,
+            &task_ids,
+            &no_annots,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            LayoutMode::default(),
+            &HashSet::new(),
+            "gray",
+        );
 
         // Should show ↺ symbol in the node label
         assert!(
@@ -1640,7 +1825,18 @@ mod tests {
         let tasks: Vec<_> = graph.tasks().collect();
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
         let no_annots = HashMap::new();
-        let result = generate_ascii(&graph, &tasks, &task_ids, &no_annots, &HashMap::new(), &HashMap::new(), &HashMap::new(), LayoutMode::default(), &HashSet::new(), "gray");
+        let result = generate_ascii(
+            &graph,
+            &tasks,
+            &task_ids,
+            &no_annots,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            LayoutMode::default(),
+            &HashSet::new(),
+            "gray",
+        );
 
         // Task with cycle_config should show the ↺ symbol
         assert!(
@@ -1659,7 +1855,18 @@ mod tests {
         let tasks: Vec<_> = graph.tasks().collect();
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
         let no_annots = HashMap::new();
-        let result = generate_ascii(&graph, &tasks, &task_ids, &no_annots, &HashMap::new(), &HashMap::new(), &HashMap::new(), LayoutMode::default(), &HashSet::new(), "gray");
+        let result = generate_ascii(
+            &graph,
+            &tasks,
+            &task_ids,
+            &no_annots,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            LayoutMode::default(),
+            &HashSet::new(),
+            "gray",
+        );
 
         // No loop symbol on tasks without loops
         assert!(
@@ -1696,15 +1903,42 @@ mod tests {
 
         let tasks: Vec<_> = graph.tasks().collect();
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
-        let result = generate_ascii(&graph, &tasks, &task_ids, &HashMap::new(), &HashMap::new(), &HashMap::new(), &HashMap::new(), LayoutMode::default(), &HashSet::new(), "gray");
+        let result = generate_ascii(
+            &graph,
+            &tasks,
+            &task_ids,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            LayoutMode::default(),
+            &HashSet::new(),
+            "gray",
+        );
 
         // Should have ← at target and ┘ at source
-        assert!(result.text.contains("←"), "Back-edge target should have ←\nOutput:\n{}", result.text);
-        assert!(result.text.contains("┘"), "Back-edge source should have ┘\nOutput:\n{}", result.text);
+        assert!(
+            result.text.contains("←"),
+            "Back-edge target should have ←\nOutput:\n{}",
+            result.text
+        );
+        assert!(
+            result.text.contains("┘"),
+            "Back-edge source should have ┘\nOutput:\n{}",
+            result.text
+        );
         // Should NOT have old-style cycle-back text
-        assert!(!result.text.contains("cycles back"), "No old-style text\nOutput:\n{}", result.text);
+        assert!(
+            !result.text.contains("cycles back"),
+            "No old-style text\nOutput:\n{}",
+            result.text
+        );
         // Should NOT have fan-in annotations
-        assert!(!result.text.contains("(←"), "No fan-in text annotations\nOutput:\n{}", result.text);
+        assert!(
+            !result.text.contains("(←"),
+            "No fan-in text annotations\nOutput:\n{}",
+            result.text
+        );
     }
 
     #[test]
@@ -1729,13 +1963,35 @@ mod tests {
 
         let tasks: Vec<_> = graph.tasks().collect();
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
-        let result = generate_ascii(&graph, &tasks, &task_ids, &HashMap::new(), &HashMap::new(), &HashMap::new(), &HashMap::new(), LayoutMode::default(), &HashSet::new(), "gray");
+        let result = generate_ascii(
+            &graph,
+            &tasks,
+            &task_ids,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            LayoutMode::default(),
+            &HashSet::new(),
+            "gray",
+        );
 
         // Fan-in should produce a right-side arc (not a text annotation)
-        assert!(result.text.contains("←") || result.text.contains("┘"),
-            "Diamond fan-in should have right-side arcs\nOutput:\n{}", result.text);
-        assert!(!result.text.contains("(←"), "No fan-in text annotation\nOutput:\n{}", result.text);
-        assert!(!result.text.contains("..."), "No duplicate 'already shown' entries\nOutput:\n{}", result.text);
+        assert!(
+            result.text.contains("←") || result.text.contains("┘"),
+            "Diamond fan-in should have right-side arcs\nOutput:\n{}",
+            result.text
+        );
+        assert!(
+            !result.text.contains("(←"),
+            "No fan-in text annotation\nOutput:\n{}",
+            result.text
+        );
+        assert!(
+            !result.text.contains("..."),
+            "No duplicate 'already shown' entries\nOutput:\n{}",
+            result.text
+        );
     }
 
     #[test]
@@ -1764,18 +2020,38 @@ mod tests {
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
 
         // Diamond layout (default)
-        let result = generate_ascii(&graph, &tasks, &task_ids, &HashMap::new(), &HashMap::new(), &HashMap::new(), &HashMap::new(), LayoutMode::Diamond, &HashSet::new(), "gray");
+        let result = generate_ascii(
+            &graph,
+            &tasks,
+            &task_ids,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            LayoutMode::Diamond,
+            &HashSet::new(),
+            "gray",
+        );
         eprintln!("DIAMOND:\n{}", result.text);
 
         let lines: Vec<&str> = result.text.lines().collect();
         // join should be at the same indentation as left and right (direct child of root)
-        let join_line = lines.iter().find(|l| l.contains("join")).expect("join should appear");
-        let left_line = lines.iter().find(|l| l.contains("left")).expect("left should appear");
+        let join_line = lines
+            .iter()
+            .find(|l| l.contains("join"))
+            .expect("join should appear");
+        let left_line = lines
+            .iter()
+            .find(|l| l.contains("left"))
+            .expect("left should appear");
         // Both should start with tree connectors at the same indent level
         let join_indent = join_line.find("join").unwrap();
         let left_indent = left_line.find("left").unwrap();
-        assert_eq!(join_indent, left_indent,
-            "Diamond layout: join should be at same indent as left\nOutput:\n{}", result.text);
+        assert_eq!(
+            join_indent, left_indent,
+            "Diamond layout: join should be at same indent as left\nOutput:\n{}",
+            result.text
+        );
 
         // join should appear AFTER both left and right in line order
         let left_idx = lines.iter().position(|l| l.contains("left")).unwrap();
@@ -1785,20 +2061,43 @@ mod tests {
         assert!(join_idx > right_idx, "join should be after right");
 
         // Arcs should flow DOWN (left and right have ┐ or ─, join has ← or ┘)
-        assert!(join_line.contains("←") || join_line.contains("┘"),
-            "join should receive arcs\nOutput:\n{}", result.text);
+        assert!(
+            join_line.contains("←") || join_line.contains("┘"),
+            "join should receive arcs\nOutput:\n{}",
+            result.text
+        );
 
         // Compare with tree layout (old behavior): join should be under left
-        let result_tree = generate_ascii(&graph, &tasks, &task_ids, &HashMap::new(), &HashMap::new(), &HashMap::new(), &HashMap::new(), LayoutMode::Tree, &HashSet::new(), "gray");
+        let result_tree = generate_ascii(
+            &graph,
+            &tasks,
+            &task_ids,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            LayoutMode::Tree,
+            &HashSet::new(),
+            "gray",
+        );
         eprintln!("TREE:\n{}", result_tree.text);
         let tree_lines: Vec<&str> = result_tree.text.lines().collect();
-        let join_tree = tree_lines.iter().find(|l| l.contains("join")).expect("join in tree");
-        let left_tree = tree_lines.iter().find(|l| l.contains("left")).expect("left in tree");
+        let join_tree = tree_lines
+            .iter()
+            .find(|l| l.contains("join"))
+            .expect("join in tree");
+        let left_tree = tree_lines
+            .iter()
+            .find(|l| l.contains("left"))
+            .expect("left in tree");
         let join_tree_indent = join_tree.find("join").unwrap();
         let left_tree_indent = left_tree.find("left").unwrap();
         // In tree mode, join should be DEEPER than left (a child of left)
-        assert!(join_tree_indent > left_tree_indent,
-            "Tree layout: join should be deeper than left\nOutput:\n{}", result_tree.text);
+        assert!(
+            join_tree_indent > left_tree_indent,
+            "Tree layout: join should be deeper than left\nOutput:\n{}",
+            result_tree.text
+        );
     }
 
     #[test]
@@ -1822,7 +2121,18 @@ mod tests {
 
         let tasks: Vec<_> = graph.tasks().collect();
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
-        let result = generate_ascii(&graph, &tasks, &task_ids, &HashMap::new(), &HashMap::new(), &HashMap::new(), &HashMap::new(), LayoutMode::Diamond, &HashSet::new(), "gray");
+        let result = generate_ascii(
+            &graph,
+            &tasks,
+            &task_ids,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            LayoutMode::Diamond,
+            &HashSet::new(),
+            "gray",
+        );
         eprintln!("WIDE DIAMOND:\n{}", result.text);
 
         let lines: Vec<&str> = result.text.lines().collect();
@@ -1834,8 +2144,11 @@ mod tests {
         }
         // join should receive arcs
         let join_line = lines.iter().find(|l| l.contains("join")).unwrap();
-        assert!(join_line.contains("←") || join_line.contains("┘"),
-            "join should receive arcs in wide diamond\nOutput:\n{}", result.text);
+        assert!(
+            join_line.contains("←") || join_line.contains("┘"),
+            "join should receive arcs in wide diamond\nOutput:\n{}",
+            result.text
+        );
     }
 
     #[test]
@@ -1860,16 +2173,32 @@ mod tests {
 
         let tasks: Vec<_> = graph.tasks().collect();
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
-        let result = generate_ascii(&graph, &tasks, &task_ids, &HashMap::new(), &HashMap::new(), &HashMap::new(), &HashMap::new(), LayoutMode::default(), &HashSet::new(), "gray");
+        let result = generate_ascii(
+            &graph,
+            &tasks,
+            &task_ids,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            LayoutMode::default(),
+            &HashSet::new(),
+            "gray",
+        );
 
         let tree_lines: Vec<&str> = result.text.lines().collect();
         // The child should use └→ (last visible child), not ├→
         let child_line = tree_lines.iter().find(|l| l.contains("child"));
-        assert!(child_line.is_some(), "Child should appear\nOutput:\n{}", result.text);
+        assert!(
+            child_line.is_some(),
+            "Child should appear\nOutput:\n{}",
+            result.text
+        );
         assert!(
             child_line.unwrap().contains("└→"),
             "Child should use └→ (no orphaned ├→)\nLine: '{}'\nOutput:\n{}",
-            child_line.unwrap(), result.text
+            child_line.unwrap(),
+            result.text
         );
     }
 
@@ -1896,7 +2225,11 @@ mod tests {
         s3.created_at = Some("2024-01-01T00:03:00Z".to_string());
 
         // All spokes cycle back to hub
-        target.after = vec!["spoke-a".to_string(), "spoke-b".to_string(), "spoke-c".to_string()];
+        target.after = vec![
+            "spoke-a".to_string(),
+            "spoke-b".to_string(),
+            "spoke-c".to_string(),
+        ];
 
         graph.add_node(Node::Task(target));
         graph.add_node(Node::Task(s1));
@@ -1905,15 +2238,37 @@ mod tests {
 
         let tasks: Vec<_> = graph.tasks().collect();
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
-        let result = generate_ascii(&graph, &tasks, &task_ids, &HashMap::new(), &HashMap::new(), &HashMap::new(), &HashMap::new(), LayoutMode::default(), &HashSet::new(), "gray");
+        let result = generate_ascii(
+            &graph,
+            &tasks,
+            &task_ids,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            LayoutMode::default(),
+            &HashSet::new(),
+            "gray",
+        );
 
         // Should have exactly one ← (same-target collapse)
         let target_count = result.text.matches("←").count();
-        assert_eq!(target_count, 1,
-            "Multiple sources to same target should collapse to 1 column\nOutput:\n{}", result.text);
+        assert_eq!(
+            target_count, 1,
+            "Multiple sources to same target should collapse to 1 column\nOutput:\n{}",
+            result.text
+        );
         // Should have ┤ for intermediate sources and ┘ for the last
-        assert!(result.text.contains("┤"), "Intermediate sources should have ┤\nOutput:\n{}", result.text);
-        assert!(result.text.contains("┘"), "Last source should have ┘\nOutput:\n{}", result.text);
+        assert!(
+            result.text.contains("┤"),
+            "Intermediate sources should have ┤\nOutput:\n{}",
+            result.text
+        );
+        assert!(
+            result.text.contains("┘"),
+            "Last source should have ┘\nOutput:\n{}",
+            result.text
+        );
     }
 
     #[test]
@@ -1936,7 +2291,18 @@ mod tests {
 
         let tasks: Vec<_> = graph.tasks().collect();
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
-        let result = generate_ascii(&graph, &tasks, &task_ids, &HashMap::new(), &HashMap::new(), &HashMap::new(), &HashMap::new(), LayoutMode::default(), &HashSet::new(), "gray");
+        let result = generate_ascii(
+            &graph,
+            &tasks,
+            &task_ids,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            LayoutMode::default(),
+            &HashSet::new(),
+            "gray",
+        );
 
         // Lines with arcs should have space before the dash fill
         for line in result.text.lines() {
@@ -1970,27 +2336,67 @@ mod tests {
 
         let tasks: Vec<_> = graph.tasks().collect();
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
-        let result = generate_ascii(&graph, &tasks, &task_ids, &HashMap::new(), &HashMap::new(), &HashMap::new(), &HashMap::new(), LayoutMode::default(), &HashSet::new(), "gray");
+        let result = generate_ascii(
+            &graph,
+            &tasks,
+            &task_ids,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            LayoutMode::default(),
+            &HashSet::new(),
+            "gray",
+        );
 
         // Find the lines
         let lines: Vec<&str> = result.text.lines().collect();
-        let b_line = lines.iter().find(|l| l.contains("bbb")).expect("B should appear");
-        let c_line = lines.iter().find(|l| l.contains("ccc")).expect("C should appear");
+        let b_line = lines
+            .iter()
+            .find(|l| l.contains("bbb"))
+            .expect("B should appear");
+        let c_line = lines
+            .iter()
+            .find(|l| l.contains("ccc"))
+            .expect("C should appear");
 
         // C (dependent) should have ← arrowhead (arc from B flows down to C)
-        assert!(c_line.contains("←"),
-            "Forward skip: dependent C should have ←\nOutput:\n{}", result.text);
+        assert!(
+            c_line.contains("←"),
+            "Forward skip: dependent C should have ←\nOutput:\n{}",
+            result.text
+        );
         // B (blocker) should have ┐ (top corner of downward arc to C)
-        assert!(b_line.contains("┐"),
-            "Forward skip: blocker B should have ┐\nOutput:\n{}", result.text);
+        assert!(
+            b_line.contains("┐"),
+            "Forward skip: blocker B should have ┐\nOutput:\n{}",
+            result.text
+        );
 
         // Verify tree layout with LayoutMode::Tree (old behavior)
-        let result_tree = generate_ascii(&graph, &tasks, &task_ids, &HashMap::new(), &HashMap::new(), &HashMap::new(), &HashMap::new(), LayoutMode::Tree, &HashSet::new(), "gray");
+        let result_tree = generate_ascii(
+            &graph,
+            &tasks,
+            &task_ids,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            LayoutMode::Tree,
+            &HashSet::new(),
+            "gray",
+        );
         let tree_lines: Vec<&str> = result_tree.text.lines().collect();
-        let a_line_tree = tree_lines.iter().find(|l| l.contains("aaa")).expect("A should appear in tree mode");
+        let a_line_tree = tree_lines
+            .iter()
+            .find(|l| l.contains("aaa"))
+            .expect("A should appear in tree mode");
         // In tree mode, A→C forward skip produces an arc with ┐ at A
-        assert!(a_line_tree.contains("┐") || a_line_tree.contains("─"),
-            "Tree mode: A should participate in arc\nOutput:\n{}", result_tree.text);
+        assert!(
+            a_line_tree.contains("┐") || a_line_tree.contains("─"),
+            "Tree mode: A should participate in arc\nOutput:\n{}",
+            result_tree.text
+        );
     }
 
     #[test]
@@ -2020,18 +2426,38 @@ mod tests {
 
         let tasks: Vec<_> = graph.tasks().collect();
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
-        let result = generate_ascii(&graph, &tasks, &task_ids, &HashMap::new(), &HashMap::new(), &HashMap::new(), &HashMap::new(), LayoutMode::default(), &HashSet::new(), "gray");
+        let result = generate_ascii(
+            &graph,
+            &tasks,
+            &task_ids,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            LayoutMode::default(),
+            &HashSet::new(),
+            "gray",
+        );
 
         // D should have exactly one ← (same-dependent collapse)
         let arrow_count = result.text.matches("←").count();
-        assert_eq!(arrow_count, 1,
-            "Mixed direction arcs to same dependent should collapse to 1 column\nOutput:\n{}", result.text);
+        assert_eq!(
+            arrow_count, 1,
+            "Mixed direction arcs to same dependent should collapse to 1 column\nOutput:\n{}",
+            result.text
+        );
 
         // D's line should have ←
         let lines: Vec<&str> = result.text.lines().collect();
-        let d_line = lines.iter().find(|l| l.contains("ddd")).expect("D should appear");
-        assert!(d_line.contains("←"),
-            "Mixed direction: D should have ←\nOutput:\n{}", result.text);
+        let d_line = lines
+            .iter()
+            .find(|l| l.contains("ddd"))
+            .expect("D should appear");
+        assert!(
+            d_line.contains("←"),
+            "Mixed direction: D should have ←\nOutput:\n{}",
+            result.text
+        );
     }
 
     #[test]
@@ -2058,21 +2484,50 @@ mod tests {
 
         let tasks: Vec<_> = graph.tasks().collect();
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
-        let result = generate_ascii(&graph, &tasks, &task_ids, &HashMap::new(), &HashMap::new(), &HashMap::new(), &HashMap::new(), LayoutMode::default(), &HashSet::new(), "gray");
+        let result = generate_ascii(
+            &graph,
+            &tasks,
+            &task_ids,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            LayoutMode::default(),
+            &HashSet::new(),
+            "gray",
+        );
 
         // Each dependent (leaf-a, leaf-b) should have ←
         let lines: Vec<&str> = result.text.lines().collect();
-        let c_line = lines.iter().find(|l| l.contains("leaf-a")).expect("leaf-a should appear");
-        let d_line = lines.iter().find(|l| l.contains("leaf-b")).expect("leaf-b should appear");
-        assert!(c_line.contains("←"),
-            "leaf-a should have ← arrowhead\nOutput:\n{}", result.text);
-        assert!(d_line.contains("←"),
-            "leaf-b should have ← arrowhead\nOutput:\n{}", result.text);
+        let c_line = lines
+            .iter()
+            .find(|l| l.contains("leaf-a"))
+            .expect("leaf-a should appear");
+        let d_line = lines
+            .iter()
+            .find(|l| l.contains("leaf-b"))
+            .expect("leaf-b should appear");
+        assert!(
+            c_line.contains("←"),
+            "leaf-a should have ← arrowhead\nOutput:\n{}",
+            result.text
+        );
+        assert!(
+            d_line.contains("←"),
+            "leaf-b should have ← arrowhead\nOutput:\n{}",
+            result.text
+        );
 
         // Root (blocker) should NOT have ←
-        let root_line = lines.iter().find(|l| l.contains("root")).expect("root should appear");
-        assert!(!root_line.contains("←"),
-            "root (blocker) should NOT have ←\nOutput:\n{}", result.text);
+        let root_line = lines
+            .iter()
+            .find(|l| l.contains("root"))
+            .expect("root should appear");
+        assert!(
+            !root_line.contains("←"),
+            "root (blocker) should NOT have ←\nOutput:\n{}",
+            result.text
+        );
     }
 
     #[test]
@@ -2117,17 +2572,30 @@ mod tests {
         let tasks: Vec<_> = graph.tasks().collect();
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
         let result = generate_ascii(
-            &graph, &tasks, &task_ids,
-            &HashMap::new(), &HashMap::new(), &HashMap::new(), &HashMap::new(),
-            LayoutMode::default(), &HashSet::new(), "gray",
+            &graph,
+            &tasks,
+            &task_ids,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            LayoutMode::default(),
+            &HashSet::new(),
+            "gray",
         );
         eprintln!("CROSSING OUTPUT:\n{}", result.text);
         // Should contain crossing character ┼ where verticals cross horizontals
-        assert!(result.text.contains("┼"),
-            "Should have crossing character ┼ where arcs cross\nOutput:\n{}", result.text);
+        assert!(
+            result.text.contains("┼"),
+            "Should have crossing character ┼ where arcs cross\nOutput:\n{}",
+            result.text
+        );
         // Should contain legend explaining the crossing symbol
-        assert!(result.text.contains("Legend:"),
-            "Should have legend when crossings exist\nOutput:\n{}", result.text);
+        assert!(
+            result.text.contains("Legend:"),
+            "Should have legend when crossings exist\nOutput:\n{}",
+            result.text
+        );
     }
 
     #[test]
@@ -2146,21 +2614,32 @@ mod tests {
         let tasks: Vec<_> = graph.tasks().collect();
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
         let result = generate_ascii(
-            &graph, &tasks, &task_ids, &HashMap::new(),
-            &HashMap::new(), &HashMap::new(), &HashMap::new(),
-            LayoutMode::default(), &HashSet::new(), "gray",
+            &graph,
+            &tasks,
+            &task_ids,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            LayoutMode::default(),
+            &HashSet::new(),
+            "gray",
         );
 
         // Verify char_edge_map has entries for tree connectors
-        assert!(!result.char_edge_map.is_empty(),
-            "char_edge_map should have entries for tree connectors");
+        assert!(
+            !result.char_edge_map.is_empty(),
+            "char_edge_map should have entries for tree connectors"
+        );
 
         // B's connector (├→ or └→) should map to edge (a, b)
         // Connector col for children of root (depth 0) is 0.
         let b_line = result.node_line_map["b"];
         let b_connector_edges = result.char_edge_map.get(&(b_line, 0));
-        assert!(b_connector_edges.is_some(),
-            "B's connector should have an edge map entry");
+        assert!(
+            b_connector_edges.is_some(),
+            "B's connector should have an edge map entry"
+        );
         let (src, _tgt) = &b_connector_edges.unwrap()[0];
         assert_eq!(src, "a", "B's connector should reference parent 'a'");
 
@@ -2168,8 +2647,10 @@ mod tests {
         // Connector col for children of depth 1 is 2*1 = 2.
         let c_line = result.node_line_map["c"];
         let c_connector_edges = result.char_edge_map.get(&(c_line, 2));
-        assert!(c_connector_edges.is_some(),
-            "C's connector should have an edge map entry at depth 2");
+        assert!(
+            c_connector_edges.is_some(),
+            "C's connector should have an edge map entry at depth 2"
+        );
         let (src, tgt) = &c_connector_edges.unwrap()[0];
         assert_eq!(src, "b", "C's connector should reference parent 'b'");
         assert_eq!(tgt, "c", "C's connector target should be 'c'");
@@ -2197,9 +2678,16 @@ mod tests {
         let tasks: Vec<_> = graph.tasks().collect();
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
         let result = generate_ascii(
-            &graph, &tasks, &task_ids, &HashMap::new(),
-            &HashMap::new(), &HashMap::new(), &HashMap::new(),
-            LayoutMode::default(), &HashSet::new(), "gray",
+            &graph,
+            &tasks,
+            &task_ids,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            LayoutMode::default(),
+            &HashSet::new(),
+            "gray",
         );
 
         // Output should look like:
@@ -2213,10 +2701,16 @@ mod tests {
         // The │ at col 0 (children of root) between B and C should contain ONLY (a, c), NOT (a, b)
         for l in (b_line + 1)..c_line {
             if let Some(edges) = result.char_edge_map.get(&(l, 0)) {
-                assert!(edges.iter().any(|(src, tgt)| src == "a" && tgt == "c"),
-                    "│ between siblings at line {} should contain edge (a, c) for next child", l);
-                assert!(!edges.iter().any(|(src, tgt)| src == "a" && tgt == "b"),
-                    "│ between siblings at line {} should NOT contain edge (a, b) for current child above", l);
+                assert!(
+                    edges.iter().any(|(src, tgt)| src == "a" && tgt == "c"),
+                    "│ between siblings at line {} should contain edge (a, c) for next child",
+                    l
+                );
+                assert!(
+                    !edges.iter().any(|(src, tgt)| src == "a" && tgt == "b"),
+                    "│ between siblings at line {} should NOT contain edge (a, b) for current child above",
+                    l
+                );
             }
         }
     }
@@ -2236,20 +2730,30 @@ mod tests {
         let tasks: Vec<_> = graph.tasks().collect();
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
         let result = generate_ascii(
-            &graph, &tasks, &task_ids, &HashMap::new(),
-            &HashMap::new(), &HashMap::new(), &HashMap::new(),
-            LayoutMode::default(), &HashSet::new(), "gray",
+            &graph,
+            &tasks,
+            &task_ids,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            LayoutMode::default(),
+            &HashSet::new(),
+            "gray",
         );
 
         // The fan-in creates an arc. Verify arc characters have edge map entries.
-        let has_arc_entries = result.char_edge_map.values()
-            .any(|edges| edges.iter().any(|(src, tgt)| {
+        let has_arc_entries = result.char_edge_map.values().any(|edges| {
+            edges.iter().any(|(src, tgt)| {
                 // At least one arc edge should exist (A→C or B→C depending on layout)
                 (src == "a" || src == "b") && tgt == "c"
-            }));
-        assert!(has_arc_entries,
+            })
+        });
+        assert!(
+            has_arc_entries,
             "char_edge_map should have arc edge entries for fan-in.\nOutput:\n{}\nMap entries: {:?}",
-            result.text, result.char_edge_map);
+            result.text, result.char_edge_map
+        );
     }
 
     // ===================================================================
@@ -2307,7 +2811,11 @@ mod tests {
                 }
             }
 
-            TraceState { upstream_set, downstream_set, selected_id: selected_id.to_string() }
+            TraceState {
+                upstream_set,
+                downstream_set,
+                selected_id: selected_id.to_string(),
+            }
         }
 
         fn in_upstream(&self, id: &str) -> bool {
@@ -2337,9 +2845,16 @@ mod tests {
         let tasks: Vec<_> = graph.tasks().collect();
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
         generate_ascii(
-            graph, &tasks, &task_ids, &HashMap::new(),
-            &HashMap::new(), &HashMap::new(), &HashMap::new(),
-            LayoutMode::default(), &HashSet::new(), "gray",
+            graph,
+            &tasks,
+            &task_ids,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            LayoutMode::default(),
+            &HashSet::new(),
+            "gray",
         )
     }
 
@@ -2535,8 +3050,13 @@ mod tests {
             for (col, &ch) in chars.iter().enumerate() {
                 if matches!(ch, '─' | '←' | '┐' | '┘' | '┤' | '┼') {
                     if let Some(edges) = viz.char_edge_map.get(&(line_idx, col)) {
-                        assert!(!edges.is_empty(),
-                            "Arc char '{}' at ({}, {}) has empty edge map", ch, line_idx, col);
+                        assert!(
+                            !edges.is_empty(),
+                            "Arc char '{}' at ({}, {}) has empty edge map",
+                            ch,
+                            line_idx,
+                            col
+                        );
                     }
                 }
             }
@@ -2566,8 +3086,12 @@ mod tests {
             for (col, &ch) in chars.iter().enumerate() {
                 if ch == '│' && col > 10 {
                     if let Some(edges) = viz.char_edge_map.get(&(line_idx, col)) {
-                        assert!(!edges.is_empty(),
-                            "Right-side │ at ({}, {}) should have edge entries", line_idx, col);
+                        assert!(
+                            !edges.is_empty(),
+                            "Right-side │ at ({}, {}) should have edge entries",
+                            line_idx,
+                            col
+                        );
                     }
                 }
             }
@@ -2590,8 +3114,12 @@ mod tests {
                     assert_eq!(trace.classify_edge(src, tgt), Some("downstream"));
                 }
                 if (src == "a" || src == "c") && tgt == "d" {
-                    assert_eq!(trace.classify_edge(src, tgt), None,
-                        "Edge ({}, d) should be unrelated when B is selected", src);
+                    assert_eq!(
+                        trace.classify_edge(src, tgt),
+                        None,
+                        "Edge ({}, d) should be unrelated when B is selected",
+                        src
+                    );
                 }
             }
         }
@@ -2607,8 +3135,16 @@ mod tests {
         let b_line = viz.node_line_map["b"];
         // Connector col for children of root (depth 0) is 0.
         let b_edges = viz.char_edge_map.get(&(b_line, 0));
-        assert!(b_edges.is_some(), "B's tree connector should have edge map entry");
-        assert!(b_edges.unwrap().iter().any(|(src, tgt)| src == "a" && tgt == "b"));
+        assert!(
+            b_edges.is_some(),
+            "B's tree connector should have edge map entry"
+        );
+        assert!(
+            b_edges
+                .unwrap()
+                .iter()
+                .any(|(src, tgt)| src == "a" && tgt == "b")
+        );
     }
 
     // --- Spec Rules 9-10: Selection indicator + text range ---
@@ -2622,8 +3158,11 @@ mod tests {
 
         // Task A is root at col 0 (no connector).
         let a_line = viz.node_line_map["a"];
-        assert!(lines[a_line].starts_with("a"),
-            "Root should start with task id. Got: {:?}", lines[a_line]);
+        assert!(
+            lines[a_line].starts_with("a"),
+            "Root should start with task id. Got: {:?}",
+            lines[a_line]
+        );
 
         // Task B has tree connectors before text.
         let b_line = viz.node_line_map["b"];
@@ -2653,7 +3192,10 @@ mod tests {
         // Status labels appear in the output for all tasks.
         assert!(plain.contains("done"), "Should show 'done' status label");
         assert!(plain.contains("open"), "Should show 'open' status label");
-        assert!(plain.contains("failed"), "Should show 'failed' status label");
+        assert!(
+            plain.contains("failed"),
+            "Should show 'failed' status label"
+        );
         // Note: ANSI colors only emitted when stdout is a terminal.
         // In the TUI, the viz is rendered with colors; here we verify
         // the text content is correct (status labels present, not dimmed).
@@ -2697,20 +3239,34 @@ mod tests {
         graph.add_node(Node::Task(assign));
 
         let tasks: Vec<_> = graph.tasks().collect();
-        let (filtered, annotations) = super::super::filter_internal_tasks(&graph, tasks, &HashMap::new());
+        let (filtered, annotations) =
+            super::super::filter_internal_tasks(&graph, tasks, &HashMap::new());
         let filtered_ids: HashSet<&str> = filtered.iter().map(|t| t.id.as_str()).collect();
         let result = generate_ascii(
-            &graph, &filtered, &filtered_ids, &annotations,
-            &HashMap::new(), &HashMap::new(), &HashMap::new(),
-            LayoutMode::default(), &HashSet::new(), "gray",
+            &graph,
+            &filtered,
+            &filtered_ids,
+            &annotations,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            LayoutMode::default(),
+            &HashSet::new(),
+            "gray",
         );
 
         let plain = strip_ansi_for_map(&result.text);
-        assert!(plain.contains("[assigning]"),
-            "Should contain [assigning]. Plain: {}", plain);
+        assert!(
+            plain.contains("[assigning]"),
+            "Should contain [assigning]. Plain: {}",
+            plain
+        );
         // Internal assign task should be filtered out.
-        assert!(!plain.contains("assign-my-task"),
-            "Internal task should be filtered. Plain: {}", plain);
+        assert!(
+            !plain.contains("assign-my-task"),
+            "Internal task should be filtered. Plain: {}",
+            plain
+        );
         // ANSI 219 (true pink) is only emitted when stdout is a terminal.
         // Verify the code path: the annotation text must reference the agency
         // phase which the TUI will render in pink when use_color is true.
@@ -2736,7 +3292,11 @@ mod tests {
         let graph = build_linear_chain();
         let viz = render_graph(&graph);
         let last = viz.task_order.len() - 1;
-        let new_idx = if last + 1 >= viz.task_order.len() { last } else { last + 1 };
+        let new_idx = if last + 1 >= viz.task_order.len() {
+            last
+        } else {
+            last + 1
+        };
         assert_eq!(new_idx, last);
     }
 
@@ -2747,7 +3307,10 @@ mod tests {
         let graph = build_linear_chain();
         let viz = render_graph(&graph);
         assert_eq!(viz.task_order[0], viz.task_order[0]); // Home → first
-        assert_eq!(viz.task_order[viz.task_order.len() - 1], *viz.task_order.last().unwrap()); // End → last
+        assert_eq!(
+            viz.task_order[viz.task_order.len() - 1],
+            *viz.task_order.last().unwrap()
+        ); // End → last
     }
 
     // --- Spec Rule 18: No legend in simple graphs ---
@@ -2758,8 +3321,10 @@ mod tests {
         let viz = render_graph(&graph);
         let plain = strip_ansi_for_map(&viz.text);
         for line in plain.lines() {
-            assert!(!line.trim_start().starts_with("Legend:"),
-                "Simple chain should not have a Legend line");
+            assert!(
+                !line.trim_start().starts_with("Legend:"),
+                "Simple chain should not have a Legend line"
+            );
         }
     }
 
@@ -2769,8 +3334,14 @@ mod tests {
     fn trace_linear_chain_all_edges_present() {
         let graph = build_linear_chain();
         let viz = render_graph(&graph);
-        let has_ab = viz.char_edge_map.values().any(|e| e.iter().any(|(s,t)| s == "a" && t == "b"));
-        let has_bc = viz.char_edge_map.values().any(|e| e.iter().any(|(s,t)| s == "b" && t == "c"));
+        let has_ab = viz
+            .char_edge_map
+            .values()
+            .any(|e| e.iter().any(|(s, t)| s == "a" && t == "b"));
+        let has_bc = viz
+            .char_edge_map
+            .values()
+            .any(|e| e.iter().any(|(s, t)| s == "b" && t == "c"));
         assert!(has_ab, "Missing edge (a,b). Map: {:?}", viz.char_edge_map);
         assert!(has_bc, "Missing edge (b,c). Map: {:?}", viz.char_edge_map);
     }
@@ -2779,11 +3350,15 @@ mod tests {
     fn trace_linear_chain_no_spurious_edges() {
         let graph = build_linear_chain();
         let viz = render_graph(&graph);
-        let valid: HashSet<(&str,&str)> = [("a","b"),("b","c")].into_iter().collect();
+        let valid: HashSet<(&str, &str)> = [("a", "b"), ("b", "c")].into_iter().collect();
         for edges in viz.char_edge_map.values() {
             for (src, tgt) in edges {
-                assert!(valid.contains(&(src.as_str(), tgt.as_str())),
-                    "Spurious edge ({}, {}) in linear chain", src, tgt);
+                assert!(
+                    valid.contains(&(src.as_str(), tgt.as_str())),
+                    "Spurious edge ({}, {}) in linear chain",
+                    src,
+                    tgt
+                );
             }
         }
     }
@@ -2794,10 +3369,16 @@ mod tests {
     fn trace_fan_in_all_edges_present() {
         let graph = build_fan_in_abcd();
         let viz = render_graph(&graph);
-        for (src, tgt) in [("a","d"), ("b","d"), ("c","d")] {
-            let found = viz.char_edge_map.values()
-                .any(|e| e.iter().any(|(s,t)| s == src && t == tgt));
-            assert!(found, "Missing edge ({},{}). Text:\n{}\nMap: {:?}", src, tgt, viz.text, viz.char_edge_map);
+        for (src, tgt) in [("a", "d"), ("b", "d"), ("c", "d")] {
+            let found = viz
+                .char_edge_map
+                .values()
+                .any(|e| e.iter().any(|(s, t)| s == src && t == tgt));
+            assert!(
+                found,
+                "Missing edge ({},{}). Text:\n{}\nMap: {:?}",
+                src, tgt, viz.text, viz.char_edge_map
+            );
         }
     }
 
@@ -2807,10 +3388,16 @@ mod tests {
     fn trace_fan_out_all_edges_present() {
         let graph = build_fan_out();
         let viz = render_graph(&graph);
-        for (src, tgt) in [("a","b"), ("a","c"), ("a","d")] {
-            let found = viz.char_edge_map.values()
-                .any(|e| e.iter().any(|(s,t)| s == src && t == tgt));
-            assert!(found, "Missing edge ({},{}). Map: {:?}", src, tgt, viz.char_edge_map);
+        for (src, tgt) in [("a", "b"), ("a", "c"), ("a", "d")] {
+            let found = viz
+                .char_edge_map
+                .values()
+                .any(|e| e.iter().any(|(s, t)| s == src && t == tgt));
+            assert!(
+                found,
+                "Missing edge ({},{}). Map: {:?}",
+                src, tgt, viz.char_edge_map
+            );
         }
     }
 
@@ -2820,10 +3407,16 @@ mod tests {
     fn trace_diamond_all_edges_present() {
         let graph = build_diamond();
         let viz = render_graph(&graph);
-        for (src, tgt) in [("a","b"), ("a","c"), ("b","d"), ("c","d")] {
-            let found = viz.char_edge_map.values()
-                .any(|e| e.iter().any(|(s,t)| s == src && t == tgt));
-            assert!(found, "Missing edge ({},{}). Text:\n{}\nMap: {:?}", src, tgt, viz.text, viz.char_edge_map);
+        for (src, tgt) in [("a", "b"), ("a", "c"), ("b", "d"), ("c", "d")] {
+            let found = viz
+                .char_edge_map
+                .values()
+                .any(|e| e.iter().any(|(s, t)| s == src && t == tgt));
+            assert!(
+                found,
+                "Missing edge ({},{}). Text:\n{}\nMap: {:?}",
+                src, tgt, viz.text, viz.char_edge_map
+            );
         }
     }
 
@@ -2847,12 +3440,25 @@ mod tests {
     fn trace_cycle_has_back_edge() {
         let graph = build_cycle_abc();
         let viz = render_graph(&graph);
-        let has_ab = viz.char_edge_map.values().any(|e| e.iter().any(|(s,t)| s == "a" && t == "b"));
-        let has_bc = viz.char_edge_map.values().any(|e| e.iter().any(|(s,t)| s == "b" && t == "c"));
-        let has_ca = viz.char_edge_map.values().any(|e| e.iter().any(|(s,t)| s == "c" && t == "a"));
+        let has_ab = viz
+            .char_edge_map
+            .values()
+            .any(|e| e.iter().any(|(s, t)| s == "a" && t == "b"));
+        let has_bc = viz
+            .char_edge_map
+            .values()
+            .any(|e| e.iter().any(|(s, t)| s == "b" && t == "c"));
+        let has_ca = viz
+            .char_edge_map
+            .values()
+            .any(|e| e.iter().any(|(s, t)| s == "c" && t == "a"));
         let count = [has_ab, has_bc, has_ca].iter().filter(|&&x| x).count();
-        assert!(count >= 2,
-            "Cycle should have ≥2 edges in char_edge_map. Text:\n{}\nMap: {:?}", viz.text, viz.char_edge_map);
+        assert!(
+            count >= 2,
+            "Cycle should have ≥2 edges in char_edge_map. Text:\n{}\nMap: {:?}",
+            viz.text,
+            viz.char_edge_map
+        );
     }
 
     // --- Trace correctness: cycle covers full loop ---
@@ -2864,8 +3470,11 @@ mod tests {
         let trace = TraceState::new(&viz, "a");
         let all = (trace.upstream_set.contains("b") || trace.downstream_set.contains("b"))
             && (trace.upstream_set.contains("c") || trace.downstream_set.contains("c"));
-        assert!(all, "In a cycle all nodes should be reachable. Up: {:?}, Down: {:?}",
-            trace.upstream_set, trace.downstream_set);
+        assert!(
+            all,
+            "In a cycle all nodes should be reachable. Up: {:?}, Down: {:?}",
+            trace.upstream_set, trace.downstream_set
+        );
     }
 
     // --- Trace correctness: diamond from leaf ---
@@ -2918,7 +3527,15 @@ mod tests {
         let mut prev = 0;
         for (i, id) in viz.task_order.iter().enumerate() {
             let line = viz.node_line_map[id];
-            if i > 0 { assert!(line > prev, "task_order not sorted: {} at {} vs {}", id, line, prev); }
+            if i > 0 {
+                assert!(
+                    line > prev,
+                    "task_order not sorted: {} at {} vs {}",
+                    id,
+                    line,
+                    prev
+                );
+            }
             prev = line;
         }
     }
@@ -2939,15 +3556,25 @@ mod tests {
             for (src, targets) in &viz.forward_edges {
                 for tgt in targets {
                     let rev = viz.reverse_edges.get(tgt);
-                    assert!(rev.is_some() && rev.unwrap().contains(src),
-                        "{}: fwd ({}->{}) missing in reverse", name, src, tgt);
+                    assert!(
+                        rev.is_some() && rev.unwrap().contains(src),
+                        "{}: fwd ({}->{}) missing in reverse",
+                        name,
+                        src,
+                        tgt
+                    );
                 }
             }
             for (tgt, sources) in &viz.reverse_edges {
                 for src in sources {
                     let fwd = viz.forward_edges.get(src);
-                    assert!(fwd.is_some() && fwd.unwrap().contains(tgt),
-                        "{}: rev ({}->{}) missing in forward", name, src, tgt);
+                    assert!(
+                        fwd.is_some() && fwd.unwrap().contains(tgt),
+                        "{}: rev ({}->{}) missing in forward",
+                        name,
+                        src,
+                        tgt
+                    );
                 }
             }
         }
@@ -2991,8 +3618,11 @@ mod tests {
         if let (Some(&bl), Some(&cl)) = (b_line, c_line) {
             for l in (bl + 1)..cl {
                 if let Some(edges) = viz.char_edge_map.get(&(l, 0)) {
-                    assert!(edges.iter().any(|(s, _)| s == "a"),
-                        "│ at line {} should reference parent 'a'", l);
+                    assert!(
+                        edges.iter().any(|(s, _)| s == "a"),
+                        "│ at line {} should reference parent 'a'",
+                        l
+                    );
                 }
             }
         }
@@ -3010,7 +3640,12 @@ mod tests {
         ] {
             let viz = render_graph(&graph);
             let unique: HashSet<&str> = viz.task_order.iter().map(|s| s.as_str()).collect();
-            assert_eq!(unique.len(), viz.task_order.len(), "{}: duplicate in task_order", name);
+            assert_eq!(
+                unique.len(),
+                viz.task_order.len(),
+                "{}: duplicate in task_order",
+                name
+            );
         }
     }
 
@@ -3027,7 +3662,12 @@ mod tests {
             let viz = render_graph(&graph);
             let lines: Vec<usize> = viz.node_line_map.values().copied().collect();
             let unique: HashSet<usize> = lines.iter().copied().collect();
-            assert_eq!(unique.len(), lines.len(), "{}: duplicate line numbers", name);
+            assert_eq!(
+                unique.len(),
+                lines.len(),
+                "{}: duplicate line numbers",
+                name
+            );
         }
     }
 
@@ -3050,10 +3690,14 @@ mod tests {
     fn trace_long_chain_correctness() {
         let mut graph = WorkGraph::new();
         graph.add_node(Node::Task(make_task("a", "A")));
-        let mut b = make_task("b", "B"); b.after = vec!["a".to_string()];
-        let mut c = make_task("c", "C"); c.after = vec!["b".to_string()];
-        let mut d = make_task("d", "D"); d.after = vec!["c".to_string()];
-        let mut e = make_task("e", "E"); e.after = vec!["d".to_string()];
+        let mut b = make_task("b", "B");
+        b.after = vec!["a".to_string()];
+        let mut c = make_task("c", "C");
+        c.after = vec!["b".to_string()];
+        let mut d = make_task("d", "D");
+        d.after = vec!["c".to_string()];
+        let mut e = make_task("e", "E");
+        e.after = vec!["d".to_string()];
         graph.add_node(Node::Task(b));
         graph.add_node(Node::Task(c));
         graph.add_node(Node::Task(d));
@@ -3066,9 +3710,11 @@ mod tests {
         assert!(trace.downstream_set.contains("d"));
         assert!(trace.downstream_set.contains("e"));
 
-        for (src, tgt) in [("a","b"), ("b","c"), ("c","d"), ("d","e")] {
-            let found = viz.char_edge_map.values()
-                .any(|e| e.iter().any(|(s,t)| s == src && t == tgt));
+        for (src, tgt) in [("a", "b"), ("b", "c"), ("c", "d"), ("d", "e")] {
+            let found = viz
+                .char_edge_map
+                .values()
+                .any(|e| e.iter().any(|(s, t)| s == src && t == tgt));
             assert!(found, "Missing edge ({},{}) in long chain", src, tgt);
         }
     }
@@ -3078,10 +3724,17 @@ mod tests {
     #[test]
     fn trace_mixed_status_all_present() {
         let mut graph = WorkGraph::new();
-        let mut a = make_task("a", "Done"); a.status = Status::Done;
-        let mut b = make_task("b", "InProg"); b.status = Status::InProgress; b.after = vec!["a".to_string()];
-        let mut c = make_task("c", "Open"); c.status = Status::Open; c.after = vec!["a".to_string()];
-        let mut d = make_task("d", "Failed"); d.status = Status::Failed; d.after = vec!["b".to_string()];
+        let mut a = make_task("a", "Done");
+        a.status = Status::Done;
+        let mut b = make_task("b", "InProg");
+        b.status = Status::InProgress;
+        b.after = vec!["a".to_string()];
+        let mut c = make_task("c", "Open");
+        c.status = Status::Open;
+        c.after = vec!["a".to_string()];
+        let mut d = make_task("d", "Failed");
+        d.status = Status::Failed;
+        d.after = vec!["b".to_string()];
         graph.add_node(Node::Task(a));
         graph.add_node(Node::Task(b));
         graph.add_node(Node::Task(c));
@@ -3129,7 +3782,10 @@ mod tests {
         graph.add_node(Node::Task(d));
 
         let viz = render_graph(&graph);
-        let src_line = *viz.node_line_map.get("src").expect("src should be in node_line_map");
+        let src_line = *viz
+            .node_line_map
+            .get("src")
+            .expect("src should be in node_line_map");
 
         // Print for debugging
         eprintln!("=== VIZ TEXT ===\n{}", viz.text);
@@ -3139,9 +3795,15 @@ mod tests {
         eprintln!("=== NODE LINE MAP ===\n{:?}", viz.node_line_map);
 
         // Collect all char_edge_map entries on src_line
-        let mut src_line_entries: Vec<(usize, Vec<(String, String)>)> = viz.char_edge_map.iter()
+        let mut src_line_entries: Vec<(usize, Vec<(String, String)>)> = viz
+            .char_edge_map
+            .iter()
             .filter_map(|((line, col), edges)| {
-                if *line == src_line { Some((*col, edges.clone())) } else { None }
+                if *line == src_line {
+                    Some((*col, edges.clone()))
+                } else {
+                    None
+                }
             })
             .collect();
         src_line_entries.sort_by_key(|(col, _)| *col);
@@ -3153,19 +3815,24 @@ mod tests {
 
         // Each arc from src to b, c, d must have char_edge_map entries on src's line
         for target in &["b", "c", "d"] {
-            let has_edge_on_src_line = viz.char_edge_map.iter()
-                .any(|(&(line, _col), edges)| {
-                    line == src_line && edges.iter().any(|(s, t)| s == "src" && t.as_str() == *target)
-                });
-            assert!(has_edge_on_src_line,
+            let has_edge_on_src_line = viz.char_edge_map.iter().any(|(&(line, _col), edges)| {
+                line == src_line
+                    && edges
+                        .iter()
+                        .any(|(s, t)| s == "src" && t.as_str() == *target)
+            });
+            assert!(
+                has_edge_on_src_line,
                 "char_edge_map should have (src, {}) entries on source line {}.\nOutput:\n{}\nMap: {:?}",
-                target, src_line, viz.text, viz.char_edge_map);
+                target, src_line, viz.text, viz.char_edge_map
+            );
         }
 
         // Verify that ALL arc characters (dashes, corners) on src's line after text
         // are mapped to some edge in char_edge_map
         let src_plain = plain_lines[src_line];
-        let text_end = src_plain.find("(open)")
+        let text_end = src_plain
+            .find("(open)")
             .map(|p| p + "(open)".len())
             .unwrap_or(0);
         let mut unmapped_dashes = Vec::new();
@@ -3176,9 +3843,13 @@ mod tests {
                 }
             }
         }
-        assert!(unmapped_dashes.is_empty(),
+        assert!(
+            unmapped_dashes.is_empty(),
             "Found unmapped arc characters on source line: {:?}\nPlain: {}\nMap entries: {:?}",
-            unmapped_dashes, src_plain, src_line_entries);
+            unmapped_dashes,
+            src_plain,
+            src_line_entries
+        );
     }
 
     #[test]
@@ -3228,9 +3899,15 @@ mod tests {
         eprintln!("=== NODE LINE MAP === {:?}", viz.node_line_map);
 
         // Collect char_edge_map entries on other's line
-        let mut other_entries: Vec<(usize, Vec<(String, String)>)> = viz.char_edge_map.iter()
+        let mut other_entries: Vec<(usize, Vec<(String, String)>)> = viz
+            .char_edge_map
+            .iter()
             .filter_map(|((line, col), edges)| {
-                if *line == other_line { Some((*col, edges.clone())) } else { None }
+                if *line == other_line {
+                    Some((*col, edges.clone()))
+                } else {
+                    None
+                }
             })
             .collect();
         other_entries.sort_by_key(|(col, _)| *col);
@@ -3241,9 +3918,15 @@ mod tests {
         }
 
         // Collect char_edge_map entries on src's line
-        let mut src_entries: Vec<(usize, Vec<(String, String)>)> = viz.char_edge_map.iter()
+        let mut src_entries: Vec<(usize, Vec<(String, String)>)> = viz
+            .char_edge_map
+            .iter()
             .filter_map(|((line, col), edges)| {
-                if *line == src_line { Some((*col, edges.clone())) } else { None }
+                if *line == src_line {
+                    Some((*col, edges.clone()))
+                } else {
+                    None
+                }
             })
             .collect();
         src_entries.sort_by_key(|(col, _)| *col);
@@ -3254,34 +3937,46 @@ mod tests {
         }
 
         // KEY ASSERTION: Dashes on other's line must map to (other, tX), not (src, tX)
-        let text_end = plain_lines[other_line].find("(open)")
+        let text_end = plain_lines[other_line]
+            .find("(open)")
             .map(|p| p + "(open)".len())
             .unwrap_or(0);
         for (col, edges) in &other_entries {
-            if *col <= text_end { continue; } // skip tree connectors
+            if *col <= text_end {
+                continue;
+            } // skip tree connectors
             let ch = plain_lines[other_line].chars().nth(*col).unwrap_or('?');
             if ch == '─' {
                 // A dash on other's line should contain an (other, *) edge
                 let has_other_edge = edges.iter().any(|(s, _)| s == "other");
-                assert!(has_other_edge,
+                assert!(
+                    has_other_edge,
                     "Dash at col {} on other's line should map to (other, ...) but got {:?}.\n\
                      This means the dash was mapped to the wrong blocker's edge.\n\
-                     Output:\n{}", col, edges, viz.text);
+                     Output:\n{}",
+                    col, edges, viz.text
+                );
             }
         }
 
         // Same check for src's line
-        let text_end_src = plain_lines[src_line].find("(open)")
+        let text_end_src = plain_lines[src_line]
+            .find("(open)")
             .map(|p| p + "(open)".len())
             .unwrap_or(0);
         for (col, edges) in &src_entries {
-            if *col <= text_end_src { continue; }
+            if *col <= text_end_src {
+                continue;
+            }
             let ch = plain_lines[src_line].chars().nth(*col).unwrap_or('?');
             if ch == '─' {
                 let has_src_edge = edges.iter().any(|(s, _)| s == "src");
-                assert!(has_src_edge,
+                assert!(
+                    has_src_edge,
                     "Dash at col {} on src's line should map to (src, ...) but got {:?}.\n\
-                     Output:\n{}", col, edges, viz.text);
+                     Output:\n{}",
+                    col, edges, viz.text
+                );
             }
         }
     }
@@ -3307,7 +4002,12 @@ mod tests {
         let mut sm = make_task("sm", "Smoke Test");
         sm.after = vec!["rem".to_string(), "ue".to_string()];
         let mut va = make_task("va", "Validate");
-        va.after = vec!["rem".to_string(), "ue".to_string(), "ud".to_string(), "sm".to_string()];
+        va.after = vec![
+            "rem".to_string(),
+            "ue".to_string(),
+            "ud".to_string(),
+            "sm".to_string(),
+        ];
         graph.add_node(Node::Task(rem));
         graph.add_node(Node::Task(ue));
         graph.add_node(Node::Task(ud));
@@ -3324,9 +4024,15 @@ mod tests {
         let ue_line = viz.node_line_map["ue"];
 
         // Collect char_edge_map entries on ue's line
-        let mut ue_entries: Vec<(usize, Vec<(String, String)>)> = viz.char_edge_map.iter()
+        let mut ue_entries: Vec<(usize, Vec<(String, String)>)> = viz
+            .char_edge_map
+            .iter()
             .filter_map(|((line, col), edges)| {
-                if *line == ue_line { Some((*col, edges.clone())) } else { None }
+                if *line == ue_line {
+                    Some((*col, edges.clone()))
+                } else {
+                    None
+                }
             })
             .collect();
         ue_entries.sort_by_key(|(col, _)| *col);
@@ -3339,9 +4045,7 @@ mod tests {
         // The ue line should have arcs to sm, ud, and va.
         // Verify every non-space, non-text arc char on ue's line is mapped
         let ue_plain = plain_lines[ue_line];
-        let text_end = ue_plain.rfind(')')
-            .map(|p| p + 1)
-            .unwrap_or(0);
+        let text_end = ue_plain.rfind(')').map(|p| p + 1).unwrap_or(0);
         let mut unmapped = Vec::new();
         for (i, ch) in ue_plain.chars().enumerate() {
             if i >= text_end && (ch == '─' || ch == '┐' || ch == '┘' || ch == '┤') {
@@ -3350,30 +4054,43 @@ mod tests {
                 }
             }
         }
-        assert!(unmapped.is_empty(),
+        assert!(
+            unmapped.is_empty(),
             "Unmapped arc chars on ue line: {:?}\nPlain: {}\nEntries: {:?}",
-            unmapped, ue_plain, ue_entries);
+            unmapped,
+            ue_plain,
+            ue_entries
+        );
 
         // Each arc from ue must have entries on ue's line
         for target in &["sm", "ud", "va"] {
-            let has = viz.char_edge_map.iter()
-                .any(|(&(line, _), edges)| {
-                    line == ue_line && edges.iter().any(|(s, t)| s == "ue" && t.as_str() == *target)
-                });
-            assert!(has,
+            let has = viz.char_edge_map.iter().any(|(&(line, _), edges)| {
+                line == ue_line
+                    && edges
+                        .iter()
+                        .any(|(s, t)| s == "ue" && t.as_str() == *target)
+            });
+            assert!(
+                has,
                 "char_edge_map missing (ue, {}) on ue line {}. Output:\n{}",
-                target, ue_line, viz.text);
+                target, ue_line, viz.text
+            );
         }
 
         // Dashes on ue's line must be mapped to (ue, *), not some other blocker
         for (col, edges) in &ue_entries {
-            if *col < text_end { continue; }
+            if *col < text_end {
+                continue;
+            }
             let ch = ue_plain.chars().nth(*col).unwrap_or('?');
             if ch == '─' {
                 let has_ue_edge = edges.iter().any(|(s, _)| s == "ue");
-                assert!(has_ue_edge,
+                assert!(
+                    has_ue_edge,
                     "Dash at col {} on ue's line should map to (ue, ...) but got {:?}.\n\
-                     Output:\n{}", col, edges, viz.text);
+                     Output:\n{}",
+                    col, edges, viz.text
+                );
             }
         }
     }
@@ -3397,12 +4114,18 @@ mod tests {
 
         let mut graph = WorkGraph::new();
         let t_root = make_task("root", "Root");
-        let mut t_a = make_task("a", "A"); t_a.after = vec!["root".to_string()];
-        let mut t_b = make_task("b", "B"); t_b.after = vec!["a".to_string()];
-        let mut t_c = make_task("c", "C"); t_c.after = vec!["b".to_string()];
-        let mut t_d = make_task("d", "D"); t_d.after = vec!["c".to_string()];
-        let mut t_e = make_task("e", "E"); t_e.after = vec!["d".to_string()];
-        let mut t_f = make_task("f", "F"); t_f.after = vec!["root".to_string()];
+        let mut t_a = make_task("a", "A");
+        t_a.after = vec!["root".to_string()];
+        let mut t_b = make_task("b", "B");
+        t_b.after = vec!["a".to_string()];
+        let mut t_c = make_task("c", "C");
+        t_c.after = vec!["b".to_string()];
+        let mut t_d = make_task("d", "D");
+        t_d.after = vec!["c".to_string()];
+        let mut t_e = make_task("e", "E");
+        t_e.after = vec!["d".to_string()];
+        let mut t_f = make_task("f", "F");
+        t_f.after = vec!["root".to_string()];
         graph.add_node(Node::Task(t_root));
         graph.add_node(Node::Task(t_a));
         graph.add_node(Node::Task(t_b));
@@ -3414,9 +4137,16 @@ mod tests {
         let tasks: Vec<_> = graph.tasks().collect();
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
         let viz = generate_ascii(
-            &graph, &tasks, &task_ids, &HashMap::new(),
-            &HashMap::new(), &HashMap::new(), &HashMap::new(),
-            LayoutMode::Tree, &HashSet::new(), "gray",
+            &graph,
+            &tasks,
+            &task_ids,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            LayoutMode::Tree,
+            &HashSet::new(),
+            "gray",
         );
 
         let a_line = viz.node_line_map["a"];
@@ -3430,17 +4160,31 @@ mod tests {
             }
 
             let edges = viz.char_edge_map.get(&(l, 0));
-            assert!(edges.is_some(),
-                "│ at ({}, 0) should have char_edge_map entry.\nOutput:\n{}", l, viz.text);
+            assert!(
+                edges.is_some(),
+                "│ at ({}, 0) should have char_edge_map entry.\nOutput:\n{}",
+                l,
+                viz.text
+            );
             let edges = edges.unwrap();
 
             // Must contain (root, f) — the next sibling below
-            assert!(edges.iter().any(|(s, t)| s == "root" && t == "f"),
-                "│ at ({}, 0) must map to (root, f). Got: {:?}\nOutput:\n{}", l, edges, viz.text);
+            assert!(
+                edges.iter().any(|(s, t)| s == "root" && t == "f"),
+                "│ at ({}, 0) must map to (root, f). Got: {:?}\nOutput:\n{}",
+                l,
+                edges,
+                viz.text
+            );
 
             // Must NOT contain (root, a) — the sibling above (already branched)
-            assert!(!edges.iter().any(|(s, t)| s == "root" && t == "a"),
-                "│ at ({}, 0) must NOT map to (root, a). Got: {:?}\nOutput:\n{}", l, edges, viz.text);
+            assert!(
+                !edges.iter().any(|(s, t)| s == "root" && t == "a"),
+                "│ at ({}, 0) must NOT map to (root, a). Got: {:?}\nOutput:\n{}",
+                l,
+                edges,
+                viz.text
+            );
         }
 
         // Simulate trace: if d is selected, upstream = {c, b, a, root}
@@ -3452,12 +4196,15 @@ mod tests {
 
         for l in (a_line + 1)..f_line {
             if let Some(edges) = viz.char_edge_map.get(&(l, 0)) {
-                let would_color = edges.iter().any(|(src, tgt)| {
-                    trace.classify_edge(src, tgt).is_some()
-                });
-                assert!(!would_color,
+                let would_color = edges
+                    .iter()
+                    .any(|(src, tgt)| trace.classify_edge(src, tgt).is_some());
+                assert!(
+                    !would_color,
                     "│ at ({}, 0) should NOT be colored when d is selected. \
-                     f is not in the trace. Edges: {:?}", l, edges);
+                     f is not in the trace. Edges: {:?}",
+                    l, edges
+                );
             }
         }
     }

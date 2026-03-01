@@ -275,10 +275,7 @@ pub fn design_experiment(
 /// Find the best cached agent for a task.
 ///
 /// Returns (agent, score) if a suitable agent is found above threshold.
-pub fn find_cached_agent(
-    agency_dir: &Path,
-    threshold: f64,
-) -> Option<(Agent, f64)> {
+pub fn find_cached_agent(agency_dir: &Path, threshold: f64) -> Option<(Agent, f64)> {
     let agents_dir = agency_dir.join("cache/agents");
     let agents = load_all_agents_or_warn(&agents_dir);
 
@@ -292,10 +289,7 @@ pub fn find_cached_agent(
                 None
             }
         })
-        .max_by(|a, b| {
-            a.1.partial_cmp(&b.1)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        })
+        .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
 }
 
 // ---------------------------------------------------------------------------
@@ -337,36 +331,38 @@ pub fn process_retrospective_inference(
             // Propagate score to the introduced primitive
             let component_path = components_dir.join(format!("{}.yaml", introduced));
             if component_path.exists()
-                && let Ok(mut component) = load_component(&component_path) {
-                    let eval_ref = EvaluationRef {
-                        score: eval_score,
-                        task_id: task_id.to_string(),
-                        timestamp: chrono::Utc::now().to_rfc3339(),
-                        context_id: format!("experiment:{}", record.composition_id),
-                    };
-                    super::eval::update_performance(&mut component.performance, eval_ref);
-                    let _ = save_component(&component, &components_dir);
-                }
+                && let Ok(mut component) = load_component(&component_path)
+            {
+                let eval_ref = EvaluationRef {
+                    score: eval_score,
+                    task_id: task_id.to_string(),
+                    timestamp: chrono::Utc::now().to_rfc3339(),
+                    context_id: format!("experiment:{}", record.composition_id),
+                };
+                super::eval::update_performance(&mut component.performance, eval_ref);
+                let _ = save_component(&component, &components_dir);
+            }
 
             // Update attractor weight on agent
             if let Some(base_id) = &experiment.base_composition {
                 let agent_path = agents_dir.join(format!("{}.yaml", base_id));
                 if agent_path.exists()
-                    && let Ok(agent) = load_agent(&agent_path) {
-                        let base_avg = agent.performance.avg_score.unwrap_or(0.5);
-                        // Adjust attractor weights on the agent
-                        // If experiment score > base avg, increase weight; otherwise decrease
-                        let mut updated_agent = agent;
-                        let learning_rate = 0.1;
-                        if eval_score > base_avg {
-                            updated_agent.attractor_weight =
-                                (updated_agent.attractor_weight + learning_rate).min(1.0);
-                        } else {
-                            updated_agent.attractor_weight =
-                                (updated_agent.attractor_weight - learning_rate).max(0.0);
-                        }
-                        let _ = save_agent(&updated_agent, &agents_dir);
+                    && let Ok(agent) = load_agent(&agent_path)
+                {
+                    let base_avg = agent.performance.avg_score.unwrap_or(0.5);
+                    // Adjust attractor weights on the agent
+                    // If experiment score > base avg, increase weight; otherwise decrease
+                    let mut updated_agent = agent;
+                    let learning_rate = 0.1;
+                    if eval_score > base_avg {
+                        updated_agent.attractor_weight =
+                            (updated_agent.attractor_weight + learning_rate).min(1.0);
+                    } else {
+                        updated_agent.attractor_weight =
+                            (updated_agent.attractor_weight - learning_rate).max(0.0);
                     }
+                    let _ = save_agent(&updated_agent, &agents_dir);
+                }
             }
         }
         ExperimentDimension::NovelComposition => {
@@ -378,16 +374,17 @@ pub fn process_retrospective_inference(
                     for comp_id in &role.component_ids {
                         let comp_path = components_dir.join(format!("{}.yaml", comp_id));
                         if comp_path.exists()
-                            && let Ok(mut comp) = load_component(&comp_path) {
-                                let eval_ref = EvaluationRef {
-                                    score: eval_score,
-                                    task_id: task_id.to_string(),
-                                    timestamp: chrono::Utc::now().to_rfc3339(),
-                                    context_id: format!("experiment:novel:{}", record.composition_id),
-                                };
-                                super::eval::update_performance(&mut comp.performance, eval_ref);
-                                let _ = save_component(&comp, &components_dir);
-                            }
+                            && let Ok(mut comp) = load_component(&comp_path)
+                        {
+                            let eval_ref = EvaluationRef {
+                                score: eval_score,
+                                task_id: task_id.to_string(),
+                                timestamp: chrono::Utc::now().to_rfc3339(),
+                                context_id: format!("experiment:novel:{}", record.composition_id),
+                            };
+                            super::eval::update_performance(&mut comp.performance, eval_ref);
+                            let _ = save_component(&comp, &components_dir);
+                        }
                     }
                 }
             }
@@ -400,16 +397,17 @@ pub fn process_retrospective_inference(
         // but update its performance to reflect this high score
         let agent_path = agents_dir.join(format!("{}.yaml", record.agent_id));
         if agent_path.exists()
-            && let Ok(mut agent) = load_agent(&agent_path) {
-                let eval_ref = EvaluationRef {
-                    score: eval_score,
-                    task_id: task_id.to_string(),
-                    timestamp: chrono::Utc::now().to_rfc3339(),
-                    context_id: "experiment:cache-population".to_string(),
-                };
-                super::eval::update_performance(&mut agent.performance, eval_ref);
-                let _ = save_agent(&agent, &agents_dir);
-            }
+            && let Ok(mut agent) = load_agent(&agent_path)
+        {
+            let eval_ref = EvaluationRef {
+                score: eval_score,
+                task_id: task_id.to_string(),
+                timestamp: chrono::Utc::now().to_rfc3339(),
+                context_id: "experiment:cache-population".to_string(),
+            };
+            super::eval::update_performance(&mut agent.performance, eval_ref);
+            let _ = save_agent(&agent, &agents_dir);
+        }
     }
 
     Ok(())
@@ -563,7 +561,8 @@ mod tests {
     #[test]
     fn test_select_primitive_single_candidate() {
         let candidates = vec![("comp-1".to_string(), Some(0.8), 5, 0.5)];
-        let (selected, scores) = select_primitive_ucb1(&candidates, 100, std::f64::consts::SQRT_2, 1.5).unwrap();
+        let (selected, scores) =
+            select_primitive_ucb1(&candidates, 100, std::f64::consts::SQRT_2, 1.5).unwrap();
         assert_eq!(selected, "comp-1");
         assert!(scores.contains_key("comp-1"));
     }
@@ -574,7 +573,8 @@ mod tests {
             ("well-explored".to_string(), Some(0.7), 50, 0.5),
             ("under-explored".to_string(), Some(0.7), 1, 0.5),
         ];
-        let (selected, _) = select_primitive_ucb1(&candidates, 100, std::f64::consts::SQRT_2, 1.5).unwrap();
+        let (selected, _) =
+            select_primitive_ucb1(&candidates, 100, std::f64::consts::SQRT_2, 1.5).unwrap();
         // Under-explored should win due to high exploration bonus
         assert_eq!(selected, "under-explored");
     }
@@ -589,7 +589,10 @@ mod tests {
 
         let config = test_config();
         let exp = design_experiment(&agency_dir, &config, 1);
-        assert!(matches!(exp.dimension, ExperimentDimension::NovelComposition));
+        assert!(matches!(
+            exp.dimension,
+            ExperimentDimension::NovelComposition
+        ));
         assert!(!exp.bizarre_ideation);
     }
 
@@ -602,7 +605,10 @@ mod tests {
         let config = test_config();
         // learning_assignment_count = 10, bizarre_ideation_interval = 10
         let exp = design_experiment(&agency_dir, &config, 10);
-        assert!(matches!(exp.dimension, ExperimentDimension::NovelComposition));
+        assert!(matches!(
+            exp.dimension,
+            ExperimentDimension::NovelComposition
+        ));
         assert!(exp.bizarre_ideation);
     }
 

@@ -10,13 +10,14 @@ use std::process::{Command, Stdio};
 use workgraph::config::Config;
 use workgraph::graph::{LogEntry, Status};
 use workgraph::parser::{load_graph, save_graph};
-use workgraph::service::executor::{
-    build_prompt, ExecutorRegistry, PromptTemplate, TemplateVars,
-};
+use workgraph::service::executor::{ExecutorRegistry, PromptTemplate, TemplateVars, build_prompt};
 use workgraph::service::registry::AgentRegistry;
 
 use super::context::{build_scope_context, build_task_context, resolve_task_scope};
-use super::{agent_output_dir, graph_path, parse_timeout_secs, prompt_file_command, shell_escape, SpawnResult};
+use super::{
+    SpawnResult, agent_output_dir, graph_path, parse_timeout_secs, prompt_file_command,
+    shell_escape,
+};
 
 /// Internal shared implementation for spawning an agent.
 /// Both `run()` (CLI) and `spawn_agent()` (coordinator) delegate here.
@@ -141,9 +142,7 @@ pub(crate) fn spawn_agent_inner(
         && (settings.executor_type == "claude" || settings.executor_type == "amplifier")
     {
         let prompt = build_prompt(&vars, scope, &scope_ctx);
-        settings.prompt_template = Some(PromptTemplate {
-            template: prompt,
-        });
+        settings.prompt_template = Some(PromptTemplate { template: prompt });
     }
 
     // Determine if this is a bare execution (lightweight, no file I/O tools)
@@ -174,13 +173,19 @@ pub(crate) fn spawn_agent_inner(
         if agent_timeout.is_empty() {
             None
         } else {
-            Some(parse_timeout_secs(agent_timeout).context("Invalid coordinator.agent_timeout config")?)
+            Some(
+                parse_timeout_secs(agent_timeout)
+                    .context("Invalid coordinator.agent_timeout config")?,
+            )
         }
     };
 
     // Build the actual command line, optionally wrapped with `timeout`
     let timed_command = if let Some(secs) = effective_timeout_secs {
-        format!("timeout --signal=TERM --kill-after=30 {} {}", secs, inner_command)
+        format!(
+            "timeout --signal=TERM --kill-after=30 {} {}",
+            secs, inner_command
+        )
     } else {
         inner_command.clone()
     };
@@ -325,10 +330,10 @@ pub(crate) fn spawn_agent_inner(
 
     // Advance message cursor for this agent so queued messages aren't re-read.
     // The queued messages were already included in the prompt via ScopeContext.
-    if let Ok(all_msgs) = workgraph::messages::list_messages(dir, task_id) {
-        if let Some(last) = all_msgs.last() {
-            let _ = workgraph::messages::write_cursor(dir, &agent_id, task_id, last.id);
-        }
+    if let Ok(all_msgs) = workgraph::messages::list_messages(dir, task_id)
+        && let Some(last) = all_msgs.last()
+    {
+        let _ = workgraph::messages::write_cursor(dir, &agent_id, task_id, last.id);
     }
 
     // Write metadata
@@ -397,12 +402,12 @@ fn build_inner_command(
             // In bare mode, pipe the task title+description as the user message
             let user_message = format!(
                 "Complete this task:\n\nTitle: {}\n\n{}",
-                vars.task_id,
-                vars.task_description
+                vars.task_id, vars.task_description
             );
             let user_msg_file = output_dir.join("user_message.txt");
-            fs::write(&user_msg_file, &user_message)
-                .with_context(|| format!("Failed to write user message file: {:?}", user_msg_file))?;
+            fs::write(&user_msg_file, &user_message).with_context(|| {
+                format!("Failed to write user message file: {:?}", user_msg_file)
+            })?;
             prompt_file_command(&user_msg_file.to_string_lossy(), &claude_cmd)
         }
         "claude" => {
@@ -494,7 +499,10 @@ fn write_wrapper_script(
     let complete_msg = "[wrapper] Agent exited successfully, marking task done";
 
     let timeout_note = if let Some(secs) = effective_timeout_secs {
-        format!("\n# Hard timeout: {}s (SIGTERM, then SIGKILL after 30s)\n", secs)
+        format!(
+            "\n# Hard timeout: {}s (SIGTERM, then SIGKILL after 30s)\n",
+            secs
+        )
     } else {
         String::new()
     };

@@ -1,15 +1,15 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use chrono::Utc;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use workgraph::agency;
-use workgraph::graph::{LoopGuard, Status, Task, WorkGraph};
-use workgraph::provenance;
 use workgraph::function::{
     self, ExtractionSource, FunctionInput, FunctionOutput, FunctionVisibility, InputType,
     LoopEdgeTemplate, PlanningConfig, StructuralConstraints, TaskTemplate, TraceFunction,
 };
+use workgraph::graph::{LoopGuard, Status, Task, WorkGraph};
+use workgraph::provenance;
 
 /// Check whether a task is coordinator-generated infrastructure noise
 /// (evaluation tasks, assignment tasks) that should be excluded from extraction.
@@ -54,7 +54,9 @@ pub fn run(
     }
 
     // Determine function ID
-    let func_id = name.map(|s| s.to_string()).unwrap_or_else(|| sanitize_id(task_id));
+    let func_id = name
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| sanitize_id(task_id));
 
     // Check for existing function
     let functions_dir = if let Some(out) = output {
@@ -173,8 +175,7 @@ pub fn run(
     };
 
     // Validate
-    function::validate_function(&func)
-        .context("Extracted function failed validation")?;
+    function::validate_function(&func).context("Extracted function failed validation")?;
 
     // Save
     let saved_path = if let Some(out) = output {
@@ -209,11 +210,7 @@ pub fn run(
         println!();
         println!("Suggested parameters:");
         for input in &suggested_inputs {
-            let req = if input.required {
-                ", required"
-            } else {
-                ""
-            };
+            let req = if input.required { ", required" } else { "" };
             let example_str = input
                 .example
                 .as_ref()
@@ -444,21 +441,24 @@ fn extract_json_from_response(response: &str) -> String {
         (Some(a), Some(o)) if a < o => {
             // Array starts first
             if let Some(end) = response.rfind(']')
-                && end > a {
-                    return response[a..=end].to_string();
-                }
+                && end > a
+            {
+                return response[a..=end].to_string();
+            }
         }
         (_, Some(o)) => {
             if let Some(end) = response.rfind('}')
-                && end > o {
-                    return response[o..=end].to_string();
-                }
+                && end > o
+            {
+                return response[o..=end].to_string();
+            }
         }
         (Some(a), None) => {
             if let Some(end) = response.rfind(']')
-                && end > a {
-                    return response[a..=end].to_string();
-                }
+                && end > a
+            {
+                return response[a..=end].to_string();
+            }
         }
         _ => {}
     }
@@ -680,7 +680,10 @@ fn pass2_rewrite_descriptions(
          Also include one entry with template_id=\"__function__\" for the top-level function \
          name and description.\n\n\
          Output ONLY valid JSON. No explanation, no markdown.",
-        func.name, func.description, input_note, task_summaries.join("\n")
+        func.name,
+        func.description,
+        input_note,
+        task_summaries.join("\n")
     );
 
     let response = invoke_claude(&prompt)?;
@@ -885,7 +888,16 @@ pub fn run_generative(
                 "All {} traces have identical topology. Falling back to static extraction.",
                 task_ids.len()
             );
-            return run(dir, &task_ids[0], name, true, false, output, force, include_evaluations);
+            return run(
+                dir,
+                &task_ids[0],
+                name,
+                true,
+                false,
+                output,
+                force,
+                include_evaluations,
+            );
         }
     }
 
@@ -916,12 +928,7 @@ pub fn run_generative(
 
     let tag_sets: Vec<HashSet<String>> = traces
         .iter()
-        .map(|trace| {
-            trace
-                .iter()
-                .flat_map(|t| t.tags.iter().cloned())
-                .collect()
-        })
+        .map(|trace| trace.iter().flat_map(|t| t.tags.iter().cloned()).collect())
         .collect();
 
     let common_tags: Vec<String> = if let Some(first) = tag_sets.first() {
@@ -978,8 +985,16 @@ pub fn run_generative(
         task_ids.len(),
         min_tasks,
         max_tasks,
-        if common_skills.is_empty() { "none".to_string() } else { common_skills.join(", ") },
-        if all_skills_sorted.is_empty() { "none".to_string() } else { all_skills_sorted.join(", ") }
+        if common_skills.is_empty() {
+            "none".to_string()
+        } else {
+            common_skills.join(", ")
+        },
+        if all_skills_sorted.is_empty() {
+            "none".to_string()
+        } else {
+            all_skills_sorted.join(", ")
+        }
     );
 
     let planner_template = TaskTemplate {
@@ -1002,9 +1017,14 @@ pub fn run_generative(
         max_depth: if max_depth > 0 { Some(max_depth) } else { None },
         allow_cycles: has_cycles,
         max_total_iterations: if has_cycles {
-            traces.iter().flat_map(|trace| {
-                trace.iter().filter_map(|t| t.cycle_config.as_ref().map(|c| c.max_iterations))
-            }).max()
+            traces
+                .iter()
+                .flat_map(|trace| {
+                    trace
+                        .iter()
+                        .filter_map(|t| t.cycle_config.as_ref().map(|c| c.max_iterations))
+                })
+                .max()
         } else {
             None
         },
@@ -1032,7 +1052,10 @@ pub fn run_generative(
     let outputs = build_outputs(median_tasks);
 
     let functions_dir = if let Some(out) = output {
-        PathBuf::from(out).parent().unwrap_or(Path::new(".")).to_path_buf()
+        PathBuf::from(out)
+            .parent()
+            .unwrap_or(Path::new("."))
+            .to_path_buf()
     } else {
         function::functions_dir(dir)
     };
@@ -1055,7 +1078,9 @@ pub fn run_generative(
         name: name.map(title_case).unwrap_or_else(|| title_case(&func_id)),
         description: format!(
             "Generative function synthesized from {} traces ({} to {} tasks)",
-            task_ids.len(), min_tasks, max_tasks
+            task_ids.len(),
+            min_tasks,
+            max_tasks
         ),
         extracted_from,
         extracted_by: None,
@@ -1076,8 +1101,7 @@ pub fn run_generative(
         redacted_fields: vec![],
     };
 
-    function::validate_function(&func)
-        .context("Generated function failed validation")?;
+    function::validate_function(&func).context("Generated function failed validation")?;
 
     let saved_path = if let Some(out) = output {
         let out_path = PathBuf::from(out);
@@ -1261,9 +1285,7 @@ fn detect_parameters(tasks: &[&Task]) -> Vec<FunctionInput> {
             input_type: InputType::String,
             description: "Command to verify the implementation".to_string(),
             required: false,
-            default: Some(serde_yaml::Value::String(
-                commands.first().unwrap().clone(),
-            )),
+            default: Some(serde_yaml::Value::String(commands.first().unwrap().clone())),
             example: None,
             min: None,
             max: None,
@@ -1283,9 +1305,9 @@ fn detect_parameters(tasks: &[&Task]) -> Vec<FunctionInput> {
                 input_type: InputType::Number,
                 description: format!("Numeric parameter ({})", param_name.replace('_', " ")),
                 required: false,
-                default: Some(serde_yaml::Value::Number(
-                    serde_yaml::Number::from(*num as i64),
-                )),
+                default: Some(serde_yaml::Value::Number(serde_yaml::Number::from(
+                    *num as i64,
+                ))),
                 example: None,
                 min: None,
                 max: None,
@@ -1298,18 +1320,21 @@ fn detect_parameters(tasks: &[&Task]) -> Vec<FunctionInput> {
     inputs
 }
 
-
 /// Extract URLs from text.
 fn extract_urls(text: &str) -> Vec<String> {
     let mut urls = Vec::new();
     let mut seen = HashSet::new();
 
     for word in text.split_whitespace() {
-        let word = word.trim_matches(|c: char| c == ',' || c == ';' || c == '"' || c == '\'' || c == '(' || c == ')');
-        if (word.starts_with("http://") || word.starts_with("https://")) && word.len() > 10
-            && seen.insert(word.to_string()) {
-                urls.push(word.to_string());
-            }
+        let word = word.trim_matches(|c: char| {
+            c == ',' || c == ';' || c == '"' || c == '\'' || c == '(' || c == ')'
+        });
+        if (word.starts_with("http://") || word.starts_with("https://"))
+            && word.len() > 10
+            && seen.insert(word.to_string())
+        {
+            urls.push(word.to_string());
+        }
     }
 
     urls
@@ -1380,13 +1405,12 @@ fn extract_cli_commands(text: &str) -> Vec<String> {
             let inside = cap[1].trim();
             // Only treat as command if it starts with a known CLI tool
             let known_tools = [
-                "cargo", "npm", "yarn", "pytest", "python", "go", "make",
-                "git", "wg", "docker", "kubectl", "rustc", "gcc", "g++",
-                "javac", "mvn", "gradle", "pip", "ruby", "node", "deno", "bun",
+                "cargo", "npm", "yarn", "pytest", "python", "go", "make", "git", "wg", "docker",
+                "kubectl", "rustc", "gcc", "g++", "javac", "mvn", "gradle", "pip", "ruby", "node",
+                "deno", "bun",
             ];
             let first_word = inside.split_whitespace().next().unwrap_or("");
-            if known_tools.contains(&first_word) && seen.insert(inside.to_string())
-            {
+            if known_tools.contains(&first_word) && seen.insert(inside.to_string()) {
                 commands.push(inside.to_string());
             }
         }
@@ -1429,8 +1453,7 @@ fn extract_contextual_numbers(text: &str) -> Vec<(String, f64)> {
     let words: Vec<&str> = text.split_whitespace().collect();
 
     for (i, word) in words.iter().enumerate() {
-        let cleaned =
-            word.trim_matches(|c: char| !c.is_ascii_digit() && c != '.' && c != '-');
+        let cleaned = word.trim_matches(|c: char| !c.is_ascii_digit() && c != '.' && c != '-');
         if cleaned.is_empty() {
             continue;
         }
@@ -1503,15 +1526,29 @@ fn extract_contextual_numbers(text: &str) -> Vec<(String, f64)> {
 ///   "auth-system"      → "auth-system" (no verb prefix)
 fn derive_feature_name(task_id: &str) -> String {
     let verb_prefixes = [
-        "impl-", "implement-", "add-", "fix-", "create-", "build-", "setup-", "update-",
-        "refactor-", "design-", "write-", "define-", "configure-", "enable-", "remove-",
+        "impl-",
+        "implement-",
+        "add-",
+        "fix-",
+        "create-",
+        "build-",
+        "setup-",
+        "update-",
+        "refactor-",
+        "design-",
+        "write-",
+        "define-",
+        "configure-",
+        "enable-",
+        "remove-",
     ];
 
     for prefix in &verb_prefixes {
         if let Some(rest) = task_id.strip_prefix(prefix)
-            && !rest.is_empty() {
-                return rest.to_string();
-            }
+            && !rest.is_empty()
+        {
+            return rest.to_string();
+        }
     }
 
     // No verb prefix found — return the full ID
@@ -1635,8 +1672,10 @@ mod tests {
         assert!(
             commands.iter().all(|c| {
                 let first = c.split_whitespace().next().unwrap_or("");
-                ["cargo", "npm", "yarn", "pytest", "python", "go", "make", "git", "wg"]
-                    .contains(&first)
+                [
+                    "cargo", "npm", "yarn", "pytest", "python", "go", "make", "git", "wg",
+                ]
+                .contains(&first)
             }),
             "All commands should start with known CLI tools, got: {:?}",
             commands
@@ -1686,13 +1725,17 @@ mod tests {
         let text = "Run with --max-iterations 5 and --batch-size 32";
         let numbers = extract_contextual_numbers(text);
         assert!(
-            numbers.iter().any(|(name, val)| name == "iterations" && *val == 5.0),
+            numbers
+                .iter()
+                .any(|(name, val)| name == "iterations" && *val == 5.0),
             "Should extract iterations from --max-iterations flag, got: {:?}",
             numbers
         );
         // --batch-size matches "batch" keyword
         assert!(
-            numbers.iter().any(|(name, val)| name == "batch" && *val == 32.0),
+            numbers
+                .iter()
+                .any(|(name, val)| name == "batch" && *val == 32.0),
             "Should extract batch from --batch-size flag, got: {:?}",
             numbers
         );
@@ -1726,7 +1769,16 @@ mod tests {
         graph.add_node(Node::Task(task));
         setup_graph(&dir, &graph);
 
-        let result = run(&dir, "impl-config", Some("my-func"), false, false, None, false, false);
+        let result = run(
+            &dir,
+            "impl-config",
+            Some("my-func"),
+            false,
+            false,
+            None,
+            false,
+            false,
+        );
         assert!(result.is_ok());
 
         // Verify function was saved
@@ -1789,7 +1841,16 @@ mod tests {
         graph.add_node(Node::Task(child2));
         setup_graph(&dir, &graph);
 
-        let result = run(&dir, "root", Some("subgraph-func"), true, false, None, false, false);
+        let result = run(
+            &dir,
+            "root",
+            Some("subgraph-func"),
+            true,
+            false,
+            None,
+            false,
+            false,
+        );
         assert!(result.is_ok());
 
         let func_path = dir.join("functions").join("subgraph-func.yaml");
@@ -1797,10 +1858,18 @@ mod tests {
         assert_eq!(func.tasks.len(), 3);
 
         // Check that after references are remapped to template IDs
-        let child1_tmpl = func.tasks.iter().find(|t| t.template_id == "child1").unwrap();
+        let child1_tmpl = func
+            .tasks
+            .iter()
+            .find(|t| t.template_id == "child1")
+            .unwrap();
         assert_eq!(child1_tmpl.after, vec!["root"]);
 
-        let child2_tmpl = func.tasks.iter().find(|t| t.template_id == "child2").unwrap();
+        let child2_tmpl = func
+            .tasks
+            .iter()
+            .find(|t| t.template_id == "child2")
+            .unwrap();
         assert_eq!(child2_tmpl.after, vec!["child1"]);
     }
 
@@ -1814,15 +1883,43 @@ mod tests {
         setup_graph(&dir, &graph);
 
         // First extraction
-        run(&dir, "t1", Some("overwrite-test"), false, false, None, false, false).unwrap();
+        run(
+            &dir,
+            "t1",
+            Some("overwrite-test"),
+            false,
+            false,
+            None,
+            false,
+            false,
+        )
+        .unwrap();
 
         // Second without force should fail
-        let result = run(&dir, "t1", Some("overwrite-test"), false, false, None, false, false);
+        let result = run(
+            &dir,
+            "t1",
+            Some("overwrite-test"),
+            false,
+            false,
+            None,
+            false,
+            false,
+        );
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("already exists"));
 
         // With force should succeed
-        let result = run(&dir, "t1", Some("overwrite-test"), false, false, None, true, false);
+        let result = run(
+            &dir,
+            "t1",
+            Some("overwrite-test"),
+            false,
+            false,
+            None,
+            true,
+            false,
+        );
         assert!(result.is_ok());
     }
 
@@ -1860,7 +1957,16 @@ mod tests {
         setup_graph(&dir, &graph);
 
         // Should succeed but print warning (we just test it doesn't error)
-        let result = run(&dir, "t1", Some("gen-test"), false, true, None, false, false);
+        let result = run(
+            &dir,
+            "t1",
+            Some("gen-test"),
+            false,
+            true,
+            None,
+            false,
+            false,
+        );
         assert!(result.is_ok());
     }
 
@@ -1900,10 +2006,7 @@ mod tests {
         let task = Task {
             id: "impl-auth".to_string(),
             title: "Implement auth".to_string(),
-            description: Some(
-                "Add authentication to src/auth.rs and src/main.rs."
-                    .to_string(),
-            ),
+            description: Some("Add authentication to src/auth.rs and src/main.rs.".to_string()),
             status: Status::Done,
             // No artifacts — file paths in description should NOT become source_files
             ..Task::default()
@@ -1934,7 +2037,11 @@ mod tests {
         assert!(
             !params.iter().any(|p| p.input_type == InputType::Number),
             "Should not extract random numbers without keyword context, got: {:?}",
-            params.iter().filter(|p| p.input_type == InputType::Number).map(|p| &p.name).collect::<Vec<_>>()
+            params
+                .iter()
+                .filter(|p| p.input_type == InputType::Number)
+                .map(|p| &p.name)
+                .collect::<Vec<_>>()
         );
     }
 
@@ -1951,7 +2058,11 @@ mod tests {
         };
 
         let params = detect_parameters(&[&task]);
-        assert!(params.iter().any(|p| p.name == "url" && p.input_type == InputType::Url));
+        assert!(
+            params
+                .iter()
+                .any(|p| p.name == "url" && p.input_type == InputType::Url)
+        );
     }
 
     #[test]
@@ -2113,8 +2224,7 @@ mod tests {
         graph.add_node(Node::Task(header.clone()));
         graph.add_node(Node::Task(step));
 
-        let subgraph_ids: HashSet<&str> =
-            ["root-header", "root-step"].iter().cloned().collect();
+        let subgraph_ids: HashSet<&str> = ["root-header", "root-step"].iter().cloned().collect();
         let tmp = TempDir::new().unwrap();
 
         let template = build_template(&header, "root", &subgraph_ids, tmp.path(), &graph);
@@ -2398,14 +2508,32 @@ mod tests {
         setup_graph(&dir, &graph);
 
         // Default: filters out evaluate-* and assign-* tasks
-        let result = run(&dir, "root", Some("filtered"), true, false, None, false, false);
+        let result = run(
+            &dir,
+            "root",
+            Some("filtered"),
+            true,
+            false,
+            None,
+            false,
+            false,
+        );
         assert!(result.is_ok());
         let func_path = dir.join("functions").join("filtered.yaml");
         let func = function::load_function(&func_path).unwrap();
         assert_eq!(func.tasks.len(), 2); // root + root-impl only
 
         // With --include-evaluations: keeps all tasks
-        let result = run(&dir, "root", Some("unfiltered"), true, false, None, false, true);
+        let result = run(
+            &dir,
+            "root",
+            Some("unfiltered"),
+            true,
+            false,
+            None,
+            false,
+            true,
+        );
         assert!(result.is_ok());
         let func_path = dir.join("functions").join("unfiltered.yaml");
         let func = function::load_function(&func_path).unwrap();

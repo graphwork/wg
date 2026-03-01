@@ -201,21 +201,11 @@ pub fn group_by_tier(commands: &[(String, u64)]) -> (Vec<&str>, Vec<&str>, Vec<&
 /// These cover the essential workflow: overview, task lifecycle, coordination, and monitoring.
 pub const CORE_COMMANDS: &[&str] = &[
     // Overview
-    "status",
-    "viz",
-    // Task lifecycle
-    "list",
-    "show",
-    "add",
-    "done",
-    "fail",
-    // Coordination
-    "service",
-    // Setup
-    "config",
-    // Monitoring
-    "ready",
-    "agents",
+    "status", "viz", // Task lifecycle
+    "list", "show", "add", "done", "fail",    // Coordination
+    "service", // Setup
+    "config",  // Monitoring
+    "ready", "agents",
 ];
 
 /// Default command ordering for cold start (before we have usage data)

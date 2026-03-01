@@ -11,9 +11,7 @@
 use std::collections::HashMap;
 use tempfile::TempDir;
 
-use workgraph::agency::{
-    self, Agent, Evaluation, EvaluationRef, Lineage, PerformanceRecord,
-};
+use workgraph::agency::{self, Agent, Evaluation, EvaluationRef, Lineage, PerformanceRecord};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -41,10 +39,7 @@ impl TestFixture {
         let role = agency::build_role(
             "Test Role",
             "A role for testing evaluations.",
-            vec![
-                "rust".to_string(),
-                "inline:Write tests".to_string(),
-            ],
+            vec!["rust".to_string(), "inline:Write tests".to_string()],
             "Tested code",
         );
         let role_id = role.id.clone();
@@ -75,9 +70,9 @@ impl TestFixture {
                 trust_level: Default::default(),
                 contact: None,
                 executor: "claude".to_string(),
-            attractor_weight: 0.5,
-            deployment_history: vec![],
-            staleness_flags: vec![],
+                attractor_weight: 0.5,
+                deployment_history: vec![],
+                staleness_flags: vec![],
             };
             agency::save_agent(&agent, &agency_dir.join("cache/agents")).unwrap();
         }
@@ -151,7 +146,7 @@ fn test_record_evaluation_json_format() {
         evaluator: "human-reviewer".to_string(),
         timestamp: "2025-06-15T14:30:00Z".to_string(),
         model: None,
-            source: "llm".to_string(),
+        source: "llm".to_string(),
     };
 
     let eval_path = agency::record_evaluation(&eval, &fix.agency_dir).unwrap();
@@ -252,7 +247,7 @@ fn test_multiple_evaluations_same_agent_avg() {
         evaluator: "test".to_string(),
         timestamp: "2025-06-01T10:00:00Z".to_string(),
         model: None,
-            source: "llm".to_string(),
+        source: "llm".to_string(),
     };
     let eval2 = Evaluation {
         id: "e2".to_string(),
@@ -266,7 +261,7 @@ fn test_multiple_evaluations_same_agent_avg() {
         evaluator: "test".to_string(),
         timestamp: "2025-06-01T11:00:00Z".to_string(),
         model: None,
-            source: "llm".to_string(),
+        source: "llm".to_string(),
     };
 
     agency::record_evaluation(&eval1, &fix.agency_dir).unwrap();
@@ -347,7 +342,7 @@ fn test_context_ids_tracked_independently() {
         evaluator: "test".to_string(),
         timestamp: "2025-06-01T12:00:00Z".to_string(),
         model: None,
-            source: "llm".to_string(),
+        source: "llm".to_string(),
     };
     agency::record_evaluation(&eval, &fix.agency_dir).unwrap();
 
@@ -413,7 +408,7 @@ fn test_role_tracks_different_motivation_context_ids() {
         evaluator: "test".to_string(),
         timestamp: "2025-06-01T10:00:00Z".to_string(),
         model: None,
-            source: "llm".to_string(),
+        source: "llm".to_string(),
     };
     agency::record_evaluation(&eval_a, &agency_dir).unwrap();
 
@@ -430,12 +425,16 @@ fn test_role_tracks_different_motivation_context_ids() {
         evaluator: "test".to_string(),
         timestamp: "2025-06-01T11:00:00Z".to_string(),
         model: None,
-            source: "llm".to_string(),
+        source: "llm".to_string(),
     };
     agency::record_evaluation(&eval_b, &agency_dir).unwrap();
 
-    let updated_role =
-        agency::load_role(&agency_dir.join("cache/roles").join(format!("{}.yaml", role.id))).unwrap();
+    let updated_role = agency::load_role(
+        &agency_dir
+            .join("cache/roles")
+            .join(format!("{}.yaml", role.id)),
+    )
+    .unwrap();
     assert_eq!(updated_role.performance.evaluations.len(), 2);
     assert_eq!(
         updated_role.performance.evaluations[0].context_id, mot_a.id,
@@ -475,7 +474,7 @@ fn test_motivation_tracks_different_role_context_ids() {
         evaluator: "test".to_string(),
         timestamp: "2025-06-01T10:00:00Z".to_string(),
         model: None,
-            source: "llm".to_string(),
+        source: "llm".to_string(),
     };
     let eval_b = Evaluation {
         id: "e-rb".to_string(),
@@ -489,7 +488,7 @@ fn test_motivation_tracks_different_role_context_ids() {
         evaluator: "test".to_string(),
         timestamp: "2025-06-01T11:00:00Z".to_string(),
         model: None,
-            source: "llm".to_string(),
+        source: "llm".to_string(),
     };
 
     agency::record_evaluation(&eval_a, &agency_dir).unwrap();
@@ -535,8 +534,12 @@ fn test_performance_zero_evaluations_yaml_roundtrip() {
     let role = agency::build_role("Fresh", "no evals yet", vec![], "outcome");
     agency::save_role(&role, &agency_dir.join("cache/roles")).unwrap();
 
-    let loaded =
-        agency::load_role(&agency_dir.join("cache/roles").join(format!("{}.yaml", role.id))).unwrap();
+    let loaded = agency::load_role(
+        &agency_dir
+            .join("cache/roles")
+            .join(format!("{}.yaml", role.id)),
+    )
+    .unwrap();
     assert_eq!(loaded.performance.task_count, 0);
     assert!(loaded.performance.avg_score.is_none());
     assert!(loaded.performance.evaluations.is_empty());

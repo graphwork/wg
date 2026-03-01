@@ -9,8 +9,8 @@ use std::path::Path;
 use tempfile::TempDir;
 
 use workgraph::agency::{
-    self, Agent, AgencyStore, Evaluation, EvaluationRef, Lineage, LocalStore, TradeoffConfig,
-    PerformanceRecord, Role,
+    self, AgencyStore, Agent, Evaluation, EvaluationRef, Lineage, LocalStore, PerformanceRecord,
+    Role, TradeoffConfig,
 };
 use workgraph::federation::{
     self, EntityFilter, FederationConfig, Remote, TransferOptions, TransferSummary,
@@ -75,7 +75,14 @@ fn make_agent(id: &str, name: &str, role_id: &str, tradeoff_id: &str) -> Agent {
     }
 }
 
-fn make_evaluation(id: &str, task_id: &str, agent_id: &str, role_id: &str, tradeoff_id: &str, score: f64) -> Evaluation {
+fn make_evaluation(
+    id: &str,
+    task_id: &str,
+    agent_id: &str,
+    role_id: &str,
+    tradeoff_id: &str,
+    score: f64,
+) -> Evaluation {
     Evaluation {
         id: id.to_string(),
         task_id: task_id.to_string(),
@@ -88,7 +95,7 @@ fn make_evaluation(id: &str, task_id: &str, agent_id: &str, role_id: &str, trade
         evaluator: "test".to_string(),
         timestamp: "2026-01-15T12:00:00Z".to_string(),
         model: None,
-            source: "llm".to_string(),
+        source: "llm".to_string(),
     }
 }
 
@@ -214,8 +221,12 @@ fn pull_new_entities_all_copied() {
 
     source.save_role(&make_role("r1", "analyst")).unwrap();
     source.save_role(&make_role("r2", "builder")).unwrap();
-    source.save_tradeoff(&make_motivation("m1", "quality")).unwrap();
-    source.save_agent(&make_agent("a1", "agent-1", "r1", "m1")).unwrap();
+    source
+        .save_tradeoff(&make_motivation("m1", "quality"))
+        .unwrap();
+    source
+        .save_agent(&make_agent("a1", "agent-1", "r1", "m1"))
+        .unwrap();
 
     let summary = federation::transfer(&source, &target, &TransferOptions::default()).unwrap();
     assert_eq!(summary.roles_added, 2);
@@ -243,9 +254,7 @@ fn pull_existing_entity_merges_metadata() {
     source.save_role(&source_role).unwrap();
 
     let mut target_role = make_role("r1", "analyst-local");
-    target_role.performance = make_perf(vec![
-        (0.8, "task-b", "2026-01-02T00:00:00Z"),
-    ]);
+    target_role.performance = make_perf(vec![(0.8, "task-b", "2026-01-02T00:00:00Z")]);
     target.save_role(&target_role).unwrap();
 
     let summary = federation::transfer(&source, &target, &TransferOptions::default()).unwrap();
@@ -268,8 +277,12 @@ fn pull_agent_auto_pulls_dependencies() {
     let target = setup_store(&tmp, "target");
 
     source.save_role(&make_role("r1", "builder")).unwrap();
-    source.save_tradeoff(&make_motivation("m1", "speed")).unwrap();
-    source.save_agent(&make_agent("a1", "fast-builder", "r1", "m1")).unwrap();
+    source
+        .save_tradeoff(&make_motivation("m1", "speed"))
+        .unwrap();
+    source
+        .save_agent(&make_agent("a1", "fast-builder", "r1", "m1"))
+        .unwrap();
 
     let opts = TransferOptions {
         entity_filter: EntityFilter::Agents,
@@ -293,8 +306,12 @@ fn pull_dry_run_no_writes() {
     let target = setup_store(&tmp, "target");
 
     source.save_role(&make_role("r1", "analyst")).unwrap();
-    source.save_tradeoff(&make_motivation("m1", "quality")).unwrap();
-    source.save_agent(&make_agent("a1", "agent-1", "r1", "m1")).unwrap();
+    source
+        .save_tradeoff(&make_motivation("m1", "quality"))
+        .unwrap();
+    source
+        .save_agent(&make_agent("a1", "agent-1", "r1", "m1"))
+        .unwrap();
 
     let opts = TransferOptions {
         dry_run: true,
@@ -328,9 +345,7 @@ fn pull_no_performance_strips_scores() {
     source.save_role(&role).unwrap();
 
     let mut motivation = make_motivation("m1", "quality");
-    motivation.performance = make_perf(vec![
-        (0.9, "task-z", "2026-01-03T00:00:00Z"),
-    ]);
+    motivation.performance = make_perf(vec![(0.9, "task-z", "2026-01-03T00:00:00Z")]);
     source.save_tradeoff(&motivation).unwrap();
 
     let opts = TransferOptions {
@@ -359,8 +374,12 @@ fn pull_type_filter_roles_only() {
     let target = setup_store(&tmp, "target");
 
     source.save_role(&make_role("r1", "analyst")).unwrap();
-    source.save_tradeoff(&make_motivation("m1", "quality")).unwrap();
-    source.save_agent(&make_agent("a1", "agent-1", "r1", "m1")).unwrap();
+    source
+        .save_tradeoff(&make_motivation("m1", "quality"))
+        .unwrap();
+    source
+        .save_agent(&make_agent("a1", "agent-1", "r1", "m1"))
+        .unwrap();
 
     let opts = TransferOptions {
         entity_filter: EntityFilter::Roles,
@@ -384,8 +403,12 @@ fn pull_type_filter_motivations_only() {
     let target = setup_store(&tmp, "target");
 
     source.save_role(&make_role("r1", "analyst")).unwrap();
-    source.save_tradeoff(&make_motivation("m1", "quality")).unwrap();
-    source.save_tradeoff(&make_motivation("m2", "speed")).unwrap();
+    source
+        .save_tradeoff(&make_motivation("m1", "quality"))
+        .unwrap();
+    source
+        .save_tradeoff(&make_motivation("m2", "speed"))
+        .unwrap();
 
     let opts = TransferOptions {
         entity_filter: EntityFilter::Tradeoffs,
@@ -432,10 +455,18 @@ fn pull_entity_filter_agent_includes_deps() {
 
     source.save_role(&make_role("r1", "builder")).unwrap();
     source.save_role(&make_role("r2", "tester")).unwrap();
-    source.save_tradeoff(&make_motivation("m1", "speed")).unwrap();
-    source.save_tradeoff(&make_motivation("m2", "quality")).unwrap();
-    source.save_agent(&make_agent("a1", "builder-agent", "r1", "m1")).unwrap();
-    source.save_agent(&make_agent("a2", "tester-agent", "r2", "m2")).unwrap();
+    source
+        .save_tradeoff(&make_motivation("m1", "speed"))
+        .unwrap();
+    source
+        .save_tradeoff(&make_motivation("m2", "quality"))
+        .unwrap();
+    source
+        .save_agent(&make_agent("a1", "builder-agent", "r1", "m1"))
+        .unwrap();
+    source
+        .save_agent(&make_agent("a2", "tester-agent", "r2", "m2"))
+        .unwrap();
 
     // Only pull agent a1 — should auto-include r1 and m1 but NOT r2, m2, a2
     let opts = TransferOptions {
@@ -466,8 +497,12 @@ fn push_to_empty_target_creates_structure() {
     let source = setup_store(&tmp, "source");
 
     source.save_role(&make_role("r1", "analyst")).unwrap();
-    source.save_tradeoff(&make_motivation("m1", "quality")).unwrap();
-    source.save_agent(&make_agent("a1", "agent-1", "r1", "m1")).unwrap();
+    source
+        .save_tradeoff(&make_motivation("m1", "quality"))
+        .unwrap();
+    source
+        .save_agent(&make_agent("a1", "agent-1", "r1", "m1"))
+        .unwrap();
 
     // Target doesn't exist yet — push creates it
     let target_path = tmp.path().join("target").join("agency");
@@ -495,7 +530,9 @@ fn push_to_existing_store_merges() {
     target.save_role(&make_role("r1", "analyst-local")).unwrap();
 
     // Source has r1 + r2
-    source.save_role(&make_role("r1", "analyst-remote")).unwrap();
+    source
+        .save_role(&make_role("r1", "analyst-remote"))
+        .unwrap();
     source.save_role(&make_role("r2", "builder")).unwrap();
 
     let summary = federation::transfer(&source, &target, &TransferOptions::default()).unwrap();
@@ -519,8 +556,12 @@ fn push_agent_includes_dependencies() {
     let target = setup_store(&tmp, "target");
 
     source.save_role(&make_role("r1", "builder")).unwrap();
-    source.save_tradeoff(&make_motivation("m1", "speed")).unwrap();
-    source.save_agent(&make_agent("a1", "fast-builder", "r1", "m1")).unwrap();
+    source
+        .save_tradeoff(&make_motivation("m1", "speed"))
+        .unwrap();
+    source
+        .save_agent(&make_agent("a1", "fast-builder", "r1", "m1"))
+        .unwrap();
 
     let opts = TransferOptions {
         entity_filter: EntityFilter::Agents,
@@ -541,11 +582,17 @@ fn push_never_deletes_from_target() {
     let target = setup_store(&tmp, "target");
 
     // Target has entities not in source
-    target.save_role(&make_role("r-target-only", "target-role")).unwrap();
-    target.save_tradeoff(&make_motivation("m-target-only", "target-mot")).unwrap();
+    target
+        .save_role(&make_role("r-target-only", "target-role"))
+        .unwrap();
+    target
+        .save_tradeoff(&make_motivation("m-target-only", "target-mot"))
+        .unwrap();
 
     // Source has different entities
-    source.save_role(&make_role("r-source", "source-role")).unwrap();
+    source
+        .save_role(&make_role("r-source", "source-role"))
+        .unwrap();
 
     federation::transfer(&source, &target, &TransferOptions::default()).unwrap();
 
@@ -605,7 +652,9 @@ fn remote_name_resolves_for_pull_push() {
     std::fs::create_dir_all(&wg_dir).unwrap();
 
     let remote_store = setup_store(&tmp, "remote");
-    remote_store.save_role(&make_role("r1", "remote-role")).unwrap();
+    remote_store
+        .save_role(&make_role("r1", "remote-role"))
+        .unwrap();
 
     // Add a named remote pointing to the store
     let mut config = FederationConfig::default();
@@ -628,7 +677,8 @@ fn remote_name_resolves_for_pull_push() {
     let resolved2 = federation::resolve_store_with_remotes(
         remote_store.store_path().to_str().unwrap(),
         &wg_dir,
-    ).unwrap();
+    )
+    .unwrap();
     assert_eq!(resolved2.store_path(), remote_store.store_path());
 }
 
@@ -639,7 +689,9 @@ fn remote_show_entity_summary() {
     let remote_store = setup_store(&tmp, "remote");
     remote_store.save_role(&make_role("r1", "role1")).unwrap();
     remote_store.save_role(&make_role("r2", "role2")).unwrap();
-    remote_store.save_tradeoff(&make_motivation("m1", "mot1")).unwrap();
+    remote_store
+        .save_tradeoff(&make_motivation("m1", "mot1"))
+        .unwrap();
 
     let counts = remote_store.entity_counts();
     assert_eq!(counts.roles, 2);
@@ -692,12 +744,18 @@ fn merge_overlapping_entities_deduped() {
     // Overlapping: both have r1, m1. Unique: store_a has r2, store_b has r3.
     store_a.save_role(&make_role("r1", "shared")).unwrap();
     store_a.save_role(&make_role("r2", "a-only")).unwrap();
-    store_a.save_tradeoff(&make_motivation("m1", "shared-mot")).unwrap();
+    store_a
+        .save_tradeoff(&make_motivation("m1", "shared-mot"))
+        .unwrap();
 
     store_b.save_role(&make_role("r1", "shared")).unwrap();
     store_b.save_role(&make_role("r3", "b-only")).unwrap();
-    store_b.save_tradeoff(&make_motivation("m1", "shared-mot")).unwrap();
-    store_b.save_tradeoff(&make_motivation("m2", "b-only-mot")).unwrap();
+    store_b
+        .save_tradeoff(&make_motivation("m1", "shared-mot"))
+        .unwrap();
+    store_b
+        .save_tradeoff(&make_motivation("m2", "b-only-mot"))
+        .unwrap();
 
     // Merge store_a into target
     let mut total = TransferSummary::default();
@@ -751,17 +809,23 @@ fn merge_idempotent() {
     let target = setup_store(&tmp, "target");
 
     store_a.save_role(&make_role("r1", "role1")).unwrap();
-    store_a.save_tradeoff(&make_motivation("m1", "mot1")).unwrap();
+    store_a
+        .save_tradeoff(&make_motivation("m1", "mot1"))
+        .unwrap();
     store_b.save_role(&make_role("r2", "role2")).unwrap();
-    store_b.save_agent(&{
-        // Agent needs role and motivation in same store for referential integrity
-        let mut a = make_agent("a1", "agent1", "r2", "m1");
-        a.role_id = "r2".to_string();
-        a.tradeoff_id = "m1".to_string();
-        a
-    }).unwrap();
+    store_b
+        .save_agent(&{
+            // Agent needs role and motivation in same store for referential integrity
+            let mut a = make_agent("a1", "agent1", "r2", "m1");
+            a.role_id = "r2".to_string();
+            a.tradeoff_id = "m1".to_string();
+            a
+        })
+        .unwrap();
     // Store b also needs r2 and m1 for agent deps
-    store_b.save_tradeoff(&make_motivation("m1", "mot1")).unwrap();
+    store_b
+        .save_tradeoff(&make_motivation("m1", "mot1"))
+        .unwrap();
 
     // First merge
     federation::transfer(&store_a, &target, &TransferOptions::default()).unwrap();
@@ -830,9 +894,7 @@ fn performance_merge_deduplicates_same_eval() {
     let source = setup_store(&tmp, "source");
     let target = setup_store(&tmp, "target");
 
-    let perf = make_perf(vec![
-        (0.9, "task-a", "2026-01-01T00:00:00Z"),
-    ]);
+    let perf = make_perf(vec![(0.9, "task-a", "2026-01-01T00:00:00Z")]);
 
     let mut source_role = make_role("r1", "analyst");
     source_role.performance = perf.clone();
@@ -860,15 +922,11 @@ fn performance_merge_avg_score_recalculated() {
     let target = setup_store(&tmp, "target");
 
     let mut source_role = make_role("r1", "analyst");
-    source_role.performance = make_perf(vec![
-        (0.9, "task-a", "2026-01-01T00:00:00Z"),
-    ]);
+    source_role.performance = make_perf(vec![(0.9, "task-a", "2026-01-01T00:00:00Z")]);
     source.save_role(&source_role).unwrap();
 
     let mut target_role = make_role("r1", "analyst");
-    target_role.performance = make_perf(vec![
-        (0.7, "task-b", "2026-01-02T00:00:00Z"),
-    ]);
+    target_role.performance = make_perf(vec![(0.7, "task-b", "2026-01-02T00:00:00Z")]);
     target.save_role(&target_role).unwrap();
 
     federation::transfer(&source, &target, &TransferOptions::default()).unwrap();
@@ -888,15 +946,11 @@ fn performance_merge_motivations() {
     let target = setup_store(&tmp, "target");
 
     let mut source_mot = make_motivation("m1", "quality");
-    source_mot.performance = make_perf(vec![
-        (0.95, "task-a", "2026-01-01T00:00:00Z"),
-    ]);
+    source_mot.performance = make_perf(vec![(0.95, "task-a", "2026-01-01T00:00:00Z")]);
     source.save_tradeoff(&source_mot).unwrap();
 
     let mut target_mot = make_motivation("m1", "quality-local");
-    target_mot.performance = make_perf(vec![
-        (0.85, "task-b", "2026-01-02T00:00:00Z"),
-    ]);
+    target_mot.performance = make_perf(vec![(0.85, "task-b", "2026-01-02T00:00:00Z")]);
     target.save_tradeoff(&target_mot).unwrap();
 
     federation::transfer(&source, &target, &TransferOptions::default()).unwrap();
@@ -917,20 +971,20 @@ fn performance_merge_agents() {
 
     // Both need role + motivation in store
     source.save_role(&make_role("r1", "builder")).unwrap();
-    source.save_tradeoff(&make_motivation("m1", "speed")).unwrap();
+    source
+        .save_tradeoff(&make_motivation("m1", "speed"))
+        .unwrap();
     target.save_role(&make_role("r1", "builder")).unwrap();
-    target.save_tradeoff(&make_motivation("m1", "speed")).unwrap();
+    target
+        .save_tradeoff(&make_motivation("m1", "speed"))
+        .unwrap();
 
     let mut source_agent = make_agent("a1", "agent-1", "r1", "m1");
-    source_agent.performance = make_perf(vec![
-        (0.9, "task-a", "2026-01-01T00:00:00Z"),
-    ]);
+    source_agent.performance = make_perf(vec![(0.9, "task-a", "2026-01-01T00:00:00Z")]);
     source.save_agent(&source_agent).unwrap();
 
     let mut target_agent = make_agent("a1", "agent-1", "r1", "m1");
-    target_agent.performance = make_perf(vec![
-        (0.8, "task-b", "2026-01-02T00:00:00Z"),
-    ]);
+    target_agent.performance = make_perf(vec![(0.8, "task-b", "2026-01-02T00:00:00Z")]);
     target.save_agent(&target_agent).unwrap();
 
     federation::transfer(&source, &target, &TransferOptions::default()).unwrap();
@@ -953,8 +1007,12 @@ fn evaluations_transferred_with_entities() {
     let target = setup_store(&tmp, "target");
 
     source.save_role(&make_role("r1", "builder")).unwrap();
-    source.save_tradeoff(&make_motivation("m1", "speed")).unwrap();
-    source.save_agent(&make_agent("a1", "agent-1", "r1", "m1")).unwrap();
+    source
+        .save_tradeoff(&make_motivation("m1", "speed"))
+        .unwrap();
+    source
+        .save_agent(&make_agent("a1", "agent-1", "r1", "m1"))
+        .unwrap();
 
     let eval = make_evaluation("eval-1", "task-1", "a1", "r1", "m1", 0.9);
     source.save_evaluation(&eval).unwrap();
@@ -1117,15 +1175,26 @@ fn large_store_transfer() {
 
     // Create 50 roles, 20 motivations, 30 agents
     for i in 0..50 {
-        source.save_role(&make_role(&format!("r{}", i), &format!("role-{}", i))).unwrap();
+        source
+            .save_role(&make_role(&format!("r{}", i), &format!("role-{}", i)))
+            .unwrap();
     }
     for i in 0..20 {
-        source.save_tradeoff(&make_motivation(&format!("m{}", i), &format!("mot-{}", i))).unwrap();
+        source
+            .save_tradeoff(&make_motivation(&format!("m{}", i), &format!("mot-{}", i)))
+            .unwrap();
     }
     for i in 0..30 {
         let role_id = format!("r{}", i % 50);
         let mot_id = format!("m{}", i % 20);
-        source.save_agent(&make_agent(&format!("a{}", i), &format!("agent-{}", i), &role_id, &mot_id)).unwrap();
+        source
+            .save_agent(&make_agent(
+                &format!("a{}", i),
+                &format!("agent-{}", i),
+                &role_id,
+                &mot_id,
+            ))
+            .unwrap();
     }
 
     let summary = federation::transfer(&source, &target, &TransferOptions::default()).unwrap();
@@ -1202,9 +1271,15 @@ fn entity_ids_prefix_matching() {
     let source = setup_store(&tmp, "source");
     let target = setup_store(&tmp, "target");
 
-    source.save_role(&make_role("role-abc123", "role-a")).unwrap();
-    source.save_role(&make_role("role-def456", "role-d")).unwrap();
-    source.save_role(&make_role("role-abc789", "role-a2")).unwrap();
+    source
+        .save_role(&make_role("role-abc123", "role-a"))
+        .unwrap();
+    source
+        .save_role(&make_role("role-def456", "role-d"))
+        .unwrap();
+    source
+        .save_role(&make_role("role-abc789", "role-a2"))
+        .unwrap();
 
     // Prefix "role-abc" should match role-abc123 and role-abc789
     let opts = TransferOptions {
@@ -1227,12 +1302,18 @@ fn agent_transfer_skips_existing_deps() {
     let target = setup_store(&tmp, "target");
 
     source.save_role(&make_role("r1", "builder")).unwrap();
-    source.save_tradeoff(&make_motivation("m1", "speed")).unwrap();
-    source.save_agent(&make_agent("a1", "agent-1", "r1", "m1")).unwrap();
+    source
+        .save_tradeoff(&make_motivation("m1", "speed"))
+        .unwrap();
+    source
+        .save_agent(&make_agent("a1", "agent-1", "r1", "m1"))
+        .unwrap();
 
     // Pre-populate target with deps
     target.save_role(&make_role("r1", "builder")).unwrap();
-    target.save_tradeoff(&make_motivation("m1", "speed")).unwrap();
+    target
+        .save_tradeoff(&make_motivation("m1", "speed"))
+        .unwrap();
 
     let opts = TransferOptions {
         entity_filter: EntityFilter::Agents,
@@ -1254,9 +1335,15 @@ fn multiple_agents_shared_deps_added_once() {
     let target = setup_store(&tmp, "target");
 
     source.save_role(&make_role("r1", "builder")).unwrap();
-    source.save_tradeoff(&make_motivation("m1", "speed")).unwrap();
-    source.save_agent(&make_agent("a1", "agent-1", "r1", "m1")).unwrap();
-    source.save_agent(&make_agent("a2", "agent-2", "r1", "m1")).unwrap();
+    source
+        .save_tradeoff(&make_motivation("m1", "speed"))
+        .unwrap();
+    source
+        .save_agent(&make_agent("a1", "agent-1", "r1", "m1"))
+        .unwrap();
+    source
+        .save_agent(&make_agent("a2", "agent-2", "r1", "m1"))
+        .unwrap();
 
     let opts = TransferOptions {
         entity_filter: EntityFilter::Agents,
@@ -1285,14 +1372,18 @@ fn scan_max_depth_limits_discovery() {
     // Add a role so it's not empty
     let shallow_store = LocalStore::new(shallow.join(".workgraph").join("agency"));
     agency::init(shallow_store.store_path()).unwrap();
-    shallow_store.save_role(&make_role("r-shallow", "shallow-role")).unwrap();
+    shallow_store
+        .save_role(&make_role("r-shallow", "shallow-role"))
+        .unwrap();
 
     // Store at depth 3: root/a/b/deep/.workgraph/agency/
     let deep = tmp.path().join("a").join("b").join("deep");
     create_project_store_dirs(&deep);
     let deep_store = LocalStore::new(deep.join(".workgraph").join("agency"));
     agency::init(deep_store.store_path()).unwrap();
-    deep_store.save_role(&make_role("r-deep", "deep-role")).unwrap();
+    deep_store
+        .save_role(&make_role("r-deep", "deep-role"))
+        .unwrap();
 
     // With max_depth=3 (root/shallow/.workgraph = 2 levels), shallow is found
     // but deep (root/a/b/deep/.workgraph = 4 levels) is not
@@ -1333,7 +1424,10 @@ fn push_to_read_only_directory_errors() {
 
     // Transfer should fail because we can't write to roles/
     let result = federation::transfer(&source, &target, &TransferOptions::default());
-    assert!(result.is_err(), "Expected error writing to read-only directory");
+    assert!(
+        result.is_err(),
+        "Expected error writing to read-only directory"
+    );
 
     // Clean up: restore permissions so temp dir can be deleted
     std::fs::set_permissions(
@@ -1622,7 +1716,9 @@ fn transfer_preserves_all_agent_fields() {
     let target = setup_store(&tmp, "target");
 
     source.save_role(&make_role("r1", "builder")).unwrap();
-    source.save_tradeoff(&make_motivation("m1", "speed")).unwrap();
+    source
+        .save_tradeoff(&make_motivation("m1", "speed"))
+        .unwrap();
 
     let mut agent = make_agent("a1", "full-agent", "r1", "m1");
     agent.capabilities = vec!["rust".to_string(), "testing".to_string()];
@@ -1650,14 +1746,26 @@ fn evaluation_relevance_filter_with_entity_ids() {
     // Use separate roles and motivations to avoid overlap through auto-pulled deps
     source.save_role(&make_role("r1", "builder")).unwrap();
     source.save_role(&make_role("r2", "tester")).unwrap();
-    source.save_tradeoff(&make_motivation("m1", "speed")).unwrap();
-    source.save_tradeoff(&make_motivation("m2", "quality")).unwrap();
-    source.save_agent(&make_agent("a1", "agent-1", "r1", "m1")).unwrap();
-    source.save_agent(&make_agent("a2", "agent-2", "r2", "m2")).unwrap();
+    source
+        .save_tradeoff(&make_motivation("m1", "speed"))
+        .unwrap();
+    source
+        .save_tradeoff(&make_motivation("m2", "quality"))
+        .unwrap();
+    source
+        .save_agent(&make_agent("a1", "agent-1", "r1", "m1"))
+        .unwrap();
+    source
+        .save_agent(&make_agent("a2", "agent-2", "r2", "m2"))
+        .unwrap();
 
     // Eval for a1 and a2
-    source.save_evaluation(&make_evaluation("eval-1", "task-1", "a1", "r1", "m1", 0.9)).unwrap();
-    source.save_evaluation(&make_evaluation("eval-2", "task-2", "a2", "r2", "m2", 0.8)).unwrap();
+    source
+        .save_evaluation(&make_evaluation("eval-1", "task-1", "a1", "r1", "m1", 0.9))
+        .unwrap();
+    source
+        .save_evaluation(&make_evaluation("eval-2", "task-2", "a2", "r2", "m2", 0.8))
+        .unwrap();
 
     // Only transfer a1 — auto-pulls r1 and m1, but NOT r2 or m2
     let opts = TransferOptions {
@@ -1727,7 +1835,9 @@ fn scan_cli_finds_multiple_stores_json() {
     let store_b = LocalStore::new(proj_b.join(".workgraph").join("agency"));
     agency::init(store_b.store_path()).unwrap();
     store_b.save_role(&make_role("r2", "role-beta")).unwrap();
-    store_b.save_tradeoff(&make_motivation("m1", "mot-beta")).unwrap();
+    store_b
+        .save_tradeoff(&make_motivation("m1", "mot-beta"))
+        .unwrap();
 
     // Both stores should be valid and discoverable
     assert!(store_a.is_valid());
@@ -1807,10 +1917,8 @@ fn transfer_preserves_motivation_tradeoffs() {
         "Slower delivery for higher quality".to_string(),
         "More verbose output".to_string(),
     ];
-    motivation.unacceptable_tradeoffs = vec![
-        "Skipping tests".to_string(),
-        "Ignoring errors".to_string(),
-    ];
+    motivation.unacceptable_tradeoffs =
+        vec!["Skipping tests".to_string(), "Ignoring errors".to_string()];
     source.save_tradeoff(&motivation).unwrap();
 
     federation::transfer(&source, &target, &TransferOptions::default()).unwrap();
@@ -1819,7 +1927,10 @@ fn transfer_preserves_motivation_tradeoffs() {
     let transferred = motivations.iter().find(|m| m.id == "m1").unwrap();
     assert_eq!(transferred.acceptable_tradeoffs.len(), 2);
     assert_eq!(transferred.unacceptable_tradeoffs.len(), 2);
-    assert_eq!(transferred.acceptable_tradeoffs[0], "Slower delivery for higher quality");
+    assert_eq!(
+        transferred.acceptable_tradeoffs[0],
+        "Slower delivery for higher quality"
+    );
     assert_eq!(transferred.unacceptable_tradeoffs[1], "Ignoring errors");
 }
 
@@ -1831,10 +1942,16 @@ fn transfer_preserves_all_optional_agent_fields() {
     let target = setup_store(&tmp, "target");
 
     source.save_role(&make_role("r1", "builder")).unwrap();
-    source.save_tradeoff(&make_motivation("m1", "speed")).unwrap();
+    source
+        .save_tradeoff(&make_motivation("m1", "speed"))
+        .unwrap();
 
     let mut agent = make_agent("a1", "full-agent", "r1", "m1");
-    agent.capabilities = vec!["rust".to_string(), "testing".to_string(), "debugging".to_string()];
+    agent.capabilities = vec![
+        "rust".to_string(),
+        "testing".to_string(),
+        "debugging".to_string(),
+    ];
     agent.rate = Some(0.95);
     agent.capacity = Some(3.0);
     agent.trust_level = TrustLevel::Verified;
@@ -1894,8 +2011,16 @@ fn performance_merge_preserves_context_id() {
     assert_eq!(merged.performance.evaluations.len(), 2);
 
     // Verify context_ids are preserved
-    let has_xyz = merged.performance.evaluations.iter().any(|e| e.context_id == "motivation-xyz");
-    let has_abc = merged.performance.evaluations.iter().any(|e| e.context_id == "motivation-abc");
+    let has_xyz = merged
+        .performance
+        .evaluations
+        .iter()
+        .any(|e| e.context_id == "motivation-xyz");
+    let has_abc = merged
+        .performance
+        .evaluations
+        .iter()
+        .any(|e| e.context_id == "motivation-abc");
     assert!(has_xyz, "context_id 'motivation-xyz' should be preserved");
     assert!(has_abc, "context_id 'motivation-abc' should be preserved");
 }
@@ -1909,10 +2034,18 @@ fn combined_entity_filter_and_entity_ids() {
 
     source.save_role(&make_role("r1", "builder")).unwrap();
     source.save_role(&make_role("r2", "tester")).unwrap();
-    source.save_tradeoff(&make_motivation("m1", "speed")).unwrap();
-    source.save_tradeoff(&make_motivation("m2", "quality")).unwrap();
-    source.save_agent(&make_agent("agent-alpha", "alpha", "r1", "m1")).unwrap();
-    source.save_agent(&make_agent("agent-beta", "beta", "r2", "m2")).unwrap();
+    source
+        .save_tradeoff(&make_motivation("m1", "speed"))
+        .unwrap();
+    source
+        .save_tradeoff(&make_motivation("m2", "quality"))
+        .unwrap();
+    source
+        .save_agent(&make_agent("agent-alpha", "alpha", "r1", "m1"))
+        .unwrap();
+    source
+        .save_agent(&make_agent("agent-beta", "beta", "r2", "m2"))
+        .unwrap();
 
     // Filter to agents only, then further narrow by entity ID prefix
     let opts = TransferOptions {
@@ -1971,9 +2104,13 @@ fn force_flag_overwrites_agent() {
     let target = setup_store(&tmp, "target");
 
     source.save_role(&make_role("r1", "builder")).unwrap();
-    source.save_tradeoff(&make_motivation("m1", "speed")).unwrap();
+    source
+        .save_tradeoff(&make_motivation("m1", "speed"))
+        .unwrap();
     target.save_role(&make_role("r1", "builder")).unwrap();
-    target.save_tradeoff(&make_motivation("m1", "speed")).unwrap();
+    target
+        .save_tradeoff(&make_motivation("m1", "speed"))
+        .unwrap();
 
     let mut source_agent = make_agent("a1", "source-agent", "r1", "m1");
     source_agent.executor = "amplifier".to_string();
@@ -2106,12 +2243,18 @@ fn agent_deps_already_in_target_not_source() {
 
     // Target has deps, source has agent referencing them
     target.save_role(&make_role("r1", "builder")).unwrap();
-    target.save_tradeoff(&make_motivation("m1", "speed")).unwrap();
+    target
+        .save_tradeoff(&make_motivation("m1", "speed"))
+        .unwrap();
 
     // Source has the agent AND the deps (for referential integrity check)
     source.save_role(&make_role("r1", "builder")).unwrap();
-    source.save_tradeoff(&make_motivation("m1", "speed")).unwrap();
-    source.save_agent(&make_agent("a1", "agent-1", "r1", "m1")).unwrap();
+    source
+        .save_tradeoff(&make_motivation("m1", "speed"))
+        .unwrap();
+    source
+        .save_agent(&make_agent("a1", "agent-1", "r1", "m1"))
+        .unwrap();
 
     let opts = TransferOptions {
         entity_filter: EntityFilter::Agents,
@@ -2133,10 +2276,18 @@ fn two_agents_different_deps_both_pulled() {
 
     source.save_role(&make_role("r1", "builder")).unwrap();
     source.save_role(&make_role("r2", "tester")).unwrap();
-    source.save_tradeoff(&make_motivation("m1", "speed")).unwrap();
-    source.save_tradeoff(&make_motivation("m2", "quality")).unwrap();
-    source.save_agent(&make_agent("a1", "agent-1", "r1", "m1")).unwrap();
-    source.save_agent(&make_agent("a2", "agent-2", "r2", "m2")).unwrap();
+    source
+        .save_tradeoff(&make_motivation("m1", "speed"))
+        .unwrap();
+    source
+        .save_tradeoff(&make_motivation("m2", "quality"))
+        .unwrap();
+    source
+        .save_agent(&make_agent("a1", "agent-1", "r1", "m1"))
+        .unwrap();
+    source
+        .save_agent(&make_agent("a2", "agent-2", "r2", "m2"))
+        .unwrap();
 
     let opts = TransferOptions {
         entity_filter: EntityFilter::Agents,
@@ -2167,8 +2318,12 @@ fn multiple_evaluations_same_agent_all_transferred() {
     let target = setup_store(&tmp, "target");
 
     source.save_role(&make_role("r1", "builder")).unwrap();
-    source.save_tradeoff(&make_motivation("m1", "speed")).unwrap();
-    source.save_agent(&make_agent("a1", "agent-1", "r1", "m1")).unwrap();
+    source
+        .save_tradeoff(&make_motivation("m1", "speed"))
+        .unwrap();
+    source
+        .save_agent(&make_agent("a1", "agent-1", "r1", "m1"))
+        .unwrap();
 
     for i in 0..5 {
         let eval = make_evaluation(
@@ -2229,12 +2384,16 @@ fn evaluations_merge_from_two_sources() {
     s2.save_role(&make_role("r1", "builder")).unwrap();
 
     // s1 has eval-1 and eval-2
-    s1.save_evaluation(&make_evaluation("eval-1", "task-1", "a1", "r1", "m1", 0.9)).unwrap();
-    s1.save_evaluation(&make_evaluation("eval-2", "task-2", "a1", "r1", "m1", 0.8)).unwrap();
+    s1.save_evaluation(&make_evaluation("eval-1", "task-1", "a1", "r1", "m1", 0.9))
+        .unwrap();
+    s1.save_evaluation(&make_evaluation("eval-2", "task-2", "a1", "r1", "m1", 0.8))
+        .unwrap();
 
     // s2 has eval-2 (overlap) and eval-3
-    s2.save_evaluation(&make_evaluation("eval-2", "task-2", "a1", "r1", "m1", 0.8)).unwrap();
-    s2.save_evaluation(&make_evaluation("eval-3", "task-3", "a1", "r1", "m1", 0.7)).unwrap();
+    s2.save_evaluation(&make_evaluation("eval-2", "task-2", "a1", "r1", "m1", 0.8))
+        .unwrap();
+    s2.save_evaluation(&make_evaluation("eval-3", "task-3", "a1", "r1", "m1", 0.7))
+        .unwrap();
 
     let sum1 = federation::transfer(&s1, &target, &TransferOptions::default()).unwrap();
     let sum2 = federation::transfer(&s2, &target, &TransferOptions::default()).unwrap();
@@ -2259,15 +2418,11 @@ fn no_performance_preserves_target_perf_on_existing() {
     let target = setup_store(&tmp, "target");
 
     let mut source_role = make_role("r1", "analyst");
-    source_role.performance = make_perf(vec![
-        (0.95, "task-src", "2026-02-01T00:00:00Z"),
-    ]);
+    source_role.performance = make_perf(vec![(0.95, "task-src", "2026-02-01T00:00:00Z")]);
     source.save_role(&source_role).unwrap();
 
     let mut target_role = make_role("r1", "analyst");
-    target_role.performance = make_perf(vec![
-        (0.75, "task-tgt", "2026-01-01T00:00:00Z"),
-    ]);
+    target_role.performance = make_perf(vec![(0.75, "task-tgt", "2026-01-01T00:00:00Z")]);
     target.save_role(&target_role).unwrap();
 
     let opts = TransferOptions {

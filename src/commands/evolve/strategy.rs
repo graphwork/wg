@@ -108,8 +108,7 @@ impl Default for EvolverTarget {
 }
 
 /// A single evolution operation returned by the evolver agent.
-#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize, Default)]
 pub struct EvolverOperation {
     /// Operation type: create_role, modify_role, create_motivation, modify_motivation,
     /// retire_role, retire_motivation, wording_mutation, component_substitution,
@@ -213,7 +212,6 @@ pub struct EvolverOperation {
     #[serde(default)]
     pub ideation_prompt: Option<String>,
 }
-
 
 /// Top-level structured output from the evolver agent.
 #[derive(Debug, serde::Deserialize, serde::Serialize)]

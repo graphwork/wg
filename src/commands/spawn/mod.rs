@@ -121,7 +121,8 @@ pub fn run(
     model: Option<&str>,
     json: bool,
 ) -> Result<()> {
-    let result = execution::spawn_agent_inner(dir, task_id, executor_name, timeout, model, "wg spawn")?;
+    let result =
+        execution::spawn_agent_inner(dir, task_id, executor_name, timeout, model, "wg spawn")?;
 
     if json {
         println!("{}", serde_json::to_string_pretty(&result)?);
@@ -147,7 +148,8 @@ pub fn spawn_agent(
     timeout: Option<&str>,
     model: Option<&str>,
 ) -> Result<(String, u32)> {
-    let result = execution::spawn_agent_inner(dir, task_id, executor_name, timeout, model, "coordinator")?;
+    let result =
+        execution::spawn_agent_inner(dir, task_id, executor_name, timeout, model, "coordinator")?;
     Ok((result.agent_id, result.pid))
 }
 
@@ -544,6 +546,9 @@ mod tests {
         let metadata_path = agent_output_dir(temp_dir.path(), "agent-1").join("metadata.json");
         let metadata: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(&metadata_path).unwrap()).unwrap();
-        assert_eq!(metadata["timeout_secs"], 600, "Metadata should record 600s (10m)");
+        assert_eq!(
+            metadata["timeout_secs"], 600,
+            "Metadata should record 600s (10m)"
+        );
     }
 }

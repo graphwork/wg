@@ -87,10 +87,7 @@ pub fn show(dir: &Path, scope: Option<ConfigScope>, json: bool) -> Result<()> {
             "  max_child_tasks_per_agent = {}",
             config.guardrails.max_child_tasks_per_agent
         );
-        println!(
-            "  max_task_depth = {}",
-            config.guardrails.max_task_depth
-        );
+        println!("  max_task_depth = {}", config.guardrails.max_task_depth);
         println!();
         println!("[viz]");
         println!("  edge_color = \"{}\"", config.viz.edge_color);
@@ -321,7 +318,10 @@ pub fn update(
                 changed = true;
             }
             _ => {
-                anyhow::bail!("Invalid edge color '{}'. Valid options: gray, white, mixed", color);
+                anyhow::bail!(
+                    "Invalid edge color '{}'. Valid options: gray, white, mixed",
+                    color
+                );
             }
         }
     }
@@ -366,7 +366,12 @@ pub fn list(dir: &Path, json: bool) -> Result<()> {
             let source = entry["source"].as_str().unwrap_or("default");
             let key = entry["key"].as_str().unwrap_or("");
             let value = &entry["value"];
-            println!("  {:40} = {:20} [{}]", key, format_toml_value(value), source);
+            println!(
+                "  {:40} = {:20} [{}]",
+                key,
+                format_toml_value(value),
+                source
+            );
         }
     }
 
@@ -790,10 +795,7 @@ mod tests {
             config.agency.creator_agent,
             Some("creator-hash".to_string())
         );
-        assert_eq!(
-            config.agency.creator_model,
-            Some("haiku".to_string())
-        );
+        assert_eq!(config.agency.creator_model, Some("haiku".to_string()));
         assert_eq!(
             config.agency.retention_heuristics,
             Some("Retire below 0.3 after 10 evals".to_string())

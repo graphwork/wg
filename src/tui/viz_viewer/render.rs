@@ -6,14 +6,15 @@ use ratatui::widgets::{
 };
 
 use super::state::VizApp;
-use workgraph::graph::{format_tokens, TokenUsage};
+use workgraph::graph::{TokenUsage, format_tokens};
 
 pub fn draw(frame: &mut Frame, app: &mut VizApp) {
     // Clear expired jump targets (>2 seconds old).
     if let Some((_, when)) = app.jump_target
-        && when.elapsed() > std::time::Duration::from_secs(2) {
-            app.jump_target = None;
-        }
+        && when.elapsed() > std::time::Duration::from_secs(2)
+    {
+        app.jump_target = None;
+    }
 
     let area = frame.area();
 
@@ -61,12 +62,11 @@ enum LineTraceCategory {
 
 fn classify_task_line(app: &VizApp, orig_idx: usize) -> LineTraceCategory {
     // Check if this line is the selected task's line.
-    if let Some(selected_id) = app.selected_task_id() {
-        if let Some(&sel_line) = app.node_line_map.get(selected_id) {
-            if orig_idx == sel_line {
-                return LineTraceCategory::Selected;
-            }
-        }
+    if let Some(selected_id) = app.selected_task_id()
+        && let Some(&sel_line) = app.node_line_map.get(selected_id)
+        && orig_idx == sel_line
+    {
+        return LineTraceCategory::Selected;
     }
     // Check if this line belongs to an upstream or downstream task node.
     for (id, &line) in &app.node_line_map {
@@ -84,10 +84,10 @@ fn classify_task_line(app: &VizApp, orig_idx: usize) -> LineTraceCategory {
 
 /// Check whether a given original line index is the selected task's line.
 fn is_selected_task_line(app: &VizApp, orig_idx: usize) -> bool {
-    if let Some(selected_id) = app.selected_task_id() {
-        if let Some(&sel_line) = app.node_line_map.get(selected_id) {
-            return orig_idx == sel_line;
-        }
+    if let Some(selected_id) = app.selected_task_id()
+        && let Some(&sel_line) = app.node_line_map.get(selected_id)
+    {
+        return orig_idx == sel_line;
     }
     false
 }
@@ -122,7 +122,11 @@ fn draw_viz_content(frame: &mut Frame, app: &VizApp, area: Rect) {
         let base_line: Line = match ansi_to_tui::IntoText::into_text(&ansi_line) {
             Ok(text) => text.lines.into_iter().next().unwrap_or_default(),
             Err(_) => {
-                let plain = app.plain_lines.get(orig_idx).map(|s| s.as_str()).unwrap_or("");
+                let plain = app
+                    .plain_lines
+                    .get(orig_idx)
+                    .map(|s| s.as_str())
+                    .unwrap_or("");
                 Line::from(plain)
             }
         };
@@ -131,7 +135,8 @@ fn draw_viz_content(frame: &mut Frame, app: &VizApp, area: Rect) {
             if let Some(fuzzy_match) = app.match_for_line(orig_idx) {
                 // This line has a fuzzy match — highlight matched characters.
                 let is_current = current_match_orig_line == Some(orig_idx);
-                let mut highlighted = highlight_fuzzy_match(base_line, &fuzzy_match.char_positions, is_current);
+                let mut highlighted =
+                    highlight_fuzzy_match(base_line, &fuzzy_match.char_positions, is_current);
                 if is_current {
                     highlighted = highlighted.style(Style::default().bg(Color::Yellow));
                 }
@@ -146,7 +151,11 @@ fn draw_viz_content(frame: &mut Frame, app: &VizApp, area: Rect) {
             text_lines.push(base_line.style(Style::default().bg(Color::Yellow)));
         } else if has_trace {
             // Per-character edge tracing with topology-aware coloring.
-            let plain_line = app.plain_lines.get(orig_idx).map(|s| s.as_str()).unwrap_or("");
+            let plain_line = app
+                .plain_lines
+                .get(orig_idx)
+                .map(|s| s.as_str())
+                .unwrap_or("");
             let line_category = classify_task_line(app, orig_idx);
             let colored_line = apply_per_char_trace_coloring(
                 base_line,
@@ -164,7 +173,11 @@ fn draw_viz_content(frame: &mut Frame, app: &VizApp, area: Rect) {
             }
         } else if has_selected && is_selected_task_line(app, orig_idx) {
             // Trace is off but a task is selected — still show bold + bright (text only).
-            let plain_line = app.plain_lines.get(orig_idx).map(|s| s.as_str()).unwrap_or("");
+            let plain_line = app
+                .plain_lines
+                .get(orig_idx)
+                .map(|s| s.as_str())
+                .unwrap_or("");
             text_lines.push(apply_selection_style(base_line, plain_line));
         } else {
             text_lines.push(base_line);
@@ -181,26 +194,36 @@ fn draw_viz_content(frame: &mut Frame, app: &VizApp, area: Rect) {
     // Off-screen selection direction indicator: when the selected task is
     // scrolled out of the viewport, show a yellow arrow at the edge to hint
     // which direction the user needs to scroll.
-    if has_selected && !has_search {
-        if let Some(selected_id) = app.selected_task_id() {
-            if let Some(&sel_orig_line) = app.node_line_map.get(selected_id) {
-                let is_visible = (start..end).any(|vi| app.visible_to_original(vi) == sel_orig_line);
-                if !is_visible {
-                    let first_visible_orig = app.visible_to_original(start);
-                    let indicator_style = Style::default().fg(Color::Yellow);
-                    if sel_orig_line < first_visible_orig {
-                        // Selected task is above viewport.
-                        let arrow = Paragraph::new(Line::from(Span::styled("▲", indicator_style)));
-                        let arrow_area = Rect { x: area.x, y: area.y, width: 1, height: 1 };
-                        frame.render_widget(arrow, arrow_area);
-                    } else {
-                        // Selected task is below viewport.
-                        let arrow = Paragraph::new(Line::from(Span::styled("▼", indicator_style)));
-                        let bottom_y = area.y + area.height.saturating_sub(1);
-                        let arrow_area = Rect { x: area.x, y: bottom_y, width: 1, height: 1 };
-                        frame.render_widget(arrow, arrow_area);
-                    }
-                }
+    if has_selected
+        && !has_search
+        && let Some(selected_id) = app.selected_task_id()
+        && let Some(&sel_orig_line) = app.node_line_map.get(selected_id)
+    {
+        let is_visible = (start..end).any(|vi| app.visible_to_original(vi) == sel_orig_line);
+        if !is_visible {
+            let first_visible_orig = app.visible_to_original(start);
+            let indicator_style = Style::default().fg(Color::Yellow);
+            if sel_orig_line < first_visible_orig {
+                // Selected task is above viewport.
+                let arrow = Paragraph::new(Line::from(Span::styled("▲", indicator_style)));
+                let arrow_area = Rect {
+                    x: area.x,
+                    y: area.y,
+                    width: 1,
+                    height: 1,
+                };
+                frame.render_widget(arrow, arrow_area);
+            } else {
+                // Selected task is below viewport.
+                let arrow = Paragraph::new(Line::from(Span::styled("▼", indicator_style)));
+                let bottom_y = area.y + area.height.saturating_sub(1);
+                let arrow_area = Rect {
+                    x: area.x,
+                    y: bottom_y,
+                    width: 1,
+                    height: 1,
+                };
+                frame.render_widget(arrow, arrow_area);
             }
         }
     }
@@ -232,15 +255,11 @@ fn apply_per_char_trace_coloring<'a>(
     }
 
     // Build the upstream+selected and downstream+selected sets for quick lookup.
-    let in_cycle = |id: &str| -> bool {
-        app.cycle_set.contains(id)
-    };
-    let in_upstream = |id: &str| -> bool {
-        app.upstream_set.contains(id) || selected_id == Some(id)
-    };
-    let in_downstream = |id: &str| -> bool {
-        app.downstream_set.contains(id) || selected_id == Some(id)
-    };
+    let in_cycle = |id: &str| -> bool { app.cycle_set.contains(id) };
+    let in_upstream =
+        |id: &str| -> bool { app.upstream_set.contains(id) || selected_id == Some(id) };
+    let in_downstream =
+        |id: &str| -> bool { app.downstream_set.contains(id) || selected_id == Some(id) };
 
     let (text_start, text_end) = text_range.unwrap_or((usize::MAX, usize::MAX));
 
@@ -264,9 +283,15 @@ fn apply_per_char_trace_coloring<'a>(
             // Shared arc column positions may carry multiple edges.
             // Priority: yellow (cycle) > magenta (upstream) > cyan (downstream).
             let is_cycle_edge = !app.cycle_set.is_empty()
-                && edges.iter().any(|(src, tgt)| in_cycle(src) && in_cycle(tgt));
-            let is_upstream_edge = edges.iter().any(|(src, tgt)| in_upstream(src) && in_upstream(tgt));
-            let is_downstream_edge = edges.iter().any(|(src, tgt)| in_downstream(src) && in_downstream(tgt));
+                && edges
+                    .iter()
+                    .any(|(src, tgt)| in_cycle(src) && in_cycle(tgt));
+            let is_upstream_edge = edges
+                .iter()
+                .any(|(src, tgt)| in_upstream(src) && in_upstream(tgt));
+            let is_downstream_edge = edges
+                .iter()
+                .any(|(src, tgt)| in_downstream(src) && in_downstream(tgt));
             if is_cycle_edge {
                 let mut s = *base_style;
                 s.fg = Some(Color::Yellow);
@@ -293,7 +318,10 @@ fn apply_per_char_trace_coloring<'a>(
             current_style = style;
             first = false;
         } else if style != current_style {
-            new_spans.push(Span::styled(std::mem::take(&mut current_buf), current_style));
+            new_spans.push(Span::styled(
+                std::mem::take(&mut current_buf),
+                current_style,
+            ));
             current_style = style;
         }
 
@@ -311,7 +339,7 @@ fn apply_per_char_trace_coloring<'a>(
 /// Returns (text_start, text_end) as char indices.
 /// - text_start: index of first alphanumeric character (task ID start)
 /// - text_end: index after last ')' (closing status/token info)
-/// Returns None for non-task lines (pure connectors, blanks, summaries).
+///   Returns None for non-task lines (pure connectors, blanks, summaries).
 fn find_text_range(plain_line: &str) -> Option<(usize, usize)> {
     let chars: Vec<char> = plain_line.chars().collect();
 
@@ -326,8 +354,8 @@ fn find_text_range(plain_line: &str) -> Option<(usize, usize)> {
         .unwrap_or_else(|| {
             // No ')' found — find the last non-connector char.
             let mut end = text_start;
-            for i in text_start..chars.len() {
-                if !chars[i].is_whitespace() && !super::state::is_box_drawing(chars[i]) {
+            for (i, &ch) in chars.iter().enumerate().skip(text_start) {
+                if !ch.is_whitespace() && !super::state::is_box_drawing(ch) {
                     end = i + 1;
                 }
             }
@@ -376,7 +404,10 @@ fn apply_selection_style<'a>(line: Line<'a>, plain_line: &str) -> Line<'a> {
             current_style = style;
             first = false;
         } else if style != current_style {
-            new_spans.push(Span::styled(std::mem::take(&mut current_buf), current_style));
+            new_spans.push(Span::styled(
+                std::mem::take(&mut current_buf),
+                current_style,
+            ));
             current_style = style;
         }
 
@@ -405,7 +436,10 @@ fn brighten_style(style: Style) -> Style {
         // Already bright or custom — keep as-is
         other => other,
     };
-    Style { fg: bright_fg, ..style }
+    Style {
+        fg: bright_fg,
+        ..style
+    }
 }
 
 /// Highlight the fuzzy-matched characters within a line.
@@ -445,7 +479,9 @@ fn highlight_fuzzy_match<'a>(
         let is_match = match_set.contains(&char_idx);
 
         // Check if we need to flush the current buffer.
-        if !current_buf.is_empty() && (is_match != current_is_match || *base_style != current_base_style) {
+        if !current_buf.is_empty()
+            && (is_match != current_is_match || *base_style != current_base_style)
+        {
             let style = if current_is_match {
                 Style::default()
                     .fg(Color::Magenta)
@@ -477,8 +513,7 @@ fn highlight_fuzzy_match<'a>(
 }
 
 fn draw_scrollbar(frame: &mut Frame, app: &VizApp, area: Rect) {
-    let mut state = ScrollbarState::new(app.scroll.content_height)
-        .position(app.scroll.offset_y);
+    let mut state = ScrollbarState::new(app.scroll.content_height).position(app.scroll.offset_y);
     let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight);
     frame.render_stateful_widget(scrollbar, area, &mut state);
 }
@@ -491,7 +526,12 @@ fn draw_status_bar(frame: &mut Frame, app: &VizApp, area: Rect) {
                 format!(" /{}", app.search_input),
                 Style::default().fg(Color::Yellow),
             ),
-            Span::styled("_", Style::default().fg(Color::Yellow).add_modifier(Modifier::SLOW_BLINK)),
+            Span::styled(
+                "_",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::SLOW_BLINK),
+            ),
         ];
 
         // Show match count inline.
@@ -516,8 +556,7 @@ fn draw_status_bar(frame: &mut Frame, app: &VizApp, area: Rect) {
             Style::default().fg(Color::Rgb(100, 100, 100)),
         ));
 
-        let bar = Paragraph::new(Line::from(spans))
-            .style(Style::default().bg(Color::DarkGray));
+        let bar = Paragraph::new(Line::from(spans)).style(Style::default().bg(Color::DarkGray));
         frame.render_widget(bar, area);
         return;
     }
@@ -547,22 +586,19 @@ fn draw_status_bar(frame: &mut Frame, app: &VizApp, area: Rect) {
             Style::default().fg(Color::DarkGray),
         ));
 
-        let bar = Paragraph::new(Line::from(spans))
-            .style(Style::default().bg(Color::DarkGray));
+        let bar = Paragraph::new(Line::from(spans)).style(Style::default().bg(Color::DarkGray));
         frame.render_widget(bar, area);
         return;
     }
 
     let c = &app.task_counts;
-    let mut spans = vec![
-        Span::styled(
-            format!(
-                " {} tasks ({} done, {} open, {} active",
-                c.total, c.done, c.open, c.in_progress
-            ),
-            Style::default().fg(Color::White),
+    let mut spans = vec![Span::styled(
+        format!(
+            " {} tasks ({} done, {} open, {} active",
+            c.total, c.done, c.open, c.in_progress
         ),
-    ];
+        Style::default().fg(Color::White),
+    )];
 
     if c.failed > 0 {
         spans.push(Span::styled(
@@ -659,10 +695,12 @@ fn draw_status_bar(frame: &mut Frame, app: &VizApp, area: Rect) {
 
     // Help hint
     spans.push(Span::styled("| ", Style::default().fg(Color::DarkGray)));
-    spans.push(Span::styled("?:help ", Style::default().fg(Color::DarkGray)));
+    spans.push(Span::styled(
+        "?:help ",
+        Style::default().fg(Color::DarkGray),
+    ));
 
-    let bar = Paragraph::new(Line::from(spans))
-        .style(Style::default().bg(Color::DarkGray));
+    let bar = Paragraph::new(Line::from(spans)).style(Style::default().bg(Color::DarkGray));
     frame.render_widget(bar, area);
 }
 
@@ -698,10 +736,7 @@ fn draw_help_overlay(frame: &mut Frame) {
 
     let binding = |key: &str, desc: &str| -> Line {
         Line::from(vec![
-            Span::styled(
-                format!("  {:<14}", key),
-                Style::default().fg(Color::Yellow),
-            ),
+            Span::styled(format!("  {:<14}", key), Style::default().fg(Color::Yellow)),
             Span::styled(desc.to_string(), Style::default().fg(Color::White)),
         ])
     };
@@ -773,10 +808,7 @@ fn render_token_breakdown<'a>(spans: &mut Vec<Span<'a>>, usage: &TokenUsage, lab
         format!("→{} ←{}", input, output)
     };
 
-    spans.push(Span::styled(
-        token_str,
-        Style::default().fg(Color::Cyan),
-    ));
+    spans.push(Span::styled(token_str, Style::default().fg(Color::Cyan)));
 
     // Label: "view" or "total" — dim to avoid clutter
     spans.push(Span::styled(
@@ -802,8 +834,8 @@ mod tests {
     use workgraph::graph::{Node, Status, WorkGraph};
     use workgraph::test_helpers::make_task_with_status;
 
-    use crate::commands::viz::{LayoutMode, VizOutput};
     use crate::commands::viz::ascii::generate_ascii;
+    use crate::commands::viz::{LayoutMode, VizOutput};
 
     /// Build a test graph and generate viz output.
     /// Returns (VizOutput, graph) for a chain: a -> b -> c, plus standalone d.
@@ -824,19 +856,23 @@ mod tests {
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
         let no_annots = HashMap::new();
         let result = generate_ascii(
-            &graph, &tasks, &task_ids, &no_annots,
-            &HashMap::new(), &HashMap::new(), &HashMap::new(),
-            LayoutMode::Tree, &HashSet::new(), "gray",
+            &graph,
+            &tasks,
+            &task_ids,
+            &no_annots,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            LayoutMode::Tree,
+            &HashSet::new(),
+            "gray",
         );
         (result, graph)
     }
 
     /// Build a VizApp from VizOutput for testing apply_per_char_trace_coloring.
     /// Sets the selected task and computes upstream/downstream sets.
-    fn build_app_from_viz_output(
-        viz: &VizOutput,
-        selected_id: &str,
-    ) -> VizApp {
+    fn build_app_from_viz_output(viz: &VizOutput, selected_id: &str) -> VizApp {
         let mut app = VizApp::from_viz_output_for_test(viz);
         let selected_task_idx = app.task_order.iter().position(|id| id == selected_id);
         app.selected_task_idx = selected_task_idx;
@@ -884,9 +920,7 @@ mod tests {
             Span::styled(suffix.clone(), Style::default()),
         ]);
 
-        let result = apply_per_char_trace_coloring(
-            line, plain, a_line, &category, &app, Some("b"),
-        );
+        let result = apply_per_char_trace_coloring(line, plain, a_line, &category, &app, Some("b"));
 
         // Verify that the task text portion preserved its green color.
         let mut char_idx = 0;
@@ -894,9 +928,12 @@ mod tests {
             for c in span.content.chars() {
                 if char_idx >= text_start && char_idx < text_end {
                     assert_eq!(
-                        span.style.fg, Some(Color::Green),
+                        span.style.fg,
+                        Some(Color::Green),
                         "Upstream task text at char {} ('{}') should preserve green status color, got {:?}",
-                        char_idx, c, span.style.fg
+                        char_idx,
+                        c,
+                        span.style.fg
                     );
                 }
                 char_idx += 1;
@@ -929,18 +966,19 @@ mod tests {
             Span::styled(suffix, Style::default()),
         ]);
 
-        let result = apply_per_char_trace_coloring(
-            line, plain, c_line, &category, &app, Some("b"),
-        );
+        let result = apply_per_char_trace_coloring(line, plain, c_line, &category, &app, Some("b"));
 
         let mut char_idx = 0;
         for span in &result.spans {
             for c in span.content.chars() {
                 if char_idx >= text_start && char_idx < text_end {
                     assert_eq!(
-                        span.style.fg, Some(Color::White),
+                        span.style.fg,
+                        Some(Color::White),
                         "Downstream task text at char {} ('{}') should preserve white status color, got {:?}",
-                        char_idx, c, span.style.fg
+                        char_idx,
+                        c,
+                        span.style.fg
                     );
                 }
                 char_idx += 1;
@@ -973,18 +1011,18 @@ mod tests {
             Span::styled(suffix, Style::default()),
         ]);
 
-        let result = apply_per_char_trace_coloring(
-            line, plain, d_line, &category, &app, Some("b"),
-        );
+        let result = apply_per_char_trace_coloring(line, plain, d_line, &category, &app, Some("b"));
 
         let mut char_idx = 0;
         for span in &result.spans {
             for _c in span.content.chars() {
                 if char_idx >= text_start && char_idx < text_end {
                     assert_eq!(
-                        span.style.fg, Some(Color::Red),
+                        span.style.fg,
+                        Some(Color::Red),
                         "Unrelated task text at char {} should preserve red status color, got {:?}",
-                        char_idx, span.style.fg
+                        char_idx,
+                        span.style.fg
                     );
                 }
                 char_idx += 1;
@@ -1016,9 +1054,8 @@ mod tests {
                 let base_line = parse_ansi_line(app.lines[ln].as_str());
                 let category = classify_task_line(&app, ln);
 
-                let result = apply_per_char_trace_coloring(
-                    base_line, plain, ln, &category, &app, Some("b"),
-                );
+                let result =
+                    apply_per_char_trace_coloring(base_line, plain, ln, &category, &app, Some("b"));
 
                 // Find the span containing char at position `col`.
                 let mut char_idx = 0;
@@ -1026,9 +1063,14 @@ mod tests {
                     for _ in span.content.chars() {
                         if char_idx == col {
                             assert_eq!(
-                                span.style.fg, Some(Color::Magenta),
+                                span.style.fg,
+                                Some(Color::Magenta),
                                 "Upstream edge char at ({}, {}) for edge {}->{} should be magenta, got {:?}",
-                                ln, col, src, tgt, span.style.fg
+                                ln,
+                                col,
+                                src,
+                                tgt,
+                                span.style.fg
                             );
                             found_magenta_edge = true;
                         }
@@ -1037,8 +1079,10 @@ mod tests {
                 }
             }
         }
-        assert!(found_magenta_edge,
-            "Should find at least one magenta-colored upstream edge char for a->b edge");
+        assert!(
+            found_magenta_edge,
+            "Should find at least one magenta-colored upstream edge char for a->b edge"
+        );
     }
 
     // ══════════════════════════════════════════════════════════════════════
@@ -1060,18 +1104,22 @@ mod tests {
                 let base_line = parse_ansi_line(app.lines[ln].as_str());
                 let category = classify_task_line(&app, ln);
 
-                let result = apply_per_char_trace_coloring(
-                    base_line, plain, ln, &category, &app, Some("b"),
-                );
+                let result =
+                    apply_per_char_trace_coloring(base_line, plain, ln, &category, &app, Some("b"));
 
                 let mut char_idx = 0;
                 for span in &result.spans {
                     for _ in span.content.chars() {
                         if char_idx == col {
                             assert_eq!(
-                                span.style.fg, Some(Color::Cyan),
+                                span.style.fg,
+                                Some(Color::Cyan),
                                 "Downstream edge char at ({}, {}) for edge {}->{} should be cyan, got {:?}",
-                                ln, col, src, tgt, span.style.fg
+                                ln,
+                                col,
+                                src,
+                                tgt,
+                                span.style.fg
                             );
                             found_cyan_edge = true;
                         }
@@ -1080,8 +1128,10 @@ mod tests {
                 }
             }
         }
-        assert!(found_cyan_edge,
-            "Should find at least one cyan-colored downstream edge char for b->c edge");
+        assert!(
+            found_cyan_edge,
+            "Should find at least one cyan-colored downstream edge char for b->c edge"
+        );
     }
 
     // ══════════════════════════════════════════════════════════════════════
@@ -1109,9 +1159,16 @@ mod tests {
         let tasks: Vec<_> = graph.tasks().collect();
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
         let viz = generate_ascii(
-            &graph, &tasks, &task_ids, &HashMap::new(),
-            &HashMap::new(), &HashMap::new(), &HashMap::new(),
-            LayoutMode::Tree, &HashSet::new(), "gray",
+            &graph,
+            &tasks,
+            &task_ids,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            LayoutMode::Tree,
+            &HashSet::new(),
+            "gray",
         );
 
         let app = build_app_from_viz_output(&viz, "b");
@@ -1125,18 +1182,22 @@ mod tests {
                 let base_line = parse_ansi_line(app.lines[ln].as_str());
                 let category = classify_task_line(&app, ln);
 
-                let result = apply_per_char_trace_coloring(
-                    base_line, plain, ln, &category, &app, Some("b"),
-                );
+                let result =
+                    apply_per_char_trace_coloring(base_line, plain, ln, &category, &app, Some("b"));
 
                 let mut char_idx = 0;
                 for span in &result.spans {
                     for _ in span.content.chars() {
                         if char_idx == col {
                             assert!(
-                                span.style.fg != Some(Color::Magenta) && span.style.fg != Some(Color::Cyan),
+                                span.style.fg != Some(Color::Magenta)
+                                    && span.style.fg != Some(Color::Cyan),
                                 "Unrelated edge char at ({}, {}) for edge {}->{} should NOT be magenta/cyan, got {:?}",
-                                ln, col, src, tgt, span.style.fg
+                                ln,
+                                col,
+                                src,
+                                tgt,
+                                span.style.fg
                             );
                         }
                         char_idx += 1;
@@ -1173,7 +1234,11 @@ mod tests {
 
         let result = apply_per_char_trace_coloring(
             parse_ansi_line(app.lines[d_line].as_str()),
-            plain, d_line, &category, &app, Some("b"),
+            plain,
+            d_line,
+            &category,
+            &app,
+            Some("b"),
         );
 
         // Collect result styles.
@@ -1184,13 +1249,18 @@ mod tests {
             }
         }
 
-        assert_eq!(base_chars.len(), result_chars.len(),
-            "WCC-unrelated line should have same number of chars");
+        assert_eq!(
+            base_chars.len(),
+            result_chars.len(),
+            "WCC-unrelated line should have same number of chars"
+        );
         for (i, ((bc, bs), (rc, rs))) in base_chars.iter().zip(result_chars.iter()).enumerate() {
             assert_eq!(bc, rc, "Char mismatch at position {}", i);
-            assert_eq!(bs, rs,
+            assert_eq!(
+                bs, rs,
                 "Style mismatch at position {} ('{}') in other-WCC line: expected {:?}, got {:?}",
-                i, bc, bs, rs);
+                i, bc, bs, rs
+            );
         }
     }
 
@@ -1209,14 +1279,15 @@ mod tests {
         assert!(matches!(category, LineTraceCategory::Selected));
 
         let base_line = parse_ansi_line(app.lines[b_line].as_str());
-        let base_styles: Vec<(char, Style)> = base_line.spans.iter()
+        let base_styles: Vec<(char, Style)> = base_line
+            .spans
+            .iter()
             .flat_map(|s| s.content.chars().map(move |c| (c, s.style)))
             .collect();
 
         let base_line2 = parse_ansi_line(app.lines[b_line].as_str());
-        let result = apply_per_char_trace_coloring(
-            base_line2, plain, b_line, &category, &app, Some("b"),
-        );
+        let result =
+            apply_per_char_trace_coloring(base_line2, plain, b_line, &category, &app, Some("b"));
 
         let text_range = find_text_range(plain).unwrap();
         let (text_start, text_end) = text_range;
@@ -1238,7 +1309,10 @@ mod tests {
                 char_idx += 1;
             }
         }
-        assert!(found_selected_text, "Should find selected task text with original style preserved");
+        assert!(
+            found_selected_text,
+            "Should find selected task text with original style preserved"
+        );
     }
 
     // ══════════════════════════════════════════════════════════════════════
@@ -1261,9 +1335,12 @@ mod tests {
 
         // Build an app with no selection.
         let lines: Vec<String> = viz.text.lines().map(String::from).collect();
-        let plain_lines: Vec<String> = lines.iter().map(|l: &String| {
-            String::from_utf8(strip_ansi_escapes::strip(l.as_bytes())).unwrap_or_default()
-        }).collect();
+        let plain_lines: Vec<String> = lines
+            .iter()
+            .map(|l: &String| {
+                String::from_utf8(strip_ansi_escapes::strip(l.as_bytes())).unwrap_or_default()
+            })
+            .collect();
 
         // For each line, verify that if we were to apply trace coloring with
         // empty upstream/downstream sets and no matching char_edge_map entries,
@@ -1292,7 +1369,11 @@ mod tests {
 
             let result = apply_per_char_trace_coloring(
                 parse_ansi_line(ansi_line),
-                plain, idx, &category, &empty_app, None,
+                plain,
+                idx,
+                &category,
+                &empty_app,
+                None,
             );
 
             let mut result_chars: Vec<(char, Style)> = Vec::new();
@@ -1302,13 +1383,20 @@ mod tests {
                 }
             }
 
-            assert_eq!(base_chars.len(), result_chars.len(),
-                "Line {} should have same char count", idx);
-            for (i, ((bc, bs), (rc, rs))) in base_chars.iter().zip(result_chars.iter()).enumerate() {
+            assert_eq!(
+                base_chars.len(),
+                result_chars.len(),
+                "Line {} should have same char count",
+                idx
+            );
+            for (i, ((bc, bs), (rc, rs))) in base_chars.iter().zip(result_chars.iter()).enumerate()
+            {
                 assert_eq!(bc, rc, "Char mismatch at line {} position {}", idx, i);
-                assert_eq!(bs, rs,
+                assert_eq!(
+                    bs, rs,
                     "Style mismatch at line {} position {} ('{}') with no selection: expected {:?}, got {:?}",
-                    idx, i, bc, bs, rs);
+                    idx, i, bc, bs, rs
+                );
             }
         }
     }
@@ -1327,14 +1415,34 @@ mod tests {
         let c_line = viz.node_line_map["c"];
         let d_line = viz.node_line_map["d"];
 
-        assert!(matches!(classify_task_line(&app, a_line), LineTraceCategory::Upstream),
-            "Task 'a' should be classified as Upstream when 'b' is selected");
-        assert!(matches!(classify_task_line(&app, b_line), LineTraceCategory::Selected),
-            "Task 'b' should be classified as Selected");
-        assert!(matches!(classify_task_line(&app, c_line), LineTraceCategory::Downstream),
-            "Task 'c' should be classified as Downstream when 'b' is selected");
-        assert!(matches!(classify_task_line(&app, d_line), LineTraceCategory::Unrelated),
-            "Task 'd' should be classified as Unrelated (separate WCC)");
+        assert!(
+            matches!(
+                classify_task_line(&app, a_line),
+                LineTraceCategory::Upstream
+            ),
+            "Task 'a' should be classified as Upstream when 'b' is selected"
+        );
+        assert!(
+            matches!(
+                classify_task_line(&app, b_line),
+                LineTraceCategory::Selected
+            ),
+            "Task 'b' should be classified as Selected"
+        );
+        assert!(
+            matches!(
+                classify_task_line(&app, c_line),
+                LineTraceCategory::Downstream
+            ),
+            "Task 'c' should be classified as Downstream when 'b' is selected"
+        );
+        assert!(
+            matches!(
+                classify_task_line(&app, d_line),
+                LineTraceCategory::Unrelated
+            ),
+            "Task 'd' should be classified as Unrelated (separate WCC)"
+        );
     }
 
     #[test]
@@ -1346,18 +1454,28 @@ mod tests {
         let (start, end) = range.unwrap();
         let chars: Vec<char> = line.chars().collect();
         // The text should start at the first alphanumeric character.
-        assert!(chars[start].is_alphanumeric(),
-            "Text range should start at alphanumeric char, got '{}'", chars[start]);
+        assert!(
+            chars[start].is_alphanumeric(),
+            "Text range should start at alphanumeric char, got '{}'",
+            chars[start]
+        );
         // The text should end after the last ')'.
-        assert_eq!(chars[end - 1], ')',
-            "Text range should end after ')', got '{}'", chars[end - 1]);
+        assert_eq!(
+            chars[end - 1],
+            ')',
+            "Text range should end after ')', got '{}'",
+            chars[end - 1]
+        );
     }
 
     #[test]
     fn test_find_text_range_on_connector_only_line() {
         let line = "│  │";
         let range = find_text_range(line);
-        assert!(range.is_none(), "Pure connector line should have no text range");
+        assert!(
+            range.is_none(),
+            "Pure connector line should have no text range"
+        );
     }
 
     #[test]
@@ -1365,14 +1483,26 @@ mod tests {
         let (viz, _graph) = build_test_graph_chain_plus_isolated();
 
         // Verify that the char_edge_map contains entries for a->b and b->c edges.
-        let has_ab = viz.char_edge_map.values().any(|edges| edges.iter().any(|(s, t)| s == "a" && t == "b"));
-        let has_bc = viz.char_edge_map.values().any(|edges| edges.iter().any(|(s, t)| s == "b" && t == "c"));
+        let has_ab = viz
+            .char_edge_map
+            .values()
+            .any(|edges| edges.iter().any(|(s, t)| s == "a" && t == "b"));
+        let has_bc = viz
+            .char_edge_map
+            .values()
+            .any(|edges| edges.iter().any(|(s, t)| s == "b" && t == "c"));
         assert!(has_ab, "char_edge_map should contain a->b edge entries");
         assert!(has_bc, "char_edge_map should contain b->c edge entries");
 
         // Verify no edges involving 'd' (it's standalone).
-        let has_d = viz.char_edge_map.values().any(|edges| edges.iter().any(|(s, t)| s == "d" || t == "d"));
-        assert!(!has_d, "char_edge_map should NOT contain any edges involving standalone task 'd'");
+        let has_d = viz
+            .char_edge_map
+            .values()
+            .any(|edges| edges.iter().any(|(s, t)| s == "d" || t == "d"));
+        assert!(
+            !has_d,
+            "char_edge_map should NOT contain any edges involving standalone task 'd'"
+        );
     }
 
     #[test]
@@ -1396,7 +1526,11 @@ mod tests {
 
             let result = apply_per_char_trace_coloring(
                 parse_ansi_line(ansi_line),
-                plain, idx, &category, &app, Some("b"),
+                plain,
+                idx,
+                &category,
+                &app,
+                Some("b"),
             );
 
             let mut result_chars: Vec<(char, Style)> = Vec::new();
@@ -1409,16 +1543,19 @@ mod tests {
             let text_range = find_text_range(plain);
             let (text_start, text_end) = text_range.unwrap_or((usize::MAX, usize::MAX));
 
-            for (i, ((bc, bs), (_rc, rs))) in base_chars.iter().zip(result_chars.iter()).enumerate() {
+            for (i, ((bc, bs), (_rc, rs))) in base_chars.iter().zip(result_chars.iter()).enumerate()
+            {
                 let is_text = i >= text_start && i < text_end;
                 let is_edge = app.char_edge_map.contains_key(&(idx, i));
 
                 if !is_text && !is_edge {
                     // Non-text, non-edge chars should keep their base style exactly.
-                    assert_eq!(bs, rs,
+                    assert_eq!(
+                        bs, rs,
                         "Non-edge non-text char at line {} pos {} ('{}') should keep base style. \
                          Expected {:?}, got {:?}",
-                        idx, i, bc, bs, rs);
+                        idx, i, bc, bs, rs
+                    );
                 }
             }
         }
@@ -1432,8 +1569,14 @@ mod tests {
         // When 'c' is selected, upstream should include both 'a' and 'b'.
         assert!(app.upstream_set.contains("a"), "a should be upstream of c");
         assert!(app.upstream_set.contains("b"), "b should be upstream of c");
-        assert!(!app.upstream_set.contains("c"), "c should not be in its own upstream set");
-        assert!(!app.upstream_set.contains("d"), "d should not be upstream of c");
+        assert!(
+            !app.upstream_set.contains("c"),
+            "c should not be in its own upstream set"
+        );
+        assert!(
+            !app.upstream_set.contains("d"),
+            "d should not be upstream of c"
+        );
         assert!(app.downstream_set.is_empty(), "c has no downstream tasks");
     }
 
@@ -1443,11 +1586,26 @@ mod tests {
         let app = build_app_from_viz_output(&viz, "a");
 
         // When 'a' is selected, downstream should include both 'b' and 'c'.
-        assert!(app.downstream_set.contains("b"), "b should be downstream of a");
-        assert!(app.downstream_set.contains("c"), "c should be downstream of a");
-        assert!(!app.downstream_set.contains("a"), "a should not be in its own downstream set");
-        assert!(!app.downstream_set.contains("d"), "d should not be downstream of a");
-        assert!(app.upstream_set.is_empty(), "a has no upstream tasks (it's a root)");
+        assert!(
+            app.downstream_set.contains("b"),
+            "b should be downstream of a"
+        );
+        assert!(
+            app.downstream_set.contains("c"),
+            "c should be downstream of a"
+        );
+        assert!(
+            !app.downstream_set.contains("a"),
+            "a should not be in its own downstream set"
+        );
+        assert!(
+            !app.downstream_set.contains("d"),
+            "d should not be downstream of a"
+        );
+        assert!(
+            app.upstream_set.is_empty(),
+            "a has no upstream tasks (it's a root)"
+        );
     }
 
     // ══════════════════════════════════════════════════════════════════════
@@ -1473,9 +1631,16 @@ mod tests {
         let tasks: Vec<_> = graph.tasks().collect();
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
         let result = generate_ascii(
-            &graph, &tasks, &task_ids, &HashMap::new(),
-            &HashMap::new(), &HashMap::new(), &HashMap::new(),
-            LayoutMode::Diamond, &HashSet::new(), "gray",
+            &graph,
+            &tasks,
+            &task_ids,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            LayoutMode::Diamond,
+            &HashSet::new(),
+            "gray",
         );
         (result, graph)
     }
@@ -1485,11 +1650,15 @@ mod tests {
         let (viz, _graph) = build_shared_arc_fan_in();
 
         // Verify the char_edge_map has entries for arcs to 'a' from multiple blockers
-        let has_b_to_a = viz.char_edge_map.values()
+        let has_b_to_a = viz
+            .char_edge_map
+            .values()
             .any(|edges| edges.iter().any(|(s, t)| s == "b" && t == "a"));
-        assert!(has_b_to_a,
+        assert!(
+            has_b_to_a,
             "char_edge_map should contain b->a arc edge.\nOutput:\n{}\nMap: {:?}",
-            viz.text, viz.char_edge_map);
+            viz.text, viz.char_edge_map
+        );
 
         // Select B. B's edge to A should be colored magenta (upstream of A).
         // But we're testing from B's perspective: select B, A is downstream.
@@ -1497,12 +1666,18 @@ mod tests {
 
         // B selected: A is downstream of B (B→A edge). C and D are unrelated
         // (they don't depend on B and B doesn't depend on them).
-        assert!(app.downstream_set.contains("a"),
-            "A should be downstream of B");
-        assert!(!app.downstream_set.contains("c"),
-            "C should NOT be downstream of B");
-        assert!(!app.downstream_set.contains("d"),
-            "D should NOT be downstream of B");
+        assert!(
+            app.downstream_set.contains("a"),
+            "A should be downstream of B"
+        );
+        assert!(
+            !app.downstream_set.contains("c"),
+            "C should NOT be downstream of B"
+        );
+        assert!(
+            !app.downstream_set.contains("d"),
+            "D should NOT be downstream of B"
+        );
 
         // Check that edge chars for b->a get colored (cyan for downstream)
         // while edge chars for c->a and d->a stay uncolored.
@@ -1514,9 +1689,8 @@ mod tests {
             let plain = app.plain_lines[ln].as_str();
             let base_line = parse_ansi_line(app.lines[ln].as_str());
             let category = classify_task_line(&app, ln);
-            let result = apply_per_char_trace_coloring(
-                base_line, plain, ln, &category, &app, Some("b"),
-            );
+            let result =
+                apply_per_char_trace_coloring(base_line, plain, ln, &category, &app, Some("b"));
 
             // Get the resulting style at this character position
             let mut char_idx = 0;
@@ -1563,15 +1737,21 @@ mod tests {
             }
         }
 
-        assert!(found_b_a_colored,
+        assert!(
+            found_b_a_colored,
             "B→A edge chars should be colored cyan when B is selected.\nOutput:\n{}",
-            viz.text);
-        assert!(found_c_a_uncolored,
+            viz.text
+        );
+        assert!(
+            found_c_a_uncolored,
             "C→A edge chars should NOT be colored when B is selected.\nOutput:\n{}",
-            viz.text);
-        assert!(found_d_a_uncolored,
+            viz.text
+        );
+        assert!(
+            found_d_a_uncolored,
             "D→A edge chars should NOT be colored when B is selected.\nOutput:\n{}",
-            viz.text);
+            viz.text
+        );
     }
 
     #[test]
@@ -1587,20 +1767,25 @@ mod tests {
         // Find arc positions on A's line in the char_edge_map
         let mut found_arrowhead_colored = false;
         for (&(ln, col), edges) in &viz.char_edge_map {
-            if ln != a_line { continue; }
+            if ln != a_line {
+                continue;
+            }
             let has_b_a = edges.iter().any(|(s, t)| s == "b" && t == "a");
-            if !has_b_a { continue; }
+            if !has_b_a {
+                continue;
+            }
 
             let base_line = parse_ansi_line(app.lines[ln].as_str());
             let category = classify_task_line(&app, ln);
-            let result = apply_per_char_trace_coloring(
-                base_line, plain, ln, &category, &app, Some("b"),
-            );
+            let result =
+                apply_per_char_trace_coloring(base_line, plain, ln, &category, &app, Some("b"));
 
             let is_text = find_text_range(plain)
                 .map(|(s, e)| col >= s && col < e)
                 .unwrap_or(false);
-            if is_text { continue; }
+            if is_text {
+                continue;
+            }
 
             let mut char_idx = 0;
             for span in &result.spans {
@@ -1613,9 +1798,11 @@ mod tests {
             }
         }
 
-        assert!(found_arrowhead_colored,
+        assert!(
+            found_arrowhead_colored,
             "A's arrowhead (←) should be colored cyan when B is selected (A is downstream).\nOutput:\n{}\nA is at line {}",
-            viz.text, a_line);
+            viz.text, a_line
+        );
     }
 
     // ══════════════════════════════════════════════════════════════════════
@@ -1642,9 +1829,16 @@ mod tests {
         let tasks: Vec<_> = graph.tasks().collect();
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
         let viz = generate_ascii(
-            &graph, &tasks, &task_ids, &HashMap::new(),
-            &HashMap::new(), &HashMap::new(), &HashMap::new(),
-            LayoutMode::Tree, &HashSet::new(), "gray",
+            &graph,
+            &tasks,
+            &task_ids,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            LayoutMode::Tree,
+            &HashSet::new(),
+            "gray",
         );
 
         // Test with b-prog selected (so a-root is upstream, c-open is downstream,
@@ -1667,7 +1861,11 @@ mod tests {
 
             let result = apply_per_char_trace_coloring(
                 parse_ansi_line(app.lines[line_idx].as_str()),
-                plain, line_idx, &category, &app, Some("b-prog"),
+                plain,
+                line_idx,
+                &category,
+                &app,
+                Some("b-prog"),
             );
 
             let mut result_text_styles: Vec<(char, Style)> = Vec::new();
@@ -1679,12 +1877,20 @@ mod tests {
 
             let text_range = find_text_range(plain);
             if let Some((text_start, text_end)) = text_range {
-                for i in text_start..text_end.min(base_text_styles.len()).min(result_text_styles.len()) {
+                for i in text_start
+                    ..text_end
+                        .min(base_text_styles.len())
+                        .min(result_text_styles.len())
+                {
                     assert_eq!(
-                        base_text_styles[i].1, result_text_styles[i].1,
+                        base_text_styles[i].1,
+                        result_text_styles[i].1,
                         "Task '{}' text at char {} should preserve original style. \
                          Expected {:?}, got {:?}. Category: {:?}",
-                        task_id, i, base_text_styles[i].1, result_text_styles[i].1,
+                        task_id,
+                        i,
+                        base_text_styles[i].1,
+                        result_text_styles[i].1,
                         match category {
                             LineTraceCategory::Selected => "Selected",
                             LineTraceCategory::Upstream => "Upstream",
@@ -1724,18 +1930,37 @@ mod tests {
         let tasks: Vec<_> = graph.tasks().collect();
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
         let viz = generate_ascii(
-            &graph, &tasks, &task_ids, &HashMap::new(),
-            &HashMap::new(), &HashMap::new(), &HashMap::new(),
-            LayoutMode::Tree, &HashSet::new(), "gray",
+            &graph,
+            &tasks,
+            &task_ids,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            LayoutMode::Tree,
+            &HashSet::new(),
+            "gray",
         );
 
         let app = build_app_from_viz_output(&viz, "b"); // Select in WCC1
 
         // WCC2 tasks (x, y) should be unrelated
-        assert!(!app.upstream_set.contains("x"), "x should NOT be in upstream");
-        assert!(!app.downstream_set.contains("x"), "x should NOT be in downstream");
-        assert!(!app.upstream_set.contains("y"), "y should NOT be in upstream");
-        assert!(!app.downstream_set.contains("y"), "y should NOT be in downstream");
+        assert!(
+            !app.upstream_set.contains("x"),
+            "x should NOT be in upstream"
+        );
+        assert!(
+            !app.downstream_set.contains("x"),
+            "x should NOT be in downstream"
+        );
+        assert!(
+            !app.upstream_set.contains("y"),
+            "y should NOT be in upstream"
+        );
+        assert!(
+            !app.downstream_set.contains("y"),
+            "y should NOT be in downstream"
+        );
 
         // All lines belonging to WCC2 should render identically with trace coloring
         for task_id in &["x", "y"] {
@@ -1743,8 +1968,11 @@ mod tests {
             let plain = app.plain_lines[line_idx].as_str();
             let base_line = parse_ansi_line(app.lines[line_idx].as_str());
             let category = classify_task_line(&app, line_idx);
-            assert!(matches!(category, LineTraceCategory::Unrelated),
-                "Task '{}' should be Unrelated", task_id);
+            assert!(
+                matches!(category, LineTraceCategory::Unrelated),
+                "Task '{}' should be Unrelated",
+                task_id
+            );
 
             let mut base_chars: Vec<(char, Style)> = Vec::new();
             for span in &base_line.spans {
@@ -1755,7 +1983,11 @@ mod tests {
 
             let result = apply_per_char_trace_coloring(
                 parse_ansi_line(app.lines[line_idx].as_str()),
-                plain, line_idx, &category, &app, Some("b"),
+                plain,
+                line_idx,
+                &category,
+                &app,
+                Some("b"),
             );
 
             let mut result_chars: Vec<(char, Style)> = Vec::new();
@@ -1765,13 +1997,24 @@ mod tests {
                 }
             }
 
-            assert_eq!(base_chars.len(), result_chars.len(),
-                "WCC2 task '{}' should have same char count", task_id);
-            for (i, ((bc, bs), (rc, rs))) in base_chars.iter().zip(result_chars.iter()).enumerate() {
-                assert_eq!(bc, rc, "Char mismatch in WCC2 task '{}' at pos {}", task_id, i);
-                assert_eq!(bs, rs,
+            assert_eq!(
+                base_chars.len(),
+                result_chars.len(),
+                "WCC2 task '{}' should have same char count",
+                task_id
+            );
+            for (i, ((bc, bs), (rc, rs))) in base_chars.iter().zip(result_chars.iter()).enumerate()
+            {
+                assert_eq!(
+                    bc, rc,
+                    "Char mismatch in WCC2 task '{}' at pos {}",
+                    task_id, i
+                );
+                assert_eq!(
+                    bs, rs,
                     "Style mismatch in WCC2 task '{}' at pos {} ('{}'):\n  expected {:?}\n  got {:?}",
-                    task_id, i, bc, bs, rs);
+                    task_id, i, bc, bs, rs
+                );
             }
         }
 
@@ -1792,7 +2035,11 @@ mod tests {
 
             let result = apply_per_char_trace_coloring(
                 parse_ansi_line(app.lines[line_idx].as_str()),
-                plain, line_idx, &category, &app, Some("b"),
+                plain,
+                line_idx,
+                &category,
+                &app,
+                Some("b"),
             );
 
             let mut result_chars: Vec<(char, Style)> = Vec::new();
@@ -1802,10 +2049,14 @@ mod tests {
                 }
             }
 
-            for (i, ((bc, bs), (rc, rs))) in base_chars.iter().zip(result_chars.iter()).enumerate() {
+            for (i, ((bc, bs), (rc, rs))) in base_chars.iter().zip(result_chars.iter()).enumerate()
+            {
                 assert_eq!(bc, rc);
-                assert_eq!(bs, rs,
-                    "WCC2 line {} pos {} ('{}') style should be unchanged", line_idx, i, bc);
+                assert_eq!(
+                    bs, rs,
+                    "WCC2 line {} pos {} ('{}') style should be unchanged",
+                    line_idx, i, bc
+                );
             }
         }
     }
@@ -1827,9 +2078,8 @@ mod tests {
 
         // apply_per_char_trace_coloring should NOT set yellow background on text.
         let base_line = parse_ansi_line(app.lines[b_line].as_str());
-        let result = apply_per_char_trace_coloring(
-            base_line, plain, b_line, &category, &app, Some("b"),
-        );
+        let result =
+            apply_per_char_trace_coloring(base_line, plain, b_line, &category, &app, Some("b"));
 
         let text_range = find_text_range(plain);
         let (text_start, text_end) = text_range.unwrap();
@@ -1838,8 +2088,12 @@ mod tests {
         for span in &result.spans {
             for _c in span.content.chars() {
                 if char_idx >= text_start && char_idx < text_end {
-                    assert_ne!(span.style.bg, Some(Color::Yellow),
-                        "apply_per_char_trace_coloring should NOT set yellow background at char {}.", char_idx);
+                    assert_ne!(
+                        span.style.bg,
+                        Some(Color::Yellow),
+                        "apply_per_char_trace_coloring should NOT set yellow background at char {}.",
+                        char_idx
+                    );
                 }
                 char_idx += 1;
             }
@@ -1863,9 +2117,8 @@ mod tests {
 
         // Apply trace coloring first, then selection style (mirrors draw_viz_content).
         let base_line = parse_ansi_line(app.lines[d_line].as_str());
-        let colored = apply_per_char_trace_coloring(
-            base_line, plain, d_line, &category, &app, Some("d"),
-        );
+        let colored =
+            apply_per_char_trace_coloring(base_line, plain, d_line, &category, &app, Some("d"));
         let result = apply_selection_style(colored, plain);
 
         // Text spans should be bold, edge spans should NOT be bold.
@@ -1875,19 +2128,28 @@ mod tests {
         for span in &result.spans {
             for _c in span.content.chars() {
                 if char_idx >= text_start && char_idx < text_end {
-                    assert!(span.style.add_modifier.contains(Modifier::BOLD),
-                        "Text char at {} should be bold. Span: {:?}", char_idx, span);
+                    assert!(
+                        span.style.add_modifier.contains(Modifier::BOLD),
+                        "Text char at {} should be bold. Span: {:?}",
+                        char_idx,
+                        span
+                    );
                 }
                 char_idx += 1;
             }
         }
 
         // Text content should be unchanged (no extra characters).
-        let result_text: String = result.spans.iter()
+        let result_text: String = result
+            .spans
+            .iter()
             .flat_map(|s| s.content.chars())
             .collect();
-        assert_eq!(result_text.chars().count(), plain.chars().count(),
-            "Selection style should not add or remove characters");
+        assert_eq!(
+            result_text.chars().count(),
+            plain.chars().count(),
+            "Selection style should not add or remove characters"
+        );
     }
 
     #[test]
@@ -1898,8 +2160,11 @@ mod tests {
         let result = apply_selection_style(line, plain);
 
         for span in &result.spans {
-            assert!(span.style.add_modifier.contains(Modifier::BOLD),
-                "All spans should be bold. Span: {:?}", span);
+            assert!(
+                span.style.add_modifier.contains(Modifier::BOLD),
+                "All spans should be bold. Span: {:?}",
+                span
+            );
         }
     }
 
@@ -1910,11 +2175,15 @@ mod tests {
         let line = Line::from(plain.to_string());
         let result = apply_selection_style(line, plain);
 
-        let result_text: String = result.spans.iter()
+        let result_text: String = result
+            .spans
+            .iter()
             .flat_map(|s| s.content.chars())
             .collect();
-        assert_eq!(result_text, plain,
-            "Selection style should preserve text exactly");
+        assert_eq!(
+            result_text, plain,
+            "Selection style should preserve text exactly"
+        );
     }
 
     #[test]
@@ -1931,8 +2200,12 @@ mod tests {
         let mut found_green = false;
         let mut found_red = false;
         for span in &result.spans {
-            if span.style.fg == Some(Color::LightGreen) { found_green = true; }
-            if span.style.fg == Some(Color::LightRed) { found_red = true; }
+            if span.style.fg == Some(Color::LightGreen) {
+                found_green = true;
+            }
+            if span.style.fg == Some(Color::LightRed) {
+                found_red = true;
+            }
         }
         assert!(found_green, "Green should become LightGreen");
         assert!(found_red, "Red should become LightRed");
@@ -1954,12 +2227,20 @@ mod tests {
             for _c in span.content.chars() {
                 if char_idx < text_range.0 {
                     // Edge/connector chars — should NOT be bold.
-                    assert!(!span.style.add_modifier.contains(Modifier::BOLD),
-                        "Edge char at {} should NOT be bold. Span: {:?}", char_idx, span);
+                    assert!(
+                        !span.style.add_modifier.contains(Modifier::BOLD),
+                        "Edge char at {} should NOT be bold. Span: {:?}",
+                        char_idx,
+                        span
+                    );
                 } else if char_idx < text_range.1 {
                     // Text chars — should be bold.
-                    assert!(span.style.add_modifier.contains(Modifier::BOLD),
-                        "Text char at {} should be bold. Span: {:?}", char_idx, span);
+                    assert!(
+                        span.style.add_modifier.contains(Modifier::BOLD),
+                        "Text char at {} should be bold. Span: {:?}",
+                        char_idx,
+                        span
+                    );
                 }
                 char_idx += 1;
             }
@@ -1991,9 +2272,16 @@ mod tests {
         let tasks: Vec<_> = graph.tasks().collect();
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
         let viz = generate_ascii(
-            &graph, &tasks, &task_ids, &HashMap::new(),
-            &HashMap::new(), &HashMap::new(), &HashMap::new(),
-            LayoutMode::Tree, &HashSet::new(), "gray",
+            &graph,
+            &tasks,
+            &task_ids,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            LayoutMode::Tree,
+            &HashSet::new(),
+            "gray",
         );
 
         // Build app with NO selection
@@ -2020,7 +2308,11 @@ mod tests {
             // With no selection, the category is always Unrelated
             let result = apply_per_char_trace_coloring(
                 parse_ansi_line(ansi_line),
-                plain, idx, &LineTraceCategory::Unrelated, &app, None,
+                plain,
+                idx,
+                &LineTraceCategory::Unrelated,
+                &app,
+                None,
             );
 
             let mut result_chars: Vec<(char, Style)> = Vec::new();
@@ -2030,13 +2322,24 @@ mod tests {
                 }
             }
 
-            assert_eq!(base_chars.len(), result_chars.len(),
-                "Line {} should have identical char count with no selection", idx);
-            for (i, ((bc, bs), (rc, rs))) in base_chars.iter().zip(result_chars.iter()).enumerate() {
-                assert_eq!(bc, rc, "No-selection: char mismatch at line {} pos {}", idx, i);
-                assert_eq!(bs, rs,
+            assert_eq!(
+                base_chars.len(),
+                result_chars.len(),
+                "Line {} should have identical char count with no selection",
+                idx
+            );
+            for (i, ((bc, bs), (rc, rs))) in base_chars.iter().zip(result_chars.iter()).enumerate()
+            {
+                assert_eq!(
+                    bc, rc,
+                    "No-selection: char mismatch at line {} pos {}",
+                    idx, i
+                );
+                assert_eq!(
+                    bs, rs,
                     "No-selection: style mismatch at line {} pos {} ('{}'):\n  expected {:?}\n  got {:?}",
-                    idx, i, bc, bs, rs);
+                    idx, i, bc, bs, rs
+                );
             }
         }
     }
@@ -2066,26 +2369,37 @@ mod tests {
         let tasks: Vec<_> = graph.tasks().collect();
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
         let viz = generate_ascii(
-            &graph, &tasks, &task_ids, &annotations,
-            &HashMap::new(), &HashMap::new(), &HashMap::new(),
-            LayoutMode::Tree, &HashSet::new(), "gray",
+            &graph,
+            &tasks,
+            &task_ids,
+            &annotations,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            LayoutMode::Tree,
+            &HashSet::new(),
+            "gray",
         );
 
         // The annotation [assigning] must appear in the output
         let task_line_idx = viz.node_line_map["my-task"];
         let line_text = viz.text.lines().nth(task_line_idx).unwrap();
-        assert!(line_text.contains("[assigning]"),
+        assert!(
+            line_text.contains("[assigning]"),
             "Assigning phase should show [assigning] annotation.\nLine: {:?}",
-            line_text);
+            line_text
+        );
 
         // In a terminal, the ANSI code \x1b[35m (magenta) would be present.
         // In non-terminal test environments, no ANSI codes are emitted.
         // Either way, the annotation text must be present. If ANSI codes ARE
         // present (some CI environments have tty), they should be magenta.
         if line_text.contains("\x1b[") {
-            assert!(line_text.contains("\x1b[38;5;219m"),
+            assert!(
+                line_text.contains("\x1b[38;5;219m"),
                 "If ANSI codes are present, assigning phase should use true pink (\\x1b[38;5;219m).\nLine: {:?}",
-                line_text);
+                line_text
+            );
         }
 
         // Test evaluating phase
@@ -2098,20 +2412,31 @@ mod tests {
         let tasks2: Vec<_> = graph2.tasks().collect();
         let task_ids2: HashSet<&str> = tasks2.iter().map(|t| t.id.as_str()).collect();
         let viz2 = generate_ascii(
-            &graph2, &tasks2, &task_ids2, &annotations2,
-            &HashMap::new(), &HashMap::new(), &HashMap::new(),
-            LayoutMode::Tree, &HashSet::new(), "gray",
+            &graph2,
+            &tasks2,
+            &task_ids2,
+            &annotations2,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            LayoutMode::Tree,
+            &HashSet::new(),
+            "gray",
         );
 
         let task_line_idx2 = viz2.node_line_map["eval-task"];
         let ansi_line2 = viz2.text.lines().nth(task_line_idx2).unwrap();
-        assert!(ansi_line2.contains("[evaluating]"),
+        assert!(
+            ansi_line2.contains("[evaluating]"),
             "Evaluating phase should show [evaluating] annotation.\nLine: {:?}",
-            ansi_line2);
+            ansi_line2
+        );
         if ansi_line2.contains("\x1b[") {
-            assert!(ansi_line2.contains("\x1b[38;5;219m"),
+            assert!(
+                ansi_line2.contains("\x1b[38;5;219m"),
                 "If ANSI codes are present, evaluating phase should use true pink (\\x1b[38;5;219m).\nLine: {:?}",
-                ansi_line2);
+                ansi_line2
+            );
         }
 
         // Verify the code logic: in ascii.rs, the agency phase detection checks:
@@ -2138,9 +2463,16 @@ mod tests {
         let tasks: Vec<_> = graph.tasks().collect();
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
         let viz = generate_ascii(
-            &graph, &tasks, &task_ids, &annotations,
-            &HashMap::new(), &HashMap::new(), &HashMap::new(),
-            LayoutMode::Tree, &HashSet::new(), "gray",
+            &graph,
+            &tasks,
+            &task_ids,
+            &annotations,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            LayoutMode::Tree,
+            &HashSet::new(),
+            "gray",
         );
 
         // Select 'child' — it's the selected task, text should keep pink/magenta
@@ -2165,7 +2497,11 @@ mod tests {
 
         let result = apply_per_char_trace_coloring(
             parse_ansi_line(app.lines[child_line].as_str()),
-            plain, child_line, &category, &app, Some("child"),
+            plain,
+            child_line,
+            &category,
+            &app,
+            Some("child"),
         );
 
         let mut result_text_fg: Vec<Option<Color>> = Vec::new();
@@ -2181,9 +2517,11 @@ mod tests {
 
         assert_eq!(base_text_fg.len(), result_text_fg.len());
         for (i, (base, result)) in base_text_fg.iter().zip(result_text_fg.iter()).enumerate() {
-            assert_eq!(base, result,
+            assert_eq!(
+                base, result,
                 "Agency-phase text fg at position {} should be preserved: {:?} vs {:?}",
-                i, base, result);
+                i, base, result
+            );
         }
     }
 
@@ -2222,20 +2560,33 @@ mod tests {
         let tasks: Vec<_> = graph.tasks().collect();
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
         let viz = generate_ascii(
-            &graph, &tasks, &task_ids, &HashMap::new(),
-            &HashMap::new(), &HashMap::new(), &HashMap::new(),
-            LayoutMode::Tree, &HashSet::new(), "gray",
+            &graph,
+            &tasks,
+            &task_ids,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            LayoutMode::Tree,
+            &HashSet::new(),
+            "gray",
         );
 
         let app = build_app_from_viz_output(&viz, "grandchild");
 
         // Verify upstream set is correct: grandchild, child-a, root
-        assert!(app.upstream_set.contains("root"),
-            "root should be in upstream set");
-        assert!(app.upstream_set.contains("child-a"),
-            "child-a should be in upstream set");
-        assert!(!app.upstream_set.contains("child-b"),
-            "child-b should NOT be in upstream set");
+        assert!(
+            app.upstream_set.contains("root"),
+            "root should be in upstream set"
+        );
+        assert!(
+            app.upstream_set.contains("child-a"),
+            "child-a should be in upstream set"
+        );
+        assert!(
+            !app.upstream_set.contains("child-b"),
+            "child-b should NOT be in upstream set"
+        );
 
         // Find child-b's line and check its connectors are NOT colored
         let child_b_line = viz.node_line_map["child-b"];
@@ -2245,14 +2596,21 @@ mod tests {
         for (&(ln, col), edges) in &viz.char_edge_map {
             // Only check edges that involve child-b (the untraced sibling)
             let involves_child_b = edges.iter().any(|(s, t)| s == "child-b" || t == "child-b");
-            if !involves_child_b { continue; }
+            if !involves_child_b {
+                continue;
+            }
 
             let plain = app.plain_lines[ln].as_str();
             let base_line = parse_ansi_line(app.lines[ln].as_str());
             let category = classify_task_line(&app, ln);
 
             let result = apply_per_char_trace_coloring(
-                base_line, plain, ln, &category, &app, Some("grandchild"),
+                base_line,
+                plain,
+                ln,
+                &category,
+                &app,
+                Some("grandchild"),
             );
 
             let mut char_idx = 0;
@@ -2260,10 +2618,15 @@ mod tests {
                 for _ in span.content.chars() {
                     if char_idx == col {
                         assert!(
-                            span.style.fg != Some(Color::Magenta) && span.style.fg != Some(Color::Cyan),
+                            span.style.fg != Some(Color::Magenta)
+                                && span.style.fg != Some(Color::Cyan),
                             "Edge char at ({}, {}) involving child-b should NOT be colored (got {:?}). \
                              child-b is not in the trace chain. Edges: {:?}\nOutput:\n{}",
-                            ln, col, span.style.fg, edges, viz.text
+                            ln,
+                            col,
+                            span.style.fg,
+                            edges,
+                            viz.text
                         );
                     }
                     char_idx += 1;
@@ -2276,10 +2639,14 @@ mod tests {
         let child_a_line = viz.node_line_map["child-a"];
         for l in (child_a_line + 1)..child_b_line {
             if let Some(edges) = viz.char_edge_map.get(&(l, 0)) {
-                assert!(!edges.iter().any(|(s, t)| s == "root" && t == "child-a"),
+                assert!(
+                    !edges.iter().any(|(s, t)| s == "root" && t == "child-a"),
                     "│ at line {} between child-a's subtree and child-b should NOT contain \
                      edge (root, child-a). It should only contain edges for children below. \
-                     Edges: {:?}", l, edges);
+                     Edges: {:?}",
+                    l,
+                    edges
+                );
             }
         }
     }
@@ -2335,22 +2702,36 @@ mod tests {
         let tasks: Vec<_> = graph.tasks().collect();
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
         let viz = generate_ascii(
-            &graph, &tasks, &task_ids, &HashMap::new(),
-            &HashMap::new(), &HashMap::new(), &HashMap::new(),
-            LayoutMode::Tree, &HashSet::new(), "gray",
+            &graph,
+            &tasks,
+            &task_ids,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            LayoutMode::Tree,
+            &HashSet::new(),
+            "gray",
         );
 
         let app = build_app_from_viz_output(&viz, "gc3");
 
         // Verify upstream set is correct
         assert!(app.upstream_set.contains("root"), "root should be upstream");
-        assert!(app.upstream_set.contains("child-a"), "child-a should be upstream");
+        assert!(
+            app.upstream_set.contains("child-a"),
+            "child-a should be upstream"
+        );
         assert!(app.upstream_set.contains("gc1"), "gc1 should be upstream");
         assert!(app.upstream_set.contains("gc2"), "gc2 should be upstream");
-        assert!(!app.upstream_set.contains("child-b"),
-            "child-b should NOT be upstream");
-        assert!(!app.upstream_set.contains("gc4"),
-            "gc4 is downstream, not upstream");
+        assert!(
+            !app.upstream_set.contains("child-b"),
+            "child-b should NOT be upstream"
+        );
+        assert!(
+            !app.upstream_set.contains("gc4"),
+            "gc4 is downstream, not upstream"
+        );
 
         let child_a_line = viz.node_line_map["child-a"];
         let child_b_line = viz.node_line_map["child-b"];
@@ -2360,8 +2741,12 @@ mod tests {
         // (root, child-b), NOT to (root, child-a) which would cause coloring.
         for l in (child_a_line + 1)..child_b_line {
             if let Some(edges) = viz.char_edge_map.get(&(l, 0)) {
-                assert!(!edges.iter().any(|(s, t)| s == "root" && t == "child-a"),
-                    "│ at ({}, 0) should NOT have (root, child-a). Edges: {:?}", l, edges);
+                assert!(
+                    !edges.iter().any(|(s, t)| s == "root" && t == "child-a"),
+                    "│ at ({}, 0) should NOT have (root, child-a). Edges: {:?}",
+                    l,
+                    edges
+                );
 
                 // No edge should have BOTH endpoints in the upstream set
                 let would_be_colored = edges.iter().any(|(src, tgt)| {
@@ -2369,9 +2754,12 @@ mod tests {
                     let tgt_upstream = app.upstream_set.contains(tgt.as_str()) || tgt == "gc3";
                     src_upstream && tgt_upstream
                 });
-                assert!(!would_be_colored,
+                assert!(
+                    !would_be_colored,
                     "│ at ({}, 0) would be colored magenta but child-b is NOT in trace! \
-                     Edges: {:?}\nUpstream: {:?}", l, edges, app.upstream_set);
+                     Edges: {:?}\nUpstream: {:?}",
+                    l, edges, app.upstream_set
+                );
             }
         }
 
@@ -2386,9 +2774,8 @@ mod tests {
 
             let base_line = parse_ansi_line(app.lines[l].as_str());
             let category = classify_task_line(&app, l);
-            let result = apply_per_char_trace_coloring(
-                base_line, plain, l, &category, &app, Some("gc3"),
-            );
+            let result =
+                apply_per_char_trace_coloring(base_line, plain, l, &category, &app, Some("gc3"));
 
             // The first character (│ at col 0) must NOT be magenta or cyan
             let mut char_idx = 0;
@@ -2396,10 +2783,14 @@ mod tests {
                 for c in span.content.chars() {
                     if char_idx == 0 && c == '│' {
                         assert!(
-                            span.style.fg != Some(Color::Magenta) && span.style.fg != Some(Color::Cyan),
+                            span.style.fg != Some(Color::Magenta)
+                                && span.style.fg != Some(Color::Cyan),
                             "│ at line {} col 0 should NOT be colored! child-b is not in \
                              the trace. Got fg={:?}\nPlain: {}\nOutput:\n{}",
-                            l, span.style.fg, plain, viz.text
+                            l,
+                            span.style.fg,
+                            plain,
+                            viz.text
                         );
                     }
                     char_idx += 1;
@@ -2418,9 +2809,16 @@ mod tests {
             let tasks: Vec<_> = graph.tasks().collect();
             let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
             generate_ascii(
-                graph, &tasks, &task_ids, &HashMap::new(),
-                &HashMap::new(), &HashMap::new(), &HashMap::new(),
-                LayoutMode::default(), &HashSet::new(), "gray",
+                graph,
+                &tasks,
+                &task_ids,
+                &HashMap::new(),
+                &HashMap::new(),
+                &HashMap::new(),
+                &HashMap::new(),
+                LayoutMode::default(),
+                &HashSet::new(),
+                "gray",
             )
         };
         build_app_from_viz_output(&viz, selected_id)
@@ -2434,7 +2832,12 @@ mod tests {
             let base_line = parse_ansi_line(ansi_line);
             let category = classify_task_line(app, idx);
             let result = apply_per_char_trace_coloring(
-                base_line, plain, idx, &category, app, Some(selected_id),
+                base_line,
+                plain,
+                idx,
+                &category,
+                app,
+                Some(selected_id),
             );
 
             let mut char_idx = 0;
@@ -2460,7 +2863,12 @@ mod tests {
             let base_line = parse_ansi_line(ansi_line);
             let category = classify_task_line(app, idx);
             let result = apply_per_char_trace_coloring(
-                base_line, plain, idx, &category, app, Some(selected_id),
+                base_line,
+                plain,
+                idx,
+                &category,
+                app,
+                Some(selected_id),
             );
 
             let mut char_idx = 0;
@@ -2486,7 +2894,12 @@ mod tests {
             let base_line = parse_ansi_line(ansi_line);
             let category = classify_task_line(app, idx);
             let result = apply_per_char_trace_coloring(
-                base_line, plain, idx, &category, app, Some(selected_id),
+                base_line,
+                plain,
+                idx,
+                &category,
+                app,
+                Some(selected_id),
             );
 
             let mut char_idx = 0;
@@ -2528,9 +2941,11 @@ mod tests {
         assert!(app.cycle_set.contains("c"), "c should be in cycle_set");
 
         // There should be yellow edges
-        assert!(has_any_yellow_edge(&app, "a"),
+        assert!(
+            has_any_yellow_edge(&app, "a"),
             "Simple cycle: should have yellow edges when A selected.\nViz:\n{}",
-            app.lines.join("\n"));
+            app.lines.join("\n")
+        );
     }
 
     // ── Test 2: No cycle — linear chain ──
@@ -2551,12 +2966,17 @@ mod tests {
         let app = build_cycle_app(&graph, "b");
 
         // cycle_set should be empty
-        assert!(app.cycle_set.is_empty(), "Linear chain: cycle_set should be empty");
+        assert!(
+            app.cycle_set.is_empty(),
+            "Linear chain: cycle_set should be empty"
+        );
 
         // No yellow edges
-        assert!(!has_any_yellow_edge(&app, "b"),
+        assert!(
+            !has_any_yellow_edge(&app, "b"),
             "Linear chain: should have no yellow edges.\nViz:\n{}",
-            app.lines.join("\n"));
+            app.lines.join("\n")
+        );
     }
 
     // ── Test 3: Cycle + non-cycle edges ──
@@ -2590,9 +3010,11 @@ mod tests {
         assert!(app.upstream_set.contains("d"), "d should be upstream of a");
 
         // Check that cycle edges exist and are yellow
-        assert!(has_any_yellow_edge(&app, "a"),
+        assert!(
+            has_any_yellow_edge(&app, "a"),
             "Cycle+non-cycle: should have yellow edges for the cycle.\nViz:\n{}",
-            app.lines.join("\n"));
+            app.lines.join("\n")
+        );
 
         // Check that edges involving D are NOT yellow.
         // D→A edges should be magenta (upstream), not yellow.
@@ -2602,9 +3024,13 @@ mod tests {
                 for (src, tgt) in edges {
                     // If this position is yellow, the edge should be between cycle members
                     assert!(
-                        app.cycle_set.contains(src.as_str()) && app.cycle_set.contains(tgt.as_str()),
+                        app.cycle_set.contains(src.as_str())
+                            && app.cycle_set.contains(tgt.as_str()),
                         "Yellow edge at ({},{}) has non-cycle endpoints: ({}, {})",
-                        line, col, src, tgt
+                        line,
+                        col,
+                        src,
+                        tgt
                     );
                 }
             }
@@ -2636,9 +3062,11 @@ mod tests {
         assert!(app.cycle_set.contains("c"), "c in cycle_set");
 
         // Should have yellow edges
-        assert!(has_any_yellow_edge(&app, "b"),
+        assert!(
+            has_any_yellow_edge(&app, "b"),
             "Multiple cycles: should have yellow edges.\nViz:\n{}",
-            app.lines.join("\n"));
+            app.lines.join("\n")
+        );
     }
 
     // ── Test 5: Self-loop ──
@@ -2663,18 +3091,24 @@ mod tests {
         // If not, this reveals a gap in the implementation.
         if app.cycle_set.contains("a") {
             // Self-loop detected in SCC — verify yellow edges exist
-            assert!(has_any_yellow_edge(&app, "a"),
+            assert!(
+                has_any_yellow_edge(&app, "a"),
                 "Self-loop: cycle_set includes 'a' but no yellow edges.\nViz:\n{}",
-                app.lines.join("\n"));
+                app.lines.join("\n")
+            );
         } else {
             // Self-loops may not be detected by the SCC algorithm as non-trivial SCCs.
             // This is acceptable behavior — document it.
-            eprintln!("Note: Self-loop A→A not detected as cycle by SCC. \
+            eprintln!(
+                "Note: Self-loop A→A not detected as cycle by SCC. \
                        cycle_set is empty. This is expected if SCC algorithm \
-                       only reports components with >1 member.");
-            assert!(!has_any_yellow_edge(&app, "a"),
+                       only reports components with >1 member."
+            );
+            assert!(
+                !has_any_yellow_edge(&app, "a"),
                 "Self-loop: cycle_set is empty, so no yellow edges expected.\nViz:\n{}",
-                app.lines.join("\n"));
+                app.lines.join("\n")
+            );
         }
     }
 
@@ -2705,9 +3139,11 @@ mod tests {
 
         // All edges between SCC members should be yellow
         let yellow_positions = collect_yellow_edge_positions(&app, "a");
-        assert!(!yellow_positions.is_empty(),
+        assert!(
+            !yellow_positions.is_empty(),
             "Nested cycles: should have yellow edges.\nViz:\n{}",
-            app.lines.join("\n"));
+            app.lines.join("\n")
+        );
     }
 
     // ── Test 7: Non-member selected ──
@@ -2731,13 +3167,18 @@ mod tests {
         let app = build_cycle_app(&graph, "d");
 
         // D is not in any cycle
-        assert!(app.cycle_set.is_empty(),
-            "Non-member selected: cycle_set should be empty, got {:?}", app.cycle_set);
+        assert!(
+            app.cycle_set.is_empty(),
+            "Non-member selected: cycle_set should be empty, got {:?}",
+            app.cycle_set
+        );
 
         // No yellow edges
-        assert!(!has_any_yellow_edge(&app, "d"),
+        assert!(
+            !has_any_yellow_edge(&app, "d"),
             "Non-member selected: should have no yellow edges.\nViz:\n{}",
-            app.lines.join("\n"));
+            app.lines.join("\n")
+        );
     }
 
     // ── Additional: Yellow overrides magenta for cycle edges ──
@@ -2772,13 +3213,18 @@ mod tests {
 
         // No position should be both yellow and magenta (yellow should override)
         let overlap: HashSet<_> = yellow.intersection(&magenta).collect();
-        assert!(overlap.is_empty(),
+        assert!(
+            overlap.is_empty(),
             "Cycle edge positions should not be magenta — yellow overrides. \
-             Overlap at: {:?}", overlap);
+             Overlap at: {:?}",
+            overlap
+        );
 
         // There should be some yellow edges
-        assert!(!yellow.is_empty(),
+        assert!(
+            !yellow.is_empty(),
             "Cycle edges should be yellow, but none found.\nViz:\n{}",
-            app.lines.join("\n"));
+            app.lines.join("\n")
+        );
     }
 }

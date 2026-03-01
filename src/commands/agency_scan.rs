@@ -76,7 +76,12 @@ fn find_agency_stores(root: &Path, max_depth: usize) -> Vec<(PathBuf, bool)> {
         // Check for bare store: agency/ exists and is a valid store, but parent is NOT .workgraph
         if dir_name == "agency" && LocalStore::new(dir).is_valid() {
             // Skip if parent is .workgraph (already handled above)
-            if dir.parent().and_then(|p| p.file_name()).map(|n| n.to_string_lossy()) == Some(".workgraph".into()) {
+            if dir
+                .parent()
+                .and_then(|p| p.file_name())
+                .map(|n| n.to_string_lossy())
+                == Some(".workgraph".into())
+            {
                 continue;
             }
             if let Ok(canonical) = dir.canonicalize() {
@@ -99,7 +104,9 @@ pub fn run(root: &Path, json: bool, max_depth: usize) -> Result<()> {
 
     if stores.is_empty() {
         if json {
-            println!("{{\"stores\":[],\"totals\":{{\"roles\":0,\"motivations\":0,\"agents\":0,\"evaluations\":0}}}}");
+            println!(
+                "{{\"stores\":[],\"totals\":{{\"roles\":0,\"motivations\":0,\"agents\":0,\"evaluations\":0}}}}"
+            );
         } else {
             println!("No agency stores found under {}", root.display());
         }
@@ -118,9 +125,7 @@ pub fn run(root: &Path, json: bool, max_depth: usize) -> Result<()> {
         total.evaluations += counts.evaluations;
 
         // Make path relative to root for display, or use absolute as fallback
-        let display_path = store_path
-            .strip_prefix(&root)
-            .unwrap_or(store_path);
+        let display_path = store_path.strip_prefix(&root).unwrap_or(store_path);
 
         discovered.push(DiscoveredStore {
             path: display_path.display().to_string(),
@@ -141,7 +146,11 @@ pub fn run(root: &Path, json: bool, max_depth: usize) -> Result<()> {
         };
         println!("{}", serde_json::to_string_pretty(&output)?);
     } else {
-        println!("Found {} agency store{}:\n", stores.len(), if stores.len() == 1 { "" } else { "s" });
+        println!(
+            "Found {} agency store{}:\n",
+            stores.len(),
+            if stores.len() == 1 { "" } else { "s" }
+        );
 
         for store in &discovered {
             println!("  {}", store.path);
@@ -206,7 +215,10 @@ mod tests {
         let project = tmp.path().join("myproject");
         create_project_store(&project);
         write_dummy_role(
-            &project.join(".workgraph").join("agency").join("cache/roles"),
+            &project
+                .join(".workgraph")
+                .join("agency")
+                .join("cache/roles"),
             "abc123",
         );
 

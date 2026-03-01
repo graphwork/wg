@@ -5,7 +5,7 @@ mod graph;
 use anyhow::Result;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use workgraph::graph::{parse_token_usage_live, Status, Task, TokenUsage, WorkGraph};
+use workgraph::graph::{Status, Task, TokenUsage, WorkGraph, parse_token_usage_live};
 
 // Re-export public API
 pub use graph::{generate_graph, generate_graph_with_overrides};
@@ -62,8 +62,7 @@ impl std::str::FromStr for OutputFormat {
 }
 
 /// Layout strategy for the ASCII tree visualization.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum LayoutMode {
     /// Classic DFS-order tree: fan-in nodes claimed by first parent visited.
     Tree,
@@ -73,7 +72,6 @@ pub enum LayoutMode {
     Diamond,
 }
 
-
 impl std::str::FromStr for LayoutMode {
     type Err = String;
 
@@ -81,10 +79,7 @@ impl std::str::FromStr for LayoutMode {
         match s.to_lowercase().as_str() {
             "tree" => Ok(LayoutMode::Tree),
             "diamond" => Ok(LayoutMode::Diamond),
-            _ => Err(format!(
-                "Unknown layout: {}. Use 'tree' or 'diamond'.",
-                s
-            )),
+            _ => Err(format!("Unknown layout: {}. Use 'tree' or 'diamond'.", s)),
         }
     }
 }
@@ -233,21 +228,31 @@ pub fn generate_viz_output_from_graph(
         let mut active = HashSet::new();
         for task in graph.tasks() {
             if task.status != Status::Done
-                && let Some(&ci) = cycle_analysis.task_to_cycle.get(&task.id) {
-                    active.insert(ci);
-                }
+                && let Some(&ci) = cycle_analysis.task_to_cycle.get(&task.id)
+            {
+                active.insert(ci);
+            }
         }
         active
     };
 
     // Compute weakly connected components via union-find.
     // Used for both active-tree filtering and --focus subgraph selection.
-    fn uf_find<'a>(comp: &mut HashMap<&'a str, usize>, merged: &mut [Option<usize>], id: &'a str) -> usize {
+    fn uf_find<'a>(
+        comp: &mut HashMap<&'a str, usize>,
+        merged: &mut [Option<usize>],
+        id: &'a str,
+    ) -> usize {
         let mut c = comp[id];
-        while let Some(parent) = merged[c] { c = parent; }
+        while let Some(parent) = merged[c] {
+            c = parent;
+        }
         let root = c;
         let mut c2 = comp[id];
-        while let Some(parent) = merged[c2] { merged[c2] = Some(root); c2 = parent; }
+        while let Some(parent) = merged[c2] {
+            merged[c2] = Some(root);
+            c2 = parent;
+        }
         comp.insert(id, root);
         root
     }
@@ -260,33 +265,51 @@ pub fn generate_viz_output_from_graph(
     }
     let mut merged: Vec<Option<usize>> = vec![None; num_components];
 
-    let edge_pairs: Vec<(String, String)> = graph.tasks().flat_map(|task| {
-        let id = task.id.clone();
-        task.after.iter().chain(task.before.iter())
-            .map(move |neighbor| (id.clone(), neighbor.clone()))
-    }).collect();
+    let edge_pairs: Vec<(String, String)> = graph
+        .tasks()
+        .flat_map(|task| {
+            let id = task.id.clone();
+            task.after
+                .iter()
+                .chain(task.before.iter())
+                .map(move |neighbor| (id.clone(), neighbor.clone()))
+        })
+        .collect();
 
     for (task_id, neighbor_id) in &edge_pairs {
         if components.contains_key(neighbor_id.as_str()) {
             let a = uf_find(&mut components, &mut merged, task_id.as_str());
             let b = uf_find(&mut components, &mut merged, neighbor_id.as_str());
-            if a != b { merged[b] = Some(a); }
+            if a != b {
+                merged[b] = Some(a);
+            }
         }
     }
 
     // Precompute task_id → root mapping so we don't need mutable borrows in the filter
-    let task_roots: HashMap<&str, usize> = graph.tasks()
-        .map(|t| (t.id.as_str(), uf_find(&mut components, &mut merged, t.id.as_str())))
+    let task_roots: HashMap<&str, usize> = graph
+        .tasks()
+        .map(|t| {
+            (
+                t.id.as_str(),
+                uf_find(&mut components, &mut merged, t.id.as_str()),
+            )
+        })
         .collect();
 
     // For focus mode: collect the roots of focused task IDs
-    let focus_roots: HashSet<usize> = options.focus.iter()
+    let focus_roots: HashSet<usize> = options
+        .focus
+        .iter()
         .filter_map(|f| task_roots.get(f.as_str()).copied())
         .collect();
 
     // For default mode: find roots with active (non-done, non-internal) tasks
-    let active_roots: HashSet<usize> = graph.tasks()
-        .filter(|t| t.status != Status::Done && t.status != Status::Abandoned && !is_internal_task(t))
+    let active_roots: HashSet<usize> = graph
+        .tasks()
+        .filter(|t| {
+            t.status != Status::Done && t.status != Status::Abandoned && !is_internal_task(t)
+        })
         .filter_map(|t| task_roots.get(t.id.as_str()).copied())
         .collect();
 
@@ -324,7 +347,9 @@ pub fn generate_viz_output_from_graph(
             }
 
             // Default: show tasks in active WCCs
-            if t.status == Status::Abandoned { return false; }
+            if t.status == Status::Abandoned {
+                return false;
+            }
             active_roots.contains(&root)
         })
         // Tag filter: task must have all specified tags (AND semantics)
@@ -353,9 +378,10 @@ pub fn generate_viz_output_from_graph(
                     // Keep walking up unless this ancestor matches the status filter
                     // (status-matching ancestors are already context but we stop climbing past them)
                     if let Some(ancestor) = graph.get_task(dep)
-                        && status_str(&ancestor.status) != filter_lower {
-                            to_visit.push(dep.clone());
-                        }
+                        && status_str(&ancestor.status) != filter_lower
+                    {
+                        to_visit.push(dep.clone());
+                    }
                 }
             }
         }
@@ -367,9 +393,10 @@ pub fn generate_viz_output_from_graph(
         let existing_ids: HashSet<&str> = tasks_to_show.iter().map(|t| t.id.as_str()).collect();
         for ctx_id in &context_ids {
             if !existing_ids.contains(ctx_id.as_str())
-                && let Some(task) = graph.get_task(ctx_id) {
-                    tasks_to_show.push(task);
-                }
+                && let Some(task) = graph.get_task(ctx_id)
+            {
+                tasks_to_show.push(task);
+            }
         }
         tasks_to_show
     } else {
@@ -393,22 +420,21 @@ pub fn generate_viz_output_from_graph(
             for dep in &task.after {
                 if let Some((peer_name, remote_task_id)) =
                     workgraph::federation::parse_remote_ref(dep)
-                    && seen.insert(dep.clone()) {
-                        let remote = workgraph::federation::resolve_remote_task_status(
-                            peer_name,
-                            remote_task_id,
-                            dir,
-                        );
-                        let title = remote
-                            .title
-                            .unwrap_or_else(|| remote_task_id.to_string());
-                        peers.push(Task {
-                            id: dep.clone(),
-                            title,
-                            status: remote.status,
-                            ..Task::default()
-                        });
-                    }
+                    && seen.insert(dep.clone())
+                {
+                    let remote = workgraph::federation::resolve_remote_task_status(
+                        peer_name,
+                        remote_task_id,
+                        dir,
+                    );
+                    let title = remote.title.unwrap_or_else(|| remote_task_id.to_string());
+                    peers.push(Task {
+                        id: dep.clone(),
+                        title,
+                        status: remote.status,
+                        ..Task::default()
+                    });
+                }
             }
         }
         peers
@@ -452,7 +478,10 @@ pub fn generate_viz_output_from_graph(
         let (is_assign, parent_id) = if task.tags.iter().any(|t| t == "assignment") {
             (true, task.id.strip_prefix("assign-").map(|s| s.to_string()))
         } else {
-            (false, task.id.strip_prefix("evaluate-").map(|s| s.to_string()))
+            (
+                false,
+                task.id.strip_prefix("evaluate-").map(|s| s.to_string()),
+            )
         };
         let Some(pid) = parent_id else { continue };
         let usage = task.token_usage.as_ref().cloned().or_else(|| {
@@ -461,7 +490,11 @@ pub fn generate_viz_output_from_graph(
             parse_token_usage_live(&log_path)
         });
         if let Some(u) = usage {
-            let map = if is_assign { &mut assign_token_usage } else { &mut eval_token_usage };
+            let map = if is_assign {
+                &mut assign_token_usage
+            } else {
+                &mut eval_token_usage
+            };
             let entry = map.entry(pid).or_insert_with(|| TokenUsage {
                 cost_usd: 0.0,
                 input_tokens: 0,
@@ -479,7 +512,18 @@ pub fn generate_viz_output_from_graph(
 
     // Generate output
     let output = match options.format {
-        OutputFormat::Ascii => ascii::generate_ascii(graph, &tasks_to_show, &task_ids, &annotations, &live_token_usage, &assign_token_usage, &eval_token_usage, options.layout, &context_ids, &options.edge_color),
+        OutputFormat::Ascii => ascii::generate_ascii(
+            graph,
+            &tasks_to_show,
+            &task_ids,
+            &annotations,
+            &live_token_usage,
+            &assign_token_usage,
+            &eval_token_usage,
+            options.layout,
+            &context_ids,
+            &options.edge_color,
+        ),
         _ => {
             let text = match options.format {
                 OutputFormat::Dot => dot::generate_dot(
@@ -496,7 +540,16 @@ pub fn generate_viz_output_from_graph(
                     &critical_path_set,
                     &annotations,
                 ),
-                OutputFormat::Graph => graph::generate_graph(graph, &tasks_to_show, &task_ids, &annotations, &live_token_usage, &assign_token_usage, &eval_token_usage, &context_ids),
+                OutputFormat::Graph => graph::generate_graph(
+                    graph,
+                    &tasks_to_show,
+                    &task_ids,
+                    &annotations,
+                    &live_token_usage,
+                    &assign_token_usage,
+                    &eval_token_usage,
+                    &context_ids,
+                ),
                 OutputFormat::Ascii => unreachable!(),
             };
             VizOutput {
@@ -555,11 +608,7 @@ fn calculate_critical_path(graph: &WorkGraph, active_ids: &HashSet<&str>) -> Has
     let entry_points: Vec<&str> = graph
         .tasks()
         .filter(|t| active_ids.contains(t.id.as_str()))
-        .filter(|t| {
-            t.after
-                .iter()
-                .all(|b| !active_ids.contains(b.as_str()))
-        })
+        .filter(|t| t.after.iter().all(|b| !active_ids.contains(b.as_str())))
         .map(|t| t.id.as_str())
         .collect();
 
@@ -871,12 +920,21 @@ mod tests {
             comp_members.push(vec![task.id.as_str()]);
         }
         let mut merged: Vec<Option<usize>> = vec![None; comp_members.len()];
-        fn find_root<'a>(comp: &mut HashMap<&'a str, usize>, merged: &mut Vec<Option<usize>>, id: &'a str) -> usize {
+        fn find_root<'a>(
+            comp: &mut HashMap<&'a str, usize>,
+            merged: &mut Vec<Option<usize>>,
+            id: &'a str,
+        ) -> usize {
             let mut c = comp[id];
-            while let Some(parent) = merged[c] { c = parent; }
+            while let Some(parent) = merged[c] {
+                c = parent;
+            }
             let root = c;
             let mut c2 = comp[id];
-            while let Some(parent) = merged[c2] { merged[c2] = Some(root); c2 = parent; }
+            while let Some(parent) = merged[c2] {
+                merged[c2] = Some(root);
+                c2 = parent;
+            }
             comp.insert(id, root);
             root
         }
@@ -885,7 +943,9 @@ mod tests {
                 if components.contains_key(neighbor_id.as_str()) {
                     let a = find_root(&mut components, &mut merged, task.id.as_str());
                     let b = find_root(&mut components, &mut merged, neighbor_id.as_str());
-                    if a != b { merged[b] = Some(a); }
+                    if a != b {
+                        merged[b] = Some(a);
+                    }
                 }
             }
         }
@@ -896,15 +956,23 @@ mod tests {
             }
         }
 
-        let filtered: Vec<_> = graph.tasks().filter(|t| {
-            if t.status == Status::Abandoned { return false; }
-            let root = find_root(&mut components, &mut merged, t.id.as_str());
-            active_roots.contains(&root)
-        }).collect();
+        let filtered: Vec<_> = graph
+            .tasks()
+            .filter(|t| {
+                if t.status == Status::Abandoned {
+                    return false;
+                }
+                let root = find_root(&mut components, &mut merged, t.id.as_str());
+                active_roots.contains(&root)
+            })
+            .collect();
 
         let ids: Vec<&str> = filtered.iter().map(|t| t.id.as_str()).collect();
         assert!(ids.contains(&"task-open"), "Active tree: open task shown");
-        assert!(ids.contains(&"task-done-dep"), "Active tree: done dep shown for context");
+        assert!(
+            ids.contains(&"task-done-dep"),
+            "Active tree: done dep shown for context"
+        );
         assert!(!ids.contains(&"done-a"), "Fully done tree: hidden");
         assert!(!ids.contains(&"done-b"), "Fully done tree: hidden");
         assert!(!ids.contains(&"task-abandoned"), "Abandoned: hidden");

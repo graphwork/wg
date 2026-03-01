@@ -358,7 +358,6 @@ fn test_in_progress_task_blocks_dependents() {
     );
 }
 
-
 #[test]
 fn test_state_persistence_roundtrip_all_statuses() {
     // Verify that all status variants survive save/load roundtrip
@@ -727,7 +726,6 @@ fn test_diamond_dependency_no_false_cycle() {
     let result = check_all(&graph);
     assert!(result.ok);
 }
-
 
 // ===========================================================================
 // Additional edge cases: orphan references, mixed validation

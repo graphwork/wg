@@ -91,8 +91,16 @@ fn msg_storage_send_and_persist() {
     wg_ok(&wg_dir, &["add", "Storage test", "--id", "store-1"]);
 
     // Send two messages via the Rust API directly
-    let id1 = messages::send_message(&wg_dir, "store-1", "First message", "user", "normal").unwrap();
-    let id2 = messages::send_message(&wg_dir, "store-1", "Second message", "coordinator", "urgent").unwrap();
+    let id1 =
+        messages::send_message(&wg_dir, "store-1", "First message", "user", "normal").unwrap();
+    let id2 = messages::send_message(
+        &wg_dir,
+        "store-1",
+        "Second message",
+        "coordinator",
+        "urgent",
+    )
+    .unwrap();
 
     assert_eq!(id1, 1);
     assert_eq!(id2, 2);
@@ -116,7 +124,8 @@ fn msg_storage_ordering_is_by_id() {
     wg_ok(&wg_dir, &["add", "Order test", "--id", "order-1"]);
 
     for i in 1..=10 {
-        messages::send_message(&wg_dir, "order-1", &format!("Msg {}", i), "user", "normal").unwrap();
+        messages::send_message(&wg_dir, "order-1", &format!("Msg {}", i), "user", "normal")
+            .unwrap();
     }
 
     let msgs = messages::list_messages(&wg_dir, "order-1").unwrap();
@@ -222,22 +231,59 @@ fn cli_msg_send_and_list() {
 
     // Send via CLI
     let output = wg_ok(&wg_dir, &["msg", "send", "cli-send", "Hello from CLI"]);
-    assert!(output.contains("#1"), "Should report message ID #1, got: {}", output);
-    assert!(output.contains("cli-send"), "Should confirm task id, got: {}", output);
+    assert!(
+        output.contains("#1"),
+        "Should report message ID #1, got: {}",
+        output
+    );
+    assert!(
+        output.contains("cli-send"),
+        "Should confirm task id, got: {}",
+        output
+    );
 
     // Send with priority
     let output = wg_ok(
         &wg_dir,
-        &["msg", "send", "cli-send", "Urgent!", "--priority", "urgent", "--from", "coordinator"],
+        &[
+            "msg",
+            "send",
+            "cli-send",
+            "Urgent!",
+            "--priority",
+            "urgent",
+            "--from",
+            "coordinator",
+        ],
     );
-    assert!(output.contains("#2"), "Should report message ID #2, got: {}", output);
+    assert!(
+        output.contains("#2"),
+        "Should report message ID #2, got: {}",
+        output
+    );
 
     // List messages
     let output = wg_ok(&wg_dir, &["msg", "list", "cli-send"]);
-    assert!(output.contains("Hello from CLI"), "List should show first message, got: {}", output);
-    assert!(output.contains("Urgent!"), "List should show second message, got: {}", output);
-    assert!(output.contains("[URGENT]"), "List should show urgent marker, got: {}", output);
-    assert!(output.contains("2 total"), "Should show total count, got: {}", output);
+    assert!(
+        output.contains("Hello from CLI"),
+        "List should show first message, got: {}",
+        output
+    );
+    assert!(
+        output.contains("Urgent!"),
+        "List should show second message, got: {}",
+        output
+    );
+    assert!(
+        output.contains("[URGENT]"),
+        "List should show urgent marker, got: {}",
+        output
+    );
+    assert!(
+        output.contains("2 total"),
+        "Should show total count, got: {}",
+        output
+    );
 }
 
 #[test]
@@ -247,8 +293,12 @@ fn cli_msg_list_json() {
     wg_ok(&wg_dir, &["msg", "send", "json-1", "JSON body"]);
 
     let output = wg_ok(&wg_dir, &["msg", "list", "json-1", "--json"]);
-    let parsed: serde_json::Value = serde_json::from_str(&output)
-        .unwrap_or_else(|e| panic!("List --json output should be valid JSON: {}\nOutput: {}", e, output));
+    let parsed: serde_json::Value = serde_json::from_str(&output).unwrap_or_else(|e| {
+        panic!(
+            "List --json output should be valid JSON: {}\nOutput: {}",
+            e, output
+        )
+    });
     assert!(parsed.is_array());
     let arr = parsed.as_array().unwrap();
     assert_eq!(arr.len(), 1);
@@ -264,9 +314,21 @@ fn cli_msg_read_advances_cursor() {
 
     // Read with explicit agent
     let output = wg_ok(&wg_dir, &["msg", "read", "read-1", "--agent", "test-agent"]);
-    assert!(output.contains("First"), "Should show first message, got: {}", output);
-    assert!(output.contains("Second"), "Should show second message, got: {}", output);
-    assert!(output.contains("2 unread"), "Should show unread count, got: {}", output);
+    assert!(
+        output.contains("First"),
+        "Should show first message, got: {}",
+        output
+    );
+    assert!(
+        output.contains("Second"),
+        "Should show second message, got: {}",
+        output
+    );
+    assert!(
+        output.contains("2 unread"),
+        "Should show unread count, got: {}",
+        output
+    );
 
     // Read again: no unread messages
     let output = wg_ok(&wg_dir, &["msg", "read", "read-1", "--agent", "test-agent"]);
@@ -279,8 +341,16 @@ fn cli_msg_read_advances_cursor() {
     // Send a third and read again
     wg_ok(&wg_dir, &["msg", "send", "read-1", "Third"]);
     let output = wg_ok(&wg_dir, &["msg", "read", "read-1", "--agent", "test-agent"]);
-    assert!(output.contains("Third"), "Should show new message, got: {}", output);
-    assert!(!output.contains("First"), "Should NOT re-show old messages, got: {}", output);
+    assert!(
+        output.contains("Third"),
+        "Should show new message, got: {}",
+        output
+    );
+    assert!(
+        !output.contains("First"),
+        "Should NOT re-show old messages, got: {}",
+        output
+    );
 }
 
 #[test]
@@ -289,7 +359,10 @@ fn cli_msg_poll_exit_codes() {
     wg_ok(&wg_dir, &["add", "Poll test", "--id", "poll-cli"]);
 
     // Poll with no messages: exit code 1
-    let output = wg_cmd(&wg_dir, &["msg", "poll", "poll-cli", "--agent", "test-agent"]);
+    let output = wg_cmd(
+        &wg_dir,
+        &["msg", "poll", "poll-cli", "--agent", "test-agent"],
+    );
     assert!(
         !output.status.success(),
         "Poll should exit non-zero when no messages"
@@ -303,17 +376,30 @@ fn cli_msg_poll_exit_codes() {
 
     // Send a message, then poll: exit code 0
     wg_ok(&wg_dir, &["msg", "send", "poll-cli", "New!"]);
-    let output = wg_cmd(&wg_dir, &["msg", "poll", "poll-cli", "--agent", "test-agent"]);
+    let output = wg_cmd(
+        &wg_dir,
+        &["msg", "poll", "poll-cli", "--agent", "test-agent"],
+    );
     assert!(
         output.status.success(),
         "Poll should exit 0 when new messages exist"
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("New!"), "Poll should show message content, got: {}", stdout);
+    assert!(
+        stdout.contains("New!"),
+        "Poll should show message content, got: {}",
+        stdout
+    );
 
     // Poll again: still shows message (poll doesn't advance cursor)
-    let output = wg_cmd(&wg_dir, &["msg", "poll", "poll-cli", "--agent", "test-agent"]);
-    assert!(output.status.success(), "Poll should still show messages (doesn't advance cursor)");
+    let output = wg_cmd(
+        &wg_dir,
+        &["msg", "poll", "poll-cli", "--agent", "test-agent"],
+    );
+    assert!(
+        output.status.success(),
+        "Poll should still show messages (doesn't advance cursor)"
+    );
 }
 
 #[test]
@@ -322,9 +408,16 @@ fn cli_msg_poll_json() {
     wg_ok(&wg_dir, &["add", "Poll JSON", "--id", "poll-json"]);
     wg_ok(&wg_dir, &["msg", "send", "poll-json", "JSON poll"]);
 
-    let output = wg_ok(&wg_dir, &["msg", "poll", "poll-json", "--agent", "ag", "--json"]);
-    let parsed: serde_json::Value = serde_json::from_str(&output)
-        .unwrap_or_else(|e| panic!("Poll --json should be valid JSON: {}\nOutput: {}", e, output));
+    let output = wg_ok(
+        &wg_dir,
+        &["msg", "poll", "poll-json", "--agent", "ag", "--json"],
+    );
+    let parsed: serde_json::Value = serde_json::from_str(&output).unwrap_or_else(|e| {
+        panic!(
+            "Poll --json should be valid JSON: {}\nOutput: {}",
+            e, output
+        )
+    });
     assert!(parsed.is_array());
     assert_eq!(parsed.as_array().unwrap().len(), 1);
 }
@@ -420,7 +513,10 @@ fn pending_task_empty_queue_formats_as_empty_string() {
     wg_ok(&wg_dir, &["add", "No messages", "--id", "no-msg"]);
 
     let formatted = messages::format_queued_messages(&wg_dir, "no-msg");
-    assert!(formatted.is_empty(), "No messages should format as empty string");
+    assert!(
+        formatted.is_empty(),
+        "No messages should format as empty string"
+    );
 }
 
 // ===========================================================================
@@ -456,7 +552,10 @@ fn adapter_claude_writes_notification_file() {
     .unwrap();
 
     assert_eq!(msg_id, 1, "First message should have ID 1");
-    assert!(!delivered, "Claude adapter should not support realtime delivery");
+    assert!(
+        !delivered,
+        "Claude adapter should not support realtime delivery"
+    );
 
     // Verify message is in persistent queue
     let msgs = messages::list_messages(&wg_dir, "adapt-1").unwrap();
@@ -464,7 +563,10 @@ fn adapter_claude_writes_notification_file() {
     assert_eq!(msgs[0].body, "Mid-execution update");
 
     // Verify notification file was written
-    let notif_path = wg_dir.join("agents").join("agent-claude-1").join("pending_messages.txt");
+    let notif_path = wg_dir
+        .join("agents")
+        .join("agent-claude-1")
+        .join("pending_messages.txt");
     assert!(notif_path.exists(), "Notification file should exist");
     let content = fs::read_to_string(&notif_path).unwrap();
     assert!(
@@ -502,9 +604,15 @@ fn adapter_amplifier_writes_notification_file() {
     .unwrap();
 
     assert_eq!(msg_id, 1);
-    assert!(!delivered, "Amplifier adapter should not support realtime delivery");
+    assert!(
+        !delivered,
+        "Amplifier adapter should not support realtime delivery"
+    );
 
-    let notif_path = wg_dir.join("agents").join("agent-amp-1").join("pending_messages.txt");
+    let notif_path = wg_dir
+        .join("agents")
+        .join("agent-amp-1")
+        .join("pending_messages.txt");
     assert!(notif_path.exists());
     let content = fs::read_to_string(&notif_path).unwrap();
     assert!(content.contains("Amplifier context update"));
@@ -539,9 +647,15 @@ fn adapter_shell_writes_notification_file() {
     .unwrap();
 
     assert_eq!(msg_id, 1);
-    assert!(!delivered, "Shell adapter should not support realtime delivery");
+    assert!(
+        !delivered,
+        "Shell adapter should not support realtime delivery"
+    );
 
-    let notif_path = wg_dir.join("agents").join("agent-shell-1").join("pending_messages.txt");
+    let notif_path = wg_dir
+        .join("agents")
+        .join("agent-shell-1")
+        .join("pending_messages.txt");
     assert!(notif_path.exists());
     let content = fs::read_to_string(&notif_path).unwrap();
     assert!(content.contains("Shell message"));
@@ -597,7 +711,10 @@ fn adapter_notification_accumulates_multiple_messages() {
     }
 
     // All 5 should be in the notification file
-    let notif_path = wg_dir.join("agents").join("agent-accum").join("pending_messages.txt");
+    let notif_path = wg_dir
+        .join("agents")
+        .join("agent-accum")
+        .join("pending_messages.txt");
     let content = fs::read_to_string(&notif_path).unwrap();
     let lines: Vec<&str> = content.lines().collect();
     assert_eq!(lines.len(), 5, "Should have 5 notification lines");
@@ -626,7 +743,9 @@ fn edge_message_to_nonexistent_task_errors() {
     // CLI send to nonexistent task should fail
     let combined = wg_fail(&wg_dir, &["msg", "send", "does-not-exist", "Hello"]);
     assert!(
-        combined.contains("not found") || combined.contains("Not found") || combined.contains("error"),
+        combined.contains("not found")
+            || combined.contains("Not found")
+            || combined.contains("error"),
         "Should error for nonexistent task, got: {}",
         combined
     );
@@ -645,8 +764,14 @@ fn edge_message_to_completed_task() {
 
     // Sending a message to a completed task: the design doc says it's allowed
     // (messages append regardless of status). Verify it works.
-    let output = wg_ok(&wg_dir, &["msg", "send", "done-task", "Post-completion note"]);
-    assert!(output.contains("#1"), "Should accept message to completed task");
+    let output = wg_ok(
+        &wg_dir,
+        &["msg", "send", "done-task", "Post-completion note"],
+    );
+    assert!(
+        output.contains("#1"),
+        "Should accept message to completed task"
+    );
 
     // Verify message is stored
     let msgs = messages::list_messages(&wg_dir, "done-task").unwrap();
@@ -668,7 +793,11 @@ fn edge_agent_dies_before_reading_messages_persist_for_retry() {
 
     // New agent-2 spawns for retry: should see all messages
     let unread = messages::read_unread(&wg_dir, "die-1", "agent-2").unwrap();
-    assert_eq!(unread.len(), 2, "New agent should see all messages from failed agent");
+    assert_eq!(
+        unread.len(),
+        2,
+        "New agent should see all messages from failed agent"
+    );
     assert_eq!(unread[0].body, "Important context");
     assert_eq!(unread[1].body, "More context");
 }
@@ -689,7 +818,11 @@ fn edge_agent_dies_after_partial_read() {
 
     // agent-old dies. New agent-new spawns. Fresh cursor (0), sees everything.
     let unread = messages::read_unread(&wg_dir, "partial-1", "agent-new").unwrap();
-    assert_eq!(unread.len(), 3, "New agent gets all messages including those the old agent already read");
+    assert_eq!(
+        unread.len(),
+        3,
+        "New agent gets all messages including those the old agent already read"
+    );
 }
 
 #[test]
@@ -699,7 +832,14 @@ fn edge_multiple_messages_rapid_succession_all_delivered_in_order() {
 
     // Send 20 messages as fast as possible
     for i in 1..=20 {
-        messages::send_message(&wg_dir, "rapid-1", &format!("Rapid {}", i), "user", "normal").unwrap();
+        messages::send_message(
+            &wg_dir,
+            "rapid-1",
+            &format!("Rapid {}", i),
+            "user",
+            "normal",
+        )
+        .unwrap();
     }
 
     let msgs = messages::list_messages(&wg_dir, "rapid-1").unwrap();
@@ -747,7 +887,9 @@ fn edge_cli_msg_list_nonexistent_task() {
     let (_tmp, wg_dir) = init_wg();
     let combined = wg_fail(&wg_dir, &["msg", "list", "no-such-task"]);
     assert!(
-        combined.contains("not found") || combined.contains("Not found") || combined.contains("error"),
+        combined.contains("not found")
+            || combined.contains("Not found")
+            || combined.contains("error"),
         "Should error for nonexistent task, got: {}",
         combined
     );
@@ -758,7 +900,9 @@ fn edge_cli_msg_read_nonexistent_task() {
     let (_tmp, wg_dir) = init_wg();
     let combined = wg_fail(&wg_dir, &["msg", "read", "no-such-task", "--agent", "x"]);
     assert!(
-        combined.contains("not found") || combined.contains("Not found") || combined.contains("error"),
+        combined.contains("not found")
+            || combined.contains("Not found")
+            || combined.contains("error"),
         "Should error for nonexistent task, got: {}",
         combined
     );
@@ -815,7 +959,10 @@ fn coordinator_deliver_message_stores_and_notifies() {
     assert_eq!(msgs[0].sender, "coordinator");
 
     // Verify notification file
-    let notif = wg_dir.join("agents").join("coord-agent").join("pending_messages.txt");
+    let notif = wg_dir
+        .join("agents")
+        .join("coord-agent")
+        .join("pending_messages.txt");
     assert!(notif.exists());
     let content = fs::read_to_string(&notif).unwrap();
     assert!(content.contains("Dependency completed"));
@@ -852,8 +999,24 @@ fn coordinator_multiple_deliveries_across_tasks() {
     };
 
     // Deliver to both tasks
-    messages::deliver_message(&wg_dir, "multi-a", &agent_a, "For A", "coordinator", "normal").unwrap();
-    messages::deliver_message(&wg_dir, "multi-b", &agent_b, "For B", "coordinator", "urgent").unwrap();
+    messages::deliver_message(
+        &wg_dir,
+        "multi-a",
+        &agent_a,
+        "For A",
+        "coordinator",
+        "normal",
+    )
+    .unwrap();
+    messages::deliver_message(
+        &wg_dir,
+        "multi-b",
+        &agent_b,
+        "For B",
+        "coordinator",
+        "urgent",
+    )
+    .unwrap();
 
     // Verify separate queues
     let msgs_a = messages::list_messages(&wg_dir, "multi-a").unwrap();
@@ -864,8 +1027,14 @@ fn coordinator_multiple_deliveries_across_tasks() {
     assert_eq!(msgs_b[0].body, "For B");
 
     // Verify separate notification files
-    let notif_a = wg_dir.join("agents").join("agent-a").join("pending_messages.txt");
-    let notif_b = wg_dir.join("agents").join("agent-b").join("pending_messages.txt");
+    let notif_a = wg_dir
+        .join("agents")
+        .join("agent-a")
+        .join("pending_messages.txt");
+    let notif_b = wg_dir
+        .join("agents")
+        .join("agent-b")
+        .join("pending_messages.txt");
     assert!(notif_a.exists());
     assert!(notif_b.exists());
     assert!(fs::read_to_string(&notif_a).unwrap().contains("For A"));
@@ -889,7 +1058,12 @@ fn smoke_test_messaging_lifecycle() {
     // Step 2: Queue messages BEFORE the task is claimed
     wg_ok(
         &wg_dir,
-        &["msg", "send", "e2e-msg", "Pre-claim context: focus on edge cases"],
+        &[
+            "msg",
+            "send",
+            "e2e-msg",
+            "Pre-claim context: focus on edge cases",
+        ],
     );
     wg_ok(
         &wg_dir,
@@ -924,7 +1098,10 @@ fn smoke_test_messaging_lifecycle() {
     assert!(unread.is_empty(), "No new messages right after spawn");
 
     // Step 6: Send a mid-execution message (simulating user sending to running agent)
-    wg_ok(&wg_dir, &["msg", "send", "e2e-msg", "Mid-exec: also test logging"]);
+    wg_ok(
+        &wg_dir,
+        &["msg", "send", "e2e-msg", "Mid-exec: also test logging"],
+    );
 
     // Step 7: Agent polls and sees the new message
     let polled = messages::poll_messages(&wg_dir, "e2e-msg", "e2e-agent").unwrap();
@@ -962,7 +1139,14 @@ fn smoke_test_messaging_cli_only() {
     wg_ok(&wg_dir, &["msg", "send", "cli-smoke", "CLI message 1"]);
     wg_ok(
         &wg_dir,
-        &["msg", "send", "cli-smoke", "CLI message 2", "--priority", "urgent"],
+        &[
+            "msg",
+            "send",
+            "cli-smoke",
+            "CLI message 2",
+            "--priority",
+            "urgent",
+        ],
     );
 
     // List all messages
@@ -978,27 +1162,45 @@ fn smoke_test_messaging_cli_only() {
     assert_eq!(parsed.len(), 2);
 
     // Read (advances cursor for "cli-agent")
-    let read_output = wg_ok(&wg_dir, &["msg", "read", "cli-smoke", "--agent", "cli-agent"]);
+    let read_output = wg_ok(
+        &wg_dir,
+        &["msg", "read", "cli-smoke", "--agent", "cli-agent"],
+    );
     assert!(read_output.contains("CLI message 1"));
     assert!(read_output.contains("CLI message 2"));
 
     // Read again: no unread
-    let read_again = wg_ok(&wg_dir, &["msg", "read", "cli-smoke", "--agent", "cli-agent"]);
+    let read_again = wg_ok(
+        &wg_dir,
+        &["msg", "read", "cli-smoke", "--agent", "cli-agent"],
+    );
     assert!(read_again.contains("No unread"));
 
     // Send new message
     wg_ok(&wg_dir, &["msg", "send", "cli-smoke", "CLI message 3"]);
 
     // Poll shows new message
-    let poll_output = wg_cmd(&wg_dir, &["msg", "poll", "cli-smoke", "--agent", "cli-agent"]);
-    assert!(poll_output.status.success(), "Poll should succeed with new message");
+    let poll_output = wg_cmd(
+        &wg_dir,
+        &["msg", "poll", "cli-smoke", "--agent", "cli-agent"],
+    );
+    assert!(
+        poll_output.status.success(),
+        "Poll should succeed with new message"
+    );
     let stdout = String::from_utf8_lossy(&poll_output.stdout);
     assert!(stdout.contains("CLI message 3"));
 
     // Read the new message
-    let read_new = wg_ok(&wg_dir, &["msg", "read", "cli-smoke", "--agent", "cli-agent"]);
+    let read_new = wg_ok(
+        &wg_dir,
+        &["msg", "read", "cli-smoke", "--agent", "cli-agent"],
+    );
     assert!(read_new.contains("CLI message 3"));
-    assert!(!read_new.contains("CLI message 1"), "Should not re-show old messages");
+    assert!(
+        !read_new.contains("CLI message 1"),
+        "Should not re-show old messages"
+    );
 }
 
 /// Multi-task messaging smoke test.
@@ -1044,8 +1246,7 @@ fn prompt_context_includes_queued_messages_section() {
     };
     let vars = TemplateVars::from_task(&task, None, None);
     let mut ctx = ScopeContext::default();
-    ctx.queued_messages =
-        "## Queued Messages\n\n[2026-02-28] user: Focus on testing".to_string();
+    ctx.queued_messages = "## Queued Messages\n\n[2026-02-28] user: Focus on testing".to_string();
 
     let prompt = build_prompt(&vars, ContextScope::Task, &ctx);
     assert!(

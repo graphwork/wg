@@ -67,7 +67,9 @@ pub fn run(
         if let Some(new_description) = description {
             let old = task.description.clone();
             task.description = Some(new_description.to_string());
-            field_changes.push(serde_json::json!({"field": "description", "old": old, "new": new_description}));
+            field_changes.push(
+                serde_json::json!({"field": "description", "old": old, "new": new_description}),
+            );
             println!("Updated description");
             changed = true;
         }
@@ -208,7 +210,8 @@ pub fn run(
                 "internal" | "public" | "peer" => {
                     let old = task.visibility.clone();
                     task.visibility = vis.to_string();
-                    field_changes.push(serde_json::json!({"field": "visibility", "old": old, "new": vis}));
+                    field_changes
+                        .push(serde_json::json!({"field": "visibility", "old": old, "new": vis}));
                     println!("Updated visibility: {}", vis);
                     changed = true;
                 }
@@ -222,10 +225,13 @@ pub fn run(
         // Update context scope
         if let Some(scope) = context_scope {
             // Validate
-            scope.parse::<workgraph::context_scope::ContextScope>().map_err(|e| anyhow::anyhow!("{}", e))?;
+            scope
+                .parse::<workgraph::context_scope::ContextScope>()
+                .map_err(|e| anyhow::anyhow!("{}", e))?;
             let old = task.context_scope.clone();
             task.context_scope = Some(scope.to_string());
-            field_changes.push(serde_json::json!({"field": "context_scope", "old": old, "new": scope}));
+            field_changes
+                .push(serde_json::json!({"field": "context_scope", "old": old, "new": scope}));
             println!("Updated context_scope: {}", scope);
             changed = true;
         }
@@ -236,14 +242,12 @@ pub fn run(
                 "full" | "bare" => {
                     let old = task.exec_mode.clone();
                     task.exec_mode = Some(mode.to_string());
-                    field_changes.push(serde_json::json!({"field": "exec_mode", "old": old, "new": mode}));
+                    field_changes
+                        .push(serde_json::json!({"field": "exec_mode", "old": old, "new": mode}));
                     println!("Updated exec_mode: {}", mode);
                     changed = true;
                 }
-                _ => anyhow::bail!(
-                    "Invalid exec_mode '{}'. Valid values: full, bare",
-                    mode
-                ),
+                _ => anyhow::bail!("Invalid exec_mode '{}'. Valid values: full, bare", mode),
             }
         }
     } // task borrow released here
@@ -257,7 +261,10 @@ pub fn run(
             match assign_task.status {
                 workgraph::graph::Status::Open | workgraph::graph::Status::InProgress => {
                     assign_task.status = workgraph::graph::Status::Abandoned;
-                    println!("Abandoned assignment task '{}' (dependencies changed)", assign_task_id);
+                    println!(
+                        "Abandoned assignment task '{}' (dependencies changed)",
+                        assign_task_id
+                    );
                 }
                 _ => {}
             }

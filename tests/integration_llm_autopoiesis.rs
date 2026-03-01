@@ -292,10 +292,7 @@ Begin working on the task now.
             );
         }
 
-        eprintln!(
-            "test_agent_completes_task passed (model: {})",
-            test_model()
-        );
+        eprintln!("test_agent_completes_task passed (model: {})", test_model());
     }
 
     // -----------------------------------------------------------------------
@@ -520,11 +517,7 @@ Begin working on the task now.
         let writer_json = task_json(&wg_dir, "writer-task").unwrap();
         let artifacts = writer_json["artifacts"]
             .as_array()
-            .map(|a| {
-                a.iter()
-                    .filter_map(|v| v.as_str())
-                    .collect::<Vec<_>>()
-            })
+            .map(|a| a.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>())
             .unwrap_or_default();
         assert!(
             artifacts.iter().any(|a| a.contains("output.txt")),
@@ -555,10 +548,7 @@ Begin working on the task now.
             logs
         );
 
-        eprintln!(
-            "test_artifact_propagation passed (model: {})",
-            test_model()
-        );
+        eprintln!("test_artifact_propagation passed (model: {})", test_model());
     }
 
     // -----------------------------------------------------------------------
@@ -626,10 +616,7 @@ Begin working on the task now.
         let logs = task_log_entries(&wg_dir, "review-final");
         eprintln!("review-final logs: {:?}", logs);
 
-        eprintln!(
-            "test_cycle_converged passed (model: {})",
-            test_model()
-        );
+        eprintln!("test_cycle_converged passed (model: {})", test_model());
     }
 
     // -----------------------------------------------------------------------
@@ -659,11 +646,7 @@ Begin working on the task now.
         .unwrap();
         wg_ok(
             &wg_dir,
-            &[
-                "artifact",
-                "survey-a",
-                ".workgraph/artifacts/survey-a.md",
-            ],
+            &["artifact", "survey-a", ".workgraph/artifacts/survey-a.md"],
         );
 
         // Create survey-b with artifact
@@ -680,11 +663,7 @@ Begin working on the task now.
         .unwrap();
         wg_ok(
             &wg_dir,
-            &[
-                "artifact",
-                "survey-b",
-                ".workgraph/artifacts/survey-b.md",
-            ],
+            &["artifact", "survey-b", ".workgraph/artifacts/survey-b.md"],
         );
 
         // Create synthesis task depending on both surveys
@@ -715,8 +694,7 @@ Begin working on the task now.
         // List all tasks and verify new ones were created
         let list_output = wg_cmd(&wg_dir, &["list", "--json"]);
         let list_stdout = String::from_utf8_lossy(&list_output.stdout).to_string();
-        let tasks: Vec<serde_json::Value> =
-            serde_json::from_str(&list_stdout).unwrap_or_default();
+        let tasks: Vec<serde_json::Value> = serde_json::from_str(&list_stdout).unwrap_or_default();
 
         // Filter for tasks that have "synthesize" in their after array
         // (i.e., tasks created by the agent as downstream of synthesize)

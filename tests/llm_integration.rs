@@ -153,9 +153,27 @@ fn test_evaluate_with_haiku() {
     wg_ok(&wg_dir, &["agency", "init"]);
 
     // Create a task, mark it done with some output
-    wg_ok(&wg_dir, &["add", "Test evaluation task", "-d", "A simple test task for evaluation."]);
-    wg_ok(&wg_dir, &["log", "test-evaluation-task", "Started working on the task"]);
-    wg_ok(&wg_dir, &["log", "test-evaluation-task", "Completed the implementation"]);
+    wg_ok(
+        &wg_dir,
+        &[
+            "add",
+            "Test evaluation task",
+            "-d",
+            "A simple test task for evaluation.",
+        ],
+    );
+    wg_ok(
+        &wg_dir,
+        &["log", "test-evaluation-task", "Started working on the task"],
+    );
+    wg_ok(
+        &wg_dir,
+        &[
+            "log",
+            "test-evaluation-task",
+            "Completed the implementation",
+        ],
+    );
     wg_ok(&wg_dir, &["done", "test-evaluation-task"]);
 
     // Run evaluation with Haiku
@@ -219,14 +237,19 @@ fn test_evolve_dry_run_with_haiku() {
     wg_ok(&wg_dir, &["agency", "init"]);
 
     // Create and complete a task so there's data for evolution
-    wg_ok(&wg_dir, &["add", "Sample task", "-d", "A sample task for evolution testing."]);
+    wg_ok(
+        &wg_dir,
+        &[
+            "add",
+            "Sample task",
+            "-d",
+            "A sample task for evolution testing.",
+        ],
+    );
     wg_ok(&wg_dir, &["done", "sample-task"]);
 
     // Run evolve with dry-run and Haiku
-    let output = wg_cmd(
-        &wg_dir,
-        &["evolve", "--dry-run", "--model", HAIKU_MODEL],
-    );
+    let output = wg_cmd(&wg_dir, &["evolve", "--dry-run", "--model", HAIKU_MODEL]);
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -234,10 +257,7 @@ fn test_evolve_dry_run_with_haiku() {
     if output.status.success() {
         // Dry run should produce output but not apply changes
         // The output should contain some indication of proposed operations
-        assert!(
-            !stdout.is_empty(),
-            "evolve dry-run should produce output"
-        );
+        assert!(!stdout.is_empty(), "evolve dry-run should produce output");
     } else {
         // May fail if no evaluations exist yet or API not available
         eprintln!(
@@ -272,7 +292,15 @@ fn test_evaluate_dry_run_shows_prompt() {
     wg_ok(&wg_dir, &["agency", "init"]);
 
     // Create and complete a task
-    wg_ok(&wg_dir, &["add", "Dry run test", "-d", "Test task for dry run evaluation."]);
+    wg_ok(
+        &wg_dir,
+        &[
+            "add",
+            "Dry run test",
+            "-d",
+            "Test task for dry run evaluation.",
+        ],
+    );
     wg_ok(&wg_dir, &["done", "dry-run-test"]);
 
     // Run evaluate with --dry-run (no LLM call)
@@ -354,10 +382,7 @@ fn test_full_cycle_no_panics() {
     );
 
     // Step 6: Evolve dry-run (also should not panic)
-    let evolve_output = wg_cmd(
-        &wg_dir,
-        &["evolve", "--dry-run", "--model", HAIKU_MODEL],
-    );
+    let evolve_output = wg_cmd(&wg_dir, &["evolve", "--dry-run", "--model", HAIKU_MODEL]);
 
     let evolve_stderr = String::from_utf8_lossy(&evolve_output.stderr);
     assert!(
@@ -439,7 +464,10 @@ Respond with ONLY a JSON object:
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        eprintln!("claude CLI failed (may be expected without API key): {}", stderr);
+        eprintln!(
+            "claude CLI failed (may be expected without API key): {}",
+            stderr
+        );
         return;
     }
 

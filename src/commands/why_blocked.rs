@@ -134,9 +134,9 @@ fn is_task_ready(graph: &WorkGraph, task: &Task, dir: &Path) -> bool {
     if task.status != Status::Open {
         return false;
     }
-    task.after.iter().all(|blocker_id| {
-        workgraph::query::is_blocker_satisfied(blocker_id, graph, Some(dir))
-    })
+    task.after
+        .iter()
+        .all(|blocker_id| workgraph::query::is_blocker_satisfied(blocker_id, graph, Some(dir)))
 }
 
 fn count_blockers(node: &BlockingNode) -> usize {

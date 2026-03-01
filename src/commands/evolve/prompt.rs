@@ -4,7 +4,10 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 
-use workgraph::agency::{self, Evaluation, Role, TradeoffConfig, render_identity_prompt_rich, resolve_all_components, resolve_outcome};
+use workgraph::agency::{
+    self, Evaluation, Role, TradeoffConfig, render_identity_prompt_rich, resolve_all_components,
+    resolve_outcome,
+};
 use workgraph::config::Config;
 
 use super::strategy::Strategy;
@@ -20,28 +23,62 @@ pub(crate) fn build_performance_summary(
     out.push_str("## Performance Summary\n\n");
     let total_evals = evaluations.len();
     let overall_avg: Option<f64> = if total_evals > 0 {
-        let valid: Vec<f64> = evaluations.iter().map(|e| e.score).filter(|s: &f64| s.is_finite()).collect();
-        if valid.is_empty() { None } else { Some(valid.iter().sum::<f64>() / valid.len() as f64) }
-    } else { None };
+        let valid: Vec<f64> = evaluations
+            .iter()
+            .map(|e| e.score)
+            .filter(|s: &f64| s.is_finite())
+            .collect();
+        if valid.is_empty() {
+            None
+        } else {
+            Some(valid.iter().sum::<f64>() / valid.len() as f64)
+        }
+    } else {
+        None
+    };
     out.push_str(&format!("Total roles: {}\n", roles.len()));
     out.push_str(&format!("Total tradeoffs: {}\n", tradeoffs.len()));
     out.push_str(&format!("Total evaluations: {}\n", total_evals));
-    if let Some(avg) = overall_avg { out.push_str(&format!("Overall avg score: {:.3}\n", avg)); }
+    if let Some(avg) = overall_avg {
+        out.push_str(&format!("Overall avg score: {:.3}\n", avg));
+    }
     out.push('\n');
     out.push_str("### Role Performance\n\n");
     for role in roles {
-        let score_str = role.performance.avg_score.map(|s| format!("{:.3}", s)).unwrap_or_else(|| "-".to_string());
-        out.push_str(&format!("- **{}** (id: `{}`): {} evals, score: {}, gen: {}\n",
-            role.name, role.id, role.performance.task_count, score_str, role.lineage.generation));
+        let score_str = role
+            .performance
+            .avg_score
+            .map(|s| format!("{:.3}", s))
+            .unwrap_or_else(|| "-".to_string());
+        out.push_str(&format!(
+            "- **{}** (id: `{}`): {} evals, score: {}, gen: {}\n",
+            role.name, role.id, role.performance.task_count, score_str, role.lineage.generation
+        ));
         out.push_str(&format!("  description: {}\n", role.description));
         out.push_str(&format!("  outcome_id: {}\n", role.outcome_id));
-        if !role.component_ids.is_empty() { out.push_str(&format!("  component_ids: {}\n", role.component_ids.join(", "))); }
-        if !role.lineage.parent_ids.is_empty() { out.push_str(&format!("  parents: {}\n", role.lineage.parent_ids.join(", "))); }
-        let role_evals: Vec<&Evaluation> = evaluations.iter().filter(|e| e.role_id == role.id).collect();
+        if !role.component_ids.is_empty() {
+            out.push_str(&format!(
+                "  component_ids: {}\n",
+                role.component_ids.join(", ")
+            ));
+        }
+        if !role.lineage.parent_ids.is_empty() {
+            out.push_str(&format!(
+                "  parents: {}\n",
+                role.lineage.parent_ids.join(", ")
+            ));
+        }
+        let role_evals: Vec<&Evaluation> = evaluations
+            .iter()
+            .filter(|e| e.role_id == role.id)
+            .collect();
         if !role_evals.is_empty() {
             let dims = aggregate_dimensions(&role_evals);
             if !dims.is_empty() {
-                let dim_strs: Vec<String> = dims.iter().map(|(k, v)| format!("{}={:.2}", k, v)).collect();
+                let dim_strs: Vec<String> = dims
+                    .iter()
+                    .map(|(k, v)| format!("{}={:.2}", k, v))
+                    .collect();
                 out.push_str(&format!("  dimensions: {}\n", dim_strs.join(", ")));
             }
         }
@@ -49,28 +86,66 @@ pub(crate) fn build_performance_summary(
     }
     out.push_str("### Tradeoff Performance\n\n");
     for tradeoff in tradeoffs {
-        let score_str = tradeoff.performance.avg_score.map(|s| format!("{:.3}", s)).unwrap_or_else(|| "-".to_string());
-        out.push_str(&format!("- **{}** (id: `{}`): {} evals, score: {}, gen: {}\n",
-            tradeoff.name, tradeoff.id, tradeoff.performance.task_count, score_str, tradeoff.lineage.generation));
+        let score_str = tradeoff
+            .performance
+            .avg_score
+            .map(|s| format!("{:.3}", s))
+            .unwrap_or_else(|| "-".to_string());
+        out.push_str(&format!(
+            "- **{}** (id: `{}`): {} evals, score: {}, gen: {}\n",
+            tradeoff.name,
+            tradeoff.id,
+            tradeoff.performance.task_count,
+            score_str,
+            tradeoff.lineage.generation
+        ));
         out.push_str(&format!("  description: {}\n", tradeoff.description));
-        if !tradeoff.acceptable_tradeoffs.is_empty() { out.push_str(&format!("  acceptable_tradeoffs: {}\n", tradeoff.acceptable_tradeoffs.join("; "))); }
-        if !tradeoff.unacceptable_tradeoffs.is_empty() { out.push_str(&format!("  unacceptable_tradeoffs: {}\n", tradeoff.unacceptable_tradeoffs.join("; "))); }
-        if !tradeoff.lineage.parent_ids.is_empty() { out.push_str(&format!("  parents: {}\n", tradeoff.lineage.parent_ids.join(", "))); }
+        if !tradeoff.acceptable_tradeoffs.is_empty() {
+            out.push_str(&format!(
+                "  acceptable_tradeoffs: {}\n",
+                tradeoff.acceptable_tradeoffs.join("; ")
+            ));
+        }
+        if !tradeoff.unacceptable_tradeoffs.is_empty() {
+            out.push_str(&format!(
+                "  unacceptable_tradeoffs: {}\n",
+                tradeoff.unacceptable_tradeoffs.join("; ")
+            ));
+        }
+        if !tradeoff.lineage.parent_ids.is_empty() {
+            out.push_str(&format!(
+                "  parents: {}\n",
+                tradeoff.lineage.parent_ids.join(", ")
+            ));
+        }
         out.push('\n');
     }
     let mut synergy: HashMap<(String, String), Vec<f64>> = HashMap::new();
-    for eval in evaluations { synergy.entry((eval.role_id.clone(), eval.tradeoff_id.clone())).or_default().push(eval.score); }
+    for eval in evaluations {
+        synergy
+            .entry((eval.role_id.clone(), eval.tradeoff_id.clone()))
+            .or_default()
+            .push(eval.score);
+    }
     if !synergy.is_empty() {
         out.push_str("### Synergy Matrix (Role x Tradeoff)\n\n");
         let mut pairs: Vec<_> = synergy.iter().collect();
         pairs.sort_by(|a, b| {
             let avg_a = a.1.iter().sum::<f64>() / a.1.len() as f64;
             let avg_b = b.1.iter().sum::<f64>() / b.1.len() as f64;
-            avg_b.partial_cmp(&avg_a).unwrap_or(std::cmp::Ordering::Equal)
+            avg_b
+                .partial_cmp(&avg_a)
+                .unwrap_or(std::cmp::Ordering::Equal)
         });
         for ((role_id, mot_id), scores) in &pairs {
             let avg = scores.iter().sum::<f64>() / scores.len() as f64;
-            out.push_str(&format!("- ({}, {}): avg={:.3}, count={}\n", role_id, mot_id, avg, scores.len()));
+            out.push_str(&format!(
+                "- ({}, {}): avg={:.3}, count={}\n",
+                role_id,
+                mot_id,
+                avg,
+                scores.len()
+            ));
         }
         out.push('\n');
     }
@@ -94,7 +169,10 @@ fn aggregate_dimensions(evals: &[&Evaluation]) -> Vec<(String, f64)> {
     dims
 }
 
-pub(crate) fn load_evolver_skills(skills_dir: &Path, strategy: Strategy) -> Result<Vec<(String, String)>> {
+pub(crate) fn load_evolver_skills(
+    skills_dir: &Path,
+    strategy: Strategy,
+) -> Result<Vec<(String, String)>> {
     let mut docs = Vec::new();
 
     if !skills_dir.exists() {
@@ -170,14 +248,20 @@ pub(crate) fn build_evolver_prompt(
         let agent_path = agents_dir.join(format!("{}.yaml", agent_hash));
         if let Ok(agent) = agency::load_agent(&agent_path)
             && let Some(role) = roles.iter().find(|r| r.id == agent.role_id)
-                && let Some(tradeoff) = tradeoffs.iter().find(|m| m.id == agent.tradeoff_id) {
-                    // Use the project root (parent of agency dir) for skill resolution
-                    let workgraph_root = agency_dir.parent().unwrap_or(agency_dir);
-                    let resolved_skills = resolve_all_components(role, workgraph_root, agency_dir);
-                    let outcome = resolve_outcome(&role.outcome_id, agency_dir);
-                    out.push_str(&render_identity_prompt_rich(role, tradeoff, &resolved_skills, outcome.as_ref()));
-                    out.push_str("\n\n");
-                }
+            && let Some(tradeoff) = tradeoffs.iter().find(|m| m.id == agent.tradeoff_id)
+        {
+            // Use the project root (parent of agency dir) for skill resolution
+            let workgraph_root = agency_dir.parent().unwrap_or(agency_dir);
+            let resolved_skills = resolve_all_components(role, workgraph_root, agency_dir);
+            let outcome = resolve_outcome(&role.outcome_id, agency_dir);
+            out.push_str(&render_identity_prompt_rich(
+                role,
+                tradeoff,
+                &resolved_skills,
+                outcome.as_ref(),
+            ));
+            out.push_str("\n\n");
+        }
     }
 
     // Meta-agent assignments (assigner, evaluator, evolver)
@@ -224,7 +308,13 @@ pub(crate) fn build_evolver_prompt(
                         .unwrap_or_default();
                     out.push_str(&format!(
                         "- **{}**: agent `{}`, role `{}` ({}), tradeoff `{}` ({}){}\n",
-                        label, hash, agent.role_id, role_name, agent.tradeoff_id, mot_name, perf_str,
+                        label,
+                        hash,
+                        agent.role_id,
+                        role_name,
+                        agent.tradeoff_id,
+                        mot_name,
+                        perf_str,
                     ));
                 } else {
                     out.push_str(&format!(

@@ -6,7 +6,7 @@ use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-use workgraph::agency::{load_all_evaluations_or_warn, Evaluation};
+use workgraph::agency::{Evaluation, load_all_evaluations_or_warn};
 use workgraph::config::Config;
 use workgraph::graph::{Status, Task};
 use workgraph::parser::save_graph;
@@ -64,9 +64,10 @@ pub fn run(dir: &Path, opts: &ReplayOptions, json: bool) -> Result<()> {
     for task in graph.tasks() {
         // If subgraph filter is active, skip tasks outside the subgraph
         if let Some(ref sg) = subgraph_ids
-            && !sg.contains(&task.id) {
-                continue;
-            }
+            && !sg.contains(&task.id)
+        {
+            continue;
+        }
 
         if !opts.tasks.is_empty() {
             // Explicit task list: only seed listed tasks
@@ -115,10 +116,11 @@ pub fn run(dir: &Path, opts: &ReplayOptions, json: bool) -> Result<()> {
         for task_id in &all_to_reset {
             if let Some(task) = graph.get_task(task_id)
                 && task.status == Status::Done
-                    && let Some(&score) = score_map.get(task_id)
-                        && score >= keep_done_threshold {
-                            to_keep.push(task_id.clone());
-                        }
+                && let Some(&score) = score_map.get(task_id)
+                && score >= keep_done_threshold
+            {
+                to_keep.push(task_id.clone());
+            }
         }
         for id in to_keep {
             all_to_reset.remove(&id);
@@ -275,16 +277,11 @@ fn reset_task(task: &mut Task) {
 }
 
 /// Build a reverse dependency index: task_id -> list of tasks that depend on it.
-fn build_reverse_index(
-    graph: &workgraph::graph::WorkGraph,
-) -> HashMap<String, Vec<String>> {
+fn build_reverse_index(graph: &workgraph::graph::WorkGraph) -> HashMap<String, Vec<String>> {
     let mut index: HashMap<String, Vec<String>> = HashMap::new();
     for task in graph.tasks() {
         for dep in &task.after {
-            index
-                .entry(dep.clone())
-                .or_default()
-                .push(task.id.clone());
+            index.entry(dep.clone()).or_default().push(task.id.clone());
         }
     }
     index
@@ -304,10 +301,7 @@ fn build_score_map(evaluations: &[Evaluation]) -> HashMap<String, f64> {
 
 /// Collect all task IDs in the subgraph rooted at `root_id` (including root).
 /// Follows `blocks` edges forward (root blocks children).
-fn collect_subgraph(
-    graph: &workgraph::graph::WorkGraph,
-    root_id: &str,
-) -> Result<HashSet<String>> {
+fn collect_subgraph(graph: &workgraph::graph::WorkGraph, root_id: &str) -> Result<HashSet<String>> {
     let _ = graph
         .get_task_or_err(root_id)
         .context("Subgraph root task not found")?;
@@ -316,11 +310,12 @@ fn collect_subgraph(
     let mut queue = vec![root_id.to_string()];
     while let Some(id) = queue.pop() {
         if result.insert(id.clone())
-            && let Some(task) = graph.get_task(&id) {
-                for blocked in &task.before {
-                    queue.push(blocked.clone());
-                }
+            && let Some(task) = graph.get_task(&id)
+        {
+            for blocked in &task.before {
+                queue.push(blocked.clone());
             }
+        }
     }
     Ok(result)
 }
@@ -425,7 +420,10 @@ mod tests {
         let (graph, _) = super::super::load_workgraph(&dir).unwrap();
         // t1 was explicitly listed => reset
         assert_eq!(graph.get_task("t1").unwrap().status, Status::Open);
-        assert_eq!(graph.get_task("t1").unwrap().model, Some("sonnet".to_string()));
+        assert_eq!(
+            graph.get_task("t1").unwrap().model,
+            Some("sonnet".to_string())
+        );
         // t2 and t3 are transitive dependents of t1 => also reset
         assert_eq!(graph.get_task("t2").unwrap().status, Status::Open);
         assert_eq!(graph.get_task("t3").unwrap().status, Status::Open);

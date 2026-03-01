@@ -120,7 +120,6 @@ pub struct PerformanceRecord {
     pub evaluations: Vec<EvaluationRef>,
 }
 
-
 /// Lineage metadata for tracking evolutionary history.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Lineage {

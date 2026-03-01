@@ -3,11 +3,11 @@ use std::path::PathBuf;
 use std::time::{Instant, SystemTime};
 
 use anyhow::Result;
-use fuzzy_matcher::skim::SkimMatcherV2;
 use fuzzy_matcher::FuzzyMatcher;
+use fuzzy_matcher::skim::SkimMatcherV2;
 
 use crate::commands::viz::{VizOptions, VizOutput};
-use workgraph::graph::{parse_token_usage_live, Status, TokenUsage};
+use workgraph::graph::{Status, TokenUsage, parse_token_usage_live};
 use workgraph::parser::load_graph;
 use workgraph::{AgentRegistry, AgentStatus};
 
@@ -153,7 +153,11 @@ impl VizApp {
     ///
     /// `mouse_override`: `Some(false)` forces mouse off (--no-mouse),
     /// `None` means auto-detect (disable in tmux split panes).
-    pub fn new(workgraph_dir: PathBuf, viz_options: VizOptions, mouse_override: Option<bool>) -> Self {
+    pub fn new(
+        workgraph_dir: PathBuf,
+        viz_options: VizOptions,
+        mouse_override: Option<bool>,
+    ) -> Self {
         let mouse_enabled = match mouse_override {
             Some(v) => v,
             None => !detect_tmux_split(),
@@ -214,10 +218,13 @@ impl VizApp {
     pub fn load_viz(&mut self) {
         match self.generate_viz() {
             Ok(viz_output) => {
-                self.lines = viz_output.text.lines()
+                self.lines = viz_output
+                    .text
+                    .lines()
                     .map(String::from)
                     .filter(|l| {
-                        let stripped = String::from_utf8(strip_ansi_escapes::strip(l.as_bytes())).unwrap_or_default();
+                        let stripped = String::from_utf8(strip_ansi_escapes::strip(l.as_bytes()))
+                            .unwrap_or_default();
                         !stripped.trim_start().starts_with("Legend:")
                     })
                     .collect();
@@ -225,7 +232,8 @@ impl VizApp {
                     .lines
                     .iter()
                     .map(|l| {
-                        String::from_utf8(strip_ansi_escapes::strip(l.as_bytes())).unwrap_or_default()
+                        String::from_utf8(strip_ansi_escapes::strip(l.as_bytes()))
+                            .unwrap_or_default()
                     })
                     .collect();
                 self.search_lines = self
@@ -233,8 +241,7 @@ impl VizApp {
                     .iter()
                     .map(|l| sanitize_for_search(l))
                     .collect();
-                self.max_line_width =
-                    self.plain_lines.iter().map(|l| l.len()).max().unwrap_or(0);
+                self.max_line_width = self.plain_lines.iter().map(|l| l.len()).max().unwrap_or(0);
 
                 // Store graph metadata for interactive edge tracing.
                 self.node_line_map = viz_output.node_line_map;
@@ -360,6 +367,35 @@ impl VizApp {
         self.scroll_to_selected_task();
     }
 
+    /// Move task selection up by `count` tasks (for PgUp).
+    pub fn select_prev_task_by(&mut self, count: usize) {
+        if self.task_order.is_empty() {
+            return;
+        }
+        let idx = match self.selected_task_idx {
+            Some(i) => i.saturating_sub(count),
+            None => 0,
+        };
+        self.selected_task_idx = Some(idx);
+        self.recompute_trace();
+        self.scroll_to_selected_task();
+    }
+
+    /// Move task selection down by `count` tasks (for PgDn).
+    pub fn select_next_task_by(&mut self, count: usize) {
+        if self.task_order.is_empty() {
+            return;
+        }
+        let last = self.task_order.len() - 1;
+        let idx = match self.selected_task_idx {
+            Some(i) => (i + count).min(last),
+            None => count.min(last),
+        };
+        self.selected_task_idx = Some(idx);
+        self.recompute_trace();
+        self.scroll_to_selected_task();
+    }
+
     /// Select the first task in the viz order.
     pub fn select_first_task(&mut self) {
         if self.task_order.is_empty() {
@@ -445,14 +481,13 @@ impl VizApp {
             Some(&line) => line,
             None => return,
         };
-        if let Some(visible_pos) = self.original_to_visible(orig_line) {
-            if visible_pos < self.scroll.offset_y
-                || visible_pos >= self.scroll.offset_y + self.scroll.viewport_height
-            {
-                let half = self.scroll.viewport_height / 2;
-                self.scroll.offset_y = visible_pos.saturating_sub(half);
-                self.scroll.clamp();
-            }
+        if let Some(visible_pos) = self.original_to_visible(orig_line)
+            && (visible_pos < self.scroll.offset_y
+                || visible_pos >= self.scroll.offset_y + self.scroll.viewport_height)
+        {
+            let half = self.scroll.viewport_height / 2;
+            self.scroll.offset_y = visible_pos.saturating_sub(half);
+            self.scroll.clamp();
         }
     }
 
@@ -523,6 +558,7 @@ impl VizApp {
 
     /// Accept search and jump to the current match with a transient highlight.
     /// Called when the user presses Enter on a search match.
+    /// Also selects the nearest task so search and selection are unified.
     pub fn accept_search_and_jump(&mut self) {
         // Capture the current match's original line index before clearing filter.
         let target_line = self.current_match_line();
@@ -532,6 +568,10 @@ impl VizApp {
             // Set the transient highlight target.
             self.jump_target = Some((orig_line, Instant::now()));
 
+            // Select the task at or nearest to the search match and enable trace.
+            self.trace_visible = true;
+            self.select_task_nearest_line(orig_line);
+
             // Scroll to center on the target line in the full (unfiltered) view.
             let half = self.scroll.viewport_height / 2;
             self.scroll.offset_y = orig_line.saturating_sub(half);
@@ -539,7 +579,7 @@ impl VizApp {
         }
     }
 
-    /// Jump to the next search match.
+    /// Jump to the next search match. Also updates the selected task.
     pub fn next_match(&mut self) {
         if self.fuzzy_matches.is_empty() {
             return;
@@ -549,10 +589,13 @@ impl VizApp {
             None => 0,
         };
         self.current_match = Some(next);
+        if let Some(orig_line) = self.current_match_line() {
+            self.select_task_nearest_line(orig_line);
+        }
         self.scroll_to_current_match();
     }
 
-    /// Jump to the previous search match.
+    /// Jump to the previous search match. Also updates the selected task.
     pub fn prev_match(&mut self) {
         if self.fuzzy_matches.is_empty() {
             return;
@@ -563,6 +606,9 @@ impl VizApp {
             None => self.fuzzy_matches.len() - 1,
         };
         self.current_match = Some(prev);
+        if let Some(orig_line) = self.current_match_line() {
+            self.select_task_nearest_line(orig_line);
+        }
         self.scroll_to_current_match();
     }
 
@@ -631,11 +677,11 @@ impl VizApp {
             if let Some(visible_pos) = self.original_to_visible(orig_line)
                 && (visible_pos < self.scroll.offset_y
                     || visible_pos >= self.scroll.offset_y + self.scroll.viewport_height)
-                {
-                    let half = self.scroll.viewport_height / 2;
-                    self.scroll.offset_y = visible_pos.saturating_sub(half);
-                    self.scroll.clamp();
-                }
+            {
+                let half = self.scroll.viewport_height / 2;
+                self.scroll.offset_y = visible_pos.saturating_sub(half);
+                self.scroll.clamp();
+            }
         }
     }
 
@@ -649,7 +695,9 @@ impl VizApp {
         // Re-run the fuzzy match with the current query.
         self.fuzzy_matches.clear();
         for (i, search_line) in self.search_lines.iter().enumerate() {
-            if let Some((score, indices)) = self.matcher.fuzzy_indices(search_line, &self.search_input) {
+            if let Some((score, indices)) =
+                self.matcher.fuzzy_indices(search_line, &self.search_input)
+            {
                 let char_positions = byte_positions_to_char_positions(search_line, &indices);
                 self.fuzzy_matches.push(FuzzyLineMatch {
                     line_idx: i,
@@ -733,7 +781,9 @@ impl VizApp {
 
             // Use stored token_usage if available, otherwise check live agent data
             let usage = task.token_usage.as_ref().or_else(|| {
-                task.assigned.as_ref().and_then(|aid| live_agent_usage.get(aid))
+                task.assigned
+                    .as_ref()
+                    .and_then(|aid| live_agent_usage.get(aid))
             });
 
             if let Some(usage) = usage {
@@ -812,10 +862,11 @@ impl VizApp {
             let orig_idx = self.visible_to_original(visible_idx);
             if let Some(plain) = self.plain_lines.get(orig_idx)
                 && let Some(task_id) = extract_task_id(plain)
-                    && seen.insert(task_id.clone())
-                        && let Some(task_usage) = self.task_token_map.get(&task_id) {
-                            usage.accumulate(task_usage);
-                        }
+                && seen.insert(task_id.clone())
+                && let Some(task_usage) = self.task_token_map.get(&task_id)
+            {
+                usage.accumulate(task_usage);
+            }
         }
         usage
     }
@@ -826,8 +877,75 @@ impl VizApp {
     }
 
     /// Toggle edge trace highlighting on/off.
+    /// When toggling ON, snap selection to the nearest visible task in the viewport.
     pub fn toggle_trace(&mut self) {
         self.trace_visible = !self.trace_visible;
+        if self.trace_visible {
+            self.select_nearest_visible_task();
+            self.recompute_trace();
+        }
+    }
+
+    /// Select the task whose line is nearest to the center of the current viewport.
+    /// Used when toggling trace back on after scrolling.
+    fn select_nearest_visible_task(&mut self) {
+        if self.task_order.is_empty() {
+            return;
+        }
+        let viewport_center = self.scroll.offset_y + self.scroll.viewport_height / 2;
+        let mut best_idx: Option<usize> = None;
+        let mut best_dist: usize = usize::MAX;
+        for (idx, task_id) in self.task_order.iter().enumerate() {
+            if let Some(&orig_line) = self.node_line_map.get(task_id) {
+                let visible_pos = match self.original_to_visible(orig_line) {
+                    Some(v) => v,
+                    None => continue,
+                };
+                let dist = visible_pos.abs_diff(viewport_center);
+                if dist < best_dist {
+                    best_dist = dist;
+                    best_idx = Some(idx);
+                }
+            }
+        }
+        if let Some(idx) = best_idx {
+            self.selected_task_idx = Some(idx);
+        }
+    }
+
+    /// Select the task at or nearest to the given line index.
+    /// Used to unify search results with the selection system.
+    fn select_task_nearest_line(&mut self, orig_line: usize) {
+        if self.task_order.is_empty() {
+            return;
+        }
+        // Try exact match first.
+        let exact = self
+            .node_line_map
+            .iter()
+            .find(|&(_, line)| *line == orig_line)
+            .and_then(|(id, _)| self.task_order.iter().position(|tid| tid == id));
+        if let Some(idx) = exact {
+            self.selected_task_idx = Some(idx);
+            self.recompute_trace();
+            return;
+        }
+        // Otherwise find the nearest task by line distance.
+        let mut best_idx: Option<usize> = None;
+        let mut best_dist: usize = usize::MAX;
+        for (idx, task_id) in self.task_order.iter().enumerate() {
+            if let Some(&task_line) = self.node_line_map.get(task_id) {
+                let dist = task_line.abs_diff(orig_line);
+                if dist < best_dist {
+                    best_dist = dist;
+                    best_idx = Some(idx);
+                }
+            }
+        }
+        if let Some(idx) = best_idx {
+            self.selected_task_idx = Some(idx);
+            self.recompute_trace();
+        }
     }
 
     /// Construct a VizApp from pre-built VizOutput for unit testing.
@@ -835,13 +953,16 @@ impl VizApp {
     #[cfg(test)]
     pub(crate) fn from_viz_output_for_test(viz: &crate::commands::viz::VizOutput) -> Self {
         let lines: Vec<String> = viz.text.lines().map(String::from).collect();
-        let plain_lines: Vec<String> = lines.iter().map(|l| {
-            String::from_utf8(strip_ansi_escapes::strip(l.as_bytes())).unwrap_or_default()
-        }).collect();
+        let plain_lines: Vec<String> = lines
+            .iter()
+            .map(|l| String::from_utf8(strip_ansi_escapes::strip(l.as_bytes())).unwrap_or_default())
+            .collect();
         let search_lines = plain_lines.iter().map(|l| sanitize_for_search(l)).collect();
         let max_line_width = plain_lines.iter().map(|l| l.len()).max().unwrap_or(0);
 
-        let mut task_order: Vec<(String, usize)> = viz.node_line_map.iter()
+        let mut task_order: Vec<(String, usize)> = viz
+            .node_line_map
+            .iter()
             .map(|(id, &line)| (id.clone(), line))
             .collect();
         task_order.sort_by_key(|(_, line)| *line);
@@ -938,7 +1059,7 @@ fn detect_tmux_split() -> bool {
     };
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let parts: Vec<&str> = stdout.trim().split_whitespace().collect();
+    let parts: Vec<&str> = stdout.split_whitespace().collect();
     if parts.len() != 2 {
         return false;
     }
@@ -1028,13 +1149,14 @@ fn compute_filtered_indices(
                     continue;
                 }
                 if let Some(indent) = line_indent_level(&plain_lines[ancestor_idx])
-                    && indent < need_below {
-                        visible.insert(ancestor_idx);
-                        need_below = indent;
-                        if indent == 0 {
-                            break; // reached root
-                        }
+                    && indent < need_below
+                {
+                    visible.insert(ancestor_idx);
+                    need_below = indent;
+                    if indent == 0 {
+                        break; // reached root
                     }
+                }
             }
         }
 
@@ -1062,8 +1184,8 @@ fn extract_task_id(plain: &str) -> Option<String> {
     // Task IDs consist of [a-zA-Z0-9_-].
     let trimmed = plain.trim_start();
     // Strip leading tree connectors (box-drawing + arrows + spaces)
-    let after_connectors: &str = trimmed
-        .trim_start_matches(|c: char| is_box_drawing(c) || c == ' ');
+    let after_connectors: &str =
+        trimmed.trim_start_matches(|c: char| is_box_drawing(c) || c == ' ');
     if after_connectors.is_empty() {
         return None;
     }

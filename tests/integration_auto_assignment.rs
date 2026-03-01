@@ -105,9 +105,9 @@ fn setup_agency(dir: &Path) -> (String, String, String) {
         trust_level: Default::default(),
         contact: None,
         executor: "claude".to_string(),
-            attractor_weight: 0.5,
-            deployment_history: vec![],
-            staleness_flags: vec![],
+        attractor_weight: 0.5,
+        deployment_history: vec![],
+        staleness_flags: vec![],
     };
     agency::save_agent(&agent, &agency_dir.join("cache/agents")).unwrap();
 
@@ -150,9 +150,9 @@ fn setup_second_agent(dir: &Path) -> String {
         trust_level: Default::default(),
         contact: None,
         executor: "claude".to_string(),
-            attractor_weight: 0.5,
-            deployment_history: vec![],
-            staleness_flags: vec![],
+        attractor_weight: 0.5,
+        deployment_history: vec![],
+        staleness_flags: vec![],
     };
     agency::save_agent(&agent, &agency_dir.join("cache/agents")).unwrap();
 
@@ -789,9 +789,9 @@ fn test_assigned_agent_appears_in_rendered_prompt() {
         trust_level: Default::default(),
         contact: None,
         executor: "claude".to_string(),
-            attractor_weight: 0.5,
-            deployment_history: vec![],
-            staleness_flags: vec![],
+        attractor_weight: 0.5,
+        deployment_history: vec![],
+        staleness_flags: vec![],
     };
     agency::save_agent(&agent, &agency_dir.join("cache/agents")).unwrap();
 

@@ -9,9 +9,8 @@ use std::path::Path;
 use std::process::Command;
 
 use workgraph::agency::{
-    self, AgencyStore, LocalStore, StoreCounts,
-    load_role, load_tradeoff, render_identity_prompt_rich,
-    resolve_all_components, resolve_outcome,
+    self, AgencyStore, LocalStore, StoreCounts, load_role, load_tradeoff,
+    render_identity_prompt_rich, resolve_all_components, resolve_outcome,
 };
 use workgraph::config::Config;
 
@@ -28,21 +27,36 @@ fn build_creator_prompt(
     let mut existing_components = Vec::new();
     if let Ok(comps) = store.load_components() {
         for c in &comps {
-            existing_components.push(format!("  - {} ({}): {}", c.name, agency::short_hash(&c.id), c.description));
+            existing_components.push(format!(
+                "  - {} ({}): {}",
+                c.name,
+                agency::short_hash(&c.id),
+                c.description
+            ));
         }
     }
 
     let mut existing_outcomes = Vec::new();
     if let Ok(outs) = store.load_outcomes() {
         for o in &outs {
-            existing_outcomes.push(format!("  - {} ({}): {}", o.name, agency::short_hash(&o.id), o.description));
+            existing_outcomes.push(format!(
+                "  - {} ({}): {}",
+                o.name,
+                agency::short_hash(&o.id),
+                o.description
+            ));
         }
     }
 
     let mut existing_tradeoffs = Vec::new();
     if let Ok(tradeoffs) = store.load_tradeoffs() {
         for t in &tradeoffs {
-            existing_tradeoffs.push(format!("  - {} ({}): {}", t.name, agency::short_hash(&t.id), t.description));
+            existing_tradeoffs.push(format!(
+                "  - {} ({}): {}",
+                t.name,
+                agency::short_hash(&t.id),
+                t.description
+            ));
         }
     }
 
@@ -71,11 +85,17 @@ fn build_creator_prompt(
             let role_path = roles_dir.join(format!("{}.yaml", agent.role_id));
             let tradeoffs_dir = agency_dir.join("primitives/tradeoffs");
             let tradeoff_path = tradeoffs_dir.join(format!("{}.yaml", agent.tradeoff_id));
-            if let (Ok(role), Ok(tradeoff)) = (load_role(&role_path), load_tradeoff(&tradeoff_path)) {
+            if let (Ok(role), Ok(tradeoff)) = (load_role(&role_path), load_tradeoff(&tradeoff_path))
+            {
                 let workgraph_root = agency_dir.parent().unwrap_or(agency_dir);
                 let resolved_skills = resolve_all_components(&role, workgraph_root, agency_dir);
                 let outcome = resolve_outcome(&role.outcome_id, agency_dir);
-                let identity = render_identity_prompt_rich(&role, &tradeoff, &resolved_skills, outcome.as_ref());
+                let identity = render_identity_prompt_rich(
+                    &role,
+                    &tradeoff,
+                    &resolved_skills,
+                    outcome.as_ref(),
+                );
                 format!(
                     "{}\n\nYour job is to expand the primitive store by discovering new role \
                      components, desired outcomes, and tradeoff configurations that are implied \
@@ -85,17 +105,20 @@ fn build_creator_prompt(
             } else {
                 "You are the Agency Creator agent. Your job is to expand the primitive store by\n\
                  discovering new role components, desired outcomes, and tradeoff configurations\n\
-                 that are implied by the project but not yet captured in the agency.".to_string()
+                 that are implied by the project but not yet captured in the agency."
+                    .to_string()
             }
         } else {
             "You are the Agency Creator agent. Your job is to expand the primitive store by\n\
              discovering new role components, desired outcomes, and tradeoff configurations\n\
-             that are implied by the project but not yet captured in the agency.".to_string()
+             that are implied by the project but not yet captured in the agency."
+                .to_string()
         }
     } else {
         "You are the Agency Creator agent. Your job is to expand the primitive store by\n\
          discovering new role components, desired outcomes, and tradeoff configurations\n\
-         that are implied by the project but not yet captured in the agency.".to_string()
+         that are implied by the project but not yet captured in the agency."
+            .to_string()
     };
 
     format!(
@@ -169,26 +192,33 @@ Rules:
 
 /// Gather project context from standard files (CLAUDE.md, README, docs/).
 fn gather_project_context(workgraph_dir: &Path) -> String {
-    let project_root = workgraph_dir
-        .parent()
-        .unwrap_or(workgraph_dir);
+    let project_root = workgraph_dir.parent().unwrap_or(workgraph_dir);
 
     let mut context_parts = Vec::new();
 
     // Try CLAUDE.md
     let claude_md = project_root.join("CLAUDE.md");
     if claude_md.exists()
-        && let Ok(content) = std::fs::read_to_string(&claude_md) {
-            let truncated = if content.len() > 3000 { &content[..3000] } else { &content };
-            context_parts.push(format!("### CLAUDE.md\n{}", truncated));
-        }
+        && let Ok(content) = std::fs::read_to_string(&claude_md)
+    {
+        let truncated = if content.len() > 3000 {
+            &content[..3000]
+        } else {
+            &content
+        };
+        context_parts.push(format!("### CLAUDE.md\n{}", truncated));
+    }
 
     // Try README.md or README
     for name in &["README.md", "README", "README.txt"] {
         let readme = project_root.join(name);
         if readme.exists() {
             if let Ok(content) = std::fs::read_to_string(&readme) {
-                let truncated = if content.len() > 3000 { &content[..3000] } else { &content };
+                let truncated = if content.len() > 3000 {
+                    &content[..3000]
+                } else {
+                    &content
+                };
                 context_parts.push(format!("### {}\n{}", name, truncated));
             }
             break;
@@ -198,16 +228,20 @@ fn gather_project_context(workgraph_dir: &Path) -> String {
     // Try Cargo.toml or package.json for project description
     let cargo_toml = project_root.join("Cargo.toml");
     if cargo_toml.exists()
-        && let Ok(content) = std::fs::read_to_string(&cargo_toml) {
-            // Just the [package] section
-            if let Some(pkg_start) = content.find("[package]") {
-                let section_end = content[pkg_start + 9..]
-                    .find("\n[")
-                    .map(|i| pkg_start + 9 + i)
-                    .unwrap_or(content.len().min(pkg_start + 500));
-                context_parts.push(format!("### Cargo.toml [package]\n{}", &content[pkg_start..section_end]));
-            }
+        && let Ok(content) = std::fs::read_to_string(&cargo_toml)
+    {
+        // Just the [package] section
+        if let Some(pkg_start) = content.find("[package]") {
+            let section_end = content[pkg_start + 9..]
+                .find("\n[")
+                .map(|i| pkg_start + 9 + i)
+                .unwrap_or(content.len().min(pkg_start + 500));
+            context_parts.push(format!(
+                "### Cargo.toml [package]\n{}",
+                &content[pkg_start..section_end]
+            ));
         }
+    }
 
     if context_parts.is_empty() {
         "No project context files found.".to_string()
@@ -235,7 +269,9 @@ struct ProposedComponent {
     category: String,
 }
 
-fn default_category() -> String { "skill".to_string() }
+fn default_category() -> String {
+    "skill".to_string()
+}
 
 #[derive(Debug, serde::Deserialize)]
 struct ProposedOutcome {
@@ -296,12 +332,7 @@ fn parse_creator_output(raw: &str) -> Result<CreatorOutput> {
 }
 
 /// Run `wg agency create` — invoke the creator agent.
-pub fn run(
-    dir: &Path,
-    model: Option<&str>,
-    dry_run: bool,
-    json: bool,
-) -> Result<()> {
+pub fn run(dir: &Path, model: Option<&str>, dry_run: bool, json: bool) -> Result<()> {
     let agency_dir = dir.join("agency");
     let store = LocalStore::new(&agency_dir);
     let counts = store.entity_counts();
@@ -367,10 +398,7 @@ pub fn run(
     }
 
     // Spawn the creator agent
-    eprintln!(
-        "Running creator agent (model: {})...",
-        model
-    );
+    eprintln!("Running creator agent (model: {})...", model);
 
     let output = Command::new("claude")
         .env_remove("CLAUDE_CODE_ENTRYPOINT")
@@ -395,8 +423,8 @@ pub fn run(
     let raw_output = String::from_utf8_lossy(&output.stdout);
 
     // Parse the structured output
-    let creator_output = parse_creator_output(&raw_output)
-        .context("Failed to parse creator output")?;
+    let creator_output =
+        parse_creator_output(&raw_output).context("Failed to parse creator output")?;
 
     let total_proposed = creator_output.components.len()
         + creator_output.outcomes.len()
@@ -404,7 +432,10 @@ pub fn run(
 
     if total_proposed == 0 {
         if json {
-            println!("{}", serde_json::json!({"created": 0, "message": "No new primitives proposed"}));
+            println!(
+                "{}",
+                serde_json::json!({"created": 0, "message": "No new primitives proposed"})
+            );
         } else {
             println!("No new primitives proposed by the creator.");
         }
@@ -427,7 +458,10 @@ pub fn run(
         );
 
         // Skip duplicates
-        if components_dir.join(format!("{}.yaml", component.id)).exists() {
+        if components_dir
+            .join(format!("{}.yaml", component.id))
+            .exists()
+        {
             eprintln!("  Skipping duplicate component: {}", comp.name);
             continue;
         }
@@ -439,18 +473,19 @@ pub fn run(
             "id": agency::short_hash(&component.id),
             "path": path.display().to_string(),
         }));
-        eprintln!("  Created component: {} ({})", comp.name, agency::short_hash(&component.id));
+        eprintln!(
+            "  Created component: {} ({})",
+            comp.name,
+            agency::short_hash(&component.id)
+        );
     }
 
     // Create outcomes
     let outcomes_dir = store.outcomes_dir();
     std::fs::create_dir_all(&outcomes_dir)?;
     for out in &creator_output.outcomes {
-        let outcome = agency::build_outcome(
-            &out.name,
-            &out.description,
-            out.success_criteria.clone(),
-        );
+        let outcome =
+            agency::build_outcome(&out.name, &out.description, out.success_criteria.clone());
 
         if outcomes_dir.join(format!("{}.yaml", outcome.id)).exists() {
             eprintln!("  Skipping duplicate outcome: {}", out.name);
@@ -464,7 +499,11 @@ pub fn run(
             "id": agency::short_hash(&outcome.id),
             "path": path.display().to_string(),
         }));
-        eprintln!("  Created outcome: {} ({})", out.name, agency::short_hash(&outcome.id));
+        eprintln!(
+            "  Created outcome: {} ({})",
+            out.name,
+            agency::short_hash(&outcome.id)
+        );
     }
 
     // Create tradeoffs
@@ -490,7 +529,11 @@ pub fn run(
             "id": agency::short_hash(&tradeoff.id),
             "path": path.display().to_string(),
         }));
-        eprintln!("  Created tradeoff: {} ({})", tc.name, agency::short_hash(&tradeoff.id));
+        eprintln!(
+            "  Created tradeoff: {} ({})",
+            tc.name,
+            agency::short_hash(&tradeoff.id)
+        );
     }
 
     if json {
@@ -542,12 +585,30 @@ mod tests {
 
     #[test]
     fn test_parse_category() {
-        assert!(matches!(parse_category("translated"), agency::ComponentCategory::Translated));
-        assert!(matches!(parse_category("skill"), agency::ComponentCategory::Translated));
-        assert!(matches!(parse_category("Enhanced"), agency::ComponentCategory::Enhanced));
-        assert!(matches!(parse_category("novel"), agency::ComponentCategory::Novel));
-        assert!(matches!(parse_category("behaviour"), agency::ComponentCategory::Novel));
-        assert!(matches!(parse_category("unknown"), agency::ComponentCategory::Translated));
+        assert!(matches!(
+            parse_category("translated"),
+            agency::ComponentCategory::Translated
+        ));
+        assert!(matches!(
+            parse_category("skill"),
+            agency::ComponentCategory::Translated
+        ));
+        assert!(matches!(
+            parse_category("Enhanced"),
+            agency::ComponentCategory::Enhanced
+        ));
+        assert!(matches!(
+            parse_category("novel"),
+            agency::ComponentCategory::Novel
+        ));
+        assert!(matches!(
+            parse_category("behaviour"),
+            agency::ComponentCategory::Novel
+        ));
+        assert!(matches!(
+            parse_category("unknown"),
+            agency::ComponentCategory::Translated
+        ));
     }
 
     #[test]

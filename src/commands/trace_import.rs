@@ -6,13 +6,7 @@ use workgraph::provenance;
 
 use super::trace_export::TraceExport;
 
-pub fn run(
-    dir: &Path,
-    file: &str,
-    source: Option<&str>,
-    dry_run: bool,
-    json: bool,
-) -> Result<()> {
+pub fn run(dir: &Path, file: &str, source: Option<&str>, dry_run: bool, json: bool) -> Result<()> {
     // Read and deserialize the export file
     let contents =
         std::fs::read_to_string(file).with_context(|| format!("Failed to read '{}'", file))?;
@@ -99,8 +93,8 @@ pub fn run(
         })
         .collect();
 
-    let tasks_yaml = serde_yaml::to_string(&imported_tasks)
-        .context("Failed to serialize imported tasks")?;
+    let tasks_yaml =
+        serde_yaml::to_string(&imported_tasks).context("Failed to serialize imported tasks")?;
     std::fs::write(&tasks_path, tasks_yaml)
         .with_context(|| format!("Failed to write {}", tasks_path.display()))?;
 
@@ -115,8 +109,9 @@ pub fn run(
             imported_eval.id = format!("imported-{}", eval.id);
             imported_eval.source = format!("import:{}", eval.source);
             // Save directly without propagating to performance records
-            agency::save_evaluation(&imported_eval, &evals_dir)
-                .with_context(|| format!("Failed to save imported evaluation {}", imported_eval.id))?;
+            agency::save_evaluation(&imported_eval, &evals_dir).with_context(|| {
+                format!("Failed to save imported evaluation {}", imported_eval.id)
+            })?;
         }
     }
 
@@ -160,8 +155,10 @@ pub fn run(
         });
         println!("{}", serde_json::to_string_pretty(&out)?);
     } else {
-        println!("Imported {} tasks, {} evaluations, {} operations from '{}'",
-            task_count, eval_count, op_count, source_tag);
+        println!(
+            "Imported {} tasks, {} evaluations, {} operations from '{}'",
+            task_count, eval_count, op_count, source_tag
+        );
         println!("Import directory: {}", import_dir.display());
     }
 

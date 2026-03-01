@@ -316,4 +316,3 @@ fn check_diamond_dependency_no_cycle() {
     assert!(result.cycles.is_empty(), "Diamond should not be a cycle");
     assert!(result.orphan_refs.is_empty());
 }
-

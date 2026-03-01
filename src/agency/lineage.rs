@@ -2,8 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use super::store::{
-    load_all_components, load_all_outcomes, load_all_roles,
-    load_all_tradeoffs, AgencyError,
+    AgencyError, load_all_components, load_all_outcomes, load_all_roles, load_all_tradeoffs,
 };
 use super::types::*;
 
@@ -45,8 +44,7 @@ pub fn component_ancestry(
     components_dir: &Path,
 ) -> Result<Vec<AncestryNode>, AgencyError> {
     let all = load_all_components(components_dir)?;
-    let map: HashMap<String, &RoleComponent> =
-        all.iter().map(|c| (c.id.clone(), c)).collect();
+    let map: HashMap<String, &RoleComponent> = all.iter().map(|c| (c.id.clone(), c)).collect();
     let mut ancestry = Vec::new();
     let mut queue = vec![component_id.to_string()];
     let mut visited = HashSet::new();
@@ -80,8 +78,7 @@ pub fn outcome_ancestry(
     outcomes_dir: &Path,
 ) -> Result<Vec<AncestryNode>, AgencyError> {
     let all = load_all_outcomes(outcomes_dir)?;
-    let map: HashMap<String, &DesiredOutcome> =
-        all.iter().map(|o| (o.id.clone(), o)).collect();
+    let map: HashMap<String, &DesiredOutcome> = all.iter().map(|o| (o.id.clone(), o)).collect();
     let mut ancestry = Vec::new();
     let mut queue = vec![outcome_id.to_string()];
     let mut visited = HashSet::new();
@@ -115,8 +112,7 @@ pub fn tradeoff_ancestry(
     tradeoffs_dir: &Path,
 ) -> Result<Vec<AncestryNode>, AgencyError> {
     let all = load_all_tradeoffs(tradeoffs_dir)?;
-    let map: HashMap<String, &TradeoffConfig> =
-        all.iter().map(|t| (t.id.clone(), t)).collect();
+    let map: HashMap<String, &TradeoffConfig> = all.iter().map(|t| (t.id.clone(), t)).collect();
     let mut ancestry = Vec::new();
     let mut queue = vec![tradeoff_id.to_string()];
     let mut visited = HashSet::new();

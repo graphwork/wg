@@ -4,12 +4,12 @@ use std::collections::HashSet;
 use std::path::Path;
 
 use workgraph::agency::{Evaluation, load_all_evaluations_or_warn};
-use workgraph::graph::{LogEntry, Status};
-use workgraph::parser::load_graph;
-use workgraph::provenance;
 use workgraph::function::{
     self, FunctionVisibility, TraceFunction, export_function, function_visible_at,
 };
+use workgraph::graph::{LogEntry, Status};
+use workgraph::parser::load_graph;
+use workgraph::provenance;
 
 /// Exported trace data with metadata, tasks, evaluations, operations, and functions.
 #[derive(Debug, Serialize, Deserialize)]
@@ -156,8 +156,10 @@ pub fn run(
     // Load operations
     let operations: Vec<provenance::OperationEntry> = {
         let all_ops = provenance::read_all_operations(dir).unwrap_or_default();
-        let structural_ops: HashSet<&str> =
-            ["add_task", "done", "fail", "abandon", "retry"].iter().copied().collect();
+        let structural_ops: HashSet<&str> = ["add_task", "done", "fail", "abandon", "retry"]
+            .iter()
+            .copied()
+            .collect();
 
         all_ops
             .into_iter()
@@ -182,8 +184,8 @@ pub fn run(
     };
 
     // Load and filter functions by visibility
-    let target_vis = FunctionVisibility::from_str_opt(visibility)
-        .unwrap_or(FunctionVisibility::Internal);
+    let target_vis =
+        FunctionVisibility::from_str_opt(visibility).unwrap_or(FunctionVisibility::Internal);
     let functions: Vec<TraceFunction> = {
         let funcs_dir = function::functions_dir(dir);
         let all_funcs = function::load_all_functions(&funcs_dir).unwrap_or_default();

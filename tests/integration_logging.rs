@@ -98,7 +98,12 @@ fn add_produces_operation_log_entry() {
 
     let entries = provenance::read_all_operations(&wg_dir).unwrap();
     let add_ops = ops_with_op(&entries, "add_task");
-    assert_eq!(add_ops.len(), 1, "Expected 1 add_task op, got {}", add_ops.len());
+    assert_eq!(
+        add_ops.len(),
+        1,
+        "Expected 1 add_task op, got {}",
+        add_ops.len()
+    );
     assert_eq!(add_ops[0].task_id.as_deref(), Some("test-task"));
 }
 
@@ -114,7 +119,12 @@ fn edit_produces_operation_log_entry() {
 
     let entries = provenance::read_all_operations(&wg_dir).unwrap();
     let edit_ops = ops_with_op(&entries, "edit");
-    assert_eq!(edit_ops.len(), 1, "Expected 1 edit op, got {}", edit_ops.len());
+    assert_eq!(
+        edit_ops.len(),
+        1,
+        "Expected 1 edit op, got {}",
+        edit_ops.len()
+    );
     assert_eq!(edit_ops[0].task_id.as_deref(), Some("edit-task"));
 }
 
@@ -231,10 +241,7 @@ fn resume_produces_operation_log_entry() {
 fn archive_produces_operation_log_entry() {
     let mut task = make_task("t1", "Done task", Status::Done);
     task.completed_at = Some("2024-01-01T00:00:00Z".to_string());
-    let (_dir, wg_dir) = setup_wg(vec![
-        task,
-        make_task("t2", "Open task", Status::Open),
-    ]);
+    let (_dir, wg_dir) = setup_wg(vec![task, make_task("t2", "Open task", Status::Open)]);
 
     wg_ok(&wg_dir, &["archive"]);
 
@@ -345,7 +352,10 @@ fn agent_archive_on_done_preserves_files() {
 
     // Verify archive exists
     let archive_base = wg_dir.join("log").join("agents").join("t1");
-    assert!(archive_base.exists(), "Agent archive directory should exist");
+    assert!(
+        archive_base.exists(),
+        "Agent archive directory should exist"
+    );
 
     let attempts: Vec<_> = fs::read_dir(&archive_base)
         .unwrap()
@@ -386,7 +396,10 @@ fn agent_archive_on_fail_preserves_files() {
     wg_ok(&wg_dir, &["fail", "t1", "--reason", "test fail"]);
 
     let archive_base = wg_dir.join("log").join("agents").join("t1");
-    assert!(archive_base.exists(), "Agent archive should exist after fail");
+    assert!(
+        archive_base.exists(),
+        "Agent archive should exist after fail"
+    );
 
     let attempts: Vec<_> = fs::read_dir(&archive_base)
         .unwrap()
@@ -432,7 +445,11 @@ fn rotation_triggers_under_high_volume() {
 
     // All 50 entries should be readable
     let all = provenance::read_all_operations(&wg_dir).unwrap();
-    assert_eq!(all.len(), 50, "Expected 50 total entries across rotated + current");
+    assert_eq!(
+        all.len(),
+        50,
+        "Expected 50 total entries across rotated + current"
+    );
 }
 
 #[test]
@@ -461,7 +478,10 @@ fn rotated_zstd_files_can_be_read_back() {
     // Verify ordering and content
     for (i, entry) in all.iter().enumerate() {
         assert_eq!(entry.op, "readback_test");
-        assert_eq!(entry.task_id.as_deref(), Some(&format!("task-{}", i) as &str));
+        assert_eq!(
+            entry.task_id.as_deref(),
+            Some(&format!("task-{}", i) as &str)
+        );
         assert_eq!(entry.actor.as_deref(), Some("test-actor"));
     }
 
@@ -668,12 +688,13 @@ fn check_coherency(wg_dir: &Path) -> Vec<String> {
                 .rev()
                 .find(|e| e.task_id.as_deref() == Some(archived_id.as_str()));
             if let Some(last_op) = last_op_for_task
-                && (last_op.op == "archive" || last_op.op == "gc") {
-                    issues.push(format!(
-                        "Task '{}' was {}'d but still in graph",
-                        archived_id, last_op.op
-                    ));
-                }
+                && (last_op.op == "archive" || last_op.op == "gc")
+            {
+                issues.push(format!(
+                    "Task '{}' was {}'d but still in graph",
+                    archived_id, last_op.op
+                ));
+            }
         }
     }
 
@@ -722,7 +743,9 @@ fn coherency_detects_missing_add_entry() {
 
     let issues = check_coherency(&wg_dir);
     assert!(
-        issues.iter().any(|i| i.contains("ghost") && i.contains("no add_task")),
+        issues
+            .iter()
+            .any(|i| i.contains("ghost") && i.contains("no add_task")),
         "Expected missing add_task issue for ghost. Got: {:?}",
         issues
     );
@@ -753,7 +776,9 @@ fn coherency_detects_done_without_done_entry() {
 
     let issues = check_coherency(&wg_dir);
     assert!(
-        issues.iter().any(|i| i.contains("t1") && i.contains("Done") && i.contains("no done")),
+        issues
+            .iter()
+            .any(|i| i.contains("t1") && i.contains("Done") && i.contains("no done")),
         "Expected missing done entry issue. Got: {:?}",
         issues
     );
@@ -782,12 +807,18 @@ fn coherency_after_archive_and_gc() {
 
     // Archived and gc'd tasks should NOT be in graph
     let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
-    assert!(graph.get_task("done-task").is_none(), "done-task should be archived");
+    assert!(
+        graph.get_task("done-task").is_none(),
+        "done-task should be archived"
+    );
     assert!(
         graph.get_task("abandon-task").is_none(),
         "abandon-task should be gc'd"
     );
-    assert!(graph.get_task("keep-task").is_some(), "keep-task should remain");
+    assert!(
+        graph.get_task("keep-task").is_some(),
+        "keep-task should remain"
+    );
 
     // Operation log should have all the entries
     let entries = provenance::read_all_operations(&wg_dir).unwrap();
@@ -813,7 +844,10 @@ fn wg_log_operations_shows_entries() {
     wg_ok(&wg_dir, &["done", "t1"]);
 
     let output = wg_ok(&wg_dir, &["log", "--operations"]);
-    assert!(output.contains("add_task"), "Should show add_task operation");
+    assert!(
+        output.contains("add_task"),
+        "Should show add_task operation"
+    );
     assert!(output.contains("done"), "Should show done operation");
 }
 

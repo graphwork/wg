@@ -152,7 +152,7 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
     use workgraph::agency::{
-        Agent, AgencyStore, EvaluationRef, Lineage, TradeoffConfig, PerformanceRecord, Role,
+        AgencyStore, Agent, EvaluationRef, Lineage, PerformanceRecord, Role, TradeoffConfig,
     };
     use workgraph::graph::TrustLevel;
 
@@ -343,10 +343,7 @@ mod tests {
         for role in &roles_after_first {
             let matching = roles_after_second.iter().find(|r| r.id == role.id).unwrap();
             assert_eq!(role.name, matching.name);
-            assert_eq!(
-                role.performance.task_count,
-                matching.performance.task_count
-            );
+            assert_eq!(role.performance.task_count, matching.performance.task_count);
         }
     }
 

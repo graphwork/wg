@@ -75,7 +75,12 @@ fn load_with_sources_custom(
     let default_val: toml::Value = toml::Value::try_from(Config::default())
         .unwrap_or(toml::Value::Table(toml::map::Map::new()));
     let mut default_sources = BTreeMap::new();
-    record_sources(&default_val, "", &ConfigSource::Default, &mut default_sources);
+    record_sources(
+        &default_val,
+        "",
+        &ConfigSource::Default,
+        &mut default_sources,
+    );
     for (key, src) in default_sources {
         sources.entry(key).or_insert(src);
     }
@@ -350,9 +355,15 @@ max_agents = 6
     // Only in global
     assert_eq!(sources.get("agent.interval"), Some(&ConfigSource::Global));
     // Only in local
-    assert_eq!(sources.get("coordinator.max_agents"), Some(&ConfigSource::Local));
+    assert_eq!(
+        sources.get("coordinator.max_agents"),
+        Some(&ConfigSource::Local)
+    );
     // Only in global
-    assert_eq!(sources.get("agency.auto_evaluate"), Some(&ConfigSource::Global));
+    assert_eq!(
+        sources.get("agency.auto_evaluate"),
+        Some(&ConfigSource::Global)
+    );
     // In neither → default
     assert_eq!(sources.get("agent.executor"), Some(&ConfigSource::Default));
 }
@@ -487,7 +498,10 @@ executor = "amplifier"
     assert_eq!(config.coordinator.max_agents, 8, "inherited from global");
     assert_eq!(config.coordinator.executor, "amplifier", "local overrides");
     assert_eq!(config.coordinator.interval, 30, "inherited from global");
-    assert_eq!(config.coordinator.poll_interval, 120, "inherited from global");
+    assert_eq!(
+        config.coordinator.poll_interval, 120,
+        "inherited from global"
+    );
 }
 
 #[test]

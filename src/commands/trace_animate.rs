@@ -11,7 +11,7 @@ use std::path::Path;
 use std::time::Duration;
 use workgraph::graph::Status;
 
-use super::trace::{collect_descendants, format_duration, reconstruct_temporal, GraphSnapshot};
+use super::trace::{GraphSnapshot, collect_descendants, format_duration, reconstruct_temporal};
 
 /// Run the trace animation TUI.
 pub fn run(dir: &Path, root_id: &str, speed: f64) -> Result<()> {
@@ -23,7 +23,10 @@ pub fn run(dir: &Path, root_id: &str, speed: f64) -> Result<()> {
 
     let snapshots = reconstruct_temporal(dir, &subgraph_ids)?;
     if snapshots.is_empty() {
-        println!("No operation history found for trace '{}'. Nothing to animate.", root_id);
+        println!(
+            "No operation history found for trace '{}'. Nothing to animate.",
+            root_id
+        );
         return Ok(());
     }
 
@@ -319,7 +322,11 @@ fn render_frame(
         terminal::Clear(ClearType::All),
     )?;
 
-    write!(stdout, "\x1b[1mTrace Animation: {}\x1b[0m\r\n", snapshot.timestamp.format("%H:%M:%S"))?;
+    write!(
+        stdout,
+        "\x1b[1mTrace Animation: {}\x1b[0m\r\n",
+        snapshot.timestamp.format("%H:%M:%S")
+    )?;
     write!(stdout, "{}\r\n\r\n", summary)?;
 
     for line in graph_output.lines() {
@@ -441,7 +448,10 @@ mod tests {
         statuses.insert("t5".to_string(), Status::Open);
 
         let done_count = statuses.values().filter(|s| **s == Status::Done).count();
-        let in_progress_count = statuses.values().filter(|s| **s == Status::InProgress).count();
+        let in_progress_count = statuses
+            .values()
+            .filter(|s| **s == Status::InProgress)
+            .count();
         let failed_count = statuses.values().filter(|s| **s == Status::Failed).count();
 
         assert_eq!(done_count, 2);

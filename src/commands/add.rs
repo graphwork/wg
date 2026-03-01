@@ -81,17 +81,16 @@ pub fn run(
 
     // Validate context_scope if provided
     if let Some(scope) = context_scope {
-        scope.parse::<workgraph::context_scope::ContextScope>().map_err(|e| anyhow::anyhow!("{}", e))?;
+        scope
+            .parse::<workgraph::context_scope::ContextScope>()
+            .map_err(|e| anyhow::anyhow!("{}", e))?;
     }
 
     // Validate exec_mode if provided
     if let Some(mode) = exec_mode {
         match mode {
             "full" | "bare" => {}
-            _ => anyhow::bail!(
-                "Invalid exec_mode '{}'. Valid values: full, bare",
-                mode
-            ),
+            _ => anyhow::bail!("Invalid exec_mode '{}'. Valid values: full, bare", mode),
         }
     }
 
@@ -186,7 +185,10 @@ pub fn run(
         let delay = match cycle_delay {
             Some(d) => {
                 parse_delay(d).ok_or_else(|| {
-                    anyhow::anyhow!("Invalid cycle delay '{}'. Use format: 30s, 5m, 1h, 24h, 7d", d)
+                    anyhow::anyhow!(
+                        "Invalid cycle delay '{}'. Use format: 30s, 5m, 1h, 24h, 7d",
+                        d
+                    )
                 })?;
                 Some(d.to_string())
             }
@@ -276,14 +278,16 @@ pub fn run(
                 continue; // Skip cross-repo deps
             }
             if let Some(dep_task) = graph.get_task_mut(dep_id)
-                && !dep_task.after.contains(&task_id) {
-                    dep_task.after.push(task_id.clone());
-                }
+                && !dep_task.after.contains(&task_id)
+            {
+                dep_task.after.push(task_id.clone());
+            }
             // Maintain bidirectional consistency for the back-edge
             if let Some(new_task) = graph.get_task_mut(&task_id)
-                && !new_task.before.contains(dep_id) {
-                    new_task.before.push(dep_id.clone());
-                }
+                && !new_task.before.contains(dep_id)
+            {
+                new_task.before.push(dep_id.clone());
+            }
         }
     }
 
@@ -381,7 +385,9 @@ pub fn run_remote(
                 peer_ref, title, peer_ref, task_id
             );
         } else {
-            let err = response.error.unwrap_or_else(|| "unknown error".to_string());
+            let err = response
+                .error
+                .unwrap_or_else(|| "unknown error".to_string());
             anyhow::bail!("Remote add failed: {}", err);
         }
     } else {
@@ -521,9 +527,7 @@ fn count_agent_created_tasks(dir: &Path, agent_id: &str) -> u32 {
         .iter()
         .filter(|e| {
             e.op == "add_task"
-                && (e.detail
-                    .get("agent_id")
-                    .and_then(|v| v.as_str()) == Some(agent_id))
+                && (e.detail.get("agent_id").and_then(|v| v.as_str()) == Some(agent_id))
         })
         .count() as u32
 }

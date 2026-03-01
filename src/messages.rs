@@ -99,10 +99,10 @@ pub fn send_message(
             if line.trim().is_empty() {
                 continue;
             }
-            if let Ok(msg) = serde_json::from_str::<Message>(&line) {
-                if msg.id > max {
-                    max = msg.id;
-                }
+            if let Ok(msg) = serde_json::from_str::<Message>(&line)
+                && msg.id > max
+            {
+                max = msg.id;
             }
         }
         max
@@ -150,8 +150,8 @@ pub fn list_messages(workgraph_dir: &Path, task_id: &str) -> Result<Vec<Message>
         if line.trim().is_empty() {
             continue;
         }
-        let msg: Message =
-            serde_json::from_str(&line).with_context(|| format!("Failed to parse message: {}", line))?;
+        let msg: Message = serde_json::from_str(&line)
+            .with_context(|| format!("Failed to parse message: {}", line))?;
         messages.push(msg);
     }
 
@@ -171,16 +171,24 @@ pub fn read_cursor(workgraph_dir: &Path, agent_id: &str, task_id: &str) -> Resul
     let content = fs::read_to_string(&path)
         .with_context(|| format!("Failed to read cursor file: {}", path.display()))?;
 
-    content
-        .trim()
-        .parse::<u64>()
-        .with_context(|| format!("Invalid cursor value in {}: '{}'", path.display(), content.trim()))
+    content.trim().parse::<u64>().with_context(|| {
+        format!(
+            "Invalid cursor value in {}: '{}'",
+            path.display(),
+            content.trim()
+        )
+    })
 }
 
 /// Update the cursor for an agent on a task.
 ///
 /// Uses write-to-temp + rename for atomicity.
-pub fn write_cursor(workgraph_dir: &Path, agent_id: &str, task_id: &str, cursor: u64) -> Result<()> {
+pub fn write_cursor(
+    workgraph_dir: &Path,
+    agent_id: &str,
+    task_id: &str,
+    cursor: u64,
+) -> Result<()> {
     let dir = cursors_dir(workgraph_dir);
     fs::create_dir_all(&dir)
         .with_context(|| format!("Failed to create cursors directory: {}", dir.display()))?;
@@ -200,11 +208,7 @@ pub fn write_cursor(workgraph_dir: &Path, agent_id: &str, task_id: &str, cursor:
 /// Read unread messages for an agent on a task.
 ///
 /// Returns messages with ID > cursor, and updates the cursor to the max ID seen.
-pub fn read_unread(
-    workgraph_dir: &Path,
-    task_id: &str,
-    agent_id: &str,
-) -> Result<Vec<Message>> {
+pub fn read_unread(workgraph_dir: &Path, task_id: &str, agent_id: &str) -> Result<Vec<Message>> {
     let cursor = read_cursor(workgraph_dir, agent_id, task_id)?;
     let all = list_messages(workgraph_dir, task_id)?;
 
@@ -220,11 +224,7 @@ pub fn read_unread(
 /// Poll for new messages (like read_unread but doesn't advance cursor).
 ///
 /// Returns Ok(messages) where messages may be empty.
-pub fn poll_messages(
-    workgraph_dir: &Path,
-    task_id: &str,
-    agent_id: &str,
-) -> Result<Vec<Message>> {
+pub fn poll_messages(workgraph_dir: &Path, task_id: &str, agent_id: &str) -> Result<Vec<Message>> {
     let cursor = read_cursor(workgraph_dir, agent_id, task_id)?;
     let all = list_messages(workgraph_dir, task_id)?;
 
@@ -234,7 +234,11 @@ pub fn poll_messages(
 
 /// Format a single message for notification files.
 fn format_notification_line(msg: &Message) -> String {
-    let priority_marker = if msg.priority == "urgent" { " [URGENT]" } else { "" };
+    let priority_marker = if msg.priority == "urgent" {
+        " [URGENT]"
+    } else {
+        ""
+    };
     format!(
         "[{}] {}{}: {}",
         msg.timestamp, msg.sender, priority_marker, msg.body
@@ -254,10 +258,17 @@ pub fn format_queued_messages(workgraph_dir: &Path, task_id: &str) -> String {
         return String::new();
     }
 
-    let mut lines = vec!["## Queued Messages\n\nThe following messages were sent to this task before you started:\n".to_string()];
+    let mut lines = vec![
+        "## Queued Messages\n\nThe following messages were sent to this task before you started:\n"
+            .to_string(),
+    ];
 
     for msg in &messages {
-        let priority_marker = if msg.priority == "urgent" { " [URGENT]" } else { "" };
+        let priority_marker = if msg.priority == "urgent" {
+            " [URGENT]"
+        } else {
+            ""
+        };
         lines.push(format!(
             "[{}] {}{}: {}",
             msg.timestamp, msg.sender, priority_marker, msg.body
@@ -311,8 +322,12 @@ fn notification_file(workgraph_dir: &Path, agent_id: &str) -> PathBuf {
 fn write_notification(workgraph_dir: &Path, agent_id: &str, message: &Message) -> Result<()> {
     let path = notification_file(workgraph_dir, agent_id);
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("Failed to create notification directory: {}", parent.display()))?;
+        fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "Failed to create notification directory: {}",
+                parent.display()
+            )
+        })?;
     }
 
     let mut file = OpenOptions::new()
@@ -592,8 +607,22 @@ mod tests {
     fn test_format_queued_messages_with_messages() {
         let (_tmp, wg_dir) = setup();
 
-        send_message(&wg_dir, "task-1", "Focus on error handling", "user", "normal").unwrap();
-        send_message(&wg_dir, "task-1", "Urgent fix needed", "coordinator", "urgent").unwrap();
+        send_message(
+            &wg_dir,
+            "task-1",
+            "Focus on error handling",
+            "user",
+            "normal",
+        )
+        .unwrap();
+        send_message(
+            &wg_dir,
+            "task-1",
+            "Urgent fix needed",
+            "coordinator",
+            "urgent",
+        )
+        .unwrap();
 
         let formatted = format_queued_messages(&wg_dir, "task-1");
         assert!(formatted.contains("## Queued Messages"));
@@ -608,7 +637,14 @@ mod tests {
 
         // Send messages in order
         for i in 1..=5 {
-            send_message(&wg_dir, "task-1", &format!("Message {}", i), "user", "normal").unwrap();
+            send_message(
+                &wg_dir,
+                "task-1",
+                &format!("Message {}", i),
+                "user",
+                "normal",
+            )
+            .unwrap();
         }
 
         let msgs = list_messages(&wg_dir, "task-1").unwrap();
@@ -693,7 +729,10 @@ mod tests {
         };
 
         let delivered = adapter.deliver(&wg_dir, &agent, &msg).unwrap();
-        assert!(!delivered, "Claude adapter should not support realtime delivery");
+        assert!(
+            !delivered,
+            "Claude adapter should not support realtime delivery"
+        );
 
         // Check notification file was written
         let notif_path = notification_file(&wg_dir, "agent-1");
@@ -721,7 +760,10 @@ mod tests {
         };
 
         let delivered = adapter.deliver(&wg_dir, &agent, &msg).unwrap();
-        assert!(!delivered, "Amplifier adapter should not support realtime delivery");
+        assert!(
+            !delivered,
+            "Amplifier adapter should not support realtime delivery"
+        );
 
         // Check notification file was written
         let notif_path = notification_file(&wg_dir, "agent-2");
@@ -774,7 +816,8 @@ mod tests {
             "Important update",
             "coordinator",
             "urgent",
-        ).unwrap();
+        )
+        .unwrap();
 
         assert_eq!(msg_id, 1);
         assert!(!delivered, "v1 adapters don't support realtime delivery");

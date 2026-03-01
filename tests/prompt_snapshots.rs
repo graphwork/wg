@@ -4,12 +4,11 @@
 //! Any change to prompt construction fails the test until explicitly approved
 //! via `cargo insta review`.
 
-use workgraph::agency::{
-    self, EvaluatorInput, ResolvedSkill, Role, TradeoffConfig,
-    render_evaluator_prompt, render_identity_prompt,
-    AssignerModeContext, render_assigner_mode_context,
-};
 use workgraph::agency::run_mode::AssignmentPath;
+use workgraph::agency::{
+    self, AssignerModeContext, EvaluatorInput, ResolvedSkill, Role, TradeoffConfig,
+    render_assigner_mode_context, render_evaluator_prompt, render_identity_prompt,
+};
 use workgraph::context_scope::ContextScope;
 use workgraph::graph::LogEntry;
 use workgraph::service::executor::{ScopeContext, TemplateVars, build_prompt};
@@ -22,7 +21,10 @@ fn test_role() -> Role {
     agency::build_role(
         "Builder",
         "Builds features from specifications with clean, tested code.",
-        vec!["rust".to_string(), "inline:Write idiomatic Rust.".to_string()],
+        vec![
+            "rust".to_string(),
+            "inline:Write idiomatic Rust.".to_string(),
+        ],
         "Working, tested code merged to main.",
     )
 }
@@ -35,10 +37,7 @@ fn test_tradeoff() -> TradeoffConfig {
             "Slower delivery for higher quality".into(),
             "More verbose code for clarity".into(),
         ],
-        vec![
-            "Skipping tests".into(),
-            "Ignoring error handling".into(),
-        ],
+        vec!["Skipping tests".into(), "Ignoring error handling".into()],
     )
 }
 
@@ -160,7 +159,10 @@ fn snapshot_identity_prompt_name_only_skills() {
 fn snapshot_evaluator_prompt_full() {
     let role = test_role();
     let tradeoff = test_tradeoff();
-    let artifacts = vec!["src/widget.rs".to_string(), "tests/test_widget.rs".to_string()];
+    let artifacts = vec![
+        "src/widget.rs".to_string(),
+        "tests/test_widget.rs".to_string(),
+    ];
     let log = test_log_entries();
     let skills = vec!["rust".to_string(), "testing".to_string()];
 
@@ -223,7 +225,9 @@ fn snapshot_evaluator_prompt_with_evaluator_identity() {
         started_at: None,
         completed_at: None,
         artifact_diff: None,
-        evaluator_identity: Some("## Custom Evaluator\n\nYou are a specialized code quality evaluator."),
+        evaluator_identity: Some(
+            "## Custom Evaluator\n\nYou are a specialized code quality evaluator.",
+        ),
         downstream_tasks: &[],
     };
 
@@ -244,11 +248,7 @@ fn snapshot_evaluator_prompt_with_downstream_tasks() {
             "Open".to_string(),
             Some("Wire the API client into the service layer.".to_string()),
         ),
-        (
-            "Write API docs".to_string(),
-            "Open".to_string(),
-            None,
-        ),
+        ("Write API docs".to_string(), "Open".to_string(), None),
     ];
 
     let input = EvaluatorInput {
@@ -346,7 +346,8 @@ fn snapshot_build_prompt_full_scope() {
 #[test]
 fn snapshot_build_prompt_with_verify() {
     let mut vars = test_template_vars();
-    vars.task_verify = Some("- cargo build passes\n- cargo test passes\n- No clippy warnings".into());
+    vars.task_verify =
+        Some("- cargo build passes\n- cargo test passes\n- No clippy warnings".into());
     let ctx = test_scope_context();
     let output = build_prompt(&vars, ContextScope::Task, &ctx);
     insta::assert_snapshot!("build_prompt_with_verify", output);
@@ -355,7 +356,8 @@ fn snapshot_build_prompt_with_verify() {
 #[test]
 fn snapshot_build_prompt_with_loop_info() {
     let mut vars = test_template_vars();
-    vars.task_loop_info = "## Cycle Information\n\nThis task is a cycle header (iteration 2, max 5).".into();
+    vars.task_loop_info =
+        "## Cycle Information\n\nThis task is a cycle header (iteration 2, max 5).".into();
     let ctx = test_scope_context();
     let output = build_prompt(&vars, ContextScope::Task, &ctx);
     insta::assert_snapshot!("build_prompt_with_loop", output);

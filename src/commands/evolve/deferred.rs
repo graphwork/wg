@@ -7,8 +7,8 @@ use workgraph::agency;
 use workgraph::graph::{Node, Status, Task};
 use workgraph::{load_graph, save_graph};
 
-use super::strategy::EvolverOperation;
 use super::operations::apply_operation;
+use super::strategy::EvolverOperation;
 
 // ---------------------------------------------------------------------------
 // Deferred operation types (human oversight gate)
@@ -53,7 +53,11 @@ pub struct DeferredOperation {
 
 /// Create a verified workgraph task for an evolver self-mutation operation.
 /// The task requires human approval before the mutation can be applied.
-pub(crate) fn defer_self_mutation(op: &EvolverOperation, dir: &Path, run_id: &str) -> Result<String> {
+pub(crate) fn defer_self_mutation(
+    op: &EvolverOperation,
+    dir: &Path,
+    run_id: &str,
+) -> Result<String> {
     let graph_path = super::super::graph_path(dir);
     let mut graph =
         load_graph(&graph_path).context("Failed to load graph for self-mutation deferral")?;
@@ -156,9 +160,10 @@ pub(crate) fn should_defer(op: &EvolverOperation, agency_dir: &Path) -> Option<D
                 .join("primitives/outcomes")
                 .join(format!("{}.yaml", target_id));
             if let Ok(outcome) = agency::load_outcome(&outcome_path)
-                && outcome.requires_human_oversight {
-                    return Some(DeferralReason::ObjectiveChange);
-                }
+                && outcome.requires_human_oversight
+            {
+                return Some(DeferralReason::ObjectiveChange);
+            }
         }
         // For bizarre_ideation outcomes (already handled above), or new outcomes
         // with requires_human_oversight default = true
@@ -169,15 +174,17 @@ pub(crate) fn should_defer(op: &EvolverOperation, agency_dir: &Path) -> Option<D
 
     // random_compose_role: check if the selected outcome has requires_human_oversight
     if op.op == "random_compose_role"
-        && let Some(ref oid) = op.outcome_id {
-            let outcome_path = agency_dir
-                .join("primitives/outcomes")
-                .join(format!("{}.yaml", oid));
-            if let Ok(outcome) = agency::load_outcome(&outcome_path)
-                && outcome.requires_human_oversight {
-                    return Some(DeferralReason::ObjectiveChange);
-                }
+        && let Some(ref oid) = op.outcome_id
+    {
+        let outcome_path = agency_dir
+            .join("primitives/outcomes")
+            .join(format!("{}.yaml", oid));
+        if let Ok(outcome) = agency::load_outcome(&outcome_path)
+            && outcome.requires_human_oversight
+        {
+            return Some(DeferralReason::ObjectiveChange);
         }
+    }
 
     None
 }
@@ -244,9 +251,10 @@ pub fn run_deferred_list(dir: &Path, json: bool) -> Result<()> {
         if path.extension().and_then(|e| e.to_str()) == Some("json") {
             let contents = fs::read_to_string(&path)?;
             if let Ok(deferred) = serde_json::from_str::<DeferredOperation>(&contents)
-                && deferred.human_decision.is_none() {
-                    ops.push(deferred);
-                }
+                && deferred.human_decision.is_none()
+            {
+                ops.push(deferred);
+            }
         }
     }
 
@@ -263,10 +271,7 @@ pub fn run_deferred_list(dir: &Path, json: bool) -> Result<()> {
                 "  {} — {} on {} ({:?})",
                 op.id,
                 op.operation.op,
-                op.operation
-                    .entity_type
-                    .as_deref()
-                    .unwrap_or("?"),
+                op.operation.entity_type.as_deref().unwrap_or("?"),
                 op.deferred_reason,
             );
             if let Some(ref rationale) = op.operation.rationale {

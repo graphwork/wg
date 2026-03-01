@@ -104,10 +104,11 @@ pub fn run(
                     &event_filters,
                     task_filter,
                     event.task_id.as_deref(),
-                ) {
-                    let line = serde_json::to_string(&event)?;
-                    println!("{}", line);
-                }
+                )
+            {
+                let line = serde_json::to_string(&event)?;
+                println!("{}", line);
+            }
         }
     }
 
@@ -119,9 +120,7 @@ pub fn run(
 
     // Seek to end of current file
     let mut last_pos = if ops_path.exists() {
-        std::fs::metadata(&ops_path)
-            .map(|m| m.len())
-            .unwrap_or(0)
+        std::fs::metadata(&ops_path).map(|m| m.len()).unwrap_or(0)
     } else {
         0
     };
@@ -174,20 +173,21 @@ pub fn run(
                     }
                     if let Ok(op) = serde_json::from_str::<provenance::OperationEntry>(trimmed)
                         && let Some(event) = op_to_watch_event(&op)
-                            && should_include_event(
-                                &event.event_type,
-                                &event_filters,
-                                task_filter,
-                                event.task_id.as_deref(),
-                            ) {
-                                let json_line = serde_json::to_string(&event)?;
-                                let mut out = stdout.lock();
-                                if writeln!(out, "{}", json_line).is_err() {
-                                    // Broken pipe - exit cleanly
-                                    return Ok(());
-                                }
-                                let _ = out.flush();
-                            }
+                        && should_include_event(
+                            &event.event_type,
+                            &event_filters,
+                            task_filter,
+                            event.task_id.as_deref(),
+                        )
+                    {
+                        let json_line = serde_json::to_string(&event)?;
+                        let mut out = stdout.lock();
+                        if writeln!(out, "{}", json_line).is_err() {
+                            // Broken pipe - exit cleanly
+                            return Ok(());
+                        }
+                        let _ = out.flush();
+                    }
                 }
                 Err(_) => break,
             }
@@ -209,8 +209,14 @@ mod tests {
         assert_eq!(op_to_event_type("done"), Some("task.completed"));
         assert_eq!(op_to_event_type("fail"), Some("task.failed"));
         assert_eq!(op_to_event_type("retry"), Some("task.retried"));
-        assert_eq!(op_to_event_type("evaluate_record"), Some("evaluation.recorded"));
-        assert_eq!(op_to_event_type("evaluate_auto"), Some("evaluation.recorded"));
+        assert_eq!(
+            op_to_event_type("evaluate_record"),
+            Some("evaluation.recorded")
+        );
+        assert_eq!(
+            op_to_event_type("evaluate_auto"),
+            Some("evaluation.recorded")
+        );
         assert_eq!(op_to_event_type("evaluate"), Some("evaluation.recorded"));
         assert_eq!(op_to_event_type("spawn_agent"), Some("agent.spawned"));
         assert_eq!(op_to_event_type("agent_complete"), Some("agent.completed"));
@@ -253,33 +259,68 @@ mod tests {
     #[test]
     fn test_should_include_event_all_filter() {
         let filters: HashSet<String> = ["all"].iter().map(|s| s.to_string()).collect();
-        assert!(should_include_event("task.created", &filters, None, Some("t1")));
+        assert!(should_include_event(
+            "task.created",
+            &filters,
+            None,
+            Some("t1")
+        ));
         assert!(should_include_event("agent.spawned", &filters, None, None));
     }
 
     #[test]
     fn test_should_include_event_category_filter() {
         let filters: HashSet<String> = ["task_state"].iter().map(|s| s.to_string()).collect();
-        assert!(should_include_event("task.created", &filters, None, Some("t1")));
+        assert!(should_include_event(
+            "task.created",
+            &filters,
+            None,
+            Some("t1")
+        ));
         assert!(!should_include_event("agent.spawned", &filters, None, None));
     }
 
     #[test]
     fn test_should_include_event_exact_type_filter() {
         let filters: HashSet<String> = ["task.created"].iter().map(|s| s.to_string()).collect();
-        assert!(should_include_event("task.created", &filters, None, Some("t1")));
-        assert!(!should_include_event("task.completed", &filters, None, Some("t1")));
+        assert!(should_include_event(
+            "task.created",
+            &filters,
+            None,
+            Some("t1")
+        ));
+        assert!(!should_include_event(
+            "task.completed",
+            &filters,
+            None,
+            Some("t1")
+        ));
     }
 
     #[test]
     fn test_should_include_event_task_prefix_filter() {
         let filters: HashSet<String> = ["all"].iter().map(|s| s.to_string()).collect();
         // Prefix match: "feat-" matches "feat-login"
-        assert!(should_include_event("task.created", &filters, Some("feat-"), Some("feat-login")));
+        assert!(should_include_event(
+            "task.created",
+            &filters,
+            Some("feat-"),
+            Some("feat-login")
+        ));
         // Prefix mismatch
-        assert!(!should_include_event("task.created", &filters, Some("feat-"), Some("bug-fix")));
+        assert!(!should_include_event(
+            "task.created",
+            &filters,
+            Some("feat-"),
+            Some("bug-fix")
+        ));
         // Task filter set but event has no task_id
-        assert!(!should_include_event("task.created", &filters, Some("feat-"), None));
+        assert!(!should_include_event(
+            "task.created",
+            &filters,
+            Some("feat-"),
+            None
+        ));
     }
 
     // ── op_to_watch_event ──

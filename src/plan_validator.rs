@@ -5,8 +5,8 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use crate::graph::{CycleAnalysis, Node, Task, WorkGraph};
 use crate::function::{ForbiddenPattern, StructuralConstraints, TaskTemplate};
+use crate::graph::{CycleAnalysis, Node, Task, WorkGraph};
 
 /// An error discovered during plan validation.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -61,13 +61,15 @@ pub fn validate_plan(
     // --- Task count bounds ---
     let count = tasks.len();
     if let Some(min) = constraints.min_tasks
-        && count < min as usize {
-            errors.push(ValidationError::TooFewTasks { count, min });
-        }
+        && count < min as usize
+    {
+        errors.push(ValidationError::TooFewTasks { count, min });
+    }
     if let Some(max) = constraints.max_tasks
-        && count > max as usize {
-            errors.push(ValidationError::TooManyTasks { count, max });
-        }
+        && count > max as usize
+    {
+        errors.push(ValidationError::TooManyTasks { count, max });
+    }
 
     // --- Required skills coverage ---
     let all_skills: HashSet<&str> = tasks
@@ -216,9 +218,10 @@ fn compute_max_depth(tasks: &[TaskTemplate]) -> u32 {
 
     while let Some((id, depth)) = queue.pop_front() {
         if let Some(&prev) = best.get(id)
-            && depth <= prev {
-                continue;
-            }
+            && depth <= prev
+        {
+            continue;
+        }
         best.insert(id, depth);
         if depth > max_depth {
             max_depth = depth;
@@ -283,10 +286,10 @@ mod tests {
             ..empty_constraints()
         };
         let errs = validate_plan(&tasks, &c).unwrap_err();
-        assert!(errs.iter().any(|e| matches!(
-            e,
-            ValidationError::TooFewTasks { count: 1, min: 3 }
-        )));
+        assert!(
+            errs.iter()
+                .any(|e| matches!(e, ValidationError::TooFewTasks { count: 1, min: 3 }))
+        );
     }
 
     #[test]
@@ -297,10 +300,10 @@ mod tests {
             ..empty_constraints()
         };
         let errs = validate_plan(&tasks, &c).unwrap_err();
-        assert!(errs.iter().any(|e| matches!(
-            e,
-            ValidationError::TooManyTasks { count: 3, max: 2 }
-        )));
+        assert!(
+            errs.iter()
+                .any(|e| matches!(e, ValidationError::TooManyTasks { count: 3, max: 2 }))
+        );
     }
 
     #[test]
@@ -407,9 +410,10 @@ mod tests {
             ..empty_constraints()
         };
         let errs = validate_plan(&tasks, &c).unwrap_err();
-        assert!(errs
-            .iter()
-            .any(|e| matches!(e, ValidationError::CyclesNotAllowed { .. })));
+        assert!(
+            errs.iter()
+                .any(|e| matches!(e, ValidationError::CyclesNotAllowed { .. }))
+        );
     }
 
     #[test]
@@ -489,10 +493,10 @@ mod tests {
             ..empty_constraints()
         };
         let errs = validate_plan(&tasks, &constraints).unwrap_err();
-        assert!(errs.iter().any(|e| matches!(
-            e,
-            ValidationError::DepthExceeded { depth: 3, max: 2 }
-        )));
+        assert!(
+            errs.iter()
+                .any(|e| matches!(e, ValidationError::DepthExceeded { depth: 3, max: 2 }))
+        );
     }
 
     #[test]

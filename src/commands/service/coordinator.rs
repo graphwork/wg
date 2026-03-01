@@ -8,11 +8,9 @@ use std::path::Path;
 use workgraph::agency;
 use workgraph::agency::run_mode::{self, AssignmentPath};
 use workgraph::agency::{
-    AssignerModeContext, AssignmentMode, TaskAssignmentRecord,
-    render_assigner_mode_context, count_assignment_records,
-    find_cached_agent, save_assignment_record,
-    load_agent, load_role, load_tradeoff,
-    render_identity_prompt_rich, resolve_all_components, resolve_outcome,
+    AssignerModeContext, AssignmentMode, TaskAssignmentRecord, count_assignment_records,
+    find_cached_agent, load_agent, load_role, load_tradeoff, render_assigner_mode_context,
+    render_identity_prompt_rich, resolve_all_components, resolve_outcome, save_assignment_record,
 };
 use workgraph::config::Config;
 use workgraph::graph::{LogEntry, Node, Status, Task};
@@ -20,8 +18,8 @@ use workgraph::parser::{load_graph, save_graph};
 use workgraph::query::ready_tasks_with_peers_cycle_aware;
 use workgraph::service::registry::AgentRegistry;
 
-use crate::commands::{graph_path, is_process_alive, spawn};
 use super::triage;
+use crate::commands::{graph_path, is_process_alive, spawn};
 
 /// Result of a single coordinator tick
 pub struct TickResult {
@@ -111,7 +109,11 @@ fn check_ready_or_return(
 /// `wg assign <task-id> <agent-hash>` followed by `wg done assign-{task-id}`.
 ///
 /// Returns `true` if the graph was modified.
-fn build_auto_assign_tasks(graph: &mut workgraph::graph::WorkGraph, config: &Config, dir: &Path) -> bool {
+fn build_auto_assign_tasks(
+    graph: &mut workgraph::graph::WorkGraph,
+    config: &Config,
+    dir: &Path,
+) -> bool {
     let mut modified = false;
 
     let grace_seconds = config.agency.auto_assign_grace_seconds;
@@ -143,8 +145,18 @@ fn build_auto_assign_tasks(graph: &mut workgraph::graph::WorkGraph, config: &Con
     let agency_dir = dir.join("agency");
     let total_assignments = count_assignment_records(&agency_dir.join("assignments")) as u32;
 
-    for (task_id, task_title, task_desc, task_skills, task_agent, task_assigned, task_tags, task_after, task_context_scope, task_created_at) in
-        ready_task_data
+    for (
+        task_id,
+        task_title,
+        task_desc,
+        task_skills,
+        task_agent,
+        task_assigned,
+        task_tags,
+        task_after,
+        task_context_scope,
+        task_created_at,
+    ) in ready_task_data
     {
         // Skip tasks that already have an agent or are already claimed
         if task_agent.is_some() || task_assigned.is_some() {
@@ -166,16 +178,19 @@ fn build_auto_assign_tasks(graph: &mut workgraph::graph::WorkGraph, config: &Con
         // dependencies wired shortly after (e.g., `wg add` then `wg edit --add-after`).
         if grace_seconds > 0
             && let Some(ref created_str) = task_created_at
-                && let Ok(created) = created_str.parse::<chrono::DateTime<chrono::Utc>>() {
-                    let age = Utc::now().signed_duration_since(created);
-                    if age.num_seconds() < grace_seconds as i64 {
-                        eprintln!(
-                            "[coordinator] Skipping auto-assign for '{}': created {}s ago (grace period: {}s)",
-                            task_id, age.num_seconds(), grace_seconds,
-                        );
-                        continue;
-                    }
-                }
+            && let Ok(created) = created_str.parse::<chrono::DateTime<chrono::Utc>>()
+        {
+            let age = Utc::now().signed_duration_since(created);
+            if age.num_seconds() < grace_seconds as i64 {
+                eprintln!(
+                    "[coordinator] Skipping auto-assign for '{}': created {}s ago (grace period: {}s)",
+                    task_id,
+                    age.num_seconds(),
+                    grace_seconds,
+                );
+                continue;
+            }
+        }
 
         let assign_task_id = format!("assign-{}", task_id);
 
@@ -188,20 +203,24 @@ fn build_auto_assign_tasks(graph: &mut workgraph::graph::WorkGraph, config: &Con
         let rng_value: f64 = {
             // Simple deterministic pseudo-random from task_id hash to avoid
             // requiring rand crate. Provides adequate entropy for routing.
-            let hash = task_id.bytes().fold(0u64, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u64));
+            let hash = task_id
+                .bytes()
+                .fold(0u64, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u64));
             (hash % 10000) as f64 / 10000.0
         };
-        let assignment_path = run_mode::determine_assignment_path(
-            &config.agency,
-            total_assignments,
-            rng_value,
-        );
+        let assignment_path =
+            run_mode::determine_assignment_path(&config.agency, total_assignments, rng_value);
 
         // Build mode-specific context for the assigner
         let experiment = match assignment_path {
             AssignmentPath::Learning | AssignmentPath::ForcedExploration => {
-                let learning_count = count_assignment_records(&agency_dir.join("assignments")) as u32;
-                Some(run_mode::design_experiment(&agency_dir, &config.agency, learning_count))
+                let learning_count =
+                    count_assignment_records(&agency_dir.join("assignments")) as u32;
+                Some(run_mode::design_experiment(
+                    &agency_dir,
+                    &config.agency,
+                    learning_count,
+                ))
             }
             AssignmentPath::Performance => None,
         };
@@ -209,25 +228,30 @@ fn build_auto_assign_tasks(graph: &mut workgraph::graph::WorkGraph, config: &Con
         let cached_agents: Vec<(String, f64)> = if assignment_path == AssignmentPath::Performance {
             // Gather top cached agents for the performance mode context
             let agents_dir = agency_dir.join("cache/agents");
-            let mut agents_with_scores: Vec<(String, f64)> = agency::load_all_agents_or_warn(&agents_dir)
-                .into_iter()
-                .filter_map(|a| {
-                    let score = a.performance.avg_score?;
-                    if a.staleness_flags.is_empty() {
-                        Some((format!("{} ({})", a.name, agency::short_hash(&a.id)), score))
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-            agents_with_scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+            let mut agents_with_scores: Vec<(String, f64)> =
+                agency::load_all_agents_or_warn(&agents_dir)
+                    .into_iter()
+                    .filter_map(|a| {
+                        let score = a.performance.avg_score?;
+                        if a.staleness_flags.is_empty() {
+                            Some((format!("{} ({})", a.name, agency::short_hash(&a.id)), score))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+            agents_with_scores
+                .sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
             agents_with_scores.truncate(5); // Top 5
             agents_with_scores
         } else {
             vec![]
         };
 
-        let effective_rate = config.agency.run_mode.max(config.agency.min_exploration_rate);
+        let effective_rate = config
+            .agency
+            .run_mode
+            .max(config.agency.min_exploration_rate);
         let mode_context = render_assigner_mode_context(&AssignerModeContext {
             run_mode: config.agency.run_mode,
             effective_exploration_rate: effective_rate,
@@ -243,8 +267,8 @@ fn build_auto_assign_tasks(graph: &mut workgraph::graph::WorkGraph, config: &Con
         );
 
         // Detect task underspecification
-        let is_underspecified = task_desc.is_none()
-            || task_desc.as_ref().map(|d| d.len() < 20).unwrap_or(true);
+        let is_underspecified =
+            task_desc.is_none() || task_desc.as_ref().map(|d| d.len() < 20).unwrap_or(true);
         let has_no_skills = task_skills.is_empty();
         let underspec_warning = if is_underspecified || has_no_skills {
             let mut warnings = Vec::new();
@@ -265,21 +289,30 @@ fn build_auto_assign_tasks(graph: &mut workgraph::graph::WorkGraph, config: &Con
         };
 
         // Resolve assigner agent identity (if configured via assigner_agent hash)
-        let assigner_identity = config.agency.assigner_agent.as_ref().and_then(|agent_hash| {
-            let agents_dir = agency_dir.join("cache/agents");
-            let agent_path = agents_dir.join(format!("{}.yaml", agent_hash));
-            let agent = load_agent(&agent_path).ok()?;
-            let roles_dir = agency_dir.join("cache/roles");
-            let role_path = roles_dir.join(format!("{}.yaml", agent.role_id));
-            let role = load_role(&role_path).ok()?;
-            let tradeoffs_dir = agency_dir.join("primitives/tradeoffs");
-            let tradeoff_path = tradeoffs_dir.join(format!("{}.yaml", agent.tradeoff_id));
-            let tradeoff = load_tradeoff(&tradeoff_path).ok()?;
-            let workgraph_root = dir;
-            let resolved_skills = resolve_all_components(&role, workgraph_root, &agency_dir);
-            let outcome = resolve_outcome(&role.outcome_id, &agency_dir);
-            Some(render_identity_prompt_rich(&role, &tradeoff, &resolved_skills, outcome.as_ref()))
-        });
+        let assigner_identity = config
+            .agency
+            .assigner_agent
+            .as_ref()
+            .and_then(|agent_hash| {
+                let agents_dir = agency_dir.join("cache/agents");
+                let agent_path = agents_dir.join(format!("{}.yaml", agent_hash));
+                let agent = load_agent(&agent_path).ok()?;
+                let roles_dir = agency_dir.join("cache/roles");
+                let role_path = roles_dir.join(format!("{}.yaml", agent.role_id));
+                let role = load_role(&role_path).ok()?;
+                let tradeoffs_dir = agency_dir.join("primitives/tradeoffs");
+                let tradeoff_path = tradeoffs_dir.join(format!("{}.yaml", agent.tradeoff_id));
+                let tradeoff = load_tradeoff(&tradeoff_path).ok()?;
+                let workgraph_root = dir;
+                let resolved_skills = resolve_all_components(&role, workgraph_root, &agency_dir);
+                let outcome = resolve_outcome(&role.outcome_id, &agency_dir);
+                Some(render_identity_prompt_rich(
+                    &role,
+                    &tradeoff,
+                    &resolved_skills,
+                    outcome.as_ref(),
+                ))
+            });
 
         // Build description for the assigner with the original task's context
         let mut desc = String::new();
@@ -299,7 +332,11 @@ fn build_auto_assign_tasks(graph: &mut workgraph::graph::WorkGraph, config: &Con
             desc.push_str(&format!("**Skills:** {}\n", task_skills.join(", ")));
         }
         if !task_after.is_empty() {
-            desc.push_str(&format!("**Dependencies ({}):** {}\n", task_after.len(), task_after.join(", ")));
+            desc.push_str(&format!(
+                "**Dependencies ({}):** {}\n",
+                task_after.len(),
+                task_after.join(", ")
+            ));
         }
         if let Some(ref scope) = task_context_scope {
             desc.push_str(&format!("**Context scope (pre-set):** {}\n", scope));
@@ -452,7 +489,7 @@ fn build_auto_assign_tasks(graph: &mut workgraph::graph::WorkGraph, config: &Con
             context_scope: None,
             cycle_config: None,
             token_usage: None,
-        exec_mode: None,
+            exec_mode: None,
         };
 
         graph.add_node(Node::Task(assign_task));
@@ -476,11 +513,17 @@ fn build_auto_assign_tasks(graph: &mut workgraph::graph::WorkGraph, config: &Con
             }
             AssignmentPath::Learning => {
                 // experiment is always Some for Learning path
-                AssignmentMode::Learning(experiment.clone().expect("experiment required for Learning path"))
+                AssignmentMode::Learning(
+                    experiment
+                        .clone()
+                        .expect("experiment required for Learning path"),
+                )
             }
-            AssignmentPath::ForcedExploration => {
-                AssignmentMode::ForcedExploration(experiment.clone().expect("experiment required for ForcedExploration path"))
-            }
+            AssignmentPath::ForcedExploration => AssignmentMode::ForcedExploration(
+                experiment
+                    .clone()
+                    .expect("experiment required for ForcedExploration path"),
+            ),
         };
 
         let record = TaskAssignmentRecord {
@@ -578,22 +621,31 @@ fn build_auto_evaluate_tasks(
         .collect();
 
     // Resolve evaluator agent identity once (shared across all eval tasks)
-    let evaluator_identity = config.agency.evaluator_agent.as_ref().and_then(|agent_hash| {
-        let agency_dir = dir.join("agency");
-        let agents_dir = agency_dir.join("cache/agents");
-        let agent_path = agents_dir.join(format!("{}.yaml", agent_hash));
-        let agent = load_agent(&agent_path).ok()?;
-        let roles_dir = agency_dir.join("cache/roles");
-        let role_path = roles_dir.join(format!("{}.yaml", agent.role_id));
-        let role = load_role(&role_path).ok()?;
-        let tradeoffs_dir = agency_dir.join("primitives/tradeoffs");
-        let tradeoff_path = tradeoffs_dir.join(format!("{}.yaml", agent.tradeoff_id));
-        let tradeoff = load_tradeoff(&tradeoff_path).ok()?;
-        let workgraph_root = dir;
-        let resolved_skills = resolve_all_components(&role, workgraph_root, &agency_dir);
-        let outcome = resolve_outcome(&role.outcome_id, &agency_dir);
-        Some(render_identity_prompt_rich(&role, &tradeoff, &resolved_skills, outcome.as_ref()))
-    });
+    let evaluator_identity = config
+        .agency
+        .evaluator_agent
+        .as_ref()
+        .and_then(|agent_hash| {
+            let agency_dir = dir.join("agency");
+            let agents_dir = agency_dir.join("cache/agents");
+            let agent_path = agents_dir.join(format!("{}.yaml", agent_hash));
+            let agent = load_agent(&agent_path).ok()?;
+            let roles_dir = agency_dir.join("cache/roles");
+            let role_path = roles_dir.join(format!("{}.yaml", agent.role_id));
+            let role = load_role(&role_path).ok()?;
+            let tradeoffs_dir = agency_dir.join("primitives/tradeoffs");
+            let tradeoff_path = tradeoffs_dir.join(format!("{}.yaml", agent.tradeoff_id));
+            let tradeoff = load_tradeoff(&tradeoff_path).ok()?;
+            let workgraph_root = dir;
+            let resolved_skills = resolve_all_components(&role, workgraph_root, &agency_dir);
+            let outcome = resolve_outcome(&role.outcome_id, &agency_dir);
+            Some(render_identity_prompt_rich(
+                &role,
+                &tradeoff,
+                &resolved_skills,
+                outcome.as_ref(),
+            ))
+        });
 
     for (task_id, task_title) in &tasks_needing_eval {
         let eval_task_id = format!("evaluate-{}", task_id);
@@ -651,7 +703,7 @@ fn build_auto_evaluate_tasks(
             visibility: "internal".to_string(),
             context_scope: None,
             cycle_config: None,
-        exec_mode: None,
+            exec_mode: None,
             token_usage: None,
         };
 
@@ -659,9 +711,10 @@ fn build_auto_evaluate_tasks(
 
         // Tag the source task so we never recreate the eval task after gc.
         if let Some(source) = graph.get_task_mut(task_id)
-            && !source.tags.iter().any(|t| t == "eval-scheduled") {
-                source.tags.push("eval-scheduled".to_string());
-            }
+            && !source.tags.iter().any(|t| t == "eval-scheduled")
+        {
+            source.tags.push("eval-scheduled".to_string());
+        }
 
         eprintln!(
             "[coordinator] Created evaluation task '{}' blocked by '{}'",
@@ -705,7 +758,6 @@ fn build_auto_evaluate_tasks(
     modified
 }
 
-
 /// Spawn an evaluation task directly without the full agent spawn machinery.
 ///
 /// Instead of coordinator -> run.sh -> bash -> `wg evaluate` -> claude, this
@@ -729,7 +781,11 @@ fn spawn_eval_inline(
 
     let task = graph.get_task_mut_or_err(eval_task_id)?;
     if task.status != Status::Open {
-        anyhow::bail!("Eval task '{}' is not open (status: {:?})", eval_task_id, task.status);
+        anyhow::bail!(
+            "Eval task '{}' is not open (status: {:?})",
+            eval_task_id,
+            task.status
+        );
     }
 
     // Use the task's exec command directly if it starts with "wg evaluate".
@@ -743,14 +799,19 @@ fn spawn_eval_inline(
         let source_task_id = eval_task_id
             .strip_prefix("evaluate-")
             .unwrap_or(eval_task_id);
-        format!("wg evaluate run '{}'", source_task_id.replace('\'', "'\\''"))
+        format!(
+            "wg evaluate run '{}'",
+            source_task_id.replace('\'', "'\\''")
+        )
     };
 
     // Resolve the special agent (evaluator) hash for performance recording.
     // After the inline eval completes, we record an Evaluation against this
     // agent so it accumulates performance history like any other agent.
     let config = Config::load_or_default(dir);
-    let special_agent_hash = task.agent.clone()
+    let special_agent_hash = task
+        .agent
+        .clone()
         .or_else(|| config.agency.evaluator_agent.clone());
 
     // Set up minimal agent tracking
@@ -774,7 +835,9 @@ fn spawn_eval_inline(
     let special_agent_verified = special_agent_hash.as_ref().and_then(|hash| {
         let agency_dir = dir.join("agency");
         let agents_dir = agency_dir.join("cache/agents");
-        agency::find_agent_by_prefix(&agents_dir, hash).ok().map(|a| a.id)
+        agency::find_agent_by_prefix(&agents_dir, hash)
+            .ok()
+            .map(|a| a.id)
     });
 
     // Single script: run eval, record special agent perf, then mark done/failed
@@ -847,17 +910,18 @@ exit $EXIT_CODE"#,
         Err(e) => {
             // Rollback the claim
             if let Ok(mut rollback_graph) = load_graph(&graph_path)
-                && let Some(t) = rollback_graph.get_task_mut(eval_task_id) {
-                    t.status = Status::Open;
-                    t.started_at = None;
-                    t.assigned = None;
-                    t.log.push(LogEntry {
-                        timestamp: Utc::now().to_rfc3339(),
-                        actor: Some(agent_id.clone()),
-                        message: format!("Eval spawn failed, reverting claim: {}", e),
-                    });
-                    let _ = save_graph(&rollback_graph, &graph_path);
-                }
+                && let Some(t) = rollback_graph.get_task_mut(eval_task_id)
+            {
+                t.status = Status::Open;
+                t.started_at = None;
+                t.assigned = None;
+                t.log.push(LogEntry {
+                    timestamp: Utc::now().to_rfc3339(),
+                    actor: Some(agent_id.clone()),
+                    message: format!("Eval spawn failed, reverting claim: {}", e),
+                });
+                let _ = save_graph(&rollback_graph, &graph_path);
+            }
             return Err(anyhow::anyhow!("Failed to spawn eval process: {}", e));
         }
     };
@@ -872,7 +936,9 @@ exit $EXIT_CODE"#,
         &output_file_str,
         evaluator_model,
     );
-    agent_registry.save(dir).context("Failed to save agent registry after eval spawn")?;
+    agent_registry
+        .save(dir)
+        .context("Failed to save agent registry after eval spawn")?;
 
     Ok((agent_id, pid))
 }
@@ -901,15 +967,16 @@ fn spawn_agents_for_ready_tasks(
         // Evaluation tasks run inline: fork `wg evaluate`
         // directly instead of going through the full spawn machinery
         // (run.sh, executor config, etc.)
-        let is_eval_task = task.tags.iter().any(|t| t == "evaluation")
-            && task.exec.is_some();
+        let is_eval_task = task.tags.iter().any(|t| t == "evaluation") && task.exec.is_some();
         if is_eval_task {
             let eval_model = task.model.as_deref();
             eprintln!(
                 "[coordinator] Spawning eval inline for: {} - {}{}",
                 task.id,
                 task.title,
-                eval_model.map(|m| format!(" (model: {})", m)).unwrap_or_default(),
+                eval_model
+                    .map(|m| format!(" (model: {})", m))
+                    .unwrap_or_default(),
             );
             match spawn_eval_inline(dir, &task.id, eval_model) {
                 Ok((agent_id, pid)) => {
@@ -1029,7 +1096,10 @@ mod tests {
         let exec = Some("wg evaluate run my-source-task".to_string());
         let source_id = exec
             .as_deref()
-            .and_then(|e| e.strip_prefix("wg evaluate run ").or_else(|| e.strip_prefix("wg evaluate ")))
+            .and_then(|e| {
+                e.strip_prefix("wg evaluate run ")
+                    .or_else(|| e.strip_prefix("wg evaluate "))
+            })
             .unwrap_or("fallback");
         assert_eq!(source_id, "my-source-task");
     }
@@ -1041,7 +1111,10 @@ mod tests {
         let eval_task_id = "evaluate-some-task";
         let source_id = exec
             .as_deref()
-            .and_then(|e| e.strip_prefix("wg evaluate run ").or_else(|| e.strip_prefix("wg evaluate ")))
+            .and_then(|e| {
+                e.strip_prefix("wg evaluate run ")
+                    .or_else(|| e.strip_prefix("wg evaluate "))
+            })
             .unwrap_or_else(|| {
                 eval_task_id
                     .strip_prefix("evaluate-")

@@ -3,7 +3,7 @@ use chrono::{DateTime, Utc};
 use serde::Serialize;
 use std::path::Path;
 use workgraph::graph::{
-    format_tokens, parse_token_usage_live, CycleConfig, LogEntry, LoopGuard, Status, TokenUsage,
+    CycleConfig, LogEntry, LoopGuard, Status, TokenUsage, format_tokens, parse_token_usage_live,
 };
 use workgraph::query::build_reverse_index;
 
@@ -373,7 +373,11 @@ fn print_human_readable(details: &TaskDetails) {
     // Token usage
     if let Some(ref usage) = details.token_usage {
         println!();
-        let compact = format!("{}/{}", format_tokens(usage.total_input()), format_tokens(usage.output_tokens));
+        let compact = format!(
+            "{}/{}",
+            format_tokens(usage.total_input()),
+            format_tokens(usage.output_tokens)
+        );
         println!("Tokens: {} (in/out)", compact);
         if usage.cost_usd > 0.0 {
             println!("Cost: ${:.2}", usage.cost_usd);

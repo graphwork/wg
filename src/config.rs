@@ -148,7 +148,6 @@ impl Default for GuardrailsConfig {
     }
 }
 
-
 /// Visualization configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VizConfig {
@@ -169,17 +168,36 @@ impl Default for VizConfig {
     }
 }
 
-fn default_auto_create_threshold() -> u32 { 20 }
-fn default_run_mode() -> f64 { 0.2 }
-fn default_min_exploration_rate() -> f64 { 0.05 }
-fn default_exploration_interval() -> u32 { 20 }
-fn default_cache_population_threshold() -> f64 { 0.8 }
-fn default_ucb_exploration_constant() -> f64 { std::f64::consts::SQRT_2 }
-fn default_novelty_bonus_multiplier() -> f64 { 1.5 }
-fn default_bizarre_ideation_interval() -> u32 { 10 }
-fn default_performance_threshold() -> f64 { 0.7 }
-fn default_auto_assign_grace_seconds() -> u64 { 10 }
-
+fn default_auto_create_threshold() -> u32 {
+    20
+}
+fn default_run_mode() -> f64 {
+    0.2
+}
+fn default_min_exploration_rate() -> f64 {
+    0.05
+}
+fn default_exploration_interval() -> u32 {
+    20
+}
+fn default_cache_population_threshold() -> f64 {
+    0.8
+}
+fn default_ucb_exploration_constant() -> f64 {
+    std::f64::consts::SQRT_2
+}
+fn default_novelty_bonus_multiplier() -> f64 {
+    1.5
+}
+fn default_bizarre_ideation_interval() -> u32 {
+    10
+}
+fn default_performance_threshold() -> f64 {
+    0.7
+}
+fn default_auto_assign_grace_seconds() -> u64 {
+    10
+}
 
 /// Agency (evolutionary identity system) configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -690,12 +708,11 @@ impl Config {
         if !path.exists() {
             return Ok(toml::Value::Table(toml::map::Map::new()));
         }
-        let content = fs::read_to_string(path).map_err(|e| {
-            anyhow::anyhow!("Failed to read config at {}: {}", path.display(), e)
-        })?;
-        let val: toml::Value = content.parse().map_err(|e| {
-            anyhow::anyhow!("Failed to parse config at {}: {}", path.display(), e)
-        })?;
+        let content = fs::read_to_string(path)
+            .map_err(|e| anyhow::anyhow!("Failed to read config at {}: {}", path.display(), e))?;
+        let val: toml::Value = content
+            .parse()
+            .map_err(|e| anyhow::anyhow!("Failed to parse config at {}: {}", path.display(), e))?;
         Ok(val)
     }
 
@@ -709,9 +726,9 @@ impl Config {
         let local_val = Self::load_toml_value(&local_path)?;
 
         let merged = merge_toml(global_val, local_val);
-        let config: Config = merged.try_into().map_err(|e| {
-            anyhow::anyhow!("Failed to deserialize merged config: {}", e)
-        })?;
+        let config: Config = merged
+            .try_into()
+            .map_err(|e| anyhow::anyhow!("Failed to deserialize merged config: {}", e))?;
 
         Ok(config)
     }
@@ -833,16 +850,21 @@ impl Config {
 
         // Merge and deserialize
         let merged = merge_toml(global_val, local_val);
-        let config: Config = merged.try_into().map_err(|e| {
-            anyhow::anyhow!("Failed to deserialize merged config: {}", e)
-        })?;
+        let config: Config = merged
+            .try_into()
+            .map_err(|e| anyhow::anyhow!("Failed to deserialize merged config: {}", e))?;
 
         // Fill in defaults for keys not present in either file
         let default_config = Config::default();
         let default_val: toml::Value = toml::Value::try_from(&default_config)
             .unwrap_or(toml::Value::Table(toml::map::Map::new()));
         let mut default_sources = BTreeMap::new();
-        record_sources(&default_val, "", &ConfigSource::Default, &mut default_sources);
+        record_sources(
+            &default_val,
+            "",
+            &ConfigSource::Default,
+            &mut default_sources,
+        );
         for (key, src) in default_sources {
             sources.entry(key).or_insert(src);
         }
@@ -994,7 +1016,10 @@ name = "My Project"
         assert!((config.agency.min_exploration_rate - 0.05).abs() < f64::EPSILON);
         assert_eq!(config.agency.exploration_interval, 20);
         assert!((config.agency.cache_population_threshold - 0.8).abs() < f64::EPSILON);
-        assert!((config.agency.ucb_exploration_constant - std::f64::consts::SQRT_2).abs() < f64::EPSILON);
+        assert!(
+            (config.agency.ucb_exploration_constant - std::f64::consts::SQRT_2).abs()
+                < f64::EPSILON
+        );
         assert!((config.agency.novelty_bonus_multiplier - 1.5).abs() < f64::EPSILON);
         assert_eq!(config.agency.bizarre_ideation_interval, 10);
         assert!((config.agency.performance_threshold - 0.7).abs() < f64::EPSILON);
@@ -1179,9 +1204,7 @@ model = "sonnet"
         let local = toml::Value::Table(toml::map::Map::new());
         let merged = merge_toml(global, local);
         assert_eq!(
-            merged.as_table().unwrap()["agent"]
-                .as_table()
-                .unwrap()["model"]
+            merged.as_table().unwrap()["agent"].as_table().unwrap()["model"]
                 .as_str()
                 .unwrap(),
             "sonnet"
@@ -1200,9 +1223,7 @@ model = "haiku"
         .unwrap();
         let merged = merge_toml(global, local);
         assert_eq!(
-            merged.as_table().unwrap()["agent"]
-                .as_table()
-                .unwrap()["model"]
+            merged.as_table().unwrap()["agent"].as_table().unwrap()["model"]
                 .as_str()
                 .unwrap(),
             "haiku"

@@ -28,7 +28,9 @@ fn local_store(workgraph_dir: &Path, global: bool) -> Result<LocalStore> {
     };
     if !LocalStore::new(&path).is_valid() {
         if global {
-            anyhow::bail!("No global agency store found at ~/.workgraph/agency/. Run 'wg agency init' first.");
+            anyhow::bail!(
+                "No global agency store found at ~/.workgraph/agency/. Run 'wg agency init' first."
+            );
         } else {
             anyhow::bail!("No local agency store found. Run 'wg agency init' first.");
         }
@@ -49,7 +51,10 @@ pub fn run(workgraph_dir: &Path, opts: &PushOptions<'_>) -> Result<()> {
         Some("role" | "roles") => EntityFilter::Roles,
         Some("motivation" | "motivations" | "tradeoff" | "tradeoffs") => EntityFilter::Tradeoffs,
         Some("agent" | "agents") => EntityFilter::Agents,
-        Some(other) => anyhow::bail!("Unknown entity type '{}'. Use: component, outcome, role, tradeoff, motivation, or agent", other),
+        Some(other) => anyhow::bail!(
+            "Unknown entity type '{}'. Use: component, outcome, role, tradeoff, motivation, or agent",
+            other
+        ),
         None => EntityFilter::All,
     };
 
@@ -95,7 +100,10 @@ pub fn run(workgraph_dir: &Path, opts: &PushOptions<'_>) -> Result<()> {
         });
         println!("{}", serde_json::to_string_pretty(&output)?);
     } else if opts.dry_run {
-        println!("Dry run — would push to {}:", target_store.store_path().display());
+        println!(
+            "Dry run — would push to {}:",
+            target_store.store_path().display()
+        );
         println!("{}", summary);
     } else {
         println!("Pushed to {}:", target_store.store_path().display());
@@ -109,7 +117,9 @@ pub fn run(workgraph_dir: &Path, opts: &PushOptions<'_>) -> Result<()> {
 mod tests {
     use super::*;
     use tempfile::TempDir;
-    use workgraph::agency::{self, Agent, AgencyStore, TradeoffConfig, PerformanceRecord, Role, Lineage};
+    use workgraph::agency::{
+        self, AgencyStore, Agent, Lineage, PerformanceRecord, Role, TradeoffConfig,
+    };
     use workgraph::graph::TrustLevel;
 
     fn setup_store(tmp: &TempDir, name: &str) -> LocalStore {
@@ -192,7 +202,9 @@ mod tests {
 
         let source = LocalStore::new(&agency_dir);
         source.save_role(&make_role("r1", "tester")).unwrap();
-        source.save_tradeoff(&make_motivation("m1", "quality")).unwrap();
+        source
+            .save_tradeoff(&make_motivation("m1", "quality"))
+            .unwrap();
 
         // Target doesn't exist yet — push should create it
         let target_path = tmp.path().join("target");
@@ -228,11 +240,15 @@ mod tests {
         );
         std::fs::write(wg_dir.join("federation.yaml"), federation_yaml).unwrap();
 
-        run(&wg_dir, &PushOptions {
-            target: "downstream",
-            no_evaluations: true,
-            ..default_opts("")
-        }).unwrap();
+        run(
+            &wg_dir,
+            &PushOptions {
+                target: "downstream",
+                no_evaluations: true,
+                ..default_opts("")
+            },
+        )
+        .unwrap();
 
         assert!(target.exists_role("r1"));
     }
@@ -248,13 +264,21 @@ mod tests {
         let target_path = tmp.path().join("target");
         std::fs::create_dir_all(&target_path).unwrap();
 
-        let result = run(&wg_dir, &PushOptions {
-            target: target_path.to_str().unwrap(),
-            entity_type: Some("invalid_type"),
-            ..default_opts("")
-        });
+        let result = run(
+            &wg_dir,
+            &PushOptions {
+                target: target_path.to_str().unwrap(),
+                entity_type: Some("invalid_type"),
+                ..default_opts("")
+            },
+        );
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Unknown entity type"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Unknown entity type")
+        );
     }
 
     #[test]
@@ -269,7 +293,12 @@ mod tests {
 
         let result = run(&wg_dir, &default_opts(target_path.to_str().unwrap()));
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("No local agency store"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("No local agency store")
+        );
     }
 
     #[test]
@@ -285,11 +314,15 @@ mod tests {
 
         let target = setup_store(&tmp, "target");
 
-        run(&wg_dir, &PushOptions {
-            target: target.store_path().to_str().unwrap(),
-            dry_run: true,
-            ..default_opts("")
-        }).unwrap();
+        run(
+            &wg_dir,
+            &PushOptions {
+                target: target.store_path().to_str().unwrap(),
+                dry_run: true,
+                ..default_opts("")
+            },
+        )
+        .unwrap();
 
         assert!(!target.exists_role("r1"));
     }
@@ -308,11 +341,15 @@ mod tests {
 
         let target = setup_store(&tmp, "target");
 
-        run(&wg_dir, &PushOptions {
-            target: target.store_path().to_str().unwrap(),
-            entity_type: Some("role"),
-            ..default_opts("")
-        }).unwrap();
+        run(
+            &wg_dir,
+            &PushOptions {
+                target: target.store_path().to_str().unwrap(),
+                entity_type: Some("role"),
+                ..default_opts("")
+            },
+        )
+        .unwrap();
 
         assert!(target.exists_role("r1"));
         assert!(!target.exists_tradeoff("m1"));
@@ -328,16 +365,24 @@ mod tests {
 
         let source = LocalStore::new(&agency_dir);
         source.save_role(&make_role("r1", "builder")).unwrap();
-        source.save_tradeoff(&make_motivation("m1", "speed")).unwrap();
-        source.save_agent(&make_agent("a1", "fast-builder", "r1", "m1")).unwrap();
+        source
+            .save_tradeoff(&make_motivation("m1", "speed"))
+            .unwrap();
+        source
+            .save_agent(&make_agent("a1", "fast-builder", "r1", "m1"))
+            .unwrap();
 
         let target = setup_store(&tmp, "target");
 
-        run(&wg_dir, &PushOptions {
-            target: target.store_path().to_str().unwrap(),
-            entity_type: Some("agent"),
-            ..default_opts("")
-        }).unwrap();
+        run(
+            &wg_dir,
+            &PushOptions {
+                target: target.store_path().to_str().unwrap(),
+                entity_type: Some("agent"),
+                ..default_opts("")
+            },
+        )
+        .unwrap();
 
         assert!(target.exists_agent("a1"));
         assert!(target.exists_role("r1"));

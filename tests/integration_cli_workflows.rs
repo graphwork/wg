@@ -446,14 +446,7 @@ fn test_add_with_dependencies() {
 
     wg_ok(
         &wg_dir,
-        &[
-            "add",
-            "Dependent task",
-            "--id",
-            "child1",
-            "--after",
-            "dep1",
-        ],
+        &["add", "Dependent task", "--id", "child1", "--after", "dep1"],
     );
 
     let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
@@ -858,10 +851,7 @@ fn test_list_json_fields() {
         assert!(item["id"].is_string(), "id should be a string");
         assert!(item["title"].is_string(), "title should be a string");
         assert!(item["status"].is_string(), "status should be a string");
-        assert!(
-            item["after"].is_array(),
-            "after should be an array"
-        );
+        assert!(item["after"].is_array(), "after should be an array");
     }
 
     // Verify specific values
@@ -986,10 +976,7 @@ fn test_ready_json_fields() {
 #[test]
 fn test_ready_json_empty() {
     let tmp = TempDir::new().unwrap();
-    let wg_dir = setup_workgraph(
-        &tmp,
-        vec![make_task("done1", "Already done", Status::Done)],
-    );
+    let wg_dir = setup_workgraph(&tmp, vec![make_task("done1", "Already done", Status::Done)]);
 
     let output = wg_ok(&wg_dir, &["ready", "--json"]);
     let parsed = parse_json(&output, "ready");
@@ -1030,7 +1017,9 @@ fn test_blocked_json_fields() {
 
     let output = wg_ok(&wg_dir, &["blocked", "child", "--json"]);
     let parsed = parse_json(&output, "blocked");
-    let arr = parsed.as_array().expect("blocked --json should be an array");
+    let arr = parsed
+        .as_array()
+        .expect("blocked --json should be an array");
     assert_eq!(arr.len(), 2);
 
     // Each blocker must have id, title, status
@@ -1120,7 +1109,12 @@ fn test_context_json_fields() {
     let ctx = parsed["available_context"].as_array().unwrap();
     assert_eq!(ctx.len(), 1);
     assert_eq!(ctx[0]["task_id"], "dep");
-    assert!(ctx[0]["artifacts"].as_array().unwrap().contains(&serde_json::json!("output.txt")));
+    assert!(
+        ctx[0]["artifacts"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("output.txt"))
+    );
 }
 
 #[test]
@@ -1311,7 +1305,9 @@ fn test_log_list_json_output() {
 
     let output = wg_ok(&wg_dir, &["log", "lt", "--list", "--json"]);
     let parsed = parse_json(&output, "log --list");
-    let arr = parsed.as_array().expect("log --list --json should be an array");
+    let arr = parsed
+        .as_array()
+        .expect("log --list --json should be an array");
     assert!(!arr.is_empty());
     assert!(arr[0]["message"].is_string());
     assert!(arr[0]["timestamp"].is_string());

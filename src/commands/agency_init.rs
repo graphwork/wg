@@ -93,7 +93,9 @@ pub fn run(workgraph_dir: &Path) -> Result<()> {
         let role = special_roles
             .iter()
             .find(|r| r.name == *role_name)
-            .ok_or_else(|| anyhow::anyhow!("{} role missing from special_agent_roles()", role_name))?;
+            .ok_or_else(|| {
+                anyhow::anyhow!("{} role missing from special_agent_roles()", role_name)
+            })?;
         let tradeoff = special_tradeoffs
             .iter()
             .find(|t| t.name == *tradeoff_name)
@@ -196,7 +198,10 @@ pub fn run(workgraph_dir: &Path) -> Result<()> {
     if !pipeline_path.exists() {
         let func = agency::creator_pipeline_function();
         if let Err(e) = workgraph::function::save_function(&func, &func_dir) {
-            eprintln!("Warning: failed to register creator-pipeline function: {}", e);
+            eprintln!(
+                "Warning: failed to register creator-pipeline function: {}",
+                e
+            );
         } else {
             println!("Registered creator-pipeline function (creator → evolver → assigner).");
         }

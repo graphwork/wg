@@ -158,8 +158,8 @@ pub struct FunctionOutput {
 pub enum FunctionVisibility {
     #[default]
     Internal, // only within this workgraph
-    Peer,     // discoverable by federated peers, redaction applies
-    Public,   // fully portable, provenance stripped
+    Peer,   // discoverable by federated peers, redaction applies
+    Public, // fully portable, provenance stripped
 }
 
 impl FunctionVisibility {
@@ -193,7 +193,6 @@ impl Ord for FunctionVisibility {
         self.openness().cmp(&other.openness())
     }
 }
-
 
 impl std::fmt::Display for FunctionVisibility {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -495,19 +494,21 @@ fn validate_value(
                 ))
             })?;
             if let Some(min) = def.min
-                && num < min {
-                    return Err(TraceFunctionError::Validation(format!(
-                        "Input '{}' value {} is below minimum {}",
-                        name, num, min
-                    )));
-                }
+                && num < min
+            {
+                return Err(TraceFunctionError::Validation(format!(
+                    "Input '{}' value {} is below minimum {}",
+                    name, num, min
+                )));
+            }
             if let Some(max) = def.max
-                && num > max {
-                    return Err(TraceFunctionError::Validation(format!(
-                        "Input '{}' value {} exceeds maximum {}",
-                        name, num, max
-                    )));
-                }
+                && num > max
+            {
+                return Err(TraceFunctionError::Validation(format!(
+                    "Input '{}' value {} exceeds maximum {}",
+                    name, num, max
+                )));
+            }
         }
         InputType::FileList => {
             if !value.is_sequence() {
@@ -536,14 +537,15 @@ fn validate_value(
                 ))
             })?;
             if let Some(ref allowed) = def.values
-                && !allowed.iter().any(|v| v == s) {
-                    return Err(TraceFunctionError::Validation(format!(
-                        "Input '{}' value '{}' is not one of: {}",
-                        name,
-                        s,
-                        allowed.join(", ")
-                    )));
-                }
+                && !allowed.iter().any(|v| v == s)
+            {
+                return Err(TraceFunctionError::Validation(format!(
+                    "Input '{}' value '{}' is not one of: {}",
+                    name,
+                    s,
+                    allowed.join(", ")
+                )));
+            }
         }
         InputType::Json => {
             // Any YAML value is valid as JSON
@@ -616,7 +618,11 @@ pub fn substitute_task_template(
         template_id: template.template_id.clone(),
         title: substitute(&template.title, inputs),
         description: substitute(&template.description, inputs),
-        skills: template.skills.iter().map(|s| substitute(s, inputs)).collect(),
+        skills: template
+            .skills
+            .iter()
+            .map(|s| substitute(s, inputs))
+            .collect(),
         after: template.after.clone(),
         loops_to: template.loops_to.clone(),
         role_hint: template.role_hint.clone(),
@@ -713,9 +719,7 @@ fn looks_like_path(s: &str) -> bool {
         || s.starts_with("./")
         || s.starts_with("../")
         || s.starts_with('~')
-        || s.contains('/')
-            && !s.starts_with("http://")
-            && !s.starts_with("https://")
+        || s.contains('/') && !s.starts_with("http://") && !s.starts_with("https://")
 }
 
 /// Apply visibility-based redaction to a trace function for export.
@@ -803,14 +807,16 @@ fn apply_public_redaction(func: &mut TraceFunction) {
     for input in &mut func.inputs {
         if let Some(ref default_val) = input.default
             && let Some(s) = default_val.as_str()
-                && looks_like_path(s) {
-                    input.default = None;
-                }
+            && looks_like_path(s)
+        {
+            input.default = None;
+        }
         if let Some(ref example_val) = input.example
             && let Some(s) = example_val.as_str()
-                && looks_like_path(s) {
-                    input.example = None;
-                }
+            && looks_like_path(s)
+        {
+            input.example = None;
+        }
     }
 
     // Strip memory entirely
@@ -1538,12 +1544,18 @@ redacted_fields:
         let constraints = func.constraints.unwrap();
         assert_eq!(constraints.min_tasks, Some(2));
         assert_eq!(constraints.max_tasks, Some(20));
-        assert_eq!(constraints.required_skills, vec!["implementation", "testing"]);
+        assert_eq!(
+            constraints.required_skills,
+            vec!["implementation", "testing"]
+        );
         assert_eq!(constraints.required_phases, vec!["implement", "test"]);
         assert_eq!(constraints.max_depth, Some(4));
         assert!(!constraints.allow_cycles);
         assert_eq!(constraints.forbidden_patterns.len(), 1);
-        assert_eq!(constraints.forbidden_patterns[0].tags, vec!["untested", "production"]);
+        assert_eq!(
+            constraints.forbidden_patterns[0].tags,
+            vec!["untested", "production"]
+        );
 
         assert!(func.memory.is_none());
     }
@@ -1841,10 +1853,7 @@ planner_template:
 
         // extracted_from: run_id stripped, timestamp kept
         assert!(exported.extracted_from[0].run_id.is_none());
-        assert_eq!(
-            exported.extracted_from[0].timestamp,
-            "2026-02-18T14:30:00Z"
-        );
+        assert_eq!(exported.extracted_from[0].timestamp, "2026-02-18T14:30:00Z");
         assert_eq!(exported.extracted_from[0].task_id, "impl-auth");
 
         // Memory: storage_path stripped, config retained
@@ -1921,9 +1930,18 @@ planner_template:
     #[test]
     fn function_visible_at_levels() {
         let internal_fn = sample_function();
-        assert!(function_visible_at(&internal_fn, &FunctionVisibility::Internal));
-        assert!(!function_visible_at(&internal_fn, &FunctionVisibility::Peer));
-        assert!(!function_visible_at(&internal_fn, &FunctionVisibility::Public));
+        assert!(function_visible_at(
+            &internal_fn,
+            &FunctionVisibility::Internal
+        ));
+        assert!(!function_visible_at(
+            &internal_fn,
+            &FunctionVisibility::Peer
+        ));
+        assert!(!function_visible_at(
+            &internal_fn,
+            &FunctionVisibility::Public
+        ));
 
         let peer_fn = sample_peer_function();
         assert!(function_visible_at(&peer_fn, &FunctionVisibility::Internal));
@@ -1931,7 +1949,10 @@ planner_template:
         assert!(!function_visible_at(&peer_fn, &FunctionVisibility::Public));
 
         let public_fn = sample_public_function();
-        assert!(function_visible_at(&public_fn, &FunctionVisibility::Internal));
+        assert!(function_visible_at(
+            &public_fn,
+            &FunctionVisibility::Internal
+        ));
         assert!(function_visible_at(&public_fn, &FunctionVisibility::Peer));
         assert!(function_visible_at(&public_fn, &FunctionVisibility::Public));
     }

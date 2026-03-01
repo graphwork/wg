@@ -1,5 +1,5 @@
 use super::hash::*;
-use super::store::{init, save_component, save_outcome, save_role, save_tradeoff, AgencyError};
+use super::store::{AgencyError, init, save_component, save_outcome, save_role, save_tradeoff};
 use super::types::*;
 use std::path::Path;
 
@@ -99,14 +99,54 @@ pub fn build_tradeoff(
 /// Return the set of built-in starter components (role capabilities).
 pub fn starter_components() -> Vec<RoleComponent> {
     vec![
-        build_component("code-writing", "Writes production-quality code.", ComponentCategory::Translated, ContentRef::Name("code-writing".into())),
-        build_component("testing", "Writes and runs tests.", ComponentCategory::Translated, ContentRef::Name("testing".into())),
-        build_component("debugging", "Diagnoses and fixes bugs.", ComponentCategory::Translated, ContentRef::Name("debugging".into())),
-        build_component("code-review", "Reviews code for correctness and style.", ComponentCategory::Translated, ContentRef::Name("code-review".into())),
-        build_component("security-audit", "Audits code for security vulnerabilities.", ComponentCategory::Translated, ContentRef::Name("security-audit".into())),
-        build_component("technical-writing", "Produces clear technical documentation.", ComponentCategory::Translated, ContentRef::Name("technical-writing".into())),
-        build_component("system-design", "Designs system architectures.", ComponentCategory::Translated, ContentRef::Name("system-design".into())),
-        build_component("dependency-analysis", "Analyzes dependencies and structural decisions.", ComponentCategory::Translated, ContentRef::Name("dependency-analysis".into())),
+        build_component(
+            "code-writing",
+            "Writes production-quality code.",
+            ComponentCategory::Translated,
+            ContentRef::Name("code-writing".into()),
+        ),
+        build_component(
+            "testing",
+            "Writes and runs tests.",
+            ComponentCategory::Translated,
+            ContentRef::Name("testing".into()),
+        ),
+        build_component(
+            "debugging",
+            "Diagnoses and fixes bugs.",
+            ComponentCategory::Translated,
+            ContentRef::Name("debugging".into()),
+        ),
+        build_component(
+            "code-review",
+            "Reviews code for correctness and style.",
+            ComponentCategory::Translated,
+            ContentRef::Name("code-review".into()),
+        ),
+        build_component(
+            "security-audit",
+            "Audits code for security vulnerabilities.",
+            ComponentCategory::Translated,
+            ContentRef::Name("security-audit".into()),
+        ),
+        build_component(
+            "technical-writing",
+            "Produces clear technical documentation.",
+            ComponentCategory::Translated,
+            ContentRef::Name("technical-writing".into()),
+        ),
+        build_component(
+            "system-design",
+            "Designs system architectures.",
+            ComponentCategory::Translated,
+            ContentRef::Name("system-design".into()),
+        ),
+        build_component(
+            "dependency-analysis",
+            "Analyzes dependencies and structural decisions.",
+            ComponentCategory::Translated,
+            ContentRef::Name("dependency-analysis".into()),
+        ),
     ]
 }
 
@@ -114,9 +154,17 @@ pub fn starter_components() -> Vec<RoleComponent> {
 pub fn starter_outcomes() -> Vec<DesiredOutcome> {
     vec![
         build_outcome("Working, tested code", "Working, tested code", vec![]),
-        build_outcome("Review report with findings", "Review report with findings", vec![]),
+        build_outcome(
+            "Review report with findings",
+            "Review report with findings",
+            vec![],
+        ),
         build_outcome("Clear documentation", "Clear documentation", vec![]),
-        build_outcome("Design document with rationale", "Design document with rationale", vec![]),
+        build_outcome(
+            "Design document with rationale",
+            "Design document with rationale",
+            vec![],
+        ),
     ]
 }
 
@@ -129,17 +177,29 @@ pub fn starter_roles() -> Vec<Role> {
 
     // Build a lookup by name for convenience
     let comp_id = |name: &str| -> String {
-        components.iter().find(|c| c.name == name).map(|c| c.id.clone()).unwrap_or_default()
+        components
+            .iter()
+            .find(|c| c.name == name)
+            .map(|c| c.id.clone())
+            .unwrap_or_default()
     };
     let out_id = |name: &str| -> String {
-        outcomes.iter().find(|o| o.name == name).map(|o| o.id.clone()).unwrap_or_default()
+        outcomes
+            .iter()
+            .find(|o| o.name == name)
+            .map(|o| o.id.clone())
+            .unwrap_or_default()
     };
 
     vec![
         build_role(
             "Programmer",
             "Writes, tests, and debugs code to implement features and fix bugs.",
-            vec![comp_id("code-writing"), comp_id("testing"), comp_id("debugging")],
+            vec![
+                comp_id("code-writing"),
+                comp_id("testing"),
+                comp_id("debugging"),
+            ],
             out_id("Working, tested code"),
         ),
         build_role(
@@ -533,10 +593,22 @@ pub fn special_agent_roles() -> Vec<Role> {
     let v_comp_ids: Vec<String> = v_comps.iter().map(|c| c.id.clone()).collect();
     let c_comp_ids: Vec<String> = c_comps.iter().map(|c| c.id.clone()).collect();
 
-    let assigner_outcome = outcomes.iter().find(|o| o.name == "Optimal agent-task assignment").unwrap();
-    let evaluator_outcome = outcomes.iter().find(|o| o.name == "Calibrated evaluation grade").unwrap();
-    let evolver_outcome = outcomes.iter().find(|o| o.name == "Proposed primitive modifications").unwrap();
-    let creator_outcome = outcomes.iter().find(|o| o.name == "New primitive candidates").unwrap();
+    let assigner_outcome = outcomes
+        .iter()
+        .find(|o| o.name == "Optimal agent-task assignment")
+        .unwrap();
+    let evaluator_outcome = outcomes
+        .iter()
+        .find(|o| o.name == "Calibrated evaluation grade")
+        .unwrap();
+    let evolver_outcome = outcomes
+        .iter()
+        .find(|o| o.name == "Proposed primitive modifications")
+        .unwrap();
+    let creator_outcome = outcomes
+        .iter()
+        .find(|o| o.name == "New primitive candidates")
+        .unwrap();
 
     vec![
         build_role(
@@ -605,10 +677,7 @@ pub fn seed_starters(agency_dir: &Path) -> Result<(usize, usize), AgencyError> {
     }
 
     let mut roles_created = 0;
-    for role in starter_roles()
-        .into_iter()
-        .chain(special_agent_roles())
-    {
+    for role in starter_roles().into_iter().chain(special_agent_roles()) {
         let path = roles_dir.join(format!("{}.yaml", role.id));
         if !path.exists() {
             save_role(&role, &roles_dir)?;
@@ -662,7 +731,11 @@ pub fn creator_pipeline_function() -> crate::function::TraceFunction {
         }],
         extracted_by: Some("wg agency init".to_string()),
         extracted_at: Some("2026-02-25T00:00:00Z".to_string()),
-        tags: vec!["agency".to_string(), "pipeline".to_string(), "creator".to_string()],
+        tags: vec![
+            "agency".to_string(),
+            "pipeline".to_string(),
+            "creator".to_string(),
+        ],
         inputs: vec![
             FunctionInput {
                 name: "search_domain".to_string(),
@@ -1272,7 +1345,11 @@ performance:
             "evo-run-1",
             Some("Test-Focused Programmer"),
             None, // inherit description
-            Some(vec!["coding".to_string(), "debugging".to_string(), "testing".to_string()]),
+            Some(vec![
+                "coding".to_string(),
+                "debugging".to_string(),
+                "testing".to_string(),
+            ]),
             Some("Working, tested code"),
         );
 
@@ -1521,10 +1598,7 @@ performance:
         let role_a = build_role(
             "Coder",
             "Writes code",
-            vec![
-                "coding".to_string(),
-                "debugging".to_string(),
-            ],
+            vec!["coding".to_string(), "debugging".to_string()],
             "Code",
         );
         let role_b = build_role(
@@ -1548,10 +1622,7 @@ performance:
         let role = build_role(
             "Full Stack",
             "Does everything",
-            vec![
-                "coding".to_string(),
-                "testing".to_string(),
-            ],
+            vec!["coding".to_string(), "testing".to_string()],
             "Everything",
         );
 
@@ -1729,18 +1800,8 @@ performance:
 
     #[test]
     fn test_build_role_content_hash_deterministic() {
-        let r1 = build_role(
-            "Name A",
-            "Desc",
-            vec!["s".to_string()],
-            "Outcome",
-        );
-        let r2 = build_role(
-            "Name B",
-            "Desc",
-            vec!["s".to_string()],
-            "Outcome",
-        );
+        let r1 = build_role("Name A", "Desc", vec!["s".to_string()], "Outcome");
+        let r2 = build_role("Name B", "Desc", vec!["s".to_string()], "Outcome");
         // Same immutable content (skills, desired_outcome, description) => same ID
         assert_eq!(r1.id, r2.id);
         assert_eq!(r1.id.len(), 64);

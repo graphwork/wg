@@ -656,11 +656,18 @@ mod tests {
     #[test]
     fn test_json_output_has_skill_bundle_setup() {
         let output = json_output();
-        let sbs = output.get("skill_bundle_setup").expect("missing skill_bundle_setup");
+        let sbs = output
+            .get("skill_bundle_setup")
+            .expect("missing skill_bundle_setup");
         assert!(sbs.get("claude").is_some());
         assert!(sbs.get("amplifier").is_some());
         assert!(sbs.get("custom").is_some());
-        assert!(sbs["claude"]["install"].as_str().unwrap().contains("wg skill install"));
+        assert!(
+            sbs["claude"]["install"]
+                .as_str()
+                .unwrap()
+                .contains("wg skill install")
+        );
     }
 
     #[test]
@@ -760,7 +767,9 @@ mod tests {
             convergence.contains("IMPORTANT"),
             "JSON convergence note should be emphatic"
         );
-        let done_converged = output["commands"]["completion"]["done_converged"].as_str().unwrap();
+        let done_converged = output["commands"]["completion"]["done_converged"]
+            .as_str()
+            .unwrap();
         assert!(
             done_converged.contains("--converged"),
             "JSON should have done_converged command"

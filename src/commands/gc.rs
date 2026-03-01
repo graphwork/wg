@@ -17,27 +17,23 @@ const INTERNAL_PREFIXES: &[&str] = &["assign-", "evaluate-"];
 fn terminal_timestamp(task: &workgraph::graph::Task) -> Option<DateTime<chrono::FixedOffset>> {
     // Done tasks have completed_at set by the done command
     if let Some(ref s) = task.completed_at
-        && let Ok(ts) = DateTime::parse_from_rfc3339(s) {
-            return Some(ts);
-        }
+        && let Ok(ts) = DateTime::parse_from_rfc3339(s)
+    {
+        return Some(ts);
+    }
     // Failed/Abandoned: the fail/abandon command adds a log entry with timestamp
     if let Some(entry) = task.log.last()
-        && let Ok(ts) = DateTime::parse_from_rfc3339(&entry.timestamp) {
-            return Some(ts);
-        }
+        && let Ok(ts) = DateTime::parse_from_rfc3339(&entry.timestamp)
+    {
+        return Some(ts);
+    }
     // Fallback chain
-    let ts = task
-        .started_at
-        .as_deref()
-        .or(task.created_at.as_deref())?;
+    let ts = task.started_at.as_deref().or(task.created_at.as_deref())?;
     DateTime::parse_from_rfc3339(ts).ok()
 }
 
 /// Check if a task is old enough to gc based on the --older filter.
-fn is_old_enough(
-    task: &workgraph::graph::Task,
-    min_age: &chrono::Duration,
-) -> bool {
+fn is_old_enough(task: &workgraph::graph::Task, min_age: &chrono::Duration) -> bool {
     if let Some(ts) = terminal_timestamp(task) {
         let age = Utc::now().signed_duration_since(ts);
         age > *min_age
@@ -90,17 +86,14 @@ pub fn run(dir: &Path, dry_run: bool, include_done: bool, older: Option<&str>) -
     let mut scc_gc_candidates: Vec<&Vec<String>> = Vec::new();
 
     for cycle in &cycle_analysis.cycles {
-        let all_terminal = cycle.members.iter().all(|id| {
-            graph
-                .get_task(id)
-                .is_some_and(|t| t.status.is_terminal())
-        });
+        let all_terminal = cycle
+            .members
+            .iter()
+            .all(|id| graph.get_task(id).is_some_and(|t| t.status.is_terminal()));
 
         let has_external_dependent = cycle.members.iter().any(|id| {
             all_tasks.iter().any(|t| {
-                !t.status.is_terminal()
-                    && t.after.contains(id)
-                    && !cycle.members.contains(&t.id)
+                !t.status.is_terminal() && t.after.contains(id) && !cycle.members.contains(&t.id)
             })
         });
 
@@ -135,9 +128,10 @@ pub fn run(dir: &Path, dry_run: bool, include_done: bool, older: Option<&str>) -
         }
         // Apply --older filter
         if let Some(ref min_age) = older_duration
-            && !is_old_enough(task, min_age) {
-                continue;
-            }
+            && !is_old_enough(task, min_age)
+        {
+            continue;
+        }
         to_gc.insert(task.id.clone());
     }
 
@@ -196,9 +190,10 @@ pub fn run(dir: &Path, dry_run: bool, include_done: bool, older: Option<&str>) -
         if is_internal && task.status.is_terminal() && !has_open_dependent.contains(&task.id) {
             // Apply --older filter to orphaned internal tasks too
             if let Some(ref min_age) = older_duration
-                && !is_old_enough(task, min_age) {
-                    continue;
-                }
+                && !is_old_enough(task, min_age)
+            {
+                continue;
+            }
             to_gc.insert(task.id.clone());
         }
     }
@@ -629,12 +624,7 @@ mod tests {
             wg_dir,
             vec![
                 make_task_with_timestamp("task-old", "Old done", Status::Done, Some(&old)),
-                make_task_with_timestamp(
-                    "task-recent",
-                    "Recent done",
-                    Status::Done,
-                    Some(&recent),
-                ),
+                make_task_with_timestamp("task-recent", "Recent done", Status::Done, Some(&recent)),
             ],
         );
 
@@ -759,7 +749,10 @@ mod tests {
             !remaining.contains("cycle-b"),
             "SCC member cycle-b should be removed"
         );
-        assert!(remaining.contains("unrelated"), "unrelated task should remain");
+        assert!(
+            remaining.contains("unrelated"),
+            "unrelated task should remain"
+        );
     }
 
     #[test]
@@ -795,7 +788,12 @@ mod tests {
             vec![
                 make_task_with_deps("cycle-a", "Cycle A", Status::Done, vec!["cycle-b"]),
                 make_task_with_deps("cycle-b", "Cycle B", Status::Done, vec!["cycle-a"]),
-                make_task_with_deps("external", "Depends on cycle", Status::Open, vec!["cycle-a"]),
+                make_task_with_deps(
+                    "external",
+                    "Depends on cycle",
+                    Status::Open,
+                    vec!["cycle-a"],
+                ),
             ],
         );
 

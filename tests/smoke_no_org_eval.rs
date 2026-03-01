@@ -9,9 +9,7 @@
 use std::collections::HashMap;
 use tempfile::TempDir;
 
-use workgraph::agency::{
-    self, Agent, Evaluation, Lineage, PerformanceRecord,
-};
+use workgraph::agency::{self, Agent, Evaluation, Lineage, PerformanceRecord};
 use workgraph::config::Config;
 use workgraph::graph::{Node, Status, Task, WorkGraph};
 use workgraph::parser::{load_graph, save_graph};
@@ -175,9 +173,7 @@ fn test_no_org_eval_tasks_with_many_completed() {
 
     // No task ID matches evaluate-org-*
     assert!(
-        loaded
-            .tasks()
-            .all(|t| !t.id.starts_with("evaluate-org-")),
+        loaded.tasks().all(|t| !t.id.starts_with("evaluate-org-")),
         "No evaluate-org-* tasks should exist"
     );
 
@@ -234,11 +230,7 @@ fn test_regular_evaluation_records_correctly() {
     assert_eq!(loaded.dimensions.len(), 5);
 
     // Agent performance updated
-    let agent = agency::find_agent_by_prefix(
-        &agency_dir.join("cache/agents"),
-        &agent_id,
-    )
-    .unwrap();
+    let agent = agency::find_agent_by_prefix(&agency_dir.join("cache/agents"), &agent_id).unwrap();
     assert_eq!(agent.performance.task_count, 1);
     assert!((agent.performance.avg_score.unwrap() - 0.85).abs() < 1e-10);
 
@@ -295,11 +287,7 @@ fn test_evaluation_with_org_dimensions_is_regular() {
     }
 
     // Agent should have 2 evaluations, no separate org score
-    let agent = agency::find_agent_by_prefix(
-        &agency_dir.join("cache/agents"),
-        &agent_id,
-    )
-    .unwrap();
+    let agent = agency::find_agent_by_prefix(&agency_dir.join("cache/agents"), &agent_id).unwrap();
     assert_eq!(agent.performance.task_count, 2);
     let expected_avg = (0.7 + 0.8) / 2.0;
     assert!(
@@ -357,11 +345,7 @@ fn test_evolution_performance_summary_no_org_scores() {
     }
 
     // Verify performance records don't reference org scores
-    let agent = agency::find_agent_by_prefix(
-        &agency_dir.join("cache/agents"),
-        &agent_id,
-    )
-    .unwrap();
+    let agent = agency::find_agent_by_prefix(&agency_dir.join("cache/agents"), &agent_id).unwrap();
 
     assert_eq!(agent.performance.task_count, 3);
     // There should be a single avg_score, not separate org/individual scores
@@ -454,8 +438,8 @@ fn test_no_active_org_eval_code_paths() {
             }
 
             // Check for evaluate-org task creation (should not exist)
-            if trimmed.contains("evaluate-org-")
-                && !trimmed.contains("evaluate-org-*") // grep pattern in tests is OK
+            if trimmed.contains("evaluate-org-") && !trimmed.contains("evaluate-org-*")
+            // grep pattern in tests is OK
             {
                 violations.push(format!(
                     "{}:{}: evaluate-org task creation: {}",

@@ -419,9 +419,11 @@ fn main() -> Result<()> {
         Commands::WhyBlocked { id } => commands::why_blocked::run(&workgraph_dir, &id, cli.json),
         Commands::Check => commands::check::run(&workgraph_dir, cli.json),
         Commands::Cycles => commands::cycles::run(&workgraph_dir, cli.json),
-        Commands::List { status, paused, tags } => {
-            commands::list::run(&workgraph_dir, status.as_deref(), paused, &tags, cli.json)
-        }
+        Commands::List {
+            status,
+            paused,
+            tags,
+        } => commands::list::run(&workgraph_dir, status.as_deref(), paused, &tags, cli.json),
         Commands::Viz {
             focus,
             all,
@@ -444,9 +446,8 @@ fn main() -> Result<()> {
             let use_tui = tui_mode;
 
             // Resolve edge color: CLI flag > config > default ("gray")
-            let resolved_edge_color = edge_color.unwrap_or_else(|| {
-                Config::load_or_default(&workgraph_dir).viz.edge_color
-            });
+            let resolved_edge_color = edge_color
+                .unwrap_or_else(|| Config::load_or_default(&workgraph_dir).viz.edge_color);
 
             if use_tui {
                 let options = commands::viz::VizOptions {
@@ -527,7 +528,16 @@ fn main() -> Result<()> {
         } => commands::gc::run(&workgraph_dir, dry_run, include_done, older.as_deref()),
         Commands::Show { id } => commands::show::run(&workgraph_dir, &id, cli.json),
         Commands::Trace { command } => match command {
-            TraceCommands::Show { id, full, ops_only, recursive, timeline, graph, animate, speed } => {
+            TraceCommands::Show {
+                id,
+                full,
+                ops_only,
+                recursive,
+                timeline,
+                graph,
+                animate,
+                speed,
+            } => {
                 if animate {
                     commands::trace_animate::run(&workgraph_dir, &id, speed)
                 } else if graph {
@@ -581,7 +591,9 @@ fn main() -> Result<()> {
                 force,
                 include_evaluations,
             } => {
-                eprintln!("Warning: 'wg trace extract' is deprecated. Use 'wg func extract' instead.");
+                eprintln!(
+                    "Warning: 'wg trace extract' is deprecated. Use 'wg func extract' instead."
+                );
                 if generative {
                     commands::func_extract::run_generative(
                         &workgraph_dir,
@@ -614,7 +626,9 @@ fn main() -> Result<()> {
                 after,
                 model,
             } => {
-                eprintln!("Warning: 'wg trace instantiate' is deprecated. Use 'wg func apply' instead.");
+                eprintln!(
+                    "Warning: 'wg trace instantiate' is deprecated. Use 'wg func apply' instead."
+                );
                 commands::func_apply::run(
                     &workgraph_dir,
                     &function_id,
@@ -628,59 +642,120 @@ fn main() -> Result<()> {
                     cli.json,
                 )
             }
-            TraceCommands::ListFunctionsAlias { verbose, include_peers, visibility } => {
-                eprintln!("Warning: 'wg trace list-functions' is deprecated. Use 'wg func list' instead.");
-                commands::func_cmd::run_list(&workgraph_dir, cli.json, verbose, include_peers, visibility.as_deref())
+            TraceCommands::ListFunctionsAlias {
+                verbose,
+                include_peers,
+                visibility,
+            } => {
+                eprintln!(
+                    "Warning: 'wg trace list-functions' is deprecated. Use 'wg func list' instead."
+                );
+                commands::func_cmd::run_list(
+                    &workgraph_dir,
+                    cli.json,
+                    verbose,
+                    include_peers,
+                    visibility.as_deref(),
+                )
             }
             TraceCommands::ShowFunctionAlias { id } => {
-                eprintln!("Warning: 'wg trace show-function' is deprecated. Use 'wg func show' instead.");
+                eprintln!(
+                    "Warning: 'wg trace show-function' is deprecated. Use 'wg func show' instead."
+                );
                 commands::func_cmd::run_show(&workgraph_dir, &id, cli.json)
             }
             TraceCommands::BootstrapAlias { force } => {
-                eprintln!("Warning: 'wg trace bootstrap' is deprecated. Use 'wg func bootstrap' instead.");
+                eprintln!(
+                    "Warning: 'wg trace bootstrap' is deprecated. Use 'wg func bootstrap' instead."
+                );
                 commands::func_bootstrap::run(&workgraph_dir, force)
             }
             TraceCommands::MakeAdaptiveAlias {
                 function_id,
                 max_runs,
             } => {
-                eprintln!("Warning: 'wg trace make-adaptive' is deprecated. Use 'wg func make-adaptive' instead.");
+                eprintln!(
+                    "Warning: 'wg trace make-adaptive' is deprecated. Use 'wg func make-adaptive' instead."
+                );
                 commands::func_make_adaptive::run(&workgraph_dir, &function_id, max_runs)
             }
         },
         Commands::Func { command } => match command {
-            FuncCommands::List { verbose, include_peers, visibility } => {
-                commands::func_cmd::run_list(&workgraph_dir, cli.json, verbose, include_peers, visibility.as_deref())
-            }
+            FuncCommands::List {
+                verbose,
+                include_peers,
+                visibility,
+            } => commands::func_cmd::run_list(
+                &workgraph_dir,
+                cli.json,
+                verbose,
+                include_peers,
+                visibility.as_deref(),
+            ),
             FuncCommands::Show { id } => {
                 commands::func_cmd::run_show(&workgraph_dir, &id, cli.json)
             }
             FuncCommands::Extract {
-                task_ids, name, subgraph, recursive, generalize, generative, output, force, include_evaluations,
+                task_ids,
+                name,
+                subgraph,
+                recursive,
+                generalize,
+                generative,
+                output,
+                force,
+                include_evaluations,
             } => {
                 if generative {
                     commands::func_extract::run_generative(
-                        &workgraph_dir, &task_ids, name.as_deref(), output.as_deref(), force, include_evaluations,
+                        &workgraph_dir,
+                        &task_ids,
+                        name.as_deref(),
+                        output.as_deref(),
+                        force,
+                        include_evaluations,
                     )
                 } else {
                     commands::func_extract::run(
-                        &workgraph_dir, &task_ids[0], name.as_deref(), subgraph || recursive,
-                        generalize, output.as_deref(), force, include_evaluations,
+                        &workgraph_dir,
+                        &task_ids[0],
+                        name.as_deref(),
+                        subgraph || recursive,
+                        generalize,
+                        output.as_deref(),
+                        force,
+                        include_evaluations,
                     )
                 }
             }
             FuncCommands::Apply {
-                function_id, from, inputs, input_file, prefix, dry_run, after, model,
+                function_id,
+                from,
+                inputs,
+                input_file,
+                prefix,
+                dry_run,
+                after,
+                model,
             } => commands::func_apply::run(
-                &workgraph_dir, &function_id, from.as_deref(), &inputs,
-                input_file.as_deref(), prefix.as_deref(), dry_run, &after, model.as_deref(), cli.json,
+                &workgraph_dir,
+                &function_id,
+                from.as_deref(),
+                &inputs,
+                input_file.as_deref(),
+                prefix.as_deref(),
+                dry_run,
+                &after,
+                model.as_deref(),
+                cli.json,
             ),
             FuncCommands::Bootstrap { force } => {
                 commands::func_bootstrap::run(&workgraph_dir, force)
             }
-            FuncCommands::MakeAdaptive { function_id, max_runs } => {
-                commands::func_make_adaptive::run(&workgraph_dir, &function_id, max_runs)
-            }
+            FuncCommands::MakeAdaptive {
+                function_id,
+                max_runs,
+            } => commands::func_make_adaptive::run(&workgraph_dir, &function_id, max_runs),
         },
         Commands::Replay {
             model,
@@ -872,29 +947,16 @@ fn main() -> Result<()> {
                 }
             },
             AgencyCommands::Create { model, dry_run } => {
-                commands::agency_create::run(
-                    &workgraph_dir,
-                    model.as_deref(),
-                    dry_run,
-                    cli.json,
-                )
+                commands::agency_create::run(&workgraph_dir, model.as_deref(), dry_run, cli.json)
             }
             AgencyCommands::Deferred => {
                 commands::evolve::run_deferred_list(&workgraph_dir, cli.json)
             }
             AgencyCommands::Approve { id, note } => {
-                commands::evolve::run_deferred_approve(
-                    &workgraph_dir,
-                    &id,
-                    note.as_deref(),
-                )
+                commands::evolve::run_deferred_approve(&workgraph_dir, &id, note.as_deref())
             }
             AgencyCommands::Reject { id, note } => {
-                commands::evolve::run_deferred_reject(
-                    &workgraph_dir,
-                    &id,
-                    note.as_deref(),
-                )
+                commands::evolve::run_deferred_reject(&workgraph_dir, &id, note.as_deref())
             }
             AgencyCommands::Push {
                 target,
@@ -925,15 +987,8 @@ fn main() -> Result<()> {
                 name,
                 path,
                 description,
-            } => commands::peer::run_add(
-                &workgraph_dir,
-                &name,
-                &path,
-                description.as_deref(),
-            ),
-            PeerCommands::Remove { name } => {
-                commands::peer::run_remove(&workgraph_dir, &name)
-            }
+            } => commands::peer::run_add(&workgraph_dir, &name, &path, description.as_deref()),
+            PeerCommands::Remove { name } => commands::peer::run_remove(&workgraph_dir, &name),
             PeerCommands::List => commands::peer::run_list(&workgraph_dir, cli.json),
             PeerCommands::Show { name } => {
                 commands::peer::run_show(&workgraph_dir, &name, cli.json)
@@ -1153,12 +1208,7 @@ fn main() -> Result<()> {
             event_types,
             task,
             replay,
-        } => commands::watch::run(
-            &workgraph_dir,
-            &event_types,
-            task.as_deref(),
-            replay,
-        ),
+        } => commands::watch::run(&workgraph_dir, &event_types, task.as_deref(), replay),
         Commands::Evolve { command } => match command {
             EvolveCommands::Run {
                 dry_run,
@@ -1173,23 +1223,17 @@ fn main() -> Result<()> {
                 model.as_deref(),
                 cli.json,
             ),
-            EvolveCommands::Review { command: review_cmd } => match review_cmd {
+            EvolveCommands::Review {
+                command: review_cmd,
+            } => match review_cmd {
                 EvolveReviewCommands::List => {
                     commands::evolve::run_deferred_list(&workgraph_dir, cli.json)
                 }
                 EvolveReviewCommands::Approve { id, note } => {
-                    commands::evolve::run_deferred_approve(
-                        &workgraph_dir,
-                        &id,
-                        note.as_deref(),
-                    )
+                    commands::evolve::run_deferred_approve(&workgraph_dir, &id, note.as_deref())
                 }
                 EvolveReviewCommands::Reject { id, note } => {
-                    commands::evolve::run_deferred_reject(
-                        &workgraph_dir,
-                        &id,
-                        note.as_deref(),
-                    )
+                    commands::evolve::run_deferred_reject(&workgraph_dir, &id, note.as_deref())
                 }
             },
         },
@@ -1299,8 +1343,7 @@ fn main() -> Result<()> {
                 commands::config_cmd::show(&workgraph_dir, scope, cli.json)
             } else {
                 // Default scope for writes = Local (like git)
-                let write_scope =
-                    scope.unwrap_or(commands::config_cmd::ConfigScope::Local);
+                let write_scope = scope.unwrap_or(commands::config_cmd::ConfigScope::Local);
                 commands::config_cmd::update(
                     &workgraph_dir,
                     write_scope,
@@ -1447,23 +1490,23 @@ fn main() -> Result<()> {
             ),
         },
         Commands::Tui { no_mouse } => {
-                let resolved_edge_color = Config::load_or_default(&workgraph_dir).viz.edge_color;
-                let options = commands::viz::VizOptions {
-                    all: true,
-                    status: None,
-                    critical_path: false,
-                    format: commands::viz::OutputFormat::Ascii,
-                    output: None,
-                    show_internal: false,
-                    focus: vec![],
-                    tui_mode: true,
-                    layout: commands::viz::LayoutMode::default(),
-                    tags: vec![],
-                    edge_color: resolved_edge_color,
-                };
-                let mouse_override = if no_mouse { Some(false) } else { None };
-                tui::viz_viewer::run(workgraph_dir, options, mouse_override)
-            }
+            let resolved_edge_color = Config::load_or_default(&workgraph_dir).viz.edge_color;
+            let options = commands::viz::VizOptions {
+                all: true,
+                status: None,
+                critical_path: false,
+                format: commands::viz::OutputFormat::Ascii,
+                output: None,
+                show_internal: false,
+                focus: vec![],
+                tui_mode: true,
+                layout: commands::viz::LayoutMode::default(),
+                tags: vec![],
+                edge_color: resolved_edge_color,
+            };
+            let mouse_override = if no_mouse { Some(false) } else { None };
+            tui::viz_viewer::run(workgraph_dir, options, mouse_override)
+        }
         Commands::Setup => commands::setup::run(),
         Commands::Quickstart => commands::quickstart::run(cli.json),
         Commands::Status => commands::status::run(&workgraph_dir, cli.json),

@@ -1,15 +1,17 @@
 use anyhow::{Context, Result, bail};
 use std::path::Path;
 
-use workgraph::agency::{self, AccessControl, ComponentCategory, ContentRef, Lineage, PerformanceRecord, Role, TradeoffConfig};
-
-use super::strategy::EvolverOperation;
-use super::deferred::{should_defer, defer_operation};
-use super::meta::{
-    apply_random_compose_role, apply_random_compose_agent,
-    apply_bizarre_ideation,
-    apply_meta_swap_role, apply_meta_swap_tradeoff, apply_meta_compose_agent,
+use workgraph::agency::{
+    self, AccessControl, ComponentCategory, ContentRef, Lineage, PerformanceRecord, Role,
+    TradeoffConfig,
 };
+
+use super::deferred::{defer_operation, should_defer};
+use super::meta::{
+    apply_bizarre_ideation, apply_meta_compose_agent, apply_meta_swap_role,
+    apply_meta_swap_tradeoff, apply_random_compose_agent, apply_random_compose_role,
+};
+use super::strategy::EvolverOperation;
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn apply_operation(
@@ -37,18 +39,14 @@ pub(crate) fn apply_operation(
         "component_substitution" => {
             apply_component_substitution(op, existing_roles, run_id, roles_dir)
         }
-        "config_add_component" => {
-            apply_config_add_component(op, existing_roles, run_id, roles_dir)
-        }
+        "config_add_component" => apply_config_add_component(op, existing_roles, run_id, roles_dir),
         "config_remove_component" => {
             apply_config_remove_component(op, existing_roles, run_id, roles_dir)
         }
         "config_swap_outcome" => {
             apply_config_swap_outcome(op, existing_roles, run_id, roles_dir, agency_dir)
         }
-        "config_swap_tradeoff" => {
-            apply_config_swap_tradeoff(op, run_id, agency_dir)
-        }
+        "config_swap_tradeoff" => apply_config_swap_tradeoff(op, run_id, agency_dir),
         // Randomisation operations
         "random_compose_role" => apply_random_compose_role(op, run_id, agency_dir),
         "random_compose_agent" => apply_random_compose_agent(op, run_id, agency_dir),
@@ -78,7 +76,11 @@ fn apply_create_role(
         .unwrap_or_default()
         .iter()
         .map(|s| {
-            agency::content_hash_component(s, &ComponentCategory::Translated, &ContentRef::Name(s.to_string()))
+            agency::content_hash_component(
+                s,
+                &ComponentCategory::Translated,
+                &ContentRef::Name(s.to_string()),
+            )
         })
         .collect();
 
@@ -163,7 +165,11 @@ fn apply_modify_role(
         .unwrap_or_default()
         .iter()
         .map(|s| {
-            agency::content_hash_component(s, &ComponentCategory::Translated, &ContentRef::Name(s.to_string()))
+            agency::content_hash_component(
+                s,
+                &ComponentCategory::Translated,
+                &ContentRef::Name(s.to_string()),
+            )
         })
         .collect();
 
@@ -229,8 +235,8 @@ fn apply_create_motivation(
         former_deployments: vec![],
     };
 
-    let path = agency::save_tradeoff(&tradeoff, tradeoffs_dir)
-        .context("Failed to save new tradeoff")?;
+    let path =
+        agency::save_tradeoff(&tradeoff, tradeoffs_dir).context("Failed to save new tradeoff")?;
 
     Ok(serde_json::json!({
         "op": "create_motivation",
@@ -440,10 +446,7 @@ fn apply_wording_mutation(
             let source: agency::RoleComponent =
                 agency::load_component(&source_path).context("Source component not found")?;
 
-            let new_desc = op
-                .new_description
-                .as_deref()
-                .unwrap_or(&source.description);
+            let new_desc = op.new_description.as_deref().unwrap_or(&source.description);
             let new_content = if let Some(ref c) = op.new_content {
                 agency::ContentRef::Inline(c.clone())
             } else {
@@ -451,8 +454,7 @@ fn apply_wording_mutation(
             };
             let category = parse_category(op.new_category.as_deref());
 
-            let new_id =
-                agency::content_hash_component(new_desc, &category, &new_content);
+            let new_id = agency::content_hash_component(new_desc, &category, &new_content);
             let new_component = agency::RoleComponent {
                 id: new_id.clone(),
                 name: op.new_name.clone().unwrap_or_else(|| source.name.clone()),
@@ -482,10 +484,7 @@ fn apply_wording_mutation(
             let source: agency::TradeoffConfig =
                 agency::load_tradeoff(&source_path).context("Source tradeoff not found")?;
 
-            let new_desc = op
-                .new_description
-                .as_deref()
-                .unwrap_or(&source.description);
+            let new_desc = op.new_description.as_deref().unwrap_or(&source.description);
             let acceptable = op
                 .new_acceptable_tradeoffs
                 .clone()
@@ -495,8 +494,7 @@ fn apply_wording_mutation(
                 .clone()
                 .unwrap_or_else(|| source.unacceptable_tradeoffs.clone());
 
-            let new_id =
-                agency::content_hash_tradeoff(&acceptable, &unacceptable, new_desc);
+            let new_id = agency::content_hash_tradeoff(&acceptable, &unacceptable, new_desc);
             let new_tradeoff = agency::TradeoffConfig {
                 id: new_id.clone(),
                 name: op.new_name.clone().unwrap_or_else(|| source.name.clone()),
@@ -526,10 +524,7 @@ fn apply_wording_mutation(
             let source: agency::DesiredOutcome =
                 agency::load_outcome(&source_path).context("Source outcome not found")?;
 
-            let new_desc = op
-                .new_description
-                .as_deref()
-                .unwrap_or(&source.description);
+            let new_desc = op.new_description.as_deref().unwrap_or(&source.description);
             let criteria = op
                 .new_success_criteria
                 .clone()
@@ -609,10 +604,7 @@ fn apply_component_substitution(
 
     let new_role = Role {
         id: new_role_id.clone(),
-        name: op
-            .new_name
-            .clone()
-            .unwrap_or_else(|| old_role.name.clone()),
+        name: op.new_name.clone().unwrap_or_else(|| old_role.name.clone()),
         description: op
             .new_description
             .clone()

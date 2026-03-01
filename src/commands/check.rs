@@ -27,17 +27,27 @@ pub fn run(dir: &Path, json: bool) -> Result<()> {
     let (graph, _path) = super::load_workgraph(dir)?;
     let result = check_all(&graph);
     let cycle_analysis = graph.compute_cycle_analysis();
-    let irreducible_count = cycle_analysis.cycles.iter().filter(|c| !c.reducible).count();
+    let irreducible_count = cycle_analysis
+        .cycles
+        .iter()
+        .filter(|c| !c.reducible)
+        .count();
 
-    let warnings =
-        result.cycles.len() + result.stale_assignments.len() + result.stuck_blocked.len() + irreducible_count;
+    let warnings = result.cycles.len()
+        + result.stale_assignments.len()
+        + result.stuck_blocked.len()
+        + irreducible_count;
     let errors = result.orphan_refs.len();
 
-    let structural_cycles: Vec<CycleInfo> = cycle_analysis.cycles.iter().map(|c| CycleInfo {
-        header: c.header.clone(),
-        members: c.members.clone(),
-        reducible: c.reducible,
-    }).collect();
+    let structural_cycles: Vec<CycleInfo> = cycle_analysis
+        .cycles
+        .iter()
+        .map(|c| CycleInfo {
+            header: c.header.clone(),
+            members: c.members.clone(),
+            reducible: c.reducible,
+        })
+        .collect();
 
     if json {
         let output = CheckJsonOutput {
@@ -105,10 +115,16 @@ pub fn run(dir: &Path, json: bool) -> Result<()> {
             cycle_analysis.cycles.len()
         );
         for cycle in &cycle_analysis.cycles {
-            let reducibility = if cycle.reducible { "reducible" } else { "IRREDUCIBLE" };
+            let reducibility = if cycle.reducible {
+                "reducible"
+            } else {
+                "IRREDUCIBLE"
+            };
             eprintln!(
                 "  {} ({} members, {})",
-                cycle.header, cycle.members.len(), reducibility
+                cycle.header,
+                cycle.members.len(),
+                reducibility
             );
         }
         if irreducible_count > 0 {

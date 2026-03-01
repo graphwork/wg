@@ -173,7 +173,10 @@ fn test_replay_failed_only_resets_and_preserves() {
 
     // 6. Verify snapshot was created in .workgraph/runs/
     let runs_dir = wg_dir.join("runs");
-    assert!(runs_dir.exists(), "runs/ directory should exist after replay");
+    assert!(
+        runs_dir.exists(),
+        "runs/ directory should exist after replay"
+    );
     let run_entries: Vec<_> = fs::read_dir(&runs_dir)
         .unwrap()
         .filter_map(|e| e.ok())

@@ -245,7 +245,11 @@ fn test_diamond_pattern_fan_out() {
 
     // Fan-out: 3 parallel tasks depending on root
     for i in 1..=3 {
-        let mut task = make_task(&format!("worker-{}", i), &format!("Worker {}", i), Status::Open);
+        let mut task = make_task(
+            &format!("worker-{}", i),
+            &format!("Worker {}", i),
+            Status::Open,
+        );
         task.after = vec!["root".to_string()];
         graph.add_node(Node::Task(task));
     }
@@ -279,7 +283,11 @@ fn test_diamond_pattern_fan_in() {
     graph.add_node(Node::Task(make_task("root", "Root Task", Status::Done)));
 
     for i in 1..=3 {
-        let mut task = make_task(&format!("worker-{}", i), &format!("Worker {}", i), Status::Done);
+        let mut task = make_task(
+            &format!("worker-{}", i),
+            &format!("Worker {}", i),
+            Status::Done,
+        );
         task.after = vec!["root".to_string()];
         graph.add_node(Node::Task(task));
     }
@@ -349,7 +357,11 @@ fn test_full_lifecycle_open_to_done() {
 
     // Phase 1: Create task
     let mut graph = WorkGraph::new();
-    graph.add_node(Node::Task(make_task("lifecycle-task", "Lifecycle Test", Status::Open)));
+    graph.add_node(Node::Task(make_task(
+        "lifecycle-task",
+        "Lifecycle Test",
+        Status::Open,
+    )));
     save_test_graph(&wg_dir, &graph);
 
     // Phase 2: Coordinator picks it up (claim)
@@ -382,7 +394,10 @@ fn test_full_lifecycle_open_to_done() {
     assert_eq!(task.status, Status::Done);
 
     let loaded_reg = AgentRegistry::load(&wg_dir).unwrap();
-    assert_eq!(loaded_reg.get_agent(&agent_id).unwrap().status, AgentStatus::Done);
+    assert_eq!(
+        loaded_reg.get_agent(&agent_id).unwrap().status,
+        AgentStatus::Done
+    );
 }
 
 #[test]

@@ -184,7 +184,10 @@ pub fn run_show(workgraph_dir: &Path, name: &str, json: bool) -> Result<()> {
     }
 
     if service_status.running {
-        println!("  Service:     running (PID {})", service_status.pid.unwrap_or(0));
+        println!(
+            "  Service:     running (PID {})",
+            service_status.pid.unwrap_or(0)
+        );
         if let Some(socket) = &service_status.socket_path {
             println!("  Socket:      {}", socket);
         }

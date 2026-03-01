@@ -140,10 +140,7 @@ fn velocity_with_completed_tasks() {
 #[test]
 fn velocity_custom_weeks() {
     let tmp = TempDir::new().unwrap();
-    let wg_dir = setup_workgraph(
-        &tmp,
-        vec![make_done_task("d1", "Done task", 2)],
-    );
+    let wg_dir = setup_workgraph(&tmp, vec![make_done_task("d1", "Done task", 2)]);
 
     let output = wg_ok(&wg_dir, &["velocity", "--weeks", "8"]);
     // 8 weeks * 7 = 56 days
@@ -162,8 +159,12 @@ fn velocity_json_output() {
     );
 
     let output = wg_ok(&wg_dir, &["--json", "velocity"]);
-    let json: serde_json::Value = serde_json::from_str(&output)
-        .unwrap_or_else(|e| panic!("Invalid JSON from velocity --json: {}\nOutput: {}", e, output));
+    let json: serde_json::Value = serde_json::from_str(&output).unwrap_or_else(|e| {
+        panic!(
+            "Invalid JSON from velocity --json: {}\nOutput: {}",
+            e, output
+        )
+    });
     assert!(json.get("weeks").is_some());
     assert!(json.get("average_tasks_per_week").is_some());
     assert!(json.get("trend").is_some());
@@ -217,7 +218,10 @@ fn forecast_with_mixed_tasks() {
     let output = wg_ok(&wg_dir, &["forecast"]);
     // Should contain some section headers
     assert!(
-        output.contains("Remaining") || output.contains("remaining") || output.contains("Forecast") || output.contains("tasks"),
+        output.contains("Remaining")
+            || output.contains("remaining")
+            || output.contains("Forecast")
+            || output.contains("tasks"),
         "Expected forecast output to contain work/tasks info, got: {}",
         output
     );
@@ -254,8 +258,12 @@ fn forecast_json_output() {
     );
 
     let output = wg_ok(&wg_dir, &["--json", "forecast"]);
-    let json: serde_json::Value = serde_json::from_str(&output)
-        .unwrap_or_else(|e| panic!("Invalid JSON from forecast --json: {}\nOutput: {}", e, output));
+    let json: serde_json::Value = serde_json::from_str(&output).unwrap_or_else(|e| {
+        panic!(
+            "Invalid JSON from forecast --json: {}\nOutput: {}",
+            e, output
+        )
+    });
     assert!(json.get("remaining_work").is_some());
     assert!(json.get("scenarios").is_some());
     assert!(json.get("has_velocity_data").is_some());
@@ -293,8 +301,11 @@ fn aging_with_tasks_of_varying_age() {
 
     // Should contain age bucket labels
     assert!(
-        output.contains("< 1 day") || output.contains("1-7 days") || output.contains("1-4 weeks")
-            || output.contains("1-3 months") || output.contains("> 3 months"),
+        output.contains("< 1 day")
+            || output.contains("1-7 days")
+            || output.contains("1-4 weeks")
+            || output.contains("1-3 months")
+            || output.contains("> 3 months"),
         "Expected age bucket labels in output, got: {}",
         output
     );
@@ -312,7 +323,10 @@ fn aging_with_stale_in_progress() {
     let output = wg_ok(&wg_dir, &["aging"]);
     // Should show stale in-progress section
     assert!(
-        output.contains("stale") || output.contains("Stale") || output.contains("In Progress") || output.contains("in-progress"),
+        output.contains("stale")
+            || output.contains("Stale")
+            || output.contains("In Progress")
+            || output.contains("in-progress"),
         "Expected stale/in-progress mention in aging output, got: {}",
         output
     );
@@ -321,12 +335,7 @@ fn aging_with_stale_in_progress() {
 #[test]
 fn aging_json_output() {
     let tmp = TempDir::new().unwrap();
-    let wg_dir = setup_workgraph(
-        &tmp,
-        vec![
-            make_task("t1", "Task 1", Status::Open),
-        ],
-    );
+    let wg_dir = setup_workgraph(&tmp, vec![make_task("t1", "Task 1", Status::Open)]);
 
     let output = wg_ok(&wg_dir, &["--json", "aging"]);
     let json: serde_json::Value = serde_json::from_str(&output)
@@ -401,8 +410,12 @@ fn coordinate_json_output() {
     );
 
     let output = wg_ok(&wg_dir, &["--json", "coordinate"]);
-    let json: serde_json::Value = serde_json::from_str(&output)
-        .unwrap_or_else(|e| panic!("Invalid JSON from coordinate --json: {}\nOutput: {}", e, output));
+    let json: serde_json::Value = serde_json::from_str(&output).unwrap_or_else(|e| {
+        panic!(
+            "Invalid JSON from coordinate --json: {}\nOutput: {}",
+            e, output
+        )
+    });
     assert!(json.get("ready").is_some());
     assert!(json.get("in_progress").is_some());
     assert!(json.get("blocked").is_some());
@@ -439,7 +452,10 @@ fn workload_with_assigned_tasks() {
     let output = wg_ok(&wg_dir, &["workload"]);
     // Should mention agents and their workloads
     assert!(
-        output.contains("agent-a") || output.contains("agent-b") || output.contains("Workload") || output.contains("workload"),
+        output.contains("agent-a")
+            || output.contains("agent-b")
+            || output.contains("Workload")
+            || output.contains("workload"),
         "Expected agent workload info, got: {}",
         output
     );
@@ -457,8 +473,12 @@ fn workload_json_output() {
     );
 
     let output = wg_ok(&wg_dir, &["--json", "workload"]);
-    let json: serde_json::Value = serde_json::from_str(&output)
-        .unwrap_or_else(|e| panic!("Invalid JSON from workload --json: {}\nOutput: {}", e, output));
+    let json: serde_json::Value = serde_json::from_str(&output).unwrap_or_else(|e| {
+        panic!(
+            "Invalid JSON from workload --json: {}\nOutput: {}",
+            e, output
+        )
+    });
     assert!(json.get("agents").is_some());
     assert!(json.get("unassigned_count").is_some());
 }

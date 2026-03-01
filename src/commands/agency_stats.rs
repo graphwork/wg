@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::path::Path;
 
-use workgraph::agency::{self, Evaluation, TradeoffConfig, Role};
+use workgraph::agency::{self, Evaluation, Role, TradeoffConfig};
 use workgraph::parser::load_graph;
 
 /// A (role_id, tradeoff_id) pair used as a key in the synergy matrix.

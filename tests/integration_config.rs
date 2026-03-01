@@ -78,7 +78,10 @@ fn config_init_creates_file() {
 
     // Config file should exist
     let config_path = wg_dir.join("config.toml");
-    assert!(config_path.exists(), "config.toml should be created by --init");
+    assert!(
+        config_path.exists(),
+        "config.toml should be created by --init"
+    );
 }
 
 #[test]
@@ -115,8 +118,12 @@ fn config_show_json() {
     let wg_dir = setup_workgraph(&tmp);
 
     let output = wg_ok(&wg_dir, &["--json", "config", "--show"]);
-    let json: serde_json::Value = serde_json::from_str(&output)
-        .unwrap_or_else(|e| panic!("Invalid JSON from config --show --json: {}\nOutput: {}", e, output));
+    let json: serde_json::Value = serde_json::from_str(&output).unwrap_or_else(|e| {
+        panic!(
+            "Invalid JSON from config --show --json: {}\nOutput: {}",
+            e, output
+        )
+    });
     assert!(json.get("agent").is_some());
     assert!(json.get("coordinator").is_some());
 }
@@ -178,7 +185,15 @@ fn config_set_multiple_values() {
 
     let output = wg_ok(
         &wg_dir,
-        &["config", "--executor", "amplifier", "--model", "sonnet", "--max-agents", "3"],
+        &[
+            "config",
+            "--executor",
+            "amplifier",
+            "--model",
+            "sonnet",
+            "--max-agents",
+            "3",
+        ],
     );
     assert!(output.contains("Set agent.executor"));
     assert!(output.contains("Set agent.model"));
@@ -199,7 +214,10 @@ fn config_set_guardrails() {
     let tmp = TempDir::new().unwrap();
     let wg_dir = setup_workgraph(&tmp);
 
-    let output = wg_ok(&wg_dir, &["config", "--max-child-tasks", "15", "--max-task-depth", "5"]);
+    let output = wg_ok(
+        &wg_dir,
+        &["config", "--max-child-tasks", "15", "--max-task-depth", "5"],
+    );
     assert!(output.contains("Set guardrails.max_child_tasks_per_agent"));
     assert!(output.contains("Set guardrails.max_task_depth"));
 }
@@ -229,8 +247,12 @@ fn config_list_json() {
     let wg_dir = setup_workgraph(&tmp);
 
     let output = wg_ok(&wg_dir, &["--json", "config", "--list"]);
-    let json: serde_json::Value = serde_json::from_str(&output)
-        .unwrap_or_else(|e| panic!("Invalid JSON from config --list --json: {}\nOutput: {}", e, output));
+    let json: serde_json::Value = serde_json::from_str(&output).unwrap_or_else(|e| {
+        panic!(
+            "Invalid JSON from config --list --json: {}\nOutput: {}",
+            e, output
+        )
+    });
     assert!(json.is_array(), "Expected array from config --list --json");
     // Each entry should have key, value, source
     if let Some(arr) = json.as_array() {

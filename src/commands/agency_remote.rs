@@ -15,7 +15,11 @@ pub fn run_add(
     let mut config = federation::load_federation_config(workgraph_dir)?;
 
     if config.remotes.contains_key(name) {
-        anyhow::bail!("Remote '{}' already exists. Remove it first with 'wg agency remote remove {}'", name, name);
+        anyhow::bail!(
+            "Remote '{}' already exists. Remove it first with 'wg agency remote remove {}'",
+            name,
+            name
+        );
     }
 
     // Validate path accessibility (warn but don't block)
@@ -96,10 +100,7 @@ pub fn run_list(workgraph_dir: &Path, json: bool) -> Result<()> {
     }
 
     for (name, remote) in &config.remotes {
-        let sync = remote
-            .last_sync
-            .as_deref()
-            .unwrap_or("never");
+        let sync = remote.last_sync.as_deref().unwrap_or("never");
         println!("  {:15} {} (last sync: {})", name, remote.path, sync);
         if let Some(desc) = &remote.description {
             println!("  {:15} {}", "", desc);
@@ -244,7 +245,13 @@ mod tests {
         let wg_dir = setup_workgraph_dir(&tmp);
         let store = setup_remote_store(&tmp, "remote-store");
 
-        run_add(&wg_dir, "upstream", store.store_path().to_str().unwrap(), None).unwrap();
+        run_add(
+            &wg_dir,
+            "upstream",
+            store.store_path().to_str().unwrap(),
+            None,
+        )
+        .unwrap();
         let result = run_add(&wg_dir, "upstream", "/other/path", None);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("already exists"));
@@ -362,11 +369,9 @@ mod tests {
         let store = setup_remote_store(&tmp, "remote-store");
 
         // No remote named "upstream", should resolve as path
-        let resolved = federation::resolve_store_with_remotes(
-            store.store_path().to_str().unwrap(),
-            &wg_dir,
-        )
-        .unwrap();
+        let resolved =
+            federation::resolve_store_with_remotes(store.store_path().to_str().unwrap(), &wg_dir)
+                .unwrap();
         assert_eq!(resolved.store_path(), store.store_path());
     }
 }

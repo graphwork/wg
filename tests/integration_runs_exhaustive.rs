@@ -48,7 +48,9 @@ fn wg_ok(wg_dir: &Path, args: &[&str]) -> String {
     assert!(
         output.status.success(),
         "wg {:?} failed.\nstdout: {}\nstderr: {}",
-        args, stdout, stderr
+        args,
+        stdout,
+        stderr
     );
     stdout
 }
@@ -60,7 +62,9 @@ fn wg_fail(wg_dir: &Path, args: &[&str]) -> (String, String) {
     assert!(
         !output.status.success(),
         "wg {:?} should have failed but succeeded.\nstdout: {}\nstderr: {}",
-        args, stdout, stderr
+        args,
+        stdout,
+        stderr
     );
     (stdout, stderr)
 }
@@ -69,9 +73,8 @@ fn wg_json(wg_dir: &Path, args: &[&str]) -> serde_json::Value {
     let mut full_args = vec!["--json"];
     full_args.extend_from_slice(args);
     let raw = wg_ok(wg_dir, &full_args);
-    serde_json::from_str(&raw).unwrap_or_else(|e| {
-        panic!("Failed to parse JSON.\nError: {}\nOutput: {}", e, raw)
-    })
+    serde_json::from_str(&raw)
+        .unwrap_or_else(|e| panic!("Failed to parse JSON.\nError: {}\nOutput: {}", e, raw))
 }
 
 fn make_task(id: &str, title: &str, status: Status) -> Task {
@@ -122,9 +125,21 @@ fn test_runs_list_chronological_three_runs() {
 
     // Verify list shows 3 runs in order
     let output = wg_ok(&wg_dir, &["runs", "list"]);
-    assert!(output.contains("run-001"), "should contain run-001: {}", output);
-    assert!(output.contains("run-002"), "should contain run-002: {}", output);
-    assert!(output.contains("run-003"), "should contain run-003: {}", output);
+    assert!(
+        output.contains("run-001"),
+        "should contain run-001: {}",
+        output
+    );
+    assert!(
+        output.contains("run-002"),
+        "should contain run-002: {}",
+        output
+    );
+    assert!(
+        output.contains("run-003"),
+        "should contain run-003: {}",
+        output
+    );
 
     // Verify ordering: run-001 appears before run-002 appears before run-003
     let pos1 = output.find("run-001").unwrap();
@@ -163,7 +178,9 @@ fn test_runs_show_nonexistent() {
 
     let (_stdout, stderr) = wg_fail(&wg_dir, &["runs", "show", "run-999"]);
     assert!(
-        stderr.contains("not found") || stderr.contains("Failed to read") || stderr.contains("No such file"),
+        stderr.contains("not found")
+            || stderr.contains("Failed to read")
+            || stderr.contains("No such file"),
         "should report run not found: stderr={}",
         stderr
     );
@@ -252,7 +269,9 @@ fn test_runs_restore_nonexistent() {
 
     let (_stdout, stderr) = wg_fail(&wg_dir, &["runs", "restore", "run-nonexistent"]);
     assert!(
-        stderr.contains("not found") || stderr.contains("Failed") || stderr.contains("No such file"),
+        stderr.contains("not found")
+            || stderr.contains("Failed")
+            || stderr.contains("No such file"),
         "should report run not found: stderr={}",
         stderr
     );
@@ -274,11 +293,7 @@ fn test_runs_diff_shows_status_change() {
 
     // Now diff against run-001 should show d2: Failed -> Open
     let output = wg_ok(&wg_dir, &["runs", "diff", "run-001"]);
-    assert!(
-        output.contains("d2"),
-        "diff should mention d2: {}",
-        output
-    );
+    assert!(output.contains("d2"), "diff should mention d2: {}", output);
     // Should show status change (Failed -> Open)
     assert!(
         output.contains("failed") || output.contains("Failed"),
@@ -366,7 +381,9 @@ fn test_runs_diff_nonexistent_run() {
 
     let (_stdout, stderr) = wg_fail(&wg_dir, &["runs", "diff", "run-nonexistent"]);
     assert!(
-        stderr.contains("not found") || stderr.contains("No such file") || stderr.contains("Failed"),
+        stderr.contains("not found")
+            || stderr.contains("No such file")
+            || stderr.contains("Failed"),
         "should report snapshot not found: stderr={}",
         stderr
     );
@@ -397,7 +414,10 @@ fn test_runs_list_json_metadata_structure() {
     assert_eq!(run1["id"], "run-001");
     assert!(run1["timestamp"].is_string(), "should have timestamp");
     assert!(run1["reset_tasks"].is_array(), "should have reset_tasks");
-    assert!(run1["preserved_tasks"].is_array(), "should have preserved_tasks");
+    assert!(
+        run1["preserved_tasks"].is_array(),
+        "should have preserved_tasks"
+    );
     assert_eq!(run1["model"], "opus");
     assert!(run1["filter"].is_string(), "should have filter");
 
@@ -492,10 +512,7 @@ fn test_runs_restore_json_output() {
         json["safety_snapshot"].is_string(),
         "should have safety_snapshot"
     );
-    assert!(
-        json["timestamp"].is_string(),
-        "should have timestamp"
-    );
+    assert!(json["timestamp"].is_string(), "should have timestamp");
 }
 
 // ===========================================================================
@@ -507,7 +524,13 @@ fn test_concurrent_replay_safety() {
     let tmp = TempDir::new().unwrap();
     // Create multiple failed tasks
     let tasks: Vec<Task> = (0..5)
-        .map(|i| make_task(&format!("c{}", i), &format!("Concurrent {}", i), Status::Failed))
+        .map(|i| {
+            make_task(
+                &format!("c{}", i),
+                &format!("Concurrent {}", i),
+                Status::Failed,
+            )
+        })
         .collect();
     let wg_dir = setup_workgraph(&tmp, tasks);
 
@@ -710,7 +733,10 @@ fn test_replay_then_diff() {
 
     // rd2 should not appear (no change)
     let rd2_change = changes.iter().find(|c| c["id"] == "rd2");
-    assert!(rd2_change.is_none(), "rd2 should not appear in changes (unchanged)");
+    assert!(
+        rd2_change.is_none(),
+        "rd2 should not appear in changes (unchanged)"
+    );
 }
 
 // ===========================================================================
@@ -793,7 +819,10 @@ fn test_runs_show_json_full_metadata() {
     let t2 = make_task("sj2", "Done", Status::Done);
     let wg_dir = setup_workgraph(&tmp, vec![t1, t2]);
 
-    wg_ok(&wg_dir, &["replay", "--failed-only", "--model", "test-model"]);
+    wg_ok(
+        &wg_dir,
+        &["replay", "--failed-only", "--model", "test-model"],
+    );
 
     let json = wg_json(&wg_dir, &["runs", "show", "run-001"]);
     assert_eq!(json["id"], "run-001");
@@ -802,10 +831,16 @@ fn test_runs_show_json_full_metadata() {
     assert!(json["filter"].is_string());
 
     let reset = json["reset_tasks"].as_array().unwrap();
-    assert!(reset.iter().any(|t| t == "sj1"), "sj1 should be in reset_tasks");
+    assert!(
+        reset.iter().any(|t| t == "sj1"),
+        "sj1 should be in reset_tasks"
+    );
 
     let preserved = json["preserved_tasks"].as_array().unwrap();
-    assert!(preserved.iter().any(|t| t == "sj2"), "sj2 should be in preserved_tasks");
+    assert!(
+        preserved.iter().any(|t| t == "sj2"),
+        "sj2 should be in preserved_tasks"
+    );
 }
 
 // ===========================================================================
@@ -885,8 +920,16 @@ fn test_runs_list_with_corrupted_metadata() {
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
 
-    assert!(output.status.success(), "runs list should not crash: stderr={}", stderr);
-    assert!(stdout.contains("run-001"), "should still list valid run-001: {}", stdout);
+    assert!(
+        output.status.success(),
+        "runs list should not crash: stderr={}",
+        stderr
+    );
+    assert!(
+        stdout.contains("run-001"),
+        "should still list valid run-001: {}",
+        stdout
+    );
 
     // Stderr should warn about run-002
     assert!(
@@ -911,13 +954,18 @@ fn test_runs_restore_missing_snapshot_graph() {
 
     // Delete graph.jsonl from the snapshot directory
     let snap_graph = wg_dir.join("runs/run-001/graph.jsonl");
-    assert!(snap_graph.exists(), "graph.jsonl should exist before deletion");
+    assert!(
+        snap_graph.exists(),
+        "graph.jsonl should exist before deletion"
+    );
     fs::remove_file(&snap_graph).unwrap();
 
     // Restore should fail with an error about missing graph.jsonl
     let (_stdout, stderr) = wg_fail(&wg_dir, &["runs", "restore", "run-001"]);
     assert!(
-        stderr.contains("not found") || stderr.contains("graph.jsonl") || stderr.contains("No such file"),
+        stderr.contains("not found")
+            || stderr.contains("graph.jsonl")
+            || stderr.contains("No such file"),
         "should report missing snapshot graph: stderr={}",
         stderr
     );
@@ -977,7 +1025,11 @@ fn test_restore_then_diff_shows_no_changes() {
 
     // JSON diff should show 0 changes
     let json = wg_json(&wg_dir, &["runs", "diff", "run-001"]);
-    assert_eq!(json["total_changes"], 0, "should have 0 changes: {:?}", json);
+    assert_eq!(
+        json["total_changes"], 0,
+        "should have 0 changes: {:?}",
+        json
+    );
     let changes = json["changes"].as_array().unwrap();
     assert!(changes.is_empty(), "changes array should be empty");
 }
@@ -1006,7 +1058,10 @@ fn test_snapshot_without_graph_jsonl() {
 
     // No graph.jsonl exists — snapshot should still succeed (creates meta.json only)
     let snap_path = workgraph::runs::snapshot(&wg_dir, run_id, &meta).unwrap();
-    assert!(snap_path.join("meta.json").exists(), "meta.json should be created");
+    assert!(
+        snap_path.join("meta.json").exists(),
+        "meta.json should be created"
+    );
     assert!(
         !snap_path.join("graph.jsonl").exists(),
         "graph.jsonl should NOT be in snapshot when source doesn't exist"
@@ -1068,7 +1123,10 @@ fn test_run_id_above_999() {
     // but this documents actual behavior
     let pos_999 = ids.iter().position(|x| x == "run-999");
     let pos_1000 = ids.iter().position(|x| x == "run-1000");
-    assert!(pos_999.is_some() && pos_1000.is_some(), "both IDs should be in list");
+    assert!(
+        pos_999.is_some() && pos_1000.is_some(),
+        "both IDs should be in list"
+    );
 }
 
 // ===========================================================================
@@ -1104,7 +1162,11 @@ fn test_runs_diff_only_compares_status() {
 
     // JSON should confirm 0 changes
     let json = wg_json(&wg_dir, &["runs", "diff", "run-001"]);
-    assert_eq!(json["total_changes"], 0, "should have 0 changes: {:?}", json);
+    assert_eq!(
+        json["total_changes"], 0,
+        "should have 0 changes: {:?}",
+        json
+    );
 }
 
 // ===========================================================================
@@ -1178,7 +1240,13 @@ fn test_trace_after_restore() {
     );
 
     // Create agent archive for tr1
-    create_agent_archive(&wg_dir, "tr1", "2026-02-18T10:00:00Z", "test prompt", "test output");
+    create_agent_archive(
+        &wg_dir,
+        "tr1",
+        "2026-02-18T10:00:00Z",
+        "test prompt",
+        "test output",
+    );
 
     // Replay: tr1 goes from Failed to Open, creates run-001
     wg_ok(&wg_dir, &["replay", "--failed-only"]);
@@ -1209,22 +1277,17 @@ fn test_trace_after_restore() {
 
     // Agent archives should still be accessible after restore
     let agent_runs = &json["agent_runs"];
-    assert!(
-        agent_runs.is_array(),
-        "agent_runs should be an array"
-    );
-    let agent_count = json["summary"]["agent_run_count"]
-        .as_u64()
-        .unwrap_or(0);
-    assert_eq!(
-        agent_count, 1,
-        "should still see 1 agent run after restore"
-    );
+    assert!(agent_runs.is_array(), "agent_runs should be an array");
+    let agent_count = json["summary"]["agent_run_count"].as_u64().unwrap_or(0);
+    assert_eq!(agent_count, 1, "should still see 1 agent run after restore");
 
     // Provenance should contain add_task operation for tr1
     let ops = &json["operations"];
     let ops_arr = ops.as_array().unwrap();
-    assert!(!ops_arr.is_empty(), "should have provenance operations (at least add_task)");
+    assert!(
+        !ops_arr.is_empty(),
+        "should have provenance operations (at least add_task)"
+    );
     // Note: restore provenance has task_id=None, so it won't appear in per-task trace
 }
 
@@ -1288,9 +1351,7 @@ fn test_multiple_replay_cycles_preserve_all_archives() {
 
     // Trace should show both agent runs
     let json = wg_json(&wg_dir, &["trace", "show", "mr1"]);
-    let agent_count = json["summary"]["agent_run_count"]
-        .as_u64()
-        .unwrap_or(0);
+    let agent_count = json["summary"]["agent_run_count"].as_u64().unwrap_or(0);
     assert_eq!(
         agent_count, 2,
         "trace should show 2 agent runs from both cycles"

@@ -1,9 +1,9 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::config::AgencyConfig;
 use super::store::*;
 use super::types::*;
+use crate::config::AgencyConfig;
 
 /// Recalculate the average score from a list of EvaluationRefs.
 ///
@@ -95,9 +95,7 @@ pub fn record_evaluation(
     }
 
     // 4. Update tradeoff performance
-    if let Ok(mut tradeoff) =
-        find_tradeoff_by_prefix(&tradeoffs_dir, &evaluation.tradeoff_id)
-    {
+    if let Ok(mut tradeoff) = find_tradeoff_by_prefix(&tradeoffs_dir, &evaluation.tradeoff_id) {
         let tradeoff_eval_ref = EvaluationRef {
             score: evaluation.score,
             task_id: evaluation.task_id.clone(),
@@ -231,7 +229,11 @@ pub fn calibration_error(pairs: &[(f64, f64)], n_bins: usize) -> Option<f64> {
 
     for i in 0..n_bins {
         let lower = i as f64 * bin_width;
-        let upper = if i == n_bins - 1 { 1.0 + f64::EPSILON } else { (i + 1) as f64 * bin_width };
+        let upper = if i == n_bins - 1 {
+            1.0 + f64::EPSILON
+        } else {
+            (i + 1) as f64 * bin_width
+        };
 
         let in_bin: Vec<&(f64, f64)> = pairs
             .iter()
@@ -273,7 +275,11 @@ pub fn resolution(pairs: &[(f64, f64)], n_bins: usize) -> Option<f64> {
 
     for i in 0..n_bins {
         let lower = i as f64 * bin_width;
-        let upper = if i == n_bins - 1 { 1.0 + f64::EPSILON } else { (i + 1) as f64 * bin_width };
+        let upper = if i == n_bins - 1 {
+            1.0 + f64::EPSILON
+        } else {
+            (i + 1) as f64 * bin_width
+        };
 
         let in_bin: Vec<&(f64, f64)> = pairs
             .iter()
@@ -310,7 +316,6 @@ pub fn compute_scoring_metrics(pairs: &[(f64, f64)], n_bins: usize) -> Option<Sc
         resolution: res,
     })
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -383,10 +388,7 @@ mod tests {
         build_role(
             "Implementer",
             "Writes code to fulfil task requirements.",
-            vec![
-                "rust".to_string(),
-                "inline:fn main() {}".to_string(),
-            ],
+            vec!["rust".to_string(), "inline:fn main() {}".to_string()],
             "Working, tested code merged to main.",
         )
     }
@@ -411,7 +413,7 @@ mod tests {
 
     #[test]
     fn test_classify_rubric_level() {
-        use super::super::types::{classify_rubric_level, RubricLevel};
+        use super::super::types::{RubricLevel, classify_rubric_level};
         assert_eq!(classify_rubric_level(0.0), RubricLevel::Failing);
         assert_eq!(classify_rubric_level(0.1), RubricLevel::Failing);
         assert_eq!(classify_rubric_level(0.19), RubricLevel::Failing);
@@ -420,18 +422,30 @@ mod tests {
         assert_eq!(classify_rubric_level(0.4), RubricLevel::MeetsExpectations);
         assert_eq!(classify_rubric_level(0.59), RubricLevel::MeetsExpectations);
         assert_eq!(classify_rubric_level(0.6), RubricLevel::ExceedsExpectations);
-        assert_eq!(classify_rubric_level(0.79), RubricLevel::ExceedsExpectations);
+        assert_eq!(
+            classify_rubric_level(0.79),
+            RubricLevel::ExceedsExpectations
+        );
         assert_eq!(classify_rubric_level(0.8), RubricLevel::Exceptional);
         assert_eq!(classify_rubric_level(1.0), RubricLevel::Exceptional);
     }
 
     #[test]
     fn test_rubric_level_display() {
-        use super::super::types::{classify_rubric_level, RubricLevel};
+        use super::super::types::{RubricLevel, classify_rubric_level};
         assert_eq!(RubricLevel::Failing.to_string(), "Failing");
-        assert_eq!(RubricLevel::BelowExpectations.to_string(), "Below Expectations");
-        assert_eq!(RubricLevel::MeetsExpectations.to_string(), "Meets Expectations");
-        assert_eq!(RubricLevel::ExceedsExpectations.to_string(), "Exceeds Expectations");
+        assert_eq!(
+            RubricLevel::BelowExpectations.to_string(),
+            "Below Expectations"
+        );
+        assert_eq!(
+            RubricLevel::MeetsExpectations.to_string(),
+            "Meets Expectations"
+        );
+        assert_eq!(
+            RubricLevel::ExceedsExpectations.to_string(),
+            "Exceeds Expectations"
+        );
         assert_eq!(RubricLevel::Exceptional.to_string(), "Exceptional");
         // label() and Display should match
         assert_eq!(classify_rubric_level(0.5).label(), "Meets Expectations");
@@ -544,7 +558,9 @@ mod tests {
         assert_eq!(saved_eval.task_id, "task-42");
 
         // 2. Role performance was updated
-        let role_path = agency_dir.join("cache/roles").join(format!("{}.yaml", role_id));
+        let role_path = agency_dir
+            .join("cache/roles")
+            .join(format!("{}.yaml", role_id));
         let updated_role = load_role(&role_path).unwrap();
         assert_eq!(updated_role.performance.task_count, 1);
         assert!((updated_role.performance.avg_score.unwrap() - 0.85).abs() < f64::EPSILON);
@@ -615,7 +631,9 @@ mod tests {
         record_evaluation(&eval1, &agency_dir).unwrap();
         record_evaluation(&eval2, &agency_dir).unwrap();
 
-        let role_path = agency_dir.join("cache/roles").join(format!("{}.yaml", role_id));
+        let role_path = agency_dir
+            .join("cache/roles")
+            .join(format!("{}.yaml", role_id));
         let updated_role = load_role(&role_path).unwrap();
         assert_eq!(updated_role.performance.task_count, 2);
         assert!((updated_role.performance.avg_score.unwrap() - 0.8).abs() < f64::EPSILON);
@@ -750,21 +768,15 @@ mod tests {
         record_evaluation(&eval, &agency_dir).unwrap();
 
         // Verify component 1 was updated
-        let updated_comp1 = find_component_by_prefix(
-            &agency_dir.join("primitives/components"),
-            &comp1.id,
-        )
-        .unwrap();
+        let updated_comp1 =
+            find_component_by_prefix(&agency_dir.join("primitives/components"), &comp1.id).unwrap();
         assert_eq!(updated_comp1.performance.task_count, 1);
         assert!((updated_comp1.performance.avg_score.unwrap() - 0.9).abs() < f64::EPSILON);
         assert_eq!(updated_comp1.performance.evaluations[0].context_id, role_id);
 
         // Verify component 2 was updated
-        let updated_comp2 = find_component_by_prefix(
-            &agency_dir.join("primitives/components"),
-            &comp2.id,
-        )
-        .unwrap();
+        let updated_comp2 =
+            find_component_by_prefix(&agency_dir.join("primitives/components"), &comp2.id).unwrap();
         assert_eq!(updated_comp2.performance.task_count, 1);
         assert!((updated_comp2.performance.avg_score.unwrap() - 0.9).abs() < f64::EPSILON);
         assert_eq!(updated_comp2.performance.evaluations[0].context_id, role_id);
@@ -783,12 +795,7 @@ mod tests {
         );
         save_outcome(&outcome, &agency_dir.join("primitives/outcomes")).unwrap();
 
-        let role = build_role(
-            "Implementer",
-            "Writes code",
-            vec![],
-            &outcome.id,
-        );
+        let role = build_role("Implementer", "Writes code", vec![], &outcome.id);
         let role_id = role.id.clone();
         save_role(&role, &agency_dir.join("cache/roles")).unwrap();
 
@@ -814,11 +821,8 @@ mod tests {
         record_evaluation(&eval, &agency_dir).unwrap();
 
         // Verify outcome was updated with agent_id as context_id
-        let updated_outcome = find_outcome_by_prefix(
-            &agency_dir.join("primitives/outcomes"),
-            &outcome.id,
-        )
-        .unwrap();
+        let updated_outcome =
+            find_outcome_by_prefix(&agency_dir.join("primitives/outcomes"), &outcome.id).unwrap();
         assert_eq!(updated_outcome.performance.task_count, 1);
         assert!((updated_outcome.performance.avg_score.unwrap() - 0.75).abs() < f64::EPSILON);
         assert_eq!(
@@ -941,9 +945,7 @@ mod tests {
         let updated_comp =
             find_component_by_prefix(&agency_dir.join("primitives/components"), &comp.id).unwrap();
         assert_eq!(updated_comp.performance.task_count, 2);
-        assert!(
-            (updated_comp.performance.avg_score.unwrap() - expected_avg).abs() < f64::EPSILON
-        );
+        assert!((updated_comp.performance.avg_score.unwrap() - expected_avg).abs() < f64::EPSILON);
         // Component context_id should be role_id
         assert_eq!(updated_comp.performance.evaluations[0].context_id, role_id);
 

@@ -71,10 +71,11 @@ pub fn run(dir: &Path) -> Result<()> {
 
     // Hint about global config if it doesn't exist
     if let Ok(global_path) = workgraph::config::Config::global_config_path()
-        && !global_path.exists() {
-            println!();
-            println!("No global config found. Run `wg setup` to configure defaults.");
-        }
+        && !global_path.exists()
+    {
+        println!();
+        println!("No global config found. Run `wg setup` to configure defaults.");
+    }
 
     // Check skill/bundle status for the configured executor
     let config = workgraph::config::Config::load_global()?.unwrap_or_default();
@@ -93,7 +94,9 @@ pub fn run(dir: &Path) -> Result<()> {
             let executor_toml = dir.join("executors/amplifier.toml");
             if !executor_toml.exists() {
                 println!();
-                println!("Hint: Amplifier executor is configured but not installed in this project.");
+                println!(
+                    "Hint: Amplifier executor is configured but not installed in this project."
+                );
                 println!("  Spawned agents won't know wg commands without the workgraph bundle.");
                 println!("  Run: cd ~/amplifier-bundle-workgraph && ./setup.sh");
             }

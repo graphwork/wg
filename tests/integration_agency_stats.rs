@@ -242,8 +242,12 @@ fn agency_stats_json_empty() {
     let wg_dir = setup_agency(&tmp);
 
     let output = wg_ok(&wg_dir, &["--json", "agency", "stats"]);
-    let json: serde_json::Value = serde_json::from_str(&output)
-        .unwrap_or_else(|e| panic!("Invalid JSON from agency stats --json: {}\nOutput: {}", e, output));
+    let json: serde_json::Value = serde_json::from_str(&output).unwrap_or_else(|e| {
+        panic!(
+            "Invalid JSON from agency stats --json: {}\nOutput: {}",
+            e, output
+        )
+    });
     // Should have roles, tradeoffs, evaluations keys
     assert!(
         json.is_object(),
@@ -262,8 +266,12 @@ fn agency_stats_json_with_data() {
     add_evaluation(&wg_dir, "eval-1", "task-1", "role-a", "tradeoff-a", 0.90);
 
     let output = wg_ok(&wg_dir, &["--json", "agency", "stats"]);
-    let json: serde_json::Value = serde_json::from_str(&output)
-        .unwrap_or_else(|e| panic!("Invalid JSON from agency stats --json: {}\nOutput: {}", e, output));
+    let json: serde_json::Value = serde_json::from_str(&output).unwrap_or_else(|e| {
+        panic!(
+            "Invalid JSON from agency stats --json: {}\nOutput: {}",
+            e, output
+        )
+    });
     assert!(json.is_object());
 }
 
@@ -333,7 +341,14 @@ fn agency_stats_with_tagged_tasks() {
 
     add_role(&wg_dir, "role-a", "Programmer", 1, Some(0.80));
     add_tradeoff(&wg_dir, "tradeoff-a", "Thorough", 1, Some(0.80));
-    add_evaluation(&wg_dir, "eval-1", "task-tagged", "role-a", "tradeoff-a", 0.80);
+    add_evaluation(
+        &wg_dir,
+        "eval-1",
+        "task-tagged",
+        "role-a",
+        "tradeoff-a",
+        0.80,
+    );
 
     // Add a task with tags
     let task = Task {

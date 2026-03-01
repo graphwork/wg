@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use crate::agency::{
-    AccessPolicy, Agent, AgencyStore, DesiredOutcome, EvaluationRef, Lineage, LocalStore,
+    AccessPolicy, AgencyStore, Agent, DesiredOutcome, EvaluationRef, Lineage, LocalStore,
     PerformanceRecord, Role, RoleComponent, TradeoffConfig,
 };
 use crate::service::is_process_alive;
@@ -161,7 +161,9 @@ impl std::fmt::Display for TransferSummary {
         writeln!(
             f,
             "  Components:   +{} new, {} updated, {} skipped{}",
-            self.components_added, self.components_updated, self.components_skipped,
+            self.components_added,
+            self.components_updated,
+            self.components_skipped,
             if self.components_access_denied > 0 {
                 format!(", {} denied (access policy)", self.components_access_denied)
             } else {
@@ -171,7 +173,9 @@ impl std::fmt::Display for TransferSummary {
         writeln!(
             f,
             "  Outcomes:     +{} new, {} updated, {} skipped{}",
-            self.outcomes_added, self.outcomes_updated, self.outcomes_skipped,
+            self.outcomes_added,
+            self.outcomes_updated,
+            self.outcomes_skipped,
             if self.outcomes_access_denied > 0 {
                 format!(", {} denied (access policy)", self.outcomes_access_denied)
             } else {
@@ -181,7 +185,9 @@ impl std::fmt::Display for TransferSummary {
         writeln!(
             f,
             "  Tradeoffs:    +{} new, {} updated, {} skipped{}",
-            self.tradeoffs_added, self.tradeoffs_updated, self.tradeoffs_skipped,
+            self.tradeoffs_added,
+            self.tradeoffs_updated,
+            self.tradeoffs_skipped,
             if self.tradeoffs_access_denied > 0 {
                 format!(", {} denied (access policy)", self.tradeoffs_access_denied)
             } else {
@@ -215,7 +221,8 @@ impl std::fmt::Display for TransferSummary {
 /// Named remotes (from `.workgraph/federation.yaml`) are a future extension.
 pub fn resolve_store(reference: &str) -> Result<LocalStore, anyhow::Error> {
     let expanded = if let Some(suffix) = reference.strip_prefix("~/") {
-        let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?;
+        let home =
+            dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?;
         home.join(suffix)
     } else {
         PathBuf::from(reference)
@@ -256,7 +263,9 @@ pub fn resolve_store(reference: &str) -> Result<LocalStore, anyhow::Error> {
     // Prefer .workgraph/agency if parent looks like a project dir.
     if path.join(".workgraph").is_dir() {
         Ok(LocalStore::new(wg_agency))
-    } else if path.join("agency").is_dir() || path.file_name().map(|n| n != "agency").unwrap_or(true) {
+    } else if path.join("agency").is_dir()
+        || path.file_name().map(|n| n != "agency").unwrap_or(true)
+    {
         // If path/agency exists but has no roles, or if path is not named "agency",
         // assume we want path/agency/ (bare store convention).
         // But if the path itself ends in "agency", use it directly.
@@ -289,10 +298,7 @@ pub struct ResolvedPeer {
 /// 1. Named peer in federation.yaml → look up `path`
 /// 2. Absolute path or `~/` → filesystem path
 /// 3. Relative path → resolve from CWD
-pub fn resolve_peer(
-    reference: &str,
-    workgraph_dir: &Path,
-) -> Result<ResolvedPeer, anyhow::Error> {
+pub fn resolve_peer(reference: &str, workgraph_dir: &Path) -> Result<ResolvedPeer, anyhow::Error> {
     let config = load_federation_config(workgraph_dir)?;
 
     // Check named peers first
@@ -304,8 +310,8 @@ pub fn resolve_peer(
 
     // Expand ~/
     let expanded = if let Some(suffix) = raw_path.strip_prefix("~/") {
-        let home = dirs::home_dir()
-            .ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?;
+        let home =
+            dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?;
         home.join(suffix)
     } else {
         PathBuf::from(&raw_path)
@@ -366,7 +372,7 @@ pub fn check_peer_service(workgraph_dir: &Path) -> PeerServiceStatus {
                 pid: None,
                 socket_path: None,
                 started_at: None,
-            }
+            };
         }
     };
 
@@ -386,7 +392,7 @@ pub fn check_peer_service(workgraph_dir: &Path) -> PeerServiceStatus {
                 pid: None,
                 socket_path: None,
                 started_at: None,
-            }
+            };
         }
     };
 
@@ -399,7 +405,6 @@ pub fn check_peer_service(workgraph_dir: &Path) -> PeerServiceStatus {
         started_at: state.started_at,
     }
 }
-
 
 // ---------------------------------------------------------------------------
 // Cross-repo dependency resolution
@@ -476,15 +481,16 @@ pub fn resolve_remote_task_status(
     let service_status = check_peer_service(&resolved.workgraph_dir);
 
     if service_status.running
-        && let Some(socket_path) = &service_status.socket_path {
-            // Try IPC first
-            match query_task_via_ipc(socket_path, task_id) {
-                Ok(status) => return status,
-                Err(_) => {
-                    // Fall through to direct file access
-                }
+        && let Some(socket_path) = &service_status.socket_path
+    {
+        // Try IPC first
+        match query_task_via_ipc(socket_path, task_id) {
+            Ok(status) => return status,
+            Err(_) => {
+                // Fall through to direct file access
             }
         }
+    }
 
     // Fall back to direct graph file read
     let graph_path = resolved.workgraph_dir.join("graph.jsonl");
@@ -536,10 +542,7 @@ pub fn resolve_remote_task_status(
 
 /// Query a task's status via IPC to a running peer service.
 #[cfg(unix)]
-fn query_task_via_ipc(
-    socket_path: &str,
-    task_id: &str,
-) -> Result<RemoteTaskStatus, anyhow::Error> {
+fn query_task_via_ipc(socket_path: &str, task_id: &str) -> Result<RemoteTaskStatus, anyhow::Error> {
     use std::io::{BufRead, BufReader, Write};
     use std::os::unix::net::UnixStream;
     use std::time::Duration;
@@ -644,28 +647,42 @@ pub fn transfer(
 
     let has_filter = !opts.entity_ids.is_empty();
     let matches_filter = |id: &str| -> bool {
-        opts.entity_ids.iter().any(|prefix| id.starts_with(prefix.as_str()))
+        opts.entity_ids
+            .iter()
+            .any(|prefix| id.starts_with(prefix.as_str()))
     };
 
     // --- Load source primitives ---
-    let source_components = if matches!(opts.entity_filter, EntityFilter::All | EntityFilter::Components) {
+    let source_components = if matches!(
+        opts.entity_filter,
+        EntityFilter::All | EntityFilter::Components
+    ) {
         source.load_components().unwrap_or_default()
     } else {
         Vec::new()
     };
-    let source_outcomes = if matches!(opts.entity_filter, EntityFilter::All | EntityFilter::Outcomes) {
+    let source_outcomes = if matches!(
+        opts.entity_filter,
+        EntityFilter::All | EntityFilter::Outcomes
+    ) {
         source.load_outcomes().unwrap_or_default()
     } else {
         Vec::new()
     };
 
     // --- Load source cache + composition entities ---
-    let source_roles = if matches!(opts.entity_filter, EntityFilter::All | EntityFilter::Roles | EntityFilter::Agents) {
+    let source_roles = if matches!(
+        opts.entity_filter,
+        EntityFilter::All | EntityFilter::Roles | EntityFilter::Agents
+    ) {
         source.load_roles().unwrap_or_default()
     } else {
         Vec::new()
     };
-    let source_tradeoffs = if matches!(opts.entity_filter, EntityFilter::All | EntityFilter::Tradeoffs | EntityFilter::Agents) {
+    let source_tradeoffs = if matches!(
+        opts.entity_filter,
+        EntityFilter::All | EntityFilter::Tradeoffs | EntityFilter::Agents
+    ) {
         source.load_tradeoffs().unwrap_or_default()
     } else {
         Vec::new()
@@ -683,7 +700,10 @@ pub fn transfer(
 
     // --- Collect primitives to transfer (with AccessPolicy enforcement) ---
     let mut components_to_transfer: Vec<&RoleComponent> = Vec::new();
-    if matches!(opts.entity_filter, EntityFilter::All | EntityFilter::Components) {
+    if matches!(
+        opts.entity_filter,
+        EntityFilter::All | EntityFilter::Components
+    ) {
         for comp in &source_components {
             if has_filter && !matches_filter(&comp.id) {
                 continue;
@@ -697,7 +717,10 @@ pub fn transfer(
     }
 
     let mut outcomes_to_transfer: Vec<&DesiredOutcome> = Vec::new();
-    if matches!(opts.entity_filter, EntityFilter::All | EntityFilter::Outcomes) {
+    if matches!(
+        opts.entity_filter,
+        EntityFilter::All | EntityFilter::Outcomes
+    ) {
         for outcome in &source_outcomes {
             if has_filter && !matches_filter(&outcome.id) {
                 continue;
@@ -734,7 +757,10 @@ pub fn transfer(
             roles_to_transfer.push(role);
         }
     }
-    if matches!(opts.entity_filter, EntityFilter::All | EntityFilter::Tradeoffs) {
+    if matches!(
+        opts.entity_filter,
+        EntityFilter::All | EntityFilter::Tradeoffs
+    ) {
         for motivation in &source_tradeoffs {
             if has_filter && !matches_filter(&motivation.id) {
                 continue;
@@ -794,7 +820,8 @@ pub fn transfer(
     }
     // Add dependency roles not already in the transfer set.
     // Per §7.1: if a dependency doesn't exist in source, that's a broken agent — error out.
-    let existing_role_ids: HashSet<String> = roles_to_transfer.iter().map(|r| r.id.clone()).collect();
+    let existing_role_ids: HashSet<String> =
+        roles_to_transfer.iter().map(|r| r.id.clone()).collect();
     for dep_id in &dep_role_ids {
         if !existing_role_ids.contains(dep_id) {
             if let Some(role) = role_map.get(dep_id) {
@@ -1002,7 +1029,9 @@ pub fn transfer(
     }
 
     // Transfer evaluations
-    if !opts.no_evaluations && matches!(opts.entity_filter, EntityFilter::All | EntityFilter::Agents) {
+    if !opts.no_evaluations
+        && matches!(opts.entity_filter, EntityFilter::All | EntityFilter::Agents)
+    {
         let source_evals = source.load_evaluations().unwrap_or_default();
         let target_evals: HashSet<String> = target
             .load_evaluations()
@@ -1469,7 +1498,7 @@ mod tests {
                 timestamp: "2026-01-01".to_string(),
                 context_id: String::new(),
             }],
-            };
+        };
         let b = PerformanceRecord {
             task_count: 2,
             avg_score: Some(0.85),
@@ -1487,7 +1516,7 @@ mod tests {
                     context_id: String::new(),
                 },
             ],
-            };
+        };
         let merged = merge_performance(&a, &b);
         assert_eq!(merged.task_count, 2); // deduped
         assert_eq!(merged.evaluations.len(), 2);
@@ -1558,10 +1587,16 @@ mod tests {
         std::fs::write(&corrupt_path, "{{{{not valid yaml!!!!").unwrap();
 
         let result = transfer(&source, &target, &TransferOptions::default());
-        assert!(result.is_err(), "transfer should fail on corrupt target YAML");
+        assert!(
+            result.is_err(),
+            "transfer should fail on corrupt target YAML"
+        );
         let err_msg = result.unwrap_err().to_string();
         assert!(
-            err_msg.contains("yaml") || err_msg.contains("YAML") || err_msg.contains("parse") || err_msg.contains("scan"),
+            err_msg.contains("yaml")
+                || err_msg.contains("YAML")
+                || err_msg.contains("parse")
+                || err_msg.contains("scan"),
             "error should mention YAML parsing: {}",
             err_msg
         );
@@ -1585,7 +1620,10 @@ mod tests {
             ..Default::default()
         };
         let result = transfer(&source, &target, &opts);
-        assert!(result.is_err(), "transfer should fail on missing role dependency");
+        assert!(
+            result.is_err(),
+            "transfer should fail on missing role dependency"
+        );
         let err_msg = result.unwrap_err().to_string();
         assert!(
             err_msg.contains("nonexistent-role") && err_msg.contains("referential integrity"),
@@ -1612,7 +1650,10 @@ mod tests {
             ..Default::default()
         };
         let result = transfer(&source, &target, &opts);
-        assert!(result.is_err(), "transfer should fail on missing motivation dependency");
+        assert!(
+            result.is_err(),
+            "transfer should fail on missing motivation dependency"
+        );
         let err_msg = result.unwrap_err().to_string();
         assert!(
             err_msg.contains("nonexistent-motivation") && err_msg.contains("referential integrity"),
@@ -1809,8 +1850,12 @@ mod tests {
         let source = setup_store(&tmp, "source");
         let target = setup_store(&tmp, "target");
 
-        source.save_component(&make_component("c1", "coding")).unwrap();
-        source.save_component(&make_component("c2", "testing")).unwrap();
+        source
+            .save_component(&make_component("c1", "coding"))
+            .unwrap();
+        source
+            .save_component(&make_component("c2", "testing"))
+            .unwrap();
 
         let summary = transfer(&source, &target, &TransferOptions::default()).unwrap();
         assert_eq!(summary.components_added, 2);
@@ -1824,7 +1869,9 @@ mod tests {
         let source = setup_store(&tmp, "source");
         let target = setup_store(&tmp, "target");
 
-        source.save_outcome(&make_outcome("o1", "Working code")).unwrap();
+        source
+            .save_outcome(&make_outcome("o1", "Working code"))
+            .unwrap();
 
         let summary = transfer(&source, &target, &TransferOptions::default()).unwrap();
         assert_eq!(summary.outcomes_added, 1);
@@ -1837,8 +1884,12 @@ mod tests {
         let source = setup_store(&tmp, "source");
         let target = setup_store(&tmp, "target");
 
-        source.save_tradeoff(&make_motivation("t1", "Careful")).unwrap();
-        source.save_tradeoff(&make_motivation("t2", "Fast")).unwrap();
+        source
+            .save_tradeoff(&make_motivation("t1", "Careful"))
+            .unwrap();
+        source
+            .save_tradeoff(&make_motivation("t2", "Fast"))
+            .unwrap();
 
         let opts = TransferOptions {
             entity_filter: EntityFilter::Tradeoffs,
@@ -1927,6 +1978,9 @@ mod tests {
         // No federation config → empty peers
         let result = resolve_remote_task_status("unknown-peer", "some-task", &local_wg);
         assert_eq!(result.status, crate::graph::Status::Open);
-        assert!(matches!(result.resolution, RemoteResolution::Unreachable(_)));
+        assert!(matches!(
+            result.resolution,
+            RemoteResolution::Unreachable(_)
+        ));
     }
 }

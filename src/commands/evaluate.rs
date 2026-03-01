@@ -4,12 +4,9 @@ use std::path::Path;
 use std::process::Command;
 
 use workgraph::agency::{
-    self, Evaluation, EvaluatorInput,
-    load_all_evaluations_or_warn,
-    load_tradeoff, load_role,
-    record_evaluation, record_evaluation_with_inference,
-    render_evaluator_prompt,
-    render_identity_prompt_rich, resolve_all_components, resolve_outcome, eval_source,
+    self, Evaluation, EvaluatorInput, eval_source, load_all_evaluations_or_warn, load_role,
+    load_tradeoff, record_evaluation, record_evaluation_with_inference, render_evaluator_prompt,
+    render_identity_prompt_rich, resolve_all_components, resolve_outcome,
 };
 use workgraph::config::Config;
 use workgraph::graph::{LogEntry, Status};
@@ -136,63 +133,63 @@ pub fn run(
     let tradeoffs_dir = agency_dir.join("primitives/tradeoffs");
     let agents_dir = agency_dir.join("cache/agents");
 
-    let (resolved_agent, role, resolved_tradeoff, agent_role_id, agent_tradeoff_id) = if let Some(
-        ref agent_hash,
-    ) = task.agent
-    {
-        match agency::find_agent_by_prefix(&agents_dir, agent_hash) {
-            Ok(agent) => {
-                let role_path = roles_dir.join(format!("{}.yaml", agent.role_id));
-                let tradeoff_path = tradeoffs_dir.join(format!("{}.yaml", agent.tradeoff_id));
+    let (resolved_agent, role, resolved_tradeoff, agent_role_id, agent_tradeoff_id) =
+        if let Some(ref agent_hash) = task.agent {
+            match agency::find_agent_by_prefix(&agents_dir, agent_hash) {
+                Ok(agent) => {
+                    let role_path = roles_dir.join(format!("{}.yaml", agent.role_id));
+                    let tradeoff_path = tradeoffs_dir.join(format!("{}.yaml", agent.tradeoff_id));
 
-                let role = if role_path.exists() {
-                    Some(load_role(&role_path).context("Failed to load role")?)
-                } else {
+                    let role = if role_path.exists() {
+                        Some(load_role(&role_path).context("Failed to load role")?)
+                    } else {
+                        eprintln!(
+                            "Warning: role '{}' not found, evaluating without role context",
+                            agent.role_id
+                        );
+                        None
+                    };
+
+                    let resolved_tradeoff = if tradeoff_path.exists() {
+                        Some(load_tradeoff(&tradeoff_path).context("Failed to load tradeoff")?)
+                    } else {
+                        eprintln!(
+                            "Warning: tradeoff '{}' not found, evaluating without tradeoff context",
+                            agent.tradeoff_id
+                        );
+                        None
+                    };
+
+                    let role_id = agent.role_id.clone();
+                    let tradeoff_id = agent.tradeoff_id.clone();
+                    (Some(agent), role, resolved_tradeoff, role_id, tradeoff_id)
+                }
+                Err(e) => {
                     eprintln!(
-                        "Warning: role '{}' not found, evaluating without role context",
-                        agent.role_id
+                        "Warning: agent '{}' not found ({}), evaluating without agent context",
+                        agent_hash, e
                     );
-                    None
-                };
-
-                let resolved_tradeoff = if tradeoff_path.exists() {
-                    Some(load_tradeoff(&tradeoff_path).context("Failed to load tradeoff")?)
-                } else {
-                    eprintln!(
-                        "Warning: tradeoff '{}' not found, evaluating without tradeoff context",
-                        agent.tradeoff_id
-                    );
-                    None
-                };
-
-                let role_id = agent.role_id.clone();
-                let tradeoff_id = agent.tradeoff_id.clone();
-                (Some(agent), role, resolved_tradeoff, role_id, tradeoff_id)
+                    (
+                        None,
+                        None,
+                        None,
+                        "unknown".to_string(),
+                        "unknown".to_string(),
+                    )
+                }
             }
-            Err(e) => {
-                eprintln!(
-                    "Warning: agent '{}' not found ({}), evaluating without agent context",
-                    agent_hash, e
-                );
-                (
-                    None,
-                    None,
-                    None,
-                    "unknown".to_string(),
-                    "unknown".to_string(),
-                )
-            }
-        }
-    } else {
-        eprintln!("Note: task has no assigned agent — evaluating without role/tradeoff context");
-        (
-            None,
-            None,
-            None,
-            "unknown".to_string(),
-            "unknown".to_string(),
-        )
-    };
+        } else {
+            eprintln!(
+                "Note: task has no assigned agent — evaluating without role/tradeoff context"
+            );
+            (
+                None,
+                None,
+                None,
+                "unknown".to_string(),
+                "unknown".to_string(),
+            )
+        };
 
     // Step 3: Collect task artifacts and log entries
     let artifacts = &task.artifacts;
@@ -203,18 +200,27 @@ pub fn run(
 
     // Step 3.6: Resolve evaluator agent identity (if configured)
     let config = Config::load_or_default(dir);
-    let evaluator_identity = config.agency.evaluator_agent.as_ref().and_then(|eval_hash| {
-        let agent_path = agents_dir.join(format!("{}.yaml", eval_hash));
-        let eval_agent = agency::load_agent(&agent_path).ok()?;
-        let eval_role_path = roles_dir.join(format!("{}.yaml", eval_agent.role_id));
-        let eval_role = load_role(&eval_role_path).ok()?;
-        let eval_tradeoff_path = tradeoffs_dir.join(format!("{}.yaml", eval_agent.tradeoff_id));
-        let eval_tradeoff = load_tradeoff(&eval_tradeoff_path).ok()?;
-        let workgraph_root = dir;
-        let resolved_skills = resolve_all_components(&eval_role, workgraph_root, &agency_dir);
-        let outcome = resolve_outcome(&eval_role.outcome_id, &agency_dir);
-        Some(render_identity_prompt_rich(&eval_role, &eval_tradeoff, &resolved_skills, outcome.as_ref()))
-    });
+    let evaluator_identity = config
+        .agency
+        .evaluator_agent
+        .as_ref()
+        .and_then(|eval_hash| {
+            let agent_path = agents_dir.join(format!("{}.yaml", eval_hash));
+            let eval_agent = agency::load_agent(&agent_path).ok()?;
+            let eval_role_path = roles_dir.join(format!("{}.yaml", eval_agent.role_id));
+            let eval_role = load_role(&eval_role_path).ok()?;
+            let eval_tradeoff_path = tradeoffs_dir.join(format!("{}.yaml", eval_agent.tradeoff_id));
+            let eval_tradeoff = load_tradeoff(&eval_tradeoff_path).ok()?;
+            let workgraph_root = dir;
+            let resolved_skills = resolve_all_components(&eval_role, workgraph_root, &agency_dir);
+            let outcome = resolve_outcome(&eval_role.outcome_id, &agency_dir);
+            Some(render_identity_prompt_rich(
+                &eval_role,
+                &eval_tradeoff,
+                &resolved_skills,
+                outcome.as_ref(),
+            ))
+        });
 
     // Step 3.7: Collect downstream task context for organizational impact scoring.
     // `task.before` lists task IDs that depend on this task's output.
@@ -348,9 +354,8 @@ pub fn run(
 
     // Step 8: Save evaluation, update performance records, and trigger retrospective inference
     if role_id != "unknown" && tradeoff_id != "unknown" {
-        let eval_path =
-            record_evaluation_with_inference(&evaluation, &agency_dir, &config.agency)
-                .context("Failed to record evaluation")?;
+        let eval_path = record_evaluation_with_inference(&evaluation, &agency_dir, &config.agency)
+            .context("Failed to record evaluation")?;
 
         if json {
             let out = serde_json::json!({
@@ -453,14 +458,21 @@ pub fn run(
             }
 
             let eval_of_evaluator = Evaluation {
-                id: format!("meta-eval-{}-{}", task_id, chrono::Utc::now().to_rfc3339().replace(':', "-")),
+                id: format!(
+                    "meta-eval-{}-{}",
+                    task_id,
+                    chrono::Utc::now().to_rfc3339().replace(':', "-")
+                ),
                 task_id: format!("evaluate-{}", task_id),
                 agent_id: eval_agent.id.clone(),
                 role_id: eval_agent.role_id.clone(),
                 tradeoff_id: eval_agent.tradeoff_id.clone(),
                 score: eval_quality.max(0.0),
                 dimensions: HashMap::new(),
-                notes: format!("Auto-recorded: evaluator produced valid evaluation for task '{}'", task_id),
+                notes: format!(
+                    "Auto-recorded: evaluator produced valid evaluation for task '{}'",
+                    task_id
+                ),
                 evaluator: "system".to_string(),
                 timestamp: chrono::Utc::now().to_rfc3339(),
                 model: None,
@@ -553,9 +565,8 @@ pub fn run_record(
     // Save evaluation and trigger retrospective inference for learning assignments
     let config = Config::load_or_default(dir);
     if !role_id.is_empty() && !tradeoff_id.is_empty() {
-        let eval_path =
-            record_evaluation_with_inference(&evaluation, &agency_dir, &config.agency)
-                .context("Failed to record evaluation")?;
+        let eval_path = record_evaluation_with_inference(&evaluation, &agency_dir, &config.agency)
+            .context("Failed to record evaluation")?;
 
         if json {
             let out = serde_json::json!({
@@ -636,7 +647,6 @@ pub fn run_show(
         task_evals.retain(|e| e.task_id == tid || e.task_id.starts_with(tid));
         task_evals.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
 
-
         if json {
             let out = serde_json::json!({
                 "task_id": tid,
@@ -651,16 +661,22 @@ pub fn run_show(
                 println!("  (none)");
             } else {
                 for e in &task_evals {
-                    println!("  Score: {:.3}  Source: {}  Agent: {}  {}",
-                        e.score, e.source,
-                        if e.agent_id.is_empty() { "-" } else { &e.agent_id[..e.agent_id.len().min(10)] },
-                        e.timestamp);
+                    println!(
+                        "  Score: {:.3}  Source: {}  Agent: {}  {}",
+                        e.score,
+                        e.source,
+                        if e.agent_id.is_empty() {
+                            "-"
+                        } else {
+                            &e.agent_id[..e.agent_id.len().min(10)]
+                        },
+                        e.timestamp
+                    );
                     for (dim, val) in &e.dimensions {
                         println!("    {}: {:.3}", dim, val);
                     }
                 }
             }
-
         }
         return Ok(());
     }

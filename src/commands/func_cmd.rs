@@ -13,10 +13,9 @@ pub fn run_list(
     visibility_filter: Option<&str>,
 ) -> Result<()> {
     let vis_filter = match visibility_filter {
-        Some(s) => Some(
-            FunctionVisibility::from_str_opt(s)
-                .ok_or_else(|| anyhow::anyhow!("Invalid visibility '{}'. Use: internal, peer, public", s))?,
-        ),
+        Some(s) => Some(FunctionVisibility::from_str_opt(s).ok_or_else(|| {
+            anyhow::anyhow!("Invalid visibility '{}'. Use: internal, peer, public", s)
+        })?),
         None => None,
     };
 
@@ -34,7 +33,10 @@ pub fn run_list(
         // Filter peer functions: only show Peer or Public visibility from peers
         for (_name, funcs) in &mut entries {
             funcs.retain(|f| {
-                let visible = matches!(f.visibility, FunctionVisibility::Peer | FunctionVisibility::Public);
+                let visible = matches!(
+                    f.visibility,
+                    FunctionVisibility::Peer | FunctionVisibility::Public
+                );
                 if let Some(ref vis) = vis_filter {
                     visible && &f.visibility == vis
                 } else {
@@ -158,9 +160,7 @@ fn print_function_table(functions: &[TraceFunction], verbose: bool, peer_name: O
             func.id.clone()
         };
         let display_id_width = if let Some(pn) = peer_name {
-            display_id
-                .len()
-                .max(id_width + pn.len() + 1)
+            display_id.len().max(id_width + pn.len() + 1)
         } else {
             id_width
         };
@@ -252,7 +252,10 @@ fn print_function_details(func: &TraceFunction, func_dir: &Path) {
     if let Some(ref planning) = func.planning {
         println!();
         println!("Planning:");
-        println!("  Planner: {} (\"{}\")", planning.planner_template.template_id, planning.planner_template.title);
+        println!(
+            "  Planner: {} (\"{}\")",
+            planning.planner_template.template_id, planning.planner_template.title
+        );
         println!("  Output format: {}", planning.output_format);
         if planning.static_fallback {
             println!("  Static fallback: yes");
@@ -286,13 +289,22 @@ fn print_function_details(func: &TraceFunction, func_dir: &Path) {
             }
         }
         if !constraints.required_skills.is_empty() {
-            println!("  Required skills: {}", constraints.required_skills.join(", "));
+            println!(
+                "  Required skills: {}",
+                constraints.required_skills.join(", ")
+            );
         }
         if !constraints.required_phases.is_empty() {
-            println!("  Required phases: {}", constraints.required_phases.join(", "));
+            println!(
+                "  Required phases: {}",
+                constraints.required_phases.join(", ")
+            );
         }
         if !constraints.forbidden_patterns.is_empty() {
-            println!("  Forbidden patterns: {}", constraints.forbidden_patterns.len());
+            println!(
+                "  Forbidden patterns: {}",
+                constraints.forbidden_patterns.len()
+            );
             for p in &constraints.forbidden_patterns {
                 println!("    - [{}]: {}", p.tags.join(", "), p.reason);
             }
@@ -454,7 +466,11 @@ fn print_template_summary(template: &TaskTemplate, indent: &str) {
     let loops = if template.loops_to.is_empty() {
         String::new()
     } else {
-        let targets: Vec<&str> = template.loops_to.iter().map(|l| l.target.as_str()).collect();
+        let targets: Vec<&str> = template
+            .loops_to
+            .iter()
+            .map(|l| l.target.as_str())
+            .collect();
         format!(" (loops to: {})", targets.join(", "))
     };
     println!(
@@ -701,10 +717,12 @@ mod tests {
         save_function(&sample_function(), &func_dir).unwrap();
         let result = run_show(dir, "nonexistent", false);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("No function matching"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("No function matching")
+        );
     }
 
     #[test]
@@ -800,7 +818,12 @@ mod tests {
 
         let result = run_list(dir, false, false, false, Some("unknown"));
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Invalid visibility"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Invalid visibility")
+        );
     }
 
     // ── --include-peers visibility filtering ──
@@ -1056,7 +1079,11 @@ mod tests {
             avg_score: Some(0.9),
         };
         let run_json = serde_json::to_string(&run).unwrap();
-        std::fs::write(func_dir.join("impl-feature.runs.jsonl"), format!("{}\n", run_json)).unwrap();
+        std::fs::write(
+            func_dir.join("impl-feature.runs.jsonl"),
+            format!("{}\n", run_json),
+        )
+        .unwrap();
 
         assert!(run_show(dir, "impl-feature", false).is_ok());
     }

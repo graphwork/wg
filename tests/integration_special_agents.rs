@@ -75,7 +75,10 @@ fn compose_special_agents_and_config(wg_dir: &std::path::Path, agency_dir: &std:
 
     for (role_name, tradeoff_name, agent_name) in &special_agents {
         let role = special_roles.iter().find(|r| r.name == *role_name).unwrap();
-        let tradeoff = special_tradeoffs.iter().find(|t| t.name == *tradeoff_name).unwrap();
+        let tradeoff = special_tradeoffs
+            .iter()
+            .find(|t| t.name == *tradeoff_name)
+            .unwrap();
 
         let sa_id = agency::content_hash_agent(&role.id, &tradeoff.id);
         let sa_path = agents_dir.join(format!("{}.yaml", sa_id));
@@ -189,21 +192,45 @@ fn test_special_agent_roles_have_correct_components() {
 
     // Expected component counts from starters.rs definitions
     let expected_roles: Vec<(&str, &str, usize)> = vec![
-        ("assigner_agent", "Assigner", agency::assigner_components().len()),
-        ("evaluator_agent", "Evaluator", agency::evaluator_components().len()),
-        ("evolver_agent", "Evolver", agency::evolver_components().len()),
-        ("creator_agent", "Agent Creator", agency::creator_components().len()),
+        (
+            "assigner_agent",
+            "Assigner",
+            agency::assigner_components().len(),
+        ),
+        (
+            "evaluator_agent",
+            "Evaluator",
+            agency::evaluator_components().len(),
+        ),
+        (
+            "evolver_agent",
+            "Evolver",
+            agency::evolver_components().len(),
+        ),
+        (
+            "creator_agent",
+            "Agent Creator",
+            agency::creator_components().len(),
+        ),
     ];
 
     // Get expected component IDs from starters
-    let expected_assigner_ids: Vec<String> =
-        agency::assigner_components().iter().map(|c| c.id.clone()).collect();
-    let expected_evaluator_ids: Vec<String> =
-        agency::evaluator_components().iter().map(|c| c.id.clone()).collect();
-    let expected_evolver_ids: Vec<String> =
-        agency::evolver_components().iter().map(|c| c.id.clone()).collect();
-    let expected_creator_ids: Vec<String> =
-        agency::creator_components().iter().map(|c| c.id.clone()).collect();
+    let expected_assigner_ids: Vec<String> = agency::assigner_components()
+        .iter()
+        .map(|c| c.id.clone())
+        .collect();
+    let expected_evaluator_ids: Vec<String> = agency::evaluator_components()
+        .iter()
+        .map(|c| c.id.clone())
+        .collect();
+    let expected_evolver_ids: Vec<String> = agency::evolver_components()
+        .iter()
+        .map(|c| c.id.clone())
+        .collect();
+    let expected_creator_ids: Vec<String> = agency::creator_components()
+        .iter()
+        .map(|c| c.id.clone())
+        .collect();
 
     for (config_key, expected_role_name, expected_comp_count) in &expected_roles {
         let agent_hash = match *config_key {
@@ -351,23 +378,19 @@ fn test_init_idempotent_no_duplicates() {
 
     // Same config hashes
     assert_eq!(
-        config_first.agency.assigner_agent,
-        config_second.agency.assigner_agent,
+        config_first.agency.assigner_agent, config_second.agency.assigner_agent,
         "assigner_agent hash should be stable across runs"
     );
     assert_eq!(
-        config_first.agency.evaluator_agent,
-        config_second.agency.evaluator_agent,
+        config_first.agency.evaluator_agent, config_second.agency.evaluator_agent,
         "evaluator_agent hash should be stable across runs"
     );
     assert_eq!(
-        config_first.agency.evolver_agent,
-        config_second.agency.evolver_agent,
+        config_first.agency.evolver_agent, config_second.agency.evolver_agent,
         "evolver_agent hash should be stable across runs"
     );
     assert_eq!(
-        config_first.agency.creator_agent,
-        config_second.agency.creator_agent,
+        config_first.agency.creator_agent, config_second.agency.creator_agent,
         "creator_agent hash should be stable across runs"
     );
 
@@ -413,8 +436,12 @@ fn test_all_component_and_outcome_ids_resolve() {
 
         // Load role
         let role_path = roles_dir.join(format!("{}.yaml", agent.role_id));
-        let role = agency::load_role(&role_path)
-            .unwrap_or_else(|e| panic!("Role {} for agent {} should load: {}", agent.role_id, agent_hash, e));
+        let role = agency::load_role(&role_path).unwrap_or_else(|e| {
+            panic!(
+                "Role {} for agent {} should load: {}",
+                agent.role_id, agent_hash, e
+            )
+        });
 
         // Verify each component_id resolves
         for comp_id in &role.component_ids {
@@ -426,12 +453,8 @@ fn test_all_component_and_outcome_ids_resolve() {
                 role.name,
                 comp_path
             );
-            let comp = agency::load_component(&comp_path).unwrap_or_else(|e| {
-                panic!(
-                    "Component {} should be loadable: {}",
-                    comp_id, e
-                )
-            });
+            let comp = agency::load_component(&comp_path)
+                .unwrap_or_else(|e| panic!("Component {} should be loadable: {}", comp_id, e));
             assert_eq!(comp.id, *comp_id, "Component ID should match filename");
         }
 
@@ -449,12 +472,8 @@ fn test_all_component_and_outcome_ids_resolve() {
             role.name,
             outcome_path
         );
-        let outcome = agency::load_outcome(&outcome_path).unwrap_or_else(|e| {
-            panic!(
-                "Outcome {} should be loadable: {}",
-                role.outcome_id, e
-            )
-        });
+        let outcome = agency::load_outcome(&outcome_path)
+            .unwrap_or_else(|e| panic!("Outcome {} should be loadable: {}", role.outcome_id, e));
         assert_eq!(
             outcome.id, role.outcome_id,
             "Outcome ID should match filename"

@@ -7,9 +7,7 @@
 use std::collections::HashMap;
 use tempfile::TempDir;
 
-use workgraph::agency::{
-    self, Agent, Evaluation, EvaluationRef, Lineage, PerformanceRecord,
-};
+use workgraph::agency::{self, Agent, Evaluation, EvaluationRef, Lineage, PerformanceRecord};
 
 // ---------------------------------------------------------------------------
 // 1. Creating an agent with nonexistent role_id or motivation_id
@@ -90,7 +88,7 @@ fn test_record_evaluation_nonexistent_agent() {
         evaluator: "test".to_string(),
         timestamp: "2025-01-01T00:00:00Z".to_string(),
         model: None,
-            source: "llm".to_string(),
+        source: "llm".to_string(),
     };
 
     // Should succeed — evaluation saved, role/motivation updated, agent skipped
@@ -134,7 +132,7 @@ fn test_record_evaluation_empty_agent_id() {
         evaluator: "test".to_string(),
         timestamp: "2025-01-01T00:00:00Z".to_string(),
         model: None,
-            source: "llm".to_string(),
+        source: "llm".to_string(),
     };
 
     let eval_path = agency::record_evaluation(&eval, &agency_dir).unwrap();
@@ -165,7 +163,7 @@ fn test_record_evaluation_nonexistent_role_and_motivation() {
         evaluator: "test".to_string(),
         timestamp: "2025-01-01T00:00:00Z".to_string(),
         model: None,
-            source: "llm".to_string(),
+        source: "llm".to_string(),
     };
 
     // Should succeed — the eval JSON is saved even if role/motivation not found
@@ -243,7 +241,7 @@ fn test_delete_role_referenced_by_agent() {
         evaluator: "test".to_string(),
         timestamp: "2025-01-01T00:00:00Z".to_string(),
         model: None,
-            source: "llm".to_string(),
+        source: "llm".to_string(),
     };
     let eval_path = agency::record_evaluation(&eval, &agency_dir).unwrap();
     assert!(eval_path.exists());
@@ -325,7 +323,7 @@ fn test_delete_motivation_referenced_by_agent() {
         evaluator: "test".to_string(),
         timestamp: "2025-01-01T00:00:00Z".to_string(),
         model: None,
-            source: "llm".to_string(),
+        source: "llm".to_string(),
     };
     let eval_path = agency::record_evaluation(&eval, &agency_dir).unwrap();
     assert!(eval_path.exists());
@@ -505,27 +503,18 @@ fn test_content_hash_role_different_skills() {
 /// Component order is irrelevant for content hashing — component_ids are sorted.
 #[test]
 fn test_content_hash_role_component_order_irrelevant() {
-    let h1 = agency::content_hash_role(
-        &[
-            "a".to_string(),
-            "b".to_string(),
-        ],
-        "outcome",
-    );
-    let h2 = agency::content_hash_role(
-        &[
-            "b".to_string(),
-            "a".to_string(),
-        ],
-        "outcome",
-    );
+    let h1 = agency::content_hash_role(&["a".to_string(), "b".to_string()], "outcome");
+    let h2 = agency::content_hash_role(&["b".to_string(), "a".to_string()], "outcome");
     assert_eq!(
         h1, h2,
         "Component order must not affect the hash (sorted internally)"
     );
     // But different component sets must still produce different hashes
     let h3 = agency::content_hash_role(&["a".to_string(), "c".to_string()], "outcome");
-    assert_ne!(h1, h3, "Different component sets must produce different hashes");
+    assert_ne!(
+        h1, h3,
+        "Different component sets must produce different hashes"
+    );
 }
 
 /// Different motivation descriptions produce different hashes.
@@ -654,11 +643,7 @@ fn test_prefix_lookup_zero_matches() {
 
     let m = agency::find_tradeoff_by_prefix(&motivations_dir, "zzzzzzz");
     assert!(m.is_err());
-    assert!(
-        m.unwrap_err()
-            .to_string()
-            .contains("No tradeoff matching")
-    );
+    assert!(m.unwrap_err().to_string().contains("No tradeoff matching"));
 
     let a = agency::find_agent_by_prefix(&agents_dir, "zzzzzzz");
     assert!(a.is_err());

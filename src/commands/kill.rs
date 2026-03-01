@@ -197,7 +197,6 @@ fn unclaim_task(dir: &Path, task_id: &str, agent_id: &str) -> Result<()> {
     Ok(())
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;

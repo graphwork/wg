@@ -47,9 +47,10 @@ pub fn next_run_id(workgraph_dir: &Path) -> String {
             let name = entry.file_name();
             let name = name.to_string_lossy();
             if let Some(num_str) = name.strip_prefix("run-")
-                && let Ok(num) = num_str.parse::<u32>() {
-                    max = max.max(num);
-                }
+                && let Ok(num) = num_str.parse::<u32>()
+            {
+                max = max.max(num);
+            }
         }
     }
     format!("run-{:03}", max + 1)
@@ -59,11 +60,7 @@ pub fn next_run_id(workgraph_dir: &Path) -> String {
 ///
 /// Copies `graph.jsonl` and `config.toml` into `.workgraph/runs/<run-id>/`.
 /// Writes `meta.json` with run metadata.
-pub fn snapshot(
-    workgraph_dir: &Path,
-    run_id: &str,
-    meta: &RunMeta,
-) -> Result<PathBuf> {
+pub fn snapshot(workgraph_dir: &Path, run_id: &str, meta: &RunMeta) -> Result<PathBuf> {
     let dest = run_dir(workgraph_dir, run_id);
     fs::create_dir_all(&dest).context("Failed to create run directory")?;
 
@@ -82,10 +79,9 @@ pub fn snapshot(
     }
 
     // Write run metadata
-    let meta_json = serde_json::to_string_pretty(meta)
-        .context("Failed to serialize run metadata")?;
-    fs::write(dest.join("meta.json"), meta_json)
-        .context("Failed to write run metadata")?;
+    let meta_json =
+        serde_json::to_string_pretty(meta).context("Failed to serialize run metadata")?;
+    fs::write(dest.join("meta.json"), meta_json).context("Failed to write run metadata")?;
 
     Ok(dest)
 }
@@ -95,8 +91,7 @@ pub fn load_run_meta(workgraph_dir: &Path, run_id: &str) -> Result<RunMeta> {
     let path = run_dir(workgraph_dir, run_id).join("meta.json");
     let content = fs::read_to_string(&path)
         .with_context(|| format!("Failed to read run metadata: {}", path.display()))?;
-    let meta: RunMeta = serde_json::from_str(&content)
-        .context("Failed to parse run metadata")?;
+    let meta: RunMeta = serde_json::from_str(&content).context("Failed to parse run metadata")?;
     Ok(meta)
 }
 
@@ -141,7 +136,11 @@ mod tests {
 
     fn setup_wg(dir: &Path) {
         fs::create_dir_all(dir).unwrap();
-        fs::write(dir.join("graph.jsonl"), "{\"kind\":\"task\",\"id\":\"t1\",\"title\":\"Test\"}\n").unwrap();
+        fs::write(
+            dir.join("graph.jsonl"),
+            "{\"kind\":\"task\",\"id\":\"t1\",\"title\":\"Test\"}\n",
+        )
+        .unwrap();
         fs::write(dir.join("config.toml"), "[agent]\nmodel = \"opus\"\n").unwrap();
     }
 
@@ -220,7 +219,10 @@ mod tests {
 
         // Modify graph
         fs::write(dir.join("graph.jsonl"), "MODIFIED\n").unwrap();
-        assert_eq!(fs::read_to_string(dir.join("graph.jsonl")).unwrap(), "MODIFIED\n");
+        assert_eq!(
+            fs::read_to_string(dir.join("graph.jsonl")).unwrap(),
+            "MODIFIED\n"
+        );
 
         // Restore
         restore_graph(&dir, "run-001").unwrap();

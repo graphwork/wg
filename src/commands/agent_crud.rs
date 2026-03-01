@@ -155,11 +155,7 @@ pub fn run_create(
         );
     }
     if let Some(t) = &resolved_tradeoff {
-        println!(
-            "  tradeoff:   {} ({})",
-            t.name,
-            agency::short_hash(&t.id)
-        );
+        println!("  tradeoff:   {} ({})", t.name, agency::short_hash(&t.id));
     }
     println!("  executor:   {}", executor);
     if !capabilities.is_empty() {
@@ -251,10 +247,9 @@ pub fn run_show(workgraph_dir: &Path, id: &str, json: bool) -> Result<()> {
         let role_name = agency::find_role_by_prefix(&roles_dir, &agent.role_id)
             .map(|r| r.name)
             .unwrap_or_else(|_| "(not found)".to_string());
-        let tradeoff_name =
-            agency::find_tradeoff_by_prefix(&tradeoffs_dir, &agent.tradeoff_id)
-                .map(|m| m.name)
-                .unwrap_or_else(|_| "(not found)".to_string());
+        let tradeoff_name = agency::find_tradeoff_by_prefix(&tradeoffs_dir, &agent.tradeoff_id)
+            .map(|m| m.name)
+            .unwrap_or_else(|_| "(not found)".to_string());
 
         let output = serde_json::json!({
             "id": agent.id,

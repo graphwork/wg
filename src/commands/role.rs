@@ -253,8 +253,7 @@ pub fn run_edit(dir: &Path, id: &str) -> Result<()> {
         )
     })?;
 
-    let new_id =
-        agency::content_hash_role(&edited.component_ids, &edited.outcome_id);
+    let new_id = agency::content_hash_role(&edited.component_ids, &edited.outcome_id);
     if new_id != edited.id {
         // Content changed — rename to new hash
         let old_path = role_path;

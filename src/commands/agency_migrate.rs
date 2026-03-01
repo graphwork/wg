@@ -4,10 +4,10 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use workgraph::agency::{
-    self, content_hash_agent, content_hash_component, content_hash_outcome, content_hash_role,
-    content_hash_tradeoff, save_agent, save_component, save_outcome, save_role, save_tradeoff,
-    short_hash, AccessControl, Agent, ComponentCategory, ContentRef, DesiredOutcome, Lineage,
-    PerformanceRecord, Role, RoleComponent, TradeoffConfig,
+    self, AccessControl, Agent, ComponentCategory, ContentRef, DesiredOutcome, Lineage,
+    PerformanceRecord, Role, RoleComponent, TradeoffConfig, content_hash_agent,
+    content_hash_component, content_hash_outcome, content_hash_role, content_hash_tradeoff,
+    save_agent, save_component, save_outcome, save_role, save_tradeoff, short_hash,
 };
 use workgraph::graph::TrustLevel;
 
@@ -253,23 +253,16 @@ fn migrate_roles(
                         former_agents: vec![],
                         former_deployments: vec![],
                     };
-                    save_outcome(&outcome, &outcomes_dir).with_context(|| {
-                        format!("Failed to save outcome {}", short_hash(&id))
-                    })?;
+                    save_outcome(&outcome, &outcomes_dir)
+                        .with_context(|| format!("Failed to save outcome {}", short_hash(&id)))?;
                     report.outcomes_created += 1;
                 }
                 id
             } else {
-                old_role
-                    .outcome_id
-                    .clone()
-                    .unwrap_or_default()
+                old_role.outcome_id.clone().unwrap_or_default()
             }
         } else {
-            old_role
-                .outcome_id
-                .clone()
-                .unwrap_or_default()
+            old_role.outcome_id.clone().unwrap_or_default()
         };
 
         // If role has a description but no outcome, create an outcome from the description
@@ -351,9 +344,7 @@ fn migrate_roles(
         }
 
         // Map old role ID -> new role ID
-        report
-            .role_id_map
-            .insert(old_role.id.clone(), new_role_id);
+        report.role_id_map.insert(old_role.id.clone(), new_role_id);
     }
 
     Ok(())
@@ -395,9 +386,7 @@ fn migrate_motivations(
 
         // Map old motivation ID -> new tradeoff ID
         // Note: the hash may be the same if fields are unchanged
-        report
-            .tradeoff_id_map
-            .insert(old_mot.id.clone(), id);
+        report.tradeoff_id_map.insert(old_mot.id.clone(), id);
     }
 
     Ok(())
@@ -584,19 +573,29 @@ pub fn run(workgraph_dir: &Path, dry_run: bool) -> Result<()> {
 
     // Check if old-format directories exist
     let has_old_roles = old_roles_dir.is_dir()
-        && fs::read_dir(&old_roles_dir)?
-            .any(|e| e.ok().is_some_and(|e| e.path().extension().and_then(|x| x.to_str()) == Some("yaml")));
+        && fs::read_dir(&old_roles_dir)?.any(|e| {
+            e.ok()
+                .is_some_and(|e| e.path().extension().and_then(|x| x.to_str()) == Some("yaml"))
+        });
     let has_old_motivations = old_motivations_dir.is_dir()
-        && fs::read_dir(&old_motivations_dir)?
-            .any(|e| e.ok().is_some_and(|e| e.path().extension().and_then(|x| x.to_str()) == Some("yaml")));
+        && fs::read_dir(&old_motivations_dir)?.any(|e| {
+            e.ok()
+                .is_some_and(|e| e.path().extension().and_then(|x| x.to_str()) == Some("yaml"))
+        });
     let has_old_agents = old_agents_dir.is_dir()
-        && fs::read_dir(&old_agents_dir)?
-            .any(|e| e.ok().is_some_and(|e| e.path().extension().and_then(|x| x.to_str()) == Some("yaml")));
+        && fs::read_dir(&old_agents_dir)?.any(|e| {
+            e.ok()
+                .is_some_and(|e| e.path().extension().and_then(|x| x.to_str()) == Some("yaml"))
+        });
 
     if !has_old_roles && !has_old_motivations && !has_old_agents {
         println!("Nothing to migrate — no old-format agency data found.");
-        println!("  Looked for: {}/roles/, {}/motivations/, {}/agents/",
-            agency_dir.display(), agency_dir.display(), agency_dir.display());
+        println!(
+            "  Looked for: {}/roles/, {}/motivations/, {}/agents/",
+            agency_dir.display(),
+            agency_dir.display(),
+            agency_dir.display()
+        );
         return Ok(());
     }
 
@@ -639,7 +638,9 @@ pub fn run(workgraph_dir: &Path, dry_run: bool) -> Result<()> {
             println!("  Motivation: {} ({})", m.name, short_hash(&m.id));
         }
         for a in &old_agents {
-            let tid = a.tradeoff_id.as_deref()
+            let tid = a
+                .tradeoff_id
+                .as_deref()
                 .or(a.motivation_id.as_deref())
                 .unwrap_or("(none)");
             println!(
@@ -675,12 +676,10 @@ pub fn run(workgraph_dir: &Path, dry_run: bool) -> Result<()> {
         .context("Failed to migrate motivations")?;
 
     // Step 2: Migrate roles -> components + outcomes + cache roles
-    migrate_roles(&old_roles, &agency_dir, &mut report)
-        .context("Failed to migrate roles")?;
+    migrate_roles(&old_roles, &agency_dir, &mut report).context("Failed to migrate roles")?;
 
     // Step 3: Migrate agents -> cache agents (uses role_id_map and tradeoff_id_map)
-    migrate_agents(&old_agents, &agency_dir, &mut report)
-        .context("Failed to migrate agents")?;
+    migrate_agents(&old_agents, &agency_dir, &mut report).context("Failed to migrate agents")?;
 
     // Step 4: Verification
     let errors = verify_migration(&agency_dir)?;
@@ -844,10 +843,7 @@ lineage:
         let outcomes: Vec<_> = fs::read_dir(agency_dir.join("primitives/outcomes"))
             .unwrap()
             .collect();
-        assert!(
-            !outcomes.is_empty(),
-            "Expected at least 1 outcome"
-        );
+        assert!(!outcomes.is_empty(), "Expected at least 1 outcome");
 
         let tradeoffs: Vec<_> = fs::read_dir(agency_dir.join("primitives/tradeoffs"))
             .unwrap()
@@ -870,7 +866,11 @@ lineage:
         let comps2: Vec<_> = fs::read_dir(agency_dir.join("primitives/components"))
             .unwrap()
             .collect();
-        assert_eq!(comps.len(), comps2.len(), "Idempotent: same component count");
+        assert_eq!(
+            comps.len(),
+            comps2.len(),
+            "Idempotent: same component count"
+        );
     }
 
     #[test]
@@ -923,11 +923,7 @@ lineage:
         let comps: Vec<_> = fs::read_dir(agency_dir.join("primitives/components"))
             .unwrap()
             .collect();
-        assert_eq!(
-            comps.len(),
-            1,
-            "Expected 1 component from description"
-        );
+        assert_eq!(comps.len(), 1, "Expected 1 component from description");
 
         // Should have created an outcome from the description
         let outcomes: Vec<_> = fs::read_dir(agency_dir.join("primitives/outcomes"))
@@ -1077,8 +1073,7 @@ lineage:
             let dir = agency_dir.join(dir_name);
             if dir.exists() {
                 for entry in fs::read_dir(&dir).unwrap() {
-                    second_run_files
-                        .push(entry.unwrap().file_name().to_string_lossy().to_string());
+                    second_run_files.push(entry.unwrap().file_name().to_string_lossy().to_string());
                 }
             }
         }

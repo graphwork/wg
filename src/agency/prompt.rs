@@ -403,11 +403,7 @@ pub fn render_evaluator_prompt(input: &EvaluatorInput) -> String {
         out.push_str("*No role was assigned.*\n\n");
     }
     if let Some(tradeoff) = input.tradeoff {
-        let _ = writeln!(
-            out,
-            "**Motivation:** {} ({})",
-            tradeoff.name, tradeoff.id
-        );
+        let _ = writeln!(out, "**Motivation:** {} ({})", tradeoff.name, tradeoff.id);
         let _ = writeln!(out, "{}\n", tradeoff.description);
         if !tradeoff.acceptable_tradeoffs.is_empty() {
             out.push_str("**Acceptable Trade-offs:**\n");
@@ -647,10 +643,7 @@ pub fn render_assigner_mode_context(ctx: &AssignerModeContext) -> String {
                             replaced,
                             introduced,
                         } => {
-                            let _ = writeln!(
-                                out,
-                                "**Experiment type:** ComponentSwap"
-                            );
+                            let _ = writeln!(out, "**Experiment type:** ComponentSwap");
                             if let Some(r) = replaced {
                                 let _ = writeln!(out, "- Replace component: `{}`", r);
                             } else {
@@ -662,18 +655,11 @@ pub fn render_assigner_mode_context(ctx: &AssignerModeContext) -> String {
                             replaced,
                             introduced,
                         } => {
-                            let _ = writeln!(
-                                out,
-                                "**Experiment type:** ConfigSwap"
-                            );
+                            let _ = writeln!(out, "**Experiment type:** ConfigSwap");
                             if let Some(r) = replaced {
                                 let _ = writeln!(out, "- Replace tradeoff: `{}`", r);
                             }
-                            let _ = writeln!(
-                                out,
-                                "- Introduce tradeoff: `{}`",
-                                introduced
-                            );
+                            let _ = writeln!(out, "- Introduce tradeoff: `{}`", introduced);
                         }
                         ExperimentDimension::NovelComposition => {
                             out.push_str(
@@ -704,7 +690,7 @@ mod tests {
     use std::io::Write as IoWrite;
     use tempfile::TempDir;
 
-    use super::super::starters::{build_tradeoff, build_role};
+    use super::super::starters::{build_role, build_tradeoff};
 
     #[test]
     fn resolve_name_returns_name_as_content() {
@@ -796,10 +782,7 @@ mod tests {
         build_role(
             "Implementer",
             "Writes code to fulfil task requirements.",
-            vec![
-                "rust".to_string(),
-                "inline:fn main() {}".to_string(),
-            ],
+            vec!["rust".to_string(), "inline:fn main() {}".to_string()],
             "Working, tested code merged to main.",
         )
     }
@@ -1034,10 +1017,7 @@ mod tests {
         assert!(output.contains("## Agent Identity"));
         assert!(output.contains(&format!("**Role:** Implementer ({})", role.id)));
         assert!(output.contains("**Desired Outcome:** Working, tested code merged to main."));
-        assert!(output.contains(&format!(
-            "**Motivation:** Quality First ({})",
-            tradeoff.id
-        )));
+        assert!(output.contains(&format!("**Motivation:** Quality First ({})", tradeoff.id)));
         assert!(output.contains("**Acceptable Trade-offs:**"));
         assert!(output.contains("- Slower delivery for higher quality"));
         assert!(output.contains("**Non-negotiable Constraints:**"));
@@ -1204,9 +1184,10 @@ mod tests {
 
         // Downstream tasks section should appear
         assert!(output.contains("## Downstream Tasks"));
-        assert!(output.contains(
-            "These tasks depend on this task's output. Consider whether the output"
-        ));
+        assert!(
+            output
+                .contains("These tasks depend on this task's output. Consider whether the output")
+        );
         assert!(output.contains("**Deploy to staging** (Open)"));
         assert!(output.contains("Deploy the built artifacts to the staging environment."));
         assert!(output.contains("**Run integration tests** (InProgress)"));
@@ -1259,7 +1240,11 @@ mod tests {
         assert_eq!(resolved.len(), 1);
         assert_eq!(resolved[0].name, "Rust Expert");
         assert!(resolved[0].content.contains("[Translated]"));
-        assert!(resolved[0].content.contains("Deep knowledge of Rust idioms and patterns."));
+        assert!(
+            resolved[0]
+                .content
+                .contains("Deep knowledge of Rust idioms and patterns.")
+        );
     }
 
     #[test]
@@ -1372,10 +1357,7 @@ mod tests {
         let outcome = build_outcome(
             "Working Software",
             "Deliver working, tested software.",
-            vec![
-                "All tests pass".into(),
-                "No regressions".into(),
-            ],
+            vec!["All tests pass".into(), "No regressions".into()],
         );
 
         let output = render_identity_prompt_rich(&role, &tradeoff, &[], Some(&outcome));

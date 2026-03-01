@@ -290,7 +290,8 @@ pub fn is_blocker_satisfied(
         let Some(wg_dir) = workgraph_dir else {
             return false; // Can't resolve without workgraph dir; treat as blocked
         };
-        let remote = crate::federation::resolve_remote_task_status(peer_name, remote_task_id, wg_dir);
+        let remote =
+            crate::federation::resolve_remote_task_status(peer_name, remote_task_id, wg_dir);
         remote.status.is_terminal()
     } else {
         // Local dependency — non-existent blocker blocks (prevents premature
@@ -366,11 +367,12 @@ pub fn ready_tasks_cycle_aware<'a>(
                 // its own forward dependencies — it must wait for workers to finish.
                 if task.cycle_config.is_none()
                     && let Some(blocker) = graph.get_task(blocker_id)
-                        && blocker.cycle_config.is_some()
-                            && let Some(bc) = cycle_analysis.task_to_cycle.get(blocker_id)
-                                && cycle_analysis.task_to_cycle.get(&task.id) == Some(bc) {
-                                    return true;
-                                }
+                    && blocker.cycle_config.is_some()
+                    && let Some(bc) = cycle_analysis.task_to_cycle.get(blocker_id)
+                    && cycle_analysis.task_to_cycle.get(&task.id) == Some(bc)
+                {
+                    return true;
+                }
                 false
             })
         })
@@ -405,11 +407,12 @@ pub fn ready_tasks_with_peers_cycle_aware<'a>(
                 // forward dependencies (workers) to complete.
                 if task.cycle_config.is_none()
                     && let Some(blocker) = graph.get_task(blocker_id)
-                        && blocker.cycle_config.is_some()
-                            && let Some(bc) = cycle_analysis.task_to_cycle.get(blocker_id)
-                                && cycle_analysis.task_to_cycle.get(&task.id) == Some(bc) {
-                                    return true;
-                                }
+                    && blocker.cycle_config.is_some()
+                    && let Some(bc) = cycle_analysis.task_to_cycle.get(blocker_id)
+                    && cycle_analysis.task_to_cycle.get(&task.id) == Some(bc)
+                {
+                    return true;
+                }
                 false
             })
         })

@@ -49,7 +49,9 @@ fn wg_ok(wg_dir: &Path, args: &[&str]) -> String {
     assert!(
         output.status.success(),
         "wg {:?} failed.\nstdout: {}\nstderr: {}",
-        args, stdout, stderr
+        args,
+        stdout,
+        stderr
     );
     stdout
 }
@@ -71,9 +73,8 @@ fn wg_json(wg_dir: &Path, args: &[&str]) -> serde_json::Value {
     let mut full_args = vec!["--json"];
     full_args.extend_from_slice(args);
     let raw = wg_ok(wg_dir, &full_args);
-    serde_json::from_str(&raw).unwrap_or_else(|e| {
-        panic!("Failed to parse JSON.\nError: {}\nRaw output: {}", e, raw)
-    })
+    serde_json::from_str(&raw)
+        .unwrap_or_else(|e| panic!("Failed to parse JSON.\nError: {}\nRaw output: {}", e, raw))
 }
 
 fn make_task(id: &str, title: &str, status: Status) -> Task {
@@ -110,7 +111,13 @@ fn create_agent_archive(wg_dir: &Path, task_id: &str, timestamp: &str, prompt: &
 }
 
 /// Record a provenance operation.
-fn record_op(wg_dir: &Path, op: &str, task_id: Option<&str>, actor: Option<&str>, detail: serde_json::Value) {
+fn record_op(
+    wg_dir: &Path,
+    op: &str,
+    task_id: Option<&str>,
+    actor: Option<&str>,
+    detail: serde_json::Value,
+) {
     provenance::record(
         wg_dir,
         op,
@@ -135,8 +142,20 @@ fn test_trace_no_agent_runs_summary_output() {
     let wg_dir = setup_workgraph(&tmp, vec![t1]);
 
     // Record provenance entries
-    record_op(&wg_dir, "add_task", Some("t1"), None, serde_json::json!({"title": "Manual task"}));
-    record_op(&wg_dir, "claim", Some("t1"), Some("human"), serde_json::Value::Null);
+    record_op(
+        &wg_dir,
+        "add_task",
+        Some("t1"),
+        None,
+        serde_json::json!({"title": "Manual task"}),
+    );
+    record_op(
+        &wg_dir,
+        "claim",
+        Some("t1"),
+        Some("human"),
+        serde_json::Value::Null,
+    );
     record_op(&wg_dir, "done", Some("t1"), None, serde_json::Value::Null);
 
     // Summary mode: should show "(none)" for agent runs
@@ -162,8 +181,20 @@ fn test_trace_no_agent_runs_json_output() {
     t1.completed_at = Some("2026-02-18T10:30:00+00:00".to_string());
     let wg_dir = setup_workgraph(&tmp, vec![t1]);
 
-    record_op(&wg_dir, "add_task", Some("t1"), None, serde_json::json!({"title": "Manual task"}));
-    record_op(&wg_dir, "claim", Some("t1"), Some("human"), serde_json::Value::Null);
+    record_op(
+        &wg_dir,
+        "add_task",
+        Some("t1"),
+        None,
+        serde_json::json!({"title": "Manual task"}),
+    );
+    record_op(
+        &wg_dir,
+        "claim",
+        Some("t1"),
+        Some("human"),
+        serde_json::Value::Null,
+    );
     record_op(&wg_dir, "done", Some("t1"), None, serde_json::Value::Null);
 
     let json = wg_json(&wg_dir, &["trace", "show", "t1"]);
@@ -220,8 +251,14 @@ fn test_trace_multiple_agent_runs_summary() {
         output
     );
     // Verify both timestamps appear
-    assert!(output.contains("2026-02-18T10:00:00Z"), "First run timestamp missing");
-    assert!(output.contains("2026-02-18T11:00:00Z"), "Second run timestamp missing");
+    assert!(
+        output.contains("2026-02-18T10:00:00Z"),
+        "First run timestamp missing"
+    );
+    assert!(
+        output.contains("2026-02-18T11:00:00Z"),
+        "Second run timestamp missing"
+    );
 }
 
 #[test]
@@ -271,8 +308,20 @@ fn test_trace_json_full_structure() {
     t1.completed_at = Some("2026-02-18T10:30:00+00:00".to_string());
     let wg_dir = setup_workgraph(&tmp, vec![t1]);
 
-    record_op(&wg_dir, "add_task", Some("t1"), None, serde_json::json!({"title": "Full structure"}));
-    record_op(&wg_dir, "done", Some("t1"), Some("agent-1"), serde_json::Value::Null);
+    record_op(
+        &wg_dir,
+        "add_task",
+        Some("t1"),
+        None,
+        serde_json::json!({"title": "Full structure"}),
+    );
+    record_op(
+        &wg_dir,
+        "done",
+        Some("t1"),
+        Some("agent-1"),
+        serde_json::Value::Null,
+    );
 
     // Create agent archive with stream-json style output
     let stream_output = r#"{"type":"assistant","message":"Starting work"}
@@ -282,7 +331,13 @@ fn test_trace_json_full_structure() {
 {"type":"tool_use","name":"Write","id":"tu_2"}
 {"type":"tool_result","tool_use_id":"tu_2","content":"ok"}
 {"type":"result","cost":{"input":1000,"output":500}}"#;
-    create_agent_archive(&wg_dir, "t1", "2026-02-18T10:05:00Z", "Build the project", stream_output);
+    create_agent_archive(
+        &wg_dir,
+        "t1",
+        "2026-02-18T10:05:00Z",
+        "Build the project",
+        stream_output,
+    );
 
     let json = wg_json(&wg_dir, &["trace", "show", "t1"]);
 
@@ -323,13 +378,25 @@ fn test_trace_json_full_structure() {
 
     // Summary object
     let summary = &json["summary"];
-    assert!(summary["duration_secs"].is_number(), "missing duration_secs");
-    assert!(summary["duration_human"].is_string(), "missing duration_human");
+    assert!(
+        summary["duration_secs"].is_number(),
+        "missing duration_secs"
+    );
+    assert!(
+        summary["duration_human"].is_string(),
+        "missing duration_human"
+    );
     assert_eq!(summary["operation_count"], 2);
     assert_eq!(summary["agent_run_count"], 1);
-    assert!(summary["total_tool_calls"].is_number(), "missing total_tool_calls");
+    assert!(
+        summary["total_tool_calls"].is_number(),
+        "missing total_tool_calls"
+    );
     assert!(summary["total_turns"].is_number(), "missing total_turns");
-    assert!(summary["total_output_bytes"].is_number(), "missing total_output_bytes");
+    assert!(
+        summary["total_output_bytes"].is_number(),
+        "missing total_output_bytes"
+    );
     assert_eq!(summary["total_tool_calls"], 2);
     assert_eq!(summary["total_turns"], 2);
 }
@@ -346,7 +413,13 @@ fn test_trace_full_shows_prompt_and_output_content() {
 
     let prompt_text = "You are an agent.\nBuild the project.\nMake sure tests pass.";
     let output_text = "I will build the project now.\nRunning cargo build...\nAll tests passed.";
-    create_agent_archive(&wg_dir, "t1", "2026-02-18T10:00:00Z", prompt_text, output_text);
+    create_agent_archive(
+        &wg_dir,
+        "t1",
+        "2026-02-18T10:00:00Z",
+        prompt_text,
+        output_text,
+    );
 
     let output = wg_ok(&wg_dir, &["trace", "show", "t1", "--full"]);
 
@@ -409,18 +482,46 @@ fn test_trace_full_multiple_runs_shows_all() {
     let t1 = make_task("t1", "Multi-run full", Status::Done);
     let wg_dir = setup_workgraph(&tmp, vec![t1]);
 
-    create_agent_archive(&wg_dir, "t1", "2026-02-18T10:00:00Z", "First prompt", "First output");
-    create_agent_archive(&wg_dir, "t1", "2026-02-18T11:00:00Z", "Second prompt", "Second output");
+    create_agent_archive(
+        &wg_dir,
+        "t1",
+        "2026-02-18T10:00:00Z",
+        "First prompt",
+        "First output",
+    );
+    create_agent_archive(
+        &wg_dir,
+        "t1",
+        "2026-02-18T11:00:00Z",
+        "Second prompt",
+        "Second output",
+    );
 
     let output = wg_ok(&wg_dir, &["trace", "show", "t1", "--full"]);
 
     // Both runs should be shown
     assert!(output.contains("Run 1"), "Should show Run 1:\n{}", output);
     assert!(output.contains("Run 2"), "Should show Run 2:\n{}", output);
-    assert!(output.contains("First prompt"), "First prompt content missing:\n{}", output);
-    assert!(output.contains("Second prompt"), "Second prompt content missing:\n{}", output);
-    assert!(output.contains("First output"), "First output content missing:\n{}", output);
-    assert!(output.contains("Second output"), "Second output content missing:\n{}", output);
+    assert!(
+        output.contains("First prompt"),
+        "First prompt content missing:\n{}",
+        output
+    );
+    assert!(
+        output.contains("Second prompt"),
+        "Second prompt content missing:\n{}",
+        output
+    );
+    assert!(
+        output.contains("First output"),
+        "First output content missing:\n{}",
+        output
+    );
+    assert!(
+        output.contains("Second output"),
+        "Second output content missing:\n{}",
+        output
+    );
 }
 
 // ===========================================================================
@@ -433,9 +534,27 @@ fn test_trace_ops_only_shows_operations() {
     let t1 = make_task("t1", "Ops only task", Status::Done);
     let wg_dir = setup_workgraph(&tmp, vec![t1]);
 
-    record_op(&wg_dir, "add_task", Some("t1"), None, serde_json::json!({"title": "Ops only task"}));
-    record_op(&wg_dir, "claim", Some("t1"), Some("agent-1"), serde_json::Value::Null);
-    record_op(&wg_dir, "done", Some("t1"), Some("agent-1"), serde_json::Value::Null);
+    record_op(
+        &wg_dir,
+        "add_task",
+        Some("t1"),
+        None,
+        serde_json::json!({"title": "Ops only task"}),
+    );
+    record_op(
+        &wg_dir,
+        "claim",
+        Some("t1"),
+        Some("agent-1"),
+        serde_json::Value::Null,
+    );
+    record_op(
+        &wg_dir,
+        "done",
+        Some("t1"),
+        Some("agent-1"),
+        serde_json::Value::Null,
+    );
 
     // Also create agent archive (should be ignored in ops-only mode)
     create_agent_archive(&wg_dir, "t1", "2026-02-18T10:00:00Z", "prompt", "output");
@@ -450,8 +569,16 @@ fn test_trace_ops_only_shows_operations() {
     );
 
     // Should list each operation
-    assert!(output.contains("add_task"), "Should list add_task op:\n{}", output);
-    assert!(output.contains("claim"), "Should list claim op:\n{}", output);
+    assert!(
+        output.contains("add_task"),
+        "Should list add_task op:\n{}",
+        output
+    );
+    assert!(
+        output.contains("claim"),
+        "Should list claim op:\n{}",
+        output
+    );
     assert!(output.contains("done"), "Should list done op:\n{}", output);
     assert!(output.contains("agent-1"), "Should show actor:\n{}", output);
 
@@ -519,7 +646,13 @@ fn test_trace_in_progress_task_summary() {
     let wg_dir = setup_workgraph(&tmp, vec![t1]);
 
     // Create a partial agent archive (agent is running)
-    create_agent_archive(&wg_dir, "t1", "2026-02-18T10:05:00Z", "Do something", "Partial output so far");
+    create_agent_archive(
+        &wg_dir,
+        "t1",
+        "2026-02-18T10:05:00Z",
+        "Do something",
+        "Partial output so far",
+    );
 
     let output = wg_ok(&wg_dir, &["trace", "show", "t1"]);
 
@@ -600,7 +733,11 @@ fn test_trace_with_rotated_operations_logs() {
     };
     let old_json = format!("{}\n", serde_json::to_string(&old_entry).unwrap());
     let compressed = zstd::encode_all(old_json.as_bytes(), 3).unwrap();
-    fs::write(log_dir.join("20260217T100000.000000Z.jsonl.zst"), &compressed).unwrap();
+    fs::write(
+        log_dir.join("20260217T100000.000000Z.jsonl.zst"),
+        &compressed,
+    )
+    .unwrap();
 
     // Create the current operations.jsonl with a newer operation
     let new_entry = provenance::OperationEntry {
@@ -620,13 +757,25 @@ fn test_trace_with_rotated_operations_logs() {
         "Should show operations from both rotated and current files:\n{}",
         output
     );
-    assert!(output.contains("add_task"), "Should include op from rotated file:\n{}", output);
-    assert!(output.contains("done"), "Should include op from current file:\n{}", output);
+    assert!(
+        output.contains("add_task"),
+        "Should include op from rotated file:\n{}",
+        output
+    );
+    assert!(
+        output.contains("done"),
+        "Should include op from current file:\n{}",
+        output
+    );
 
     // JSON mode should include all operations
     let json = wg_json(&wg_dir, &["trace", "show", "t1"]);
     let ops = json["operations"].as_array().unwrap();
-    assert_eq!(ops.len(), 2, "Should have 2 operations (1 rotated + 1 current)");
+    assert_eq!(
+        ops.len(),
+        2,
+        "Should have 2 operations (1 rotated + 1 current)"
+    );
 
     // Should be in chronological order
     assert_eq!(ops[0]["op"], "add_task");
@@ -645,7 +794,13 @@ fn test_trace_output_size_accuracy_summary() {
 
     // Write exactly 10240 bytes of output
     let output_content = "x".repeat(10240);
-    create_agent_archive(&wg_dir, "t1", "2026-02-18T10:00:00Z", "prompt", &output_content);
+    create_agent_archive(
+        &wg_dir,
+        "t1",
+        "2026-02-18T10:00:00Z",
+        "prompt",
+        &output_content,
+    );
 
     let output = wg_ok(&wg_dir, &["trace", "show", "t1"]);
     assert!(
@@ -663,7 +818,13 @@ fn test_trace_output_size_accuracy_json() {
 
     // Write exactly 10240 bytes
     let output_content = "x".repeat(10240);
-    create_agent_archive(&wg_dir, "t1", "2026-02-18T10:00:00Z", "prompt", &output_content);
+    create_agent_archive(
+        &wg_dir,
+        "t1",
+        "2026-02-18T10:00:00Z",
+        "prompt",
+        &output_content,
+    );
 
     let json = wg_json(&wg_dir, &["trace", "show", "t1"]);
 
@@ -685,7 +846,13 @@ fn test_trace_output_size_accuracy_megabytes() {
 
     // Write >1MB of output (1048576 + 512 bytes = 1049088 bytes)
     let output_content = "y".repeat(1_049_088);
-    create_agent_archive(&wg_dir, "t1", "2026-02-18T10:00:00Z", "prompt", &output_content);
+    create_agent_archive(
+        &wg_dir,
+        "t1",
+        "2026-02-18T10:00:00Z",
+        "prompt",
+        &output_content,
+    );
 
     let output = wg_ok(&wg_dir, &["trace", "show", "t1"]);
     // 1049088 bytes = 1024.5 KB = 1.0 MB
@@ -743,13 +910,22 @@ fn test_trace_turn_count_accuracy() {
 {"type":"tool_result","tool_use_id":"tu_5","content":"ok"}
 {"type":"result","cost":{"input":5000,"output":2000}}"#;
 
-    create_agent_archive(&wg_dir, "t1", "2026-02-18T10:00:00Z", "prompt", stream_output);
+    create_agent_archive(
+        &wg_dir,
+        "t1",
+        "2026-02-18T10:00:00Z",
+        "prompt",
+        stream_output,
+    );
 
     let json = wg_json(&wg_dir, &["trace", "show", "t1"]);
 
     // Per-run counts
     assert_eq!(json["agent_runs"][0]["turns"], 3, "Expected 3 turns");
-    assert_eq!(json["agent_runs"][0]["tool_calls"], 5, "Expected 5 tool calls");
+    assert_eq!(
+        json["agent_runs"][0]["tool_calls"], 5,
+        "Expected 5 tool calls"
+    );
 
     // Summary totals
     assert_eq!(json["summary"]["total_turns"], 3);
@@ -766,7 +942,13 @@ fn test_trace_turn_count_summary_display() {
 {"type":"tool_use","name":"Read","id":"tu_1"}
 {"type":"tool_result","tool_use_id":"tu_1","content":"ok"}
 {"type":"result","cost":{"input":100,"output":50}}"#;
-    create_agent_archive(&wg_dir, "t1", "2026-02-18T10:00:00Z", "prompt", stream_output);
+    create_agent_archive(
+        &wg_dir,
+        "t1",
+        "2026-02-18T10:00:00Z",
+        "prompt",
+        stream_output,
+    );
 
     let output = wg_ok(&wg_dir, &["trace", "show", "t1"]);
     assert!(
@@ -847,7 +1029,13 @@ fn test_trace_content_block_tool_use_counting() {
 {"content_block":{"type":"tool_use","name":"Write","id":"tu_2"}}
 {"type":"result","cost":{"input":100,"output":50}}"#;
 
-    create_agent_archive(&wg_dir, "t1", "2026-02-18T10:00:00Z", "prompt", stream_output);
+    create_agent_archive(
+        &wg_dir,
+        "t1",
+        "2026-02-18T10:00:00Z",
+        "prompt",
+        stream_output,
+    );
 
     let json = wg_json(&wg_dir, &["trace", "show", "t1"]);
 
@@ -875,7 +1063,13 @@ fn test_trace_content_block_no_double_counting() {
 {"content_block":{"type":"tool_use","name":"Bash","id":"tu_3"}}
 {"type":"result","cost":{"input":100,"output":50}}"#;
 
-    create_agent_archive(&wg_dir, "t1", "2026-02-18T10:00:00Z", "prompt", stream_output);
+    create_agent_archive(
+        &wg_dir,
+        "t1",
+        "2026-02-18T10:00:00Z",
+        "prompt",
+        stream_output,
+    );
 
     let json = wg_json(&wg_dir, &["trace", "show", "t1"]);
 
@@ -970,7 +1164,13 @@ fn test_trace_result_only_output() {
 
     // Output contains ONLY a result message (no assistant turns)
     let stream_output = r#"{"type":"result","cost":{"input":100,"output":50}}"#;
-    create_agent_archive(&wg_dir, "t1", "2026-02-18T10:00:00Z", "prompt", stream_output);
+    create_agent_archive(
+        &wg_dir,
+        "t1",
+        "2026-02-18T10:00:00Z",
+        "prompt",
+        stream_output,
+    );
 
     let json = wg_json(&wg_dir, &["trace", "show", "t1"]);
 
@@ -997,9 +1197,18 @@ fn test_trace_agent_runs_sort_order() {
     let runs = json["agent_runs"].as_array().unwrap();
 
     assert_eq!(runs.len(), 3);
-    assert_eq!(runs[0]["timestamp"], "2026-02-18T09:00:00Z", "First should be earliest");
-    assert_eq!(runs[1]["timestamp"], "2026-02-18T12:00:00Z", "Second should be middle");
-    assert_eq!(runs[2]["timestamp"], "2026-02-18T15:00:00Z", "Third should be latest");
+    assert_eq!(
+        runs[0]["timestamp"], "2026-02-18T09:00:00Z",
+        "First should be earliest"
+    );
+    assert_eq!(
+        runs[1]["timestamp"], "2026-02-18T12:00:00Z",
+        "Second should be middle"
+    );
+    assert_eq!(
+        runs[2]["timestamp"], "2026-02-18T15:00:00Z",
+        "Third should be latest"
+    );
 }
 
 // ===========================================================================
@@ -1033,7 +1242,13 @@ fn test_trace_json_overrides_full_flag() {
     let wg_dir = setup_workgraph(&tmp, vec![t1]);
 
     create_agent_archive(&wg_dir, "t1", "2026-02-18T10:00:00Z", "prompt", "output");
-    record_op(&wg_dir, "add_task", Some("t1"), None, serde_json::json!({"title": "Override test"}));
+    record_op(
+        &wg_dir,
+        "add_task",
+        Some("t1"),
+        None,
+        serde_json::json!({"title": "Override test"}),
+    );
 
     // Pass --json globally AND --full on the trace subcommand
     // The --json flag should take priority, producing JSON output
@@ -1043,14 +1258,29 @@ fn test_trace_json_overrides_full_flag() {
 
     // Output should be valid JSON (not the full text format)
     let json: serde_json::Value = serde_json::from_str(&stdout).unwrap_or_else(|e| {
-        panic!("Output should be valid JSON when --json is set.\nError: {}\nOutput: {}", e, stdout)
+        panic!(
+            "Output should be valid JSON when --json is set.\nError: {}\nOutput: {}",
+            e, stdout
+        )
     });
     assert!(json["id"].is_string(), "JSON should have id field");
-    assert!(json["agent_runs"].is_array(), "JSON should have agent_runs array");
-    assert!(json["summary"].is_object(), "JSON should have summary object");
+    assert!(
+        json["agent_runs"].is_array(),
+        "JSON should have agent_runs array"
+    );
+    assert!(
+        json["summary"].is_object(),
+        "JSON should have summary object"
+    );
     // Should NOT contain text-mode markers
-    assert!(!stdout.contains("[Prompt]"), "Should not contain full-mode [Prompt] header");
-    assert!(!stdout.contains("[Output]"), "Should not contain full-mode [Output] header");
+    assert!(
+        !stdout.contains("[Prompt]"),
+        "Should not contain full-mode [Prompt] header"
+    );
+    assert!(
+        !stdout.contains("[Output]"),
+        "Should not contain full-mode [Output] header"
+    );
 }
 
 #[test]
@@ -1060,7 +1290,13 @@ fn test_trace_json_overrides_ops_only_flag() {
     let wg_dir = setup_workgraph(&tmp, vec![t1]);
 
     create_agent_archive(&wg_dir, "t1", "2026-02-18T10:00:00Z", "prompt", "output");
-    record_op(&wg_dir, "add_task", Some("t1"), None, serde_json::json!({"title": "Override test"}));
+    record_op(
+        &wg_dir,
+        "add_task",
+        Some("t1"),
+        None,
+        serde_json::json!({"title": "Override test"}),
+    );
 
     // Pass --json globally AND --ops-only on the trace subcommand
     let output = wg_cmd(&wg_dir, &["--json", "trace", "show", "t1", "--ops-only"]);
@@ -1069,14 +1305,29 @@ fn test_trace_json_overrides_ops_only_flag() {
 
     // Output should be valid JSON (not the ops-only text format)
     let json: serde_json::Value = serde_json::from_str(&stdout).unwrap_or_else(|e| {
-        panic!("Output should be valid JSON when --json is set.\nError: {}\nOutput: {}", e, stdout)
+        panic!(
+            "Output should be valid JSON when --json is set.\nError: {}\nOutput: {}",
+            e, stdout
+        )
     });
     assert!(json["id"].is_string(), "JSON should have id field");
-    assert!(json["agent_runs"].is_array(), "JSON should have agent_runs array (not ops-only)");
-    assert!(json["operations"].is_array(), "JSON should have operations array");
-    assert!(json["summary"].is_object(), "JSON should have summary object");
+    assert!(
+        json["agent_runs"].is_array(),
+        "JSON should have agent_runs array (not ops-only)"
+    );
+    assert!(
+        json["operations"].is_array(),
+        "JSON should have operations array"
+    );
+    assert!(
+        json["summary"].is_object(),
+        "JSON should have summary object"
+    );
     // Should NOT contain ops-only text markers
-    assert!(!stdout.contains("Operations for"), "Should not contain ops-only header");
+    assert!(
+        !stdout.contains("Operations for"),
+        "Should not contain ops-only header"
+    );
 }
 
 // ===========================================================================
@@ -1110,10 +1361,22 @@ fn test_trace_agent_archive_missing_output() {
     // JSON mode should show prompt_bytes but no output_bytes
     let json = wg_json(&wg_dir, &["trace", "show", "t1"]);
     let run = &json["agent_runs"][0];
-    assert!(run["prompt_bytes"].is_number(), "prompt_bytes should be present");
-    assert!(run["output_bytes"].is_null(), "output_bytes should be null when output.txt missing");
-    assert!(run["tool_calls"].is_null(), "tool_calls should be null when no output");
-    assert!(run["turns"].is_null(), "turns should be null when no output");
+    assert!(
+        run["prompt_bytes"].is_number(),
+        "prompt_bytes should be present"
+    );
+    assert!(
+        run["output_bytes"].is_null(),
+        "output_bytes should be null when output.txt missing"
+    );
+    assert!(
+        run["tool_calls"].is_null(),
+        "tool_calls should be null when no output"
+    );
+    assert!(
+        run["turns"].is_null(),
+        "turns should be null when no output"
+    );
 }
 
 // ===========================================================================
@@ -1133,12 +1396,24 @@ fn test_trace_agent_archive_empty_output() {
     let run = &json["agent_runs"][0];
 
     // output_bytes should be 0
-    assert_eq!(run["output_bytes"], 0, "output_bytes should be 0 for empty file");
+    assert_eq!(
+        run["output_bytes"], 0,
+        "output_bytes should be 0 for empty file"
+    );
     // output_lines should be 0
-    assert_eq!(run["output_lines"], 0, "output_lines should be 0 for empty file");
+    assert_eq!(
+        run["output_lines"], 0,
+        "output_lines should be 0 for empty file"
+    );
     // tool_calls and turns should be omitted (0 from empty input)
-    assert!(run["tool_calls"].is_null(), "tool_calls should be null for empty output");
-    assert!(run["turns"].is_null(), "turns should be null for empty output");
+    assert!(
+        run["tool_calls"].is_null(),
+        "tool_calls should be null for empty output"
+    );
+    assert!(
+        run["turns"].is_null(),
+        "turns should be null for empty output"
+    );
 
     // Summary total_output_bytes should be omitted (sum is 0)
     assert!(
@@ -1221,9 +1496,17 @@ fn test_trace_summary_mode_excludes_content() {
     let t1 = make_task("t1", "Summary exclusion", Status::Done);
     let wg_dir = setup_workgraph(&tmp, vec![t1]);
 
-    let prompt_text = "UNIQUE_PROMPT_MARKER_12345 This is the prompt text that should not appear in summary";
-    let output_text = "UNIQUE_OUTPUT_MARKER_67890 This is the output text that should not appear in summary";
-    create_agent_archive(&wg_dir, "t1", "2026-02-18T10:00:00Z", prompt_text, output_text);
+    let prompt_text =
+        "UNIQUE_PROMPT_MARKER_12345 This is the prompt text that should not appear in summary";
+    let output_text =
+        "UNIQUE_OUTPUT_MARKER_67890 This is the output text that should not appear in summary";
+    create_agent_archive(
+        &wg_dir,
+        "t1",
+        "2026-02-18T10:00:00Z",
+        prompt_text,
+        output_text,
+    );
 
     // Summary mode (default) should NOT print prompt/output content verbatim
     let output = wg_ok(&wg_dir, &["trace", "show", "t1"]);
@@ -1272,7 +1555,13 @@ fn test_trace_json_no_tool_calls_or_turns_omitted() {
     let wg_dir = setup_workgraph(&tmp, vec![t1]);
 
     // Agent archive with non-JSON output (plain text)
-    create_agent_archive(&wg_dir, "t1", "2026-02-18T10:00:00Z", "prompt", "plain text output with no json");
+    create_agent_archive(
+        &wg_dir,
+        "t1",
+        "2026-02-18T10:00:00Z",
+        "prompt",
+        "plain text output with no json",
+    );
 
     let json = wg_json(&wg_dir, &["trace", "show", "t1"]);
 

@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::io::IsTerminal;
-use workgraph::graph::{format_token_display, Status, Task, TokenUsage, WorkGraph};
+use workgraph::graph::{Status, Task, TokenUsage, WorkGraph, format_token_display};
 
 use super::ascii::visible_len;
 
@@ -23,7 +23,17 @@ pub fn generate_graph(
     eval_token_usage: &HashMap<String, TokenUsage>,
     context_ids: &HashSet<String>,
 ) -> String {
-    generate_graph_with_overrides(graph, tasks, task_ids, annotations, &HashMap::new(), live_token_usage, assign_token_usage, eval_token_usage, context_ids)
+    generate_graph_with_overrides(
+        graph,
+        tasks,
+        task_ids,
+        annotations,
+        &HashMap::new(),
+        live_token_usage,
+        assign_token_usage,
+        eval_token_usage,
+        context_ids,
+    )
 }
 
 /// Like generate_graph but allows overriding the displayed status for each task.
@@ -96,7 +106,12 @@ pub fn generate_graph_with_overrides(
     // Assign layers via BFS from roots
     let roots: Vec<&str> = tasks
         .iter()
-        .filter(|t| reverse.get(t.id.as_str()).map(Vec::is_empty).unwrap_or(true))
+        .filter(|t| {
+            reverse
+                .get(t.id.as_str())
+                .map(Vec::is_empty)
+                .unwrap_or(true)
+        })
         .map(|t| t.id.as_str())
         .collect();
 
@@ -166,9 +181,9 @@ pub fn generate_graph_with_overrides(
     let max_id_len = 16;
 
     struct BoxInfo {
-        lines: Vec<String>,      // content lines (no color)
+        lines: Vec<String>,       // content lines (no color)
         color_lines: Vec<String>, // content lines (with color)
-        width: usize,            // inner width
+        width: usize,             // inner width
     }
 
     let dim = if use_color { "\x1b[2m" } else { "" };
@@ -206,18 +221,28 @@ pub fn generate_graph_with_overrides(
                 String::new()
             };
 
-            let usage = task.token_usage.as_ref().or_else(|| live_token_usage.get(id));
+            let usage = task
+                .token_usage
+                .as_ref()
+                .or_else(|| live_token_usage.get(id));
             let atok_usage = assign_token_usage.get(id);
             let etok_usage = eval_token_usage.get(id);
             let token_info = format_token_display(usage, atok_usage, etok_usage)
                 .map(|s| format!(" · {}", s))
                 .unwrap_or_default();
 
-            (display_id, format!("{}{}{}{}", status, token_info, phase, loop_info))
+            (
+                display_id,
+                format!("{}{}{}{}", status, token_info, phase, loop_info),
+            )
         };
         let width = line1.len().max(line2.len());
 
-        let color = if is_context { dim } else { status_color(&effective_status) };
+        let color = if is_context {
+            dim
+        } else {
+            status_color(&effective_status)
+        };
         let color_line1 = format!("{}{}{}", color, center_str(&line1, width), reset);
         let color_line2 = format!("{}{}{}", color, center_str(&line2, width), reset);
 
@@ -410,13 +435,14 @@ pub fn generate_graph_with_overrides(
                     let pc = box_center(layer_idx, ni);
                     for &cid in children {
                         if let Some(&(cl, cn)) = node_pos.get(cid)
-                            && cl == next_layer_idx {
-                                let cc = box_center(cl, cn);
-                                edges.push(Edge {
-                                    parent_center: pc,
-                                    child_center: cc,
-                                });
-                            }
+                            && cl == next_layer_idx
+                        {
+                            let cc = box_center(cl, cn);
+                            edges.push(Edge {
+                                parent_center: pc,
+                                child_center: cc,
+                            });
+                        }
                     }
                 }
             }
@@ -499,8 +525,7 @@ pub fn generate_graph_with_overrides(
 
                 // Row 3: vertical drops to child centers
                 let mut row3 = vec![' '; canvas_width];
-                let child_centers: HashSet<usize> =
-                    edges.iter().map(|e| e.child_center).collect();
+                let child_centers: HashSet<usize> = edges.iter().map(|e| e.child_center).collect();
                 for &cc in &child_centers {
                     if cc < canvas_width {
                         row3[cc] = '│';
@@ -511,16 +536,22 @@ pub fn generate_graph_with_overrides(
         }
     }
 
-
     output.join("\n")
 }
 
-fn avg_parent_pos(id: &str, reverse: &HashMap<&str, Vec<&str>>, prev_pos: &HashMap<&str, usize>) -> f64 {
+fn avg_parent_pos(
+    id: &str,
+    reverse: &HashMap<&str, Vec<&str>>,
+    prev_pos: &HashMap<&str, usize>,
+) -> f64 {
     let parents = match reverse.get(id) {
         Some(p) => p,
         None => return f64::MAX,
     };
-    let positions: Vec<usize> = parents.iter().filter_map(|p| prev_pos.get(p).copied()).collect();
+    let positions: Vec<usize> = parents
+        .iter()
+        .filter_map(|p| prev_pos.get(p).copied())
+        .collect();
     if positions.is_empty() {
         return f64::MAX;
     }
@@ -568,7 +599,16 @@ mod tests {
         let tasks: Vec<&Task> = vec![];
         let task_ids: HashSet<&str> = HashSet::new();
         let no_annots = HashMap::new();
-        let result = generate_graph(&graph, &tasks, &task_ids, &no_annots, &HashMap::new(), &HashMap::new(), &HashMap::new(), &HashSet::new());
+        let result = generate_graph(
+            &graph,
+            &tasks,
+            &task_ids,
+            &no_annots,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashSet::new(),
+        );
         assert_eq!(result, "(no tasks to display)");
     }
 
@@ -581,10 +621,27 @@ mod tests {
         let tasks: Vec<_> = graph.tasks().collect();
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
         let no_annots = HashMap::new();
-        let result = generate_graph(&graph, &tasks, &task_ids, &no_annots, &HashMap::new(), &HashMap::new(), &HashMap::new(), &HashSet::new());
+        let result = generate_graph(
+            &graph,
+            &tasks,
+            &task_ids,
+            &no_annots,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashSet::new(),
+        );
 
-        assert!(result.contains("alpha"), "Should contain task id:\n{}", result);
-        assert!(result.contains("open"), "Should contain status:\n{}", result);
+        assert!(
+            result.contains("alpha"),
+            "Should contain task id:\n{}",
+            result
+        );
+        assert!(
+            result.contains("open"),
+            "Should contain status:\n{}",
+            result
+        );
         assert!(result.contains('┌'), "Should have box top:\n{}", result);
         assert!(result.contains('┘'), "Should have box bottom:\n{}", result);
     }
@@ -601,13 +658,26 @@ mod tests {
         let tasks: Vec<_> = graph.tasks().collect();
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
         let no_annots = HashMap::new();
-        let result = generate_graph(&graph, &tasks, &task_ids, &no_annots, &HashMap::new(), &HashMap::new(), &HashMap::new(), &HashSet::new());
+        let result = generate_graph(
+            &graph,
+            &tasks,
+            &task_ids,
+            &no_annots,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashSet::new(),
+        );
 
         // Both boxes should appear
         assert!(result.contains('a'), "Should contain 'a':\n{}", result);
         assert!(result.contains('b'), "Should contain 'b':\n{}", result);
         // Connecting line between layers
-        assert!(result.contains('│'), "Should have vertical connector:\n{}", result);
+        assert!(
+            result.contains('│'),
+            "Should have vertical connector:\n{}",
+            result
+        );
     }
 
     #[test]
@@ -628,14 +698,27 @@ mod tests {
         let tasks: Vec<_> = graph.tasks().collect();
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
         let no_annots = HashMap::new();
-        let result = generate_graph(&graph, &tasks, &task_ids, &no_annots, &HashMap::new(), &HashMap::new(), &HashMap::new(), &HashSet::new());
+        let result = generate_graph(
+            &graph,
+            &tasks,
+            &task_ids,
+            &no_annots,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashSet::new(),
+        );
 
         // All children should appear
         assert!(result.contains("c1"), "Should contain c1:\n{}", result);
         assert!(result.contains("c2"), "Should contain c2:\n{}", result);
         assert!(result.contains("c3"), "Should contain c3:\n{}", result);
         // Should have horizontal connector for fan-out
-        assert!(result.contains('┬'), "Should have ┬ for fan-out:\n{}", result);
+        assert!(
+            result.contains('┬'),
+            "Should have ┬ for fan-out:\n{}",
+            result
+        );
     }
 
     #[test]
@@ -652,12 +735,25 @@ mod tests {
         let tasks: Vec<_> = graph.tasks().collect();
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
         let no_annots = HashMap::new();
-        let result = generate_graph(&graph, &tasks, &task_ids, &no_annots, &HashMap::new(), &HashMap::new(), &HashMap::new(), &HashSet::new());
+        let result = generate_graph(
+            &graph,
+            &tasks,
+            &task_ids,
+            &no_annots,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashSet::new(),
+        );
 
         // All nodes should be present
         assert!(result.contains('a'), "Should contain a:\n{}", result);
         assert!(result.contains('b'), "Should contain b:\n{}", result);
-        assert!(result.contains("merge"), "Should contain merge:\n{}", result);
+        assert!(
+            result.contains("merge"),
+            "Should contain merge:\n{}",
+            result
+        );
     }
 
     #[test]
@@ -678,16 +774,37 @@ mod tests {
         let tasks: Vec<_> = graph.tasks().collect();
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
         let no_annots = HashMap::new();
-        let result = generate_graph(&graph, &tasks, &task_ids, &no_annots, &HashMap::new(), &HashMap::new(), &HashMap::new(), &HashSet::new());
+        let result = generate_graph(
+            &graph,
+            &tasks,
+            &task_ids,
+            &no_annots,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashSet::new(),
+        );
 
         // All 4 nodes
-        assert!(result.contains("start"), "Should contain start:\n{}", result);
+        assert!(
+            result.contains("start"),
+            "Should contain start:\n{}",
+            result
+        );
         assert!(result.contains("left"), "Should contain left:\n{}", result);
-        assert!(result.contains("right"), "Should contain right:\n{}", result);
+        assert!(
+            result.contains("right"),
+            "Should contain right:\n{}",
+            result
+        );
         assert!(result.contains("end"), "Should contain end:\n{}", result);
         // 3 layers of boxes
         let box_tops = result.matches('┌').count();
-        assert!(box_tops >= 4, "Should have at least 4 box tops:\n{}", result);
+        assert!(
+            box_tops >= 4,
+            "Should have at least 4 box tops:\n{}",
+            result
+        );
     }
 
     #[test]
@@ -704,10 +821,27 @@ mod tests {
         let tasks: Vec<_> = graph.tasks().collect();
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
         let no_annots = HashMap::new();
-        let result = generate_graph(&graph, &tasks, &task_ids, &no_annots, &HashMap::new(), &HashMap::new(), &HashMap::new(), &HashSet::new());
+        let result = generate_graph(
+            &graph,
+            &tasks,
+            &task_ids,
+            &no_annots,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashSet::new(),
+        );
 
-        assert!(result.contains("in-progress"), "Should show in-progress status:\n{}", result);
-        assert!(result.contains("blocked"), "Should show blocked status:\n{}", result);
+        assert!(
+            result.contains("in-progress"),
+            "Should show in-progress status:\n{}",
+            result
+        );
+        assert!(
+            result.contains("blocked"),
+            "Should show blocked status:\n{}",
+            result
+        );
     }
 
     #[test]
@@ -730,10 +864,27 @@ mod tests {
         let tasks: Vec<_> = graph.tasks().collect();
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
         let no_annots = HashMap::new();
-        let result = generate_graph(&graph, &tasks, &task_ids, &no_annots, &HashMap::new(), &HashMap::new(), &HashMap::new(), &HashSet::new());
+        let result = generate_graph(
+            &graph,
+            &tasks,
+            &task_ids,
+            &no_annots,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashSet::new(),
+        );
 
-        assert!(result.contains("↺"), "Should show loop annotation:\n{}", result);
-        assert!(result.contains("2/5"), "Should show iteration count:\n{}", result);
+        assert!(
+            result.contains("↺"),
+            "Should show loop annotation:\n{}",
+            result
+        );
+        assert!(
+            result.contains("2/5"),
+            "Should show iteration count:\n{}",
+            result
+        );
     }
 
     #[test]
@@ -745,18 +896,33 @@ mod tests {
         let tasks: Vec<_> = graph.tasks().collect();
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
         let no_annots = HashMap::new();
-        let result = generate_graph(&graph, &tasks, &task_ids, &no_annots, &HashMap::new(), &HashMap::new(), &HashMap::new(), &HashSet::new());
+        let result = generate_graph(
+            &graph,
+            &tasks,
+            &task_ids,
+            &no_annots,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashSet::new(),
+        );
 
         // ID should be truncated with ellipsis
         assert!(result.contains('…'), "Should truncate long id:\n{}", result);
         // Full ID should NOT appear
-        assert!(!result.contains("very-long-task-id-that-exceeds-limit"),
-            "Full long ID should not appear:\n{}", result);
+        assert!(
+            !result.contains("very-long-task-id-that-exceeds-limit"),
+            "Full long ID should not appear:\n{}",
+            result
+        );
     }
 
     #[test]
     fn test_generate_graph_format_parsing() {
         use super::super::OutputFormat;
-        assert_eq!("graph".parse::<OutputFormat>().unwrap(), OutputFormat::Graph);
+        assert_eq!(
+            "graph".parse::<OutputFormat>().unwrap(),
+            OutputFormat::Graph
+        );
     }
 }

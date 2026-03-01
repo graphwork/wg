@@ -264,7 +264,10 @@ fn evolver_output_mutation_fixture() {
     assert_eq!(parsed.run_id.as_deref(), Some("evolve-run-001"));
     assert_eq!(parsed.operations.len(), 1);
     assert_eq!(parsed.operations[0].op, "wording_mutation");
-    assert_eq!(parsed.operations[0].new_name.as_deref(), Some("Senior Builder"));
+    assert_eq!(
+        parsed.operations[0].new_name.as_deref(),
+        Some("Senior Builder")
+    );
     assert!(parsed.operations[0].rationale.is_some());
     assert!(parsed.deferred_operations.is_empty());
 }
@@ -310,7 +313,11 @@ fn evolver_output_all_operation_types() {
     assert!(op_types.contains(&"meta_compose_agent"));
 
     // Verify meta_role field is populated for meta ops
-    let meta_swap = parsed.operations.iter().find(|o| o.op == "meta_swap_role").unwrap();
+    let meta_swap = parsed
+        .operations
+        .iter()
+        .find(|o| o.op == "meta_swap_role")
+        .unwrap();
     assert_eq!(meta_swap.meta_role.as_deref(), Some("assigner"));
     assert!(meta_swap.role_id.is_some());
 }
@@ -341,7 +348,10 @@ fn evolver_operation_bizarre_ideation_fields() {
     let parsed: EvolverOperation = serde_json::from_str(json).unwrap();
     assert_eq!(parsed.op, "bizarre_ideation");
     assert_eq!(parsed.entity_type.as_deref(), Some("component"));
-    assert_eq!(parsed.new_content.as_deref(), Some("Debug via quantum states"));
+    assert_eq!(
+        parsed.new_content.as_deref(),
+        Some("Debug via quantum states")
+    );
     assert_eq!(parsed.ideation_prompt.as_deref(), Some("Invent debugging"));
 }
 

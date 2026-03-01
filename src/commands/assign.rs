@@ -48,7 +48,10 @@ fn record_assigner_evaluation(
         // retrospectively when the assigned agent's task completes.
         score: 0.5,
         dimensions: std::collections::HashMap::new(),
-        notes: format!("Assignment recorded for task '{}'. Awaiting downstream evaluation.", task_id),
+        notes: format!(
+            "Assignment recorded for task '{}'. Awaiting downstream evaluation.",
+            task_id
+        ),
         evaluator: "system".to_string(),
         timestamp: chrono::Utc::now().to_rfc3339(),
         model: None,
@@ -56,7 +59,10 @@ fn record_assigner_evaluation(
     };
 
     if let Err(e) = agency::record_evaluation(&eval, agency_dir) {
-        eprintln!("Warning: failed to record assigner evaluation for '{}': {}", task_id, e);
+        eprintln!(
+            "Warning: failed to record assigner evaluation for '{}': {}",
+            task_id, e
+        );
     }
 }
 
@@ -141,7 +147,10 @@ fn run_explicit_assign(dir: &Path, path: &Path, task_id: &str, agent_hash: &str)
         }
     };
     if let Err(e) = agency::save_assignment_record(&record, &assignments_dir) {
-        eprintln!("Warning: failed to save assignment record for '{}': {}", task_id, e);
+        eprintln!(
+            "Warning: failed to save assignment record for '{}': {}",
+            task_id, e
+        );
     }
 
     // Record assigner evaluation for downstream attribution
@@ -495,7 +504,10 @@ mod tests {
         // Load and verify the evaluation contents
         let eval = agency::load_evaluation(&eval_files[0].path()).unwrap();
         assert_eq!(eval.task_id, "assign-t1");
-        assert_eq!(eval.agent_id, assigner_id, "Evaluation should be recorded against the assigner agent");
+        assert_eq!(
+            eval.agent_id, assigner_id,
+            "Evaluation should be recorded against the assigner agent"
+        );
         assert_eq!(eval.source, "system");
         assert_eq!(eval.score, 0.5, "Placeholder score should be 0.5");
     }
@@ -554,17 +566,26 @@ mod tests {
         // First assignment
         run(dir_path, "t1", Some(&actor_id), false).unwrap();
         let assigner = agency::find_agent_by_prefix(&agents_dir, &assigner_id).unwrap();
-        assert_eq!(assigner.performance.task_count, 1, "task_count should be 1 after first assign");
+        assert_eq!(
+            assigner.performance.task_count, 1,
+            "task_count should be 1 after first assign"
+        );
 
         // Second assignment
         run(dir_path, "t2", Some(&actor_id), false).unwrap();
         let assigner = agency::find_agent_by_prefix(&agents_dir, &assigner_id).unwrap();
-        assert_eq!(assigner.performance.task_count, 2, "task_count should be 2 after second assign");
+        assert_eq!(
+            assigner.performance.task_count, 2,
+            "task_count should be 2 after second assign"
+        );
 
         // Third assignment
         run(dir_path, "t3", Some(&actor_id), false).unwrap();
         let assigner = agency::find_agent_by_prefix(&agents_dir, &assigner_id).unwrap();
-        assert_eq!(assigner.performance.task_count, 3, "task_count should be 3 after third assign");
+        assert_eq!(
+            assigner.performance.task_count, 3,
+            "task_count should be 3 after third assign"
+        );
 
         // Verify avg_score is 0.5 (all assignments use placeholder score 0.5)
         assert!(
@@ -614,8 +635,7 @@ mod tests {
         assert!((role.performance.avg_score.unwrap() - 0.5).abs() < 1e-10);
         // Role's context_id should be the tradeoff_id
         assert_eq!(
-            role.performance.evaluations[0].context_id,
-            assigner.tradeoff_id,
+            role.performance.evaluations[0].context_id, assigner.tradeoff_id,
             "Role eval context_id should be tradeoff_id"
         );
 
@@ -629,8 +649,7 @@ mod tests {
         assert!((tradeoff.performance.avg_score.unwrap() - 0.5).abs() < 1e-10);
         // Tradeoff's context_id should be the role_id
         assert_eq!(
-            tradeoff.performance.evaluations[0].context_id,
-            assigner.role_id,
+            tradeoff.performance.evaluations[0].context_id, assigner.role_id,
             "Tradeoff eval context_id should be role_id"
         );
 
@@ -656,8 +675,7 @@ mod tests {
             );
             // Component's context_id should be the role_id
             assert_eq!(
-                component.performance.evaluations[0].context_id,
-                assigner.role_id,
+                component.performance.evaluations[0].context_id, assigner.role_id,
                 "Component '{}' context_id should be role_id",
                 component.name
             );
@@ -686,8 +704,7 @@ mod tests {
         );
         // Outcome's context_id should be the agent_id
         assert_eq!(
-            outcome.performance.evaluations[0].context_id,
-            assigner.id,
+            outcome.performance.evaluations[0].context_id, assigner.id,
             "Outcome eval context_id should be agent_id"
         );
     }
@@ -775,9 +792,8 @@ mod tests {
         assert_eq!(assigner.performance.evaluations.len(), 2);
 
         // Role should also have 2
-        let role =
-            agency::find_role_by_prefix(&agency_dir.join("cache/roles"), &assigner.role_id)
-                .unwrap();
+        let role = agency::find_role_by_prefix(&agency_dir.join("cache/roles"), &assigner.role_id)
+            .unwrap();
         assert_eq!(role.performance.task_count, 2);
 
         // Each component should have 2

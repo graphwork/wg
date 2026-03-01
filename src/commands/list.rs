@@ -3,7 +3,13 @@ use chrono::{DateTime, Utc};
 use std::path::Path;
 use workgraph::graph::Status;
 
-pub fn run(dir: &Path, status_filter: Option<&str>, paused_only: bool, tags: &[String], json: bool) -> Result<()> {
+pub fn run(
+    dir: &Path,
+    status_filter: Option<&str>,
+    paused_only: bool,
+    tags: &[String],
+    json: bool,
+) -> Result<()> {
     let (graph, _path) = super::load_workgraph(dir)?;
 
     let status_filter: Option<Status> = match status_filter {

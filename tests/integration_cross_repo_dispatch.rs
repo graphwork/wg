@@ -10,9 +10,7 @@ use std::path::Path;
 
 use tempfile::TempDir;
 
-use workgraph::federation::{
-    self, FederationConfig, PeerConfig, check_peer_service, resolve_peer,
-};
+use workgraph::federation::{self, FederationConfig, PeerConfig, check_peer_service, resolve_peer};
 use workgraph::graph::WorkGraph;
 use workgraph::parser::{load_graph, save_graph};
 
@@ -110,7 +108,12 @@ fn resolve_named_peer() {
     let remote = setup_project(&tmp, "remote");
 
     let local_wg = local.join(".workgraph");
-    register_peer(&local_wg, "remote", remote.to_str().unwrap(), Some("Remote project"));
+    register_peer(
+        &local_wg,
+        "remote",
+        remote.to_str().unwrap(),
+        Some("Remote project"),
+    );
 
     let resolved = resolve_peer("remote", &local_wg).unwrap();
     assert_eq!(resolved.workgraph_dir, remote.join(".workgraph"));
@@ -127,7 +130,10 @@ fn resolve_peer_by_absolute_path() {
 
     // No named peer — resolve by absolute path
     let resolved = resolve_peer(remote.to_str().unwrap(), &local_wg).unwrap();
-    assert_eq!(resolved.workgraph_dir, remote.join(".workgraph").canonicalize().unwrap());
+    assert_eq!(
+        resolved.workgraph_dir,
+        remote.join(".workgraph").canonicalize().unwrap()
+    );
 }
 
 #[test]
@@ -226,7 +232,10 @@ fn direct_add_task_to_peer_graph() {
     let reloaded = load_graph(&graph_path).unwrap();
     let task = reloaded.get_task("remote-task").unwrap();
     assert_eq!(task.title, "A task from local");
-    assert_eq!(task.description.as_deref(), Some("Created via cross-repo dispatch"));
+    assert_eq!(
+        task.description.as_deref(),
+        Some("Created via cross-repo dispatch")
+    );
 }
 
 #[test]
@@ -262,9 +271,10 @@ fn direct_add_task_with_after() {
 
     // Update the blocker's blocks field (same as add.rs logic)
     if let Some(blocker) = graph.get_task_mut("prereq-task")
-        && !blocker.before.contains(&"dependent-task".to_string()) {
-            blocker.before.push("dependent-task".to_string());
-        }
+        && !blocker.before.contains(&"dependent-task".to_string())
+    {
+        blocker.before.push("dependent-task".to_string());
+    }
     save_graph(&graph, &graph_path).unwrap();
 
     // Verify both tasks and the bidirectional relationship
@@ -384,7 +394,11 @@ fn cli_add_with_repo_flag_direct_fallback() {
         stdout,
         stderr
     );
-    assert!(stdout.contains("remote:"), "Expected 'remote:' prefix in output: {}", stdout);
+    assert!(
+        stdout.contains("remote:"),
+        "Expected 'remote:' prefix in output: {}",
+        stdout
+    );
 
     // Verify the task was created in the remote graph
     let remote_graph = load_graph(remote.join(".workgraph").join("graph.jsonl")).unwrap();
@@ -457,7 +471,10 @@ fn cli_add_with_repo_flag_nonexistent_peer_fails() {
         .output()
         .expect("Failed to execute wg");
 
-    assert!(!output.status.success(), "Should have failed for nonexistent peer");
+    assert!(
+        !output.status.success(),
+        "Should have failed for nonexistent peer"
+    );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains(".workgraph") || stderr.contains("not found"),
@@ -534,12 +551,7 @@ fn cli_add_without_repo_flag_adds_locally() {
     let local_wg = local.join(".workgraph");
 
     let output = Command::new(env!("CARGO_BIN_EXE_wg"))
-        .args([
-            "--dir",
-            local_wg.to_str().unwrap(),
-            "add",
-            "Local task",
-        ])
+        .args(["--dir", local_wg.to_str().unwrap(), "add", "Local task"])
         .output()
         .expect("Failed to execute wg");
 
@@ -773,7 +785,10 @@ fn cross_repo_dep_mixed_one_not_done() {
     // Remote dep not done → task should NOT be ready
     let local_graph = load_graph(&local_graph_path).unwrap();
     let ready = ready_tasks_with_peers(&local_graph, &local_wg);
-    assert!(ready.is_empty(), "Should be blocked when remote dep is in-progress");
+    assert!(
+        ready.is_empty(),
+        "Should be blocked when remote dep is in-progress"
+    );
 }
 
 #[test]
@@ -857,7 +872,10 @@ fn resolve_remote_task_status_peer_not_found() {
 
     let result = resolve_remote_task_status("nonexistent", "any-task", &local_wg);
     assert_eq!(result.status, workgraph::graph::Status::Open);
-    assert!(matches!(result.resolution, RemoteResolution::Unreachable(_)));
+    assert!(matches!(
+        result.resolution,
+        RemoteResolution::Unreachable(_)
+    ));
 }
 
 // ===========================================================================
@@ -963,8 +981,18 @@ fn end_to_end_cross_repo_all_four_subsystems() {
     let wg_b = project_b.join(".workgraph");
 
     // ── Step 2: Register each as a peer of the other ───────────────────
-    register_peer(&wg_a, "project-b", project_b.to_str().unwrap(), Some("Project B"));
-    register_peer(&wg_b, "project-a", project_a.to_str().unwrap(), Some("Project A"));
+    register_peer(
+        &wg_a,
+        "project-b",
+        project_b.to_str().unwrap(),
+        Some("Project B"),
+    );
+    register_peer(
+        &wg_b,
+        "project-a",
+        project_a.to_str().unwrap(),
+        Some("Project A"),
+    );
 
     // Verify bidirectional peer resolution
     let resolved_b = federation::resolve_peer("project-b", &wg_a).unwrap();
@@ -1186,10 +1214,7 @@ fn end_to_end_cross_repo_mixed_local_and_remote_deps() {
         id: "final-task".to_string(),
         title: "Needs both".to_string(),
         status: Status::Open,
-        after: vec![
-            "local-dep".to_string(),
-            "project-b:remote-dep".to_string(),
-        ],
+        after: vec!["local-dep".to_string(), "project-b:remote-dep".to_string()],
         ..Task::default()
     }));
     save_graph(&graph_a, &graph_path_a).unwrap();
@@ -1287,7 +1312,10 @@ fn end_to_end_function_list_includes_peers() {
     );
 
     let source = peer_func.unwrap()["source"].as_str().unwrap();
-    assert_eq!(source, "peer:project-b", "Source should indicate peer origin");
+    assert_eq!(
+        source, "peer:project-b",
+        "Source should indicate peer origin"
+    );
 }
 
 #[test]

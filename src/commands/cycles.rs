@@ -83,12 +83,7 @@ fn print_human(analysis: &CycleAnalysis, graph: &workgraph::graph::WorkGraph) {
         }
         path.push(cycle.header.clone());
 
-        println!(
-            "  {}. {} [{}]",
-            i + 1,
-            path.join(" -> "),
-            reducibility
-        );
+        println!("  {}. {} [{}]", i + 1, path.join(" -> "), reducibility);
         println!("     Header: {}", cycle.header);
         println!("     Members: {}", cycle.members.join(", "));
 
@@ -130,10 +125,7 @@ fn print_human(analysis: &CycleAnalysis, graph: &workgraph::graph::WorkGraph) {
 
     let irreducible_count = analysis.cycles.iter().filter(|c| !c.reducible).count();
     if irreducible_count > 0 {
-        println!(
-            "  Irreducible cycles: {}",
-            irreducible_count
-        );
+        println!("  Irreducible cycles: {}", irreducible_count);
     } else {
         println!("  Irreducible cycles: 0");
     }

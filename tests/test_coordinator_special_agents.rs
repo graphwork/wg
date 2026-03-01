@@ -12,11 +12,9 @@ use std::collections::HashMap;
 use tempfile::TempDir;
 
 use workgraph::agency::{
-    self, Agent, Evaluation, Lineage, PerformanceRecord,
-    content_hash_agent, load_agent, load_role, load_tradeoff, save_agent,
-    render_identity_prompt_rich, resolve_all_components, resolve_outcome,
-    record_evaluation, seed_starters,
-    special_agent_roles, special_agent_tradeoffs,
+    self, Agent, Evaluation, Lineage, PerformanceRecord, content_hash_agent, load_agent, load_role,
+    load_tradeoff, record_evaluation, render_identity_prompt_rich, resolve_all_components,
+    resolve_outcome, save_agent, seed_starters, special_agent_roles, special_agent_tradeoffs,
 };
 use workgraph::config::Config;
 
@@ -75,7 +73,10 @@ fn bootstrap_agency() -> (TempDir, std::path::PathBuf) {
 
     for (role_name, tradeoff_name, agent_name) in &special_agents {
         let role = special_roles.iter().find(|r| r.name == *role_name).unwrap();
-        let tradeoff = special_tradeoffs.iter().find(|t| t.name == *tradeoff_name).unwrap();
+        let tradeoff = special_tradeoffs
+            .iter()
+            .find(|t| t.name == *tradeoff_name)
+            .unwrap();
         let sa_id = content_hash_agent(&role.id, &tradeoff.id);
         let sa_path = agents_dir.join(format!("{}.yaml", sa_id));
         if !sa_path.exists() {
@@ -240,7 +241,9 @@ fn coordinator_assign_task_uses_composed_assigner_identity() {
     let mut desc = String::new();
     desc.push_str(&identity);
     desc.push_str("\n\n");
-    desc.push_str("Assign an agent to task 'test-task-123'.\n\n## Original Task\n**Title:** Test Task\n");
+    desc.push_str(
+        "Assign an agent to task 'test-task-123'.\n\n## Original Task\n**Title:** Test Task\n",
+    );
 
     // Verify the description contains the composed identity
     assert!(
@@ -346,7 +349,8 @@ fn coordinator_eval_task_uses_composed_evaluator_identity() {
             ))
         });
 
-    let identity = evaluator_identity.expect("Evaluator identity should resolve when config is set");
+    let identity =
+        evaluator_identity.expect("Evaluator identity should resolve when config is set");
 
     // Build a mock eval task description the way coordinator.rs does
     let task_id = "some-completed-task";
@@ -406,10 +410,8 @@ fn assign_task_agent_field_set_to_assigner_hash() {
 
     // Verify the hash resolves to the correct agent
     let agents_dir = wg_dir.join("agency/cache/agents");
-    let agent = load_agent(
-        &agents_dir.join(format!("{}.yaml", assigner_hash.as_ref().unwrap())),
-    )
-    .unwrap();
+    let agent =
+        load_agent(&agents_dir.join(format!("{}.yaml", assigner_hash.as_ref().unwrap()))).unwrap();
     let roles_dir = wg_dir.join("agency/cache/roles");
     let role = load_role(&roles_dir.join(format!("{}.yaml", agent.role_id))).unwrap();
     assert_eq!(
@@ -431,10 +433,8 @@ fn eval_task_agent_field_set_to_evaluator_hash() {
     assert!(evaluator_hash.is_some(), "evaluator_agent should be set");
 
     let agents_dir = wg_dir.join("agency/cache/agents");
-    let agent = load_agent(
-        &agents_dir.join(format!("{}.yaml", evaluator_hash.as_ref().unwrap())),
-    )
-    .unwrap();
+    let agent =
+        load_agent(&agents_dir.join(format!("{}.yaml", evaluator_hash.as_ref().unwrap()))).unwrap();
     let roles_dir = wg_dir.join("agency/cache/roles");
     let role = load_role(&roles_dir.join(format!("{}.yaml", agent.role_id))).unwrap();
     assert_eq!(
@@ -460,7 +460,10 @@ fn evaluation_records_update_assigner_agent_performance() {
     let agent = load_agent(&agents_dir.join(format!("{}.yaml", assigner_hash))).unwrap();
 
     // Verify initial state: no evaluations
-    assert_eq!(agent.performance.task_count, 0, "Initial task_count should be 0");
+    assert_eq!(
+        agent.performance.task_count, 0,
+        "Initial task_count should be 0"
+    );
     assert!(
         agent.performance.evaluations.is_empty(),
         "Initial evaluations should be empty"
@@ -515,7 +518,10 @@ fn evaluation_records_update_assigner_agent_performance() {
     // Verify the evaluation ref has correct cross-references
     let eval_ref = &updated_agent.performance.evaluations[0];
     assert_eq!(eval_ref.task_id, "assign-some-task");
-    assert_eq!(eval_ref.context_id, agent.role_id, "context_id should be role_id for agent evals");
+    assert_eq!(
+        eval_ref.context_id, agent.role_id,
+        "context_id should be role_id for agent evals"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -555,7 +561,11 @@ fn multiple_evaluations_accumulate_on_assigner_agent() {
     // Reload and verify
     let updated = load_agent(&agents_dir.join(format!("{}.yaml", assigner_hash))).unwrap();
     assert_eq!(updated.performance.task_count, 3, "task_count should be 3");
-    assert_eq!(updated.performance.evaluations.len(), 3, "should have 3 evaluation entries");
+    assert_eq!(
+        updated.performance.evaluations.len(),
+        3,
+        "should have 3 evaluation entries"
+    );
 
     // Average of 0.7, 0.85, 1.0 = 0.85
     let expected_avg = (0.7 + 0.85 + 1.0) / 3.0;
@@ -600,7 +610,10 @@ fn evaluation_propagates_to_assigner_role_and_components() {
     // Verify role was updated
     let roles_dir = agency_dir.join("cache/roles");
     let role = load_role(&roles_dir.join(format!("{}.yaml", agent.role_id))).unwrap();
-    assert_eq!(role.performance.task_count, 1, "Role task_count should be 1");
+    assert_eq!(
+        role.performance.task_count, 1,
+        "Role task_count should be 1"
+    );
     assert!(
         (role.performance.avg_score.unwrap() - 0.9).abs() < 0.01,
         "Role avg_score should be ~0.9"
@@ -608,19 +621,18 @@ fn evaluation_propagates_to_assigner_role_and_components() {
 
     // Verify tradeoff was updated
     let tradeoffs_dir = agency_dir.join("primitives/tradeoffs");
-    let tradeoff = load_tradeoff(
-        &tradeoffs_dir.join(format!("{}.yaml", agent.tradeoff_id)),
-    )
-    .unwrap();
-    assert_eq!(tradeoff.performance.task_count, 1, "Tradeoff task_count should be 1");
+    let tradeoff =
+        load_tradeoff(&tradeoffs_dir.join(format!("{}.yaml", agent.tradeoff_id))).unwrap();
+    assert_eq!(
+        tradeoff.performance.task_count, 1,
+        "Tradeoff task_count should be 1"
+    );
 
     // Verify each component was updated
     let components_dir = agency_dir.join("primitives/components");
     for comp_id in &role.component_ids {
-        let comp = agency::load_component(
-            &components_dir.join(format!("{}.yaml", comp_id)),
-        )
-        .unwrap();
+        let comp =
+            agency::load_component(&components_dir.join(format!("{}.yaml", comp_id))).unwrap();
         assert_eq!(
             comp.performance.task_count, 1,
             "Component {} task_count should be 1",
@@ -692,7 +704,10 @@ fn end_to_end_init_assign_evaluate_flow() {
     // Step 1: Verify init produced valid config
     let assigner_hash = config.agency.assigner_agent.as_ref().unwrap();
     let evaluator_hash = config.agency.evaluator_agent.as_ref().unwrap();
-    assert_ne!(assigner_hash, evaluator_hash, "Assigner and evaluator should be different agents");
+    assert_ne!(
+        assigner_hash, evaluator_hash,
+        "Assigner and evaluator should be different agents"
+    );
 
     // Step 2: Simulate coordinator creating an assign task
     let agents_dir = agency_dir.join("cache/agents");
@@ -755,8 +770,7 @@ fn end_to_end_init_assign_evaluate_flow() {
     record_evaluation(&eval, &agency_dir).unwrap();
 
     // Step 6: Verify the assigner agent's performance record was updated
-    let updated_assigner =
-        load_agent(&agents_dir.join(format!("{}.yaml", assigner_hash))).unwrap();
+    let updated_assigner = load_agent(&agents_dir.join(format!("{}.yaml", assigner_hash))).unwrap();
     assert_eq!(updated_assigner.performance.task_count, 1);
     assert!(
         (updated_assigner.performance.avg_score.unwrap() - 0.88).abs() < 0.01,

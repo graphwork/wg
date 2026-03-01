@@ -1,9 +1,9 @@
-mod strategy;
-mod prompt;
-mod parser;
 mod deferred;
-mod operations;
 mod meta;
+mod operations;
+mod parser;
+mod prompt;
+mod strategy;
 
 use anyhow::{Context, Result, bail};
 use chrono::Utc;
@@ -18,13 +18,13 @@ use workgraph::config::Config;
 
 pub use strategy::Strategy;
 
-pub use deferred::{run_deferred_list, run_deferred_approve, run_deferred_reject};
+pub use deferred::{run_deferred_approve, run_deferred_list, run_deferred_reject};
 
-use prompt::{build_performance_summary, load_evolver_skills, build_evolver_prompt};
-use parser::parse_evolver_output;
 use deferred::defer_self_mutation;
-use operations::apply_operation;
 use meta::print_operation_result;
+use operations::apply_operation;
+use parser::parse_evolver_output;
+use prompt::{build_evolver_prompt, build_performance_summary, load_evolver_skills};
 
 /// Run `wg evolve` — trigger an evolution cycle on agency roles and tradeoffs.
 pub fn run(
@@ -105,9 +105,7 @@ pub fn run(
         .unwrap_or_else(|| config.agent.model.clone());
 
     // Build performance summary
-    let perf_summary = build_performance_summary(
-        &roles, &tradeoffs, &evaluations, &config,
-    );
+    let perf_summary = build_performance_summary(&roles, &tradeoffs, &evaluations, &config);
 
     // Build the evolver prompt
     let prompt = build_evolver_prompt(
@@ -359,9 +357,13 @@ pub fn run(
                 // was just created in the same batch).
                 if matches!(
                     op.op.as_str(),
-                    "create_role" | "modify_role" | "retire_role"
-                        | "component_substitution" | "config_add_component"
-                        | "config_remove_component" | "config_swap_outcome"
+                    "create_role"
+                        | "modify_role"
+                        | "retire_role"
+                        | "component_substitution"
+                        | "config_add_component"
+                        | "config_remove_component"
+                        | "config_swap_outcome"
                         | "random_compose_role"
                 ) && let Ok(updated) = agency::load_all_roles(&roles_dir)
                 {
@@ -484,11 +486,11 @@ pub fn run(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use super::strategy::{EvolverOperation, EvolverOutput};
-    use super::parser::extract_json;
-    use super::prompt::{build_performance_summary, build_evolver_prompt};
     use super::operations::apply_operation;
+    use super::parser::extract_json;
+    use super::prompt::{build_evolver_prompt, build_performance_summary};
+    use super::strategy::{EvolverOperation, EvolverOutput};
+    use super::*;
     use workgraph::agency::{AccessControl, Lineage, PerformanceRecord, Role, TradeoffConfig};
 
     #[test]
@@ -602,7 +604,6 @@ mod tests {
                 task_count: 2,
                 avg_score: Some(0.75),
                 evaluations: vec![],
-
             },
             lineage: Lineage::default(),
             default_context_scope: None,
@@ -617,7 +618,6 @@ mod tests {
                 task_count: 1,
                 avg_score: Some(0.60),
                 evaluations: vec![],
-
             },
             lineage: Lineage::default(),
             access_control: AccessControl::default(),
@@ -651,7 +651,17 @@ mod tests {
             ..Default::default()
         };
 
-        let result = apply_operation(&op, &[], &[], "test-run", &roles_dir, &temp_dir.path().join("mot"), &temp_dir.path().join("agency"), temp_dir.path()).unwrap();
+        let result = apply_operation(
+            &op,
+            &[],
+            &[],
+            "test-run",
+            &roles_dir,
+            &temp_dir.path().join("mot"),
+            &temp_dir.path().join("agency"),
+            temp_dir.path(),
+        )
+        .unwrap();
         assert_eq!(result["status"], "applied");
 
         // ID should be a content hash, not the LLM-suggested new_id
@@ -687,7 +697,6 @@ mod tests {
                 task_count: 5,
                 avg_score: Some(0.55),
                 evaluations: vec![],
-
             },
             lineage: Lineage::default(),
             default_context_scope: None,
@@ -707,7 +716,17 @@ mod tests {
             ..Default::default()
         };
 
-        let result = apply_operation(&op, &[parent], &[], "test-run", &roles_dir, &temp_dir.path().join("mot"), &temp_dir.path().join("agency"), temp_dir.path()).unwrap();
+        let result = apply_operation(
+            &op,
+            &[parent],
+            &[],
+            "test-run",
+            &roles_dir,
+            &temp_dir.path().join("mot"),
+            &temp_dir.path().join("agency"),
+            temp_dir.path(),
+        )
+        .unwrap();
         assert_eq!(result["status"], "applied");
         assert_eq!(result["generation"], 1);
 
@@ -766,7 +785,17 @@ mod tests {
             ..Default::default()
         };
 
-        let result = apply_operation(&op, &[role_a, role_b], &[], "test-run", &roles_dir, &temp_dir.path().join("mot"), &temp_dir.path().join("agency"), temp_dir.path()).unwrap();
+        let result = apply_operation(
+            &op,
+            &[role_a, role_b],
+            &[],
+            "test-run",
+            &roles_dir,
+            &temp_dir.path().join("mot"),
+            &temp_dir.path().join("agency"),
+            temp_dir.path(),
+        )
+        .unwrap();
         assert_eq!(result["status"], "applied");
 
         // .yaml should be gone, .yaml.retired should exist
@@ -806,7 +835,16 @@ mod tests {
             ..Default::default()
         };
 
-        let result = apply_operation(&op, &[role], &[], "test-run", &roles_dir, &temp_dir.path().join("mot"), &temp_dir.path().join("agency"), temp_dir.path());
+        let result = apply_operation(
+            &op,
+            &[role],
+            &[],
+            "test-run",
+            &roles_dir,
+            &temp_dir.path().join("mot"),
+            &temp_dir.path().join("agency"),
+            temp_dir.path(),
+        );
         assert!(result.is_err());
         assert!(
             result
@@ -1009,7 +1047,17 @@ Let me know if you'd like me to adjust anything."#;
             ..Default::default()
         };
 
-        let result = apply_operation(&op, &[], &[], "test-run", &temp_dir.path().join("roles"), &tradeoffs_dir, &temp_dir.path().join("agency"), temp_dir.path()).unwrap();
+        let result = apply_operation(
+            &op,
+            &[],
+            &[],
+            "test-run",
+            &temp_dir.path().join("roles"),
+            &tradeoffs_dir,
+            &temp_dir.path().join("agency"),
+            temp_dir.path(),
+        )
+        .unwrap();
         assert_eq!(result["status"], "applied");
         assert_eq!(result["op"], "create_motivation");
 
@@ -1059,7 +1107,16 @@ Let me know if you'd like me to adjust anything."#;
             ..Default::default()
         };
 
-        let result = apply_operation(&op, &[], &[], "test-run", &temp_dir.path().join("roles"), &tradeoffs_dir, &temp_dir.path().join("agency"), temp_dir.path());
+        let result = apply_operation(
+            &op,
+            &[],
+            &[],
+            "test-run",
+            &temp_dir.path().join("roles"),
+            &tradeoffs_dir,
+            &temp_dir.path().join("agency"),
+            temp_dir.path(),
+        );
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("requires name"));
     }
@@ -1080,7 +1137,6 @@ Let me know if you'd like me to adjust anything."#;
                 task_count: 3,
                 avg_score: Some(0.65),
                 evaluations: vec![],
-
             },
             lineage: Lineage {
                 parent_ids: vec![],
@@ -1107,7 +1163,17 @@ Let me know if you'd like me to adjust anything."#;
             ..Default::default()
         };
 
-        let result = apply_operation(&op, &[], &[parent], "test-run", &temp_dir.path().join("roles"), &tradeoffs_dir, &temp_dir.path().join("agency"), temp_dir.path()).unwrap();
+        let result = apply_operation(
+            &op,
+            &[],
+            &[parent],
+            "test-run",
+            &temp_dir.path().join("roles"),
+            &tradeoffs_dir,
+            &temp_dir.path().join("agency"),
+            temp_dir.path(),
+        )
+        .unwrap();
         assert_eq!(result["status"], "applied");
         assert_eq!(result["op"], "modify_motivation");
         assert_eq!(result["target_id"], "parent-mot");
@@ -1127,8 +1193,7 @@ Let me know if you'd like me to adjust anything."#;
         assert_eq!(new_id.len(), 64);
 
         // Load and verify
-        let mot =
-            agency::load_tradeoff(&tradeoffs_dir.join(format!("{}.yaml", new_id))).unwrap();
+        let mot = agency::load_tradeoff(&tradeoffs_dir.join(format!("{}.yaml", new_id))).unwrap();
         assert_eq!(mot.name, "Carefully Fast");
         assert_eq!(mot.lineage.generation, 1);
         assert_eq!(mot.lineage.parent_ids, vec!["parent-mot"]);
@@ -1155,7 +1220,16 @@ Let me know if you'd like me to adjust anything."#;
             ..Default::default()
         };
 
-        let result = apply_operation(&op, &[], &[], "test-run", &temp_dir.path().join("roles"), &tradeoffs_dir, &temp_dir.path().join("agency"), temp_dir.path());
+        let result = apply_operation(
+            &op,
+            &[],
+            &[],
+            "test-run",
+            &temp_dir.path().join("roles"),
+            &tradeoffs_dir,
+            &temp_dir.path().join("agency"),
+            temp_dir.path(),
+        );
         assert!(result.is_err());
         assert!(
             result
@@ -1185,7 +1259,16 @@ Let me know if you'd like me to adjust anything."#;
             ..Default::default()
         };
 
-        let result = apply_operation(&op, &[], &[], "test-run", &temp_dir.path().join("roles"), &tradeoffs_dir, &temp_dir.path().join("agency"), temp_dir.path());
+        let result = apply_operation(
+            &op,
+            &[],
+            &[],
+            "test-run",
+            &temp_dir.path().join("roles"),
+            &tradeoffs_dir,
+            &temp_dir.path().join("agency"),
+            temp_dir.path(),
+        );
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("not found"));
     }
@@ -1206,7 +1289,6 @@ Let me know if you'd like me to adjust anything."#;
                 task_count: 5,
                 avg_score: Some(0.7),
                 evaluations: vec![],
-
             },
             lineage: Lineage {
                 parent_ids: vec![],
@@ -1229,7 +1311,6 @@ Let me know if you'd like me to adjust anything."#;
                 task_count: 3,
                 avg_score: Some(0.8),
                 evaluations: vec![],
-
             },
             lineage: Lineage {
                 parent_ids: vec![],
@@ -1256,9 +1337,17 @@ Let me know if you'd like me to adjust anything."#;
             ..Default::default()
         };
 
-        let result =
-            apply_operation(&op, &[], &[parent_a, parent_b], "test-run", &temp_dir.path().join("roles"), &tradeoffs_dir, &temp_dir.path().join("agency"), temp_dir.path())
-                .unwrap();
+        let result = apply_operation(
+            &op,
+            &[],
+            &[parent_a, parent_b],
+            "test-run",
+            &temp_dir.path().join("roles"),
+            &tradeoffs_dir,
+            &temp_dir.path().join("agency"),
+            temp_dir.path(),
+        )
+        .unwrap();
         assert_eq!(result["status"], "applied");
 
         // Generation should be max(2, 1) + 1 = 3
@@ -1278,8 +1367,7 @@ Let me know if you'd like me to adjust anything."#;
         assert_eq!(new_id.len(), 64);
 
         // Load and verify
-        let mot =
-            agency::load_tradeoff(&tradeoffs_dir.join(format!("{}.yaml", new_id))).unwrap();
+        let mot = agency::load_tradeoff(&tradeoffs_dir.join(format!("{}.yaml", new_id))).unwrap();
         assert_eq!(mot.name, "Balanced");
         assert_eq!(mot.lineage.generation, 3);
         assert_eq!(mot.lineage.parent_ids, vec!["mot-careful", "mot-fast"]);
@@ -1318,7 +1406,16 @@ Let me know if you'd like me to adjust anything."#;
             ..Default::default()
         };
 
-        let result = apply_operation(&op, &[], &[parent_a], "test-run", &temp_dir.path().join("roles"), &tradeoffs_dir, &temp_dir.path().join("agency"), temp_dir.path());
+        let result = apply_operation(
+            &op,
+            &[],
+            &[parent_a],
+            "test-run",
+            &temp_dir.path().join("roles"),
+            &tradeoffs_dir,
+            &temp_dir.path().join("agency"),
+            temp_dir.path(),
+        );
         assert!(result.is_err());
         assert!(
             result
@@ -1376,7 +1473,17 @@ Let me know if you'd like me to adjust anything."#;
             ..Default::default()
         };
 
-        let result = apply_operation(&op, &[], &[mot_a, mot_b], "test-run", &temp_dir.path().join("roles"), &tradeoffs_dir, &temp_dir.path().join("agency"), temp_dir.path()).unwrap();
+        let result = apply_operation(
+            &op,
+            &[],
+            &[mot_a, mot_b],
+            "test-run",
+            &temp_dir.path().join("roles"),
+            &tradeoffs_dir,
+            &temp_dir.path().join("agency"),
+            temp_dir.path(),
+        )
+        .unwrap();
         assert_eq!(result["status"], "applied");
         assert_eq!(result["op"], "retire_motivation");
 
@@ -1419,7 +1526,16 @@ Let me know if you'd like me to adjust anything."#;
             ..Default::default()
         };
 
-        let result = apply_operation(&op, &[], &[mot], "test-run", &temp_dir.path().join("roles"), &tradeoffs_dir, &temp_dir.path().join("agency"), temp_dir.path());
+        let result = apply_operation(
+            &op,
+            &[],
+            &[mot],
+            "test-run",
+            &temp_dir.path().join("roles"),
+            &tradeoffs_dir,
+            &temp_dir.path().join("agency"),
+            temp_dir.path(),
+        );
         assert!(result.is_err());
         assert!(
             result
@@ -1462,7 +1578,16 @@ Let me know if you'd like me to adjust anything."#;
             ..Default::default()
         };
 
-        let result = apply_operation(&op, &[], &[mot], "test-run", &temp_dir.path().join("roles"), &tradeoffs_dir, &temp_dir.path().join("agency"), temp_dir.path());
+        let result = apply_operation(
+            &op,
+            &[],
+            &[mot],
+            "test-run",
+            &temp_dir.path().join("roles"),
+            &tradeoffs_dir,
+            &temp_dir.path().join("agency"),
+            temp_dir.path(),
+        );
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("not found"));
     }
@@ -1487,7 +1612,6 @@ Let me know if you'd like me to adjust anything."#;
                 task_count: 10,
                 avg_score: Some(0.7),
                 evaluations: vec![],
-
             },
             lineage: Lineage {
                 parent_ids: vec![],
@@ -1508,7 +1632,6 @@ Let me know if you'd like me to adjust anything."#;
                 task_count: 8,
                 avg_score: Some(0.8),
                 evaluations: vec![],
-
             },
             lineage: Lineage {
                 parent_ids: vec![],
@@ -1533,7 +1656,17 @@ Let me know if you'd like me to adjust anything."#;
             ..Default::default()
         };
 
-        let result = apply_operation(&op, &[parent_a, parent_b], &[], "test-run", &roles_dir, &temp_dir.path().join("mot"), &temp_dir.path().join("agency"), temp_dir.path()).unwrap();
+        let result = apply_operation(
+            &op,
+            &[parent_a, parent_b],
+            &[],
+            "test-run",
+            &roles_dir,
+            &temp_dir.path().join("mot"),
+            &temp_dir.path().join("agency"),
+            temp_dir.path(),
+        )
+        .unwrap();
         assert_eq!(result["status"], "applied");
 
         // Generation should be max(2, 1) + 1 = 3
@@ -1581,7 +1714,16 @@ Let me know if you'd like me to adjust anything."#;
             ..Default::default()
         };
 
-        let result = apply_operation(&op, &[], &[], "test-run", &roles_dir, &temp_dir.path().join("mot"), &temp_dir.path().join("agency"), temp_dir.path());
+        let result = apply_operation(
+            &op,
+            &[],
+            &[],
+            "test-run",
+            &roles_dir,
+            &temp_dir.path().join("mot"),
+            &temp_dir.path().join("agency"),
+            temp_dir.path(),
+        );
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("not found"));
     }
@@ -1606,7 +1748,16 @@ Let me know if you'd like me to adjust anything."#;
             ..Default::default()
         };
 
-        let result = apply_operation(&op, &[], &[], "test-run", &roles_dir, &temp_dir.path().join("mot"), &temp_dir.path().join("agency"), temp_dir.path());
+        let result = apply_operation(
+            &op,
+            &[],
+            &[],
+            "test-run",
+            &roles_dir,
+            &temp_dir.path().join("mot"),
+            &temp_dir.path().join("agency"),
+            temp_dir.path(),
+        );
         assert!(result.is_err());
         assert!(
             result
@@ -1642,8 +1793,17 @@ Let me know if you'd like me to adjust anything."#;
             ..Default::default()
         };
 
-        let result =
-            apply_operation(&op, &[], &[], "run-dispatch", &roles_dir, &tradeoffs_dir, temp_dir.path(), temp_dir.path()).unwrap();
+        let result = apply_operation(
+            &op,
+            &[],
+            &[],
+            "run-dispatch",
+            &roles_dir,
+            &tradeoffs_dir,
+            temp_dir.path(),
+            temp_dir.path(),
+        )
+        .unwrap();
         assert_eq!(result["status"], "applied");
         assert_eq!(result["op"], "create_role");
     }
@@ -1670,7 +1830,16 @@ Let me know if you'd like me to adjust anything."#;
             ..Default::default()
         };
 
-        let result = apply_operation(&op, &[], &[], "run-bad", &roles_dir, &tradeoffs_dir, temp_dir.path(), temp_dir.path());
+        let result = apply_operation(
+            &op,
+            &[],
+            &[],
+            "run-bad",
+            &roles_dir,
+            &tradeoffs_dir,
+            temp_dir.path(),
+            temp_dir.path(),
+        );
         assert!(result.is_err());
         assert!(
             result
@@ -1704,8 +1873,28 @@ Let me know if you'd like me to adjust anything."#;
             ..Default::default()
         };
 
-        let result1 = apply_operation(&op, &[], &[], "run-1", &roles_dir, &temp_dir.path().join("mot"), &temp_dir.path().join("agency"), temp_dir.path()).unwrap();
-        let result2 = apply_operation(&op, &[], &[], "run-2", &roles_dir, &temp_dir.path().join("mot"), &temp_dir.path().join("agency"), temp_dir.path()).unwrap();
+        let result1 = apply_operation(
+            &op,
+            &[],
+            &[],
+            "run-1",
+            &roles_dir,
+            &temp_dir.path().join("mot"),
+            &temp_dir.path().join("agency"),
+            temp_dir.path(),
+        )
+        .unwrap();
+        let result2 = apply_operation(
+            &op,
+            &[],
+            &[],
+            "run-2",
+            &roles_dir,
+            &temp_dir.path().join("mot"),
+            &temp_dir.path().join("agency"),
+            temp_dir.path(),
+        )
+        .unwrap();
 
         // Same content = same ID (even though run_id differs)
         assert_eq!(result1["id"], result2["id"]);
@@ -1731,8 +1920,28 @@ Let me know if you'd like me to adjust anything."#;
             ..Default::default()
         };
 
-        let result1 = apply_operation(&op, &[], &[], "run-1", &temp_dir.path().join("roles"), &tradeoffs_dir, &temp_dir.path().join("agency"), temp_dir.path()).unwrap();
-        let result2 = apply_operation(&op, &[], &[], "run-2", &temp_dir.path().join("roles"), &tradeoffs_dir, &temp_dir.path().join("agency"), temp_dir.path()).unwrap();
+        let result1 = apply_operation(
+            &op,
+            &[],
+            &[],
+            "run-1",
+            &temp_dir.path().join("roles"),
+            &tradeoffs_dir,
+            &temp_dir.path().join("agency"),
+            temp_dir.path(),
+        )
+        .unwrap();
+        let result2 = apply_operation(
+            &op,
+            &[],
+            &[],
+            "run-2",
+            &temp_dir.path().join("roles"),
+            &tradeoffs_dir,
+            &temp_dir.path().join("agency"),
+            temp_dir.path(),
+        )
+        .unwrap();
 
         assert_eq!(result1["id"], result2["id"]);
     }
@@ -1752,7 +1961,6 @@ Let me know if you'd like me to adjust anything."#;
                 task_count: 5,
                 avg_score: Some(0.75),
                 evaluations: vec![],
-
             },
             lineage: Lineage::default(),
             default_context_scope: None,
@@ -1770,7 +1978,6 @@ Let me know if you'd like me to adjust anything."#;
                 task_count: 3,
                 avg_score: Some(0.60),
                 evaluations: vec![],
-
             },
             lineage: Lineage::default(),
             access_control: AccessControl::default(),
@@ -1993,7 +2200,6 @@ Let me know if you'd like me to adjust anything."#;
                     task_count: 2,
                     avg_score: Some(0.75),
                     evaluations: vec![],
-
                 },
                 lineage: Lineage::default(),
                 default_context_scope: None,
@@ -2008,7 +2214,6 @@ Let me know if you'd like me to adjust anything."#;
                     task_count: 1,
                     avg_score: Some(0.90),
                     evaluations: vec![],
-
                 },
                 lineage: Lineage::default(),
                 default_context_scope: None,
@@ -2024,7 +2229,6 @@ Let me know if you'd like me to adjust anything."#;
                 task_count: 3,
                 avg_score: Some(0.80),
                 evaluations: vec![],
-
             },
             lineage: Lineage::default(),
             access_control: AccessControl::default(),
@@ -2080,7 +2284,8 @@ Let me know if you'd like me to adjust anything."#;
             },
         ];
 
-        let summary = build_performance_summary(&roles, &motivations, &evaluations, &Config::default());
+        let summary =
+            build_performance_summary(&roles, &motivations, &evaluations, &Config::default());
 
         // Overall stats
         assert!(summary.contains("Total roles: 2"));
@@ -2144,7 +2349,17 @@ Let me know if you'd like me to adjust anything."#;
             ..Default::default()
         };
 
-        let result = apply_operation(&op, &[parent], &[], "run-new", &roles_dir, &temp_dir.path().join("mot"), &temp_dir.path().join("agency"), temp_dir.path()).unwrap();
+        let result = apply_operation(
+            &op,
+            &[parent],
+            &[],
+            "run-new",
+            &roles_dir,
+            &temp_dir.path().join("mot"),
+            &temp_dir.path().join("agency"),
+            temp_dir.path(),
+        )
+        .unwrap();
         assert_eq!(result["generation"], 6);
 
         let parent_ids: Vec<String> = result["parent_ids"]
@@ -2207,7 +2422,17 @@ Let me know if you'd like me to adjust anything."#;
             ..Default::default()
         };
 
-        let result = apply_operation(&op, &[parent_a, parent_b], &[], "run-x", &roles_dir, &temp_dir.path().join("mot"), &temp_dir.path().join("agency"), temp_dir.path()).unwrap();
+        let result = apply_operation(
+            &op,
+            &[parent_a, parent_b],
+            &[],
+            "run-x",
+            &roles_dir,
+            &temp_dir.path().join("mot"),
+            &temp_dir.path().join("agency"),
+            temp_dir.path(),
+        )
+        .unwrap();
         // max(3, 7) + 1 = 8
         assert_eq!(result["generation"], 8);
     }

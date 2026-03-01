@@ -94,7 +94,10 @@ pub fn run_restore(dir: &Path, run_id: &str, json: bool) -> Result<()> {
         model: None,
         reset_tasks: vec![],
         preserved_tasks: vec![],
-        filter: Some(format!("pre-restore safety snapshot (restoring {})", run_id)),
+        filter: Some(format!(
+            "pre-restore safety snapshot (restoring {})",
+            run_id
+        )),
     };
     runs::snapshot(dir, &safety_id, &safety_meta)?;
 
@@ -127,7 +130,10 @@ pub fn run_restore(dir: &Path, run_id: &str, json: bool) -> Result<()> {
         );
     } else {
         println!("Restored graph from {}", run_id);
-        println!("  Safety snapshot: {} (in case you need to undo)", safety_id);
+        println!(
+            "  Safety snapshot: {} (in case you need to undo)",
+            safety_id
+        );
     }
     Ok(())
 }
@@ -139,8 +145,7 @@ pub fn run_diff(dir: &Path, run_id: &str, json: bool) -> Result<()> {
         anyhow::bail!("Snapshot graph.jsonl not found for run '{}'", run_id);
     }
 
-    let snap_graph = load_graph(&snap_graph_path)
-        .context("Failed to load snapshot graph")?;
+    let snap_graph = load_graph(&snap_graph_path).context("Failed to load snapshot graph")?;
     let (current_graph, _) = super::load_workgraph(dir)?;
 
     // Build maps: task_id -> status

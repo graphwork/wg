@@ -41,9 +41,14 @@ fn parse_entity_filter(entity_type: Option<&str>) -> Result<EntityFilter> {
         Some("component" | "components") => Ok(EntityFilter::Components),
         Some("outcome" | "outcomes") => Ok(EntityFilter::Outcomes),
         Some("role" | "roles") => Ok(EntityFilter::Roles),
-        Some("motivation" | "motivations" | "tradeoff" | "tradeoffs") => Ok(EntityFilter::Tradeoffs),
+        Some("motivation" | "motivations" | "tradeoff" | "tradeoffs") => {
+            Ok(EntityFilter::Tradeoffs)
+        }
         Some("agent" | "agents") => Ok(EntityFilter::Agents),
-        Some(other) => anyhow::bail!("Unknown entity type '{}'. Use: component, outcome, role, tradeoff, motivation, or agent", other),
+        Some(other) => anyhow::bail!(
+            "Unknown entity type '{}'. Use: component, outcome, role, tradeoff, motivation, or agent",
+            other
+        ),
         None => Ok(EntityFilter::All),
     }
 }
@@ -131,7 +136,7 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
     use workgraph::agency::{
-        Agent, AgencyStore, EvaluationRef, Lineage, TradeoffConfig, PerformanceRecord, Role,
+        AgencyStore, Agent, EvaluationRef, Lineage, PerformanceRecord, Role, TradeoffConfig,
     };
     use workgraph::graph::TrustLevel;
 
@@ -408,9 +413,7 @@ mod tests {
         let target = setup_store(&tmp, "target");
 
         source.save_role(&make_role("r1", "role")).unwrap();
-        source
-            .save_tradeoff(&make_motivation("m1", "mot"))
-            .unwrap();
+        source.save_tradeoff(&make_motivation("m1", "mot")).unwrap();
 
         // Pull only roles
         let opts = TransferOptions {

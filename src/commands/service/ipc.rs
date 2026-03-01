@@ -14,8 +14,8 @@ use workgraph::graph::{Node, Status, Task};
 use workgraph::parser::{load_graph, save_graph};
 use workgraph::service::registry::AgentRegistry;
 
-use crate::commands::graph_path;
 use super::{CoordinatorState, DaemonConfig, DaemonLogger, ServiceState};
+use crate::commands::graph_path;
 
 /// IPC Request types
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -92,9 +92,7 @@ pub enum IpcRequest {
         origin: Option<String>,
     },
     /// Query a task's status (cross-repo query)
-    QueryTask {
-        task_id: String,
-    },
+    QueryTask { task_id: String },
     /// Send a message to a task's message queue
     SendMessage {
         task_id: String,
@@ -312,8 +310,7 @@ fn handle_request(
         } => {
             logger.info(&format!(
                 "IPC AddTask: title='{}', origin={:?}",
-                title,
-                origin
+                title, origin
             ));
             let resp = handle_add_task(
                 dir,
@@ -525,7 +522,8 @@ fn handle_reconfigure(
                 daemon_cfg.executor = config.coordinator.executor;
                 daemon_cfg.poll_interval = Duration::from_secs(config.coordinator.poll_interval);
                 daemon_cfg.model = config.coordinator.model;
-                daemon_cfg.settling_delay = Duration::from_millis(config.coordinator.settling_delay_ms);
+                daemon_cfg.settling_delay =
+                    Duration::from_millis(config.coordinator.settling_delay_ms);
             }
             Err(e) => {
                 logger.error(&format!("Failed to reload config.toml: {}", e));

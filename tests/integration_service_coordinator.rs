@@ -884,7 +884,11 @@ fn test_eval_task_routes_to_inline_spawn() {
     )));
 
     // Eval task (ready, with evaluation tag and exec)
-    let mut eval_task = make_task("evaluate-source-task", "Evaluate: Source Task", Status::Open);
+    let mut eval_task = make_task(
+        "evaluate-source-task",
+        "Evaluate: Source Task",
+        Status::Open,
+    );
     eval_task.tags = vec!["evaluation".to_string(), "agency".to_string()];
     eval_task.exec = Some("wg evaluate source-task".to_string());
     eval_task.model = Some("sonnet".to_string());
@@ -1720,8 +1724,14 @@ fn test_burst_addition_complex_dependency_chain() {
     let ready_ids: Vec<&str> = ready.iter().map(|t| t.id.as_str()).collect();
     assert!(ready_ids.contains(&"phase-2a"), "phase-2a should be ready");
     assert!(ready_ids.contains(&"phase-1c"), "phase-1c still ready");
-    assert!(!ready_ids.contains(&"phase-2b"), "phase-2b blocked by open phase-1c");
-    assert!(!ready_ids.contains(&"phase-3"), "phase-3 blocked by open phase-2a, phase-2b");
+    assert!(
+        !ready_ids.contains(&"phase-2b"),
+        "phase-2b blocked by open phase-1c"
+    );
+    assert!(
+        !ready_ids.contains(&"phase-3"),
+        "phase-3 blocked by open phase-2a, phase-2b"
+    );
 }
 
 /// Verify that the cycle-aware ready_tasks variant also blocks on dangling deps.
