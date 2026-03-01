@@ -1,4 +1,4 @@
-mod ascii;
+pub(crate) mod ascii;
 mod dot;
 mod graph;
 
@@ -24,6 +24,15 @@ pub struct VizOutput {
     pub forward_edges: HashMap<String, Vec<String>>,
     /// Reverse edges: task_id → list of dependency task IDs (tasks it depends on).
     pub reverse_edges: HashMap<String, Vec<String>>,
+    /// Per-character edge map: (line, visible_column) → list of (source_id, target_id).
+    /// Maps each edge/connector character to the graph edge(s) it represents.
+    /// Positions in shared arc columns may carry multiple edges (e.g., a vertical
+    /// segment that passes through multiple arcs).
+    /// Only edge characters have entries; text characters are absent.
+    pub char_edge_map: HashMap<(usize, usize), Vec<(String, String)>>,
+    /// Cycle membership: task_id → set of all task IDs in the same SCC.
+    /// Only populated for tasks that are in non-trivial SCCs (>1 member).
+    pub cycle_members: HashMap<String, HashSet<String>>,
 }
 
 /// Output format for visualization
@@ -496,6 +505,8 @@ pub fn generate_viz_output_from_graph(
                 task_order: Vec::new(),
                 forward_edges: HashMap::new(),
                 reverse_edges: HashMap::new(),
+                char_edge_map: HashMap::new(),
+                cycle_members: HashMap::new(),
             }
         }
     };

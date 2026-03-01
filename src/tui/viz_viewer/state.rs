@@ -105,14 +105,21 @@ pub struct VizApp {
     pub reverse_edges: HashMap<String, Vec<String>>,
     /// Currently selected task index into `task_order`.
     pub selected_task_idx: Option<usize>,
+    /// Whether edge trace highlighting is visible (toggled by Tab).
+    pub trace_visible: bool,
     /// Transitive upstream (dependency) task IDs of the selected task.
     pub upstream_set: HashSet<String>,
     /// Transitive downstream (dependent) task IDs of the selected task.
     pub downstream_set: HashSet<String>,
-    /// Set of line indices that belong to upstream edges (for coloring tree/arc connectors).
-    pub upstream_lines: HashSet<usize>,
-    /// Set of line indices that belong to downstream edges.
-    pub downstream_lines: HashSet<usize>,
+    /// Per-character edge map: (line, visible_column) → list of (source_id, target_id).
+    /// Maps edge/connector characters to the graph edge(s) they represent.
+    /// Shared arc column positions may carry multiple edges.
+    pub char_edge_map: std::collections::HashMap<(usize, usize), Vec<(String, String)>>,
+    /// Cycle membership from VizOutput: task_id → set of SCC members.
+    cycle_members: HashMap<String, HashSet<String>>,
+    /// Set of task IDs in the same SCC as the currently selected task.
+    /// Empty if the selected task is not in any cycle.
+    pub cycle_set: HashSet<String>,
 
     // ── Live refresh ──
     /// Last observed modification time of graph.jsonl.
@@ -187,10 +194,12 @@ impl VizApp {
             forward_edges: HashMap::new(),
             reverse_edges: HashMap::new(),
             selected_task_idx: None,
+            trace_visible: true,
             upstream_set: HashSet::new(),
             downstream_set: HashSet::new(),
-            upstream_lines: HashSet::new(),
-            downstream_lines: HashSet::new(),
+            char_edge_map: std::collections::HashMap::new(),
+            cycle_members: HashMap::new(),
+            cycle_set: HashSet::new(),
             last_graph_mtime: graph_mtime,
             last_refresh: Instant::now(),
             last_refresh_display: chrono::Local::now().format("%H:%M:%S").to_string(),
@@ -205,7 +214,13 @@ impl VizApp {
     pub fn load_viz(&mut self) {
         match self.generate_viz() {
             Ok(viz_output) => {
-                self.lines = viz_output.text.lines().map(String::from).collect();
+                self.lines = viz_output.text.lines()
+                    .map(String::from)
+                    .filter(|l| {
+                        let stripped = String::from_utf8(strip_ansi_escapes::strip(l.as_bytes())).unwrap_or_default();
+                        !stripped.trim_start().starts_with("Legend:")
+                    })
+                    .collect();
                 self.plain_lines = self
                     .lines
                     .iter()
@@ -226,6 +241,8 @@ impl VizApp {
                 self.task_order = viz_output.task_order;
                 self.forward_edges = viz_output.forward_edges;
                 self.reverse_edges = viz_output.reverse_edges;
+                self.char_edge_map = viz_output.char_edge_map;
+                self.cycle_members = viz_output.cycle_members;
 
                 // Preserve selection if possible (e.g., after refresh).
                 if let Some(idx) = self.selected_task_idx {
@@ -256,8 +273,9 @@ impl VizApp {
                 self.selected_task_idx = None;
                 self.upstream_set.clear();
                 self.downstream_set.clear();
-                self.upstream_lines.clear();
-                self.downstream_lines.clear();
+                self.char_edge_map.clear();
+                self.cycle_members.clear();
+                self.cycle_set.clear();
                 self.update_scroll_bounds();
             }
         }
@@ -311,12 +329,13 @@ impl VizApp {
     // ── Task selection / edge tracing ──
 
     /// Move task selection to the previous task in the viz order.
+    /// Does NOT wrap around — stays at top when already at first task.
     pub fn select_prev_task(&mut self) {
         if self.task_order.is_empty() {
             return;
         }
         let idx = match self.selected_task_idx {
-            Some(0) => self.task_order.len() - 1, // wrap around
+            Some(0) => return, // already at top, do nothing
             Some(i) => i - 1,
             None => 0,
         };
@@ -326,16 +345,37 @@ impl VizApp {
     }
 
     /// Move task selection to the next task in the viz order.
+    /// Does NOT wrap around — stays at bottom when already at last task.
     pub fn select_next_task(&mut self) {
         if self.task_order.is_empty() {
             return;
         }
         let idx = match self.selected_task_idx {
-            Some(i) if i + 1 >= self.task_order.len() => 0, // wrap around
+            Some(i) if i + 1 >= self.task_order.len() => return, // already at bottom, do nothing
             Some(i) => i + 1,
             None => 0,
         };
         self.selected_task_idx = Some(idx);
+        self.recompute_trace();
+        self.scroll_to_selected_task();
+    }
+
+    /// Select the first task in the viz order.
+    pub fn select_first_task(&mut self) {
+        if self.task_order.is_empty() {
+            return;
+        }
+        self.selected_task_idx = Some(0);
+        self.recompute_trace();
+        self.scroll_to_selected_task();
+    }
+
+    /// Select the last task in the viz order.
+    pub fn select_last_task(&mut self) {
+        if self.task_order.is_empty() {
+            return;
+        }
+        self.selected_task_idx = Some(self.task_order.len() - 1);
         self.recompute_trace();
         self.scroll_to_selected_task();
     }
@@ -345,8 +385,7 @@ impl VizApp {
     pub fn recompute_trace(&mut self) {
         self.upstream_set.clear();
         self.downstream_set.clear();
-        self.upstream_lines.clear();
-        self.downstream_lines.clear();
+        self.cycle_set.clear();
 
         let selected_id = match self.selected_task_idx {
             Some(idx) => match self.task_order.get(idx) {
@@ -390,26 +429,9 @@ impl VizApp {
             }
         }
 
-        // Build line sets for coloring connectors between nodes.
-        // For upstream: all lines between the selected node and each upstream node.
-        let selected_line = self.node_line_map.get(&selected_id).copied();
-        if let Some(sel_line) = selected_line {
-            for id in &self.upstream_set {
-                if let Some(&line) = self.node_line_map.get(id) {
-                    let (lo, hi) = if line < sel_line { (line, sel_line) } else { (sel_line, line) };
-                    for l in lo..=hi {
-                        self.upstream_lines.insert(l);
-                    }
-                }
-            }
-            for id in &self.downstream_set {
-                if let Some(&line) = self.node_line_map.get(id) {
-                    let (lo, hi) = if line < sel_line { (line, sel_line) } else { (sel_line, line) };
-                    for l in lo..=hi {
-                        self.downstream_lines.insert(l);
-                    }
-                }
-            }
+        // Compute cycle membership for the selected task.
+        if let Some(members) = self.cycle_members.get(&selected_id) {
+            self.cycle_set = members.clone();
         }
     }
 
@@ -801,6 +823,76 @@ impl VizApp {
     /// Toggle mouse capture on/off.
     pub fn toggle_mouse(&mut self) {
         self.mouse_enabled = !self.mouse_enabled;
+    }
+
+    /// Toggle edge trace highlighting on/off.
+    pub fn toggle_trace(&mut self) {
+        self.trace_visible = !self.trace_visible;
+    }
+
+    /// Construct a VizApp from pre-built VizOutput for unit testing.
+    /// Avoids needing a real workgraph directory on disk.
+    #[cfg(test)]
+    pub(crate) fn from_viz_output_for_test(viz: &crate::commands::viz::VizOutput) -> Self {
+        let lines: Vec<String> = viz.text.lines().map(String::from).collect();
+        let plain_lines: Vec<String> = lines.iter().map(|l| {
+            String::from_utf8(strip_ansi_escapes::strip(l.as_bytes())).unwrap_or_default()
+        }).collect();
+        let search_lines = plain_lines.iter().map(|l| sanitize_for_search(l)).collect();
+        let max_line_width = plain_lines.iter().map(|l| l.len()).max().unwrap_or(0);
+
+        let mut task_order: Vec<(String, usize)> = viz.node_line_map.iter()
+            .map(|(id, &line)| (id.clone(), line))
+            .collect();
+        task_order.sort_by_key(|(_, line)| *line);
+        let task_order: Vec<String> = task_order.into_iter().map(|(id, _)| id).collect();
+
+        let selected_task_idx = if task_order.is_empty() { None } else { Some(0) };
+
+        Self {
+            workgraph_dir: std::path::PathBuf::from("/tmp/test-workgraph"),
+            viz_options: crate::commands::viz::VizOptions::default(),
+            should_quit: false,
+            lines,
+            plain_lines,
+            search_lines,
+            max_line_width,
+            scroll: ViewportScroll::new(),
+            search_active: false,
+            search_input: String::new(),
+            fuzzy_matches: Vec::new(),
+            current_match: None,
+            filtered_indices: None,
+            matcher: SkimMatcherV2::default(),
+            task_counts: TaskCounts::default(),
+            total_usage: workgraph::graph::TokenUsage {
+                cost_usd: 0.0,
+                input_tokens: 0,
+                output_tokens: 0,
+                cache_read_input_tokens: 0,
+                cache_creation_input_tokens: 0,
+            },
+            task_token_map: HashMap::new(),
+            show_total_tokens: false,
+            show_help: false,
+            mouse_enabled: false,
+            jump_target: None,
+            task_order,
+            node_line_map: viz.node_line_map.clone(),
+            forward_edges: viz.forward_edges.clone(),
+            reverse_edges: viz.reverse_edges.clone(),
+            selected_task_idx,
+            trace_visible: true,
+            upstream_set: HashSet::new(),
+            downstream_set: HashSet::new(),
+            char_edge_map: viz.char_edge_map.clone(),
+            cycle_members: viz.cycle_members.clone(),
+            cycle_set: HashSet::new(),
+            last_graph_mtime: None,
+            last_refresh: Instant::now(),
+            last_refresh_display: String::new(),
+            refresh_interval: std::time::Duration::from_secs(3600),
+        }
     }
 
     /// Force an immediate refresh (manual `r` key).

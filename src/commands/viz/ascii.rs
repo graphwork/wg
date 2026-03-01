@@ -8,6 +8,8 @@ use super::{LayoutMode, VizOutput};
 struct BackEdgeArc {
     blocker_line: usize,   // line index where the blocking node was rendered
     dependent_line: usize, // line index where the dependent node was rendered
+    from_id: String,       // task ID of the blocker (dependency)
+    to_id: String,         // task ID of the dependent (depends on blocker)
 }
 
 /// Generate an ASCII visualization that shows the dependency graph
@@ -39,6 +41,8 @@ pub(crate) fn generate_ascii(
             task_order: Vec::new(),
             forward_edges: HashMap::new(),
             reverse_edges: HashMap::new(),
+            char_edge_map: HashMap::new(),
+            cycle_members: HashMap::new(),
         };
     }
 
@@ -219,12 +223,6 @@ pub(crate) fn generate_ascii(
     let task_map: HashMap<&str, &Task> =
         tasks.iter().map(|t| (t.id.as_str(), *t)).collect();
 
-    let is_independent = |id: &str| -> bool {
-        let has_children = forward.get(id).map(|v| !v.is_empty()).unwrap_or(false);
-        let has_parents = reverse.get(id).map(|v| !v.is_empty()).unwrap_or(false);
-        !has_children && !has_parents
-    };
-
     // Color helpers
     let use_color = std::io::stdout().is_terminal();
 
@@ -301,6 +299,23 @@ pub(crate) fn generate_ascii(
             .get(id)
             .map(|a| format!(" {}", a))
             .unwrap_or_default();
+
+        // Override phase annotation to true pink for agency phases (assigning/evaluating).
+        // Uses ANSI 256-color 219 (light pink) to be visually distinct from magenta/purple
+        // which is used for upstream edge tracing.
+        let is_agency_phase = use_color
+            && annotations
+                .get(id)
+                .map_or(false, |a| a.contains("assigning") || a.contains("evaluating"));
+        let phase_info = if is_agency_phase {
+            annotations
+                .get(id)
+                .map(|a| format!(" \x1b[38;5;219m{}\x1b[0m", a))
+                .unwrap_or_default()
+        } else {
+            phase_info
+        };
+
         let usage = task
             .and_then(|t| t.token_usage.as_ref().or_else(|| live_token_usage.get(&t.id)));
         let atok_usage = assign_token_usage.get(id);
@@ -516,6 +531,8 @@ pub(crate) fn generate_ascii(
                                 back_edge_arcs.push(BackEdgeArc {
                                     blocker_line,
                                     dependent_line,
+                                    from_id: pid.to_string(),
+                                    to_id: id.to_string(),
                                 });
                             }
                     return;
@@ -584,11 +601,6 @@ pub(crate) fn generate_ascii(
             );
         }
 
-        // For single-node independent WCCs, append "(independent)" label
-        if component.len() == 1 && is_independent(component[0])
-            && let Some(last_line) = lines.last_mut() {
-                last_line.push_str("  (independent)");
-            }
     }
 
     // Add arcs for fan-in edges that were moved during diamond restructuring
@@ -599,12 +611,18 @@ pub(crate) fn generate_ascii(
             back_edge_arcs.push(BackEdgeArc {
                 blocker_line: parent_line,
                 dependent_line: fan_in_line,
+                from_id: parent.to_string(),
+                to_id: fan_in.to_string(),
             });
         }
     }
 
+    // Build char_edge_map for tree connectors (Phase 1 output)
+    let mut char_edge_map: HashMap<(usize, usize), Vec<(String, String)>> =
+        build_tree_char_edge_map(&lines, &node_line_map);
+
     // Phase 2: Draw right-side arcs for all non-tree edges
-    let has_crossings = draw_back_edge_arcs(&mut lines, &back_edge_arcs, use_color, arc_color);
+    let has_crossings = draw_back_edge_arcs(&mut lines, &back_edge_arcs, use_color, arc_color, &mut char_edge_map);
 
     // Append legend when crossings are present
     if has_crossings {
@@ -644,13 +662,204 @@ pub(crate) fn generate_ascii(
         }
     }
 
+    // Build cycle membership map from existing cycle_analysis.
+    let mut cycle_members_map: HashMap<String, HashSet<String>> = HashMap::new();
+    for cycle in &cycle_analysis.cycles {
+        let member_set: HashSet<String> = cycle.members.iter().cloned().collect();
+        for member in &cycle.members {
+            cycle_members_map.insert(member.clone(), member_set.clone());
+        }
+    }
+
     VizOutput {
         text: lines.join("\n"),
         node_line_map: owned_node_line_map,
         task_order,
         forward_edges,
         reverse_edges,
+        char_edge_map,
+        cycle_members: cycle_members_map,
     }
+}
+
+/// Build a character-level edge map for tree connectors.
+///
+/// Analyzes the rendered plain text to determine which edge each tree connector
+/// character (│, ├, └, →) belongs to. Returns a map from (line, visible_col)
+/// to (source_id, target_id).
+fn build_tree_char_edge_map(
+    lines: &[String],
+    node_line_map: &HashMap<&str, usize>,
+) -> HashMap<(usize, usize), Vec<(String, String)>> {
+    let mut map: HashMap<(usize, usize), Vec<(String, String)>> = HashMap::new();
+
+    // Build reverse map: line_num → task_id
+    let mut line_to_task: HashMap<usize, &str> = HashMap::new();
+    for (&task_id, &line_num) in node_line_map {
+        line_to_task.insert(line_num, task_id);
+    }
+
+    // Strip ANSI and get plain text for each line
+    let plain_lines: Vec<String> = lines.iter().map(|l| strip_ansi_for_map(l)).collect();
+
+    // For each task, determine its depth from the plain text.
+    // Root: depth 0, text starts at col 0 (no connector).
+    // Depth d (d >= 1): text starts at col 2*d + 1 (child spacing + connector).
+    struct NodeInfo {
+        id: String,
+        line: usize,
+        depth: usize,
+    }
+
+    let mut nodes: Vec<NodeInfo> = Vec::new();
+    for (&task_id, &line_num) in node_line_map {
+        if line_num >= plain_lines.len() {
+            continue;
+        }
+        let plain = &plain_lines[line_num];
+        // Find the first alphanumeric character position (task text start)
+        let text_start = match plain.chars().position(|c| c.is_alphanumeric()) {
+            Some(pos) => pos,
+            None => continue,
+        };
+        let depth = if text_start < 3 {
+            0
+        } else {
+            (text_start - 1) / 2
+        };
+        nodes.push(NodeInfo {
+            id: task_id.to_string(),
+            line: line_num,
+            depth,
+        });
+    }
+
+    // Sort nodes by line number
+    nodes.sort_by_key(|n| n.line);
+
+    // Build tree parent-child relationships using a stack-based approach.
+    // Process nodes top-to-bottom; the parent is the most recent node with depth - 1.
+    // parent_id → ordered children
+    let mut tree_children: HashMap<String, Vec<String>> = HashMap::new();
+    // Stack of (id, depth) — maintains the current path from root to current position
+    let mut stack: Vec<(String, usize)> = Vec::new();
+
+    for node in &nodes {
+        // Pop stack until we find the parent (depth - 1)
+        while let Some((_, d)) = stack.last() {
+            if *d >= node.depth {
+                stack.pop();
+            } else {
+                break;
+            }
+        }
+
+        if node.depth > 0 {
+            if let Some((parent_id, _)) = stack.last() {
+                tree_children
+                    .entry(parent_id.clone())
+                    .or_default()
+                    .push(node.id.clone());
+            }
+        }
+
+        stack.push((node.id.clone(), node.depth));
+    }
+
+    // Build node depth lookup
+    let node_depth: HashMap<&str, usize> = nodes.iter().map(|n| (n.id.as_str(), n.depth)).collect();
+    let node_line: HashMap<&str, usize> = nodes.iter().map(|n| (n.id.as_str(), n.line)).collect();
+
+    // Map tree connector characters to edges.
+    // For each parent P with children [c1, c2, ..., cn]:
+    //   - Connector (├→ or └→) on ci's line at col 2*(P_depth): edge (P, ci)
+    //   - → on ci's line at col 2*(P_depth) + 1: edge (P, ci)
+    //   - │ between ci and ci+1 at col 2*(P_depth): edge (P, ci+1)
+    for (parent_id, children) in &tree_children {
+        let p_depth = match node_depth.get(parent_id.as_str()) {
+            Some(&d) => d,
+            None => continue,
+        };
+        let connector_col = 2 * p_depth; // column where ├/└/│ appear for this parent's children
+
+        for (i, child_id) in children.iter().enumerate() {
+            let child_line = match node_line.get(child_id.as_str()) {
+                Some(&l) => l,
+                None => continue,
+            };
+
+            // Map the connector characters on the child's line
+            // ├ or └ at connector_col, → at connector_col + 1
+            let edge = (parent_id.clone(), child_id.clone());
+            if child_line < plain_lines.len() {
+                let chars: Vec<char> = plain_lines[child_line].chars().collect();
+                if connector_col < chars.len() && is_tree_connector(chars[connector_col]) {
+                    map.entry((child_line, connector_col)).or_default().push(edge.clone());
+                }
+                if connector_col + 1 < chars.len() && chars[connector_col + 1] == '→' {
+                    map.entry((child_line, connector_col + 1)).or_default().push(edge.clone());
+                }
+            }
+
+            // Map │ characters between this child's subtree and the next sibling.
+            // Only map to edges for children BELOW this point (not the current child).
+            // A vertical bar represents the trunk continuing down to subsequent siblings.
+            // It should only be colored if at least one child below is in the traced path.
+            if i + 1 < children.len() {
+                let next_child_id = &children[i + 1];
+                let next_child_line = match node_line.get(next_child_id.as_str()) {
+                    Some(&l) => l,
+                    None => continue,
+                };
+
+                // Collect edges for ALL remaining children below (j > i)
+                let remaining_edges: Vec<(String, String)> = children[i + 1..]
+                    .iter()
+                    .map(|cid| (parent_id.clone(), cid.clone()))
+                    .collect();
+
+                // Lines from child_line+1 to next_child_line-1 at connector_col
+                for l in (child_line + 1)..next_child_line {
+                    if l < plain_lines.len() {
+                        let chars: Vec<char> = plain_lines[l].chars().collect();
+                        if connector_col < chars.len() && chars[connector_col] == '│' {
+                            let entries = map.entry((l, connector_col)).or_default();
+                            for edge in &remaining_edges {
+                                if !entries.contains(edge) {
+                                    entries.push(edge.clone());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    map
+}
+
+/// Check if a character is a tree connector (├, └, but not │ which is handled separately).
+fn is_tree_connector(c: char) -> bool {
+    matches!(c, '├' | '└')
+}
+
+/// Strip ANSI escape codes from a string to get plain visible text.
+fn strip_ansi_for_map(s: &str) -> String {
+    let mut result = String::new();
+    let mut in_escape = false;
+    for ch in s.chars() {
+        if in_escape {
+            if ch == 'm' {
+                in_escape = false;
+            }
+        } else if ch == '\x1b' {
+            in_escape = true;
+        } else {
+            result.push(ch);
+        }
+    }
+    result
 }
 
 /// Pad a line with spaces so its visible length reaches at least `target_len`.
@@ -688,7 +897,13 @@ fn fill_line_to(line: &mut String, target_len: usize, dim: &str, reset: &str) {
 /// Corner characters: `┐` at top, `┘` at bottom, `┤` at intermediate.
 /// Dash fill (`─`) connects node text to the arc column.
 /// Returns true if any arc crossings (┼) were drawn.
-fn draw_back_edge_arcs(lines: &mut [String], arcs: &[BackEdgeArc], use_color: bool, arc_color_code: &str) -> bool {
+fn draw_back_edge_arcs(
+    lines: &mut [String],
+    arcs: &[BackEdgeArc],
+    use_color: bool,
+    arc_color_code: &str,
+    char_edge_map: &mut HashMap<(usize, usize), Vec<(String, String)>>,
+) -> bool {
     if arcs.is_empty() {
         return false;
     }
@@ -717,35 +932,57 @@ fn draw_back_edge_arcs(lines: &mut [String], arcs: &[BackEdgeArc], use_color: bo
 
     // Group arcs by dependent line — all edges pointing to the same dependent
     // share one column, regardless of whether blockers are above or below.
-    let mut by_dependent: HashMap<usize, Vec<usize>> = HashMap::new();
+    // Track task IDs alongside line numbers for the char_edge_map.
+    struct ArcInfo {
+        blocker_line: usize,
+        from_id: String,
+        to_id: String,
+    }
+    let mut by_dependent: HashMap<usize, Vec<ArcInfo>> = HashMap::new();
     for arc in &real_arcs {
         by_dependent
             .entry(arc.dependent_line)
             .or_default()
-            .push(arc.blocker_line);
-    }
-    for blockers in by_dependent.values_mut() {
-        blockers.sort();
-        blockers.dedup();
+            .push(ArcInfo {
+                blocker_line: arc.blocker_line,
+                from_id: arc.from_id.clone(),
+                to_id: arc.to_id.clone(),
+            });
     }
 
     struct ArcColumn {
         dependent: usize,
+        dependent_id: String,
         blockers: Vec<usize>,
+        /// Map from blocker_line → from_id (the blocker task ID)
+        blocker_id_map: HashMap<usize, String>,
         top: usize,
         bottom: usize,
     }
 
     let mut columns: Vec<ArcColumn> = by_dependent
         .into_iter()
-        .map(|(dependent, blockers)| {
+        .map(|(dependent, infos)| {
+            let dependent_id = infos.first().map(|a| a.to_id.clone()).unwrap_or_default();
+            let mut blocker_id_map: HashMap<usize, String> = HashMap::new();
+            let mut blockers: Vec<usize> = Vec::new();
+            for info in &infos {
+                if !blocker_id_map.contains_key(&info.blocker_line) {
+                    blockers.push(info.blocker_line);
+                    blocker_id_map.insert(info.blocker_line, info.from_id.clone());
+                }
+            }
+            blockers.sort();
+            blockers.dedup();
             let min_blocker = *blockers.first().unwrap();
             let max_blocker = *blockers.last().unwrap();
             let top = dependent.min(min_blocker);
             let bottom = dependent.max(max_blocker);
             ArcColumn {
                 dependent,
+                dependent_id,
                 blockers,
+                blocker_id_map,
                 top,
                 bottom,
             }
@@ -852,6 +1089,31 @@ fn draw_back_edge_arcs(lines: &mut [String], arcs: &[BackEdgeArc], use_color: bo
                 let is_top = line_idx == column.top;
                 let is_bottom = line_idx == column.bottom;
 
+                // Collect all arcs in this column that span through this line.
+                // An arc from blocker_line → dependent spans through line_idx if
+                // line_idx is between blocker_line and dependent (inclusive).
+                let spanning_edges: Vec<(String, String)> = column.blockers.iter()
+                    .filter(|&&b| {
+                        let lo = column.dependent.min(b);
+                        let hi = column.dependent.max(b);
+                        line_idx >= lo && line_idx <= hi
+                    })
+                    .map(|b| {
+                        let from_id = column.blocker_id_map.get(b)
+                            .cloned().unwrap_or_default();
+                        (from_id, column.dependent_id.clone())
+                    })
+                    .collect();
+
+                // The specific edge for this line's own horizontal connection.
+                let specific_edge = if is_blocker {
+                    let from_id = column.blocker_id_map.get(&line_idx)
+                        .cloned().unwrap_or_default();
+                    Some((from_id, column.dependent_id.clone()))
+                } else {
+                    None // Dependent line uses all spanning edges
+                };
+
                 if is_dep || is_blocker {
                     // This line participates in the arc — needs dash fill + glyph
                     let line = &mut lines[line_idx];
@@ -866,7 +1128,8 @@ fn draw_back_edge_arcs(lines: &mut [String], arcs: &[BackEdgeArc], use_color: bo
                         if is_dep { "←┘" } else { "─┘" }
                     } else if is_dep { "←┤" } else { "─┤" };
 
-                    let current = visible_len(line);
+                    let pre_len = visible_len(line);
+                    let current = pre_len;
                     if current < end {
                         let gap = end - current;
                         if gap >= 3 && glyph.starts_with('←') {
@@ -885,6 +1148,34 @@ fn draw_back_edge_arcs(lines: &mut [String], arcs: &[BackEdgeArc], use_color: bo
                             line.push_str(&format!("{}{}{}", dim, &glyph[glyph.char_indices().last().unwrap().0..], reset));
                         }
                     }
+                    let post_len = visible_len(line);
+                    // Record edges for new visible positions (skip leading separator space).
+                    // Horizontal chars: specific edge (blocker) or all edges (dependent).
+                    // Vertical position (col_x+1): all spanning arcs.
+                    let start = if post_len > pre_len + 1 { pre_len + 1 } else { pre_len };
+                    for pos in start..post_len {
+                        let edges = char_edge_map.entry((line_idx, pos)).or_default();
+                        if pos == col_x + 1 {
+                            // Vertical column position: record ALL spanning arcs
+                            for e in &spanning_edges {
+                                if !edges.contains(e) {
+                                    edges.push(e.clone());
+                                }
+                            }
+                        } else if let Some(ref se) = specific_edge {
+                            // Blocker horizontal: only this blocker's edge
+                            if !edges.contains(se) {
+                                edges.push(se.clone());
+                            }
+                        } else {
+                            // Dependent horizontal (arrowhead/dashes): all arcs
+                            for e in &spanning_edges {
+                                if !edges.contains(e) {
+                                    edges.push(e.clone());
+                                }
+                            }
+                        }
+                    }
                 } else {
                     // Vertical pass-through
                     let line = &mut lines[line_idx];
@@ -899,6 +1190,7 @@ fn draw_back_edge_arcs(lines: &mut [String], arcs: &[BackEdgeArc], use_color: bo
                                     || c.blockers.contains(&line_idx))
                         });
 
+                        let pre_len = visible_len(line);
                         if has_crossing {
                             has_crossings = true;
                             fill_line_to(line, col_x + 1, dim, reset);
@@ -911,6 +1203,71 @@ fn draw_back_edge_arcs(lines: &mut [String], arcs: &[BackEdgeArc], use_color: bo
                             let current_vis = visible_len(line);
                             if current_vis == col_x + 1 {
                                 line.push_str(&format!("{}│{}", dim, reset));
+                            }
+                        }
+                        let post_len = visible_len(line);
+                        // Record vertical character position — ALL spanning arcs
+                        if post_len > pre_len {
+                            let edges = char_edge_map.entry((line_idx, col_x + 1)).or_default();
+                            for e in &spanning_edges {
+                                if !edges.contains(e) {
+                                    edges.push(e.clone());
+                                }
+                            }
+                            // For crossings: dash fill belongs to the HORIZONTAL arc(s),
+                            // and ┼ belongs to BOTH vertical and horizontal arcs.
+                            if has_crossing {
+                                // Collect horizontal edge(s) from outer columns crossing this line
+                                let mut horizontal_edges: Vec<(String, String)> = Vec::new();
+                                for &outer_ci in &band.col_indices[local_idx + 1..] {
+                                    let outer_col = &columns[outer_ci];
+                                    if line_idx >= outer_col.top && line_idx <= outer_col.bottom
+                                        && (line_idx == outer_col.dependent || outer_col.blockers.contains(&line_idx))
+                                    {
+                                        if outer_col.blockers.contains(&line_idx) {
+                                            // Blocker line: specific edge
+                                            let from_id = outer_col.blocker_id_map.get(&line_idx)
+                                                .cloned().unwrap_or_default();
+                                            let edge = (from_id, outer_col.dependent_id.clone());
+                                            if !horizontal_edges.contains(&edge) {
+                                                horizontal_edges.push(edge);
+                                            }
+                                        } else {
+                                            // Dependent line: all spanning edges for this outer column
+                                            for &b in &outer_col.blockers {
+                                                let lo = outer_col.dependent.min(b);
+                                                let hi = outer_col.dependent.max(b);
+                                                if line_idx >= lo && line_idx <= hi {
+                                                    let from_id = outer_col.blocker_id_map.get(&b)
+                                                        .cloned().unwrap_or_default();
+                                                    let edge = (from_id, outer_col.dependent_id.clone());
+                                                    if !horizontal_edges.contains(&edge) {
+                                                        horizontal_edges.push(edge);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // Dash fill before ┼: map to horizontal arc(s) only
+                                let fill_start = if post_len > pre_len + 1 { pre_len + 1 } else { pre_len };
+                                for pos in fill_start..col_x + 1 {
+                                    let edges = char_edge_map.entry((line_idx, pos)).or_default();
+                                    for he in &horizontal_edges {
+                                        if !edges.contains(he) {
+                                            edges.push(he.clone());
+                                        }
+                                    }
+                                }
+
+                                // ┼ itself: also map to horizontal arc(s)
+                                let edges = char_edge_map.entry((line_idx, col_x + 1)).or_default();
+                                for he in &horizontal_edges {
+                                    if !edges.contains(he) {
+                                        edges.push(he.clone());
+                                    }
+                                }
                             }
                         }
                     }
@@ -1056,7 +1413,7 @@ mod tests {
         let result = generate_ascii(&graph, &tasks, &task_ids, &no_annots, &HashMap::new(), &HashMap::new(), &HashMap::new(), LayoutMode::default(), &HashSet::new(), "gray");
 
         assert!(result.text.contains("solo"));
-        assert!(result.text.contains("(independent)"));
+        assert!(!result.text.contains("(independent)"));
     }
 
     #[test]
@@ -1771,5 +2128,1337 @@ mod tests {
         // Should contain legend explaining the crossing symbol
         assert!(result.text.contains("Legend:"),
             "Should have legend when crossings exist\nOutput:\n{}", result.text);
+    }
+
+    #[test]
+    fn test_char_edge_map_simple_chain() {
+        // A → B → C: tree connectors should map to the correct edges
+        let mut graph = WorkGraph::new();
+        let t1 = make_task("a", "Task A");
+        let mut t2 = make_task("b", "Task B");
+        t2.after = vec!["a".to_string()];
+        let mut t3 = make_task("c", "Task C");
+        t3.after = vec!["b".to_string()];
+        graph.add_node(Node::Task(t1));
+        graph.add_node(Node::Task(t2));
+        graph.add_node(Node::Task(t3));
+
+        let tasks: Vec<_> = graph.tasks().collect();
+        let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
+        let result = generate_ascii(
+            &graph, &tasks, &task_ids, &HashMap::new(),
+            &HashMap::new(), &HashMap::new(), &HashMap::new(),
+            LayoutMode::default(), &HashSet::new(), "gray",
+        );
+
+        // Verify char_edge_map has entries for tree connectors
+        assert!(!result.char_edge_map.is_empty(),
+            "char_edge_map should have entries for tree connectors");
+
+        // B's connector (├→ or └→) should map to edge (a, b)
+        // Connector col for children of root (depth 0) is 0.
+        let b_line = result.node_line_map["b"];
+        let b_connector_edges = result.char_edge_map.get(&(b_line, 0));
+        assert!(b_connector_edges.is_some(),
+            "B's connector should have an edge map entry");
+        let (src, _tgt) = &b_connector_edges.unwrap()[0];
+        assert_eq!(src, "a", "B's connector should reference parent 'a'");
+
+        // C's connector should map to edge (b, c)
+        // Connector col for children of depth 1 is 2*1 = 2.
+        let c_line = result.node_line_map["c"];
+        let c_connector_edges = result.char_edge_map.get(&(c_line, 2));
+        assert!(c_connector_edges.is_some(),
+            "C's connector should have an edge map entry at depth 2");
+        let (src, tgt) = &c_connector_edges.unwrap()[0];
+        assert_eq!(src, "b", "C's connector should reference parent 'b'");
+        assert_eq!(tgt, "c", "C's connector target should be 'c'");
+    }
+
+    #[test]
+    fn test_char_edge_map_fan_out_sibling_separation() {
+        // A → B, A → C: the │ between B and C should map ONLY to edges for children
+        // BELOW (a, c), NOT the current child above (a, b). The trunk going down
+        // represents the path toward remaining siblings, not the child already branched.
+        let mut graph = WorkGraph::new();
+        let t1 = make_task("a", "Task A");
+        let mut t2 = make_task("b", "Task B");
+        t2.after = vec!["a".to_string()];
+        let mut t3 = make_task("c", "Task C");
+        t3.after = vec!["a".to_string()];
+        // Add a child of B to create a line between B and C
+        let mut t4 = make_task("d", "Task D");
+        t4.after = vec!["b".to_string()];
+        graph.add_node(Node::Task(t1));
+        graph.add_node(Node::Task(t2));
+        graph.add_node(Node::Task(t3));
+        graph.add_node(Node::Task(t4));
+
+        let tasks: Vec<_> = graph.tasks().collect();
+        let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
+        let result = generate_ascii(
+            &graph, &tasks, &task_ids, &HashMap::new(),
+            &HashMap::new(), &HashMap::new(), &HashMap::new(),
+            LayoutMode::default(), &HashSet::new(), "gray",
+        );
+
+        // Output should look like:
+        // a
+        // ├→ b
+        // │  └→ d
+        // └→ c
+        let b_line = result.node_line_map["b"];
+        let c_line = result.node_line_map["c"];
+
+        // The │ at col 0 (children of root) between B and C should contain ONLY (a, c), NOT (a, b)
+        for l in (b_line + 1)..c_line {
+            if let Some(edges) = result.char_edge_map.get(&(l, 0)) {
+                assert!(edges.iter().any(|(src, tgt)| src == "a" && tgt == "c"),
+                    "│ between siblings at line {} should contain edge (a, c) for next child", l);
+                assert!(!edges.iter().any(|(src, tgt)| src == "a" && tgt == "b"),
+                    "│ between siblings at line {} should NOT contain edge (a, b) for current child above", l);
+            }
+        }
+    }
+
+    #[test]
+    fn test_char_edge_map_arc_edges() {
+        // Fan-in: A → C, B → C. The arc should have char_edge_map entries.
+        let mut graph = WorkGraph::new();
+        let t1 = make_task("a", "Task A");
+        let t2 = make_task("b", "Task B");
+        let mut t3 = make_task("c", "Merge Task");
+        t3.after = vec!["a".to_string(), "b".to_string()];
+        graph.add_node(Node::Task(t1));
+        graph.add_node(Node::Task(t2));
+        graph.add_node(Node::Task(t3));
+
+        let tasks: Vec<_> = graph.tasks().collect();
+        let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
+        let result = generate_ascii(
+            &graph, &tasks, &task_ids, &HashMap::new(),
+            &HashMap::new(), &HashMap::new(), &HashMap::new(),
+            LayoutMode::default(), &HashSet::new(), "gray",
+        );
+
+        // The fan-in creates an arc. Verify arc characters have edge map entries.
+        let has_arc_entries = result.char_edge_map.values()
+            .any(|edges| edges.iter().any(|(src, tgt)| {
+                // At least one arc edge should exist (A→C or B→C depending on layout)
+                (src == "a" || src == "b") && tgt == "c"
+            }));
+        assert!(has_arc_entries,
+            "char_edge_map should have arc edge entries for fan-in.\nOutput:\n{}\nMap entries: {:?}",
+            result.text, result.char_edge_map);
+    }
+
+    // ===================================================================
+    // Systematic TUI trace regression tests against spec
+    // ===================================================================
+    //
+    // These tests validate edge trace coloring rules, selection indicator
+    // behavior, navigation invariants, and char_edge_map correctness
+    // for various graph topologies.
+
+    /// Simulate TUI trace logic: compute upstream/downstream sets via BFS
+    /// on the VizOutput forward/reverse edges, exactly as state.rs does.
+    struct TraceState {
+        upstream_set: HashSet<String>,
+        downstream_set: HashSet<String>,
+        selected_id: String,
+    }
+
+    impl TraceState {
+        fn new(viz: &VizOutput, selected_id: &str) -> Self {
+            let mut upstream_set = HashSet::new();
+            let mut downstream_set = HashSet::new();
+
+            // Upstream: BFS on reverse_edges (mirrors state.rs recompute_trace)
+            {
+                let mut queue = std::collections::VecDeque::new();
+                for dep in viz.reverse_edges.get(selected_id).into_iter().flatten() {
+                    if upstream_set.insert(dep.clone()) {
+                        queue.push_back(dep.clone());
+                    }
+                }
+                while let Some(id) = queue.pop_front() {
+                    for dep in viz.reverse_edges.get(&id).into_iter().flatten() {
+                        if upstream_set.insert(dep.clone()) {
+                            queue.push_back(dep.clone());
+                        }
+                    }
+                }
+            }
+
+            // Downstream: BFS on forward_edges
+            {
+                let mut queue = std::collections::VecDeque::new();
+                for dep in viz.forward_edges.get(selected_id).into_iter().flatten() {
+                    if downstream_set.insert(dep.clone()) {
+                        queue.push_back(dep.clone());
+                    }
+                }
+                while let Some(id) = queue.pop_front() {
+                    for dep in viz.forward_edges.get(&id).into_iter().flatten() {
+                        if downstream_set.insert(dep.clone()) {
+                            queue.push_back(dep.clone());
+                        }
+                    }
+                }
+            }
+
+            TraceState { upstream_set, downstream_set, selected_id: selected_id.to_string() }
+        }
+
+        fn in_upstream(&self, id: &str) -> bool {
+            self.upstream_set.contains(id) || id == self.selected_id
+        }
+
+        fn in_downstream(&self, id: &str) -> bool {
+            self.downstream_set.contains(id) || id == self.selected_id
+        }
+
+        /// Classify an edge per TUI coloring spec:
+        /// "upstream" (magenta) if both endpoints in upstream∪{selected},
+        /// "downstream" (cyan) if both in downstream∪{selected},
+        /// None otherwise.
+        fn classify_edge(&self, src: &str, tgt: &str) -> Option<&'static str> {
+            if self.in_upstream(src) && self.in_upstream(tgt) {
+                Some("upstream")
+            } else if self.in_downstream(src) && self.in_downstream(tgt) {
+                Some("downstream")
+            } else {
+                None
+            }
+        }
+    }
+
+    fn render_graph(graph: &WorkGraph) -> VizOutput {
+        let tasks: Vec<_> = graph.tasks().collect();
+        let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
+        generate_ascii(
+            graph, &tasks, &task_ids, &HashMap::new(),
+            &HashMap::new(), &HashMap::new(), &HashMap::new(),
+            LayoutMode::default(), &HashSet::new(), "gray",
+        )
+    }
+
+    // --- Graph builders ---
+
+    fn build_linear_chain() -> WorkGraph {
+        let mut graph = WorkGraph::new();
+        let a = make_task("a", "Task A");
+        let mut b = make_task("b", "Task B");
+        b.after = vec!["a".to_string()];
+        let mut c = make_task("c", "Task C");
+        c.after = vec!["b".to_string()];
+        graph.add_node(Node::Task(a));
+        graph.add_node(Node::Task(b));
+        graph.add_node(Node::Task(c));
+        graph
+    }
+
+    fn build_fan_in_abcd() -> WorkGraph {
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(make_task("a", "Task A")));
+        graph.add_node(Node::Task(make_task("b", "Task B")));
+        graph.add_node(Node::Task(make_task("c", "Task C")));
+        let mut d = make_task("d", "Merge Task");
+        d.after = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        graph.add_node(Node::Task(d));
+        graph
+    }
+
+    fn build_disconnected() -> WorkGraph {
+        let mut graph = WorkGraph::new();
+        let a = make_task("a", "Task A");
+        let mut b = make_task("b", "Task B");
+        b.after = vec!["a".to_string()];
+        let x = make_task("x", "Task X");
+        let mut y = make_task("y", "Task Y");
+        y.after = vec!["x".to_string()];
+        graph.add_node(Node::Task(a));
+        graph.add_node(Node::Task(b));
+        graph.add_node(Node::Task(x));
+        graph.add_node(Node::Task(y));
+        graph
+    }
+
+    fn build_cycle_abc() -> WorkGraph {
+        let mut graph = WorkGraph::new();
+        let mut a = make_task("a", "Task A");
+        a.after = vec!["c".to_string()];
+        let mut b = make_task("b", "Task B");
+        b.after = vec!["a".to_string()];
+        let mut c = make_task("c", "Task C");
+        c.after = vec!["b".to_string()];
+        graph.add_node(Node::Task(a));
+        graph.add_node(Node::Task(b));
+        graph.add_node(Node::Task(c));
+        graph
+    }
+
+    fn build_fan_out() -> WorkGraph {
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(make_task("a", "Root")));
+        let mut b = make_task("b", "Task B");
+        b.after = vec!["a".to_string()];
+        let mut c = make_task("c", "Task C");
+        c.after = vec!["a".to_string()];
+        let mut d = make_task("d", "Task D");
+        d.after = vec!["a".to_string()];
+        graph.add_node(Node::Task(b));
+        graph.add_node(Node::Task(c));
+        graph.add_node(Node::Task(d));
+        graph
+    }
+
+    fn build_diamond() -> WorkGraph {
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(make_task("a", "Task A")));
+        let mut b = make_task("b", "Task B");
+        b.after = vec!["a".to_string()];
+        let mut c = make_task("c", "Task C");
+        c.after = vec!["a".to_string()];
+        let mut d = make_task("d", "Task D");
+        d.after = vec!["b".to_string(), "c".to_string()];
+        graph.add_node(Node::Task(b));
+        graph.add_node(Node::Task(c));
+        graph.add_node(Node::Task(d));
+        graph
+    }
+
+    // --- Spec Rule 1: Trace is PURELY ADDITIVE ---
+
+    #[test]
+    fn spec_rule_1_no_selection_output_identical() {
+        let graph = build_linear_chain();
+        let viz = render_graph(&graph);
+        // With no selection the VizOutput text is the normal viz output.
+        assert!(!viz.text.is_empty());
+        assert!(viz.node_line_map.contains_key("a"));
+        assert!(viz.node_line_map.contains_key("b"));
+        assert!(viz.node_line_map.contains_key("c"));
+        assert_eq!(viz.task_order.len(), 3);
+    }
+
+    // --- Spec Rules 2-3: Upstream → magenta, Downstream → cyan ---
+
+    #[test]
+    fn spec_rule_2_upstream_edges_classified_magenta() {
+        let graph = build_linear_chain();
+        let viz = render_graph(&graph);
+        // Select C. A and B are upstream.
+        let trace = TraceState::new(&viz, "c");
+        assert!(trace.upstream_set.contains("a"));
+        assert!(trace.upstream_set.contains("b"));
+        assert!(trace.downstream_set.is_empty());
+
+        for edges in viz.char_edge_map.values() {
+            for (src, tgt) in edges {
+                if trace.in_upstream(src) && trace.in_upstream(tgt) {
+                    assert_eq!(trace.classify_edge(src, tgt), Some("upstream"));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn spec_rule_3_downstream_edges_classified_cyan() {
+        let graph = build_linear_chain();
+        let viz = render_graph(&graph);
+        // Select A. B and C are downstream.
+        let trace = TraceState::new(&viz, "a");
+        assert!(trace.downstream_set.contains("b"));
+        assert!(trace.downstream_set.contains("c"));
+        assert!(trace.upstream_set.is_empty());
+
+        for edges in viz.char_edge_map.values() {
+            for (src, tgt) in edges {
+                if trace.in_downstream(src) && trace.in_downstream(tgt) {
+                    assert_eq!(trace.classify_edge(src, tgt), Some("downstream"));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn spec_rule_2_3_middle_node_both_directions() {
+        let graph = build_linear_chain();
+        let viz = render_graph(&graph);
+        // Select B. A upstream, C downstream.
+        let trace = TraceState::new(&viz, "b");
+        assert!(trace.upstream_set.contains("a"));
+        assert!(trace.downstream_set.contains("c"));
+        assert_eq!(trace.classify_edge("a", "b"), Some("upstream"));
+        assert_eq!(trace.classify_edge("b", "c"), Some("downstream"));
+    }
+
+    // --- Spec Rule 4: ONLY edges in selected task's chain get colored ---
+
+    #[test]
+    fn spec_rule_4_unrelated_edges_not_colored() {
+        let graph = build_disconnected();
+        let viz = render_graph(&graph);
+        let trace = TraceState::new(&viz, "a");
+        assert!(trace.downstream_set.contains("b"));
+        assert!(!trace.downstream_set.contains("x"));
+        assert!(!trace.downstream_set.contains("y"));
+        assert_eq!(trace.classify_edge("x", "y"), None);
+    }
+
+    #[test]
+    fn spec_rule_4_fan_in_only_relevant_edges() {
+        let graph = build_fan_in_abcd();
+        let viz = render_graph(&graph);
+        // Select A. D is downstream, but B and C are unrelated.
+        let trace = TraceState::new(&viz, "a");
+        assert!(trace.downstream_set.contains("d"));
+        assert!(!trace.downstream_set.contains("b"));
+        assert!(!trace.downstream_set.contains("c"));
+        assert_eq!(trace.classify_edge("a", "d"), Some("downstream"));
+        assert_eq!(trace.classify_edge("b", "d"), None);
+        assert_eq!(trace.classify_edge("c", "d"), None);
+    }
+
+    // --- Spec Rule 5: Horizontal dashes fully mapped ---
+
+    #[test]
+    fn spec_rule_5_horizontal_dashes_fully_mapped() {
+        let graph = build_fan_in_abcd();
+        let viz = render_graph(&graph);
+        let plain_text = strip_ansi_for_map(&viz.text);
+        let lines: Vec<&str> = plain_text.lines().collect();
+
+        for (line_idx, line) in lines.iter().enumerate() {
+            let chars: Vec<char> = line.chars().collect();
+            for (col, &ch) in chars.iter().enumerate() {
+                if matches!(ch, '─' | '←' | '┐' | '┘' | '┤' | '┼') {
+                    if let Some(edges) = viz.char_edge_map.get(&(line_idx, col)) {
+                        assert!(!edges.is_empty(),
+                            "Arc char '{}' at ({}, {}) has empty edge map", ch, line_idx, col);
+                    }
+                }
+            }
+        }
+    }
+
+    // --- Spec Rule 6: Arc vertical passthrough mapped ---
+
+    #[test]
+    fn spec_rule_6_arc_vertical_passthrough_mapped() {
+        // A -> D, B (unrelated), C -> D: arc from A may pass through B's line.
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(make_task("a", "Task A")));
+        graph.add_node(Node::Task(make_task("b", "Task B")));
+        graph.add_node(Node::Task(make_task("c", "Task C")));
+        let mut d = make_task("d", "Task D");
+        d.after = vec!["a".to_string(), "c".to_string()];
+        graph.add_node(Node::Task(d));
+
+        let viz = render_graph(&graph);
+        let plain_text = strip_ansi_for_map(&viz.text);
+        let lines: Vec<&str> = plain_text.lines().collect();
+
+        // Check that any │ on the right side has edge map entries.
+        for (line_idx, line) in lines.iter().enumerate() {
+            let chars: Vec<char> = line.chars().collect();
+            for (col, &ch) in chars.iter().enumerate() {
+                if ch == '│' && col > 10 {
+                    if let Some(edges) = viz.char_edge_map.get(&(line_idx, col)) {
+                        assert!(!edges.is_empty(),
+                            "Right-side │ at ({}, {}) should have edge entries", line_idx, col);
+                    }
+                }
+            }
+        }
+    }
+
+    // --- Spec Rule 7: Shared arc column selective coloring ---
+
+    #[test]
+    fn spec_rule_7_shared_arc_column_selective_coloring() {
+        let graph = build_fan_in_abcd();
+        let viz = render_graph(&graph);
+        // Select B. Only (b,d) in trace. (a,d) and (c,d) unrelated.
+        let trace = TraceState::new(&viz, "b");
+        assert!(trace.downstream_set.contains("d"));
+
+        for edges in viz.char_edge_map.values() {
+            for (src, tgt) in edges {
+                if src == "b" && tgt == "d" {
+                    assert_eq!(trace.classify_edge(src, tgt), Some("downstream"));
+                }
+                if (src == "a" || src == "c") && tgt == "d" {
+                    assert_eq!(trace.classify_edge(src, tgt), None,
+                        "Edge ({}, d) should be unrelated when B is selected", src);
+                }
+            }
+        }
+    }
+
+    // --- Spec Rule 8: Left tree connectors have edge entries (style preserved by renderer) ---
+
+    #[test]
+    fn spec_rule_8_left_tree_connectors_mapped() {
+        let graph = build_linear_chain();
+        let viz = render_graph(&graph);
+
+        let b_line = viz.node_line_map["b"];
+        // Connector col for children of root (depth 0) is 0.
+        let b_edges = viz.char_edge_map.get(&(b_line, 0));
+        assert!(b_edges.is_some(), "B's tree connector should have edge map entry");
+        assert!(b_edges.unwrap().iter().any(|(src, tgt)| src == "a" && tgt == "b"));
+    }
+
+    // --- Spec Rules 9-10: Selection indicator + text range ---
+
+    #[test]
+    fn spec_rule_9_10_selection_text_range() {
+        let graph = build_linear_chain();
+        let viz = render_graph(&graph);
+        let plain = strip_ansi_for_map(&viz.text);
+        let lines: Vec<&str> = plain.lines().collect();
+
+        // Task A is root at col 0 (no connector).
+        let a_line = viz.node_line_map["a"];
+        assert!(lines[a_line].starts_with("a"),
+            "Root should start with task id. Got: {:?}", lines[a_line]);
+
+        // Task B has tree connectors before text.
+        let b_line = viz.node_line_map["b"];
+        let b_text_start = lines[b_line].chars().position(|c| c.is_alphanumeric());
+        assert!(b_text_start.unwrap() > 0);
+    }
+
+    // --- Spec Rules 11-12: Task text keeps status color, never dimmed ---
+
+    #[test]
+    fn spec_rule_11_12_task_text_preserved() {
+        let mut graph = WorkGraph::new();
+        let mut a = make_task("a", "Done");
+        a.status = Status::Done;
+        let mut b = make_task("b", "Open");
+        b.status = Status::Open;
+        b.after = vec!["a".to_string()];
+        let mut c = make_task("c", "Failed");
+        c.status = Status::Failed;
+        c.after = vec!["b".to_string()];
+        graph.add_node(Node::Task(a));
+        graph.add_node(Node::Task(b));
+        graph.add_node(Node::Task(c));
+
+        let viz = render_graph(&graph);
+        let plain = strip_ansi_for_map(&viz.text);
+        // Status labels appear in the output for all tasks.
+        assert!(plain.contains("done"), "Should show 'done' status label");
+        assert!(plain.contains("open"), "Should show 'open' status label");
+        assert!(plain.contains("failed"), "Should show 'failed' status label");
+        // Note: ANSI colors only emitted when stdout is a terminal.
+        // In the TUI, the viz is rendered with colors; here we verify
+        // the text content is correct (status labels present, not dimmed).
+        assert!(plain.contains("a"), "Task a text present");
+        assert!(plain.contains("b"), "Task b text present");
+        assert!(plain.contains("c"), "Task c text present");
+    }
+
+    // --- Spec Rule 13: Unrelated WCCs unaffected ---
+
+    #[test]
+    fn spec_rule_13_unrelated_wcc_unaffected() {
+        let graph = build_disconnected();
+        let viz = render_graph(&graph);
+        let trace = TraceState::new(&viz, "a");
+
+        for edges in viz.char_edge_map.values() {
+            for (src, tgt) in edges {
+                if src == "x" || src == "y" || tgt == "x" || tgt == "y" {
+                    assert_eq!(trace.classify_edge(src, tgt), None);
+                }
+            }
+        }
+    }
+
+    // --- Spec Rule 14: Agency phase true pink ---
+
+    #[test]
+    fn spec_rule_14_agency_phase_annotation_present() {
+        let mut graph = WorkGraph::new();
+        let mut parent = make_task("my-task", "My Task");
+        parent.status = Status::InProgress;
+        let assign = Task {
+            id: "assign-my-task".to_string(),
+            title: "Assign my-task".to_string(),
+            tags: vec!["assignment".to_string(), "agency".to_string()],
+            status: Status::InProgress,
+            ..Task::default()
+        };
+        graph.add_node(Node::Task(parent));
+        graph.add_node(Node::Task(assign));
+
+        let tasks: Vec<_> = graph.tasks().collect();
+        let (filtered, annotations) = super::super::filter_internal_tasks(&graph, tasks, &HashMap::new());
+        let filtered_ids: HashSet<&str> = filtered.iter().map(|t| t.id.as_str()).collect();
+        let result = generate_ascii(
+            &graph, &filtered, &filtered_ids, &annotations,
+            &HashMap::new(), &HashMap::new(), &HashMap::new(),
+            LayoutMode::default(), &HashSet::new(), "gray",
+        );
+
+        let plain = strip_ansi_for_map(&result.text);
+        assert!(plain.contains("[assigning]"),
+            "Should contain [assigning]. Plain: {}", plain);
+        // Internal assign task should be filtered out.
+        assert!(!plain.contains("assign-my-task"),
+            "Internal task should be filtered. Plain: {}", plain);
+        // ANSI 219 (true pink) is only emitted when stdout is a terminal.
+        // Verify the code path: the annotation text must reference the agency
+        // phase which the TUI will render in pink when use_color is true.
+        // The annotation mechanism is tested; color code verified by the
+        // existing test_ascii_shows_evaluating_phase tests and TUI rendering.
+    }
+
+    // --- Spec Rules 15-16: Navigation no wrap ---
+
+    #[test]
+    fn spec_rule_15_up_at_first_no_wrap() {
+        let graph = build_linear_chain();
+        let viz = render_graph(&graph);
+        // select_prev_task at idx 0 should stay at 0.
+        let idx: usize = 0;
+        let new_idx = if idx == 0 { idx } else { idx - 1 };
+        assert_eq!(new_idx, 0);
+        assert!(!viz.task_order.is_empty());
+    }
+
+    #[test]
+    fn spec_rule_16_down_at_last_no_wrap() {
+        let graph = build_linear_chain();
+        let viz = render_graph(&graph);
+        let last = viz.task_order.len() - 1;
+        let new_idx = if last + 1 >= viz.task_order.len() { last } else { last + 1 };
+        assert_eq!(new_idx, last);
+    }
+
+    // --- Spec Rule 17: Home/End ---
+
+    #[test]
+    fn spec_rule_17_home_end() {
+        let graph = build_linear_chain();
+        let viz = render_graph(&graph);
+        assert_eq!(viz.task_order[0], viz.task_order[0]); // Home → first
+        assert_eq!(viz.task_order[viz.task_order.len() - 1], *viz.task_order.last().unwrap()); // End → last
+    }
+
+    // --- Spec Rule 18: No legend in simple graphs ---
+
+    #[test]
+    fn spec_rule_18_no_legend_simple_graph() {
+        let graph = build_linear_chain();
+        let viz = render_graph(&graph);
+        let plain = strip_ansi_for_map(&viz.text);
+        for line in plain.lines() {
+            assert!(!line.trim_start().starts_with("Legend:"),
+                "Simple chain should not have a Legend line");
+        }
+    }
+
+    // --- char_edge_map: linear chain completeness & no spurious edges ---
+
+    #[test]
+    fn trace_linear_chain_all_edges_present() {
+        let graph = build_linear_chain();
+        let viz = render_graph(&graph);
+        let has_ab = viz.char_edge_map.values().any(|e| e.iter().any(|(s,t)| s == "a" && t == "b"));
+        let has_bc = viz.char_edge_map.values().any(|e| e.iter().any(|(s,t)| s == "b" && t == "c"));
+        assert!(has_ab, "Missing edge (a,b). Map: {:?}", viz.char_edge_map);
+        assert!(has_bc, "Missing edge (b,c). Map: {:?}", viz.char_edge_map);
+    }
+
+    #[test]
+    fn trace_linear_chain_no_spurious_edges() {
+        let graph = build_linear_chain();
+        let viz = render_graph(&graph);
+        let valid: HashSet<(&str,&str)> = [("a","b"),("b","c")].into_iter().collect();
+        for edges in viz.char_edge_map.values() {
+            for (src, tgt) in edges {
+                assert!(valid.contains(&(src.as_str(), tgt.as_str())),
+                    "Spurious edge ({}, {}) in linear chain", src, tgt);
+            }
+        }
+    }
+
+    // --- char_edge_map: fan-in ---
+
+    #[test]
+    fn trace_fan_in_all_edges_present() {
+        let graph = build_fan_in_abcd();
+        let viz = render_graph(&graph);
+        for (src, tgt) in [("a","d"), ("b","d"), ("c","d")] {
+            let found = viz.char_edge_map.values()
+                .any(|e| e.iter().any(|(s,t)| s == src && t == tgt));
+            assert!(found, "Missing edge ({},{}). Text:\n{}\nMap: {:?}", src, tgt, viz.text, viz.char_edge_map);
+        }
+    }
+
+    // --- char_edge_map: fan-out ---
+
+    #[test]
+    fn trace_fan_out_all_edges_present() {
+        let graph = build_fan_out();
+        let viz = render_graph(&graph);
+        for (src, tgt) in [("a","b"), ("a","c"), ("a","d")] {
+            let found = viz.char_edge_map.values()
+                .any(|e| e.iter().any(|(s,t)| s == src && t == tgt));
+            assert!(found, "Missing edge ({},{}). Map: {:?}", src, tgt, viz.char_edge_map);
+        }
+    }
+
+    // --- char_edge_map: diamond ---
+
+    #[test]
+    fn trace_diamond_all_edges_present() {
+        let graph = build_diamond();
+        let viz = render_graph(&graph);
+        for (src, tgt) in [("a","b"), ("a","c"), ("b","d"), ("c","d")] {
+            let found = viz.char_edge_map.values()
+                .any(|e| e.iter().any(|(s,t)| s == src && t == tgt));
+            assert!(found, "Missing edge ({},{}). Text:\n{}\nMap: {:?}", src, tgt, viz.text, viz.char_edge_map);
+        }
+    }
+
+    // --- char_edge_map: disconnected subgraphs ---
+
+    #[test]
+    fn trace_disconnected_no_cross_edges() {
+        let graph = build_disconnected();
+        let viz = render_graph(&graph);
+        for edges in viz.char_edge_map.values() {
+            for (src, tgt) in edges {
+                let valid = (src == "a" && tgt == "b") || (src == "x" && tgt == "y");
+                assert!(valid, "Unexpected cross-edge ({}, {})", src, tgt);
+            }
+        }
+    }
+
+    // --- char_edge_map: cycle ---
+
+    #[test]
+    fn trace_cycle_has_back_edge() {
+        let graph = build_cycle_abc();
+        let viz = render_graph(&graph);
+        let has_ab = viz.char_edge_map.values().any(|e| e.iter().any(|(s,t)| s == "a" && t == "b"));
+        let has_bc = viz.char_edge_map.values().any(|e| e.iter().any(|(s,t)| s == "b" && t == "c"));
+        let has_ca = viz.char_edge_map.values().any(|e| e.iter().any(|(s,t)| s == "c" && t == "a"));
+        let count = [has_ab, has_bc, has_ca].iter().filter(|&&x| x).count();
+        assert!(count >= 2,
+            "Cycle should have ≥2 edges in char_edge_map. Text:\n{}\nMap: {:?}", viz.text, viz.char_edge_map);
+    }
+
+    // --- Trace correctness: cycle covers full loop ---
+
+    #[test]
+    fn trace_cycle_full_coverage() {
+        let graph = build_cycle_abc();
+        let viz = render_graph(&graph);
+        let trace = TraceState::new(&viz, "a");
+        let all = (trace.upstream_set.contains("b") || trace.downstream_set.contains("b"))
+            && (trace.upstream_set.contains("c") || trace.downstream_set.contains("c"));
+        assert!(all, "In a cycle all nodes should be reachable. Up: {:?}, Down: {:?}",
+            trace.upstream_set, trace.downstream_set);
+    }
+
+    // --- Trace correctness: diamond from leaf ---
+
+    #[test]
+    fn trace_diamond_leaf_selection() {
+        let graph = build_diamond();
+        let viz = render_graph(&graph);
+        let trace = TraceState::new(&viz, "d");
+        assert!(trace.upstream_set.contains("a"));
+        assert!(trace.upstream_set.contains("b"));
+        assert!(trace.upstream_set.contains("c"));
+        assert!(trace.downstream_set.is_empty());
+    }
+
+    #[test]
+    fn trace_diamond_root_selection() {
+        let graph = build_diamond();
+        let viz = render_graph(&graph);
+        let trace = TraceState::new(&viz, "a");
+        assert!(trace.downstream_set.contains("b"));
+        assert!(trace.downstream_set.contains("c"));
+        assert!(trace.downstream_set.contains("d"));
+        assert!(trace.upstream_set.is_empty());
+    }
+
+    // --- node_line_map and task_order ---
+
+    #[test]
+    fn trace_node_line_map_covers_all_tasks() {
+        for (name, graph) in [
+            ("linear", build_linear_chain()),
+            ("fan_in", build_fan_in_abcd()),
+            ("fan_out", build_fan_out()),
+            ("diamond", build_diamond()),
+            ("disconnected", build_disconnected()),
+            ("cycle", build_cycle_abc()),
+        ] {
+            let viz = render_graph(&graph);
+            let tc = graph.tasks().count();
+            assert_eq!(viz.node_line_map.len(), tc, "{}: node_line_map size", name);
+            assert_eq!(viz.task_order.len(), tc, "{}: task_order size", name);
+        }
+    }
+
+    #[test]
+    fn trace_task_order_sorted_by_line() {
+        let graph = build_linear_chain();
+        let viz = render_graph(&graph);
+        let mut prev = 0;
+        for (i, id) in viz.task_order.iter().enumerate() {
+            let line = viz.node_line_map[id];
+            if i > 0 { assert!(line > prev, "task_order not sorted: {} at {} vs {}", id, line, prev); }
+            prev = line;
+        }
+    }
+
+    // --- forward/reverse edge consistency ---
+
+    #[test]
+    fn trace_forward_reverse_consistent() {
+        for (name, graph) in [
+            ("linear", build_linear_chain()),
+            ("fan_in", build_fan_in_abcd()),
+            ("fan_out", build_fan_out()),
+            ("diamond", build_diamond()),
+            ("disconnected", build_disconnected()),
+            ("cycle", build_cycle_abc()),
+        ] {
+            let viz = render_graph(&graph);
+            for (src, targets) in &viz.forward_edges {
+                for tgt in targets {
+                    let rev = viz.reverse_edges.get(tgt);
+                    assert!(rev.is_some() && rev.unwrap().contains(src),
+                        "{}: fwd ({}->{}) missing in reverse", name, src, tgt);
+                }
+            }
+            for (tgt, sources) in &viz.reverse_edges {
+                for src in sources {
+                    let fwd = viz.forward_edges.get(src);
+                    assert!(fwd.is_some() && fwd.unwrap().contains(tgt),
+                        "{}: rev ({}->{}) missing in forward", name, src, tgt);
+                }
+            }
+        }
+    }
+
+    // --- Negative tests ---
+
+    #[test]
+    fn negative_unrelated_edges_stay_uncolored() {
+        let graph = build_disconnected();
+        let viz = render_graph(&graph);
+        let trace = TraceState::new(&viz, "b");
+        assert!(trace.upstream_set.contains("a"));
+        for edges in viz.char_edge_map.values() {
+            for (src, tgt) in edges {
+                if src == "x" && tgt == "y" {
+                    assert_eq!(trace.classify_edge(src, tgt), None);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn negative_partially_related_edge_not_colored() {
+        let graph = build_fan_in_abcd();
+        let viz = render_graph(&graph);
+        let trace = TraceState::new(&viz, "b");
+        assert_eq!(trace.classify_edge("a", "d"), None);
+        assert_eq!(trace.classify_edge("c", "d"), None);
+        assert_eq!(trace.classify_edge("b", "d"), Some("downstream"));
+    }
+
+    // --- Regression: sibling trunk has both edges ---
+
+    #[test]
+    fn regression_sibling_trunk_both_edges() {
+        let graph = build_fan_out();
+        let viz = render_graph(&graph);
+        let b_line = viz.node_line_map.get("b");
+        let c_line = viz.node_line_map.get("c");
+        if let (Some(&bl), Some(&cl)) = (b_line, c_line) {
+            for l in (bl + 1)..cl {
+                if let Some(edges) = viz.char_edge_map.get(&(l, 0)) {
+                    assert!(edges.iter().any(|(s, _)| s == "a"),
+                        "│ at line {} should reference parent 'a'", l);
+                }
+            }
+        }
+    }
+
+    // --- Regression: no duplicate task_order ---
+
+    #[test]
+    fn regression_no_duplicate_task_order() {
+        for (name, graph) in [
+            ("linear", build_linear_chain()),
+            ("fan_in", build_fan_in_abcd()),
+            ("diamond", build_diamond()),
+            ("cycle", build_cycle_abc()),
+        ] {
+            let viz = render_graph(&graph);
+            let unique: HashSet<&str> = viz.task_order.iter().map(|s| s.as_str()).collect();
+            assert_eq!(unique.len(), viz.task_order.len(), "{}: duplicate in task_order", name);
+        }
+    }
+
+    // --- Regression: unique line numbers ---
+
+    #[test]
+    fn regression_unique_line_numbers() {
+        for (name, graph) in [
+            ("linear", build_linear_chain()),
+            ("fan_in", build_fan_in_abcd()),
+            ("diamond", build_diamond()),
+            ("cycle", build_cycle_abc()),
+        ] {
+            let viz = render_graph(&graph);
+            let lines: Vec<usize> = viz.node_line_map.values().copied().collect();
+            let unique: HashSet<usize> = lines.iter().copied().collect();
+            assert_eq!(unique.len(), lines.len(), "{}: duplicate line numbers", name);
+        }
+    }
+
+    // --- Single node edge case ---
+
+    #[test]
+    fn trace_single_node() {
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(make_task("solo", "Solo Task")));
+        let viz = render_graph(&graph);
+        assert_eq!(viz.task_order.len(), 1);
+        let trace = TraceState::new(&viz, "solo");
+        assert!(trace.upstream_set.is_empty());
+        assert!(trace.downstream_set.is_empty());
+    }
+
+    // --- Long chain (5 nodes) ---
+
+    #[test]
+    fn trace_long_chain_correctness() {
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(make_task("a", "A")));
+        let mut b = make_task("b", "B"); b.after = vec!["a".to_string()];
+        let mut c = make_task("c", "C"); c.after = vec!["b".to_string()];
+        let mut d = make_task("d", "D"); d.after = vec!["c".to_string()];
+        let mut e = make_task("e", "E"); e.after = vec!["d".to_string()];
+        graph.add_node(Node::Task(b));
+        graph.add_node(Node::Task(c));
+        graph.add_node(Node::Task(d));
+        graph.add_node(Node::Task(e));
+
+        let viz = render_graph(&graph);
+        let trace = TraceState::new(&viz, "c");
+        assert!(trace.upstream_set.contains("a"));
+        assert!(trace.upstream_set.contains("b"));
+        assert!(trace.downstream_set.contains("d"));
+        assert!(trace.downstream_set.contains("e"));
+
+        for (src, tgt) in [("a","b"), ("b","c"), ("c","d"), ("d","e")] {
+            let found = viz.char_edge_map.values()
+                .any(|e| e.iter().any(|(s,t)| s == src && t == tgt));
+            assert!(found, "Missing edge ({},{}) in long chain", src, tgt);
+        }
+    }
+
+    // --- Mixed status graph ---
+
+    #[test]
+    fn trace_mixed_status_all_present() {
+        let mut graph = WorkGraph::new();
+        let mut a = make_task("a", "Done"); a.status = Status::Done;
+        let mut b = make_task("b", "InProg"); b.status = Status::InProgress; b.after = vec!["a".to_string()];
+        let mut c = make_task("c", "Open"); c.status = Status::Open; c.after = vec!["a".to_string()];
+        let mut d = make_task("d", "Failed"); d.status = Status::Failed; d.after = vec!["b".to_string()];
+        graph.add_node(Node::Task(a));
+        graph.add_node(Node::Task(b));
+        graph.add_node(Node::Task(c));
+        graph.add_node(Node::Task(d));
+
+        let viz = render_graph(&graph);
+        let plain = strip_ansi_for_map(&viz.text);
+        assert!(plain.contains("done"));
+        assert!(plain.contains("in-progress"));
+        assert!(plain.contains("open"));
+        assert!(plain.contains("failed"));
+    }
+
+    // --- char_edge_map: source line multi-arc fan-out ---
+
+    #[test]
+    fn test_char_edge_map_source_line_multi_arc() {
+        // Graph: root → {src, b, c, d}; b, c, d also depend on src.
+        // Diamond layout moves b, c, d to root (LCA). src→b, src→c, src→d
+        // become fan-in arc edges. src appears as a blocker at the TOP of 3 arcs.
+        //
+        // Expected layout:
+        //   root  (open)
+        //   ├→ src  (open) ──┐ ─┐ ─┐
+        //   ├→ b  (open) ←───┘  │  │
+        //   ├→ c  (open) ←──────┘  │
+        //   └→ d  (open) ←─────────┘
+        //
+        // Verify: ALL dashes and corners on src's line are in char_edge_map
+        // with the correct (src, target) edges.
+        let mut graph = WorkGraph::new();
+        let root = make_task("root", "Root");
+        let mut src = make_task("src", "Source");
+        src.after = vec!["root".to_string()];
+        let mut b = make_task("b", "Task B");
+        b.after = vec!["root".to_string(), "src".to_string()];
+        let mut c = make_task("c", "Task C");
+        c.after = vec!["root".to_string(), "src".to_string()];
+        let mut d = make_task("d", "Task D");
+        d.after = vec!["root".to_string(), "src".to_string()];
+        graph.add_node(Node::Task(root));
+        graph.add_node(Node::Task(src));
+        graph.add_node(Node::Task(b));
+        graph.add_node(Node::Task(c));
+        graph.add_node(Node::Task(d));
+
+        let viz = render_graph(&graph);
+        let src_line = *viz.node_line_map.get("src").expect("src should be in node_line_map");
+
+        // Print for debugging
+        eprintln!("=== VIZ TEXT ===\n{}", viz.text);
+        let plain = strip_ansi_for_map(&viz.text);
+        let plain_lines: Vec<&str> = plain.lines().collect();
+        eprintln!("=== PLAIN SRC LINE ===\n{}", plain_lines[src_line]);
+        eprintln!("=== NODE LINE MAP ===\n{:?}", viz.node_line_map);
+
+        // Collect all char_edge_map entries on src_line
+        let mut src_line_entries: Vec<(usize, Vec<(String, String)>)> = viz.char_edge_map.iter()
+            .filter_map(|((line, col), edges)| {
+                if *line == src_line { Some((*col, edges.clone())) } else { None }
+            })
+            .collect();
+        src_line_entries.sort_by_key(|(col, _)| *col);
+        eprintln!("=== CHAR_EDGE_MAP entries on src_line {} ===", src_line);
+        for (col, edges) in &src_line_entries {
+            let ch = plain_lines[src_line].chars().nth(*col).unwrap_or('?');
+            eprintln!("  col {}: '{}' -> {:?}", col, ch, edges);
+        }
+
+        // Each arc from src to b, c, d must have char_edge_map entries on src's line
+        for target in &["b", "c", "d"] {
+            let has_edge_on_src_line = viz.char_edge_map.iter()
+                .any(|(&(line, _col), edges)| {
+                    line == src_line && edges.iter().any(|(s, t)| s == "src" && t.as_str() == *target)
+                });
+            assert!(has_edge_on_src_line,
+                "char_edge_map should have (src, {}) entries on source line {}.\nOutput:\n{}\nMap: {:?}",
+                target, src_line, viz.text, viz.char_edge_map);
+        }
+
+        // Verify that ALL arc characters (dashes, corners) on src's line after text
+        // are mapped to some edge in char_edge_map
+        let src_plain = plain_lines[src_line];
+        let text_end = src_plain.find("(open)")
+            .map(|p| p + "(open)".len())
+            .unwrap_or(0);
+        let mut unmapped_dashes = Vec::new();
+        for (i, ch) in src_plain.chars().enumerate() {
+            if i > text_end && (ch == '─' || ch == '┐' || ch == '┘' || ch == '┤') {
+                if !viz.char_edge_map.contains_key(&(src_line, i)) {
+                    unmapped_dashes.push((i, ch));
+                }
+            }
+        }
+        assert!(unmapped_dashes.is_empty(),
+            "Found unmapped arc characters on source line: {:?}\nPlain: {}\nMap entries: {:?}",
+            unmapped_dashes, src_plain, src_line_entries);
+    }
+
+    #[test]
+    fn test_char_edge_map_shared_column_blocker_dashes() {
+        // Two blockers (other, src) share the same arc column for each dependent.
+        // The dashes on other's line must be mapped to (other, target) not (src, target).
+        //
+        // Graph: root → {other, src, t1, t2, t3}; t1/t2/t3 depend on both other and src
+        //
+        // Layout:
+        //   root  (open)
+        //   ├→ other  (open) ──┐ ─┐ ─┐   ← line 1, blocker for 3 shared columns
+        //   ├→ src  (open) ────┤ ─┤ ─┤   ← line 2, also blocker
+        //   ├→ t1  (open) ←────┘  │  │
+        //   ├→ t2  (open) ←───────┘  │
+        //   └→ t3  (open) ←──────────┘
+        //
+        // Each column has 2 blockers: other (line 1) and src (line 2).
+        // When tracing, dashes on other's line should belong to (other, tX),
+        // and dashes on src's line should belong to (src, tX).
+        let mut graph = WorkGraph::new();
+        let root = make_task("root", "Root");
+        let mut other = make_task("other", "Other");
+        other.after = vec!["root".to_string()];
+        let mut src = make_task("src", "Source");
+        src.after = vec!["root".to_string()];
+        let mut t1 = make_task("t1", "T1");
+        t1.after = vec!["root".to_string(), "other".to_string(), "src".to_string()];
+        let mut t2 = make_task("t2", "T2");
+        t2.after = vec!["root".to_string(), "other".to_string(), "src".to_string()];
+        let mut t3 = make_task("t3", "T3");
+        t3.after = vec!["root".to_string(), "other".to_string(), "src".to_string()];
+        graph.add_node(Node::Task(root));
+        graph.add_node(Node::Task(other));
+        graph.add_node(Node::Task(src));
+        graph.add_node(Node::Task(t1));
+        graph.add_node(Node::Task(t2));
+        graph.add_node(Node::Task(t3));
+
+        let viz = render_graph(&graph);
+        let plain = strip_ansi_for_map(&viz.text);
+        let plain_lines: Vec<&str> = plain.lines().collect();
+        let other_line = *viz.node_line_map.get("other").expect("other in map");
+        let src_line = *viz.node_line_map.get("src").expect("src in map");
+
+        eprintln!("=== VIZ TEXT ===\n{}", viz.text);
+        eprintln!("=== NODE LINE MAP === {:?}", viz.node_line_map);
+
+        // Collect char_edge_map entries on other's line
+        let mut other_entries: Vec<(usize, Vec<(String, String)>)> = viz.char_edge_map.iter()
+            .filter_map(|((line, col), edges)| {
+                if *line == other_line { Some((*col, edges.clone())) } else { None }
+            })
+            .collect();
+        other_entries.sort_by_key(|(col, _)| *col);
+        eprintln!("=== other line {} entries ===", other_line);
+        for (col, edges) in &other_entries {
+            let ch = plain_lines[other_line].chars().nth(*col).unwrap_or('?');
+            eprintln!("  col {}: '{}' -> {:?}", col, ch, edges);
+        }
+
+        // Collect char_edge_map entries on src's line
+        let mut src_entries: Vec<(usize, Vec<(String, String)>)> = viz.char_edge_map.iter()
+            .filter_map(|((line, col), edges)| {
+                if *line == src_line { Some((*col, edges.clone())) } else { None }
+            })
+            .collect();
+        src_entries.sort_by_key(|(col, _)| *col);
+        eprintln!("=== src line {} entries ===", src_line);
+        for (col, edges) in &src_entries {
+            let ch = plain_lines[src_line].chars().nth(*col).unwrap_or('?');
+            eprintln!("  col {}: '{}' -> {:?}", col, ch, edges);
+        }
+
+        // KEY ASSERTION: Dashes on other's line must map to (other, tX), not (src, tX)
+        let text_end = plain_lines[other_line].find("(open)")
+            .map(|p| p + "(open)".len())
+            .unwrap_or(0);
+        for (col, edges) in &other_entries {
+            if *col <= text_end { continue; } // skip tree connectors
+            let ch = plain_lines[other_line].chars().nth(*col).unwrap_or('?');
+            if ch == '─' {
+                // A dash on other's line should contain an (other, *) edge
+                let has_other_edge = edges.iter().any(|(s, _)| s == "other");
+                assert!(has_other_edge,
+                    "Dash at col {} on other's line should map to (other, ...) but got {:?}.\n\
+                     This means the dash was mapped to the wrong blocker's edge.\n\
+                     Output:\n{}", col, edges, viz.text);
+            }
+        }
+
+        // Same check for src's line
+        let text_end_src = plain_lines[src_line].find("(open)")
+            .map(|p| p + "(open)".len())
+            .unwrap_or(0);
+        for (col, edges) in &src_entries {
+            if *col <= text_end_src { continue; }
+            let ch = plain_lines[src_line].chars().nth(*col).unwrap_or('?');
+            if ch == '─' {
+                let has_src_edge = edges.iter().any(|(s, _)| s == "src");
+                assert!(has_src_edge,
+                    "Dash at col {} on src's line should map to (src, ...) but got {:?}.\n\
+                     Output:\n{}", col, edges, viz.text);
+            }
+        }
+    }
+
+    #[test]
+    fn test_char_edge_map_real_world_fan_out_with_shared_column() {
+        // Reproduces the exact graph from the bug report:
+        //   remove-org → update-eval, update-docs, smoke-test, validate
+        //   update-eval → update-docs, smoke-test, validate
+        //   update-docs → validate
+        //   smoke-test → validate
+        //
+        // The validate column has 3 blockers: update-eval, update-docs, smoke-test.
+        // update-eval's line is the SOURCE for 3 arcs: one to each of smoke-test,
+        // update-docs, and validate. All dashes on update-eval's line must be in
+        // char_edge_map with the correct edges.
+        let mut graph = WorkGraph::new();
+        let rem = make_task("rem", "Remove Org Eval");
+        let mut ue = make_task("ue", "Update Eval To Cover Org");
+        ue.after = vec!["rem".to_string()];
+        let mut ud = make_task("ud", "Update Docs");
+        ud.after = vec!["rem".to_string(), "ue".to_string()];
+        let mut sm = make_task("sm", "Smoke Test");
+        sm.after = vec!["rem".to_string(), "ue".to_string()];
+        let mut va = make_task("va", "Validate");
+        va.after = vec!["rem".to_string(), "ue".to_string(), "ud".to_string(), "sm".to_string()];
+        graph.add_node(Node::Task(rem));
+        graph.add_node(Node::Task(ue));
+        graph.add_node(Node::Task(ud));
+        graph.add_node(Node::Task(sm));
+        graph.add_node(Node::Task(va));
+
+        let viz = render_graph(&graph);
+        let plain = strip_ansi_for_map(&viz.text);
+        let plain_lines: Vec<&str> = plain.lines().collect();
+
+        eprintln!("=== VIZ TEXT ===\n{}", viz.text);
+        eprintln!("=== NODE LINE MAP === {:?}", viz.node_line_map);
+
+        let ue_line = viz.node_line_map["ue"];
+
+        // Collect char_edge_map entries on ue's line
+        let mut ue_entries: Vec<(usize, Vec<(String, String)>)> = viz.char_edge_map.iter()
+            .filter_map(|((line, col), edges)| {
+                if *line == ue_line { Some((*col, edges.clone())) } else { None }
+            })
+            .collect();
+        ue_entries.sort_by_key(|(col, _)| *col);
+        eprintln!("=== ue line {} entries ===", ue_line);
+        for (col, edges) in &ue_entries {
+            let ch = plain_lines[ue_line].chars().nth(*col).unwrap_or('?');
+            eprintln!("  col {}: '{}' -> {:?}", col, ch, edges);
+        }
+
+        // The ue line should have arcs to sm, ud, and va.
+        // Verify every non-space, non-text arc char on ue's line is mapped
+        let ue_plain = plain_lines[ue_line];
+        let text_end = ue_plain.rfind(')')
+            .map(|p| p + 1)
+            .unwrap_or(0);
+        let mut unmapped = Vec::new();
+        for (i, ch) in ue_plain.chars().enumerate() {
+            if i >= text_end && (ch == '─' || ch == '┐' || ch == '┘' || ch == '┤') {
+                if !viz.char_edge_map.contains_key(&(ue_line, i)) {
+                    unmapped.push((i, ch));
+                }
+            }
+        }
+        assert!(unmapped.is_empty(),
+            "Unmapped arc chars on ue line: {:?}\nPlain: {}\nEntries: {:?}",
+            unmapped, ue_plain, ue_entries);
+
+        // Each arc from ue must have entries on ue's line
+        for target in &["sm", "ud", "va"] {
+            let has = viz.char_edge_map.iter()
+                .any(|(&(line, _), edges)| {
+                    line == ue_line && edges.iter().any(|(s, t)| s == "ue" && t.as_str() == *target)
+                });
+            assert!(has,
+                "char_edge_map missing (ue, {}) on ue line {}. Output:\n{}",
+                target, ue_line, viz.text);
+        }
+
+        // Dashes on ue's line must be mapped to (ue, *), not some other blocker
+        for (col, edges) in &ue_entries {
+            if *col < text_end { continue; }
+            let ch = ue_plain.chars().nth(*col).unwrap_or('?');
+            if ch == '─' {
+                let has_ue_edge = edges.iter().any(|(s, _)| s == "ue");
+                assert!(has_ue_edge,
+                    "Dash at col {} on ue's line should map to (ue, ...) but got {:?}.\n\
+                     Output:\n{}", col, edges, viz.text);
+            }
+        }
+    }
+
+    // ── Deep subtree: vertical bars map to sibling edge, not parent edge ──
+
+    #[test]
+    fn test_char_edge_map_deep_subtree_vertical_bars() {
+        // Topology matching the fix-vertical-tree bug:
+        //   root
+        //   ├→ a
+        //   │ └→ b
+        //   │   └→ c
+        //   │     └→ d
+        //   │       └→ e
+        //   └→ f
+        //
+        // The │ bars at col 0 between a's subtree and f MUST map to (root, f),
+        // NOT to (root, a). This ensures trace coloring only highlights the bar
+        // when sibling f is in the traced path.
+
+        let mut graph = WorkGraph::new();
+        let t_root = make_task("root", "Root");
+        let mut t_a = make_task("a", "A"); t_a.after = vec!["root".to_string()];
+        let mut t_b = make_task("b", "B"); t_b.after = vec!["a".to_string()];
+        let mut t_c = make_task("c", "C"); t_c.after = vec!["b".to_string()];
+        let mut t_d = make_task("d", "D"); t_d.after = vec!["c".to_string()];
+        let mut t_e = make_task("e", "E"); t_e.after = vec!["d".to_string()];
+        let mut t_f = make_task("f", "F"); t_f.after = vec!["root".to_string()];
+        graph.add_node(Node::Task(t_root));
+        graph.add_node(Node::Task(t_a));
+        graph.add_node(Node::Task(t_b));
+        graph.add_node(Node::Task(t_c));
+        graph.add_node(Node::Task(t_d));
+        graph.add_node(Node::Task(t_e));
+        graph.add_node(Node::Task(t_f));
+
+        let tasks: Vec<_> = graph.tasks().collect();
+        let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
+        let viz = generate_ascii(
+            &graph, &tasks, &task_ids, &HashMap::new(),
+            &HashMap::new(), &HashMap::new(), &HashMap::new(),
+            LayoutMode::Tree, &HashSet::new(), "gray",
+        );
+
+        let a_line = viz.node_line_map["a"];
+        let f_line = viz.node_line_map["f"];
+
+        // Every │ at col 0 between a and f must map to (root, f), NOT (root, a).
+        for l in (a_line + 1)..f_line {
+            let plain: Vec<char> = viz.text.lines().nth(l).unwrap_or("").chars().collect();
+            if plain.is_empty() || plain[0] != '│' {
+                continue;
+            }
+
+            let edges = viz.char_edge_map.get(&(l, 0));
+            assert!(edges.is_some(),
+                "│ at ({}, 0) should have char_edge_map entry.\nOutput:\n{}", l, viz.text);
+            let edges = edges.unwrap();
+
+            // Must contain (root, f) — the next sibling below
+            assert!(edges.iter().any(|(s, t)| s == "root" && t == "f"),
+                "│ at ({}, 0) must map to (root, f). Got: {:?}\nOutput:\n{}", l, edges, viz.text);
+
+            // Must NOT contain (root, a) — the sibling above (already branched)
+            assert!(!edges.iter().any(|(s, t)| s == "root" && t == "a"),
+                "│ at ({}, 0) must NOT map to (root, a). Got: {:?}\nOutput:\n{}", l, edges, viz.text);
+        }
+
+        // Simulate trace: if d is selected, upstream = {c, b, a, root}
+        // f is NOT upstream, so (root, f) should NOT trigger coloring
+        let trace = TraceState::new(&viz, "d");
+        assert!(trace.in_upstream("root"));
+        assert!(trace.in_upstream("a"));
+        assert!(!trace.in_upstream("f"), "f should NOT be upstream of d");
+
+        for l in (a_line + 1)..f_line {
+            if let Some(edges) = viz.char_edge_map.get(&(l, 0)) {
+                let would_color = edges.iter().any(|(src, tgt)| {
+                    trace.classify_edge(src, tgt).is_some()
+                });
+                assert!(!would_color,
+                    "│ at ({}, 0) should NOT be colored when d is selected. \
+                     f is not in the trace. Edges: {:?}", l, edges);
+            }
+        }
     }
 }

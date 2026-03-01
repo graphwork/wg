@@ -153,13 +153,28 @@ fn handle_normal_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
             app.update_scroll_bounds();
         }
 
+        // Toggle edge trace highlighting.
+        KeyCode::Tab => app.toggle_trace(),
+
         // Navigate between matches.
-        KeyCode::Char('n') | KeyCode::Tab => app.next_match(),
+        KeyCode::Char('n') => app.next_match(),
         KeyCode::Char('N') | KeyCode::BackTab => app.prev_match(),
 
-        // Task selection (arrow keys navigate between tasks)
-        KeyCode::Up => app.select_prev_task(),
-        KeyCode::Down => app.select_next_task(),
+        // Arrow keys: navigate tasks when trace is visible, scroll viewport when trace is off.
+        KeyCode::Up => {
+            if app.trace_visible {
+                app.select_prev_task();
+            } else {
+                app.scroll.scroll_up(1);
+            }
+        }
+        KeyCode::Down => {
+            if app.trace_visible {
+                app.select_next_task();
+            } else {
+                app.scroll.scroll_down(1);
+            }
+        }
 
         // Vertical scroll (vim-style)
         KeyCode::Char('k') => app.scroll.scroll_up(1),
@@ -172,6 +187,14 @@ fn handle_normal_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
         // Jump to top/bottom
         KeyCode::Char('g') => app.scroll.go_top(),
         KeyCode::Char('G') => app.scroll.go_bottom(),
+        KeyCode::Home => {
+            app.scroll.go_top();
+            app.select_first_task();
+        }
+        KeyCode::End => {
+            app.scroll.go_bottom();
+            app.select_last_task();
+        }
 
         // Manual refresh
         KeyCode::Char('r') => app.force_refresh(),
