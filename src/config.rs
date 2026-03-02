@@ -434,6 +434,14 @@ pub struct CoordinatorConfig {
     /// to settle. Default: 2000ms (2 seconds).
     #[serde(default = "default_settling_delay_ms")]
     pub settling_delay_ms: u64,
+
+    /// Whether to spawn a persistent LLM coordinator agent for chat.
+    /// When true, the daemon launches a Claude CLI session that interprets
+    /// user chat messages and manages the graph conversationally.
+    /// When false, chat uses a simple stub response.
+    /// Default: true.
+    #[serde(default = "default_coordinator_agent")]
+    pub coordinator_agent: bool,
 }
 
 fn default_max_agents() -> usize {
@@ -446,6 +454,10 @@ fn default_coordinator_interval() -> u64 {
 
 fn default_settling_delay_ms() -> u64 {
     2000
+}
+
+fn default_coordinator_agent() -> bool {
+    true
 }
 
 fn default_poll_interval() -> u64 {
@@ -467,6 +479,7 @@ impl Default for CoordinatorConfig {
             default_context_scope: None,
             agent_timeout: default_agent_timeout(),
             settling_delay_ms: default_settling_delay_ms(),
+            coordinator_agent: default_coordinator_agent(),
         }
     }
 }

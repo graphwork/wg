@@ -12,6 +12,7 @@ use workgraph::agency::{
     find_cached_agent, load_agent, load_role, load_tradeoff, render_assigner_mode_context,
     render_identity_prompt_rich, resolve_all_components, resolve_outcome, save_assignment_record,
 };
+use workgraph::chat;
 use workgraph::config::Config;
 use workgraph::graph::{LogEntry, Node, Status, Task, evaluate_all_cycle_iterations};
 use workgraph::parser::{load_graph, save_graph};
@@ -331,6 +332,9 @@ fn build_auto_assign_tasks(
         if !task_skills.is_empty() {
             desc.push_str(&format!("**Skills:** {}\n", task_skills.join(", ")));
         }
+        if !task_tags.is_empty() {
+            desc.push_str(&format!("**Tags:** {}\n", task_tags.join(", ")));
+        }
         if !task_after.is_empty() {
             desc.push_str(&format!(
                 "**Dependencies ({}):** {}\n",
@@ -389,6 +393,16 @@ fn build_auto_assign_tasks(
              3. **Capabilities**: Check the agent's `capabilities` list for specific \
              technology or domain tags that match the task (e.g., \"rust\", \"python\", \
              \"kubernetes\").\n\n\
+             4. **Tag→Skill affinity**: When the task has tags, use them as additional \
+             signals for agent selection. Common affinities:\n\
+             - Tags `research`, `exploration`, `analysis` → prefer agents with research/analysis skills\n\
+             - Tags `review`, `audit`, `code-review` → prefer Reviewer role agents\n\
+             - Tags `implementation`, `coding`, `feature` → prefer Programmer role agents\n\
+             - Tags `docs`, `documentation`, `writing` → prefer Documenter role agents\n\
+             - Tags `design`, `architecture`, `planning` → prefer Architect role agents\n\
+             - Tags `integration`, `synthesis` → prefer agents with integration skills\n\
+             Tags supplement skills — when a task has explicit skills, those take priority. \
+             When skills are absent, tags provide the best signal for role matching.\n\n\
              ### Step 4: Use Performance Data\n\n\
              Each agent has a `performance` record with `task_count`, `avg_score` \
              (0.0–1.0), and individual evaluation entries. Each evaluation has \
@@ -1059,6 +1073,11 @@ pub fn coordinator_tick(
     // Load config for agency settings
     let config = Config::load_or_default(dir);
 
+    // Process chat inbox FIRST — chat is a user-facing interaction that must not
+    // be blocked by agent capacity limits or empty task queues. The early returns
+    // below (max agents, no ready tasks) would skip chat processing otherwise.
+    process_chat_inbox(dir);
+
     // Phase 1: Clean up dead agents and count alive ones
     let alive_count = match cleanup_and_count_alive(dir, &graph_path, max_agents)? {
         Ok(count) => count,
@@ -1127,6 +1146,66 @@ pub fn coordinator_tick(
         tasks_ready: ready_count,
         agents_spawned: spawned,
     })
+}
+
+/// Process pending chat inbox messages and write responses to the outbox.
+///
+/// Simple stub that acknowledges receipt when the coordinator agent is not
+/// running. The full path (CLI → IPC → inbox → coordinator tick → outbox → CLI)
+/// is wired; when the coordinator agent is enabled it handles messages instead.
+fn process_chat_inbox(dir: &Path) {
+    let chat_dir = dir.join("chat");
+    if !chat_dir.exists() {
+        return;
+    }
+
+    let inbox_cursor = match chat::read_coordinator_cursor(dir) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("[coordinator] Failed to read chat coordinator cursor: {}", e);
+            return;
+        }
+    };
+
+    let new_messages = match chat::read_inbox_since(dir, inbox_cursor) {
+        Ok(msgs) => msgs,
+        Err(e) => {
+            eprintln!("[coordinator] Failed to read chat inbox: {}", e);
+            return;
+        }
+    };
+
+    if new_messages.is_empty() {
+        return;
+    }
+
+    eprintln!(
+        "[coordinator] Processing {} chat message(s)",
+        new_messages.len()
+    );
+
+    for msg in &new_messages {
+        let response = format!(
+            "Message received. The coordinator agent will provide \
+             intelligent responses. For now, your message has been logged: \"{}\"",
+            msg.content
+        );
+        if let Err(e) = chat::append_outbox(dir, &response, &msg.request_id) {
+            eprintln!(
+                "[coordinator] Failed to write chat outbox for request_id={}: {}",
+                msg.request_id, e
+            );
+        }
+    }
+
+    if let Some(last) = new_messages.last() {
+        if let Err(e) = chat::write_coordinator_cursor(dir, last.id) {
+            eprintln!(
+                "[coordinator] Failed to update chat coordinator cursor: {}",
+                e
+            );
+        }
+    }
 }
 
 #[cfg(test)]

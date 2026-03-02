@@ -102,6 +102,15 @@ pub enum IpcRequest {
         #[serde(default)]
         priority: Option<String>,
     },
+    /// Send a chat message from the user to the coordinator agent.
+    /// Unlike SendMessage (which targets a specific task's queue), UserChat
+    /// targets the coordinator directly and expects a conversational response.
+    UserChat {
+        /// The user's message text
+        message: String,
+        /// Unique request ID for correlating this request with a response
+        request_id: String,
+    },
 }
 
 /// IPC Response types
@@ -139,6 +148,7 @@ pub(crate) fn handle_connection(
     stream: UnixStream,
     running: &mut bool,
     wake_coordinator: &mut bool,
+    urgent_wake: &mut bool,
     daemon_cfg: &mut DaemonConfig,
     logger: &DaemonLogger,
 ) -> Result<()> {
@@ -177,7 +187,7 @@ pub(crate) fn handle_connection(
             }
         };
 
-        let response = handle_request(dir, request, running, wake_coordinator, daemon_cfg, logger);
+        let response = handle_request(dir, request, running, wake_coordinator, urgent_wake, daemon_cfg, logger);
         write_response(&mut write_stream, &response)?;
 
         // Check if we should stop
@@ -203,6 +213,7 @@ fn handle_request(
     request: IpcRequest,
     running: &mut bool,
     wake_coordinator: &mut bool,
+    urgent_wake: &mut bool,
     daemon_cfg: &mut DaemonConfig,
     logger: &DaemonLogger,
 ) -> IpcResponse {
@@ -347,6 +358,24 @@ fn handle_request(
                 task_id, sender, priority
             ));
             handle_send_message(dir, &task_id, &body, sender, priority)
+        }
+        IpcRequest::UserChat {
+            message,
+            request_id,
+        } => {
+            logger.info(&format!("IPC UserChat: request_id={}", request_id));
+            match append_chat_inbox(dir, &message, &request_id) {
+                Ok(msg_id) => {
+                    // Signal urgent wake — bypasses settling delay entirely
+                    *urgent_wake = true;
+                    IpcResponse::success(serde_json::json!({
+                        "status": "accepted",
+                        "request_id": request_id,
+                        "inbox_id": msg_id,
+                    }))
+                }
+                Err(e) => IpcResponse::error(&format!("Failed to store chat message: {}", e)),
+            }
         }
     }
 }
@@ -688,6 +717,9 @@ fn handle_add_task(
         return IpcResponse::error(&format!("Failed to save graph: {}", e));
     }
 
+    // Notify TUI to auto-focus on the new task
+    crate::commands::notify_new_task_focus(dir, &task_id);
+
     // Record provenance
     let origin_str = origin.unwrap_or("unknown");
     let config = workgraph::config::Config::load_or_default(dir);
@@ -753,6 +785,12 @@ fn handle_query_task(dir: &Path, task_id: &str) -> IpcResponse {
         })),
         None => IpcResponse::error(&format!("Task '{}' not found", task_id)),
     }
+}
+
+/// Append a user chat message to the inbox.
+/// Delegates to workgraph::chat::append_inbox for the actual storage.
+fn append_chat_inbox(dir: &Path, content: &str, request_id: &str) -> Result<u64> {
+    workgraph::chat::append_inbox(dir, content, request_id)
 }
 
 #[cfg(test)]
@@ -971,5 +1009,130 @@ poll_interval = 120
         assert_eq!(cfg.executor, "shell");
         assert_eq!(cfg.poll_interval, Duration::from_secs(120));
         assert_eq!(cfg.model, None); // config.toml doesn't set model
+    }
+
+    #[test]
+    fn test_ipc_user_chat_serialization() {
+        let req = IpcRequest::UserChat {
+            message: "help me plan the auth system".to_string(),
+            request_id: "chat-123-abcd".to_string(),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains("\"cmd\":\"user_chat\""));
+        assert!(json.contains("\"message\":\"help me plan the auth system\""));
+        assert!(json.contains("\"request_id\":\"chat-123-abcd\""));
+
+        let parsed: IpcRequest = serde_json::from_str(&json).unwrap();
+        match parsed {
+            IpcRequest::UserChat {
+                message,
+                request_id,
+            } => {
+                assert_eq!(message, "help me plan the auth system");
+                assert_eq!(request_id, "chat-123-abcd");
+            }
+            _ => panic!("Wrong request type"),
+        }
+
+        // Also test parsing from raw JSON
+        let raw = r#"{"cmd":"user_chat","message":"hello","request_id":"req-1"}"#;
+        let parsed: IpcRequest = serde_json::from_str(raw).unwrap();
+        match parsed {
+            IpcRequest::UserChat {
+                message,
+                request_id,
+            } => {
+                assert_eq!(message, "hello");
+                assert_eq!(request_id, "req-1");
+            }
+            _ => panic!("Wrong request type"),
+        }
+    }
+
+    #[test]
+    fn test_handle_user_chat_sets_urgent_wake() {
+        let temp_dir = TempDir::new().unwrap();
+        let dir = temp_dir.path();
+
+        // Create required directories
+        fs::create_dir_all(dir.join("service")).unwrap();
+
+        let mut running = true;
+        let mut wake_coordinator = false;
+        let mut urgent_wake = false;
+        let mut cfg = DaemonConfig {
+            max_agents: 4,
+            executor: "claude".to_string(),
+            poll_interval: Duration::from_secs(60),
+            model: None,
+            paused: false,
+            settling_delay: Duration::from_millis(2000),
+        };
+        let logger = DaemonLogger::open(dir).unwrap();
+
+        let resp = handle_request(
+            dir,
+            IpcRequest::UserChat {
+                message: "test message".to_string(),
+                request_id: "req-test-1".to_string(),
+            },
+            &mut running,
+            &mut wake_coordinator,
+            &mut urgent_wake,
+            &mut cfg,
+            &logger,
+        );
+
+        // Verify response
+        assert!(resp.ok);
+        let data = resp.data.unwrap();
+        assert_eq!(data["status"], "accepted");
+        assert_eq!(data["request_id"], "req-test-1");
+        assert_eq!(data["inbox_id"], 1);
+
+        // Verify urgent_wake was set (not wake_coordinator)
+        assert!(urgent_wake, "urgent_wake should be true after UserChat");
+        assert!(!wake_coordinator, "wake_coordinator should NOT be set by UserChat");
+
+        // Verify message was written to inbox
+        let msgs = workgraph::chat::read_inbox(dir).unwrap();
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].content, "test message");
+        assert_eq!(msgs[0].request_id, "req-test-1");
+        assert_eq!(msgs[0].role, "user");
+    }
+
+    #[test]
+    fn test_graph_changed_sets_wake_not_urgent() {
+        let temp_dir = TempDir::new().unwrap();
+        let dir = temp_dir.path();
+        fs::create_dir_all(dir.join("service")).unwrap();
+
+        let mut running = true;
+        let mut wake_coordinator = false;
+        let mut urgent_wake = false;
+        let mut cfg = DaemonConfig {
+            max_agents: 4,
+            executor: "claude".to_string(),
+            poll_interval: Duration::from_secs(60),
+            model: None,
+            paused: false,
+            settling_delay: Duration::from_millis(2000),
+        };
+        let logger = DaemonLogger::open(dir).unwrap();
+
+        handle_request(
+            dir,
+            IpcRequest::GraphChanged,
+            &mut running,
+            &mut wake_coordinator,
+            &mut urgent_wake,
+            &mut cfg,
+            &logger,
+        );
+
+        // GraphChanged should set wake_coordinator, NOT urgent_wake
+        assert!(wake_coordinator, "wake_coordinator should be true after GraphChanged");
+        assert!(!urgent_wake, "urgent_wake should NOT be set by GraphChanged");
     }
 }

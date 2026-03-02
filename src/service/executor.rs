@@ -171,7 +171,10 @@ Check for new messages periodically during long-running tasks:
 wg msg read {{task_id}} --agent $WG_AGENT_ID
 ```
 Messages may contain updated requirements, context from other agents,
-or instructions from the user. Check at natural breakpoints in your work.\n";
+or instructions from the user. Check at natural breakpoints in your work.
+
+**Note:** Messages are also automatically surfaced when you run `wg log`. \
+When you see messages in your log output, respond to them via `wg msg send`.\n";
 
 /// Hint for task+ scopes about using wg context/show to get more info (R2).
 const WG_CONTEXT_HINT: &str = "\
@@ -728,6 +731,25 @@ impl ExecutorRegistry {
                     model: None,
                 },
             }),
+            "native" => Ok(ExecutorConfig {
+                executor: ExecutorSettings {
+                    executor_type: "native".to_string(),
+                    command: "wg".to_string(),
+                    args: vec![
+                        "native-exec".to_string(),
+                    ],
+                    env: {
+                        let mut env = HashMap::new();
+                        env.insert("WG_TASK_ID".to_string(), "{{task_id}}".to_string());
+                        env
+                    },
+                    // No default template — uses scope-based build_prompt() assembly.
+                    prompt_template: None,
+                    working_dir: Some("{{working_dir}}".to_string()),
+                    timeout: None,
+                    model: None,
+                },
+            }),
             "default" => Ok(ExecutorConfig {
                 executor: ExecutorSettings {
                     executor_type: "default".to_string(),
@@ -741,7 +763,7 @@ impl ExecutorRegistry {
                 },
             }),
             _ => Err(anyhow!(
-                "Unknown executor '{}'. Available: claude, amplifier, shell, default",
+                "Unknown executor '{}'. Available: claude, amplifier, native, shell, default",
                 name,
             )),
         }

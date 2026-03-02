@@ -141,7 +141,9 @@ pub(crate) fn spawn_agent_inner(
     // When no custom prompt_template is defined (built-in defaults),
     // use build_prompt() to assemble the prompt based on context scope.
     if settings.prompt_template.is_none()
-        && (settings.executor_type == "claude" || settings.executor_type == "amplifier")
+        && (settings.executor_type == "claude"
+            || settings.executor_type == "amplifier"
+            || settings.executor_type == "native")
     {
         let prompt = build_prompt(&vars, scope, &scope_ctx);
         settings.prompt_template = Some(PromptTemplate { template: prompt });
@@ -495,6 +497,33 @@ fn build_inner_command(
             } else {
                 amplifier_cmd
             }
+        }
+        "native" => {
+            // Native executor: runs the agent loop in-process via `wg native-exec`.
+            // Prompt is written to a file and passed as an argument. The bundle is
+            // resolved from exec_mode by the native-exec subcommand.
+            let prompt_content = settings
+                .prompt_template
+                .as_ref()
+                .map(|pt| pt.template.clone())
+                .unwrap_or_default();
+            let prompt_file = output_dir.join("prompt.txt");
+            fs::write(&prompt_file, &prompt_content)
+                .with_context(|| format!("Failed to write prompt file: {:?}", prompt_file))?;
+
+            let mut cmd_parts = vec![shell_escape(&settings.command)];
+            cmd_parts.push("native-exec".to_string());
+            cmd_parts.push("--prompt-file".to_string());
+            cmd_parts.push(shell_escape(&prompt_file.to_string_lossy()));
+            cmd_parts.push("--exec-mode".to_string());
+            cmd_parts.push(shell_escape(exec_mode));
+            cmd_parts.push("--task-id".to_string());
+            cmd_parts.push(shell_escape(&vars.task_id));
+            if let Some(m) = effective_model {
+                cmd_parts.push("--model".to_string());
+                cmd_parts.push(shell_escape(m));
+            }
+            cmd_parts.join(" ")
         }
         "shell" => {
             format!(

@@ -1,6 +1,8 @@
 pub mod agency;
+pub mod chat;
 pub mod check;
 pub mod config;
+pub mod executor;
 pub mod context_scope;
 pub mod cycle;
 pub mod federation;

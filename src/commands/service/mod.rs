@@ -17,6 +17,7 @@
 //!   executor = "claude"  # Executor for spawned agents
 
 mod coordinator;
+pub(crate) mod coordinator_agent;
 pub mod ipc;
 mod triage;
 
@@ -34,8 +35,11 @@ use std::time::{Duration, Instant};
 #[cfg(unix)]
 use std::os::unix::net::{UnixListener, UnixStream};
 
+use chrono::{DateTime, Utc};
+
 use workgraph::agency;
 use workgraph::config::Config;
+use workgraph::parser::load_graph;
 use workgraph::service::registry::AgentRegistry;
 
 use super::{graph_path, is_process_alive, kill_process_force, kill_process_graceful};
@@ -507,6 +511,7 @@ pub fn run_start(
     model: Option<&str>,
     json: bool,
     force: bool,
+    no_coordinator_agent: bool,
 ) -> Result<()> {
     // Check if service is already running
     if let Some(state) = ServiceState::load(dir)? {
@@ -636,6 +641,9 @@ pub fn run_start(
         args.push("--model".to_string());
         args.push(m.to_string());
     }
+    if no_coordinator_agent {
+        args.push("--no-coordinator-agent".to_string());
+    }
     // Redirect daemon stderr to the log file so early startup crashes and
     // unexpected panics that bypass the DaemonLogger are captured.
     let log_path = log_file_path(dir);
@@ -746,6 +754,7 @@ pub fn run_start(
     _model: Option<&str>,
     _json: bool,
     _force: bool,
+    _no_coordinator_agent: bool,
 ) -> Result<()> {
     anyhow::bail!("Service daemon is only supported on Unix systems")
 }
@@ -780,6 +789,131 @@ pub(crate) struct DaemonConfig {
     settling_delay: Duration,
 }
 
+/// Route new chat inbox messages to the persistent coordinator agent.
+///
+/// Reads the inbox since the coordinator cursor, sends each message to the
+/// agent thread, and advances the cursor. The agent thread handles context
+/// injection, LLM processing, and outbox writing asynchronously.
+///
+/// Returns the number of messages routed.
+fn route_chat_to_agent(
+    dir: &Path,
+    agent: &coordinator_agent::CoordinatorAgent,
+    logger: &DaemonLogger,
+) -> Result<usize> {
+    let chat_dir = dir.join("chat");
+    if !chat_dir.exists() {
+        return Ok(0);
+    }
+
+    let inbox_cursor = workgraph::chat::read_coordinator_cursor(dir)?;
+    let new_messages = workgraph::chat::read_inbox_since(dir, inbox_cursor)?;
+
+    if new_messages.is_empty() {
+        return Ok(0);
+    }
+
+    let count = new_messages.len();
+    for msg in &new_messages {
+        if let Err(e) = agent.send_message(msg.request_id.clone(), msg.content.clone()) {
+            logger.error(&format!(
+                "Failed to send chat message to coordinator agent: {}",
+                e
+            ));
+            // Write an error response so the user isn't left hanging
+            let _ = workgraph::chat::append_outbox(
+                dir,
+                "The coordinator agent is not available. Please try again.",
+                &msg.request_id,
+            );
+        }
+    }
+
+    // Advance the coordinator cursor past these messages
+    if let Some(last) = new_messages.last() {
+        workgraph::chat::write_coordinator_cursor(dir, last.id)?;
+    }
+
+    Ok(count)
+}
+
+/// Record events from the latest coordinator tick into the event log.
+///
+/// Scans the agent registry and graph to detect new agent spawns, completions,
+/// and failures since the last check. This keeps the coordinator agent's
+/// context refresh up-to-date with real-time events.
+fn record_tick_events(
+    dir: &Path,
+    event_log: &coordinator_agent::SharedEventLog,
+    logger: &DaemonLogger,
+) {
+    // Record recently spawned agents (alive, recently started)
+    if let Ok(registry) = AgentRegistry::load(dir) {
+        let mut log = event_log.lock().unwrap_or_else(|e| e.into_inner());
+        for agent in registry.list_agents() {
+            if agent.is_alive() && is_process_alive(agent.pid) {
+                // Check if agent was spawned very recently (within last 5 seconds)
+                if let Some(secs) = agent.uptime_secs() {
+                    if secs <= 5 {
+                        log.record(coordinator_agent::Event::AgentSpawned {
+                            agent_id: agent.id.clone(),
+                            task_id: agent.task_id.clone(),
+                            executor: agent.executor.clone(),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    // Record recently completed/failed tasks from graph state.
+    // These are detected by checking for tasks that have completed_at or
+    // failure_reason set recently. The coordinator tick already processes
+    // dead agents, so by the time we get here, task statuses are updated.
+    let gp = graph_path(dir);
+    if let Ok(graph) = load_graph(&gp) {
+        let recent_cutoff = chrono::Utc::now() - chrono::Duration::seconds(10);
+        let mut log = event_log.lock().unwrap_or_else(|e| e.into_inner());
+
+        for task in graph.tasks() {
+            match task.status {
+                workgraph::graph::Status::Done => {
+                    if let Some(ref completed_at) = task.completed_at {
+                        if let Ok(dt) = completed_at.parse::<DateTime<Utc>>() {
+                            if dt > recent_cutoff {
+                                log.record(coordinator_agent::Event::TaskCompleted {
+                                    task_id: task.id.clone(),
+                                    agent_id: task.assigned.clone(),
+                                });
+                            }
+                        }
+                    }
+                }
+                workgraph::graph::Status::Failed => {
+                    // Check the last log entry for recency
+                    if let Some(last_log) = task.log.last() {
+                        if let Ok(dt) = last_log.timestamp.parse::<DateTime<Utc>>() {
+                            if dt > recent_cutoff {
+                                log.record(coordinator_agent::Event::TaskFailed {
+                                    task_id: task.id.clone(),
+                                    reason: task
+                                        .failure_reason
+                                        .as_deref()
+                                        .unwrap_or("unknown")
+                                        .to_string(),
+                                });
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    } else {
+        logger.warn("Failed to load graph for event recording");
+    }
+}
+
 /// Run the actual daemon loop (called by forked process)
 #[cfg(unix)]
 pub fn run_daemon(
@@ -789,6 +923,7 @@ pub fn run_daemon(
     cli_executor: Option<&str>,
     cli_interval: Option<u64>,
     cli_model: Option<&str>,
+    no_coordinator_agent: bool,
 ) -> Result<()> {
     let socket = PathBuf::from(socket_path);
 
@@ -889,6 +1024,45 @@ pub fn run_daemon(
     };
     coord_state.save(&dir);
 
+    // Create the shared event log for coordinator context refresh.
+    // The daemon records events (task completions, agent spawns, etc.) and the
+    // coordinator agent reads them when building context for each interaction.
+    let event_log = coordinator_agent::new_event_log();
+
+    // Spawn the persistent coordinator agent (LLM session for chat).
+    // The coordinator agent is a long-lived Claude CLI session that interprets
+    // user intent, replacing the simple stub responses.
+    // Enabled by default; disable with --no-coordinator-agent or
+    // coordinator.coordinator_agent = false in config.toml.
+    let enable_coordinator_agent = !no_coordinator_agent && config.coordinator.coordinator_agent;
+    let coordinator_agent = if enable_coordinator_agent {
+        match coordinator_agent::CoordinatorAgent::spawn(
+            &dir,
+            daemon_cfg.model.as_deref(),
+            &logger,
+            event_log.clone(),
+        ) {
+            Ok(agent) => {
+                logger.info("Coordinator agent spawned successfully");
+                Some(agent)
+            }
+            Err(e) => {
+                logger.warn(&format!(
+                    "Failed to spawn coordinator agent: {}. Chat will use stub responses.",
+                    e
+                ));
+                None
+            }
+        }
+    } else {
+        if no_coordinator_agent {
+            logger.info("Coordinator agent disabled via --no-coordinator-agent flag");
+        } else {
+            logger.info("Coordinator agent disabled (set coordinator.coordinator_agent = true to enable)");
+        }
+        None
+    };
+
     // Track last coordinator tick time - run immediately on start
     let mut last_coordinator_tick = Instant::now() - daemon_cfg.poll_interval;
 
@@ -896,6 +1070,11 @@ pub fn run_daemon(
     // after a settling delay. Each subsequent GraphChanged resets the deadline,
     // debouncing burst additions so the coordinator sees the full graph.
     let mut settling_deadline: Option<Instant> = None;
+
+    // Urgent wake: when a UserChat IPC arrives, tick immediately without settling delay.
+    // This flag bypasses both the settling delay and the paused state, because
+    // chat is a user-facing interaction that expects sub-second acknowledgement.
+    let mut urgent_wake = false;
 
     while running {
         // Reap zombie child processes (agents that have exited).
@@ -908,15 +1087,21 @@ pub fn run_daemon(
         match listener.accept() {
             Ok((stream, _)) => {
                 let mut wake_coordinator = false;
+                let mut conn_urgent_wake = false;
                 if let Err(e) = ipc::handle_connection(
                     &dir,
                     stream,
                     &mut running,
                     &mut wake_coordinator,
+                    &mut conn_urgent_wake,
                     &mut daemon_cfg,
                     &logger,
                 ) {
                     logger.error(&format!("Error handling connection: {}", e));
+                }
+                if conn_urgent_wake {
+                    urgent_wake = true;
+                    logger.info("Urgent wake (UserChat), will tick immediately");
                 }
                 if wake_coordinator {
                     // Debounce: (re)set the settling deadline. Each GraphChanged
@@ -948,8 +1133,40 @@ pub fn run_daemon(
         }
 
         // Determine whether to run a coordinator tick.
-        // Two triggers: (1) settling deadline expired, (2) background poll interval.
+        // Three triggers: (1) urgent wake (UserChat), (2) settling deadline expired,
+        // (3) background poll interval.
         let mut should_tick = false;
+
+        // Urgent wake: a UserChat IPC arrived. Route messages to the coordinator
+        // agent if available, otherwise fall through to the coordinator tick (stub).
+        if urgent_wake {
+            urgent_wake = false;
+
+            if let Some(ref agent) = coordinator_agent {
+                // Route chat messages to the persistent coordinator agent.
+                // Read new inbox messages and send them to the agent thread.
+                match route_chat_to_agent(&dir, agent, &logger) {
+                    Ok(count) if count > 0 => {
+                        logger.info(&format!(
+                            "Routed {} chat message(s) to coordinator agent",
+                            count
+                        ));
+                    }
+                    Ok(_) => {} // No new messages
+                    Err(e) => {
+                        logger.error(&format!("Failed to route chat to agent: {}", e));
+                        // Fall through to tick for stub response
+                        should_tick = true;
+                    }
+                }
+            } else {
+                // No coordinator agent — fall through to coordinator tick
+                // which will use the stub response via process_chat_inbox.
+                should_tick = true;
+                logger.info("Urgent wake (no coordinator agent): running coordinator tick");
+            }
+        }
+
         if !daemon_cfg.paused {
             // Settled tick: the settling deadline has passed after GraphChanged events.
             if let Some(deadline) = settling_deadline
@@ -1001,6 +1218,12 @@ pub fn run_daemon(
                     coord_state.tasks_ready = result.tasks_ready;
                     coord_state.agents_spawned = result.agents_spawned;
                     coord_state.save(&dir);
+
+                    // Record agent spawn events in the event log
+                    if result.agents_spawned > 0 {
+                        record_tick_events(&dir, &event_log, &logger);
+                    }
+
                     logger.info(&format!(
                         "Coordinator tick #{} complete: agents_alive={}, tasks_ready={}, spawned={}",
                         coord_state.ticks, result.agents_alive, result.tasks_ready, result.agents_spawned
@@ -1017,8 +1240,16 @@ pub fn run_daemon(
 
     logger.info("Daemon shutting down");
 
+    // Shut down the coordinator agent
+    if let Some(agent) = coordinator_agent {
+        logger.info("Shutting down coordinator agent");
+        agent.shutdown();
+    }
+
     // Cleanup
     let _ = fs::remove_file(&socket);
+    // Clean up coordinator prompt file
+    let _ = fs::remove_file(dir.join("service").join("coordinator-prompt.txt"));
     CoordinatorState::remove(&dir);
     ServiceState::remove(&dir)?;
 
@@ -1035,6 +1266,7 @@ pub fn run_daemon(
     _executor: Option<&str>,
     _interval: Option<u64>,
     _model: Option<&str>,
+    _no_coordinator_agent: bool,
 ) -> Result<()> {
     anyhow::bail!("Daemon is only supported on Unix systems")
 }
@@ -1620,7 +1852,7 @@ mod tests {
         state.save(dir).unwrap();
 
         // run_start should not start a new daemon
-        let result = run_start(dir, None, None, None, None, None, None, false, false);
+        let result = run_start(dir, None, None, None, None, None, None, false, false, false);
         assert!(result.is_ok()); // returns Ok but prints "already running"
 
         // State should be unchanged (same PID)
