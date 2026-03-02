@@ -102,6 +102,7 @@ fn apply_create_role(
             created_at: chrono::Utc::now(),
         },
         default_context_scope: None,
+        default_exec_mode: None,
     };
 
     let path = agency::save_role(&role, roles_dir).context("Failed to save new role")?;
@@ -186,6 +187,7 @@ fn apply_modify_role(
         performance: PerformanceRecord::default(),
         lineage,
         default_context_scope: None,
+        default_exec_mode: None,
     };
 
     let path = agency::save_role(&role, roles_dir).context("Failed to save modified role")?;
@@ -614,6 +616,7 @@ fn apply_component_substitution(
         performance: PerformanceRecord::default(),
         lineage: Lineage::mutation(target_id, old_role.lineage.generation, run_id),
         default_context_scope: old_role.default_context_scope.clone(),
+        default_exec_mode: old_role.default_exec_mode.clone(),
     };
 
     let path = agency::save_role(&new_role, roles_dir)?;
@@ -672,6 +675,7 @@ fn apply_config_add_component(
         performance: PerformanceRecord::default(),
         lineage: Lineage::mutation(target_id, old_role.lineage.generation, run_id),
         default_context_scope: old_role.default_context_scope.clone(),
+        default_exec_mode: old_role.default_exec_mode.clone(),
     };
 
     let path = agency::save_role(&new_role, roles_dir)?;
@@ -731,6 +735,7 @@ fn apply_config_remove_component(
         performance: PerformanceRecord::default(),
         lineage: Lineage::mutation(target_id, old_role.lineage.generation, run_id),
         default_context_scope: old_role.default_context_scope.clone(),
+        default_exec_mode: old_role.default_exec_mode.clone(),
     };
 
     let path = agency::save_role(&new_role, roles_dir)?;
@@ -783,6 +788,7 @@ fn apply_config_swap_outcome(
         performance: PerformanceRecord::default(),
         lineage: Lineage::mutation(target_id, old_role.lineage.generation, run_id),
         default_context_scope: old_role.default_context_scope.clone(),
+        default_exec_mode: old_role.default_exec_mode.clone(),
     };
 
     let path = agency::save_role(&new_role, roles_dir)?;

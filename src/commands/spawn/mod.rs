@@ -158,7 +158,7 @@ mod tests {
     use super::*;
     use std::fs;
     use tempfile::TempDir;
-    use workgraph::graph::{LogEntry, Node, Status, Task, WorkGraph};
+    use workgraph::graph::{Node, Status, Task, WorkGraph};
     use workgraph::parser::save_graph;
     use workgraph::service::registry::AgentRegistry;
 

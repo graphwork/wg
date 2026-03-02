@@ -90,8 +90,11 @@ pub fn run(
     // Validate exec_mode if provided
     if let Some(mode) = exec_mode {
         match mode {
-            "full" | "bare" => {}
-            _ => anyhow::bail!("Invalid exec_mode '{}'. Valid values: full, bare", mode),
+            "full" | "light" | "bare" | "shell" => {}
+            _ => anyhow::bail!(
+                "Invalid exec_mode '{}'. Valid values: full, light, bare, shell",
+                mode
+            ),
         }
     }
 

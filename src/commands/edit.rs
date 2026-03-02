@@ -256,7 +256,7 @@ pub fn run(
         // Update exec mode
         if let Some(mode) = exec_mode {
             match mode {
-                "full" | "bare" => {
+                "full" | "light" | "bare" | "shell" => {
                     let old = task.exec_mode.clone();
                     task.exec_mode = Some(mode.to_string());
                     field_changes
@@ -264,7 +264,10 @@ pub fn run(
                     println!("Updated exec_mode: {}", mode);
                     changed = true;
                 }
-                _ => anyhow::bail!("Invalid exec_mode '{}'. Valid values: full, bare", mode),
+                _ => anyhow::bail!(
+                    "Invalid exec_mode '{}'. Valid values: full, light, bare, shell",
+                    mode
+                ),
             }
         }
     } // task borrow released here

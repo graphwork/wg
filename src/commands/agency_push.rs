@@ -138,6 +138,7 @@ mod tests {
             performance: PerformanceRecord::default(),
             lineage: Lineage::default(),
             default_context_scope: None,
+            default_exec_mode: None,
         }
     }
 

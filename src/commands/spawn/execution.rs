@@ -13,7 +13,9 @@ use workgraph::parser::{load_graph, save_graph};
 use workgraph::service::executor::{ExecutorRegistry, PromptTemplate, TemplateVars, build_prompt};
 use workgraph::service::registry::AgentRegistry;
 
-use super::context::{build_scope_context, build_task_context, resolve_task_scope};
+use super::context::{
+    build_scope_context, build_task_context, resolve_task_exec_mode, resolve_task_scope,
+};
 use super::{
     SpawnResult, agent_output_dir, graph_path, parse_timeout_secs, prompt_file_command,
     shell_escape,
@@ -94,8 +96,8 @@ pub(crate) fn spawn_agent_inner(
     let task_exec = task.exec.clone();
     // Get task model preference
     let task_model = task.model.clone();
-    // Get task exec mode (bare = lightweight, no tools; full = default Claude Code session)
-    let task_exec_mode = task.exec_mode.clone();
+    // Resolve exec_mode: task.exec_mode > role.default_exec_mode > "full"
+    let resolved_exec_mode = resolve_task_exec_mode(task, dir);
     // Load executor config using the registry
     let executor_registry = ExecutorRegistry::new(dir);
     let executor_config = executor_registry.load_config(executor_name)?;
@@ -145,13 +147,13 @@ pub(crate) fn spawn_agent_inner(
         settings.prompt_template = Some(PromptTemplate { template: prompt });
     }
 
-    // Determine if this is a bare execution (lightweight, no file I/O tools)
-    let is_bare = task_exec_mode.as_deref() == Some("bare");
+    // Use resolved exec_mode (already accounts for role defaults)
+    let exec_mode = resolved_exec_mode.as_str();
 
     // Build the inner command string first
     let inner_command = build_inner_command(
         &settings,
-        is_bare,
+        exec_mode,
         &output_dir,
         &effective_model,
         &vars,
@@ -363,14 +365,14 @@ pub(crate) fn spawn_agent_inner(
 /// Build the inner command string for the executor.
 fn build_inner_command(
     settings: &workgraph::service::executor::ExecutorSettings,
-    is_bare: bool,
+    exec_mode: &str,
     output_dir: &Path,
     effective_model: &Option<String>,
     vars: &TemplateVars,
     task_exec: &Option<String>,
 ) -> Result<String> {
     let inner_command = match settings.executor_type.as_str() {
-        "claude" if is_bare => {
+        "claude" if exec_mode == "bare" => {
             // Bare mode: lightweight execution with --system-prompt and no tools.
             // Used for pure-reasoning tasks (synthesis, triage, summarization).
             // The prompt is passed via --system-prompt and stdin provides the task input.
@@ -409,6 +411,34 @@ fn build_inner_command(
                 format!("Failed to write user message file: {:?}", user_msg_file)
             })?;
             prompt_file_command(&user_msg_file.to_string_lossy(), &claude_cmd)
+        }
+        "claude" if exec_mode == "light" => {
+            // Light mode: read-only file access + wg CLI tools.
+            // Used for research, code review, exploration, analysis tasks.
+            // Standard prompt-via-stdin flow with --allowedTools restriction.
+            let mut cmd_parts = vec![shell_escape(&settings.command)];
+            cmd_parts.push("--print".to_string());
+            cmd_parts.push("--verbose".to_string());
+            cmd_parts.push("--output-format".to_string());
+            cmd_parts.push("stream-json".to_string());
+            cmd_parts.push("--allowedTools".to_string());
+            cmd_parts.push(shell_escape("Bash(wg:*),Read,Glob,Grep,WebFetch,WebSearch"));
+            // Add model flag if specified
+            if let Some(m) = effective_model {
+                cmd_parts.push("--model".to_string());
+                cmd_parts.push(shell_escape(m));
+            }
+            let claude_cmd = cmd_parts.join(" ");
+
+            if let Some(ref prompt_template) = settings.prompt_template {
+                // Write prompt to file for safe passing
+                let prompt_file = output_dir.join("prompt.txt");
+                fs::write(&prompt_file, &prompt_template.template)
+                    .with_context(|| format!("Failed to write prompt file: {:?}", prompt_file))?;
+                prompt_file_command(&prompt_file.to_string_lossy(), &claude_cmd)
+            } else {
+                claude_cmd
+            }
         }
         "claude" => {
             // Full mode: standard Claude Code session with all tools

@@ -122,7 +122,7 @@ pub enum Commands {
         #[arg(long = "context-scope")]
         context_scope: Option<String>,
 
-        /// Execution mode: full (default, full Claude Code session) or bare (lightweight, no file I/O tools)
+        /// Execution weight: full (default), light (read-only tools), bare (wg CLI only), shell (no LLM)
         #[arg(long = "exec-mode")]
         exec_mode: Option<String>,
 
@@ -201,7 +201,7 @@ pub enum Commands {
         #[arg(long = "context-scope")]
         context_scope: Option<String>,
 
-        /// Set execution mode: full (default) or bare (lightweight, no file I/O tools)
+        /// Set execution weight: full (default), light (read-only tools), bare (wg CLI only), shell (no LLM)
         #[arg(long = "exec-mode")]
         exec_mode: Option<String>,
     },

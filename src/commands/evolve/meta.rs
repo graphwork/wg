@@ -86,6 +86,7 @@ pub(crate) fn apply_random_compose_role(
             created_at: Utc::now(),
         },
         default_context_scope: None,
+        default_exec_mode: None,
     };
 
     let path = agency::save_role(&new_role, &roles_dir)?;

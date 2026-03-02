@@ -25,6 +25,7 @@ pub fn build_role(
         performance: PerformanceRecord::default(),
         lineage: Lineage::default(),
         default_context_scope: None,
+        default_exec_mode: None,
     }
 }
 
@@ -894,6 +895,7 @@ pub(crate) fn mutate_role(
         performance: PerformanceRecord::default(),
         lineage: Lineage::mutation(&parent.id, parent.lineage.generation, run_id),
         default_context_scope: parent.default_context_scope.clone(),
+        default_exec_mode: parent.default_exec_mode.clone(),
     }
 }
 

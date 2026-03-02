@@ -607,6 +607,7 @@ mod tests {
             },
             lineage: Lineage::default(),
             default_context_scope: None,
+            default_exec_mode: None,
         }];
         let motivations = vec![TradeoffConfig {
             id: "m1".into(),
@@ -700,6 +701,7 @@ mod tests {
             },
             lineage: Lineage::default(),
             default_context_scope: None,
+            default_exec_mode: None,
         };
 
         let op = EvolverOperation {
@@ -756,6 +758,7 @@ mod tests {
             performance: PerformanceRecord::default(),
             lineage: Lineage::default(),
             default_context_scope: None,
+            default_exec_mode: None,
         };
         let role_b = Role {
             id: "role-b".into(),
@@ -766,6 +769,7 @@ mod tests {
             performance: PerformanceRecord::default(),
             lineage: Lineage::default(),
             default_context_scope: None,
+            default_exec_mode: None,
         };
 
         agency::save_role(&role_a, &roles_dir).unwrap();
@@ -818,6 +822,7 @@ mod tests {
             performance: PerformanceRecord::default(),
             lineage: Lineage::default(),
             default_context_scope: None,
+            default_exec_mode: None,
         };
         agency::save_role(&role, &roles_dir).unwrap();
 
@@ -1620,6 +1625,7 @@ Let me know if you'd like me to adjust anything."#;
                 created_at: chrono::Utc::now(),
             },
             default_context_scope: None,
+            default_exec_mode: None,
         };
 
         let parent_b = Role {
@@ -1640,6 +1646,7 @@ Let me know if you'd like me to adjust anything."#;
                 created_at: chrono::Utc::now(),
             },
             default_context_scope: None,
+            default_exec_mode: None,
         };
 
         let op = EvolverOperation {
@@ -1964,6 +1971,7 @@ Let me know if you'd like me to adjust anything."#;
             },
             lineage: Lineage::default(),
             default_context_scope: None,
+            default_exec_mode: None,
         }]
     }
 
@@ -2203,6 +2211,7 @@ Let me know if you'd like me to adjust anything."#;
                 },
                 lineage: Lineage::default(),
                 default_context_scope: None,
+                default_exec_mode: None,
             },
             Role {
                 id: "r2".into(),
@@ -2217,6 +2226,7 @@ Let me know if you'd like me to adjust anything."#;
                 },
                 lineage: Lineage::default(),
                 default_context_scope: None,
+                default_exec_mode: None,
             },
         ];
         let motivations = vec![TradeoffConfig {
@@ -2333,6 +2343,7 @@ Let me know if you'd like me to adjust anything."#;
                 created_at: chrono::Utc::now(),
             },
             default_context_scope: None,
+            default_exec_mode: None,
         };
 
         let op = EvolverOperation {
@@ -2391,6 +2402,7 @@ Let me know if you'd like me to adjust anything."#;
                 created_at: chrono::Utc::now(),
             },
             default_context_scope: None,
+            default_exec_mode: None,
         };
         let parent_b = Role {
             id: "pb".into(),
@@ -2406,6 +2418,7 @@ Let me know if you'd like me to adjust anything."#;
                 created_at: chrono::Utc::now(),
             },
             default_context_scope: None,
+            default_exec_mode: None,
         };
 
         let op = EvolverOperation {

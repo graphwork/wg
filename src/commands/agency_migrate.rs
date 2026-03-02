@@ -337,6 +337,7 @@ fn migrate_roles(
                 performance: old_role.performance.clone(),
                 lineage: old_role.lineage.clone(),
                 default_context_scope: old_role.default_context_scope.clone(),
+                default_exec_mode: None,
             };
             save_role(&new_role, &roles_dir)
                 .with_context(|| format!("Failed to save role {}", short_hash(&new_role_id)))?;

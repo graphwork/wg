@@ -449,8 +449,30 @@ fn build_auto_assign_tasks(
              on the task):\n\
              ```\n\
              wg edit {} --context-scope <scope>\n\
+             ```\n\n\
+             ### Step 6c: Set Execution Weight\n\n\
+             After assigning the agent, determine the appropriate execution weight \
+             (`exec_mode`) for the task. This controls what tools the spawned agent \
+             has access to, directly affecting cost and speed.\n\n\
+             - **shell**: No LLM. Task has an `exec` command that runs directly. \
+             For: CI checks, test runs, git operations, simple scripts.\n\
+               Signals: task.exec is set, task description says \"run\", \"check\", \"verify status\".\n\n\
+             - **bare**: LLM with wg CLI only. No file access. \
+             For: synthesis, triage, summarization, assignment, abstract reasoning, critique.\n\
+               Signals: task doesn't need to read/write files, task is about decision-making \
+             or text generation.\n\n\
+             - **light**: LLM with read-only file access (Read, Glob, Grep). \
+             For: research, code review, exploration, analysis, documentation review.\n\
+               Signals: task needs to read code but not modify it, task is tagged \"research\" \
+             or \"review\".\n\n\
+             - **full** (default): Full Claude Code session with all tools. \
+             For: implementation, debugging, refactoring, test writing, any task that modifies files.\n\
+               Signals: task creates or modifies code/files.\n\n\
+             Set the exec_mode (skip if `full` is appropriate):\n\
+             ```\n\
+             wg edit {} --exec-mode <mode>\n\
              ```",
-            task_id, assign_task_id, assign_task_id, task_id,
+            task_id, task_id, assign_task_id, assign_task_id, task_id,
         ));
 
         // Create the assignment task (blocks the original)
@@ -489,7 +511,8 @@ fn build_auto_assign_tasks(
             context_scope: None,
             cycle_config: None,
             token_usage: None,
-            exec_mode: None,
+            // Assignment tasks only need wg CLI — no file access required
+            exec_mode: Some("bare".to_string()),
         };
 
         graph.add_node(Node::Task(assign_task));
@@ -990,9 +1013,11 @@ fn spawn_agents_for_ready_tasks(
             continue;
         }
 
-        // Resolve executor: tasks with exec commands use shell executor directly,
+        // Resolve executor: tasks with exec commands or exec_mode=shell use shell executor,
         // otherwise: agent.executor > config.coordinator.executor
-        let effective_executor = if task.exec.is_some() {
+        let effective_executor = if task.exec.is_some()
+            || task.exec_mode.as_deref() == Some("shell")
+        {
             "shell".to_string()
         } else {
             task.agent

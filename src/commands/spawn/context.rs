@@ -370,6 +370,32 @@ fn read_claude_md(workgraph_dir: &Path) -> String {
     std::fs::read_to_string(&claude_md_path).unwrap_or_default()
 }
 
+/// Resolve the effective exec_mode for a task using the priority hierarchy:
+/// task.exec_mode > role.default_exec_mode > "full".
+pub(crate) fn resolve_task_exec_mode(
+    task: &workgraph::graph::Task,
+    workgraph_dir: &Path,
+) -> String {
+    if let Some(ref mode) = task.exec_mode {
+        return mode.clone();
+    }
+
+    // Check role's default_exec_mode if task has an agent
+    if let Some(ref agent_hash) = task.agent {
+        let agency_dir = workgraph_dir.join("agency");
+        let agents_dir = agency_dir.join("cache/agents");
+        let roles_dir = agency_dir.join("cache/roles");
+        if let Ok(agent) = workgraph::agency::find_agent_by_prefix(&agents_dir, agent_hash)
+            && let Ok(role) = workgraph::agency::find_role_by_prefix(&roles_dir, &agent.role_id)
+            && let Some(mode) = role.default_exec_mode
+        {
+            return mode;
+        }
+    }
+
+    "full".to_string()
+}
+
 /// Resolve the context scope for a task using the priority hierarchy:
 /// task > role > coordinator config > default ("task").
 pub(crate) fn resolve_task_scope(

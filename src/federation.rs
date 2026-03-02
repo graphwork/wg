@@ -1175,6 +1175,7 @@ fn merge_role(target: &Role, source: &Role) -> Role {
         performance: merge_performance(&target.performance, &source.performance),
         lineage: merge_lineage(&target.lineage, &source.lineage),
         default_context_scope: target.default_context_scope.clone(),
+        default_exec_mode: target.default_exec_mode.clone(),
     }
 }
 
@@ -1261,6 +1262,7 @@ mod tests {
             performance: PerformanceRecord::default(),
             lineage: Lineage::default(),
             default_context_scope: None,
+            default_exec_mode: None,
         }
     }
 

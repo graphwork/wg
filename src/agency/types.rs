@@ -271,6 +271,10 @@ pub struct Role {
     pub lineage: Lineage,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_context_scope: Option<String>,
+    /// Default execution weight for tasks assigned to agents with this role.
+    /// Values: "full" (default), "light" (read-only tools), "bare" (wg CLI only), "shell" (no LLM).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_exec_mode: Option<String>,
 }
 
 fn default_executor() -> String {
