@@ -62,6 +62,9 @@ pub struct AgentEntry {
     /// Model used for this agent (e.g., "anthropic/claude-opus-4-6")
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// When the agent finished (ISO 8601), set on transition to Done/Failed/Dead
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_at: Option<String>,
 }
 
 impl AgentEntry {
@@ -305,6 +308,7 @@ impl AgentRegistry {
             status: AgentStatus::Working,
             output_file: output_file.to_string(),
             model: model.map(std::string::ToString::to_string),
+            completed_at: None,
         };
 
         self.agents.insert(agent_id.clone(), entry);
@@ -380,6 +384,14 @@ impl AgentRegistry {
     pub fn set_status(&mut self, agent_id: &str, status: AgentStatus) -> bool {
         if let Some(agent) = self.agents.get_mut(agent_id) {
             agent.status = status;
+            // Record completion time on terminal transitions
+            if matches!(
+                status,
+                AgentStatus::Done | AgentStatus::Failed | AgentStatus::Dead
+            ) && agent.completed_at.is_none()
+            {
+                agent.completed_at = Some(chrono::Utc::now().to_rfc3339());
+            }
             true
         } else {
             false
@@ -424,9 +436,13 @@ impl AgentRegistry {
             .map(|(id, _)| id.clone())
             .collect();
 
+        let now = chrono::Utc::now().to_rfc3339();
         for id in &dead_ids {
             if let Some(agent) = self.agents.get_mut(id) {
                 agent.status = AgentStatus::Dead;
+                if agent.completed_at.is_none() {
+                    agent.completed_at = Some(now.clone());
+                }
             }
         }
 

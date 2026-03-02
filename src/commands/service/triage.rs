@@ -70,9 +70,13 @@ pub(crate) fn cleanup_dead_agents(dir: &Path, graph_path: &Path) -> Result<Vec<S
     }
 
     // Mark these agents as dead in registry
+    let now = Utc::now().to_rfc3339();
     for (agent_id, _, _, _, _) in &dead {
         if let Some(agent) = locked_registry.get_agent_mut(agent_id) {
             agent.status = AgentStatus::Dead;
+            if agent.completed_at.is_none() {
+                agent.completed_at = Some(now.clone());
+            }
         }
     }
     locked_registry.save_ref()?;

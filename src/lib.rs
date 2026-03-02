@@ -84,6 +84,12 @@ pub fn format_duration(secs: i64, compact: bool) -> String {
     }
     let days = secs / 86400;
     if compact {
+        if days >= 365 {
+            return format!("{}y", days / 365);
+        }
+        if days >= 30 {
+            return format!("{}mo", days / 30);
+        }
         return format!("{}d", days);
     }
     let hours = (secs % 86400) / 3600;
@@ -129,6 +135,13 @@ mod tests {
         assert_eq!(format_duration(3661, true), "1h");
         assert_eq!(format_duration(86400, true), "1d");
         assert_eq!(format_duration(90000, true), "1d");
+        // months and years
+        assert_eq!(format_duration(86400 * 29, true), "29d");
+        assert_eq!(format_duration(86400 * 30, true), "1mo");
+        assert_eq!(format_duration(86400 * 60, true), "2mo");
+        assert_eq!(format_duration(86400 * 364, true), "12mo");
+        assert_eq!(format_duration(86400 * 365, true), "1y");
+        assert_eq!(format_duration(86400 * 730, true), "2y");
     }
 
     #[test]

@@ -510,6 +510,19 @@ pub fn generate_viz_output_from_graph(
         }
     }
 
+    // Compute per-task message stats (in/out counts, read status).
+    let message_stats: HashMap<String, workgraph::messages::MessageStats> = tasks_to_show
+        .iter()
+        .filter_map(|t| {
+            let stats = workgraph::messages::message_stats(dir, &t.id, t.assigned.as_deref());
+            if stats.incoming > 0 || stats.outgoing > 0 {
+                Some((t.id.clone(), stats))
+            } else {
+                None
+            }
+        })
+        .collect();
+
     // Generate output
     let output = match options.format {
         OutputFormat::Ascii => ascii::generate_ascii(
@@ -523,6 +536,7 @@ pub fn generate_viz_output_from_graph(
             options.layout,
             &context_ids,
             &options.edge_color,
+            &message_stats,
         ),
         _ => {
             let text = match options.format {

@@ -3,13 +3,20 @@ use chrono::Utc;
 use std::fs;
 use std::path::{Path, PathBuf};
 use workgraph::graph::LogEntry;
+use workgraph::messages;
 use workgraph::parser::save_graph;
 
 #[cfg(test)]
 use super::graph_path;
 
 /// Add a log entry to a task
-pub fn run_add(dir: &Path, id: &str, message: &str, actor: Option<&str>) -> Result<()> {
+pub fn run_add(
+    dir: &Path,
+    id: &str,
+    message: &str,
+    actor: Option<&str>,
+    agent_id: Option<&str>,
+) -> Result<()> {
     let (mut graph, path) = super::load_workgraph_mut(dir)?;
 
     let task = graph.get_task_mut_or_err(id)?;
@@ -27,6 +34,41 @@ pub fn run_add(dir: &Path, id: &str, message: &str, actor: Option<&str>) -> Resu
 
     let actor_str = actor.map(|a| format!(" ({})", a)).unwrap_or_default();
     println!("Added log entry to '{}'{}", id, actor_str);
+
+    // Surface unread messages if we know the agent ID
+    if let Some(agent) = agent_id {
+        let unread = messages::read_unread(dir, id, agent)?;
+        if !unread.is_empty() {
+            println!(
+                "\n\u{1f4ec} You have {} new message{}:",
+                unread.len(),
+                if unread.len() == 1 { "" } else { "s" }
+            );
+            for msg in &unread {
+                let priority_marker = if msg.priority == "urgent" {
+                    " [URGENT]"
+                } else {
+                    ""
+                };
+                // Extract just the time portion from the timestamp for compact display
+                let time_display = msg
+                    .timestamp
+                    .split('T')
+                    .nth(1)
+                    .and_then(|t| t.split('+').next())
+                    .and_then(|t| t.split('Z').next())
+                    .unwrap_or(&msg.timestamp);
+                println!(
+                    "  #{} [{}] {}{}",
+                    msg.id, time_display, msg.sender, priority_marker
+                );
+                for line in msg.body.lines() {
+                    println!("    {}", line);
+                }
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -294,7 +336,7 @@ mod tests {
         graph.add_node(Node::Task(make_task("t1", "Task 1")));
         setup_graph(&dir, &graph);
 
-        run_add(&dir, "t1", "Started working on this", None).unwrap();
+        run_add(&dir, "t1", "Started working on this", None, None).unwrap();
 
         let graph = load_graph(graph_path(&dir)).unwrap();
         let task = graph.get_task("t1").unwrap();
@@ -316,7 +358,7 @@ mod tests {
         graph.add_node(Node::Task(make_task("t1", "Task 1")));
         setup_graph(&dir, &graph);
 
-        run_add(&dir, "t1", "Reviewed the PR", Some("alice")).unwrap();
+        run_add(&dir, "t1", "Reviewed the PR", Some("alice"), None).unwrap();
 
         let graph = load_graph(graph_path(&dir)).unwrap();
         let task = graph.get_task("t1").unwrap();
@@ -334,8 +376,8 @@ mod tests {
         graph.add_node(Node::Task(make_task("t1", "Task 1")));
         setup_graph(&dir, &graph);
 
-        run_add(&dir, "t1", "First entry", None).unwrap();
-        run_add(&dir, "t1", "Second entry", Some("bot")).unwrap();
+        run_add(&dir, "t1", "First entry", None, None).unwrap();
+        run_add(&dir, "t1", "Second entry", Some("bot"), None).unwrap();
 
         let graph = load_graph(graph_path(&dir)).unwrap();
         let task = graph.get_task("t1").unwrap();
@@ -355,7 +397,7 @@ mod tests {
         setup_graph(&dir, &graph);
 
         // Empty message is allowed — the function doesn't validate content
-        run_add(&dir, "t1", "", None).unwrap();
+        run_add(&dir, "t1", "", None, None).unwrap();
 
         let graph = load_graph(graph_path(&dir)).unwrap();
         let task = graph.get_task("t1").unwrap();
@@ -372,7 +414,7 @@ mod tests {
         graph.add_node(Node::Task(make_task("t1", "Task 1")));
         setup_graph(&dir, &graph);
 
-        let result = run_add(&dir, "nonexistent", "message", None);
+        let result = run_add(&dir, "nonexistent", "message", None, None);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("not found"));
     }
@@ -386,8 +428,8 @@ mod tests {
         graph.add_node(Node::Task(make_task("t1", "Task 1")));
         setup_graph(&dir, &graph);
 
-        run_add(&dir, "t1", "Entry one", None).unwrap();
-        run_add(&dir, "t1", "Entry two", Some("bob")).unwrap();
+        run_add(&dir, "t1", "Entry one", None, None).unwrap();
+        run_add(&dir, "t1", "Entry two", Some("bob"), None).unwrap();
 
         // run_list should succeed without error
         let result = run_list(&dir, "t1", false);
@@ -417,7 +459,7 @@ mod tests {
         graph.add_node(Node::Task(make_task("t1", "Task 1")));
         setup_graph(&dir, &graph);
 
-        run_add(&dir, "t1", "JSON test entry", Some("agent")).unwrap();
+        run_add(&dir, "t1", "JSON test entry", Some("agent"), None).unwrap();
 
         // JSON output should succeed
         let result = run_list(&dir, "t1", true);
@@ -433,7 +475,7 @@ mod tests {
         graph.add_node(Node::Task(make_task("t1", "Task 1")));
         setup_graph(&dir, &graph);
 
-        run_add(&dir, "t1", "Check JSON", Some("tester")).unwrap();
+        run_add(&dir, "t1", "Check JSON", Some("tester"), None).unwrap();
 
         // Verify the data that would be serialized is valid JSON
         let graph = load_graph(graph_path(&dir)).unwrap();
@@ -460,11 +502,90 @@ mod tests {
     }
 
     #[test]
+    fn test_log_add_surfaces_unread_messages() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join(".workgraph");
+
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(make_task("t1", "Task 1")));
+        setup_graph(&dir, &graph);
+
+        // Send a message to the task queue
+        messages::send_message(&dir, "t1", "Please handle edge case X", "user", "normal")
+            .unwrap();
+        messages::send_message(&dir, "t1", "Urgent fix needed", "coordinator", "urgent")
+            .unwrap();
+
+        // Log with an agent_id should read and advance cursor
+        run_add(&dir, "t1", "Working on it", None, Some("agent-1")).unwrap();
+
+        // Messages should now be read (cursor advanced)
+        let unread = messages::read_unread(&dir, "t1", "agent-1").unwrap();
+        assert!(
+            unread.is_empty(),
+            "Messages should be marked as read after log surfaced them"
+        );
+    }
+
+    #[test]
+    fn test_log_add_no_messages_when_no_agent_id() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join(".workgraph");
+
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(make_task("t1", "Task 1")));
+        setup_graph(&dir, &graph);
+
+        // Send a message
+        messages::send_message(&dir, "t1", "Hello", "user", "normal").unwrap();
+
+        // Log without agent_id should NOT read messages
+        run_add(&dir, "t1", "Working", None, None).unwrap();
+
+        // Messages should still be unread for any agent
+        let unread = messages::read_unread(&dir, "t1", "agent-1").unwrap();
+        assert_eq!(
+            unread.len(),
+            1,
+            "Messages should remain unread when no agent_id provided"
+        );
+    }
+
+    #[test]
+    fn test_log_add_no_repeat_messages() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join(".workgraph");
+
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(make_task("t1", "Task 1")));
+        setup_graph(&dir, &graph);
+
+        // Send a message
+        messages::send_message(&dir, "t1", "First msg", "user", "normal").unwrap();
+
+        // First log call surfaces the message
+        run_add(&dir, "t1", "Progress 1", None, Some("agent-1")).unwrap();
+
+        // Send another message
+        messages::send_message(&dir, "t1", "Second msg", "coordinator", "normal").unwrap();
+
+        // Second log call should only surface the new message
+        run_add(&dir, "t1", "Progress 2", None, Some("agent-1")).unwrap();
+
+        // All messages should be read now
+        let unread = messages::read_unread(&dir, "t1", "agent-1").unwrap();
+        assert!(
+            unread.is_empty(),
+            "All messages should be read after two log calls"
+        );
+    }
+
+    #[test]
     fn test_log_fails_when_not_initialized() {
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path().join(".workgraph");
 
-        let result = run_add(&dir, "t1", "message", None);
+        let result = run_add(&dir, "t1", "message", None, None);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("not initialized"));
 

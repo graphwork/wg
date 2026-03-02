@@ -1,6 +1,8 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::IsTerminal;
+use chrono::Utc;
 use workgraph::graph::{Status, Task, TokenUsage, WorkGraph, format_token_display};
+use workgraph::messages::MessageStats;
 
 use super::{LayoutMode, VizOutput};
 
@@ -33,6 +35,7 @@ pub(crate) fn generate_ascii(
     layout: LayoutMode,
     context_ids: &HashSet<String>,
     edge_color: &str,
+    message_stats: &HashMap<String, MessageStats>,
 ) -> VizOutput {
     if tasks.is_empty() {
         return VizOutput {
@@ -265,6 +268,8 @@ pub(crate) fn generate_ascii(
         ("", "")
     };
 
+    let now = Utc::now();
+
     let format_node = |id: &str| -> String {
         let task = task_map.get(id);
         let is_context = context_ids.contains(id);
@@ -326,9 +331,55 @@ pub(crate) fn generate_ascii(
             } else {
                 status.to_string()
             };
+        let msg_indicator = message_stats
+            .get(id)
+            .map(|stats| {
+                let count_str = if stats.outgoing > 0 {
+                    format!("{}/{}", stats.incoming, stats.outgoing)
+                } else {
+                    format!("{}", stats.incoming)
+                };
+                if use_color {
+                    // Green: all messages responded to
+                    // Blue: all messages read (but not responded)
+                    // Yellow: has unread messages
+                    let color = if stats.responded {
+                        "\x1b[32m" // green
+                    } else if !stats.has_unread {
+                        "\x1b[34m" // blue
+                    } else {
+                        "\x1b[33m" // yellow
+                    };
+                    format!(" {}✉{}\x1b[0m", color, count_str)
+                } else {
+                    format!(" ✉{}", count_str)
+                }
+            })
+            .unwrap_or_default();
+        let relative_ts = task
+            .and_then(|t| {
+                // Pick the most relevant timestamp based on status
+                let ts_str = match t.status {
+                    Status::InProgress => t.started_at.as_deref(),
+                    Status::Done => t.completed_at.as_deref(),
+                    _ => None,
+                }
+                .or(t.created_at.as_deref());
+                ts_str.and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+            })
+            .map(|dt| {
+                let secs = (now - dt.with_timezone(&Utc)).num_seconds().max(0);
+                let dur = workgraph::format_duration(secs, true);
+                if use_color {
+                    format!(" \x1b[90m{}\x1b[0m", dur)
+                } else {
+                    format!(" {}", dur)
+                }
+            })
+            .unwrap_or_default();
         format!(
-            "{}{}{}  ({}){}{}",
-            color, id, reset, status_with_tokens, phase_info, loop_info
+            "{}{}{}  ({}){}{}{}{}",
+            color, id, reset, status_with_tokens, relative_ts, msg_indicator, phase_info, loop_info
         )
     };
 
@@ -1384,6 +1435,7 @@ mod tests {
             LayoutMode::default(),
             &HashSet::new(),
             "gray",
+            &HashMap::new(),
         );
         assert_eq!(result.text, "(no tasks to display)");
     }
@@ -1411,6 +1463,7 @@ mod tests {
             LayoutMode::default(),
             &HashSet::new(),
             "gray",
+            &HashMap::new(),
         );
 
         // Tree output: src is root, tgt is child
@@ -1446,6 +1499,7 @@ mod tests {
             LayoutMode::default(),
             &HashSet::new(),
             "gray",
+            &HashMap::new(),
         );
 
         // a is root with two children
@@ -1481,6 +1535,7 @@ mod tests {
             LayoutMode::default(),
             &HashSet::new(),
             "gray",
+            &HashMap::new(),
         );
 
         // c should appear, and the fan-in edge should be shown as a right-side arc
@@ -1513,6 +1568,7 @@ mod tests {
             LayoutMode::default(),
             &HashSet::new(),
             "gray",
+            &HashMap::new(),
         );
 
         assert!(result.text.contains("solo"));
@@ -1544,6 +1600,7 @@ mod tests {
             LayoutMode::default(),
             &HashSet::new(),
             "gray",
+            &HashMap::new(),
         );
 
         assert!(result.text.contains("(in-progress)"));
@@ -1576,6 +1633,7 @@ mod tests {
             LayoutMode::default(),
             &HashSet::new(),
             "gray",
+            &HashMap::new(),
         );
 
         // Should show indented chain: a -> b -> c
@@ -1626,6 +1684,7 @@ mod tests {
             LayoutMode::default(),
             &HashSet::new(),
             "gray",
+            &HashMap::new(),
         );
 
         // Internal task should NOT appear
@@ -1669,6 +1728,7 @@ mod tests {
             LayoutMode::default(),
             &HashSet::new(),
             "gray",
+            &HashMap::new(),
         );
 
         assert!(!result.text.contains("evaluate-my-task"));
@@ -1707,6 +1767,7 @@ mod tests {
             LayoutMode::default(),
             &HashSet::new(),
             "gray",
+            &HashMap::new(),
         );
 
         // Both tasks should be visible
@@ -1749,6 +1810,7 @@ mod tests {
             LayoutMode::default(),
             &HashSet::new(),
             "gray",
+            &HashMap::new(),
         );
 
         // The source task (which has cycle_config) should show the ↺ symbol
@@ -1794,6 +1856,7 @@ mod tests {
             LayoutMode::default(),
             &HashSet::new(),
             "gray",
+            &HashMap::new(),
         );
 
         // Should show ↺ symbol in the node label
@@ -1840,6 +1903,7 @@ mod tests {
             LayoutMode::default(),
             &HashSet::new(),
             "gray",
+            &HashMap::new(),
         );
 
         // Task with cycle_config should show the ↺ symbol
@@ -1870,6 +1934,7 @@ mod tests {
             LayoutMode::default(),
             &HashSet::new(),
             "gray",
+            &HashMap::new(),
         );
 
         // No loop symbol on tasks without loops
@@ -1919,6 +1984,7 @@ mod tests {
             LayoutMode::default(),
             &HashSet::new(),
             "gray",
+            &HashMap::new(),
         );
 
         // Should have ← at target and ┘ at source
@@ -1979,6 +2045,7 @@ mod tests {
             LayoutMode::default(),
             &HashSet::new(),
             "gray",
+            &HashMap::new(),
         );
 
         // Fan-in should produce a right-side arc (not a text annotation)
@@ -2036,6 +2103,7 @@ mod tests {
             LayoutMode::Diamond,
             &HashSet::new(),
             "gray",
+            &HashMap::new(),
         );
         eprintln!("DIAMOND:\n{}", result.text);
 
@@ -2084,6 +2152,7 @@ mod tests {
             LayoutMode::Tree,
             &HashSet::new(),
             "gray",
+            &HashMap::new(),
         );
         eprintln!("TREE:\n{}", result_tree.text);
         let tree_lines: Vec<&str> = result_tree.text.lines().collect();
@@ -2137,6 +2206,7 @@ mod tests {
             LayoutMode::Diamond,
             &HashSet::new(),
             "gray",
+            &HashMap::new(),
         );
         eprintln!("WIDE DIAMOND:\n{}", result.text);
 
@@ -2190,6 +2260,7 @@ mod tests {
             LayoutMode::default(),
             &HashSet::new(),
             "gray",
+            &HashMap::new(),
         );
 
         let tree_lines: Vec<&str> = result.text.lines().collect();
@@ -2256,6 +2327,7 @@ mod tests {
             LayoutMode::default(),
             &HashSet::new(),
             "gray",
+            &HashMap::new(),
         );
 
         // Should have exactly one ← (same-target collapse)
@@ -2310,6 +2382,7 @@ mod tests {
             LayoutMode::default(),
             &HashSet::new(),
             "gray",
+            &HashMap::new(),
         );
 
         // Lines with arcs should have space before the dash fill
@@ -2355,6 +2428,7 @@ mod tests {
             LayoutMode::default(),
             &HashSet::new(),
             "gray",
+            &HashMap::new(),
         );
 
         // Find the lines
@@ -2393,6 +2467,7 @@ mod tests {
             LayoutMode::Tree,
             &HashSet::new(),
             "gray",
+            &HashMap::new(),
         );
         let tree_lines: Vec<&str> = result_tree.text.lines().collect();
         let a_line_tree = tree_lines
@@ -2445,6 +2520,7 @@ mod tests {
             LayoutMode::default(),
             &HashSet::new(),
             "gray",
+            &HashMap::new(),
         );
 
         // D should have exactly one ← (same-dependent collapse)
@@ -2503,6 +2579,7 @@ mod tests {
             LayoutMode::default(),
             &HashSet::new(),
             "gray",
+            &HashMap::new(),
         );
 
         // Each dependent (leaf-a, leaf-b) should have ←
@@ -2591,6 +2668,7 @@ mod tests {
             LayoutMode::default(),
             &HashSet::new(),
             "gray",
+            &HashMap::new(),
         );
         eprintln!("CROSSING OUTPUT:\n{}", result.text);
         // Should contain crossing character ┼ where verticals cross horizontals
@@ -2633,6 +2711,7 @@ mod tests {
             LayoutMode::default(),
             &HashSet::new(),
             "gray",
+            &HashMap::new(),
         );
 
         // Verify char_edge_map has entries for tree connectors
@@ -2697,6 +2776,7 @@ mod tests {
             LayoutMode::default(),
             &HashSet::new(),
             "gray",
+            &HashMap::new(),
         );
 
         // Output should look like:
@@ -2749,6 +2829,7 @@ mod tests {
             LayoutMode::default(),
             &HashSet::new(),
             "gray",
+            &HashMap::new(),
         );
 
         // The fan-in creates an arc. Verify arc characters have edge map entries.
@@ -2864,6 +2945,7 @@ mod tests {
             LayoutMode::default(),
             &HashSet::new(),
             "gray",
+            &HashMap::new(),
         )
     }
 
@@ -3262,6 +3344,7 @@ mod tests {
             LayoutMode::default(),
             &HashSet::new(),
             "gray",
+            &HashMap::new(),
         );
 
         let plain = strip_ansi_for_map(&result.text);
@@ -4156,6 +4239,7 @@ mod tests {
             LayoutMode::Tree,
             &HashSet::new(),
             "gray",
+            &HashMap::new(),
         );
 
         let a_line = viz.node_line_map["a"];

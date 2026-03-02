@@ -132,6 +132,96 @@ pub fn send_message(
     Ok(next_id)
 }
 
+/// Count the number of messages for a task (without parsing them).
+///
+/// Returns 0 if no message file exists for the task.
+pub fn message_count(workgraph_dir: &Path, task_id: &str) -> usize {
+    let path = message_file(workgraph_dir, task_id);
+    if !path.exists() {
+        return 0;
+    }
+    match std::fs::File::open(&path) {
+        Ok(file) => {
+            let reader = BufReader::new(file);
+            reader
+                .lines()
+                .filter(|line| {
+                    line.as_ref()
+                        .map(|l| !l.trim().is_empty())
+                        .unwrap_or(false)
+                })
+                .count()
+        }
+        Err(_) => 0,
+    }
+}
+
+/// Per-task message statistics for the viz indicator.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct MessageStats {
+    /// Messages sent TO the task (by someone other than the assigned agent).
+    pub incoming: usize,
+    /// Messages sent BY the task's assigned agent.
+    pub outgoing: usize,
+    /// Whether the assigned agent has unread messages.
+    pub has_unread: bool,
+    /// Whether the assigned agent has responded after the latest incoming message.
+    pub responded: bool,
+}
+
+/// Compute message statistics for a task.
+///
+/// Determines in/out counts relative to the task's assigned agent,
+/// and whether there are unread messages based on the agent's cursor.
+pub fn message_stats(workgraph_dir: &Path, task_id: &str, assigned_agent: Option<&str>) -> MessageStats {
+    let messages = match list_messages(workgraph_dir, task_id) {
+        Ok(msgs) => msgs,
+        Err(_) => return MessageStats::default(),
+    };
+
+    if messages.is_empty() {
+        return MessageStats::default();
+    }
+
+    let mut incoming = 0usize;
+    let mut outgoing = 0usize;
+    let mut last_incoming_id: u64 = 0;
+    let mut last_outgoing_id: u64 = 0;
+
+    for msg in &messages {
+        let is_from_agent = assigned_agent
+            .map(|a| msg.sender == a)
+            .unwrap_or(false);
+        if is_from_agent {
+            outgoing += 1;
+            last_outgoing_id = msg.id;
+        } else {
+            incoming += 1;
+            last_incoming_id = msg.id;
+        }
+    }
+
+    // Check read status: if the assigned agent has a cursor, compare it to max message ID
+    let max_id = messages.last().map(|m| m.id).unwrap_or(0);
+    let has_unread = if let Some(agent_id) = assigned_agent {
+        let cursor = read_cursor(workgraph_dir, agent_id, task_id).unwrap_or(0);
+        cursor < max_id
+    } else {
+        // No assigned agent — treat all messages as unread
+        true
+    };
+
+    // "Responded" means the agent's last outgoing message is after the last incoming message
+    let responded = last_outgoing_id > 0 && last_outgoing_id > last_incoming_id;
+
+    MessageStats {
+        incoming,
+        outgoing,
+        has_unread,
+        responded,
+    }
+}
+
 /// Read all messages for a task, ordered by ID.
 pub fn list_messages(workgraph_dir: &Path, task_id: &str) -> Result<Vec<Message>> {
     let path = message_file(workgraph_dir, task_id);
@@ -509,6 +599,102 @@ mod tests {
     }
 
     #[test]
+    fn test_message_count() {
+        let (_tmp, wg_dir) = setup();
+
+        assert_eq!(message_count(&wg_dir, "task-1"), 0);
+
+        send_message(&wg_dir, "task-1", "First", "user", "normal").unwrap();
+        assert_eq!(message_count(&wg_dir, "task-1"), 1);
+
+        send_message(&wg_dir, "task-1", "Second", "user", "normal").unwrap();
+        send_message(&wg_dir, "task-1", "Third", "coordinator", "urgent").unwrap();
+        assert_eq!(message_count(&wg_dir, "task-1"), 3);
+
+        // Different task has separate count
+        assert_eq!(message_count(&wg_dir, "task-2"), 0);
+    }
+
+    #[test]
+    fn test_message_stats_empty() {
+        let (_tmp, wg_dir) = setup();
+
+        let stats = message_stats(&wg_dir, "task-1", Some("agent-1"));
+        assert_eq!(stats.incoming, 0);
+        assert_eq!(stats.outgoing, 0);
+        assert!(!stats.has_unread);
+        assert!(!stats.responded);
+    }
+
+    #[test]
+    fn test_message_stats_incoming_only() {
+        let (_tmp, wg_dir) = setup();
+
+        send_message(&wg_dir, "task-1", "Hello", "user", "normal").unwrap();
+        send_message(&wg_dir, "task-1", "Update", "coordinator", "normal").unwrap();
+
+        let stats = message_stats(&wg_dir, "task-1", Some("agent-1"));
+        assert_eq!(stats.incoming, 2);
+        assert_eq!(stats.outgoing, 0);
+        assert!(stats.has_unread);
+        assert!(!stats.responded);
+    }
+
+    #[test]
+    fn test_message_stats_with_outgoing() {
+        let (_tmp, wg_dir) = setup();
+
+        send_message(&wg_dir, "task-1", "Hello", "user", "normal").unwrap();
+        send_message(&wg_dir, "task-1", "Reply", "agent-1", "normal").unwrap();
+
+        let stats = message_stats(&wg_dir, "task-1", Some("agent-1"));
+        assert_eq!(stats.incoming, 1);
+        assert_eq!(stats.outgoing, 1);
+        assert!(stats.has_unread); // cursor not advanced
+        assert!(stats.responded); // last message is outgoing
+    }
+
+    #[test]
+    fn test_message_stats_read_status() {
+        let (_tmp, wg_dir) = setup();
+
+        send_message(&wg_dir, "task-1", "Hello", "user", "normal").unwrap();
+        // Agent reads the message (advance cursor)
+        write_cursor(&wg_dir, "agent-1", "task-1", 1).unwrap();
+
+        let stats = message_stats(&wg_dir, "task-1", Some("agent-1"));
+        assert_eq!(stats.incoming, 1);
+        assert!(!stats.has_unread); // cursor is at max
+        assert!(!stats.responded); // no outgoing messages
+    }
+
+    #[test]
+    fn test_message_stats_responded() {
+        let (_tmp, wg_dir) = setup();
+
+        send_message(&wg_dir, "task-1", "Hello", "user", "normal").unwrap();
+        send_message(&wg_dir, "task-1", "Reply", "agent-1", "normal").unwrap();
+        // Agent reads all messages
+        write_cursor(&wg_dir, "agent-1", "task-1", 2).unwrap();
+
+        let stats = message_stats(&wg_dir, "task-1", Some("agent-1"));
+        assert!(!stats.has_unread);
+        assert!(stats.responded); // last msg is outgoing (id=2 > last incoming id=1)
+    }
+
+    #[test]
+    fn test_message_stats_no_agent() {
+        let (_tmp, wg_dir) = setup();
+
+        send_message(&wg_dir, "task-1", "Hello", "user", "normal").unwrap();
+
+        let stats = message_stats(&wg_dir, "task-1", None);
+        assert_eq!(stats.incoming, 1);
+        assert_eq!(stats.outgoing, 0);
+        assert!(stats.has_unread); // no agent = all unread
+    }
+
+    #[test]
     fn test_cursor_roundtrip() {
         let (_tmp, wg_dir) = setup();
 
@@ -681,6 +867,7 @@ mod tests {
             status: crate::service::registry::AgentStatus::Working,
             output_file: "/tmp/output.log".to_string(),
             model: None,
+            completed_at: None,
         }
     }
 
