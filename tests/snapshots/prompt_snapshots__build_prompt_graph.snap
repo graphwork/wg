@@ -1,6 +1,5 @@
 ---
 source: tests/prompt_snapshots.rs
-assertion_line: 335
 expression: output
 ---
 # Task Assignment
@@ -34,6 +33,12 @@ Tasks that depend on your work:
 ## Required Workflow
 
 You MUST use these commands to track your work:
+
+0. **Check for messages** at the very start:
+   ```bash
+   wg msg read test-task-123 --agent $WG_AGENT_ID
+   ```
+   ACKNOWLEDGE any messages by replying with `wg msg send test-task-123 "your response"`.
 
 1. **Log progress** as you work (helps recovery if interrupted):
    ```bash
@@ -75,6 +80,9 @@ You MUST use these commands to track your work:
 
 
 ## Messages
+
+**You MUST check for messages at the START of your task and at every natural breakpoint.**
+**After EVERY `wg log` call, READ THE COMPLETE OUTPUT — it may contain pending messages.**
 
 Check for new messages periodically during long-running tasks:
 ```bash

@@ -22,6 +22,12 @@ pub const REQUIRED_WORKFLOW_SECTION: &str = "\
 
 You MUST use these commands to track your work:
 
+0. **Check for messages** at the very start:
+   ```bash
+   wg msg read {{task_id}} --agent $WG_AGENT_ID
+   ```
+   ACKNOWLEDGE any messages by replying with `wg msg send {{task_id}} \"your response\"`.
+
 1. **Log progress** as you work (helps recovery if interrupted):
    ```bash
    wg log {{task_id}} \"Starting implementation...\"
@@ -172,6 +178,9 @@ The coordinator will dispatch them automatically.
 /// Contains {{task_id}} placeholder for variable substitution.
 pub const MESSAGE_POLLING_SECTION: &str = "\
 ## Messages\n\
+\n\
+**You MUST check for messages at the START of your task and at every natural breakpoint.**\n\
+**After EVERY `wg log` call, READ THE COMPLETE OUTPUT — it may contain pending messages.**\n\
 \n\
 Check for new messages periodically during long-running tasks:\n\
 ```bash\n\
