@@ -1144,12 +1144,14 @@ fn reactivate_cycle(
         return vec![];
     }
 
-    // Check max_iterations
+    // Check max_iterations — use the NEXT iteration value so that
+    // max_iterations=N yields exactly N total runs (iterations 0..N-1).
     let current_iter = graph
         .get_task(config_owner_id)
         .map(|t| t.loop_iteration)
         .unwrap_or(0);
-    if current_iter >= cycle_config.max_iterations {
+    let new_iteration = current_iter + 1;
+    if new_iteration >= cycle_config.max_iterations {
         return vec![];
     }
 
@@ -1158,13 +1160,12 @@ fn reactivate_cycle(
         return vec![];
     }
     if let Some(LoopGuard::IterationLessThan(n)) = &cycle_config.guard
-        && current_iter >= *n
+        && new_iteration >= *n
     {
         return vec![];
     }
 
     // All checks passed — re-open all members
-    let new_iteration = current_iter + 1;
     let ready_after = cycle_config
         .delay
         .as_ref()

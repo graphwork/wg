@@ -345,9 +345,8 @@ fn print_human_readable(details: &TaskDetails) {
         if cc.no_converge {
             println!("  No-converge: true (all iterations forced)");
         }
-        if details.loop_iteration > 0 {
-            println!("  Current iteration: {}", details.loop_iteration);
-        }
+        // Display 1-based iteration: loop_iteration=0 is "iteration 1/max"
+        println!("  Current iteration: {}/{}", details.loop_iteration + 1, cc.max_iterations);
     }
 
     println!();

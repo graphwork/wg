@@ -375,14 +375,14 @@ impl TemplateVars {
         let task_loop_info = if let Some(config) = &task.cycle_config {
             format!(
                 "## Cycle Information\n\n\
-                 This task is a cycle header (iteration {}, max {}).\n\n\
+                 This task is a cycle header (iteration {}/{}).\n\n\
                  **IMPORTANT: When this cycle's work is complete (converged), you MUST use:**\n\
                  ```\n\
                  wg done {} --converged\n\
                  ```\n\
                  Using plain `wg done` will cause the cycle to iterate again and re-open tasks.\n\
                  Only use plain `wg done` if you want the next iteration to proceed.",
-                task.loop_iteration, config.max_iterations, task.id
+                task.loop_iteration + 1, config.max_iterations, task.id
             )
         } else if task.loop_iteration > 0 {
             format!(
@@ -392,7 +392,7 @@ impl TemplateVars {
                  ```\n\
                  wg done {} --converged\n\
                  ```",
-                task.loop_iteration, task.id
+                task.loop_iteration + 1, task.id
             )
         } else {
             String::new()
@@ -1581,7 +1581,7 @@ args = ["--custom-flag"]
 
         let vars = TemplateVars::from_task(&task, None, None);
 
-        assert!(vars.task_loop_info.contains("iteration 2"));
+        assert!(vars.task_loop_info.contains("iteration 3"));
     }
 
     #[test]
@@ -1787,7 +1787,7 @@ args = ["--custom-flag"]
         let prompt = build_prompt(&vars, ContextScope::Clean, &ctx);
 
         // Loop info should appear even at clean scope
-        assert!(prompt.contains("iteration 2"));
+        assert!(prompt.contains("iteration 3"));
         assert!(prompt.contains("--converged"));
     }
 

@@ -1290,7 +1290,10 @@ fn test_completion_multiple_independent_cycles() {
 
 #[test]
 fn test_completion_iteration_less_than_guard() {
-    // IterationLessThan(2) guard: iterate when current < 2, stop at 2.
+    // IterationLessThan(2) guard: iterate while next_iteration < 2, stop when next >= 2.
+    // With max_iterations=10 and guard IterationLessThan(2):
+    //   iteration 0: next=1, 1<2 → iterate
+    //   iteration 1: next=2, 2>=2 → stop
     let mut a = make_task_with_status("a", "A", Status::Done);
     a.after = vec!["b".to_string()];
     a.cycle_config = Some(CycleConfig {
@@ -1299,27 +1302,27 @@ fn test_completion_iteration_less_than_guard() {
         delay: None,
         no_converge: false,
     });
-    a.loop_iteration = 1;
+    a.loop_iteration = 0;
     let mut b = make_task_with_status("b", "B", Status::Done);
     b.after = vec!["a".to_string()];
-    b.loop_iteration = 1;
+    b.loop_iteration = 0;
 
     let mut graph = build_graph(vec![a, b]);
     let analysis = graph.compute_cycle_analysis();
 
-    // At iteration 1, which is < 2, so should iterate
+    // At iteration 0, next=1 which is < 2, so should iterate
     let reactivated = evaluate_cycle_iteration(&mut graph, "b", &analysis);
-    assert!(!reactivated.is_empty(), "Should iterate (1 < 2)");
-    assert_eq!(graph.get_task("a").unwrap().loop_iteration, 2);
+    assert!(!reactivated.is_empty(), "Should iterate (next 1 < 2)");
+    assert_eq!(graph.get_task("a").unwrap().loop_iteration, 1);
 
-    // Now at iteration 2, set Done again
+    // Now at iteration 1, set Done again
     graph.get_task_mut("a").unwrap().status = Status::Done;
     graph.get_task_mut("b").unwrap().status = Status::Done;
     let analysis = graph.compute_cycle_analysis();
 
-    // At iteration 2, which is NOT < 2, so should stop
+    // At iteration 1, next=2 which is NOT < 2, so should stop
     let reactivated = evaluate_cycle_iteration(&mut graph, "b", &analysis);
-    assert!(reactivated.is_empty(), "Should NOT iterate (2 >= 2)");
+    assert!(reactivated.is_empty(), "Should NOT iterate (next 2 >= 2)");
 }
 
 // ===========================================================================
@@ -2967,22 +2970,12 @@ fn test_deep_multi_iteration_stops_at_max() {
     let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
     assert_eq!(graph.get_task("a").unwrap().loop_iteration, 2);
 
-    // Iteration 2 → 3
-    wg_ok(&wg_dir, &["done", "a"]);
-    let output = wg_ok(&wg_dir, &["done", "b"]);
-    assert!(
-        output.contains("re-activated"),
-        "Iteration 2→3 should re-activate"
-    );
-    let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
-    assert_eq!(graph.get_task("a").unwrap().loop_iteration, 3);
-
-    // Iteration 3: at max, should NOT re-activate
+    // Iteration 2: at max (max_iterations=3 means iterations 0,1,2), should NOT re-activate
     wg_ok(&wg_dir, &["done", "a"]);
     let output = wg_ok(&wg_dir, &["done", "b"]);
     assert!(
         !output.contains("re-activated"),
-        "At max_iterations=3, should NOT re-activate. Output: {}",
+        "At max_iterations=3, iteration 2 should NOT re-activate. Output: {}",
         output
     );
     let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
@@ -4528,18 +4521,7 @@ fn test_evaluate_all_cycles_multi_iteration_sweep() {
         graph.get_task_mut(id).unwrap().status = Status::Done;
     }
 
-    // Iteration 2 → 3
-    let analysis = graph.compute_cycle_analysis();
-    let reactivated = evaluate_all_cycle_iterations(&mut graph, &analysis);
-    assert_eq!(reactivated.len(), 3);
-    assert_eq!(graph.get_task("a").unwrap().loop_iteration, 3);
-
-    // Set all back to Done (simulating completion of iteration 3)
-    for id in &["a", "b", "c"] {
-        graph.get_task_mut(id).unwrap().status = Status::Done;
-    }
-
-    // Iteration 3 at max: should NOT reactivate
+    // Iteration 2 at max (max_iterations=3 means iterations 0,1,2): should NOT reactivate
     let analysis = graph.compute_cycle_analysis();
     let reactivated = evaluate_all_cycle_iterations(&mut graph, &analysis);
     assert!(reactivated.is_empty(), "Should stop at max_iterations=3");
@@ -4655,20 +4637,7 @@ fn test_e2e_three_task_cycle_via_edit_multi_iteration() {
     let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
     assert_eq!(graph.get_task("step-a").unwrap().loop_iteration, 2);
 
-    // Iteration 2: step-b → step-c → step-a
-    wg_ok(&wg_dir, &["done", "step-b"]);
-    wg_ok(&wg_dir, &["done", "step-c"]);
-    let output = wg_ok(&wg_dir, &["done", "step-a"]);
-    assert!(
-        output.contains("re-activated"),
-        "Iteration 2 should re-activate. Output: {}",
-        output
-    );
-
-    let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
-    assert_eq!(graph.get_task("step-a").unwrap().loop_iteration, 3);
-
-    // Iteration 3 (at max): should NOT re-activate
+    // Iteration 2 (at max, max_iterations=3 means iterations 0,1,2): should NOT re-activate
     wg_ok(&wg_dir, &["done", "step-b"]);
     wg_ok(&wg_dir, &["done", "step-c"]);
     let output = wg_ok(&wg_dir, &["done", "step-a"]);
