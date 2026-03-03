@@ -239,6 +239,15 @@ impl RightPanelTab {
     ];
 }
 
+/// Which scrollbar is being dragged by the mouse.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ScrollbarDragTarget {
+    /// Dragging the graph pane scrollbar.
+    Graph,
+    /// Dragging the right panel scrollbar.
+    Panel,
+}
+
 /// Sort mode for task ordering in the graph view.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum SortMode {
@@ -984,6 +993,14 @@ pub struct VizApp {
     /// Timestamp of the last scroll activity in the right panel.
     pub panel_scroll_activity: Option<Instant>,
 
+    // ── Scrollbar drag state ──
+    /// Which scrollbar (if any) is currently being dragged.
+    pub scrollbar_drag: Option<ScrollbarDragTarget>,
+    /// The area of the graph scrollbar from the last render frame.
+    pub last_graph_scrollbar_area: Rect,
+    /// The area of the right-panel scrollbar from the last render frame.
+    pub last_panel_scrollbar_area: Rect,
+
     // ── Live refresh ──
     /// Last observed modification time of graph.jsonl.
     last_graph_mtime: Option<SystemTime>,
@@ -1112,6 +1129,9 @@ impl VizApp {
             message_indent: config.tui.message_indent,
             graph_scroll_activity: None,
             panel_scroll_activity: None,
+            scrollbar_drag: None,
+            last_graph_scrollbar_area: Rect::default(),
+            last_panel_scrollbar_area: Rect::default(),
             last_graph_mtime: graph_mtime,
             last_refresh: Instant::now(),
             last_refresh_display: chrono::Local::now().format("%H:%M:%S").to_string(),
@@ -2756,16 +2776,24 @@ impl VizApp {
         self.panel_scroll_activity = Some(Instant::now());
     }
 
-    /// Whether the graph pane scrollbar should be visible (within 2s of last graph scroll).
+    /// Whether the graph pane scrollbar should be visible (within 2s of last graph scroll,
+    /// or while actively dragging the graph scrollbar).
     pub fn graph_scrollbar_visible(&self) -> bool {
+        if self.scrollbar_drag == Some(ScrollbarDragTarget::Graph) {
+            return true;
+        }
         match self.graph_scroll_activity {
             Some(when) => when.elapsed() < std::time::Duration::from_secs(2),
             None => false,
         }
     }
 
-    /// Whether the right panel scrollbar should be visible (within 2s of last panel scroll).
+    /// Whether the right panel scrollbar should be visible (within 2s of last panel scroll,
+    /// or while actively dragging the panel scrollbar).
     pub fn panel_scrollbar_visible(&self) -> bool {
+        if self.scrollbar_drag == Some(ScrollbarDragTarget::Panel) {
+            return true;
+        }
         match self.panel_scroll_activity {
             Some(when) => when.elapsed() < std::time::Duration::from_secs(2),
             None => false,
@@ -3057,6 +3085,9 @@ impl VizApp {
             message_indent: 2,
             graph_scroll_activity: None,
             panel_scroll_activity: None,
+            scrollbar_drag: None,
+            last_graph_scrollbar_area: Rect::default(),
+            last_panel_scrollbar_area: Rect::default(),
             last_graph_mtime: None,
             last_refresh: Instant::now(),
             last_refresh_display: String::new(),
