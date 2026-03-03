@@ -324,7 +324,7 @@ mod llm_tests {
         );
 
         let output_log = dir.join("agent.ndjson");
-        let agent = AgentLoop::new(client, registry, system_prompt, 10, output_log);
+        let agent = AgentLoop::new(Box::new(client), registry, system_prompt, 10, output_log);
 
         let rt = tokio::runtime::Runtime::new().unwrap();
         let result = rt

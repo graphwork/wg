@@ -1,6 +1,8 @@
-//! Anthropic HTTP client for the Messages API.
+//! LLM client abstraction and Anthropic Messages API implementation.
 //!
-//! Handles request/response serialization, streaming (SSE), and retry logic.
+//! Defines the `LlmClient` trait and canonical request/response types used by the
+//! agent loop. The `AnthropicClient` implements this trait for the Anthropic API.
+//! See `openai_client.rs` for the OpenAI-compatible implementation.
 
 use std::path::Path;
 use std::time::Duration;
@@ -90,6 +92,24 @@ impl Usage {
             *self.cache_read_input_tokens.get_or_insert(0) += v;
         }
     }
+}
+
+// ── LlmClient trait ─────────────────────────────────────────────────────
+
+/// Provider-agnostic LLM client trait.
+///
+/// Both `AnthropicClient` and `OpenAiClient` implement this trait so the
+/// agent loop can work with any backend.
+#[async_trait::async_trait]
+pub trait LlmClient: Send + Sync {
+    /// Send a messages request (non-streaming) and return the response.
+    async fn send(&self, request: &MessagesRequest) -> Result<MessagesResponse>;
+
+    /// The model name this client is configured with.
+    fn model(&self) -> &str;
+
+    /// Max tokens per response.
+    fn max_tokens(&self) -> u32;
 }
 
 /// Request body for POST /v1/messages.
@@ -377,6 +397,21 @@ impl AnthropicClient {
         );
         headers.insert("content-type", HeaderValue::from_static("application/json"));
         headers
+    }
+}
+
+#[async_trait::async_trait]
+impl LlmClient for AnthropicClient {
+    async fn send(&self, request: &MessagesRequest) -> Result<MessagesResponse> {
+        self.messages(request).await
+    }
+
+    fn model(&self) -> &str {
+        &self.model
+    }
+
+    fn max_tokens(&self) -> u32 {
+        self.max_tokens
     }
 }
 

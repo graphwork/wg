@@ -11,8 +11,7 @@ use anyhow::{Context, Result};
 use serde::Serialize;
 
 use super::client::{
-    AnthropicClient, ContentBlock, Message, MessagesRequest, MessagesResponse, Role, StopReason,
-    Usage,
+    ContentBlock, LlmClient, Message, MessagesRequest, MessagesResponse, Role, StopReason, Usage,
 };
 use super::tools::ToolRegistry;
 
@@ -36,7 +35,7 @@ pub struct AgentResult {
 
 /// The main agent loop.
 pub struct AgentLoop {
-    client: AnthropicClient,
+    client: Box<dyn LlmClient>,
     tools: ToolRegistry,
     system_prompt: String,
     max_turns: usize,
@@ -98,7 +97,7 @@ impl From<&ContentBlock> for ContentBlockLog {
 impl AgentLoop {
     /// Create a new agent loop.
     pub fn new(
-        client: AnthropicClient,
+        client: Box<dyn LlmClient>,
         tools: ToolRegistry,
         system_prompt: String,
         max_turns: usize,
@@ -136,8 +135,8 @@ impl AgentLoop {
             }
 
             let request = MessagesRequest {
-                model: self.client.model.clone(),
-                max_tokens: self.client.max_tokens,
+                model: self.client.model().to_string(),
+                max_tokens: self.client.max_tokens(),
                 system: Some(self.system_prompt.clone()),
                 messages: messages.clone(),
                 tools: self.tools.definitions(),
@@ -146,7 +145,7 @@ impl AgentLoop {
 
             let response = self
                 .client
-                .messages(&request)
+                .send(&request)
                 .await
                 .context("API request failed")?;
 
