@@ -874,14 +874,6 @@ fn handle_graph_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
         // Tab: switch panel focus (replaces old trace toggle)
         KeyCode::Tab => {
             app.toggle_panel_focus();
-            // Auto-enter ChatInput when focusing right panel on Chat tab,
-            // but only if user hasn't explicitly dismissed it with Esc.
-            if app.focused_panel == FocusedPanel::RightPanel
-                && app.right_panel_tab == RightPanelTab::Chat
-                && !app.chat_input_dismissed
-            {
-                app.input_mode = InputMode::ChatInput;
-            }
         }
 
         // t: toggle trace (was Tab)
@@ -911,39 +903,19 @@ fn handle_graph_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
         // Alt+Up/Down: toggle focus between graph and right panel
         KeyCode::Up if modifiers.contains(KeyModifiers::ALT) => {
             app.toggle_panel_focus();
-            if app.focused_panel == FocusedPanel::RightPanel
-                && app.right_panel_tab == RightPanelTab::Chat
-                && !app.chat_input_dismissed
-            {
-                app.input_mode = InputMode::ChatInput;
-            }
         }
         KeyCode::Down if modifiers.contains(KeyModifiers::ALT) => {
             app.toggle_panel_focus();
-            if app.focused_panel == FocusedPanel::RightPanel
-                && app.right_panel_tab == RightPanelTab::Chat
-                && !app.chat_input_dismissed
-            {
-                app.input_mode = InputMode::ChatInput;
-            }
         }
 
         // Alt+Left/Right: cycle tabs
         KeyCode::Left if modifiers.contains(KeyModifiers::ALT) => {
-            let old_tab = app.right_panel_tab;
             app.right_panel_visible = true;
             app.right_panel_tab = app.right_panel_tab.prev();
-            if old_tab == RightPanelTab::Chat && app.right_panel_tab != RightPanelTab::Chat {
-                app.chat_input_dismissed = false;
-            }
         }
         KeyCode::Right if modifiers.contains(KeyModifiers::ALT) => {
-            let old_tab = app.right_panel_tab;
             app.right_panel_visible = true;
             app.right_panel_tab = app.right_panel_tab.next();
-            if old_tab == RightPanelTab::Chat && app.right_panel_tab != RightPanelTab::Chat {
-                app.chat_input_dismissed = false;
-            }
         }
 
         // HUD panel scroll (Shift + Up/Down/PgUp/PgDn)
@@ -1145,15 +1117,11 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
                 KeyCode::Char('=') => app.cycle_layout_mode(),
                 KeyCode::Esc => {
                     app.focused_panel = FocusedPanel::Graph;
-                    app.chat_input_dismissed = false;
                 }
                 KeyCode::Char(d @ '0'..='7') => {
                     let idx = (d as u8 - b'0') as usize;
                     if let Some(tab) = RightPanelTab::from_index(idx) {
                         app.right_panel_tab = tab;
-                        if tab == RightPanelTab::Chat && !app.chat_input_dismissed {
-                            app.input_mode = InputMode::ChatInput;
-                        }
                     }
                 }
                 _ => handle_files_key(app, code),
@@ -1174,10 +1142,6 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
         // Tab: switch panel focus back to graph
         KeyCode::Tab => {
             app.toggle_panel_focus();
-            // Reset dismissed flag when leaving right panel
-            if app.focused_panel == FocusedPanel::Graph {
-                app.chat_input_dismissed = false;
-            }
         }
 
         // Backslash: toggle right panel
@@ -1193,83 +1157,38 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
         // Esc: go back to graph focus
         KeyCode::Esc => {
             app.focused_panel = FocusedPanel::Graph;
-            // Reset dismissed flag so auto-enter works next time user returns
-            app.chat_input_dismissed = false;
         }
 
         // Number keys 0-6 switch tabs
         KeyCode::Char(d @ '0'..='7') => {
             let idx = (d as u8 - b'0') as usize;
             if let Some(tab) = RightPanelTab::from_index(idx) {
-                // Reset dismissed flag when navigating away from Chat tab
-                if app.right_panel_tab == RightPanelTab::Chat && tab != RightPanelTab::Chat {
-                    app.chat_input_dismissed = false;
-                }
                 app.right_panel_tab = tab;
-                // Auto-enter ChatInput when switching to Chat tab,
-                // unless user explicitly dismissed with Esc.
-                if tab == RightPanelTab::Chat && !app.chat_input_dismissed {
-                    app.input_mode = InputMode::ChatInput;
-                }
             }
         }
 
         // Alt+Up/Down: toggle panel focus
         KeyCode::Up if modifiers.contains(KeyModifiers::ALT) => {
             app.toggle_panel_focus();
-            if app.focused_panel == FocusedPanel::Graph {
-                app.chat_input_dismissed = false;
-            }
         }
         KeyCode::Down if modifiers.contains(KeyModifiers::ALT) => {
             app.toggle_panel_focus();
-            if app.focused_panel == FocusedPanel::Graph {
-                app.chat_input_dismissed = false;
-            }
         }
 
         // Alt+Left/Right: cycle tabs (same as bare Left/Right)
         KeyCode::Left if modifiers.contains(KeyModifiers::ALT) => {
-            let old_tab = app.right_panel_tab;
             app.right_panel_tab = app.right_panel_tab.prev();
-            if old_tab == RightPanelTab::Chat && app.right_panel_tab != RightPanelTab::Chat {
-                app.chat_input_dismissed = false;
-            }
-            if app.right_panel_tab == RightPanelTab::Chat && !app.chat_input_dismissed {
-                app.input_mode = InputMode::ChatInput;
-            }
         }
         KeyCode::Right if modifiers.contains(KeyModifiers::ALT) => {
-            let old_tab = app.right_panel_tab;
             app.right_panel_tab = app.right_panel_tab.next();
-            if old_tab == RightPanelTab::Chat && app.right_panel_tab != RightPanelTab::Chat {
-                app.chat_input_dismissed = false;
-            }
-            if app.right_panel_tab == RightPanelTab::Chat && !app.chat_input_dismissed {
-                app.input_mode = InputMode::ChatInput;
-            }
         }
 
         // Left/Right cycle tabs
         KeyCode::Left => {
-            let old_tab = app.right_panel_tab;
             app.right_panel_tab = app.right_panel_tab.prev();
-            if old_tab == RightPanelTab::Chat && app.right_panel_tab != RightPanelTab::Chat {
-                app.chat_input_dismissed = false;
-            }
-            if app.right_panel_tab == RightPanelTab::Chat && !app.chat_input_dismissed {
-                app.input_mode = InputMode::ChatInput;
-            }
         }
         KeyCode::Right => {
-            let old_tab = app.right_panel_tab;
             app.right_panel_tab = app.right_panel_tab.next();
-            if old_tab == RightPanelTab::Chat && app.right_panel_tab != RightPanelTab::Chat {
-                app.chat_input_dismissed = false;
-            }
-            if app.right_panel_tab == RightPanelTab::Chat && !app.chat_input_dismissed {
-                app.input_mode = InputMode::ChatInput;
-            }
         }
 
         // Up/Down/k/j scroll the active panel content
@@ -1365,6 +1284,11 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
             app.detail_raw_json = !app.detail_raw_json;
             app.hud_detail = None; // force reload with new format
             app.load_hud_detail();
+        }
+
+        // Detail tab: Space toggles section collapse at current scroll position
+        KeyCode::Char(' ') if app.right_panel_tab == RightPanelTab::Detail => {
+            app.toggle_detail_section_at_scroll();
         }
 
         _ => {}
@@ -1517,6 +1441,10 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
     let in_right_content = app.last_right_content_area.contains(pos);
     let in_graph_hscrollbar =
         app.last_graph_hscrollbar_area.width > 0 && app.last_graph_hscrollbar_area.contains(pos);
+    let in_graph_vscrollbar =
+        app.last_graph_scrollbar_area.height > 0 && app.last_graph_scrollbar_area.contains(pos);
+    let in_panel_vscrollbar =
+        app.last_panel_scrollbar_area.height > 0 && app.last_panel_scrollbar_area.contains(pos);
 
     match kind {
         MouseEventKind::ScrollUp => {
@@ -1554,7 +1482,19 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
             }
         }
         MouseEventKind::Down(MouseButton::Left) => {
-            if in_graph_hscrollbar {
+            if in_graph_vscrollbar {
+                // Click on graph vertical scrollbar: start drag and jump.
+                app.focused_panel = FocusedPanel::Graph;
+                app.scrollbar_drag = Some(ScrollbarDragTarget::Graph);
+                app.record_graph_scroll_activity();
+                vscrollbar_jump_graph(app, row);
+            } else if in_panel_vscrollbar {
+                // Click on panel vertical scrollbar: start drag and jump.
+                app.focused_panel = FocusedPanel::RightPanel;
+                app.scrollbar_drag = Some(ScrollbarDragTarget::Panel);
+                app.record_panel_scroll_activity();
+                vscrollbar_jump_panel(app, row);
+            } else if in_graph_hscrollbar {
                 app.focused_panel = FocusedPanel::Graph;
                 app.scrollbar_drag = Some(ScrollbarDragTarget::GraphHorizontal);
                 app.record_graph_hscroll_activity();
@@ -1569,6 +1509,14 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
             } else if in_right_content {
                 // Click in right panel content: focus the right panel.
                 app.focused_panel = FocusedPanel::RightPanel;
+                // Config tab: click to select an entry.
+                if app.right_panel_tab == RightPanelTab::Config
+                    && !app.config_panel.editing
+                    && let Some(&(entry_idx, _)) =
+                        app.config_entry_y_positions.iter().find(|(_, y)| *y == row)
+                {
+                    app.config_panel.selected = entry_idx;
+                }
             } else if in_graph {
                 // Click in graph: focus graph + select task at clicked line.
                 app.focused_panel = FocusedPanel::Graph;
@@ -1622,7 +1570,13 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
             }
         }
         MouseEventKind::Drag(MouseButton::Left) => {
-            if app.scrollbar_drag == Some(ScrollbarDragTarget::GraphHorizontal) {
+            if app.scrollbar_drag == Some(ScrollbarDragTarget::Graph) {
+                app.record_graph_scroll_activity();
+                vscrollbar_jump_graph(app, row);
+            } else if app.scrollbar_drag == Some(ScrollbarDragTarget::Panel) {
+                app.record_panel_scroll_activity();
+                vscrollbar_jump_panel(app, row);
+            } else if app.scrollbar_drag == Some(ScrollbarDragTarget::GraphHorizontal) {
                 app.record_graph_hscroll_activity();
                 hscrollbar_jump_to_column(app, column);
             }
@@ -1656,6 +1610,129 @@ fn hscrollbar_jump_to_column(app: &mut VizApp, column: u16) {
         (col_in_track * max_offset) / track_width.saturating_sub(1)
     };
     app.scroll.offset_x = new_offset.min(max_offset);
+}
+
+/// Jump the graph pane vertical scroll to a position proportional to `row` within the scrollbar.
+fn vscrollbar_jump_graph(app: &mut VizApp, row: u16) {
+    let sb = app.last_graph_scrollbar_area;
+    if sb.height == 0 {
+        return;
+    }
+    let max_offset = app
+        .scroll
+        .content_height
+        .saturating_sub(app.scroll.viewport_height);
+    if max_offset == 0 {
+        return;
+    }
+    let row_in_track = row.saturating_sub(sb.y) as usize;
+    let track_height = sb.height as usize;
+    let new_offset = if track_height <= 1 {
+        0
+    } else {
+        (row_in_track * max_offset) / track_height.saturating_sub(1)
+    };
+    app.scroll.offset_y = new_offset.min(max_offset);
+}
+
+/// Jump the right panel vertical scroll to a position proportional to `row` within the scrollbar.
+fn vscrollbar_jump_panel(app: &mut VizApp, row: u16) {
+    let sb = app.last_panel_scrollbar_area;
+    if sb.height == 0 {
+        return;
+    }
+    let row_in_track = row.saturating_sub(sb.y) as usize;
+    let track_height = sb.height as usize;
+
+    match app.right_panel_tab {
+        RightPanelTab::Detail => {
+            let max_scroll = app
+                .hud_wrapped_line_count
+                .saturating_sub(app.hud_detail_viewport_height);
+            if max_scroll == 0 {
+                return;
+            }
+            let pos = if track_height <= 1 {
+                0
+            } else {
+                (row_in_track * max_scroll) / track_height.saturating_sub(1)
+            };
+            app.hud_scroll = pos.min(max_scroll);
+        }
+        RightPanelTab::Chat => {
+            // Chat scroll is inverted: 0 = bottom, higher = further from bottom.
+            let total = app.chat.total_rendered_lines;
+            let viewport = app.chat.viewport_height;
+            let max_scroll = total.saturating_sub(viewport);
+            if max_scroll == 0 {
+                return;
+            }
+            let scroll_from_top = if track_height <= 1 {
+                0
+            } else {
+                (row_in_track * max_scroll) / track_height.saturating_sub(1)
+            };
+            // Convert scroll_from_top to chat's inverted scroll.
+            app.chat.scroll = max_scroll.saturating_sub(scroll_from_top);
+        }
+        RightPanelTab::Log => {
+            let total = app.log_pane.total_wrapped_lines;
+            let viewport = app.log_pane.viewport_height;
+            let max_scroll = total.saturating_sub(viewport);
+            if max_scroll == 0 {
+                return;
+            }
+            let pos = if track_height <= 1 {
+                0
+            } else {
+                (row_in_track * max_scroll) / track_height.saturating_sub(1)
+            };
+            app.log_pane.scroll = pos.min(max_scroll);
+        }
+        RightPanelTab::Messages => {
+            let total = app.messages_panel.total_wrapped_lines;
+            let viewport = app.messages_panel.viewport_height;
+            let max_scroll = total.saturating_sub(viewport);
+            if max_scroll == 0 {
+                return;
+            }
+            let pos = if track_height <= 1 {
+                0
+            } else {
+                (row_in_track * max_scroll) / track_height.saturating_sub(1)
+            };
+            app.messages_panel.scroll = pos.min(max_scroll);
+        }
+        RightPanelTab::Agency => {
+            let total = app.agent_monitor.total_rendered_lines;
+            let viewport = app.agent_monitor.viewport_height;
+            let max_scroll = total.saturating_sub(viewport);
+            if max_scroll == 0 {
+                return;
+            }
+            let pos = if track_height <= 1 {
+                0
+            } else {
+                (row_in_track * max_scroll) / track_height.saturating_sub(1)
+            };
+            app.agent_monitor.scroll = pos.min(max_scroll);
+        }
+        RightPanelTab::CoordLog => {
+            let total = app.coord_log.total_wrapped_lines;
+            let viewport = app.coord_log.viewport_height;
+            let max_scroll = total.saturating_sub(viewport);
+            if max_scroll == 0 {
+                return;
+            }
+            let pos = if track_height <= 1 {
+                0
+            } else {
+                (row_in_track * max_scroll) / track_height.saturating_sub(1)
+            };
+            app.coord_log.scroll = pos.min(max_scroll);
+        }
+        _ => {}
+    }
 }
 
 /// Enter edit mode for the currently selected config entry.
@@ -2030,4 +2107,654 @@ fn tab_at_column(col: u16) -> Option<RightPanelTab> {
         pos += tab_width;
     }
     None
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Tests for scrollbar click and drag behavior
+// ══════════════════════════════════════════════════════════════════════════════
+#[cfg(test)]
+mod scrollbar_tests {
+    use super::*;
+    use crate::commands::viz::LayoutMode as VizLayoutMode;
+    use crate::commands::viz::ascii::generate_ascii;
+    use crate::tui::viz_viewer::state::ScrollbarDragTarget;
+    use ratatui::layout::Rect;
+    use std::collections::{HashMap, HashSet};
+    use workgraph::graph::{Node, Status, WorkGraph};
+    use workgraph::parser::save_graph;
+    use workgraph::test_helpers::make_task_with_status;
+
+    /// Build a minimal graph and VizApp for scrollbar testing.
+    /// Returns (VizApp, TempDir) — keep TempDir alive.
+    fn build_test_app() -> (VizApp, tempfile::TempDir) {
+        let mut graph = WorkGraph::new();
+        // Create enough tasks that scrolling makes sense.
+        for i in 0..20 {
+            let id = format!("task-{}", i);
+            let title = format!("Task {}", i);
+            let t = make_task_with_status(&id, &title, Status::Open);
+            graph.add_node(Node::Task(t));
+        }
+
+        let tmp = tempfile::tempdir().unwrap();
+        let graph_path = tmp.path().join("graph.jsonl");
+        save_graph(&graph, &graph_path).unwrap();
+
+        let tasks: Vec<_> = graph.tasks().collect();
+        let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
+        let viz = generate_ascii(
+            &graph,
+            &tasks,
+            &task_ids,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            VizLayoutMode::Tree,
+            &HashSet::new(),
+            "gray",
+            &HashMap::new(),
+        );
+
+        let mut app = VizApp::from_viz_output_for_test(&viz);
+        app.workgraph_dir = tmp.path().to_path_buf();
+        (app, tmp)
+    }
+
+    /// Configure the app's graph scroll state so that scrollbar interactions
+    /// have meaningful content to scroll through.
+    fn setup_graph_scroll(app: &mut VizApp, content_height: usize, viewport_height: usize) {
+        app.scroll.content_height = content_height;
+        app.scroll.viewport_height = viewport_height;
+        app.scroll.offset_y = 0;
+    }
+
+    // ── 1. Scrollbar hit-testing ──
+
+    #[test]
+    fn click_inside_graph_scrollbar_detected() {
+        let (mut app, _tmp) = build_test_app();
+        // Scrollbar occupies rightmost column of graph area.
+        // Place scrollbar area at x=79, y=1, height=20 (typical right edge).
+        app.last_graph_scrollbar_area = Rect {
+            x: 79,
+            y: 1,
+            width: 1,
+            height: 20,
+        };
+        let pos = Position::new(79, 10); // Inside scrollbar
+        assert!(
+            app.last_graph_scrollbar_area.height > 0 && app.last_graph_scrollbar_area.contains(pos),
+            "Click at (79,10) should be inside graph scrollbar"
+        );
+    }
+
+    #[test]
+    fn click_outside_graph_scrollbar_not_detected() {
+        let (mut app, _tmp) = build_test_app();
+        app.last_graph_scrollbar_area = Rect {
+            x: 79,
+            y: 1,
+            width: 1,
+            height: 20,
+        };
+        let pos = Position::new(78, 10); // One column to the left
+        assert!(
+            !app.last_graph_scrollbar_area.contains(pos),
+            "Click at (78,10) should NOT be inside scrollbar at x=79"
+        );
+    }
+
+    #[test]
+    fn click_on_scrollbar_boundary_top() {
+        let (mut app, _tmp) = build_test_app();
+        app.last_graph_scrollbar_area = Rect {
+            x: 79,
+            y: 1,
+            width: 1,
+            height: 20,
+        };
+        // Top edge: (79, 1) — should be inside.
+        let pos_top = Position::new(79, 1);
+        assert!(app.last_graph_scrollbar_area.contains(pos_top));
+        // Just above: (79, 0) — should be outside.
+        let pos_above = Position::new(79, 0);
+        assert!(!app.last_graph_scrollbar_area.contains(pos_above));
+    }
+
+    #[test]
+    fn click_on_scrollbar_boundary_bottom() {
+        let (mut app, _tmp) = build_test_app();
+        app.last_graph_scrollbar_area = Rect {
+            x: 79,
+            y: 1,
+            width: 1,
+            height: 20,
+        };
+        // Bottom edge: (79, 20) — y=1+20-1=20, should be inside.
+        let pos_bottom = Position::new(79, 20);
+        assert!(app.last_graph_scrollbar_area.contains(pos_bottom));
+        // Just below: (79, 21) — should be outside.
+        let pos_below = Position::new(79, 21);
+        assert!(!app.last_graph_scrollbar_area.contains(pos_below));
+    }
+
+    #[test]
+    fn click_inside_panel_scrollbar_detected() {
+        let (mut app, _tmp) = build_test_app();
+        app.last_panel_scrollbar_area = Rect {
+            x: 119,
+            y: 1,
+            width: 1,
+            height: 30,
+        };
+        let pos = Position::new(119, 15);
+        assert!(
+            app.last_panel_scrollbar_area.height > 0 && app.last_panel_scrollbar_area.contains(pos)
+        );
+    }
+
+    #[test]
+    fn zero_height_scrollbar_never_hit() {
+        let (mut app, _tmp) = build_test_app();
+        app.last_graph_scrollbar_area = Rect::default(); // zero-size
+        let pos = Position::new(0, 0);
+        // Even if contains() might return true for (0,0) in a zero rect,
+        // the code guards with height > 0.
+        let detected =
+            app.last_graph_scrollbar_area.height > 0 && app.last_graph_scrollbar_area.contains(pos);
+        assert!(
+            !detected,
+            "Zero-height scrollbar should never register a hit"
+        );
+    }
+
+    // ── 2. Proportional scroll calculation ──
+
+    #[test]
+    fn vscrollbar_jump_graph_midpoint() {
+        let (mut app, _tmp) = build_test_app();
+        setup_graph_scroll(&mut app, 100, 20); // max_offset = 80
+        app.last_graph_scrollbar_area = Rect {
+            x: 79,
+            y: 0,
+            width: 1,
+            height: 20,
+        };
+        // Click at row 10 out of 20 (50% of track).
+        // new_offset = (10 * 80) / (20 - 1) = 800 / 19 = 42
+        vscrollbar_jump_graph(&mut app, 10);
+        assert_eq!(app.scroll.offset_y, 42);
+    }
+
+    #[test]
+    fn vscrollbar_jump_graph_top() {
+        let (mut app, _tmp) = build_test_app();
+        setup_graph_scroll(&mut app, 100, 20);
+        app.last_graph_scrollbar_area = Rect {
+            x: 79,
+            y: 0,
+            width: 1,
+            height: 20,
+        };
+        // Click at row 0 (top of scrollbar).
+        vscrollbar_jump_graph(&mut app, 0);
+        assert_eq!(app.scroll.offset_y, 0);
+    }
+
+    #[test]
+    fn vscrollbar_jump_graph_bottom() {
+        let (mut app, _tmp) = build_test_app();
+        setup_graph_scroll(&mut app, 100, 20);
+        app.last_graph_scrollbar_area = Rect {
+            x: 79,
+            y: 0,
+            width: 1,
+            height: 20,
+        };
+        // Click at row 19 (bottom of scrollbar, 0-indexed within track).
+        // new_offset = (19 * 80) / 19 = 80
+        vscrollbar_jump_graph(&mut app, 19);
+        assert_eq!(app.scroll.offset_y, 80);
+    }
+
+    #[test]
+    fn vscrollbar_jump_graph_with_offset_scrollbar_area() {
+        let (mut app, _tmp) = build_test_app();
+        setup_graph_scroll(&mut app, 100, 20);
+        // Scrollbar starts at y=5 (not y=0).
+        app.last_graph_scrollbar_area = Rect {
+            x: 79,
+            y: 5,
+            width: 1,
+            height: 20,
+        };
+        // Click at absolute row 5 → row_in_track = 5 - 5 = 0 → offset 0.
+        vscrollbar_jump_graph(&mut app, 5);
+        assert_eq!(app.scroll.offset_y, 0);
+
+        // Click at absolute row 15 → row_in_track = 15 - 5 = 10.
+        // new_offset = (10 * 80) / 19 = 42
+        vscrollbar_jump_graph(&mut app, 15);
+        assert_eq!(app.scroll.offset_y, 42);
+    }
+
+    #[test]
+    fn vscrollbar_jump_graph_no_scroll_needed() {
+        let (mut app, _tmp) = build_test_app();
+        // Content fits in viewport: no scrolling possible.
+        setup_graph_scroll(&mut app, 10, 20);
+        app.last_graph_scrollbar_area = Rect {
+            x: 79,
+            y: 0,
+            width: 1,
+            height: 20,
+        };
+        app.scroll.offset_y = 0;
+        vscrollbar_jump_graph(&mut app, 10);
+        assert_eq!(
+            app.scroll.offset_y, 0,
+            "Should not scroll when content fits in viewport"
+        );
+    }
+
+    #[test]
+    fn vscrollbar_jump_graph_zero_height_scrollbar() {
+        let (mut app, _tmp) = build_test_app();
+        setup_graph_scroll(&mut app, 100, 20);
+        app.last_graph_scrollbar_area = Rect::default(); // height=0
+        app.scroll.offset_y = 5;
+        vscrollbar_jump_graph(&mut app, 10);
+        assert_eq!(
+            app.scroll.offset_y, 5,
+            "Should not change offset when scrollbar height is 0"
+        );
+    }
+
+    #[test]
+    fn vscrollbar_jump_panel_detail_tab() {
+        let (mut app, _tmp) = build_test_app();
+        app.right_panel_tab = RightPanelTab::Detail;
+        app.hud_wrapped_line_count = 100;
+        app.hud_detail_viewport_height = 20;
+        app.last_panel_scrollbar_area = Rect {
+            x: 119,
+            y: 0,
+            width: 1,
+            height: 20,
+        };
+        // Click at 50%: row_in_track=10, max_scroll=80.
+        // pos = (10 * 80) / 19 = 42
+        vscrollbar_jump_panel(&mut app, 10);
+        assert_eq!(app.hud_scroll, 42);
+    }
+
+    #[test]
+    fn vscrollbar_jump_panel_no_scroll_content_fits() {
+        let (mut app, _tmp) = build_test_app();
+        app.right_panel_tab = RightPanelTab::Detail;
+        app.hud_wrapped_line_count = 10;
+        app.hud_detail_viewport_height = 20;
+        app.last_panel_scrollbar_area = Rect {
+            x: 119,
+            y: 0,
+            width: 1,
+            height: 20,
+        };
+        app.hud_scroll = 0;
+        vscrollbar_jump_panel(&mut app, 10);
+        assert_eq!(app.hud_scroll, 0, "No scroll when content fits in viewport");
+    }
+
+    #[test]
+    fn hscrollbar_jump_midpoint() {
+        let (mut app, _tmp) = build_test_app();
+        app.scroll.content_width = 200;
+        app.scroll.viewport_width = 80;
+        // max_offset = 120
+        app.last_graph_hscrollbar_area = Rect {
+            x: 0,
+            y: 29,
+            width: 80,
+            height: 1,
+        };
+        // Click at column 40 (50% of 80-wide track).
+        // col_in_track = 40, new_offset = (40 * 120) / 79 = 60
+        hscrollbar_jump_to_column(&mut app, 40);
+        assert_eq!(app.scroll.offset_x, (40 * 120) / 79);
+    }
+
+    #[test]
+    fn hscrollbar_jump_no_scroll_needed() {
+        let (mut app, _tmp) = build_test_app();
+        app.scroll.content_width = 50;
+        app.scroll.viewport_width = 80;
+        app.last_graph_hscrollbar_area = Rect {
+            x: 0,
+            y: 29,
+            width: 80,
+            height: 1,
+        };
+        app.scroll.offset_x = 0;
+        hscrollbar_jump_to_column(&mut app, 40);
+        assert_eq!(app.scroll.offset_x, 0);
+    }
+
+    // ── 3. Drag state management ──
+
+    #[test]
+    fn mousedown_on_graph_scrollbar_starts_drag() {
+        let (mut app, _tmp) = build_test_app();
+        setup_graph_scroll(&mut app, 100, 20);
+        app.last_graph_scrollbar_area = Rect {
+            x: 79,
+            y: 0,
+            width: 1,
+            height: 20,
+        };
+        // Ensure no panel scrollbar conflicts.
+        app.last_panel_scrollbar_area = Rect::default();
+        app.last_graph_hscrollbar_area = Rect::default();
+
+        assert!(app.scrollbar_drag.is_none());
+        handle_mouse(&mut app, MouseEventKind::Down(MouseButton::Left), 10, 79);
+        assert_eq!(app.scrollbar_drag, Some(ScrollbarDragTarget::Graph));
+    }
+
+    #[test]
+    fn mousedown_on_panel_scrollbar_starts_drag() {
+        let (mut app, _tmp) = build_test_app();
+        app.right_panel_tab = RightPanelTab::Detail;
+        app.hud_wrapped_line_count = 100;
+        app.hud_detail_viewport_height = 20;
+        app.last_panel_scrollbar_area = Rect {
+            x: 119,
+            y: 0,
+            width: 1,
+            height: 20,
+        };
+        app.last_graph_scrollbar_area = Rect::default();
+        app.last_graph_hscrollbar_area = Rect::default();
+
+        assert!(app.scrollbar_drag.is_none());
+        handle_mouse(&mut app, MouseEventKind::Down(MouseButton::Left), 10, 119);
+        assert_eq!(app.scrollbar_drag, Some(ScrollbarDragTarget::Panel));
+    }
+
+    #[test]
+    fn drag_updates_scroll_position() {
+        let (mut app, _tmp) = build_test_app();
+        setup_graph_scroll(&mut app, 100, 20);
+        app.last_graph_scrollbar_area = Rect {
+            x: 79,
+            y: 0,
+            width: 1,
+            height: 20,
+        };
+        app.last_panel_scrollbar_area = Rect::default();
+        app.last_graph_hscrollbar_area = Rect::default();
+
+        // Start drag.
+        handle_mouse(&mut app, MouseEventKind::Down(MouseButton::Left), 0, 79);
+        assert_eq!(app.scroll.offset_y, 0);
+
+        // Drag to midpoint.
+        handle_mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), 10, 79);
+        let expected = (10 * 80) / 19; // 42
+        assert_eq!(app.scroll.offset_y, expected);
+
+        // Drag to near bottom.
+        handle_mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), 18, 79);
+        let expected = (18 * 80) / 19; // 75
+        assert_eq!(app.scroll.offset_y, expected);
+    }
+
+    #[test]
+    fn mouseup_clears_drag_state() {
+        let (mut app, _tmp) = build_test_app();
+        setup_graph_scroll(&mut app, 100, 20);
+        app.last_graph_scrollbar_area = Rect {
+            x: 79,
+            y: 0,
+            width: 1,
+            height: 20,
+        };
+        app.last_panel_scrollbar_area = Rect::default();
+        app.last_graph_hscrollbar_area = Rect::default();
+
+        // Start drag.
+        handle_mouse(&mut app, MouseEventKind::Down(MouseButton::Left), 5, 79);
+        assert!(app.scrollbar_drag.is_some());
+
+        // Release.
+        handle_mouse(&mut app, MouseEventKind::Up(MouseButton::Left), 5, 79);
+        assert!(
+            app.scrollbar_drag.is_none(),
+            "Drag state should be cleared on mouse up"
+        );
+    }
+
+    #[test]
+    fn drag_without_prior_mousedown_has_no_effect() {
+        let (mut app, _tmp) = build_test_app();
+        setup_graph_scroll(&mut app, 100, 20);
+        app.last_graph_scrollbar_area = Rect {
+            x: 79,
+            y: 0,
+            width: 1,
+            height: 20,
+        };
+        app.last_panel_scrollbar_area = Rect::default();
+        app.last_graph_hscrollbar_area = Rect::default();
+        app.scroll.offset_y = 5;
+
+        // Drag event without prior mousedown — scrollbar_drag is None.
+        handle_mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), 15, 79);
+        assert_eq!(
+            app.scroll.offset_y, 5,
+            "Drag without active drag state should not change scroll"
+        );
+    }
+
+    // ── 4. Simulated mouse event sequences ──
+
+    #[test]
+    fn full_click_drag_release_sequence_graph() {
+        let (mut app, _tmp) = build_test_app();
+        setup_graph_scroll(&mut app, 100, 20);
+        app.last_graph_scrollbar_area = Rect {
+            x: 79,
+            y: 0,
+            width: 1,
+            height: 20,
+        };
+        app.last_panel_scrollbar_area = Rect::default();
+        app.last_graph_hscrollbar_area = Rect::default();
+
+        // Step 1: MouseDown at top of scrollbar.
+        handle_mouse(&mut app, MouseEventKind::Down(MouseButton::Left), 0, 79);
+        assert_eq!(app.scrollbar_drag, Some(ScrollbarDragTarget::Graph));
+        assert_eq!(app.scroll.offset_y, 0);
+
+        // Step 2: Drag to row 5.
+        handle_mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), 5, 79);
+        let pos_at_5 = app.scroll.offset_y;
+        assert!(pos_at_5 > 0, "Dragging down should increase scroll offset");
+
+        // Step 3: Drag to row 15.
+        handle_mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), 15, 79);
+        let pos_at_15 = app.scroll.offset_y;
+        assert!(
+            pos_at_15 > pos_at_5,
+            "Dragging further down should increase scroll more"
+        );
+
+        // Step 4: MouseUp.
+        handle_mouse(&mut app, MouseEventKind::Up(MouseButton::Left), 15, 79);
+        assert!(app.scrollbar_drag.is_none());
+        // Scroll position preserved after release.
+        assert_eq!(app.scroll.offset_y, pos_at_15);
+    }
+
+    #[test]
+    fn full_click_drag_release_sequence_panel() {
+        let (mut app, _tmp) = build_test_app();
+        app.right_panel_tab = RightPanelTab::Detail;
+        app.hud_wrapped_line_count = 100;
+        app.hud_detail_viewport_height = 20;
+        app.last_panel_scrollbar_area = Rect {
+            x: 119,
+            y: 0,
+            width: 1,
+            height: 20,
+        };
+        app.last_graph_scrollbar_area = Rect::default();
+        app.last_graph_hscrollbar_area = Rect::default();
+
+        // MouseDown on panel scrollbar.
+        handle_mouse(&mut app, MouseEventKind::Down(MouseButton::Left), 0, 119);
+        assert_eq!(app.scrollbar_drag, Some(ScrollbarDragTarget::Panel));
+        assert_eq!(app.hud_scroll, 0);
+
+        // Drag to row 10.
+        handle_mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), 10, 119);
+        let mid_scroll = app.hud_scroll;
+        assert!(mid_scroll > 0);
+
+        // Drag to row 19.
+        handle_mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), 19, 119);
+        assert_eq!(app.hud_scroll, 80); // max scroll
+
+        // Release.
+        handle_mouse(&mut app, MouseEventKind::Up(MouseButton::Left), 19, 119);
+        assert!(app.scrollbar_drag.is_none());
+        assert_eq!(app.hud_scroll, 80); // preserved
+    }
+
+    #[test]
+    fn horizontal_scrollbar_click_drag_release() {
+        let (mut app, _tmp) = build_test_app();
+        app.scroll.content_width = 200;
+        app.scroll.viewport_width = 80;
+        app.last_graph_hscrollbar_area = Rect {
+            x: 0,
+            y: 29,
+            width: 80,
+            height: 1,
+        };
+        app.last_graph_scrollbar_area = Rect::default();
+        app.last_panel_scrollbar_area = Rect::default();
+
+        // MouseDown on horizontal scrollbar.
+        handle_mouse(&mut app, MouseEventKind::Down(MouseButton::Left), 29, 0);
+        assert_eq!(
+            app.scrollbar_drag,
+            Some(ScrollbarDragTarget::GraphHorizontal)
+        );
+        assert_eq!(app.scroll.offset_x, 0);
+
+        // Drag to column 40.
+        handle_mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), 29, 40);
+        assert!(app.scroll.offset_x > 0);
+
+        // Release.
+        handle_mouse(&mut app, MouseEventKind::Up(MouseButton::Left), 29, 40);
+        assert!(app.scrollbar_drag.is_none());
+    }
+
+    #[test]
+    fn click_outside_scrollbar_does_not_start_drag() {
+        let (mut app, _tmp) = build_test_app();
+        setup_graph_scroll(&mut app, 100, 20);
+        app.last_graph_scrollbar_area = Rect {
+            x: 79,
+            y: 0,
+            width: 1,
+            height: 20,
+        };
+        app.last_panel_scrollbar_area = Rect::default();
+        app.last_graph_hscrollbar_area = Rect::default();
+        // Set graph area so the click registers as a graph click, not scrollbar.
+        app.last_graph_area = Rect {
+            x: 0,
+            y: 0,
+            width: 79,
+            height: 20,
+        };
+
+        // Click inside graph area but NOT on scrollbar.
+        handle_mouse(&mut app, MouseEventKind::Down(MouseButton::Left), 10, 50);
+        assert!(
+            app.scrollbar_drag.is_none(),
+            "Click inside graph body should not start scrollbar drag"
+        );
+    }
+
+    #[test]
+    fn drag_position_clamped_to_max() {
+        let (mut app, _tmp) = build_test_app();
+        setup_graph_scroll(&mut app, 100, 20); // max_offset = 80
+        app.last_graph_scrollbar_area = Rect {
+            x: 79,
+            y: 0,
+            width: 1,
+            height: 20,
+        };
+        app.last_panel_scrollbar_area = Rect::default();
+        app.last_graph_hscrollbar_area = Rect::default();
+
+        // Start drag.
+        handle_mouse(&mut app, MouseEventKind::Down(MouseButton::Left), 0, 79);
+
+        // Drag way beyond the scrollbar bottom.
+        handle_mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), 100, 79);
+        assert!(
+            app.scroll.offset_y <= 80,
+            "Scroll position should be clamped to max_offset (80), got {}",
+            app.scroll.offset_y
+        );
+    }
+
+    // ── 5. Scrollbar visibility ──
+
+    #[test]
+    fn graph_scrollbar_visible_during_drag() {
+        let (mut app, _tmp) = build_test_app();
+        app.scrollbar_drag = Some(ScrollbarDragTarget::Graph);
+        assert!(
+            app.graph_scrollbar_visible(),
+            "Scrollbar should be visible while dragging"
+        );
+    }
+
+    #[test]
+    fn panel_scrollbar_visible_during_drag() {
+        let (mut app, _tmp) = build_test_app();
+        app.scrollbar_drag = Some(ScrollbarDragTarget::Panel);
+        assert!(
+            app.panel_scrollbar_visible(),
+            "Panel scrollbar should be visible while dragging"
+        );
+    }
+
+    #[test]
+    fn graph_scrollbar_not_visible_without_activity() {
+        let (mut app, _tmp) = build_test_app();
+        app.scrollbar_drag = None;
+        app.graph_scroll_activity = None;
+        assert!(
+            !app.graph_scrollbar_visible(),
+            "Scrollbar should not be visible without recent activity"
+        );
+    }
+
+    #[test]
+    fn scrollbar_visible_after_scroll_activity() {
+        let (mut app, _tmp) = build_test_app();
+        app.record_graph_scroll_activity();
+        assert!(
+            app.graph_scrollbar_visible(),
+            "Scrollbar should be visible immediately after scroll activity"
+        );
+    }
 }

@@ -9,6 +9,7 @@ use unicode_width::UnicodeWidthStr;
 use super::state::{
     ConfigEditKind, ConfigSection, ConfirmAction, FocusedPanel, InputMode, LayoutMode,
     RightPanelTab, SortMode, TaskFormField, TaskFormState, TextPromptAction, VizApp,
+    extract_section_name,
 };
 use workgraph::AgentStatus;
 use workgraph::graph::{TokenUsage, format_tokens};
@@ -26,6 +27,10 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
 
     // Clean up expired splash animations.
     app.cleanup_splash_animations();
+
+    // Reset scrollbar areas each frame (re-set by draw_scrollbar / panel scrollbar code).
+    app.last_graph_scrollbar_area = Rect::default();
+    app.last_panel_scrollbar_area = Rect::default();
 
     let area = frame.area();
 
@@ -827,8 +832,38 @@ fn highlight_fuzzy_match<'a>(
     Line::from(new_spans)
 }
 
-fn draw_scrollbar(frame: &mut Frame, app: &VizApp, area: Rect) {
+fn draw_scrollbar(frame: &mut Frame, app: &mut VizApp, area: Rect) {
+    // Store the scrollbar area for mouse hit-testing (rightmost column of the area).
+    let sb_area = Rect {
+        x: area.x + area.width.saturating_sub(1),
+        y: area.y,
+        width: 1,
+        height: area.height,
+    };
+    app.last_graph_scrollbar_area = sb_area;
+
     let mut state = ScrollbarState::new(app.scroll.content_height).position(app.scroll.offset_y);
+    let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight);
+    frame.render_stateful_widget(scrollbar, area, &mut state);
+}
+
+/// Render a vertical scrollbar for the right panel and store its area for hit-testing.
+fn draw_panel_scrollbar(
+    frame: &mut Frame,
+    app: &mut VizApp,
+    area: Rect,
+    max_scroll: usize,
+    position: usize,
+) {
+    let sb_area = Rect {
+        x: area.x + area.width.saturating_sub(1),
+        y: area.y,
+        width: 1,
+        height: area.height,
+    };
+    app.last_panel_scrollbar_area = sb_area;
+
+    let mut state = ScrollbarState::new(max_scroll).position(position);
     let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight);
     frame.render_stateful_widget(scrollbar, area, &mut state);
 }
@@ -967,9 +1002,40 @@ fn draw_detail_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
         }
     };
 
+    // Build visible lines: filter out content of collapsed sections, add ▸/▾ indicators.
+    let mut visible_lines: Vec<String> = Vec::new();
+    let mut current_section: Option<String> = None;
+    let mut in_collapsed = false;
+
+    for line in &detail.rendered_lines {
+        if let Some(name) = extract_section_name(line) {
+            let collapsed = app.detail_collapsed_sections.contains(&name);
+            let indicator = if collapsed { "▸" } else { "▾" };
+            // Replace the original header with an indicator-prefixed version.
+            visible_lines.push(format!("{} ── {} ──", indicator, name));
+            current_section = Some(name);
+            in_collapsed = collapsed;
+        } else if in_collapsed {
+            // Skip content lines in collapsed sections.
+            // But allow the trailing blank line (section separator) through so
+            // the next section header doesn't merge visually with collapsed one.
+            if line.is_empty() {
+                visible_lines.push(String::new());
+                in_collapsed = false;
+            }
+        } else {
+            visible_lines.push(line.clone());
+            // If we hit an empty line, the current section content ends.
+            if line.is_empty() {
+                current_section = None;
+            }
+        }
+    }
+    let _ = current_section; // suppress unused warning
+
     // Word-wrap all content lines to fit the panel width.
     let wrap_width = area.width as usize;
-    let wrapped: Vec<(String, bool)> = wrap_detail_lines(&detail.rendered_lines, wrap_width);
+    let wrapped: Vec<(String, bool)> = wrap_detail_lines(&visible_lines, wrap_width);
 
     let total_lines = wrapped.len();
     let viewport_h = area.height as usize;
@@ -997,11 +1063,6 @@ fn draw_detail_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
                         .fg(Color::Cyan)
                         .add_modifier(Modifier::BOLD),
                 ))
-            } else if s.starts_with("  ...") {
-                Line::from(Span::styled(
-                    s.clone(),
-                    Style::default().fg(Color::DarkGray),
-                ))
             } else {
                 Line::from(Span::raw(s.clone()))
             }
@@ -1012,10 +1073,13 @@ fn draw_detail_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     frame.render_widget(paragraph, area);
 
     if total_lines > viewport_h && app.panel_scrollbar_visible() {
-        let mut state =
-            ScrollbarState::new(total_lines.saturating_sub(viewport_h)).position(app.hud_scroll);
-        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight);
-        frame.render_stateful_widget(scrollbar, area, &mut state);
+        draw_panel_scrollbar(
+            frame,
+            app,
+            area,
+            total_lines.saturating_sub(viewport_h),
+            app.hud_scroll,
+        );
     }
 }
 
@@ -1185,6 +1249,8 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     // Scrolling: `scroll` is lines from bottom (0 = fully scrolled down).
     let total_lines = rendered_lines.len();
     let viewport_h = msg_area.height as usize;
+    app.chat.total_rendered_lines = total_lines;
+    app.chat.viewport_height = viewport_h;
 
     // Calculate the visible window.
     let scroll_from_top = if total_lines <= viewport_h {
@@ -1203,9 +1269,7 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
 
     // Scrollbar if content overflows (auto-hides after 2 seconds of inactivity).
     if total_lines > viewport_h && app.panel_scrollbar_visible() {
-        let mut state = ScrollbarState::new(total_lines).position(scroll_from_top);
-        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight);
-        frame.render_stateful_widget(scrollbar, msg_area, &mut state);
+        draw_panel_scrollbar(frame, app, msg_area, total_lines, scroll_from_top);
     }
 
     // Input area.
@@ -1509,10 +1573,13 @@ fn draw_log_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
 
     // Scrollbar if content overflows (auto-hides after 2 seconds of inactivity).
     if total_lines > viewport_h && app.panel_scrollbar_visible() {
-        let mut scrollbar_state =
-            ScrollbarState::new(total_lines.saturating_sub(viewport_h)).position(scroll);
-        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight);
-        frame.render_stateful_widget(scrollbar, area, &mut scrollbar_state);
+        draw_panel_scrollbar(
+            frame,
+            app,
+            area,
+            total_lines.saturating_sub(viewport_h),
+            scroll,
+        );
     }
 }
 
@@ -1609,15 +1676,18 @@ fn draw_coord_log_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     let paragraph = Paragraph::new(visible_lines);
     frame.render_widget(paragraph, area);
     if total_lines > viewport_h && app.panel_scrollbar_visible() {
-        let mut scrollbar_state =
-            ScrollbarState::new(total_lines.saturating_sub(viewport_h)).position(scroll);
-        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight);
-        frame.render_stateful_widget(scrollbar, area, &mut scrollbar_state);
+        draw_panel_scrollbar(
+            frame,
+            app,
+            area,
+            total_lines.saturating_sub(viewport_h),
+            scroll,
+        );
     }
 }
 
 /// Draw the Messages tab content (panel 3) — message queue for selected task.
-fn draw_messages_tab(frame: &mut Frame, app: &VizApp, area: Rect) {
+fn draw_messages_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     let width = area.width as usize;
     if width < 4 || area.height < 3 {
         return;
@@ -1865,6 +1935,8 @@ fn draw_messages_tab(frame: &mut Frame, app: &VizApp, area: Rect) {
     }
 
     let total_lines = wrapped_lines.len();
+    app.messages_panel.total_wrapped_lines = total_lines;
+    app.messages_panel.viewport_height = viewport_h;
 
     // Scrolling: scroll is from top (0 = fully scrolled to top).
     let scroll = app
@@ -1879,9 +1951,7 @@ fn draw_messages_tab(frame: &mut Frame, app: &VizApp, area: Rect) {
     frame.render_widget(paragraph, msg_area);
 
     if total_lines > viewport_h && app.panel_scrollbar_visible() {
-        let mut state = ScrollbarState::new(total_lines).position(scroll);
-        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight);
-        frame.render_stateful_widget(scrollbar, msg_area, &mut state);
+        draw_panel_scrollbar(frame, app, msg_area, total_lines, scroll);
     }
 
     // Input area.
@@ -1985,20 +2055,22 @@ fn draw_message_input(frame: &mut Frame, app: &VizApp, area: Rect) {
 }
 
 /// Wrap HUD detail lines for rendering, preserving section headers.
-/// Returns (line_text, is_header) tuples. Section headers (starting with "──")
+/// Returns (line_text, is_header) tuples. Section headers (starting with "──" or "▸/▾ ──")
 /// are never wrapped. Other lines are word-wrapped to fit `max_width`, with
 /// continuation lines preserving any leading indent from the original line.
 fn wrap_detail_lines(lines: &[String], max_width: usize) -> Vec<(String, bool)> {
+    let is_section_header =
+        |l: &str| l.starts_with("──") || l.starts_with("▸ ──") || l.starts_with("▾ ──");
     let mut out = Vec::new();
     if max_width == 0 {
         for l in lines {
-            let is_header = l.starts_with("──");
+            let is_header = is_section_header(l);
             out.push((l.clone(), is_header));
         }
         return out;
     }
     for line in lines {
-        let is_header = line.starts_with("──");
+        let is_header = is_section_header(line);
         if is_header || line.len() <= max_width || line.trim().is_empty() {
             out.push((line.clone(), is_header));
         } else {
@@ -2146,7 +2218,7 @@ fn wrap_line_spans<'a>(lines: &[Line<'a>], max_width: usize) -> Vec<Line<'a>> {
 }
 
 /// Draw the Agents tab content: lifecycle view for selected task + agent list.
-fn draw_agents_tab(frame: &mut Frame, app: &VizApp, area: Rect) {
+fn draw_agents_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     let mut lines: Vec<Line> = Vec::new();
 
     // ── Task Lifecycle (assign → execute → evaluate) ──
@@ -2443,6 +2515,8 @@ fn draw_agents_tab(frame: &mut Frame, app: &VizApp, area: Rect) {
 
     let viewport_h = area.height as usize;
     let total_lines = wrapped_lines.len();
+    app.agent_monitor.total_rendered_lines = total_lines;
+    app.agent_monitor.viewport_height = viewport_h;
     let scroll = app
         .agent_monitor
         .scroll
@@ -2452,6 +2526,16 @@ fn draw_agents_tab(frame: &mut Frame, app: &VizApp, area: Rect) {
 
     let paragraph = Paragraph::new(visible_lines);
     frame.render_widget(paragraph, area);
+
+    if total_lines > viewport_h && app.panel_scrollbar_visible() {
+        draw_panel_scrollbar(
+            frame,
+            app,
+            area,
+            total_lines.saturating_sub(viewport_h),
+            scroll,
+        );
+    }
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -3100,6 +3184,7 @@ fn draw_help_overlay(frame: &mut Frame) {
         binding("=", "Cycle layout: split/panel/graph"),
         binding("0-7", "Switch tab: Chat/.../Files/Coord"),
         binding("R", "Toggle raw JSON in Detail tab"),
+        binding("Space", "Toggle section collapse in Detail"),
         blank(),
         heading("Edge Tracing"),
         binding("t", "Toggle trace on/off"),
@@ -3307,7 +3392,11 @@ fn draw_config_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
         let label_width = 24;
         let label = format!("{:<width$}", entry.label, width = label_width);
 
-        let style = if is_selected {
+        let style = if is_editing {
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD)
+        } else if is_selected {
             Style::default()
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD)
@@ -3315,36 +3404,49 @@ fn draw_config_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
             Style::default().fg(Color::White)
         };
 
-        let value_color = match &entry.edit_kind {
-            ConfigEditKind::Toggle => {
-                if entry.value == "on" {
-                    Color::Green
-                } else {
-                    Color::Red
+        let value_style = if is_editing {
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            let value_color = match &entry.edit_kind {
+                ConfigEditKind::Toggle => {
+                    if entry.value == "on" {
+                        Color::Green
+                    } else {
+                        Color::Red
+                    }
                 }
-            }
-            ConfigEditKind::SecretInput => {
-                if entry.value == "(not set)" {
-                    Color::DarkGray
-                } else {
-                    Color::Magenta
+                ConfigEditKind::SecretInput => {
+                    if entry.value == "(not set)" {
+                        Color::DarkGray
+                    } else {
+                        Color::Magenta
+                    }
                 }
-            }
-            _ => {
-                if is_selected {
-                    Color::Yellow
-                } else {
-                    Color::Gray
+                _ => {
+                    if is_selected {
+                        Color::Yellow
+                    } else {
+                        Color::Gray
+                    }
                 }
-            }
+            };
+            Style::default().fg(value_color)
         };
 
-        let cursor = if is_selected { "▸ " } else { "  " };
+        let cursor = if is_editing {
+            "✎ "
+        } else if is_selected {
+            "▸ "
+        } else {
+            "  "
+        };
 
         let line = Line::from(vec![
             Span::styled(cursor, style),
             Span::styled(label, style),
-            Span::styled(value_display, Style::default().fg(value_color)),
+            Span::styled(value_display, value_style),
         ]);
 
         lines.push((line, true));
@@ -3403,6 +3505,15 @@ fn draw_config_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     let start = app.config_panel.scroll;
     let end = (start + viewport_h).min(lines.len());
 
+    // Build entry_idx → screen Y mapping for mouse click detection.
+    app.config_entry_y_positions.clear();
+    for (entry_idx, &display_line) in entry_line_map.iter().enumerate() {
+        if display_line >= start && display_line < end {
+            let screen_y = area.y + (display_line - start) as u16;
+            app.config_entry_y_positions.push((entry_idx, screen_y));
+        }
+    }
+
     let visible_lines: Vec<Line> = lines[start..end].iter().map(|(l, _)| l.clone()).collect();
 
     let paragraph = Paragraph::new(visible_lines);
@@ -3410,10 +3521,13 @@ fn draw_config_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
 
     // Scrollbar if content exceeds viewport (auto-hides after 2 seconds of inactivity).
     if lines.len() > viewport_h && app.panel_scrollbar_visible() {
-        let mut state = ScrollbarState::new(lines.len().saturating_sub(viewport_h))
-            .position(app.config_panel.scroll);
-        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight);
-        frame.render_stateful_widget(scrollbar, area, &mut state);
+        draw_panel_scrollbar(
+            frame,
+            app,
+            area,
+            lines.len().saturating_sub(viewport_h),
+            app.config_panel.scroll,
+        );
     }
 }
 

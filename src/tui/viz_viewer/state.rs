@@ -245,7 +245,7 @@ impl RightPanelTab {
 }
 
 /// Which scrollbar is being dragged by the mouse.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ScrollbarDragTarget {
     /// Dragging the graph pane scrollbar.
     Graph,
@@ -507,6 +507,10 @@ pub struct ChatState {
     pub coordinator_active: bool,
     /// Pending attachments for the next message (file paths, already stored in .workgraph/attachments/).
     pub pending_attachments: Vec<PendingAttachment>,
+    /// Total rendered lines (set each frame by renderer, for scrollbar dragging).
+    pub total_rendered_lines: usize,
+    /// Viewport height for the message area (set each frame by renderer).
+    pub viewport_height: usize,
 }
 
 /// A pending attachment waiting to be sent with the next chat message.
@@ -543,6 +547,10 @@ pub struct AgentMonitorState {
     pub agents: Vec<AgentMonitorEntry>,
     /// Scroll offset.
     pub scroll: usize,
+    /// Total rendered lines (set each frame by renderer, for scrollbar dragging).
+    pub total_rendered_lines: usize,
+    /// Viewport height (set each frame by renderer).
+    pub viewport_height: usize,
 }
 
 pub struct AgentMonitorEntry {
@@ -658,6 +666,10 @@ pub struct MessagesPanelState {
     pub input: String,
     /// Cursor position (byte offset) within `input`.
     pub cursor: usize,
+    /// Total wrapped lines (set each frame by renderer, for scrollbar dragging).
+    pub total_wrapped_lines: usize,
+    /// Viewport height for the message area (set each frame by renderer).
+    pub viewport_height: usize,
 }
 
 /// A single setting entry displayed in the Config panel.
@@ -802,6 +814,32 @@ pub struct HudDetail {
     pub rendered_lines: Vec<String>,
 }
 
+/// Extract section name from a detail header line like "── Description ──" → "Description".
+/// Returns None for non-header lines or the task-id header (first line).
+pub fn extract_section_name(line: &str) -> Option<String> {
+    let trimmed = line.trim();
+    if trimmed.starts_with("──") && trimmed.ends_with("──") {
+        let inner = trimmed
+            .trim_start_matches('─')
+            .trim_end_matches('─')
+            .trim()
+            // Strip any trailing annotations like "[R: raw JSON]"
+            .split(" [")
+            .next()
+            .unwrap_or("")
+            .trim();
+        // Skip the task-id header line (it doesn't contain spaces or known section keywords)
+        // Section names are things like "Description", "Prompt", "Output", "Output (raw)", etc.
+        if !inner.is_empty() {
+            Some(inner.to_string())
+        } else {
+            None
+        }
+    } else {
+        None
+    }
+}
+
 /// Task status counts for the status bar.
 #[derive(Default)]
 pub struct TaskCounts {
@@ -890,6 +928,10 @@ pub struct VizApp {
     /// The content area inside the right panel (below tab bar) from the last render frame.
     pub last_right_content_area: Rect,
 
+    /// Maps config entry index → screen Y position (set each frame by renderer).
+    /// Used for mouse click → config entry selection.
+    pub config_entry_y_positions: Vec<(usize, u16)>,
+
     // ── Jump target (transient highlight after Enter) ──
     /// After pressing Enter on a search match, stores (original_line_index, when_set).
     /// Render code applies a transient yellow highlight that fades after ~2 seconds.
@@ -933,6 +975,8 @@ pub struct VizApp {
     pub hud_detail_viewport_height: usize,
     /// When true, show raw JSON in the Detail tab instead of human-readable format.
     pub detail_raw_json: bool,
+    /// Set of collapsed section names in the Detail view (persists across task switches).
+    pub detail_collapsed_sections: std::collections::HashSet<String>,
 
     // ── Multi-panel layout ──
     /// Whether the right panel is visible (toggle with `\`).
@@ -1033,6 +1077,11 @@ pub struct VizApp {
     /// Which scrollbar (if any) is currently being dragged.
     pub scrollbar_drag: Option<ScrollbarDragTarget>,
 
+    /// Vertical scrollbar area for the graph pane (set each frame by renderer).
+    pub last_graph_scrollbar_area: Rect,
+    /// Vertical scrollbar area for the right panel (set each frame by renderer).
+    pub last_panel_scrollbar_area: Rect,
+
     pub graph_hscroll_activity: Option<Instant>,
     #[allow(dead_code)]
     pub panel_hscroll_activity: Option<Instant>,
@@ -1118,6 +1167,7 @@ impl VizApp {
             last_right_panel_area: Rect::default(),
             last_tab_bar_area: Rect::default(),
             last_right_content_area: Rect::default(),
+            config_entry_y_positions: Vec::new(),
             jump_target: None,
             task_order: Vec::new(),
             node_line_map: HashMap::new(),
@@ -1135,6 +1185,7 @@ impl VizApp {
             hud_wrapped_line_count: 0,
             hud_detail_viewport_height: 0,
             detail_raw_json: false,
+            detail_collapsed_sections: std::collections::HashSet::new(),
             right_panel_visible: true,
             focused_panel: FocusedPanel::Graph,
             right_panel_tab: RightPanelTab::Detail,
@@ -1170,6 +1221,8 @@ impl VizApp {
             graph_scroll_activity: None,
             panel_scroll_activity: None,
             scrollbar_drag: None,
+            last_graph_scrollbar_area: Rect::default(),
+            last_panel_scrollbar_area: Rect::default(),
             graph_hscroll_activity: None,
             panel_hscroll_activity: None,
             last_graph_hscrollbar_area: Rect::default(),
@@ -2366,11 +2419,7 @@ impl VizApp {
         // ── Description ──
         if let Some(ref desc) = task.description {
             lines.push("── Description ──".to_string());
-            for (i, line) in desc.lines().enumerate() {
-                if i >= 10 {
-                    lines.push("  ...".to_string());
-                    break;
-                }
+            for line in desc.lines() {
                 lines.push(format!("  {}", line));
             }
             lines.push(String::new());
@@ -2683,11 +2732,7 @@ impl VizApp {
         // ── Description ──
         if let Some(ref desc) = task.description {
             lines.push("── Description ──".to_string());
-            for (i, line) in desc.lines().enumerate() {
-                if i >= 10 {
-                    lines.push("  ...".to_string());
-                    break;
-                }
+            for line in desc.lines() {
                 lines.push(format!("  {}", line));
             }
             lines.push(String::new());
@@ -2810,6 +2855,37 @@ impl VizApp {
             .hud_wrapped_line_count
             .saturating_sub(self.hud_detail_viewport_height);
         self.hud_scroll = (self.hud_scroll + amount).min(max_scroll);
+    }
+
+    /// Toggle collapse state of the section header at the current scroll position.
+    /// Returns the name of the toggled section, if any.
+    pub fn toggle_detail_section_at_scroll(&mut self) -> Option<String> {
+        let detail = self.hud_detail.as_ref()?;
+        // Find which section header is currently at the top of the viewport (or closest above).
+        // We use the unwrapped rendered_lines to find section headers, then map
+        // through the wrapped lines to find the one at the scroll position.
+        // Since we can't easily map wrapped→unwrapped here, we scan the wrapped
+        // output that was last produced by draw_detail_tab. Instead, we'll just
+        // scan rendered_lines for section headers and let the renderer handle it.
+        // Find the section at the current scroll position by scanning rendered_lines.
+        let mut current_section: Option<String> = None;
+        for (line_idx, raw_line) in detail.rendered_lines.iter().enumerate() {
+            if let Some(name) = extract_section_name(raw_line) {
+                // This is a section header. Check if it's the first one at or before scroll pos.
+                current_section = Some(name);
+            }
+            if line_idx >= self.hud_scroll {
+                break;
+            }
+        }
+        if let Some(ref name) = current_section {
+            if self.detail_collapsed_sections.contains(name) {
+                self.detail_collapsed_sections.remove(name);
+            } else {
+                self.detail_collapsed_sections.insert(name.clone());
+            }
+        }
+        current_section
     }
 
     /// Record scroll activity in the graph pane for auto-hiding scrollbar.
@@ -3195,6 +3271,7 @@ impl VizApp {
             last_right_panel_area: Rect::default(),
             last_tab_bar_area: Rect::default(),
             last_right_content_area: Rect::default(),
+            config_entry_y_positions: Vec::new(),
             jump_target: None,
             task_order,
             node_line_map: viz.node_line_map.clone(),
@@ -3212,6 +3289,7 @@ impl VizApp {
             hud_wrapped_line_count: 0,
             hud_detail_viewport_height: 0,
             detail_raw_json: false,
+            detail_collapsed_sections: std::collections::HashSet::new(),
             right_panel_visible: false,
             focused_panel: FocusedPanel::Graph,
             right_panel_tab: RightPanelTab::Detail,
@@ -3245,6 +3323,8 @@ impl VizApp {
             graph_scroll_activity: None,
             panel_scroll_activity: None,
             scrollbar_drag: None,
+            last_graph_scrollbar_area: Rect::default(),
+            last_panel_scrollbar_area: Rect::default(),
             graph_hscroll_activity: None,
             panel_hscroll_activity: None,
             last_graph_hscrollbar_area: Rect::default(),
@@ -6136,7 +6216,7 @@ mod hud_tests {
     // ── ADDITIONAL: description truncation ──
 
     #[test]
-    fn hud_description_truncated_to_10_lines() {
+    fn hud_description_shows_full_content() {
         let mut graph = WorkGraph::new();
         let mut task = make_task_with_status("long-desc", "Long Description Task", Status::Open);
         task.description = Some(
@@ -6182,15 +6262,67 @@ mod hud_tests {
             .take_while(|l| !l.is_empty())
             .collect();
 
-        // Should have at most 11 lines (10 content + 1 "  ..." truncation indicator)
-        assert!(
-            desc_lines.len() <= 11,
-            "Description should be truncated, got {} lines",
+        // Full description: all 15 lines should be present, no truncation
+        assert_eq!(
+            desc_lines.len(),
+            15,
+            "Description should show all 15 lines, got {}",
             desc_lines.len()
         );
         assert!(
-            desc_lines.iter().any(|l| l.contains("...")),
-            "Truncated description should show '...' indicator"
+            !desc_lines.iter().any(|l| l.contains("...")),
+            "Full description should not show '...' truncation indicator"
         );
+    }
+
+    #[test]
+    fn hud_section_collapse_toggle() {
+        let mut graph = WorkGraph::new();
+        let mut task = make_task_with_status("collapse-test", "Collapse Test", Status::Open);
+        task.description = Some("Line 1\nLine 2\nLine 3".to_string());
+        graph.add_node(Node::Task(task));
+
+        let tmp = tempfile::tempdir().unwrap();
+        let graph_path = tmp.path().join("graph.jsonl");
+        save_graph(&graph, &graph_path).unwrap();
+
+        let tasks: Vec<_> = graph.tasks().collect();
+        let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
+        let viz = generate_ascii(
+            &graph,
+            &tasks,
+            &task_ids,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            LayoutMode::Tree,
+            &HashSet::new(),
+            "gray",
+            &HashMap::new(),
+        );
+
+        let mut app = build_app(&viz, "collapse-test", tmp.path());
+        app.load_hud_detail();
+
+        // Verify Description section exists
+        assert!(app.detail_collapsed_sections.is_empty());
+
+        // Scroll to the Description header and toggle
+        let detail = app.hud_detail.as_ref().unwrap();
+        let desc_idx = detail
+            .rendered_lines
+            .iter()
+            .position(|l| l.contains("── Description ──"))
+            .expect("should have description section");
+        app.hud_scroll = desc_idx;
+        let toggled = app.toggle_detail_section_at_scroll();
+        assert_eq!(toggled, Some("Description".to_string()));
+        assert!(app.detail_collapsed_sections.contains("Description"));
+
+        // Toggle again to expand
+        let toggled = app.toggle_detail_section_at_scroll();
+        assert_eq!(toggled, Some("Description".to_string()));
+        assert!(!app.detail_collapsed_sections.contains("Description"));
     }
 }
