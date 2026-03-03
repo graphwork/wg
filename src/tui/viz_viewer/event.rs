@@ -20,18 +20,19 @@ const INPUT_POLL: Duration = Duration::from_millis(50);
 
 /// Apply the current mouse capture state to the terminal.
 ///
-/// Uses only modes 1000 (button tracking) and 1006 (SGR extended coordinates)
-/// instead of crossterm's EnableMouseCapture which also enables 1002 (drag)
-/// and 1003 (any-event). Mode 1003 breaks mosh compatibility because mosh
-/// disables earlier modes when a new mode arrives, and Termux doesn't support
-/// 1003 — leaving no tracking mode active.
+/// Uses modes 1002 (button-event tracking) and 1006 (SGR extended coordinates)
+/// instead of crossterm's EnableMouseCapture which also enables 1003 (any-event).
+/// Mode 1003 breaks mosh compatibility because mosh disables earlier modes when
+/// a new mode arrives, and Termux doesn't support 1003 — leaving no tracking
+/// mode active. Mode 1002 adds drag reporting (motion while button held) on top
+/// of 1000 (button tracking), which is needed for scrollbar dragging.
 fn set_mouse_capture(enabled: bool) -> Result<()> {
     use io::Write;
     let mut stdout = io::stdout();
     if enabled {
-        stdout.write_all(b"\x1b[?1000h\x1b[?1006h")?;
+        stdout.write_all(b"\x1b[?1002h\x1b[?1006h")?;
     } else {
-        stdout.write_all(b"\x1b[?1006l\x1b[?1000l")?;
+        stdout.write_all(b"\x1b[?1006l\x1b[?1002l")?;
     }
     stdout.flush()?;
     Ok(())
@@ -1486,22 +1487,24 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
 
     match kind {
         MouseEventKind::ScrollUp => {
-            app.record_graph_scroll_activity();
             if in_graph {
+                app.record_graph_scroll_activity();
                 app.scroll.scroll_up(3);
             } else if in_right_content || in_tab_bar {
                 right_panel_scroll_up(app, 3);
             } else {
+                app.record_graph_scroll_activity();
                 app.scroll.scroll_up(3);
             }
         }
         MouseEventKind::ScrollDown => {
-            app.record_graph_scroll_activity();
             if in_graph {
+                app.record_graph_scroll_activity();
                 app.scroll.scroll_down(3);
             } else if in_right_content || in_tab_bar {
                 right_panel_scroll_down(app, 3);
             } else {
+                app.record_graph_scroll_activity();
                 app.scroll.scroll_down(3);
             }
         }
