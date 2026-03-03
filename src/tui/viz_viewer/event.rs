@@ -153,7 +153,8 @@ fn handle_paste(app: &mut VizApp, text: &str) {
     match &app.input_mode {
         InputMode::ChatInput => {
             // Insert pasted text at cursor position, preserving newlines.
-            app.chat.textarea.insert_str(text);
+            app.chat.input.insert_str(app.chat.cursor, text);
+            app.chat.cursor += text.len();
         }
         InputMode::Search => {
             // Strip newlines for search — it's single-line.
@@ -238,19 +239,19 @@ fn handle_search_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers)
         KeyCode::BackTab => app.prev_match(),
         KeyCode::Tab => app.next_match(),
         KeyCode::Left => {
-            app.record_scroll_activity();
+            app.record_graph_scroll_activity();
             app.scroll.scroll_left(4);
         }
         KeyCode::Right => {
-            app.record_scroll_activity();
+            app.record_graph_scroll_activity();
             app.scroll.scroll_right(4);
         }
         KeyCode::Up => {
-            app.record_scroll_activity();
+            app.record_graph_scroll_activity();
             app.scroll.scroll_up(1);
         }
         KeyCode::Down => {
-            app.record_scroll_activity();
+            app.record_graph_scroll_activity();
             app.scroll.scroll_down(1);
         }
         _ => {}
@@ -570,11 +571,11 @@ fn handle_chat_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
         }
         // Alt+Up/Down: always scroll chat history
         KeyCode::Up if modifiers.contains(KeyModifiers::ALT) => {
-            app.record_scroll_activity();
+            app.record_graph_scroll_activity();
             app.chat.scroll = app.chat.scroll.saturating_add(1);
         }
         KeyCode::Down if modifiers.contains(KeyModifiers::ALT) => {
-            app.record_scroll_activity();
+            app.record_graph_scroll_activity();
             app.chat.scroll = app.chat.scroll.saturating_sub(1);
         }
         // Up/Down: navigate between lines in multi-line input
@@ -582,7 +583,7 @@ fn handle_chat_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
             let new_pos = move_cursor_up(&app.chat.input, app.chat.cursor);
             if new_pos == app.chat.cursor {
                 // Already on first line: scroll chat history instead.
-                app.record_scroll_activity();
+                app.record_graph_scroll_activity();
                 app.chat.scroll = app.chat.scroll.saturating_add(1);
             } else {
                 app.chat.cursor = new_pos;
@@ -592,7 +593,7 @@ fn handle_chat_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
             let new_pos = move_cursor_down(&app.chat.input, app.chat.cursor);
             if new_pos == app.chat.cursor {
                 // Already on last line: scroll chat history instead.
-                app.record_scroll_activity();
+                app.record_graph_scroll_activity();
                 app.chat.scroll = app.chat.scroll.saturating_sub(1);
             } else {
                 app.chat.cursor = new_pos;
@@ -779,11 +780,11 @@ fn handle_message_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers
         }
         // Scroll message history while typing
         KeyCode::Up if modifiers.contains(KeyModifiers::ALT) => {
-            app.record_scroll_activity();
+            app.record_graph_scroll_activity();
             app.messages_panel.scroll = app.messages_panel.scroll.saturating_sub(1);
         }
         KeyCode::Down if modifiers.contains(KeyModifiers::ALT) => {
-            app.record_scroll_activity();
+            app.record_graph_scroll_activity();
             app.messages_panel.scroll += 1;
         }
         KeyCode::Char(c) => {
@@ -949,19 +950,19 @@ fn handle_graph_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
 
         // HUD panel scroll (Shift + Up/Down/PgUp/PgDn)
         KeyCode::Up if modifiers.contains(KeyModifiers::SHIFT) => {
-            app.record_scroll_activity();
+            app.record_graph_scroll_activity();
             app.hud_scroll_up(1);
         }
         KeyCode::Down if modifiers.contains(KeyModifiers::SHIFT) => {
-            app.record_scroll_activity();
+            app.record_graph_scroll_activity();
             app.hud_scroll_down(1);
         }
         KeyCode::PageUp if modifiers.contains(KeyModifiers::SHIFT) => {
-            app.record_scroll_activity();
+            app.record_graph_scroll_activity();
             app.hud_scroll_up(10);
         }
         KeyCode::PageDown if modifiers.contains(KeyModifiers::SHIFT) => {
-            app.record_scroll_activity();
+            app.record_graph_scroll_activity();
             app.hud_scroll_down(10);
         }
 
@@ -975,19 +976,19 @@ fn handle_graph_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
 
         // Vertical scroll (vim-style)
         KeyCode::Char('k') => {
-            app.record_scroll_activity();
+            app.record_graph_scroll_activity();
             app.scroll.scroll_up(1);
         }
         KeyCode::Char('j') => {
-            app.record_scroll_activity();
+            app.record_graph_scroll_activity();
             app.scroll.scroll_down(1);
         }
         KeyCode::Char('u') if modifiers.contains(KeyModifiers::CONTROL) => {
-            app.record_scroll_activity();
+            app.record_graph_scroll_activity();
             app.scroll.page_up();
         }
         KeyCode::Char('d') if modifiers.contains(KeyModifiers::CONTROL) => {
-            app.record_scroll_activity();
+            app.record_graph_scroll_activity();
             app.scroll.page_down();
         }
         KeyCode::PageUp => {
@@ -1002,20 +1003,20 @@ fn handle_graph_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
 
         // Jump to top/bottom
         KeyCode::Char('g') => {
-            app.record_scroll_activity();
+            app.record_graph_scroll_activity();
             app.scroll.go_top();
         }
         KeyCode::Char('G') => {
-            app.record_scroll_activity();
+            app.record_graph_scroll_activity();
             app.scroll.go_bottom();
         }
         KeyCode::Home => {
-            app.record_scroll_activity();
+            app.record_graph_scroll_activity();
             app.scroll.go_top();
             app.select_first_task();
         }
         KeyCode::End => {
-            app.record_scroll_activity();
+            app.record_graph_scroll_activity();
             app.scroll.go_bottom();
             app.select_last_task();
         }
@@ -1353,7 +1354,7 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
 }
 
 fn right_panel_scroll_up(app: &mut VizApp, amount: usize) {
-    app.record_scroll_activity();
+    app.record_graph_scroll_activity();
     match app.right_panel_tab {
         RightPanelTab::Detail => app.hud_scroll_up(amount),
         RightPanelTab::Chat => {
@@ -1385,7 +1386,7 @@ fn right_panel_scroll_up(app: &mut VizApp, amount: usize) {
 }
 
 fn right_panel_scroll_down(app: &mut VizApp, amount: usize) {
-    app.record_scroll_activity();
+    app.record_graph_scroll_activity();
     match app.right_panel_tab {
         RightPanelTab::Detail => {
             app.hud_scroll_down(amount);
@@ -1420,7 +1421,7 @@ fn right_panel_scroll_down(app: &mut VizApp, amount: usize) {
 }
 
 fn right_panel_scroll_to_top(app: &mut VizApp) {
-    app.record_scroll_activity();
+    app.record_graph_scroll_activity();
     match app.right_panel_tab {
         RightPanelTab::Detail => {
             app.hud_scroll = 0;
@@ -1449,7 +1450,7 @@ fn right_panel_scroll_to_top(app: &mut VizApp) {
 }
 
 fn right_panel_scroll_to_bottom(app: &mut VizApp) {
-    app.record_scroll_activity();
+    app.record_graph_scroll_activity();
     match app.right_panel_tab {
         RightPanelTab::Detail => {
             app.hud_scroll_down(usize::MAX);
@@ -1485,7 +1486,7 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
 
     match kind {
         MouseEventKind::ScrollUp => {
-            app.record_scroll_activity();
+            app.record_graph_scroll_activity();
             if in_graph {
                 app.scroll.scroll_up(3);
             } else if in_right_content || in_tab_bar {
@@ -1495,7 +1496,7 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
             }
         }
         MouseEventKind::ScrollDown => {
-            app.record_scroll_activity();
+            app.record_graph_scroll_activity();
             if in_graph {
                 app.scroll.scroll_down(3);
             } else if in_right_content || in_tab_bar {

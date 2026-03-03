@@ -90,7 +90,7 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
             app.scroll.viewport_width = main_area.width as usize;
 
             draw_viz_content(frame, app, main_area);
-            if app.scroll.content_height > app.scroll.viewport_height && app.scrollbar_visible() {
+            if app.scroll.content_height > app.scroll.viewport_height && app.graph_scrollbar_visible() {
                 draw_scrollbar(frame, app, main_area);
             }
         }
@@ -114,7 +114,7 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
 
                     draw_viz_content(frame, app, viz_area);
                     if app.scroll.content_height > app.scroll.viewport_height
-                        && app.scrollbar_visible()
+                        && app.graph_scrollbar_visible()
                     {
                         draw_scrollbar(frame, app, viz_area);
                     }
@@ -138,7 +138,7 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
 
                     draw_viz_content(frame, app, viz_area);
                     if app.scroll.content_height > app.scroll.viewport_height
-                        && app.scrollbar_visible()
+                        && app.graph_scrollbar_visible()
                     {
                         draw_scrollbar(frame, app, viz_area);
                     }
@@ -154,7 +154,7 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
                 app.scroll.viewport_width = main_area.width as usize;
 
                 draw_viz_content(frame, app, main_area);
-                if app.scroll.content_height > app.scroll.viewport_height && app.scrollbar_visible()
+                if app.scroll.content_height > app.scroll.viewport_height && app.graph_scrollbar_visible()
                 {
                     draw_scrollbar(frame, app, main_area);
                 }
@@ -944,7 +944,7 @@ fn draw_detail_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     let paragraph = Paragraph::new(lines);
     frame.render_widget(paragraph, area);
 
-    if total_lines > viewport_h && app.scrollbar_visible() {
+    if total_lines > viewport_h && app.graph_scrollbar_visible() {
         let mut state =
             ScrollbarState::new(total_lines.saturating_sub(viewport_h)).position(app.hud_scroll);
         let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight);
@@ -1043,7 +1043,7 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
 
     // Build rendered lines from messages with word-wrapping.
     // When scrollbar is hidden, content gets the full width.
-    let content_width = if app.scrollbar_visible() {
+    let content_width = if app.graph_scrollbar_visible() {
         width.saturating_sub(1) // leave 1 col for scrollbar
     } else {
         width
@@ -1139,7 +1139,7 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     frame.render_widget(paragraph, msg_area);
 
     // Scrollbar if content overflows (auto-hides after 2 seconds of inactivity).
-    if total_lines > viewport_h && app.scrollbar_visible() {
+    if total_lines > viewport_h && app.graph_scrollbar_visible() {
         let mut state = ScrollbarState::new(total_lines).position(scroll_from_top);
         let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight);
         frame.render_stateful_widget(scrollbar, msg_area, &mut state);
@@ -1445,7 +1445,7 @@ fn draw_log_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     frame.render_widget(paragraph, area);
 
     // Scrollbar if content overflows (auto-hides after 2 seconds of inactivity).
-    if total_lines > viewport_h && app.scrollbar_visible() {
+    if total_lines > viewport_h && app.graph_scrollbar_visible() {
         let mut scrollbar_state =
             ScrollbarState::new(total_lines.saturating_sub(viewport_h)).position(scroll);
         let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight);
@@ -1534,7 +1534,7 @@ fn draw_messages_tab(frame: &mut Frame, app: &VizApp, area: Rect) {
     }
 
     let viewport_h = msg_area.height as usize;
-    let wrap_width = if app.scrollbar_visible() {
+    let wrap_width = if app.graph_scrollbar_visible() {
         width.saturating_sub(1) // leave 1 col for scrollbar
     } else {
         width
@@ -1736,7 +1736,7 @@ fn draw_messages_tab(frame: &mut Frame, app: &VizApp, area: Rect) {
     let paragraph = Paragraph::new(visible_lines);
     frame.render_widget(paragraph, msg_area);
 
-    if total_lines > viewport_h && app.scrollbar_visible() {
+    if total_lines > viewport_h && app.graph_scrollbar_visible() {
         let mut state = ScrollbarState::new(total_lines).position(scroll);
         let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight);
         frame.render_stateful_widget(scrollbar, msg_area, &mut state);
@@ -3264,7 +3264,7 @@ fn draw_config_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     frame.render_widget(paragraph, area);
 
     // Scrollbar if content exceeds viewport (auto-hides after 2 seconds of inactivity).
-    if lines.len() > viewport_h && app.scrollbar_visible() {
+    if lines.len() > viewport_h && app.graph_scrollbar_visible() {
         let mut state = ScrollbarState::new(lines.len().saturating_sub(viewport_h))
             .position(app.config_panel.scroll);
         let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight);
