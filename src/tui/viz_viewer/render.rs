@@ -1601,56 +1601,107 @@ fn draw_messages_tab(frame: &mut Frame, app: &VizApp, area: Rect) {
                 Style::default().fg(color).add_modifier(Modifier::BOLD)
             };
 
-            // Build the prefix: "you: " or "agent-1234: "
-            let mut prefix_spans: Vec<Span> = vec![Span::styled(display_label, sender_style)];
-            if is_urgent {
-                prefix_spans.push(Span::styled(
-                    " [!]",
-                    Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-                ));
-            }
-            prefix_spans.push(Span::styled(": ", Style::default().fg(Color::DarkGray)));
-
-            // Calculate prefix display width for indentation.
-            let prefix_display_len: usize = prefix_spans.iter().map(|sp| sp.content.len()).sum();
-            let indent = " ".repeat(prefix_display_len);
-            let text_width = wrap_width.saturating_sub(prefix_display_len);
-
             // Strip any ANSI escape sequences from body.
             let clean_body = String::from_utf8(strip_ansi_escapes::strip(body.as_bytes()))
                 .unwrap_or_else(|_| body.to_string());
 
-            if text_width == 0 || clean_body.is_empty() {
-                let mut line_spans = prefix_spans;
-                line_spans.push(Span::raw(clean_body.clone()));
-                line_spans.push(Span::styled(
+            // Decide inline vs above-line based on display_label length.
+            let name_threshold = app.message_name_threshold as usize;
+            let name_display_len =
+                display_label.len() + if is_urgent { 4 } else { 0 };
+
+            if name_display_len > name_threshold {
+                // Long name: put on its own line, body with fixed indent.
+                let mut name_spans: Vec<Span> =
+                    vec![Span::styled(display_label, sender_style)];
+                if is_urgent {
+                    name_spans.push(Span::styled(
+                        " [!]",
+                        Style::default()
+                            .fg(Color::Red)
+                            .add_modifier(Modifier::BOLD),
+                    ));
+                }
+                name_spans
+                    .push(Span::styled(":", Style::default().fg(Color::DarkGray)));
+                name_spans.push(Span::styled(
                     format!("  {}", timestamp),
                     Style::default().fg(Color::DarkGray),
                 ));
-                wrapped_lines.push(Line::from(line_spans));
-            } else {
-                let wrapped = word_wrap(&clean_body, text_width);
-                for (i, wl) in wrapped.iter().enumerate() {
-                    if i == 0 {
-                        let mut line_spans = prefix_spans.clone();
-                        line_spans.push(Span::raw(wl.to_string()));
-                        if wrapped.len() == 1 {
-                            line_spans.push(Span::styled(
-                                format!("  {}", timestamp),
-                                Style::default().fg(Color::DarkGray),
-                            ));
-                        }
-                        wrapped_lines.push(Line::from(line_spans));
-                    } else {
-                        wrapped_lines.push(Line::from(Span::raw(format!("{}{}", indent, wl))));
+                wrapped_lines.push(Line::from(name_spans));
+
+                let fixed_indent = app.message_indent as usize;
+                let indent = " ".repeat(fixed_indent);
+                let text_width = wrap_width.saturating_sub(fixed_indent);
+
+                if text_width == 0 || clean_body.is_empty() {
+                    wrapped_lines.push(Line::from(Span::raw(format!(
+                        "{}{}",
+                        indent, clean_body
+                    ))));
+                } else {
+                    let wrapped = word_wrap(&clean_body, text_width);
+                    for wl in &wrapped {
+                        wrapped_lines.push(Line::from(Span::raw(format!(
+                            "{}{}",
+                            indent, wl
+                        ))));
                     }
                 }
-                // If multi-line, put timestamp on last continuation line.
-                if wrapped.len() > 1 {
-                    wrapped_lines.push(Line::from(Span::styled(
-                        format!("{}{}", indent, timestamp),
+            } else {
+                // Short name: inline "name: body" with matching indentation.
+                let mut prefix_spans: Vec<Span> =
+                    vec![Span::styled(display_label, sender_style)];
+                if is_urgent {
+                    prefix_spans.push(Span::styled(
+                        " [!]",
+                        Style::default()
+                            .fg(Color::Red)
+                            .add_modifier(Modifier::BOLD),
+                    ));
+                }
+                prefix_spans
+                    .push(Span::styled(": ", Style::default().fg(Color::DarkGray)));
+
+                let prefix_display_len: usize =
+                    prefix_spans.iter().map(|sp| sp.content.len()).sum();
+                let indent = " ".repeat(prefix_display_len);
+                let text_width = wrap_width.saturating_sub(prefix_display_len);
+
+                if text_width == 0 || clean_body.is_empty() {
+                    let mut line_spans = prefix_spans;
+                    line_spans.push(Span::raw(clean_body.clone()));
+                    line_spans.push(Span::styled(
+                        format!("  {}", timestamp),
                         Style::default().fg(Color::DarkGray),
-                    )));
+                    ));
+                    wrapped_lines.push(Line::from(line_spans));
+                } else {
+                    let wrapped = word_wrap(&clean_body, text_width);
+                    for (i, wl) in wrapped.iter().enumerate() {
+                        if i == 0 {
+                            let mut line_spans = prefix_spans.clone();
+                            line_spans.push(Span::raw(wl.to_string()));
+                            if wrapped.len() == 1 {
+                                line_spans.push(Span::styled(
+                                    format!("  {}", timestamp),
+                                    Style::default().fg(Color::DarkGray),
+                                ));
+                            }
+                            wrapped_lines.push(Line::from(line_spans));
+                        } else {
+                            wrapped_lines.push(Line::from(Span::raw(format!(
+                                "{}{}",
+                                indent, wl
+                            ))));
+                        }
+                    }
+                    if wrapped.len() > 1 {
+                        wrapped_lines.push(Line::from(Span::styled(
+                            format!("{}{}", indent, timestamp),
+                            Style::default().fg(Color::DarkGray),
+                        )));
+                    }
                 }
             }
 
