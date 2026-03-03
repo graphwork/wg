@@ -4415,12 +4415,9 @@ impl VizApp {
                         && ep_idx < config.llm_endpoints.endpoints.len()
                     {
                         match parts[1] {
-                            "name" => {
-                                config.llm_endpoints.endpoints[ep_idx].name = new_value
-                            }
+                            "name" => config.llm_endpoints.endpoints[ep_idx].name = new_value,
                             "model" => {
-                                config.llm_endpoints.endpoints[ep_idx].model =
-                                    Some(new_value)
+                                config.llm_endpoints.endpoints[ep_idx].model = Some(new_value)
                             }
                             "api_key" => {
                                 config.llm_endpoints.endpoints[ep_idx].api_key =
@@ -4428,9 +4425,7 @@ impl VizApp {
                                 self.config_panel.entries[idx].value =
                                     config.llm_endpoints.endpoints[ep_idx].masked_key();
                             }
-                            _ => {
-                                config.llm_endpoints.endpoints[ep_idx].url = Some(new_value)
-                            }
+                            _ => config.llm_endpoints.endpoints[ep_idx].url = Some(new_value),
                         }
                     }
                 }
@@ -4565,6 +4560,7 @@ impl VizApp {
     }
 
     /// Toggle collapse state for a config section.
+    #[allow(dead_code)]
     pub fn toggle_config_section(&mut self, section: ConfigSection) {
         if self.config_panel.collapsed.contains(&section) {
             self.config_panel.collapsed.remove(&section);
@@ -4574,6 +4570,7 @@ impl VizApp {
     }
 
     /// Get the section of the currently selected config entry.
+    #[allow(dead_code)]
     pub fn selected_config_section(&self) -> Option<ConfigSection> {
         self.config_panel
             .entries
@@ -4750,13 +4747,14 @@ fn clipboard_grab_macos(
 
     let pngpaste_result = Command::new("pngpaste").arg(&tmp).output();
 
-    if let Ok(o) = pngpaste_result {
-        if o.status.success() && tmp.exists() {
-            let att = workgraph::chat::store_attachment(workgraph_dir, &tmp)?;
-            // Clean up temp file (store_attachment copies it)
-            let _ = std::fs::remove_file(&tmp);
-            return Ok(Some(att));
-        }
+    if let Ok(o) = pngpaste_result
+        && o.status.success()
+        && tmp.exists()
+    {
+        let att = workgraph::chat::store_attachment(workgraph_dir, &tmp)?;
+        // Clean up temp file (store_attachment copies it)
+        let _ = std::fs::remove_file(&tmp);
+        return Ok(Some(att));
     }
 
     // Fallback: use osascript to extract PNG data
