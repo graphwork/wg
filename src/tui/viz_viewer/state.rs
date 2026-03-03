@@ -16,6 +16,9 @@ use workgraph::graph::{Status, TokenUsage, format_tokens, parse_token_usage_live
 use workgraph::parser::load_graph;
 use workgraph::{AgentRegistry, AgentStatus};
 
+/// Duration of the splash-and-fade animation for newly added tasks (seconds).
+const SPLASH_DURATION_SECS: f64 = 1.5;
+
 // ══════════════════════════════════════════════════════════════════════════════
 // Panel state types
 // ══════════════════════════════════════════════════════════════════════════════
@@ -30,11 +33,11 @@ pub enum FocusedPanel {
 /// Which tab is active in the right panel.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum RightPanelTab {
-    Chat,    // 0
-    Detail,  // 1
-    Log,     // 2
-    Messages,// 3
-    Agency,  // 4
+    Chat,     // 0
+    Detail,   // 1
+    Log,      // 2
+    Messages, // 3
+    Agency,   // 4
 }
 
 impl RightPanelTab {
@@ -171,15 +174,16 @@ pub enum InputMode {
 /// What action the confirmation dialog is for.
 #[derive(Clone, PartialEq, Eq)]
 pub enum ConfirmAction {
-    MarkDone(String),  // task_id
-    Retry(String),     // task_id
+    MarkDone(String), // task_id
+    Retry(String),    // task_id
 }
 
 /// What action the text prompt dialog is for.
 #[derive(Clone, PartialEq, Eq)]
 pub enum TextPromptAction {
-    MarkFailed(String),   // task_id
-    SendMessage(String),  // task_id
+    MarkFailed(String), // task_id
+    #[allow(dead_code)]
+    SendMessage(String), // task_id
     EditDescription(String), // task_id
 }
 
@@ -238,10 +242,7 @@ impl TaskFormState {
         // Load all tasks for dependency search.
         let graph_path = workgraph_dir.join("graph.jsonl");
         let all_tasks = match load_graph(&graph_path) {
-            Ok(g) => g
-                .tasks()
-                .map(|t| (t.id.clone(), t.title.clone()))
-                .collect(),
+            Ok(g) => g.tasks().map(|t| (t.id.clone(), t.title.clone())).collect(),
             Err(_) => Vec::new(),
         };
         Self {
@@ -288,6 +289,7 @@ impl TaskFormState {
 }
 
 /// State for the chat panel.
+#[derive(Default)]
 pub struct ChatState {
     /// Message history for display.
     pub messages: Vec<ChatMessage>,
@@ -310,22 +312,6 @@ pub struct ChatState {
     pub coordinator_active: bool,
 }
 
-impl Default for ChatState {
-    fn default() -> Self {
-        Self {
-            messages: Vec::new(),
-            input: String::new(),
-            cursor: 0,
-            input_scroll: 0,
-            scroll: 0,
-            awaiting_response: false,
-            outbox_cursor: 0,
-            last_request_id: None,
-            coordinator_active: false,
-        }
-    }
-}
-
 pub struct ChatMessage {
     pub role: ChatRole,
     pub text: String,
@@ -339,20 +325,12 @@ pub enum ChatRole {
 }
 
 /// State for the agent monitor panel.
+#[derive(Default)]
 pub struct AgentMonitorState {
     /// Agent entries loaded from the registry.
     pub agents: Vec<AgentMonitorEntry>,
     /// Scroll offset.
     pub scroll: usize,
-}
-
-impl Default for AgentMonitorState {
-    fn default() -> Self {
-        Self {
-            agents: Vec::new(),
-            scroll: 0,
-        }
-    }
 }
 
 pub struct AgentMonitorEntry {
@@ -365,6 +343,39 @@ pub struct AgentMonitorEntry {
     pub started_at: Option<String>,
     /// ISO 8601 completion timestamp (for Done/Failed/Dead agents)
     pub completed_at: Option<String>,
+}
+
+/// A single phase in the agency lifecycle (assignment, execution, or evaluation).
+pub struct LifecyclePhase {
+    /// Task ID for this phase (e.g., "assign-foo", "foo", "evaluate-foo")
+    pub task_id: String,
+    /// Human label for the phase
+    #[allow(dead_code)]
+    pub label: &'static str,
+    /// Status of this phase's task
+    pub status: Status,
+    /// Agent assigned to this phase (if any)
+    pub agent_id: Option<String>,
+    /// Token usage for this phase
+    pub token_usage: Option<TokenUsage>,
+    /// Runtime in seconds (if available)
+    pub runtime_secs: Option<i64>,
+    /// Evaluation score (only for evaluation phase)
+    pub eval_score: Option<f64>,
+    /// Evaluation notes (only for evaluation phase, first few lines)
+    pub eval_notes: Option<String>,
+}
+
+/// Full agency lifecycle for a selected task: assignment → execution → evaluation.
+pub struct AgencyLifecycle {
+    /// The parent task ID this lifecycle is for.
+    pub task_id: String,
+    /// Assignment phase (if an assign-{task_id} task exists)
+    pub assignment: Option<LifecyclePhase>,
+    /// Execution phase (the task itself)
+    pub execution: Option<LifecyclePhase>,
+    /// Evaluation phase (if an evaluate-{task_id} task exists)
+    pub evaluation: Option<LifecyclePhase>,
 }
 
 /// State for the log pane (now embedded as right panel tab 2).
@@ -397,6 +408,7 @@ impl Default for LogPaneState {
 }
 
 /// State for the Messages panel (panel 3) — shows message queue for the selected task.
+#[derive(Default)]
 pub struct MessagesPanelState {
     /// Cached rendered log lines.
     pub rendered_lines: Vec<String>,
@@ -410,18 +422,6 @@ pub struct MessagesPanelState {
     pub cursor: usize,
 }
 
-impl Default for MessagesPanelState {
-    fn default() -> Self {
-        Self {
-            rendered_lines: Vec::new(),
-            task_id: None,
-            scroll: 0,
-            input: String::new(),
-            cursor: 0,
-        }
-    }
-}
-
 /// A background command result received from a spawned thread.
 pub struct CommandResult {
     pub success: bool,
@@ -433,6 +433,7 @@ pub struct CommandResult {
 #[derive(Clone)]
 pub enum CommandEffect {
     /// Trigger a full graph refresh.
+    #[allow(dead_code)]
     Refresh,
     /// Show a notification message in the status bar.
     Notify(String),
@@ -586,6 +587,8 @@ pub struct VizApp {
     pub hud_wrapped_line_count: usize,
     /// Viewport height of the detail panel (set by renderer each frame).
     pub hud_detail_viewport_height: usize,
+    /// When true, show raw JSON in the Detail tab instead of human-readable format.
+    pub detail_raw_json: bool,
 
     // ── Multi-panel layout ──
     /// Whether the right panel is visible (toggle with `\`).
@@ -600,6 +603,9 @@ pub struct VizApp {
     pub hud_size: HudSize,
     /// Current input mode.
     pub input_mode: InputMode,
+    /// True when user explicitly dismissed chat input with Esc.
+    /// Prevents auto-re-entering ChatInput until user navigates away from Chat tab.
+    pub chat_input_dismissed: bool,
 
     // ── Task form ──
     /// Task creation form state (populated when form is open).
@@ -614,6 +620,9 @@ pub struct VizApp {
 
     // ── Agent monitor state ──
     pub agent_monitor: AgentMonitorState,
+
+    // ── Agency lifecycle for selected task ──
+    pub agency_lifecycle: Option<AgencyLifecycle>,
 
     // ── Log pane state (now embedded as panel 2) ──
     pub log_pane: LogPaneState,
@@ -631,6 +640,7 @@ pub struct VizApp {
 
     // ── Double-tap detection ──
     /// Timestamp of the last Tab key press, for double-tap recenter detection.
+    #[allow(dead_code)]
     pub last_tab_press: Option<Instant>,
 
     // ── Sort mode ──
@@ -643,6 +653,12 @@ pub struct VizApp {
     pub smart_follow_active: bool,
     /// Whether this is the initial load (first load scrolls to bottom by default).
     initial_load: bool,
+
+    // ── Splash animations ──
+    /// Tracks splash-and-fade animations for newly added tasks.
+    /// Maps task ID to the Instant when the task first appeared.
+    /// Animations run for SPLASH_DURATION_SECS then get cleaned up.
+    pub splash_animations: HashMap<String, Instant>,
 
     // ── Live refresh ──
     /// Last observed modification time of graph.jsonl.
@@ -736,18 +752,21 @@ impl VizApp {
             hud_scroll: 0,
             hud_wrapped_line_count: 0,
             hud_detail_viewport_height: 0,
+            detail_raw_json: false,
             right_panel_visible: true,
             focused_panel: FocusedPanel::Graph,
             right_panel_tab: RightPanelTab::Detail,
             right_panel_percent: 35,
             hud_size: HudSize::Normal,
             input_mode: InputMode::Normal,
+            chat_input_dismissed: false,
             task_form: None,
             text_prompt: TextPromptState {
                 input: String::new(),
             },
             chat: ChatState::default(),
             agent_monitor: AgentMonitorState::default(),
+            agency_lifecycle: None,
             log_pane: LogPaneState::default(),
             messages_panel: MessagesPanelState::default(),
             cmd_rx,
@@ -757,6 +776,7 @@ impl VizApp {
             sort_mode: SortMode::Chronological,
             smart_follow_active: true,
             initial_load: true,
+            splash_animations: HashMap::new(),
             last_graph_mtime: graph_mtime,
             last_refresh: Instant::now(),
             last_refresh_display: chrono::Local::now().format("%H:%M:%S").to_string(),
@@ -823,6 +843,21 @@ impl VizApp {
                 self.char_edge_map = viz_output.char_edge_map;
                 self.cycle_members = viz_output.cycle_members;
 
+                // Detect newly appeared tasks and register splash animations.
+                // Skip on initial load (old_task_order is empty).
+                if !old_task_order.is_empty() {
+                    let old_set: HashSet<&str> =
+                        old_task_order.iter().map(|s| s.as_str()).collect();
+                    let now = Instant::now();
+                    for id in &self.task_order {
+                        if !old_set.contains(id.as_str())
+                            && !self.splash_animations.contains_key(id)
+                        {
+                            self.splash_animations.insert(id.clone(), now);
+                        }
+                    }
+                }
+
                 // Preserve selection by task ID (not index) across refreshes.
                 // The task_order may have changed, so resolve the old ID to
                 // its new position.
@@ -876,17 +911,16 @@ impl VizApp {
                     self.scroll.go_bottom();
                 } else if selection_unchanged {
                     // Try to anchor using the task's relative position.
-                    let anchored = old_relative_pos
-                        .and_then(|rel_pos| {
-                            let id = new_selected_id.as_ref()?;
-                            let new_orig_line = *self.node_line_map.get(id)?;
-                            let new_visible_pos = self.original_to_visible(new_orig_line)?;
-                            // Compute new offset so the task stays at the same
-                            // screen-relative position. Clamp to valid range.
-                            let raw = new_visible_pos as isize - rel_pos;
-                            let clamped = raw.max(0) as usize;
-                            Some(clamped)
-                        });
+                    let anchored = old_relative_pos.and_then(|rel_pos| {
+                        let id = new_selected_id.as_ref()?;
+                        let new_orig_line = *self.node_line_map.get(id)?;
+                        let new_visible_pos = self.original_to_visible(new_orig_line)?;
+                        // Compute new offset so the task stays at the same
+                        // screen-relative position. Clamp to valid range.
+                        let raw = new_visible_pos as isize - rel_pos;
+                        let clamped = raw.max(0) as usize;
+                        Some(clamped)
+                    });
                     if let Some(new_offset) = anchored {
                         self.scroll.offset_y = new_offset;
                         self.scroll.clamp();
@@ -1074,8 +1108,9 @@ impl VizApp {
             self.cycle_set = members.clone();
         }
 
-        // Invalidate HUD and messages panel so they reload for the new selection.
+        // Invalidate HUD, lifecycle, and messages panel so they reload for the new selection.
         self.invalidate_hud();
+        self.invalidate_agency_lifecycle();
         self.invalidate_log_pane();
         self.invalidate_messages_panel();
     }
@@ -1101,6 +1136,7 @@ impl VizApp {
     }
 
     /// Center the viewport on the selected task (unconditional — always recenters).
+    #[allow(dead_code)]
     pub fn center_on_selected_task(&mut self) {
         let task_id = match self.selected_task_idx.and_then(|i| self.task_order.get(i)) {
             Some(id) => id,
@@ -1168,8 +1204,7 @@ impl VizApp {
         if self.right_panel_tab != RightPanelTab::Chat {
             // Still show the notification so the user knows a task was added,
             // but don't move the selection or scroll.
-            self.notification =
-                Some((format!("New task: {}", task_id), Instant::now()));
+            self.notification = Some((format!("New task: {}", task_id), Instant::now()));
             return false;
         }
 
@@ -1180,12 +1215,39 @@ impl VizApp {
             if let Some(&orig_line) = self.node_line_map.get(&task_id) {
                 self.jump_target = Some((orig_line, Instant::now()));
             }
-            self.notification =
-                Some((format!("New task: {}", task_id), Instant::now()));
+            self.notification = Some((format!("New task: {}", task_id), Instant::now()));
             true
         } else {
             false
         }
+    }
+
+    // ── Splash animations ──
+
+    /// Returns the fade progress for a task's splash animation.
+    /// 0.0 = animation just started (full brightness), 1.0 = fully faded.
+    /// Returns None if the task has no active animation.
+    pub fn splash_progress(&self, task_id: &str) -> Option<f64> {
+        self.splash_animations.get(task_id).map(|start| {
+            let elapsed = start.elapsed().as_secs_f64();
+            (elapsed / SPLASH_DURATION_SECS).min(1.0)
+        })
+    }
+
+    /// Whether any splash animations are currently active (not yet fully faded).
+    #[allow(dead_code)]
+    pub fn has_active_animations(&self) -> bool {
+        let cutoff = std::time::Duration::from_secs_f64(SPLASH_DURATION_SECS);
+        self.splash_animations
+            .values()
+            .any(|start| start.elapsed() < cutoff)
+    }
+
+    /// Remove expired splash animations.
+    pub fn cleanup_splash_animations(&mut self) {
+        let cutoff = std::time::Duration::from_secs_f64(SPLASH_DURATION_SECS);
+        self.splash_animations
+            .retain(|_, start| start.elapsed() < cutoff);
     }
 
     // ── Search ──
@@ -1522,6 +1584,11 @@ impl VizApp {
                 self.invalidate_messages_panel();
                 self.load_messages_panel();
             }
+            // Reload agency lifecycle if Agency tab is active.
+            if self.right_panel_tab == RightPanelTab::Agency {
+                self.invalidate_agency_lifecycle();
+                self.load_agency_lifecycle();
+            }
             self.last_refresh_display = chrono::Local::now().format("%H:%M:%S").to_string();
         }
 
@@ -1535,6 +1602,7 @@ impl VizApp {
     }
 
     /// Cycle through layout modes (tree ↔ diamond).
+    #[allow(dead_code)]
     pub fn cycle_layout(&mut self) {
         use crate::commands::viz::LayoutMode;
         self.viz_options.layout = match self.viz_options.layout {
@@ -1625,10 +1693,7 @@ impl VizApp {
                 }
             }
         }
-        self.notification = Some((
-            format!("Sort: {}", self.sort_mode.label()),
-            Instant::now(),
-        ));
+        self.notification = Some((format!("Sort: {}", self.sort_mode.label()), Instant::now()));
     }
 
     /// Apply the current sort mode to reorder `task_order`.
@@ -1644,9 +1709,8 @@ impl VizApp {
             SortMode::Chronological | SortMode::ReverseChronological => {
                 // Sort by line number (original viz output order).
                 // ReverseChronological uses the same order but starts the viewport at the bottom.
-                self.task_order.sort_by_key(|id| {
-                    self.node_line_map.get(id).copied().unwrap_or(usize::MAX)
-                });
+                self.task_order
+                    .sort_by_key(|id| self.node_line_map.get(id).copied().unwrap_or(usize::MAX));
             }
             SortMode::StatusGrouped => {
                 // Sort navigation order by status priority: in-progress first, then
@@ -1770,10 +1834,8 @@ impl VizApp {
             lines.push("── Prompt ──".to_string());
             if let Ok(file) = std::fs::File::open(&prompt_path) {
                 let reader = BufReader::new(file);
-                for line in reader.lines() {
-                    if let Ok(l) = line {
-                        lines.push(format!("  {}", l));
-                    }
+                for l in reader.lines().map_while(Result::ok) {
+                    lines.push(format!("  {}", l));
                 }
             }
             lines.push(String::new());
@@ -1793,20 +1855,29 @@ impl VizApp {
             .filter(|p| p.exists())
             .or_else(|| find_latest_archive(&self.workgraph_dir, &task.id, "output.txt"));
         if let Some(output_path) = output_path {
-            lines.push("── Output ──".to_string());
+            if self.detail_raw_json {
+                lines.push("── Output (raw) ── [R: human-readable]".to_string());
+            } else {
+                lines.push("── Output ── [R: raw JSON]".to_string());
+            }
             if let Ok(content) = std::fs::read_to_string(&output_path) {
                 for line in content.lines() {
                     let trimmed = line.trim();
                     if (trimmed.starts_with('{') || trimmed.starts_with('['))
-                        && let Ok(val) =
-                            serde_json::from_str::<serde_json::Value>(trimmed)
+                        && let Ok(val) = serde_json::from_str::<serde_json::Value>(trimmed)
                     {
-                        if let Ok(pretty) = serde_json::to_string_pretty(&val) {
-                            for pline in pretty.lines() {
-                                lines.push(format!("  {}", pline));
+                        if self.detail_raw_json {
+                            // Raw mode: pretty-printed JSON
+                            if let Ok(pretty) = serde_json::to_string_pretty(&val) {
+                                for pline in pretty.lines() {
+                                    lines.push(format!("  {}", pline));
+                                }
+                            } else {
+                                lines.push(format!("  {}", line));
                             }
                         } else {
-                            lines.push(format!("  {}", line));
+                            // Human-readable mode: extract key/value pairs
+                            flatten_json_to_lines(&val, "  ", &mut lines);
                         }
                     } else {
                         lines.push(format!("  {}", line));
@@ -1860,7 +1931,7 @@ impl VizApp {
             }
         }
 
-        // ── Token usage ──
+        // ── Token usage (execution) ──
         if let Some(ref usage) = task.token_usage {
             lines.push("── Tokens ──".to_string());
             lines.push(format!(
@@ -1887,6 +1958,72 @@ impl VizApp {
                 lines.push(format!("  Cost: ${:.4}", usage.cost_usd));
             }
             lines.push(String::new());
+        }
+
+        // ── Assignment + Evaluation costs ──
+        {
+            let agents_dir = self.workgraph_dir.join("agents");
+            let assign_task_id = format!("assign-{}", task.id);
+            let eval_task_id = format!("evaluate-{}", task.id);
+
+            let assign_usage = graph
+                .tasks()
+                .find(|t| t.id == assign_task_id)
+                .and_then(|t| {
+                    t.token_usage.clone().or_else(|| {
+                        let agent_id = t.assigned.as_deref()?;
+                        let log_path = agents_dir.join(agent_id).join("output.log");
+                        parse_token_usage_live(&log_path)
+                    })
+                });
+            let eval_usage = graph.tasks().find(|t| t.id == eval_task_id).and_then(|t| {
+                t.token_usage.clone().or_else(|| {
+                    let agent_id = t.assigned.as_deref()?;
+                    let log_path = agents_dir.join(agent_id).join("output.log");
+                    parse_token_usage_live(&log_path)
+                })
+            });
+
+            if assign_usage.is_some() || eval_usage.is_some() {
+                lines.push("── Phase Costs ──".to_string());
+                if let Some(ref u) = assign_usage {
+                    let total = u.total_input() + u.output_tokens;
+                    let mut detail = format!(
+                        "  ⊳ Assignment: {} (→{} ←{}",
+                        format_tokens(total),
+                        format_tokens(u.total_input()),
+                        format_tokens(u.output_tokens)
+                    );
+                    if u.cost_usd > 0.0 {
+                        detail.push_str(&format!(" ${:.4}", u.cost_usd));
+                    }
+                    detail.push(')');
+                    lines.push(detail);
+                }
+                if let Some(ref u) = eval_usage {
+                    let total = u.total_input() + u.output_tokens;
+                    let mut detail = format!(
+                        "  ∴ Evaluation: {} (→{} ←{}",
+                        format_tokens(total),
+                        format_tokens(u.total_input()),
+                        format_tokens(u.output_tokens)
+                    );
+                    if u.cost_usd > 0.0 {
+                        detail.push_str(&format!(" ${:.4}", u.cost_usd));
+                    }
+                    detail.push(')');
+                    lines.push(detail);
+                }
+                // Show combined total
+                let exec_cost = task.token_usage.as_ref().map(|u| u.cost_usd).unwrap_or(0.0);
+                let total_cost = exec_cost
+                    + assign_usage.as_ref().map(|u| u.cost_usd).unwrap_or(0.0)
+                    + eval_usage.as_ref().map(|u| u.cost_usd).unwrap_or(0.0);
+                if total_cost > 0.0 {
+                    lines.push(format!("  Total cost: ${:.4}", total_cost));
+                }
+                lines.push(String::new());
+            }
         }
 
         // ── Dependencies ──
@@ -1951,6 +2088,158 @@ impl VizApp {
         self.hud_detail = None;
     }
 
+    /// Load HUD detail for an arbitrary task ID (used for navigating to internal tasks
+    /// like assign-* and evaluate-* from the Agency tab).
+    pub fn load_hud_detail_for_task(&mut self, target_task_id: &str) {
+        self.hud_scroll = 0;
+
+        let graph_path = self.workgraph_dir.join("graph.jsonl");
+        let graph = match load_graph(&graph_path) {
+            Ok(g) => g,
+            Err(_) => {
+                self.hud_detail = None;
+                return;
+            }
+        };
+
+        let task = match graph.tasks().find(|t| t.id == target_task_id) {
+            Some(t) => t.clone(),
+            None => {
+                self.hud_detail = None;
+                return;
+            }
+        };
+
+        let mut lines: Vec<String> = Vec::new();
+
+        // ── Header ──
+        lines.push(format!("── {} ──", task.id));
+        lines.push(format!("Title: {}", task.title));
+        lines.push(format!("Status: {:?}", task.status));
+        if let Some(ref agent) = task.assigned {
+            lines.push(format!("Agent: {}", agent));
+        }
+        lines.push(String::new());
+
+        // ── Description ──
+        if let Some(ref desc) = task.description {
+            lines.push("── Description ──".to_string());
+            for (i, line) in desc.lines().enumerate() {
+                if i >= 10 {
+                    lines.push("  ...".to_string());
+                    break;
+                }
+                lines.push(format!("  {}", line));
+            }
+            lines.push(String::new());
+        }
+
+        // ── Agent output ──
+        let output_path = task
+            .assigned
+            .as_ref()
+            .map(|aid| {
+                self.workgraph_dir
+                    .join("agents")
+                    .join(aid)
+                    .join("output.log")
+            })
+            .filter(|p| p.exists())
+            .or_else(|| find_latest_archive(&self.workgraph_dir, &task.id, "output.txt"));
+        if let Some(output_path) = output_path {
+            lines.push("── Output ──".to_string());
+            if let Ok(content) = std::fs::read_to_string(&output_path) {
+                for line in content.lines() {
+                    let trimmed = line.trim();
+                    if (trimmed.starts_with('{') || trimmed.starts_with('['))
+                        && let Ok(val) = serde_json::from_str::<serde_json::Value>(trimmed)
+                    {
+                        if let Ok(pretty) = serde_json::to_string_pretty(&val) {
+                            for pline in pretty.lines() {
+                                lines.push(format!("  {}", pline));
+                            }
+                        } else {
+                            lines.push(format!("  {}", line));
+                        }
+                    } else {
+                        lines.push(format!("  {}", line));
+                    }
+                }
+            }
+            lines.push(String::new());
+        }
+
+        // ── Token usage ──
+        if let Some(ref usage) = task.token_usage {
+            lines.push("── Tokens ──".to_string());
+            lines.push(format!(
+                "  Input:  {} (→{})",
+                format_tokens(usage.total_input()),
+                format_tokens(usage.input_tokens)
+            ));
+            lines.push(format!(
+                "  Output: {} (←{})",
+                format_tokens(usage.output_tokens),
+                format_tokens(usage.output_tokens)
+            ));
+            if usage.cache_read_input_tokens > 0 || usage.cache_creation_input_tokens > 0 {
+                lines.push(format!(
+                    "  Cache read:  {} (◎)",
+                    format_tokens(usage.cache_read_input_tokens)
+                ));
+                lines.push(format!(
+                    "  Cache write: {} (⊳)",
+                    format_tokens(usage.cache_creation_input_tokens)
+                ));
+            }
+            if usage.cost_usd > 0.0 {
+                lines.push(format!("  Cost: ${:.4}", usage.cost_usd));
+            }
+            lines.push(String::new());
+        }
+
+        // ── Timing ──
+        let has_timing =
+            task.created_at.is_some() || task.started_at.is_some() || task.completed_at.is_some();
+        if has_timing {
+            lines.push("── Timing ──".to_string());
+            if let Some(ref ts) = task.created_at {
+                lines.push(format!("  Created:   {}", format_timestamp(ts)));
+            }
+            if let Some(ref ts) = task.started_at {
+                lines.push(format!("  Started:   {}", format_timestamp(ts)));
+            }
+            if let Some(ref ts) = task.completed_at {
+                lines.push(format!("  Completed: {}", format_timestamp(ts)));
+            }
+            if let (Some(start), Some(end)) = (&task.started_at, &task.completed_at)
+                && let (Ok(s), Ok(e)) = (
+                    chrono::DateTime::parse_from_rfc3339(start),
+                    chrono::DateTime::parse_from_rfc3339(end),
+                )
+            {
+                let dur = (e - s).num_seconds();
+                lines.push(format!(
+                    "  Duration:  {}",
+                    workgraph::format_duration(dur, false)
+                ));
+            }
+            lines.push(String::new());
+        }
+
+        // ── Failure reason ──
+        if let Some(ref reason) = task.failure_reason {
+            lines.push("── Failure ──".to_string());
+            lines.push(format!("  {}", reason));
+            lines.push(String::new());
+        }
+
+        self.hud_detail = Some(HudDetail {
+            task_id: target_task_id.to_string(),
+            rendered_lines: lines,
+        });
+    }
+
     /// Scroll the HUD panel up.
     pub fn hud_scroll_up(&mut self, amount: usize) {
         self.hud_scroll = self.hud_scroll.saturating_sub(amount);
@@ -2004,7 +2293,9 @@ impl VizApp {
         self.log_pane.rendered_lines.clear();
 
         if task.log.is_empty() {
-            self.log_pane.rendered_lines.push("(no log entries)".to_string());
+            self.log_pane
+                .rendered_lines
+                .push("(no log entries)".to_string());
         } else {
             let now = chrono::Utc::now();
             for entry in &task.log {
@@ -2019,10 +2310,9 @@ impl VizApp {
                 } else {
                     // Human-readable format.
                     let time_str = format_relative_time(&entry.timestamp, &now);
-                    self.log_pane.rendered_lines.push(format!(
-                        "[{}] {}",
-                        time_str, entry.message
-                    ));
+                    self.log_pane
+                        .rendered_lines
+                        .push(format!("[{}] {}", time_str, entry.message));
                 }
             }
         }
@@ -2104,7 +2394,9 @@ impl VizApp {
 
         match workgraph::messages::list_messages(&self.workgraph_dir, &task_id) {
             Ok(msgs) if msgs.is_empty() => {
-                self.messages_panel.rendered_lines.push("(no messages)".to_string());
+                self.messages_panel
+                    .rendered_lines
+                    .push("(no messages)".to_string());
             }
             Ok(msgs) => {
                 let now = chrono::Utc::now();
@@ -2118,7 +2410,9 @@ impl VizApp {
                 }
             }
             Err(_) => {
-                self.messages_panel.rendered_lines.push("(error loading messages)".to_string());
+                self.messages_panel
+                    .rendered_lines
+                    .push("(error loading messages)".to_string());
             }
         }
 
@@ -2199,18 +2493,21 @@ impl VizApp {
             hud_scroll: 0,
             hud_wrapped_line_count: 0,
             hud_detail_viewport_height: 0,
+            detail_raw_json: false,
             right_panel_visible: false,
             focused_panel: FocusedPanel::Graph,
             right_panel_tab: RightPanelTab::Detail,
             right_panel_percent: 35,
             hud_size: HudSize::Normal,
             input_mode: InputMode::Normal,
+            chat_input_dismissed: false,
             task_form: None,
             text_prompt: TextPromptState {
                 input: String::new(),
             },
             chat: ChatState::default(),
             agent_monitor: AgentMonitorState::default(),
+            agency_lifecycle: None,
             log_pane: LogPaneState::default(),
             messages_panel: MessagesPanelState::default(),
             cmd_rx: mpsc::channel().1,
@@ -2220,6 +2517,7 @@ impl VizApp {
             sort_mode: SortMode::ReverseChronological,
             smart_follow_active: true,
             initial_load: false,
+            splash_animations: HashMap::new(),
             last_graph_mtime: None,
             last_refresh: Instant::now(),
             last_refresh_display: String::new(),
@@ -2323,7 +2621,11 @@ impl VizApp {
                     let msg = if result.success {
                         msg
                     } else {
-                        let err = result.output.lines().find(|l| !l.is_empty()).unwrap_or("unknown");
+                        let err = result
+                            .output
+                            .lines()
+                            .find(|l| !l.is_empty())
+                            .unwrap_or("unknown");
                         format!("Error: {}", err)
                     };
                     self.notification = Some((msg, Instant::now()));
@@ -2333,7 +2635,11 @@ impl VizApp {
                     let msg = if result.success {
                         msg
                     } else {
-                        let err = result.output.lines().find(|l| !l.is_empty()).unwrap_or("unknown");
+                        let err = result
+                            .output
+                            .lines()
+                            .find(|l| !l.is_empty())
+                            .unwrap_or("unknown");
                         format!("Error: {}", err)
                     };
                     self.notification = Some((msg, Instant::now()));
@@ -2368,10 +2674,10 @@ impl VizApp {
             }
         }
         // Clear expired notifications (after 3 seconds).
-        if let Some((_, when)) = &self.notification {
-            if when.elapsed() > std::time::Duration::from_secs(3) {
-                self.notification = None;
-            }
+        if let Some((_, when)) = &self.notification
+            && when.elapsed() > std::time::Duration::from_secs(3)
+        {
+            self.notification = None;
         }
     }
 
@@ -2391,10 +2697,9 @@ impl VizApp {
                             .as_ref()
                             .and_then(|g| g.tasks().find(|t| t.id == *tid))
                             .map(|t| t.title.clone());
-                        let started =
-                            chrono::DateTime::parse_from_rfc3339(&agent.started_at)
-                                .ok()
-                                .map(|dt| dt.with_timezone(&chrono::Utc));
+                        let started = chrono::DateTime::parse_from_rfc3339(&agent.started_at)
+                            .ok()
+                            .map(|dt| dt.with_timezone(&chrono::Utc));
                         let completed = agent
                             .completed_at
                             .as_deref()
@@ -2427,6 +2732,159 @@ impl VizApp {
                 self.agent_monitor.agents.clear();
             }
         }
+    }
+
+    /// Load the agency lifecycle (assign → execute → evaluate) for the currently selected task.
+    pub fn load_agency_lifecycle(&mut self) {
+        let task_id = match self.selected_task_id() {
+            Some(id) => id.to_string(),
+            None => {
+                self.agency_lifecycle = None;
+                return;
+            }
+        };
+
+        // Skip reload if already loaded for this task.
+        if let Some(ref lc) = self.agency_lifecycle
+            && lc.task_id == task_id
+        {
+            return;
+        }
+
+        let graph_path = self.workgraph_dir.join("graph.jsonl");
+        let graph = match load_graph(&graph_path) {
+            Ok(g) => g,
+            Err(_) => {
+                self.agency_lifecycle = None;
+                return;
+            }
+        };
+
+        let task = match graph.tasks().find(|t| t.id == task_id) {
+            Some(t) => t.clone(),
+            None => {
+                self.agency_lifecycle = None;
+                return;
+            }
+        };
+
+        let agents_dir = self.workgraph_dir.join("agents");
+
+        // Helper: build a LifecyclePhase from a task
+        let wg_dir = self.workgraph_dir.clone();
+        let build_phase = |t: &workgraph::graph::Task, label: &'static str| -> LifecyclePhase {
+            let usage = t
+                .token_usage
+                .clone()
+                .or_else(|| {
+                    let agent_id = t.assigned.as_deref()?;
+                    let log_path = agents_dir.join(agent_id).join("output.log");
+                    parse_token_usage_live(&log_path)
+                })
+                .or_else(|| {
+                    // Fall back to archived output
+                    let archive_base = wg_dir.join("log").join("agents").join(&t.id);
+                    if !archive_base.exists() {
+                        return None;
+                    }
+                    let mut entries: Vec<_> = std::fs::read_dir(&archive_base)
+                        .ok()?
+                        .filter_map(|e| e.ok())
+                        .filter(|e| e.file_type().ok().is_some_and(|ft| ft.is_dir()))
+                        .collect();
+                    entries.sort_by_key(|b| std::cmp::Reverse(b.file_name()));
+                    for entry in entries {
+                        let candidate = entry.path().join("output.txt");
+                        if candidate.exists()
+                            && let Some(u) = parse_token_usage_live(&candidate)
+                        {
+                            return Some(u);
+                        }
+                    }
+                    None
+                });
+            let runtime_secs = match (&t.started_at, &t.completed_at) {
+                (Some(s), Some(e)) => {
+                    if let (Ok(start), Ok(end)) = (
+                        chrono::DateTime::parse_from_rfc3339(s),
+                        chrono::DateTime::parse_from_rfc3339(e),
+                    ) {
+                        Some((end - start).num_seconds())
+                    } else {
+                        None
+                    }
+                }
+                (Some(s), None) if t.status == Status::InProgress => {
+                    chrono::DateTime::parse_from_rfc3339(s).ok().map(|start| {
+                        (chrono::Utc::now() - start.with_timezone(&chrono::Utc)).num_seconds()
+                    })
+                }
+                _ => None,
+            };
+            LifecyclePhase {
+                task_id: t.id.clone(),
+                label,
+                status: t.status,
+                agent_id: t.assigned.clone(),
+                token_usage: usage,
+                runtime_secs,
+                eval_score: None,
+                eval_notes: None,
+            }
+        };
+
+        // Assignment phase
+        let assign_task_id = format!("assign-{}", task_id);
+        let assignment = graph
+            .tasks()
+            .find(|t| t.id == assign_task_id)
+            .map(|t| build_phase(t, "Assignment"));
+
+        // Execution phase (the task itself)
+        let execution = Some(build_phase(&task, "Execution"));
+
+        // Evaluation phase
+        let eval_task_id = format!("evaluate-{}", task_id);
+        let evaluation = graph.tasks().find(|t| t.id == eval_task_id).map(|t| {
+            let mut phase = build_phase(t, "Evaluation");
+
+            // Load evaluation results from agency/evaluations/
+            let evals_dir = self.workgraph_dir.join("agency").join("evaluations");
+            if evals_dir.exists() {
+                let prefix = format!("eval-{}-", task_id);
+                if let Ok(entries) = std::fs::read_dir(&evals_dir) {
+                    let mut eval_files: Vec<_> = entries
+                        .filter_map(|e| e.ok())
+                        .filter(|e| e.file_name().to_string_lossy().starts_with(&prefix))
+                        .collect();
+                    eval_files.sort_by_key(|b| std::cmp::Reverse(b.file_name()));
+                    if let Some(entry) = eval_files.first()
+                        && let Ok(content) = std::fs::read_to_string(entry.path())
+                        && let Ok(eval) = serde_json::from_str::<serde_json::Value>(&content)
+                    {
+                        phase.eval_score = eval.get("score").and_then(|v| v.as_f64());
+                        phase.eval_notes = eval
+                            .get("notes")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.lines().take(5).collect::<Vec<_>>().join("\n"));
+                    }
+                }
+            }
+
+            phase
+        });
+
+        self.agency_lifecycle = Some(AgencyLifecycle {
+            task_id,
+            assignment,
+            execution,
+            evaluation,
+        });
+    }
+
+    /// Invalidate the agency lifecycle cache so it reloads on next render.
+    pub fn invalidate_agency_lifecycle(&mut self) {
+        self.agency_lifecycle = None;
     }
 
     // ── Chat methods ──
@@ -2471,12 +2929,13 @@ impl VizApp {
     /// Poll for new coordinator responses in the outbox.
     /// Called during refresh ticks.
     pub fn poll_chat_messages(&mut self) {
-        let new_msgs =
-            match workgraph::chat::read_outbox_since(&self.workgraph_dir, self.chat.outbox_cursor)
-            {
-                Ok(msgs) => msgs,
-                Err(_) => return,
-            };
+        let new_msgs = match workgraph::chat::read_outbox_since(
+            &self.workgraph_dir,
+            self.chat.outbox_cursor,
+        ) {
+            Ok(msgs) => msgs,
+            Err(_) => return,
+        };
 
         if new_msgs.is_empty() {
             return;
@@ -2490,7 +2949,10 @@ impl VizApp {
         }
 
         // Update cursor to latest message.
-        self.chat.outbox_cursor = new_msgs.last().map(|m| m.id).unwrap_or(self.chat.outbox_cursor);
+        self.chat.outbox_cursor = new_msgs
+            .last()
+            .map(|m| m.id)
+            .unwrap_or(self.chat.outbox_cursor);
 
         // Any new coordinator response clears the awaiting state.
         // The TUI request_id ("tui-...") differs from wg chat's ("chat-..."),
@@ -2517,11 +2979,7 @@ impl VizApp {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default();
-        let request_id = format!(
-            "tui-{}-{}",
-            now.as_millis(),
-            now.subsec_nanos() % 100_000
-        );
+        let request_id = format!("tui-{}-{}", now.as_millis(), now.subsec_nanos() % 100_000);
 
         // Add user message to display immediately.
         self.chat.messages.push(ChatMessage {
@@ -2582,13 +3040,21 @@ impl VizApp {
         }
 
         if !form.tags.trim().is_empty() {
-            for tag in form.tags.split(',').map(|t| t.trim()).filter(|t| !t.is_empty()) {
+            for tag in form
+                .tags
+                .split(',')
+                .map(|t| t.trim())
+                .filter(|t| !t.is_empty())
+            {
                 args.push("--tag".to_string());
                 args.push(tag.to_string());
             }
         }
 
-        self.exec_command(args, CommandEffect::RefreshAndNotify("Task created".to_string()));
+        self.exec_command(
+            args,
+            CommandEffect::RefreshAndNotify("Task created".to_string()),
+        );
     }
 
     /// Kill the agent assigned to the currently selected task.
@@ -2600,8 +3066,7 @@ impl VizApp {
         let task_id = match self.selected_task_id() {
             Some(id) => id.to_string(),
             None => {
-                self.notification =
-                    Some(("No task selected".to_string(), Instant::now()));
+                self.notification = Some(("No task selected".to_string(), Instant::now()));
                 return;
             }
         };
@@ -2610,8 +3075,7 @@ impl VizApp {
         let graph = match load_graph(&graph_path) {
             Ok(g) => g,
             Err(_) => {
-                self.notification =
-                    Some(("Failed to load graph".to_string(), Instant::now()));
+                self.notification = Some(("Failed to load graph".to_string(), Instant::now()));
                 return;
             }
         };
@@ -2620,26 +3084,20 @@ impl VizApp {
             Some(task) => match &task.assigned {
                 Some(id) => id.clone(),
                 None => {
-                    self.notification = Some((
-                        format!("No active agent on '{}'", task_id),
-                        Instant::now(),
-                    ));
+                    self.notification =
+                        Some((format!("No active agent on '{}'", task_id), Instant::now()));
                     return;
                 }
             },
             None => {
-                self.notification =
-                    Some((format!("Task '{}' not found", task_id), Instant::now()));
+                self.notification = Some((format!("Task '{}' not found", task_id), Instant::now()));
                 return;
             }
         };
 
         self.exec_command(
             vec!["kill".to_string(), agent_id.clone()],
-            CommandEffect::RefreshAndNotify(format!(
-                "Killed {} on task '{}'",
-                agent_id, task_id
-            )),
+            CommandEffect::RefreshAndNotify(format!("Killed {} on task '{}'", agent_id, task_id)),
         );
     }
 }
@@ -2877,7 +3335,7 @@ fn find_latest_archive(
         .filter(|e| e.file_type().ok().is_some_and(|ft| ft.is_dir()))
         .collect();
     // Sort by name descending (timestamps sort lexicographically)
-    entries.sort_by(|a, b| b.file_name().cmp(&a.file_name()));
+    entries.sort_by_key(|b| std::cmp::Reverse(b.file_name()));
     for entry in entries {
         let candidate = entry.path().join(filename);
         if candidate.exists() {
@@ -2888,6 +3346,101 @@ fn find_latest_archive(
 }
 
 /// Format an ISO 8601 timestamp for HUD display (shorter, local time).
+/// Flatten a JSON value into human-readable key/value lines.
+/// Strings are displayed directly, objects show "Key: Value", arrays are listed.
+/// Nested objects recurse with increased indent.
+fn flatten_json_to_lines(val: &serde_json::Value, indent: &str, lines: &mut Vec<String>) {
+    match val {
+        serde_json::Value::Object(map) => {
+            for (key, value) in map {
+                match value {
+                    serde_json::Value::String(s) => {
+                        // Capitalize the key nicely
+                        let label = humanize_key(key);
+                        for (i, line) in s.lines().enumerate() {
+                            if i == 0 {
+                                lines.push(format!("{}{}: {}", indent, label, line));
+                            } else {
+                                let continuation = " ".repeat(indent.len() + label.len() + 2);
+                                lines.push(format!("{}{}", continuation, line));
+                            }
+                        }
+                    }
+                    serde_json::Value::Number(n) => {
+                        lines.push(format!("{}{}: {}", indent, humanize_key(key), n));
+                    }
+                    serde_json::Value::Bool(b) => {
+                        lines.push(format!("{}{}: {}", indent, humanize_key(key), b));
+                    }
+                    serde_json::Value::Null => {
+                        lines.push(format!("{}{}: null", indent, humanize_key(key)));
+                    }
+                    serde_json::Value::Array(arr) => {
+                        lines.push(format!("{}{}:", indent, humanize_key(key)));
+                        let child_indent = format!("{}  ", indent);
+                        for item in arr {
+                            match item {
+                                serde_json::Value::String(s) => {
+                                    lines.push(format!("{}- {}", child_indent, s));
+                                }
+                                serde_json::Value::Object(_) => {
+                                    flatten_json_to_lines(item, &child_indent, lines);
+                                    lines.push(String::new());
+                                }
+                                other => {
+                                    lines.push(format!("{}- {}", child_indent, other));
+                                }
+                            }
+                        }
+                    }
+                    serde_json::Value::Object(_) => {
+                        lines.push(format!("{}{}:", indent, humanize_key(key)));
+                        let child_indent = format!("{}  ", indent);
+                        flatten_json_to_lines(value, &child_indent, lines);
+                    }
+                }
+            }
+        }
+        serde_json::Value::Array(arr) => {
+            for item in arr {
+                flatten_json_to_lines(item, indent, lines);
+                lines.push(String::new());
+            }
+        }
+        serde_json::Value::String(s) => {
+            lines.push(format!("{}{}", indent, s));
+        }
+        other => {
+            lines.push(format!("{}{}", indent, other));
+        }
+    }
+}
+
+/// Convert a snake_case or camelCase JSON key to a human-readable label.
+fn humanize_key(key: &str) -> String {
+    // Replace underscores and split camelCase, then capitalize first letter.
+    let mut result = String::new();
+    let mut prev_lower = false;
+    for (i, c) in key.chars().enumerate() {
+        if c == '_' || c == '-' {
+            result.push(' ');
+            prev_lower = false;
+        } else if c.is_uppercase() && prev_lower {
+            result.push(' ');
+            result.push(c.to_lowercase().next().unwrap_or(c));
+            prev_lower = false;
+        } else {
+            if i == 0 {
+                result.push(c.to_uppercase().next().unwrap_or(c));
+            } else {
+                result.push(c);
+            }
+            prev_lower = c.is_lowercase();
+        }
+    }
+    result
+}
+
 fn format_timestamp(ts: &str) -> String {
     match chrono::DateTime::parse_from_rfc3339(ts) {
         Ok(dt) => {
@@ -2909,10 +3462,7 @@ fn format_relative_time(ts: &str, now: &chrono::DateTime<chrono::Utc>) -> String
     let secs = delta.num_seconds();
     if secs < 0 {
         // Future timestamp — just show the time.
-        return dt
-            .with_timezone(&chrono::Local)
-            .format("%H:%M")
-            .to_string();
+        return dt.with_timezone(&chrono::Local).format("%H:%M").to_string();
     }
     if secs < 60 {
         format!("{}s ago", secs)

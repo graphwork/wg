@@ -5,12 +5,14 @@ pub mod state;
 use std::io;
 use std::path::PathBuf;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use crossterm::{
-    event::{DisableBracketedPaste, EnableBracketedPaste},
+    event::{DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste},
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
+use ratatui::Terminal;
+use ratatui::backend::CrosstermBackend;
 
 use self::state::VizApp;
 use crate::commands::viz::VizOptions;
@@ -30,21 +32,33 @@ pub fn run(
         original_hook(panic_info);
     }));
 
-    enable_raw_mode()?;
+    enable_raw_mode().context(
+        "failed to enable raw mode — is this an interactive terminal?\n\
+         Hint: `wg tui` requires a real terminal (not a pipe or agent context)",
+    )?;
     execute!(io::stdout(), EnterAlternateScreen, EnableBracketedPaste)?;
 
-    let mut terminal = ratatui::init();
+    let backend = CrosstermBackend::new(io::stdout());
+    let mut terminal = Terminal::new(backend).context("failed to create terminal for TUI")?;
     let mut app = VizApp::new(workgraph_dir, viz_options, mouse_override);
     let result = event::run_event_loop(&mut terminal, &mut app);
 
     let _ = restore_terminal();
-    ratatui::restore();
 
     result
 }
 
 fn restore_terminal() -> Result<()> {
-    disable_raw_mode()?;
-    execute!(io::stdout(), LeaveAlternateScreen, DisableBracketedPaste)?;
+    // Best-effort cleanup: don't short-circuit on individual failures
+    // so that later steps still run even if an earlier one fails.
+    let r1 = disable_raw_mode();
+    let r2 = execute!(
+        io::stdout(),
+        DisableMouseCapture,
+        LeaveAlternateScreen,
+        DisableBracketedPaste
+    );
+    r1?;
+    r2?;
     Ok(())
 }

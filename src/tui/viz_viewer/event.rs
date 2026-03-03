@@ -259,12 +259,7 @@ fn handle_text_prompt_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModif
                 }
                 TextPromptAction::EditDescription(task_id) => {
                     app.exec_command(
-                        vec![
-                            "edit".to_string(),
-                            task_id.clone(),
-                            "-d".to_string(),
-                            text,
-                        ],
+                        vec!["edit".to_string(), task_id.clone(), "-d".to_string(), text],
                         CommandEffect::RefreshAndNotify(format!("Updated '{}'", task_id)),
                     );
                 }
@@ -367,9 +362,7 @@ fn handle_task_form_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
                 }
             }
             KeyCode::Down => {
-                if !form.dep_matches.is_empty()
-                    && form.dep_match_idx < form.dep_matches.len() - 1
-                {
+                if !form.dep_matches.is_empty() && form.dep_match_idx < form.dep_matches.len() - 1 {
                     form.dep_match_idx += 1;
                 }
             }
@@ -393,9 +386,11 @@ fn handle_chat_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
     match code {
         KeyCode::Esc => {
             app.input_mode = InputMode::Normal;
+            app.chat_input_dismissed = true;
         }
         KeyCode::Enter => {
             // Enter sends the message (newlines from paste are preserved in the content).
+            // Stay in ChatInput mode so the user can immediately type another message.
             let text = app.chat.input.clone();
             app.chat.input.clear();
             app.chat.cursor = 0;
@@ -403,7 +398,6 @@ fn handle_chat_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
             if !text.trim().is_empty() {
                 app.send_chat_message(text);
             }
-            app.input_mode = InputMode::Normal;
         }
         KeyCode::Backspace => {
             if app.chat.cursor > 0 {
@@ -542,7 +536,11 @@ fn move_cursor_up(s: &str, pos: usize) -> usize {
     let prev_line = &s[prev_line_start..prev_line_end];
     let target_col = col.min(prev_line.chars().count());
     // Convert char offset to byte offset.
-    let byte_offset: usize = prev_line.chars().take(target_col).map(|c| c.len_utf8()).sum();
+    let byte_offset: usize = prev_line
+        .chars()
+        .take(target_col)
+        .map(|c| c.len_utf8())
+        .sum();
     prev_line_start + byte_offset
 }
 
@@ -559,7 +557,11 @@ fn move_cursor_down(s: &str, pos: usize) -> usize {
     let next_line_end = line_end(s, next_line_start);
     let next_line = &s[next_line_start..next_line_end];
     let target_col = col.min(next_line.chars().count());
-    let byte_offset: usize = next_line.chars().take(target_col).map(|c| c.len_utf8()).sum();
+    let byte_offset: usize = next_line
+        .chars()
+        .take(target_col)
+        .map(|c| c.len_utf8())
+        .sum();
     next_line_start + byte_offset
 }
 
@@ -572,37 +574,41 @@ fn handle_message_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers
             let text = app.messages_panel.input.clone();
             app.messages_panel.input.clear();
             app.messages_panel.cursor = 0;
-            if !text.trim().is_empty() {
-                if let Some(task_id) = app.messages_panel.task_id.clone() {
-                    app.exec_command(
-                        vec![
-                            "msg".to_string(),
-                            "send".to_string(),
-                            task_id.clone(),
-                            text,
-                            "--from".to_string(),
-                            "tui".to_string(),
-                        ],
-                        CommandEffect::Notify(format!("Message sent to '{}'", task_id)),
-                    );
-                    // Invalidate so messages reload on next frame.
-                    app.invalidate_messages_panel();
-                    app.load_messages_panel();
-                }
+            if !text.trim().is_empty()
+                && let Some(task_id) = app.messages_panel.task_id.clone()
+            {
+                app.exec_command(
+                    vec![
+                        "msg".to_string(),
+                        "send".to_string(),
+                        task_id.clone(),
+                        text,
+                        "--from".to_string(),
+                        "tui".to_string(),
+                    ],
+                    CommandEffect::Notify(format!("Message sent to '{}'", task_id)),
+                );
+                // Invalidate so messages reload on next frame.
+                app.invalidate_messages_panel();
+                app.load_messages_panel();
             }
             app.input_mode = InputMode::Normal;
         }
         KeyCode::Backspace => {
             if app.messages_panel.cursor > 0 {
                 let prev = prev_char_boundary(&app.messages_panel.input, app.messages_panel.cursor);
-                app.messages_panel.input.drain(prev..app.messages_panel.cursor);
+                app.messages_panel
+                    .input
+                    .drain(prev..app.messages_panel.cursor);
                 app.messages_panel.cursor = prev;
             }
         }
         KeyCode::Delete => {
             if app.messages_panel.cursor < app.messages_panel.input.len() {
                 let next = next_char_boundary(&app.messages_panel.input, app.messages_panel.cursor);
-                app.messages_panel.input.drain(app.messages_panel.cursor..next);
+                app.messages_panel
+                    .input
+                    .drain(app.messages_panel.cursor..next);
             }
         }
         // Ctrl+A: move to beginning
@@ -615,11 +621,13 @@ fn handle_message_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers
         }
         // Ctrl+B: move backward one char
         KeyCode::Char('b') if modifiers.contains(KeyModifiers::CONTROL) => {
-            app.messages_panel.cursor = prev_char_boundary(&app.messages_panel.input, app.messages_panel.cursor);
+            app.messages_panel.cursor =
+                prev_char_boundary(&app.messages_panel.input, app.messages_panel.cursor);
         }
         // Ctrl+F: move forward one char
         KeyCode::Char('f') if modifiers.contains(KeyModifiers::CONTROL) => {
-            app.messages_panel.cursor = next_char_boundary(&app.messages_panel.input, app.messages_panel.cursor);
+            app.messages_panel.cursor =
+                next_char_boundary(&app.messages_panel.input, app.messages_panel.cursor);
         }
         // Ctrl+K: kill to end of line
         KeyCode::Char('k') if modifiers.contains(KeyModifiers::CONTROL) => {
@@ -633,14 +641,18 @@ fn handle_message_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers
         // Ctrl+W: delete word backward
         KeyCode::Char('w') if modifiers.contains(KeyModifiers::CONTROL) => {
             let start = word_boundary_back(&app.messages_panel.input, app.messages_panel.cursor);
-            app.messages_panel.input.drain(start..app.messages_panel.cursor);
+            app.messages_panel
+                .input
+                .drain(start..app.messages_panel.cursor);
             app.messages_panel.cursor = start;
         }
         // Ctrl+D: delete char forward (or no-op at end)
         KeyCode::Char('d') if modifiers.contains(KeyModifiers::CONTROL) => {
             if app.messages_panel.cursor < app.messages_panel.input.len() {
                 let next = next_char_boundary(&app.messages_panel.input, app.messages_panel.cursor);
-                app.messages_panel.input.drain(app.messages_panel.cursor..next);
+                app.messages_panel
+                    .input
+                    .drain(app.messages_panel.cursor..next);
             }
         }
         // Ctrl+C: cancel input
@@ -651,10 +663,12 @@ fn handle_message_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers
         }
         // Arrow keys
         KeyCode::Left => {
-            app.messages_panel.cursor = prev_char_boundary(&app.messages_panel.input, app.messages_panel.cursor);
+            app.messages_panel.cursor =
+                prev_char_boundary(&app.messages_panel.input, app.messages_panel.cursor);
         }
         KeyCode::Right => {
-            app.messages_panel.cursor = next_char_boundary(&app.messages_panel.input, app.messages_panel.cursor);
+            app.messages_panel.cursor =
+                next_char_boundary(&app.messages_panel.input, app.messages_panel.cursor);
         }
         KeyCode::Home => {
             app.messages_panel.cursor = 0;
@@ -670,7 +684,9 @@ fn handle_message_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers
             app.messages_panel.scroll += 1;
         }
         KeyCode::Char(c) => {
-            app.messages_panel.input.insert(app.messages_panel.cursor, c);
+            app.messages_panel
+                .input
+                .insert(app.messages_panel.cursor, c);
             app.messages_panel.cursor += c.len_utf8();
         }
         _ => {}
@@ -756,6 +772,14 @@ fn handle_graph_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
         // Tab: switch panel focus (replaces old trace toggle)
         KeyCode::Tab => {
             app.toggle_panel_focus();
+            // Auto-enter ChatInput when focusing right panel on Chat tab,
+            // but only if user hasn't explicitly dismissed it with Esc.
+            if app.focused_panel == FocusedPanel::RightPanel
+                && app.right_panel_tab == RightPanelTab::Chat
+                && !app.chat_input_dismissed
+            {
+                app.input_mode = InputMode::ChatInput;
+            }
         }
 
         // t: toggle trace (was Tab)
@@ -784,26 +808,22 @@ fn handle_graph_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
 
         // HUD panel scroll (Shift or Alt + Up/Down/PgUp/PgDn)
         KeyCode::Up
-            if modifiers.contains(KeyModifiers::SHIFT)
-                || modifiers.contains(KeyModifiers::ALT) =>
+            if modifiers.contains(KeyModifiers::SHIFT) || modifiers.contains(KeyModifiers::ALT) =>
         {
             app.hud_scroll_up(1);
         }
         KeyCode::Down
-            if modifiers.contains(KeyModifiers::SHIFT)
-                || modifiers.contains(KeyModifiers::ALT) =>
+            if modifiers.contains(KeyModifiers::SHIFT) || modifiers.contains(KeyModifiers::ALT) =>
         {
             app.hud_scroll_down(1);
         }
         KeyCode::PageUp
-            if modifiers.contains(KeyModifiers::SHIFT)
-                || modifiers.contains(KeyModifiers::ALT) =>
+            if modifiers.contains(KeyModifiers::SHIFT) || modifiers.contains(KeyModifiers::ALT) =>
         {
             app.hud_scroll_up(10);
         }
         KeyCode::PageDown
-            if modifiers.contains(KeyModifiers::SHIFT)
-                || modifiers.contains(KeyModifiers::ALT) =>
+            if modifiers.contains(KeyModifiers::SHIFT) || modifiers.contains(KeyModifiers::ALT) =>
         {
             app.hud_scroll_down(10);
         }
@@ -884,8 +904,7 @@ fn handle_graph_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
         KeyCode::Char('f') => {
             if let Some(task_id) = app.selected_task_id().map(|s| s.to_string()) {
                 app.text_prompt.input.clear();
-                app.input_mode =
-                    InputMode::TextPrompt(TextPromptAction::MarkFailed(task_id));
+                app.input_mode = InputMode::TextPrompt(TextPromptAction::MarkFailed(task_id));
             }
         }
 
@@ -900,8 +919,7 @@ fn handle_graph_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
         KeyCode::Char('e') => {
             if let Some(task_id) = app.selected_task_id().map(|s| s.to_string()) {
                 app.text_prompt.input.clear();
-                app.input_mode =
-                    InputMode::TextPrompt(TextPromptAction::EditDescription(task_id));
+                app.input_mode = InputMode::TextPrompt(TextPromptAction::EditDescription(task_id));
             }
         }
 
@@ -911,6 +929,7 @@ fn handle_graph_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
             app.right_panel_visible = true;
             app.right_panel_tab = RightPanelTab::Chat;
             app.focused_panel = FocusedPanel::RightPanel;
+            app.chat_input_dismissed = false;
             app.input_mode = InputMode::ChatInput;
         }
 
@@ -940,6 +959,10 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
         // Tab: switch panel focus back to graph
         KeyCode::Tab => {
             app.toggle_panel_focus();
+            // Reset dismissed flag when leaving right panel
+            if app.focused_panel == FocusedPanel::Graph {
+                app.chat_input_dismissed = false;
+            }
         }
 
         // Backslash: toggle right panel
@@ -955,19 +978,48 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
         // Esc: go back to graph focus
         KeyCode::Esc => {
             app.focused_panel = FocusedPanel::Graph;
+            // Reset dismissed flag so auto-enter works next time user returns
+            app.chat_input_dismissed = false;
         }
 
         // Number keys 0-4 switch tabs
         KeyCode::Char(d @ '0'..='4') => {
             let idx = (d as u8 - b'0') as usize;
             if let Some(tab) = RightPanelTab::from_index(idx) {
+                // Reset dismissed flag when navigating away from Chat tab
+                if app.right_panel_tab == RightPanelTab::Chat && tab != RightPanelTab::Chat {
+                    app.chat_input_dismissed = false;
+                }
                 app.right_panel_tab = tab;
+                // Auto-enter ChatInput when switching to Chat tab,
+                // unless user explicitly dismissed with Esc.
+                if tab == RightPanelTab::Chat && !app.chat_input_dismissed {
+                    app.input_mode = InputMode::ChatInput;
+                }
             }
         }
 
         // Left/Right cycle tabs
-        KeyCode::Left => app.right_panel_tab = app.right_panel_tab.prev(),
-        KeyCode::Right => app.right_panel_tab = app.right_panel_tab.next(),
+        KeyCode::Left => {
+            let old_tab = app.right_panel_tab;
+            app.right_panel_tab = app.right_panel_tab.prev();
+            if old_tab == RightPanelTab::Chat && app.right_panel_tab != RightPanelTab::Chat {
+                app.chat_input_dismissed = false;
+            }
+            if app.right_panel_tab == RightPanelTab::Chat && !app.chat_input_dismissed {
+                app.input_mode = InputMode::ChatInput;
+            }
+        }
+        KeyCode::Right => {
+            let old_tab = app.right_panel_tab;
+            app.right_panel_tab = app.right_panel_tab.next();
+            if old_tab == RightPanelTab::Chat && app.right_panel_tab != RightPanelTab::Chat {
+                app.chat_input_dismissed = false;
+            }
+            if app.right_panel_tab == RightPanelTab::Chat && !app.chat_input_dismissed {
+                app.input_mode = InputMode::ChatInput;
+            }
+        }
 
         // Up/Down/k/j scroll the active panel content
         KeyCode::Up | KeyCode::Char('k') => {
@@ -989,12 +1041,40 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
         // Preserves any in-progress chat input from previous editing.
         KeyCode::Enter => {
             if app.right_panel_tab == RightPanelTab::Chat {
+                app.chat_input_dismissed = false;
                 app.input_mode = InputMode::ChatInput;
             } else if app.right_panel_tab == RightPanelTab::Messages {
                 app.messages_panel.input.clear();
                 app.messages_panel.cursor = 0;
                 app.input_mode = InputMode::MessageInput;
             }
+        }
+
+        // Agency tab: 'a' = view assignment task detail, 'e' = view evaluation task detail
+        KeyCode::Char('a') if app.right_panel_tab == RightPanelTab::Agency => {
+            if let Some(ref lifecycle) = app.agency_lifecycle
+                && let Some(ref phase) = lifecycle.assignment
+            {
+                let task_id = phase.task_id.clone();
+                app.load_hud_detail_for_task(&task_id);
+                app.right_panel_tab = RightPanelTab::Detail;
+            }
+        }
+        KeyCode::Char('e') if app.right_panel_tab == RightPanelTab::Agency => {
+            if let Some(ref lifecycle) = app.agency_lifecycle
+                && let Some(ref phase) = lifecycle.evaluation
+            {
+                let task_id = phase.task_id.clone();
+                app.load_hud_detail_for_task(&task_id);
+                app.right_panel_tab = RightPanelTab::Detail;
+            }
+        }
+
+        // Detail tab: 'R' toggles raw JSON display
+        KeyCode::Char('R') if app.right_panel_tab == RightPanelTab::Detail => {
+            app.detail_raw_json = !app.detail_raw_json;
+            app.hud_detail = None; // force reload with new format
+            app.load_hud_detail();
         }
 
         _ => {}
@@ -1039,7 +1119,6 @@ fn right_panel_scroll_down(app: &mut VizApp, amount: usize) {
     }
 }
 
-
 fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
     let pos = Position::new(column, row);
     let in_graph = app.last_graph_area.contains(pos);
@@ -1081,38 +1160,46 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
                 app.focused_panel = FocusedPanel::Graph;
                 let content_row = row.saturating_sub(app.last_graph_area.y);
                 let visible_idx = app.scroll.offset_y + content_row as usize;
-                if visible_idx < app.visible_line_count() {
+                let line_count = app.visible_line_count();
+                if line_count > 0 && visible_idx < line_count {
                     let orig_line = app.visible_to_original(visible_idx);
-                    // Check if the click is on the mail indicator (✉) region.
-                    let content_col =
-                        (column.saturating_sub(app.last_graph_area.x) as usize)
+                    // Guard: orig_line must be within plain_lines range.
+                    if orig_line < app.plain_lines.len() {
+                        // Check if the click is on the mail indicator (✉) region.
+                        let content_col = (column.saturating_sub(app.last_graph_area.x) as usize)
                             + app.scroll.offset_x;
-                    let clicked_mail = app
-                        .plain_lines
-                        .get(orig_line)
-                        .and_then(|line| {
-                            let envelope_pos = line.find('✉')?;
-                            // The mail indicator region spans from the ✉ char
-                            // through the count digits that follow it.
-                            // Find the end: skip ✉ and any subsequent non-space chars.
-                            let after = &line[envelope_pos + '✉'.len_utf8()..];
-                            let suffix_len =
-                                after.chars().take_while(|c| !c.is_whitespace()).count();
-                            let end = envelope_pos + '✉'.len_utf8() + suffix_len;
-                            if content_col >= envelope_pos && content_col <= end {
-                                Some(())
-                            } else {
-                                None
-                            }
-                        })
-                        .is_some();
-                    app.select_task_at_line(orig_line);
-                    if clicked_mail {
-                        // Switch to the Messages tab for this task.
-                        app.right_panel_visible = true;
-                        app.right_panel_tab = RightPanelTab::Messages;
-                        app.invalidate_messages_panel();
-                        app.load_messages_panel();
+                        let clicked_mail = app
+                            .plain_lines
+                            .get(orig_line)
+                            .and_then(|line| {
+                                // Find the ✉ character position in display columns
+                                // (not byte offset) since content_col is a visual column.
+                                let envelope_char_col =
+                                    line.char_indices().position(|(_, c)| c == '✉')?;
+                                // The clickable region spans from ✉ through the
+                                // count digits/slash that follow it (e.g. "✉3" or "✉2/1").
+                                let after_envelope: String = line
+                                    .chars()
+                                    .skip(envelope_char_col + 1)
+                                    .take_while(|c| !c.is_whitespace())
+                                    .collect();
+                                let end_col =
+                                    envelope_char_col + 1 + after_envelope.chars().count();
+                                if content_col >= envelope_char_col && content_col < end_col {
+                                    Some(())
+                                } else {
+                                    None
+                                }
+                            })
+                            .is_some();
+                        app.select_task_at_line(orig_line);
+                        if clicked_mail {
+                            // Switch to the Messages tab for this task.
+                            app.right_panel_visible = true;
+                            app.right_panel_tab = RightPanelTab::Messages;
+                            app.invalidate_messages_panel();
+                            app.load_messages_panel();
+                        }
                     }
                 }
             }

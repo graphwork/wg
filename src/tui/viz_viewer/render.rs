@@ -9,8 +9,8 @@ use super::state::{
     ConfirmAction, FocusedPanel, InputMode, RightPanelTab, SortMode, TaskFormField, TaskFormState,
     TextPromptAction, VizApp,
 };
-use workgraph::graph::{TokenUsage, format_tokens};
 use workgraph::AgentStatus;
+use workgraph::graph::{TokenUsage, format_tokens};
 
 /// Minimum terminal width for side-by-side right panel layout.
 const SIDE_MIN_WIDTH: u16 = 100;
@@ -22,6 +22,9 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
     {
         app.jump_target = None;
     }
+
+    // Clean up expired splash animations.
+    app.cleanup_splash_animations();
 
     let area = frame.area();
 
@@ -55,13 +58,18 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
     {
         app.load_messages_panel();
     }
+    if app.right_panel_tab == RightPanelTab::Agency
+        && app.agency_lifecycle.is_none()
+        && app.selected_task_idx.is_some()
+    {
+        app.load_agency_lifecycle();
+    }
 
     // Determine if right panel is shown.
     if app.right_panel_visible {
         if area.width >= SIDE_MIN_WIDTH {
             // Side-by-side: viz left, right panel right.
-            let right_width =
-                (area.width as u32 * app.right_panel_percent as u32 / 100) as u16;
+            let right_width = (area.width as u32 * app.right_panel_percent as u32 / 100) as u16;
             let split = Layout::default()
                 .direction(Direction::Horizontal)
                 .constraints([Constraint::Min(1), Constraint::Length(right_width)])
@@ -81,9 +89,9 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
             draw_right_panel(frame, app, right_area);
         } else {
             // Narrow: viz on top, right panel on bottom.
-            let panel_height =
-                (main_area.height as u32 * app.hud_size.bottom_percent() as u32 / 100).max(5)
-                    as u16;
+            let panel_height = (main_area.height as u32 * app.hud_size.bottom_percent() as u32
+                / 100)
+                .max(5) as u16;
             let split = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([Constraint::Min(1), Constraint::Length(panel_height)])
@@ -140,10 +148,10 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
     }
 
     // Task creation form overlay
-    if app.input_mode == InputMode::TaskForm {
-        if let Some(ref form) = app.task_form {
-            draw_task_form(frame, form);
-        }
+    if app.input_mode == InputMode::TaskForm
+        && let Some(ref form) = app.task_form
+    {
+        draw_task_form(frame, form);
     }
 }
 
@@ -154,6 +162,39 @@ enum LineTraceCategory {
     Upstream,
     Downstream,
     Unrelated,
+}
+
+/// Check if an original line index belongs to a task with an active splash animation.
+/// Returns the fade progress (0.0 = fully bright, approaching 1.0 = nearly faded out).
+fn splash_progress_for_line(app: &VizApp, orig_idx: usize) -> Option<f64> {
+    for (task_id, &line) in &app.node_line_map {
+        if line == orig_idx {
+            return app.splash_progress(task_id);
+        }
+    }
+    None
+}
+
+/// Apply a splash-and-fade background color to a line.
+/// `progress` ranges from 0.0 (bright splash) to 1.0 (fully faded/transparent).
+/// Uses a warm yellow-to-transparent fade via RGB interpolation.
+fn apply_splash_style(line: Line<'_>, progress: f64) -> Line<'_> {
+    // Ease-out curve for a smoother fade (fast initial dim, slow tail-off).
+    let t = progress * progress;
+
+    // Interpolate from bright splash color to no background.
+    // Splash: warm yellow (180, 160, 60) → terminal default (via reduced alpha).
+    // Since terminals don't have true alpha, we fade toward a dark neutral.
+    let r = (180.0 * (1.0 - t)) as u8;
+    let g = (160.0 * (1.0 - t)) as u8;
+    let b = (60.0 * (1.0 - t)) as u8;
+
+    // At very low intensity, skip to avoid barely-visible artifacts.
+    if r < 15 && g < 15 && b < 5 {
+        return line;
+    }
+
+    line.style(Style::default().bg(Color::Rgb(r, g, b)))
 }
 
 fn classify_task_line(app: &VizApp, orig_idx: usize) -> LineTraceCategory {
@@ -242,8 +283,11 @@ fn draw_viz_content(frame: &mut Frame, app: &VizApp, area: Rect) {
                 let dimmed = base_line.style(Style::default().fg(Color::DarkGray));
                 text_lines.push(dimmed);
             }
-        } else if jump_target_line == Some(orig_idx) {
+        } else if jump_target_line == Some(orig_idx)
+            && splash_progress_for_line(app, orig_idx).is_none()
+        {
             // Transient highlight on the line we jumped to after Enter.
+            // Skipped when a splash animation is active (splash provides a smoother fade).
             text_lines.push(base_line.style(Style::default().bg(Color::Yellow)));
         } else if has_trace {
             // Per-character edge tracing with topology-aware coloring.
@@ -277,6 +321,15 @@ fn draw_viz_content(frame: &mut Frame, app: &VizApp, area: Rect) {
             text_lines.push(apply_selection_style(base_line, plain_line));
         } else {
             text_lines.push(base_line);
+        }
+
+        // Apply splash-and-fade animation overlay if this line belongs to an animated task.
+        if !app.splash_animations.is_empty()
+            && let Some(progress) = splash_progress_for_line(app, orig_idx)
+            && progress < 1.0
+        {
+            let last = text_lines.last_mut().unwrap();
+            *last = apply_splash_style(std::mem::take(last), progress);
         }
     }
 
@@ -753,8 +806,8 @@ fn draw_detail_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     frame.render_widget(paragraph, area);
 
     if total_lines > viewport_h {
-        let mut state = ScrollbarState::new(total_lines.saturating_sub(viewport_h))
-            .position(app.hud_scroll);
+        let mut state =
+            ScrollbarState::new(total_lines.saturating_sub(viewport_h)).position(app.hud_scroll);
         let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight);
         frame.render_stateful_widget(scrollbar, area, &mut state);
     }
@@ -860,27 +913,25 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
                     .add_modifier(Modifier::BOLD),
             ),
             super::state::ChatRole::Coordinator => (
-                "c/",
+                "↯",
                 Style::default()
                     .fg(Color::Cyan)
                     .add_modifier(Modifier::BOLD),
             ),
             super::state::ChatRole::System => (
                 "sys",
-                Style::default()
-                    .fg(Color::Red)
-                    .add_modifier(Modifier::BOLD),
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
             ),
         };
 
-        // Inline prefix: "c/: message text" with continuation lines indented.
+        // Inline prefix: "↯: message text" with continuation lines indented.
         let prefix = format!("{}: ", role_label);
         let prefix_len = prefix.len();
         let indent = " ".repeat(prefix_len);
         let text_width = content_width.saturating_sub(prefix_len);
         let mut first_line = true;
 
-        for paragraph in msg.text.split('\n') {
+        for paragraph in msg.text.trim_end_matches('\n').split('\n') {
             if paragraph.is_empty() {
                 rendered_lines.push(Line::from(""));
                 continue;
@@ -962,11 +1013,7 @@ fn draw_chat_input(frame: &mut Frame, app: &mut VizApp, area: Rect) {
             );
         }
 
-        let input_y = if area.height >= 2 {
-            area.y + 1
-        } else {
-            area.y
-        };
+        let input_y = if area.height >= 2 { area.y + 1 } else { area.y };
         let input_h = if area.height >= 2 {
             area.height - 1
         } else {
@@ -1065,7 +1112,7 @@ fn count_visual_lines(input: &str, usable_width: usize) -> usize {
         if chars == 0 {
             count += 1;
         } else {
-            count += (chars + usable_width - 1) / usable_width;
+            count += chars.div_ceil(usable_width);
         }
     }
     count
@@ -1198,7 +1245,10 @@ fn draw_log_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     }
 
     let total_lines = wrapped_lines.len();
-    let scroll = app.log_pane.scroll.min(total_lines.saturating_sub(viewport_h));
+    let scroll = app
+        .log_pane
+        .scroll
+        .min(total_lines.saturating_sub(viewport_h));
     let end = (scroll + viewport_h).min(total_lines);
 
     let visible_lines: Vec<Line> = wrapped_lines[scroll..end].to_vec();
@@ -1230,7 +1280,7 @@ fn draw_messages_tab(frame: &mut Frame, app: &VizApp, area: Rect) {
         let wrapped_lines = if input_chars == 0 {
             1
         } else {
-            ((input_chars + usable - 1) / usable) as u16
+            input_chars.div_ceil(usable) as u16
         };
         let max_input = (area.height / 2).max(2);
         let lines = wrapped_lines.min(max_input);
@@ -1301,8 +1351,22 @@ fn draw_messages_tab(frame: &mut Frame, app: &VizApp, area: Rect) {
     // Build rendered lines with conversational styling.
     // Format: "[timestamp] sender[priority]: body"
     // Map senders to display labels and use distinct colors.
+    // Track distinct senders for color rotation in multi-agent conversations.
     let mut wrapped_lines: Vec<Line> = Vec::new();
     let msg_count = app.messages_panel.rendered_lines.len();
+    let mut sender_color_map: std::collections::HashMap<String, Color> =
+        std::collections::HashMap::new();
+    // Color palette for distinct non-outgoing senders (task names, agent IDs, etc.)
+    const SENDER_COLORS: [Color; 6] = [
+        Color::Cyan,
+        Color::Magenta,
+        Color::Blue,
+        Color::LightYellow,
+        Color::LightRed,
+        Color::LightGreen,
+    ];
+    let mut next_color_idx: usize = 0;
+
     for (msg_idx, s) in app.messages_panel.rendered_lines.iter().enumerate() {
         if let Some(bracket_end) = s.find(']') {
             let timestamp = &s[..=bracket_end];
@@ -1321,31 +1385,32 @@ fn draw_messages_tab(frame: &mut Frame, app: &VizApp, area: Rect) {
 
             // Map sender to display label:
             // "user"/"tui"/"coordinator" -> "you", anything else stays as-is.
-            let is_outgoing = matches!(
-                sender_clean.as_str(),
-                "user" | "tui" | "coordinator"
-            );
+            let is_outgoing = matches!(sender_clean.as_str(), "user" | "tui" | "coordinator");
             let display_label = if is_outgoing {
                 "you".to_string()
             } else {
                 sender_clean.clone()
             };
 
-            // Distinct colors: outgoing (you) = green, incoming (agent) = cyan.
+            // Distinct colors: outgoing (you) = green, each unique sender gets a
+            // rotating color from the palette for multi-agent readability.
             let sender_style = if is_outgoing {
                 Style::default()
                     .fg(Color::Green)
                     .add_modifier(Modifier::BOLD)
             } else {
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD)
+                let color = *sender_color_map
+                    .entry(sender_clean.clone())
+                    .or_insert_with(|| {
+                        let c = SENDER_COLORS[next_color_idx % SENDER_COLORS.len()];
+                        next_color_idx += 1;
+                        c
+                    });
+                Style::default().fg(color).add_modifier(Modifier::BOLD)
             };
 
             // Build the prefix: "you: " or "agent-1234: "
-            let mut prefix_spans: Vec<Span> = vec![
-                Span::styled(display_label, sender_style),
-            ];
+            let mut prefix_spans: Vec<Span> = vec![Span::styled(display_label, sender_style)];
             if is_urgent {
                 prefix_spans.push(Span::styled(
                     " [!]",
@@ -1360,10 +1425,8 @@ fn draw_messages_tab(frame: &mut Frame, app: &VizApp, area: Rect) {
             let text_width = wrap_width.saturating_sub(prefix_display_len);
 
             // Strip any ANSI escape sequences from body.
-            let clean_body = String::from_utf8(
-                strip_ansi_escapes::strip(body.as_bytes()),
-            )
-            .unwrap_or_else(|_| body.to_string());
+            let clean_body = String::from_utf8(strip_ansi_escapes::strip(body.as_bytes()))
+                .unwrap_or_else(|_| body.to_string());
 
             if text_width == 0 || clean_body.is_empty() {
                 let mut line_spans = prefix_spans;
@@ -1460,11 +1523,7 @@ fn draw_message_input(frame: &mut Frame, app: &VizApp, area: Rect) {
             );
         }
 
-        let input_y = if area.height >= 2 {
-            area.y + 1
-        } else {
-            area.y
-        };
+        let input_y = if area.height >= 2 { area.y + 1 } else { area.y };
         let input_h = if area.height >= 2 {
             area.height - 1
         } else {
@@ -1562,12 +1621,8 @@ fn wrap_detail_lines(lines: &[String], max_width: usize) -> Vec<(String, bool)> 
             // Wrap content to fit within max_width minus indent.
             let wrap_w = max_width.saturating_sub(indent.len());
             let wrapped = word_wrap(content, wrap_w);
-            for (i, w) in wrapped.iter().enumerate() {
-                if i == 0 {
-                    out.push((format!("{}{}", indent, w), false));
-                } else {
-                    out.push((format!("{}{}", indent, w), false));
-                }
+            for w in &wrapped {
+                out.push((format!("{}{}", indent, w), false));
             }
         }
     }
@@ -1576,45 +1631,50 @@ fn wrap_detail_lines(lines: &[String], max_width: usize) -> Vec<(String, bool)> 
 
 /// Simple word-wrap: break text into lines that fit within `max_width` characters.
 /// Words longer than `max_width` are hard-broken across multiple lines.
+/// Uses char count (not byte length) so multi-byte UTF-8 characters are handled safely.
 fn word_wrap(text: &str, max_width: usize) -> Vec<String> {
     if max_width == 0 {
         return vec![text.to_string()];
     }
+
+    /// Hard-break a word that exceeds `max_width` chars, pushing complete
+    /// chunks to `lines` and returning any leftover as a String.
+    fn hard_break(word: &str, max_width: usize, lines: &mut Vec<String>) -> String {
+        let chars = word.chars();
+        let mut buf = String::new();
+        for c in chars {
+            buf.push(c);
+            if buf.chars().count() == max_width {
+                lines.push(std::mem::take(&mut buf));
+            }
+        }
+        buf // leftover (< max_width chars)
+    }
+
+    let char_len = |s: &str| s.chars().count();
+
     let mut lines = Vec::new();
     let mut current_line = String::new();
 
     for word in text.split_whitespace() {
+        let wlen = char_len(word);
+        let clen = char_len(&current_line);
+
         if current_line.is_empty() {
-            if word.len() <= max_width {
+            if wlen <= max_width {
                 current_line.push_str(word);
             } else {
-                // Hard-break long words that exceed max_width.
-                let mut remaining = word;
-                while remaining.len() > max_width {
-                    lines.push(remaining[..max_width].to_string());
-                    remaining = &remaining[max_width..];
-                }
-                if !remaining.is_empty() {
-                    current_line.push_str(remaining);
-                }
+                current_line = hard_break(word, max_width, &mut lines);
             }
-        } else if current_line.len() + 1 + word.len() <= max_width {
+        } else if clen + 1 + wlen <= max_width {
             current_line.push(' ');
             current_line.push_str(word);
         } else {
             lines.push(std::mem::take(&mut current_line));
-            // The word starts a new line — may itself need hard-breaking.
-            if word.len() <= max_width {
+            if wlen <= max_width {
                 current_line.push_str(word);
             } else {
-                let mut remaining = word;
-                while remaining.len() > max_width {
-                    lines.push(remaining[..max_width].to_string());
-                    remaining = &remaining[max_width..];
-                }
-                if !remaining.is_empty() {
-                    current_line.push_str(remaining);
-                }
+                current_line = hard_break(word, max_width, &mut lines);
             }
         }
     }
@@ -1630,135 +1690,377 @@ fn word_wrap(text: &str, max_width: usize) -> Vec<String> {
     lines
 }
 
-/// Draw the Agents tab content.
-fn draw_agents_tab(frame: &mut Frame, app: &VizApp, area: Rect) {
-    if app.agent_monitor.agents.is_empty() {
-        let msg = Paragraph::new(vec![
-            Line::from(Span::styled(
-                "Agent Monitor",
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            )),
-            Line::from(""),
-            Line::from(Span::styled(
-                "No agents registered.",
-                Style::default().fg(Color::DarkGray),
-            )),
-        ]);
-        frame.render_widget(msg, area);
-        return;
+/// Word-wrap a list of styled `Line`s to fit within `max_width`.
+///
+/// For each line, extracts the full text content and applies `word_wrap`.
+/// Continuation lines inherit the style of the last span in the original line.
+/// Lines that already fit (or are empty) are passed through unchanged.
+fn wrap_line_spans<'a>(lines: &[Line<'a>], max_width: usize) -> Vec<Line<'a>> {
+    if max_width == 0 {
+        return lines.to_vec();
     }
+    let mut out: Vec<Line> = Vec::new();
+    for line in lines {
+        // Compute the total display width of this line.
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        let char_len = text.chars().count();
+        if char_len <= max_width || text.trim().is_empty() {
+            out.push(line.clone());
+            continue;
+        }
 
-    let mut lines: Vec<Line> = Vec::new();
-    let working_count = app
-        .agent_monitor
-        .agents
-        .iter()
-        .filter(|a| matches!(a.status, AgentStatus::Working))
-        .count();
-    lines.push(Line::from(Span::styled(
-        format!(
-            "Active Agents ({}/{})",
-            working_count,
-            app.agent_monitor.agents.len()
-        ),
-        Style::default()
-            .fg(Color::Cyan)
-            .add_modifier(Modifier::BOLD),
-    )));
-    lines.push(Line::from(""));
-
-    for agent in &app.agent_monitor.agents {
-        let status_indicator = match agent.status {
-            AgentStatus::Working => Span::styled("● ", Style::default().fg(Color::Green)),
-            AgentStatus::Done => Span::styled("✓ ", Style::default().fg(Color::Green)),
-            AgentStatus::Failed | AgentStatus::Dead => {
-                Span::styled("✗ ", Style::default().fg(Color::Red))
+        // For lines with a single span, wrap and preserve the style.
+        if line.spans.len() == 1 {
+            let span = &line.spans[0];
+            let style = span.style;
+            let content = span.content.as_ref();
+            // Detect leading whitespace indent.
+            let indent_len = content.len() - content.trim_start().len();
+            let indent: String = content.chars().take(indent_len).collect();
+            let body = &content[indent.len()..];
+            let wrap_w = max_width.saturating_sub(indent_len);
+            let wrapped = word_wrap(body, wrap_w);
+            for w in &wrapped {
+                out.push(Line::from(Span::styled(format!("{}{}", indent, w), style)));
             }
-            _ => Span::styled("○ ", Style::default().fg(Color::DarkGray)),
-        };
-        lines.push(Line::from(vec![
-            status_indicator,
-            Span::styled(
-                &agent.agent_id,
-                Style::default().add_modifier(Modifier::BOLD),
-            ),
-        ]));
-        if let Some(ref tid) = agent.task_id {
-            let task_display = if let Some(ref title) = agent.task_title {
-                format!("  Task: {} ({})", tid, title)
+            continue;
+        }
+
+        // Multi-span line: concatenate all text, wrap, then rebuild.
+        // First span keeps its style for the prefix; continuation lines use
+        // the style of the last span.
+        let wrapped = word_wrap(&text, max_width);
+        let continuation_style = line.spans.last().map(|s| s.style).unwrap_or_default();
+        for (i, w) in wrapped.iter().enumerate() {
+            if i == 0 {
+                // Rebuild spans for the first wrapped line by walking original spans
+                // and slicing at the character boundary.
+                let first_char_count = w.chars().count();
+                let mut remaining = first_char_count;
+                let mut new_spans: Vec<Span> = Vec::new();
+                for span in &line.spans {
+                    if remaining == 0 {
+                        break;
+                    }
+                    let span_chars: Vec<char> = span.content.chars().collect();
+                    let take = remaining.min(span_chars.len());
+                    let slice: String = span_chars[..take].iter().collect();
+                    new_spans.push(Span::styled(slice, span.style));
+                    remaining -= take;
+                }
+                out.push(Line::from(new_spans));
             } else {
-                format!("  Task: {}", tid)
-            };
+                out.push(Line::from(Span::styled(w.clone(), continuation_style)));
+            }
+        }
+    }
+    out
+}
+
+/// Draw the Agents tab content: lifecycle view for selected task + agent list.
+fn draw_agents_tab(frame: &mut Frame, app: &VizApp, area: Rect) {
+    let mut lines: Vec<Line> = Vec::new();
+
+    // ── Task Lifecycle (assign → execute → evaluate) ──
+    if let Some(ref lifecycle) = app.agency_lifecycle {
+        lines.push(Line::from(Span::styled(
+            "── Task Lifecycle ──",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )));
+        lines.push(Line::from(""));
+
+        let phases: Vec<Option<&super::state::LifecyclePhase>> = vec![
+            lifecycle.assignment.as_ref(),
+            lifecycle.execution.as_ref(),
+            lifecycle.evaluation.as_ref(),
+        ];
+        let phase_labels = ["⊳ Assignment", "▸ Execution", "∴ Evaluation"];
+        let phase_keys = ["[a]", "", "[e]"];
+
+        for (i, phase_opt) in phases.iter().enumerate() {
+            match phase_opt {
+                Some(phase) => {
+                    // Status indicator
+                    let status_icon = match phase.status {
+                        workgraph::graph::Status::Done => {
+                            Span::styled("✓ ", Style::default().fg(Color::Green))
+                        }
+                        workgraph::graph::Status::InProgress => {
+                            Span::styled("● ", Style::default().fg(Color::Yellow))
+                        }
+                        workgraph::graph::Status::Failed => {
+                            Span::styled("✗ ", Style::default().fg(Color::Red))
+                        }
+                        _ => Span::styled("○ ", Style::default().fg(Color::DarkGray)),
+                    };
+
+                    let label_style = if i == 1 {
+                        // Execution phase gets bold
+                        Style::default()
+                            .fg(Color::White)
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(Color::White)
+                    };
+
+                    let mut spans = vec![status_icon, Span::styled(phase_labels[i], label_style)];
+
+                    // Add navigate hint for assign/eval phases
+                    if !phase_keys[i].is_empty() {
+                        spans.push(Span::styled(
+                            format!(" {}", phase_keys[i]),
+                            Style::default().fg(Color::DarkGray),
+                        ));
+                    }
+
+                    lines.push(Line::from(spans));
+
+                    // Agent info
+                    if let Some(ref agent_id) = phase.agent_id {
+                        lines.push(Line::from(Span::styled(
+                            format!("  Agent: {}", agent_id),
+                            Style::default().fg(Color::DarkGray),
+                        )));
+                    }
+
+                    // Token usage
+                    if let Some(ref usage) = phase.token_usage {
+                        let total = usage.total_input() + usage.output_tokens;
+                        let mut tok_parts = vec![
+                            format!("→{}", format_tokens(usage.total_input())),
+                            format!("←{}", format_tokens(usage.output_tokens)),
+                        ];
+                        if usage.cost_usd > 0.0 {
+                            tok_parts.push(format!("${:.4}", usage.cost_usd));
+                        }
+                        lines.push(Line::from(Span::styled(
+                            format!(
+                                "  Tokens: {} ({})",
+                                format_tokens(total),
+                                tok_parts.join(" ")
+                            ),
+                            Style::default().fg(Color::DarkGray),
+                        )));
+                    }
+
+                    // Runtime
+                    if let Some(secs) = phase.runtime_secs {
+                        let dur = workgraph::format_duration(secs, false);
+                        let timing_label = if phase.status == workgraph::graph::Status::InProgress {
+                            format!("  Running: {}", dur)
+                        } else {
+                            format!("  Duration: {}", dur)
+                        };
+                        lines.push(Line::from(Span::styled(
+                            timing_label,
+                            Style::default().fg(Color::DarkGray),
+                        )));
+                    }
+
+                    // Evaluation results (only for evaluation phase)
+                    if let Some(score) = phase.eval_score {
+                        lines.push(Line::from(Span::styled(
+                            format!("  Score: {:.2}", score),
+                            Style::default().fg(Color::Yellow),
+                        )));
+                    }
+                    if let Some(ref notes) = phase.eval_notes {
+                        for note_line in notes.lines().take(3) {
+                            lines.push(Line::from(Span::styled(
+                                format!("  {}", note_line),
+                                Style::default().fg(Color::DarkGray),
+                            )));
+                        }
+                    }
+
+                    // Arrow connector between phases (except after last)
+                    if i < 2 {
+                        lines.push(Line::from(Span::styled(
+                            "  │",
+                            Style::default().fg(Color::DarkGray),
+                        )));
+                    }
+                }
+                None => {
+                    // Phase doesn't exist - show as absent
+                    if i != 1 {
+                        // Don't skip execution (always present)
+                        lines.push(Line::from(Span::styled(
+                            format!("  {} (none)", phase_labels[i]),
+                            Style::default().fg(Color::DarkGray),
+                        )));
+                        if i < 2 {
+                            lines.push(Line::from(Span::styled(
+                                "  │",
+                                Style::default().fg(Color::DarkGray),
+                            )));
+                        }
+                    }
+                }
+            }
+        }
+
+        // Total cost summary
+        let total_cost: f64 = phases
+            .iter()
+            .filter_map(|p| p.as_ref())
+            .filter_map(|p| p.token_usage.as_ref())
+            .map(|u| u.cost_usd)
+            .sum();
+        let total_tokens: u64 = phases
+            .iter()
+            .filter_map(|p| p.as_ref())
+            .filter_map(|p| p.token_usage.as_ref())
+            .map(|u| u.total_input() + u.output_tokens)
+            .sum();
+        if total_tokens > 0 {
+            lines.push(Line::from(""));
+            let mut summary = format!("  Total: {}", format_tokens(total_tokens));
+            if total_cost > 0.0 {
+                summary.push_str(&format!(" (${:.4})", total_cost));
+            }
             lines.push(Line::from(Span::styled(
-                task_display,
-                Style::default().fg(Color::White),
+                summary,
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
             )));
         }
-        // Show timing info: runtime duration, start time, and finish time
-        {
-            let is_alive = matches!(agent.status, AgentStatus::Working);
-            let runtime_str = agent
-                .runtime_secs
-                .map(|s| workgraph::format_duration(s, false));
-            let start_local = agent.started_at.as_deref().and_then(|s| {
-                chrono::DateTime::parse_from_rfc3339(s)
-                    .ok()
-                    .map(|dt| dt.with_timezone(&chrono::Local))
-            });
-            let completed_local = agent.completed_at.as_deref().and_then(|s| {
-                chrono::DateTime::parse_from_rfc3339(s)
-                    .ok()
-                    .map(|dt| dt.with_timezone(&chrono::Local))
-            });
 
-            let timing = if is_alive {
-                // Active: "Running for 2m 15s (started 21:27:33)"
-                match (runtime_str, start_local) {
-                    (Some(dur), Some(st)) => {
-                        format!("  Running for {} (started {})", dur, st.format("%H:%M:%S"))
-                    }
-                    (Some(dur), None) => format!("  Running for {}", dur),
-                    _ => String::new(),
-                }
-            } else {
-                // Completed: "Ran 3m 22s · Finished 5m ago (21:13:43)"
-                let finished_ago = completed_local.map(|c| {
-                    let ago_secs = (chrono::Utc::now()
-                        - c.with_timezone(&chrono::Utc))
-                    .num_seconds()
-                    .max(0);
-                    workgraph::format_duration(ago_secs, true)
-                });
-                match (runtime_str, finished_ago, completed_local) {
-                    (Some(dur), Some(ago), Some(ct)) => {
-                        format!(
-                            "  Ran {} \u{00b7} Finished {} ago ({})",
-                            dur,
-                            ago,
-                            ct.format("%H:%M:%S")
-                        )
-                    }
-                    (Some(dur), _, _) => format!("  Ran {}", dur),
-                    _ => String::new(),
-                }
-            };
-
-            if !timing.is_empty() {
-                lines.push(Line::from(Span::styled(
-                    timing,
-                    Style::default().fg(Color::DarkGray),
-                )));
-            }
-        }
+        lines.push(Line::from(""));
+    } else {
+        lines.push(Line::from(Span::styled(
+            "No task selected",
+            Style::default().fg(Color::DarkGray),
+        )));
         lines.push(Line::from(""));
     }
 
+    // ── Agent List ──
+    if !app.agent_monitor.agents.is_empty() {
+        let working_count = app
+            .agent_monitor
+            .agents
+            .iter()
+            .filter(|a| matches!(a.status, AgentStatus::Working))
+            .count();
+        lines.push(Line::from(Span::styled(
+            format!(
+                "── Agents ({}/{}) ──",
+                working_count,
+                app.agent_monitor.agents.len()
+            ),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )));
+        lines.push(Line::from(""));
+
+        for agent in &app.agent_monitor.agents {
+            let status_indicator = match agent.status {
+                AgentStatus::Working => Span::styled("● ", Style::default().fg(Color::Green)),
+                AgentStatus::Done => Span::styled("✓ ", Style::default().fg(Color::Green)),
+                AgentStatus::Failed | AgentStatus::Dead => {
+                    Span::styled("✗ ", Style::default().fg(Color::Red))
+                }
+                _ => Span::styled("○ ", Style::default().fg(Color::DarkGray)),
+            };
+            lines.push(Line::from(vec![
+                status_indicator,
+                Span::styled(
+                    &agent.agent_id,
+                    Style::default().add_modifier(Modifier::BOLD),
+                ),
+            ]));
+            if let Some(ref tid) = agent.task_id {
+                let task_display = if let Some(ref title) = agent.task_title {
+                    format!("  Task: {} ({})", tid, title)
+                } else {
+                    format!("  Task: {}", tid)
+                };
+                lines.push(Line::from(Span::styled(
+                    task_display,
+                    Style::default().fg(Color::White),
+                )));
+            }
+            // Show timing info
+            {
+                let is_alive = matches!(agent.status, AgentStatus::Working);
+                let runtime_str = agent
+                    .runtime_secs
+                    .map(|s| workgraph::format_duration(s, false));
+                let start_local = agent.started_at.as_deref().and_then(|s| {
+                    chrono::DateTime::parse_from_rfc3339(s)
+                        .ok()
+                        .map(|dt| dt.with_timezone(&chrono::Local))
+                });
+                let completed_local = agent.completed_at.as_deref().and_then(|s| {
+                    chrono::DateTime::parse_from_rfc3339(s)
+                        .ok()
+                        .map(|dt| dt.with_timezone(&chrono::Local))
+                });
+
+                let timing = if is_alive {
+                    match (runtime_str, start_local) {
+                        (Some(dur), Some(st)) => {
+                            format!("  Running for {} (started {})", dur, st.format("%H:%M:%S"))
+                        }
+                        (Some(dur), None) => format!("  Running for {}", dur),
+                        _ => String::new(),
+                    }
+                } else {
+                    let finished_ago = completed_local.map(|c| {
+                        let ago_secs = (chrono::Utc::now() - c.with_timezone(&chrono::Utc))
+                            .num_seconds()
+                            .max(0);
+                        workgraph::format_duration(ago_secs, true)
+                    });
+                    match (runtime_str, finished_ago, completed_local) {
+                        (Some(dur), Some(ago), Some(ct)) => {
+                            format!(
+                                "  Ran {} · Finished {} ago ({})",
+                                dur,
+                                ago,
+                                ct.format("%H:%M:%S")
+                            )
+                        }
+                        (Some(dur), _, _) => format!("  Ran {}", dur),
+                        _ => String::new(),
+                    }
+                };
+
+                if !timing.is_empty() {
+                    lines.push(Line::from(Span::styled(
+                        timing,
+                        Style::default().fg(Color::DarkGray),
+                    )));
+                }
+            }
+            lines.push(Line::from(""));
+        }
+    }
+
+    if lines.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "No agency data available.",
+            Style::default().fg(Color::DarkGray),
+        )));
+    }
+
+    // Word-wrap all lines to fit the panel width.
+    let wrap_width = area.width as usize;
+    let wrapped_lines = wrap_line_spans(&lines, wrap_width);
+
     let viewport_h = area.height as usize;
-    let scroll = app.agent_monitor.scroll.min(lines.len().saturating_sub(viewport_h));
-    let end = (scroll + viewport_h).min(lines.len());
-    let visible_lines: Vec<Line> = lines[scroll..end].to_vec();
+    let total_lines = wrapped_lines.len();
+    let scroll = app
+        .agent_monitor
+        .scroll
+        .min(total_lines.saturating_sub(viewport_h));
+    let end = (scroll + viewport_h).min(total_lines);
+    let visible_lines: Vec<Line> = wrapped_lines[scroll..end].to_vec();
 
     let paragraph = Paragraph::new(visible_lines);
     frame.render_widget(paragraph, area);
@@ -1776,7 +2078,9 @@ fn draw_confirm_dialog(frame: &mut Frame, action: &ConfirmAction) {
     };
 
     let size = frame.area();
-    let width = (message.len() as u16 + 6).min(size.width.saturating_sub(4)).max(30);
+    let width = (message.len() as u16 + 6)
+        .min(size.width.saturating_sub(4))
+        .max(30);
     let height = 5;
     let x = (size.width.saturating_sub(width)) / 2;
     let y = (size.height.saturating_sub(height)) / 2;
@@ -1799,9 +2103,17 @@ fn draw_confirm_dialog(frame: &mut Frame, action: &ConfirmAction) {
         Line::from(Span::raw(&message)),
         Line::from(""),
         Line::from(vec![
-            Span::styled("[y]", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "[y]",
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::raw(" Yes  "),
-            Span::styled("[n]", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "[n]",
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            ),
             Span::raw(" No"),
         ]),
     ];
@@ -1906,15 +2218,17 @@ fn draw_task_form(frame: &mut Frame, form: &TaskFormState) {
         field_label("Title", is_title),
         Span::raw(" "),
         Span::raw(&form.title),
-        if is_title { cursor.clone() } else { Span::raw("") },
+        if is_title {
+            cursor.clone()
+        } else {
+            Span::raw("")
+        },
     ]));
     lines.push(Line::from(""));
 
     // Description field
     let is_desc = form.active_field == TaskFormField::Description;
-    lines.push(Line::from(vec![
-        field_label("Description", is_desc),
-    ]));
+    lines.push(Line::from(vec![field_label("Description", is_desc)]));
     // Show first few lines of description
     let desc_lines: Vec<&str> = form.description.lines().collect();
     let show_lines = if desc_lines.is_empty() && is_desc {
@@ -1926,7 +2240,11 @@ fn draw_task_form(frame: &mut Frame, form: &TaskFormState) {
         let is_last = i == show_lines.len() - 1;
         lines.push(Line::from(vec![
             Span::raw(format!("    {}", dl)),
-            if is_desc && is_last { cursor.clone() } else { Span::raw("") },
+            if is_desc && is_last {
+                cursor.clone()
+            } else {
+                Span::raw("")
+            },
         ]));
     }
     lines.push(Line::from(""));
@@ -2008,7 +2326,7 @@ fn draw_action_hints(frame: &mut Frame, app: &VizApp, area: Rect) {
                 Span::styled(" Enter", Style::default().fg(Color::Yellow)),
                 Span::styled(":send ", Style::default().fg(Color::DarkGray)),
                 Span::styled("Esc", Style::default().fg(Color::Yellow)),
-                Span::styled(":cancel", Style::default().fg(Color::DarkGray)),
+                Span::styled(":navigate", Style::default().fg(Color::DarkGray)),
             ]
         }
         InputMode::TaskForm => {
@@ -2037,46 +2355,57 @@ fn draw_action_hints(frame: &mut Frame, app: &VizApp, area: Rect) {
                 Span::styled(":cancel", Style::default().fg(Color::DarkGray)),
             ]
         }
-        InputMode::Normal => {
-            match app.focused_panel {
-                FocusedPanel::Graph => {
-                    let mut hints = vec![
-                        Span::styled(" a", Style::default().fg(Color::Yellow)),
-                        Span::styled(":add ", Style::default().fg(Color::DarkGray)),
-                        Span::styled("D", Style::default().fg(Color::Yellow)),
-                        Span::styled(":done ", Style::default().fg(Color::DarkGray)),
-                        Span::styled("f", Style::default().fg(Color::Yellow)),
-                        Span::styled(":fail ", Style::default().fg(Color::DarkGray)),
-                        Span::styled("x", Style::default().fg(Color::Yellow)),
-                        Span::styled(":retry ", Style::default().fg(Color::DarkGray)),
-                        Span::styled("/", Style::default().fg(Color::Yellow)),
-                        Span::styled(":search ", Style::default().fg(Color::DarkGray)),
-                        Span::styled("Tab", Style::default().fg(Color::Yellow)),
-                        Span::styled(":panel ", Style::default().fg(Color::DarkGray)),
-                    ];
-                    if app.right_panel_visible {
-                        hints.push(Span::styled("\\", Style::default().fg(Color::Yellow)));
-                        hints.push(Span::styled(":collapse", Style::default().fg(Color::DarkGray)));
-                    } else {
-                        hints.push(Span::styled("\\", Style::default().fg(Color::Yellow)));
-                        hints.push(Span::styled(":expand", Style::default().fg(Color::DarkGray)));
-                    }
-                    hints
+        InputMode::Normal => match app.focused_panel {
+            FocusedPanel::Graph => {
+                let mut hints = vec![
+                    Span::styled(" a", Style::default().fg(Color::Yellow)),
+                    Span::styled(":add ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("D", Style::default().fg(Color::Yellow)),
+                    Span::styled(":done ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("f", Style::default().fg(Color::Yellow)),
+                    Span::styled(":fail ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("x", Style::default().fg(Color::Yellow)),
+                    Span::styled(":retry ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("/", Style::default().fg(Color::Yellow)),
+                    Span::styled(":search ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("Tab", Style::default().fg(Color::Yellow)),
+                    Span::styled(":panel ", Style::default().fg(Color::DarkGray)),
+                ];
+                if app.right_panel_visible {
+                    hints.push(Span::styled("\\", Style::default().fg(Color::Yellow)));
+                    hints.push(Span::styled(
+                        ":collapse",
+                        Style::default().fg(Color::DarkGray),
+                    ));
+                } else {
+                    hints.push(Span::styled("\\", Style::default().fg(Color::Yellow)));
+                    hints.push(Span::styled(
+                        ":expand",
+                        Style::default().fg(Color::DarkGray),
+                    ));
                 }
-                FocusedPanel::RightPanel => {
-                    vec![
-                        Span::styled(" 0-4", Style::default().fg(Color::Yellow)),
-                        Span::styled(":tab ", Style::default().fg(Color::DarkGray)),
-                        Span::styled("↑↓", Style::default().fg(Color::Yellow)),
-                        Span::styled(":scroll ", Style::default().fg(Color::DarkGray)),
-                        Span::styled("Tab", Style::default().fg(Color::Yellow)),
-                        Span::styled(":graph ", Style::default().fg(Color::DarkGray)),
-                        Span::styled("Enter", Style::default().fg(Color::Yellow)),
-                        Span::styled(":input", Style::default().fg(Color::DarkGray)),
-                    ]
-                }
+                hints
             }
-        }
+            FocusedPanel::RightPanel => {
+                let mut hints = vec![
+                    Span::styled(" 0-4", Style::default().fg(Color::Yellow)),
+                    Span::styled(":tab ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("↑↓", Style::default().fg(Color::Yellow)),
+                    Span::styled(":scroll ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("Tab", Style::default().fg(Color::Yellow)),
+                    Span::styled(":graph ", Style::default().fg(Color::DarkGray)),
+                ];
+                if app.right_panel_tab == RightPanelTab::Chat
+                    || app.right_panel_tab == RightPanelTab::Messages
+                {
+                    hints.push(Span::styled("Enter", Style::default().fg(Color::Yellow)));
+                    hints.push(Span::styled(":type", Style::default().fg(Color::DarkGray)));
+                }
+                hints.push(Span::styled(" Esc", Style::default().fg(Color::Yellow)));
+                hints.push(Span::styled(":back", Style::default().fg(Color::DarkGray)));
+                hints
+            }
+        },
     };
 
     // Add notification if present
@@ -2342,6 +2671,7 @@ fn draw_help_overlay(frame: &mut Frame) {
         binding("\\", "Toggle right panel visible"),
         binding("=", "Cycle HUD size: 1/3 ↔ 2/3"),
         binding("0-4", "Switch tab: Chat/Detail/Log/Msg/Agency"),
+        binding("R", "Toggle raw JSON in Detail tab"),
         blank(),
         heading("Edge Tracing"),
         binding("t", "Toggle trace on/off"),
