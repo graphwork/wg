@@ -157,8 +157,6 @@ pub struct TaskSnapshot {
     pub token_bucket: u64,
     /// Number of dependency edges (after).
     pub edge_count: usize,
-    /// The plain-text rendered line for this task (detects any content change).
-    pub plain_line: String,
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -1189,29 +1187,13 @@ impl VizApp {
                         }
                     }
 
-                    // Detect per-task content changes (plain line text differs).
-                    for (task_id, snap) in &self.task_snapshots {
-                        if self.splash_animations.contains_key(task_id) {
-                            continue; // already animating (e.g., new task)
-                        }
-                        if let Some(&line_idx) = self.node_line_map.get(task_id)
-                            && let Some(plain) = self.plain_lines.get(line_idx)
-                            && *plain != snap.plain_line
-                        {
-                            // Content changed but we don't know what — register
-                            // a soft content-change animation. The more specific
-                            // status/assignment detection in detect_state_changes()
-                            // will overwrite this with a stronger color if applicable.
-                            self.splash_animations.insert(
-                                task_id.clone(),
-                                Animation {
-                                    start: now,
-                                    flash_color: flash_color_for_kind(AnimationKind::ContentChange),
-                                    kind: AnimationKind::ContentChange,
-                                },
-                            );
-                        }
-                    }
+                    // Note: per-task content changes (status, assignment, edges,
+                    // tokens) are detected by field-level comparison in
+                    // load_stats(). We intentionally do NOT compare rendered
+                    // plain-line text here, because tree connector characters
+                    // and duration text change whenever tasks shift position
+                    // or minutes tick over, causing false-positive flashes on
+                    // stable tasks.
                 }
 
                 // Re-apply the current sort mode so task_order reflects the
