@@ -2864,22 +2864,22 @@ fn draw_agents_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
                 }
             }
             // Show live stream snippet for working agents.
-            if let Some(si) = stream_info {
-                if let Some(ref snippet) = si.latest_snippet {
-                    let icon = if si.latest_is_tool {
-                        "\u{1f527} "
+            if let Some(si) = stream_info
+                && let Some(ref snippet) = si.latest_snippet
+            {
+                let icon = if si.latest_is_tool {
+                    "\u{1f527} "
+                } else {
+                    "\u{1f4ad} "
+                };
+                lines.push(Line::from(Span::styled(
+                    format!("  {}{}", icon, snippet),
+                    Style::default().fg(if si.latest_is_tool {
+                        Color::Cyan
                     } else {
-                        "\u{1f4ad} "
-                    };
-                    lines.push(Line::from(Span::styled(
-                        format!("  {}{}", icon, snippet),
-                        Style::default().fg(if si.latest_is_tool {
-                            Color::Cyan
-                        } else {
-                            Color::White
-                        }),
-                    )));
-                }
+                        Color::White
+                    }),
+                )));
             }
             lines.push(Line::from(""));
         }

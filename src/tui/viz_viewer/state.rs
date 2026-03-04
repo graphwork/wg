@@ -1522,9 +1522,8 @@ impl VizApp {
                         self.scroll_to_selected_task();
                     }
                 } else if new_task_focused {
-                    // New task appeared — center with WCC awareness so the
-                    // user can see the whole cluster, biased toward the top.
-                    self.center_on_new_task_wcc_aware();
+                    // New task appeared — center it in the viewport middle.
+                    self.center_on_selected_task();
                 } else {
                     // Selection changed (different task) — center on it.
                     self.center_on_selected_task();
@@ -3933,12 +3932,12 @@ impl VizApp {
                 continue; // No new data.
             }
 
-            if let Err(_) = file.seek(SeekFrom::Start(info.file_offset)) {
+            if file.seek(SeekFrom::Start(info.file_offset)).is_err() {
                 continue;
             }
 
             let mut new_data = String::new();
-            if let Err(_) = file.read_to_string(&mut new_data) {
+            if file.read_to_string(&mut new_data).is_err() {
                 continue;
             }
 
