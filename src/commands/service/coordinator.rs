@@ -15,9 +15,10 @@ use workgraph::agency::{
 use workgraph::chat;
 use workgraph::config::Config;
 use workgraph::graph::{
-    LogEntry, Node, Status, Task, evaluate_all_cycle_failure_restarts,
+    LogEntry, Node, Status, Task, WaitCondition, WaitSpec, evaluate_all_cycle_failure_restarts,
     evaluate_all_cycle_iterations,
 };
+use workgraph::messages;
 use workgraph::parser::{load_graph, save_graph};
 use workgraph::query::ready_tasks_with_peers_cycle_aware;
 use workgraph::service::registry::AgentRegistry;
@@ -102,6 +103,427 @@ fn check_ready_or_return(
         });
     }
     None
+}
+
+/// Evaluate a single wait condition against the current graph/filesystem state.
+/// Returns `true` if the condition is satisfied.
+fn evaluate_condition(
+    condition: &WaitCondition,
+    graph: &workgraph::graph::WorkGraph,
+    dir: &Path,
+    task_id: &str,
+    wait_started_at: Option<&str>,
+) -> bool {
+    match condition {
+        WaitCondition::TaskStatus {
+            task_id: dep_id,
+            status: expected,
+        } => {
+            if let Some(dep) = graph.get_task(dep_id) {
+                dep.status == *expected
+            } else {
+                false
+            }
+        }
+        WaitCondition::Timer { resume_after } => {
+            if let Ok(target) = resume_after.parse::<chrono::DateTime<chrono::Utc>>() {
+                Utc::now() >= target
+            } else {
+                // Unparseable timestamp — treat as satisfied to avoid permanent hang
+                true
+            }
+        }
+        WaitCondition::HumanInput => {
+            // Check for messages from non-agent senders since the task started waiting
+            has_non_agent_message_since(dir, task_id, wait_started_at)
+        }
+        WaitCondition::Message => {
+            // Check for any message since the task started waiting
+            has_any_message_since(dir, task_id, wait_started_at)
+        }
+        WaitCondition::FileChanged {
+            path,
+            mtime_at_wait,
+        } => {
+            if let Ok(metadata) = std::fs::metadata(path) {
+                if let Ok(modified) = metadata.modified() {
+                    let current_mtime = modified
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs();
+                    current_mtime > *mtime_at_wait
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        }
+    }
+}
+
+/// Check if any message exists for a task since the wait started.
+fn has_any_message_since(dir: &Path, task_id: &str, wait_started_at: Option<&str>) -> bool {
+    if let Ok(msgs) = messages::list_messages(dir, task_id) {
+        if let Some(wait_ts) = wait_started_at
+            && let Ok(wait_time) = wait_ts.parse::<chrono::DateTime<chrono::Utc>>()
+        {
+            msgs.iter().any(|m| {
+                m.timestamp
+                    .parse::<chrono::DateTime<chrono::Utc>>()
+                    .map(|t| t > wait_time)
+                    .unwrap_or(false)
+            })
+        } else {
+            !msgs.is_empty()
+        }
+    } else {
+        false
+    }
+}
+
+/// Check if any non-agent message exists for a task since the wait started.
+fn has_non_agent_message_since(dir: &Path, task_id: &str, wait_started_at: Option<&str>) -> bool {
+    if let Ok(msgs) = messages::list_messages(dir, task_id) {
+        if let Some(wait_ts) = wait_started_at
+            && let Ok(wait_time) = wait_ts.parse::<chrono::DateTime<chrono::Utc>>()
+        {
+            msgs.iter().any(|m| {
+                !m.sender.starts_with("agent-")
+                    && m.timestamp
+                        .parse::<chrono::DateTime<chrono::Utc>>()
+                        .map(|t| t > wait_time)
+                        .unwrap_or(false)
+            })
+        } else {
+            msgs.iter().any(|m| !m.sender.starts_with("agent-"))
+        }
+    } else {
+        false
+    }
+}
+
+/// Evaluate all conditions in a WaitSpec.
+fn evaluate_wait_spec(
+    spec: &WaitSpec,
+    graph: &workgraph::graph::WorkGraph,
+    dir: &Path,
+    task_id: &str,
+    wait_started_at: Option<&str>,
+) -> bool {
+    match spec {
+        WaitSpec::All(conditions) => conditions
+            .iter()
+            .all(|c| evaluate_condition(c, graph, dir, task_id, wait_started_at)),
+        WaitSpec::Any(conditions) => conditions
+            .iter()
+            .any(|c| evaluate_condition(c, graph, dir, task_id, wait_started_at)),
+    }
+}
+
+/// Check if a TaskStatus wait condition is unsatisfiable (referenced task
+/// is in a terminal state that doesn't match the expected status).
+fn is_condition_unsatisfiable(
+    condition: &WaitCondition,
+    graph: &workgraph::graph::WorkGraph,
+) -> Option<String> {
+    match condition {
+        WaitCondition::TaskStatus {
+            task_id: dep_id,
+            status: expected,
+        } => {
+            if let Some(dep) = graph.get_task(dep_id) {
+                if dep.status.is_terminal() && dep.status != *expected {
+                    Some(format!(
+                        "task '{}' is {} (expected {})",
+                        dep_id, dep.status, expected
+                    ))
+                } else {
+                    None
+                }
+            } else {
+                Some(format!("task '{}' no longer exists", dep_id))
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Detect circular waits: task A waiting on task B, task B waiting on task A.
+fn detect_circular_waits(
+    graph: &workgraph::graph::WorkGraph,
+) -> Vec<Vec<String>> {
+    let mut cycles = Vec::new();
+    let waiting_tasks: Vec<_> = graph
+        .tasks()
+        .filter(|t| t.status == Status::Waiting && t.wait_condition.is_some())
+        .collect();
+
+    // Build a map: task_id -> set of task_ids it's waiting on (via TaskStatus conditions)
+    let mut wait_edges: std::collections::HashMap<&str, Vec<&str>> = std::collections::HashMap::new();
+    for t in &waiting_tasks {
+        if let Some(ref spec) = t.wait_condition {
+            let conditions = match spec {
+                WaitSpec::All(c) | WaitSpec::Any(c) => c,
+            };
+            let deps: Vec<&str> = conditions
+                .iter()
+                .filter_map(|c| match c {
+                    WaitCondition::TaskStatus { task_id, .. } => Some(task_id.as_str()),
+                    _ => None,
+                })
+                .collect();
+            if !deps.is_empty() {
+                wait_edges.insert(t.id.as_str(), deps);
+            }
+        }
+    }
+
+    // DFS cycle detection
+    let mut visited = std::collections::HashSet::new();
+    for start in wait_edges.keys() {
+        if visited.contains(start) {
+            continue;
+        }
+        let mut path = vec![*start];
+        let mut stack: Vec<(&str, usize)> = vec![(*start, 0)];
+        let mut in_path = std::collections::HashSet::new();
+        in_path.insert(*start);
+
+        while let Some((node, idx)) = stack.last_mut() {
+            let deps = wait_edges.get(node).cloned().unwrap_or_default();
+            if *idx >= deps.len() {
+                in_path.remove(*node);
+                path.pop();
+                stack.pop();
+                continue;
+            }
+            let next = deps[*idx];
+            *idx += 1;
+            if in_path.contains(next) {
+                // Found a cycle - extract it
+                let cycle_start = path.iter().position(|p| *p == next).unwrap();
+                let cycle: Vec<String> =
+                    path[cycle_start..].iter().map(|s| s.to_string()).collect();
+                if cycle.len() >= 2 {
+                    cycles.push(cycle);
+                }
+            } else if !visited.contains(next) && wait_edges.contains_key(next) {
+                in_path.insert(next);
+                path.push(next);
+                stack.push((next, 0));
+            }
+        }
+        visited.insert(*start);
+    }
+    cycles
+}
+
+/// Build a brief graph state delta for resume context injection.
+/// Shows what changed while the task was waiting (~100 tokens).
+fn build_resume_delta(
+    graph: &workgraph::graph::WorkGraph,
+    task: &Task,
+    dir: &Path,
+) -> String {
+    let mut delta = String::new();
+    delta.push_str("## Resume Context\n");
+
+    // Show what condition was satisfied
+    if let Some(ref spec) = task.wait_condition {
+        let conditions = match spec {
+            WaitSpec::All(c) | WaitSpec::Any(c) => c,
+        };
+        delta.push_str("Your wait condition is now satisfied.\n\n");
+
+        // Show status of referenced tasks
+        for cond in conditions {
+            if let WaitCondition::TaskStatus { task_id, status } = cond {
+                if let Some(dep) = graph.get_task(task_id) {
+                    delta.push_str(&format!(
+                        "- {}: {} (expected: {})\n",
+                        task_id, dep.status, status
+                    ));
+                    // Include artifacts if any
+                    if !dep.artifacts.is_empty() {
+                        for art in &dep.artifacts {
+                            delta.push_str(&format!("  artifact: {}\n", art));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Include checkpoint if available
+    if let Some(ref cp) = task.checkpoint {
+        delta.push_str(&format!("\nYour checkpoint: \"{}\"\n", cp));
+    }
+
+    // Include recent messages on this task
+    if let Ok(msgs) = messages::list_messages(dir, &task.id) {
+        let recent: Vec<_> = msgs.iter().rev().take(3).collect();
+        if !recent.is_empty() {
+            delta.push_str("\nRecent messages:\n");
+            for msg in recent.iter().rev() {
+                delta.push_str(&format!("- [{}] {}: {}\n", msg.timestamp, msg.sender, msg.body));
+            }
+        }
+    }
+
+    delta.push_str(&format!("\nContinue your work on '{}'.\n", task.id));
+    delta
+}
+
+/// Evaluate waiting tasks and transition them when conditions are met.
+/// Returns `true` if the graph was modified.
+fn evaluate_waiting_tasks(
+    graph: &mut workgraph::graph::WorkGraph,
+    dir: &Path,
+) -> bool {
+    let mut modified = false;
+
+    // First, detect circular waits
+    let circular = detect_circular_waits(graph);
+    for cycle in &circular {
+        eprintln!(
+            "[coordinator] Circular wait detected: {:?}",
+            cycle
+        );
+        for task_id in cycle {
+            if let Some(t) = graph.get_task_mut(task_id)
+                && t.status == Status::Waiting
+            {
+                t.status = Status::Failed;
+                t.wait_condition = None;
+                t.failure_reason = Some(format!(
+                    "Circular wait detected: {}",
+                    cycle.join(" -> ")
+                ));
+                t.log.push(LogEntry {
+                    timestamp: Utc::now().to_rfc3339(),
+                    actor: Some("coordinator".to_string()),
+                    message: format!(
+                        "Failed: circular wait detected ({})",
+                        cycle.join(" -> ")
+                    ),
+                });
+                modified = true;
+            }
+        }
+    }
+
+    // Collect waiting tasks with their data to avoid borrow conflicts
+    let waiting_data: Vec<_> = graph
+        .tasks()
+        .filter(|t| t.status == Status::Waiting && t.wait_condition.is_some())
+        .map(|t| {
+            let wait_started = t
+                .log
+                .iter()
+                .rev()
+                .find(|l| l.message.contains("Agent parked"))
+                .map(|l| l.timestamp.clone());
+            (
+                t.id.clone(),
+                t.wait_condition.clone().unwrap(),
+                wait_started,
+                t.session_id.clone(),
+                t.checkpoint.clone(),
+            )
+        })
+        .collect();
+
+    for (task_id, spec, wait_started, _session_id, _checkpoint) in &waiting_data {
+        // Check for unsatisfiable conditions first
+        let conditions = match &spec {
+            WaitSpec::All(c) | WaitSpec::Any(c) => c,
+        };
+
+        let mut unsatisfiable_reasons = Vec::new();
+        for cond in conditions {
+            if let Some(reason) = is_condition_unsatisfiable(cond, graph) {
+                unsatisfiable_reasons.push(reason);
+            }
+        }
+
+        // For All: any unsatisfiable => whole spec unsatisfiable
+        // For Any: all must be unsatisfiable
+        let is_unsatisfiable = match &spec {
+            WaitSpec::All(_) => !unsatisfiable_reasons.is_empty(),
+            WaitSpec::Any(_) => {
+                // Only unsatisfiable if ALL conditions are unsatisfiable
+                // (non-TaskStatus conditions like timer/message are never unsatisfiable)
+                let task_status_count = conditions
+                    .iter()
+                    .filter(|c| matches!(c, WaitCondition::TaskStatus { .. }))
+                    .count();
+                unsatisfiable_reasons.len() == task_status_count
+                    && task_status_count == conditions.len()
+            }
+        };
+
+        if is_unsatisfiable {
+            let reason = format!(
+                "Wait condition unsatisfiable: {}",
+                unsatisfiable_reasons.join(", ")
+            );
+            if let Some(t) = graph.get_task_mut(task_id) {
+                t.status = Status::Failed;
+                t.wait_condition = None;
+                t.failure_reason = Some(reason.clone());
+                t.log.push(LogEntry {
+                    timestamp: Utc::now().to_rfc3339(),
+                    actor: Some("coordinator".to_string()),
+                    message: format!("Failed: {}", reason),
+                });
+                modified = true;
+                eprintln!(
+                    "[coordinator] Waiting task '{}' failed: {}",
+                    task_id, reason
+                );
+            }
+            continue;
+        }
+
+        // Evaluate the wait spec
+        let satisfied = evaluate_wait_spec(
+            &spec,
+            graph,
+            dir,
+            task_id,
+            wait_started.as_deref(),
+        );
+
+        if satisfied {
+            // Build resume delta before mutating
+            let delta = {
+                let task = graph.get_task(task_id).unwrap();
+                build_resume_delta(graph, task, dir)
+            };
+
+            if let Some(t) = graph.get_task_mut(task_id) {
+                t.status = Status::Open;
+                t.wait_condition = None;
+                // Store the resume delta as the new checkpoint so the spawned agent gets it
+                t.checkpoint = Some(delta.clone());
+                // Clear the assignment so the coordinator can re-spawn
+                t.assigned = None;
+                t.log.push(LogEntry {
+                    timestamp: Utc::now().to_rfc3339(),
+                    actor: Some("coordinator".to_string()),
+                    message: "Wait condition satisfied. Task ready for resume.".to_string(),
+                });
+                modified = true;
+                eprintln!(
+                    "[coordinator] Waiting task '{}' condition satisfied, transitioning to Open",
+                    task_id
+                );
+            }
+        }
+    }
+
+    modified
 }
 
 /// Auto-assign: build assignment subgraph for unassigned ready tasks.
@@ -1101,6 +1523,211 @@ fn spawn_agents_for_ready_tasks(
     spawned
 }
 
+// ---------------------------------------------------------------------------
+// Auto-checkpoint for alive agents
+// ---------------------------------------------------------------------------
+
+/// Check alive agents and trigger auto-checkpoints when turn count or time
+/// thresholds are met. Calls haiku to summarize the agent's recent output.
+fn auto_checkpoint_agents(dir: &Path, config: &Config) {
+    let interval_turns = config.checkpoint.auto_interval_turns;
+    let interval_mins = config.checkpoint.auto_interval_mins;
+
+    // Skip if auto-checkpoint is effectively disabled
+    if interval_turns == 0 && interval_mins == 0 {
+        return;
+    }
+
+    let registry = match AgentRegistry::load(dir) {
+        Ok(r) => r,
+        Err(_) => return,
+    };
+
+    let alive_agents: Vec<_> = registry
+        .agents
+        .values()
+        .filter(|a| a.is_alive() && is_process_alive(a.pid))
+        .cloned()
+        .collect();
+
+    for agent in &alive_agents {
+        if let Err(e) = try_auto_checkpoint(dir, agent, config, interval_turns, interval_mins) {
+            eprintln!(
+                "[coordinator] Auto-checkpoint failed for agent {} (task {}): {}",
+                agent.id, agent.task_id, e
+            );
+        }
+    }
+}
+
+/// Attempt auto-checkpoint for a single agent if thresholds are met.
+fn try_auto_checkpoint(
+    dir: &Path,
+    agent: &workgraph::service::registry::AgentEntry,
+    config: &Config,
+    interval_turns: u32,
+    interval_mins: u32,
+) -> Result<()> {
+    use crate::commands::checkpoint::{self, CheckpointType};
+    use workgraph::stream_event;
+
+    let output_path = std::path::Path::new(&agent.output_file);
+    let agent_dir = match output_path.parent() {
+        Some(d) => d,
+        None => return Ok(()),
+    };
+
+    // Read stream events to get turn count
+    let stream_path = agent_dir.join(stream_event::STREAM_FILE_NAME);
+    let raw_path = agent_dir.join(stream_event::RAW_STREAM_FILE_NAME);
+
+    let events = if stream_path.exists() {
+        stream_event::read_stream_events(&stream_path, 0)
+            .map(|(evts, _)| evts)
+            .unwrap_or_default()
+    } else if raw_path.exists() {
+        stream_event::translate_claude_stream(&raw_path, 0)
+            .map(|(evts, _)| evts)
+            .unwrap_or_default()
+    } else {
+        return Ok(());
+    };
+
+    if events.is_empty() {
+        return Ok(());
+    }
+
+    // Count turns from stream events
+    let turn_count: u32 = events
+        .iter()
+        .filter(|e| matches!(e, stream_event::StreamEvent::Turn { .. }))
+        .count() as u32;
+
+    // Get the timestamp of the latest event
+    let last_event_ms = events.last().map(|e| e.timestamp_ms()).unwrap_or(0);
+
+    // Load latest checkpoint for this agent to determine if we need a new one
+    let latest_checkpoint = checkpoint::load_latest(dir, &agent.id)?;
+
+    let should_checkpoint = match &latest_checkpoint {
+        Some(cp) => {
+            // Check turn-based trigger
+            let cp_turn = cp.turn_count.unwrap_or(0) as u32;
+            let turns_since = turn_count.saturating_sub(cp_turn);
+            let turn_trigger = interval_turns > 0 && turns_since >= interval_turns;
+
+            // Check time-based trigger
+            let cp_ms = chrono::DateTime::parse_from_rfc3339(&cp.timestamp)
+                .map(|dt| dt.timestamp_millis())
+                .unwrap_or(0);
+            let elapsed_mins = (last_event_ms - cp_ms).max(0) / 60_000;
+            let time_trigger = interval_mins > 0 && elapsed_mins as u32 >= interval_mins;
+
+            turn_trigger || time_trigger
+        }
+        None => {
+            // No checkpoint yet — trigger on first threshold
+            let turn_trigger = interval_turns > 0 && turn_count >= interval_turns;
+
+            let init_ms = events
+                .first()
+                .map(|e| e.timestamp_ms())
+                .unwrap_or(last_event_ms);
+            let elapsed_mins = (last_event_ms - init_ms).max(0) / 60_000;
+            let time_trigger = interval_mins > 0 && elapsed_mins as u32 >= interval_mins;
+
+            turn_trigger || time_trigger
+        }
+    };
+
+    if !should_checkpoint {
+        return Ok(());
+    }
+
+    // Generate summary via haiku
+    let summary = generate_checkpoint_summary(config, &agent.output_file, &agent.task_id)?;
+
+    eprintln!(
+        "[coordinator] Auto-checkpoint for agent {} (task {}, turn {}): {}",
+        agent.id,
+        agent.task_id,
+        turn_count,
+        summary.chars().take(80).collect::<String>()
+    );
+
+    // Store checkpoint
+    checkpoint::run(
+        dir,
+        &agent.task_id,
+        &summary,
+        Some(&agent.id),
+        &[], // files_modified not tracked in auto-checkpoint
+        None,
+        Some(turn_count as u64),
+        None,
+        None,
+        CheckpointType::Auto,
+        false,
+    )?;
+
+    Ok(())
+}
+
+/// Call haiku (or configured triage model) to summarize an agent's recent output log.
+fn generate_checkpoint_summary(
+    config: &Config,
+    output_file: &str,
+    task_id: &str,
+) -> Result<String> {
+    use std::process;
+
+    let model = config.agency.triage_model.as_deref().unwrap_or("haiku");
+    let timeout_secs = config.agency.triage_timeout.unwrap_or(30);
+
+    // Read last 20KB of output for summary context
+    let log_content = triage::read_truncated_log_pub(output_file, 20_000);
+
+    let prompt = format!(
+        r#"Summarize the progress of an agent working on task '{task_id}'.
+
+## Agent Output (last portion)
+```
+{log_content}
+```
+
+## Instructions
+Write a 2-4 sentence summary of what the agent has accomplished so far.
+Focus on: files modified, features implemented, tests written, current status.
+Respond with ONLY the summary text, no JSON or formatting."#
+    );
+
+    let output = process::Command::new("timeout")
+        .arg(format!("{}s", timeout_secs))
+        .arg("claude")
+        .arg("--model")
+        .arg(model)
+        .arg("--print")
+        .arg("--dangerously-skip-permissions")
+        .arg(&prompt)
+        .output()
+        .context("Failed to run claude CLI for checkpoint summary")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!(
+            "Checkpoint summary call failed: {}",
+            stderr.chars().take(200).collect::<String>()
+        );
+    }
+
+    let summary = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if summary.is_empty() {
+        anyhow::bail!("Empty checkpoint summary from LLM");
+    }
+
+    Ok(summary)
+}
+
 /// Single coordinator tick: spawn agents on ready tasks
 pub fn coordinator_tick(
     dir: &Path,
@@ -1123,6 +1750,9 @@ pub fn coordinator_tick(
         Ok(count) => count,
         Err(early_result) => return Ok(early_result),
     };
+
+    // Phase 1.5: Auto-checkpoint alive agents if thresholds are met
+    auto_checkpoint_agents(dir, &config);
 
     // Phase 2: Load graph
     let mut graph = load_graph(&graph_path).context("Failed to load graph")?;
@@ -1161,6 +1791,16 @@ pub fn coordinator_tick(
             );
             save_graph(&graph, &graph_path)
                 .context("Failed to save graph after cycle failure restart")?;
+        }
+    }
+
+    // Phase 2.7: Evaluate waiting tasks — check if wait conditions are satisfied
+    // and transition satisfied tasks back to Open for dispatch.
+    {
+        let wait_modified = evaluate_waiting_tasks(&mut graph, dir);
+        if wait_modified {
+            save_graph(&graph, &graph_path)
+                .context("Failed to save graph after wait condition evaluation")?;
         }
     }
 
@@ -1269,7 +1909,27 @@ fn process_chat_inbox(dir: &Path) {
 
 #[cfg(test)]
 mod tests {
-    use workgraph::graph::Task;
+    use super::*;
+    use crate::commands::checkpoint::{self, CheckpointType};
+    use workgraph::graph::{Node, Task, WorkGraph};
+    use workgraph::parser::save_graph;
+    use workgraph::stream_event::{self, StreamEvent, StreamWriter};
+    use tempfile::tempdir;
+
+    fn make_agent_entry(output_file: &std::path::Path) -> workgraph::service::registry::AgentEntry {
+        workgraph::service::registry::AgentEntry {
+            id: "agent-1".to_string(),
+            pid: std::process::id(),
+            task_id: "t1".to_string(),
+            executor: "test".to_string(),
+            started_at: chrono::Utc::now().to_rfc3339(),
+            last_heartbeat: chrono::Utc::now().to_rfc3339(),
+            status: workgraph::service::registry::AgentStatus::Working,
+            output_file: output_file.to_str().unwrap().to_string(),
+            model: None,
+            completed_at: None,
+        }
+    }
 
     #[test]
     fn test_eval_inline_extracts_source_task_from_exec() {
@@ -1329,5 +1989,607 @@ mod tests {
         let is_inline_eval3 =
             no_exec.tags.iter().any(|t| t == "evaluation") && no_exec.exec.is_some();
         assert!(!is_inline_eval3);
+    }
+
+    fn setup_workgraph_dir(dir: &Path) {
+        let graph_path = dir.join("graph.jsonl");
+        let mut graph = WorkGraph::new();
+        let mut task = Task::default();
+        task.id = "t1".to_string();
+        task.title = "Test Task".to_string();
+        task.status = Status::InProgress;
+        task.assigned = Some("agent-1".to_string());
+        graph.add_node(Node::Task(task));
+        save_graph(&graph, &graph_path).unwrap();
+    }
+
+    fn write_stream_events(agent_dir: &Path, turn_count: u32, start_ms: i64) {
+        let stream_path = agent_dir.join(stream_event::STREAM_FILE_NAME);
+        let writer = StreamWriter::new(&stream_path);
+
+        writer.write_event(&StreamEvent::Init {
+            executor_type: "test".to_string(),
+            model: None,
+            session_id: None,
+            timestamp_ms: start_ms,
+        });
+
+        for i in 0..turn_count {
+            writer.write_event(&StreamEvent::Turn {
+                turn_number: i + 1,
+                tools_used: vec![],
+                usage: None,
+                timestamp_ms: start_ms + (i as i64 + 1) * 60_000, // 1 min between turns
+            });
+        }
+    }
+
+    #[test]
+    fn test_auto_checkpoint_turn_trigger() {
+        let temp = tempdir().unwrap();
+        let dir = temp.path();
+        setup_workgraph_dir(dir);
+
+        // Create agent directory with stream events (20 turns, threshold is 15)
+        let agent_dir = dir.join("agents").join("agent-1");
+        std::fs::create_dir_all(&agent_dir).unwrap();
+        let output_file = agent_dir.join("output.log");
+        std::fs::write(&output_file, "test output").unwrap();
+
+        write_stream_events(&agent_dir, 20, stream_event::now_ms() - 20 * 60_000);
+
+        // Create a registry with a live agent (use PID 1 which should exist)
+        let mut registry = workgraph::service::registry::AgentRegistry::default();
+        let agent_entry = make_agent_entry(&output_file);
+        registry.agents.insert("agent-1".to_string(), agent_entry.clone());
+
+        let service_dir = dir.join("service");
+        std::fs::create_dir_all(&service_dir).unwrap();
+        let registry_path = service_dir.join("registry.json");
+        std::fs::write(
+            &registry_path,
+            serde_json::to_string_pretty(&registry).unwrap(),
+        ).unwrap();
+
+        // Config with 15 turn threshold
+        let config = Config::default(); // default has auto_interval_turns=15
+
+        // Should not panic and should attempt checkpoint (will fail on LLM call,
+        // but the logic should trigger)
+        let result = try_auto_checkpoint(dir, &agent_entry, &config, 15, 20);
+        // LLM call will fail in test env — that's expected.
+        // The important thing is the logic correctly identifies the trigger.
+        // The function will return Err because claude CLI isn't available.
+        assert!(result.is_err());
+        // Error should be about the LLM call, not about threshold logic
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("checkpoint summary")
+                || err_msg.contains("claude")
+                || err_msg.contains("Claude")
+                || err_msg.contains("No such file"),
+            "Expected LLM-related error, got: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn test_auto_checkpoint_below_threshold_no_trigger() {
+        let temp = tempdir().unwrap();
+        let dir = temp.path();
+        setup_workgraph_dir(dir);
+
+        let agent_dir = dir.join("agents").join("agent-1");
+        std::fs::create_dir_all(&agent_dir).unwrap();
+        let output_file = agent_dir.join("output.log");
+        std::fs::write(&output_file, "test output").unwrap();
+
+        // Only 5 turns, threshold is 15 — should NOT trigger
+        let now_ms = stream_event::now_ms();
+        write_stream_events(&agent_dir, 5, now_ms - 5 * 60_000);
+
+        let agent_entry = make_agent_entry(&output_file);
+
+        let config = Config::default();
+
+        // Should return Ok(()) — no checkpoint triggered
+        let result = try_auto_checkpoint(dir, &agent_entry, &config, 15, 20);
+        assert!(result.is_ok());
+
+        // No checkpoint file should exist
+        let cp_dir = dir.join("agents").join("agent-1").join("checkpoints");
+        assert!(!cp_dir.exists() || std::fs::read_dir(&cp_dir).unwrap().count() == 0);
+    }
+
+    #[test]
+    fn test_auto_checkpoint_time_trigger() {
+        let temp = tempdir().unwrap();
+        let dir = temp.path();
+        setup_workgraph_dir(dir);
+
+        let agent_dir = dir.join("agents").join("agent-1");
+        std::fs::create_dir_all(&agent_dir).unwrap();
+        let output_file = agent_dir.join("output.log");
+        std::fs::write(&output_file, "test output").unwrap();
+
+        // 5 turns spread over 25 minutes (threshold 20 mins)
+        let now_ms = stream_event::now_ms();
+        let start_ms = now_ms - 25 * 60_000;
+
+        let stream_path = agent_dir.join(stream_event::STREAM_FILE_NAME);
+        let writer = StreamWriter::new(&stream_path);
+        writer.write_event(&StreamEvent::Init {
+            executor_type: "test".to_string(),
+            model: None,
+            session_id: None,
+            timestamp_ms: start_ms,
+        });
+        for i in 0..5 {
+            writer.write_event(&StreamEvent::Turn {
+                turn_number: i + 1,
+                tools_used: vec![],
+                usage: None,
+                timestamp_ms: start_ms + (i as i64 + 1) * 5 * 60_000, // 5 min apart
+            });
+        }
+
+        let agent_entry = make_agent_entry(&output_file);
+
+        let config = Config::default();
+
+        // Should trigger due to time (25 min > 20 min threshold)
+        // but fail on LLM call
+        let result = try_auto_checkpoint(dir, &agent_entry, &config, 15, 20);
+        assert!(result.is_err()); // Expected: LLM not available in test
+    }
+
+    #[test]
+    fn test_auto_checkpoint_skips_when_recent_checkpoint_exists() {
+        let temp = tempdir().unwrap();
+        let dir = temp.path();
+        setup_workgraph_dir(dir);
+
+        let agent_dir = dir.join("agents").join("agent-1");
+        std::fs::create_dir_all(&agent_dir).unwrap();
+        let output_file = agent_dir.join("output.log");
+        std::fs::write(&output_file, "test output").unwrap();
+
+        // 20 turns
+        let now_ms = stream_event::now_ms();
+        write_stream_events(&agent_dir, 20, now_ms - 20 * 60_000);
+
+        // Create a recent checkpoint at turn 18 (so only 2 turns since)
+        checkpoint::run(
+            dir,
+            "t1",
+            "Recent checkpoint",
+            Some("agent-1"),
+            &[],
+            None,
+            Some(18),
+            None,
+            None,
+            CheckpointType::Auto,
+            false,
+        ).unwrap();
+
+        let agent_entry = make_agent_entry(&output_file);
+
+        let config = Config::default();
+
+        // Should NOT trigger — only 2 turns since last checkpoint
+        let result = try_auto_checkpoint(dir, &agent_entry, &config, 15, 20);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_auto_checkpoint_disabled_when_zero() {
+        let dir = tempdir().unwrap();
+        let mut config = Config::default();
+        config.checkpoint.auto_interval_turns = 0;
+        config.checkpoint.auto_interval_mins = 0;
+
+        // Should return immediately without touching anything
+        auto_checkpoint_agents(dir.path(), &config);
+        // No crash, no panic — success
+    }
+
+    // === Wait condition evaluation tests ===
+
+    fn setup_wait_graph(dir: &Path, tasks: Vec<Task>) {
+        let path = dir.join("graph.jsonl");
+        std::fs::create_dir_all(dir).unwrap();
+        let mut graph = WorkGraph::new();
+        for task in tasks {
+            graph.add_node(Node::Task(task));
+        }
+        save_graph(&graph, &path).unwrap();
+    }
+
+    fn load_wait_graph(dir: &Path) -> WorkGraph {
+        let path = dir.join("graph.jsonl");
+        load_graph(&path).unwrap()
+    }
+
+    #[test]
+    fn test_evaluate_condition_task_status_satisfied() {
+        let mut graph = WorkGraph::new();
+        let mut dep = Task::default();
+        dep.id = "dep-a".to_string();
+        dep.status = Status::Done;
+        graph.add_node(Node::Task(dep));
+
+        let cond = WaitCondition::TaskStatus {
+            task_id: "dep-a".to_string(),
+            status: Status::Done,
+        };
+        assert!(evaluate_condition(&cond, &graph, Path::new("/tmp"), "main", None));
+    }
+
+    #[test]
+    fn test_evaluate_condition_task_status_not_satisfied() {
+        let mut graph = WorkGraph::new();
+        let mut dep = Task::default();
+        dep.id = "dep-a".to_string();
+        dep.status = Status::InProgress;
+        graph.add_node(Node::Task(dep));
+
+        let cond = WaitCondition::TaskStatus {
+            task_id: "dep-a".to_string(),
+            status: Status::Done,
+        };
+        assert!(!evaluate_condition(&cond, &graph, Path::new("/tmp"), "main", None));
+    }
+
+    #[test]
+    fn test_evaluate_condition_timer_elapsed() {
+        let graph = WorkGraph::new();
+        let past = (Utc::now() - chrono::Duration::minutes(5)).to_rfc3339();
+        let cond = WaitCondition::Timer { resume_after: past };
+        assert!(evaluate_condition(&cond, &graph, Path::new("/tmp"), "main", None));
+    }
+
+    #[test]
+    fn test_evaluate_condition_timer_not_elapsed() {
+        let graph = WorkGraph::new();
+        let future = (Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
+        let cond = WaitCondition::Timer { resume_after: future };
+        assert!(!evaluate_condition(&cond, &graph, Path::new("/tmp"), "main", None));
+    }
+
+    #[test]
+    fn test_evaluate_condition_file_changed() {
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("watched.txt");
+        std::fs::write(&file_path, "initial").unwrap();
+
+        let mtime = std::fs::metadata(&file_path)
+            .unwrap()
+            .modified()
+            .unwrap()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        let graph = WorkGraph::new();
+        // Not changed yet: same mtime
+        let cond_same = WaitCondition::FileChanged {
+            path: file_path.to_string_lossy().to_string(),
+            mtime_at_wait: mtime,
+        };
+        assert!(!evaluate_condition(&cond_same, &graph, dir.path(), "main", None));
+
+        // Simulate earlier mtime_at_wait (file was modified after the stored mtime)
+        let cond_earlier = WaitCondition::FileChanged {
+            path: file_path.to_string_lossy().to_string(),
+            mtime_at_wait: mtime - 1,
+        };
+        assert!(evaluate_condition(&cond_earlier, &graph, dir.path(), "main", None));
+    }
+
+    #[test]
+    fn test_evaluate_wait_spec_all_not_satisfied() {
+        let mut graph = WorkGraph::new();
+        let mut dep_a = Task::default();
+        dep_a.id = "dep-a".to_string();
+        dep_a.status = Status::Done;
+        let mut dep_b = Task::default();
+        dep_b.id = "dep-b".to_string();
+        dep_b.status = Status::Open;
+        graph.add_node(Node::Task(dep_a));
+        graph.add_node(Node::Task(dep_b));
+
+        let spec = WaitSpec::All(vec![
+            WaitCondition::TaskStatus { task_id: "dep-a".to_string(), status: Status::Done },
+            WaitCondition::TaskStatus { task_id: "dep-b".to_string(), status: Status::Done },
+        ]);
+        assert!(!evaluate_wait_spec(&spec, &graph, Path::new("/tmp"), "main", None));
+    }
+
+    #[test]
+    fn test_evaluate_wait_spec_any_satisfied() {
+        let mut graph = WorkGraph::new();
+        let mut dep_a = Task::default();
+        dep_a.id = "dep-a".to_string();
+        dep_a.status = Status::Done;
+        let mut dep_b = Task::default();
+        dep_b.id = "dep-b".to_string();
+        dep_b.status = Status::Open;
+        graph.add_node(Node::Task(dep_a));
+        graph.add_node(Node::Task(dep_b));
+
+        let spec = WaitSpec::Any(vec![
+            WaitCondition::TaskStatus { task_id: "dep-a".to_string(), status: Status::Done },
+            WaitCondition::TaskStatus { task_id: "dep-b".to_string(), status: Status::Done },
+        ]);
+        assert!(evaluate_wait_spec(&spec, &graph, Path::new("/tmp"), "main", None));
+    }
+
+    #[test]
+    fn test_unsatisfiable_condition_failed_dep() {
+        let mut graph = WorkGraph::new();
+        let mut dep = Task::default();
+        dep.id = "dep-a".to_string();
+        dep.status = Status::Failed;
+        graph.add_node(Node::Task(dep));
+
+        let cond = WaitCondition::TaskStatus {
+            task_id: "dep-a".to_string(),
+            status: Status::Done,
+        };
+        let result = is_condition_unsatisfiable(&cond, &graph);
+        assert!(result.is_some());
+        assert!(result.unwrap().contains("failed"));
+    }
+
+    #[test]
+    fn test_unsatisfiable_condition_nonexistent_task() {
+        let graph = WorkGraph::new();
+        let cond = WaitCondition::TaskStatus {
+            task_id: "nonexistent".to_string(),
+            status: Status::Done,
+        };
+        let result = is_condition_unsatisfiable(&cond, &graph);
+        assert!(result.is_some());
+        assert!(result.unwrap().contains("no longer exists"));
+    }
+
+    #[test]
+    fn test_circular_wait_detection() {
+        let mut graph = WorkGraph::new();
+
+        let mut task_a = Task::default();
+        task_a.id = "task-a".to_string();
+        task_a.status = Status::Waiting;
+        task_a.wait_condition = Some(WaitSpec::All(vec![
+            WaitCondition::TaskStatus { task_id: "task-b".to_string(), status: Status::Done },
+        ]));
+
+        let mut task_b = Task::default();
+        task_b.id = "task-b".to_string();
+        task_b.status = Status::Waiting;
+        task_b.wait_condition = Some(WaitSpec::All(vec![
+            WaitCondition::TaskStatus { task_id: "task-a".to_string(), status: Status::Done },
+        ]));
+
+        graph.add_node(Node::Task(task_a));
+        graph.add_node(Node::Task(task_b));
+
+        let cycles = detect_circular_waits(&graph);
+        assert!(!cycles.is_empty(), "Should detect circular wait");
+    }
+
+    #[test]
+    fn test_evaluate_waiting_tasks_transitions_to_open() {
+        let dir = tempdir().unwrap();
+
+        let mut dep = Task::default();
+        dep.id = "dep-a".to_string();
+        dep.status = Status::Done;
+
+        let mut main_task = Task::default();
+        main_task.id = "main".to_string();
+        main_task.status = Status::Waiting;
+        main_task.wait_condition = Some(WaitSpec::All(vec![
+            WaitCondition::TaskStatus {
+                task_id: "dep-a".to_string(),
+                status: Status::Done,
+            },
+        ]));
+        main_task.checkpoint = Some("Phase 1 complete".to_string());
+        main_task.assigned = Some("agent-1".to_string());
+
+        setup_wait_graph(dir.path(), vec![dep, main_task]);
+
+        let mut graph = load_wait_graph(dir.path());
+        let modified = evaluate_waiting_tasks(&mut graph, dir.path());
+
+        assert!(modified);
+        let task = graph.get_task("main").unwrap();
+        assert_eq!(task.status, Status::Open);
+        assert!(task.wait_condition.is_none());
+        assert!(task.assigned.is_none(), "assigned should be cleared for re-dispatch");
+        assert!(task.checkpoint.is_some());
+        let cp = task.checkpoint.as_ref().unwrap();
+        assert!(cp.contains("Resume Context"));
+        assert!(cp.contains("Phase 1 complete"));
+    }
+
+    #[test]
+    fn test_evaluate_waiting_tasks_autofails_unsatisfiable() {
+        let dir = tempdir().unwrap();
+
+        let mut dep = Task::default();
+        dep.id = "dep-a".to_string();
+        dep.status = Status::Failed;
+
+        let mut main_task = Task::default();
+        main_task.id = "main".to_string();
+        main_task.status = Status::Waiting;
+        main_task.wait_condition = Some(WaitSpec::All(vec![
+            WaitCondition::TaskStatus {
+                task_id: "dep-a".to_string(),
+                status: Status::Done,
+            },
+        ]));
+
+        setup_wait_graph(dir.path(), vec![dep, main_task]);
+
+        let mut graph = load_wait_graph(dir.path());
+        let modified = evaluate_waiting_tasks(&mut graph, dir.path());
+
+        assert!(modified);
+        let task = graph.get_task("main").unwrap();
+        assert_eq!(task.status, Status::Failed);
+        assert!(task.failure_reason.as_ref().unwrap().contains("unsatisfiable"));
+    }
+
+    #[test]
+    fn test_evaluate_waiting_tasks_fails_circular_waits() {
+        let dir = tempdir().unwrap();
+
+        let mut task_a = Task::default();
+        task_a.id = "task-a".to_string();
+        task_a.status = Status::Waiting;
+        task_a.wait_condition = Some(WaitSpec::All(vec![
+            WaitCondition::TaskStatus { task_id: "task-b".to_string(), status: Status::Done },
+        ]));
+
+        let mut task_b = Task::default();
+        task_b.id = "task-b".to_string();
+        task_b.status = Status::Waiting;
+        task_b.wait_condition = Some(WaitSpec::All(vec![
+            WaitCondition::TaskStatus { task_id: "task-a".to_string(), status: Status::Done },
+        ]));
+
+        setup_wait_graph(dir.path(), vec![task_a, task_b]);
+
+        let mut graph = load_wait_graph(dir.path());
+        let modified = evaluate_waiting_tasks(&mut graph, dir.path());
+
+        assert!(modified);
+        let a = graph.get_task("task-a").unwrap();
+        let b = graph.get_task("task-b").unwrap();
+        assert_eq!(a.status, Status::Failed);
+        assert_eq!(b.status, Status::Failed);
+        assert!(a.failure_reason.as_ref().unwrap().contains("Circular wait"));
+    }
+
+    #[test]
+    fn test_wait_resume_preserves_session_id() {
+        let dir = tempdir().unwrap();
+
+        let mut dep = Task::default();
+        dep.id = "dep-a".to_string();
+        dep.status = Status::Done;
+        dep.artifacts = vec!["docs/api-schema.json".to_string()];
+
+        let mut main_task = Task::default();
+        main_task.id = "main".to_string();
+        main_task.status = Status::Waiting;
+        main_task.session_id = Some("session-123".to_string());
+        main_task.checkpoint = Some("Waiting for API schema".to_string());
+        main_task.wait_condition = Some(WaitSpec::All(vec![
+            WaitCondition::TaskStatus {
+                task_id: "dep-a".to_string(),
+                status: Status::Done,
+            },
+        ]));
+        main_task.assigned = Some("agent-1".to_string());
+
+        setup_wait_graph(dir.path(), vec![dep, main_task]);
+
+        let mut graph = load_wait_graph(dir.path());
+        let modified = evaluate_waiting_tasks(&mut graph, dir.path());
+
+        assert!(modified);
+        let task = graph.get_task("main").unwrap();
+        assert_eq!(task.status, Status::Open);
+        assert_eq!(task.session_id.as_deref(), Some("session-123"));
+        let cp = task.checkpoint.as_ref().unwrap();
+        assert!(cp.contains("dep-a"));
+        assert!(cp.contains("docs/api-schema.json"));
+    }
+
+    #[test]
+    fn test_build_resume_delta_content() {
+        let mut graph = WorkGraph::new();
+
+        let mut dep = Task::default();
+        dep.id = "dep-a".to_string();
+        dep.status = Status::Done;
+        dep.artifacts = vec!["output.txt".to_string()];
+        graph.add_node(Node::Task(dep));
+
+        let mut main_task = Task::default();
+        main_task.id = "main".to_string();
+        main_task.checkpoint = Some("Working on phase 2".to_string());
+        main_task.wait_condition = Some(WaitSpec::All(vec![
+            WaitCondition::TaskStatus {
+                task_id: "dep-a".to_string(),
+                status: Status::Done,
+            },
+        ]));
+        graph.add_node(Node::Task(main_task));
+
+        let task = graph.get_task("main").unwrap();
+        let delta = build_resume_delta(&graph, task, Path::new("/tmp"));
+
+        assert!(delta.contains("Resume Context"));
+        assert!(delta.contains("dep-a: done"));
+        assert!(delta.contains("output.txt"));
+        assert!(delta.contains("Working on phase 2"));
+        assert!(delta.contains("Continue your work"));
+    }
+
+    #[test]
+    fn test_evaluate_waiting_tasks_no_change_when_not_satisfied() {
+        let dir = tempdir().unwrap();
+
+        let mut dep = Task::default();
+        dep.id = "dep-a".to_string();
+        dep.status = Status::InProgress;
+
+        let mut main_task = Task::default();
+        main_task.id = "main".to_string();
+        main_task.status = Status::Waiting;
+        main_task.wait_condition = Some(WaitSpec::All(vec![
+            WaitCondition::TaskStatus {
+                task_id: "dep-a".to_string(),
+                status: Status::Done,
+            },
+        ]));
+
+        setup_wait_graph(dir.path(), vec![dep, main_task]);
+
+        let mut graph = load_wait_graph(dir.path());
+        let modified = evaluate_waiting_tasks(&mut graph, dir.path());
+
+        assert!(!modified);
+        let task = graph.get_task("main").unwrap();
+        assert_eq!(task.status, Status::Waiting);
+        assert!(task.wait_condition.is_some());
+    }
+
+    #[test]
+    fn test_message_condition_with_messages() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path()).unwrap();
+
+        messages::send_message(dir.path(), "main", "Hello", "user", "normal").unwrap();
+
+        let mut main_task = Task::default();
+        main_task.id = "main".to_string();
+        main_task.status = Status::Waiting;
+        main_task.wait_condition = Some(WaitSpec::All(vec![WaitCondition::Message]));
+
+        setup_wait_graph(dir.path(), vec![main_task]);
+
+        let mut graph = load_wait_graph(dir.path());
+        let modified = evaluate_waiting_tasks(&mut graph, dir.path());
+
+        assert!(modified);
+        let task = graph.get_task("main").unwrap();
+        assert_eq!(task.status, Status::Open);
     }
 }
