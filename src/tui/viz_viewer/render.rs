@@ -121,10 +121,11 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
                 if area.width >= SIDE_MIN_WIDTH {
                     // Side-by-side: viz left, right panel right.
                     let right_width =
-                        (area.width as u32 * app.right_panel_percent as u32 / 100) as u16;
+                        (main_area.width as u32 * app.right_panel_percent as u32 / 100) as u16;
+                    let left_width = main_area.width.saturating_sub(right_width);
                     let split = Layout::default()
                         .direction(Direction::Horizontal)
-                        .constraints([Constraint::Min(1), Constraint::Length(right_width)])
+                        .constraints([Constraint::Length(left_width), Constraint::Length(right_width)])
                         .split(main_area);
 
                     let viz_area = split[0];
@@ -151,12 +152,14 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
                     draw_right_panel(frame, app, right_area);
                 } else {
                     // Narrow: viz on top, right panel on bottom.
+                    // Use right_panel_percent so = cycling works in vertical mode too.
                     let panel_height =
-                        (main_area.height as u32 * app.hud_size.bottom_percent() as u32 / 100)
+                        (main_area.height as u32 * app.right_panel_percent as u32 / 100)
                             .max(5) as u16;
+                    let top_height = main_area.height.saturating_sub(panel_height);
                     let split = Layout::default()
                         .direction(Direction::Vertical)
-                        .constraints([Constraint::Min(1), Constraint::Length(panel_height)])
+                        .constraints([Constraint::Length(top_height), Constraint::Length(panel_height)])
                         .split(main_area);
 
                     let viz_area = split[0];
@@ -1297,21 +1300,13 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
                 spans.extend(line.spans.iter().cloned());
                 rendered_lines.push(Line::from(spans));
                 first_line = false;
-            } else if is_coordinator {
-                if is_tool_line {
-                    // Tool call lines: dim styling
-                    rendered_lines.push(Line::from(vec![
-                        Span::styled("  ", Style::default()),
-                        Span::styled(line_text, Style::default().fg(Color::DarkGray)),
-                    ]));
-                } else {
-                    // Regular text lines in coordinator: │ gutter
-                    let mut spans =
-                        vec![Span::styled("  │ ", Style::default().fg(Color::DarkGray))];
-                    spans.extend(line.spans.iter().cloned());
-                    rendered_lines.push(Line::from(spans));
-                }
+            } else if is_tool_line {
+                // Tool call box-drawing lines: dim styling, indented to match prefix
+                let mut spans = vec![Span::raw(indent.clone())];
+                spans.push(Span::styled(line_text, Style::default().fg(Color::DarkGray)));
+                rendered_lines.push(Line::from(spans));
             } else {
+                // Continuation lines: indent to align with text after prefix
                 let mut spans = vec![Span::raw(indent.clone())];
                 spans.extend(line.spans.iter().cloned());
                 rendered_lines.push(Line::from(spans));
@@ -3510,31 +3505,21 @@ fn draw_status_bar(frame: &mut Frame, app: &VizApp, area: Rect) {
         ));
     }
 
-    // Layout mode indicator (show when not default 1/3 split view)
-    match app.layout_mode {
-        LayoutMode::TwoThirdsInspector => {
-            spans.push(Span::styled("| ", Style::default().fg(Color::DarkGray)));
-            spans.push(Span::styled(
-                "2/3 PANEL ",
-                Style::default().fg(Color::Magenta),
-            ));
-        }
-        LayoutMode::FullInspector => {
-            spans.push(Span::styled("| ", Style::default().fg(Color::DarkGray)));
-            spans.push(Span::styled(
-                "FULL PANEL ",
-                Style::default().fg(Color::Magenta),
-            ));
-        }
-        LayoutMode::Off => {
-            spans.push(Span::styled("| ", Style::default().fg(Color::DarkGray)));
-            spans.push(Span::styled(
-                "FULL GRAPH ",
-                Style::default().fg(Color::Magenta),
-            ));
-        }
-        LayoutMode::ThirdInspector => {}
-    }
+    // Layout mode indicator (always shown)
+    spans.push(Span::styled("| ", Style::default().fg(Color::DarkGray)));
+    spans.push(Span::styled(
+        match app.layout_mode {
+            LayoutMode::ThirdInspector => {
+                format!("1/3 PANEL ({}%) ", app.right_panel_percent)
+            }
+            LayoutMode::TwoThirdsInspector => {
+                format!("2/3 PANEL ({}%) ", app.right_panel_percent)
+            }
+            LayoutMode::FullInspector => "FULL PANEL ".to_string(),
+            LayoutMode::Off => "FULL GRAPH ".to_string(),
+        },
+        Style::default().fg(Color::Magenta),
+    ));
 
     // Help hint
     spans.push(Span::styled("| ", Style::default().fg(Color::DarkGray)));

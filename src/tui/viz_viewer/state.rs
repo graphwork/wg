@@ -335,7 +335,7 @@ impl HudSize {
 
 /// Layout mode for the four-state cycle (=/i/Shift+Tab key).
 /// Cycle: ThirdInspector → TwoThirdsInspector → FullInspector → Off → ...
-#[derive(Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum LayoutMode {
     /// 1/3 inspector (2/3 graph + 1/3 inspector).
     ThirdInspector,
