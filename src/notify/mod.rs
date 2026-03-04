@@ -11,9 +11,11 @@ pub mod dispatch;
 pub mod email;
 #[cfg(feature = "matrix-lite")]
 pub mod matrix;
+pub mod push;
 pub mod slack;
 pub mod sms;
 pub mod telegram;
+pub mod voice;
 pub mod webhook;
 
 use std::fmt;
