@@ -172,9 +172,16 @@ pub fn run(
             // Cross-repo dependency — validated at resolution time, not here
         } else if graph.get_node(blocker_id).is_none() {
             eprintln!(
-                "Warning: blocker '{}' does not exist in the graph",
+                "Warning: blocker '{}' does not exist yet (will be treated as unresolved until created)",
                 blocker_id
             );
+            // Suggest fuzzy match if a close task ID exists
+            let all_ids: Vec<&str> = graph.tasks().map(|t| t.id.as_str()).collect();
+            if let Some((suggestion, _)) =
+                workgraph::check::fuzzy_match_task_id(blocker_id, all_ids.iter().copied(), 3)
+            {
+                eprintln!("  → Did you mean '{}'?", suggestion);
+            }
         }
     }
 

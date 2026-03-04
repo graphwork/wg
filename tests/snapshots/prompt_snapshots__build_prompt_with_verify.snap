@@ -64,12 +64,13 @@ You MUST use these commands to track your work:
    ```
 
 3. **Validate your work** before marking done:
+   - **Check task-specific criteria first:** Run `wg show test-task-123` and look for a **Verification Required** section or a **## Validation** section in the description. Those criteria are your primary acceptance test — address every item.
    - **Code tasks:** Run `cargo build` and `cargo test` (or the project's equivalent). Fix any failures.
    - **Research/docs tasks:** Re-read the task description and verify your output addresses every requirement. Check that referenced files and links exist.
    - **All tasks:** Log your validation results:
      ```bash
+     wg log test-task-123 "Validated: task-specific criteria met"
      wg log test-task-123 "Validated: cargo build + cargo test pass"
-     wg log test-task-123 "Validated: re-read description, all requirements addressed"
      ```
 
 4. **Check messages AGAIN and reply** (BEFORE marking done — this is a completion gate):
@@ -145,6 +146,18 @@ You are encouraged to create new tasks as you discover work. The coordinator wil
 - **Create a synthesis task**: After fan-out, add an integrator: `wg add 'Integrate results' --after part-a,part-b`
 - **Pipeline decomposition**: `wg add 'Step 1' --after test-task-123 && wg add 'Step 2' --after step-1`
 - **Bug/issue found**: `wg add 'Fix: ...' --after test-task-123 -d 'Found while working on test-task-123'`
+
+### Include validation criteria in subtasks
+Every code subtask description MUST include a `## Validation` section with concrete acceptance criteria. Use `--verify` to attach machine-checkable criteria:
+```bash
+wg add 'Implement auth endpoint' --after test-task-123 --verify 'cargo test test_auth_ passes; endpoint returns 401 for bad tokens' -d '## Description
+Add POST /auth/token endpoint.
+
+## Validation
+- [ ] Failing test written first: test_auth_rejects_expired_token
+- [ ] Implementation makes the test pass
+- [ ] cargo test passes with no regressions'
+```
 
 ### Guardrails
 - You can create up to **10** subtasks per session (configurable via `wg config`)

@@ -85,14 +85,31 @@ pub(crate) fn generate_dot(
         }
     }
 
+    // Collect truly dangling dependency targets (don't exist in the graph at all)
+    let mut dangling_targets: HashSet<String> = HashSet::new();
+    for task in tasks {
+        for after in &task.after {
+            if !task_ids.contains(after.as_str()) && graph.get_node(after).is_none() {
+                dangling_targets.insert(after.clone());
+            }
+        }
+    }
+
+    // Add phantom nodes for dangling dependencies
+    for target in &dangling_targets {
+        lines.push(format!(
+            "  \"{}\" [label=\"⚠ {} (missing)\", shape=none, fontcolor=red];",
+            target, target
+        ));
+    }
+
     lines.push(String::new());
 
     // Print edges
     for task in tasks {
         for after in &task.after {
-            // Only show edge if the blocker is also in our task set
             if task_ids.contains(after.as_str()) {
-                // Check if this edge is on critical path
+                // Normal edge — check if on critical path
                 let edge_style =
                     if critical_path.contains(&task.id) && critical_path.contains(after) {
                         "color=red, penwidth=2"
@@ -108,6 +125,12 @@ pub(crate) fn generate_dot(
                         after, task.id, edge_style
                     ));
                 }
+            } else if dangling_targets.contains(after) {
+                // Dangling edge — dashed red
+                lines.push(format!(
+                    "  \"{}\" -> \"{}\" [style=dashed, color=red];",
+                    after, task.id
+                ));
             }
         }
 
@@ -176,6 +199,24 @@ pub(crate) fn generate_mermaid(
         lines.push(node);
     }
 
+    // Collect truly dangling dependency targets (don't exist in the graph at all)
+    let mut dangling_targets: HashSet<String> = HashSet::new();
+    for task in tasks {
+        for after in &task.after {
+            if !task_ids.contains(after.as_str()) && _graph.get_node(after).is_none() {
+                dangling_targets.insert(after.clone());
+            }
+        }
+    }
+
+    // Add phantom nodes for dangling dependencies
+    for target in &dangling_targets {
+        lines.push(format!(
+            "  {}[\"⚠ {} (missing)\"]:::dangling",
+            target, target
+        ));
+    }
+
     lines.push(String::new());
 
     // Print edges
@@ -190,6 +231,9 @@ pub(crate) fn generate_mermaid(
                 };
 
                 lines.push(format!("  {} {} {}", after, arrow, task.id));
+            } else if dangling_targets.contains(after) {
+                // Dangling edge — dotted red
+                lines.push(format!("  {} -.-> {}", after, task.id));
             }
         }
     }
@@ -220,6 +264,12 @@ pub(crate) fn generate_mermaid(
             "  style {} stroke:#f00,stroke-width:3px",
             critical_nodes.join(",")
         ));
+    }
+
+    // Add styling for dangling nodes
+    if !dangling_targets.is_empty() {
+        lines.push(String::new());
+        lines.push("  classDef dangling fill:#fff,stroke:#f00,stroke-dasharray: 5 5,color:#f00".to_string());
     }
 
     lines.join("\n")
@@ -447,5 +497,72 @@ mod tests {
         assert!(!result.contains("assign-my-task"));
         assert!(result.contains("my-task"));
         assert!(result.contains("[assigning]"));
+    }
+
+    #[test]
+    fn test_dot_dangling_dependency_rendering() {
+        let mut graph = WorkGraph::new();
+        let mut t1 = make_task("t1", "Task 1");
+        t1.after = vec!["nonexistent-dep".to_string()];
+        graph.add_node(Node::Task(t1));
+
+        let tasks: Vec<_> = graph.tasks().collect();
+        let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
+        let critical_path = HashSet::new();
+        let no_annots = HashMap::new();
+
+        let dot = generate_dot(&graph, &tasks, &task_ids, &critical_path, &no_annots);
+
+        // Should have phantom node for the missing dep
+        assert!(dot.contains("nonexistent-dep"));
+        assert!(dot.contains("(missing)"));
+        assert!(dot.contains("fontcolor=red"));
+        // Should have dashed red edge
+        assert!(dot.contains("style=dashed, color=red"));
+    }
+
+    #[test]
+    fn test_mermaid_dangling_dependency_rendering() {
+        let mut graph = WorkGraph::new();
+        let mut t1 = make_task("t1", "Task 1");
+        t1.after = vec!["nonexistent-dep".to_string()];
+        graph.add_node(Node::Task(t1));
+
+        let tasks: Vec<_> = graph.tasks().collect();
+        let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
+        let critical_path = HashSet::new();
+        let no_annots = HashMap::new();
+
+        let mermaid = generate_mermaid(&graph, &tasks, &task_ids, &critical_path, &no_annots);
+
+        // Should have phantom node
+        assert!(mermaid.contains("nonexistent-dep"));
+        assert!(mermaid.contains("(missing)"));
+        assert!(mermaid.contains(":::dangling"));
+        // Should have dotted edge
+        assert!(mermaid.contains("-.->"));
+        // Should have dangling class definition
+        assert!(mermaid.contains("classDef dangling"));
+    }
+
+    #[test]
+    fn test_dot_no_dangling_when_dep_exists() {
+        let mut graph = WorkGraph::new();
+        let t1 = make_task("t1", "Task 1");
+        let mut t2 = make_task("t2", "Task 2");
+        t2.after = vec!["t1".to_string()];
+        graph.add_node(Node::Task(t1));
+        graph.add_node(Node::Task(t2));
+
+        let tasks: Vec<_> = graph.tasks().collect();
+        let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
+        let critical_path = HashSet::new();
+        let no_annots = HashMap::new();
+
+        let dot = generate_dot(&graph, &tasks, &task_ids, &critical_path, &no_annots);
+
+        // Should NOT have phantom node or dangling styling
+        assert!(!dot.contains("(missing)"));
+        assert!(!dot.contains("style=dashed, color=red"));
     }
 }

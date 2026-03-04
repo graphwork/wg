@@ -174,6 +174,47 @@ pub fn check_orphans(graph: &WorkGraph) -> Vec<OrphanRef> {
     orphans
 }
 
+/// Compute Levenshtein edit distance between two strings.
+fn levenshtein(a: &str, b: &str) -> usize {
+    let b_len = b.len();
+    let mut prev: Vec<usize> = (0..=b_len).collect();
+    let mut curr = vec![0; b_len + 1];
+
+    for (i, ca) in a.chars().enumerate() {
+        curr[0] = i + 1;
+        for (j, cb) in b.chars().enumerate() {
+            let cost = if ca == cb { 0 } else { 1 };
+            curr[j + 1] = (prev[j + 1] + 1)
+                .min(curr[j] + 1)
+                .min(prev[j] + cost);
+        }
+        std::mem::swap(&mut prev, &mut curr);
+    }
+
+    prev[b_len]
+}
+
+/// Find the closest matching task ID for an orphan reference using fuzzy matching.
+/// Returns Some((id, distance)) if a close match is found (distance <= max_distance).
+pub fn fuzzy_match_task_id<'a>(
+    orphan_target: &str,
+    task_ids: impl Iterator<Item = &'a str>,
+    max_distance: usize,
+) -> Option<(String, usize)> {
+    let mut best: Option<(String, usize)> = None;
+
+    for id in task_ids {
+        let dist = levenshtein(orphan_target, id);
+        if dist > 0 && dist <= max_distance {
+            if best.as_ref().is_none_or(|(_, d)| dist < *d) {
+                best = Some((id.to_string(), dist));
+            }
+        }
+    }
+
+    best
+}
+
 /// Run all checks and return a summary
 pub fn check_all(graph: &WorkGraph) -> CheckResult {
     let cycles = check_cycles(graph);
@@ -656,5 +697,69 @@ mod tests {
         assert!(!result.stuck_blocked.is_empty());
         // Stuck blocked should not make the graph invalid
         assert!(result.ok);
+    }
+
+    // --- Levenshtein / fuzzy match tests ---
+
+    #[test]
+    fn test_levenshtein_identical() {
+        assert_eq!(super::levenshtein("abc", "abc"), 0);
+    }
+
+    #[test]
+    fn test_levenshtein_one_edit() {
+        assert_eq!(super::levenshtein("setup-db", "setup-dB"), 1);
+        assert_eq!(super::levenshtein("abc", "ab"), 1);
+        assert_eq!(super::levenshtein("abc", "abcd"), 1);
+    }
+
+    #[test]
+    fn test_levenshtein_two_edits() {
+        // "kitten" -> "sitting": 3 edits (k->s, e->i, +g)
+        assert_eq!(super::levenshtein("abc", "axyz"), 3);
+        // "stream" -> "streem" is 1 edit (a->e)
+        assert_eq!(super::levenshtein("implement-stream", "implement-streem"), 1);
+    }
+
+    #[test]
+    fn test_levenshtein_empty() {
+        assert_eq!(super::levenshtein("", "abc"), 3);
+        assert_eq!(super::levenshtein("abc", ""), 3);
+        assert_eq!(super::levenshtein("", ""), 0);
+    }
+
+    #[test]
+    fn test_fuzzy_match_finds_close_match() {
+        let ids = vec!["setup-database", "deploy-service", "build-artifacts"];
+        let result = fuzzy_match_task_id("setup-databse", ids.iter().copied(), 3);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().0, "setup-database");
+    }
+
+    #[test]
+    fn test_fuzzy_match_no_close_match() {
+        let ids = vec!["setup-database", "deploy-service"];
+        let result = fuzzy_match_task_id("completely-different", ids.iter().copied(), 3);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_fuzzy_match_exact_match_excluded() {
+        // Exact match (distance 0) should not be suggested
+        let ids = vec!["setup-db"];
+        let result = fuzzy_match_task_id("setup-db", ids.iter().copied(), 3);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_fuzzy_match_picks_closest() {
+        let ids = vec!["ab", "abc", "abcd"];
+        let result = fuzzy_match_task_id("abx", ids.iter().copied(), 3);
+        assert!(result.is_some());
+        // "abc" is distance 1, "ab" is distance 1, "abcd" is distance 2
+        // Should pick one of the distance-1 matches
+        let (matched, dist) = result.unwrap();
+        assert_eq!(dist, 1);
+        assert!(matched == "abc" || matched == "ab");
     }
 }

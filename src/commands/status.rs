@@ -14,6 +14,7 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use std::path::Path;
+use workgraph::check::{check_orphans, OrphanRef};
 use workgraph::graph::Status;
 use workgraph::parser::load_graph;
 use workgraph::query::ready_tasks;
@@ -77,6 +78,14 @@ struct RecentActivityEntry {
     title: String,
 }
 
+/// A dangling dependency (task depends on a non-existent task)
+#[derive(Debug, Clone, serde::Serialize)]
+struct DanglingDep {
+    task_id: String,
+    missing_dep: String,
+    relation: String,
+}
+
 /// Full status output
 #[derive(Debug, Clone, serde::Serialize)]
 struct StatusOutput {
@@ -85,6 +94,8 @@ struct StatusOutput {
     agents: AgentSummaryInfo,
     tasks: TaskSummaryInfo,
     recent: Vec<RecentActivityEntry>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    dangling_deps: Vec<DanglingDep>,
 }
 
 pub fn run(dir: &Path, json: bool) -> Result<()> {
@@ -115,12 +126,16 @@ fn gather_status(dir: &Path) -> Result<StatusOutput> {
     // 5. Recent activity
     let recent = gather_recent_activity(dir)?;
 
+    // 6. Dangling dependencies
+    let dangling_deps = gather_dangling_deps(dir);
+
     Ok(StatusOutput {
         service,
         coordinator,
         agents,
         tasks,
         recent,
+        dangling_deps,
     })
 }
 
@@ -350,6 +365,31 @@ fn gather_recent_activity(dir: &Path) -> Result<Vec<RecentActivityEntry>> {
     Ok(recent)
 }
 
+fn gather_dangling_deps(dir: &Path) -> Vec<DanglingDep> {
+    let path = super::graph_path(dir);
+    if !path.exists() {
+        return Vec::new();
+    }
+
+    let graph = match load_graph(&path) {
+        Ok(g) => g,
+        Err(_) => return Vec::new(),
+    };
+
+    let orphans: Vec<OrphanRef> = check_orphans(&graph);
+
+    // Only surface "after" relation orphans — those are the ones that block tasks
+    orphans
+        .into_iter()
+        .filter(|o| o.relation == "after")
+        .map(|o| DanglingDep {
+            task_id: o.from,
+            missing_dep: o.to,
+            relation: o.relation,
+        })
+        .collect()
+}
+
 fn print_status(status: &StatusOutput) {
     // Line 1: Service status
     if status.service.running {
@@ -412,6 +452,22 @@ fn print_status(status: &StatusOutput) {
         status.tasks.done_total,
         status.tasks.done_today
     );
+
+    // Attention: dangling dependencies
+    if !status.dangling_deps.is_empty() {
+        println!();
+        println!(
+            "\x1b[33m⚠ Attention:\x1b[0m {} task(s) have unresolved dependencies:",
+            status.dangling_deps.len()
+        );
+        for dep in &status.dangling_deps {
+            println!(
+                "  {} → \x1b[31m{}\x1b[0m (missing)",
+                dep.task_id, dep.missing_dep
+            );
+        }
+        println!("  Run 'wg check' for details.");
+    }
 
     // Recent activity
     if !status.recent.is_empty() {
@@ -610,5 +666,70 @@ mod tests {
         };
         assert!(task_display.ends_with("..."));
         assert!(task_display.chars().count() <= 24);
+    }
+
+    #[test]
+    fn test_gather_dangling_deps_none() {
+        let temp_dir = TempDir::new().unwrap();
+        let path = temp_dir.path().join("graph.jsonl");
+
+        let mut graph = WorkGraph::new();
+        let t1 = make_task("t1", "Task 1");
+        let mut t2 = make_task("t2", "Task 2");
+        t2.after = vec!["t1".to_string()];
+        graph.add_node(Node::Task(t1));
+        graph.add_node(Node::Task(t2));
+        save_graph(&graph, &path).unwrap();
+
+        let dangling = gather_dangling_deps(temp_dir.path());
+        assert!(dangling.is_empty());
+    }
+
+    #[test]
+    fn test_gather_dangling_deps_found() {
+        let temp_dir = TempDir::new().unwrap();
+        let path = temp_dir.path().join("graph.jsonl");
+
+        let mut graph = WorkGraph::new();
+        let mut t1 = make_task("t1", "Task 1");
+        t1.after = vec!["nonexistent".to_string()];
+        graph.add_node(Node::Task(t1));
+        save_graph(&graph, &path).unwrap();
+
+        let dangling = gather_dangling_deps(temp_dir.path());
+        assert_eq!(dangling.len(), 1);
+        assert_eq!(dangling[0].task_id, "t1");
+        assert_eq!(dangling[0].missing_dep, "nonexistent");
+    }
+
+    #[test]
+    fn test_gather_dangling_deps_resolves_when_created() {
+        let temp_dir = TempDir::new().unwrap();
+        let path = temp_dir.path().join("graph.jsonl");
+
+        // First: create task with dangling dep
+        let mut graph = WorkGraph::new();
+        let mut t1 = make_task("t1", "Task 1");
+        t1.after = vec!["t2".to_string()];
+        graph.add_node(Node::Task(t1));
+        save_graph(&graph, &path).unwrap();
+
+        let dangling = gather_dangling_deps(temp_dir.path());
+        assert_eq!(dangling.len(), 1);
+
+        // Now create the missing task
+        graph.add_node(Node::Task(make_task("t2", "Task 2")));
+        save_graph(&graph, &path).unwrap();
+
+        let dangling = gather_dangling_deps(temp_dir.path());
+        assert!(dangling.is_empty(), "dangling dep should auto-resolve when target is created");
+    }
+
+    #[test]
+    fn test_gather_dangling_deps_no_graph() {
+        let temp_dir = TempDir::new().unwrap();
+        // No graph file at all
+        let dangling = gather_dangling_deps(temp_dir.path());
+        assert!(dangling.is_empty());
     }
 }

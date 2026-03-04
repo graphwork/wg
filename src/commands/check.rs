@@ -99,12 +99,36 @@ pub fn run(dir: &Path, json: bool) -> Result<()> {
 
     // Orphan references are errors
     if !result.orphan_refs.is_empty() {
-        eprintln!("Error: Orphan references:");
+        eprintln!("Error: Orphan references (dependencies on non-existent tasks):");
+        let all_task_ids: Vec<&str> = graph.tasks().map(|t| t.id.as_str()).collect();
         for orphan in &result.orphan_refs {
+            // Show time since task creation
+            let age_str = graph
+                .get_task(&orphan.from)
+                .and_then(|t| t.created_at.as_deref())
+                .and_then(|ts| ts.parse::<chrono::DateTime<chrono::Utc>>().ok())
+                .map(|created| {
+                    let elapsed = chrono::Utc::now().signed_duration_since(created);
+                    format!(
+                        " (task created {})",
+                        workgraph::format_duration(elapsed.num_seconds(), false)
+                    )
+                })
+                .unwrap_or_default();
+
             eprintln!(
-                "  {} --[{}]--> {} (not found)",
-                orphan.from, orphan.relation, orphan.to
+                "  {} --[{}]--> {} (not found){}",
+                orphan.from, orphan.relation, orphan.to, age_str
             );
+
+            // Fuzzy match suggestion
+            if let Some((suggestion, _dist)) = workgraph::check::fuzzy_match_task_id(
+                &orphan.to,
+                all_task_ids.iter().copied(),
+                3,
+            ) {
+                eprintln!("    → Did you mean '{}'?", suggestion);
+            }
         }
     }
 
