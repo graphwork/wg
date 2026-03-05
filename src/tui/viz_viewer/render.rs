@@ -1686,10 +1686,10 @@ fn draw_chat_input(frame: &mut Frame, app: &mut VizApp, area: Rect) {
         }
     } else {
         let hint_text = if app.chat.pending_attachments.is_empty() {
-            " c/Enter: type  \u{2191}\u{2193}: scroll".to_string()
+            " \u{2191}\u{2193}: scroll".to_string()
         } else {
             format!(
-                " c/Enter: type  \u{2191}\u{2193}: scroll  {} attached",
+                " \u{2191}\u{2193}: scroll  {} attached",
                 app.chat.pending_attachments.len()
             )
         };
@@ -3244,7 +3244,7 @@ fn draw_task_form(frame: &mut Frame, form: &TaskFormState) {
             };
             let marker = if is_selected { "▸ " } else { "  " };
             let display = if title.len() > 30 {
-                format!("{}{} ({}…)", marker, id, &title[..27])
+                format!("{}{} ({}…)", marker, id, &title[..title.floor_char_boundary(27)])
             } else {
                 format!("{}{} ({})", marker, id, title)
             };
@@ -3715,7 +3715,7 @@ fn draw_status_bar(frame: &mut Frame, app: &VizApp, area: Rect) {
         spans.push(Span::styled("| ", Style::default().fg(Color::DarkGray)));
         // Truncate long task IDs for status bar display
         let display_id = if task_id.len() > 24 {
-            format!("{}…", &task_id[..23])
+            format!("{}…", &task_id[..task_id.floor_char_boundary(23)])
         } else {
             task_id.to_string()
         };

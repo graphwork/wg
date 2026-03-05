@@ -4175,7 +4175,7 @@ impl VizApp {
                                                 let snippet =
                                                     trimmed.lines().last().unwrap_or(trimmed);
                                                 let snippet = if snippet.len() > 120 {
-                                                    format!("{}…", &snippet[..120])
+                                                    format!("{}…", &snippet[..snippet.floor_char_boundary(120)])
                                                 } else {
                                                     snippet.to_string()
                                                 };
@@ -4198,7 +4198,7 @@ impl VizApp {
                                                 .map(|c| {
                                                     let c = c.trim();
                                                     if c.len() > 80 {
-                                                        format!("{name}: {}…", &c[..80])
+                                                        format!("{name}: {}…", &c[..c.floor_char_boundary(80)])
                                                     } else {
                                                         format!("{name}: {c}")
                                                     }
@@ -4790,7 +4790,7 @@ impl VizApp {
         let mask_env = |var: &str| -> String {
             match std::env::var(var).ok().filter(|k| !k.is_empty()) {
                 Some(key) if key.len() > 8 => {
-                    format!("{}****...{}", &key[..3], &key[key.len() - 4..])
+                    format!("{}****...{}", &key[..key.floor_char_boundary(3)], &key[key.ceil_char_boundary(key.len() - 4)..])
                 }
                 Some(_) => "****".into(),
                 None => "(not set)".into(),

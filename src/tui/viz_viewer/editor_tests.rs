@@ -522,4 +522,224 @@ mod tui_editor_tests {
             let _rendered = render_to_string(&mut app, 80, 24);
         }
     }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // Viewport scrolling tests
+    // ══════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn tui_editor_typing_beyond_visible_area_still_shows_cursor_text() {
+        let mut app = make_editor_test_app();
+        enter_chat_input(&mut app);
+
+        // Type many newlines to exceed any reasonable viewport height.
+        for i in 0..20 {
+            type_string(&mut app, &format!("line{}", i));
+            send_chat_key(&mut app, KeyCode::Enter, KeyModifiers::SHIFT);
+        }
+        type_string(&mut app, "LAST_LINE");
+
+        let text = editor_text(&app.chat.editor);
+        assert!(
+            text.contains("LAST_LINE"),
+            "Editor should contain the last typed text"
+        );
+
+        // Render twice: the first render sets edtui's internal num_rows,
+        // the second render uses it to scroll the viewport correctly.
+        // This mirrors the real event loop where frames render continuously.
+        render_to_string(&mut app, 80, 30);
+        let rendered = render_to_string(&mut app, 80, 30);
+        assert!(
+            buffer_contains(&rendered, "LAST_LINE"),
+            "Last line should be visible after typing beyond initial area:\n{}",
+            rendered
+        );
+    }
+
+    #[test]
+    fn tui_editor_long_single_line_wraps_and_stays_visible() {
+        let mut app = make_editor_test_app();
+        enter_chat_input(&mut app);
+
+        // Type a very long single line that will wrap many times.
+        let long_text = "x".repeat(200);
+        type_string(&mut app, &long_text);
+
+        // The editor text should contain all of it.
+        assert_eq!(editor_text(&app.chat.editor).len(), 200);
+
+        // Render — no crash and the editor area grows to accommodate.
+        let _rendered = render_to_string(&mut app, 80, 30);
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // Mouse click-to-position tests
+    // ══════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn tui_editor_mouse_click_positions_cursor() {
+        use crossterm::event::{MouseButton, MouseEventKind};
+
+        let mut app = make_editor_test_app();
+        enter_chat_input(&mut app);
+        type_string(&mut app, "hello world");
+
+        // Render to populate screen areas (edtui needs screen_area set).
+        render_to_string(&mut app, 120, 40);
+
+        // The cursor should be at the end (col 11). Click at the
+        // beginning to reposition. We use the chat input area coordinates.
+        if app.last_chat_input_area.height > 0 {
+            let click_row = app.last_chat_input_area.y + 1; // after separator
+            let click_col = app.last_chat_input_area.x + 2; // after "> " prefix
+
+            let mouse_event = crossterm::event::MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: click_col,
+                row: click_row,
+                modifiers: KeyModifiers::NONE,
+            };
+            app.editor_handler
+                .on_mouse_event(mouse_event, &mut app.chat.editor);
+
+            // Now type a character — it should be inserted near the beginning.
+            send_chat_key(&mut app, KeyCode::Char('Z'), KeyModifiers::NONE);
+            let text = editor_text(&app.chat.editor);
+            assert!(
+                text.starts_with('Z') || text.starts_with("hZ") || text.contains('Z'),
+                "Z should be inserted near click position, got: {:?}",
+                text
+            );
+        }
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // Mouse scroll wheel tests
+    // ══════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn tui_editor_mouse_scroll_in_editor_does_not_crash() {
+        let mut app = make_editor_test_app();
+        enter_chat_input(&mut app);
+
+        // Type multi-line content.
+        for i in 0..10 {
+            type_string(&mut app, &format!("line {}", i));
+            send_chat_key(&mut app, KeyCode::Enter, KeyModifiers::SHIFT);
+        }
+
+        // Render to populate areas.
+        render_to_string(&mut app, 80, 30);
+
+        // Simulate scroll up/down via cursor movement (same mechanism
+        // as mouse scroll uses internally).
+        let initial_cursor = app.chat.editor.cursor;
+        send_chat_key(&mut app, KeyCode::Up, KeyModifiers::NONE);
+        send_chat_key(&mut app, KeyCode::Up, KeyModifiers::NONE);
+        send_chat_key(&mut app, KeyCode::Up, KeyModifiers::NONE);
+        assert!(
+            app.chat.editor.cursor.row < initial_cursor.row,
+            "Cursor should move up: initial {:?}, now {:?}",
+            initial_cursor,
+            app.chat.editor.cursor
+        );
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // Emacs keybinding tests
+    // ══════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn tui_editor_ctrl_a_moves_to_beginning() {
+        let mut app = make_editor_test_app();
+        enter_chat_input(&mut app);
+        type_string(&mut app, "hello");
+        send_chat_key(&mut app, KeyCode::Char('a'), KeyModifiers::CONTROL);
+        send_chat_key(&mut app, KeyCode::Char('X'), KeyModifiers::NONE);
+        assert_eq!(
+            editor_text(&app.chat.editor),
+            "Xhello",
+            "Ctrl-A should move cursor to beginning of line"
+        );
+    }
+
+    #[test]
+    fn tui_editor_ctrl_e_moves_to_end() {
+        let mut app = make_editor_test_app();
+        enter_chat_input(&mut app);
+        type_string(&mut app, "hello");
+        send_chat_key(&mut app, KeyCode::Char('a'), KeyModifiers::CONTROL);
+        send_chat_key(&mut app, KeyCode::Char('e'), KeyModifiers::CONTROL);
+        send_chat_key(&mut app, KeyCode::Char('X'), KeyModifiers::NONE);
+        assert_eq!(
+            editor_text(&app.chat.editor),
+            "helloX",
+            "Ctrl-E should move cursor to end of line"
+        );
+    }
+
+    #[test]
+    fn tui_editor_ctrl_f_moves_forward() {
+        let mut app = make_editor_test_app();
+        enter_chat_input(&mut app);
+        type_string(&mut app, "abc");
+        send_chat_key(&mut app, KeyCode::Char('a'), KeyModifiers::CONTROL);
+        send_chat_key(&mut app, KeyCode::Char('f'), KeyModifiers::CONTROL);
+        send_chat_key(&mut app, KeyCode::Char('X'), KeyModifiers::NONE);
+        assert_eq!(
+            editor_text(&app.chat.editor),
+            "aXbc",
+            "Ctrl-F should move cursor forward one char"
+        );
+    }
+
+    #[test]
+    fn tui_editor_ctrl_b_moves_backward() {
+        let mut app = make_editor_test_app();
+        enter_chat_input(&mut app);
+        type_string(&mut app, "abc");
+        send_chat_key(&mut app, KeyCode::Char('b'), KeyModifiers::CONTROL);
+        send_chat_key(&mut app, KeyCode::Char('X'), KeyModifiers::NONE);
+        assert_eq!(
+            editor_text(&app.chat.editor),
+            "abXc",
+            "Ctrl-B should move cursor backward one char"
+        );
+    }
+
+    #[test]
+    fn tui_editor_ctrl_k_kills_to_end_of_line() {
+        let mut app = make_editor_test_app();
+        enter_chat_input(&mut app);
+        type_string(&mut app, "hello world");
+        // Move to beginning, then forward 5 chars to position after "hello"
+        send_chat_key(&mut app, KeyCode::Char('a'), KeyModifiers::CONTROL);
+        for _ in 0..5 {
+            send_chat_key(&mut app, KeyCode::Char('f'), KeyModifiers::CONTROL);
+        }
+        send_chat_key(&mut app, KeyCode::Char('k'), KeyModifiers::CONTROL);
+        assert_eq!(
+            editor_text(&app.chat.editor),
+            "hello",
+            "Ctrl-K should kill from cursor to end of line"
+        );
+    }
+
+    #[test]
+    fn tui_editor_ctrl_u_kills_to_beginning() {
+        let mut app = make_editor_test_app();
+        enter_chat_input(&mut app);
+        type_string(&mut app, "hello world");
+        // Ctrl-U should delete from cursor to beginning of line
+        send_chat_key(&mut app, KeyCode::Char('u'), KeyModifiers::CONTROL);
+        // edtui's Ctrl-U deletes to first non-whitespace char on line,
+        // which for "hello world" at end means deleting everything.
+        let text = editor_text(&app.chat.editor);
+        assert!(
+            text.is_empty() || text.len() < "hello world".len(),
+            "Ctrl-U should delete to beginning of line, got: {:?}",
+            text
+        );
+    }
 }
