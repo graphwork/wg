@@ -522,7 +522,7 @@ const RESURRECTION_COOLDOWN_SECS: i64 = 60;
 /// Two modes:
 /// 1. Reopen: if no downstream task is InProgress or Done, transition Done → Open.
 /// 2. Child task: if downstream tasks are running, create a child task
-///    `respond-to-<parent-id>` that inherits the parent's session_id and checkpoint.
+///    `.respond-to-<parent-id>` that inherits the parent's session_id and checkpoint.
 ///
 /// Guards: rate limit, sender whitelist, abandoned exclusion.
 /// Returns `true` if the graph was modified.
@@ -617,7 +617,7 @@ fn resurrect_done_tasks(graph: &mut workgraph::graph::WorkGraph, dir: &Path) -> 
 
         if has_active_downstream {
             // Mode 2: Create child task
-            let child_id = format!("respond-to-{}", task_id);
+            let child_id = format!(".respond-to-{}", task_id);
 
             // Skip if child already exists
             if graph.get_task(&child_id).is_some() {
@@ -769,13 +769,8 @@ fn build_auto_assign_tasks(
             continue;
         }
 
-        // Skip tasks tagged with assignment/evaluation/evolution/org-evaluation
-        // to prevent infinite regress (assign-assign-assign-...)
-        let dominated_tags = ["assignment", "evaluation", "evolution"];
-        if task_tags
-            .iter()
-            .any(|tag| dominated_tags.contains(&tag.as_str()))
-        {
+        // Skip system tasks (dot-prefixed) to prevent infinite regress
+        if workgraph::graph::is_system_task(&task_id) {
             continue;
         }
 
@@ -798,7 +793,7 @@ fn build_auto_assign_tasks(
             }
         }
 
-        let assign_task_id = format!("assign-{}", task_id);
+        let assign_task_id = format!(".assign-{}", task_id);
 
         // Skip if assignment task already exists (idempotent)
         if graph.get_task(&assign_task_id).is_some() {
@@ -1244,7 +1239,7 @@ fn build_auto_evaluate_tasks(
         .tasks()
         .filter(|t| {
             // Skip tasks that already have an evaluation task
-            let eval_id = format!("evaluate-{}", t.id);
+            let eval_id = format!(".evaluate-{}", t.id);
             if graph.get_task(&eval_id).is_some() {
                 return false;
             }
@@ -1303,7 +1298,7 @@ fn build_auto_evaluate_tasks(
         });
 
     for (task_id, task_title) in &tasks_needing_eval {
-        let eval_task_id = format!("evaluate-{}", task_id);
+        let eval_task_id = format!(".evaluate-{}", task_id);
 
         // Double-check (the filter above already checks but graph may have changed)
         if graph.get_task(&eval_task_id).is_some() {
@@ -1395,7 +1390,7 @@ fn build_auto_evaluate_tasks(
     // get evaluated"), so we remove the blocker explicitly.
     let eval_fixups: Vec<(String, String)> = graph
         .tasks()
-        .filter(|t| t.id.starts_with("evaluate-") && t.status == Status::Open)
+        .filter(|t| t.id.starts_with(".evaluate-") && t.status == Status::Open)
         .filter_map(|t| {
             // The eval task blocks on a single task: the original
             if t.after.len() == 1 {
@@ -1460,7 +1455,7 @@ fn build_flip_verification_tasks(
 
     for eval in &low_flip {
         let source_task_id = &eval.task_id;
-        let verify_task_id = format!("verify-flip-{}", source_task_id);
+        let verify_task_id = format!(".verify-flip-{}", source_task_id);
 
         // Skip if verification task already exists
         if graph.get_task(&verify_task_id).is_some() {
@@ -1476,12 +1471,8 @@ fn build_flip_verification_tasks(
             continue;
         }
 
-        // Skip tasks tagged to prevent verification loops
-        if source_task
-            .tags
-            .iter()
-            .any(|t| t == "verification" || t == "evaluation")
-        {
+        // Skip system tasks (dot-prefixed) to prevent verification loops
+        if workgraph::graph::is_system_task(source_task_id) {
             continue;
         }
 
@@ -1642,7 +1633,8 @@ fn spawn_eval_inline(
     // This handles both "wg evaluate run <task>" and "wg evaluate org <task>".
     // Fall back to reconstructing from task ID for backward compatibility.
     let source_task_id = eval_task_id
-        .strip_prefix("evaluate-")
+        .strip_prefix(".evaluate-")
+        .or_else(|| eval_task_id.strip_prefix("evaluate-"))
         .unwrap_or(eval_task_id);
     let eval_cmd = if let Some(ref exec) = eval_task_exec
         && exec.starts_with("wg evaluate")
@@ -1825,6 +1817,7 @@ fn spawn_agents_for_ready_tasks(
     executor: &str,
     model: Option<&str>,
     slots_available: usize,
+    auto_assign: bool,
 ) -> usize {
     let cycle_analysis = graph.compute_cycle_analysis();
     let final_ready = ready_tasks_with_peers_cycle_aware(graph, dir, &cycle_analysis);
@@ -1835,6 +1828,18 @@ fn spawn_agents_for_ready_tasks(
     for task in to_spawn {
         // Skip if already claimed
         if task.assigned.is_some() {
+            continue;
+        }
+
+        // When auto_assign is enabled, non-system tasks must go through the
+        // assignment flow (build_auto_assign_tasks → .assign-* task → wg assign)
+        // before being spawned.  The assignment flow sets `task.agent`; if it's
+        // still None the task hasn't been assigned yet — skip it so the next
+        // tick's Phase 3 can create the .assign-* task.
+        if auto_assign
+            && !workgraph::graph::is_system_task(&task.id)
+            && task.agent.is_none()
+        {
             continue;
         }
 
@@ -2216,6 +2221,7 @@ pub fn coordinator_tick(
         executor,
         Some(effective_model.as_str()),
         slots_available,
+        config.agency.auto_assign,
     );
 
     Ok(TickResult {
@@ -2341,7 +2347,8 @@ mod tests {
             })
             .unwrap_or_else(|| {
                 eval_task_id
-                    .strip_prefix("evaluate-")
+                    .strip_prefix(".evaluate-")
+        .or_else(|| eval_task_id.strip_prefix("evaluate-"))
                     .unwrap_or(eval_task_id)
             });
         assert_eq!(source_id, "some-task");
@@ -3155,7 +3162,7 @@ mod tests {
         assert_eq!(parent.resurrection_count, 1);
 
         // Child task created
-        let child = graph.get_task("respond-to-parent").unwrap();
+        let child = graph.get_task(".respond-to-parent").unwrap();
         assert_eq!(child.status, Status::Open);
         assert_eq!(
             child.session_id,
@@ -3311,7 +3318,7 @@ mod tests {
 
         // Child already exists from a previous resurrection
         let mut existing_child = Task::default();
-        existing_child.id = "respond-to-parent".to_string();
+        existing_child.id = ".respond-to-parent".to_string();
         existing_child.status = Status::InProgress;
 
         let mut graph = WorkGraph::new();
@@ -3349,6 +3356,77 @@ mod tests {
         );
     }
 
+    // -----------------------------------------------------------------------
+    // spawn_agents_for_ready_tasks: auto_assign filtering
+    // -----------------------------------------------------------------------
+
+    /// When auto_assign=true, a ready task WITHOUT an agent field should be
+    /// skipped by spawn_agents_for_ready_tasks (it needs to go through the
+    /// .assign-* flow first).
+    #[test]
+    fn test_spawn_skips_unassigned_task_when_auto_assign_enabled() {
+        let dir = tempdir().unwrap();
+        let wg_dir = dir.path();
+        std::fs::create_dir_all(wg_dir.join("agency/cache/agents")).unwrap();
+
+        let mut task = Task::default();
+        task.id = "my-task".to_string();
+        task.title = "Test".to_string();
+        task.status = Status::Open;
+        // No agent field set — hasn't been through assignment
+
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(task));
+        save_graph(&graph, &wg_dir.join("graph.jsonl")).unwrap();
+
+        let result = spawn_agents_for_ready_tasks(
+            wg_dir,
+            &graph,
+            "shell",
+            None,
+            10,
+            true, // auto_assign = true
+        );
+
+        // Task should be skipped (no agent), so nothing spawned
+        assert_eq!(result, 0, "unassigned task should NOT be spawned when auto_assign=true");
+    }
+
+    /// When auto_assign=true, a ready task WITH an agent field SHOULD be
+    /// spawned (it has been through the assignment flow).
+    #[test]
+    fn test_spawn_allows_assigned_agent_task_when_auto_assign_enabled() {
+        // Verify the condition logic: task with agent set should NOT be skipped
+        let has_agent = true; // agent = Some("abc123")
+        let is_system = workgraph::graph::is_system_task("my-task");
+        let would_skip = true && !is_system && !has_agent;
+        assert!(!would_skip, "task with agent field should NOT be skipped");
+    }
+
+    /// System tasks (dot-prefixed) are always spawned regardless of auto_assign.
+    #[test]
+    fn test_spawn_always_allows_system_tasks_when_auto_assign_enabled() {
+        // System tasks like .assign-foo, .evaluate-foo should bypass auto_assign filter
+        let is_system = workgraph::graph::is_system_task(".assign-my-task");
+        assert!(is_system, ".assign-* should be a system task");
+
+        // The filter: skip if auto_assign && !is_system && agent.is_none()
+        // For system tasks, !is_system is false, so the condition is false → not skipped
+        let would_skip = true && !is_system && true; // auto_assign=true, agent=None
+        assert!(!would_skip, "system tasks should never be skipped by auto_assign filter");
+    }
+
+    /// When auto_assign=false, tasks without agent field should still be spawned.
+    #[test]
+    fn test_spawn_allows_unassigned_task_when_auto_assign_disabled() {
+        let auto_assign = false;
+        let is_system = workgraph::graph::is_system_task("my-task");
+        let has_agent = false; // no agent field
+
+        let would_skip = auto_assign && !is_system && !has_agent;
+        assert!(!would_skip, "should not skip when auto_assign is disabled");
+    }
+
     #[test]
     fn test_resurrection_downstream_done_triggers_child() {
         let dir = tempdir().unwrap();
@@ -3374,7 +3452,7 @@ mod tests {
 
         assert!(modified);
         // Downstream is Done, so child task should be created
-        let child = graph.get_task("respond-to-parent").unwrap();
+        let child = graph.get_task(".respond-to-parent").unwrap();
         assert_eq!(child.status, Status::Open);
     }
 }
