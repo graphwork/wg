@@ -3188,7 +3188,7 @@ fn test_deep_first_iteration_ordering_b_waits_for_a() {
     let tmp = TempDir::new().unwrap();
     let wg_dir = setup_workgraph(&tmp, vec![]);
 
-    wg_ok(&wg_dir, &["add", "Task A", "--id", "a"]);
+    wg_ok(&wg_dir, &["add", "Task A", "--id", "a", "--immediate"]);
     wg_ok(
         &wg_dir,
         &[
@@ -3200,6 +3200,7 @@ fn test_deep_first_iteration_ordering_b_waits_for_a() {
             "a",
             "--max-iterations",
             "3",
+            "--immediate",
         ],
     );
 
@@ -3311,7 +3312,7 @@ fn test_deep_reiteration_ordering_e2e() {
     let tmp = TempDir::new().unwrap();
     let wg_dir = setup_workgraph(&tmp, vec![]);
 
-    wg_ok(&wg_dir, &["add", "Task A", "--id", "a"]);
+    wg_ok(&wg_dir, &["add", "Task A", "--id", "a", "--immediate"]);
     wg_ok(
         &wg_dir,
         &[
@@ -3323,6 +3324,7 @@ fn test_deep_reiteration_ordering_e2e() {
             "a",
             "--max-iterations",
             "3",
+            "--immediate",
         ],
     );
 
@@ -3381,8 +3383,8 @@ fn test_deep_three_task_cycle_reopen_and_ordering() {
     let wg_dir = setup_workgraph(&tmp, vec![]);
 
     // Create pipeline: A → B → C
-    wg_ok(&wg_dir, &["add", "Task A", "--id", "a"]);
-    wg_ok(&wg_dir, &["add", "Task B", "--id", "b", "--after", "a"]);
+    wg_ok(&wg_dir, &["add", "Task A", "--id", "a", "--immediate"]);
+    wg_ok(&wg_dir, &["add", "Task B", "--id", "b", "--after", "a", "--immediate"]);
     wg_ok(
         &wg_dir,
         &[
@@ -3394,6 +3396,7 @@ fn test_deep_three_task_cycle_reopen_and_ordering() {
             "b",
             "--max-iterations",
             "2",
+            "--immediate",
         ],
     );
 
@@ -3533,10 +3536,10 @@ fn test_deep_mixed_deps_setup_included_behavior() {
     let tmp = TempDir::new().unwrap();
     let wg_dir = setup_workgraph(&tmp, vec![]);
 
-    wg_ok(&wg_dir, &["add", "Setup", "--id", "setup"]);
+    wg_ok(&wg_dir, &["add", "Setup", "--id", "setup", "--immediate"]);
     wg_ok(
         &wg_dir,
-        &["add", "Implement", "--id", "impl", "--after", "setup"],
+        &["add", "Implement", "--id", "impl", "--after", "setup", "--immediate"],
     );
     wg_ok(
         &wg_dir,
@@ -3549,6 +3552,7 @@ fn test_deep_mixed_deps_setup_included_behavior() {
             "impl",
             "--max-iterations",
             "3",
+            "--immediate",
         ],
     );
 

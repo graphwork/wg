@@ -280,7 +280,7 @@ fn full_lifecycle_produces_ordered_operations() {
     fs::write(wg_dir.join("graph.jsonl"), "").unwrap();
 
     // add -> claim -> pause -> resume -> done
-    wg_ok(&wg_dir, &["add", "Lifecycle task", "--id", "lifecycle"]);
+    wg_ok(&wg_dir, &["add", "Lifecycle task", "--id", "lifecycle", "--immediate"]);
     wg_ok(&wg_dir, &["claim", "lifecycle", "--actor", "agent-1"]);
     wg_ok(&wg_dir, &["pause", "lifecycle"]);
     wg_ok(&wg_dir, &["resume", "lifecycle"]);
@@ -310,7 +310,7 @@ fn fail_retry_done_lifecycle() {
     fs::write(wg_dir.join("graph.jsonl"), "").unwrap();
 
     // add -> claim -> fail -> retry -> claim -> done
-    wg_ok(&wg_dir, &["add", "Retry task", "--id", "retry-task"]);
+    wg_ok(&wg_dir, &["add", "Retry task", "--id", "retry-task", "--immediate"]);
     wg_ok(&wg_dir, &["claim", "retry-task"]);
     wg_ok(&wg_dir, &["fail", "retry-task", "--reason", "oops"]);
     wg_ok(&wg_dir, &["retry", "retry-task"]);
@@ -709,9 +709,9 @@ fn coherency_after_full_lifecycle() {
     fs::write(wg_dir.join("graph.jsonl"), "").unwrap();
 
     // Perform a series of operations
-    wg_ok(&wg_dir, &["add", "Task A", "--id", "task-a"]);
-    wg_ok(&wg_dir, &["add", "Task B", "--id", "task-b"]);
-    wg_ok(&wg_dir, &["add", "Task C", "--id", "task-c"]);
+    wg_ok(&wg_dir, &["add", "Task A", "--id", "task-a", "--immediate"]);
+    wg_ok(&wg_dir, &["add", "Task B", "--id", "task-b", "--immediate"]);
+    wg_ok(&wg_dir, &["add", "Task C", "--id", "task-c", "--immediate"]);
 
     // Complete A
     wg_ok(&wg_dir, &["done", "task-a"]);
@@ -792,9 +792,9 @@ fn coherency_after_archive_and_gc() {
     fs::write(wg_dir.join("graph.jsonl"), "").unwrap();
 
     // Add tasks, complete one, abandon another
-    wg_ok(&wg_dir, &["add", "Done task", "--id", "done-task"]);
-    wg_ok(&wg_dir, &["add", "Abandon task", "--id", "abandon-task"]);
-    wg_ok(&wg_dir, &["add", "Keep task", "--id", "keep-task"]);
+    wg_ok(&wg_dir, &["add", "Done task", "--id", "done-task", "--immediate"]);
+    wg_ok(&wg_dir, &["add", "Abandon task", "--id", "abandon-task", "--immediate"]);
+    wg_ok(&wg_dir, &["add", "Keep task", "--id", "keep-task", "--immediate"]);
 
     wg_ok(&wg_dir, &["done", "done-task"]);
     wg_ok(&wg_dir, &["abandon", "abandon-task"]);
@@ -840,7 +840,7 @@ fn wg_log_operations_shows_entries() {
     fs::create_dir_all(&wg_dir).unwrap();
     fs::write(wg_dir.join("graph.jsonl"), "").unwrap();
 
-    wg_ok(&wg_dir, &["add", "Test task", "--id", "t1"]);
+    wg_ok(&wg_dir, &["add", "Test task", "--id", "t1", "--immediate"]);
     wg_ok(&wg_dir, &["done", "t1"]);
 
     let output = wg_ok(&wg_dir, &["log", "--operations"]);
@@ -858,7 +858,7 @@ fn wg_log_operations_json() {
     fs::create_dir_all(&wg_dir).unwrap();
     fs::write(wg_dir.join("graph.jsonl"), "").unwrap();
 
-    wg_ok(&wg_dir, &["add", "Test task", "--id", "t1"]);
+    wg_ok(&wg_dir, &["add", "Test task", "--id", "t1", "--immediate"]);
 
     let output = wg_ok(&wg_dir, &["log", "--operations", "--json"]);
     let parsed: Vec<serde_json::Value> = serde_json::from_str(&output)
@@ -906,8 +906,8 @@ fn multiple_tasks_archive_produces_multiple_entries() {
     fs::create_dir_all(&wg_dir).unwrap();
     fs::write(wg_dir.join("graph.jsonl"), "").unwrap();
 
-    wg_ok(&wg_dir, &["add", "Done A", "--id", "done-a"]);
-    wg_ok(&wg_dir, &["add", "Done B", "--id", "done-b"]);
+    wg_ok(&wg_dir, &["add", "Done A", "--id", "done-a", "--immediate"]);
+    wg_ok(&wg_dir, &["add", "Done B", "--id", "done-b", "--immediate"]);
     wg_ok(&wg_dir, &["done", "done-a"]);
     wg_ok(&wg_dir, &["done", "done-b"]);
     wg_ok(&wg_dir, &["archive"]);

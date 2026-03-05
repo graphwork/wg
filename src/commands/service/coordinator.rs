@@ -2446,7 +2446,7 @@ mod tests {
         // Error should be about the LLM call, not about threshold logic
         let err_msg = result.unwrap_err().to_string();
         assert!(
-            err_msg.contains("checkpoint summary")
+            err_msg.to_lowercase().contains("checkpoint summary")
                 || err_msg.contains("claude")
                 || err_msg.contains("Claude")
                 || err_msg.contains("No such file"),

@@ -97,7 +97,7 @@ fn smoke_test_full_lifecycle() {
     );
 
     // ── 3. wg add 'Test task' --context-scope task ──────────────────────
-    let output = wg_ok(&wg_dir, &["add", "Test task", "--context-scope", "task"]);
+    let output = wg_ok(&wg_dir, &["add", "Test task", "--context-scope", "task", "--immediate"]);
     assert!(
         output.contains("test-task") || output.contains("Test task"),
         "add should echo the task, got: {}",
@@ -245,12 +245,12 @@ fn smoke_test_dependency_chain() {
     wg_ok(&wg_dir, &["init"]);
 
     // Create parent task
-    wg_ok(&wg_dir, &["add", "Parent task", "--id", "parent"]);
+    wg_ok(&wg_dir, &["add", "Parent task", "--id", "parent", "--immediate"]);
 
     // Create child task that depends on parent
     wg_ok(
         &wg_dir,
-        &["add", "Child task", "--id", "child", "--after", "parent"],
+        &["add", "Child task", "--id", "child", "--after", "parent", "--immediate"],
     );
 
     // Child should not be in ready list
@@ -296,7 +296,7 @@ fn smoke_test_fail_retry_lifecycle() {
     let wg_dir = tmp.path().join(".workgraph");
 
     wg_ok(&wg_dir, &["init"]);
-    wg_ok(&wg_dir, &["add", "Flaky task", "--id", "flaky"]);
+    wg_ok(&wg_dir, &["add", "Flaky task", "--id", "flaky", "--immediate"]);
 
     // Claim and fail
     wg_ok(&wg_dir, &["claim", "flaky"]);

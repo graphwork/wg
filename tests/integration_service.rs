@@ -123,7 +123,7 @@ fn socket_path_for(tmp_root: &Path) -> String {
 /// Helper: add a task with a shell exec command.
 fn add_shell_task(wg_dir: &Path, task_id: &str, title: &str, exec_cmd: &str) {
     // wg add doesn't support --exec directly, so we add the task then patch the JSONL
-    wg_ok(wg_dir, &["add", title, "--id", task_id]);
+    wg_ok(wg_dir, &["add", title, "--id", task_id, "--immediate"]);
 
     // Patch the graph to add exec field
     let graph_path = wg_dir.join("graph.jsonl");

@@ -204,7 +204,7 @@ fn add_not_before_past_timestamp_immediately_ready() {
     let past = (Utc::now() - Duration::hours(1)).to_rfc3339();
     wg_ok(
         &wg_dir,
-        &["add", "Past scheduled", "--id", "p1", "--not-before", &past],
+        &["add", "Past scheduled", "--id", "p1", "--not-before", &past, "--immediate"],
     );
 
     let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
@@ -776,11 +776,11 @@ fn ready_command_excludes_delayed_task() {
     let wg_dir = setup_workgraph(&tmp, vec![]);
 
     // Add a normal ready task
-    wg_ok(&wg_dir, &["add", "Normal task", "--id", "n1"]);
+    wg_ok(&wg_dir, &["add", "Normal task", "--id", "n1", "--immediate"]);
     // Add a delayed task
     wg_ok(
         &wg_dir,
-        &["add", "Delayed task", "--id", "d1", "--delay", "3600s"],
+        &["add", "Delayed task", "--id", "d1", "--delay", "3600s", "--immediate"],
     );
 
     let output = wg_ok(&wg_dir, &["ready"]);
@@ -803,10 +803,10 @@ fn ready_command_json_shows_not_ready() {
     let tmp = TempDir::new().unwrap();
     let wg_dir = setup_workgraph(&tmp, vec![]);
 
-    wg_ok(&wg_dir, &["add", "Normal", "--id", "n1"]);
+    wg_ok(&wg_dir, &["add", "Normal", "--id", "n1", "--immediate"]);
     wg_ok(
         &wg_dir,
-        &["add", "Delayed", "--id", "d1", "--delay", "3600s"],
+        &["add", "Delayed", "--id", "d1", "--delay", "3600s", "--immediate"],
     );
 
     // Note: wg ready --json currently only shows ready_after-delayed tasks, not not_before-delayed
