@@ -152,6 +152,11 @@ fn handle_paste(app: &mut VizApp, text: &str) {
             // Insert pasted text at cursor position, preserving newlines.
             app.editor_handler
                 .on_paste_event(text.to_string(), &mut app.chat.editor);
+            // Compensate for edtui's vim-style paste cursor placement.
+            // In Insert mode, cursor should be AFTER the last pasted char.
+            if !text.ends_with('\n') {
+                app.chat.editor.cursor.col += 1;
+            }
         }
         InputMode::Search => {
             // Strip newlines for search — it's single-line.
@@ -162,6 +167,9 @@ fn handle_paste(app: &mut VizApp, text: &str) {
         InputMode::TextPrompt(_action) => {
             app.editor_handler
                 .on_paste_event(text.to_string(), &mut app.text_prompt.editor);
+            if !text.ends_with('\n') {
+                app.text_prompt.editor.cursor.col += 1;
+            }
         }
         InputMode::TaskForm => {
             if let Some(form) = app.task_form.as_mut() {
@@ -192,6 +200,9 @@ fn handle_paste(app: &mut VizApp, text: &str) {
             // Insert pasted text at cursor position, preserving newlines (like chat).
             app.editor_handler
                 .on_paste_event(text.to_string(), &mut app.messages_panel.editor);
+            if !text.ends_with('\n') {
+                app.messages_panel.editor.cursor.col += 1;
+            }
         }
         InputMode::ConfigEdit => {
             let clean: String = text.chars().filter(|c| *c != '\n' && *c != '\r').collect();
