@@ -131,6 +131,8 @@ pub enum AnimationKind {
     EdgeChange,
     /// A previously hidden task was revealed (e.g. toggling system task visibility).
     Revealed,
+    /// A task is fading out because it was hidden by a filter change.
+    FadeOut,
 }
 
 /// A single active flash-and-fade animation on a task.
@@ -218,6 +220,7 @@ fn flash_color_for_kind(kind: AnimationKind) -> (u8, u8, u8) {
         AnimationKind::Assignment => (200, 120, 220), // magenta
         AnimationKind::EdgeChange => (100, 180, 200), // teal
         AnimationKind::Revealed => (120, 120, 140),  // soft gray-blue
+        AnimationKind::FadeOut => (120, 120, 140),   // soft gray-blue (same as Revealed)
     }
 }
 
@@ -1408,6 +1411,12 @@ pub struct VizApp {
     /// Active flash-and-fade animations keyed by task ID.
     /// Each task can have at most one active animation; newer changes replace older ones.
     pub splash_animations: HashMap<String, Animation>,
+    /// Lines for tasks that are fading out (filtered but still animating).
+    /// Maps task_id → (ansi_line, plain_line) so ghost lines can be spliced
+    /// back into the rendered output until the fade-out animation completes.
+    pub fading_out_lines: HashMap<String, (String, String)>,
+    /// When to force-refresh to clean up expired fade-out ghost lines.
+    next_fade_cleanup: Option<Instant>,
     /// Previous per-task snapshots for change detection.
     /// Populated on each refresh; compared to current state to detect changes.
     pub task_snapshots: HashMap<String, TaskSnapshot>,
@@ -1592,6 +1601,8 @@ impl VizApp {
             smart_follow_active: true,
             initial_load: true,
             splash_animations: HashMap::new(),
+            fading_out_lines: HashMap::new(),
+            next_fade_cleanup: None,
             task_snapshots: HashMap::new(),
             animation_mode,
             message_name_threshold: config.tui.message_name_threshold,
@@ -1638,6 +1649,18 @@ impl VizApp {
 
         match self.generate_viz() {
             Ok(viz_output) => {
+                // Save old task line data before overwriting — needed to populate
+                // fading_out_lines for tasks that disappear due to filter changes.
+                let old_task_lines: HashMap<String, (String, String)> = self
+                    .node_line_map
+                    .iter()
+                    .filter_map(|(id, &line_idx)| {
+                        let ansi = self.lines.get(line_idx)?;
+                        let plain = self.plain_lines.get(line_idx)?;
+                        Some((id.clone(), (ansi.clone(), plain.clone())))
+                    })
+                    .collect();
+
                 self.lines = viz_output
                     .text
                     .lines()
@@ -1674,12 +1697,82 @@ impl VizApp {
                 self.char_edge_map = viz_output.char_edge_map;
                 self.cycle_members = viz_output.cycle_members;
 
-                // Detect newly appeared tasks and register splash animations.
+                // Detect newly appeared/disappeared tasks and register animations.
                 // Skip on initial load (old_task_order is empty).
                 if !old_task_order.is_empty() && self.animation_mode.is_enabled() {
                     let old_set: HashSet<&str> =
                         old_task_order.iter().map(|s| s.as_str()).collect();
+                    let new_set: HashSet<&str> =
+                        self.task_order.iter().map(|s| s.as_str()).collect();
                     let now = Instant::now();
+
+                    // ── Fade-out: detect tasks leaving the view ──
+                    // First, clean up expired fade-out entries from prior cycles.
+                    let duration = self.animation_mode.speed().duration_secs();
+                    let cutoff = std::time::Duration::from_secs_f64(duration);
+                    self.fading_out_lines.retain(|id, _| {
+                        self.splash_animations
+                            .get(id)
+                            .map(|a| {
+                                a.start.elapsed() < cutoff
+                                    && matches!(a.kind, AnimationKind::FadeOut)
+                            })
+                            .unwrap_or(false)
+                    });
+
+                    // Register fade-out for tasks that just disappeared due to
+                    // filter toggle (e.g. system task visibility).
+                    if self.system_tasks_just_toggled {
+                        for id in &old_task_order {
+                            if !new_set.contains(id.as_str())
+                                && !self.fading_out_lines.contains_key(id)
+                            {
+                                if let Some(line_data) = old_task_lines.get(id) {
+                                    self.fading_out_lines
+                                        .insert(id.clone(), line_data.clone());
+                                    self.splash_animations.insert(
+                                        id.clone(),
+                                        Animation {
+                                            start: now,
+                                            flash_color: flash_color_for_kind(
+                                                AnimationKind::FadeOut,
+                                            ),
+                                            kind: AnimationKind::FadeOut,
+                                        },
+                                    );
+                                }
+                            }
+                        }
+                    }
+
+                    // Detect tasks that reappeared while fading out — cancel
+                    // fade-out and start a gentle reveal animation instead.
+                    for id in &self.task_order {
+                        if self.fading_out_lines.remove(id).is_some() {
+                            self.splash_animations.insert(
+                                id.clone(),
+                                Animation {
+                                    start: now,
+                                    flash_color: flash_color_for_kind(AnimationKind::Revealed),
+                                    kind: AnimationKind::Revealed,
+                                },
+                            );
+                        }
+                    }
+
+                    // Schedule a force-refresh to clean up ghost lines after
+                    // fade-out animations expire.
+                    if !self.fading_out_lines.is_empty() {
+                        self.next_fade_cleanup = Some(
+                            now + std::time::Duration::from_secs_f64(duration + 0.1),
+                        );
+                    }
+
+                    // Splice fading-out ghost lines back into the line arrays
+                    // so they remain visible during the fade animation.
+                    self.splice_fading_lines(&old_task_order);
+
+                    // ── Fade-in: detect tasks entering the view ──
                     // If system task visibility was just toggled, newly visible
                     // tasks get a gentle "revealed" animation instead of the
                     // bright "new task" flash.
@@ -2086,6 +2179,102 @@ impl VizApp {
             .map(|s| s.as_str())
     }
 
+    /// Splice fading-out ghost lines back into `self.lines` / `self.plain_lines`
+    /// / `self.search_lines` so they remain visible during the fade animation.
+    ///
+    /// Each fading task's line is inserted at a position that approximates its
+    /// old location: right after the nearest preceding surviving task, preserving
+    /// the original relative ordering.
+    fn splice_fading_lines(&mut self, old_task_order: &[String]) {
+        if self.fading_out_lines.is_empty() {
+            return;
+        }
+
+        // Build (insert_pos_in_original_coords, task_id, ansi, plain).
+        let mut insertions: Vec<(usize, String, String, String)> = Vec::new();
+
+        for (fading_id, (ansi, plain)) in &self.fading_out_lines {
+            // Find fading task's position in old task order.
+            let old_pos = old_task_order
+                .iter()
+                .position(|id| id == fading_id)
+                .unwrap_or(0);
+
+            // Walk backward to find the nearest preceding task still in the
+            // new output; insert right after its line.
+            let mut insert_pos = 0usize;
+            for i in (0..old_pos).rev() {
+                if let Some(&line) = self.node_line_map.get(&old_task_order[i]) {
+                    insert_pos = line + 1;
+                    break;
+                }
+            }
+
+            insertions.push((insert_pos, fading_id.clone(), ansi.clone(), plain.clone()));
+        }
+
+        if insertions.is_empty() {
+            return;
+        }
+
+        // Sort ascending by insert position, breaking ties by old-order position
+        // so same-anchor tasks keep their original relative order.
+        insertions.sort_by(|a, b| {
+            a.0.cmp(&b.0).then_with(|| {
+                let a_old = old_task_order
+                    .iter()
+                    .position(|id| id == &a.1)
+                    .unwrap_or(usize::MAX);
+                let b_old = old_task_order
+                    .iter()
+                    .position(|id| id == &b.1)
+                    .unwrap_or(usize::MAX);
+                a_old.cmp(&b_old)
+            })
+        });
+
+        let insert_positions: Vec<usize> = insertions.iter().map(|i| i.0).collect();
+
+        // Shift node_line_map: for each original line index, its new index is
+        // orig + count(insertion positions <= orig).
+        for (_, line_idx) in self.node_line_map.iter_mut() {
+            let shift = insert_positions.iter().filter(|&&p| p <= *line_idx).count();
+            *line_idx += shift;
+        }
+
+        // Shift char_edge_map line keys by the same rule.
+        let new_edge_map: HashMap<_, _> = self
+            .char_edge_map
+            .drain()
+            .map(|((line, col), edges)| {
+                let shift = insert_positions.iter().filter(|&&p| p <= line).count();
+                ((line + shift, col), edges)
+            })
+            .collect();
+        self.char_edge_map = new_edge_map;
+
+        // Insert lines from back to front so each insertion goes at its stated
+        // original position without needing adjustment for prior inserts.
+        for (pos, _task_id, ansi, plain) in insertions.iter().rev() {
+            let at = (*pos).min(self.lines.len());
+            let search = sanitize_for_search(plain);
+            self.lines.insert(at, ansi.clone());
+            self.plain_lines.insert(at, plain.clone());
+            self.search_lines.insert(at, search);
+        }
+
+        // Record each fading task's final position in node_line_map.
+        for (idx, (pos, task_id, _, _)) in insertions.iter().enumerate() {
+            // Final position = original pos + number of earlier insertions at
+            // positions <= this one (they all shift this entry forward).
+            let prior = insertions[..idx].iter().filter(|i| i.0 <= *pos).count();
+            self.node_line_map.insert(task_id.clone(), pos + prior);
+        }
+
+        // Refresh derived values after splicing.
+        self.max_line_width = self.plain_lines.iter().map(|l| l.len()).max().unwrap_or(0);
+    }
+
     /// Check for a new-task focus marker file and, if present, select that task.
     /// Returns true if selection was overridden to a newly created task.
     fn check_new_task_focus(&mut self) -> bool {
@@ -2158,11 +2347,18 @@ impl VizApp {
     }
 
     /// Remove expired splash animations.
+    /// FadeOut animations are kept alive until their ghost lines are cleaned up
+    /// in `load_viz()`, so they continue to render as invisible rather than
+    /// snapping back to full opacity.
     pub fn cleanup_splash_animations(&mut self) {
         let duration = self.animation_mode.speed().duration_secs();
         let cutoff = std::time::Duration::from_secs_f64(duration);
-        self.splash_animations
-            .retain(|_, anim| anim.start.elapsed() < cutoff);
+        self.splash_animations.retain(|_, anim| {
+            if matches!(anim.kind, AnimationKind::FadeOut) {
+                return true; // cleaned up in load_viz along with ghost lines
+            }
+            anim.start.elapsed() < cutoff
+        });
     }
 
     /// Enforce the maximum animation count by dropping oldest animations.
@@ -2170,15 +2366,18 @@ impl VizApp {
         if self.splash_animations.len() <= MAX_ANIMATIONS {
             return;
         }
-        // Collect (id, start_time) and sort by start time ascending (oldest first).
+        // Collect non-FadeOut entries (id, start_time), sorted oldest first.
+        // FadeOut animations are exempt — removing them causes ghost lines to
+        // flash at full opacity until the next cleanup refresh.
         let mut entries: Vec<(String, Instant)> = self
             .splash_animations
             .iter()
+            .filter(|(_, a)| !matches!(a.kind, AnimationKind::FadeOut))
             .map(|(k, a)| (k.clone(), a.start))
             .collect();
         entries.sort_by_key(|(_, t)| *t);
         // Remove oldest until we're at the cap.
-        let to_remove = entries.len() - MAX_ANIMATIONS;
+        let to_remove = self.splash_animations.len().saturating_sub(MAX_ANIMATIONS);
         for (id, _) in entries.into_iter().take(to_remove) {
             self.splash_animations.remove(&id);
         }
@@ -2549,6 +2748,16 @@ impl VizApp {
 
     /// Check if the graph has changed on disk and refresh if needed.
     pub fn maybe_refresh(&mut self) {
+        // If fade-out ghost lines have expired, force a refresh to remove them
+        // (even if the graph hasn't changed on disk).
+        if let Some(cleanup_at) = self.next_fade_cleanup {
+            if Instant::now() >= cleanup_at {
+                self.next_fade_cleanup = None;
+                self.force_refresh();
+                return;
+            }
+        }
+
         if self.last_refresh.elapsed() < self.refresh_interval {
             return;
         }
@@ -3854,6 +4063,8 @@ impl VizApp {
             smart_follow_active: true,
             initial_load: false,
             splash_animations: HashMap::new(),
+            fading_out_lines: HashMap::new(),
+            next_fade_cleanup: None,
             task_snapshots: HashMap::new(),
             animation_mode: AnimationMode::Normal,
             message_name_threshold: 8,

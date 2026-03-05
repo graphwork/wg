@@ -333,11 +333,20 @@ fn apply_splash_style<'a>(
     kind: super::state::AnimationKind,
 ) -> Line<'a> {
     let is_fade_in = matches!(kind, super::state::AnimationKind::Revealed);
+    let is_fade_out = matches!(kind, super::state::AnimationKind::FadeOut);
 
     // Terminal background color assumption (dark terminal).
     let terminal_bg: (u8, u8, u8) = (0, 0, 0);
 
     if reduced_motion {
+        if is_fade_out {
+            // Fade-out with reduced motion: show normally for first half,
+            // then snap to invisible.
+            if progress < 0.5 {
+                return line;
+            }
+            return apply_fg_fade_to_full_line(line, terminal_bg, 0.0);
+        }
         if is_fade_in {
             // For fade-in with reduced motion, show invisible text for first half,
             // then snap to normal text for the second half.
@@ -356,6 +365,16 @@ fn apply_splash_style<'a>(
             (flash_color.2 as f64 * 0.6) as u8,
         );
         return apply_bg_to_title_range(line, plain_line, splash_bg);
+    }
+
+    if is_fade_out {
+        // Fade-out: text foreground transitions from normal color to terminal
+        // bg (invisible). Applies to the entire line (including tree connectors)
+        // since the tree structure is changing.
+        // Ease-in curve: slow start, fast vanish at end.
+        let inv = 1.0 - progress.min(1.0);
+        let t = (inv * inv).max(0.0);
+        return apply_fg_fade_to_full_line(line, terminal_bg, t);
     }
 
     if is_fade_in {
@@ -612,6 +631,27 @@ fn apply_fg_fade_to_title_range<'a>(
     Line::from(new_spans)
 }
 
+/// Apply a foreground color fade to the **entire** line (all spans).
+/// Used for fade-out animations where tree connectors should also fade.
+/// `t`: 0.0 = fully `target_fg`, 1.0 = original foreground.
+fn apply_fg_fade_to_full_line<'a>(line: Line<'a>, target_fg: (u8, u8, u8), t: f64) -> Line<'a> {
+    let new_spans: Vec<Span<'a>> = line
+        .spans
+        .into_iter()
+        .map(|span| {
+            let orig_fg = match span.style.fg {
+                Some(c) => color_to_rgb(c),
+                None => (200, 200, 200),
+            };
+            let r = (target_fg.0 as f64 + (orig_fg.0 as f64 - target_fg.0 as f64) * t) as u8;
+            let g = (target_fg.1 as f64 + (orig_fg.1 as f64 - target_fg.1 as f64) * t) as u8;
+            let b = (target_fg.2 as f64 + (orig_fg.2 as f64 - target_fg.2 as f64) * t) as u8;
+            Span::styled(span.content, span.style.fg(Color::Rgb(r, g, b)))
+        })
+        .collect();
+    Line::from(new_spans)
+}
+
 fn classify_task_line(app: &VizApp, orig_idx: usize) -> LineTraceCategory {
     // Check if this line is the selected task's line.
     if let Some(selected_id) = app.selected_task_id()
@@ -739,10 +779,13 @@ fn draw_viz_content(frame: &mut Frame, app: &VizApp, area: Rect) {
         }
 
         // Apply splash-and-fade animation overlay if this line belongs to an animated task.
+        // FadeOut animations are rendered even at progress >= 1.0 (they render as
+        // invisible text until the ghost line is cleaned up in the next load_viz).
         if !app.splash_animations.is_empty()
             && app.animation_mode.is_enabled()
             && let Some((progress, flash_color, anim_kind)) = splash_info_for_line(app, orig_idx)
-            && progress < 1.0
+            && (progress < 1.0
+                || matches!(anim_kind, super::state::AnimationKind::FadeOut))
         {
             let splash_plain = app
                 .plain_lines
