@@ -991,7 +991,7 @@ fn build_auto_assign_tasks(
             status: Status::Done,
             assigned: None,
             estimate: None,
-            before: vec![],
+            before: vec![task_id.clone()],
             after: vec![],
             requires: vec![],
             tags: vec!["assignment".to_string(), "agency".to_string()],

@@ -297,6 +297,7 @@ pub(crate) fn spawn_agent_inner(
             title: format!("Assign agent for: {}", task_title_for_audit),
             description: Some(audit_desc),
             status: Status::Done,
+            before: vec![task_id.to_string()],
             tags: vec!["assignment".to_string(), "agency".to_string()],
             created_at: Some(now.clone()),
             started_at: Some(now.clone()),
