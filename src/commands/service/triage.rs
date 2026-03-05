@@ -229,6 +229,33 @@ pub(crate) fn cleanup_dead_agents(dir: &Path, graph_path: &Path) -> Result<Vec<S
         }
     }
 
+    // Circuit breaker: auto-pause tasks with repeated rapid agent deaths
+    let max_failures = config.coordinator.max_consecutive_failures;
+    let failure_window = config.coordinator.failure_window_seconds;
+    for (_agent_id, task_id, _pid, _output_file, _reason) in &dead {
+        if let Some(task) = graph.get_task_mut(task_id) {
+            if task.status == Status::Open && !task.paused {
+                if should_circuit_break(task, max_failures, failure_window) {
+                    task.paused = true;
+                    task.log.push(LogEntry {
+                        timestamp: Utc::now().to_rfc3339(),
+                        actor: Some("coordinator".to_string()),
+                        message: format!(
+                            "Circuit breaker: auto-paused after {} agent deaths within {}s. \
+                             Investigate and run `wg resume {}` when ready.",
+                            max_failures, failure_window, task_id,
+                        ),
+                    });
+                    eprintln!(
+                        "[coordinator] Circuit breaker: auto-paused task '{}' ({} rapid failures)",
+                        task_id, max_failures,
+                    );
+                    tasks_modified = true;
+                }
+            }
+        }
+    }
+
     // Extract token usage and session_id from dead agents' stream files
     for (agent_id, task_id, _pid, output_file, _reason) in &dead {
         // Extract session_id from stream events
@@ -298,6 +325,44 @@ pub(crate) fn cleanup_dead_agents(dir: &Path, graph_path: &Path) -> Result<Vec<S
     }
 
     Ok(dead.into_iter().map(|(id, _, _, _, _)| id).collect())
+}
+
+// ---------------------------------------------------------------------------
+// Circuit breaker: detect repeated rapid agent failures
+// ---------------------------------------------------------------------------
+
+/// Check if a task should be circuit-broken (auto-paused) based on recent
+/// agent death log entries. Counts log entries containing "unclaimed" or
+/// "Triage:" (which indicate agent death) within the given time window.
+fn should_circuit_break(task: &Task, max_failures: u32, window_seconds: u64) -> bool {
+    if max_failures == 0 {
+        return false;
+    }
+
+    let now = Utc::now();
+    let window = chrono::Duration::seconds(window_seconds as i64);
+    let cutoff = now - window;
+
+    let recent_deaths = task
+        .log
+        .iter()
+        .rev()
+        .filter(|entry| {
+            // Parse timestamp
+            let ts = match entry.timestamp.parse::<chrono::DateTime<Utc>>() {
+                Ok(t) => t,
+                Err(_) => return false,
+            };
+            if ts < cutoff {
+                return false;
+            }
+            // Match log messages that indicate agent death/unclaim
+            let msg = &entry.message;
+            msg.contains("Task unclaimed:") || msg.contains("Triage:")
+        })
+        .count();
+
+    recent_deaths >= max_failures as usize
 }
 
 // ---------------------------------------------------------------------------
@@ -795,6 +860,140 @@ mod tests {
                 .unwrap()
                 .contains("Max retries exceeded")
         );
+    }
+
+    // ---- circuit breaker tests ----
+
+    #[test]
+    fn test_circuit_breaker_triggers_after_threshold() {
+        let now = Utc::now();
+        let task = Task {
+            id: "t1".to_string(),
+            title: "Test".to_string(),
+            status: Status::Open,
+            log: vec![
+                LogEntry {
+                    timestamp: (now - chrono::Duration::seconds(30)).to_rfc3339(),
+                    actor: None,
+                    message: "Task unclaimed: agent 'a1' (PID 100) process exited".to_string(),
+                },
+                LogEntry {
+                    timestamp: (now - chrono::Duration::seconds(20)).to_rfc3339(),
+                    actor: None,
+                    message: "Task unclaimed: agent 'a2' (PID 101) process exited".to_string(),
+                },
+                LogEntry {
+                    timestamp: (now - chrono::Duration::seconds(10)).to_rfc3339(),
+                    actor: None,
+                    message: "Task unclaimed: agent 'a3' (PID 102) process exited".to_string(),
+                },
+            ],
+            ..Default::default()
+        };
+        assert!(should_circuit_break(&task, 3, 120));
+    }
+
+    #[test]
+    fn test_circuit_breaker_does_not_trigger_below_threshold() {
+        let now = Utc::now();
+        let task = Task {
+            id: "t1".to_string(),
+            title: "Test".to_string(),
+            status: Status::Open,
+            log: vec![
+                LogEntry {
+                    timestamp: (now - chrono::Duration::seconds(30)).to_rfc3339(),
+                    actor: None,
+                    message: "Task unclaimed: agent 'a1' (PID 100) process exited".to_string(),
+                },
+                LogEntry {
+                    timestamp: (now - chrono::Duration::seconds(20)).to_rfc3339(),
+                    actor: None,
+                    message: "Task unclaimed: agent 'a2' (PID 101) process exited".to_string(),
+                },
+            ],
+            ..Default::default()
+        };
+        assert!(!should_circuit_break(&task, 3, 120));
+    }
+
+    #[test]
+    fn test_circuit_breaker_ignores_old_failures() {
+        let now = Utc::now();
+        let task = Task {
+            id: "t1".to_string(),
+            title: "Test".to_string(),
+            status: Status::Open,
+            log: vec![
+                LogEntry {
+                    timestamp: (now - chrono::Duration::seconds(200)).to_rfc3339(),
+                    actor: None,
+                    message: "Task unclaimed: agent 'a1' (PID 100) process exited".to_string(),
+                },
+                LogEntry {
+                    timestamp: (now - chrono::Duration::seconds(190)).to_rfc3339(),
+                    actor: None,
+                    message: "Task unclaimed: agent 'a2' (PID 101) process exited".to_string(),
+                },
+                LogEntry {
+                    timestamp: (now - chrono::Duration::seconds(180)).to_rfc3339(),
+                    actor: None,
+                    message: "Task unclaimed: agent 'a3' (PID 102) process exited".to_string(),
+                },
+            ],
+            ..Default::default()
+        };
+        // All 3 deaths are outside the 120s window
+        assert!(!should_circuit_break(&task, 3, 120));
+    }
+
+    #[test]
+    fn test_circuit_breaker_triage_entries() {
+        let now = Utc::now();
+        let task = Task {
+            id: "t1".to_string(),
+            title: "Test".to_string(),
+            status: Status::Open,
+            log: vec![
+                LogEntry {
+                    timestamp: (now - chrono::Duration::seconds(30)).to_rfc3339(),
+                    actor: Some("triage".to_string()),
+                    message: "Triage: restarting (agent 'a1' PID 100 died) — no progress".to_string(),
+                },
+                LogEntry {
+                    timestamp: (now - chrono::Duration::seconds(20)).to_rfc3339(),
+                    actor: Some("triage".to_string()),
+                    message: "Triage: restarting (agent 'a2' PID 101 died) — no progress".to_string(),
+                },
+                LogEntry {
+                    timestamp: (now - chrono::Duration::seconds(10)).to_rfc3339(),
+                    actor: Some("triage".to_string()),
+                    message: "Triage: restarting (agent 'a3' PID 102 died) — no progress".to_string(),
+                },
+            ],
+            ..Default::default()
+        };
+        assert!(should_circuit_break(&task, 3, 120));
+    }
+
+    #[test]
+    fn test_circuit_breaker_disabled_with_zero() {
+        let now = Utc::now();
+        let task = Task {
+            id: "t1".to_string(),
+            title: "Test".to_string(),
+            status: Status::Open,
+            log: vec![
+                LogEntry {
+                    timestamp: (now - chrono::Duration::seconds(10)).to_rfc3339(),
+                    actor: None,
+                    message: "Task unclaimed: agent 'a1' (PID 100) process exited".to_string(),
+                },
+            ],
+            ..Default::default()
+        };
+        // max_failures=0 disables the circuit breaker
+        assert!(!should_circuit_break(&task, 0, 120));
     }
 
     #[test]

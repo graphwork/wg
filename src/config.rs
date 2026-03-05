@@ -1075,6 +1075,16 @@ pub struct CoordinatorConfig {
     /// Default: true.
     #[serde(default = "default_coordinator_agent")]
     pub coordinator_agent: bool,
+
+    /// Circuit breaker: max consecutive agent deaths on a single task before
+    /// the task is auto-paused. Default: 3.
+    #[serde(default = "default_max_consecutive_failures")]
+    pub max_consecutive_failures: u32,
+
+    /// Circuit breaker: time window in seconds for counting consecutive failures.
+    /// Only deaths within this window count toward the threshold. Default: 120.
+    #[serde(default = "default_failure_window_seconds")]
+    pub failure_window_seconds: u64,
 }
 
 fn default_max_agents() -> usize {
@@ -1101,6 +1111,14 @@ fn default_agent_timeout() -> String {
     "30m".to_string()
 }
 
+fn default_max_consecutive_failures() -> u32 {
+    3
+}
+
+fn default_failure_window_seconds() -> u64 {
+    120
+}
+
 impl Default for CoordinatorConfig {
     fn default() -> Self {
         Self {
@@ -1113,6 +1131,8 @@ impl Default for CoordinatorConfig {
             agent_timeout: default_agent_timeout(),
             settling_delay_ms: default_settling_delay_ms(),
             coordinator_agent: default_coordinator_agent(),
+            max_consecutive_failures: default_max_consecutive_failures(),
+            failure_window_seconds: default_failure_window_seconds(),
         }
     }
 }

@@ -254,6 +254,11 @@ pub fn run(
         None
     };
 
+    // Validate verify command if provided
+    if let Some(verify_cmd) = verify {
+        validate_verify_command(verify_cmd)?;
+    }
+
     let log = if paused {
         vec![workgraph::graph::LogEntry {
             timestamp: Utc::now().to_rfc3339(),
@@ -606,6 +611,43 @@ fn count_agent_created_tasks(dir: &Path, agent_id: &str) -> u32 {
         .count() as u32
 }
 
+/// Validate that a --verify string is a valid shell command.
+/// Runs `bash -n -c "CMD"` to syntax-check without executing.
+fn validate_verify_command(cmd: &str) -> Result<()> {
+    use std::process::Command;
+
+    let cmd_trimmed = cmd.trim();
+    if cmd_trimmed.is_empty() {
+        anyhow::bail!("Verify command cannot be empty");
+    }
+
+    // Syntax check: bash -n parses without executing
+    let output = Command::new("bash")
+        .arg("-n")
+        .arg("-c")
+        .arg(cmd_trimmed)
+        .output()
+        .context("Failed to run bash syntax check on verify command")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!(
+            "Verify command is not valid shell syntax:\n  {}\n\n\
+             Error: {}\n\
+             The --verify flag requires a shell command that will be run with `sh -c`.\n\
+             Examples of valid verify commands:\n  \
+             cargo test\n  \
+             cargo test --lib\n  \
+             test -f output.txt && grep 'expected' output.txt\n  \
+             make check",
+            cmd_trimmed,
+            stderr.trim(),
+        );
+    }
+
+    Ok(())
+}
+
 fn generate_id(title: &str, graph: &workgraph::WorkGraph) -> String {
     // Generate a slug from the title: take up to 3 non-numeric words,
     // plus any trailing numeric tokens (so "task 1" -> "task-1", not "task").
@@ -678,6 +720,50 @@ mod tests {
             title: id.to_string(),
             ..Task::default()
         }
+    }
+
+    // ---- validate_verify_command tests ----
+
+    #[test]
+    fn verify_valid_command_accepted() {
+        assert!(validate_verify_command("cargo test").is_ok());
+        assert!(validate_verify_command("cargo test --lib").is_ok());
+        assert!(validate_verify_command("test -f output.txt && grep 'expected' output.txt").is_ok());
+        assert!(validate_verify_command("make check").is_ok());
+        assert!(validate_verify_command("exit 0").is_ok());
+        assert!(validate_verify_command("true").is_ok());
+    }
+
+    #[test]
+    fn verify_natural_language_rejected() {
+        // "cargo test passes" — "passes" is not a valid command/argument syntax
+        // but bash -n may or may not reject it depending on shell parsing.
+        // What bash -n WILL reject are things like unmatched quotes, bad syntax.
+        let result = validate_verify_command("if then else");
+        assert!(result.is_err(), "expected syntax error for 'if then else'");
+    }
+
+    #[test]
+    fn verify_empty_string_rejected() {
+        let result = validate_verify_command("");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("cannot be empty"));
+    }
+
+    #[test]
+    fn verify_whitespace_only_rejected() {
+        let result = validate_verify_command("   ");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("cannot be empty"));
+    }
+
+    #[test]
+    fn verify_bad_syntax_rejected() {
+        // Unmatched quote is definitely invalid shell
+        let result = validate_verify_command("echo 'unterminated");
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("not valid shell syntax"), "got: {}", err);
     }
 
     // ---- parse_guard_expr tests ----
