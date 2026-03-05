@@ -360,8 +360,9 @@ fn apply_splash_style<'a>(
 
     if is_fade_in {
         // Fade-in: text foreground transitions from terminal bg (invisible)
-        // to its normal color. Use an ease-in curve (slow start, accelerating).
-        let t = (progress * progress).min(1.0);
+        // to its normal color. Use an ease-out curve (fast reveal, slow settle).
+        let inv = 1.0 - progress;
+        let t = (1.0 - inv * inv).min(1.0);
         return apply_fg_fade_to_title_range(line, plain_line, terminal_bg, t);
     }
 
@@ -396,8 +397,9 @@ fn apply_splash_style<'a>(
 fn find_title_range(plain_line: &str) -> Option<(usize, usize)> {
     let chars: Vec<char> = plain_line.chars().collect();
 
-    // Start at first alphanumeric character (skip tree connectors like └→).
-    let text_start = chars.iter().position(|c| c.is_alphanumeric())?;
+    // Start at first alphanumeric or dot character (skip tree connectors like └→).
+    // Dot is included so system tasks like `.assign-foo` have their prefix in range.
+    let text_start = chars.iter().position(|c| c.is_alphanumeric() || *c == '.')?;
 
     // End before the metadata parenthetical — look for `  (` (two spaces + open paren)
     // which separates the task ID from its status/token info.

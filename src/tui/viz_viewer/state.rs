@@ -109,9 +109,9 @@ impl AnimationSpeed {
     /// Duration of the splash-and-fade animation in seconds.
     pub fn duration_secs(self) -> f64 {
         match self {
-            Self::Fast => 0.8,
-            Self::Normal => 1.5,
-            Self::Slow => 2.5,
+            Self::Fast => 0.4,
+            Self::Normal => 0.8,
+            Self::Slow => 1.5,
         }
     }
 }
