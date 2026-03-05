@@ -16,7 +16,9 @@ use workgraph::config::Config;
 use workgraph::context_scope::{ContextScope, resolve_context_scope};
 use workgraph::graph::{Node, Task, WorkGraph};
 use workgraph::parser::{load_graph, save_graph};
-use workgraph::service::executor::{ScopeContext, TemplateVars, build_prompt};
+use workgraph::service::executor::{
+    ScopeContext, TemplateVars, build_prompt, description_has_pattern_keywords,
+};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -431,4 +433,107 @@ fn test_scope_ordering_is_strict() {
     assert!(ContextScope::Full >= ContextScope::Graph);
     assert!((ContextScope::Clean < ContextScope::Task));
     assert!((ContextScope::Task < ContextScope::Graph));
+}
+
+// ---------------------------------------------------------------------------
+// Pattern keyword glossary: conditional inclusion
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_pattern_keyword_detection() {
+    // Positive cases
+    assert!(description_has_pattern_keywords("Use autopoietic decomposition"));
+    assert!(description_has_pattern_keywords("This is a self-organizing task"));
+    assert!(description_has_pattern_keywords("Create a committee review"));
+    assert!(description_has_pattern_keywords("Use swarm intelligence"));
+    assert!(description_has_pattern_keywords("Fork-join the workers"));
+    assert!(description_has_pattern_keywords("Fan-out to parallel tasks"));
+    assert!(description_has_pattern_keywords("Run tasks in parallel"));
+    assert!(description_has_pattern_keywords("Loop until converged"));
+    assert!(description_has_pattern_keywords("Add a cycle for retries"));
+    assert!(description_has_pattern_keywords("Iterate on the design"));
+    assert!(description_has_pattern_keywords("Research the codebase"));
+    assert!(description_has_pattern_keywords("Investigate the bug"));
+    assert!(description_has_pattern_keywords("Audit the security"));
+    assert!(description_has_pattern_keywords("Use DELIBERATION process"));
+    assert!(description_has_pattern_keywords("Open a discussion"));
+
+    // Negative cases
+    assert!(!description_has_pattern_keywords("Build a widget factory"));
+    assert!(!description_has_pattern_keywords("Fix the login bug"));
+    assert!(!description_has_pattern_keywords("Add unit tests"));
+}
+
+#[test]
+fn test_pattern_glossary_included_when_keywords_present() {
+    let vars = TemplateVars {
+        task_id: "pattern-task".into(),
+        task_title: "Research patterns".into(),
+        task_description: "Research the codebase for security issues".into(),
+        task_context: "No dependencies".into(),
+        task_identity: String::new(),
+        working_dir: String::new(),
+        skills_preamble: String::new(),
+        model: String::new(),
+        task_loop_info: String::new(),
+        task_verify: None,
+        max_child_tasks: 10,
+        max_task_depth: 8,
+    };
+    let ctx = ScopeContext::default();
+    let prompt = build_prompt(&vars, ContextScope::Clean, &ctx);
+
+    assert!(
+        prompt.contains("## Pattern Keywords"),
+        "Prompt should include pattern glossary when description contains keywords"
+    );
+    assert!(
+        prompt.contains("autopoietic / self-organizing"),
+        "Glossary should define autopoietic pattern"
+    );
+    assert!(
+        prompt.contains("committee / discussion / deliberation / swarm"),
+        "Glossary should define committee pattern"
+    );
+    assert!(
+        prompt.contains("fork-join / fan-out / parallel"),
+        "Glossary should define fork-join pattern"
+    );
+    assert!(
+        prompt.contains("loop / cycle / iterate"),
+        "Glossary should define loop pattern"
+    );
+    assert!(
+        prompt.contains("research / investigate / audit"),
+        "Glossary should define research pattern"
+    );
+    assert!(
+        prompt.contains("docs/research/organizational-patterns.md"),
+        "Glossary should reference the patterns doc"
+    );
+}
+
+#[test]
+fn test_pattern_glossary_excluded_when_no_keywords() {
+    let vars = TemplateVars {
+        task_id: "plain-task".into(),
+        task_title: "Build widget".into(),
+        task_description: "Build a widget factory that produces widgets from specs.".into(),
+        task_context: "No dependencies".into(),
+        task_identity: String::new(),
+        working_dir: String::new(),
+        skills_preamble: String::new(),
+        model: String::new(),
+        task_loop_info: String::new(),
+        task_verify: None,
+        max_child_tasks: 10,
+        max_task_depth: 8,
+    };
+    let ctx = ScopeContext::default();
+    let prompt = build_prompt(&vars, ContextScope::Clean, &ctx);
+
+    assert!(
+        !prompt.contains("## Pattern Keywords"),
+        "Prompt should NOT include pattern glossary when description has no keywords"
+    );
 }

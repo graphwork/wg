@@ -241,6 +241,54 @@ const WG_CONTEXT_HINT: &str = "\
 - Use `wg context` to view the current task's full context
 - Use `wg list` to see all tasks and their statuses\n";
 
+/// Pattern keyword trigger words. If any of these appear (case-insensitive, word-boundary)
+/// in the task description, the glossary section is included in the prompt.
+const PATTERN_TRIGGER_KEYWORDS: &[&str] = &[
+    "autopoietic",
+    "self-organizing",
+    "committee",
+    "discussion",
+    "deliberation",
+    "swarm",
+    "fork-join",
+    "fan-out",
+    "parallel",
+    "loop",
+    "cycle",
+    "iterate",
+    "research",
+    "investigate",
+    "audit",
+];
+
+/// Pattern keyword glossary injected when the task description contains trigger keywords.
+/// Teaches agents the expected behavior for each organizational pattern.
+pub const PATTERN_KEYWORDS_GLOSSARY: &str = "\
+## Pattern Keywords
+
+Your task description uses organizational pattern vocabulary. Here is what each pattern expects:
+
+- **autopoietic / self-organizing**: Decompose this work into subtasks using `wg add`. Create your own task graph with proper dependencies. Don't try to do everything yourself — break it into pieces and let the coordinator dispatch them.
+
+- **committee / discussion / deliberation / swarm**: Spawn multiple parallel tasks (via `wg add`) representing different perspectives or approaches. Each task produces a position/analysis. Create a synthesis task (`--after` all perspectives) that integrates findings. Use `wg msg` to communicate between tasks if needed.
+
+- **fork-join / fan-out / parallel**: Create N parallel subtasks for independent work, plus one integration task that depends on all of them (`--after task1,task2,...,taskN`).
+
+- **loop / cycle / iterate**: Use `--max-iterations` on tasks. Each iteration should build on the previous. Use `wg done --converged` when the work has stabilized. If verify fails and you can't fix it, use `wg fail` so the cycle can restart.
+
+- **research / investigate / audit**: Produce a structured document with findings. Reference specific files and line numbers. Create implementation subtasks if the research reveals work to be done.
+
+For detailed pattern descriptions, see docs/research/organizational-patterns.md\n";
+
+/// Check whether a task description contains any pattern trigger keywords.
+/// Uses case-insensitive matching.
+pub fn description_has_pattern_keywords(description: &str) -> bool {
+    let lower = description.to_lowercase();
+    PATTERN_TRIGGER_KEYWORDS
+        .iter()
+        .any(|kw| lower.contains(kw))
+}
+
 /// Additional context for scope-based prompt assembly beyond TemplateVars.
 #[derive(Debug, Default, Clone)]
 pub struct ScopeContext {
@@ -296,6 +344,11 @@ pub fn build_prompt(vars: &TemplateVars, scope: ContextScope, ctx: &ScopeContext
         "## Your Task\n- **ID:** {}\n- **Title:** {}\n- **Description:** {}",
         vars.task_id, vars.task_title, vars.task_description
     ));
+
+    // All scopes: pattern keywords glossary (conditional on description content)
+    if description_has_pattern_keywords(&vars.task_description) {
+        parts.push(PATTERN_KEYWORDS_GLOSSARY.to_string());
+    }
 
     // All scopes: verification criteria (R4 from validation synthesis)
     if let Some(ref verify) = vars.task_verify {
