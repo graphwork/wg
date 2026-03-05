@@ -11,7 +11,7 @@ use workgraph::agency::{
     resolve_outcome,
 };
 use workgraph::config::Config;
-use workgraph::graph::{LogEntry, Status};
+use workgraph::graph::{LogEntry, Status, TokenUsage};
 use workgraph::parser::load_graph;
 use workgraph::provenance;
 
@@ -297,7 +297,7 @@ pub fn run(
     println!("Evaluating task '{}' with model '{}'...", task_id, model);
 
     let timeout_secs = config.agency.triage_timeout.unwrap_or(60);
-    let raw_output = workgraph::service::llm::run_lightweight_llm_call(
+    let eval_result = workgraph::service::llm::run_lightweight_llm_call(
         &config,
         workgraph::config::DispatchRole::Evaluator,
         &prompt,
@@ -307,7 +307,7 @@ pub fn run(
 
     // Step 7: Parse the JSON output from the evaluator
     let eval_json =
-        extract_json(&raw_output).context("Failed to extract valid JSON from evaluator output")?;
+        extract_json(&eval_result.text).context("Failed to extract valid JSON from evaluator output")?;
 
     let parsed: EvalOutput = serde_json::from_str(&eval_json)
         .with_context(|| format!("Failed to parse evaluator JSON:\n{}", eval_json))?;
@@ -429,7 +429,19 @@ pub fn run(
         }
     }
 
-    // Step 8.5: Eval gate — reject the original task if score is below threshold
+    // Step 8.5: Persist token usage to the .evaluate-* task
+    if let Some(usage) = eval_result.token_usage {
+        let eval_task_id = format!(".evaluate-{}", task_id);
+        let graph_path = super::graph_path(dir);
+        if let Ok(mut graph) = load_graph(&graph_path) {
+            if let Some(eval_task) = graph.get_task_mut(&eval_task_id) {
+                eval_task.token_usage = Some(usage);
+                let _ = workgraph::parser::save_graph(&graph, &graph_path);
+            }
+        }
+    }
+
+    // Step 8.6: Eval gate — reject the original task if score is below threshold
     let rejected = check_eval_gate(dir, task_id, &task.tags, &evaluation, &config, json)?;
     if rejected && !json {
         println!("  REJECTED: task '{}' failed by evaluation gate", task_id);
@@ -627,14 +639,14 @@ pub fn run_flip(
     );
 
     let flip_timeout = config.agency.triage_timeout.unwrap_or(60);
-    let raw_inference = workgraph::service::llm::run_lightweight_llm_call(
+    let inference_result = workgraph::service::llm::run_lightweight_llm_call(
         &config,
         workgraph::config::DispatchRole::FlipInference,
         &inference_prompt,
         flip_timeout,
     )
     .context("FLIP inference LLM call failed")?;
-    let inference_json = extract_json(&raw_inference)
+    let inference_json = extract_json(&inference_result.text)
         .context("Failed to extract JSON from FLIP inference output")?;
 
     let parsed_inference: FlipInferenceOutput = serde_json::from_str(&inference_json)
@@ -659,14 +671,14 @@ pub fn run_flip(
         comparison_model
     );
 
-    let raw_comparison = workgraph::service::llm::run_lightweight_llm_call(
+    let comparison_result = workgraph::service::llm::run_lightweight_llm_call(
         &config,
         workgraph::config::DispatchRole::FlipComparison,
         &comparison_prompt,
         flip_timeout,
     )
     .context("FLIP comparison LLM call failed")?;
-    let comparison_json = extract_json(&raw_comparison)
+    let comparison_json = extract_json(&comparison_result.text)
         .context("Failed to extract JSON from FLIP comparison output")?;
 
     let parsed_comparison: FlipComparisonOutput = serde_json::from_str(&comparison_json)
@@ -792,7 +804,44 @@ pub fn run_flip(
         }
     }
 
+    // Persist combined token usage from both FLIP phases to the .evaluate-* task
+    let combined_usage = combine_token_usage(&[
+        inference_result.token_usage,
+        comparison_result.token_usage,
+    ]);
+    if let Some(usage) = combined_usage {
+        let eval_task_id = format!(".evaluate-{}", task_id);
+        let graph_path = super::graph_path(dir);
+        if let Ok(mut graph) = load_graph(&graph_path) {
+            if let Some(eval_task) = graph.get_task_mut(&eval_task_id) {
+                eval_task.token_usage = Some(usage);
+                let _ = workgraph::parser::save_graph(&graph, &graph_path);
+            }
+        }
+    }
+
     Ok(())
+}
+
+/// Combine multiple optional TokenUsage values into a single sum.
+fn combine_token_usage(usages: &[Option<TokenUsage>]) -> Option<TokenUsage> {
+    let mut total = TokenUsage {
+        cost_usd: 0.0,
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_read_input_tokens: 0,
+        cache_creation_input_tokens: 0,
+    };
+    let mut found_any = false;
+    for usage in usages.iter().flatten() {
+        found_any = true;
+        total.cost_usd += usage.cost_usd;
+        total.input_tokens += usage.input_tokens;
+        total.output_tokens += usage.output_tokens;
+        total.cache_read_input_tokens += usage.cache_read_input_tokens;
+        total.cache_creation_input_tokens += usage.cache_creation_input_tokens;
+    }
+    if found_any { Some(total) } else { None }
 }
 
 /// Output shape for FLIP inference phase.

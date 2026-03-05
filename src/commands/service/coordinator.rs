@@ -908,7 +908,7 @@ fn build_auto_assign_tasks(
         };
 
         // Run lightweight LLM call for assignment (replaces full Claude Code session)
-        let verdict = match super::assignment::run_lightweight_assignment(
+        let (verdict, assign_token_usage) = match super::assignment::run_lightweight_assignment(
             config,
             &task_snapshot,
             &all_agents,
@@ -1032,7 +1032,7 @@ fn build_auto_assign_tasks(
             visibility: "internal".to_string(),
             context_scope: None,
             cycle_config: None,
-            token_usage: None,
+            token_usage: assign_token_usage,
             session_id: None,
             wait_condition: None,
             checkpoint: None,
@@ -1971,7 +1971,7 @@ Focus on: files modified, features implemented, tests written, current status.
 Respond with ONLY the summary text, no JSON or formatting."#
     );
 
-    let summary = workgraph::service::llm::run_lightweight_llm_call(
+    let result = workgraph::service::llm::run_lightweight_llm_call(
         config,
         workgraph::config::DispatchRole::Triage,
         &prompt,
@@ -1979,7 +1979,7 @@ Respond with ONLY the summary text, no JSON or formatting."#
     )
     .context("Checkpoint summary LLM call failed")?;
 
-    Ok(summary)
+    Ok(result.text)
 }
 
 /// Single coordinator tick: spawn agents on ready tasks

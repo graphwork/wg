@@ -11,6 +11,14 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 
 use crate::config::{Config, DispatchRole};
+use crate::graph::TokenUsage;
+
+/// Result of a lightweight LLM call, including both the text response and token usage.
+#[derive(Debug, Clone)]
+pub struct LlmCallResult {
+    pub text: String,
+    pub token_usage: Option<TokenUsage>,
+}
 
 /// Run a lightweight (no tool-use) LLM call for an internal dispatch role.
 ///
@@ -18,12 +26,14 @@ use crate::config::{Config, DispatchRole};
 /// 1. If `provider` is set to a native provider ("anthropic", "openai", "openrouter"),
 ///    attempts a direct API call using the native client.
 /// 2. Falls back to shelling out to `claude` CLI.
+///
+/// Returns both the text response and token usage when available.
 pub fn run_lightweight_llm_call(
     config: &Config,
     role: DispatchRole,
     prompt: &str,
     timeout_secs: u64,
-) -> Result<String> {
+) -> Result<LlmCallResult> {
     let resolved = config.resolve_model_for_role(role);
     let model = &resolved.model;
     let provider = resolved.provider.as_deref();
@@ -48,7 +58,7 @@ pub fn run_lightweight_llm_call(
     call_claude_cli(model, prompt, timeout_secs)
 }
 
-fn call_claude_cli(model: &str, prompt: &str, timeout_secs: u64) -> Result<String> {
+fn call_claude_cli(model: &str, prompt: &str, timeout_secs: u64) -> Result<LlmCallResult> {
     let output = process::Command::new("timeout")
         .arg(format!("{}s", timeout_secs))
         .arg("claude")
@@ -73,10 +83,14 @@ fn call_claude_cli(model: &str, prompt: &str, timeout_secs: u64) -> Result<Strin
     if result.is_empty() {
         anyhow::bail!("Empty response from claude CLI");
     }
-    Ok(result)
+    // Claude CLI with --print doesn't provide structured token usage
+    Ok(LlmCallResult {
+        text: result,
+        token_usage: None,
+    })
 }
 
-fn call_anthropic_native(model: &str, prompt: &str, timeout_secs: u64) -> Result<String> {
+fn call_anthropic_native(model: &str, prompt: &str, timeout_secs: u64) -> Result<LlmCallResult> {
     use crate::executor::native::client::{
         AnthropicClient, ContentBlock, LlmClient, Message, MessagesRequest, Role,
     };
@@ -109,6 +123,14 @@ fn call_anthropic_native(model: &str, prompt: &str, timeout_secs: u64) -> Result
             .context("Native Anthropic call timed out")?
     })?;
 
+    let token_usage = Some(TokenUsage {
+        cost_usd: 0.0,
+        input_tokens: u64::from(response.usage.input_tokens),
+        output_tokens: u64::from(response.usage.output_tokens),
+        cache_read_input_tokens: response.usage.cache_read_input_tokens.map(u64::from).unwrap_or(0),
+        cache_creation_input_tokens: response.usage.cache_creation_input_tokens.map(u64::from).unwrap_or(0),
+    });
+
     let text: String = response
         .content
         .iter()
@@ -123,10 +145,13 @@ fn call_anthropic_native(model: &str, prompt: &str, timeout_secs: u64) -> Result
     if text.is_empty() {
         anyhow::bail!("Empty response from native Anthropic call");
     }
-    Ok(text)
+    Ok(LlmCallResult {
+        text,
+        token_usage,
+    })
 }
 
-fn call_openai_native(model: &str, prompt: &str, timeout_secs: u64) -> Result<String> {
+fn call_openai_native(model: &str, prompt: &str, timeout_secs: u64) -> Result<LlmCallResult> {
     use crate::executor::native::client::{
         ContentBlock, LlmClient, Message, MessagesRequest, Role,
     };
@@ -160,6 +185,14 @@ fn call_openai_native(model: &str, prompt: &str, timeout_secs: u64) -> Result<St
             .context("Native OpenAI call timed out")?
     })?;
 
+    let token_usage = Some(TokenUsage {
+        cost_usd: 0.0,
+        input_tokens: u64::from(response.usage.input_tokens),
+        output_tokens: u64::from(response.usage.output_tokens),
+        cache_read_input_tokens: response.usage.cache_read_input_tokens.map(u64::from).unwrap_or(0),
+        cache_creation_input_tokens: response.usage.cache_creation_input_tokens.map(u64::from).unwrap_or(0),
+    });
+
     let text: String = response
         .content
         .iter()
@@ -174,7 +207,10 @@ fn call_openai_native(model: &str, prompt: &str, timeout_secs: u64) -> Result<St
     if text.is_empty() {
         anyhow::bail!("Empty response from native OpenAI call");
     }
-    Ok(text)
+    Ok(LlmCallResult {
+        text,
+        token_usage,
+    })
 }
 
 #[cfg(test)]

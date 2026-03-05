@@ -411,7 +411,7 @@ fn run_triage(config: &Config, task: &Task, output_file: &str) -> Result<TriageV
     let log_content = read_truncated_log(output_file, max_log_bytes);
     let prompt = build_triage_prompt(task, &log_content);
 
-    let raw = workgraph::service::llm::run_lightweight_llm_call(
+    let result = workgraph::service::llm::run_lightweight_llm_call(
         config,
         workgraph::config::DispatchRole::Triage,
         &prompt,
@@ -420,7 +420,7 @@ fn run_triage(config: &Config, task: &Task, output_file: &str) -> Result<TriageV
     .context("Triage LLM call failed")?;
 
     // Parse JSON verdict from output
-    let json_str = extract_triage_json(&raw)
+    let json_str = extract_triage_json(&result.text)
         .ok_or_else(|| anyhow::anyhow!("No valid JSON found in triage output"))?;
 
     let verdict: TriageVerdict = serde_json::from_str(&json_str)

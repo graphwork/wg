@@ -6,7 +6,7 @@ use anyhow::{Context, Result};
 
 use workgraph::agency::{self, short_hash, Agent};
 use workgraph::config::{Config, DispatchRole};
-use workgraph::graph::Task;
+use workgraph::graph::{Task, TokenUsage};
 
 /// Parsed assignment decision from the LLM.
 #[derive(Debug, serde::Deserialize)]
@@ -189,6 +189,7 @@ If no suitable agent exists, still pick the closest match — never fail to assi
 }
 
 /// Run the lightweight assignment LLM call and parse the verdict.
+/// Returns the assignment verdict and any token usage from the LLM call.
 pub(crate) fn run_lightweight_assignment(
     config: &Config,
     task: &Task,
@@ -197,7 +198,7 @@ pub(crate) fn run_lightweight_assignment(
     tradeoffs_dir: &std::path::Path,
     mode_context: &str,
     underspec_warning: Option<&str>,
-) -> Result<AssignmentVerdict> {
+) -> Result<(AssignmentVerdict, Option<TokenUsage>)> {
     let timeout_secs = config.agency.triage_timeout.unwrap_or(30);
 
     let catalog_entries = build_agent_catalog(agents, roles_dir, tradeoffs_dir);
@@ -205,7 +206,7 @@ pub(crate) fn run_lightweight_assignment(
 
     let prompt = build_assignment_prompt(task, mode_context, &catalog_text, underspec_warning);
 
-    let raw = workgraph::service::llm::run_lightweight_llm_call(
+    let result = workgraph::service::llm::run_lightweight_llm_call(
         config,
         DispatchRole::Assigner,
         &prompt,
@@ -213,9 +214,11 @@ pub(crate) fn run_lightweight_assignment(
     )
     .context("Assignment LLM call failed")?;
 
+    let token_usage = result.token_usage;
+
     // Parse JSON verdict from output (reuse triage JSON extraction logic)
-    let json_str = extract_assignment_json(&raw)
-        .ok_or_else(|| anyhow::anyhow!("No valid JSON found in assignment output: {}", &raw[..raw.len().min(200)]))?;
+    let json_str = extract_assignment_json(&result.text)
+        .ok_or_else(|| anyhow::anyhow!("No valid JSON found in assignment output: {}", &result.text[..result.text.len().min(200)]))?;
 
     let verdict: AssignmentVerdict = serde_json::from_str(&json_str)
         .with_context(|| format!("Failed to parse assignment JSON: {}", json_str))?;
@@ -246,7 +249,7 @@ pub(crate) fn run_lightweight_assignment(
         }
     }
 
-    Ok(verdict)
+    Ok((verdict, token_usage))
 }
 
 /// Extract a JSON object from potentially noisy LLM output.
