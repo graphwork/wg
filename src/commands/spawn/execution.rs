@@ -8,7 +8,7 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 
 use workgraph::config::Config;
-use workgraph::graph::{LogEntry, Status};
+use workgraph::graph::{LogEntry, Node, Status, Task, is_system_task};
 use workgraph::parser::{load_graph, save_graph};
 use workgraph::service::executor::{ExecutorRegistry, PromptTemplate, TemplateVars, build_prompt};
 use workgraph::service::registry::AgentRegistry;
@@ -41,6 +41,10 @@ pub(crate) fn spawn_agent_inner(
     let mut graph = load_graph(&graph_path).context("Failed to load graph")?;
 
     let task = graph.get_task_or_err(task_id)?;
+
+    // Capture audit info before mutable borrows
+    let task_title_for_audit = task.title.clone();
+    let task_agent_for_audit = task.agent.clone();
 
     // Only allow spawning on tasks that are Open or Blocked
     match task.status {
@@ -270,6 +274,43 @@ pub(crate) fn spawn_agent_inner(
                 .unwrap_or_default()
         ),
     });
+
+    // Create .assign-* audit trail if missing (defense-in-depth).
+    // When auto_assign is enabled, build_auto_assign_tasks creates this via
+    // lightweight LLM call. When disabled or skipped, we still want audit trail.
+    let assign_task_id = format!(".assign-{}", task_id);
+    if !is_system_task(task_id) && graph.get_task(&assign_task_id).is_none() {
+        let now = Utc::now().to_rfc3339();
+        let audit_desc = if let Some(ref agent_id) = task_agent_for_audit {
+            format!(
+                "Direct dispatch: agent={} → '{}'\nNo lightweight assignment flow (auto_assign disabled or skipped)",
+                agent_id, task_id
+            )
+        } else {
+            format!(
+                "Direct dispatch: '{}'\nNo agent pre-assigned (auto_assign disabled or skipped)",
+                task_id
+            )
+        };
+        graph.add_node(Node::Task(Task {
+            id: assign_task_id,
+            title: format!("Assign agent for: {}", task_title_for_audit),
+            description: Some(audit_desc),
+            status: Status::Done,
+            tags: vec!["assignment".to_string(), "agency".to_string()],
+            created_at: Some(now.clone()),
+            started_at: Some(now.clone()),
+            completed_at: Some(now),
+            exec_mode: Some("bare".to_string()),
+            visibility: "internal".to_string(),
+            log: vec![LogEntry {
+                timestamp: Utc::now().to_rfc3339(),
+                actor: Some("coordinator".to_string()),
+                message: "Created at spawn time (no prior .assign-* task existed)".to_string(),
+            }],
+            ..Default::default()
+        }));
+    }
 
     save_graph(&graph, &graph_path).context("Failed to save graph")?;
 
