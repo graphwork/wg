@@ -1718,12 +1718,30 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
 
     // Streaming indicator when awaiting response.
     if app.chat.awaiting_response {
-        rendered_lines.push(Line::from(Span::styled(
-            "↯ ...",
+        // Braille spinner (more portable than SLOW_BLINK which doesn't work on Termux)
+        const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+        let frame_idx = (app.tick_count / 3) as usize % SPINNER_FRAMES.len();
+        let spinner = SPINNER_FRAMES[frame_idx];
+
+        let mut spans = vec![Span::styled(
+            format!("↯ {} ", spinner),
             Style::default()
                 .fg(Color::Cyan)
-                .add_modifier(Modifier::SLOW_BLINK),
-        )));
+                .add_modifier(Modifier::BOLD),
+        )];
+
+        if let Some((input_tokens, output_tokens)) = app.chat.thinking_tokens {
+            spans.push(Span::styled(
+                format!(
+                    "→{}/←{}",
+                    format_tokens(input_tokens),
+                    format_tokens(output_tokens)
+                ),
+                Style::default().fg(Color::DarkGray),
+            ));
+        }
+
+        rendered_lines.push(Line::from(spans));
         rendered_lines.push(Line::from(""));
     }
 

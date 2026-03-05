@@ -661,6 +661,8 @@ pub struct ChatState {
     pub viewport_height: usize,
     /// Scroll offset from top (set each frame by renderer for scrollbar dragging).
     pub scroll_from_top: usize,
+    /// Live token counts from coordinator's current turn (input, output).
+    pub thinking_tokens: Option<(u64, u64)>,
 }
 
 impl Default for ChatState {
@@ -677,6 +679,7 @@ impl Default for ChatState {
             total_rendered_lines: 0,
             viewport_height: 0,
             scroll_from_top: 0,
+            thinking_tokens: None,
         }
     }
 }
@@ -1440,6 +1443,9 @@ pub struct VizApp {
 
     pub editor_handler: EditorEventHandler,
 
+    // ── Frame counter (for animations) ──
+    pub tick_count: u64,
+
     // ── Live refresh ──
     /// Last observed modification time of graph.jsonl.
     last_graph_mtime: Option<SystemTime>,
@@ -1597,6 +1603,7 @@ impl VizApp {
             last_panel_hscrollbar_area: Rect::default(),
             has_keyboard_enhancement: false,
             editor_handler: create_editor_handler(),
+            tick_count: 0,
             last_graph_mtime: graph_mtime,
             last_refresh: Instant::now(),
             last_refresh_display: chrono::Local::now().format("%H:%M:%S").to_string(),
@@ -2608,6 +2615,9 @@ impl VizApp {
         if self.chat.awaiting_response || self.right_panel_tab == RightPanelTab::Chat {
             self.check_coordinator_status();
             self.poll_chat_messages();
+            if self.chat.awaiting_response {
+                self.poll_thinking_tokens();
+            }
         }
 
         self.last_refresh = Instant::now();
@@ -3854,6 +3864,7 @@ impl VizApp {
             last_panel_hscrollbar_area: Rect::default(),
             has_keyboard_enhancement: false,
             editor_handler: create_editor_handler(),
+            tick_count: 0,
             last_graph_mtime: None,
             last_refresh: Instant::now(),
             last_refresh_display: String::new(),
@@ -4555,6 +4566,17 @@ impl VizApp {
         if self.chat.scroll == 0 {
             // Already at bottom; new messages will be visible.
         }
+    }
+
+    /// Poll for live token counts from the coordinator's current turn.
+    pub fn poll_thinking_tokens(&mut self) {
+        let path = self.workgraph_dir.join("chat").join(".thinking-tokens");
+        self.chat.thinking_tokens = std::fs::read_to_string(&path).ok().and_then(|s| {
+            let mut parts = s.trim().split_whitespace();
+            let input: u64 = parts.next()?.parse().ok()?;
+            let output: u64 = parts.next()?.parse().ok()?;
+            Some((input, output))
+        });
     }
 
     /// Send a chat message to the coordinator via IPC.

@@ -452,10 +452,11 @@ fn agent_thread_main(
         // Spawn stdout reader thread
         let (response_tx, response_rx) = mpsc::channel::<ResponseEvent>();
         let reader_logger = logger.clone();
+        let reader_dir = dir.to_path_buf();
         let _reader_thread = thread::Builder::new()
             .name("coordinator-stdout".to_string())
             .spawn(move || {
-                stdout_reader(stdout, response_tx, &reader_logger);
+                stdout_reader(stdout, response_tx, &reader_logger, &reader_dir);
             });
 
         // If this is a restart, inject crash recovery context
@@ -745,14 +746,39 @@ struct CollectedResponse {
     full_text: Option<String>,
 }
 
+/// Path to the thinking tokens file, read by the TUI for live token display.
+fn thinking_tokens_path(dir: &Path) -> std::path::PathBuf {
+    dir.join("chat").join(".thinking-tokens")
+}
+
+/// Write current token counts to the thinking tokens file for TUI consumption.
+fn write_thinking_tokens(dir: &Path, input_tokens: u64, output_tokens: u64) {
+    let path = thinking_tokens_path(dir);
+    let content = format!("{} {}", input_tokens, output_tokens);
+    let _ = std::fs::write(&path, content.as_bytes());
+}
+
+/// Clear the thinking tokens file (response complete).
+fn clear_thinking_tokens(dir: &Path) {
+    let path = thinking_tokens_path(dir);
+    let _ = std::fs::remove_file(&path);
+}
+
 /// Read stdout from the Claude CLI process line by line, parse stream-json
 /// events, and forward text content and turn-complete signals.
+///
+/// Also tracks token usage from `assistant` and `result` events and writes
+/// live counts to `.workgraph/chat/.thinking-tokens` for the TUI to poll.
 fn stdout_reader(
     stdout: std::process::ChildStdout,
     tx: mpsc::Sender<ResponseEvent>,
     logger: &DaemonLogger,
+    dir: &Path,
 ) {
     let reader = BufReader::new(stdout);
+    #[allow(unused_assignments)]
+    let mut total_input_tokens: u64 = 0;
+    let mut total_output_tokens: u64 = 0;
 
     for line in reader.lines() {
         let line = match line {
@@ -808,6 +834,23 @@ fn stdout_reader(
                                 }
                                 _ => {}
                             }
+                        }
+                    }
+
+                    // Extract token usage from message.usage
+                    if let Some(usage) = message.get("usage") {
+                        let input = usage
+                            .get("input_tokens")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0);
+                        let output = usage
+                            .get("output_tokens")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0);
+                        if input > 0 || output > 0 {
+                            total_input_tokens = input;
+                            total_output_tokens += output;
+                            write_thinking_tokens(dir, total_input_tokens, total_output_tokens);
                         }
                     }
 
@@ -872,6 +915,25 @@ fn stdout_reader(
                 }
             }
             "result" => {
+                // Extract final usage if present
+                if let Some(usage) = val.get("usage") {
+                    let input = usage
+                        .get("input_tokens")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                    let output = usage
+                        .get("output_tokens")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                    if input > 0 || output > 0 {
+                        total_input_tokens = input;
+                        total_output_tokens = output;
+                        write_thinking_tokens(dir, total_input_tokens, total_output_tokens);
+                    }
+                }
+                // Clear thinking tokens and reset output counter for next exchange
+                clear_thinking_tokens(dir);
+                total_output_tokens = 0;
                 // Final result message — turn is complete
                 let _ = tx.send(ResponseEvent::TurnComplete);
             }
@@ -879,7 +941,8 @@ fn stdout_reader(
         }
     }
 
-    // Stream ended
+    // Stream ended — clean up thinking tokens
+    clear_thinking_tokens(dir);
     let _ = tx.send(ResponseEvent::StreamEnd);
 }
 

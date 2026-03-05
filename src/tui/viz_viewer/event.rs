@@ -68,6 +68,7 @@ fn run_event_loop_inner(terminal: &mut DefaultTerminal, app: &mut VizApp) -> Res
     loop {
         app.maybe_refresh();
         app.drain_commands();
+        app.tick_count = app.tick_count.wrapping_add(1);
         terminal.draw(|frame| render::draw(frame, app))?;
 
         // Wait for the first event (up to INPUT_POLL), then drain all
