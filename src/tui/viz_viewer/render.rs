@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use ratatui::prelude::*;
 use ratatui::widgets::{
-    Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Tabs,
+    Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
 };
 use unicode_width::UnicodeWidthStr;
 
@@ -1274,25 +1274,54 @@ fn draw_right_panel(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     }
 }
 
-/// Draw the tab bar for the right panel.
+/// Spectral colors for the tab bar (bright and dim variants).
+/// Spread across the visible spectrum: red → orange → yellow → green → cyan → blue → indigo → violet.
+const TAB_COLORS_BRIGHT: [Color; 8] = [
+    Color::Rgb(0xFF, 0x44, 0x44), // 0 Chat    – Red
+    Color::Rgb(0xFF, 0x88, 0x44), // 1 Detail  – Orange
+    Color::Rgb(0xFF, 0xCC, 0x44), // 2 Log     – Yellow
+    Color::Rgb(0x44, 0xDD, 0x44), // 3 Msg     – Green
+    Color::Rgb(0x44, 0xDD, 0xDD), // 4 Agency  – Cyan
+    Color::Rgb(0x44, 0x88, 0xFF), // 5 Config  – Blue
+    Color::Rgb(0x88, 0x44, 0xFF), // 6 Files   – Indigo
+    Color::Rgb(0xCC, 0x44, 0xFF), // 7 Coord   – Violet
+];
+
+const TAB_COLORS_DIM: [Color; 8] = [
+    Color::Rgb(0x88, 0x22, 0x22), // 0 Chat    – dim Red
+    Color::Rgb(0x88, 0x44, 0x22), // 1 Detail  – dim Orange
+    Color::Rgb(0x88, 0x66, 0x22), // 2 Log     – dim Yellow
+    Color::Rgb(0x22, 0x77, 0x22), // 3 Msg     – dim Green
+    Color::Rgb(0x22, 0x77, 0x77), // 4 Agency  – dim Cyan
+    Color::Rgb(0x22, 0x44, 0x88), // 5 Config  – dim Blue
+    Color::Rgb(0x44, 0x22, 0x88), // 6 Files   – dim Indigo
+    Color::Rgb(0x66, 0x22, 0x88), // 7 Coord   – dim Violet
+];
+
+/// Draw the tab bar for the right panel with rainbow spectral colors.
 fn draw_tab_bar(frame: &mut Frame, active: RightPanelTab, area: Rect) {
-    let tab_labels: Vec<String> = RightPanelTab::ALL
-        .iter()
-        .map(|t| format!("{}:{}", t.index(), t.label()))
-        .collect();
     let active_idx = active.index();
+    let separator_style = Style::default().fg(Color::Rgb(0x44, 0x44, 0x44));
 
-    let tabs = Tabs::new(tab_labels)
-        .select(active_idx)
-        .style(Style::default().fg(Color::DarkGray))
-        .highlight_style(
+    let mut spans: Vec<Span> = Vec::new();
+    for (i, tab) in RightPanelTab::ALL.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::styled(" │ ", separator_style));
+        }
+        let label = format!("{}:{}", tab.index(), tab.label());
+        let style = if i == active_idx {
             Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        )
-        .divider("│");
+                .fg(TAB_COLORS_BRIGHT[i])
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(TAB_COLORS_DIM[i])
+        };
+        spans.push(Span::styled(label, style));
+    }
 
-    frame.render_widget(tabs, area);
+    let line = Line::from(spans);
+    let paragraph = Paragraph::new(line);
+    frame.render_widget(paragraph, area);
 }
 
 /// Draw the Detail tab content (evolved from HUD).
