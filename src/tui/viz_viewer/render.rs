@@ -296,34 +296,59 @@ enum LineTraceCategory {
 }
 
 /// Check if an original line index belongs to a task with an active splash animation.
-/// Returns (fade_progress, flash_color) where progress is 0.0 = fully bright,
-/// approaching 1.0 = nearly faded out.
-fn splash_info_for_line(app: &VizApp, orig_idx: usize) -> Option<(f64, (u8, u8, u8))> {
+/// Returns (fade_progress, flash_color, animation_kind) where progress is 0.0 = start,
+/// approaching 1.0 = end of animation.
+fn splash_info_for_line(
+    app: &VizApp,
+    orig_idx: usize,
+) -> Option<(f64, (u8, u8, u8), super::state::AnimationKind)> {
     for (task_id, &line) in &app.node_line_map {
         if line == orig_idx {
             let progress = app.splash_progress(task_id)?;
             let color = app.splash_color(task_id).unwrap_or((180, 160, 60));
-            return Some((progress, color));
+            let kind = app
+                .splash_kind(task_id)
+                .unwrap_or(super::state::AnimationKind::NewTask);
+            return Some((progress, color, kind));
         }
     }
     None
 }
 
 /// Apply a splash-and-fade background color to the task title portion of a line.
-/// `progress` ranges from 0.0 (bright splash) to 1.0 (fully faded/transparent).
+/// `progress` ranges from 0.0 (start) to 1.0 (end of animation).
 /// `flash_color` is the (r, g, b) color at full brightness.
 /// Only the task title (ID) gets the splash — tree connectors, status/token
 /// metadata, timestamps, and trailing content are left unchanged.
+///
+/// For `Revealed` animations the color fades IN (transparent→visible) instead
+/// of the default flash-and-fade-out (bright→transparent).
 fn apply_splash_style<'a>(
     line: Line<'a>,
     progress: f64,
     plain_line: &str,
     flash_color: (u8, u8, u8),
     reduced_motion: bool,
+    kind: super::state::AnimationKind,
 ) -> Line<'a> {
+    let is_fade_in = matches!(kind, super::state::AnimationKind::Revealed);
+
     // In reduced motion mode, show full-brightness color for first 50% of duration,
     // then snap to no background.
     if reduced_motion {
+        if is_fade_in {
+            // For fade-in with reduced motion, show nothing for first half,
+            // then snap to the color for the second half.
+            if progress < 0.5 {
+                return line;
+            }
+            let splash_bg = Color::Rgb(
+                (flash_color.0 as f64 * 0.6) as u8,
+                (flash_color.1 as f64 * 0.6) as u8,
+                (flash_color.2 as f64 * 0.6) as u8,
+            );
+            return apply_bg_to_title_range(line, plain_line, splash_bg);
+        }
         if progress > 0.5 {
             return line;
         }
@@ -336,6 +361,25 @@ fn apply_splash_style<'a>(
         return apply_bg_to_title_range(line, plain_line, splash_bg);
     }
 
+    if is_fade_in {
+        // Fade-in: intensity ramps up from 0 to peak, then holds briefly.
+        // Use an ease-in curve (slow start, accelerating).
+        let t = progress * progress;
+
+        let r = (flash_color.0 as f64 * t) as u8;
+        let g = (flash_color.1 as f64 * t) as u8;
+        let b = (flash_color.2 as f64 * t) as u8;
+
+        // At very low intensity early on, skip to avoid invisible backgrounds.
+        if r < 5 && g < 5 && b < 5 {
+            return line;
+        }
+
+        let splash_bg = Color::Rgb(r, g, b);
+        return apply_bg_to_title_range(line, plain_line, splash_bg);
+    }
+
+    // Default: flash-and-fade-out.
     // Ease-out curve for a smoother fade (fast initial dim, slow tail-off).
     let t = progress * progress;
 
@@ -579,7 +623,7 @@ fn draw_viz_content(frame: &mut Frame, app: &VizApp, area: Rect) {
         // Apply splash-and-fade animation overlay if this line belongs to an animated task.
         if !app.splash_animations.is_empty()
             && app.animation_mode.is_enabled()
-            && let Some((progress, flash_color)) = splash_info_for_line(app, orig_idx)
+            && let Some((progress, flash_color, anim_kind)) = splash_info_for_line(app, orig_idx)
             && progress < 1.0
         {
             let splash_plain = app
@@ -595,6 +639,7 @@ fn draw_viz_content(frame: &mut Frame, app: &VizApp, area: Rect) {
                 splash_plain,
                 flash_color,
                 reduced,
+                anim_kind,
             );
         }
     }

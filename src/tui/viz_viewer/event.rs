@@ -657,6 +657,7 @@ fn handle_graph_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
         // Period: toggle system task visibility
         KeyCode::Char('.') => {
             app.show_system_tasks = !app.show_system_tasks;
+            app.system_tasks_just_toggled = true;
             app.force_refresh();
         }
 

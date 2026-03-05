@@ -119,6 +119,8 @@ pub enum AnimationKind {
     Assignment,
     /// A new dependency edge appeared on the task.
     EdgeChange,
+    /// A previously hidden task was revealed (e.g. toggling system task visibility).
+    Revealed,
 }
 
 /// A single active flash-and-fade animation on a task.
@@ -205,6 +207,7 @@ fn flash_color_for_kind(kind: AnimationKind) -> (u8, u8, u8) {
         AnimationKind::ContentChange => (160, 160, 200), // soft blue-gray
         AnimationKind::Assignment => (200, 120, 220), // magenta
         AnimationKind::EdgeChange => (100, 180, 200), // teal
+        AnimationKind::Revealed => (120, 120, 140),  // soft gray-blue
     }
 }
 
@@ -839,7 +842,7 @@ pub struct AgencyLifecycle {
     pub assignment: Option<LifecyclePhase>,
     /// Execution phase (the task itself)
     pub execution: Option<LifecyclePhase>,
-    /// Evaluation phase (if an evaluate-{task_id} task exists)
+    /// Evaluation phase (if a .evaluate-{task_id} task exists)
     pub evaluation: Option<LifecyclePhase>,
 }
 
@@ -1216,6 +1219,13 @@ pub struct VizApp {
     // ── Help overlay ──
     pub show_help: bool,
 
+    // ── System task visibility ──
+    /// When true, show system tasks (dot-prefixed) in the graph view.
+    pub show_system_tasks: bool,
+    /// Set to true when system task visibility was just toggled, so that
+    /// newly appearing tasks get a `Revealed` animation instead of `NewTask`.
+    pub system_tasks_just_toggled: bool,
+
     // ── Mouse capture ──
     /// Whether mouse capture is currently enabled.
     pub mouse_enabled: bool,
@@ -1494,6 +1504,8 @@ impl VizApp {
             task_token_map: HashMap::new(),
             show_total_tokens: false,
             show_help: false,
+            show_system_tasks: false,
+            system_tasks_just_toggled: false,
             mouse_enabled,
             last_graph_area: Rect::default(),
             last_right_panel_area: Rect::default(),
@@ -1645,6 +1657,14 @@ impl VizApp {
                     let old_set: HashSet<&str> =
                         old_task_order.iter().map(|s| s.as_str()).collect();
                     let now = Instant::now();
+                    // If system task visibility was just toggled, newly visible
+                    // tasks get a gentle "revealed" animation instead of the
+                    // bright "new task" flash.
+                    let anim_kind = if self.system_tasks_just_toggled {
+                        AnimationKind::Revealed
+                    } else {
+                        AnimationKind::NewTask
+                    };
                     for id in &self.task_order {
                         if !old_set.contains(id.as_str())
                             && !self.splash_animations.contains_key(id)
@@ -1653,12 +1673,13 @@ impl VizApp {
                                 id.clone(),
                                 Animation {
                                     start: now,
-                                    flash_color: flash_color_for_kind(AnimationKind::NewTask),
-                                    kind: AnimationKind::NewTask,
+                                    flash_color: flash_color_for_kind(anim_kind),
+                                    kind: anim_kind,
                                 },
                             );
                         }
                     }
+                    self.system_tasks_just_toggled = false;
 
                     // Note: per-task content changes (status, assignment, edges,
                     // tokens) are detected by field-level comparison in
@@ -1778,7 +1799,9 @@ impl VizApp {
     }
 
     fn generate_viz(&self) -> Result<VizOutput> {
-        crate::commands::viz::generate_viz_output(&self.workgraph_dir, &self.viz_options)
+        let mut opts = self.viz_options.clone();
+        opts.show_internal = self.show_system_tasks;
+        crate::commands::viz::generate_viz_output(&self.workgraph_dir, &opts)
     }
 
     /// Update scroll content bounds based on current filter state.
@@ -2094,6 +2117,11 @@ impl VizApp {
     /// Returns the flash color for a task's active animation, or None.
     pub fn splash_color(&self, task_id: &str) -> Option<(u8, u8, u8)> {
         self.splash_animations.get(task_id).map(|a| a.flash_color)
+    }
+
+    /// Returns the animation kind for a task's active animation, or None.
+    pub fn splash_kind(&self, task_id: &str) -> Option<AnimationKind> {
+        self.splash_animations.get(task_id).map(|a| a.kind)
     }
 
     /// Whether any splash animations are currently active (not yet fully faded).
@@ -2933,12 +2961,14 @@ impl VizApp {
         // ── Assignment + Evaluation costs ──
         {
             let agents_dir = self.workgraph_dir.join("agents");
-            let assign_task_id = format!("assign-{}", task.id);
-            let eval_task_id = format!("evaluate-{}", task.id);
+            let assign_task_id = format!(".assign-{}", task.id);
+            let legacy_assign_id = format!("assign-{}", task.id);
+            let eval_task_id = format!(".evaluate-{}", task.id);
+            let legacy_eval_id = format!("evaluate-{}", task.id);
 
             let assign_usage = graph
                 .tasks()
-                .find(|t| t.id == assign_task_id)
+                .find(|t| t.id == assign_task_id || t.id == legacy_assign_id)
                 .and_then(|t| {
                     t.token_usage.clone().or_else(|| {
                         let agent_id = t.assigned.as_deref()?;
@@ -2946,13 +2976,16 @@ impl VizApp {
                         parse_token_usage_live(&log_path)
                     })
                 });
-            let eval_usage = graph.tasks().find(|t| t.id == eval_task_id).and_then(|t| {
-                t.token_usage.clone().or_else(|| {
-                    let agent_id = t.assigned.as_deref()?;
-                    let log_path = agents_dir.join(agent_id).join("output.log");
-                    parse_token_usage_live(&log_path)
-                })
-            });
+            let eval_usage = graph
+                .tasks()
+                .find(|t| t.id == eval_task_id || t.id == legacy_eval_id)
+                .and_then(|t| {
+                    t.token_usage.clone().or_else(|| {
+                        let agent_id = t.assigned.as_deref()?;
+                        let log_path = agents_dir.join(agent_id).join("output.log");
+                        parse_token_usage_live(&log_path)
+                    })
+                });
 
             if assign_usage.is_some() || eval_usage.is_some() {
                 lines.push("── Phase Costs ──".to_string());
@@ -3731,6 +3764,8 @@ impl VizApp {
             task_token_map: HashMap::new(),
             show_total_tokens: false,
             show_help: false,
+            show_system_tasks: false,
+            system_tasks_just_toggled: false,
             mouse_enabled: false,
             last_graph_area: Rect::default(),
             last_right_panel_area: Rect::default(),
@@ -4338,18 +4373,20 @@ impl VizApp {
         };
 
         // Assignment phase
-        let assign_task_id = format!("assign-{}", task_id);
+        let assign_task_id = format!(".assign-{}", task_id);
+        let legacy_assign_id = format!("assign-{}", task_id);
         let assignment = graph
             .tasks()
-            .find(|t| t.id == assign_task_id)
+            .find(|t| t.id == assign_task_id || t.id == legacy_assign_id)
             .map(|t| build_phase(t, "Assignment"));
 
         // Execution phase (the task itself)
         let execution = Some(build_phase(&task, "Execution"));
 
         // Evaluation phase
-        let eval_task_id = format!("evaluate-{}", task_id);
-        let evaluation = graph.tasks().find(|t| t.id == eval_task_id).map(|t| {
+        let eval_task_id = format!(".evaluate-{}", task_id);
+        let legacy_eval_id = format!("evaluate-{}", task_id);
+        let evaluation = graph.tasks().find(|t| t.id == eval_task_id || t.id == legacy_eval_id).map(|t| {
             let mut phase = build_phase(t, "Evaluation");
 
             // Load evaluation results from agency/evaluations/
