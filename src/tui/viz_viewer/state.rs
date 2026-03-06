@@ -129,8 +129,6 @@ pub enum AnimationKind {
     Assignment,
     /// A new dependency edge appeared on the task.
     EdgeChange,
-    /// A previously hidden task was revealed (e.g. toggling system task visibility).
-    Revealed,
 }
 
 /// A single active flash-and-fade animation on a task.
@@ -217,7 +215,6 @@ fn flash_color_for_kind(kind: AnimationKind) -> (u8, u8, u8) {
         AnimationKind::ContentChange => (160, 160, 200), // soft blue-gray
         AnimationKind::Assignment => (200, 120, 220), // magenta
         AnimationKind::EdgeChange => (100, 180, 200), // teal
-        AnimationKind::Revealed => (120, 120, 140),  // soft gray-blue
     }
 }
 
@@ -1232,7 +1229,7 @@ pub struct VizApp {
     /// When true, show system tasks (dot-prefixed) in the graph view.
     pub show_system_tasks: bool,
     /// Set to true when system task visibility was just toggled, so that
-    /// newly appearing tasks get a `Revealed` animation instead of `NewTask`.
+    /// the animation and scroll logic can handle the instant show/hide.
     pub system_tasks_just_toggled: bool,
 
     // ── Mouse capture ──
@@ -1663,20 +1660,19 @@ impl VizApp {
                 self.char_edge_map = viz_output.char_edge_map;
                 self.cycle_members = viz_output.cycle_members;
 
+                // Save toggle flag before clearing — used for scroll below.
+                let was_system_toggle = self.system_tasks_just_toggled;
+
                 // Detect newly appeared tasks and register splash animations.
                 // Skip on initial load (old_task_order is empty).
-                if !old_task_order.is_empty() && self.animation_mode.is_enabled() {
+                // System task toggle: instant show/hide — no animation.
+                if !old_task_order.is_empty()
+                    && self.animation_mode.is_enabled()
+                    && !self.system_tasks_just_toggled
+                {
                     let old_set: HashSet<&str> =
                         old_task_order.iter().map(|s| s.as_str()).collect();
                     let now = Instant::now();
-                    // If system task visibility was just toggled, newly visible
-                    // tasks get a gentle "revealed" animation instead of the
-                    // bright "new task" flash.
-                    let anim_kind = if self.system_tasks_just_toggled {
-                        AnimationKind::Revealed
-                    } else {
-                        AnimationKind::NewTask
-                    };
                     for id in &self.task_order {
                         if !old_set.contains(id.as_str())
                             && !self.splash_animations.contains_key(id)
@@ -1685,8 +1681,10 @@ impl VizApp {
                                 id.clone(),
                                 Animation {
                                     start: now,
-                                    flash_color: flash_color_for_kind(anim_kind),
-                                    kind: anim_kind,
+                                    flash_color: flash_color_for_kind(
+                                        AnimationKind::NewTask,
+                                    ),
+                                    kind: AnimationKind::NewTask,
                                 },
                             );
                         }
@@ -1701,6 +1699,8 @@ impl VizApp {
                     // or minutes tick over, causing false-positive flashes on
                     // stable tasks.
                 }
+                // Ensure toggle flag is cleared even if animation block was skipped.
+                self.system_tasks_just_toggled = false;
 
                 // Re-apply the current sort mode so task_order reflects the
                 // user's selected ordering (e.g. StatusGrouped) immediately,
@@ -1725,12 +1725,39 @@ impl VizApp {
                         .iter()
                         .position(|id| id == prev_id)
                         .or_else(|| {
-                            // Task disappeared — clamp to end.
+                            // Task disappeared (e.g. dot-task hidden by toggle).
+                            // Find the nearest visible task by walking outward
+                            // from the old position in the old order.
                             if self.task_order.is_empty() {
-                                None
-                            } else {
-                                Some(self.task_order.len() - 1)
+                                return None;
                             }
+                            let old_idx = old_task_order
+                                .iter()
+                                .position(|id| id == prev_id)
+                                .unwrap_or(0);
+                            for delta in 1..=old_task_order.len() {
+                                if old_idx + delta < old_task_order.len() {
+                                    let candidate = &old_task_order[old_idx + delta];
+                                    if let Some(pos) = self
+                                        .task_order
+                                        .iter()
+                                        .position(|id| id == candidate)
+                                    {
+                                        return Some(pos);
+                                    }
+                                }
+                                if delta <= old_idx {
+                                    let candidate = &old_task_order[old_idx - delta];
+                                    if let Some(pos) = self
+                                        .task_order
+                                        .iter()
+                                        .position(|id| id == candidate)
+                                    {
+                                        return Some(pos);
+                                    }
+                                }
+                            }
+                            Some(0)
                         });
                 } else if !self.task_order.is_empty() {
                     // Default to first task on initial load (top of graph).
@@ -1758,6 +1785,25 @@ impl VizApp {
                     // First load: scroll to top so tasks are visible immediately.
                     self.scroll.go_top();
                     self.initial_load = false;
+                } else if was_system_toggle {
+                    // System task toggle: preserve scroll position relative
+                    // to the selected task (instant show/hide, no jump).
+                    let anchored = old_relative_pos.and_then(|rel_pos| {
+                        let id = new_selected_id.as_ref()?;
+                        let new_orig_line = *self.node_line_map.get(id)?;
+                        let new_visible_pos = self.original_to_visible(new_orig_line)?;
+                        let raw = new_visible_pos as isize - rel_pos;
+                        let clamped = raw.max(0) as usize;
+                        Some(clamped)
+                    });
+                    if let Some(new_offset) = anchored {
+                        self.scroll.offset_y = new_offset;
+                        self.scroll.clamp();
+                    } else {
+                        self.scroll.offset_y = old_offset_y;
+                        self.scroll.clamp();
+                        self.scroll_to_selected_task();
+                    }
                 } else if was_at_bottom && !new_task_focused {
                     // Smart-follow: user was at the bottom, keep them there.
                     self.scroll.go_bottom();

@@ -317,35 +317,19 @@ fn splash_info_for_line(
 
 /// Apply animation styles to the task title portion of a line.
 /// `progress` ranges from 0.0 (start) to 1.0 (end of animation).
-/// `flash_color` is the (r, g, b) color at full brightness (used for NewTask).
+/// `flash_color` is the (r, g, b) color at full brightness.
 /// Only the task title (ID) gets the effect — tree connectors, status/token
 /// metadata, timestamps, and trailing content are left unchanged.
-///
-/// For `Revealed` animations the text **foreground** fades in from the terminal
-/// background color to its normal color (text emerges from invisibility).
-/// For `NewTask` animations the **background** flashes and fades out.
+/// The **background** flashes and fades out.
 fn apply_splash_style<'a>(
     line: Line<'a>,
     progress: f64,
     plain_line: &str,
     flash_color: (u8, u8, u8),
     reduced_motion: bool,
-    kind: super::state::AnimationKind,
+    _kind: super::state::AnimationKind,
 ) -> Line<'a> {
-    let is_fade_in = matches!(kind, super::state::AnimationKind::Revealed);
-
-    // Terminal background color assumption (dark terminal).
-    let terminal_bg: (u8, u8, u8) = (0, 0, 0);
-
     if reduced_motion {
-        if is_fade_in {
-            // For fade-in with reduced motion, show invisible text for first half,
-            // then snap to normal text for the second half.
-            if progress < 0.5 {
-                return apply_fg_fade_to_title_range(line, plain_line, terminal_bg, 0.0);
-            }
-            return line;
-        }
         if progress > 0.5 {
             return line;
         }
@@ -358,15 +342,7 @@ fn apply_splash_style<'a>(
         return apply_bg_to_title_range(line, plain_line, splash_bg);
     }
 
-    if is_fade_in {
-        // Fade-in: text foreground transitions from terminal bg (invisible)
-        // to its normal color. Use an ease-out curve (fast reveal, slow settle).
-        let inv = 1.0 - progress;
-        let t = (1.0 - inv * inv).min(1.0);
-        return apply_fg_fade_to_title_range(line, plain_line, terminal_bg, t);
-    }
-
-    // Default: flash-and-fade-out.
+    // Flash-and-fade-out.
     // Ease-out curve for a smoother fade (fast initial dim, slow tail-off).
     let t = progress * progress;
 
@@ -457,136 +433,6 @@ fn apply_bg_to_title_range<'a>(line: Line<'a>, plain_line: &str, bg: Color) -> L
     for (char_idx, (c, base_style)) in chars_with_styles.iter().enumerate() {
         let style = if char_idx >= text_start && char_idx < text_end {
             base_style.bg(bg)
-        } else {
-            *base_style
-        };
-
-        if first {
-            current_style = style;
-            first = false;
-        } else if style != current_style {
-            new_spans.push(Span::styled(
-                std::mem::take(&mut current_buf),
-                current_style,
-            ));
-            current_style = style;
-        }
-
-        current_buf.push(*c);
-    }
-
-    if !current_buf.is_empty() {
-        new_spans.push(Span::styled(current_buf, current_style));
-    }
-
-    Line::from(new_spans)
-}
-
-/// Convert any ratatui `Color` to an approximate `(u8, u8, u8)` RGB tuple.
-///
-/// Used for smooth color interpolation during fade animations, so that ANSI named
-/// colors fade toward their true hue instead of a gray fallback.
-fn color_to_rgb(color: Color) -> (u8, u8, u8) {
-    match color {
-        Color::Rgb(r, g, b) => (r, g, b),
-        Color::Black => (0, 0, 0),
-        Color::Red => (205, 49, 49),
-        Color::Green => (13, 188, 121),
-        Color::Yellow => (229, 229, 16),
-        Color::Blue => (36, 114, 200),
-        Color::Magenta => (188, 63, 188),
-        Color::Cyan => (17, 168, 205),
-        Color::Gray => (170, 170, 170),
-        Color::DarkGray => (118, 118, 118),
-        Color::LightRed => (241, 76, 76),
-        Color::LightGreen => (35, 209, 139),
-        Color::LightYellow => (245, 245, 67),
-        Color::LightBlue => (59, 142, 234),
-        Color::LightMagenta => (214, 112, 214),
-        Color::LightCyan => (41, 184, 219),
-        Color::White => (229, 229, 229),
-        Color::Indexed(idx) => indexed_color_to_rgb(idx),
-        _ => (200, 200, 200),
-    }
-}
-
-/// Map a 256-color palette index to approximate RGB.
-fn indexed_color_to_rgb(idx: u8) -> (u8, u8, u8) {
-    match idx {
-        // 0-7: standard colors (same as named ANSI)
-        0 => (0, 0, 0),
-        1 => (205, 49, 49),
-        2 => (13, 188, 121),
-        3 => (229, 229, 16),
-        4 => (36, 114, 200),
-        5 => (188, 63, 188),
-        6 => (17, 168, 205),
-        7 => (170, 170, 170),
-        // 8-15: bright colors
-        8 => (118, 118, 118),
-        9 => (241, 76, 76),
-        10 => (35, 209, 139),
-        11 => (245, 245, 67),
-        12 => (59, 142, 234),
-        13 => (214, 112, 214),
-        14 => (41, 184, 219),
-        15 => (229, 229, 229),
-        // 16-231: 6x6x6 color cube
-        16..=231 => {
-            let n = idx - 16;
-            let b_idx = n % 6;
-            let g_idx = (n / 6) % 6;
-            let r_idx = n / 36;
-            let to_val = |i: u8| if i == 0 { 0u8 } else { 55 + 40 * i };
-            (to_val(r_idx), to_val(g_idx), to_val(b_idx))
-        }
-        // 232-255: grayscale ramp
-        232..=255 => {
-            let v = 8 + 10 * (idx - 232);
-            (v, v, v)
-        }
-    }
-}
-
-/// Apply a foreground color fade to the task title range.
-/// Interpolates each span's foreground from `start_fg` toward its original fg color
-/// based on `t` (0.0 = fully `start_fg`, 1.0 = original foreground).
-fn apply_fg_fade_to_title_range<'a>(
-    line: Line<'a>,
-    plain_line: &str,
-    start_fg: (u8, u8, u8),
-    t: f64,
-) -> Line<'a> {
-    let (text_start, text_end) = match find_title_range(plain_line) {
-        Some(range) => range,
-        None => return line,
-    };
-
-    // Flatten spans into per-character (char, style) pairs.
-    let mut chars_with_styles: Vec<(char, Style)> = Vec::new();
-    for span in &line.spans {
-        for c in span.content.chars() {
-            chars_with_styles.push((c, span.style));
-        }
-    }
-
-    // Rebuild spans, applying fg interpolation only within the title range.
-    let mut new_spans: Vec<Span<'a>> = Vec::new();
-    let mut current_buf = String::new();
-    let mut current_style = Style::default();
-    let mut first = true;
-
-    for (char_idx, (c, base_style)) in chars_with_styles.iter().enumerate() {
-        let style = if char_idx >= text_start && char_idx < text_end {
-            let orig_fg = match base_style.fg {
-                Some(c) => color_to_rgb(c),
-                // No foreground set — assume light gray for dark terminals.
-                None => (200, 200, 200),
-            };
-            let r = (start_fg.0 as f64 + (orig_fg.0 as f64 - start_fg.0 as f64) * t) as u8;
-            let g = (start_fg.1 as f64 + (orig_fg.1 as f64 - start_fg.1 as f64) * t) as u8;
-            let b = (start_fg.2 as f64 + (orig_fg.2 as f64 - start_fg.2 as f64) * t) as u8;
-            base_style.fg(Color::Rgb(r, g, b))
         } else {
             *base_style
         };
