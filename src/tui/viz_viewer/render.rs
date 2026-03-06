@@ -20,6 +20,9 @@ use crate::tui::markdown::markdown_to_lines;
 const SIDE_MIN_WIDTH: u16 = 100;
 
 pub fn draw(frame: &mut Frame, app: &mut VizApp) {
+    // Increment frame tick counter (used for animated spinners).
+    app.tick_count = app.tick_count.wrapping_add(1);
+
     // Clear expired jump targets (>2 seconds old).
     if let Some((_, when)) = app.jump_target
         && when.elapsed() > std::time::Duration::from_secs(2)
@@ -1726,7 +1729,7 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
         rendered_lines.push(Line::from(""));
     }
 
-    // Streaming indicator when awaiting response.
+    // Streaming response or thinking indicator when awaiting response.
     if app.chat.awaiting_response {
         rendered_lines.push(Line::from(Span::styled(
             "↯ ...",

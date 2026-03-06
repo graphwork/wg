@@ -67,6 +67,7 @@ fn run_event_loop_inner(terminal: &mut DefaultTerminal, app: &mut VizApp) -> Res
 
     loop {
         app.maybe_refresh();
+        app.poll_streaming_fast();
         app.drain_commands();
         terminal.draw(|frame| render::draw(frame, app))?;
 

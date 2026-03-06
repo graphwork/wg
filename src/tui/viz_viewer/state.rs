@@ -678,6 +678,11 @@ pub struct ChatState {
     pub viewport_height: usize,
     /// Scroll offset from top (set each frame by renderer for scrollbar dragging).
     pub scroll_from_top: usize,
+    /// Live token counts from coordinator's current turn (input, output).
+    pub thinking_tokens: Option<(u64, u64)>,
+    /// Streaming text from the coordinator's in-progress response.
+    /// Populated by polling `.workgraph/chat/.streaming`.
+    pub streaming_text: Option<String>,
 }
 
 impl Default for ChatState {
@@ -694,6 +699,8 @@ impl Default for ChatState {
             total_rendered_lines: 0,
             viewport_height: 0,
             scroll_from_top: 0,
+            thinking_tokens: None,
+            streaming_text: None,
         }
     }
 }
@@ -1333,6 +1340,18 @@ pub struct VizApp {
     /// Populated each frame by the renderer; used for mouse click hit-testing.
     pub detail_section_header_lines: Vec<(usize, String)>,
 
+    // ── Live stream (detail view) ──
+    /// Task ID currently being live-streamed (if any).
+    live_stream_task_id: Option<String>,
+    /// Byte offset into raw_stream.jsonl for incremental reads.
+    live_stream_offset: u64,
+    /// Accumulated chat lines from the live stream (output section only).
+    live_stream_lines: Vec<String>,
+    /// Index into rendered_lines where the Output section content starts.
+    live_stream_output_insert_idx: usize,
+    /// Auto-scroll to bottom when new content arrives (disabled when user scrolls up).
+    live_stream_auto_scroll: bool,
+
     // ── Multi-panel layout ──
     /// Whether the right panel is visible (toggle with `\`).
     pub right_panel_visible: bool,
@@ -1429,6 +1448,9 @@ pub struct VizApp {
     pub message_name_threshold: u16,
     /// Cached: indent for message body when name is on its own line.
     pub message_indent: u16,
+
+    // ── Tick counter (increments each frame, used for animated spinners) ──
+    pub tick_count: u64,
 
     // ── Scrollbar auto-hide (per-pane) ──
     /// Timestamp of the last scroll activity in the graph pane.
@@ -1568,6 +1590,11 @@ impl VizApp {
                 .map(|s| s.to_string())
                 .collect(),
             detail_section_header_lines: Vec::new(),
+            live_stream_task_id: None,
+            live_stream_offset: 0,
+            live_stream_lines: Vec::new(),
+            live_stream_output_insert_idx: 0,
+            live_stream_auto_scroll: true,
             right_panel_visible: true,
             focused_panel: FocusedPanel::Graph,
             right_panel_tab: RightPanelTab::Chat,
@@ -1606,6 +1633,7 @@ impl VizApp {
             animation_mode,
             message_name_threshold: config.tui.message_name_threshold,
             message_indent: config.tui.message_indent,
+            tick_count: 0,
             graph_scroll_activity: None,
             panel_scroll_activity: None,
             scrollbar_drag: None,
@@ -2638,14 +2666,21 @@ impl VizApp {
             self.load_stats();
             self.load_agent_monitor();
             self.update_agent_streams();
-            // Preserve HUD scroll position when the selected task hasn't changed.
-            self.invalidate_hud();
-            // Eagerly reload so we can restore scroll before render.
-            self.load_hud_detail();
-            if prev_hud_task.is_some()
-                && prev_hud_task == self.hud_detail.as_ref().map(|d| d.task_id.clone())
-            {
-                self.hud_scroll = prev_hud_scroll;
+            // For live-streaming tasks, prefer incremental update over full rebuild.
+            let has_live_stream = self.live_stream_task_id.is_some()
+                && prev_hud_task == self.live_stream_task_id;
+            if has_live_stream && !graph_changed {
+                // Incremental: append new lines from raw_stream.jsonl.
+                self.refresh_live_stream();
+            } else {
+                self.invalidate_hud();
+                self.load_hud_detail();
+                if prev_hud_task.is_some()
+                    && prev_hud_task == self.hud_detail.as_ref().map(|d| d.task_id.clone())
+                    && self.live_stream_task_id.is_none()
+                {
+                    self.hud_scroll = prev_hud_scroll;
+                }
             }
             // Reload log pane content if Log tab is active.
             if self.right_panel_tab == RightPanelTab::Log {
@@ -2679,6 +2714,10 @@ impl VizApp {
         if self.chat.awaiting_response || self.right_panel_tab == RightPanelTab::Chat {
             self.check_coordinator_status();
             self.poll_chat_messages();
+            if self.chat.awaiting_response {
+                self.poll_thinking_tokens();
+                self.poll_streaming_text();
+            }
         }
 
         self.last_refresh = Instant::now();
@@ -2859,6 +2898,13 @@ impl VizApp {
         }
 
         self.hud_scroll = 0;
+        // Reset live stream state when switching tasks.
+        if self.live_stream_task_id.as_deref() != Some(&task_id) {
+            self.live_stream_task_id = None;
+            self.live_stream_offset = 0;
+            self.live_stream_lines.clear();
+            self.live_stream_auto_scroll = true;
+        }
 
         let graph_path = self.workgraph_dir.join("graph.jsonl");
         let graph = match load_graph(&graph_path) {
@@ -2922,49 +2968,80 @@ impl VizApp {
         }
 
         // ── Agent output (full) ──
-        // Try live agent dir first, then fall back to archived logs
-        let output_path = task
-            .assigned
-            .as_ref()
-            .map(|aid| {
-                self.workgraph_dir
-                    .join("agents")
-                    .join(aid)
-                    .join("output.log")
-            })
-            .filter(|p| p.exists())
-            .or_else(|| find_latest_archive(&self.workgraph_dir, &task.id, "output.txt"));
-        if let Some(output_path) = output_path {
-            if self.detail_raw_json {
-                lines.push("── Output (raw) ── [R: human-readable]".to_string());
-            } else {
-                lines.push("── Output ── [R: raw JSON]".to_string());
-            }
-            if let Ok(content) = std::fs::read_to_string(&output_path) {
-                for line in content.lines() {
-                    let trimmed = line.trim();
-                    if (trimmed.starts_with('{') || trimmed.starts_with('['))
-                        && let Ok(val) = serde_json::from_str::<serde_json::Value>(trimmed)
-                    {
-                        if self.detail_raw_json {
-                            // Raw mode: pretty-printed JSON
-                            if let Ok(pretty) = serde_json::to_string_pretty(&val) {
-                                for pline in pretty.lines() {
-                                    lines.push(format!("  {}", pline));
-                                }
-                            } else {
-                                lines.push(format!("  {}", line));
-                            }
-                        } else {
-                            // Human-readable mode: extract key/value pairs
-                            flatten_json_to_lines(&val, "  ", &mut lines);
-                        }
-                    } else {
-                        lines.push(format!("  {}", line));
-                    }
+        // For in-progress tasks, live-stream from raw_stream.jsonl as readable chat.
+        // For completed tasks, use output.log as before.
+        let is_live = task.status == workgraph::graph::Status::InProgress;
+        let raw_stream_path = task.assigned.as_ref().map(|aid| {
+            self.workgraph_dir
+                .join("agents")
+                .join(aid)
+                .join("raw_stream.jsonl")
+        });
+
+        if is_live && !self.detail_raw_json {
+            if let Some(ref rsp) = raw_stream_path {
+                if rsp.exists() {
+                    lines.push("── Output (live) ── [R: raw JSON]".to_string());
+                    let output_insert_idx = lines.len();
+                    let (chat_lines, new_offset) =
+                        extract_chat_lines_from_raw_stream(rsp, 0);
+                    lines.extend(chat_lines.iter().cloned());
+                    lines.push(String::new());
+                    // Set up live stream state for incremental updates.
+                    self.live_stream_task_id = Some(task_id.clone());
+                    self.live_stream_offset = new_offset;
+                    self.live_stream_lines = chat_lines;
+                    self.live_stream_output_insert_idx = output_insert_idx;
+                    self.live_stream_auto_scroll = true;
                 }
             }
-            lines.push(String::new());
+        } else {
+            // Reset live stream state when not live-streaming.
+            if self.live_stream_task_id.as_deref() == Some(&task_id) {
+                self.live_stream_task_id = None;
+            }
+            let output_path = task
+                .assigned
+                .as_ref()
+                .map(|aid| {
+                    self.workgraph_dir
+                        .join("agents")
+                        .join(aid)
+                        .join("output.log")
+                })
+                .filter(|p| p.exists())
+                .or_else(|| find_latest_archive(&self.workgraph_dir, &task.id, "output.txt"));
+            if let Some(output_path) = output_path {
+                if self.detail_raw_json {
+                    lines.push("── Output (raw) ── [R: human-readable]".to_string());
+                } else {
+                    lines.push("── Output ── [R: raw JSON]".to_string());
+                }
+                if let Ok(content) = std::fs::read_to_string(&output_path) {
+                    for line in content.lines() {
+                        let trimmed = line.trim();
+                        if (trimmed.starts_with('{') || trimmed.starts_with('['))
+                            && let Ok(val) =
+                                serde_json::from_str::<serde_json::Value>(trimmed)
+                        {
+                            if self.detail_raw_json {
+                                if let Ok(pretty) = serde_json::to_string_pretty(&val) {
+                                    for pline in pretty.lines() {
+                                        lines.push(format!("  {}", pline));
+                                    }
+                                } else {
+                                    lines.push(format!("  {}", line));
+                                }
+                            } else {
+                                flatten_json_to_lines(&val, "  ", &mut lines);
+                            }
+                        } else {
+                            lines.push(format!("  {}", line));
+                        }
+                    }
+                }
+                lines.push(String::new());
+            }
         }
 
         // ── Evaluation ──
@@ -3176,6 +3253,89 @@ impl VizApp {
         self.hud_detail = None;
     }
 
+    /// Incrementally update the live stream output in the detail view.
+    /// Returns true if new content was appended.
+    pub fn refresh_live_stream(&mut self) -> bool {
+        let task_id = match self.live_stream_task_id.clone() {
+            Some(id) => id,
+            None => return false,
+        };
+
+        // Verify the detail is still showing this task.
+        let showing_this_task = self
+            .hud_detail
+            .as_ref()
+            .is_some_and(|d| d.task_id == task_id);
+        if !showing_this_task {
+            self.live_stream_task_id = None;
+            return false;
+        }
+
+        // Find the raw_stream.jsonl path from graph.
+        let graph_path = self.workgraph_dir.join("graph.jsonl");
+        let graph = match load_graph(&graph_path) {
+            Ok(g) => g,
+            Err(_) => return false,
+        };
+        let task = match graph.tasks().find(|t| t.id == task_id) {
+            Some(t) => t.clone(),
+            None => return false,
+        };
+
+        // If task is no longer in-progress, stop live streaming and do a full reload.
+        if task.status != workgraph::graph::Status::InProgress {
+            self.live_stream_task_id = None;
+            self.invalidate_hud();
+            self.load_hud_detail();
+            return true;
+        }
+
+        let agent_id = match task.assigned.as_ref() {
+            Some(a) => a,
+            None => return false,
+        };
+        let rsp = self
+            .workgraph_dir
+            .join("agents")
+            .join(agent_id)
+            .join("raw_stream.jsonl");
+        if !rsp.exists() {
+            return false;
+        }
+
+        let (new_lines, new_offset) =
+            extract_chat_lines_from_raw_stream(&rsp, self.live_stream_offset);
+        if new_lines.is_empty() {
+            return false;
+        }
+
+        self.live_stream_offset = new_offset;
+        self.live_stream_lines.extend(new_lines.iter().cloned());
+
+        // Splice new lines into rendered_lines, just before the trailing empty line.
+        if let Some(ref mut detail) = self.hud_detail {
+            let insert_at = self.live_stream_output_insert_idx + self.live_stream_lines.len()
+                - new_lines.len();
+            let clamped = insert_at.min(detail.rendered_lines.len());
+            for (i, line) in new_lines.iter().enumerate() {
+                detail.rendered_lines.insert(clamped + i, line.clone());
+            }
+        }
+
+        // Auto-scroll to bottom if enabled.
+        if self.live_stream_auto_scroll {
+            if let Some(ref detail) = self.hud_detail {
+                let total = detail.rendered_lines.len();
+                let viewport = self.hud_detail_viewport_height;
+                if total > viewport {
+                    self.hud_scroll = total.saturating_sub(viewport);
+                }
+            }
+        }
+
+        true
+    }
+
     /// Load HUD detail for an arbitrary task ID (used for navigating to internal tasks
     /// like assign-* and evaluate-* from the Agency tab).
     pub fn load_hud_detail_for_task(&mut self, target_task_id: &str) {
@@ -3328,6 +3488,10 @@ impl VizApp {
     /// Scroll the HUD panel up.
     pub fn hud_scroll_up(&mut self, amount: usize) {
         self.hud_scroll = self.hud_scroll.saturating_sub(amount);
+        // User scrolled up — disable live stream auto-scroll.
+        if self.live_stream_task_id.is_some() {
+            self.live_stream_auto_scroll = false;
+        }
     }
 
     /// Scroll the HUD panel down using the cached wrapped line count and viewport height.
@@ -3336,6 +3500,10 @@ impl VizApp {
             .hud_wrapped_line_count
             .saturating_sub(self.hud_detail_viewport_height);
         self.hud_scroll = (self.hud_scroll + amount).min(max_scroll);
+        // Re-enable auto-scroll if user scrolled to the bottom.
+        if self.live_stream_task_id.is_some() && self.hud_scroll >= max_scroll {
+            self.live_stream_auto_scroll = true;
+        }
     }
 
     /// Toggle collapse state of the section header at the current scroll position.
@@ -3880,7 +4048,13 @@ impl VizApp {
             detail_raw_json: false,
             detail_collapsed_sections: std::collections::HashSet::new(),
             detail_section_header_lines: Vec::new(),
+            live_stream_task_id: None,
+            live_stream_offset: 0,
+            live_stream_lines: Vec::new(),
+            live_stream_output_insert_idx: 0,
+            live_stream_auto_scroll: true,
             right_panel_visible: false,
+
             focused_panel: FocusedPanel::Graph,
             right_panel_tab: RightPanelTab::Detail,
             right_panel_percent: 35,
@@ -3915,6 +4089,7 @@ impl VizApp {
             animation_mode: AnimationMode::Normal,
             message_name_threshold: 8,
             message_indent: 2,
+            tick_count: 0,
             graph_scroll_activity: None,
             panel_scroll_activity: None,
             scrollbar_drag: None,
@@ -4621,12 +4796,48 @@ impl VizApp {
         if self.chat.awaiting_response {
             self.chat.awaiting_response = false;
             self.chat.last_request_id = None;
+            self.chat.streaming_text = None;
         }
 
         // Auto-scroll to bottom when new messages arrive (if user hasn't scrolled up).
         if self.chat.scroll == 0 {
             // Already at bottom; new messages will be visible.
         }
+    }
+
+    /// Fast-path polling for streaming text and thinking tokens.
+    /// Called every frame (50ms) instead of every refresh_interval (1500ms)
+    /// so that progressive rendering appears smooth.
+    pub fn poll_streaming_fast(&mut self) {
+        if !self.chat.awaiting_response {
+            return;
+        }
+        self.poll_streaming_text();
+        self.poll_thinking_tokens();
+        self.poll_chat_messages();
+    }
+
+    /// Poll for streaming response text from the coordinator.
+    pub fn poll_streaming_text(&mut self) {
+        let new_text = workgraph::chat::read_streaming(&self.workgraph_dir);
+        let changed = new_text != self.chat.streaming_text;
+        self.chat.streaming_text = new_text;
+
+        // Auto-scroll to bottom when new streaming text arrives and user is at bottom.
+        if changed && self.chat.scroll == 0 {
+            // Already at bottom; new text will be visible.
+        }
+    }
+
+    /// Poll for live token counts from the coordinator's current turn.
+    pub fn poll_thinking_tokens(&mut self) {
+        let path = self.workgraph_dir.join("chat").join(".thinking-tokens");
+        self.chat.thinking_tokens = std::fs::read_to_string(&path).ok().and_then(|s| {
+            let mut parts = s.trim().split_whitespace();
+            let input: u64 = parts.next()?.parse().ok()?;
+            let output: u64 = parts.next()?.parse().ok()?;
+            Some((input, output))
+        });
     }
 
     /// Send a chat message to the coordinator via IPC.
@@ -6277,6 +6488,98 @@ fn humanize_key(key: &str) -> String {
         }
     }
     result
+}
+
+/// Extract readable chat lines from a raw_stream.jsonl file (Claude CLI format).
+///
+/// Reads from `offset` bytes into the file. Returns (new_lines, new_offset).
+/// Each assistant text block becomes indented markdown lines.
+/// Tool uses are shown as compact "  ▶ <ToolName>" lines.
+fn extract_chat_lines_from_raw_stream(
+    path: &std::path::Path,
+    offset: u64,
+) -> (Vec<String>, u64) {
+    use std::io::{BufRead, Seek, SeekFrom};
+
+    let file = match std::fs::File::open(path) {
+        Ok(f) => f,
+        Err(_) => return (Vec::new(), offset),
+    };
+    let end = file.metadata().map(|m| m.len()).unwrap_or(0);
+    if offset >= end {
+        return (Vec::new(), offset);
+    }
+
+    let mut file = file;
+    if file.seek(SeekFrom::Start(offset)).is_err() {
+        return (Vec::new(), offset);
+    }
+    let reader = std::io::BufReader::new(&file);
+    let mut lines_out = Vec::new();
+    let mut new_offset = offset;
+
+    for line_result in reader.lines() {
+        let line = match line_result {
+            Ok(l) => l,
+            Err(_) => break,
+        };
+        new_offset += line.len() as u64 + 1; // +1 for newline
+        let trimmed = line.trim();
+        if trimmed.is_empty() || !trimmed.starts_with('{') {
+            continue;
+        }
+        let val: serde_json::Value = match serde_json::from_str(trimmed) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let event_type = match val.get("type").and_then(|t| t.as_str()) {
+            Some(t) => t,
+            None => continue,
+        };
+
+        match event_type {
+            "assistant" => {
+                let content = val
+                    .get("message")
+                    .and_then(|m| m.get("content"))
+                    .and_then(|c| c.as_array());
+                if let Some(blocks) = content {
+                    let mut tool_names: Vec<String> = Vec::new();
+                    for block in blocks {
+                        let block_type = block.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                        match block_type {
+                            "text" => {
+                                if let Some(text) = block.get("text").and_then(|t| t.as_str()) {
+                                    let text = text.trim();
+                                    if !text.is_empty() {
+                                        for tl in text.lines() {
+                                            lines_out.push(format!("  {}", tl));
+                                        }
+                                        lines_out.push(String::new());
+                                    }
+                                }
+                            }
+                            "tool_use" => {
+                                if let Some(name) =
+                                    block.get("name").and_then(|n| n.as_str())
+                                {
+                                    tool_names.push(name.to_string());
+                                }
+                            }
+                            _ => {} // skip thinking, etc.
+                        }
+                    }
+                    if !tool_names.is_empty() {
+                        lines_out
+                            .push(format!("  \u{25b6} {}", tool_names.join(", ")));
+                    }
+                }
+            }
+            _ => {} // skip system, user (tool_result), result, rate_limit_event, etc.
+        }
+    }
+
+    (lines_out, new_offset)
 }
 
 fn format_timestamp(ts: &str) -> String {
