@@ -947,6 +947,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         assert!(result.is_ok());
 
@@ -971,6 +972,7 @@ mod tests {
             Some(60),
             None,
             Some("shell"),
+            None,
             None,
             None,
             None,
@@ -1049,6 +1051,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         assert!(result.is_ok());
 
@@ -1082,6 +1085,7 @@ mod tests {
             Some("creator-hash"),
             Some("haiku"),
             Some("Retire below 0.3 after 10 evals"),
+            None,
             None,
             None,
             None,
