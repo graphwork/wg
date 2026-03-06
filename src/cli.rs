@@ -1113,6 +1113,10 @@ pub enum Commands {
         #[arg(long)]
         triage_timeout: Option<u64>,
 
+        /// Set timeout in seconds for evaluation LLM calls (default: 120)
+        #[arg(long)]
+        eval_timeout: Option<u64>,
+
         /// Set max bytes to read from agent output log for triage (default: 50000)
         #[arg(long)]
         triage_max_log_bytes: Option<usize>,

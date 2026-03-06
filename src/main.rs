@@ -1436,6 +1436,7 @@ fn main() -> Result<()> {
             auto_triage,
             triage_model,
             triage_timeout,
+            eval_timeout,
             triage_max_log_bytes,
             max_child_tasks,
             max_task_depth,
@@ -1555,6 +1556,7 @@ fn main() -> Result<()> {
                     && auto_triage.is_none()
                     && triage_model.is_none()
                     && triage_timeout.is_none()
+                    && eval_timeout.is_none()
                     && triage_max_log_bytes.is_none()
                     && max_child_tasks.is_none()
                     && max_task_depth.is_none()
@@ -1597,6 +1599,7 @@ fn main() -> Result<()> {
                     auto_triage,
                     triage_model.as_deref(),
                     triage_timeout,
+                    eval_timeout,
                     triage_max_log_bytes,
                     max_child_tasks,
                     max_task_depth,

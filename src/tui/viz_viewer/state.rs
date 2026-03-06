@@ -5297,6 +5297,17 @@ impl VizApp {
             section: ConfigSection::Agency,
         });
         entries.push(ConfigEntry {
+            key: "agency.eval_timeout".into(),
+            label: "Eval timeout (s)".into(),
+            value: config
+                .agency
+                .eval_timeout
+                .map(|t| t.to_string())
+                .unwrap_or_else(|| "120".into()),
+            edit_kind: ConfigEditKind::TextInput,
+            section: ConfigSection::Agency,
+        });
+        entries.push(ConfigEntry {
             key: "agency.triage_max_log_bytes".into(),
             label: "Triage max log bytes".into(),
             value: config
@@ -5474,6 +5485,9 @@ impl VizApp {
             }
             "agency.triage_timeout" => {
                 config.agency.triage_timeout = new_value.parse::<u64>().ok();
+            }
+            "agency.eval_timeout" => {
+                config.agency.eval_timeout = new_value.parse::<u64>().ok();
             }
             "agency.triage_max_log_bytes" => {
                 config.agency.triage_max_log_bytes = new_value.parse::<usize>().ok();

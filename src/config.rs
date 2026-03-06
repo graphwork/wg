@@ -844,6 +844,11 @@ pub struct AgencyConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub triage_timeout: Option<u64>,
 
+    /// Timeout in seconds for evaluation LLM calls (default: 120).
+    /// Eval prompts are larger than triage prompts and need more time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eval_timeout: Option<u64>,
+
     /// Maximum bytes to read from agent output log for triage (default: 50000)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub triage_max_log_bytes: Option<usize>,
@@ -958,6 +963,7 @@ impl Default for AgencyConfig {
             auto_triage: false,
             triage_model: None,
             triage_timeout: None,
+            eval_timeout: None,
             triage_max_log_bytes: None,
             run_mode: default_run_mode(),
             min_exploration_rate: default_min_exploration_rate(),

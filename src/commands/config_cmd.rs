@@ -78,6 +78,9 @@ pub fn show(dir: &Path, scope: Option<ConfigScope>, json: bool) -> Result<()> {
         if let Some(timeout) = config.agency.triage_timeout {
             println!("  triage_timeout = {}", timeout);
         }
+        if let Some(timeout) = config.agency.eval_timeout {
+            println!("  eval_timeout = {}", timeout);
+        }
         if let Some(max_bytes) = config.agency.triage_max_log_bytes {
             println!("  triage_max_log_bytes = {}", max_bytes);
         }
@@ -207,6 +210,7 @@ pub fn update(
     auto_triage: Option<bool>,
     triage_model: Option<&str>,
     triage_timeout: Option<u64>,
+    eval_timeout: Option<u64>,
     triage_max_log_bytes: Option<usize>,
     max_child_tasks: Option<u32>,
     max_task_depth: Option<u32>,
@@ -373,6 +377,12 @@ pub fn update(
     if let Some(t) = triage_timeout {
         config.agency.triage_timeout = Some(t);
         println!("Set agency.triage_timeout = {}", t);
+        changed = true;
+    }
+
+    if let Some(t) = eval_timeout {
+        config.agency.eval_timeout = Some(t);
+        println!("Set agency.eval_timeout = {}", t);
         changed = true;
     }
 
