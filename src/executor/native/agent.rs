@@ -231,21 +231,25 @@ impl AgentLoop {
                     let mut results = Vec::new();
                     for block in &response.content {
                         if let ContentBlock::ToolUse { id, name, input } = block {
-                            // Stream: tool start
+                            // Stream: tool start (with detail)
                             if let Some(ref sw) = self.stream_writer {
-                                sw.write_tool_start(name, None);
+                                let detail = crate::stream_event::extract_tool_detail(name, input);
+                                sw.write_tool_start(name, detail);
                             }
                             let tool_start = std::time::Instant::now();
 
                             let output = self.tools.execute(name, input).await;
 
-                            // Stream: tool end
+                            // Stream: tool end (with output summary)
                             if let Some(ref sw) = self.stream_writer {
+                                let summary = crate::stream_event::summarize_tool_output(
+                                    &output.content, 120,
+                                );
                                 sw.write_tool_end(
                                     name,
                                     output.is_error,
                                     tool_start.elapsed().as_millis() as u64,
-                                    None,
+                                    summary,
                                 );
                             }
 
