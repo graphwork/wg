@@ -554,7 +554,7 @@ impl TemplateVars {
             model: task.model.clone().unwrap_or_default(),
             task_loop_info,
             task_verify: {
-                let mut parts = Vec::new();
+                let mut parts: Vec<String> = Vec::new();
                 if let Some(ref cmd) = task.verify_cmd {
                     parts.push(cmd.clone());
                 }

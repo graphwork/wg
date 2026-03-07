@@ -546,6 +546,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             false,
             false,
             None,
@@ -586,6 +587,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             false,
             false,
             None,
@@ -612,6 +614,7 @@ mod tests {
             &[],
             None,
             Some("sonnet"),
+            None,
             None,
             None,
             None,
@@ -1745,20 +1748,20 @@ mod tests {
         // Create: new-dep -> target -> downstream (all Done except new-dep)
         crate::commands::add::run(
             dir, "New dep", Some("new-dep"), None, &[], None, None, None,
-            &[], &[], &[], &[], None, None, None, None, None, None, None,
+            &[], &[], &[], &[], None, None, None, None, None, None, None, None,
             false, false, None, "internal", None, None, false, None, None,
         ).unwrap();
 
         crate::commands::add::run(
             dir, "Target", Some("target"), None, &[], None, None, None,
-            &[], &[], &[], &[], None, None, None, None, None, None, None,
+            &[], &[], &[], &[], None, None, None, None, None, None, None, None,
             false, false, None, "internal", None, None, false, None, None,
         ).unwrap();
 
         crate::commands::add::run(
             dir, "Downstream", Some("downstream"), None,
             &["target".to_string()], None, None, None,
-            &[], &[], &[], &[], None, None, None, None, None, None, None,
+            &[], &[], &[], &[], None, None, None, None, None, None, None, None,
             false, false, None, "internal", None, None, false, None, None,
         ).unwrap();
 

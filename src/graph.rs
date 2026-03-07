@@ -259,9 +259,12 @@ pub struct Task {
     /// Provider override for this task (anthropic, openai, openrouter, local)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
-    /// Verification criteria - if set, task requires review before done
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub verify: Option<String>,
+    /// Verification command — must exit 0 before task can be marked done
+    #[serde(skip_serializing_if = "Option::is_none", alias = "verify")]
+    pub verify_cmd: Option<String>,
+    /// Verification prompt — natural language criteria for LLM verification
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verify_prompt: Option<String>,
     /// Agent assigned to this task (content-hash of an Agent in the agency)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<String>,
@@ -691,8 +694,10 @@ struct TaskHelper {
     model: Option<String>,
     #[serde(default)]
     provider: Option<String>,
+    #[serde(default, alias = "verify")]
+    verify_cmd: Option<String>,
     #[serde(default)]
-    verify: Option<String>,
+    verify_prompt: Option<String>,
     #[serde(default)]
     agent: Option<String>,
     /// Deprecated: silently ignored on deserialization for backward compatibility.
@@ -776,7 +781,8 @@ impl<'de> Deserialize<'de> for Task {
             failure_reason: helper.failure_reason,
             model: helper.model,
             provider: helper.provider,
-            verify: helper.verify,
+            verify_cmd: helper.verify_cmd,
+            verify_prompt: helper.verify_prompt,
             agent,
             loop_iteration: helper.loop_iteration,
             cycle_failure_restarts: helper.cycle_failure_restarts,

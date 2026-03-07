@@ -457,12 +457,14 @@ fn test_smoke_liveness_heartbeat_removal_no_impact() {
             },
             StreamEvent::ToolStart {
                 name: "Bash".to_string(),
+                detail: None,
                 timestamp_ms: now_ms - 10_000,
             },
             StreamEvent::ToolEnd {
                 name: "Bash".to_string(),
                 is_error: false,
                 duration_ms: 5000,
+                output_summary: None,
                 timestamp_ms: now_ms - 5_000,
             },
             StreamEvent::Turn {
@@ -541,6 +543,7 @@ fn test_smoke_liveness_in_progress_tool_detection() {
             },
             StreamEvent::ToolStart {
                 name: "Bash".to_string(),
+                detail: None,
                 timestamp_ms: now_ms - 30_000,
             },
             // No ToolEnd — tool still running
@@ -561,6 +564,7 @@ fn test_smoke_liveness_in_progress_tool_detection() {
         name: "Bash".to_string(),
         is_error: false,
         duration_ms: 25_000,
+        output_summary: None,
         timestamp_ms: now_ms - 5_000,
     });
 

@@ -310,7 +310,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let mut task = make_task("t1", "Test Task");
         task.exec = Some("echo hello".to_string());
-        task.verify = None; // Not verified, should use wg done
+        task.verify_cmd = None; // Not verified, should use wg done
         setup_graph(temp_dir.path(), vec![task]);
 
         run(temp_dir.path(), "t1", "shell", None, None, false).unwrap();
@@ -340,7 +340,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let mut task = make_task("t1", "Test Task");
         task.exec = Some("echo hello".to_string());
-        task.verify = Some("manual".to_string());
+        task.verify_cmd = Some("manual".to_string());
         setup_graph(temp_dir.path(), vec![task]);
 
         run(temp_dir.path(), "t1", "shell", None, None, false).unwrap();

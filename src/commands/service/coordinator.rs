@@ -1601,6 +1601,138 @@ fn build_flip_verification_tasks(
     modified
 }
 
+/// Auto-create `.verify-<task-id>` validation tasks for completed tasks that have
+/// `verify_prompt` set. These are dispatched to a sonnet-class agent that checks
+/// the prose/natural-language verification criteria independently.
+///
+/// Returns `true` if the graph was modified.
+fn build_verify_prompt_tasks(
+    graph: &mut workgraph::graph::WorkGraph,
+    config: &Config,
+) -> bool {
+    let mut modified = false;
+    let verification_resolved =
+        config.resolve_model_for_role(workgraph::config::DispatchRole::Verification);
+
+    // Collect tasks that need verify-prompt validation tasks
+    let candidates: Vec<_> = graph
+        .tasks()
+        .filter(|t| {
+            // Must have verify_prompt set
+            t.verify_prompt.is_some()
+            // Must be done (verification happens after completion)
+            && t.status == Status::Done
+            // Skip system tasks to avoid loops
+            && !workgraph::graph::is_system_task(&t.id)
+            // Skip if .verify- task already exists
+            && graph.get_task(&format!(".verify-{}", t.id)).is_none()
+            // Skip if already tagged as verify-prompt-scheduled (survives gc)
+            && !t.tags.iter().any(|tag| tag == "verify-prompt-scheduled")
+        })
+        .map(|t| {
+            (
+                t.id.clone(),
+                t.title.clone(),
+                t.verify_prompt.clone().unwrap(),
+                t.description.as_deref().unwrap_or("(no description)").chars().take(2000).collect::<String>(),
+            )
+        })
+        .collect();
+
+    for (task_id, task_title, verify_prompt, source_desc) in &candidates {
+        let verify_task_id = format!(".verify-{}", task_id);
+
+        // Double-check
+        if graph.get_task(&verify_task_id).is_some() {
+            continue;
+        }
+
+        let desc = format!(
+            "## Verify Prompt Validation\n\n\
+             Independently verify whether task '{}' meets its verification criteria.\n\n\
+             ### Original Task\n\
+             **ID:** {}\n\
+             **Title:** {}\n\
+             **Description:**\n{}\n\n\
+             ### Verification Criteria\n\
+             {}\n\n\
+             ### Instructions\n\
+             1. Check the work done by the original agent (git log, test results, artifacts)\n\
+             2. Evaluate each verification criterion independently\n\
+             3. If ALL criteria pass: mark this task done with `wg done {}`\n\
+             4. If ANY criterion fails: run `wg fail '{}' --reason \"Verification failed: <details>\"` then mark this task done with `wg done {}`\n",
+            task_id, task_id, task_title, source_desc,
+            verify_prompt,
+            verify_task_id, task_id, verify_task_id,
+        );
+
+        let verify_task = Task {
+            id: verify_task_id.clone(),
+            title: format!("Verify: {}", task_title),
+            description: Some(desc),
+            status: Status::Open,
+            assigned: None,
+            estimate: None,
+            before: vec![],
+            after: vec![task_id.clone()],
+            requires: vec![],
+            tags: vec!["verification".to_string()],
+            skills: vec![],
+            inputs: vec![],
+            deliverables: vec![],
+            artifacts: vec![],
+            exec: None,
+            not_before: None,
+            created_at: Some(Utc::now().to_rfc3339()),
+            started_at: None,
+            completed_at: None,
+            log: vec![],
+            retry_count: 0,
+            max_retries: Some(1),
+            failure_reason: None,
+            model: Some(verification_resolved.model.clone()),
+            provider: verification_resolved.provider.clone(),
+            verify_cmd: None,
+            verify_prompt: None,
+            agent: None,
+            loop_iteration: 0,
+            cycle_failure_restarts: 0,
+            ready_after: None,
+            paused: false,
+            visibility: "internal".to_string(),
+            context_scope: None,
+            cycle_config: None,
+            exec_mode: Some("light".to_string()),
+            token_usage: None,
+            session_id: None,
+            wait_condition: None,
+            checkpoint: None,
+            resurrection_count: 0,
+            last_resurrected_at: None,
+        };
+
+        graph.add_node(Node::Task(verify_task));
+
+        // Wire bidirectional edge and tag source task
+        if let Some(source) = graph.get_task_mut(task_id) {
+            if !source.before.contains(&verify_task_id) {
+                source.before.push(verify_task_id.clone());
+            }
+            if !source.tags.iter().any(|t| t == "verify-prompt-scheduled") {
+                source.tags.push("verify-prompt-scheduled".to_string());
+            }
+        }
+
+        eprintln!(
+            "[coordinator] Created verify-prompt task '{}' for completed task '{}'",
+            verify_task_id, task_id,
+        );
+        modified = true;
+    }
+
+    modified
+}
+
 /// Spawn an evaluation task directly without the full agent spawn machinery.
 ///
 /// Instead of coordinator -> run.sh -> bash -> `wg evaluate` -> claude, this
@@ -2226,6 +2358,9 @@ pub fn coordinator_tick(
 
         // Phase 4.5: FLIP verification
         build_flip_verification_tasks(dir, graph, &config);
+
+        // Phase 4.6: Verify-prompt validation tasks
+        build_verify_prompt_tasks(graph, &config);
 
         Ok(())
     })
