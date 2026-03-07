@@ -535,6 +535,8 @@ mod tests {
         let mut record = PerformanceRecord {
             task_count: 2,
             avg_score: Some(0.7),
+            avg_cost_usd: None,
+            total_cost_usd: 0.0,
             evaluations: vec![
                 make_eval_ref(0.6, "t1", "m1"),
                 make_eval_ref(0.8, "t2", "m1"),

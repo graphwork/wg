@@ -1505,6 +1505,8 @@ mod tests {
         let a = PerformanceRecord {
             task_count: 1,
             avg_score: Some(0.9),
+            avg_cost_usd: None,
+            total_cost_usd: 0.0,
             evaluations: vec![EvaluationRef {
                 score: 0.9,
                 task_id: "t1".to_string(),
@@ -1516,6 +1518,8 @@ mod tests {
         let b = PerformanceRecord {
             task_count: 2,
             avg_score: Some(0.85),
+            avg_cost_usd: None,
+            total_cost_usd: 0.0,
             evaluations: vec![
                 EvaluationRef {
                     score: 0.9,
