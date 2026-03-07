@@ -722,7 +722,11 @@ fn apply_per_char_trace_coloring<'a>(
         } else if let Some(edges) = app.char_edge_map.get(&(orig_idx, char_idx)) {
             // Edge character with known edge(s): color if ANY edge matches topology.
             // Shared arc column positions may carry multiple edges.
-            // Priority: yellow (cycle) > magenta (upstream) > cyan (downstream).
+            // Priority: red (dangling) > yellow (cycle) > magenta (upstream) > cyan (downstream).
+            let is_dangling_edge = !app.dangling_edges.is_empty()
+                && edges
+                    .iter()
+                    .any(|(src, tgt)| app.dangling_edges.contains(&(src.clone(), tgt.clone())));
             let is_cycle_edge = !app.cycle_set.is_empty()
                 && edges
                     .iter()
@@ -733,7 +737,11 @@ fn apply_per_char_trace_coloring<'a>(
             let is_downstream_edge = edges
                 .iter()
                 .any(|(src, tgt)| in_downstream(src) && in_downstream(tgt));
-            if is_cycle_edge {
+            if is_dangling_edge {
+                let mut s = *base_style;
+                s.fg = Some(Color::Red);
+                s
+            } else if is_cycle_edge {
                 let mut s = *base_style;
                 s.fg = Some(Color::Yellow);
                 s
