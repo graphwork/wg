@@ -84,6 +84,12 @@ pub(crate) fn spawn_agent_inner(
         Status::Waiting => {
             anyhow::bail!("Cannot spawn on task '{}': task is Waiting", task_id);
         }
+        Status::PendingValidation => {
+            anyhow::bail!(
+                "Cannot spawn on task '{}': task is pending validation",
+                task_id
+            );
+        }
     }
 
     // Resolve context scope
@@ -161,12 +167,22 @@ pub(crate) fn spawn_agent_inner(
     // Use resolved exec_mode (already accounts for role defaults)
     let exec_mode = resolved_exec_mode.as_str();
 
+    // Resolve per-role provider for native executor.
+    let effective_provider: Option<String> = if settings.executor_type == "native" {
+        config
+            .resolve_model_for_role(workgraph::config::DispatchRole::TaskAgent)
+            .provider
+    } else {
+        None
+    };
+
     // Build the inner command string first
     let inner_command = build_inner_command(
         &settings,
         exec_mode,
         &output_dir,
         &effective_model,
+        &effective_provider,
         &vars,
         &task_exec,
         resume_session_id.as_deref(),
@@ -419,6 +435,7 @@ fn build_inner_command(
     exec_mode: &str,
     output_dir: &Path,
     effective_model: &Option<String>,
+    effective_provider: &Option<String>,
     vars: &TemplateVars,
     task_exec: &Option<String>,
     resume_session_id: Option<&str>,
@@ -613,6 +630,10 @@ fn build_inner_command(
             if let Some(m) = effective_model {
                 cmd_parts.push("--model".to_string());
                 cmd_parts.push(shell_escape(m));
+            }
+            if let Some(p) = effective_provider {
+                cmd_parts.push("--provider".to_string());
+                cmd_parts.push(shell_escape(p));
             }
             cmd_parts.join(" ")
         }

@@ -873,7 +873,7 @@ fn print_recursive_tree(
                 Status::InProgress => "\x1b[33m",
                 Status::Failed => "\x1b[31m",
                 Status::Open => "\x1b[37m",
-                Status::Blocked | Status::Abandoned | Status::Waiting => "\x1b[90m",
+                Status::Blocked | Status::Abandoned | Status::Waiting | Status::PendingValidation => "\x1b[90m",
             }
         };
 
@@ -885,7 +885,7 @@ fn print_recursive_tree(
                 Status::Open => "open",
                 Status::Blocked => "blocked",
                 Status::Abandoned => "abandoned",
-                Status::Waiting => "waiting",
+                Status::Waiting | Status::PendingValidation => "waiting",
             }
         };
 
@@ -1091,7 +1091,7 @@ fn print_timeline(
             Status::InProgress => "\x1b[33m",
             Status::Failed => "\x1b[31m",
             Status::Open => "\x1b[37m",
-            Status::Blocked | Status::Abandoned | Status::Waiting => "\x1b[90m",
+            Status::Blocked | Status::Abandoned | Status::Waiting | Status::PendingValidation => "\x1b[90m",
         }
     };
 
