@@ -60,7 +60,8 @@ pub fn run(
     max_retries: Option<u32>,
     model: Option<&str>,
     provider: Option<&str>,
-    verify: Option<&str>,
+    verify_cmd: Option<&str>,
+    verify_prompt: Option<&str>,
     max_iterations: Option<u32>,
     cycle_guard: Option<&str>,
     cycle_delay: Option<&str>,
@@ -284,7 +285,8 @@ pub fn run(
             failure_reason: None,
             model: model.map(String::from),
             provider: provider.map(String::from),
-            verify: verify.map(String::from),
+            verify_cmd: verify_cmd.map(String::from),
+            verify_prompt: verify_prompt.map(String::from),
             agent: None,
             loop_iteration: 0,
             cycle_failure_restarts: 0,
@@ -396,7 +398,7 @@ pub fn run_remote(
     deliverables: &[String],
     model: Option<&str>,
     provider: Option<&str>,
-    verify: Option<&str>,
+    verify_cmd: Option<&str>,
 ) -> Result<()> {
     use workgraph::federation::{check_peer_service, resolve_peer};
 
@@ -427,7 +429,7 @@ pub fn run_remote(
             skills: skills.to_vec(),
             deliverables: deliverables.to_vec(),
             model: model.map(String::from),
-            verify: verify.map(String::from),
+            verify: verify_cmd.map(String::from),
             origin: Some(origin),
         };
 
@@ -463,7 +465,7 @@ pub fn run_remote(
             deliverables,
             model,
             provider,
-            verify,
+            verify_cmd,
             &origin,
         )?;
         println!(
@@ -488,7 +490,7 @@ fn add_task_directly(
     deliverables: &[String],
     model: Option<&str>,
     provider: Option<&str>,
-    verify: Option<&str>,
+    verify_cmd: Option<&str>,
     origin: &str,
 ) -> Result<String> {
     let graph_path = super::graph_path(peer_workgraph_dir);
@@ -530,7 +532,8 @@ fn add_task_directly(
             failure_reason: None,
             model: model.map(String::from),
             provider: provider.map(String::from),
-            verify: verify.map(String::from),
+            verify_cmd: verify_cmd.map(String::from),
+            verify_prompt: None,
             agent: None,
             loop_iteration: 0,
             cycle_failure_restarts: 0,

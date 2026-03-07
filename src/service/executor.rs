@@ -553,7 +553,16 @@ impl TemplateVars {
             skills_preamble,
             model: task.model.clone().unwrap_or_default(),
             task_loop_info,
-            task_verify: task.verify.clone(),
+            task_verify: {
+                let mut parts = Vec::new();
+                if let Some(ref cmd) = task.verify_cmd {
+                    parts.push(cmd.clone());
+                }
+                if let Some(ref prompt) = task.verify_prompt {
+                    parts.push(prompt.clone());
+                }
+                if parts.is_empty() { None } else { Some(parts.join("\n")) }
+            },
             max_child_tasks: guardrails.max_child_tasks_per_agent,
             max_task_depth: guardrails.max_task_depth,
         }
@@ -987,7 +996,8 @@ mod tests {
             failure_reason: None,
             model: None,
             provider: None,
-            verify: None,
+            verify_cmd: None,
+            verify_prompt: None,
             agent: None,
             loop_iteration: 0,
             cycle_failure_restarts: 0,
@@ -2014,7 +2024,7 @@ args = ["--custom-flag"]
     #[test]
     fn test_build_prompt_includes_verify_when_present() {
         let mut task = make_test_task("task-1", "Test");
-        task.verify = Some("run cargo test and confirm all pass".to_string());
+        task.verify_cmd = Some("run cargo test and confirm all pass".to_string());
         let vars = TemplateVars::from_task(&task, Some("dep ctx"), None);
         let ctx = ScopeContext::default();
 
@@ -2028,7 +2038,7 @@ args = ["--custom-flag"]
     #[test]
     fn test_build_prompt_omits_verify_when_absent() {
         let task = make_test_task("task-1", "Test");
-        assert!(task.verify.is_none());
+        assert!(task.verify_cmd.is_none());
         let vars = TemplateVars::from_task(&task, Some("dep ctx"), None);
         let ctx = ScopeContext::default();
 
@@ -2039,7 +2049,7 @@ args = ["--custom-flag"]
     #[test]
     fn test_template_vars_verify_from_task() {
         let mut task = make_test_task("task-1", "Test");
-        task.verify = Some("check output format".to_string());
+        task.verify_cmd = Some("check output format".to_string());
         let vars = TemplateVars::from_task(&task, None, None);
         assert_eq!(vars.task_verify, Some("check output format".to_string()));
 

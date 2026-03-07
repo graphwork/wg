@@ -1118,7 +1118,8 @@ fn build_auto_assign_tasks(
             provider: config
                 .resolve_model_for_role(workgraph::config::DispatchRole::Assigner)
                 .provider,
-            verify: None,
+            verify_cmd: None,
+            verify_prompt: None,
             agent: config.agency.assigner_agent.clone(),
             loop_iteration: 0,
             cycle_failure_restarts: 0,
@@ -1343,7 +1344,8 @@ fn build_auto_evaluate_tasks(
             provider: config
                 .resolve_model_for_role(workgraph::config::DispatchRole::Evaluator)
                 .provider,
-            verify: None,
+            verify_cmd: None,
+            verify_prompt: None,
             agent: config.agency.evaluator_agent.clone(),
 
             loop_iteration: 0,
@@ -1476,7 +1478,7 @@ fn build_flip_verification_tasks(
         }
 
         // Build verification task description
-        let source_verify_cmd = source_task.verify.clone();
+        let source_verify_cmd = source_task.verify_cmd.clone();
         let source_title = source_task.title.clone();
         let source_desc_snippet = source_task
             .description
@@ -1551,7 +1553,8 @@ fn build_flip_verification_tasks(
             failure_reason: None,
             model: Some(verification_model.clone()),
             provider: verification_resolved.provider.clone(),
-            verify: source_verify_cmd,
+            verify_cmd: source_verify_cmd,
+            verify_prompt: None,
             agent: None,
             loop_iteration: 0,
             cycle_failure_restarts: 0,

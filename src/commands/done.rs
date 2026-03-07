@@ -118,7 +118,7 @@ fn run_inner(
     // Run verify command gate BEFORE acquiring the lock (can take up to 120s).
     // Read-only peek to get the verify command string.
     if let Ok((peek_graph, _)) = super::load_workgraph(dir) {
-        if let Some(verify_cmd) = peek_graph.get_task(id).and_then(|t| t.verify.clone()) {
+        if let Some(verify_cmd) = peek_graph.get_task(id).and_then(|t| t.verify_cmd.clone()) {
             if skip_verify {
                 if is_agent {
                     anyhow::bail!(
@@ -499,7 +499,7 @@ mod tests {
         let dir_path = dir.path();
 
         let mut task = make_task("t1", "Verified task", Status::InProgress);
-        task.verify = Some("true".to_string());
+        task.verify_cmd = Some("true".to_string());
 
         setup_workgraph(dir_path, vec![task]);
 
@@ -909,7 +909,7 @@ mod tests {
         let dir_path = dir.path();
 
         let mut task = make_task("t1", "Task with passing verify", Status::InProgress);
-        task.verify = Some("exit 0".to_string());
+        task.verify_cmd = Some("exit 0".to_string());
         setup_workgraph(dir_path, vec![task]);
 
         let result = run(dir_path, "t1", false, false);
@@ -927,7 +927,7 @@ mod tests {
         let dir_path = dir.path();
 
         let mut task = make_task("t1", "Task with failing verify", Status::InProgress);
-        task.verify = Some("exit 1".to_string());
+        task.verify_cmd = Some("exit 1".to_string());
         setup_workgraph(dir_path, vec![task]);
 
         let result = run(dir_path, "t1", false, false);
@@ -949,7 +949,7 @@ mod tests {
         let dir_path = dir.path();
 
         let mut task = make_task("t1", "Task with failing verify", Status::InProgress);
-        task.verify = Some("echo 'test failed: expected 42 got 0' >&2; exit 1".to_string());
+        task.verify_cmd = Some("echo 'test failed: expected 42 got 0' >&2; exit 1".to_string());
         setup_workgraph(dir_path, vec![task]);
 
         let result = run(dir_path, "t1", false, false);
@@ -968,7 +968,7 @@ mod tests {
         let dir_path = dir.path();
 
         let mut task = make_task("t1", "Task with failing verify", Status::InProgress);
-        task.verify = Some("exit 1".to_string());
+        task.verify_cmd = Some("exit 1".to_string());
         setup_workgraph(dir_path, vec![task]);
 
         // Use run_inner with is_agent=false to simulate human usage
@@ -987,7 +987,7 @@ mod tests {
         let dir_path = dir.path();
 
         let mut task = make_task("t1", "Task with failing verify", Status::InProgress);
-        task.verify = Some("exit 1".to_string());
+        task.verify_cmd = Some("exit 1".to_string());
         setup_workgraph(dir_path, vec![task]);
 
         // Use run_inner with is_agent=true to simulate agent context
@@ -1014,7 +1014,7 @@ mod tests {
         let dir_path = dir.path();
 
         let task = make_task("t1", "Task without verify", Status::InProgress);
-        assert!(task.verify.is_none());
+        assert!(task.verify_cmd.is_none());
         setup_workgraph(dir_path, vec![task]);
 
         let result = run(dir_path, "t1", false, false);
@@ -1032,7 +1032,7 @@ mod tests {
         let dir_path = dir.path();
 
         let mut task = make_task("t1", "Task with failing verify", Status::InProgress);
-        task.verify = Some("exit 1".to_string());
+        task.verify_cmd = Some("exit 1".to_string());
         setup_workgraph(dir_path, vec![task]);
 
         let result = run(dir_path, "t1", true, false);

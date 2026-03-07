@@ -203,7 +203,7 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
         max_retries: task.max_retries,
         failure_reason: task.failure_reason.clone(),
         model: task.model.clone(),
-        verify: task.verify.clone(),
+        verify: task.verify_cmd.clone(),
         agent: task.agent.clone(),
         loop_iteration: task.loop_iteration,
         cycle_failure_restarts: task.cycle_failure_restarts,

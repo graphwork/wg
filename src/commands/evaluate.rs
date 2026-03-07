@@ -242,7 +242,7 @@ pub fn run(
         task_title: &task.title,
         task_description: task.description.as_deref(),
         task_skills: &task.skills,
-        verify: task.verify.as_deref(),
+        verify: task.verify_cmd.as_deref(),
         agent: resolved_agent.as_ref(),
         role: role.as_ref(),
         tradeoff: resolved_tradeoff.as_ref(),

@@ -233,7 +233,7 @@ impl AgentLoop {
                         if let ContentBlock::ToolUse { id, name, input } = block {
                             // Stream: tool start
                             if let Some(ref sw) = self.stream_writer {
-                                sw.write_tool_start(name);
+                                sw.write_tool_start(name, None);
                             }
                             let tool_start = std::time::Instant::now();
 
@@ -245,6 +245,7 @@ impl AgentLoop {
                                     name,
                                     output.is_error,
                                     tool_start.elapsed().as_millis() as u64,
+                                    None,
                                 );
                             }
 
