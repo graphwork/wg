@@ -806,6 +806,8 @@ pub struct AgentMonitorEntry {
     pub started_at: Option<String>,
     /// ISO 8601 completion timestamp (for Done/Failed/Dead agents)
     pub completed_at: Option<String>,
+    /// Seconds since the agent's last stream event (None if no stream data or not working).
+    pub last_activity_secs: Option<u64>,
 }
 
 /// Live JSONL stream state for a single agent.
@@ -4151,6 +4153,15 @@ impl VizApp {
                             let end = completed.unwrap_or_else(chrono::Utc::now);
                             (end - s).num_seconds()
                         });
+                        // For working agents, compute time since last stream event.
+                        let last_activity_secs = if agent.status == AgentStatus::Working {
+                            Self::last_stream_event_ms(agent).map(|ts| {
+                                let now_ms = workgraph::stream_event::now_ms();
+                                ((now_ms - ts).max(0) / 1000) as u64
+                            })
+                        } else {
+                            None
+                        };
                         AgentMonitorEntry {
                             agent_id: id.clone(),
                             task_id: Some(agent.task_id.clone()),
@@ -4159,6 +4170,7 @@ impl VizApp {
                             runtime_secs,
                             started_at: Some(agent.started_at.clone()),
                             completed_at: agent.completed_at.clone(),
+                            last_activity_secs,
                         }
                     })
                     .collect();
@@ -4173,6 +4185,31 @@ impl VizApp {
                 self.agent_monitor.agents.clear();
             }
         }
+    }
+
+    /// Read the last stream event timestamp (ms) for an agent from its stream files.
+    fn last_stream_event_ms(agent: &workgraph::service::registry::AgentEntry) -> Option<i64> {
+        use workgraph::stream_event;
+        let output_path = std::path::Path::new(&agent.output_file);
+        let agent_dir = output_path.parent()?;
+
+        // Try unified stream.jsonl first
+        let stream_path = agent_dir.join(stream_event::STREAM_FILE_NAME);
+        if stream_path.exists() {
+            if let Ok((events, _)) = stream_event::read_stream_events(&stream_path, 0) {
+                return events.last().map(|e| e.timestamp_ms());
+            }
+        }
+
+        // Try raw_stream.jsonl (Claude CLI)
+        let raw_path = agent_dir.join(stream_event::RAW_STREAM_FILE_NAME);
+        if raw_path.exists() {
+            if let Ok((events, _)) = stream_event::translate_claude_stream(&raw_path, 0) {
+                return events.last().map(|e| e.timestamp_ms());
+            }
+        }
+
+        None
     }
 
     /// Update live JSONL stream state for all active (Working) agents.

@@ -3110,13 +3110,24 @@ fn draw_agents_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
         lines.push(Line::from(""));
 
         for agent in &app.agent_monitor.agents {
-            let status_indicator = match agent.status {
-                AgentStatus::Working => Span::styled("● ", Style::default().fg(Color::Green)),
-                AgentStatus::Done => Span::styled("✓ ", Style::default().fg(Color::Green)),
-                AgentStatus::Failed | AgentStatus::Dead => {
-                    Span::styled("✗ ", Style::default().fg(Color::Red))
+            // Stuck detection: working agent with no stream activity for 10+ minutes.
+            let is_stuck = matches!(agent.status, AgentStatus::Working)
+                && agent.last_activity_secs.map_or(false, |s| s >= 600);
+            let status_indicator = if is_stuck {
+                Span::styled("\u{26a0} ", Style::default().fg(Color::Yellow))
+            } else {
+                match agent.status {
+                    AgentStatus::Working => {
+                        Span::styled("● ", Style::default().fg(Color::Green))
+                    }
+                    AgentStatus::Done => {
+                        Span::styled("✓ ", Style::default().fg(Color::Green))
+                    }
+                    AgentStatus::Failed | AgentStatus::Dead => {
+                        Span::styled("✗ ", Style::default().fg(Color::Red))
+                    }
+                    _ => Span::styled("○ ", Style::default().fg(Color::DarkGray)),
                 }
-                _ => Span::styled("○ ", Style::default().fg(Color::DarkGray)),
             };
             // Build agent header with optional stream message count.
             let stream_info = app.agent_streams.get(&agent.agent_id);
@@ -3127,6 +3138,14 @@ fn draw_agents_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
                     Style::default().add_modifier(Modifier::BOLD),
                 ),
             ];
+            if is_stuck {
+                header_spans.push(Span::styled(
+                    " STUCK",
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                ));
+            }
             if let Some(ref tid) = agent.task_id {
                 let task_label = agent.task_title.as_deref().unwrap_or(tid.as_str());
                 header_spans.push(Span::styled(
@@ -3192,6 +3211,23 @@ fn draw_agents_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
                         timing,
                         Style::default().fg(Color::DarkGray),
                     )));
+                }
+
+                // Show last activity for working agents.
+                if is_alive {
+                    if let Some(secs) = agent.last_activity_secs {
+                        let activity_str =
+                            workgraph::format_duration(secs as i64, true);
+                        let style = if is_stuck {
+                            Style::default().fg(Color::Yellow)
+                        } else {
+                            Style::default().fg(Color::DarkGray)
+                        };
+                        lines.push(Line::from(Span::styled(
+                            format!("  Last activity: {} ago", activity_str),
+                            style,
+                        )));
+                    }
                 }
             }
             // Show live stream snippet for working agents.
