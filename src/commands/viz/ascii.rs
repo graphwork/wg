@@ -45,6 +45,7 @@ pub(crate) fn generate_ascii(
             forward_edges: HashMap::new(),
             reverse_edges: HashMap::new(),
             char_edge_map: HashMap::new(),
+            dangling_edges: HashSet::new(),
             cycle_members: HashMap::new(),
             phase_annotations: HashMap::new(),
         };
@@ -788,6 +789,7 @@ pub(crate) fn generate_ascii(
         forward_edges,
         reverse_edges,
         char_edge_map,
+        dangling_edges: HashSet::new(),
         cycle_members: cycle_members_map,
         phase_annotations: HashMap::new(),
     }

@@ -1418,6 +1418,8 @@ pub struct VizApp {
     /// Set of task IDs in the same SCC as the currently selected task.
     /// Empty if the selected task is not in any cycle.
     pub cycle_set: HashSet<String>,
+    /// Dangling dependency edges: (phantom_node_id, dependent_task_id).
+    pub dangling_edges: HashSet<(String, String)>,
     /// Active lifecycle phase annotations: parent_task_id → list of phases.
     pub phase_annotations: HashMap<String, Vec<crate::commands::viz::PhaseAnnotation>>,
 
@@ -1682,6 +1684,7 @@ impl VizApp {
             char_edge_map: std::collections::HashMap::new(),
             cycle_members: HashMap::new(),
             cycle_set: HashSet::new(),
+            dangling_edges: HashSet::new(),
             phase_annotations: HashMap::new(),
             hud_detail: None,
             hud_scroll: 0,
@@ -1815,6 +1818,7 @@ impl VizApp {
                 self.reverse_edges = viz_output.reverse_edges;
                 self.char_edge_map = viz_output.char_edge_map;
                 self.cycle_members = viz_output.cycle_members;
+                self.dangling_edges = viz_output.dangling_edges;
 
                 // Save toggle flag before clearing — used for scroll below.
                 let was_system_toggle = self.system_tasks_just_toggled;
@@ -1822,27 +1826,31 @@ impl VizApp {
                 // Detect newly appeared tasks and register splash animations.
                 // Skip on initial load (old_task_order is empty).
                 // System task toggle: instant show/hide — no animation.
+                // Also track the last new task ID for auto-focus below.
+                let mut last_new_task_id: Option<String> = None;
                 if !old_task_order.is_empty()
-                    && self.animation_mode.is_enabled()
                     && !self.system_tasks_just_toggled
                 {
                     let old_set: HashSet<&str> =
                         old_task_order.iter().map(|s| s.as_str()).collect();
                     let now = Instant::now();
                     for id in &self.task_order {
-                        if !old_set.contains(id.as_str())
-                            && !self.splash_animations.contains_key(id)
-                        {
-                            self.splash_animations.insert(
-                                id.clone(),
-                                Animation {
-                                    start: now,
-                                    flash_color: flash_color_for_kind(
-                                        AnimationKind::NewTask,
-                                    ),
-                                    kind: AnimationKind::NewTask,
-                                },
-                            );
+                        if !old_set.contains(id.as_str()) {
+                            last_new_task_id = Some(id.clone());
+                            if self.animation_mode.is_enabled()
+                                && !self.splash_animations.contains_key(id)
+                            {
+                                self.splash_animations.insert(
+                                    id.clone(),
+                                    Animation {
+                                        start: now,
+                                        flash_color: flash_color_for_kind(
+                                            AnimationKind::NewTask,
+                                        ),
+                                        kind: AnimationKind::NewTask,
+                                    },
+                                );
+                            }
                         }
                     }
                     self.system_tasks_just_toggled = false;
@@ -1922,7 +1930,22 @@ impl VizApp {
 
                 // Check for new-task focus marker (written by `wg add`).
                 // If present, override selection to the newly created task.
-                let new_task_focused = self.check_new_task_focus();
+                let mut new_task_focused = self.check_new_task_focus();
+
+                // Auto-focus on newly detected tasks even without a marker file.
+                // This handles tasks added by other agents or external processes.
+                // Only auto-navigate when on the Chat tab (same guard as marker focus).
+                if !new_task_focused {
+                    if let Some(ref new_id) = last_new_task_id {
+                        if self.right_panel_tab == RightPanelTab::Chat {
+                            if let Some(idx) = self.task_order.iter().position(|id| id == new_id) {
+                                self.selected_task_idx = Some(idx);
+                                self.notification = Some((format!("New task: {}", new_id), Instant::now()));
+                                new_task_focused = true;
+                            }
+                        }
+                    }
+                }
 
                 self.recompute_trace();
 
@@ -2007,6 +2030,7 @@ impl VizApp {
                 self.char_edge_map.clear();
                 self.cycle_members.clear();
                 self.cycle_set.clear();
+                self.dangling_edges.clear();
                 self.phase_annotations.clear();
                 self.update_scroll_bounds();
             }
@@ -4460,6 +4484,7 @@ impl VizApp {
             cycle_members: viz.cycle_members.clone(),
             phase_annotations: viz.phase_annotations.clone(),
             cycle_set: HashSet::new(),
+            dangling_edges: viz.dangling_edges.clone(),
             hud_detail: None,
             hud_scroll: 0,
             hud_wrapped_line_count: 0,
@@ -7991,6 +8016,7 @@ mod hud_tests {
             char_edge_map: HashMap::new(),
             cycle_members: HashMap::new(),
             phase_annotations: HashMap::new(),
+            dangling_edges: HashSet::new(),
         };
 
         let mut app = VizApp::from_viz_output_for_test(&empty_viz);

@@ -6,7 +6,7 @@
 
 #[cfg(test)]
 mod tui_editor_tests {
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
 
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use ratatui::Terminal;
@@ -31,6 +31,7 @@ mod tui_editor_tests {
             char_edge_map: HashMap::new(),
             cycle_members: HashMap::new(),
             phase_annotations: HashMap::new(),
+            dangling_edges: HashSet::new(),
         };
         let mut app = VizApp::from_viz_output_for_test(&viz);
         app.right_panel_visible = true;
@@ -938,7 +939,7 @@ mod tui_cursor_tests {
     use crossterm::event::{KeyCode, KeyModifiers};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
 
     use crate::commands::viz::VizOutput;
     use crate::tui::viz_viewer::render;
@@ -956,6 +957,7 @@ mod tui_cursor_tests {
             char_edge_map: HashMap::new(),
             cycle_members: HashMap::new(),
             phase_annotations: HashMap::new(),
+            dangling_edges: HashSet::new(),
         };
         let mut app = VizApp::from_viz_output_for_test(&viz);
         app.right_panel_visible = true;

@@ -45,6 +45,9 @@ pub struct VizOutput {
     /// Active lifecycle phase annotations: parent_task_id → list of phases.
     /// Used by the TUI for click-to-navigate on phase labels.
     pub phase_annotations: HashMap<String, Vec<PhaseAnnotation>>,
+    /// Dangling dependency edges: (phantom_node_id, dependent_task_id).
+    /// These edges point from a non-existent task to the task that depends on it.
+    pub dangling_edges: HashSet<(String, String)>,
 }
 
 /// Output format for visualization
@@ -651,6 +654,7 @@ pub fn generate_viz_output_from_graph(
                 char_edge_map: HashMap::new(),
                 cycle_members: HashMap::new(),
                 phase_annotations,
+                dangling_edges: HashSet::new(),
             }
         }
     };
