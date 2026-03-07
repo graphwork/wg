@@ -36,6 +36,8 @@ pub enum TaskEventKind {
     Failed,
     /// Task requires human approval.
     ApprovalNeeded,
+    /// Agent has a question for a human.
+    Question,
     /// Urgent: task needs immediate attention.
     Urgent,
 }
@@ -48,6 +50,7 @@ impl TaskEventKind {
             Self::Blocked => EventType::TaskBlocked,
             Self::Failed => EventType::TaskFailed,
             Self::ApprovalNeeded => EventType::Approval,
+            Self::Question => EventType::Question,
             Self::Urgent => EventType::Urgent,
         }
     }
@@ -64,6 +67,7 @@ pub fn format_event(event: &TaskEvent) -> RichMessage {
         TaskEventKind::Blocked => "🚫",
         TaskEventKind::Failed => "❌",
         TaskEventKind::ApprovalNeeded => "🔐",
+        TaskEventKind::Question => "❓",
         TaskEventKind::Urgent => "🚨",
     };
 
@@ -72,6 +76,7 @@ pub fn format_event(event: &TaskEvent) -> RichMessage {
         TaskEventKind::Blocked => "blocked",
         TaskEventKind::Failed => "failed",
         TaskEventKind::ApprovalNeeded => "approval needed",
+        TaskEventKind::Question => "question",
         TaskEventKind::Urgent => "URGENT",
     };
 

@@ -96,6 +96,7 @@ pub enum EventType {
     TaskBlocked,
     TaskFailed,
     Approval,
+    Question,
     Urgent,
 }
 
@@ -106,6 +107,7 @@ impl fmt::Display for EventType {
             Self::TaskBlocked => write!(f, "task_blocked"),
             Self::TaskFailed => write!(f, "task_failed"),
             Self::Approval => write!(f, "approval"),
+            Self::Question => write!(f, "question"),
             Self::Urgent => write!(f, "urgent"),
         }
     }
