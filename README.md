@@ -131,20 +131,21 @@ wg done set-up-ci-pipeline       # unblocks deploy-to-staging
 
 ### 7. Verification workflow
 
-Tasks created with `--verify` require human approval before completion:
+Tasks created with `--verify` go through a validation gate before completion. When an agent calls `wg done`, the task transitions to `PendingValidation` instead of `Done`:
 
 ```bash
 # Create a task that needs review
 wg add "Security audit" --verify "All findings documented with severity ratings"
 
-# Agent works on it, then marks it done
+# Agent works on it, then marks it done — status becomes PendingValidation
 wg done security-audit
 
-# The verify field is recorded for human reviewers to check
-wg show security-audit
+# Reviewer approves or rejects
+wg approve security-audit                          # transitions to Done
+wg reject security-audit --reason "Missing CVE references"  # reopens for rework
 ```
 
-The verify criteria are stored on the task for auditing and review purposes.
+Rejected tasks reopen for the agent to address feedback. After too many rejections (default: 3), the task is failed automatically. See [docs/COMMANDS.md](docs/COMMANDS.md) for full details.
 
 ## Using with AI Coding Assistants
 
@@ -450,13 +451,21 @@ Launch the interactive terminal dashboard:
 wg tui [--refresh-rate 2000]  # default: 2000ms refresh
 ```
 
-The TUI has three views:
+The TUI has three main views plus a rich inspector panel:
 
 **Dashboard** — split-pane showing tasks (left) and agents (right) with status bars.
 
-**Graph Explorer** — tree view of the dependency graph with task status and active agent indicators.
+**Graph Explorer** — tree view of the dependency graph with task status and active agent indicators. Touch drag-to-pan is supported for mobile terminals (Termux).
 
 **Log Viewer** — real-time tailing of agent output with auto-scroll.
+
+**Inspector panel** — nine tabbed views accessible via `Alt+Left`/`Alt+Right` (with slide animation): Chat, Detail, Log, Messages, Agency, Config, Files, Coordinator Log, and Firehose. The Firehose tab is a combined live stream of all agent activity. Resize the inspector with `i` (cycle through 1/3 → 1/2 → 2/3 → full) and `I` (shrink back).
+
+**Status bar features:**
+- Service health badge — colored dot (green/yellow/red) with tap-to-inspect showing service state, stuck tasks, and control actions
+- Token display — shows novel vs cached input split per task
+- Lifecycle indicators — Unicode symbols for agency phases (⊳ assigning, ∴ evaluating, validating, verifying) rendered in pink
+- Markdown rendering with syntax highlighting (pulldown-cmark + syntect) in detail views
 
 #### Keybindings
 
@@ -558,6 +567,12 @@ wg assign my-task <agent-hash>
    - `wg evaluate show` — view evaluation history
 6. **Evolution** uses performance data to create new roles/motivations and retire weak ones
 
+### FLIP pipeline
+
+FLIP (Fidelity via Latent Intent Probing) is an independent second-opinion scoring system. After a task completes, an LLM reconstructs what the task must have been from only the agent's output, then a comparison scores how well the output matched the actual task description. Low FLIP scores (below threshold) automatically trigger verification tasks where a stronger model independently checks the work.
+
+The full agency loop: **eval → FLIP → verify → evolve**. Evaluation grades quality, FLIP grades fidelity, verification catches low-confidence results, and evolution uses performance data to improve agent identities.
+
 ### Automation
 
 Enable auto-assign and auto-evaluate to run the full loop without manual intervention:
@@ -604,6 +619,32 @@ wg peer status                      # quick health check of all peers
 ```
 
 See [docs/AGENCY.md](docs/AGENCY.md) for the full agency system documentation.
+
+## Communication
+
+Agents and humans can exchange messages on tasks using `wg msg`:
+
+```bash
+# Send a message to a task (any agent working on it will see it)
+wg msg send my-task "The API schema changed — use v2 endpoints"
+
+# Read messages as an agent
+wg msg read my-task --agent $WG_AGENT_ID
+```
+
+For interactive conversation with the coordinator agent, use `wg chat`:
+
+```bash
+wg chat "What's the status of the auth refactor?"
+```
+
+See [docs/COMMANDS.md](docs/COMMANDS.md) for full messaging options.
+
+## Agent isolation
+
+When the service spawns multiple agents concurrently, each agent operates in its own [git worktree](https://git-scm.com/docs/git-worktree) to avoid file conflicts. Each worktree has an independent working tree and index while sharing the same repository, so agents can build, test, and commit without interfering with each other.
+
+See [docs/WORKTREE-ISOLATION.md](docs/WORKTREE-ISOLATION.md) for the full design and implementation details.
 
 ## Graph locking
 
@@ -772,7 +813,7 @@ wg trace show <task-id> --animate    # animated replay of execution over time
 
 ## Key concepts
 
-**Tasks** have a status (`open`, `in-progress`, `done`, `failed`, `abandoned`, `blocked`) and can block other tasks. Tasks can carry a per-task `model` override, an `agent` identity assignment, a `visibility` field (`internal`, `public`, `peer`) controlling what information is shared during trace exports, and a `context_scope` (`clean`, `task`, `graph`, `full`) controlling how much context the agent receives at dispatch.
+**Tasks** have a status (`open`, `in-progress`, `done`, `failed`, `abandoned`, `blocked`, `pending-validation`) and can block other tasks. Tasks can carry a per-task `model` override, an `agent` identity assignment, a `visibility` field (`internal`, `public`, `peer`) controlling what information is shared during trace exports, and a `context_scope` (`clean`, `task`, `graph`, `full`) controlling how much context the agent receives at dispatch.
 
 **Agents** are humans or AIs that do work. They can be AI agents (with a role and motivation that shape their behavior) or human agents (with contact info and a human executor like Matrix or email). All agents share the same identity model: capabilities, trust levels, rate, and capacity.
 
