@@ -310,7 +310,7 @@ pub(crate) fn generate_ascii(
         let is_agency_phase = use_color
             && annotations
                 .get(id)
-                .is_some_and(|a| a.contains("assigning") || a.contains("evaluating"));
+                .is_some_and(|a| a.contains("assigning") || a.contains("evaluating") || a.contains("validating") || a.contains("verifying"));
         let phase_info = if is_agency_phase {
             annotations
                 .get(id)
