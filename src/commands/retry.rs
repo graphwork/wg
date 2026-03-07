@@ -38,6 +38,7 @@ pub fn run(dir: &Path, id: &str) -> Result<()> {
             task.status = Status::Open;
             task.failure_reason = None;
             task.assigned = None;
+            task.session_id = None;
             task.tags.retain(|t| t != "converged");
 
             task.log.push(LogEntry {

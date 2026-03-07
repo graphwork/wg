@@ -61,35 +61,6 @@ enum DeadReason {
     ProcessExited,
 }
 
-/// Check stream file activity for an agent. Returns the timestamp of the last
-/// stream event (if any stream file exists), and whether the stream is stale.
-///
-/// Staleness threshold: 5 minutes with no stream events while PID is alive.
-const STREAM_STALE_THRESHOLD_MS: i64 = 5 * 60 * 1000;
-
-fn check_stream_liveness(agent: &AgentEntry) -> Option<i64> {
-    let output_path = std::path::Path::new(&agent.output_file);
-    let agent_dir = output_path.parent()?;
-
-    // Try unified stream.jsonl first (native executor, amplifier/shell bookends)
-    let stream_path = agent_dir.join(stream_event::STREAM_FILE_NAME);
-    if stream_path.exists()
-        && let Ok((events, _)) = stream_event::read_stream_events(&stream_path, 0)
-    {
-        return events.last().map(|e| e.timestamp_ms());
-    }
-
-    // Try raw_stream.jsonl (Claude CLI)
-    let raw_path = agent_dir.join(stream_event::RAW_STREAM_FILE_NAME);
-    if raw_path.exists()
-        && let Ok((events, _)) = stream_event::translate_claude_stream(&raw_path, 0)
-    {
-        return events.last().map(|e| e.timestamp_ms());
-    }
-
-    None
-}
-
 /// Check if an agent should be considered dead
 fn detect_dead_reason(agent: &AgentEntry) -> Option<DeadReason> {
     if !agent.is_alive() {
@@ -126,26 +97,8 @@ pub(crate) fn cleanup_dead_agents(dir: &Path, graph_path: &Path) -> Result<Vec<S
         })
         .collect();
 
-    // Auto-bump heartbeat for agents whose process is still alive.
-    // Also check stream file activity for more precise liveness tracking.
-    for agent in locked_registry.agents.values_mut() {
-        if agent.is_alive() && is_process_alive(agent.pid) {
-            agent.last_heartbeat = Utc::now().to_rfc3339();
-
-            // Check stream for staleness warning (PID alive but no stream activity)
-            if let Some(last_event_ms) = check_stream_liveness(agent) {
-                let now_ms = stream_event::now_ms();
-                if now_ms - last_event_ms > STREAM_STALE_THRESHOLD_MS {
-                    eprintln!(
-                        "[triage] WARNING: Agent {} (task {}) PID alive but stream stale for {}s",
-                        agent.id,
-                        agent.task_id,
-                        (now_ms - last_event_ms) / 1000
-                    );
-                }
-            }
-        }
-    }
+    // NOTE: Heartbeat auto-bump removed. Stream events are the ground truth
+    // liveness signal. Staleness tracking is handled by liveness::SleepTracker.
 
     if dead.is_empty() {
         locked_registry.save_ref()?;
@@ -198,6 +151,7 @@ pub(crate) fn cleanup_dead_agents(dir: &Path, graph_path: &Path) -> Result<Vec<S
                             );
                             task.status = Status::Open;
                             task.assigned = None;
+                            task.session_id = None;
                             task.log.push(LogEntry {
                                 timestamp: Utc::now().to_rfc3339(),
                                 actor: Some("triage".to_string()),
@@ -212,6 +166,7 @@ pub(crate) fn cleanup_dead_agents(dir: &Path, graph_path: &Path) -> Result<Vec<S
                     // Existing behavior: simple unclaim
                     task.status = Status::Open;
                     task.assigned = None;
+                    task.session_id = None;
                     let reason_msg = match reason {
                         DeadReason::ProcessExited => format!(
                             "Task unclaimed: agent '{}' (PID {}) process exited",
@@ -508,6 +463,7 @@ fn apply_triage_verdict(task: &mut Task, verdict: &TriageVerdict, agent_id: &str
 
             task.status = Status::Open;
             task.assigned = None;
+            task.session_id = None;
             task.retry_count += 1;
 
             // Replace (not append) recovery context to prevent unbounded description growth
