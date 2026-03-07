@@ -50,7 +50,7 @@ pub struct WebhookAction {
 /// Configuration for a webhook channel, typically read from `notify.toml`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WebhookConfig {
-    /// Target URL to POST payloads to.
+    /// Default URL to POST payloads to.
     pub url: String,
     /// HMAC-SHA256 secret for signing payloads.
     #[serde(default)]
@@ -58,6 +58,23 @@ pub struct WebhookConfig {
     /// Event types to send. If empty, all events are sent.
     #[serde(default)]
     pub events: Vec<String>,
+    /// Per-event-type URL overrides. Keys are event type strings (e.g. "task_failed").
+    #[serde(default)]
+    pub event_urls: std::collections::HashMap<String, String>,
+    /// Maximum number of retry attempts on HTTP failure (default: 3).
+    #[serde(default = "default_max_retries")]
+    pub max_retries: u32,
+    /// Initial backoff duration in milliseconds (default: 500).
+    #[serde(default = "default_initial_backoff_ms")]
+    pub initial_backoff_ms: u64,
+}
+
+fn default_max_retries() -> u32 {
+    3
+}
+
+fn default_initial_backoff_ms() -> u64 {
+    500
 }
 
 // ---------------------------------------------------------------------------
@@ -93,39 +110,66 @@ impl WebhookChannel {
         self.config.events.is_empty() || self.config.events.iter().any(|e| e == event_type)
     }
 
-    /// Build and send a payload, returning a synthetic message id.
+    /// Resolve the URL for a given event type (per-event override or default).
+    fn url_for_event(&self, event_type: &str) -> &str {
+        self.config
+            .event_urls
+            .get(event_type)
+            .map(|s| s.as_str())
+            .unwrap_or(&self.config.url)
+    }
+
+    /// Build and send a payload with retry + exponential backoff.
     async fn send_payload(&self, payload: &WebhookPayload) -> Result<MessageId> {
         if !self.event_allowed(&payload.event_type) {
             return Ok(MessageId(format!("filtered:{}", payload.event_type)));
         }
 
         let body = serde_json::to_vec(payload)?;
+        let url = self.url_for_event(&payload.event_type);
+        let max_retries = self.config.max_retries;
+        let initial_backoff = std::time::Duration::from_millis(self.config.initial_backoff_ms);
 
-        let mut req = self
-            .client
-            .post(&self.config.url)
-            .header("Content-Type", "application/json")
-            .header("User-Agent", "workgraph-webhook/1.0");
+        let mut last_err: Option<anyhow::Error> = None;
 
-        if let Some(ref secret) = self.config.secret {
-            let sig = Self::compute_signature(secret, &body);
-            req = req.header("X-Webhook-Signature", format!("sha256={sig}"));
+        for attempt in 0..=max_retries {
+            if attempt > 0 {
+                let backoff = initial_backoff * 2u32.saturating_pow(attempt - 1);
+                tokio::time::sleep(backoff).await;
+            }
+
+            let mut req = self
+                .client
+                .post(url)
+                .header("Content-Type", "application/json")
+                .header("User-Agent", "workgraph-webhook/1.0");
+
+            if let Some(ref secret) = self.config.secret {
+                let sig = Self::compute_signature(secret, &body);
+                req = req.header("X-Webhook-Signature", format!("sha256={sig}"));
+            }
+
+            match req.body(body.clone()).send().await {
+                Ok(resp) if resp.status().is_success() => {
+                    return Ok(MessageId(format!(
+                        "webhook:{}:{}",
+                        payload.event_type, payload.timestamp
+                    )));
+                }
+                Ok(resp) => {
+                    let status = resp.status();
+                    let text = resp.text().await.unwrap_or_default();
+                    last_err = Some(anyhow::anyhow!(
+                        "webhook returned HTTP {status}: {text}"
+                    ));
+                }
+                Err(e) => {
+                    last_err = Some(e.into());
+                }
+            }
         }
 
-        let resp = req.body(body).send().await?;
-
-        if !resp.status().is_success() {
-            anyhow::bail!(
-                "webhook returned HTTP {}: {}",
-                resp.status(),
-                resp.text().await.unwrap_or_default()
-            );
-        }
-
-        Ok(MessageId(format!(
-            "webhook:{}:{}",
-            payload.event_type, payload.timestamp
-        )))
+        Err(last_err.unwrap_or_else(|| anyhow::anyhow!("webhook send failed")))
     }
 
     /// Parse a `target` string in the format "task_id:event_type" or just "task_id".
@@ -248,6 +292,9 @@ mod tests {
             url: "http://localhost".into(),
             secret: None,
             events: vec![],
+            event_urls: Default::default(),
+            max_retries: 3,
+            initial_backoff_ms: 500,
         });
         assert!(ch.event_allowed("task_ready"));
         assert!(ch.event_allowed("anything"));
@@ -259,6 +306,9 @@ mod tests {
             url: "http://localhost".into(),
             secret: None,
             events: vec!["task_ready".into(), "task_failed".into()],
+            event_urls: Default::default(),
+            max_retries: 3,
+            initial_backoff_ms: 500,
         });
         assert!(ch.event_allowed("task_ready"));
         assert!(ch.event_allowed("task_failed"));
@@ -378,8 +428,312 @@ events = ["task_ready", "task_failed"]
             url: "http://localhost".into(),
             secret: None,
             events: vec![],
+            event_urls: Default::default(),
+            max_retries: 3,
+            initial_backoff_ms: 500,
         });
         assert_eq!(ch.channel_type(), "webhook");
         assert!(!ch.supports_receive());
+    }
+
+    #[test]
+    fn url_for_event_uses_override_when_present() {
+        let mut event_urls = std::collections::HashMap::new();
+        event_urls.insert("task_failed".into(), "https://alerts.example.com/fail".into());
+        event_urls.insert("approval".into(), "https://approvals.example.com/hook".into());
+
+        let ch = WebhookChannel::new(WebhookConfig {
+            url: "https://default.example.com/hook".into(),
+            secret: None,
+            events: vec![],
+            event_urls,
+            max_retries: 3,
+            initial_backoff_ms: 500,
+        });
+
+        assert_eq!(ch.url_for_event("task_failed"), "https://alerts.example.com/fail");
+        assert_eq!(ch.url_for_event("approval"), "https://approvals.example.com/hook");
+        assert_eq!(ch.url_for_event("task_ready"), "https://default.example.com/hook");
+    }
+
+    #[test]
+    fn url_for_event_falls_back_to_default() {
+        let ch = WebhookChannel::new(WebhookConfig {
+            url: "https://default.example.com/hook".into(),
+            secret: None,
+            events: vec![],
+            event_urls: Default::default(),
+            max_retries: 3,
+            initial_backoff_ms: 500,
+        });
+
+        assert_eq!(ch.url_for_event("any_event"), "https://default.example.com/hook");
+    }
+
+    #[test]
+    fn webhook_config_with_event_urls_deserializes() {
+        let toml_str = r#"
+url = "https://default.example.com/hook"
+secret = "my-secret"
+events = ["task_ready", "task_failed"]
+max_retries = 5
+initial_backoff_ms = 1000
+
+[event_urls]
+task_failed = "https://alerts.example.com/fail"
+approval = "https://approvals.example.com/hook"
+"#;
+        let config: WebhookConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.url, "https://default.example.com/hook");
+        assert_eq!(config.max_retries, 5);
+        assert_eq!(config.initial_backoff_ms, 1000);
+        assert_eq!(
+            config.event_urls.get("task_failed").map(|s| s.as_str()),
+            Some("https://alerts.example.com/fail")
+        );
+        assert_eq!(
+            config.event_urls.get("approval").map(|s| s.as_str()),
+            Some("https://approvals.example.com/hook")
+        );
+    }
+
+    #[test]
+    fn webhook_config_defaults_retry_values() {
+        let toml_str = r#"url = "https://example.com/hook""#;
+        let config: WebhookConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.max_retries, 3);
+        assert_eq!(config.initial_backoff_ms, 500);
+        assert!(config.event_urls.is_empty());
+    }
+
+    #[tokio::test]
+    async fn send_payload_retries_on_http_error() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        use std::sync::Arc;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let attempts = Arc::new(AtomicU32::new(0));
+        let attempts_clone = attempts.clone();
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let server = tokio::spawn(async move {
+            for _ in 0..3 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let attempt = attempts_clone.fetch_add(1, Ordering::SeqCst);
+                // Read until we get the double CRLF ending the headers
+                let mut buf = vec![0u8; 8192];
+                let mut total = 0;
+                loop {
+                    let n = stream.read(&mut buf[total..]).await.unwrap();
+                    total += n;
+                    if total >= 4 && buf[..total].windows(4).any(|w| w == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                // Read any remaining body bytes (Content-Length based)
+                let header_str = String::from_utf8_lossy(&buf[..total]);
+                if let Some(cl) = header_str
+                    .lines()
+                    .find(|l| l.to_lowercase().starts_with("content-length:"))
+                    .and_then(|l| l.split(':').nth(1))
+                    .and_then(|v| v.trim().parse::<usize>().ok())
+                {
+                    let header_end = buf[..total]
+                        .windows(4)
+                        .position(|w| w == b"\r\n\r\n")
+                        .unwrap()
+                        + 4;
+                    let body_so_far = total - header_end;
+                    if body_so_far < cl {
+                        let remaining = cl - body_so_far;
+                        let mut body_buf = vec![0u8; remaining];
+                        let _ = stream.read_exact(&mut body_buf).await;
+                    }
+                }
+
+                let response = if attempt < 2 {
+                    "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 5\r\nConnection: close\r\n\r\nerror"
+                } else {
+                    "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok"
+                };
+                let _ = stream.write_all(response.as_bytes()).await;
+                let _ = stream.shutdown().await;
+            }
+        });
+
+        let ch = WebhookChannel::new(WebhookConfig {
+            url: format!("http://{addr}/hook"),
+            secret: Some("test-secret".into()),
+            events: vec![],
+            event_urls: Default::default(),
+            max_retries: 3,
+            initial_backoff_ms: 10,
+        });
+
+        let payload = WebhookPayload {
+            task_id: "test-retry".into(),
+            event_type: "task_failed".into(),
+            title: "Test".into(),
+            description: "Testing retry".into(),
+            status: "failed".into(),
+            timestamp: "2026-03-07T00:00:00Z".into(),
+            actions: vec![],
+        };
+
+        let result = ch.send_payload(&payload).await;
+        assert!(result.is_ok(), "Expected success after retries, got: {:?}", result);
+        assert_eq!(attempts.load(Ordering::SeqCst), 3);
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn send_payload_fails_after_exhausting_retries() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let server = tokio::spawn(async move {
+            loop {
+                let (mut stream, _) = match listener.accept().await {
+                    Ok(s) => s,
+                    Err(_) => break,
+                };
+                let mut buf = vec![0u8; 8192];
+                let mut total = 0;
+                loop {
+                    let n = match stream.read(&mut buf[total..]).await {
+                        Ok(n) => n,
+                        Err(_) => break,
+                    };
+                    if n == 0 { break; }
+                    total += n;
+                    if total >= 4 && buf[..total].windows(4).any(|w| w == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                let header_str = String::from_utf8_lossy(&buf[..total]);
+                if let Some(cl) = header_str
+                    .lines()
+                    .find(|l| l.to_lowercase().starts_with("content-length:"))
+                    .and_then(|l| l.split(':').nth(1))
+                    .and_then(|v| v.trim().parse::<usize>().ok())
+                {
+                    let header_end = buf[..total]
+                        .windows(4)
+                        .position(|w| w == b"\r\n\r\n")
+                        .map(|p| p + 4)
+                        .unwrap_or(total);
+                    let body_so_far = total - header_end;
+                    if body_so_far < cl {
+                        let remaining = cl - body_so_far;
+                        let mut body_buf = vec![0u8; remaining];
+                        let _ = stream.read_exact(&mut body_buf).await;
+                    }
+                }
+                let response = "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 11\r\nConnection: close\r\n\r\nunavailable";
+                let _ = stream.write_all(response.as_bytes()).await;
+                let _ = stream.shutdown().await;
+            }
+        });
+
+        let ch = WebhookChannel::new(WebhookConfig {
+            url: format!("http://{addr}/hook"),
+            secret: None,
+            events: vec![],
+            event_urls: Default::default(),
+            max_retries: 2,
+            initial_backoff_ms: 10,
+        });
+
+        let payload = WebhookPayload {
+            task_id: "test-exhaust".into(),
+            event_type: "task_failed".into(),
+            title: "Test".into(),
+            description: "Testing exhaustion".into(),
+            status: "failed".into(),
+            timestamp: "2026-03-07T00:00:00Z".into(),
+            actions: vec![],
+        };
+
+        let result = ch.send_payload(&payload).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("503"));
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn send_payload_uses_event_url_override() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 8192];
+            let mut total = 0;
+            loop {
+                let n = stream.read(&mut buf[total..]).await.unwrap();
+                if n == 0 { break; }
+                total += n;
+                if total >= 4 && buf[..total].windows(4).any(|w| w == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let header_str = String::from_utf8_lossy(&buf[..total]);
+            if let Some(cl) = header_str
+                .lines()
+                .find(|l| l.to_lowercase().starts_with("content-length:"))
+                .and_then(|l| l.split(':').nth(1))
+                .and_then(|v| v.trim().parse::<usize>().ok())
+            {
+                let header_end = buf[..total]
+                    .windows(4)
+                    .position(|w| w == b"\r\n\r\n")
+                    .map(|p| p + 4)
+                    .unwrap_or(total);
+                let body_so_far = total - header_end;
+                if body_so_far < cl {
+                    let remaining = cl - body_so_far;
+                    let mut body_buf = vec![0u8; remaining];
+                    let _ = stream.read_exact(&mut body_buf).await;
+                }
+            }
+            let response = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok";
+            let _ = stream.write_all(response.as_bytes()).await;
+            let _ = stream.shutdown().await;
+        });
+
+        let mut event_urls = std::collections::HashMap::new();
+        event_urls.insert("task_failed".into(), format!("http://{addr}/fail-hook"));
+
+        let ch = WebhookChannel::new(WebhookConfig {
+            url: "http://192.0.2.1:1/should-not-be-called".into(),
+            secret: None,
+            events: vec![],
+            event_urls,
+            max_retries: 0,
+            initial_backoff_ms: 10,
+        });
+
+        let payload = WebhookPayload {
+            task_id: "test-url".into(),
+            event_type: "task_failed".into(),
+            title: "Test".into(),
+            description: "URL override".into(),
+            status: "failed".into(),
+            timestamp: "2026-03-07T00:00:00Z".into(),
+            actions: vec![],
+        };
+
+        let result = ch.send_payload(&payload).await;
+        assert!(result.is_ok(), "Expected success with event URL override, got: {:?}", result);
+
+        server.abort();
     }
 }
