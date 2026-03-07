@@ -128,7 +128,7 @@ where
     if !path.exists() {
         anyhow::bail!("Workgraph not initialized. Run 'wg init' first.");
     }
-    workgraph::parser::mutate_graph(&path, f).context("Failed to mutate graph")
+    workgraph::parser::mutate_graph(&path, f).map_err(|e| e.into())
 }
 
 pub use workgraph::service::{is_process_alive, kill_process_force, kill_process_graceful};
