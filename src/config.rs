@@ -375,6 +375,10 @@ pub struct CheckpointConfig {
     /// Keep only last N checkpoints per task
     #[serde(default = "default_max_checkpoints")]
     pub max_checkpoints: u32,
+
+    /// Max tokens of previous attempt context to inject on retry (0 = disabled)
+    #[serde(default = "default_retry_context_tokens")]
+    pub retry_context_tokens: u32,
 }
 
 fn default_auto_interval_turns() -> u32 {
@@ -389,12 +393,17 @@ fn default_max_checkpoints() -> u32 {
     5
 }
 
+fn default_retry_context_tokens() -> u32 {
+    2000
+}
+
 impl Default for CheckpointConfig {
     fn default() -> Self {
         Self {
             auto_interval_turns: default_auto_interval_turns(),
             auto_interval_mins: default_auto_interval_mins(),
             max_checkpoints: default_max_checkpoints(),
+            retry_context_tokens: default_retry_context_tokens(),
         }
     }
 }
@@ -1230,6 +1239,11 @@ pub struct CoordinatorConfig {
     /// Options: "every", "every_5" (default), "every_10", "sample_20pct", "none"
     #[serde(default = "default_eval_frequency")]
     pub eval_frequency: String,
+
+    /// Enable git worktree isolation for spawned agents.
+    /// When true, each agent gets its own worktree at .wg-worktrees/<agent-id>/.
+    #[serde(default)]
+    pub worktree_isolation: bool,
 }
 
 fn default_max_agents() -> usize {
@@ -1283,6 +1297,7 @@ impl Default for CoordinatorConfig {
             compactor_interval: default_compactor_interval(),
             compactor_ops_threshold: default_compactor_ops_threshold(),
             eval_frequency: default_eval_frequency(),
+            worktree_isolation: false,
         }
     }
 }
