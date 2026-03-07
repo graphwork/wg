@@ -2367,6 +2367,7 @@ pub fn coordinator_tick(
         resurrect_done_tasks(graph, dir);
 
         // Phase 2.9: Self-healing
+        super::remediation::process_failed_tasks(graph, &config, dir);
 
         // Phase 3: Auto-assign unassigned ready tasks
         if config.agency.auto_assign {
