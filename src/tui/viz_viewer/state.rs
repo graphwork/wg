@@ -1541,6 +1541,8 @@ pub struct VizApp {
     pub last_chat_input_area: Rect,
     /// The chat message history area from the last render frame (for click-to-focus).
     pub last_chat_message_area: Rect,
+    /// The message input area from the last render frame (for click-to-type).
+    pub last_message_input_area: Rect,
 
     /// The text prompt overlay area from the last render frame (for mouse scroll).
     pub last_text_prompt_area: Rect,
@@ -1666,6 +1668,8 @@ pub struct VizApp {
 
     // ── Messages panel state (panel 3) ──
     pub messages_panel: MessagesPanelState,
+    /// Per-task message drafts: persists unsent text across task/panel switches.
+    pub message_drafts: HashMap<String, String>,
 
     // ── Config panel state (panel 5) ──
     pub config_panel: ConfigPanelState,
@@ -1826,6 +1830,7 @@ impl VizApp {
             last_right_content_area: Rect::default(),
             last_chat_input_area: Rect::default(),
             last_chat_message_area: Rect::default(),
+            last_message_input_area: Rect::default(),
             last_text_prompt_area: Rect::default(),
             last_file_tree_area: Rect::default(),
             last_file_preview_area: Rect::default(),
@@ -1880,6 +1885,7 @@ impl VizApp {
             log_pane: LogPaneState::default(),
             coord_log: CoordLogState::default(),
             messages_panel: MessagesPanelState::default(),
+            message_drafts: HashMap::new(),
             config_panel: ConfigPanelState::default(),
             file_browser: None,
             cmd_rx,
@@ -3929,10 +3935,12 @@ impl VizApp {
         let task_id = match self.selected_task_id() {
             Some(id) => id.to_string(),
             None => {
+                self.save_message_draft();
                 self.messages_panel.rendered_lines.clear();
                 self.messages_panel.entries.clear();
                 self.messages_panel.summary = MessageSummary::default();
                 self.messages_panel.task_id = None;
+                editor_clear(&mut self.messages_panel.editor);
                 return;
             }
         };
@@ -3941,6 +3949,9 @@ impl VizApp {
         if self.messages_panel.task_id.as_deref() == Some(&task_id) {
             return;
         }
+
+        // Save draft for the old task before switching.
+        self.save_message_draft();
 
         self.messages_panel.rendered_lines.clear();
         self.messages_panel.entries.clear();
@@ -4043,11 +4054,39 @@ impl VizApp {
         }
 
         self.messages_panel.task_id = Some(task_id);
+
+        // Restore draft for the new task.
+        self.restore_message_draft();
     }
 
     /// Force reload of messages panel content.
     pub fn invalidate_messages_panel(&mut self) {
         self.messages_panel.task_id = None;
+    }
+
+    /// Save the current message editor text as a draft for the current task.
+    pub fn save_message_draft(&mut self) {
+        if let Some(task_id) = self.messages_panel.task_id.clone() {
+            let text = editor_text(&self.messages_panel.editor);
+            if text.is_empty() {
+                self.message_drafts.remove(&task_id);
+            } else {
+                self.message_drafts.insert(task_id, text);
+            }
+        }
+    }
+
+    /// Restore a saved draft into the message editor for the current task.
+    pub fn restore_message_draft(&mut self) {
+        if let Some(task_id) = &self.messages_panel.task_id {
+            if let Some(draft) = self.message_drafts.get(task_id).cloned() {
+                self.messages_panel.editor = new_emacs_editor_with(&draft);
+            } else {
+                editor_clear(&mut self.messages_panel.editor);
+            }
+        } else {
+            editor_clear(&mut self.messages_panel.editor);
+        }
     }
 
     /// Construct a VizApp from pre-built VizOutput for unit testing.
@@ -4107,6 +4146,7 @@ impl VizApp {
             last_right_content_area: Rect::default(),
             last_chat_input_area: Rect::default(),
             last_chat_message_area: Rect::default(),
+            last_message_input_area: Rect::default(),
             last_text_prompt_area: Rect::default(),
             last_file_tree_area: Rect::default(),
             last_file_preview_area: Rect::default(),
@@ -4157,6 +4197,7 @@ impl VizApp {
             log_pane: LogPaneState::default(),
             coord_log: CoordLogState::default(),
             messages_panel: MessagesPanelState::default(),
+            message_drafts: HashMap::new(),
             cmd_rx: mpsc::channel().1,
             cmd_tx: mpsc::channel().0,
             notification: None,

@@ -592,6 +592,8 @@ fn handle_message_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers
     use crossterm::event::KeyEvent;
     match code {
         KeyCode::Esc => {
+            // Save draft on exit so it persists across panel/task switches.
+            app.save_message_draft();
             app.input_mode = InputMode::Normal;
             return;
         }
@@ -604,6 +606,8 @@ fn handle_message_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers
             if !text.trim().is_empty()
                 && let Some(task_id) = app.messages_panel.task_id.clone()
             {
+                // Clear draft on successful send.
+                app.message_drafts.remove(&task_id);
                 app.exec_command(
                     vec![
                         "msg".to_string(),
@@ -622,6 +626,10 @@ fn handle_message_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers
         }
         KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => {
             editor_clear(&mut app.messages_panel.editor);
+            // Clear draft on Ctrl+C (intentional discard).
+            if let Some(task_id) = &app.messages_panel.task_id {
+                app.message_drafts.remove(task_id);
+            }
             app.input_mode = InputMode::Normal;
             return;
         }
@@ -1069,7 +1077,7 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
                 app.inspector_sub_focus = InspectorSubFocus::TextEntry;
                 // Editor cursor is already at the right position.
             } else if app.right_panel_tab == RightPanelTab::Messages {
-                super::state::editor_clear(&mut app.messages_panel.editor);
+                // Enter compose mode without clearing — preserves any draft.
                 app.input_mode = InputMode::MessageInput;
             } else if app.right_panel_tab == RightPanelTab::Config {
                 config_enter_edit(app);
@@ -1429,6 +1437,14 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
                 app.input_mode = InputMode::ChatInput;
                 app.inspector_sub_focus = InspectorSubFocus::TextEntry;
                 route_mouse_to_editor(app, row, column, EditorTarget::Chat);
+            } else if app.last_message_input_area.height > 0
+                && app.last_message_input_area.contains(pos)
+                && (app.right_panel_tab == RightPanelTab::Messages)
+            {
+                // Click on message input area: enter/resume editing and position cursor.
+                app.focused_panel = FocusedPanel::RightPanel;
+                app.input_mode = InputMode::MessageInput;
+                route_mouse_to_editor(app, row, column, EditorTarget::Message);
             } else if in_right_content
                 && app.right_panel_tab == RightPanelTab::Chat
                 && app.last_chat_message_area.height > 0
@@ -1486,6 +1502,9 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
                     app.input_mode = InputMode::Normal;
                     app.chat_input_dismissed = true;
                     app.inspector_sub_focus = InspectorSubFocus::ChatHistory;
+                } else if app.input_mode == InputMode::MessageInput {
+                    app.save_message_draft();
+                    app.input_mode = InputMode::Normal;
                 }
                 let content_row = row.saturating_sub(app.last_graph_area.y);
                 let visible_idx = app.scroll.offset_y + content_row as usize;
@@ -1604,6 +1623,7 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
 pub(super) enum EditorTarget {
     Chat,
     TextPrompt,
+    Message,
 }
 
 /// Route a mouse-down event to the appropriate edtui editor for click-to-position.
@@ -1632,6 +1652,9 @@ pub(super) fn route_mouse_to_editor(
             };
             app.editor_handler
                 .on_mouse_event(mouse_event, &mut app.text_prompt.editor);
+        }
+        EditorTarget::Message => {
+            message_click_to_cursor(app, row, column);
         }
     }
 }
@@ -1730,6 +1753,89 @@ fn chat_click_to_cursor(app: &mut VizApp, screen_row: u16, screen_col: u16) {
     }
 }
 
+/// Map a screen-space mouse click to a logical cursor position in the message editor.
+/// Same coordinate logic as `chat_click_to_cursor` but using the message input area.
+fn message_click_to_cursor(app: &mut VizApp, screen_row: u16, screen_col: u16) {
+    use unicode_width::UnicodeWidthChar;
+
+    let input_area = app.last_message_input_area;
+    if input_area.width == 0 || input_area.height == 0 {
+        return;
+    }
+
+    let prefix_len: u16 = 2;
+    let editor_y = if input_area.height >= 2 {
+        input_area.y + 1
+    } else {
+        input_area.y
+    };
+    let editor_x = input_area.x + prefix_len;
+    let editor_width = input_area.width.saturating_sub(prefix_len) as usize;
+    let editor_height = if input_area.height >= 2 {
+        input_area.height - 1
+    } else {
+        input_area.height
+    } as usize;
+
+    if editor_width == 0 || editor_height == 0 {
+        return;
+    }
+
+    let local_row = screen_row.saturating_sub(editor_y) as usize;
+    let local_col = screen_col.saturating_sub(editor_x) as usize;
+
+    let text = app.messages_panel.editor.lines.to_string();
+    let logical_lines: Vec<&str> = text.split('\n').collect();
+
+    let mut visual_rows: Vec<(usize, usize, usize)> = Vec::new();
+    let mut cursor_visual_row = 0usize;
+
+    for (line_idx, logical_line) in logical_lines.iter().enumerate() {
+        let segments = super::render::word_wrap_segments(logical_line, editor_width);
+        if line_idx == app.messages_panel.editor.cursor.row {
+            let (sub_row, _) =
+                super::render::cursor_in_segments(&segments, app.messages_panel.editor.cursor.col);
+            cursor_visual_row = visual_rows.len() + sub_row;
+        }
+        for &(start, end) in &segments {
+            visual_rows.push((line_idx, start, end));
+        }
+    }
+
+    let scroll = if cursor_visual_row >= editor_height {
+        cursor_visual_row - editor_height + 1
+    } else {
+        0
+    };
+
+    let target_visual = scroll + local_row;
+
+    if target_visual < visual_rows.len() {
+        let (line_idx, seg_start, seg_end) = visual_rows[target_visual];
+        let chars: Vec<char> = logical_lines[line_idx].chars().collect();
+
+        let mut char_idx = seg_start;
+        let mut display_col = 0usize;
+        while char_idx < seg_end {
+            let cw = UnicodeWidthChar::width(chars[char_idx]).unwrap_or(0);
+            if display_col + cw > local_col {
+                break;
+            }
+            display_col += cw;
+            char_idx += 1;
+        }
+
+        app.messages_panel.editor.cursor = edtui::Index2::new(line_idx, char_idx);
+    } else {
+        if let Some(last_line) = logical_lines.last() {
+            app.messages_panel.editor.cursor = edtui::Index2::new(
+                logical_lines.len().saturating_sub(1),
+                last_line.chars().count(),
+            );
+        }
+    }
+}
+
 /// Scroll an editor up by moving the cursor up `n` lines.
 fn scroll_editor_up(app: &mut VizApp, n: usize, target: EditorTarget) {
     use crossterm::event::KeyEvent;
@@ -1742,6 +1848,10 @@ fn scroll_editor_up(app: &mut VizApp, n: usize, target: EditorTarget) {
             EditorTarget::TextPrompt => {
                 app.editor_handler
                     .on_key_event(key, &mut app.text_prompt.editor);
+            }
+            EditorTarget::Message => {
+                app.editor_handler
+                    .on_key_event(key, &mut app.messages_panel.editor);
             }
         }
     }
@@ -1759,6 +1869,10 @@ fn scroll_editor_down(app: &mut VizApp, n: usize, target: EditorTarget) {
             EditorTarget::TextPrompt => {
                 app.editor_handler
                     .on_key_event(key, &mut app.text_prompt.editor);
+            }
+            EditorTarget::Message => {
+                app.editor_handler
+                    .on_key_event(key, &mut app.messages_panel.editor);
             }
         }
     }

@@ -2614,7 +2614,7 @@ fn draw_messages_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
             )),
             Line::from(""),
             Line::from(Span::styled(
-                "No messages yet. Press Enter to compose.",
+                "No messages yet. Click below or press Enter to compose.",
                 Style::default().fg(Color::DarkGray),
             )),
         ]);
@@ -2873,6 +2873,7 @@ fn draw_messages_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
 fn draw_message_input(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     let is_editing = app.input_mode == InputMode::MessageInput;
     let has_text = !super::state::editor_is_empty(&app.messages_panel.editor);
+    app.last_message_input_area = area;
     let border_color = if is_editing {
         Color::Magenta
     } else {
@@ -2959,7 +2960,7 @@ fn draw_message_input(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     } else {
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
-                " Enter: compose  \u{2191}\u{2193}: scroll",
+                " Type a message...",
                 Style::default().fg(Color::DarkGray),
             ))),
             area,
