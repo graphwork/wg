@@ -22,6 +22,7 @@ pub mod notify;
 pub mod parser;
 pub mod plan_validator;
 pub mod provenance;
+pub mod questions;
 pub mod query;
 pub mod runs;
 pub mod service;

@@ -103,9 +103,13 @@ pub enum Commands {
         #[arg(long)]
         provider: Option<String>,
 
-        /// Verification criteria - task requires review before done
-        #[arg(long)]
-        verify: Option<String>,
+        /// Shell command for verification — executed by `wg done` as a gate
+        #[arg(long = "verify-cmd", alias = "verify")]
+        verify_cmd: Option<String>,
+
+        /// Prose/natural-language verification criteria — dispatched to a validation agent
+        #[arg(long = "verify-prompt")]
+        verify_prompt: Option<String>,
 
         /// Maximum iterations for structural cycle (sets cycle_config on this task as cycle header)
         #[arg(long = "max-iterations")]
@@ -776,6 +780,12 @@ pub enum Commands {
         command: MsgCommands,
     },
 
+    /// Ask questions and get answers from humans during task execution
+    Ask {
+        #[command(subcommand)]
+        command: AskCommands,
+    },
+
     /// Save a checkpoint for context preservation during long-running tasks
     Checkpoint {
         /// Task ID
@@ -1431,6 +1441,57 @@ pub enum MsgCommands {
         /// Agent ID (default: from WG_AGENT_ID env var, or "user")
         #[arg(long)]
         agent: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum AskCommands {
+    /// Ask a question (agent asks human for input)
+    #[command(name = "question")]
+    Question {
+        /// Task ID
+        task_id: String,
+
+        /// The question to ask
+        question: String,
+
+        /// Comma-separated list of options
+        #[arg(long, value_delimiter = ',')]
+        options: Vec<String>,
+
+        /// Block until the question is answered
+        #[arg(long)]
+        wait: bool,
+
+        /// Timeout in seconds (only with --wait)
+        #[arg(long)]
+        timeout: Option<u64>,
+    },
+
+    /// Answer the most recent pending question for a task
+    Answer {
+        /// Task ID
+        task_id: String,
+
+        /// The answer
+        answer: String,
+
+        /// Who is answering (default: "user")
+        #[arg(long, default_value = "user")]
+        from: String,
+    },
+
+    /// List questions (all pending, or for a specific task)
+    List {
+        /// Filter by task ID
+        #[arg(long)]
+        task: Option<String>,
+    },
+
+    /// Check if a question has been answered (exit 0 = answered, 1 = not)
+    Check {
+        /// Question ID (e.g., q-a1b2c3d4)
+        question_id: String,
     },
 }
 
@@ -2553,6 +2614,7 @@ pub fn command_name(cmd: &Commands) -> &'static str {
         Commands::Runs { .. } => "runs",
         Commands::Log { .. } => "log",
         Commands::Msg { .. } => "msg",
+        Commands::Ask { .. } => "ask",
         Commands::Resource { .. } => "resource",
         Commands::Skill { .. } => "skill",
         Commands::Agency { .. } => "agency",
@@ -2623,6 +2685,7 @@ pub fn supports_json(cmd: &Commands) -> bool {
             | Commands::Runs { .. }
             | Commands::Log { .. }
             | Commands::Msg { .. }
+            | Commands::Ask { .. }
             | Commands::Resource { .. }
             | Commands::Skill { .. }
             | Commands::Agency { .. }

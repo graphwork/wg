@@ -17,6 +17,7 @@ pub mod aging;
 pub mod analyze;
 pub mod archive;
 pub mod artifact;
+pub mod ask;
 pub mod assign;
 pub mod blocked;
 pub mod bottlenecks;
@@ -243,6 +244,7 @@ mod provenance_coverage_tests {
             None,
             None,
             None,
+            None,
             false,
             false,
             None,
@@ -277,6 +279,7 @@ mod provenance_coverage_tests {
             &[],
             &[],
             &[],
+            None,
             None,
             None,
             None,
@@ -356,6 +359,7 @@ mod provenance_coverage_tests {
             None,
             None,
             None,
+            None,
             false,
             false,
             None,
@@ -397,6 +401,7 @@ mod provenance_coverage_tests {
             &[],
             &[],
             &[],
+            None,
             None,
             None,
             None,
@@ -446,6 +451,7 @@ mod provenance_coverage_tests {
             None,
             None,
             None,
+            None,
             false,
             false,
             None,
@@ -481,6 +487,7 @@ mod provenance_coverage_tests {
             &[],
             &[],
             &[],
+            None,
             None,
             None,
             None,
@@ -530,6 +537,7 @@ mod provenance_coverage_tests {
             None,
             None,
             None,
+            None,
             false,
             false,
             None,
@@ -568,6 +576,7 @@ mod provenance_coverage_tests {
             &[],
             &[],
             &[],
+            None,
             None,
             None,
             None,
@@ -622,6 +631,7 @@ mod provenance_coverage_tests {
             None,
             None,
             None,
+            None,
             false,
             false,
             None,
@@ -662,6 +672,7 @@ mod provenance_coverage_tests {
             &[],
             &[],
             &[],
+            None,
             None,
             None,
             None,
@@ -713,6 +724,7 @@ mod provenance_coverage_tests {
             None,
             None,
             None,
+            None,
             false,
             false,
             None,
@@ -753,6 +765,7 @@ mod provenance_coverage_tests {
             &[],
             &[],
             &[],
+            None,
             None,
             None,
             None,

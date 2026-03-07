@@ -313,7 +313,8 @@ fn main() -> Result<()> {
             max_retries,
             model,
             provider,
-            verify,
+            verify_cmd,
+            verify_prompt,
             max_iterations,
             cycle_guard,
             cycle_delay,
@@ -359,7 +360,7 @@ fn main() -> Result<()> {
                     &deliverable,
                     model.as_deref(),
                     provider.as_deref(),
-                    verify.as_deref(),
+                    verify_cmd.as_deref(),
                 )
             } else {
                 commands::add::run(
@@ -378,7 +379,8 @@ fn main() -> Result<()> {
                     max_retries,
                     model.as_deref(),
                     provider.as_deref(),
-                    verify.as_deref(),
+                    verify_cmd.as_deref(),
+                    verify_prompt.as_deref(),
                     max_iterations,
                     cycle_guard.as_deref(),
                     cycle_delay.as_deref(),
@@ -963,6 +965,49 @@ fn main() -> Result<()> {
                     let has_messages =
                         commands::msg::run_poll(&workgraph_dir, &task_id, &agent_id, cli.json)?;
                     if !has_messages {
+                        std::process::exit(1);
+                    }
+                    Ok(())
+                }
+            }
+        }
+        Commands::Ask { command } => {
+            let agent_id_from_env = std::env::var("WG_AGENT_ID").ok();
+            match command {
+                AskCommands::Question {
+                    task_id,
+                    question,
+                    options,
+                    wait,
+                    timeout,
+                } => commands::ask::run_ask(
+                    &workgraph_dir,
+                    &task_id,
+                    &question,
+                    &options,
+                    agent_id_from_env.as_deref(),
+                    wait,
+                    timeout,
+                    cli.json,
+                ),
+                AskCommands::Answer {
+                    task_id,
+                    answer,
+                    from,
+                } => commands::ask::run_answer(
+                    &workgraph_dir,
+                    &task_id,
+                    &answer,
+                    Some(&from),
+                    cli.json,
+                ),
+                AskCommands::List { task } => {
+                    commands::ask::run_list(&workgraph_dir, task.as_deref(), cli.json)
+                }
+                AskCommands::Check { question_id } => {
+                    let answered =
+                        commands::ask::run_check(&workgraph_dir, &question_id, cli.json)?;
+                    if !answered {
                         std::process::exit(1);
                     }
                     Ok(())
