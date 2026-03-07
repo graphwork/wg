@@ -1,14 +1,13 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use chrono::Utc;
 use std::collections::{HashSet, VecDeque};
 use std::path::Path;
 use workgraph::graph::{LogEntry, WorkGraph};
-use workgraph::parser::save_graph;
 
 #[cfg(test)]
 use super::graph_path;
 #[cfg(test)]
-use workgraph::parser::load_graph;
+use workgraph::parser::{load_graph, save_graph};
 
 pub fn run(dir: &Path, id: &str, only: bool) -> Result<()> {
     run_inner(dir, id, only, false)
@@ -20,62 +19,56 @@ pub fn publish(dir: &Path, id: &str, only: bool) -> Result<()> {
 }
 
 fn run_inner(dir: &Path, id: &str, only: bool, is_publish: bool) -> Result<()> {
-    let (mut graph, path) = super::load_workgraph_mut(dir)?;
+    let downstream_count = super::mutate_workgraph(dir, |graph| {
+        // Verify seed task exists and is paused
+        let task = graph.get_task_or_err(id)?;
+        if !task.paused {
+            anyhow::bail!("Task '{}' is not paused", id);
+        }
 
-    // Verify seed task exists and is paused
-    let task = graph.get_task_or_err(id)?;
-    if !task.paused {
-        anyhow::bail!("Task '{}' is not paused", id);
-    }
+        if only {
+            validate_task_deps(graph, id, is_publish)?;
+            let action = if is_publish { "published" } else { "resumed" };
+            unpause_task(graph, id, action);
+            Ok(0usize)
+        } else {
+            let subgraph = discover_downstream(graph, id);
+            validate_subgraph(graph, &subgraph, is_publish)?;
+
+            let action = if is_publish { "published" } else { "resumed" };
+            let mut unpaused = Vec::new();
+            for task_id in &subgraph {
+                let t = graph.get_task(task_id).unwrap();
+                if t.paused {
+                    unpaused.push(task_id.clone());
+                }
+            }
+            for task_id in &unpaused {
+                unpause_task(graph, task_id, action);
+            }
+            Ok(unpaused.len().saturating_sub(1))
+        }
+    })?;
+
+    super::notify_graph_changed(dir);
+    record_provenance(dir, id, is_publish);
 
     if only {
-        // Single-task mode: validate just this task's deps, then unpause
-        validate_task_deps(&graph, id, is_publish)?;
-        let action = if is_publish { "published" } else { "resumed" };
-        unpause_task(&mut graph, id, action);
-        save_graph(&graph, &path).context("Failed to save graph")?;
-        super::notify_graph_changed(dir);
-        record_provenance(dir, id, is_publish);
         if is_publish {
             println!("Published '{}' — task is now available for dispatch", id);
         } else {
             println!("Resumed '{}'", id);
         }
     } else {
-        // Propagating mode: discover subgraph, validate all, unpause all
-        let subgraph = discover_downstream(&graph, id);
-
-        // Validate the entire subgraph structure
-        validate_subgraph(&graph, &subgraph, is_publish)?;
-
-        // Atomic unpause: all paused tasks in the subgraph
-        let action = if is_publish { "published" } else { "resumed" };
-        let mut unpaused = Vec::new();
-        for task_id in &subgraph {
-            let t = graph.get_task(task_id).unwrap();
-            if t.paused {
-                unpaused.push(task_id.clone());
-            }
-        }
-        for task_id in &unpaused {
-            unpause_task(&mut graph, task_id, action);
-        }
-
-        save_graph(&graph, &path).context("Failed to save graph")?;
-        super::notify_graph_changed(dir);
-        record_provenance(dir, id, is_publish);
-
         if is_publish {
             println!(
                 "Published '{}' and {} downstream task(s)",
-                id,
-                unpaused.len().saturating_sub(1)
+                id, downstream_count
             );
         } else {
             println!(
                 "Resumed '{}' and {} downstream task(s)",
-                id,
-                unpaused.len().saturating_sub(1)
+                id, downstream_count
             );
         }
     }

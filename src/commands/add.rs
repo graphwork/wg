@@ -2,9 +2,11 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use std::path::Path;
 use workgraph::graph::{CycleConfig, Estimate, Node, Status, Task, parse_delay};
-use workgraph::parser::{load_graph, save_graph};
 
+#[cfg(test)]
 use super::graph_path;
+#[cfg(test)]
+use workgraph::parser::load_graph;
 
 /// Parse a guard expression string into a LoopGuard.
 /// Formats: 'task:<id>=<status>' or 'always'
@@ -103,18 +105,9 @@ pub fn run(
         }
     }
 
-    let path = graph_path(dir);
-
-    // Load existing graph to check for ID conflicts
-    let mut graph = if path.exists() {
-        load_graph(&path).context("Failed to load graph")?
-    } else {
-        anyhow::bail!("Workgraph not initialized. Run 'wg init' first.");
-    };
-
-    // --- Autopoietic guardrails ---
+    // --- Autopoietic guardrails (pre-lock) ---
     let config = workgraph::config::Config::load_or_default(dir);
-    let guardrails = &config.guardrails;
+    let guardrails = config.guardrails.clone();
 
     // 1. Per-agent task creation limit (only enforced in agent context)
     let agent_id = std::env::var("WG_AGENT_ID").ok();
@@ -133,59 +126,6 @@ pub fn run(
         }
     }
 
-    // 2. Task depth limit (enforced when --after is specified)
-    if !after.is_empty() {
-        let max_depth = guardrails.max_task_depth;
-        // The new task's depth = max(depth of each parent) + 1
-        let max_parent_depth = after
-            .iter()
-            .map(|parent_id| graph.task_depth(parent_id))
-            .max()
-            .unwrap_or(0);
-        let new_depth = max_parent_depth + 1;
-        if new_depth > max_depth {
-            anyhow::bail!(
-                "Task would be at depth {} (max: {}). \
-                 Consider creating tasks at the current level instead.",
-                new_depth,
-                max_depth
-            );
-        }
-    }
-
-    // Generate ID if not provided
-    let task_id = match id {
-        Some(id) => {
-            if graph.get_node(id).is_some() {
-                anyhow::bail!("Task with ID '{}' already exists", id);
-            }
-            id.to_string()
-        }
-        None => generate_id(title, &graph),
-    };
-
-    // Validate after references (supports cross-repo peer:task-id syntax)
-    for blocker_id in after {
-        if blocker_id == &task_id {
-            anyhow::bail!("Task '{}' cannot block itself", task_id);
-        }
-        if workgraph::federation::parse_remote_ref(blocker_id).is_some() {
-            // Cross-repo dependency — validated at resolution time, not here
-        } else if graph.get_node(blocker_id).is_none() {
-            eprintln!(
-                "Warning: blocker '{}' does not exist yet (will be treated as unresolved until created)",
-                blocker_id
-            );
-            // Suggest fuzzy match if a close task ID exists
-            let all_ids: Vec<&str> = graph.tasks().map(|t| t.id.as_str()).collect();
-            if let Some((suggestion, _)) =
-                workgraph::check::fuzzy_match_task_id(blocker_id, all_ids.iter().copied(), 3)
-            {
-                eprintln!("  → Did you mean '{}'?", suggestion);
-            }
-        }
-    }
-
     let estimate = if hours.is_some() || cost.is_some() {
         Some(Estimate { hours, cost })
     } else {
@@ -198,7 +138,7 @@ pub fn run(
             Some(expr) => Some(parse_guard_expr(expr)?),
             None => None,
         };
-        let delay = match cycle_delay {
+        let delay_val = match cycle_delay {
             Some(d) => {
                 parse_delay(d).ok_or_else(|| {
                     anyhow::anyhow!(
@@ -213,7 +153,7 @@ pub fn run(
         Some(CycleConfig {
             max_iterations: max_iter,
             guard,
-            delay,
+            delay: delay_val,
             no_converge,
             restart_on_failure: !no_restart_on_failure,
             max_failure_restarts,
@@ -264,90 +204,145 @@ pub fn run(
         vec![]
     };
 
-    let task = Task {
-        id: task_id.clone(),
-        title: title.to_string(),
-        description: description.map(String::from),
-        status: Status::Open,
-        assigned: assign.map(String::from),
-        estimate,
-        before: vec![],
-        after: after.to_vec(),
-        requires: vec![],
-        tags: tags.to_vec(),
-        skills: skills.to_vec(),
-        inputs: inputs.to_vec(),
-        deliverables: deliverables.to_vec(),
-        artifacts: vec![],
-        exec: None,
-        not_before: computed_not_before,
-        created_at: Some(Utc::now().to_rfc3339()),
-        started_at: None,
-        completed_at: None,
-        log,
-        retry_count: 0,
-        max_retries,
-        failure_reason: None,
-        model: model.map(String::from),
-        provider: provider.map(String::from),
-        verify: verify.map(String::from),
-        agent: None,
-        loop_iteration: 0,
-        cycle_failure_restarts: 0,
-        cycle_config,
-        ready_after: None,
-        paused,
-        visibility: visibility.to_string(),
-        context_scope: context_scope.map(String::from),
-        exec_mode: exec_mode.map(String::from),
-        token_usage: None,
-        session_id: None,
-        wait_condition: None,
-        checkpoint: None,
-        resurrection_count: 0,
-        last_resurrected_at: None,
-    };
-
-    // Add task to graph
-    graph.add_node(Node::Task(task));
-
-    // Maintain bidirectional consistency: update `blocks` on referenced blocker tasks
-    // (skip cross-repo refs — those live in a different graph)
-    for dep in after {
-        if workgraph::federation::parse_remote_ref(dep).is_some() {
-            continue; // Cross-repo dep; can't update remote graph's blocks field
-        }
-        if let Some(blocker) = graph.get_task_mut(dep)
-            && !blocker.before.contains(&task_id)
-        {
-            blocker.before.push(task_id.clone());
-        }
-    }
-
-    // Auto-create back-edges when --max-iterations is set and --after deps exist.
-    // For each --after dep, add the new task's ID to the dep's after list,
-    // forming a structural cycle that the SCC detector will find.
-    if max_iterations.is_some() && !after.is_empty() {
-        for dep_id in after {
-            if workgraph::federation::parse_remote_ref(dep_id).is_some() {
-                continue; // Skip cross-repo deps
+    let task_id = super::mutate_workgraph(dir, |graph| {
+        // 2. Task depth limit (enforced when --after is specified)
+        if !after.is_empty() {
+            let max_depth = guardrails.max_task_depth;
+            // The new task's depth = max(depth of each parent) + 1
+            let max_parent_depth = after
+                .iter()
+                .map(|parent_id| graph.task_depth(parent_id))
+                .max()
+                .unwrap_or(0);
+            let new_depth = max_parent_depth + 1;
+            if new_depth > max_depth {
+                anyhow::bail!(
+                    "Task would be at depth {} (max: {}). \
+                     Consider creating tasks at the current level instead.",
+                    new_depth,
+                    max_depth
+                );
             }
-            if let Some(dep_task) = graph.get_task_mut(dep_id)
-                && !dep_task.after.contains(&task_id)
+        }
+
+        // Generate ID if not provided
+        let task_id = match id {
+            Some(id) => {
+                if graph.get_node(id).is_some() {
+                    anyhow::bail!("Task with ID '{}' already exists", id);
+                }
+                id.to_string()
+            }
+            None => generate_id(title, graph),
+        };
+
+        // Validate after references (supports cross-repo peer:task-id syntax)
+        for blocker_id in after {
+            if blocker_id == &task_id {
+                anyhow::bail!("Task '{}' cannot block itself", task_id);
+            }
+            if workgraph::federation::parse_remote_ref(blocker_id).is_some() {
+                // Cross-repo dependency — validated at resolution time, not here
+            } else if graph.get_node(blocker_id).is_none() {
+                eprintln!(
+                    "Warning: blocker '{}' does not exist yet (will be treated as unresolved until created)",
+                    blocker_id
+                );
+                // Suggest fuzzy match if a close task ID exists
+                let all_ids: Vec<&str> = graph.tasks().map(|t| t.id.as_str()).collect();
+                if let Some((suggestion, _)) =
+                    workgraph::check::fuzzy_match_task_id(blocker_id, all_ids.iter().copied(), 3)
+                {
+                    eprintln!("  → Did you mean '{}'?", suggestion);
+                }
+            }
+        }
+
+        let task = Task {
+            id: task_id.clone(),
+            title: title.to_string(),
+            description: description.map(String::from),
+            status: Status::Open,
+            assigned: assign.map(String::from),
+            estimate: estimate.clone(),
+            before: vec![],
+            after: after.to_vec(),
+            requires: vec![],
+            tags: tags.to_vec(),
+            skills: skills.to_vec(),
+            inputs: inputs.to_vec(),
+            deliverables: deliverables.to_vec(),
+            artifacts: vec![],
+            exec: None,
+            not_before: computed_not_before.clone(),
+            created_at: Some(Utc::now().to_rfc3339()),
+            started_at: None,
+            completed_at: None,
+            log: log.clone(),
+            retry_count: 0,
+            max_retries,
+            failure_reason: None,
+            model: model.map(String::from),
+            provider: provider.map(String::from),
+            verify: verify.map(String::from),
+            agent: None,
+            loop_iteration: 0,
+            cycle_failure_restarts: 0,
+            cycle_config: cycle_config.clone(),
+            ready_after: None,
+            paused,
+            visibility: visibility.to_string(),
+            context_scope: context_scope.map(String::from),
+            exec_mode: exec_mode.map(String::from),
+            token_usage: None,
+            session_id: None,
+            wait_condition: None,
+            checkpoint: None,
+            resurrection_count: 0,
+            last_resurrected_at: None,
+        };
+
+        // Add task to graph
+        graph.add_node(Node::Task(task));
+
+        // Maintain bidirectional consistency: update `blocks` on referenced blocker tasks
+        // (skip cross-repo refs — those live in a different graph)
+        for dep in after {
+            if workgraph::federation::parse_remote_ref(dep).is_some() {
+                continue; // Cross-repo dep; can't update remote graph's blocks field
+            }
+            if let Some(blocker) = graph.get_task_mut(dep)
+                && !blocker.before.contains(&task_id)
             {
-                dep_task.after.push(task_id.clone());
-            }
-            // Maintain bidirectional consistency for the back-edge
-            if let Some(new_task) = graph.get_task_mut(&task_id)
-                && !new_task.before.contains(dep_id)
-            {
-                new_task.before.push(dep_id.clone());
+                blocker.before.push(task_id.clone());
             }
         }
-    }
 
-    // Save atomically (temp file + rename)
-    save_graph(&graph, &path).context("Failed to save graph")?;
+        // Auto-create back-edges when --max-iterations is set and --after deps exist.
+        // For each --after dep, add the new task's ID to the dep's after list,
+        // forming a structural cycle that the SCC detector will find.
+        if max_iterations.is_some() && !after.is_empty() {
+            for dep_id in after {
+                if workgraph::federation::parse_remote_ref(dep_id).is_some() {
+                    continue; // Skip cross-repo deps
+                }
+                if let Some(dep_task) = graph.get_task_mut(dep_id)
+                    && !dep_task.after.contains(&task_id)
+                {
+                    dep_task.after.push(task_id.clone());
+                }
+                // Maintain bidirectional consistency for the back-edge
+                if let Some(new_task) = graph.get_task_mut(&task_id)
+                    && !new_task.before.contains(dep_id)
+                {
+                    new_task.before.push(dep_id.clone());
+                }
+            }
+        }
+
+        Ok(task_id)
+    })?;
+
     super::notify_graph_changed(dir);
     super::notify_new_task_focus(dir, &task_id);
 
@@ -496,85 +491,76 @@ fn add_task_directly(
     verify: Option<&str>,
     origin: &str,
 ) -> Result<String> {
-    use workgraph::graph::{Node, Status, Task};
-    use workgraph::parser::{load_graph, save_graph};
-
     let graph_path = super::graph_path(peer_workgraph_dir);
-    let mut graph = if graph_path.exists() {
-        load_graph(&graph_path).context("Failed to load peer graph")?
-    } else {
-        anyhow::bail!(
-            "No graph.jsonl at '{}'. Is this a workgraph project?",
-            peer_workgraph_dir.display()
-        );
-    };
 
-    let task_id = match id {
-        Some(id) => {
-            if graph.get_node(id).is_some() {
-                anyhow::bail!("Task with ID '{}' already exists in peer", id);
+    let task_id = workgraph::parser::mutate_graph(&graph_path, |graph| {
+        let task_id = match id {
+            Some(id) => {
+                if graph.get_node(id).is_some() {
+                    anyhow::bail!("Task with ID '{}' already exists in peer", id);
+                }
+                id.to_string()
             }
-            id.to_string()
+            None => generate_id(title, graph),
+        };
+
+        let task = Task {
+            id: task_id.clone(),
+            title: title.to_string(),
+            description: description.map(String::from),
+            status: Status::Open,
+            assigned: None,
+            estimate: None,
+            before: vec![],
+            after: after.to_vec(),
+            requires: vec![],
+            tags: tags.to_vec(),
+            skills: skills.to_vec(),
+            inputs: vec![],
+            deliverables: deliverables.to_vec(),
+            artifacts: vec![],
+            exec: None,
+            not_before: None,
+            created_at: Some(chrono::Utc::now().to_rfc3339()),
+            started_at: None,
+            completed_at: None,
+            log: vec![],
+            retry_count: 0,
+            max_retries: None,
+            failure_reason: None,
+            model: model.map(String::from),
+            provider: provider.map(String::from),
+            verify: verify.map(String::from),
+            agent: None,
+            loop_iteration: 0,
+            cycle_failure_restarts: 0,
+            ready_after: None,
+            paused: false,
+            visibility: "internal".to_string(),
+            context_scope: None,
+            cycle_config: None,
+            exec_mode: None,
+            token_usage: None,
+            session_id: None,
+            wait_condition: None,
+            checkpoint: None,
+            resurrection_count: 0,
+            last_resurrected_at: None,
+        };
+
+        graph.add_node(Node::Task(task));
+
+        // Maintain bidirectional after/blocks consistency
+        for dep in after {
+            if let Some(blocker) = graph.get_task_mut(dep)
+                && !blocker.before.contains(&task_id)
+            {
+                blocker.before.push(task_id.clone());
+            }
         }
-        None => generate_id(title, &graph),
-    };
 
-    let task = Task {
-        id: task_id.clone(),
-        title: title.to_string(),
-        description: description.map(String::from),
-        status: Status::Open,
-        assigned: None,
-        estimate: None,
-        before: vec![],
-        after: after.to_vec(),
-        requires: vec![],
-        tags: tags.to_vec(),
-        skills: skills.to_vec(),
-        inputs: vec![],
-        deliverables: deliverables.to_vec(),
-        artifacts: vec![],
-        exec: None,
-        not_before: None,
-        created_at: Some(chrono::Utc::now().to_rfc3339()),
-        started_at: None,
-        completed_at: None,
-        log: vec![],
-        retry_count: 0,
-        max_retries: None,
-        failure_reason: None,
-        model: model.map(String::from),
-        provider: provider.map(String::from),
-        verify: verify.map(String::from),
-        agent: None,
-        loop_iteration: 0,
-        cycle_failure_restarts: 0,
-        ready_after: None,
-        paused: false,
-        visibility: "internal".to_string(),
-        context_scope: None,
-        cycle_config: None,
-        exec_mode: None,
-        token_usage: None,
-        session_id: None,
-        wait_condition: None,
-        checkpoint: None,
-        resurrection_count: 0,
-        last_resurrected_at: None,
-    };
-
-    graph.add_node(Node::Task(task));
-
-    // Maintain bidirectional after/blocks consistency
-    for dep in after {
-        if let Some(blocker) = graph.get_task_mut(dep)
-            && !blocker.before.contains(&task_id)
-        {
-            blocker.before.push(task_id.clone());
-        }
-    }
-
-    save_graph(&graph, &graph_path).context("Failed to save peer graph")?;
+        Ok(task_id)
+    }).context("Failed to modify peer graph")?;
 
     // Record provenance in the peer's workgraph
     let config = workgraph::config::Config::load_or_default(peer_workgraph_dir);
