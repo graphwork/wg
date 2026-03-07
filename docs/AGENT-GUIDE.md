@@ -24,6 +24,64 @@ If the request doesn't map to one of these, it's probably a **composition** — 
 
 ---
 
+## 1b. Task Lifecycle
+
+Every task moves through a state machine. Understanding the states and transitions is essential for working effectively with the graph.
+
+### Status states
+
+| Status | Meaning |
+|--------|---------|
+| **Open** | Ready to be claimed/dispatched (all `--after` deps are done) |
+| **Blocked** | Waiting for upstream dependencies to complete |
+| **InProgress** | An agent has claimed the task and is working on it |
+| **PendingValidation** | Agent called `wg done`, but the task has a `--verify` criterion requiring external validation |
+| **Done** | Completed successfully |
+| **Failed** | Agent called `wg fail` or validation failed |
+| **Abandoned** | Manually abandoned via `wg abandon` |
+| **Waiting** | Paused — waiting for an external event or manual intervention |
+
+### Validation flow (PendingValidation)
+
+Tasks created with `--verify` go through an extra validation gate:
+
+```
+InProgress → wg done → PendingValidation → wg approve → Done
+                                          → wg reject  → Open (re-dispatched)
+```
+
+- `wg approve <task-id>` — transitions PendingValidation → Done
+- `wg reject <task-id> --reason "..."` — reopens the task for re-dispatch (clears assignment)
+- After `max_rejections` (default: 3), `wg reject` transitions the task to Failed instead of Open
+
+### Retry workflow
+
+Failed tasks can be retried:
+
+```bash
+wg retry <task-id>    # Failed → Open (clears assignment, preserves logs)
+```
+
+- Retry count is tracked (`retry_count`). Set `max_retries` to limit attempts.
+- Previous failure reasons and logs are preserved for the next agent to learn from.
+- The coordinator re-dispatches the task automatically after retry.
+
+### Cascade abandon
+
+When a task is abandoned (`wg abandon`), its **system tasks** (IDs starting with `.`, such as `.evaluate-*` and `.verify-*`) are automatically cascade-abandoned. Normal dependent tasks are NOT cascade-abandoned — they remain blocked until the situation is resolved.
+
+### Task supersession
+
+When abandoning a task that's been replaced by a better approach:
+
+```bash
+wg abandon old-task --superseded-by new-task-a,new-task-b --reason "Replaced with better approach"
+```
+
+The `superseded_by` field creates a traceable link from the old task to its replacements.
+
+---
+
 ## 2. Structure Rules
 
 Structure patterns describe how to arrange tasks in the graph.
@@ -280,6 +338,8 @@ wg msg poll <task-id> --agent $WG_AGENT_ID
 
 **Messages are persistent** — they survive agent restarts and are visible to future agents who work on the same task.
 
+**Workflow expectation:** Agents should check for messages at task start, at natural breakpoints during work, and before marking a task done. Unreplied messages at completion time indicate incomplete work.
+
 ### 4.2 After Code Changes: Rebuild
 
 When you modify source code in a Rust project that uses `cargo install`:
@@ -290,7 +350,18 @@ cargo install --path .
 
 This updates the global `wg` binary. Forgetting this step is a common source of "why isn't this working" bugs. Do it after every code change.
 
-### 4.3 Convergence Signaling
+### 4.3 Worktree Isolation
+
+When the coordinator spawns agents, each agent works in an isolated [git worktree](WORKTREE-ISOLATION.md). This means:
+
+- Each agent has its own working tree — no shared file conflicts
+- Agents can build, test, and commit independently
+- Worktrees share the same `.git` object store, so branches are visible across agents
+- Worktrees are created under `.wg-worktrees/` and cleaned up after task completion
+
+This eliminates the "parallel file conflict" problem at the git level. However, you should still serialize tasks that modify the same logical files (via `--after`) to avoid merge conflicts at commit time.
+
+### 4.4 Convergence Signaling
 
 Use `wg done --converged` to stop a loop. Use plain `wg done` to iterate.
 
@@ -304,7 +375,7 @@ wg done review
 
 The `--converged` flag tags the cycle header. This prevents further iterations even if `--max-iterations` hasn't been reached. Any cycle member can signal convergence for the entire cycle.
 
-### 4.4 Evolve — the feedback loop
+### 4.5 Evolve — the feedback loop
 
 After work accumulates, evaluate and evolve roles:
 
