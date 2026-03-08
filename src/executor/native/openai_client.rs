@@ -121,7 +121,7 @@ struct OaiErrorDetail {
 
 // ── Client ──────────────────────────────────────────────────────────────
 
-const DEFAULT_BASE_URL: &str = "https://openrouter.ai/api";
+const DEFAULT_BASE_URL: &str = "https://openrouter.ai/api/v1";
 const DEFAULT_MAX_TOKENS: u32 = 16384;
 
 /// OpenAI-compatible chat completions client.
@@ -133,6 +133,8 @@ pub struct OpenAiClient {
     base_url: String,
     pub model: String,
     pub max_tokens: u32,
+    /// Provider hint for provider-specific behavior (e.g. "openrouter", "openai", "local").
+    provider_hint: Option<String>,
 }
 
 impl OpenAiClient {
@@ -152,6 +154,7 @@ impl OpenAiClient {
                 .to_string(),
             model: model.to_string(),
             max_tokens: DEFAULT_MAX_TOKENS,
+            provider_hint: None,
         })
     }
 
@@ -176,6 +179,15 @@ impl OpenAiClient {
     /// Override max tokens per response.
     pub fn with_max_tokens(mut self, max_tokens: u32) -> Self {
         self.max_tokens = max_tokens;
+        self
+    }
+
+    /// Set a provider hint for provider-specific behavior.
+    ///
+    /// When set to `"openrouter"`, adds `HTTP-Referer` and `X-Title` attribution
+    /// headers to requests.
+    pub fn with_provider_hint(mut self, hint: &str) -> Self {
+        self.provider_hint = Some(hint.to_string());
         self
     }
 
@@ -385,7 +397,7 @@ impl OpenAiClient {
             stream: false,
         };
 
-        let url = format!("{}/v1/chat/completions", self.base_url);
+        let url = format!("{}/chat/completions", self.base_url);
         self.send_with_retry(&url, &oai_request).await
     }
 
@@ -463,6 +475,16 @@ impl OpenAiClient {
                 .expect("invalid api key header"),
         );
         headers.insert("content-type", HeaderValue::from_static("application/json"));
+
+        // OpenRouter attribution headers
+        if self.provider_hint.as_deref() == Some("openrouter") {
+            headers.insert(
+                "http-referer",
+                HeaderValue::from_static("https://github.com/anthropics/workgraph"),
+            );
+            headers.insert("x-title", HeaderValue::from_static("workgraph"));
+        }
+
         headers
     }
 }
@@ -470,7 +492,7 @@ impl OpenAiClient {
 #[async_trait::async_trait]
 impl super::provider::Provider for OpenAiClient {
     fn name(&self) -> &str {
-        "openai"
+        self.provider_hint.as_deref().unwrap_or("openai")
     }
 
     fn model(&self) -> &str {
@@ -750,5 +772,106 @@ mod tests {
 
         let resp = OpenAiClient::translate_response(oai).unwrap();
         assert_eq!(resp.stop_reason, Some(StopReason::MaxTokens));
+    }
+
+    // ── OpenRouter-specific tests ───────────────────────────────────────
+
+    #[test]
+    fn test_openrouter_headers_included() {
+        let client = OpenAiClient::new("test-key".into(), "test/model", None)
+            .unwrap()
+            .with_provider_hint("openrouter");
+        let headers = client.build_headers();
+        assert_eq!(
+            headers.get("http-referer").unwrap(),
+            "https://github.com/anthropics/workgraph"
+        );
+        assert_eq!(headers.get("x-title").unwrap(), "workgraph");
+    }
+
+    #[test]
+    fn test_non_openrouter_no_extra_headers() {
+        let client = OpenAiClient::new("test-key".into(), "gpt-4o", None)
+            .unwrap()
+            .with_provider_hint("openai");
+        let headers = client.build_headers();
+        assert!(headers.get("http-referer").is_none());
+        assert!(headers.get("x-title").is_none());
+    }
+
+    #[test]
+    fn test_no_hint_no_extra_headers() {
+        let client = OpenAiClient::new("test-key".into(), "gpt-4o", None).unwrap();
+        let headers = client.build_headers();
+        assert!(headers.get("http-referer").is_none());
+        assert!(headers.get("x-title").is_none());
+    }
+
+    #[test]
+    fn test_openrouter_url_construction() {
+        let client =
+            OpenAiClient::new("test-key".into(), "minimax/minimax-m2.5", None).unwrap();
+        assert!(client.base_url.ends_with("/v1"));
+        let expected = format!("{}/chat/completions", client.base_url);
+        assert_eq!(expected, "https://openrouter.ai/api/v1/chat/completions");
+    }
+
+    #[test]
+    fn test_model_id_passthrough() {
+        let c1 = OpenAiClient::new("k".into(), "minimax/minimax-m2.5", None).unwrap();
+        assert_eq!(c1.model, "minimax/minimax-m2.5");
+        let c2 = OpenAiClient::new("k".into(), "openai/gpt-4o-mini", None).unwrap();
+        assert_eq!(c2.model, "openai/gpt-4o-mini");
+    }
+
+    #[test]
+    fn test_provider_hint_sets_name() {
+        use super::super::provider::Provider;
+        let client = OpenAiClient::new("test-key".into(), "test/model", None)
+            .unwrap()
+            .with_provider_hint("openrouter");
+        assert_eq!(client.name(), "openrouter");
+        let client2 = OpenAiClient::new("test-key".into(), "test/model", None)
+            .unwrap()
+            .with_provider_hint("local");
+        assert_eq!(client2.name(), "local");
+        let client3 = OpenAiClient::new("test-key".into(), "gpt-4o", None).unwrap();
+        assert_eq!(client3.name(), "openai");
+    }
+
+    #[test]
+    fn test_local_provider_placeholder_key() {
+        use super::super::provider::Provider;
+        let client = OpenAiClient::new("local".into(), "llama3.1", None)
+            .unwrap()
+            .with_provider_hint("local");
+        assert_eq!(client.name(), "local");
+        let headers = client.build_headers();
+        assert_eq!(headers.get("authorization").unwrap(), "Bearer local");
+        assert!(headers.get("http-referer").is_none());
+    }
+
+    #[test]
+    fn test_openrouter_response_gen_prefix_id() {
+        let oai = OaiResponse {
+            id: "gen-abc123".to_string(),
+            choices: vec![OaiChoice {
+                message: OaiResponseMessage {
+                    role: "assistant".to_string(),
+                    content: Some("Hello from OpenRouter".to_string()),
+                    tool_calls: None,
+                },
+                finish_reason: Some("stop".to_string()),
+            }],
+            usage: Some(OaiUsage {
+                prompt_tokens: 5,
+                completion_tokens: 4,
+            }),
+        };
+        let resp = OpenAiClient::translate_response(oai).unwrap();
+        assert_eq!(resp.id, "gen-abc123");
+        assert!(
+            matches!(&resp.content[0], ContentBlock::Text { text } if text == "Hello from OpenRouter")
+        );
     }
 }

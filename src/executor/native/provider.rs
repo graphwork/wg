@@ -99,9 +99,13 @@ pub fn create_provider_ext(
         .map(|v| v as u32);
 
     match provider_name.as_str() {
-        "openai" | "openrouter" => {
+        "openai" | "openrouter" | "local" => {
             let mut client = if let Some(key) = endpoint_key {
                 OpenAiClient::new(key, model, None)
+            } else if provider_name == "local" {
+                // Local providers (Ollama, vLLM) don't require auth
+                OpenAiClient::from_env(model)
+                    .or_else(|_| OpenAiClient::new("local".to_string(), model, None))
             } else {
                 OpenAiClient::from_env(model).or_else(|_| {
                     let key = super::client::resolve_api_key_from_dir(workgraph_dir)?;
@@ -109,6 +113,7 @@ pub fn create_provider_ext(
                 })
             }
             .context("Failed to initialize OpenAI-compatible client")?;
+            client = client.with_provider_hint(&provider_name);
             if let Some(base) = api_base {
                 client = client.with_base_url(&base);
             }

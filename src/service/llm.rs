@@ -47,7 +47,7 @@ pub fn run_lightweight_llm_call(
                     return Ok(result);
                 }
             }
-            "openai" | "openrouter" => {
+            "openai" | "openrouter" | "local" => {
                 if let Ok(result) = call_openai_native(config, prov, model, prompt, timeout_secs) {
                     return Ok(result);
                 }
@@ -186,17 +186,24 @@ fn call_openai_native(
     use crate::executor::native::provider::Provider;
 
     let endpoint = config.llm_endpoints.find_for_provider(provider_name);
-    let client = if let Some(key) = endpoint.and_then(|ep| ep.api_key.clone()) {
+    let mut client = if let Some(key) = endpoint.and_then(|ep| ep.api_key.clone()) {
         let mut c = OpenAiClient::new(key, model, None)
             .context("Failed to create OpenAI client for lightweight call")?;
         if let Some(url) = endpoint.and_then(|ep| ep.url.clone()) {
             c = c.with_base_url(&url);
         }
         c
+    } else if provider_name == "local" {
+        // Local providers don't require auth
+        OpenAiClient::from_env(model).unwrap_or_else(|_| {
+            OpenAiClient::new("local".to_string(), model, None)
+                .expect("infallible with static args")
+        })
     } else {
         OpenAiClient::from_env(model)
             .context("Failed to create OpenAI client for lightweight call")?
     };
+    client = client.with_provider_hint(provider_name);
 
     let request = MessagesRequest {
         model: model.to_string(),

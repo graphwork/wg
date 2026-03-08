@@ -179,8 +179,8 @@ fn test_prefixed_model_routes_to_openai() {
     assert_eq!(response.id, "chatcmpl-mock");
     assert_eq!(
         paths.lock().unwrap().first().unwrap(),
-        "/v1/chat/completions",
-        "OpenAI client should hit /v1/chat/completions"
+        "/chat/completions",
+        "OpenAI client should hit /chat/completions (base_url includes /v1 when set)"
     );
 }
 
