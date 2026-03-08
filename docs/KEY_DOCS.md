@@ -15,7 +15,7 @@ Last updated: 2026-03-07 (verified by doc-audit-inventory)
 | `docs/COMMANDS.md` | Complete CLI command reference with examples | Users, agents |
 | `docs/AGENT-GUIDE.md` | How spawned agents should think about task graphs: patterns, structures, anti-patterns | AI agents, advanced users |
 | `docs/AGENT-SERVICE.md` | Service daemon architecture: coordinator tick, dispatch cycle, agent lifecycle | Operators, contributors |
-| `docs/AGENCY.md` | Agency system: roles, motivations, evaluation, evolution, skill system | Users setting up agency |
+| `docs/AGENCY.md` | Agency system: roles, tradeoffs, evaluation, evolution, skill system | Users setting up agency |
 | `docs/LOGGING.md` | Logging and provenance system: operation log, agent archives, rotation | Operators, integrators |
 | `docs/DEV.md` | Development notes: build, test, reusable functions, common pitfalls | Contributors |
 | `docs/WORKTREE-ISOLATION.md` | Worktree-based isolation for concurrent agents | Operators, contributors |
@@ -37,7 +37,7 @@ Last updated: 2026-03-07 (verified by doc-audit-inventory)
 |------|---------|----------|
 | `docs/manual/01-overview.typ` | System overview: graph, agency, core loop, agency loop | Deep readers |
 | `docs/manual/02-task-graph.typ` | Task graph: nodes, status, dependencies, cycles, readiness, analysis | Deep readers |
-| `docs/manual/03-agency.typ` | Agency model: roles, motivations, agents, content-hash IDs, skills, trust, federation | Deep readers |
+| `docs/manual/03-agency.typ` | Agency model: roles, tradeoffs, agents, content-hash IDs, skills, trust, federation | Deep readers |
 | `docs/manual/04-coordination.typ` | Coordination & execution: daemon, tick, dispatch, wrapper, IPC, watch, custom executors | Deep readers |
 | `docs/manual/05-evolution.typ` | Evolution & improvement: evaluation, performance, strategies, lineage, autopoiesis | Deep readers |
 | `docs/manual/workgraph-manual.typ` | Manual entry point (imports all chapters) | Deep readers |
