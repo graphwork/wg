@@ -5157,12 +5157,26 @@ impl VizApp {
         }
         self.service_health.stuck_tasks = stuck;
 
-        // Read recent errors from daemon log (last 5 ERROR/WARN lines)
+        // Read recent errors from daemon log (last 5 ERROR/WARN lines within 10 minutes)
         let log_path = log_file_path(dir);
         let mut recent_errors = Vec::new();
+        let cutoff = chrono::Utc::now() - chrono::Duration::minutes(10);
         if let Ok(content) = std::fs::read_to_string(&log_path) {
             for line in content.lines().rev() {
                 if line.contains("ERROR") || line.contains("WARN") {
+                    // Parse timestamp from line start: "2026-03-08T12:59:07.285Z [LEVEL] ..."
+                    let ts_end = line.find(' ').unwrap_or(0);
+                    if ts_end == 0 {
+                        continue;
+                    }
+                    let ts_str = &line[..ts_end];
+                    let Ok(ts) = chrono::DateTime::parse_from_rfc3339(ts_str) else {
+                        continue;
+                    };
+                    if ts.with_timezone(&chrono::Utc) < cutoff {
+                        // Past the 10-minute window; since we're iterating newest-first, stop
+                        break;
+                    }
                     recent_errors.push(line.to_string());
                     if recent_errors.len() >= 5 {
                         break;
@@ -5185,7 +5199,11 @@ impl VizApp {
         } else {
             self.service_health.level = ServiceHealthLevel::Green;
         }
-        self.service_health.label = count_label;
+        self.service_health.label = if coord.paused {
+            "PAUSED".to_string()
+        } else {
+            count_label
+        };
 
         self.service_health.last_poll = Instant::now();
     }
