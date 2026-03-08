@@ -299,17 +299,41 @@ pub fn run(
     // Eval calls can be slow with large task outputs — use a generous timeout.
     // The triage_timeout is designed for short triage calls; evals need more.
     let timeout_secs = config.agency.triage_timeout.unwrap_or(60).max(300);
-    let eval_result = workgraph::service::llm::run_lightweight_llm_call(
-        &config,
-        workgraph::config::DispatchRole::Evaluator,
-        &prompt,
-        timeout_secs,
-    )
-    .context("Evaluation LLM call failed")?;
 
-    // Step 7: Parse the JSON output from the evaluator
-    let eval_json = extract_json(&eval_result.text)
-        .context("Failed to extract valid JSON from evaluator output")?;
+    // Retry LLM call up to 3 times if JSON extraction fails (transient format failures)
+    let (eval_json, eval_token_usage) = {
+        let mut last_text = String::new();
+        let mut extracted = None;
+        let mut token_usage = None;
+        for attempt in 1..=3 {
+            let eval_result = workgraph::service::llm::run_lightweight_llm_call(
+                &config,
+                workgraph::config::DispatchRole::Evaluator,
+                &prompt,
+                timeout_secs,
+            )
+            .context("Evaluation LLM call failed")?;
+            last_text = eval_result.text;
+            token_usage = eval_result.token_usage;
+            if let Some(json) = extract_json(&last_text) {
+                extracted = Some(json);
+                break;
+            }
+            if attempt < 3 {
+                eprintln!(
+                    "[evaluate] JSON extraction failed, retrying ({}/3)...",
+                    attempt
+                );
+            }
+        }
+        let json = extracted.with_context(|| {
+            format!(
+                "Failed to extract valid JSON from evaluator output after 3 attempts. Last response:\n{}",
+                last_text
+            )
+        })?;
+        (json, token_usage)
+    };
 
     let parsed: EvalOutput = serde_json::from_str(&eval_json)
         .with_context(|| format!("Failed to parse evaluator JSON:\n{}", eval_json))?;
@@ -432,7 +456,7 @@ pub fn run(
     }
 
     // Step 8.5: Persist token usage to the .evaluate-* task
-    if let Some(usage) = eval_result.token_usage {
+    if let Some(usage) = eval_token_usage {
         let eval_task_id = format!(".evaluate-{}", task_id);
         let graph_path = super::graph_path(dir);
         if let Ok(mut graph) = load_graph(&graph_path)
@@ -641,15 +665,41 @@ pub fn run_flip(
     );
 
     let flip_timeout = config.agency.triage_timeout.unwrap_or(60).max(300);
-    let inference_result = workgraph::service::llm::run_lightweight_llm_call(
-        &config,
-        workgraph::config::DispatchRole::FlipInference,
-        &inference_prompt,
-        flip_timeout,
-    )
-    .context("FLIP inference LLM call failed")?;
-    let inference_json = extract_json(&inference_result.text)
-        .context("Failed to extract JSON from FLIP inference output")?;
+
+    // Retry LLM call up to 3 times if JSON extraction fails (transient format failures)
+    let (inference_json, inference_token_usage) = {
+        let mut last_text = String::new();
+        let mut extracted = None;
+        let mut token_usage = None;
+        for attempt in 1..=3 {
+            let inference_result = workgraph::service::llm::run_lightweight_llm_call(
+                &config,
+                workgraph::config::DispatchRole::FlipInference,
+                &inference_prompt,
+                flip_timeout,
+            )
+            .context("FLIP inference LLM call failed")?;
+            last_text = inference_result.text;
+            token_usage = inference_result.token_usage;
+            if let Some(json) = extract_json(&last_text) {
+                extracted = Some(json);
+                break;
+            }
+            if attempt < 3 {
+                eprintln!(
+                    "[evaluate] JSON extraction failed, retrying ({}/3)...",
+                    attempt
+                );
+            }
+        }
+        let json = extracted.with_context(|| {
+            format!(
+                "Failed to extract JSON from FLIP inference output after 3 attempts. Last response:\n{}",
+                last_text
+            )
+        })?;
+        (json, token_usage)
+    };
 
     let parsed_inference: FlipInferenceOutput = serde_json::from_str(&inference_json)
         .with_context(|| format!("Failed to parse FLIP inference JSON:\n{}", inference_json))?;
@@ -673,15 +723,40 @@ pub fn run_flip(
         comparison_model
     );
 
-    let comparison_result = workgraph::service::llm::run_lightweight_llm_call(
-        &config,
-        workgraph::config::DispatchRole::FlipComparison,
-        &comparison_prompt,
-        flip_timeout,
-    )
-    .context("FLIP comparison LLM call failed")?;
-    let comparison_json = extract_json(&comparison_result.text)
-        .context("Failed to extract JSON from FLIP comparison output")?;
+    // Retry LLM call up to 3 times if JSON extraction fails (transient format failures)
+    let (comparison_json, comparison_token_usage) = {
+        let mut last_text = String::new();
+        let mut extracted = None;
+        let mut token_usage = None;
+        for attempt in 1..=3 {
+            let comparison_result = workgraph::service::llm::run_lightweight_llm_call(
+                &config,
+                workgraph::config::DispatchRole::FlipComparison,
+                &comparison_prompt,
+                flip_timeout,
+            )
+            .context("FLIP comparison LLM call failed")?;
+            last_text = comparison_result.text;
+            token_usage = comparison_result.token_usage;
+            if let Some(json) = extract_json(&last_text) {
+                extracted = Some(json);
+                break;
+            }
+            if attempt < 3 {
+                eprintln!(
+                    "[evaluate] JSON extraction failed, retrying ({}/3)...",
+                    attempt
+                );
+            }
+        }
+        let json = extracted.with_context(|| {
+            format!(
+                "Failed to extract JSON from FLIP comparison output after 3 attempts. Last response:\n{}",
+                last_text
+            )
+        })?;
+        (json, token_usage)
+    };
 
     let parsed_comparison: FlipComparisonOutput = serde_json::from_str(&comparison_json)
         .with_context(|| format!("Failed to parse FLIP comparison JSON:\n{}", comparison_json))?;
@@ -808,7 +883,7 @@ pub fn run_flip(
 
     // Persist combined token usage from both FLIP phases to the .evaluate-* task
     let combined_usage =
-        combine_token_usage(&[inference_result.token_usage, comparison_result.token_usage]);
+        combine_token_usage(&[inference_token_usage, comparison_token_usage]);
     if let Some(usage) = combined_usage {
         let eval_task_id = format!(".evaluate-{}", task_id);
         let graph_path = super::graph_path(dir);
