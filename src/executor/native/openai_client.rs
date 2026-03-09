@@ -57,6 +57,10 @@ struct OaiRequest {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     tools: Vec<OaiToolDef>,
     stream: bool,
+    /// OpenRouter cache_control — triggers auto-caching for Anthropic/Gemini models.
+    /// When set, OpenRouter applies cache_control to the last cacheable content block.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cache_control: Option<serde_json::Value>,
 }
 
 /// OpenAI-format response body.
@@ -104,7 +108,9 @@ struct OaiPromptTokenDetails {
     cached_tokens: Option<u32>,
     #[serde(default)]
     cache_write_tokens: Option<u32>,
+    /// Cost reduction from caching (parsed but not yet used — no price table).
     #[serde(default)]
+    #[allow(dead_code)]
     cache_discount: Option<f64>,
 }
 
@@ -487,6 +493,7 @@ impl OpenAiClient {
             max_tokens: Some(request.max_tokens),
             tools: Self::translate_tools(&request.tools),
             stream: false,
+            cache_control: self.cache_control_value(),
         };
 
         let url = format!("{}/chat/completions", self.base_url);
@@ -508,6 +515,7 @@ impl OpenAiClient {
             max_tokens: Some(request.max_tokens),
             tools: Self::translate_tools(&request.tools),
             stream: true,
+            cache_control: self.cache_control_value(),
         };
 
         let url = format!("{}/chat/completions", self.base_url);
@@ -667,6 +675,20 @@ impl OpenAiClient {
         }
     }
 
+    /// Returns the cache_control value for OpenRouter requests.
+    ///
+    /// When using OpenRouter, sends `{"type": "ephemeral"}` to enable auto-caching.
+    /// OpenRouter applies this to the last cacheable content block, enabling prompt
+    /// caching for Anthropic and Gemini models with zero per-message configuration.
+    /// For providers with automatic caching (OpenAI, DeepSeek), this field is ignored.
+    fn cache_control_value(&self) -> Option<serde_json::Value> {
+        if self.provider_hint.as_deref() == Some("openrouter") {
+            Some(serde_json::json!({"type": "ephemeral"}))
+        } else {
+            None
+        }
+    }
+
     fn build_headers(&self) -> HeaderMap {
         let mut headers = HeaderMap::new();
         headers.insert(
@@ -805,6 +827,102 @@ fn truncate(s: &str, max: usize) -> &str {
     } else {
         &s[..s.floor_char_boundary(max)]
     }
+}
+
+// ── OpenRouter model discovery ──────────────────────────────────────────
+
+/// A model returned by the OpenRouter `/api/v1/models` endpoint.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenRouterModel {
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub context_length: Option<u64>,
+    #[serde(default)]
+    pub pricing: Option<OpenRouterPricing>,
+    #[serde(default)]
+    pub supported_parameters: Vec<String>,
+    #[serde(default)]
+    pub architecture: Option<OpenRouterArchitecture>,
+    #[serde(default)]
+    pub top_provider: Option<OpenRouterTopProvider>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenRouterPricing {
+    #[serde(default)]
+    pub prompt: Option<String>,
+    #[serde(default)]
+    pub completion: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenRouterArchitecture {
+    #[serde(default)]
+    pub modality: Option<String>,
+    #[serde(default)]
+    pub tokenizer: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenRouterTopProvider {
+    #[serde(default)]
+    pub max_completion_tokens: Option<u64>,
+    #[serde(default)]
+    pub is_moderated: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct OpenRouterModelsResponse {
+    data: Vec<OpenRouterModel>,
+}
+
+/// Fetch models from an OpenRouter-compatible API.
+///
+/// Queries `GET {base_url}/models` and returns the full model list.
+pub async fn fetch_openrouter_models(
+    api_key: &str,
+    base_url: Option<&str>,
+) -> Result<Vec<OpenRouterModel>> {
+    let base = base_url.unwrap_or(DEFAULT_BASE_URL).trim_end_matches('/');
+    let url = format!("{}/models", base);
+
+    let http = reqwest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .context("Failed to build HTTP client")?;
+
+    let resp = http
+        .get(&url)
+        .header("authorization", format!("Bearer {}", api_key))
+        .send()
+        .await
+        .context("Failed to fetch models from API")?;
+
+    let status = resp.status().as_u16();
+    if status != 200 {
+        let body = resp.text().await.unwrap_or_default();
+        return Err(oai_api_error(status, &body));
+    }
+
+    let models_resp: OpenRouterModelsResponse = resp
+        .json()
+        .await
+        .context("Failed to parse models response")?;
+
+    Ok(models_resp.data)
+}
+
+/// Blocking version of `fetch_openrouter_models` for CLI use.
+pub fn fetch_openrouter_models_blocking(
+    api_key: &str,
+    base_url: Option<&str>,
+) -> Result<Vec<OpenRouterModel>> {
+    let rt = tokio::runtime::Runtime::new().context("Failed to create tokio runtime")?;
+    rt.block_on(fetch_openrouter_models(api_key, base_url))
 }
 
 /// Parse the next `data:` line from an SSE buffer, consuming it.
@@ -1468,5 +1586,55 @@ mod tests {
         let usage: OaiUsage = serde_json::from_str(json).unwrap();
         assert_eq!(usage.prompt_tokens, 50);
         assert!(usage.prompt_tokens_details.is_none());
+    }
+
+    // ── cache_control request tests ────────────────────────────────────
+
+    #[test]
+    fn test_openrouter_request_includes_cache_control() {
+        let client = OpenAiClient::new("test-key".into(), "anthropic/claude-sonnet-4-6", None)
+            .unwrap()
+            .with_provider_hint("openrouter");
+        let cc = client.cache_control_value();
+        assert!(cc.is_some());
+        let val = cc.unwrap();
+        assert_eq!(val["type"], "ephemeral");
+    }
+
+    #[test]
+    fn test_non_openrouter_request_no_cache_control() {
+        let client = OpenAiClient::new("test-key".into(), "gpt-4o", None)
+            .unwrap()
+            .with_provider_hint("openai");
+        assert!(client.cache_control_value().is_none());
+    }
+
+    #[test]
+    fn test_cache_control_serialized_in_request() {
+        let request = OaiRequest {
+            model: "anthropic/claude-sonnet-4-6".to_string(),
+            messages: vec![],
+            max_tokens: Some(1024),
+            tools: vec![],
+            stream: false,
+            cache_control: Some(serde_json::json!({"type": "ephemeral"})),
+        };
+        let json = serde_json::to_string(&request).unwrap();
+        assert!(json.contains("cache_control"));
+        assert!(json.contains("ephemeral"));
+    }
+
+    #[test]
+    fn test_cache_control_omitted_when_none() {
+        let request = OaiRequest {
+            model: "gpt-4o".to_string(),
+            messages: vec![],
+            max_tokens: Some(1024),
+            tools: vec![],
+            stream: false,
+            cache_control: None,
+        };
+        let json = serde_json::to_string(&request).unwrap();
+        assert!(!json.contains("cache_control"));
     }
 }
