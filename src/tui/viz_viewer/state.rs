@@ -2355,7 +2355,8 @@ impl VizApp {
             self.cycle_set = members.clone();
         }
 
-        // Selection sync: if a coordinator task is selected, switch chat to that coordinator.
+        // Selection sync: if a coordinator task is selected, switch chat to that coordinator
+        // and auto-switch the right panel to Chat tab.
         if let Some(cid) = selected_id
             .strip_prefix(".coordinator-")
             .and_then(|s| s.parse::<u32>().ok())
@@ -2363,8 +2364,12 @@ impl VizApp {
             if cid != self.active_coordinator_id {
                 self.switch_coordinator(cid);
             }
+            self.right_panel_tab = RightPanelTab::Chat;
         } else if selected_id == ".coordinator" && self.active_coordinator_id != 0 {
             self.switch_coordinator(0);
+            self.right_panel_tab = RightPanelTab::Chat;
+        } else if selected_id == ".coordinator" {
+            self.right_panel_tab = RightPanelTab::Chat;
         }
 
         // Invalidate HUD, lifecycle, and messages panel so they reload for the new selection.
@@ -4615,7 +4620,11 @@ impl VizApp {
                         // Parse the new coordinator ID from the output
                         if let Ok(data) = serde_json::from_str::<serde_json::Value>(&result.output) {
                             if let Some(cid) = data["coordinator_id"].as_u64() {
+                                // Refresh graph so the new coordinator task appears
+                                self.force_refresh();
                                 self.switch_coordinator(cid as u32);
+                                // Auto-switch to Chat tab so the user sees the new coordinator
+                                self.right_panel_tab = RightPanelTab::Chat;
                                 self.notification = Some((
                                     format!("Coordinator {} created", cid),
                                     std::time::Instant::now(),

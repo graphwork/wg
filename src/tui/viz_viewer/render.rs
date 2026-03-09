@@ -1604,7 +1604,9 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
             Color::LightGreen,
         ];
         fn dot_color(cid: u32) -> Color {
-            DOT_COLORS[cid as usize % DOT_COLORS.len()]
+            // Knuth multiplicative hash to spread sequential IDs across the palette
+            let hash = cid.wrapping_mul(2654435761);
+            DOT_COLORS[hash as usize % DOT_COLORS.len()]
         }
 
         let mut spans = Vec::new();
@@ -1631,6 +1633,10 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
             spans.push(Span::raw(" "));
         }
         spans.push(Span::styled("[+]", Style::default().fg(Color::DarkGray)));
+        // Show close hint when a non-zero coordinator is active
+        if app.active_coordinator_id != 0 {
+            spans.push(Span::styled("  [-] close", Style::default().fg(Color::DarkGray)));
+        }
         let tab_line = Line::from(spans);
         frame.render_widget(Paragraph::new(vec![tab_line]), tab_area);
     }
