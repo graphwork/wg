@@ -2650,7 +2650,7 @@ mod scrollbar_tests {
             &task_ids,
             &HashMap::new(),
             &HashMap::new(),
-            &HashMap::new(),
+            
             &HashMap::new(),
             VizLayoutMode::Tree,
             &HashSet::new(),

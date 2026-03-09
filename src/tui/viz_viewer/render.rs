@@ -5693,7 +5693,7 @@ mod tests {
             &no_annots,
             &HashMap::new(),
             &HashMap::new(),
-            &HashMap::new(),
+            
             LayoutMode::Tree,
             &HashSet::new(),
             "gray",
@@ -5996,7 +5996,7 @@ mod tests {
             &task_ids,
             &HashMap::new(),
             &HashMap::new(),
-            &HashMap::new(),
+            
             &HashMap::new(),
             LayoutMode::Tree,
             &HashSet::new(),
@@ -6469,7 +6469,7 @@ mod tests {
             &task_ids,
             &HashMap::new(),
             &HashMap::new(),
-            &HashMap::new(),
+            
             &HashMap::new(),
             LayoutMode::Diamond,
             &HashSet::new(),
@@ -6668,7 +6668,7 @@ mod tests {
             &task_ids,
             &HashMap::new(),
             &HashMap::new(),
-            &HashMap::new(),
+            
             &HashMap::new(),
             LayoutMode::Tree,
             &HashSet::new(),
@@ -6770,7 +6770,7 @@ mod tests {
             &task_ids,
             &HashMap::new(),
             &HashMap::new(),
-            &HashMap::new(),
+            
             &HashMap::new(),
             LayoutMode::Tree,
             &HashSet::new(),
@@ -7113,7 +7113,7 @@ mod tests {
             &task_ids,
             &HashMap::new(),
             &HashMap::new(),
-            &HashMap::new(),
+            
             &HashMap::new(),
             LayoutMode::Tree,
             &HashSet::new(),
@@ -7212,7 +7212,7 @@ mod tests {
             &annotations,
             &HashMap::new(),
             &HashMap::new(),
-            &HashMap::new(),
+            
             LayoutMode::Tree,
             &HashSet::new(),
             "gray",
@@ -7256,7 +7256,7 @@ mod tests {
             &annotations2,
             &HashMap::new(),
             &HashMap::new(),
-            &HashMap::new(),
+            
             LayoutMode::Tree,
             &HashSet::new(),
             "gray",
@@ -7294,7 +7294,7 @@ mod tests {
             &annotations3,
             &HashMap::new(),
             &HashMap::new(),
-            &HashMap::new(),
+            
             LayoutMode::Tree,
             &HashSet::new(),
             "gray",
@@ -7328,7 +7328,7 @@ mod tests {
             &annotations4,
             &HashMap::new(),
             &HashMap::new(),
-            &HashMap::new(),
+            
             LayoutMode::Tree,
             &HashSet::new(),
             "gray",
@@ -7373,7 +7373,7 @@ mod tests {
             &annotations,
             &HashMap::new(),
             &HashMap::new(),
-            &HashMap::new(),
+            
             LayoutMode::Tree,
             &HashSet::new(),
             "gray",
@@ -7470,7 +7470,7 @@ mod tests {
             &task_ids,
             &HashMap::new(),
             &HashMap::new(),
-            &HashMap::new(),
+            
             &HashMap::new(),
             LayoutMode::Tree,
             &HashSet::new(),
@@ -7613,7 +7613,7 @@ mod tests {
             &task_ids,
             &HashMap::new(),
             &HashMap::new(),
-            &HashMap::new(),
+            
             &HashMap::new(),
             LayoutMode::Tree,
             &HashSet::new(),
@@ -7721,7 +7721,7 @@ mod tests {
                 &task_ids,
                 &HashMap::new(),
                 &HashMap::new(),
-                &HashMap::new(),
+                
                 &HashMap::new(),
                 LayoutMode::default(),
                 &HashSet::new(),
@@ -8169,7 +8169,7 @@ mod tests {
             &no_annots,
             &HashMap::new(),
             &HashMap::new(),
-            &HashMap::new(),
+            
             LayoutMode::Tree,
             &HashSet::new(),
             "gray",

@@ -30,8 +30,7 @@ pub(crate) fn generate_ascii(
     task_ids: &HashSet<&str>,
     annotations: &HashMap<String, String>,
     live_token_usage: &HashMap<String, TokenUsage>,
-    assign_token_usage: &HashMap<String, TokenUsage>,
-    eval_token_usage: &HashMap<String, TokenUsage>,
+    agency_token_usage: &HashMap<String, TokenUsage>,
     layout: LayoutMode,
     context_ids: &HashSet<String>,
     edge_color: &str,
@@ -338,10 +337,9 @@ pub(crate) fn generate_ascii(
                 .as_ref()
                 .or_else(|| live_token_usage.get(&t.id))
         });
-        let atok_usage = assign_token_usage.get(id);
-        let etok_usage = eval_token_usage.get(id);
+        let agency_usage = agency_token_usage.get(id);
         let status_with_tokens =
-            if let Some(tok_str) = format_token_display(usage, atok_usage, etok_usage) {
+            if let Some(tok_str) = format_token_display(usage, agency_usage) {
                 format!("{} · {}", status, tok_str)
             } else {
                 status.to_string()
@@ -1502,7 +1500,7 @@ mod tests {
             &no_annots,
             &HashMap::new(),
             &HashMap::new(),
-            &HashMap::new(),
+            
             LayoutMode::default(),
             &HashSet::new(),
             "gray",
@@ -1530,7 +1528,7 @@ mod tests {
             &no_annots,
             &HashMap::new(),
             &HashMap::new(),
-            &HashMap::new(),
+            
             LayoutMode::default(),
             &HashSet::new(),
             "gray",
@@ -1566,7 +1564,7 @@ mod tests {
             &no_annots,
             &HashMap::new(),
             &HashMap::new(),
-            &HashMap::new(),
+            
             LayoutMode::default(),
             &HashSet::new(),
             "gray",
@@ -1602,7 +1600,7 @@ mod tests {
             &no_annots,
             &HashMap::new(),
             &HashMap::new(),
-            &HashMap::new(),
+            
             LayoutMode::default(),
             &HashSet::new(),
             "gray",
@@ -1635,7 +1633,7 @@ mod tests {
             &no_annots,
             &HashMap::new(),
             &HashMap::new(),
-            &HashMap::new(),
+            
             LayoutMode::default(),
             &HashSet::new(),
             "gray",
@@ -1667,7 +1665,7 @@ mod tests {
             &no_annots,
             &HashMap::new(),
             &HashMap::new(),
-            &HashMap::new(),
+            
             LayoutMode::default(),
             &HashSet::new(),
             "gray",
@@ -1700,7 +1698,7 @@ mod tests {
             &no_annots,
             &HashMap::new(),
             &HashMap::new(),
-            &HashMap::new(),
+            
             LayoutMode::default(),
             &HashSet::new(),
             "gray",
@@ -1751,7 +1749,7 @@ mod tests {
             &annots,
             &HashMap::new(),
             &HashMap::new(),
-            &HashMap::new(),
+            
             LayoutMode::default(),
             &HashSet::new(),
             "gray",
@@ -1795,7 +1793,7 @@ mod tests {
             &annots,
             &HashMap::new(),
             &HashMap::new(),
-            &HashMap::new(),
+            
             LayoutMode::default(),
             &HashSet::new(),
             "gray",
@@ -1834,7 +1832,7 @@ mod tests {
             &annots,
             &HashMap::new(),
             &HashMap::new(),
-            &HashMap::new(),
+            
             LayoutMode::default(),
             &HashSet::new(),
             "gray",
@@ -1879,7 +1877,7 @@ mod tests {
             &no_annots,
             &HashMap::new(),
             &HashMap::new(),
-            &HashMap::new(),
+            
             LayoutMode::default(),
             &HashSet::new(),
             "gray",
@@ -1927,7 +1925,7 @@ mod tests {
             &no_annots,
             &HashMap::new(),
             &HashMap::new(),
-            &HashMap::new(),
+            
             LayoutMode::default(),
             &HashSet::new(),
             "gray",
@@ -1976,7 +1974,7 @@ mod tests {
             &no_annots,
             &HashMap::new(),
             &HashMap::new(),
-            &HashMap::new(),
+            
             LayoutMode::default(),
             &HashSet::new(),
             "gray",
@@ -2007,7 +2005,7 @@ mod tests {
             &no_annots,
             &HashMap::new(),
             &HashMap::new(),
-            &HashMap::new(),
+            
             LayoutMode::default(),
             &HashSet::new(),
             "gray",
@@ -2058,7 +2056,7 @@ mod tests {
             &task_ids,
             &HashMap::new(),
             &HashMap::new(),
-            &HashMap::new(),
+            
             &HashMap::new(),
             LayoutMode::default(),
             &HashSet::new(),
@@ -2119,7 +2117,7 @@ mod tests {
             &task_ids,
             &HashMap::new(),
             &HashMap::new(),
-            &HashMap::new(),
+            
             &HashMap::new(),
             LayoutMode::default(),
             &HashSet::new(),
@@ -2177,7 +2175,7 @@ mod tests {
             &task_ids,
             &HashMap::new(),
             &HashMap::new(),
-            &HashMap::new(),
+            
             &HashMap::new(),
             LayoutMode::Diamond,
             &HashSet::new(),
@@ -2226,7 +2224,7 @@ mod tests {
             &task_ids,
             &HashMap::new(),
             &HashMap::new(),
-            &HashMap::new(),
+            
             &HashMap::new(),
             LayoutMode::Tree,
             &HashSet::new(),
@@ -2280,7 +2278,7 @@ mod tests {
             &task_ids,
             &HashMap::new(),
             &HashMap::new(),
-            &HashMap::new(),
+            
             &HashMap::new(),
             LayoutMode::Diamond,
             &HashSet::new(),
@@ -2336,7 +2334,7 @@ mod tests {
             &task_ids,
             &HashMap::new(),
             &HashMap::new(),
-            &HashMap::new(),
+            
             &HashMap::new(),
             LayoutMode::default(),
             &HashSet::new(),
@@ -2405,7 +2403,7 @@ mod tests {
             &task_ids,
             &HashMap::new(),
             &HashMap::new(),
-            &HashMap::new(),
+            
             &HashMap::new(),
             LayoutMode::default(),
             &HashSet::new(),
@@ -2462,7 +2460,7 @@ mod tests {
             &task_ids,
             &HashMap::new(),
             &HashMap::new(),
-            &HashMap::new(),
+            
             &HashMap::new(),
             LayoutMode::default(),
             &HashSet::new(),
@@ -2508,7 +2506,7 @@ mod tests {
             &task_ids,
             &HashMap::new(),
             &HashMap::new(),
-            &HashMap::new(),
+            
             &HashMap::new(),
             LayoutMode::default(),
             &HashSet::new(),
@@ -2547,7 +2545,7 @@ mod tests {
             &task_ids,
             &HashMap::new(),
             &HashMap::new(),
-            &HashMap::new(),
+            
             &HashMap::new(),
             LayoutMode::Tree,
             &HashSet::new(),
@@ -2600,7 +2598,7 @@ mod tests {
             &task_ids,
             &HashMap::new(),
             &HashMap::new(),
-            &HashMap::new(),
+            
             &HashMap::new(),
             LayoutMode::default(),
             &HashSet::new(),
@@ -2659,7 +2657,7 @@ mod tests {
             &task_ids,
             &HashMap::new(),
             &HashMap::new(),
-            &HashMap::new(),
+            
             &HashMap::new(),
             LayoutMode::default(),
             &HashSet::new(),
@@ -2750,7 +2748,7 @@ mod tests {
             &task_ids,
             &HashMap::new(),
             &HashMap::new(),
-            &HashMap::new(),
+            
             &HashMap::new(),
             LayoutMode::default(),
             &HashSet::new(),
@@ -2793,7 +2791,7 @@ mod tests {
             &task_ids,
             &HashMap::new(),
             &HashMap::new(),
-            &HashMap::new(),
+            
             &HashMap::new(),
             LayoutMode::default(),
             &HashSet::new(),
@@ -2858,7 +2856,7 @@ mod tests {
             &task_ids,
             &HashMap::new(),
             &HashMap::new(),
-            &HashMap::new(),
+            
             &HashMap::new(),
             LayoutMode::default(),
             &HashSet::new(),
@@ -2911,7 +2909,7 @@ mod tests {
             &task_ids,
             &HashMap::new(),
             &HashMap::new(),
-            &HashMap::new(),
+            
             &HashMap::new(),
             LayoutMode::default(),
             &HashSet::new(),
@@ -3027,7 +3025,7 @@ mod tests {
             &task_ids,
             &HashMap::new(),
             &HashMap::new(),
-            &HashMap::new(),
+            
             &HashMap::new(),
             LayoutMode::default(),
             &HashSet::new(),
@@ -3428,7 +3426,7 @@ mod tests {
             &annotations,
             &HashMap::new(),
             &HashMap::new(),
-            &HashMap::new(),
+            
             LayoutMode::default(),
             &HashSet::new(),
             "gray",
@@ -4324,7 +4322,7 @@ mod tests {
             &task_ids,
             &HashMap::new(),
             &HashMap::new(),
-            &HashMap::new(),
+            
             &HashMap::new(),
             LayoutMode::Tree,
             &HashSet::new(),
@@ -4418,7 +4416,7 @@ mod tests {
             &task_ids,
             &HashMap::new(),
             &HashMap::new(),
-            &HashMap::new(),
+            
             &HashMap::new(),
             LayoutMode::default(),
             &HashSet::new(),
@@ -4490,7 +4488,7 @@ mod tests {
             &task_ids,
             &HashMap::new(),
             &HashMap::new(),
-            &HashMap::new(),
+            
             &HashMap::new(),
             LayoutMode::default(),
             &HashSet::new(),
@@ -4533,7 +4531,7 @@ mod tests {
             &task_ids,
             &HashMap::new(),
             &HashMap::new(),
-            &HashMap::new(),
+            
             &HashMap::new(),
             LayoutMode::default(),
             &HashSet::new(),
@@ -4595,7 +4593,7 @@ mod tests {
             &task_ids,
             &HashMap::new(),
             &HashMap::new(),
-            &HashMap::new(),
+            
             &HashMap::new(),
             LayoutMode::default(),
             &HashSet::new(),
@@ -4655,7 +4653,7 @@ mod tests {
             &visible_ids,
             &HashMap::new(),
             &HashMap::new(),
-            &HashMap::new(),
+            
             &HashMap::new(),
             LayoutMode::default(),
             &HashSet::new(),
@@ -4675,7 +4673,7 @@ mod tests {
             &all_task_ids,
             &HashMap::new(),
             &HashMap::new(),
-            &HashMap::new(),
+            
             &HashMap::new(),
             LayoutMode::default(),
             &HashSet::new(),
@@ -4730,7 +4728,7 @@ mod tests {
             &task_ids,
             &HashMap::new(),
             &HashMap::new(),
-            &HashMap::new(),
+            
             &HashMap::new(),
             LayoutMode::default(),
             &HashSet::new(),
@@ -4809,7 +4807,7 @@ mod tests {
             &task_ids,
             &HashMap::new(),
             &HashMap::new(),
-            &HashMap::new(),
+            
             &HashMap::new(),
             LayoutMode::default(),
             &HashSet::new(),
@@ -4859,7 +4857,7 @@ mod tests {
             &task_ids,
             &HashMap::new(),
             &HashMap::new(),
-            &HashMap::new(),
+            
             &HashMap::new(),
             LayoutMode::default(),
             &HashSet::new(),

@@ -540,14 +540,13 @@ pub fn parse_token_usage_live(output_log_path: &std::path::Path) -> Option<Token
 /// `usage` is the work task's token usage, `validation` is the optional assign+eval token usage.
 pub fn format_token_display(
     usage: Option<&TokenUsage>,
-    assign_usage: Option<&TokenUsage>,
-    eval_usage: Option<&TokenUsage>,
+    agency_usage: Option<&TokenUsage>,
 ) -> Option<String> {
     let has_work = usage.is_some();
-    let has_assign = assign_usage.is_some_and(|a| a.total_input() + a.output_tokens > 0);
-    let has_eval = eval_usage.is_some_and(|e| e.total_input() + e.output_tokens > 0);
+    let has_agency = agency_usage
+        .is_some_and(|a| a.input_tokens + a.output_tokens > 0);
 
-    if !has_work && !has_assign && !has_eval {
+    if !has_work && !has_agency {
         return None;
     }
 
@@ -566,19 +565,16 @@ pub fn format_token_display(
         }
     }
 
-    if let Some(a) = assign_usage {
-        let atok = a.total_input() + a.output_tokens;
-        if atok > 0 {
-            // ⊳ triangle for assignment
-            s.push_str(&format!(" ⊳{}", format_tokens(atok)));
-        }
-    }
-
-    if let Some(e) = eval_usage {
-        let etok = e.total_input() + e.output_tokens;
-        if etok > 0 {
-            // ∴ QED for evaluation
-            s.push_str(&format!(" ∴{}", format_tokens(etok)));
+    if let Some(a) = agency_usage {
+        let novel_in = a.input_tokens;
+        let novel_out = a.output_tokens;
+        if novel_in + novel_out > 0 {
+            // ∎ tombstone/QED for aggregated agency token usage (novel only)
+            s.push_str(&format!(
+                " ∎→{} ←{}",
+                format_tokens(novel_in),
+                format_tokens(novel_out)
+            ));
         }
     }
 
@@ -2136,42 +2132,31 @@ mod tests {
             cache_read_input_tokens: 100_000,
             cache_creation_input_tokens: 5_000,
         };
-        let assign = TokenUsage {
+        // Aggregated agency usage (assign + eval combined, novel only)
+        let agency = TokenUsage {
             cost_usd: 0.0,
-            input_tokens: 500,
-            output_tokens: 200,
+            input_tokens: 1300, // 500 assign + 800 eval novel input
+            output_tokens: 600,  // 200 assign + 400 eval novel output
             cache_read_input_tokens: 0,
             cache_creation_input_tokens: 0,
         };
-        let eval = TokenUsage {
-            cost_usd: 0.0,
-            input_tokens: 800,
-            output_tokens: 400,
-            cache_read_input_tokens: 0,
-            cache_creation_input_tokens: 0,
-        };
-        // →novel_in ←out ◎cached ⊳assign ∴eval format
+        // →novel_in ←out ◎cached ∎→agency_in ←agency_out
         assert_eq!(
-            format_token_display(Some(&usage), Some(&assign), Some(&eval)),
-            Some("→4.6k ←3.9k ◎105k ⊳700 ∴1.2k".to_string())
+            format_token_display(Some(&usage), Some(&agency)),
+            Some("→4.6k ←3.9k ◎105k ∎→1.3k ←600".to_string())
         );
         assert_eq!(
-            format_token_display(Some(&usage), None, None),
+            format_token_display(Some(&usage), None),
             Some("→4.6k ←3.9k ◎105k".to_string())
         );
-        // Only eval, no assign
+        // Only agency, no task usage
         assert_eq!(
-            format_token_display(None, None, Some(&eval)),
-            Some(" ∴1.2k".to_string())
+            format_token_display(None, Some(&agency)),
+            Some(" ∎→1.3k ←600".to_string())
         );
-        // Only assign, no eval
-        assert_eq!(
-            format_token_display(None, Some(&assign), None),
-            Some(" ⊳700".to_string())
-        );
-        assert_eq!(format_token_display(None, None, None), None);
+        assert_eq!(format_token_display(None, None), None);
 
-        // Zero validation tokens should not show assign/eval
+        // Zero agency tokens should not show ∎ section
         let zero_val = TokenUsage {
             cost_usd: 0.0,
             input_tokens: 0,
@@ -2180,10 +2165,10 @@ mod tests {
             cache_creation_input_tokens: 0,
         };
         assert_eq!(
-            format_token_display(Some(&usage), Some(&zero_val), Some(&zero_val)),
+            format_token_display(Some(&usage), Some(&zero_val)),
             Some("→4.6k ←3.9k ◎105k".to_string())
         );
-        assert_eq!(format_token_display(None, Some(&zero_val), None), None);
+        assert_eq!(format_token_display(None, Some(&zero_val)), None);
     }
 
     #[test]

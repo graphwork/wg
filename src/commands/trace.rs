@@ -1313,7 +1313,6 @@ pub fn run_graph(dir: &Path, root_id: &str) -> Result<()> {
         &annotations,
         &HashMap::new(),
         &HashMap::new(),
-        &HashMap::new(),
         &HashSet::new(),
     );
     println!("{}", output);

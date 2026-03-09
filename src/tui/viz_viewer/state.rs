@@ -3427,14 +3427,9 @@ impl VizApp {
             lines.push(String::new());
         }
 
-        // ── Assignment + Evaluation costs (via graph queries) ──
+        // ── Agency lifecycle costs (per-task breakdown) ──
         {
             let agents_dir = self.workgraph_dir.join("agents");
-            let assign_task_id = format!(".assign-{}", task.id);
-            let legacy_assign_id = format!("assign-{}", task.id);
-            let eval_task_id = format!(".evaluate-{}", task.id);
-            let legacy_eval_id = format!("evaluate-{}", task.id);
-            let flip_task_id = format!(".flip-{}", task.id);
 
             let get_usage = |t: &workgraph::graph::Task| -> Option<TokenUsage> {
                 t.token_usage.clone().or_else(|| {
@@ -3444,36 +3439,43 @@ impl VizApp {
                 })
             };
 
-            let assign_usage = graph
-                .tasks()
-                .find(|t| t.id == assign_task_id || t.id == legacy_assign_id)
-                .and_then(&get_usage);
+            // Lifecycle task prefixes with labels
+            let lifecycle_tasks: Vec<(&str, String)> = vec![
+                ("⊳ Assignment", format!(".assign-{}", task.id)),
+                ("⊳ Assignment", format!("assign-{}", task.id)),
+                ("∴ Evaluation", format!(".evaluate-{}", task.id)),
+                ("∴ Evaluation", format!("evaluate-{}", task.id)),
+                ("⤿ FLIP", format!(".flip-{}", task.id)),
+                ("⤿ FLIP", format!("flip-{}", task.id)),
+                ("✓ Verify-FLIP", format!(".verify-flip-{}", task.id)),
+                ("✓ Verify-FLIP", format!("verify-flip-{}", task.id)),
+            ];
 
-            // Combine .evaluate-* and .flip-* token usage
-            let eval_base = graph
-                .tasks()
-                .find(|t| t.id == eval_task_id || t.id == legacy_eval_id)
-                .and_then(&get_usage);
-            let flip_usage = graph
-                .tasks()
-                .find(|t| t.id == flip_task_id)
-                .and_then(get_usage);
-            let eval_usage = match (eval_base, flip_usage) {
-                (Some(mut eu), Some(fu)) => {
-                    eu.accumulate(&fu);
-                    Some(eu)
-                }
-                (Some(eu), None) => Some(eu),
-                (None, Some(fu)) => Some(fu),
-                (None, None) => None,
+            let mut phase_entries: Vec<(String, TokenUsage)> = Vec::new();
+            let mut agency_total = TokenUsage {
+                cost_usd: 0.0,
+                input_tokens: 0,
+                output_tokens: 0,
+                cache_read_input_tokens: 0,
+                cache_creation_input_tokens: 0,
             };
 
-            if assign_usage.is_some() || eval_usage.is_some() {
-                lines.push("── Phase Costs ──".to_string());
-                if let Some(ref u) = assign_usage {
+            for (label, tid) in &lifecycle_tasks {
+                if let Some(t) = graph.tasks().find(|t| t.id == *tid) {
+                    if let Some(u) = get_usage(t) {
+                        agency_total.accumulate(&u);
+                        phase_entries.push((label.to_string(), u));
+                    }
+                }
+            }
+
+            if !phase_entries.is_empty() {
+                lines.push("── ∎ Agency Costs ──".to_string());
+                for (label, u) in &phase_entries {
                     let cache = u.cache_read_input_tokens + u.cache_creation_input_tokens;
                     let mut detail = format!(
-                        "  ⊳ Assignment: →{} ←{}",
+                        "  {} →{} ←{}",
+                        label,
                         format_tokens(u.input_tokens),
                         format_tokens(u.output_tokens)
                     );
@@ -3485,26 +3487,15 @@ impl VizApp {
                     }
                     lines.push(detail);
                 }
-                if let Some(ref u) = eval_usage {
-                    let cache = u.cache_read_input_tokens + u.cache_creation_input_tokens;
-                    let mut detail = format!(
-                        "  ∴ Evaluation: →{} ←{}",
-                        format_tokens(u.input_tokens),
-                        format_tokens(u.output_tokens)
-                    );
-                    if cache > 0 {
-                        detail.push_str(&format!("  (cached: {})", format_tokens(cache)));
-                    }
-                    if u.cost_usd > 0.0 {
-                        detail.push_str(&format!(" ${:.4}", u.cost_usd));
-                    }
-                    lines.push(detail);
-                }
-                // Show combined total
+                // Show aggregated agency total (novel only)
+                lines.push(format!(
+                    "  ∎ Total: →{} ←{}",
+                    format_tokens(agency_total.input_tokens),
+                    format_tokens(agency_total.output_tokens)
+                ));
+                // Show combined total cost (execution + agency)
                 let exec_cost = task.token_usage.as_ref().map(|u| u.cost_usd).unwrap_or(0.0);
-                let total_cost = exec_cost
-                    + assign_usage.as_ref().map(|u| u.cost_usd).unwrap_or(0.0)
-                    + eval_usage.as_ref().map(|u| u.cost_usd).unwrap_or(0.0);
+                let total_cost = exec_cost + agency_total.cost_usd;
                 if total_cost > 0.0 {
                     lines.push(format!("  Total cost: ${:.4}", total_cost));
                 }
@@ -8069,7 +8060,7 @@ mod hud_tests {
             &task_ids,
             &HashMap::new(),
             &HashMap::new(),
-            &HashMap::new(),
+            
             &HashMap::new(),
             LayoutMode::Tree,
             &HashSet::new(),
@@ -8632,7 +8623,7 @@ mod hud_tests {
             &task_ids,
             &HashMap::new(),
             &HashMap::new(),
-            &HashMap::new(),
+            
             &HashMap::new(),
             LayoutMode::Tree,
             &HashSet::new(),
@@ -8687,7 +8678,7 @@ mod hud_tests {
             &task_ids,
             &HashMap::new(),
             &HashMap::new(),
-            &HashMap::new(),
+            
             &HashMap::new(),
             LayoutMode::Tree,
             &HashSet::new(),
@@ -8738,7 +8729,7 @@ mod hud_tests {
             &task_ids,
             &HashMap::new(),
             &HashMap::new(),
-            &HashMap::new(),
+            
             &HashMap::new(),
             LayoutMode::Tree,
             &HashSet::new(),
@@ -8895,7 +8886,7 @@ mod remap_panel_tests {
             &task_ids,
             &HashMap::new(),
             &HashMap::new(),
-            &HashMap::new(),
+            
             &HashMap::new(),
             VizLayoutMode::Tree,
             &HashSet::new(),
@@ -9201,7 +9192,7 @@ mod firehose_tests {
             &task_ids,
             &HashMap::new(),
             &HashMap::new(),
-            &HashMap::new(),
+            
             &HashMap::new(),
             VizLayoutMode::Tree,
             &HashSet::new(),
@@ -9557,7 +9548,7 @@ mod tui_config_panel_tests {
             &task_ids,
             &HashMap::new(),
             &HashMap::new(),
-            &HashMap::new(),
+            
             &HashMap::new(),
             VizLayoutMode::Tree,
             &HashSet::new(),

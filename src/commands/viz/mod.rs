@@ -178,10 +178,12 @@ fn system_task_parent_id(id: &str) -> Option<String> {
         ".assign-",
         ".evaluate-",
         ".verify-flip-",
+        ".flip-",
         ".respond-to-",
         "assign-",
         "evaluate-",
         "verify-flip-",
+        "flip-",
         "respond-to-",
     ] {
         if let Some(rest) = id.strip_prefix(prefix) {
@@ -550,14 +552,13 @@ pub fn generate_viz_output_from_graph(
         })
         .collect();
 
-    // Build separate assign and eval token usage maps for each visible task
-    let mut assign_token_usage: HashMap<String, TokenUsage> = HashMap::new();
-    let mut eval_token_usage: HashMap<String, TokenUsage> = HashMap::new();
+    // Build unified agency token usage map: aggregate all lifecycle tasks
+    // (.assign-*, .evaluate-*, .flip-*, .verify-flip-*) into a single total per parent task.
+    let mut agency_token_usage: HashMap<String, TokenUsage> = HashMap::new();
     for task in graph.tasks() {
         if !is_internal_task(task) {
             continue;
         }
-        let is_assign = task.id.starts_with(".assign-") || task.id.starts_with("assign-");
         let parent_id = system_task_parent_id(&task.id);
         let Some(pid) = parent_id else { continue };
         let usage = task
@@ -593,23 +594,14 @@ pub fn generate_viz_output_from_graph(
                 None
             });
         if let Some(u) = usage {
-            let map = if is_assign {
-                &mut assign_token_usage
-            } else {
-                &mut eval_token_usage
-            };
-            let entry = map.entry(pid).or_insert_with(|| TokenUsage {
+            let entry = agency_token_usage.entry(pid).or_insert_with(|| TokenUsage {
                 cost_usd: 0.0,
                 input_tokens: 0,
                 output_tokens: 0,
                 cache_read_input_tokens: 0,
                 cache_creation_input_tokens: 0,
             });
-            entry.cost_usd += u.cost_usd;
-            entry.output_tokens += u.output_tokens;
-            entry.input_tokens += u.input_tokens;
-            entry.cache_read_input_tokens += u.cache_read_input_tokens;
-            entry.cache_creation_input_tokens += u.cache_creation_input_tokens;
+            entry.accumulate(&u);
         }
     }
 
@@ -634,8 +626,7 @@ pub fn generate_viz_output_from_graph(
             &task_ids,
             &annotations,
             &live_token_usage,
-            &assign_token_usage,
-            &eval_token_usage,
+            &agency_token_usage,
             options.layout,
             &context_ids,
             &options.edge_color,
@@ -663,8 +654,7 @@ pub fn generate_viz_output_from_graph(
                     &task_ids,
                     &annotations,
                     &live_token_usage,
-                    &assign_token_usage,
-                    &eval_token_usage,
+                    &agency_token_usage,
                     &context_ids,
                 ),
                 OutputFormat::Ascii => unreachable!(),

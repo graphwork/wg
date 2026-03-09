@@ -19,8 +19,7 @@ pub fn generate_graph(
     task_ids: &HashSet<&str>,
     annotations: &HashMap<String, String>,
     live_token_usage: &HashMap<String, TokenUsage>,
-    assign_token_usage: &HashMap<String, TokenUsage>,
-    eval_token_usage: &HashMap<String, TokenUsage>,
+    agency_token_usage: &HashMap<String, TokenUsage>,
     context_ids: &HashSet<String>,
 ) -> String {
     generate_graph_with_overrides(
@@ -30,8 +29,7 @@ pub fn generate_graph(
         annotations,
         &HashMap::new(),
         live_token_usage,
-        assign_token_usage,
-        eval_token_usage,
+        agency_token_usage,
         context_ids,
     )
 }
@@ -46,8 +44,7 @@ pub fn generate_graph_with_overrides(
     annotations: &HashMap<String, String>,
     status_overrides: &HashMap<&str, Status>,
     live_token_usage: &HashMap<String, TokenUsage>,
-    assign_token_usage: &HashMap<String, TokenUsage>,
-    eval_token_usage: &HashMap<String, TokenUsage>,
+    agency_token_usage: &HashMap<String, TokenUsage>,
     context_ids: &HashSet<String>,
 ) -> String {
     if tasks.is_empty() {
@@ -235,9 +232,8 @@ pub fn generate_graph_with_overrides(
                 .token_usage
                 .as_ref()
                 .or_else(|| live_token_usage.get(id));
-            let atok_usage = assign_token_usage.get(id);
-            let etok_usage = eval_token_usage.get(id);
-            let token_info = format_token_display(usage, atok_usage, etok_usage)
+            let agency_usage = agency_token_usage.get(id);
+            let token_info = format_token_display(usage, agency_usage)
                 .map(|s| format!(" · {}", s))
                 .unwrap_or_default();
 
@@ -618,7 +614,6 @@ mod tests {
             &no_annots,
             &HashMap::new(),
             &HashMap::new(),
-            &HashMap::new(),
             &HashSet::new(),
         );
         assert_eq!(result, "(no tasks to display)");
@@ -638,7 +633,6 @@ mod tests {
             &tasks,
             &task_ids,
             &no_annots,
-            &HashMap::new(),
             &HashMap::new(),
             &HashMap::new(),
             &HashSet::new(),
@@ -675,7 +669,6 @@ mod tests {
             &tasks,
             &task_ids,
             &no_annots,
-            &HashMap::new(),
             &HashMap::new(),
             &HashMap::new(),
             &HashSet::new(),
@@ -717,7 +710,6 @@ mod tests {
             &no_annots,
             &HashMap::new(),
             &HashMap::new(),
-            &HashMap::new(),
             &HashSet::new(),
         );
 
@@ -752,7 +744,6 @@ mod tests {
             &tasks,
             &task_ids,
             &no_annots,
-            &HashMap::new(),
             &HashMap::new(),
             &HashMap::new(),
             &HashSet::new(),
@@ -791,7 +782,6 @@ mod tests {
             &tasks,
             &task_ids,
             &no_annots,
-            &HashMap::new(),
             &HashMap::new(),
             &HashMap::new(),
             &HashSet::new(),
@@ -840,7 +830,6 @@ mod tests {
             &no_annots,
             &HashMap::new(),
             &HashMap::new(),
-            &HashMap::new(),
             &HashSet::new(),
         );
 
@@ -886,7 +875,6 @@ mod tests {
             &no_annots,
             &HashMap::new(),
             &HashMap::new(),
-            &HashMap::new(),
             &HashSet::new(),
         );
 
@@ -916,7 +904,6 @@ mod tests {
             &tasks,
             &task_ids,
             &no_annots,
-            &HashMap::new(),
             &HashMap::new(),
             &HashMap::new(),
             &HashSet::new(),
