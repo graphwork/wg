@@ -1379,6 +1379,7 @@ pub fn run_daemon(
             Ok((stream, _)) => {
                 let mut wake_coordinator = false;
                 let mut conn_urgent_wake = false;
+                let mut conn_delete_coordinator_ids = Vec::new();
                 if let Err(e) = ipc::handle_connection(
                     &dir,
                     stream,
@@ -1386,10 +1387,18 @@ pub fn run_daemon(
                     &mut wake_coordinator,
                     &mut conn_urgent_wake,
                     &mut pending_coordinator_ids,
+                    &mut conn_delete_coordinator_ids,
                     &mut daemon_cfg,
                     &logger,
                 ) {
                     logger.error(&format!("Error handling connection: {}", e));
+                }
+                // Stop and remove any coordinator agents marked for deletion.
+                for cid in conn_delete_coordinator_ids {
+                    if let Some(agent) = coordinator_agents.remove(&cid) {
+                        logger.info(&format!("Shutting down coordinator agent {} (deleted via IPC)", cid));
+                        agent.shutdown();
+                    }
                 }
                 if conn_urgent_wake {
                     urgent_wake = true;
@@ -2150,6 +2159,39 @@ pub fn run_create_coordinator(dir: &Path, name: Option<&str>, json: bool) -> Res
 
 #[cfg(not(unix))]
 pub fn run_create_coordinator(_dir: &Path, _name: Option<&str>, _json: bool) -> Result<()> {
+    anyhow::bail!("Service daemon is only supported on Unix systems")
+}
+
+/// Delete a coordinator session via IPC
+#[cfg(unix)]
+pub fn run_delete_coordinator(dir: &Path, coordinator_id: u32, json: bool) -> Result<()> {
+    let response = send_request(
+        dir,
+        &IpcRequest::DeleteCoordinator { coordinator_id },
+    )?;
+
+    if !response.ok {
+        let msg = response
+            .error
+            .unwrap_or_else(|| "Unknown error".to_string());
+        if json {
+            let output = serde_json::json!({ "error": msg });
+            println!("{}", serde_json::to_string_pretty(&output)?);
+        } else {
+            eprintln!("Error: {}", msg);
+        }
+        anyhow::bail!("{}", msg);
+    }
+
+    if let Some(data) = &response.data {
+        println!("{}", serde_json::to_string_pretty(data)?);
+    }
+
+    Ok(())
+}
+
+#[cfg(not(unix))]
+pub fn run_delete_coordinator(_dir: &Path, _coordinator_id: u32, _json: bool) -> Result<()> {
     anyhow::bail!("Service daemon is only supported on Unix systems")
 }
 

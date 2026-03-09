@@ -2529,6 +2529,12 @@ pub enum ServiceCommands {
         name: Option<String>,
     },
 
+    /// Delete a coordinator session
+    DeleteCoordinator {
+        /// Coordinator ID to delete
+        id: u32,
+    },
+
     /// Run the daemon (internal, called by start)
     #[command(hide = true)]
     Daemon {

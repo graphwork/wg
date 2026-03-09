@@ -123,6 +123,10 @@ pub enum IpcRequest {
         #[serde(default)]
         name: Option<String>,
     },
+    /// Delete a coordinator instance.
+    DeleteCoordinator {
+        coordinator_id: u32,
+    },
     /// List all active coordinators.
     ListCoordinators,
 }
@@ -164,6 +168,7 @@ pub(crate) fn handle_connection(
     wake_coordinator: &mut bool,
     urgent_wake: &mut bool,
     pending_coordinator_ids: &mut Vec<u32>,
+    delete_coordinator_ids: &mut Vec<u32>,
     daemon_cfg: &mut DaemonConfig,
     logger: &DaemonLogger,
 ) -> Result<()> {
@@ -209,6 +214,7 @@ pub(crate) fn handle_connection(
             wake_coordinator,
             urgent_wake,
             pending_coordinator_ids,
+            delete_coordinator_ids,
             daemon_cfg,
             logger,
         );
@@ -239,6 +245,7 @@ fn handle_request(
     wake_coordinator: &mut bool,
     urgent_wake: &mut bool,
     pending_coordinator_ids: &mut Vec<u32>,
+    delete_coordinator_ids: &mut Vec<u32>,
     daemon_cfg: &mut DaemonConfig,
     logger: &DaemonLogger,
 ) -> IpcResponse {
@@ -417,6 +424,17 @@ fn handle_request(
                 name
             ));
             handle_create_coordinator(dir, name.as_deref())
+        }
+        IpcRequest::DeleteCoordinator { coordinator_id } => {
+            logger.info(&format!(
+                "IPC DeleteCoordinator: coordinator_id={}",
+                coordinator_id
+            ));
+            let resp = handle_delete_coordinator(dir, coordinator_id);
+            if resp.ok {
+                delete_coordinator_ids.push(coordinator_id);
+            }
+            resp
         }
         IpcRequest::ListCoordinators => {
             logger.info("IPC ListCoordinators");
@@ -930,6 +948,42 @@ fn handle_create_coordinator(dir: &Path, name: Option<&str>) -> IpcResponse {
     }))
 }
 
+/// Handle DeleteCoordinator IPC request.
+fn handle_delete_coordinator(dir: &Path, coordinator_id: u32) -> IpcResponse {
+    let graph_path = crate::commands::graph_path(dir);
+    let mut graph = match workgraph::parser::load_graph(&graph_path) {
+        Ok(g) => g,
+        Err(e) => return IpcResponse::error(&format!("Failed to load graph: {}", e)),
+    };
+
+    let task_id = format!(".coordinator-{}", coordinator_id);
+    let task = match graph.get_task_mut(&task_id) {
+        Some(t) => t,
+        None => {
+            return IpcResponse::error(&format!(
+                "Coordinator task '{}' not found",
+                task_id
+            ))
+        }
+    };
+
+    task.status = workgraph::graph::Status::Abandoned;
+    task.log.push(workgraph::graph::LogEntry {
+        timestamp: chrono::Utc::now().to_rfc3339(),
+        actor: Some("daemon".to_string()),
+        message: format!("Coordinator {} deleted via IPC", coordinator_id),
+    });
+
+    if let Err(e) = workgraph::parser::save_graph(&graph, &graph_path) {
+        return IpcResponse::error(&format!("Failed to save graph: {}", e));
+    }
+
+    IpcResponse::success(serde_json::json!({
+        "coordinator_id": coordinator_id,
+        "task_id": task_id,
+    }))
+}
+
 /// Handle ListCoordinators IPC request.
 fn handle_list_coordinators(dir: &Path) -> IpcResponse {
     let graph_path = crate::commands::graph_path(dir);
@@ -1265,6 +1319,24 @@ poll_interval = 120
     }
 
     #[test]
+    fn test_ipc_delete_coordinator_serialization() {
+        let req = IpcRequest::DeleteCoordinator {
+            coordinator_id: 2,
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains("\"cmd\":\"delete_coordinator\""));
+        assert!(json.contains("\"coordinator_id\":2"));
+
+        let parsed: IpcRequest = serde_json::from_str(&json).unwrap();
+        match parsed {
+            IpcRequest::DeleteCoordinator { coordinator_id } => {
+                assert_eq!(coordinator_id, 2);
+            }
+            _ => panic!("Wrong request type"),
+        }
+    }
+
+    #[test]
     fn test_ipc_list_coordinators_serialization() {
         let req = IpcRequest::ListCoordinators;
         let json = serde_json::to_string(&req).unwrap();
@@ -1286,6 +1358,7 @@ poll_interval = 120
         let mut wake_coordinator = false;
         let mut urgent_wake = false;
         let mut pending_coordinator_ids = Vec::new();
+        let mut delete_coordinator_ids = Vec::new();
         let mut cfg = DaemonConfig {
             max_agents: 4,
             executor: "claude".to_string(),
@@ -1308,6 +1381,7 @@ poll_interval = 120
             &mut wake_coordinator,
             &mut urgent_wake,
             &mut pending_coordinator_ids,
+            &mut delete_coordinator_ids,
             &mut cfg,
             &logger,
         );
@@ -1348,6 +1422,7 @@ poll_interval = 120
         let mut wake_coordinator = false;
         let mut urgent_wake = false;
         let mut pending_coordinator_ids = Vec::new();
+        let mut delete_coordinator_ids = Vec::new();
         let mut cfg = DaemonConfig {
             max_agents: 4,
             executor: "claude".to_string(),
@@ -1371,6 +1446,7 @@ poll_interval = 120
             &mut wake_coordinator,
             &mut urgent_wake,
             &mut pending_coordinator_ids,
+            &mut delete_coordinator_ids,
             &mut cfg,
             &logger,
         );
@@ -1401,6 +1477,7 @@ poll_interval = 120
         let mut wake_coordinator = false;
         let mut urgent_wake = false;
         let mut pending_coordinator_ids = Vec::new();
+        let mut delete_coordinator_ids = Vec::new();
         let mut cfg = DaemonConfig {
             max_agents: 4,
             executor: "claude".to_string(),
@@ -1418,6 +1495,7 @@ poll_interval = 120
             &mut wake_coordinator,
             &mut urgent_wake,
             &mut pending_coordinator_ids,
+            &mut delete_coordinator_ids,
             &mut cfg,
             &logger,
         );
