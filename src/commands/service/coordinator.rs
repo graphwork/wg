@@ -795,9 +795,19 @@ fn build_auto_assign_tasks(
 
         let assign_task_id = format!(".assign-{}", task_id);
 
-        // Skip if assignment task already exists (idempotent)
-        if graph.get_task(&assign_task_id).is_some() {
-            continue;
+        // Skip if assignment task already exists (idempotent).
+        // However, if the source task was resurrected (reopened after completion)
+        // while the old .assign-* is still Done, the assignment is stale — remove
+        // the old one so a fresh assignment can be created.
+        if let Some(existing) = graph.get_task(&assign_task_id) {
+            if existing.status == Status::Done {
+                // Stale assignment: source is ready but .assign is done.
+                // Remove it so we can create a new one below.
+                graph.remove_node(&assign_task_id);
+                modified = true;
+            } else {
+                continue;
+            }
         }
 
         // Determine assignment path via run mode continuum
@@ -3596,6 +3606,82 @@ mod tests {
 
         let would_skip = auto_assign && !is_system && !has_agent;
         assert!(!would_skip, "should not skip when auto_assign is disabled");
+    }
+
+    /// A resurrected task (reopened after completion) with an existing done
+    /// .assign-* task should have the stale assignment removed so a new one
+    /// can be created on the next tick.
+    #[test]
+    fn test_assign_recreated_after_resurrection() {
+        let dir = tempdir().unwrap();
+        let wg_dir = dir.path();
+        std::fs::create_dir_all(wg_dir.join("agency/assignments")).unwrap();
+        std::fs::create_dir_all(wg_dir.join("agency/cache/agents")).unwrap();
+
+        // Source task: resurrected (Open again after being Done)
+        let mut source = Task::default();
+        source.id = "my-task".to_string();
+        source.title = "Resurrected task".to_string();
+        source.status = Status::Open;
+        // No agent — cleared on resurrection
+
+        // Old stale .assign task: completed from the previous round
+        let mut old_assign = Task::default();
+        old_assign.id = ".assign-my-task".to_string();
+        old_assign.title = "Assign my-task".to_string();
+        old_assign.status = Status::Done;
+
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(source));
+        graph.add_node(Node::Task(old_assign));
+
+        // Verify stale .assign exists before the call
+        assert!(graph.get_task(".assign-my-task").is_some());
+
+        let config = Config::load_or_default(wg_dir);
+        let _modified = build_auto_assign_tasks(&mut graph, &config, wg_dir);
+
+        // The stale Done .assign should be removed, unblocking re-assignment.
+        // (The LLM call to create a new assignment will fail in tests, but
+        // the critical fix is that the stale guard no longer blocks progress —
+        // on the next coordinator tick a fresh assignment attempt will proceed.)
+        let assign = graph.get_task(".assign-my-task");
+        assert!(
+            assign.is_none() || assign.unwrap().status != Status::Done,
+            "stale Done .assign-my-task should be removed after resurrection"
+        );
+    }
+
+    /// An in-progress (Open/Waiting) .assign-* task should NOT be removed.
+    #[test]
+    fn test_assign_not_removed_when_still_active() {
+        let dir = tempdir().unwrap();
+        let wg_dir = dir.path();
+        std::fs::create_dir_all(wg_dir.join("agency/assignments")).unwrap();
+        std::fs::create_dir_all(wg_dir.join("agency/cache/agents")).unwrap();
+
+        let mut source = Task::default();
+        source.id = "my-task".to_string();
+        source.title = "Active task".to_string();
+        source.status = Status::Open;
+
+        // .assign is still Open (in-progress)
+        let mut active_assign = Task::default();
+        active_assign.id = ".assign-my-task".to_string();
+        active_assign.title = "Assign my-task".to_string();
+        active_assign.status = Status::Open;
+
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(source));
+        graph.add_node(Node::Task(active_assign));
+
+        let config = Config::load_or_default(wg_dir);
+        let modified = build_auto_assign_tasks(&mut graph, &config, wg_dir);
+
+        // Active .assign should be left alone
+        assert!(!modified, "should not modify graph when .assign is still active");
+        let assign = graph.get_task(".assign-my-task").unwrap();
+        assert_eq!(assign.status, Status::Open);
     }
 
     #[test]
