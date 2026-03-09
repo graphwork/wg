@@ -342,6 +342,12 @@ pub struct EvaluatorInput<'a> {
     /// Downstream task context for organizational impact scoring.
     /// Each entry: (task_title, status_str, description_snippet).
     pub downstream_tasks: &'a [(String, String, Option<String>)],
+    /// FLIP score for the source task (from source: "flip" evaluation), if available.
+    pub flip_score: Option<f64>,
+    /// Verification status from .verify-flip-<task>: "passed" or "failed", if available.
+    pub verify_status: Option<&'a str>,
+    /// Log entries from the .verify-flip-<task> task, if available.
+    pub verify_findings: Option<&'a str>,
 }
 
 /// Render the evaluator prompt that an LLM evaluator will receive.
@@ -487,6 +493,38 @@ pub fn render_evaluator_prompt(input: &EvaluatorInput) -> String {
             out.push('\n');
         }
         out.push('\n');
+    }
+
+    // -- FLIP Verification Results (when available) --
+    if input.flip_score.is_some() || input.verify_status.is_some() {
+        out.push_str("## FLIP Verification Results\n\n");
+        if let Some(score) = input.flip_score {
+            let threshold = 0.70;
+            let relation = if score >= threshold {
+                "at or above"
+            } else {
+                "below"
+            };
+            let _ = writeln!(
+                out,
+                "FLIP Score: {:.2} ({} threshold {:.2})",
+                score, relation, threshold
+            );
+        }
+        if let Some(status) = input.verify_status {
+            let _ = writeln!(out, "Verification Status: {}", status.to_uppercase());
+        }
+        if let Some(findings) = input.verify_findings {
+            out.push_str("Verification Findings:\n");
+            out.push_str(findings);
+            out.push('\n');
+        }
+        out.push('\n');
+        out.push_str(
+            "NOTE: Verification is a strong signal. If verification failed, significantly\n\
+             reduce the overall score. If verification passed despite low FLIP, the FLIP\n\
+             may have been a false alarm.\n\n",
+        );
     }
 
     // -- Evaluation rubric & output format --
@@ -1220,6 +1258,9 @@ mod tests {
             artifact_diff: None,
             evaluator_identity: None,
             downstream_tasks: &[],
+            flip_score: None,
+            verify_status: None,
+            verify_findings: None,
         };
 
         let output = render_evaluator_prompt(&input);
@@ -1311,6 +1352,9 @@ mod tests {
             artifact_diff: None,
             evaluator_identity: None,
             downstream_tasks: &[],
+            flip_score: None,
+            verify_status: None,
+            verify_findings: None,
         };
 
         let output = render_evaluator_prompt(&input);
@@ -1350,6 +1394,9 @@ mod tests {
             artifact_diff: None,
             evaluator_identity: None,
             downstream_tasks: &[],
+            flip_score: None,
+            verify_status: None,
+            verify_findings: None,
         };
 
         let output = render_evaluator_prompt(&input);
@@ -1402,6 +1449,9 @@ mod tests {
             artifact_diff: None,
             evaluator_identity: None,
             downstream_tasks: &downstream,
+            flip_score: None,
+            verify_status: None,
+            verify_findings: None,
         };
 
         let output = render_evaluator_prompt(&input);
@@ -1424,6 +1474,100 @@ mod tests {
         assert!(output.contains("**downstream_usability**"));
         assert!(output.contains("**coordination_overhead**"));
         assert!(output.contains("**blocking_impact**"));
+    }
+
+    #[test]
+    fn test_render_evaluator_prompt_with_flip_verify() {
+        let input = EvaluatorInput {
+            task_title: "Task with verify",
+            task_description: Some("A task that was verified."),
+            task_skills: &[],
+            verify: None,
+            agent: None,
+            role: None,
+            tradeoff: None,
+            artifacts: &[],
+            log_entries: &[],
+            started_at: None,
+            completed_at: None,
+            artifact_diff: None,
+            evaluator_identity: None,
+            downstream_tasks: &[],
+            flip_score: Some(0.45),
+            verify_status: Some("passed"),
+            verify_findings: Some("[2025-01-01] (agent-1): Tests pass\n[2025-01-01] (agent-1): Artifacts verified"),
+        };
+
+        let output = render_evaluator_prompt(&input);
+
+        // FLIP Verification Results section should appear
+        assert!(output.contains("## FLIP Verification Results"));
+        assert!(output.contains("FLIP Score: 0.45 (below threshold 0.70)"));
+        assert!(output.contains("Verification Status: PASSED"));
+        assert!(output.contains("Verification Findings:"));
+        assert!(output.contains("Tests pass"));
+        assert!(output.contains("Artifacts verified"));
+        assert!(output.contains("NOTE: Verification is a strong signal"));
+    }
+
+    #[test]
+    fn test_render_evaluator_prompt_no_flip_verify() {
+        let input = EvaluatorInput {
+            task_title: "Task without verify",
+            task_description: None,
+            task_skills: &[],
+            verify: None,
+            agent: None,
+            role: None,
+            tradeoff: None,
+            artifacts: &[],
+            log_entries: &[],
+            started_at: None,
+            completed_at: None,
+            artifact_diff: None,
+            evaluator_identity: None,
+            downstream_tasks: &[],
+            flip_score: None,
+            verify_status: None,
+            verify_findings: None,
+        };
+
+        let output = render_evaluator_prompt(&input);
+
+        // FLIP Verification Results section should NOT appear
+        assert!(!output.contains("## FLIP Verification Results"));
+        assert!(!output.contains("FLIP Score"));
+        assert!(!output.contains("Verification Status"));
+        assert!(!output.contains("NOTE: Verification is a strong signal"));
+    }
+
+    #[test]
+    fn test_render_evaluator_prompt_flip_above_threshold() {
+        let input = EvaluatorInput {
+            task_title: "High FLIP",
+            task_description: None,
+            task_skills: &[],
+            verify: None,
+            agent: None,
+            role: None,
+            tradeoff: None,
+            artifacts: &[],
+            log_entries: &[],
+            started_at: None,
+            completed_at: None,
+            artifact_diff: None,
+            evaluator_identity: None,
+            downstream_tasks: &[],
+            flip_score: Some(0.85),
+            verify_status: None,
+            verify_findings: None,
+        };
+
+        let output = render_evaluator_prompt(&input);
+
+        assert!(output.contains("## FLIP Verification Results"));
+        assert!(output.contains("FLIP Score: 0.85 (at or above threshold 0.70)"));
+        assert!(!output.contains("Verification Status"));
     }
 
     // -- Rich component resolution tests ------------------------------------
