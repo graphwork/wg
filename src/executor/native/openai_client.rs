@@ -99,11 +99,23 @@ struct OaiToolCallFunction {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+struct OaiPromptTokenDetails {
+    #[serde(default)]
+    cached_tokens: Option<u32>,
+    #[serde(default)]
+    cache_write_tokens: Option<u32>,
+    #[serde(default)]
+    cache_discount: Option<f64>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
 struct OaiUsage {
     #[serde(default)]
     prompt_tokens: u32,
     #[serde(default)]
     completion_tokens: u32,
+    #[serde(default)]
+    prompt_tokens_details: Option<OaiPromptTokenDetails>,
 }
 
 /// OpenAI-format error response.
@@ -445,11 +457,17 @@ impl OpenAiClient {
 
         let usage = oai
             .usage
-            .map(|u| Usage {
-                input_tokens: u.prompt_tokens,
-                output_tokens: u.completion_tokens,
-                cache_creation_input_tokens: None,
-                cache_read_input_tokens: None,
+            .map(|u| {
+                let (cache_read, cache_creation) = u
+                    .prompt_tokens_details
+                    .map(|d| (d.cached_tokens, d.cache_write_tokens))
+                    .unwrap_or((None, None));
+                Usage {
+                    input_tokens: u.prompt_tokens,
+                    output_tokens: u.completion_tokens,
+                    cache_creation_input_tokens: cache_creation,
+                    cache_read_input_tokens: cache_read,
+                }
             })
             .unwrap_or_default();
 
@@ -852,11 +870,17 @@ fn assemble_oai_stream_response(
     };
 
     let usage = usage
-        .map(|u| Usage {
-            input_tokens: u.prompt_tokens,
-            output_tokens: u.completion_tokens,
-            cache_creation_input_tokens: None,
-            cache_read_input_tokens: None,
+        .map(|u| {
+            let (cache_read, cache_creation) = u
+                .prompt_tokens_details
+                .map(|d| (d.cached_tokens, d.cache_write_tokens))
+                .unwrap_or((None, None));
+            Usage {
+                input_tokens: u.prompt_tokens,
+                output_tokens: u.completion_tokens,
+                cache_creation_input_tokens: cache_creation,
+                cache_read_input_tokens: cache_read,
+            }
         })
         .unwrap_or_default();
 
@@ -974,6 +998,7 @@ mod tests {
             usage: Some(OaiUsage {
                 prompt_tokens: 10,
                 completion_tokens: 5,
+                prompt_tokens_details: None,
             }),
         };
 
@@ -1007,6 +1032,7 @@ mod tests {
             usage: Some(OaiUsage {
                 prompt_tokens: 20,
                 completion_tokens: 15,
+                prompt_tokens_details: None,
             }),
         };
 
@@ -1170,6 +1196,7 @@ mod tests {
             Some(OaiUsage {
                 prompt_tokens: 10,
                 completion_tokens: 5,
+                prompt_tokens_details: None,
             }),
         )
         .unwrap();
@@ -1240,6 +1267,7 @@ mod tests {
             Some(OaiUsage {
                 prompt_tokens: 50,
                 completion_tokens: 30,
+                prompt_tokens_details: None,
             }),
         )
         .unwrap();
@@ -1355,5 +1383,90 @@ mod tests {
         let json = r#"{"id":"chatcmpl-4","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}"#;
         let chunk: OaiStreamChunk = serde_json::from_str(json).unwrap();
         assert_eq!(chunk.choices[0].delta.role.as_deref(), Some("assistant"));
+    }
+
+    // ── Cache tracking tests ────────────────────────────────────────────
+
+    #[test]
+    fn test_translate_response_with_cache_fields() {
+        let oai = OaiResponse {
+            id: "chatcmpl-cache".to_string(),
+            choices: vec![OaiChoice {
+                message: OaiResponseMessage {
+                    role: "assistant".to_string(),
+                    content: Some("cached response".to_string()),
+                    tool_calls: None,
+                },
+                finish_reason: Some("stop".to_string()),
+            }],
+            usage: Some(OaiUsage {
+                prompt_tokens: 100,
+                completion_tokens: 20,
+                prompt_tokens_details: Some(OaiPromptTokenDetails {
+                    cached_tokens: Some(80),
+                    cache_write_tokens: Some(15),
+                    cache_discount: Some(0.5),
+                }),
+            }),
+        };
+
+        let resp = OpenAiClient::translate_response(oai).unwrap();
+        assert_eq!(resp.usage.input_tokens, 100);
+        assert_eq!(resp.usage.output_tokens, 20);
+        assert_eq!(resp.usage.cache_read_input_tokens, Some(80));
+        assert_eq!(resp.usage.cache_creation_input_tokens, Some(15));
+    }
+
+    #[test]
+    fn test_assemble_stream_response_with_cache_fields() {
+        let resp = assemble_oai_stream_response(
+            "gen-cache".to_string(),
+            "streamed cached".to_string(),
+            std::collections::BTreeMap::new(),
+            Some("stop".to_string()),
+            Some(OaiUsage {
+                prompt_tokens: 200,
+                completion_tokens: 40,
+                prompt_tokens_details: Some(OaiPromptTokenDetails {
+                    cached_tokens: Some(150),
+                    cache_write_tokens: Some(30),
+                    cache_discount: None,
+                }),
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(resp.usage.input_tokens, 200);
+        assert_eq!(resp.usage.output_tokens, 40);
+        assert_eq!(resp.usage.cache_read_input_tokens, Some(150));
+        assert_eq!(resp.usage.cache_creation_input_tokens, Some(30));
+    }
+
+    #[test]
+    fn test_oai_usage_deserialization_with_prompt_tokens_details() {
+        let json = r#"{
+            "prompt_tokens": 100,
+            "completion_tokens": 25,
+            "prompt_tokens_details": {
+                "cached_tokens": 60,
+                "cache_write_tokens": 10,
+                "cache_discount": 0.75
+            }
+        }"#;
+        let usage: OaiUsage = serde_json::from_str(json).unwrap();
+        assert_eq!(usage.prompt_tokens, 100);
+        assert_eq!(usage.completion_tokens, 25);
+        let details = usage.prompt_tokens_details.unwrap();
+        assert_eq!(details.cached_tokens, Some(60));
+        assert_eq!(details.cache_write_tokens, Some(10));
+        assert_eq!(details.cache_discount, Some(0.75));
+    }
+
+    #[test]
+    fn test_oai_usage_deserialization_without_prompt_tokens_details() {
+        let json = r#"{"prompt_tokens": 50, "completion_tokens": 10}"#;
+        let usage: OaiUsage = serde_json::from_str(json).unwrap();
+        assert_eq!(usage.prompt_tokens, 50);
+        assert!(usage.prompt_tokens_details.is_none());
     }
 }
