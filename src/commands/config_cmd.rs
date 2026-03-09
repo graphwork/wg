@@ -1044,6 +1044,112 @@ fn mask_token(token: &str) -> String {
     }
 }
 
+/// Install the current project's config as the global default.
+///
+/// Copies `.workgraph/config.toml` → `~/.workgraph/config.toml`.
+/// If the global config already exists and `--force` is not set, shows a diff
+/// summary and asks for confirmation on stdin.
+pub fn install_global(workgraph_dir: &Path, force: bool) -> Result<()> {
+    let global_path = Config::global_config_path()?;
+    let global_dir = Config::global_dir()?;
+    install_global_to(workgraph_dir, &global_path, &global_dir, force)
+}
+
+/// Core logic for install-global, parameterized for testing.
+pub fn install_global_to(
+    workgraph_dir: &Path,
+    global_path: &Path,
+    global_dir: &Path,
+    force: bool,
+) -> Result<()> {
+    let local_path = workgraph_dir.join("config.toml");
+    if !local_path.exists() {
+        anyhow::bail!(
+            "No project config found at {}.\nRun `wg config --init` to create one first.",
+            local_path.display()
+        );
+    }
+
+    let local_content = std::fs::read_to_string(&local_path)?;
+
+    if global_path.exists() && !force {
+        let global_content = std::fs::read_to_string(global_path)?;
+        if local_content == global_content {
+            println!("Global config is already identical to project config — nothing to do.");
+            return Ok(());
+        }
+        println!("Global config already exists at {}", global_path.display());
+        println!();
+        print_diff_summary(&global_content, &local_content);
+        println!();
+        eprint!("Overwrite global config? [y/N] ");
+        let mut answer = String::new();
+        std::io::stdin().read_line(&mut answer)?;
+        if !answer.trim().eq_ignore_ascii_case("y") {
+            println!("Aborted.");
+            return Ok(());
+        }
+    }
+
+    // Ensure parent directory exists
+    std::fs::create_dir_all(global_dir)?;
+
+    std::fs::copy(&local_path, global_path)?;
+    println!("Installed project config as global default");
+    println!("  {} → {}", local_path.display(), global_path.display());
+    Ok(())
+}
+
+/// Print a brief summary of differences between two TOML config strings.
+fn print_diff_summary(old: &str, new: &str) {
+    let old_lines: Vec<&str> = old.lines().collect();
+    let new_lines: Vec<&str> = new.lines().collect();
+
+    let mut added = 0usize;
+    let mut removed = 0usize;
+    let mut changed_keys: Vec<String> = Vec::new();
+
+    // Simple line-by-line diff: collect changed lines
+    let max_len = old_lines.len().max(new_lines.len());
+    for i in 0..max_len {
+        let ol = old_lines.get(i).copied().unwrap_or("");
+        let nl = new_lines.get(i).copied().unwrap_or("");
+        if ol != nl {
+            if ol.is_empty() {
+                added += 1;
+            } else if nl.is_empty() {
+                removed += 1;
+            } else {
+                // Try to extract key name from TOML line
+                if let Some(key) = nl.split('=').next() {
+                    let k = key.trim().to_string();
+                    if !k.is_empty() && !k.starts_with('[') && !changed_keys.contains(&k) {
+                        changed_keys.push(k);
+                    }
+                }
+            }
+        }
+    }
+
+    println!("Diff summary:");
+    if !changed_keys.is_empty() {
+        let display: Vec<&str> = changed_keys.iter().take(10).map(|s| s.as_str()).collect();
+        println!("  Changed keys: {}", display.join(", "));
+        if changed_keys.len() > 10 {
+            println!("  ... and {} more", changed_keys.len() - 10);
+        }
+    }
+    if added > 0 {
+        println!("  +{} new lines", added);
+    }
+    if removed > 0 {
+        println!("  -{} removed lines", removed);
+    }
+    if changed_keys.is_empty() && added == 0 && removed == 0 {
+        println!("  (content differs but no key-level changes detected)");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1346,5 +1452,67 @@ mod tests {
 
         let result = list(temp_dir.path(), true);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_config_install_global() {
+        // Set up a project dir with a config
+        let project_dir = TempDir::new().unwrap();
+        init(project_dir.path(), None).unwrap();
+
+        // Set up a separate "global" dir
+        let global_dir = TempDir::new().unwrap();
+        let global_path = global_dir.path().join("config.toml");
+
+        // Install with --force (no global exists yet)
+        let result =
+            install_global_to(project_dir.path(), &global_path, global_dir.path(), true);
+        assert!(result.is_ok());
+        assert!(global_path.exists(), "Global config should be created");
+
+        // Verify contents match
+        let local_content =
+            std::fs::read_to_string(project_dir.path().join("config.toml")).unwrap();
+        let global_content = std::fs::read_to_string(&global_path).unwrap();
+        assert_eq!(local_content, global_content);
+
+        // Install again with --force should overwrite
+        let result =
+            install_global_to(project_dir.path(), &global_path, global_dir.path(), true);
+        assert!(result.is_ok());
+
+        // Without project config should fail
+        let empty_dir = TempDir::new().unwrap();
+        let result =
+            install_global_to(empty_dir.path(), &global_path, global_dir.path(), true);
+        assert!(result.is_err());
+        assert!(
+            result.unwrap_err().to_string().contains("No project config"),
+            "Should mention missing project config"
+        );
+    }
+
+    #[test]
+    fn test_config_install_global_creates_parent_dir() {
+        let project_dir = TempDir::new().unwrap();
+        init(project_dir.path(), None).unwrap();
+
+        // Point to a nested global path that doesn't exist yet
+        let global_base = TempDir::new().unwrap();
+        let global_dir = global_base.path().join("nested").join(".workgraph");
+        let global_path = global_dir.join("config.toml");
+
+        let result = install_global_to(project_dir.path(), &global_path, &global_dir, true);
+        assert!(result.is_ok());
+        assert!(global_path.exists());
+    }
+
+    #[test]
+    fn test_diff_summary() {
+        // Just verify it doesn't panic
+        print_diff_summary(
+            "key1 = \"old\"\nkey2 = \"same\"\n",
+            "key1 = \"new\"\nkey2 = \"same\"\nkey3 = \"added\"\n",
+        );
     }
 }

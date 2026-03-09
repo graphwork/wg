@@ -1366,6 +1366,7 @@ pub enum ConfigSection {
     Agency,
     Guardrails,
     ModelRouting,
+    Actions,
 }
 
 impl ConfigSection {
@@ -1379,6 +1380,7 @@ impl ConfigSection {
             Self::Agency => "Agency",
             Self::Guardrails => "Guardrails",
             Self::ModelRouting => "Model Routing",
+            Self::Actions => "Actions",
         }
     }
 
@@ -1392,6 +1394,7 @@ impl ConfigSection {
             Self::AgentDefaults,
             Self::Agency,
             Self::Guardrails,
+            Self::Actions,
         ]
     }
 }
@@ -6723,9 +6726,51 @@ impl VizApp {
             }
         }
 
+        // ── 9. Actions ──
+        entries.push(ConfigEntry {
+            key: "action.install_global".into(),
+            label: "Install as Global".into(),
+            value: "▸".into(),
+            edit_kind: ConfigEditKind::Toggle,
+            section: ConfigSection::Actions,
+        });
+
         self.config_panel.entries = entries;
         if self.config_panel.selected >= self.config_panel.entries.len() {
             self.config_panel.selected = 0;
+        }
+    }
+
+    /// Install the current project config as the global default (force mode).
+    pub fn install_config_as_global(&mut self) {
+        use crate::commands::config_cmd::install_global_to;
+
+        let global_path = match Config::global_config_path() {
+            Ok(p) => p,
+            Err(e) => {
+                self.notification = Some((format!("Error: {}", e), std::time::Instant::now()));
+                return;
+            }
+        };
+        let global_dir = match Config::global_dir() {
+            Ok(d) => d,
+            Err(e) => {
+                self.notification = Some((format!("Error: {}", e), std::time::Instant::now()));
+                return;
+            }
+        };
+        match install_global_to(&self.workgraph_dir, &global_path, &global_dir, true) {
+            Ok(()) => {
+                self.config_panel.save_notification = Some(std::time::Instant::now());
+                self.notification = Some((
+                    "Installed project config as global default".to_string(),
+                    std::time::Instant::now(),
+                ));
+            }
+            Err(e) => {
+                self.notification =
+                    Some((format!("Install failed: {}", e), std::time::Instant::now()));
+            }
         }
     }
 
@@ -7088,6 +7133,12 @@ impl VizApp {
                 self.config_panel.save_notification = Some(Instant::now());
                 self.load_config_panel();
             }
+            return;
+        }
+
+        // Handle install-as-global action
+        if key == "action.install_global" {
+            self.install_config_as_global();
             return;
         }
 
@@ -9440,7 +9491,7 @@ mod tui_config_panel_tests {
             let key = entry.key.clone();
 
             // Skip entries that are read-only or special
-            if key.starts_with("apikey.") || key == "endpoint.add" || key.ends_with(".remove") || key.ends_with(".is_default") {
+            if key.starts_with("apikey.") || key == "endpoint.add" || key.ends_with(".remove") || key.ends_with(".is_default") || key.starts_with("action.") {
                 continue;
             }
             // Skip endpoint entries (they need an existing endpoint)
@@ -9688,7 +9739,7 @@ mod tui_config_panel_tests {
             // Skip known read-only/special entries
             if key.starts_with("apikey.") || key == "endpoint.add"
                 || key.ends_with(".remove") || key.ends_with(".is_default")
-                || key.starts_with("endpoint.")
+                || key.starts_with("endpoint.") || key.starts_with("action.")
             {
                 continue;
             }

@@ -1185,6 +1185,11 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
             app.load_config_panel();
         }
 
+        // Config tab: 'g' installs project config as global default
+        KeyCode::Char('g') if app.right_panel_tab == RightPanelTab::Config => {
+            app.install_config_as_global();
+        }
+
         // Config tab: 'a' starts the add-endpoint flow
         KeyCode::Char('a') if app.right_panel_tab == RightPanelTab::Config => {
             app.config_panel.adding_endpoint = true;

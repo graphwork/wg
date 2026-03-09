@@ -5442,7 +5442,7 @@ fn draw_config_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
                 ConfigEditKind::Toggle => "Enter/Space: toggle",
             }
         } else {
-            "j/k: navigate  Enter: edit  Space: toggle  Tab: collapse/expand  a: add endpoint  r: reload"
+            "j/k: navigate  Enter: edit  Space: toggle  Tab: collapse/expand  a: add endpoint  g: install global  r: reload"
         };
         lines.push((
             Line::from(Span::styled(
