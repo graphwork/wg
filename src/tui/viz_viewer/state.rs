@@ -1571,6 +1571,8 @@ pub struct VizApp {
     pub last_chat_input_area: Rect,
     /// The chat message history area from the last render frame (for click-to-focus).
     pub last_chat_message_area: Rect,
+    /// The coordinator tab bar area from the last render frame (for click support).
+    pub last_coordinator_bar_area: Rect,
     /// The message input area from the last render frame (for click-to-type).
     pub last_message_input_area: Rect,
 
@@ -1866,6 +1868,7 @@ impl VizApp {
             last_right_content_area: Rect::default(),
             last_chat_input_area: Rect::default(),
             last_chat_message_area: Rect::default(),
+            last_coordinator_bar_area: Rect::default(),
             last_message_input_area: Rect::default(),
             last_text_prompt_area: Rect::default(),
             last_file_tree_area: Rect::default(),
@@ -2368,6 +2371,8 @@ impl VizApp {
         self.invalidate_hud();
         self.invalidate_agency_lifecycle();
         self.invalidate_log_pane();
+        // Save message draft before invalidating — invalidate clears task_id.
+        self.save_message_draft();
         self.invalidate_messages_panel();
     }
 
@@ -2954,7 +2959,10 @@ impl VizApp {
                 self.load_log_pane();
             }
             // Reload messages panel if Messages tab is active.
+            // Save draft BEFORE invalidating — invalidate clears task_id,
+            // which would prevent save_message_draft() from finding the task.
             if self.right_panel_tab == RightPanelTab::Messages {
+                self.save_message_draft();
                 self.invalidate_messages_panel();
                 self.load_messages_panel();
             }
@@ -4196,6 +4204,7 @@ impl VizApp {
             last_right_content_area: Rect::default(),
             last_chat_input_area: Rect::default(),
             last_chat_message_area: Rect::default(),
+            last_coordinator_bar_area: Rect::default(),
             last_message_input_area: Rect::default(),
             last_text_prompt_area: Rect::default(),
             last_file_tree_area: Rect::default(),
@@ -5644,6 +5653,24 @@ impl VizApp {
             args.push(n.clone());
         }
         self.exec_command(args, CommandEffect::CreateCoordinator);
+    }
+
+    /// Delete a coordinator session. Coordinator 0 cannot be deleted.
+    /// Removes the coordinator's chat state and switches to coordinator 0.
+    pub fn delete_coordinator(&mut self, cid: u32) {
+        if cid == 0 {
+            return;
+        }
+        // If we're deleting the active coordinator, switch to 0 first
+        if cid == self.active_coordinator_id {
+            self.switch_coordinator(0);
+        }
+        // Remove stored chat state for this coordinator
+        self.coordinator_chats.remove(&cid);
+        self.notification = Some((
+            format!("Closed coordinator {}", cid),
+            std::time::Instant::now(),
+        ));
     }
 
     /// Get a list of known coordinator IDs from the graph.
