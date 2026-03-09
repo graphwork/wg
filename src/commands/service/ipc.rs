@@ -1512,4 +1512,57 @@ poll_interval = 120
             "urgent_wake should NOT be set by GraphChanged"
         );
     }
+
+    #[test]
+    fn test_handle_add_task_internal_no_focus_steal() {
+        let temp_dir = TempDir::new().unwrap();
+        let dir = temp_dir.path();
+
+        // Create an empty graph file
+        fs::write(dir.join("graph.jsonl"), "").unwrap();
+
+        let focus_path = dir.join(".new_task_focus");
+
+        // Adding an internal (dot-prefixed) task should NOT create the focus marker
+        let resp = handle_add_task(
+            dir,
+            "Internal eval task",
+            Some(".evaluate-my-task"),
+            None,
+            &[],
+            &[],
+            &[],
+            &[],
+            None,
+            None,
+            None,
+        );
+        assert!(resp.ok, "Adding internal task should succeed");
+        assert!(
+            !focus_path.exists(),
+            "Internal dot-prefixed task should NOT create .new_task_focus"
+        );
+
+        // Adding a regular task SHOULD create the focus marker
+        let resp = handle_add_task(
+            dir,
+            "User task",
+            Some("my-regular-task"),
+            None,
+            &[],
+            &[],
+            &[],
+            &[],
+            None,
+            None,
+            None,
+        );
+        assert!(resp.ok, "Adding regular task should succeed");
+        assert!(
+            focus_path.exists(),
+            "Regular task should create .new_task_focus"
+        );
+        let focused_id = fs::read_to_string(&focus_path).unwrap();
+        assert_eq!(focused_id, "my-regular-task");
+    }
 }
