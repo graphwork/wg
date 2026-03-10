@@ -833,16 +833,10 @@ pub fn render_flip_comparison_prompt(input: &FlipComparisonInput) -> String {
 
 /// Input data for assigner mode context.
 pub struct AssignerModeContext<'a> {
-    /// Current run_mode value.
-    pub run_mode: f64,
-    /// Effective exploration rate (max of run_mode and min_exploration_rate).
-    pub effective_exploration_rate: f64,
     /// Which assignment path was selected.
     pub assignment_path: AssignmentPath,
     /// For learning mode: the experiment specification.
     pub experiment: Option<&'a AssignmentExperiment>,
-    /// For performance mode: top cached agents with scores.
-    pub cached_agents: &'a [(String, f64)],
     /// Total assignment count so far.
     pub total_assignments: u32,
 }
@@ -850,99 +844,69 @@ pub struct AssignerModeContext<'a> {
 /// Render mode context for the assigner prompt.
 ///
 /// Extends the assigner prompt with:
-/// 1. Mode context (run_mode, effective rate, selected path).
-/// 2. Experiment specification (learning mode).
-/// 3. Cache contents (performance mode).
+/// 1. Assignment path (Learning or ForcedExploration).
+/// 2. Experiment specification.
 pub fn render_assigner_mode_context(ctx: &AssignerModeContext) -> String {
     let mut out = String::new();
 
     out.push_str("## Assignment Mode Context\n\n");
-    let _ = writeln!(out, "- **Run mode:** {:.2}", ctx.run_mode);
-    let _ = writeln!(
-        out,
-        "- **Effective exploration rate:** {:.2}",
-        ctx.effective_exploration_rate
-    );
     let _ = writeln!(
         out,
         "- **Assignment path:** {}",
         match ctx.assignment_path {
-            AssignmentPath::Performance => "Performance (cache-first)",
             AssignmentPath::Learning => "Learning (structured experiment)",
             AssignmentPath::ForcedExploration => "Forced Exploration (interval trigger)",
         }
     );
     let _ = writeln!(out, "- **Total assignments:** {}\n", ctx.total_assignments);
 
-    match ctx.assignment_path {
-        AssignmentPath::Performance => {
-            if ctx.cached_agents.is_empty() {
-                out.push_str(
-                    "### Cache Status\n\n\
-                     No cached agents available. Use best-guess composition.\n\n",
-                );
-            } else {
-                out.push_str("### Cached Agents (ranked by fit)\n\n");
-                for (name, score) in ctx.cached_agents {
-                    let _ = writeln!(out, "- {} (score: {:.2})", name, score);
+    if let Some(exp) = ctx.experiment {
+        out.push_str("### Experiment Specification\n\n");
+        if exp.bizarre_ideation {
+            out.push_str(
+                "**Bizarre ideation mode:** Compose from random primitives with no\n\
+                 attractor guidance. Maximise novelty.\n\n",
+            );
+        } else {
+            match &exp.dimension {
+                ExperimentDimension::RoleComponent {
+                    replaced,
+                    introduced,
+                } => {
+                    let _ = writeln!(out, "**Experiment type:** ComponentSwap");
+                    if let Some(r) = replaced {
+                        let _ = writeln!(out, "- Replace component: `{}`", r);
+                    } else {
+                        out.push_str("- Add new component (no replacement)\n");
+                    }
+                    let _ = writeln!(out, "- Introduce component: `{}`", introduced);
                 }
-                out.push('\n');
-                out.push_str(
-                    "Deploy the highest-scoring cached agent if its score meets the threshold.\n\
-                     Do NOT vary composition dimensions — deterministic selection only.\n\n",
-                );
-            }
-        }
-        AssignmentPath::Learning | AssignmentPath::ForcedExploration => {
-            if let Some(exp) = ctx.experiment {
-                out.push_str("### Experiment Specification\n\n");
-                if exp.bizarre_ideation {
+                ExperimentDimension::TradeoffConfig {
+                    replaced,
+                    introduced,
+                } => {
+                    let _ = writeln!(out, "**Experiment type:** ConfigSwap");
+                    if let Some(r) = replaced {
+                        let _ = writeln!(out, "- Replace tradeoff: `{}`", r);
+                    }
+                    let _ = writeln!(out, "- Introduce tradeoff: `{}`", introduced);
+                }
+                ExperimentDimension::NovelComposition => {
                     out.push_str(
-                        "**Bizarre ideation mode:** Compose from random primitives with no\n\
-                         attractor guidance. Maximise novelty.\n\n",
+                        "**Experiment type:** NovelComposition\n\
+                         Compose entirely from primitives. No base composition.\n",
                     );
-                } else {
-                    match &exp.dimension {
-                        ExperimentDimension::RoleComponent {
-                            replaced,
-                            introduced,
-                        } => {
-                            let _ = writeln!(out, "**Experiment type:** ComponentSwap");
-                            if let Some(r) = replaced {
-                                let _ = writeln!(out, "- Replace component: `{}`", r);
-                            } else {
-                                out.push_str("- Add new component (no replacement)\n");
-                            }
-                            let _ = writeln!(out, "- Introduce component: `{}`", introduced);
-                        }
-                        ExperimentDimension::TradeoffConfig {
-                            replaced,
-                            introduced,
-                        } => {
-                            let _ = writeln!(out, "**Experiment type:** ConfigSwap");
-                            if let Some(r) = replaced {
-                                let _ = writeln!(out, "- Replace tradeoff: `{}`", r);
-                            }
-                            let _ = writeln!(out, "- Introduce tradeoff: `{}`", introduced);
-                        }
-                        ExperimentDimension::NovelComposition => {
-                            out.push_str(
-                                "**Experiment type:** NovelComposition\n\
-                                 Compose entirely from primitives. No base composition.\n",
-                            );
-                        }
-                    }
-                    if let Some(base) = &exp.base_composition {
-                        let _ = writeln!(out, "\n**Base composition:** `{}`", base);
-                    }
                 }
-                out.push('\n');
-                out.push_str(
-                    "Your role is to construct a coherent agent from the specified primitives.\n\
-                     The experiment design (what to vary) is algorithmic — do NOT override it.\n\n",
-                );
+            }
+            if let Some(base) = &exp.base_composition {
+                let _ = writeln!(out, "\n**Base composition:** `{}`", base);
             }
         }
+        out.push('\n');
+        out.push_str(
+            "Your role is to construct a coherent agent from the specified primitives.\n\
+             The experiment design (what to vary) is algorithmic — do NOT override it.\n\n",
+        );
     }
 
     out

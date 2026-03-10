@@ -6805,13 +6805,6 @@ impl VizApp {
             section: ConfigSection::Agency,
         });
         entries.push(ConfigEntry {
-            key: "agency.run_mode".into(),
-            label: "Run mode".into(),
-            value: format!("{:.1}", config.agency.run_mode),
-            edit_kind: ConfigEditKind::TextInput,
-            section: ConfigSection::Agency,
-        });
-        entries.push(ConfigEntry {
             key: "agency.assigner_model".into(),
             label: "Assigner model".into(),
             value: config
@@ -7194,11 +7187,6 @@ impl VizApp {
             "agency.auto_assign" => config.agency.auto_assign = new_value == "on",
             "agency.auto_triage" => config.agency.auto_triage = new_value == "on",
             "agency.auto_create" => config.agency.auto_create = new_value == "on",
-            "agency.run_mode" => {
-                if let Ok(v) = new_value.parse::<f64>() {
-                    config.agency.run_mode = v.clamp(0.0, 1.0);
-                }
-            }
             "agency.assigner_model" => {
                 config.agency.assigner_model = if new_value == "(default)" {
                     None
@@ -9901,7 +9889,6 @@ mod tui_config_panel_tests {
                         | "guardrails.max_child_tasks_per_agent" | "guardrails.max_task_depth"
                         | "tui.chat_history_max" | "checkpoint.retry_context_tokens" => "42",
                         "tui.message_indent" => "4", // clamped to max 8
-                        "agency.run_mode" => "0.5",
                         "agency.flip_verification_threshold" | "agency.eval_gate_threshold" => {
                             "0.85"
                         }
@@ -9931,14 +9918,6 @@ mod tui_config_panel_tests {
                                 reloaded.value, "0.85",
                                 "TextInput for '{}' did not round-trip",
                                 key
-                            );
-                        }
-                        "agency.run_mode" => {
-                            assert!(
-                                reloaded.value.starts_with("0.5"),
-                                "TextInput for '{}' did not round-trip: got '{}'",
-                                key,
-                                reloaded.value
                             );
                         }
                         _ => {
@@ -10038,7 +10017,6 @@ mod tui_config_panel_tests {
             "agency.auto_evaluate",
             "agency.auto_triage",
             "agency.auto_create",
-            "agency.run_mode",
             "agency.assigner_model",
             "agency.evaluator_model",
             "agency.evolver_model",

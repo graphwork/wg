@@ -870,12 +870,6 @@ impl Config {
 fn default_auto_create_threshold() -> u32 {
     20
 }
-fn default_run_mode() -> f64 {
-    0.2
-}
-fn default_min_exploration_rate() -> f64 {
-    0.05
-}
 fn default_exploration_interval() -> u32 {
     20
 }
@@ -890,9 +884,6 @@ fn default_novelty_bonus_multiplier() -> f64 {
 }
 fn default_bizarre_ideation_interval() -> u32 {
     10
-}
-fn default_performance_threshold() -> f64 {
-    0.7
 }
 fn default_flip_verification_threshold() -> Option<f64> {
     Some(0.7)
@@ -994,19 +985,7 @@ pub struct AgencyConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub triage_max_log_bytes: Option<usize>,
 
-    /// Run mode on the performance/learning continuum.
-    /// 0.0 = pure performance, 1.0 = pure learning.
-    /// Default: 0.2
-    #[serde(default = "default_run_mode")]
-    pub run_mode: f64,
-
-    /// Minimum fraction of assignments routed through learning path
-    /// even when run_mode is low. Guards against exploitation drift
-    /// (March, 1991). Default: 0.05
-    #[serde(default = "default_min_exploration_rate")]
-    pub min_exploration_rate: f64,
-
-    /// Force a learning assignment every N tasks in performance mode.
+    /// Force a learning assignment every N tasks with forced exploration parameters.
     /// 0 = disabled. Default: 20
     #[serde(default = "default_exploration_interval")]
     pub exploration_interval: u32,
@@ -1031,11 +1010,6 @@ pub struct AgencyConfig {
     /// 0 = disabled. Default: 10
     #[serde(default = "default_bizarre_ideation_interval")]
     pub bizarre_ideation_interval: u32,
-
-    /// Performance threshold for cache-hit deployment in performance mode.
-    /// Default: 0.7
-    #[serde(default = "default_performance_threshold")]
-    pub performance_threshold: f64,
 
     /// Grace period in seconds after task creation before auto-assignment
     /// is eligible. Prevents premature assignment when tasks are created
@@ -1131,14 +1105,11 @@ impl Default for AgencyConfig {
             triage_model: None,
             triage_timeout: None,
             triage_max_log_bytes: None,
-            run_mode: default_run_mode(),
-            min_exploration_rate: default_min_exploration_rate(),
             exploration_interval: default_exploration_interval(),
             cache_population_threshold: default_cache_population_threshold(),
             ucb_exploration_constant: default_ucb_exploration_constant(),
             novelty_bonus_multiplier: default_novelty_bonus_multiplier(),
             bizarre_ideation_interval: default_bizarre_ideation_interval(),
-            performance_threshold: default_performance_threshold(),
             auto_assign_grace_seconds: default_auto_assign_grace_seconds(),
             eval_gate_threshold: None,
             eval_gate_all: false,
@@ -1867,8 +1838,6 @@ name = "My Project"
         assert!(config.agency.evolver_agent.is_none());
         assert!(config.agency.retention_heuristics.is_none());
         // Run mode continuum defaults
-        assert!((config.agency.run_mode - 0.2).abs() < f64::EPSILON);
-        assert!((config.agency.min_exploration_rate - 0.05).abs() < f64::EPSILON);
         assert_eq!(config.agency.exploration_interval, 20);
         assert!((config.agency.cache_population_threshold - 0.8).abs() < f64::EPSILON);
         assert!(
@@ -1877,7 +1846,6 @@ name = "My Project"
         );
         assert!((config.agency.novelty_bonus_multiplier - 1.5).abs() < f64::EPSILON);
         assert_eq!(config.agency.bizarre_ideation_interval, 10);
-        assert!((config.agency.performance_threshold - 0.7).abs() < f64::EPSILON);
     }
 
     #[test]

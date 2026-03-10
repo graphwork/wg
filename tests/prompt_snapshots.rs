@@ -4,10 +4,9 @@
 //! Any change to prompt construction fails the test until explicitly approved
 //! via `cargo insta review`.
 
-use workgraph::agency::run_mode::AssignmentPath;
 use workgraph::agency::{
-    self, AssignerModeContext, EvaluatorInput, ResolvedSkill, Role, TradeoffConfig,
-    render_assigner_mode_context, render_evaluator_prompt, render_identity_prompt,
+    self, EvaluatorInput, ResolvedSkill, Role, TradeoffConfig,
+    render_evaluator_prompt, render_identity_prompt,
 };
 use workgraph::context_scope::ContextScope;
 use workgraph::graph::LogEntry;
@@ -283,41 +282,6 @@ fn snapshot_evaluator_prompt_with_downstream_tasks() {
 
     let output = render_evaluator_prompt(&input);
     insta::assert_snapshot!("evaluator_prompt_with_downstream", output);
-}
-
-// ============================================================================
-// render_assigner_mode_context snapshots
-// ============================================================================
-
-#[test]
-fn snapshot_assigner_mode_performance() {
-    let ctx = AssignerModeContext {
-        run_mode: 0.15,
-        effective_exploration_rate: 0.15,
-        assignment_path: AssignmentPath::Performance,
-        experiment: None,
-        cached_agents: &[
-            ("Builder-QualityFirst".to_string(), 0.92),
-            ("Coder-FastShip".to_string(), 0.78),
-        ],
-        total_assignments: 42,
-    };
-    let output = render_assigner_mode_context(&ctx);
-    insta::assert_snapshot!("assigner_mode_performance", output);
-}
-
-#[test]
-fn snapshot_assigner_mode_performance_no_cache() {
-    let ctx = AssignerModeContext {
-        run_mode: 0.10,
-        effective_exploration_rate: 0.10,
-        assignment_path: AssignmentPath::Performance,
-        experiment: None,
-        cached_agents: &[],
-        total_assignments: 5,
-    };
-    let output = render_assigner_mode_context(&ctx);
-    insta::assert_snapshot!("assigner_mode_performance_no_cache", output);
 }
 
 // ============================================================================

@@ -173,7 +173,7 @@ fn run_explicit_assign(dir: &Path, path: &Path, task_id: &str, agent_hash: &str)
     );
 
     // Update preliminary TaskAssignmentRecord (created by coordinator) with actual agent info.
-    // If no preliminary record exists, create one with CacheMiss mode.
+    // If no preliminary record exists, create a basic Learning one.
     let assignments_dir = agency_dir.join("assignments");
     let record = match agency::load_assignment_record_by_task(&assignments_dir, task_id) {
         Ok(mut existing) => {
@@ -188,8 +188,12 @@ fn run_explicit_assign(dir: &Path, path: &Path, task_id: &str, agent_hash: &str)
                 agent_id: agent.id.clone(),
                 composition_id: agent.id.clone(),
                 timestamp: chrono::Utc::now().to_rfc3339(),
-                run_mode_value: config.agency.run_mode,
-                mode: agency::AssignmentMode::CacheMiss,
+                mode: agency::AssignmentMode::Learning(agency::AssignmentExperiment {
+                    base_composition: None,
+                    dimension: agency::ExperimentDimension::NovelComposition,
+                    bizarre_ideation: false,
+                    ucb_scores: std::collections::HashMap::new(),
+                }),
             }
         }
     };

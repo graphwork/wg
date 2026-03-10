@@ -10,7 +10,7 @@ use workgraph::agency::evolver::{self, EvolutionTrigger, EvolverState};
 use workgraph::agency::run_mode::{self, AssignmentPath};
 use workgraph::agency::{
     AssignerModeContext, AssignmentMode, Evaluation, TaskAssignmentRecord,
-    count_assignment_records, eval_source, find_cached_agent,
+    count_assignment_records, eval_source,
     load_all_evaluations_or_warn, render_assigner_mode_context, save_assignment_record,
 };
 use workgraph::chat;
@@ -848,68 +848,28 @@ fn build_auto_assign_tasks(
                 None => continue,
             };
 
-        // Determine assignment path via run mode continuum
-        let rng_value: f64 = {
-            let hash = source_id
-                .bytes()
-                .fold(0u64, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u64));
-            (hash % 10000) as f64 / 10000.0
-        };
+        // Determine assignment path — always LLM-based
         let assignment_path =
-            run_mode::determine_assignment_path(&config.agency, total_assignments, rng_value);
+            run_mode::determine_assignment_path(&config.agency, total_assignments);
 
-        // Build mode-specific context for the assigner
-        let experiment = match assignment_path {
-            AssignmentPath::Learning | AssignmentPath::ForcedExploration => {
-                let learning_count =
-                    count_assignment_records(&agency_dir.join("assignments")) as u32;
-                Some(run_mode::design_experiment(
-                    &agency_dir,
-                    &config.agency,
-                    learning_count,
-                ))
-            }
-            AssignmentPath::Performance => None,
-        };
+        // Design experiment for the assigner
+        let learning_count =
+            count_assignment_records(&agency_dir.join("assignments")) as u32;
+        let experiment = run_mode::design_experiment(
+            &agency_dir,
+            &config.agency,
+            learning_count,
+        );
 
-        let cached_agents: Vec<(String, f64)> = if assignment_path == AssignmentPath::Performance {
-            let agents_dir = agency_dir.join("cache/agents");
-            let mut agents_with_scores: Vec<(String, f64)> =
-                agency::load_all_agents_or_warn(&agents_dir)
-                    .into_iter()
-                    .filter_map(|a| {
-                        let score = a.performance.avg_score?;
-                        if a.staleness_flags.is_empty() {
-                            Some((format!("{} ({})", a.name, agency::short_hash(&a.id)), score))
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
-            agents_with_scores
-                .sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-            agents_with_scores.truncate(5);
-            agents_with_scores
-        } else {
-            vec![]
-        };
-
-        let effective_rate = config
-            .agency
-            .run_mode
-            .max(config.agency.min_exploration_rate);
         let mode_context = render_assigner_mode_context(&AssignerModeContext {
-            run_mode: config.agency.run_mode,
-            effective_exploration_rate: effective_rate,
             assignment_path,
-            experiment: experiment.as_ref(),
-            cached_agents: &cached_agents,
+            experiment: Some(&experiment),
             total_assignments,
         });
 
         eprintln!(
-            "[coordinator] Assignment path for '{}': {:?} (run_mode={:.2}, total_assignments={})",
-            source_id, assignment_path, config.agency.run_mode, total_assignments,
+            "[coordinator] Assignment path for '{}': {:?} (total_assignments={})",
+            source_id, assignment_path, total_assignments,
         );
 
         // Detect task underspecification
@@ -1044,7 +1004,7 @@ fn build_auto_assign_tasks(
                 timestamp: Utc::now().to_rfc3339(),
                 actor: Some("coordinator".to_string()),
                 message: format!(
-                    "Completed via lightweight LLM call (path: {:?})",
+                    "Assigned via LLM (path: {:?})",
                     assignment_path,
                 ),
             });
@@ -1052,22 +1012,10 @@ fn build_auto_assign_tasks(
 
         // Persist TaskAssignmentRecord with actual agent info
         let assignment_mode = match assignment_path {
-            AssignmentPath::Performance => {
-                match find_cached_agent(&agency_dir, config.agency.performance_threshold) {
-                    Some((_, score)) => AssignmentMode::CacheHit { cache_score: score },
-                    None => AssignmentMode::CacheMiss,
-                }
+            AssignmentPath::Learning => AssignmentMode::Learning(experiment.clone()),
+            AssignmentPath::ForcedExploration => {
+                AssignmentMode::ForcedExploration(experiment.clone())
             }
-            AssignmentPath::Learning => AssignmentMode::Learning(
-                experiment
-                    .clone()
-                    .expect("experiment required for Learning path"),
-            ),
-            AssignmentPath::ForcedExploration => AssignmentMode::ForcedExploration(
-                experiment
-                    .clone()
-                    .expect("experiment required for ForcedExploration path"),
-            ),
         };
 
         let record = TaskAssignmentRecord {
@@ -1075,7 +1023,6 @@ fn build_auto_assign_tasks(
             agent_id: resolved_agent.id.clone(),
             composition_id: resolved_agent.id.clone(),
             timestamp: Utc::now().to_rfc3339(),
-            run_mode_value: config.agency.run_mode,
             mode: assignment_mode,
         };
 
