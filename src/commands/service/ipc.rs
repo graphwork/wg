@@ -997,6 +997,10 @@ fn handle_list_coordinators(dir: &Path) -> IpcResponse {
     let mut coordinators = Vec::new();
     for task in graph.tasks() {
         if task.tags.iter().any(|t| t == "coordinator-loop") {
+            // Skip abandoned/done coordinators
+            if matches!(task.status, workgraph::graph::Status::Abandoned | workgraph::graph::Status::Done) {
+                continue;
+            }
             // Extract coordinator ID from task ID (.coordinator-N)
             let cid = task
                 .id
@@ -1564,5 +1568,51 @@ poll_interval = 120
         );
         let focused_id = fs::read_to_string(&focus_path).unwrap();
         assert_eq!(focused_id, "my-regular-task");
+    }
+
+    #[test]
+    fn test_handle_list_coordinators_excludes_abandoned_and_done() {
+        let temp_dir = TempDir::new().unwrap();
+        let dir = temp_dir.path();
+
+        // Create coordinator tasks with various statuses
+        let active = workgraph::graph::Task {
+            id: ".coordinator-0".to_string(),
+            title: "Active Coordinator".to_string(),
+            status: workgraph::graph::Status::InProgress,
+            tags: vec!["coordinator-loop".to_string()],
+            ..Default::default()
+        };
+        let abandoned = workgraph::graph::Task {
+            id: ".coordinator-1".to_string(),
+            title: "Abandoned Coordinator".to_string(),
+            status: workgraph::graph::Status::Abandoned,
+            tags: vec!["coordinator-loop".to_string()],
+            ..Default::default()
+        };
+        let done = workgraph::graph::Task {
+            id: ".coordinator-2".to_string(),
+            title: "Done Coordinator".to_string(),
+            status: workgraph::graph::Status::Done,
+            tags: vec!["coordinator-loop".to_string()],
+            ..Default::default()
+        };
+
+        // Write graph to disk
+        let mut graph = workgraph::graph::WorkGraph::new();
+        graph.add_node(workgraph::graph::Node::Task(active));
+        graph.add_node(workgraph::graph::Node::Task(abandoned));
+        graph.add_node(workgraph::graph::Node::Task(done));
+        workgraph::parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
+
+        let resp = handle_list_coordinators(dir);
+        assert!(resp.ok);
+        let data = resp.data.unwrap();
+        let coordinators = data["coordinators"].as_array().unwrap();
+
+        // Only the active (InProgress) coordinator should be listed
+        assert_eq!(coordinators.len(), 1);
+        assert_eq!(coordinators[0]["coordinator_id"], 0);
+        assert_eq!(coordinators[0]["task_id"], ".coordinator-0");
     }
 }
