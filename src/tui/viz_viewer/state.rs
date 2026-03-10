@@ -3470,7 +3470,7 @@ impl VizApp {
             }
 
             if !phase_entries.is_empty() {
-                lines.push("── ∎ Agency Costs ──".to_string());
+                lines.push("── § Agency Costs ──".to_string());
                 for (label, u) in &phase_entries {
                     let cache = u.cache_read_input_tokens + u.cache_creation_input_tokens;
                     let mut detail = format!(
@@ -3489,7 +3489,7 @@ impl VizApp {
                 }
                 // Show aggregated agency total (novel only)
                 lines.push(format!(
-                    "  ∎ Total: →{} ←{}",
+                    "  § Total: →{} ←{}",
                     format_tokens(agency_total.input_tokens),
                     format_tokens(agency_total.output_tokens)
                 ));
