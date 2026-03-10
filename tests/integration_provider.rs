@@ -393,10 +393,11 @@ fn test_per_role_isolation() {
     config.models.set_model(DispatchRole::Triage, "gpt-4o-mini");
     config.models.set_provider(DispatchRole::Triage, "openai");
 
-    // Evaluator should still have default (no explicit provider)
+    // Evaluator should not inherit Triage's provider (gets its own from tier resolution)
     let evaluator = config.resolve_model_for_role(DispatchRole::Evaluator);
-    assert!(
-        evaluator.provider.is_none(),
+    assert_ne!(
+        evaluator.provider,
+        Some("openai".to_string()),
         "Evaluator should not inherit Triage's provider"
     );
 }
@@ -482,22 +483,26 @@ fn test_fallback_chain_role_to_default_to_agent() {
     // Resolution: role-specific → models.default → agent.model
     let mut config = Config::default();
 
-    // 1. No config at all → falls through to agent.model
+    // 1. No config at all → resolves via Standard tier → sonnet registry entry
     let resolved = config.resolve_model_for_role(DispatchRole::Evolver);
     assert_eq!(
-        resolved.model, config.agent.model,
-        "Without any config, should fall back to agent.model"
+        resolved.model, "claude-sonnet-4-20250514",
+        "Without any config, Evolver should resolve via Standard tier"
     );
-    assert!(resolved.provider.is_none());
+    assert_eq!(resolved.provider, Some("anthropic".to_string()));
 
-    // 2. Set models.default → should use that
+    // 2. Set models.default → tier resolution still takes priority for Evolver (Standard tier)
+    //    but default provider cascades through tier resolution
     config.models.default = Some(RoleModelConfig {
         model: Some("default-model".to_string()),
         provider: Some("openrouter".to_string()),
+        tier: None,
     });
     let resolved = config.resolve_model_for_role(DispatchRole::Evolver);
-    assert_eq!(resolved.model, "default-model");
-    assert_eq!(resolved.provider, Some("openrouter".to_string()));
+    assert_eq!(resolved.model, "claude-sonnet-4-20250514",
+        "Tier resolution (step 4) takes priority over models.default (step 5)");
+    assert_eq!(resolved.provider, Some("openrouter".to_string()),
+        "Default provider should cascade through tier resolution");
 
     // 3. Set role-specific → should override default
     config
@@ -516,38 +521,38 @@ fn test_fallback_tier_defaults() {
     // Some roles have built-in tier defaults (between legacy and models.default)
     let config = Config::default();
 
-    // Triage → "haiku" (budget tier default)
+    // Triage → Fast tier → "claude-haiku-4-5-20251001"
     assert_eq!(
         config.resolve_model_for_role(DispatchRole::Triage).model,
-        "haiku"
+        "claude-haiku-4-5-20251001"
     );
 
-    // Compactor → "haiku"
+    // Compactor → Fast tier → "claude-haiku-4-5-20251001"
     assert_eq!(
         config.resolve_model_for_role(DispatchRole::Compactor).model,
-        "haiku"
+        "claude-haiku-4-5-20251001"
     );
 
-    // FlipInference → "sonnet" (mid tier default)
+    // FlipInference → Standard tier → "claude-sonnet-4-20250514"
     assert_eq!(
         config
             .resolve_model_for_role(DispatchRole::FlipInference)
             .model,
-        "sonnet"
+        "claude-sonnet-4-20250514"
     );
 
-    // Verification → "opus" (frontier tier default)
+    // Verification → Premium tier → "claude-opus-4-6"
     assert_eq!(
         config
             .resolve_model_for_role(DispatchRole::Verification)
             .model,
-        "opus"
+        "claude-opus-4-6"
     );
 
-    // Evaluator → agent.model (no tier default)
+    // Evaluator → Standard tier → "claude-sonnet-4-20250514"
     assert_eq!(
         config.resolve_model_for_role(DispatchRole::Evaluator).model,
-        config.agent.model
+        "claude-sonnet-4-20250514"
     );
 }
 

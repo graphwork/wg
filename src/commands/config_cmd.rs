@@ -175,6 +175,9 @@ pub fn show(dir: &Path, scope: Option<ConfigScope>, json: bool) -> Result<()> {
                         if let Some(ref p) = role_cfg.provider {
                             println!("  {}.provider = \"{}\"", role, p);
                         }
+                        if let Some(ref t) = role_cfg.tier {
+                            println!("  {}.tier = \"{}\"", role, t);
+                        }
                     }
                 }
                 println!();
@@ -813,6 +816,7 @@ pub fn show_model_routing(dir: &Path, json: bool) -> Result<()> {
             serde_json::json!({
                 "model": resolved.model,
                 "provider": resolved.provider,
+                "tier": DispatchRole::Default.default_tier().to_string(),
             }),
         );
         for role in DispatchRole::ALL {
@@ -822,6 +826,7 @@ pub fn show_model_routing(dir: &Path, json: bool) -> Result<()> {
                 serde_json::json!({
                     "model": resolved.model,
                     "provider": resolved.provider,
+                    "tier": role.default_tier().to_string(),
                 }),
             );
         }
@@ -830,14 +835,18 @@ pub fn show_model_routing(dir: &Path, json: bool) -> Result<()> {
         println!("Model Routing Configuration");
         println!("===========================");
         println!();
-        println!("  {:<20} {:<20} PROVIDER", "ROLE", "MODEL");
-        println!("  {}", "-".repeat(55));
+        println!(
+            "  {:<20} {:<10} {:<30} PROVIDER",
+            "ROLE", "TIER", "MODEL"
+        );
+        println!("  {}", "-".repeat(75));
 
         // Default
         let resolved = config.resolve_model_for_role(DispatchRole::Default);
         println!(
-            "  {:<20} {:<20} {}",
+            "  {:<20} {:<10} {:<30} {}",
             "default",
+            DispatchRole::Default.default_tier(),
             resolved.model,
             resolved.provider.as_deref().unwrap_or("(not set)")
         );
@@ -847,10 +856,11 @@ pub fn show_model_routing(dir: &Path, json: bool) -> Result<()> {
             let resolved = config.resolve_model_for_role(*role);
             let role_cfg = config.models.get_role(*role);
             let has_explicit = role_cfg.and_then(|c| c.model.as_ref()).is_some();
-            let marker = if has_explicit { "" } else { " (inherited)" };
+            let marker = if has_explicit { "" } else { " (tier)" };
             println!(
-                "  {:<20} {:<20} {}{}",
+                "  {:<20} {:<10} {:<30} {}{}",
                 role.to_string(),
+                role.default_tier(),
                 resolved.model,
                 resolved.provider.as_deref().unwrap_or("(not set)"),
                 marker,

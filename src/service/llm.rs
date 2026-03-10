@@ -271,10 +271,11 @@ mod tests {
     fn test_lightweight_llm_dispatch_resolves_model() {
         let config = Config::default();
         let resolved = config.resolve_model_for_role(DispatchRole::Triage);
-        assert_eq!(resolved.model, "haiku");
-        assert!(
-            resolved.provider.is_none(),
-            "Default triage should have no explicit provider"
+        assert_eq!(resolved.model, "claude-haiku-4-5-20251001");
+        assert_eq!(
+            resolved.provider,
+            Some("anthropic".to_string()),
+            "Default triage should resolve via Fast tier registry"
         );
     }
 
