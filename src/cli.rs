@@ -2619,6 +2619,18 @@ pub enum ServiceCommands {
         id: u32,
     },
 
+    /// Archive a coordinator session (mark as Done)
+    ArchiveCoordinator {
+        /// Coordinator ID to archive
+        id: u32,
+    },
+
+    /// Stop a coordinator session (kill agent, reset to Open)
+    StopCoordinator {
+        /// Coordinator ID to stop
+        id: u32,
+    },
+
     /// Run the daemon (internal, called by start)
     #[command(hide = true)]
     Daemon {

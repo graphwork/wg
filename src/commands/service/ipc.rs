@@ -125,6 +125,10 @@ pub enum IpcRequest {
     },
     /// Delete a coordinator instance.
     DeleteCoordinator { coordinator_id: u32 },
+    /// Archive a coordinator instance (mark as Done).
+    ArchiveCoordinator { coordinator_id: u32 },
+    /// Stop a coordinator instance (kill agent, reset to Open).
+    StopCoordinator { coordinator_id: u32 },
     /// List all active coordinators.
     ListCoordinators,
 }
@@ -428,6 +432,28 @@ fn handle_request(
                 coordinator_id
             ));
             let resp = handle_delete_coordinator(dir, coordinator_id);
+            if resp.ok {
+                delete_coordinator_ids.push(coordinator_id);
+            }
+            resp
+        }
+        IpcRequest::ArchiveCoordinator { coordinator_id } => {
+            logger.info(&format!(
+                "IPC ArchiveCoordinator: coordinator_id={}",
+                coordinator_id
+            ));
+            let resp = handle_archive_coordinator(dir, coordinator_id);
+            if resp.ok {
+                delete_coordinator_ids.push(coordinator_id);
+            }
+            resp
+        }
+        IpcRequest::StopCoordinator { coordinator_id } => {
+            logger.info(&format!(
+                "IPC StopCoordinator: coordinator_id={}",
+                coordinator_id
+            ));
+            let resp = handle_stop_coordinator(dir, coordinator_id);
             if resp.ok {
                 delete_coordinator_ids.push(coordinator_id);
             }
@@ -981,6 +1007,84 @@ fn handle_delete_coordinator(dir: &Path, coordinator_id: u32) -> IpcResponse {
     }))
 }
 
+/// Handle ArchiveCoordinator IPC request.
+/// Like DeleteCoordinator but marks the coordinator task as Done instead of Abandoned.
+fn handle_archive_coordinator(dir: &Path, coordinator_id: u32) -> IpcResponse {
+    let graph_path = crate::commands::graph_path(dir);
+    let mut graph = match workgraph::parser::load_graph(&graph_path) {
+        Ok(g) => g,
+        Err(e) => return IpcResponse::error(&format!("Failed to load graph: {}", e)),
+    };
+
+    let task_id = format!(".coordinator-{}", coordinator_id);
+    let task = match graph.get_task_mut(&task_id) {
+        Some(t) => t,
+        None => return IpcResponse::error(&format!("Coordinator task '{}' not found", task_id)),
+    };
+
+    task.status = workgraph::graph::Status::Done;
+    task.log.push(workgraph::graph::LogEntry {
+        timestamp: chrono::Utc::now().to_rfc3339(),
+        actor: Some("daemon".to_string()),
+        message: format!("Coordinator {} archived via IPC", coordinator_id),
+    });
+
+    if let Err(e) = workgraph::parser::save_graph(&graph, &graph_path) {
+        return IpcResponse::error(&format!("Failed to save graph: {}", e));
+    }
+
+    IpcResponse::success(serde_json::json!({
+        "coordinator_id": coordinator_id,
+        "task_id": task_id,
+    }))
+}
+
+/// Handle StopCoordinator IPC request.
+/// Kills any running agent for this coordinator and resets the task to Open.
+fn handle_stop_coordinator(dir: &Path, coordinator_id: u32) -> IpcResponse {
+    let graph_path = crate::commands::graph_path(dir);
+    let mut graph = match workgraph::parser::load_graph(&graph_path) {
+        Ok(g) => g,
+        Err(e) => return IpcResponse::error(&format!("Failed to load graph: {}", e)),
+    };
+
+    let task_id = format!(".coordinator-{}", coordinator_id);
+    let task = match graph.get_task_mut(&task_id) {
+        Some(t) => t,
+        None => return IpcResponse::error(&format!("Coordinator task '{}' not found", task_id)),
+    };
+
+    // Kill any running agent assigned to this coordinator task
+    if let Some(ref agent_hash) = task.agent {
+        if let Ok(registry) = AgentRegistry::load(dir) {
+            for agent in registry.list_agents() {
+                if agent.task_id == task_id {
+                    let _ = crate::commands::kill::run(dir, &agent.id, false, true);
+                    break;
+                }
+            }
+        }
+        let _ = agent_hash; // suppress unused warning
+    }
+
+    task.status = workgraph::graph::Status::Open;
+    task.assigned = None;
+    task.log.push(workgraph::graph::LogEntry {
+        timestamp: chrono::Utc::now().to_rfc3339(),
+        actor: Some("daemon".to_string()),
+        message: format!("Coordinator {} stopped via IPC", coordinator_id),
+    });
+
+    if let Err(e) = workgraph::parser::save_graph(&graph, &graph_path) {
+        return IpcResponse::error(&format!("Failed to save graph: {}", e));
+    }
+
+    IpcResponse::success(serde_json::json!({
+        "coordinator_id": coordinator_id,
+        "task_id": task_id,
+    }))
+}
+
 /// Handle ListCoordinators IPC request.
 fn handle_list_coordinators(dir: &Path) -> IpcResponse {
     let graph_path = crate::commands::graph_path(dir);
@@ -1344,6 +1448,38 @@ poll_interval = 120
 
         let parsed: IpcRequest = serde_json::from_str(&json).unwrap();
         assert!(matches!(parsed, IpcRequest::ListCoordinators));
+    }
+
+    #[test]
+    fn test_ipc_archive_coordinator_serialization() {
+        let req = IpcRequest::ArchiveCoordinator { coordinator_id: 3 };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains("\"cmd\":\"archive_coordinator\""));
+        assert!(json.contains("\"coordinator_id\":3"));
+
+        let parsed: IpcRequest = serde_json::from_str(&json).unwrap();
+        match parsed {
+            IpcRequest::ArchiveCoordinator { coordinator_id } => {
+                assert_eq!(coordinator_id, 3);
+            }
+            _ => panic!("Wrong request type"),
+        }
+    }
+
+    #[test]
+    fn test_ipc_stop_coordinator_serialization() {
+        let req = IpcRequest::StopCoordinator { coordinator_id: 1 };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains("\"cmd\":\"stop_coordinator\""));
+        assert!(json.contains("\"coordinator_id\":1"));
+
+        let parsed: IpcRequest = serde_json::from_str(&json).unwrap();
+        match parsed {
+            IpcRequest::StopCoordinator { coordinator_id } => {
+                assert_eq!(coordinator_id, 1);
+            }
+            _ => panic!("Wrong request type"),
+        }
     }
 
     #[test]

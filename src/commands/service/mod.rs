@@ -2194,6 +2194,66 @@ pub fn run_delete_coordinator(_dir: &Path, _coordinator_id: u32, _json: bool) ->
     anyhow::bail!("Service daemon is only supported on Unix systems")
 }
 
+/// Archive a coordinator session via IPC (mark as Done)
+#[cfg(unix)]
+pub fn run_archive_coordinator(dir: &Path, coordinator_id: u32, json: bool) -> Result<()> {
+    let response = send_request(dir, &IpcRequest::ArchiveCoordinator { coordinator_id })?;
+
+    if !response.ok {
+        let msg = response
+            .error
+            .unwrap_or_else(|| "Unknown error".to_string());
+        if json {
+            let output = serde_json::json!({ "error": msg });
+            println!("{}", serde_json::to_string_pretty(&output)?);
+        } else {
+            eprintln!("Error: {}", msg);
+        }
+        anyhow::bail!("{}", msg);
+    }
+
+    if let Some(data) = &response.data {
+        println!("{}", serde_json::to_string_pretty(data)?);
+    }
+
+    Ok(())
+}
+
+#[cfg(not(unix))]
+pub fn run_archive_coordinator(_dir: &Path, _coordinator_id: u32, _json: bool) -> Result<()> {
+    anyhow::bail!("Service daemon is only supported on Unix systems")
+}
+
+/// Stop a coordinator session via IPC (kill agent, reset to Open)
+#[cfg(unix)]
+pub fn run_stop_coordinator(dir: &Path, coordinator_id: u32, json: bool) -> Result<()> {
+    let response = send_request(dir, &IpcRequest::StopCoordinator { coordinator_id })?;
+
+    if !response.ok {
+        let msg = response
+            .error
+            .unwrap_or_else(|| "Unknown error".to_string());
+        if json {
+            let output = serde_json::json!({ "error": msg });
+            println!("{}", serde_json::to_string_pretty(&output)?);
+        } else {
+            eprintln!("Error: {}", msg);
+        }
+        anyhow::bail!("{}", msg);
+    }
+
+    if let Some(data) = &response.data {
+        println!("{}", serde_json::to_string_pretty(data)?);
+    }
+
+    Ok(())
+}
+
+#[cfg(not(unix))]
+pub fn run_stop_coordinator(_dir: &Path, _coordinator_id: u32, _json: bool) -> Result<()> {
+    anyhow::bail!("Service daemon is only supported on Unix systems")
+}
+
 /// Public wrapper: check if the service process is alive
 pub fn is_service_alive(pid: u32) -> bool {
     is_process_alive(pid)

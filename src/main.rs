@@ -1857,6 +1857,12 @@ fn main() -> Result<()> {
             ServiceCommands::DeleteCoordinator { id } => {
                 commands::service::run_delete_coordinator(&workgraph_dir, id, cli.json)
             }
+            ServiceCommands::ArchiveCoordinator { id } => {
+                commands::service::run_archive_coordinator(&workgraph_dir, id, cli.json)
+            }
+            ServiceCommands::StopCoordinator { id } => {
+                commands::service::run_stop_coordinator(&workgraph_dir, id, cli.json)
+            }
             ServiceCommands::Daemon {
                 socket,
                 max_agents,
