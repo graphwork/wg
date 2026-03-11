@@ -1705,7 +1705,7 @@ fn build_flip_verification_tasks(
             assigned: None,
             estimate: None,
             before: vec![],
-            after: vec![], // Not blocked by anything — source task is already done
+            after: vec![source_task_id.clone()],
             requires: vec![],
             tags: vec!["verification".to_string(), "agency".to_string()],
             skills: vec![],
