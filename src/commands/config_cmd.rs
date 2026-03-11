@@ -104,6 +104,7 @@ pub fn show(dir: &Path, scope: Option<ConfigScope>, json: bool) -> Result<()> {
             "  flip_verification_model = \"{}\"",
             config.agency.flip_verification_model
         );
+        println!("  auto_place = {}", config.agency.auto_place);
         if config.agency.auto_evolve {
             println!("  auto_evolve = {}", config.agency.auto_evolve);
             println!(
@@ -119,6 +120,52 @@ pub fn show(dir: &Path, scope: Option<ConfigScope>, json: bool) -> Result<()> {
                 "  evolution_reactive_threshold = {}",
                 config.agency.evolution_reactive_threshold
             );
+        }
+        println!();
+
+        // Unified agency agents display
+        {
+            use workgraph::config::DispatchRole;
+            println!("[agency agents]");
+
+            // Helper to get auto-toggle status for applicable roles
+            let auto_status = |role: &DispatchRole| -> Option<&str> {
+                match role {
+                    DispatchRole::Placer => Some(if config.agency.auto_place { "on" } else { "off" }),
+                    DispatchRole::Assigner => Some(if config.agency.auto_assign { "on" } else { "off" }),
+                    DispatchRole::Evaluator | DispatchRole::CoordinatorEval => {
+                        Some(if config.agency.auto_evaluate { "on" } else { "off" })
+                    }
+                    DispatchRole::Creator => Some(if config.agency.auto_create { "on" } else { "off" }),
+                    DispatchRole::Evolver => Some(if config.agency.auto_evolve { "on" } else { "off" }),
+                    DispatchRole::Triage => Some(if config.agency.auto_triage { "on" } else { "off" }),
+                    _ => None,
+                }
+            };
+
+            for role in DispatchRole::ALL {
+                let resolved = config.resolve_model_for_role(*role);
+                let tier = role.default_tier();
+                // Use the registry entry short ID if available, otherwise truncate model name
+                let display_model = resolved
+                    .registry_entry
+                    .as_ref()
+                    .map(|e| e.id.clone())
+                    .unwrap_or_else(|| {
+                        let m = &resolved.model;
+                        if m.len() > 12 { m[..12].to_string() } else { m.to_string() }
+                    });
+
+                let auto_str = match auto_status(role) {
+                    Some(status) => format!(", auto: {}", status),
+                    None => String::new(),
+                };
+
+                println!(
+                    "  {:<14} = {:<10} (tier: {}{})",
+                    role, display_model, tier, auto_str
+                );
+            }
         }
         println!();
         println!("[guardrails]");
@@ -231,6 +278,7 @@ pub fn update(
     creator_model: Option<&str>,
     retention_heuristics: Option<&str>,
     auto_triage: Option<bool>,
+    auto_place: Option<bool>,
     triage_model: Option<&str>,
     triage_timeout: Option<u64>,
     triage_max_log_bytes: Option<usize>,
@@ -391,6 +439,12 @@ pub fn update(
     if let Some(v) = auto_triage {
         config.agency.auto_triage = v;
         println!("Set agency.auto_triage = {}", v);
+        changed = true;
+    }
+
+    if let Some(v) = auto_place {
+        config.agency.auto_place = v;
+        println!("Set agency.auto_place = {}", v);
         changed = true;
     }
 
@@ -811,22 +865,26 @@ pub fn show_model_routing(dir: &Path, json: bool) -> Result<()> {
         let mut entries = serde_json::Map::new();
         // Show default
         let resolved = config.resolve_model_for_role(DispatchRole::Default);
+        let source = config.resolve_model_source(DispatchRole::Default);
         entries.insert(
             "default".to_string(),
             serde_json::json!({
                 "model": resolved.model,
                 "provider": resolved.provider,
                 "tier": DispatchRole::Default.default_tier().to_string(),
+                "source": source,
             }),
         );
         for role in DispatchRole::ALL {
             let resolved = config.resolve_model_for_role(*role);
+            let source = config.resolve_model_source(*role);
             entries.insert(
                 role.to_string(),
                 serde_json::json!({
                     "model": resolved.model,
                     "provider": resolved.provider,
                     "tier": role.default_tier().to_string(),
+                    "source": source,
                 }),
             );
         }
@@ -836,36 +894,40 @@ pub fn show_model_routing(dir: &Path, json: bool) -> Result<()> {
         println!("===========================");
         println!();
         println!(
-            "  {:<20} {:<10} {:<30} PROVIDER",
-            "ROLE", "TIER", "MODEL"
+            "  {:<20} {:<10} {:<30} {:<14} SOURCE",
+            "ROLE", "TIER", "MODEL", "PROVIDER"
         );
-        println!("  {}", "-".repeat(75));
+        println!("  {}", "-".repeat(90));
 
         // Default
         let resolved = config.resolve_model_for_role(DispatchRole::Default);
+        let source = config.resolve_model_source(DispatchRole::Default);
         println!(
-            "  {:<20} {:<10} {:<30} {}",
+            "  {:<20} {:<10} {:<30} {:<14} {}",
             "default",
             DispatchRole::Default.default_tier(),
             resolved.model,
-            resolved.provider.as_deref().unwrap_or("(not set)")
+            resolved.provider.as_deref().unwrap_or("(not set)"),
+            source,
         );
 
         // Per-role
         for role in DispatchRole::ALL {
             let resolved = config.resolve_model_for_role(*role);
-            let role_cfg = config.models.get_role(*role);
-            let has_explicit = role_cfg.and_then(|c| c.model.as_ref()).is_some();
-            let marker = if has_explicit { "" } else { " (tier)" };
+            let source = config.resolve_model_source(*role);
             println!(
-                "  {:<20} {:<10} {:<30} {}{}",
+                "  {:<20} {:<10} {:<30} {:<14} {}",
                 role.to_string(),
                 role.default_tier(),
                 resolved.model,
                 resolved.provider.as_deref().unwrap_or("(not set)"),
-                marker,
+                source,
             );
         }
+        println!();
+        println!("Sources: explicit = user-set model, tier-default = from default_tier(),");
+        println!("         tier-override = from [models.role].tier, legacy = from agency.*_model,");
+        println!("         fallback = from [models.default] or agent.model");
         println!();
         println!("Use --set-model <role> <model> to override a role.");
         println!("Use --set-provider <role> <provider> to set a provider.");
@@ -898,6 +960,29 @@ pub fn update_model_routing(
         let model = &args[1];
         config.models.set_model(role, model);
         println!("Set models.{}.model = \"{}\"", role, model);
+
+        // Validate: warn if model ID is not in the registry
+        if config.registry_lookup(model).is_none() {
+            eprintln!(
+                "Warning: model '{}' is not in the registry. It will be used as a raw model ID.",
+                model
+            );
+            eprintln!(
+                "  If this is a short alias, add it with: wg config --registry-add --id {} ...",
+                model
+            );
+        } else {
+            // Informational: check tier compatibility
+            if let Some(entry) = config.registry_lookup(model) {
+                let role_tier = role.default_tier();
+                if entry.tier != role_tier {
+                    eprintln!(
+                        "Note: model '{}' is tier '{}' but role '{}' defaults to tier '{}'.",
+                        model, entry.tier, role, role_tier
+                    );
+                }
+            }
+        }
         changed = true;
     }
 
@@ -1523,7 +1608,8 @@ mod tests {
             None,
             None,
             None,
-            None,
+            None, // auto_triage
+            None, // auto_place
             None,
             None,
             None,
@@ -1578,7 +1664,8 @@ mod tests {
             None,
             None,
             None,
-            None,
+            None, // auto_triage
+            None, // auto_place
             None,
             None,
             None,
@@ -1632,7 +1719,8 @@ mod tests {
             None,
             None,
             None,
-            None,
+            None, // auto_triage
+            None, // auto_place
             None,
             None,
             None,
@@ -1683,7 +1771,8 @@ mod tests {
             Some("creator-hash"),
             Some("haiku"),
             Some("Retire below 0.3 after 10 evals"),
-            None,
+            None, // auto_triage
+            None, // auto_place
             None,
             None,
             None,

@@ -1172,6 +1172,10 @@ pub enum Commands {
         #[arg(long)]
         auto_triage: Option<bool>,
 
+        /// Enable/disable automatic placement analysis on new tasks
+        #[arg(long)]
+        auto_place: Option<bool>,
+
         /// Set model for triage (default: haiku)
         #[arg(long)]
         triage_model: Option<String>,

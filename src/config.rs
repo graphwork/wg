@@ -1069,6 +1069,55 @@ impl Config {
         }
     }
 
+    /// Determine the source of model resolution for a role.
+    ///
+    /// Returns one of: "explicit", "legacy", "tier-override", "tier-default", "fallback"
+    pub fn resolve_model_source(&self, role: DispatchRole) -> &'static str {
+        // 1. Role-specific [models] config (direct model override)
+        if let Some(role_cfg) = self.models.get_role(role) {
+            if role_cfg.model.is_some() {
+                return "explicit";
+            }
+        }
+
+        // 2. Legacy per-role config
+        let legacy_model = match role {
+            DispatchRole::Evaluator => self.agency.evaluator_model.as_ref(),
+            DispatchRole::Assigner => self.agency.assigner_model.as_ref(),
+            DispatchRole::Evolver => self.agency.evolver_model.as_ref(),
+            DispatchRole::Creator => self.agency.creator_model.as_ref(),
+            DispatchRole::Triage => self.agency.triage_model.as_ref(),
+            DispatchRole::FlipInference => self.agency.flip_inference_model.as_ref(),
+            DispatchRole::FlipComparison => self.agency.flip_comparison_model.as_ref(),
+            DispatchRole::Verification => {
+                if self.agency.flip_verification_model != "opus" {
+                    Some(&self.agency.flip_verification_model)
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
+        if legacy_model.is_some() {
+            return "legacy";
+        }
+
+        // 3. Role tier override
+        if let Some(role_cfg) = self.models.get_role(role) {
+            if role_cfg.tier.is_some() {
+                return "tier-override";
+            }
+        }
+
+        // 4. Role default_tier() → registry
+        if self.resolve_tier(role.default_tier()).is_some() {
+            return "tier-default";
+        }
+
+        // 5/6. Fallback
+        "fallback"
+    }
+
     /// Check for legacy `agency.*_model` fields and emit deprecation warnings to stderr.
     /// Returns the list of deprecated fields found (useful for testing).
     pub fn check_legacy_deprecations(&self) -> Vec<String> {
@@ -1229,6 +1278,12 @@ pub struct AgencyConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub placer_agent: Option<String>,
 
+    /// Automatically run placement analysis on newly added tasks.
+    /// When enabled, the coordinator creates `.place-*` meta-tasks
+    /// for tasks that need graph wiring. Default: false.
+    #[serde(default)]
+    pub auto_place: bool,
+
     /// Automatically invoke the creator agent when the primitive store
     /// needs expansion. Default: false.
     #[serde(default)]
@@ -1374,6 +1429,7 @@ impl Default for AgencyConfig {
             creator_agent: None,
             creator_model: None,
             placer_agent: None,
+            auto_place: false,
             auto_create: false,
             auto_create_threshold: default_auto_create_threshold(),
             retention_heuristics: None,
