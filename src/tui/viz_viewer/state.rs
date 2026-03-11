@@ -1135,6 +1135,7 @@ pub struct ArchiveEntry {
 }
 
 /// State for the archive browser panel (toggled with 'A').
+#[derive(Default)]
 pub struct ArchiveBrowserState {
     /// Whether the archive browser is currently open/visible.
     pub active: bool,
@@ -1150,20 +1151,6 @@ pub struct ArchiveBrowserState {
     pub filter_active: bool,
     /// Indices into `entries` that match the current filter.
     pub filtered_indices: Vec<usize>,
-}
-
-impl Default for ArchiveBrowserState {
-    fn default() -> Self {
-        Self {
-            active: false,
-            entries: Vec::new(),
-            selected: 0,
-            scroll: 0,
-            filter: String::new(),
-            filter_active: false,
-            filtered_indices: Vec::new(),
-        }
-    }
 }
 
 impl ArchiveBrowserState {
@@ -3234,11 +3221,7 @@ impl VizApp {
             return true;
         }
         // Slide animation on inspector panel
-        if self
-            .slide_animation
-            .as_ref()
-            .is_some_and(|a| !a.is_done())
-        {
+        if self.slide_animation.as_ref().is_some_and(|a| !a.is_done()) {
             return true;
         }
         // Jump target highlight (fades after 2s)
@@ -3285,10 +3268,7 @@ impl VizApp {
     pub fn next_poll_timeout(&self) -> std::time::Duration {
         // During animations, keep frame rate high for smooth visuals
         if self.has_active_animations()
-            || self
-                .slide_animation
-                .as_ref()
-                .is_some_and(|a| !a.is_done())
+            || self.slide_animation.as_ref().is_some_and(|a| !a.is_done())
         {
             return std::time::Duration::from_millis(50);
         }
@@ -3301,12 +3281,16 @@ impl VizApp {
 
         // When time counters are displayed (session timer, uptime), update ~1/sec
         if self.time_counters.any_enabled() {
-            let until_refresh = self.refresh_interval.saturating_sub(self.last_refresh.elapsed());
+            let until_refresh = self
+                .refresh_interval
+                .saturating_sub(self.last_refresh.elapsed());
             return until_refresh.min(std::time::Duration::from_secs(1));
         }
 
         // Fully idle: wait until next refresh is due, capped at 1 second
-        let until_refresh = self.refresh_interval.saturating_sub(self.last_refresh.elapsed());
+        let until_refresh = self
+            .refresh_interval
+            .saturating_sub(self.last_refresh.elapsed());
         until_refresh.min(std::time::Duration::from_secs(1))
     }
 
@@ -3647,10 +3631,7 @@ impl VizApp {
         if let Some(ref usage) = task.token_usage {
             lines.push("── Tokens ──".to_string());
             let cache_total = usage.cache_read_input_tokens + usage.cache_creation_input_tokens;
-            lines.push(format!(
-                "  Input:  →{}",
-                format_tokens(usage.input_tokens)
-            ));
+            lines.push(format!("  Input:  →{}", format_tokens(usage.input_tokens)));
             lines.push(format!("  Output: ←{}", format_tokens(usage.output_tokens)));
             if cache_total > 0 {
                 lines.push(format!(
@@ -3700,11 +3681,11 @@ impl VizApp {
             };
 
             for (label, tid) in &lifecycle_tasks {
-                if let Some(t) = graph.tasks().find(|t| t.id == *tid) {
-                    if let Some(u) = get_usage(t) {
-                        agency_total.accumulate(&u);
-                        phase_entries.push((label.to_string(), u));
-                    }
+                if let Some(t) = graph.tasks().find(|t| t.id == *tid)
+                    && let Some(u) = get_usage(t)
+                {
+                    agency_total.accumulate(&u);
+                    phase_entries.push((label.to_string(), u));
                 }
             }
 
@@ -3877,10 +3858,7 @@ impl VizApp {
         if let Some(ref usage) = task.token_usage {
             lines.push("── Tokens ──".to_string());
             let cache_total = usage.cache_read_input_tokens + usage.cache_creation_input_tokens;
-            lines.push(format!(
-                "  Input:  →{}",
-                format_tokens(usage.input_tokens)
-            ));
+            lines.push(format!("  Input:  →{}", format_tokens(usage.input_tokens)));
             lines.push(format!("  Output: ←{}", format_tokens(usage.output_tokens)));
             if cache_total > 0 {
                 lines.push(format!(
@@ -4924,7 +4902,8 @@ impl VizApp {
                 CommandEffect::CreateCoordinator => {
                     if result.success {
                         // Parse the new coordinator ID from the output
-                        if let Ok(data) = serde_json::from_str::<serde_json::Value>(&result.output) {
+                        if let Ok(data) = serde_json::from_str::<serde_json::Value>(&result.output)
+                        {
                             if let Some(cid) = data["coordinator_id"].as_u64() {
                                 // Refresh graph so the new coordinator task appears
                                 self.force_refresh();
@@ -6242,11 +6221,16 @@ impl VizApp {
             .filter(|t| t.tags.iter().any(|tag| tag == "coordinator-loop"))
             .filter(|t| !matches!(t.status, Status::Abandoned | Status::Done))
             .filter_map(|t| {
-                let cid = t
-                    .id
-                    .strip_prefix(".coordinator-")
-                    .and_then(|s| s.parse::<u32>().ok())
-                    .or_else(|| if t.id == ".coordinator" { Some(0) } else { None })?;
+                let cid =
+                    t.id.strip_prefix(".coordinator-")
+                        .and_then(|s| s.parse::<u32>().ok())
+                        .or_else(|| {
+                            if t.id == ".coordinator" {
+                                Some(0)
+                            } else {
+                                None
+                            }
+                        })?;
                 // Use task title as label if it's not a generic "Coordinator" title
                 let label = if !t.title.is_empty()
                     && t.title != "Coordinator"
@@ -7372,8 +7356,7 @@ impl VizApp {
                         let field = parts[0]; // "model" or "provider"
                         let role_str = parts[1];
                         if let Ok(role) = role_str.parse::<workgraph::config::DispatchRole>() {
-                            let is_inherit =
-                                new_value == "(inherit)" || new_value.is_empty();
+                            let is_inherit = new_value == "(inherit)" || new_value.is_empty();
                             match field {
                                 "model" => {
                                     if is_inherit {
@@ -8326,7 +8309,6 @@ mod hud_tests {
             &task_ids,
             &HashMap::new(),
             &HashMap::new(),
-            
             &HashMap::new(),
             LayoutMode::Tree,
             &HashSet::new(),
@@ -8485,12 +8467,7 @@ mod hud_tests {
                 .iter()
                 .any(|l| l.contains("Cost: $0.05"))
         );
-        assert!(
-            detail
-                .rendered_lines
-                .iter()
-                .any(|l| l.contains("Cached:"))
-        );
+        assert!(detail.rendered_lines.iter().any(|l| l.contains("Cached:")));
     }
 
     #[test]
@@ -8889,7 +8866,6 @@ mod hud_tests {
             &task_ids,
             &HashMap::new(),
             &HashMap::new(),
-            
             &HashMap::new(),
             LayoutMode::Tree,
             &HashSet::new(),
@@ -8944,7 +8920,6 @@ mod hud_tests {
             &task_ids,
             &HashMap::new(),
             &HashMap::new(),
-            
             &HashMap::new(),
             LayoutMode::Tree,
             &HashSet::new(),
@@ -8995,7 +8970,6 @@ mod hud_tests {
             &task_ids,
             &HashMap::new(),
             &HashMap::new(),
-            
             &HashMap::new(),
             LayoutMode::Tree,
             &HashSet::new(),
@@ -9152,7 +9126,6 @@ mod remap_panel_tests {
             &task_ids,
             &HashMap::new(),
             &HashMap::new(),
-            
             &HashMap::new(),
             VizLayoutMode::Tree,
             &HashSet::new(),
@@ -9458,7 +9431,6 @@ mod firehose_tests {
             &task_ids,
             &HashMap::new(),
             &HashMap::new(),
-            
             &HashMap::new(),
             VizLayoutMode::Tree,
             &HashSet::new(),
@@ -9789,8 +9761,8 @@ mod tui_config_panel_tests {
     use workgraph::parser::save_graph;
     use workgraph::test_helpers::make_task_with_status;
 
-    use crate::commands::viz::ascii::generate_ascii;
     use crate::commands::viz::LayoutMode as VizLayoutMode;
+    use crate::commands::viz::ascii::generate_ascii;
 
     /// Create a minimal VizApp with a real temp directory for config round-trip testing.
     fn build_config_test_app() -> (VizApp, tempfile::TempDir) {
@@ -9814,7 +9786,6 @@ mod tui_config_panel_tests {
             &task_ids,
             &HashMap::new(),
             &HashMap::new(),
-            
             &HashMap::new(),
             VizLayoutMode::Tree,
             &HashSet::new(),
@@ -9832,7 +9803,12 @@ mod tui_config_panel_tests {
         app.load_config_panel();
 
         // Collect all keys for verification
-        let keys: Vec<String> = app.config_panel.entries.iter().map(|e| e.key.clone()).collect();
+        let keys: Vec<String> = app
+            .config_panel
+            .entries
+            .iter()
+            .map(|e| e.key.clone())
+            .collect();
         assert!(!keys.is_empty(), "load_config_panel should produce entries");
 
         // For each entry, set a valid value, save, reload, and verify.
@@ -9841,7 +9817,12 @@ mod tui_config_panel_tests {
             let key = entry.key.clone();
 
             // Skip entries that are read-only or special
-            if key.starts_with("apikey.") || key == "endpoint.add" || key.ends_with(".remove") || key.ends_with(".is_default") || key.starts_with("action.") {
+            if key.starts_with("apikey.")
+                || key == "endpoint.add"
+                || key.ends_with(".remove")
+                || key.ends_with(".is_default")
+                || key.starts_with("action.")
+            {
                 continue;
             }
             // Skip endpoint entries (they need an existing endpoint)
@@ -9865,7 +9846,12 @@ mod tui_config_panel_tests {
 
                     // Reload and verify persistence
                     app.load_config_panel();
-                    let reloaded = app.config_panel.entries.iter().find(|e| e.key == key).unwrap();
+                    let reloaded = app
+                        .config_panel
+                        .entries
+                        .iter()
+                        .find(|e| e.key == key)
+                        .unwrap();
                     assert_eq!(
                         reloaded.value, expected,
                         "Toggle for '{}' did not persist after reload",
@@ -9873,7 +9859,12 @@ mod tui_config_panel_tests {
                     );
 
                     // Toggle back to original
-                    let idx = app.config_panel.entries.iter().position(|e| e.key == key).unwrap();
+                    let idx = app
+                        .config_panel
+                        .entries
+                        .iter()
+                        .position(|e| e.key == key)
+                        .unwrap();
                     app.config_panel.selected = idx;
                     app.toggle_config_entry();
                     app.load_config_panel();
@@ -9881,13 +9872,19 @@ mod tui_config_panel_tests {
                 ConfigEditKind::TextInput | ConfigEditKind::SecretInput => {
                     // Set a test value
                     let test_value = match key.as_str() {
-                        "coordinator.max_agents" | "coordinator.poll_interval"
-                        | "coordinator.settling_delay_ms" | "coordinator.max_coordinators"
-                        | "agent.heartbeat_timeout" | "agency.auto_create_threshold"
-                        | "agency.triage_timeout" | "agency.triage_max_log_bytes"
+                        "coordinator.max_agents"
+                        | "coordinator.poll_interval"
+                        | "coordinator.settling_delay_ms"
+                        | "coordinator.max_coordinators"
+                        | "agent.heartbeat_timeout"
+                        | "agency.auto_create_threshold"
+                        | "agency.triage_timeout"
+                        | "agency.triage_max_log_bytes"
                         | "tui.message_name_threshold"
-                        | "guardrails.max_child_tasks_per_agent" | "guardrails.max_task_depth"
-                        | "tui.chat_history_max" | "checkpoint.retry_context_tokens" => "42",
+                        | "guardrails.max_child_tasks_per_agent"
+                        | "guardrails.max_task_depth"
+                        | "tui.chat_history_max"
+                        | "checkpoint.retry_context_tokens" => "42",
                         "tui.message_indent" => "4", // clamped to max 8
                         "agency.flip_verification_threshold" | "agency.eval_gate_threshold" => {
                             "0.85"
@@ -9905,11 +9902,7 @@ mod tui_config_panel_tests {
                     // Reload and verify
                     app.load_config_panel();
                     let reloaded = app.config_panel.entries.iter().find(|e| e.key == key);
-                    assert!(
-                        reloaded.is_some(),
-                        "Entry '{}' missing after reload",
-                        key
-                    );
+                    assert!(reloaded.is_some(), "Entry '{}' missing after reload", key);
                     let reloaded = reloaded.unwrap();
                     // For numeric fields, the saved value may be formatted differently
                     match key.as_str() {
@@ -9922,8 +9915,7 @@ mod tui_config_panel_tests {
                         }
                         _ => {
                             assert_eq!(
-                                reloaded.value,
-                                test_value,
+                                reloaded.value, test_value,
                                 "TextInput for '{}' did not round-trip",
                                 key
                             );
@@ -9936,7 +9928,10 @@ mod tui_config_panel_tests {
                     }
                     // Cycle through choices
                     let original_value = app.config_panel.entries[i].value.clone();
-                    let original_idx = choices.iter().position(|c| c == &original_value).unwrap_or(0);
+                    let original_idx = choices
+                        .iter()
+                        .position(|c| c == &original_value)
+                        .unwrap_or(0);
                     let next_idx = (original_idx + 1) % choices.len();
                     let next_value = choices[next_idx].clone();
 
@@ -9951,16 +9946,18 @@ mod tui_config_panel_tests {
                     assert!(reloaded.is_some(), "Entry '{}' missing after reload", key);
                     let reloaded = reloaded.unwrap();
                     assert_eq!(
-                        reloaded.value,
-                        next_value,
+                        reloaded.value, next_value,
                         "Choice for '{}' did not round-trip: expected '{}', got '{}'",
-                        key,
-                        next_value,
-                        reloaded.value
+                        key, next_value, reloaded.value
                     );
 
                     // Restore original value
-                    let idx = app.config_panel.entries.iter().position(|e| e.key == key).unwrap();
+                    let idx = app
+                        .config_panel
+                        .entries
+                        .iter()
+                        .position(|e| e.key == key)
+                        .unwrap();
                     app.config_panel.selected = idx;
                     app.config_panel.editing = true;
                     app.config_panel.choice_index = original_idx;
@@ -10077,9 +10074,12 @@ mod tui_config_panel_tests {
             let key = entry.key.clone();
 
             // Skip known read-only/special entries
-            if key.starts_with("apikey.") || key == "endpoint.add"
-                || key.ends_with(".remove") || key.ends_with(".is_default")
-                || key.starts_with("endpoint.") || key.starts_with("action.")
+            if key.starts_with("apikey.")
+                || key == "endpoint.add"
+                || key.ends_with(".remove")
+                || key.ends_with(".is_default")
+                || key.starts_with("endpoint.")
+                || key.starts_with("action.")
             {
                 continue;
             }
@@ -10110,7 +10110,12 @@ mod tui_config_panel_tests {
 
         // Set a model routing entry
         let key = "models.default.model";
-        let idx = app.config_panel.entries.iter().position(|e| e.key == key).unwrap();
+        let idx = app
+            .config_panel
+            .entries
+            .iter()
+            .position(|e| e.key == key)
+            .unwrap();
         app.config_panel.selected = idx;
         app.config_panel.editing = true;
         app.config_panel.edit_buffer = "sonnet".to_string();
@@ -10124,19 +10129,33 @@ mod tui_config_panel_tests {
         // Set a provider
         app.load_config_panel();
         let key = "models.default.provider";
-        let idx = app.config_panel.entries.iter().position(|e| e.key == key).unwrap();
+        let idx = app
+            .config_panel
+            .entries
+            .iter()
+            .position(|e| e.key == key)
+            .unwrap();
         app.config_panel.selected = idx;
         app.config_panel.editing = true;
         app.config_panel.edit_buffer = "openrouter".to_string();
         app.save_config_entry();
 
         let config = Config::load(&app.workgraph_dir).unwrap();
-        let default_provider = config.models.default.as_ref().and_then(|c| c.provider.clone());
+        let default_provider = config
+            .models
+            .default
+            .as_ref()
+            .and_then(|c| c.provider.clone());
         assert_eq!(default_provider, Some("openrouter".to_string()));
 
         // Set to inherit (clear)
         app.load_config_panel();
-        let idx = app.config_panel.entries.iter().position(|e| e.key == "models.default.model").unwrap();
+        let idx = app
+            .config_panel
+            .entries
+            .iter()
+            .position(|e| e.key == "models.default.model")
+            .unwrap();
         app.config_panel.selected = idx;
         app.config_panel.editing = true;
         app.config_panel.edit_buffer = "(inherit)".to_string();
@@ -10174,7 +10193,12 @@ mod archive_browser_tests {
             tmp.path(),
             &[
                 ("task-1", "First task", "2026-01-15T00:00:00Z", &["bug"]),
-                ("task-2", "Second task", "2026-02-20T00:00:00Z", &["feature", "ui"]),
+                (
+                    "task-2",
+                    "Second task",
+                    "2026-02-20T00:00:00Z",
+                    &["feature", "ui"],
+                ),
                 ("task-3", "Third task", "2026-03-01T00:00:00Z", &[]),
             ],
         );
@@ -10198,7 +10222,12 @@ mod archive_browser_tests {
             tmp.path(),
             &[
                 ("task-1", "Fix login bug", "2026-01-15T00:00:00Z", &["bug"]),
-                ("task-2", "Add dashboard", "2026-02-20T00:00:00Z", &["feature"]),
+                (
+                    "task-2",
+                    "Add dashboard",
+                    "2026-02-20T00:00:00Z",
+                    &["feature"],
+                ),
                 ("task-3", "Fix signup bug", "2026-03-01T00:00:00Z", &["bug"]),
             ],
         );
@@ -10279,10 +10308,7 @@ mod archive_browser_tests {
     #[test]
     fn test_tui_archive_toggle() {
         let tmp = tempfile::tempdir().unwrap();
-        create_archive(
-            tmp.path(),
-            &[("x", "Test", "2026-01-01T00:00:00Z", &[])],
-        );
+        create_archive(tmp.path(), &[("x", "Test", "2026-01-01T00:00:00Z", &[])]);
 
         let mut ab = ArchiveBrowserState::default();
         assert!(!ab.active);

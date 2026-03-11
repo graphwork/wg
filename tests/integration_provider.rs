@@ -499,10 +499,15 @@ fn test_fallback_chain_role_to_default_to_agent() {
         tier: None,
     });
     let resolved = config.resolve_model_for_role(DispatchRole::Evolver);
-    assert_eq!(resolved.model, "claude-sonnet-4-20250514",
-        "Tier resolution (step 4) takes priority over models.default (step 5)");
-    assert_eq!(resolved.provider, Some("openrouter".to_string()),
-        "Default provider should cascade through tier resolution");
+    assert_eq!(
+        resolved.model, "claude-sonnet-4-20250514",
+        "Tier resolution (step 4) takes priority over models.default (step 5)"
+    );
+    assert_eq!(
+        resolved.provider,
+        Some("openrouter".to_string()),
+        "Default provider should cascade through tier resolution"
+    );
 
     // 3. Set role-specific → should override default
     config

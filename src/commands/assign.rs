@@ -69,7 +69,13 @@ fn record_assigner_evaluation(
 /// `wg assign <task-id> <agent-hash>`  — explicitly assign agent to task
 /// `wg assign <task-id> --auto`        — automatically select an agent using LLM
 /// `wg assign <task-id> --clear`       — remove agent assignment
-pub fn run(dir: &Path, task_id: &str, agent_hash: Option<&str>, clear: bool, auto: bool) -> Result<()> {
+pub fn run(
+    dir: &Path,
+    task_id: &str,
+    agent_hash: Option<&str>,
+    clear: bool,
+    auto: bool,
+) -> Result<()> {
     let path = graph_path(dir);
 
     if !path.exists() {
@@ -121,7 +127,9 @@ fn run_auto_assign(dir: &Path, path: &Path, task_id: &str) -> Result<()> {
         .max_by(|a, b| {
             let a_score = a.performance.avg_score.unwrap_or(0.0);
             let b_score = b.performance.avg_score.unwrap_or(0.0);
-            a_score.partial_cmp(&b_score).unwrap_or(std::cmp::Ordering::Equal)
+            a_score
+                .partial_cmp(&b_score)
+                .unwrap_or(std::cmp::Ordering::Equal)
         })
         .ok_or_else(|| anyhow::anyhow!("No agents found"))?
         .id

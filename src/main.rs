@@ -337,8 +337,8 @@ fn main() -> Result<()> {
             // - Agent context (WG_TASK_ID set): default to --no-place behavior
             // - Default (interactive): paused=true (draft-by-default, needs placement)
             let is_system_task = title.starts_with('.');
-            let is_agent_context = std::env::var("WG_TASK_ID").is_ok()
-                || std::env::var("WG_AGENT_ID").is_ok();
+            let is_agent_context =
+                std::env::var("WG_TASK_ID").is_ok() || std::env::var("WG_AGENT_ID").is_ok();
             let effective_no_place = no_place || is_system_task || is_agent_context;
             let effective_paused = if paused {
                 true
@@ -1540,18 +1540,18 @@ fn main() -> Result<()> {
 
             // Handle --registry-add
             if registry_add {
-                let id = reg_id.as_deref().ok_or_else(|| {
-                    anyhow::anyhow!("--registry-add requires --id <ID>")
-                })?;
+                let id = reg_id
+                    .as_deref()
+                    .ok_or_else(|| anyhow::anyhow!("--registry-add requires --id <ID>"))?;
                 let provider = reg_provider.as_deref().ok_or_else(|| {
                     anyhow::anyhow!("--registry-add requires --provider <PROVIDER>")
                 })?;
                 let model_name = reg_model.as_deref().ok_or_else(|| {
                     anyhow::anyhow!("--registry-add requires --reg-model <MODEL>")
                 })?;
-                let tier = reg_tier.as_deref().ok_or_else(|| {
-                    anyhow::anyhow!("--registry-add requires --reg-tier <TIER>")
-                })?;
+                let tier = reg_tier
+                    .as_deref()
+                    .ok_or_else(|| anyhow::anyhow!("--registry-add requires --reg-tier <TIER>"))?;
                 let write_scope = scope.unwrap_or(commands::config_cmd::ConfigScope::Local);
                 return commands::config_cmd::add_registry_entry(
                     &workgraph_dir,
@@ -1587,11 +1587,7 @@ fn main() -> Result<()> {
             // Handle --tier <tier>=<model-id>
             if let Some(ref tier_spec) = set_tier {
                 let write_scope = scope.unwrap_or(commands::config_cmd::ConfigScope::Local);
-                return commands::config_cmd::set_tier(
-                    &workgraph_dir,
-                    write_scope,
-                    tier_spec,
-                );
+                return commands::config_cmd::set_tier(&workgraph_dir, write_scope, tier_spec);
             }
 
             // Handle Matrix configuration
@@ -1946,12 +1942,21 @@ fn main() -> Result<()> {
                 tools,
                 no_cache,
                 limit,
-            } => commands::models::run_search(&workgraph_dir, &query, tools, no_cache, limit, cli.json),
+            } => commands::models::run_search(
+                &workgraph_dir,
+                &query,
+                tools,
+                no_cache,
+                limit,
+                cli.json,
+            ),
             ModelsCommands::Remote {
                 tools,
                 no_cache,
                 limit,
-            } => commands::models::run_list_remote(&workgraph_dir, tools, no_cache, limit, cli.json),
+            } => {
+                commands::models::run_list_remote(&workgraph_dir, tools, no_cache, limit, cli.json)
+            }
             ModelsCommands::Add {
                 id,
                 provider,

@@ -931,8 +931,7 @@ pub fn run_flip(
     }
 
     // Persist combined token usage from both FLIP phases to the .flip-* task
-    let combined_usage =
-        combine_token_usage(&[inference_token_usage, comparison_token_usage]);
+    let combined_usage = combine_token_usage(&[inference_token_usage, comparison_token_usage]);
     if let Some(ref usage) = combined_usage {
         let eval_task_id = format!(".flip-{}", task_id);
         let graph_path = super::graph_path(dir);

@@ -383,18 +383,12 @@ pub fn ready_tasks_cycle_aware<'a>(
                     if *blocker_id == task.id {
                         return true;
                     }
-                    if let Some(blocker) = graph.get_task(blocker_id) {
-                        if blocker.cycle_config.is_some() {
-                            if let Some(tc) =
-                                cycle_analysis.task_to_cycle.get(&task.id)
-                            {
-                                if cycle_analysis.task_to_cycle.get(blocker_id)
-                                    == Some(tc)
-                                {
-                                    return true;
-                                }
-                            }
-                        }
+                    if let Some(blocker) = graph.get_task(blocker_id)
+                        && blocker.cycle_config.is_some()
+                        && let Some(tc) = cycle_analysis.task_to_cycle.get(&task.id)
+                        && cycle_analysis.task_to_cycle.get(blocker_id) == Some(tc)
+                    {
+                        return true;
                     }
                 }
                 false
@@ -442,18 +436,12 @@ pub fn ready_tasks_with_peers_cycle_aware<'a>(
                     if *blocker_id == task.id {
                         return true;
                     }
-                    if let Some(blocker) = graph.get_task(blocker_id) {
-                        if blocker.cycle_config.is_some() {
-                            if let Some(tc) =
-                                cycle_analysis.task_to_cycle.get(&task.id)
-                            {
-                                if cycle_analysis.task_to_cycle.get(blocker_id)
-                                    == Some(tc)
-                                {
-                                    return true;
-                                }
-                            }
-                        }
+                    if let Some(blocker) = graph.get_task(blocker_id)
+                        && blocker.cycle_config.is_some()
+                        && let Some(tc) = cycle_analysis.task_to_cycle.get(&task.id)
+                        && cycle_analysis.task_to_cycle.get(blocker_id) == Some(tc)
+                    {
+                        return true;
                     }
                 }
                 false
@@ -1803,7 +1791,11 @@ mod tests {
 
         let mut ids: Vec<&str> = ready.iter().map(|t| t.id.as_str()).collect();
         ids.sort();
-        assert_eq!(ids, vec!["a", "b"], "Both tasks should bootstrap on iteration 0");
+        assert_eq!(
+            ids,
+            vec!["a", "b"],
+            "Both tasks should bootstrap on iteration 0"
+        );
     }
 
     #[test]
@@ -1917,7 +1909,11 @@ mod tests {
 
         let mut ids: Vec<&str> = ready.iter().map(|t| t.id.as_str()).collect();
         ids.sort();
-        assert_eq!(ids, vec!["a", "b"], "Both should bootstrap after external dep done");
+        assert_eq!(
+            ids,
+            vec!["a", "b"],
+            "Both should bootstrap after external dep done"
+        );
     }
 
     #[test]

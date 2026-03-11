@@ -37,7 +37,10 @@ pub fn show(dir: &Path, scope: Option<ConfigScope>, json: bool) -> Result<()> {
         println!();
         println!("[coordinator]");
         println!("  max_agents = {}", config.coordinator.max_agents);
-        println!("  max_coordinators = {}", config.coordinator.max_coordinators);
+        println!(
+            "  max_coordinators = {}",
+            config.coordinator.max_coordinators
+        );
         println!("  interval = {}", config.coordinator.interval);
         println!("  poll_interval = {}", config.coordinator.poll_interval);
         println!("  executor = \"{}\"", config.coordinator.executor);
@@ -132,14 +135,38 @@ pub fn show(dir: &Path, scope: Option<ConfigScope>, json: bool) -> Result<()> {
             // Helper to get auto-toggle status for applicable roles
             let auto_status = |role: &DispatchRole| -> Option<&str> {
                 match role {
-                    DispatchRole::Placer => Some(if config.agency.auto_place { "on" } else { "off" }),
-                    DispatchRole::Assigner => Some(if config.agency.auto_assign { "on" } else { "off" }),
+                    DispatchRole::Placer => Some(if config.agency.auto_place {
+                        "on"
+                    } else {
+                        "off"
+                    }),
+                    DispatchRole::Assigner => Some(if config.agency.auto_assign {
+                        "on"
+                    } else {
+                        "off"
+                    }),
                     DispatchRole::Evaluator | DispatchRole::CoordinatorEval => {
-                        Some(if config.agency.auto_evaluate { "on" } else { "off" })
+                        Some(if config.agency.auto_evaluate {
+                            "on"
+                        } else {
+                            "off"
+                        })
                     }
-                    DispatchRole::Creator => Some(if config.agency.auto_create { "on" } else { "off" }),
-                    DispatchRole::Evolver => Some(if config.agency.auto_evolve { "on" } else { "off" }),
-                    DispatchRole::Triage => Some(if config.agency.auto_triage { "on" } else { "off" }),
+                    DispatchRole::Creator => Some(if config.agency.auto_create {
+                        "on"
+                    } else {
+                        "off"
+                    }),
+                    DispatchRole::Evolver => Some(if config.agency.auto_evolve {
+                        "on"
+                    } else {
+                        "off"
+                    }),
+                    DispatchRole::Triage => Some(if config.agency.auto_triage {
+                        "on"
+                    } else {
+                        "off"
+                    }),
                     _ => None,
                 }
             };
@@ -154,7 +181,11 @@ pub fn show(dir: &Path, scope: Option<ConfigScope>, json: bool) -> Result<()> {
                     .map(|e| e.id.clone())
                     .unwrap_or_else(|| {
                         let m = &resolved.model;
-                        if m.len() > 12 { m[..12].to_string() } else { m.to_string() }
+                        if m.len() > 12 {
+                            m[..12].to_string()
+                        } else {
+                            m.to_string()
+                        }
                     });
 
                 let auto_str = match auto_status(role) {
@@ -1052,8 +1083,8 @@ pub fn show_registry(dir: &Path, json: bool) -> Result<()> {
     }
 
     println!(
-        "  {:<12} {:<12} {:<30} {:<10} {}",
-        "ID", "PROVIDER", "MODEL", "TIER", "COST (in/out per MTok)"
+        "  {:<12} {:<12} {:<30} {:<10} COST (in/out per MTok)",
+        "ID", "PROVIDER", "MODEL", "TIER"
     );
     println!("  {}", "-".repeat(85));
 
@@ -1076,6 +1107,7 @@ pub fn show_registry(dir: &Path, json: bool) -> Result<()> {
 }
 
 /// Add a new model entry to the registry.
+#[allow(clippy::too_many_arguments)]
 pub fn add_registry_entry(
     dir: &Path,
     scope: ConfigScope,
@@ -1119,10 +1151,7 @@ pub fn add_registry_entry(
 
     save_config(&config, dir, scope)?;
 
-    println!(
-        "  {} / {} / {} (tier: {})",
-        id, provider, model, tier
-    );
+    println!("  {} / {} / {} (tier: {})", id, provider, model, tier);
 
     Ok(())
 }
@@ -1141,10 +1170,7 @@ pub fn remove_registry_entry(
     };
 
     // Check if entry exists in user config
-    let idx = config
-        .model_registry
-        .iter()
-        .position(|e| e.id == id);
+    let idx = config.model_registry.iter().position(|e| e.id == id);
 
     if idx.is_none() {
         // Check if it's a built-in
@@ -1177,10 +1203,10 @@ pub fn remove_registry_entry(
     // Check role overrides
     use workgraph::config::DispatchRole;
     for role in DispatchRole::ALL {
-        if let Some(role_cfg) = config.models.get_role(*role) {
-            if role_cfg.model.as_deref() == Some(id) {
-                warnings.push(format!("[models.{}].model = '{}'", role, id));
-            }
+        if let Some(role_cfg) = config.models.get_role(*role)
+            && role_cfg.model.as_deref() == Some(id)
+        {
+            warnings.push(format!("[models.{}].model = '{}'", role, id));
         }
     }
 
@@ -1258,10 +1284,7 @@ pub fn show_tiers(dir: &Path, json: bool) -> Result<()> {
         return Ok(());
     }
 
-    println!(
-        "  {:<12} {:<12} {}",
-        "TIER", "MODEL ID", "RESOLVED MODEL"
-    );
+    println!("  {:<12} {:<12} RESOLVED MODEL", "TIER", "MODEL ID");
     println!("  {}", "-".repeat(60));
 
     println!(
@@ -1354,9 +1377,7 @@ pub fn check_key(dir: &Path, json: bool) -> Result<()> {
                 );
             } else {
                 eprintln!("Error: No API key found.");
-                eprintln!(
-                    "Set OPENROUTER_API_KEY or OPENAI_API_KEY environment variable,"
-                );
+                eprintln!("Set OPENROUTER_API_KEY or OPENAI_API_KEY environment variable,");
                 eprintln!("or add [native_executor] api_key to .workgraph/config.toml");
             }
             std::process::exit(1);
@@ -1656,8 +1677,8 @@ mod tests {
             None,
             None,
             None,
-            Some(8),  // max_agents
-            None,      // max_coordinators
+            Some(8), // max_agents
+            None,    // max_coordinators
             Some(60),
             None,
             Some("shell"),
@@ -1894,8 +1915,7 @@ mod tests {
         let global_path = global_dir.path().join("config.toml");
 
         // Install with --force (no global exists yet)
-        let result =
-            install_global_to(project_dir.path(), &global_path, global_dir.path(), true);
+        let result = install_global_to(project_dir.path(), &global_path, global_dir.path(), true);
         assert!(result.is_ok());
         assert!(global_path.exists(), "Global config should be created");
 
@@ -1906,17 +1926,18 @@ mod tests {
         assert_eq!(local_content, global_content);
 
         // Install again with --force should overwrite
-        let result =
-            install_global_to(project_dir.path(), &global_path, global_dir.path(), true);
+        let result = install_global_to(project_dir.path(), &global_path, global_dir.path(), true);
         assert!(result.is_ok());
 
         // Without project config should fail
         let empty_dir = TempDir::new().unwrap();
-        let result =
-            install_global_to(empty_dir.path(), &global_path, global_dir.path(), true);
+        let result = install_global_to(empty_dir.path(), &global_path, global_dir.path(), true);
         assert!(result.is_err());
         assert!(
-            result.unwrap_err().to_string().contains("No project config"),
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("No project config"),
             "Should mention missing project config"
         );
     }

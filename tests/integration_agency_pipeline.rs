@@ -12,7 +12,7 @@ use tempfile::TempDir;
 use workgraph::config::{
     Config, DispatchRole, ModelRegistryEntry, RoleModelConfig, Tier, TierConfig,
 };
-use workgraph::graph::{is_system_task, Node, Status, Task, WorkGraph};
+use workgraph::graph::{Node, Status, Task, WorkGraph, is_system_task};
 use workgraph::parser::save_graph;
 
 // ---------------------------------------------------------------------------
@@ -69,7 +69,9 @@ fn wg_ok(wg_dir: &Path, args: &[&str]) -> String {
     assert!(
         output.status.success(),
         "wg {:?} failed.\nstdout: {}\nstderr: {}",
-        args, stdout, stderr
+        args,
+        stdout,
+        stderr
     );
     stdout
 }
@@ -243,7 +245,8 @@ fn registry_remove_warns_about_dependent_roles_tiers() {
             || combined.contains("warning")
             || !success,
         "Expected warning about dependent tier, got:\nstdout: {}\nstderr: {}",
-        stdout, stderr
+        stdout,
+        stderr
     );
 }
 
@@ -432,7 +435,10 @@ fn auto_place_fast_path_with_deps_no_overlap() {
     };
 
     assert!(has_deps, "Task should have deps");
-    assert!(!has_overlap, "Should have no file overlap with active tasks");
+    assert!(
+        !has_overlap,
+        "Should have no file overlap with active tasks"
+    );
     // This combination triggers auto-place fast path
 }
 
@@ -517,7 +523,10 @@ fn place_task_failure_publishes_original() {
     }
 
     let source = graph.get_task("feature-x").unwrap();
-    assert!(!source.paused, "Original task should be unpaused after fallback");
+    assert!(
+        !source.paused,
+        "Original task should be unpaused after fallback"
+    );
     assert!(
         source.tags.contains(&"placed".to_string()),
         "Original task should have 'placed' tag"
@@ -707,7 +716,10 @@ fn config_models_json_includes_tier_and_source() {
 
     let output = wg_ok(&wg_dir, &["--json", "config", "--models"]);
     let json: serde_json::Value = serde_json::from_str(&output).unwrap_or_else(|e| {
-        panic!("Invalid JSON from config --models --json: {}\nOutput: {}", e, output)
+        panic!(
+            "Invalid JSON from config --models --json: {}\nOutput: {}",
+            e, output
+        )
     });
 
     // Check that each role entry has tier and source fields
@@ -874,7 +886,8 @@ fn agent_context_defaults_to_no_place() {
     assert!(
         output.status.success(),
         "wg add in agent context failed.\nstdout: {}\nstderr: {}",
-        stdout, stderr
+        stdout,
+        stderr
     );
     // Should NOT be draft
     assert!(

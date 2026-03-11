@@ -408,6 +408,7 @@ impl CoordinatorAgent {
 /// - Conversation history injection on restart
 /// - Graph state refresh on restart
 /// - Chat history rotation to prevent unbounded growth
+#[allow(clippy::too_many_arguments)]
 fn agent_thread_main(
     dir: &Path,
     coordinator_id: u32,
@@ -464,7 +465,9 @@ fn agent_thread_main(
         let is_restart = !restart_timestamps.is_empty();
 
         // Rotate old chat history on restart to prevent unbounded growth
-        if is_restart && let Err(e) = chat::rotate_history_for(dir, coordinator_id, HISTORY_ROTATION_KEEP) {
+        if is_restart
+            && let Err(e) = chat::rotate_history_for(dir, coordinator_id, HISTORY_ROTATION_KEEP)
+        {
             logger.warn(&format!(
                 "Coordinator agent: failed to rotate chat history: {}",
                 e
@@ -507,7 +510,9 @@ fn agent_thread_main(
         // If this is a restart, inject crash recovery context
         if is_restart {
             logger.info("Coordinator agent: injecting crash recovery context");
-            if let Err(e) = inject_crash_recovery_context(dir, coordinator_id, &mut stdin, &response_rx, logger) {
+            if let Err(e) =
+                inject_crash_recovery_context(dir, coordinator_id, &mut stdin, &response_rx, logger)
+            {
                 logger.warn(&format!(
                     "Coordinator agent: failed to inject crash recovery context: {}",
                     e
@@ -664,7 +669,13 @@ fn agent_thread_main(
                 // Record this turn as a cycle iteration on the .coordinator task
                 if let Some((resp_len, ref resp_summary)) = response_info {
                     turn_count += 1;
-                    record_coordinator_turn(dir, coordinator_id, &req.message, resp_len, turn_start);
+                    record_coordinator_turn(
+                        dir,
+                        coordinator_id,
+                        &req.message,
+                        resp_len,
+                        turn_start,
+                    );
 
                     // Inline evaluation (runs in background thread, non-blocking)
                     let eval_config = workgraph::config::Config::load_or_default(dir);

@@ -124,9 +124,7 @@ pub enum IpcRequest {
         name: Option<String>,
     },
     /// Delete a coordinator instance.
-    DeleteCoordinator {
-        coordinator_id: u32,
-    },
+    DeleteCoordinator { coordinator_id: u32 },
     /// List all active coordinators.
     ListCoordinators,
 }
@@ -161,6 +159,7 @@ impl IpcResponse {
 
 /// Handle a single IPC connection
 #[cfg(unix)]
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn handle_connection(
     dir: &Path,
     stream: UnixStream,
@@ -238,6 +237,7 @@ fn write_response(stream: &mut UnixStream, response: &IpcResponse) -> Result<()>
 }
 
 /// Handle an IPC request
+#[allow(clippy::too_many_arguments)]
 fn handle_request(
     dir: &Path,
     request: IpcRequest,
@@ -419,10 +419,7 @@ fn handle_request(
             }
         }
         IpcRequest::CreateCoordinator { name } => {
-            logger.info(&format!(
-                "IPC CreateCoordinator: name={:?}",
-                name
-            ));
+            logger.info(&format!("IPC CreateCoordinator: name={:?}", name));
             handle_create_coordinator(dir, name.as_deref())
         }
         IpcRequest::DeleteCoordinator { coordinator_id } => {
@@ -964,12 +961,7 @@ fn handle_delete_coordinator(dir: &Path, coordinator_id: u32) -> IpcResponse {
     let task_id = format!(".coordinator-{}", coordinator_id);
     let task = match graph.get_task_mut(&task_id) {
         Some(t) => t,
-        None => {
-            return IpcResponse::error(&format!(
-                "Coordinator task '{}' not found",
-                task_id
-            ))
-        }
+        None => return IpcResponse::error(&format!("Coordinator task '{}' not found", task_id)),
     };
 
     task.status = workgraph::graph::Status::Abandoned;
@@ -1001,7 +993,10 @@ fn handle_list_coordinators(dir: &Path) -> IpcResponse {
     for task in graph.tasks() {
         if task.tags.iter().any(|t| t == "coordinator-loop") {
             // Skip abandoned/done coordinators
-            if matches!(task.status, workgraph::graph::Status::Abandoned | workgraph::graph::Status::Done) {
+            if matches!(
+                task.status,
+                workgraph::graph::Status::Abandoned | workgraph::graph::Status::Done
+            ) {
                 continue;
             }
             // Extract coordinator ID from task ID (.coordinator-N)
@@ -1301,9 +1296,7 @@ poll_interval = 120
         let raw2 = r#"{"cmd":"user_chat","message":"hi","request_id":"req-2","coordinator_id":1}"#;
         let parsed2: IpcRequest = serde_json::from_str(raw2).unwrap();
         match parsed2 {
-            IpcRequest::UserChat {
-                coordinator_id, ..
-            } => {
+            IpcRequest::UserChat { coordinator_id, .. } => {
                 assert_eq!(coordinator_id, Some(1));
             }
             _ => panic!("Wrong request type"),
@@ -1329,9 +1322,7 @@ poll_interval = 120
 
     #[test]
     fn test_ipc_delete_coordinator_serialization() {
-        let req = IpcRequest::DeleteCoordinator {
-            coordinator_id: 2,
-        };
+        let req = IpcRequest::DeleteCoordinator { coordinator_id: 2 };
         let json = serde_json::to_string(&req).unwrap();
         assert!(json.contains("\"cmd\":\"delete_coordinator\""));
         assert!(json.contains("\"coordinator_id\":2"));

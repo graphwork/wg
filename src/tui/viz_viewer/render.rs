@@ -694,8 +694,7 @@ fn draw_viz_content(frame: &mut Frame, app: &mut VizApp, area: Rect) {
 
     // Precompute coordinator line indices for chat-to-coordinator visual link.
     // When the Chat tab is active, coordinator task lines get a subtle cyan highlight.
-    let chat_active = app.right_panel_visible
-        && app.right_panel_tab == RightPanelTab::Chat;
+    let chat_active = app.right_panel_visible && app.right_panel_tab == RightPanelTab::Chat;
     let coordinator_lines: HashSet<usize> = if chat_active {
         app.node_line_map
             .iter()
@@ -806,9 +805,7 @@ fn draw_viz_content(frame: &mut Frame, app: &mut VizApp, area: Rect) {
         if coordinator_lines.contains(&orig_idx) {
             let last = text_lines.last_mut().unwrap();
             // Subtle dark cyan background to mark the coordinator row.
-            *last = std::mem::take(last).style(
-                Style::default().bg(Color::Rgb(0, 40, 50)),
-            );
+            *last = std::mem::take(last).style(Style::default().bg(Color::Rgb(0, 40, 50)));
         }
     }
 
@@ -1210,7 +1207,10 @@ fn draw_archive_browser(frame: &mut Frame, app: &mut VizApp, area: Rect) {
             format!(" [{}]", entry.tags.join(", "))
         };
 
-        let line_text = format!("  {} │ {} │ {}{}", completed, entry.id, entry.title, tags_str);
+        let line_text = format!(
+            "  {} │ {} │ {}{}",
+            completed, entry.id, entry.title, tags_str
+        );
 
         let style = if is_selected {
             Style::default()
@@ -1768,7 +1768,9 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
 
             // Label
             let label_style = if is_active {
-                Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(Color::DarkGray)
             };
@@ -2033,7 +2035,9 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
                 if msg.edited {
                     spans.push(Span::styled(
                         " (edited)",
-                        Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC),
+                        Style::default()
+                            .fg(Color::DarkGray)
+                            .add_modifier(Modifier::ITALIC),
                     ));
                 }
                 let mut built = Line::from(spans);
@@ -5826,7 +5830,6 @@ mod tests {
             &no_annots,
             &HashMap::new(),
             &HashMap::new(),
-            
             LayoutMode::Tree,
             &HashSet::new(),
             "gray",
@@ -6129,7 +6132,6 @@ mod tests {
             &task_ids,
             &HashMap::new(),
             &HashMap::new(),
-            
             &HashMap::new(),
             LayoutMode::Tree,
             &HashSet::new(),
@@ -6602,7 +6604,6 @@ mod tests {
             &task_ids,
             &HashMap::new(),
             &HashMap::new(),
-            
             &HashMap::new(),
             LayoutMode::Diamond,
             &HashSet::new(),
@@ -6801,7 +6802,6 @@ mod tests {
             &task_ids,
             &HashMap::new(),
             &HashMap::new(),
-            
             &HashMap::new(),
             LayoutMode::Tree,
             &HashSet::new(),
@@ -6903,7 +6903,6 @@ mod tests {
             &task_ids,
             &HashMap::new(),
             &HashMap::new(),
-            
             &HashMap::new(),
             LayoutMode::Tree,
             &HashSet::new(),
@@ -7246,7 +7245,6 @@ mod tests {
             &task_ids,
             &HashMap::new(),
             &HashMap::new(),
-            
             &HashMap::new(),
             LayoutMode::Tree,
             &HashSet::new(),
@@ -7345,7 +7343,6 @@ mod tests {
             &annotations,
             &HashMap::new(),
             &HashMap::new(),
-            
             LayoutMode::Tree,
             &HashSet::new(),
             "gray",
@@ -7389,7 +7386,6 @@ mod tests {
             &annotations2,
             &HashMap::new(),
             &HashMap::new(),
-            
             LayoutMode::Tree,
             &HashSet::new(),
             "gray",
@@ -7427,7 +7423,6 @@ mod tests {
             &annotations3,
             &HashMap::new(),
             &HashMap::new(),
-            
             LayoutMode::Tree,
             &HashSet::new(),
             "gray",
@@ -7461,7 +7456,6 @@ mod tests {
             &annotations4,
             &HashMap::new(),
             &HashMap::new(),
-            
             LayoutMode::Tree,
             &HashSet::new(),
             "gray",
@@ -7506,7 +7500,6 @@ mod tests {
             &annotations,
             &HashMap::new(),
             &HashMap::new(),
-            
             LayoutMode::Tree,
             &HashSet::new(),
             "gray",
@@ -7603,7 +7596,6 @@ mod tests {
             &task_ids,
             &HashMap::new(),
             &HashMap::new(),
-            
             &HashMap::new(),
             LayoutMode::Tree,
             &HashSet::new(),
@@ -7746,7 +7738,6 @@ mod tests {
             &task_ids,
             &HashMap::new(),
             &HashMap::new(),
-            
             &HashMap::new(),
             LayoutMode::Tree,
             &HashSet::new(),
@@ -7854,7 +7845,6 @@ mod tests {
                 &task_ids,
                 &HashMap::new(),
                 &HashMap::new(),
-                
                 &HashMap::new(),
                 LayoutMode::default(),
                 &HashSet::new(),
@@ -8302,7 +8292,6 @@ mod tests {
             &no_annots,
             &HashMap::new(),
             &HashMap::new(),
-            
             LayoutMode::Tree,
             &HashSet::new(),
             "gray",

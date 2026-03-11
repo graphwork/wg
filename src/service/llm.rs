@@ -108,8 +108,8 @@ fn call_claude_cli(model: &str, prompt: &str, timeout_secs: u64) -> Result<LlmCa
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let val: serde_json::Value =
-        serde_json::from_str(stdout.trim()).context("Failed to parse JSON output from claude CLI")?;
+    let val: serde_json::Value = serde_json::from_str(stdout.trim())
+        .context("Failed to parse JSON output from claude CLI")?;
     let text = val
         .get("result")
         .and_then(|v| v.as_str())

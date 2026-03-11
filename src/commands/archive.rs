@@ -37,8 +37,8 @@ fn load_batch_metadata(dir: &Path) -> Result<Vec<String>> {
     }
     let content = std::fs::read_to_string(&path)
         .with_context(|| format!("Failed to read batch metadata from {:?}", path))?;
-    let metadata: serde_json::Value = serde_json::from_str(&content)
-        .with_context(|| "Failed to parse batch metadata")?;
+    let metadata: serde_json::Value =
+        serde_json::from_str(&content).with_context(|| "Failed to parse batch metadata")?;
     let task_ids = metadata["task_ids"]
         .as_array()
         .ok_or_else(|| anyhow::anyhow!("Invalid batch metadata: missing task_ids"))?
@@ -1281,10 +1281,12 @@ mod tests {
         // Undo without a previous archive should fail
         let result = undo(wg_dir);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("No archive batch to undo"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("No archive batch to undo")
+        );
     }
 
     #[test]

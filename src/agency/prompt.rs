@@ -1461,7 +1461,9 @@ mod tests {
             downstream_tasks: &[],
             flip_score: Some(0.45),
             verify_status: Some("passed"),
-            verify_findings: Some("[2025-01-01] (agent-1): Tests pass\n[2025-01-01] (agent-1): Artifacts verified"),
+            verify_findings: Some(
+                "[2025-01-01] (agent-1): Tests pass\n[2025-01-01] (agent-1): Artifacts verified",
+            ),
         };
 
         let output = render_evaluator_prompt(&input);

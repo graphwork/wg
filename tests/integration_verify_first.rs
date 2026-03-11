@@ -230,10 +230,7 @@ fn test_flip_scaffold_idempotent() {
     );
 
     // Verify only one FLIP task exists (no duplicates)
-    let flip_count = graph
-        .tasks()
-        .filter(|t| t.id == flip_task_id)
-        .count();
+    let flip_count = graph.tasks().filter(|t| t.id == flip_task_id).count();
     assert_eq!(flip_count, 1, "Should have exactly one FLIP task");
 }
 
@@ -360,10 +357,7 @@ fn test_eval_blocked_until_verify_done() {
     );
 
     // Verify is in-progress: still blocked
-    graph
-        .get_task_mut(".verify-flip-task-x")
-        .unwrap()
-        .status = Status::InProgress;
+    graph.get_task_mut(".verify-flip-task-x").unwrap().status = Status::InProgress;
     let ready = ready_tasks(&graph);
     let ready_ids: Vec<&str> = ready.iter().map(|t| t.id.as_str()).collect();
     assert!(
@@ -373,10 +367,7 @@ fn test_eval_blocked_until_verify_done() {
     );
 
     // Verify completes: eval becomes ready
-    graph
-        .get_task_mut(".verify-flip-task-x")
-        .unwrap()
-        .status = Status::Done;
+    graph.get_task_mut(".verify-flip-task-x").unwrap().status = Status::Done;
     let ready = ready_tasks(&graph);
     let ready_ids: Vec<&str> = ready.iter().map(|t| t.id.as_str()).collect();
     assert!(

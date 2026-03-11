@@ -401,7 +401,10 @@ pub fn write_coordinator_cursor_for(
 /// Read all inbox and outbox messages interleaved by timestamp for a specific coordinator.
 pub fn read_history_for(workgraph_dir: &Path, coordinator_id: u32) -> Result<Vec<ChatMessage>> {
     let mut all = read_messages(&inbox_path_for(workgraph_dir, coordinator_id))?;
-    all.extend(read_messages(&outbox_path_for(workgraph_dir, coordinator_id))?);
+    all.extend(read_messages(&outbox_path_for(
+        workgraph_dir,
+        coordinator_id,
+    ))?);
     all.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
     Ok(all)
 }
@@ -683,7 +686,8 @@ fn rewrite_jsonl(path: &Path, mut f: impl FnMut(&mut ChatMessage) -> bool) -> Re
     let mut out = String::new();
     for msg in &messages {
         out.push_str(
-            &serde_json::to_string(msg).context("Failed to serialize chat message during rewrite")?,
+            &serde_json::to_string(msg)
+                .context("Failed to serialize chat message during rewrite")?,
         );
         out.push('\n');
     }
@@ -1298,13 +1302,13 @@ mod tests {
         append_outbox_for(&wg_dir, 1, "response from coord 1", "target-req").unwrap();
 
         // Searching coordinator 0 should not find it
-        let result = wait_for_response_for(&wg_dir, 0, "target-req", Duration::from_millis(100))
-            .unwrap();
+        let result =
+            wait_for_response_for(&wg_dir, 0, "target-req", Duration::from_millis(100)).unwrap();
         assert!(result.is_none());
 
         // Searching coordinator 1 should find it
-        let result = wait_for_response_for(&wg_dir, 1, "target-req", Duration::from_secs(1))
-            .unwrap();
+        let result =
+            wait_for_response_for(&wg_dir, 1, "target-req", Duration::from_secs(1)).unwrap();
         assert!(result.is_some());
         assert_eq!(result.unwrap().content, "response from coord 1");
     }

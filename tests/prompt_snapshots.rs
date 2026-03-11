@@ -5,8 +5,8 @@
 //! via `cargo insta review`.
 
 use workgraph::agency::{
-    self, EvaluatorInput, ResolvedSkill, Role, TradeoffConfig,
-    render_evaluator_prompt, render_identity_prompt,
+    self, EvaluatorInput, ResolvedSkill, Role, TradeoffConfig, render_evaluator_prompt,
+    render_identity_prompt,
 };
 use workgraph::context_scope::ContextScope;
 use workgraph::graph::LogEntry;

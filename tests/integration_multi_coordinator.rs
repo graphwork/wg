@@ -211,12 +211,20 @@ fn multi_coordinator_message_isolation() {
 
     // Verify coordinator 0's inbox only has its message
     let inbox_0 = workgraph::chat::read_inbox_for(&wg_dir, 0).unwrap();
-    assert_eq!(inbox_0.len(), 1, "Coordinator 0 should have 1 inbox message");
+    assert_eq!(
+        inbox_0.len(),
+        1,
+        "Coordinator 0 should have 1 inbox message"
+    );
     assert_eq!(inbox_0[0].content, "message for coordinator zero");
 
     // Verify coordinator 1's inbox only has its message
     let inbox_1 = workgraph::chat::read_inbox_for(&wg_dir, 1).unwrap();
-    assert_eq!(inbox_1.len(), 1, "Coordinator 1 should have 1 inbox message");
+    assert_eq!(
+        inbox_1.len(),
+        1,
+        "Coordinator 1 should have 1 inbox message"
+    );
     assert_eq!(inbox_1[0].content, "message for coordinator one");
 
     // Verify outboxes are also isolated
@@ -383,26 +391,12 @@ fn multi_coordinator_both_visible_in_storage() {
     // Send to coordinator 0
     wg_cmd(
         &wg_dir,
-        &[
-            "chat",
-            "msg0",
-            "--coordinator",
-            "0",
-            "--timeout",
-            "10",
-        ],
+        &["chat", "msg0", "--coordinator", "0", "--timeout", "10"],
     );
     // Send to coordinator 1
     wg_cmd(
         &wg_dir,
-        &[
-            "chat",
-            "msg1",
-            "--coordinator",
-            "1",
-            "--timeout",
-            "10",
-        ],
+        &["chat", "msg1", "--coordinator", "1", "--timeout", "10"],
     );
 
     // Both coordinator chat directories should exist

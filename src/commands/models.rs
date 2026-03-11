@@ -36,8 +36,8 @@ pub fn run_list(workgraph_dir: &Path, tier: Option<&str>, json: bool) -> Result<
 
     // Table header
     println!(
-        "{:<35} {:<8} {:>10} {:>11} {:>10} {}",
-        "MODEL", "TIER", "IN/1M", "OUT/1M", "CTX", "CAPABILITIES"
+        "{:<35} {:<8} {:>10} {:>11} {:>10} CAPABILITIES",
+        "MODEL", "TIER", "IN/1M", "OUT/1M", "CTX"
     );
     println!("{}", "-".repeat(100));
 
@@ -66,6 +66,7 @@ pub fn run_list(workgraph_dir: &Path, tier: Option<&str>, json: bool) -> Result<
 }
 
 /// Add a custom model to the registry
+#[allow(clippy::too_many_arguments)]
 pub fn run_add(
     workgraph_dir: &Path,
     id: &str,
@@ -163,8 +164,7 @@ fn save_cache(workgraph_dir: &Path, models: &[OpenRouterModel]) -> Result<()> {
         models: models.to_vec(),
     };
     let content = serde_json::to_string(&cache).context("Failed to serialize model cache")?;
-    std::fs::write(cache_path(workgraph_dir), content)
-        .context("Failed to write model cache")?;
+    std::fs::write(cache_path(workgraph_dir), content).context("Failed to write model cache")?;
     Ok(())
 }
 
@@ -178,18 +178,14 @@ fn is_cache_fresh(cache: &ModelCache) -> bool {
 }
 
 /// Fetch models from the remote API, using the cache when available and fresh.
-fn get_remote_models(
-    workgraph_dir: &Path,
-    no_cache: bool,
-) -> Result<Vec<OpenRouterModel>> {
+fn get_remote_models(workgraph_dir: &Path, no_cache: bool) -> Result<Vec<OpenRouterModel>> {
     // Try cache first
-    if !no_cache {
-        if let Some(cache) = load_cache(workgraph_dir) {
-            if is_cache_fresh(&cache) {
-                eprintln!("Using cached model list (fetched {})", cache.fetched_at);
-                return Ok(cache.models);
-            }
-        }
+    if !no_cache
+        && let Some(cache) = load_cache(workgraph_dir)
+        && is_cache_fresh(&cache)
+    {
+        eprintln!("Using cached model list (fetched {})", cache.fetched_at);
+        return Ok(cache.models);
     }
 
     // Resolve API key
@@ -201,10 +197,7 @@ fn get_remote_models(
         .ok();
 
     eprintln!("Fetching models from API...");
-    let models = fetch_openrouter_models_blocking(
-        &api_key,
-        base_url.as_deref(),
-    )?;
+    let models = fetch_openrouter_models_blocking(&api_key, base_url.as_deref())?;
 
     // Save to cache
     if let Err(e) = save_cache(workgraph_dir, &models) {
@@ -254,8 +247,8 @@ pub fn run_search(
     }
 
     println!(
-        "{:<45} {:>12} {:>12} {:>8} {}",
-        "MODEL", "IN/1M", "OUT/1M", "CTX", "TOOLS"
+        "{:<45} {:>12} {:>12} {:>8} TOOLS",
+        "MODEL", "IN/1M", "OUT/1M", "CTX"
     );
     println!("{}", "-".repeat(95));
 
@@ -297,8 +290,8 @@ pub fn run_list_remote(
     }
 
     println!(
-        "{:<45} {:>12} {:>12} {:>8} {}",
-        "MODEL", "IN/1M", "OUT/1M", "CTX", "TOOLS"
+        "{:<45} {:>12} {:>12} {:>8} TOOLS",
+        "MODEL", "IN/1M", "OUT/1M", "CTX"
     );
     println!("{}", "-".repeat(95));
 

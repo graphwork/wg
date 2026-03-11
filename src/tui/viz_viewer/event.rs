@@ -630,7 +630,10 @@ fn handle_chat_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
             app.try_paste_clipboard_image();
             return;
         }
-        KeyCode::Up if !modifiers.contains(KeyModifiers::ALT) && !modifiers.contains(KeyModifiers::SHIFT) => {
+        KeyCode::Up
+            if !modifiers.contains(KeyModifiers::ALT)
+                && !modifiers.contains(KeyModifiers::SHIFT) =>
+        {
             // Up arrow: navigate to previous user message (history)
             // Only trigger when input is empty (for fresh history nav) or already in history mode
             let is_empty = editor_text(&app.chat.editor).is_empty();
@@ -638,7 +641,10 @@ fn handle_chat_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
                 return;
             }
         }
-        KeyCode::Down if !modifiers.contains(KeyModifiers::ALT) && !modifiers.contains(KeyModifiers::SHIFT) => {
+        KeyCode::Down
+            if !modifiers.contains(KeyModifiers::ALT)
+                && !modifiers.contains(KeyModifiers::SHIFT) =>
+        {
             // Down arrow: navigate to next user message or back to fresh input
             if app.chat.history_cursor.is_some() && app.chat_history_down() {
                 return;
@@ -1101,8 +1107,7 @@ fn handle_archive_key(app: &mut VizApp, code: KeyCode, _modifiers: KeyModifiers)
         KeyCode::PageDown => {
             let count = app.archive_browser.visible_count();
             if count > 0 {
-                app.archive_browser.selected =
-                    (app.archive_browser.selected + 20).min(count - 1);
+                app.archive_browser.selected = (app.archive_browser.selected + 20).min(count - 1);
             }
         }
 
@@ -1234,7 +1239,10 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
             if app.right_panel_tab == RightPanelTab::Chat {
                 let ids = app.list_coordinator_ids();
                 if ids.len() > 1 {
-                    let pos = ids.iter().position(|&id| id == app.active_coordinator_id).unwrap_or(0);
+                    let pos = ids
+                        .iter()
+                        .position(|&id| id == app.active_coordinator_id)
+                        .unwrap_or(0);
                     let prev = if pos == 0 { ids.len() - 1 } else { pos - 1 };
                     app.switch_coordinator(ids[prev]);
                 }
@@ -1246,7 +1254,10 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
             if app.right_panel_tab == RightPanelTab::Chat {
                 let ids = app.list_coordinator_ids();
                 if ids.len() > 1 {
-                    let pos = ids.iter().position(|&id| id == app.active_coordinator_id).unwrap_or(0);
+                    let pos = ids
+                        .iter()
+                        .position(|&id| id == app.active_coordinator_id)
+                        .unwrap_or(0);
                     let next = (pos + 1) % ids.len();
                     app.switch_coordinator(ids[next]);
                 }
@@ -1353,7 +1364,10 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
         KeyCode::Char('[') if app.right_panel_tab == RightPanelTab::Chat => {
             let ids = app.list_coordinator_ids();
             if ids.len() > 1 {
-                let pos = ids.iter().position(|&id| id == app.active_coordinator_id).unwrap_or(0);
+                let pos = ids
+                    .iter()
+                    .position(|&id| id == app.active_coordinator_id)
+                    .unwrap_or(0);
                 let prev = if pos == 0 { ids.len() - 1 } else { pos - 1 };
                 app.switch_coordinator(ids[prev]);
             }
@@ -1361,7 +1375,10 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
         KeyCode::Char(']') if app.right_panel_tab == RightPanelTab::Chat => {
             let ids = app.list_coordinator_ids();
             if ids.len() > 1 {
-                let pos = ids.iter().position(|&id| id == app.active_coordinator_id).unwrap_or(0);
+                let pos = ids
+                    .iter()
+                    .position(|&id| id == app.active_coordinator_id)
+                    .unwrap_or(0);
                 let next = (pos + 1) % ids.len();
                 app.switch_coordinator(ids[next]);
             }
@@ -1572,8 +1589,8 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
         app.last_graph_scrollbar_area.height > 0 && app.last_graph_scrollbar_area.contains(pos);
     let in_panel_vscrollbar =
         app.last_panel_scrollbar_area.height > 0 && app.last_panel_scrollbar_area.contains(pos);
-    let in_coordinator_bar = app.last_coordinator_bar_area.height > 0
-        && app.last_coordinator_bar_area.contains(pos);
+    let in_coordinator_bar =
+        app.last_coordinator_bar_area.height > 0 && app.last_coordinator_bar_area.contains(pos);
 
     match kind {
         MouseEventKind::ScrollUp => {
@@ -1743,9 +1760,11 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
                     .flatten();
                 if let Some(msg_idx) = clicked_msg_idx
                     && !app.is_chat_message_consumed(msg_idx)
-                    && app.chat.messages.get(msg_idx).is_some_and(|m| {
-                        m.role == super::state::ChatRole::User
-                    })
+                    && app
+                        .chat
+                        .messages
+                        .get(msg_idx)
+                        .is_some_and(|m| m.role == super::state::ChatRole::User)
                 {
                     // Click on an editable user message: enter edit mode.
                     app.enter_chat_edit_mode(msg_idx);
@@ -1872,8 +1891,7 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
                             } else if let Some(line) = app.plain_lines.get(orig_line) {
                                 // Determine click region for tab switching.
                                 let chars: Vec<char> = line.chars().collect();
-                                let text_start =
-                                    chars.iter().position(|c| c.is_alphanumeric());
+                                let text_start = chars.iter().position(|c| c.is_alphanumeric());
                                 // Find the "  (" separator between task ID and status.
                                 let paren_start = text_start.and_then(|ts| {
                                     (ts..chars.len().saturating_sub(1))
@@ -2790,7 +2808,6 @@ mod scrollbar_tests {
             &task_ids,
             &HashMap::new(),
             &HashMap::new(),
-            
             &HashMap::new(),
             VizLayoutMode::Tree,
             &HashSet::new(),
@@ -3778,10 +3795,7 @@ mod scrollbar_tests {
             .expect("Should have at least one child line with tree chars");
 
         let line = &app.plain_lines[child_line_idx];
-        let text_start = line
-            .chars()
-            .position(|c| c.is_alphanumeric())
-            .unwrap_or(0);
+        let text_start = line.chars().position(|c| c.is_alphanumeric()).unwrap_or(0);
 
         // Click on the tree-drawing prefix area (column 0, which is before text).
         // First select a different task so we can detect change.
@@ -3794,8 +3808,8 @@ mod scrollbar_tests {
         handle_mouse(
             &mut app,
             MouseEventKind::Down(MouseButton::Left),
-            0,  // row
-            0,  // column — in the tree-drawing area
+            0, // row
+            0, // column — in the tree-drawing area
         );
 
         // The selection should remain unchanged because we clicked on tree chars.

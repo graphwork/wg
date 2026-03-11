@@ -95,8 +95,14 @@ pub fn run(
     }
 
     // Create and run the agent loop
-    let agent =
-        AgentLoop::with_tool_support(client, registry, system_prompt, max_turns, output_log, supports_tools);
+    let agent = AgentLoop::with_tool_support(
+        client,
+        registry,
+        system_prompt,
+        max_turns,
+        output_log,
+        supports_tools,
+    );
 
     // Run the async agent loop
     let rt = tokio::runtime::Runtime::new().context("Failed to create tokio runtime")?;

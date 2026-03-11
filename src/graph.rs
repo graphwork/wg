@@ -562,11 +562,11 @@ pub fn parse_wg_tokens(output_log_path: &std::path::Path) -> Option<TokenUsage> 
     let mut found_any = false;
 
     for line in content.lines() {
-        if let Some(json) = line.strip_prefix("__WG_TOKENS__:") {
-            if let Ok(usage) = serde_json::from_str::<TokenUsage>(json.trim()) {
-                found_any = true;
-                total.accumulate(&usage);
-            }
+        if let Some(json) = line.strip_prefix("__WG_TOKENS__:")
+            && let Ok(usage) = serde_json::from_str::<TokenUsage>(json.trim())
+        {
+            found_any = true;
+            total.accumulate(&usage);
         }
     }
 
@@ -582,8 +582,7 @@ pub fn format_token_display(
     agency_usage: Option<&TokenUsage>,
 ) -> Option<String> {
     let has_work = usage.is_some();
-    let has_agency = agency_usage
-        .is_some_and(|a| a.input_tokens + a.output_tokens > 0);
+    let has_agency = agency_usage.is_some_and(|a| a.input_tokens + a.output_tokens > 0);
 
     if !has_work && !has_agency {
         return None;
@@ -2184,7 +2183,7 @@ mod tests {
         let agency = TokenUsage {
             cost_usd: 0.0,
             input_tokens: 1300, // 500 assign + 800 eval novel input
-            output_tokens: 600,  // 200 assign + 400 eval novel output
+            output_tokens: 600, // 200 assign + 400 eval novel output
             cache_read_input_tokens: 0,
             cache_creation_input_tokens: 0,
         };

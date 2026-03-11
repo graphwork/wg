@@ -1113,12 +1113,13 @@ fn ensure_coordinator_task(dir: &Path) {
     let mut modified = false;
 
     // Migrate legacy .coordinator to .coordinator-0
-    if graph.get_task(".coordinator").is_some() && graph.get_task(".coordinator-0").is_none() {
-        if let Some(task) = graph.get_task_mut(".coordinator") {
-            task.id = ".coordinator-0".to_string();
-            task.title = "Coordinator 0".to_string();
-            modified = true;
-        }
+    if graph.get_task(".coordinator").is_some()
+        && graph.get_task(".coordinator-0").is_none()
+        && let Some(task) = graph.get_task_mut(".coordinator")
+    {
+        task.id = ".coordinator-0".to_string();
+        task.title = "Coordinator 0".to_string();
+        modified = true;
     }
 
     // Ensure .coordinator-0 exists
@@ -1153,13 +1154,11 @@ fn ensure_coordinator_task(dir: &Path) {
         modified = true;
     }
 
-    if modified {
-        if let Err(e) = save_graph(&graph, &gp) {
-            eprintln!(
-                "[daemon] Failed to save graph after creating .coordinator-0 task: {}",
-                e
-            );
-        }
+    if modified && let Err(e) = save_graph(&graph, &gp) {
+        eprintln!(
+            "[daemon] Failed to save graph after creating .coordinator-0 task: {}",
+            e
+        );
     }
 }
 
@@ -1319,8 +1318,10 @@ pub fn run_daemon(
     // Enabled by default; disable with --no-coordinator-agent or
     // coordinator.coordinator_agent = false in config.toml.
     let enable_coordinator_agent = !no_coordinator_agent && config.coordinator.coordinator_agent;
-    let mut coordinator_agents: std::collections::HashMap<u32, coordinator_agent::CoordinatorAgent> =
-        std::collections::HashMap::new();
+    let mut coordinator_agents: std::collections::HashMap<
+        u32,
+        coordinator_agent::CoordinatorAgent,
+    > = std::collections::HashMap::new();
     if enable_coordinator_agent {
         match coordinator_agent::CoordinatorAgent::spawn(
             &dir,
@@ -1340,14 +1341,12 @@ pub fn run_daemon(
                 ));
             }
         }
+    } else if no_coordinator_agent {
+        logger.info("Coordinator agent disabled via --no-coordinator-agent flag");
     } else {
-        if no_coordinator_agent {
-            logger.info("Coordinator agent disabled via --no-coordinator-agent flag");
-        } else {
-            logger.info(
-                "Coordinator agent disabled (set coordinator.coordinator_agent = true to enable)",
-            );
-        }
+        logger.info(
+            "Coordinator agent disabled (set coordinator.coordinator_agent = true to enable)",
+        );
     };
 
     // Track last coordinator tick time - run immediately on start
@@ -1396,7 +1395,10 @@ pub fn run_daemon(
                 // Stop and remove any coordinator agents marked for deletion.
                 for cid in conn_delete_coordinator_ids {
                     if let Some(agent) = coordinator_agents.remove(&cid) {
-                        logger.info(&format!("Shutting down coordinator agent {} (deleted via IPC)", cid));
+                        logger.info(&format!(
+                            "Shutting down coordinator agent {} (deleted via IPC)",
+                            cid
+                        ));
                         agent.shutdown();
                     }
                 }
@@ -2165,10 +2167,7 @@ pub fn run_create_coordinator(_dir: &Path, _name: Option<&str>, _json: bool) -> 
 /// Delete a coordinator session via IPC
 #[cfg(unix)]
 pub fn run_delete_coordinator(dir: &Path, coordinator_id: u32, json: bool) -> Result<()> {
-    let response = send_request(
-        dir,
-        &IpcRequest::DeleteCoordinator { coordinator_id },
-    )?;
+    let response = send_request(dir, &IpcRequest::DeleteCoordinator { coordinator_id })?;
 
     if !response.ok {
         let msg = response

@@ -259,17 +259,12 @@ fn scaffold_eval_for_published(dir: &Path, graph: &mut WorkGraph, task_ids: &[St
     let candidates: Vec<(String, String)> = task_ids
         .iter()
         .filter(|id| !workgraph::graph::is_system_task(id))
-        .filter_map(|id| {
-            graph
-                .get_task(id)
-                .map(|t| (id.clone(), t.title.clone()))
-        })
+        .filter_map(|id| graph.get_task(id).map(|t| (id.clone(), t.title.clone())))
         .collect();
 
     // Scaffold .assign-* tasks (blocking edges) when auto_assign is enabled
     if config.agency.auto_assign {
-        let assign_count =
-            eval_scaffold::scaffold_assign_tasks_batch(graph, &candidates);
+        let assign_count = eval_scaffold::scaffold_assign_tasks_batch(graph, &candidates);
         if assign_count > 0 {
             eprintln!(
                 "[publish] Eagerly scaffolded {} assignment task(s)",
@@ -280,8 +275,7 @@ fn scaffold_eval_for_published(dir: &Path, graph: &mut WorkGraph, task_ids: &[St
 
     // Scaffold .evaluate-* and .flip-* tasks
     if config.agency.auto_evaluate {
-        let eval_count =
-            eval_scaffold::scaffold_eval_tasks_batch(dir, graph, &candidates, &config);
+        let eval_count = eval_scaffold::scaffold_eval_tasks_batch(dir, graph, &candidates, &config);
         if eval_count > 0 {
             eprintln!(
                 "[publish] Eagerly scaffolded {} evaluation task(s)",

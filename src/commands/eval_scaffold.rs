@@ -33,11 +33,7 @@ fn should_run_flip(graph: &WorkGraph, task_id: &str, config: &Config) -> bool {
 ///
 /// Returns `true` if the graph was modified (i.e. the flip task was created).
 /// Idempotent: returns `false` if the flip task already exists.
-pub fn scaffold_flip_task(
-    graph: &mut WorkGraph,
-    task_id: &str,
-    config: &Config,
-) -> bool {
+pub fn scaffold_flip_task(graph: &mut WorkGraph, task_id: &str, config: &Config) -> bool {
     let flip_task_id = format!(".flip-{}", task_id);
 
     // Idempotency: skip if flip task already exists
@@ -45,8 +41,7 @@ pub fn scaffold_flip_task(
         return false;
     }
 
-    let flip_resolved =
-        config.resolve_model_for_role(workgraph::config::DispatchRole::Evaluator);
+    let flip_resolved = config.resolve_model_for_role(workgraph::config::DispatchRole::Evaluator);
 
     let flip_task = Task {
         id: flip_task_id.clone(),
@@ -85,11 +80,7 @@ pub fn scaffold_flip_task(
 ///
 /// Returns `true` if the graph was modified.
 /// Idempotent: returns `false` if the assign task already exists.
-pub fn scaffold_assign_task(
-    graph: &mut WorkGraph,
-    task_id: &str,
-    task_title: &str,
-) -> bool {
+pub fn scaffold_assign_task(graph: &mut WorkGraph, task_id: &str, task_title: &str) -> bool {
     let assign_task_id = format!(".assign-{}", task_id);
 
     // Idempotent: skip if assign task already exists
@@ -243,10 +234,10 @@ pub fn scaffold_eval_task(
     graph.add_node(Node::Task(eval_task));
 
     // Tag the source task so we never recreate the eval task after gc
-    if let Some(source) = graph.get_task_mut(task_id) {
-        if !source.tags.iter().any(|t| t == "eval-scheduled") {
-            source.tags.push("eval-scheduled".to_string());
-        }
+    if let Some(source) = graph.get_task_mut(task_id)
+        && !source.tags.iter().any(|t| t == "eval-scheduled")
+    {
+        source.tags.push("eval-scheduled".to_string());
     }
 
     eprintln!(
@@ -337,10 +328,7 @@ mod tests {
         assert_eq!(eval.after, vec!["my-task".to_string()]);
         assert!(eval.tags.contains(&"evaluation".to_string()));
         assert!(eval.tags.contains(&"agency".to_string()));
-        assert_eq!(
-            eval.exec,
-            Some("wg evaluate run my-task".to_string())
-        );
+        assert_eq!(eval.exec, Some("wg evaluate run my-task".to_string()));
         assert_eq!(eval.exec_mode, Some("bare".to_string()));
         assert_eq!(eval.visibility, "internal");
     }

@@ -925,7 +925,11 @@ impl Config {
     fn effective_tiers(&self) -> TierConfig {
         TierConfig {
             fast: self.tiers.fast.clone().or_else(|| Some("haiku".into())),
-            standard: self.tiers.standard.clone().or_else(|| Some("sonnet".into())),
+            standard: self
+                .tiers
+                .standard
+                .clone()
+                .or_else(|| Some("sonnet".into())),
             premium: self.tiers.premium.clone().or_else(|| Some("opus".into())),
         }
     }
@@ -1031,14 +1035,13 @@ impl Config {
         // 3. Role tier override: [models.<role>].tier
         if let Some(role_cfg) = self.models.get_role(role)
             && let Some(tier) = role_cfg.tier
+            && let Some(mut resolved) = self.resolve_tier(tier)
         {
-            if let Some(mut resolved) = self.resolve_tier(tier) {
-                // Allow role/default provider to override registry provider
-                if let Some(p) = resolve_provider(role) {
-                    resolved.provider = Some(p);
-                }
-                return resolved;
+            // Allow role/default provider to override registry provider
+            if let Some(p) = resolve_provider(role) {
+                resolved.provider = Some(p);
             }
+            return resolved;
         }
 
         // 4. Role default_tier() → tiers.<tier> → registry lookup
@@ -1074,10 +1077,10 @@ impl Config {
     /// Returns one of: "explicit", "legacy", "tier-override", "tier-default", "fallback"
     pub fn resolve_model_source(&self, role: DispatchRole) -> &'static str {
         // 1. Role-specific [models] config (direct model override)
-        if let Some(role_cfg) = self.models.get_role(role) {
-            if role_cfg.model.is_some() {
-                return "explicit";
-            }
+        if let Some(role_cfg) = self.models.get_role(role)
+            && role_cfg.model.is_some()
+        {
+            return "explicit";
         }
 
         // 2. Legacy per-role config
@@ -1103,10 +1106,10 @@ impl Config {
         }
 
         // 3. Role tier override
-        if let Some(role_cfg) = self.models.get_role(role) {
-            if role_cfg.tier.is_some() {
-                return "tier-override";
-            }
+        if let Some(role_cfg) = self.models.get_role(role)
+            && role_cfg.tier.is_some()
+        {
+            return "tier-override";
         }
 
         // 4. Role default_tier() → registry

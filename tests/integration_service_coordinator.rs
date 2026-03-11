@@ -1792,10 +1792,7 @@ fn test_pid_reuse_detection_nonexistent_pid() {
 
     // PID 999999999 should not exist
     let result = read_proc_start_time_secs(999999999);
-    assert!(
-        result.is_none(),
-        "Non-existent PID should return None"
-    );
+    assert!(result.is_none(), "Non-existent PID should return None");
 }
 
 #[test]
@@ -1855,7 +1852,10 @@ fn test_dead_agent_detection_after_daemon_restart() {
     // The old PID (999999999) doesn't exist, so cleanup should detect and remove it.
     let loaded_registry = AgentRegistry::load(&wg_dir).unwrap();
     let agent = loaded_registry.get_agent("agent-1").unwrap();
-    assert!(agent.is_alive(), "Agent should still show as alive in registry");
+    assert!(
+        agent.is_alive(),
+        "Agent should still show as alive in registry"
+    );
     assert!(
         !workgraph::service::is_process_alive(agent.pid),
         "PID 999999999 should not be alive"
@@ -1871,10 +1871,7 @@ fn test_rapid_respawn_detection_no_deaths() {
     // A task with no death log entries should not be throttled
     let task = make_task("task-1", "Test Task", Status::Open);
     // No log entries at all — should be fine
-    assert!(
-        task.log.is_empty(),
-        "Fresh task should have no log entries"
-    );
+    assert!(task.log.is_empty(), "Fresh task should have no log entries");
 }
 
 #[test]
@@ -1904,11 +1901,7 @@ fn test_rapid_respawn_detection_recent_deaths_in_log() {
         .iter()
         .filter(|e| e.message.contains("process exited"))
         .collect();
-    assert_eq!(
-        recent_deaths.len(),
-        4,
-        "Should have 4 death entries in log"
-    );
+    assert_eq!(recent_deaths.len(), 4, "Should have 4 death entries in log");
 }
 
 #[test]

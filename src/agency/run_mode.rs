@@ -29,10 +29,7 @@ pub enum AssignmentPath {
 ///
 /// All assignments go through the LLM. `ForcedExploration` fires on
 /// interval triggers to vary experiment parameters; otherwise `Learning`.
-pub fn determine_assignment_path(
-    config: &AgencyConfig,
-    task_count: u32,
-) -> AssignmentPath {
+pub fn determine_assignment_path(config: &AgencyConfig, task_count: u32) -> AssignmentPath {
     if config.exploration_interval > 0
         && task_count > 0
         && task_count.is_multiple_of(config.exploration_interval)
@@ -543,5 +540,4 @@ mod tests {
         let result = process_retrospective_inference(&agency_dir, "nonexistent-task", 0.9, &config);
         assert!(result.is_ok());
     }
-
 }

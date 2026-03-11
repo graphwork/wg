@@ -1152,12 +1152,17 @@ mod tests {
         graph.add_node(Node::Task(assign));
 
         let annotations = HashMap::new();
-        let (filtered, _) =
-            filter_internal_tasks(&graph, graph.tasks().collect(), &annotations);
+        let (filtered, _) = filter_internal_tasks(&graph, graph.tasks().collect(), &annotations);
         let ids: HashSet<&str> = filtered.iter().map(|t| t.id.as_str()).collect();
 
-        assert!(ids.contains(".coordinator"), "Coordinator should be visible");
+        assert!(
+            ids.contains(".coordinator"),
+            "Coordinator should be visible"
+        );
         assert!(ids.contains("foo"), "Normal tasks should be visible");
-        assert!(!ids.contains(".assign-foo"), "Internal tasks should be hidden");
+        assert!(
+            !ids.contains(".assign-foo"),
+            "Internal tasks should be hidden"
+        );
     }
 }

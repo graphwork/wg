@@ -107,10 +107,10 @@ fn detect_dead_reason(agent: &AgentEntry) -> Option<DeadReason> {
     // This happens when the daemon restarts after a crash and old PIDs have been
     // recycled by the OS. We verify by comparing the actual process start time
     // against the agent's registered start time.
-    if let Ok(agent_start) = agent.started_at.parse::<chrono::DateTime<chrono::Utc>>() {
-        if !workgraph::service::verify_process_identity(agent.pid, agent_start.timestamp()) {
-            return Some(DeadReason::PidReused);
-        }
+    if let Ok(agent_start) = agent.started_at.parse::<chrono::DateTime<chrono::Utc>>()
+        && !workgraph::service::verify_process_identity(agent.pid, agent_start.timestamp())
+    {
+        return Some(DeadReason::PidReused);
     }
 
     None

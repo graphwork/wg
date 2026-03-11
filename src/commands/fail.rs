@@ -2,9 +2,11 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use std::path::Path;
 use workgraph::agency::capture_task_output;
-use workgraph::graph::{LogEntry, Status, evaluate_cycle_on_failure, parse_token_usage, parse_wg_tokens};
-use workgraph::service::registry::AgentRegistry;
+use workgraph::graph::{
+    LogEntry, Status, evaluate_cycle_on_failure, parse_token_usage, parse_wg_tokens,
+};
 use workgraph::parser::save_graph;
+use workgraph::service::registry::AgentRegistry;
 
 #[cfg(test)]
 use super::graph_path;
