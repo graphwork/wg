@@ -1627,18 +1627,44 @@ fn build_flip_verification_tasks(
             .take(2000)
             .collect::<String>();
 
+        // Gather source task checkpoint and artifacts for context
+        let source_checkpoint = source_task.checkpoint.clone().unwrap_or_default();
+        let source_artifacts = source_task.artifacts.clone();
+
         let mut desc = format!(
-            "## FLIP Verification\n\n\
-             FLIP score {:.2} is below threshold {:.2} — independently verify this task.\n\n\
+            "## FLIP Verification & Repair\n\n\
+             FLIP score {:.2} is below threshold {:.2} — independently verify and, if needed, **fix** this task's work.\n\n\
+             ### Your Authority\n\
+             You are a **senior engineer reviewing a junior's PR**. You have full authority to:\n\
+             - Edit source files, run builds, run tests, and commit fixes\n\
+             - Correct mistakes, resolve test failures, and improve the implementation\n\
+             - Only reject (fail) the source task if the approach is fundamentally wrong\n\n\
+             **Fix first, fail last.** If the work is close but has issues, repair it yourself.\n\n\
              ### Original Task\n\
              **ID:** {}\n\
              **Title:** {}\n\
-             **Description:**\n{}\n\n\
-             ### Verification Instructions\n\
-             You must independently verify whether the work was actually completed.\n\
-             Do NOT trust the original agent's claims. Check independently:\n\n",
+             **Description:**\n{}\n\n",
             eval.score, threshold, source_task_id, source_title, source_desc_snippet,
         );
+
+        if !source_checkpoint.is_empty() {
+            desc.push_str(&format!(
+                "**Checkpoint (last known state):**\n{}\n\n",
+                source_checkpoint
+            ));
+        }
+
+        if !source_artifacts.is_empty() {
+            desc.push_str("**Artifacts:**\n");
+            for artifact in &source_artifacts {
+                desc.push_str(&format!("- `{}`\n", artifact));
+            }
+            desc.push_str("\n");
+        }
+
+        desc.push_str("### Verification Steps\n");
+        desc.push_str("Independently check whether the work was actually completed.\n");
+        desc.push_str("Do NOT trust the original agent's claims.\n\n");
 
         if let Some(ref verify_cmd) = source_verify_cmd {
             desc.push_str(&format!(
@@ -1658,13 +1684,18 @@ fn build_flip_verification_tasks(
         }
 
         desc.push_str(
-            "### Verdict\n\
-             - If verification **passes**: run `wg log '{source_task_id}' \"FLIP verification passed (score {score:.2})\"` and mark this task done.\n\
-             - If verification **fails**: run `wg fail '{source_task_id}' --reason \"FLIP verification failed: <reason>\"` then mark this task done.\n"
+            "### Repair & Verdict\n\
+             - If everything looks good: log verification passed and mark this task done.\n\
+             - If problems found: **fix them directly** — edit code, resolve test failures, \
+               correct logic errors, then run the verification again. Commit your fixes \
+               with a descriptive message. Once fixed, mark this task done.\n\
+             - **Only as a last resort**, if the approach is fundamentally wrong and cannot \
+               be salvaged: run `wg fail '{source_task_id}' --reason \"FLIP verification failed: <reason>\"` \
+               then mark this task done.\n\n\
+             Remember: your job is to make the work **pass**, not to find reasons to reject it.\n"
         );
         // Replace placeholders
         desc = desc.replace("{source_task_id}", source_task_id);
-        desc = desc.replace("{score:.2}", &format!("{:.2}", eval.score));
 
         let verify_task = Task {
             id: verify_task_id.clone(),
@@ -1701,9 +1732,9 @@ fn build_flip_verification_tasks(
             visibility: "internal".to_string(),
             context_scope: None,
             cycle_config: None,
-            // Verification needs read-only file access (run tests, check git, verify artifacts)
-            // but does not modify source files — "light" is appropriate.
-            exec_mode: Some("light".to_string()),
+            // Verification agent is empowered to fix problems — needs full exec
+            // authority to edit files, run builds, and commit repairs.
+            exec_mode: None,
             token_usage: None,
             session_id: None,
             wait_condition: None,
