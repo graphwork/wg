@@ -1333,7 +1333,7 @@ fn reactivate_cycle(
         .map(|t| t.loop_iteration)
         .unwrap_or(0);
     let new_iteration = current_iter + 1;
-    if new_iteration >= cycle_config.max_iterations {
+    if cycle_config.max_iterations > 0 && new_iteration >= cycle_config.max_iterations {
         return vec![];
     }
 
@@ -1374,10 +1374,17 @@ fn reactivate_cycle(
             task.log.push(LogEntry {
                 timestamp: Utc::now().to_rfc3339(),
                 actor: None,
-                message: format!(
-                    "Re-activated by cycle iteration (iteration {}/{})",
-                    new_iteration, cycle_config.max_iterations
-                ),
+                message: if cycle_config.max_iterations == 0 {
+                    format!(
+                        "Re-activated by cycle iteration (iteration {}/unlimited)",
+                        new_iteration
+                    )
+                } else {
+                    format!(
+                        "Re-activated by cycle iteration (iteration {}/{})",
+                        new_iteration, cycle_config.max_iterations
+                    )
+                },
             });
 
             reactivated.push(member_id.clone());

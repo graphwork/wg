@@ -4593,6 +4593,45 @@ fn test_evaluate_all_cycles_respects_max_iterations() {
 }
 
 #[test]
+fn test_cycle_reactivates_indefinitely_with_max_iterations_zero() {
+    // max_iterations=0 means unlimited. The cycle should reactivate no matter
+    // how high the loop_iteration gets.
+    for iteration in [0, 1, 5, 100, 1000] {
+        let mut a = make_task_with_status("a", "A", Status::Done);
+        a.after = vec!["b".to_string()];
+        a.loop_iteration = iteration;
+        a.cycle_config = Some(CycleConfig {
+            max_iterations: 0,
+            guard: None,
+            delay: None,
+            no_converge: false,
+            restart_on_failure: true,
+            max_failure_restarts: None,
+        });
+        let mut b = make_task_with_status("b", "B", Status::Done);
+        b.after = vec!["a".to_string()];
+        b.loop_iteration = iteration;
+
+        let mut graph = build_graph(vec![a, b]);
+        let analysis = graph.compute_cycle_analysis();
+
+        let reactivated = evaluate_all_cycle_iterations(&mut graph, &analysis);
+        assert_eq!(
+            reactivated.len(),
+            2,
+            "Cycle with max_iterations=0 should reactivate at iteration {}",
+            iteration
+        );
+        assert_eq!(graph.get_task("a").unwrap().status, Status::Open);
+        assert_eq!(graph.get_task("b").unwrap().status, Status::Open);
+        assert_eq!(
+            graph.get_task("a").unwrap().loop_iteration,
+            iteration + 1
+        );
+    }
+}
+
+#[test]
 fn test_evaluate_all_cycles_three_node_cycle() {
     // 3-node cycle: A → B → C → A, all Done, max_iterations=3.
     let mut a = make_task_with_status("a", "A", Status::Done);
