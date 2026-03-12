@@ -269,17 +269,24 @@ fn call_anthropic_native(
     use crate::executor::native::provider::Provider;
 
     let endpoint = config.llm_endpoints.find_for_provider(provider_name);
-    let client = if let Some(key) = endpoint.and_then(|ep| ep.api_key.clone()) {
-        let mut c = AnthropicClient::new(key, model)
-            .context("Failed to create Anthropic client for lightweight call")?;
-        if let Some(url) = endpoint.and_then(|ep| ep.url.clone()) {
-            c = c.with_base_url(&url);
-        }
-        c
+    let endpoint_key = endpoint.and_then(|ep| ep.api_key.clone());
+    let endpoint_url = endpoint.and_then(|ep| ep.url.clone());
+
+    // Resolve API key. Priority: env var > endpoint config > from_env fallbacks
+    let env_key = std::env::var("ANTHROPIC_API_KEY")
+        .ok()
+        .filter(|k| !k.is_empty());
+    let mut client = if let Some(key) = env_key {
+        AnthropicClient::new(key, model)
+    } else if let Some(key) = endpoint_key {
+        AnthropicClient::new(key, model)
     } else {
         AnthropicClient::from_env(model)
-            .context("Failed to create Anthropic client for lightweight call")?
-    };
+    }
+    .context("Failed to create Anthropic client for lightweight call")?;
+    if let Some(url) = endpoint_url {
+        client = client.with_base_url(&url);
+    }
 
     let request = MessagesRequest {
         model: model.to_string(),
@@ -356,23 +363,30 @@ fn call_openai_native(
     use crate::executor::native::provider::Provider;
 
     let endpoint = config.llm_endpoints.find_for_provider(provider_name);
-    let mut client = if let Some(key) = endpoint.and_then(|ep| ep.api_key.clone()) {
-        let mut c = OpenAiClient::new(key, model, None)
-            .context("Failed to create OpenAI client for lightweight call")?;
-        if let Some(url) = endpoint.and_then(|ep| ep.url.clone()) {
-            c = c.with_base_url(&url);
-        }
-        c
+    let endpoint_key = endpoint.and_then(|ep| ep.api_key.clone());
+    let endpoint_url = endpoint.and_then(|ep| ep.url.clone());
+
+    // Resolve API key. Priority: env var > endpoint config > from_env fallbacks
+    let env_key = ["OPENROUTER_API_KEY", "OPENAI_API_KEY"]
+        .iter()
+        .find_map(|v| std::env::var(v).ok().filter(|k| !k.is_empty()));
+    let resolved_key = env_key.or(endpoint_key);
+
+    let mut client = if let Some(key) = resolved_key {
+        OpenAiClient::new(key, model, None)
+            .context("Failed to create OpenAI client for lightweight call")?
     } else if provider_name == "local" {
         // Local providers don't require auth
-        OpenAiClient::from_env(model).unwrap_or_else(|_| {
-            OpenAiClient::new("local".to_string(), model, None)
-                .expect("infallible with static args")
-        })
+        OpenAiClient::new("local".to_string(), model, None)
+            .expect("infallible with static args")
     } else {
+        // Legacy fallback
         OpenAiClient::from_env(model)
             .context("Failed to create OpenAI client for lightweight call")?
     };
+    if let Some(url) = endpoint_url {
+        client = client.with_base_url(&url);
+    }
     client = client.with_provider_hint(provider_name);
 
     let request = MessagesRequest {

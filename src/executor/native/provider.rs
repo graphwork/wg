@@ -45,10 +45,15 @@ pub fn create_provider(workgraph_dir: &Path, model: &str) -> Result<Box<dyn Prov
 
 /// Create a provider, optionally overriding the provider name.
 ///
-/// Resolution order for API key and base URL:
-/// 1. Matching `[[llm_endpoints]]` entry in config (by provider name)
-/// 2. `[native_executor]` section in config (`api_base`)
-/// 3. Environment variables (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, etc.)
+/// Resolution order for API key:
+/// 1. Environment variables (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, etc.)
+/// 2. Matching `[[llm_endpoints]]` entry in config (by provider name)
+/// 3. `[native_executor]` section in config (legacy fallback)
+///
+/// Resolution order for base URL:
+/// 1. Matching `[[llm_endpoints]]` entry's `url` field
+/// 2. Environment variables (`OPENAI_BASE_URL`, etc.) — OpenAI-family only
+/// 3. `[native_executor]` section's `api_base` field
 pub fn create_provider_ext(
     workgraph_dir: &Path,
     model: &str,
@@ -86,12 +91,23 @@ pub fn create_provider_ext(
     let endpoint_key = endpoint.and_then(|ep| ep.api_key.clone());
     let endpoint_url = endpoint.and_then(|ep| ep.url.clone());
 
-    let api_base: Option<String> = endpoint_url.or_else(|| {
-        native_cfg
-            .and_then(|c| c.get("api_base"))
-            .and_then(|v| v.as_str())
-            .map(String::from)
-    });
+    let api_base: Option<String> = endpoint_url
+        .or_else(|| {
+            // OpenAI-family env var base URLs
+            if matches!(provider_name.as_str(), "openai" | "openrouter" | "local") {
+                std::env::var("OPENAI_BASE_URL")
+                    .or_else(|_| std::env::var("OPENROUTER_BASE_URL"))
+                    .ok()
+            } else {
+                None
+            }
+        })
+        .or_else(|| {
+            native_cfg
+                .and_then(|c| c.get("api_base"))
+                .and_then(|v| v.as_str())
+                .map(String::from)
+        });
 
     let max_tokens = native_cfg
         .and_then(|c| c.get("max_tokens"))
@@ -100,13 +116,19 @@ pub fn create_provider_ext(
 
     match provider_name.as_str() {
         "openai" | "openrouter" | "local" => {
-            let mut client = if let Some(key) = endpoint_key {
+            // Resolve API key. Priority: env var > endpoint config > native_executor (legacy)
+            let env_key = ["OPENROUTER_API_KEY", "OPENAI_API_KEY"]
+                .iter()
+                .find_map(|v| std::env::var(v).ok().filter(|k| !k.is_empty()));
+            let resolved_key = env_key.or(endpoint_key);
+
+            let mut client = if let Some(key) = resolved_key {
                 OpenAiClient::new(key, model, None)
             } else if provider_name == "local" {
                 // Local providers (Ollama, vLLM) don't require auth
-                OpenAiClient::from_env(model)
-                    .or_else(|_| OpenAiClient::new("local".to_string(), model, None))
+                OpenAiClient::new("local".to_string(), model, None)
             } else {
+                // Legacy fallback: native_executor api_key
                 OpenAiClient::from_env(model).or_else(|_| {
                     let key = super::client::resolve_api_key_from_dir(workgraph_dir)?;
                     OpenAiClient::new(key, model, None)
@@ -127,9 +149,16 @@ pub fn create_provider_ext(
             Ok(Box::new(client))
         }
         _ => {
-            let mut client = if let Some(key) = endpoint_key {
+            // Resolve API key. Priority: env var > endpoint config > from_env fallbacks
+            let env_key = std::env::var("ANTHROPIC_API_KEY")
+                .ok()
+                .filter(|k| !k.is_empty());
+            let mut client = if let Some(key) = env_key {
+                AnthropicClient::new(key, model)
+            } else if let Some(key) = endpoint_key {
                 AnthropicClient::new(key, model)
             } else {
+                // Legacy fallback: ~/.config/anthropic/api_key, etc.
                 AnthropicClient::from_env(model)
             }
             .context("Failed to initialize Anthropic client")?;

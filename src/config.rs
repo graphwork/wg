@@ -2857,4 +2857,135 @@ model = "haiku"
         assert_eq!("PREMIUM".parse::<Tier>().unwrap(), Tier::Premium);
         assert!("unknown".parse::<Tier>().is_err());
     }
+
+    // ---- EndpointsConfig::find_for_provider tests ----
+
+    #[test]
+    fn test_find_for_provider_empty() {
+        let endpoints = EndpointsConfig::default();
+        assert!(endpoints.find_for_provider("openai").is_none());
+    }
+
+    #[test]
+    fn test_find_for_provider_single_match() {
+        let endpoints = EndpointsConfig {
+            endpoints: vec![EndpointConfig {
+                name: "my-openai".to_string(),
+                provider: "openai".to_string(),
+                url: Some("https://api.openai.com/v1".to_string()),
+                model: None,
+                api_key: Some("sk-test-key".to_string()),
+                is_default: false,
+            }],
+        };
+        let ep = endpoints.find_for_provider("openai").unwrap();
+        assert_eq!(ep.name, "my-openai");
+        assert_eq!(ep.api_key.as_deref(), Some("sk-test-key"));
+    }
+
+    #[test]
+    fn test_find_for_provider_no_match() {
+        let endpoints = EndpointsConfig {
+            endpoints: vec![EndpointConfig {
+                name: "my-openai".to_string(),
+                provider: "openai".to_string(),
+                url: None,
+                model: None,
+                api_key: Some("sk-test".to_string()),
+                is_default: false,
+            }],
+        };
+        assert!(endpoints.find_for_provider("anthropic").is_none());
+    }
+
+    #[test]
+    fn test_find_for_provider_prefers_default() {
+        let endpoints = EndpointsConfig {
+            endpoints: vec![
+                EndpointConfig {
+                    name: "first-openai".to_string(),
+                    provider: "openai".to_string(),
+                    url: None,
+                    model: None,
+                    api_key: Some("sk-first".to_string()),
+                    is_default: false,
+                },
+                EndpointConfig {
+                    name: "default-openai".to_string(),
+                    provider: "openai".to_string(),
+                    url: None,
+                    model: None,
+                    api_key: Some("sk-default".to_string()),
+                    is_default: true,
+                },
+                EndpointConfig {
+                    name: "third-openai".to_string(),
+                    provider: "openai".to_string(),
+                    url: None,
+                    model: None,
+                    api_key: Some("sk-third".to_string()),
+                    is_default: false,
+                },
+            ],
+        };
+        let ep = endpoints.find_for_provider("openai").unwrap();
+        assert_eq!(ep.name, "default-openai");
+        assert_eq!(ep.api_key.as_deref(), Some("sk-default"));
+    }
+
+    #[test]
+    fn test_find_for_provider_first_match_without_default() {
+        let endpoints = EndpointsConfig {
+            endpoints: vec![
+                EndpointConfig {
+                    name: "anthropic-ep".to_string(),
+                    provider: "anthropic".to_string(),
+                    url: None,
+                    model: None,
+                    api_key: Some("ant-key".to_string()),
+                    is_default: false,
+                },
+                EndpointConfig {
+                    name: "first-openai".to_string(),
+                    provider: "openai".to_string(),
+                    url: None,
+                    model: None,
+                    api_key: Some("sk-first".to_string()),
+                    is_default: false,
+                },
+                EndpointConfig {
+                    name: "second-openai".to_string(),
+                    provider: "openai".to_string(),
+                    url: None,
+                    model: None,
+                    api_key: Some("sk-second".to_string()),
+                    is_default: false,
+                },
+            ],
+        };
+        // Without a default, returns the first matching provider
+        let ep = endpoints.find_for_provider("openai").unwrap();
+        assert_eq!(ep.name, "first-openai");
+    }
+
+    #[test]
+    fn test_find_for_provider_url_and_key() {
+        let endpoints = EndpointsConfig {
+            endpoints: vec![EndpointConfig {
+                name: "openrouter".to_string(),
+                provider: "openrouter".to_string(),
+                url: Some("https://openrouter.ai/api/v1".to_string()),
+                model: Some("anthropic/claude-sonnet-4-20250514".to_string()),
+                api_key: Some("sk-or-test".to_string()),
+                is_default: true,
+            }],
+        };
+        let ep = endpoints.find_for_provider("openrouter").unwrap();
+        assert_eq!(ep.url.as_deref(), Some("https://openrouter.ai/api/v1"));
+        assert_eq!(ep.api_key.as_deref(), Some("sk-or-test"));
+        assert_eq!(
+            ep.model.as_deref(),
+            Some("anthropic/claude-sonnet-4-20250514")
+        );
+    }
 }
