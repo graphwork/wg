@@ -1656,6 +1656,12 @@ pub struct CoordinatorConfig {
     #[serde(default = "default_compactor_ops_threshold")]
     pub compactor_ops_threshold: usize,
 
+    /// Accumulated coordinator conversation token threshold for triggering compaction.
+    /// Compaction is deferred until at least this many tokens have been accumulated
+    /// since the last compaction. Default: 100_000. Set to 0 to disable token gating.
+    #[serde(default = "default_compaction_token_threshold")]
+    pub compaction_token_threshold: u64,
+
     /// How often to evaluate coordinator turns.
     /// Options: "every", "every_5" (default), "every_10", "sample_20pct", "none"
     #[serde(default = "default_eval_frequency")]
@@ -1700,6 +1706,10 @@ fn default_compactor_ops_threshold() -> usize {
     100
 }
 
+fn default_compaction_token_threshold() -> u64 {
+    100_000
+}
+
 fn default_eval_frequency() -> String {
     "every_5".to_string()
 }
@@ -1726,6 +1736,7 @@ impl Default for CoordinatorConfig {
             coordinator_agent: default_coordinator_agent(),
             compactor_interval: default_compactor_interval(),
             compactor_ops_threshold: default_compactor_ops_threshold(),
+            compaction_token_threshold: default_compaction_token_threshold(),
             eval_frequency: default_eval_frequency(),
             worktree_isolation: false,
             max_coordinators: default_max_coordinators(),

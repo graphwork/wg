@@ -621,6 +621,9 @@ fn agent_thread_main(
                 let collected =
                     collect_response(&response_rx, logger, std::time::Duration::from_secs(300));
 
+                // Extract token usage before consuming the response.
+                let turn_token_usage = collected.as_ref().and_then(|r| r.token_usage);
+
                 let response_info = match collected {
                     Some(resp) if !resp.summary.is_empty() => {
                         let len = resp.summary.len();
@@ -670,6 +673,22 @@ fn agent_thread_main(
                         None
                     }
                 };
+
+                // Accumulate token usage in coordinator state for compaction gating.
+                // Done regardless of whether there was a text response, so even
+                // tool-only turns are counted.
+                if let Some((input_toks, output_toks)) = turn_token_usage {
+                    let total = input_toks.saturating_add(output_toks);
+                    if total > 0 {
+                        let mut cs = super::CoordinatorState::load_or_default(dir);
+                        cs.accumulated_tokens = cs.accumulated_tokens.saturating_add(total);
+                        cs.save(dir);
+                        logger.info(&format!(
+                            "Coordinator agent: turn used {} tokens (input={}, output={}), accumulated={}",
+                            total, input_toks, output_toks, cs.accumulated_tokens
+                        ));
+                    }
+                }
 
                 // Record this turn as a cycle iteration on the .coordinator task
                 if let Some((resp_len, ref resp_summary)) = response_info {
@@ -822,6 +841,8 @@ enum ResponseEvent {
     Text(String),
     /// A tool call from an assistant message.
     ToolUse { name: String, input: String },
+    /// Token usage from an assistant turn (per-turn input + output tokens).
+    TurnStats { input_tokens: u64, output_tokens: u64 },
     /// A tool result from Claude CLI's internal tool execution.
     ToolResult(String),
     /// The assistant turn is complete (end_turn).
@@ -844,6 +865,8 @@ struct CollectedResponse {
     /// Full response text including tool calls, for the expanded view.
     /// None if the response had no tool calls (full == summary).
     full_text: Option<String>,
+    /// Per-turn token usage: (input_tokens, output_tokens).
+    token_usage: Option<(u64, u64)>,
 }
 
 /// Read stdout from the Claude CLI process line by line, parse stream-json
@@ -909,6 +932,24 @@ fn stdout_reader(
                                 }
                                 _ => {}
                             }
+                        }
+                    }
+
+                    // Extract per-turn token usage from message.usage
+                    if let Some(usage) = message.get("usage") {
+                        let input_tokens = usage
+                            .get("input_tokens")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0);
+                        let output_tokens = usage
+                            .get("output_tokens")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0);
+                        if input_tokens > 0 || output_tokens > 0 {
+                            let _ = tx.send(ResponseEvent::TurnStats {
+                                input_tokens,
+                                output_tokens,
+                            });
                         }
                     }
 
@@ -997,6 +1038,8 @@ fn collect_response(
     let deadline = std::time::Instant::now() + timeout;
     let mut parts: Vec<ResponsePart> = Vec::new();
     let mut has_tool_calls = false;
+    let mut total_input_tokens: u64 = 0;
+    let mut total_output_tokens: u64 = 0;
 
     loop {
         let remaining = deadline
@@ -1004,7 +1047,12 @@ fn collect_response(
             .unwrap_or(std::time::Duration::ZERO);
         if remaining.is_zero() {
             logger.warn("Coordinator agent: response collection timed out");
-            return build_collected_response(&parts, has_tool_calls);
+            return build_collected_response(
+                &parts,
+                has_tool_calls,
+                total_input_tokens,
+                total_output_tokens,
+            );
         }
 
         match rx.recv_timeout(remaining) {
@@ -1019,6 +1067,14 @@ fn collect_response(
                 has_tool_calls = true;
                 parts.push(ResponsePart::ToolResult(content));
             }
+            Ok(ResponseEvent::TurnStats {
+                input_tokens,
+                output_tokens,
+            }) => {
+                // Accumulate per-turn token usage across all sub-turns in the exchange.
+                total_input_tokens = total_input_tokens.saturating_add(input_tokens);
+                total_output_tokens = total_output_tokens.saturating_add(output_tokens);
+            }
             Ok(ResponseEvent::TurnComplete) => {
                 // The assistant finished its turn.
                 let has_text = parts.iter().any(|p| matches!(p, ResponsePart::Text(_)));
@@ -1027,17 +1083,37 @@ fn collect_response(
                     // only made tool calls. Continue waiting for the next turn.
                     continue;
                 }
-                return build_collected_response(&parts, has_tool_calls);
+                return build_collected_response(
+                    &parts,
+                    has_tool_calls,
+                    total_input_tokens,
+                    total_output_tokens,
+                );
             }
             Ok(ResponseEvent::StreamEnd) => {
                 logger.warn("Coordinator agent: stdout stream ended during response collection");
-                return build_collected_response(&parts, has_tool_calls);
+                return build_collected_response(
+                    &parts,
+                    has_tool_calls,
+                    total_input_tokens,
+                    total_output_tokens,
+                );
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
-                return build_collected_response(&parts, has_tool_calls);
+                return build_collected_response(
+                    &parts,
+                    has_tool_calls,
+                    total_input_tokens,
+                    total_output_tokens,
+                );
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
-                return build_collected_response(&parts, has_tool_calls);
+                return build_collected_response(
+                    &parts,
+                    has_tool_calls,
+                    total_input_tokens,
+                    total_output_tokens,
+                );
             }
         }
     }
@@ -1050,6 +1126,8 @@ fn collect_response(
 fn build_collected_response(
     parts: &[ResponsePart],
     has_tool_calls: bool,
+    total_input_tokens: u64,
+    total_output_tokens: u64,
 ) -> Option<CollectedResponse> {
     // Find the last text part for the summary
     let summary = parts
@@ -1075,7 +1153,17 @@ fn build_collected_response(
         None
     };
 
-    Some(CollectedResponse { summary, full_text })
+    let token_usage = if total_input_tokens > 0 || total_output_tokens > 0 {
+        Some((total_input_tokens, total_output_tokens))
+    } else {
+        None
+    };
+
+    Some(CollectedResponse {
+        summary,
+        full_text,
+        token_usage,
+    })
 }
 
 /// Format the full response text from ordered response parts.

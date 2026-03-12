@@ -275,6 +275,11 @@ pub struct CoordinatorState {
     /// Whether the coordinator is paused (no new agent spawns)
     #[serde(default)]
     pub paused: bool,
+    /// Accumulated coordinator conversation tokens since last compaction.
+    /// Incremented by the coordinator agent thread after each LLM turn.
+    /// Resets to 0 after successful compaction.
+    #[serde(default)]
+    pub accumulated_tokens: u64,
 }
 
 impl CoordinatorState {
@@ -1205,27 +1210,34 @@ fn ensure_coordinator_task(dir: &Path) {
 fn run_graph_compaction(dir: &Path, compaction_error_count: &mut u64, logger: &DaemonLogger) {
     let gp = graph_path(dir);
 
-    // Check if .compact-0 is graph-ready (Open + all deps terminal)
+    // Check if .compact-0 is cycle-ready (uses cycle-aware readiness, not terminal check)
     {
         let graph = match load_graph(&gp) {
             Ok(g) => g,
             Err(_) => return,
         };
-        let compact = match graph.get_task(".compact-0") {
-            Some(t) => t,
-            None => return, // No compact task in graph
-        };
-        if compact.status != workgraph::graph::Status::Open {
-            return; // Not ready — already in-progress, done, etc.
+        if graph.get_task(".compact-0").is_none() {
+            return; // No compact task in graph
         }
-        let all_deps_met = compact.after.iter().all(|dep_id| {
-            graph
-                .get_task(dep_id)
-                .map(|t| t.status.is_terminal())
-                .unwrap_or(false)
-        });
-        if !all_deps_met {
-            return; // Dependencies not yet satisfied
+        let cycle_analysis = graph.compute_cycle_analysis();
+        let cycle_ready =
+            workgraph::query::ready_tasks_with_peers_cycle_aware(&graph, dir, &cycle_analysis);
+        if !cycle_ready.iter().any(|t| t.id == ".compact-0") {
+            return; // .compact-0 is not cycle-ready
+        }
+
+        // Gate on token threshold: defer compaction until enough tokens have accumulated
+        let config = workgraph::config::Config::load_or_default(dir);
+        let threshold = config.coordinator.compaction_token_threshold;
+        if threshold > 0 {
+            let state = CoordinatorState::load_or_default(dir);
+            if state.accumulated_tokens < threshold {
+                logger.info(&format!(
+                    "Compaction deferred: accumulated_tokens={} < threshold={}",
+                    state.accumulated_tokens, threshold
+                ));
+                return;
+            }
         }
     }
 
@@ -1264,6 +1276,18 @@ fn run_graph_compaction(dir: &Path, compaction_error_count: &mut u64, logger: &D
             }
             *compaction_error_count = 0;
             logger.info(&format!("Compaction complete → {}", path.display()));
+
+            // Reset accumulated token counter after successful compaction
+            {
+                let mut cs = CoordinatorState::load_or_default(dir);
+                let prev = cs.accumulated_tokens;
+                cs.accumulated_tokens = 0;
+                cs.save(dir);
+                logger.info(&format!(
+                    "Compaction: reset accumulated_tokens from {} to 0",
+                    prev
+                ));
+            }
 
             // Mark .compact-0 as Done and increment iteration
             let mut graph = match load_graph(&gp) {
@@ -1449,6 +1473,7 @@ pub fn run_daemon(
         tasks_ready: 0,
         agents_spawned: 0,
         paused: false,
+        accumulated_tokens: 0,
     };
     coord_state.save(&dir);
 
@@ -1737,6 +1762,11 @@ pub fn run_daemon(
                     coord_state.agents_alive = result.agents_alive;
                     coord_state.tasks_ready = result.tasks_ready;
                     coord_state.agents_spawned = result.agents_spawned;
+                    // Reload accumulated_tokens from disk before saving to avoid clobbering
+                    // increments written by the coordinator agent thread.
+                    if let Some(disk) = CoordinatorState::load(&dir) {
+                        coord_state.accumulated_tokens = disk.accumulated_tokens;
+                    }
                     coord_state.save(&dir);
 
                     // Record tick events (spawns, completions, failures, zero-output kills)
@@ -1755,6 +1785,9 @@ pub fn run_daemon(
                 }
                 Err(e) => {
                     coord_state.ticks += 1;
+                    if let Some(disk) = CoordinatorState::load(&dir) {
+                        coord_state.accumulated_tokens = disk.accumulated_tokens;
+                    }
                     coord_state.save(&dir);
                     logger.error(&format!("Coordinator tick error: {}", e));
                 }
@@ -2874,6 +2907,11 @@ mod tests {
         // Create a logger for the test
         let logger = DaemonLogger::open(dir).unwrap();
 
+        // Pre-seed accumulated tokens above threshold so compaction isn't deferred
+        let mut cs = CoordinatorState::load_or_default(dir);
+        cs.accumulated_tokens = 200_000;
+        cs.save(dir);
+
         let mut error_count = 0u64;
         // .compact-0 is Open with no deps → graph-ready → compaction fires
         // It will fail (no LLM) but we verify the task status gets updated
@@ -2917,6 +2955,11 @@ mod tests {
 
         let logger = DaemonLogger::open(dir).unwrap();
         let mut error_count = 0u64;
+
+        // Pre-seed accumulated tokens above threshold so compaction isn't deferred
+        let mut cs = CoordinatorState::load_or_default(dir);
+        cs.accumulated_tokens = 200_000;
+        cs.save(dir);
 
         // .compact-0 is Open and dep (.coordinator-0) is Done → should fire
         run_graph_compaction(dir, &mut error_count, &logger);
