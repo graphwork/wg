@@ -102,8 +102,16 @@ pub fn scaffold_assign_task(graph: &mut WorkGraph, task_id: &str, task_title: &s
         return false;
     }
 
-    // If a .place-* task exists for this source task, make .assign-* depend on it.
-    // This enforces the pipeline ordering: .place-* → .assign-* → task
+    // Dual-wiring strategy for .place-* → .assign-* ordering:
+    //
+    // This is one half of a two-sided wiring approach. Either side can run first:
+    //   1. Here (publish-side): if .place-* already exists, add it as a dep.
+    //   2. Coordinator Phase 2.9 (build_placement_tasks): if .assign-* already
+    //      exists when .place-* is created, retroactively add .place-* to
+    //      .assign-*'s after list.
+    //
+    // Whoever arrives second completes the chain. This makes the wiring
+    // idempotent regardless of creation order.
     let place_task_id = format!(".place-{}", task_id);
     let after = if graph.get_task(&place_task_id).is_some() {
         vec![place_task_id.clone()]

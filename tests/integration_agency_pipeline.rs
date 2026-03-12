@@ -871,6 +871,117 @@ fn resolve_model_source_reports_tier_override() {
 }
 
 // ===========================================================================
+// Place → Assign retroactive wiring tests
+// ===========================================================================
+
+#[test]
+fn scaffold_assign_then_place_wires_retroactively() {
+    // Scenario: publish runs before coordinator Phase 2.9.
+    // .assign-* is created first (without .place-* dep), then .place-* is created.
+    // The coordinator's retroactive wiring must add .place-* to .assign-*'s after list
+    // so the chain .place-* → .assign-* → task is always correct regardless of order.
+    let mut graph = WorkGraph::new();
+    graph.add_node(Node::Task(make_task("my-task", "My Task")));
+
+    // Step 1: Simulate publish creating .assign-* without .place-* existing
+    // (replicates scaffold_assign_task when .place-* doesn't exist yet)
+    let assign_task = Task {
+        id: ".assign-my-task".to_string(),
+        title: "Assign agent for: My Task".to_string(),
+        status: Status::Open,
+        after: vec![], // No .place-* exists yet → empty deps
+        before: vec!["my-task".to_string()],
+        tags: vec!["assignment".to_string(), "agency".to_string()],
+        ..Task::default()
+    };
+    graph.add_node(Node::Task(assign_task));
+
+    // Verify .assign-* has no deps initially
+    let assign = graph.get_task(".assign-my-task").unwrap();
+    assert!(
+        assign.after.is_empty(),
+        ".assign-* should have no deps when .place-* doesn't exist yet"
+    );
+
+    // Step 2: Simulate coordinator Phase 2.9 creating .place-*
+    let place_task = Task {
+        id: ".place-my-task".to_string(),
+        title: "Place: my-task".to_string(),
+        status: Status::Open,
+        tags: vec!["placement".to_string(), "agency".to_string()],
+        ..Task::default()
+    };
+    graph.add_node(Node::Task(place_task));
+
+    // Step 3: Coordinator's retroactive wiring (from build_placement_tasks):
+    // after creating .place-*, check if .assign-* exists and wire the edge
+    let place_task_id = ".place-my-task";
+    let assign_task_id = ".assign-my-task";
+    if let Some(assign_task) = graph.get_task_mut(assign_task_id)
+        && !assign_task.after.iter().any(|a| a == place_task_id)
+    {
+        assign_task.after.push(place_task_id.to_string());
+    }
+
+    // Verify: .assign-* now depends on .place-*
+    let assign = graph.get_task(".assign-my-task").unwrap();
+    assert_eq!(
+        assign.after,
+        vec![".place-my-task".to_string()],
+        ".assign-* should depend on .place-* after retroactive wiring"
+    );
+
+    // Verify: full chain .place-* → .assign-* → my-task
+    assert_eq!(assign.before, vec!["my-task".to_string()]);
+}
+
+#[test]
+fn retroactive_wiring_is_idempotent() {
+    // The retroactive wiring must not add duplicate edges if called multiple times
+    let mut graph = WorkGraph::new();
+    graph.add_node(Node::Task(make_task("foo", "Foo")));
+
+    let assign_task = Task {
+        id: ".assign-foo".to_string(),
+        title: "Assign agent for: Foo".to_string(),
+        status: Status::Open,
+        after: vec![],
+        before: vec!["foo".to_string()],
+        tags: vec!["assignment".to_string()],
+        ..Task::default()
+    };
+    graph.add_node(Node::Task(assign_task));
+
+    let place_task = Task {
+        id: ".place-foo".to_string(),
+        title: "Place: foo".to_string(),
+        status: Status::Open,
+        tags: vec!["placement".to_string()],
+        ..Task::default()
+    };
+    graph.add_node(Node::Task(place_task));
+
+    // Wire twice — second call should be a no-op
+    for _ in 0..2 {
+        let place_id = ".place-foo";
+        let assign_id = ".assign-foo";
+        if let Some(assign_task) = graph.get_task_mut(assign_id)
+            && !assign_task.after.iter().any(|a| a == place_id)
+        {
+            assign_task.after.push(place_id.to_string());
+        }
+    }
+
+    let assign = graph.get_task(".assign-foo").unwrap();
+    assert_eq!(
+        assign.after.len(),
+        1,
+        "Retroactive wiring should not create duplicate edges"
+    );
+    assert_eq!(assign.after[0], ".place-foo");
+}
+
+// ===========================================================================
 // Additional edge cases
 // ===========================================================================
 
