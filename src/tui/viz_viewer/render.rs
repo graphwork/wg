@@ -9163,4 +9163,296 @@ mod tests {
             "No annotations should produce no hit regions"
         );
     }
+
+    // ── E2E annotation click pipeline tests ──
+    // These test the full pipeline: graph with internal dot-tasks → filter_internal_tasks
+    // generates annotations → ASCII render → VizApp hit region computation → click resolution.
+
+    /// Helper: build a graph with a parent and an internal task, run filter + ascii + hit regions.
+    /// Returns (VizApp, annotations) for assertion.
+    fn build_e2e_annotation_app(
+        parent_id: &str,
+        parent_title: &str,
+        parent_status: Status,
+        internal_id: &str,
+        internal_title: &str,
+        internal_tag: &str,
+        internal_after: Vec<&str>,
+    ) -> VizApp {
+        let mut graph = WorkGraph::new();
+        let mut parent = make_task_with_status(parent_id, parent_title, parent_status);
+        // Wire dependency if the internal task blocks the parent
+        if !internal_after.contains(&parent_id) {
+            parent.after = vec![internal_id.to_string()];
+        }
+        graph.add_node(Node::Task(parent));
+
+        let mut internal = workgraph::graph::Task {
+            id: internal_id.to_string(),
+            title: internal_title.to_string(),
+            tags: vec![internal_tag.to_string(), "agency".to_string()],
+            after: internal_after.into_iter().map(String::from).collect(),
+            status: Status::InProgress,
+            ..workgraph::graph::Task::default()
+        };
+        let _ = &mut internal; // suppress unused warning
+        graph.add_node(Node::Task(internal));
+
+        let empty_annotations: HashMap<String, crate::commands::viz::AnnotationInfo> =
+            HashMap::new();
+        let (filtered, annots) = crate::commands::viz::filter_internal_tasks(
+            &graph,
+            graph.tasks().collect(),
+            &empty_annotations,
+        );
+        let task_ids: HashSet<&str> = filtered.iter().map(|t| t.id.as_str()).collect();
+
+        let viz = generate_ascii(
+            &graph,
+            &filtered,
+            &task_ids,
+            &annots,
+            &HashMap::new(),
+            &HashMap::new(),
+            LayoutMode::Tree,
+            &HashSet::new(),
+            "gray",
+            &HashMap::new(),
+        );
+
+        let mut app = VizApp::from_viz_output_for_test(&viz);
+        app.annotation_map = viz.annotation_map.clone();
+        app.compute_annotation_hit_regions();
+        app
+    }
+
+    #[test]
+    fn test_e2e_assigning_click_resolves() {
+        // parent + .assign-parent → [⊞ assigning], click resolves to .assign-parent
+        let app = build_e2e_annotation_app(
+            "parent",
+            "Parent Task",
+            Status::Open,
+            ".assign-parent",
+            "Assign parent",
+            "assignment",
+            vec![],
+        );
+
+        assert_eq!(
+            app.annotation_hit_regions.len(),
+            1,
+            "Expected 1 hit region for assigning"
+        );
+        let region = &app.annotation_hit_regions[0];
+        assert_eq!(region.parent_task_id, "parent");
+        assert_eq!(region.dot_task_ids, vec![".assign-parent"]);
+
+        let plain = &app.plain_lines[region.orig_line];
+        let found = &plain[region.col_start..region.col_end];
+        assert!(
+            found.contains("assigning"),
+            "Hit region should cover [⊞ assigning], got: {:?}",
+            found
+        );
+    }
+
+    #[test]
+    fn test_e2e_evaluating_click_resolves() {
+        // parent + .evaluate-parent → [∴ evaluating], click resolves to .evaluate-parent
+        let app = build_e2e_annotation_app(
+            "parent",
+            "Parent Task",
+            Status::Done,
+            ".evaluate-parent",
+            "Evaluate parent",
+            "evaluation",
+            vec!["parent"],
+        );
+
+        assert_eq!(
+            app.annotation_hit_regions.len(),
+            1,
+            "Expected 1 hit region for evaluating"
+        );
+        let region = &app.annotation_hit_regions[0];
+        assert_eq!(region.parent_task_id, "parent");
+        assert_eq!(region.dot_task_ids, vec![".evaluate-parent"]);
+
+        let plain = &app.plain_lines[region.orig_line];
+        let found = &plain[region.col_start..region.col_end];
+        assert!(
+            found.contains("evaluating"),
+            "Hit region should cover [∴ evaluating], got: {:?}",
+            found
+        );
+    }
+
+    #[test]
+    fn test_e2e_placing_click_resolves() {
+        // parent + .place-parent → [⊞ placing], click resolves to .place-parent
+        let app = build_e2e_annotation_app(
+            "parent",
+            "Parent Task",
+            Status::Open,
+            ".place-parent",
+            "Place parent",
+            "assignment",
+            vec![],
+        );
+
+        assert_eq!(
+            app.annotation_hit_regions.len(),
+            1,
+            "Expected 1 hit region for placing"
+        );
+        let region = &app.annotation_hit_regions[0];
+        assert_eq!(region.parent_task_id, "parent");
+        assert_eq!(region.dot_task_ids, vec![".place-parent"]);
+
+        let plain = &app.plain_lines[region.orig_line];
+        let found = &plain[region.col_start..region.col_end];
+        assert!(
+            found.contains("placing"),
+            "Hit region should cover [⊞ placing], got: {:?}",
+            found
+        );
+    }
+
+    #[test]
+    fn test_e2e_multiple_annotations_column_accurate_click() {
+        // parent with both .assign-parent and .evaluate-parent → two annotations on same line
+        let mut graph = WorkGraph::new();
+        let mut parent = make_task_with_status("parent", "Parent Task", Status::Done);
+        parent.after = vec![".assign-parent".to_string()];
+        graph.add_node(Node::Task(parent));
+
+        let assign = workgraph::graph::Task {
+            id: ".assign-parent".to_string(),
+            title: "Assign parent".to_string(),
+            tags: vec!["assignment".to_string(), "agency".to_string()],
+            status: Status::InProgress,
+            ..workgraph::graph::Task::default()
+        };
+        graph.add_node(Node::Task(assign));
+
+        let eval = workgraph::graph::Task {
+            id: ".evaluate-parent".to_string(),
+            title: "Evaluate parent".to_string(),
+            tags: vec!["evaluation".to_string(), "agency".to_string()],
+            after: vec!["parent".to_string()],
+            status: Status::InProgress,
+            ..workgraph::graph::Task::default()
+        };
+        graph.add_node(Node::Task(eval));
+
+        let empty_annotations: HashMap<String, crate::commands::viz::AnnotationInfo> =
+            HashMap::new();
+        let (filtered, annots) = crate::commands::viz::filter_internal_tasks(
+            &graph,
+            graph.tasks().collect(),
+            &empty_annotations,
+        );
+        let task_ids: HashSet<&str> = filtered.iter().map(|t| t.id.as_str()).collect();
+
+        // Both annotations should merge onto the parent
+        assert!(
+            annots.contains_key("parent"),
+            "Annotations should include parent"
+        );
+        let info = &annots["parent"];
+        assert_eq!(
+            info.dot_task_ids.len(),
+            2,
+            "Should have 2 dot-task IDs for parent"
+        );
+        assert!(info.dot_task_ids.contains(&".assign-parent".to_string()));
+        assert!(info.dot_task_ids.contains(&".evaluate-parent".to_string()));
+
+        let viz = generate_ascii(
+            &graph,
+            &filtered,
+            &task_ids,
+            &annots,
+            &HashMap::new(),
+            &HashMap::new(),
+            LayoutMode::Tree,
+            &HashSet::new(),
+            "gray",
+            &HashMap::new(),
+        );
+
+        let mut app = VizApp::from_viz_output_for_test(&viz);
+        app.annotation_map = viz.annotation_map.clone();
+        app.compute_annotation_hit_regions();
+
+        // Should have exactly 1 hit region (both annotations merge into one composite)
+        assert_eq!(
+            app.annotation_hit_regions.len(),
+            1,
+            "Both annotations on same parent should produce 1 combined hit region"
+        );
+        let region = &app.annotation_hit_regions[0];
+        assert_eq!(region.parent_task_id, "parent");
+        assert_eq!(
+            region.dot_task_ids.len(),
+            2,
+            "Combined region should carry both dot-task IDs"
+        );
+
+        // Verify the annotation text in the plain line covers both phases
+        let plain = &app.plain_lines[region.orig_line];
+        let found = &plain[region.col_start..region.col_end];
+        assert!(
+            found.contains("assigning"),
+            "Combined annotation should contain 'assigning', got: {:?}",
+            found
+        );
+        assert!(
+            found.contains("evaluating"),
+            "Combined annotation should contain 'evaluating', got: {:?}",
+            found
+        );
+
+        // Column accuracy: col_start and col_end should tightly bound the annotation text
+        assert!(
+            region.col_start > 0,
+            "Annotation should not start at column 0 (task label is before it)"
+        );
+        assert!(
+            region.col_end > region.col_start,
+            "col_end should be after col_start"
+        );
+    }
+
+    #[test]
+    fn test_e2e_validating_click_resolves() {
+        // parent + .verify-parent → [∴ validating], click resolves to .verify-parent
+        let app = build_e2e_annotation_app(
+            "parent",
+            "Parent Task",
+            Status::Done,
+            ".verify-parent",
+            "Verify parent",
+            "evaluation",
+            vec!["parent"],
+        );
+
+        assert_eq!(
+            app.annotation_hit_regions.len(),
+            1,
+            "Expected 1 hit region for validating"
+        );
+        let region = &app.annotation_hit_regions[0];
+        assert_eq!(region.parent_task_id, "parent");
+        assert_eq!(region.dot_task_ids, vec![".verify-parent"]);
+
+        let plain = &app.plain_lines[region.orig_line];
+        let found = &plain[region.col_start..region.col_end];
+        assert!(
+            found.contains("validating"),
+            "Hit region should cover [∴ validating], got: {:?}",
+            found
+        );
+    }
 }
