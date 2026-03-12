@@ -429,6 +429,11 @@ impl EndpointsConfig {
         }
         first_match
     }
+
+    /// Find an endpoint by its display name.
+    pub fn find_by_name(&self, name: &str) -> Option<&EndpointConfig> {
+        self.endpoints.iter().find(|ep| ep.name == name)
+    }
 }
 
 /// Checkpoint configuration for agent context preservation
@@ -786,6 +791,9 @@ pub struct RoleModelConfig {
     /// Tier override: resolve model via tier system instead of direct model
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tier: Option<Tier>,
+    /// Named endpoint override: use a specific configured endpoint by name
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<String>,
 }
 
 /// Model routing: maps each dispatch role to a model+provider.
@@ -880,6 +888,7 @@ impl ModelRoutingConfig {
                 provider: None,
                 model: Some(model.to_string()),
                 tier: None,
+                endpoint: None,
             });
         }
     }
@@ -894,6 +903,22 @@ impl ModelRoutingConfig {
                 provider: Some(provider.to_string()),
                 model: None,
                 tier: None,
+                endpoint: None,
+            });
+        }
+    }
+
+    /// Set the endpoint for a role.
+    pub fn set_endpoint(&mut self, role: DispatchRole, endpoint: &str) {
+        let slot = self.get_role_mut(role);
+        if let Some(cfg) = slot {
+            cfg.endpoint = Some(endpoint.to_string());
+        } else {
+            *slot = Some(RoleModelConfig {
+                provider: None,
+                model: None,
+                tier: None,
+                endpoint: Some(endpoint.to_string()),
             });
         }
     }
@@ -906,6 +931,9 @@ pub struct ResolvedModel {
     pub provider: Option<String>,
     /// Registry entry if resolved through the registry (carries cost data)
     pub registry_entry: Option<ModelRegistryEntry>,
+    /// Named endpoint override: when set, consumers should look up this endpoint
+    /// by name instead of falling back to provider-based endpoint lookup.
+    pub endpoint: Option<String>,
 }
 
 impl Config {
@@ -1011,6 +1039,7 @@ impl Config {
                 model: entry.model.clone(),
                 provider: Some(entry.provider.clone()),
                 registry_entry: Some(entry),
+                endpoint: None,
             })
         } else {
             // Model ID not in registry — treat as a bare model name
@@ -1018,6 +1047,7 @@ impl Config {
                 model: model_id.to_string(),
                 provider: None,
                 registry_entry: None,
+                endpoint: None,
             })
         }
     }
@@ -1040,12 +1070,26 @@ impl Config {
             .get_role(DispatchRole::Default)
             .and_then(|c| c.provider.clone());
 
+        // Default endpoint cascades to all roles that don't set their own.
+        let default_endpoint = self
+            .models
+            .get_role(DispatchRole::Default)
+            .and_then(|c| c.endpoint.clone());
+
         // Helper: resolve provider for a role, cascading to default if unset.
         let resolve_provider = |role: DispatchRole| -> Option<String> {
             self.models
                 .get_role(role)
                 .and_then(|c| c.provider.clone())
                 .or_else(|| default_provider.clone())
+        };
+
+        // Helper: resolve endpoint for a role, cascading to default if unset.
+        let resolve_endpoint = |role: DispatchRole| -> Option<String> {
+            self.models
+                .get_role(role)
+                .and_then(|c| c.endpoint.clone())
+                .or_else(|| default_endpoint.clone())
         };
 
         // 1. Check role-specific [models] config (direct model override)
@@ -1059,6 +1103,7 @@ impl Config {
                     .clone()
                     .or_else(|| default_provider.clone()),
                 registry_entry: None,
+                endpoint: resolve_endpoint(role),
             };
         }
 
@@ -1087,6 +1132,7 @@ impl Config {
                 model: model.clone(),
                 provider: resolve_provider(role),
                 registry_entry: None,
+                endpoint: resolve_endpoint(role),
             };
         }
 
@@ -1099,6 +1145,7 @@ impl Config {
             if let Some(p) = resolve_provider(role) {
                 resolved.provider = Some(p);
             }
+            resolved.endpoint = resolve_endpoint(role);
             return resolved;
         }
 
@@ -1108,6 +1155,7 @@ impl Config {
             if let Some(p) = resolve_provider(role) {
                 resolved.provider = Some(p);
             }
+            resolved.endpoint = resolve_endpoint(role);
             return resolved;
         }
 
@@ -1119,6 +1167,7 @@ impl Config {
                 model: model.clone(),
                 provider: default_provider,
                 registry_entry: None,
+                endpoint: default_endpoint,
             };
         }
 
@@ -1127,6 +1176,7 @@ impl Config {
             model: self.agent.model.clone(),
             provider: default_provider,
             registry_entry: None,
+            endpoint: default_endpoint,
         }
     }
 
@@ -2538,6 +2588,7 @@ model = "haiku"
             model: Some("routing-model".to_string()),
             provider: Some("openrouter".to_string()),
             tier: None,
+            endpoint: None,
         });
         let resolved = config.resolve_model_for_role(DispatchRole::Triage);
         assert_eq!(resolved.model, "routing-model");
@@ -2639,6 +2690,7 @@ model = "haiku"
             model: None,
             provider: Some("openrouter".to_string()),
             tier: None,
+            endpoint: None,
         });
 
         let resolved = config.resolve_model_for_role(DispatchRole::Triage);
@@ -2670,11 +2722,13 @@ model = "haiku"
             model: None,
             provider: Some("openrouter".to_string()),
             tier: None,
+            endpoint: None,
         });
         config.models.triage = Some(RoleModelConfig {
             model: Some("anthropic/claude-3.5-haiku".to_string()),
             provider: None,
             tier: None,
+            endpoint: None,
         });
 
         let resolved = config.resolve_model_for_role(DispatchRole::Triage);
@@ -2694,11 +2748,13 @@ model = "haiku"
             model: None,
             provider: Some("openrouter".to_string()),
             tier: None,
+            endpoint: None,
         });
         config.models.triage = Some(RoleModelConfig {
             model: Some("gpt-4o-mini".to_string()),
             provider: Some("openai".to_string()),
             tier: None,
+            endpoint: None,
         });
 
         let resolved = config.resolve_model_for_role(DispatchRole::Triage);
@@ -2718,6 +2774,7 @@ model = "haiku"
             model: None,
             provider: Some("openrouter".to_string()),
             tier: None,
+            endpoint: None,
         });
 
         let resolved = config.resolve_model_for_role(DispatchRole::Evaluator);
@@ -2737,6 +2794,7 @@ model = "haiku"
             model: None,
             provider: Some("openrouter".to_string()),
             tier: None,
+            endpoint: None,
         });
         config.agency.evaluator_model = Some("haiku".to_string());
 
@@ -2871,6 +2929,7 @@ model = "haiku"
             model: None,
             provider: None,
             tier: Some(Tier::Premium),
+            endpoint: None,
         });
         let resolved = config.resolve_model_for_role(DispatchRole::Evaluator);
         assert_eq!(resolved.model, "claude-opus-4-6");
@@ -2884,6 +2943,7 @@ model = "haiku"
             model: Some("my-custom-model".to_string()),
             provider: None,
             tier: Some(Tier::Premium), // Should be ignored because model is set
+            endpoint: None,
         });
         let resolved = config.resolve_model_for_role(DispatchRole::Triage);
         assert_eq!(resolved.model, "my-custom-model");
@@ -3206,5 +3266,102 @@ model = "haiku"
             is_default: false,
         };
         assert_eq!(ep.masked_key(), "(from file)");
+    }
+
+    // ---- Endpoint routing tests ----
+
+    #[test]
+    fn test_find_by_name() {
+        let endpoints = EndpointsConfig {
+            endpoints: vec![
+                EndpointConfig {
+                    name: "openrouter".to_string(),
+                    provider: "openrouter".to_string(),
+                    url: Some("https://openrouter.ai/api/v1".to_string()),
+                    model: None,
+                    api_key: Some("sk-or-test".to_string()),
+                    api_key_file: None,
+                    is_default: false,
+                },
+                EndpointConfig {
+                    name: "anthropic-direct".to_string(),
+                    provider: "anthropic".to_string(),
+                    url: None,
+                    model: None,
+                    api_key: Some("sk-ant-test".to_string()),
+                    api_key_file: None,
+                    is_default: true,
+                },
+            ],
+        };
+        let ep = endpoints.find_by_name("openrouter").unwrap();
+        assert_eq!(ep.provider, "openrouter");
+        assert_eq!(ep.api_key.as_deref(), Some("sk-or-test"));
+
+        let ep = endpoints.find_by_name("anthropic-direct").unwrap();
+        assert_eq!(ep.provider, "anthropic");
+
+        assert!(endpoints.find_by_name("nonexistent").is_none());
+    }
+
+    #[test]
+    fn test_endpoint_cascades_from_default() {
+        let mut config = Config::default();
+        config.models.default = Some(RoleModelConfig {
+            model: None,
+            provider: None,
+            tier: None,
+            endpoint: Some("openrouter".to_string()),
+        });
+
+        // Triage should inherit the default endpoint
+        let resolved = config.resolve_model_for_role(DispatchRole::Triage);
+        assert_eq!(resolved.endpoint.as_deref(), Some("openrouter"));
+
+        // Evaluator should also inherit
+        let resolved = config.resolve_model_for_role(DispatchRole::Evaluator);
+        assert_eq!(resolved.endpoint.as_deref(), Some("openrouter"));
+    }
+
+    #[test]
+    fn test_role_endpoint_overrides_default() {
+        let mut config = Config::default();
+        config.models.default = Some(RoleModelConfig {
+            model: None,
+            provider: None,
+            tier: None,
+            endpoint: Some("openrouter".to_string()),
+        });
+        config.models.evaluator = Some(RoleModelConfig {
+            model: None,
+            provider: None,
+            tier: None,
+            endpoint: Some("anthropic-direct".to_string()),
+        });
+
+        // Triage inherits default
+        let resolved = config.resolve_model_for_role(DispatchRole::Triage);
+        assert_eq!(resolved.endpoint.as_deref(), Some("openrouter"));
+
+        // Evaluator uses its own endpoint
+        let resolved = config.resolve_model_for_role(DispatchRole::Evaluator);
+        assert_eq!(resolved.endpoint.as_deref(), Some("anthropic-direct"));
+    }
+
+    #[test]
+    fn test_no_endpoint_is_backward_compatible() {
+        let config = Config::default();
+        let resolved = config.resolve_model_for_role(DispatchRole::Triage);
+        assert!(resolved.endpoint.is_none());
+    }
+
+    #[test]
+    fn test_set_endpoint() {
+        let mut config = Config::default();
+        config.models.set_endpoint(DispatchRole::Evaluator, "openrouter");
+        let role_cfg = config.models.evaluator.unwrap();
+        assert_eq!(role_cfg.endpoint.as_deref(), Some("openrouter"));
+        assert!(role_cfg.model.is_none()); // Didn't touch model
+        assert!(role_cfg.provider.is_none()); // Didn't touch provider
     }
 }

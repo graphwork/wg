@@ -40,24 +40,25 @@ pub trait Provider: Send + Sync {
 
 /// Backward-compatible wrapper: routes by model string only.
 pub fn create_provider(workgraph_dir: &Path, model: &str) -> Result<Box<dyn Provider>> {
-    create_provider_ext(workgraph_dir, model, None)
+    create_provider_ext(workgraph_dir, model, None, None)
 }
 
-/// Create a provider, optionally overriding the provider name.
+/// Create a provider, optionally overriding the provider name and/or endpoint.
 ///
 /// Resolution order for API key:
 /// 1. Environment variables (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, etc.)
-/// 2. Matching `[[llm_endpoints]]` entry in config (by provider name)
+/// 2. Matching endpoint entry in config (by name if `endpoint_name` is set, otherwise by provider)
 /// 3. `[native_executor]` section in config (legacy fallback)
 ///
 /// Resolution order for base URL:
-/// 1. Matching `[[llm_endpoints]]` entry's `url` field
+/// 1. Matching endpoint entry's `url` field
 /// 2. Environment variables (`OPENAI_BASE_URL`, etc.) — OpenAI-family only
 /// 3. `[native_executor]` section's `api_base` field
 pub fn create_provider_ext(
     workgraph_dir: &Path,
     model: &str,
     provider_override: Option<&str>,
+    endpoint_name: Option<&str>,
 ) -> Result<Box<dyn Provider>> {
     let config = crate::config::Config::load(workgraph_dir).unwrap_or_default();
 
@@ -86,8 +87,10 @@ pub fn create_provider_ext(
             }
         });
 
-    // Look up endpoint config for this provider
-    let endpoint = config.llm_endpoints.find_for_provider(&provider_name);
+    // Look up endpoint config: by name first, then by provider
+    let endpoint = endpoint_name
+        .and_then(|name| config.llm_endpoints.find_by_name(name))
+        .or_else(|| config.llm_endpoints.find_for_provider(&provider_name));
     let endpoint_key = endpoint
         .and_then(|ep| ep.resolve_api_key(Some(workgraph_dir)).ok().flatten());
     let endpoint_url = endpoint.and_then(|ep| ep.url.clone());

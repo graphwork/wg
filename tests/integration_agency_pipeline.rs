@@ -143,6 +143,7 @@ fn role_with_explicit_model_ignores_tier() {
         model: Some("my-explicit-model".to_string()),
         provider: None,
         tier: Some(Tier::Premium), // Should be ignored
+        endpoint: None,
     });
     let resolved = config.resolve_model_for_role(DispatchRole::Triage);
     assert_eq!(resolved.model, "my-explicit-model");
@@ -157,6 +158,7 @@ fn role_with_tier_override_resolves_via_registry() {
         model: None,
         provider: None,
         tier: Some(Tier::Premium), // Override default Standard → Premium
+        endpoint: None,
     });
     let resolved = config.resolve_model_for_role(DispatchRole::Evaluator);
     assert_eq!(resolved.model, "claude-opus-4-6");
@@ -845,6 +847,7 @@ fn resolve_model_source_reports_explicit_for_models_override() {
         model: Some("custom-model".to_string()),
         provider: None,
         tier: None,
+        endpoint: None,
     });
     let source = config.resolve_model_source(DispatchRole::Triage);
     assert_eq!(source, "explicit");
@@ -865,6 +868,7 @@ fn resolve_model_source_reports_tier_override() {
         model: None,
         provider: None,
         tier: Some(Tier::Premium),
+        endpoint: None,
     });
     let source = config.resolve_model_source(DispatchRole::Evaluator);
     assert_eq!(source, "tier-override");

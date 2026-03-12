@@ -82,7 +82,13 @@ pub fn run(
     );
 
     // Create the LLM provider (auto-selects by model name)
-    let client = create_provider_ext(workgraph_dir, &effective_model, provider)?;
+    let endpoint_name = std::env::var("WG_ENDPOINT").ok();
+    let client = create_provider_ext(
+        workgraph_dir,
+        &effective_model,
+        provider,
+        endpoint_name.as_deref(),
+    )?;
 
     // Check if the model supports tool use
     let model_registry = ModelRegistry::load(workgraph_dir).unwrap_or_default();

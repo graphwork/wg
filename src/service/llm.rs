@@ -38,21 +38,34 @@ pub fn run_lightweight_llm_call(
     let model = &resolved.model;
     let provider = resolved.provider.as_deref();
     let registry_entry = resolved.registry_entry.as_ref();
+    let endpoint_name = resolved.endpoint.as_deref();
 
     // Try native API call if provider is explicitly configured
     if let Some(prov) = provider {
         match prov {
             "anthropic" => {
-                if let Ok(result) =
-                    call_anthropic_native(config, prov, model, prompt, timeout_secs, registry_entry)
-                {
+                if let Ok(result) = call_anthropic_native(
+                    config,
+                    prov,
+                    model,
+                    prompt,
+                    timeout_secs,
+                    registry_entry,
+                    endpoint_name,
+                ) {
                     return Ok(result);
                 }
             }
             "openai" | "openrouter" | "local" => {
-                if let Ok(result) =
-                    call_openai_native(config, prov, model, prompt, timeout_secs, registry_entry)
-                {
+                if let Ok(result) = call_openai_native(
+                    config,
+                    prov,
+                    model,
+                    prompt,
+                    timeout_secs,
+                    registry_entry,
+                    endpoint_name,
+                ) {
                     return Ok(result);
                 }
             }
@@ -262,13 +275,17 @@ fn call_anthropic_native(
     prompt: &str,
     timeout_secs: u64,
     registry_entry: Option<&ModelRegistryEntry>,
+    endpoint_name: Option<&str>,
 ) -> Result<LlmCallResult> {
     use crate::executor::native::client::{
         AnthropicClient, ContentBlock, Message, MessagesRequest, Role,
     };
     use crate::executor::native::provider::Provider;
 
-    let endpoint = config.llm_endpoints.find_for_provider(provider_name);
+    // Look up endpoint: by name first, then by provider
+    let endpoint = endpoint_name
+        .and_then(|name| config.llm_endpoints.find_by_name(name))
+        .or_else(|| config.llm_endpoints.find_for_provider(provider_name));
     let endpoint_key = endpoint
         .and_then(|ep| ep.resolve_api_key(None).ok().flatten());
     let endpoint_url = endpoint.and_then(|ep| ep.url.clone());
@@ -358,12 +375,16 @@ fn call_openai_native(
     prompt: &str,
     timeout_secs: u64,
     registry_entry: Option<&ModelRegistryEntry>,
+    endpoint_name: Option<&str>,
 ) -> Result<LlmCallResult> {
     use crate::executor::native::client::{ContentBlock, Message, MessagesRequest, Role};
     use crate::executor::native::openai_client::OpenAiClient;
     use crate::executor::native::provider::Provider;
 
-    let endpoint = config.llm_endpoints.find_for_provider(provider_name);
+    // Look up endpoint: by name first, then by provider
+    let endpoint = endpoint_name
+        .and_then(|name| config.llm_endpoints.find_by_name(name))
+        .or_else(|| config.llm_endpoints.find_for_provider(provider_name));
     let endpoint_key = endpoint
         .and_then(|ep| ep.resolve_api_key(None).ok().flatten());
     let endpoint_url = endpoint.and_then(|ep| ep.url.clone());

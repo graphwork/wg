@@ -1506,6 +1506,7 @@ fn main() -> Result<()> {
             show_models,
             set_model,
             set_provider,
+            set_endpoint,
             role_model,
             role_provider,
             retry_context_tokens,
@@ -1635,6 +1636,7 @@ fn main() -> Result<()> {
                 commands::config_cmd::show_model_routing(&workgraph_dir, cli.json)
             } else if set_model.is_some()
                 || set_provider.is_some()
+                || set_endpoint.is_some()
                 || role_model.is_some()
                 || role_provider.is_some()
             {
@@ -1670,6 +1672,7 @@ fn main() -> Result<()> {
                     write_scope,
                     effective_model.as_deref(),
                     effective_provider.as_deref(),
+                    set_endpoint.as_deref(),
                 )
             } else if list {
                 commands::config_cmd::list(&workgraph_dir, cli.json)

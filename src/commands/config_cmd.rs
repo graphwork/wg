@@ -912,6 +912,7 @@ pub fn show_model_routing(dir: &Path, json: bool) -> Result<()> {
             serde_json::json!({
                 "model": resolved.model,
                 "provider": resolved.provider,
+                "endpoint": resolved.endpoint,
                 "tier": DispatchRole::Default.default_tier().to_string(),
                 "source": source,
             }),
@@ -924,6 +925,7 @@ pub fn show_model_routing(dir: &Path, json: bool) -> Result<()> {
                 serde_json::json!({
                     "model": resolved.model,
                     "provider": resolved.provider,
+                    "endpoint": resolved.endpoint,
                     "tier": role.default_tier().to_string(),
                     "source": source,
                 }),
@@ -935,20 +937,21 @@ pub fn show_model_routing(dir: &Path, json: bool) -> Result<()> {
         println!("===========================");
         println!();
         println!(
-            "  {:<20} {:<10} {:<30} {:<14} SOURCE",
-            "ROLE", "TIER", "MODEL", "PROVIDER"
+            "  {:<20} {:<10} {:<30} {:<14} {:<16} SOURCE",
+            "ROLE", "TIER", "MODEL", "PROVIDER", "ENDPOINT"
         );
-        println!("  {}", "-".repeat(90));
+        println!("  {}", "-".repeat(106));
 
         // Default
         let resolved = config.resolve_model_for_role(DispatchRole::Default);
         let source = config.resolve_model_source(DispatchRole::Default);
         println!(
-            "  {:<20} {:<10} {:<30} {:<14} {}",
+            "  {:<20} {:<10} {:<30} {:<14} {:<16} {}",
             "default",
             DispatchRole::Default.default_tier(),
             resolved.model,
             resolved.provider.as_deref().unwrap_or("(not set)"),
+            resolved.endpoint.as_deref().unwrap_or(""),
             source,
         );
 
@@ -957,11 +960,12 @@ pub fn show_model_routing(dir: &Path, json: bool) -> Result<()> {
             let resolved = config.resolve_model_for_role(*role);
             let source = config.resolve_model_source(*role);
             println!(
-                "  {:<20} {:<10} {:<30} {:<14} {}",
+                "  {:<20} {:<10} {:<30} {:<14} {:<16} {}",
                 role.to_string(),
                 role.default_tier(),
                 resolved.model,
                 resolved.provider.as_deref().unwrap_or("(not set)"),
+                resolved.endpoint.as_deref().unwrap_or(""),
                 source,
             );
         }
@@ -972,17 +976,19 @@ pub fn show_model_routing(dir: &Path, json: bool) -> Result<()> {
         println!();
         println!("Use --set-model <role> <model> to override a role.");
         println!("Use --set-provider <role> <provider> to set a provider.");
+        println!("Use --set-endpoint <role> <endpoint-name> to bind an endpoint.");
     }
 
     Ok(())
 }
 
-/// Update model routing configuration (--set-model / --set-provider).
+/// Update model routing configuration (--set-model / --set-provider / --set-endpoint).
 pub fn update_model_routing(
     dir: &Path,
     scope: ConfigScope,
     set_model: Option<&[String]>,
     set_provider: Option<&[String]>,
+    set_endpoint: Option<&[String]>,
 ) -> Result<()> {
     use workgraph::config::DispatchRole;
 
@@ -1035,6 +1041,26 @@ pub fn update_model_routing(
         let provider = &args[1];
         config.models.set_provider(role, provider);
         println!("Set models.{}.provider = \"{}\"", role, provider);
+        changed = true;
+    }
+
+    if let Some(args) = set_endpoint {
+        if args.len() != 2 {
+            anyhow::bail!("--set-endpoint requires exactly 2 arguments: <role> <endpoint-name>");
+        }
+        let role: DispatchRole = args[0].parse()?;
+        let endpoint_name = &args[1];
+
+        // Validate: warn if endpoint name is not configured
+        if config.llm_endpoints.find_by_name(endpoint_name).is_none() {
+            eprintln!(
+                "Warning: endpoint '{}' is not configured. Add it with: wg endpoints add {}",
+                endpoint_name, endpoint_name
+            );
+        }
+
+        config.models.set_endpoint(role, endpoint_name);
+        println!("Set models.{}.endpoint = \"{}\"", role, endpoint_name);
         changed = true;
     }
 

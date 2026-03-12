@@ -167,6 +167,7 @@ pub fn run(workgraph_dir: &Path) -> Result<()> {
             model: Some("haiku".to_string()),
             provider: None,
             tier: None,
+            endpoint: None,
         });
         config_changed = true;
     }
@@ -175,6 +176,7 @@ pub fn run(workgraph_dir: &Path) -> Result<()> {
             model: Some("haiku".to_string()),
             provider: None,
             tier: None,
+            endpoint: None,
         });
         config_changed = true;
     }

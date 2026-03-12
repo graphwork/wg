@@ -264,7 +264,7 @@ api_key = "test-openai-key"
     std::fs::write(tmp.path().join("config.toml"), config_content).unwrap();
 
     // Even though "my-custom-model" has no slash, forcing openai provider
-    let provider = create_provider_ext(tmp.path(), "my-custom-model", Some("openai")).unwrap();
+    let provider = create_provider_ext(tmp.path(), "my-custom-model", Some("openai"), None).unwrap();
     assert_eq!(provider.name(), "openai");
 }
 
@@ -447,11 +447,11 @@ provider = "openai"
 
     // The evaluator should route to Anthropic
     let eval_provider =
-        create_provider_ext(tmp.path(), "claude-sonnet-4-6", Some("anthropic")).unwrap();
+        create_provider_ext(tmp.path(), "claude-sonnet-4-6", Some("anthropic"), None).unwrap();
     assert_eq!(eval_provider.name(), "anthropic");
 
     // The triage should route to OpenAI
-    let triage_provider = create_provider_ext(tmp.path(), "gpt-4o-mini", Some("openai")).unwrap();
+    let triage_provider = create_provider_ext(tmp.path(), "gpt-4o-mini", Some("openai"), None).unwrap();
     assert_eq!(triage_provider.name(), "openai");
 
     // Verify they actually hit different API endpoints
@@ -502,6 +502,7 @@ fn test_fallback_chain_role_to_default_to_agent() {
         model: Some("default-model".to_string()),
         provider: Some("openrouter".to_string()),
         tier: None,
+        endpoint: None,
     });
     let resolved = config.resolve_model_for_role(DispatchRole::Evolver);
     assert_eq!(

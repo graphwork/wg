@@ -1316,6 +1316,11 @@ pub enum Commands {
         #[arg(long = "set-provider", num_args = 2, value_names = ["ROLE", "PROVIDER"])]
         set_provider: Option<Vec<String>>,
 
+        /// Set endpoint for a dispatch role: --set-endpoint <role> <endpoint-name>
+        /// Binds a named endpoint (from `wg endpoints list`) to a dispatch role.
+        #[arg(long = "set-endpoint", num_args = 2, value_names = ["ROLE", "ENDPOINT"])]
+        set_endpoint: Option<Vec<String>>,
+
         /// Set model for a dispatch role: --role-model <role>=<model>
         /// Equivalent to --set-model but uses key=value syntax.
         #[arg(long = "role-model", value_name = "ROLE=MODEL")]
