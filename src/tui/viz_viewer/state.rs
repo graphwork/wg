@@ -4912,29 +4912,27 @@ impl VizApp {
         }
     }
 
-    /// Grow the viz (right) pane by 10% of panel_percent, wrapping around when past max.
-    /// Steps: 10 → 20 → 30 → ... → 90 → 100 → 10 (wraps back to minimum).
+    /// Grow the viz (right) pane by 5% of panel_percent, transitioning to Off at max.
+    /// Steps: 5 → 10 → ... → 95 → 100 → Off (closes panel, full viz).
     pub fn grow_viz_pane(&mut self) {
         if !self.right_panel_visible || self.layout_mode == LayoutMode::Off {
             // Open panel at minimum size first
             self.right_panel_visible = true;
             self.layout_mode = LayoutMode::ThirdInspector;
-            self.right_panel_percent = 10;
+            self.right_panel_percent = 5;
             return;
         }
-        let next = self.right_panel_percent + 10;
-        if next > 100 {
-            // Wrap around to minimum
-            self.right_panel_percent = 10;
-            self.layout_mode = LayoutMode::ThirdInspector;
+        if self.right_panel_percent >= 100 {
+            // At maximum → transition to Off (full viz)
+            self.apply_layout_mode(LayoutMode::Off);
         } else {
-            self.right_panel_percent = next;
+            self.right_panel_percent = (self.right_panel_percent + 5).min(100);
             self.layout_mode = Self::layout_mode_for_percent(self.right_panel_percent);
         }
     }
 
-    /// Shrink the viz (right) pane by 10%, wrapping around when at min.
-    /// Steps: 100 → 90 → ... → 20 → 10 → 100 (wraps to max).
+    /// Shrink the viz (right) pane by 5%, transitioning to Off at min.
+    /// Steps: 100 → 95 → ... → 10 → 5 → Off (closes panel, full viz).
     pub fn shrink_viz_pane(&mut self) {
         if !self.right_panel_visible || self.layout_mode == LayoutMode::Off {
             // Open panel at max size first
@@ -4944,13 +4942,11 @@ impl VizApp {
             self.focused_panel = FocusedPanel::RightPanel;
             return;
         }
-        if self.right_panel_percent <= 10 {
-            // Wrap around to maximum
-            self.right_panel_percent = 100;
-            self.layout_mode = LayoutMode::FullInspector;
-            self.focused_panel = FocusedPanel::RightPanel;
+        if self.right_panel_percent <= 5 {
+            // At minimum → transition to Off (full viz)
+            self.apply_layout_mode(LayoutMode::Off);
         } else {
-            self.right_panel_percent = self.right_panel_percent.saturating_sub(10).max(10);
+            self.right_panel_percent = self.right_panel_percent.saturating_sub(5).max(5);
             self.layout_mode = Self::layout_mode_for_percent(self.right_panel_percent);
         }
     }
@@ -9495,17 +9491,17 @@ mod remap_panel_tests {
     // ── Grow viz pane ──
 
     #[test]
-    fn grow_viz_pane_increases_by_10_percent() {
+    fn grow_viz_pane_increases_by_5_percent() {
         let mut app = build_test_app();
         app.right_panel_visible = true;
         app.layout_mode = LayoutMode::ThirdInspector;
         app.right_panel_percent = 10;
 
         app.grow_viz_pane();
-        assert_eq!(app.right_panel_percent, 20);
+        assert_eq!(app.right_panel_percent, 15);
 
         app.grow_viz_pane();
-        assert_eq!(app.right_panel_percent, 30);
+        assert_eq!(app.right_panel_percent, 20);
     }
 
     #[test]
@@ -9513,7 +9509,7 @@ mod remap_panel_tests {
         let mut app = build_test_app();
         app.right_panel_visible = true;
         app.layout_mode = LayoutMode::ThirdInspector;
-        app.right_panel_percent = 90;
+        app.right_panel_percent = 95;
 
         app.grow_viz_pane();
         assert_eq!(app.right_panel_percent, 100);
@@ -9521,15 +9517,16 @@ mod remap_panel_tests {
     }
 
     #[test]
-    fn grow_viz_pane_wraps_at_max() {
+    fn grow_viz_pane_from_full_transitions_to_off() {
         let mut app = build_test_app();
         app.right_panel_visible = true;
         app.layout_mode = LayoutMode::FullInspector;
         app.right_panel_percent = 100;
 
-        // 100 + 10 = 110 > 100, wraps to 10
+        // At 100% → transitions to Off (no wrap)
         app.grow_viz_pane();
-        assert_eq!(app.right_panel_percent, 10);
+        assert!(!app.right_panel_visible);
+        assert_eq!(app.layout_mode, LayoutMode::Off);
     }
 
     #[test]
@@ -9538,21 +9535,22 @@ mod remap_panel_tests {
         app.right_panel_visible = false;
         app.layout_mode = LayoutMode::Off;
 
-        // First press opens at 10%
+        // First press opens at 5%
         app.grow_viz_pane();
-        assert_eq!(app.right_panel_percent, 10);
+        assert_eq!(app.right_panel_percent, 5);
         assert!(app.right_panel_visible);
 
-        // 9 more presses: 20, 30, 40, 50, 60, 70, 80, 90, 100
-        for expected in (20..=100).step_by(10) {
+        // 19 more presses: 10, 15, 20, ..., 100
+        for expected in (10..=100).step_by(5) {
             app.grow_viz_pane();
             assert_eq!(app.right_panel_percent, expected);
         }
         assert_eq!(app.layout_mode, LayoutMode::FullInspector);
 
-        // One more wraps back to 10
+        // One more transitions to Off (no wrap)
         app.grow_viz_pane();
-        assert_eq!(app.right_panel_percent, 10);
+        assert!(!app.right_panel_visible);
+        assert_eq!(app.layout_mode, LayoutMode::Off);
     }
 
     #[test]
@@ -9564,35 +9562,36 @@ mod remap_panel_tests {
         app.grow_viz_pane();
 
         assert!(app.right_panel_visible);
-        assert_eq!(app.right_panel_percent, 10);
+        assert_eq!(app.right_panel_percent, 5);
     }
 
     // ── Shrink viz pane ──
 
     #[test]
-    fn shrink_viz_pane_decreases_by_10_percent() {
+    fn shrink_viz_pane_decreases_by_5_percent() {
         let mut app = build_test_app();
         app.right_panel_visible = true;
         app.layout_mode = LayoutMode::TwoThirdsInspector;
         app.right_panel_percent = 70;
 
         app.shrink_viz_pane();
-        assert_eq!(app.right_panel_percent, 60);
+        assert_eq!(app.right_panel_percent, 65);
 
         app.shrink_viz_pane();
-        assert_eq!(app.right_panel_percent, 50);
+        assert_eq!(app.right_panel_percent, 60);
     }
 
     #[test]
-    fn shrink_viz_pane_wraps_at_min() {
+    fn shrink_viz_pane_from_min_transitions_to_off() {
         let mut app = build_test_app();
         app.right_panel_visible = true;
         app.layout_mode = LayoutMode::ThirdInspector;
-        app.right_panel_percent = 10;
+        app.right_panel_percent = 5;
 
-        // At min → wraps to 100
+        // At min (5%) → transitions to Off (no wrap)
         app.shrink_viz_pane();
-        assert_eq!(app.right_panel_percent, 100);
+        assert!(!app.right_panel_visible);
+        assert_eq!(app.layout_mode, LayoutMode::Off);
     }
 
     #[test]
