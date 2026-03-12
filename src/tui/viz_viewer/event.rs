@@ -1505,12 +1505,7 @@ pub(super) enum EditorTarget {
 /// coordinate mapping relies on `screen_area` which is never set by our renderer.
 /// Instead, we compute the cursor position ourselves using the same word-wrapping
 /// logic as the renderer.
-pub(super) fn route_mouse_to_editor(
-    app: &mut VizApp,
-    row: u16,
-    column: u16,
-    target: EditorTarget,
-) {
+pub(super) fn route_mouse_to_editor(app: &mut VizApp, row: u16, column: u16, target: EditorTarget) {
     match target {
         EditorTarget::Chat => {
             chat_click_to_cursor(app, row, column);

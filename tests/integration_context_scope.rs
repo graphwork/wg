@@ -442,12 +442,20 @@ fn test_scope_ordering_is_strict() {
 #[test]
 fn test_pattern_keyword_detection() {
     // Positive cases
-    assert!(description_has_pattern_keywords("Use autopoietic decomposition"));
-    assert!(description_has_pattern_keywords("This is a self-organizing task"));
-    assert!(description_has_pattern_keywords("Create a committee review"));
+    assert!(description_has_pattern_keywords(
+        "Use autopoietic decomposition"
+    ));
+    assert!(description_has_pattern_keywords(
+        "This is a self-organizing task"
+    ));
+    assert!(description_has_pattern_keywords(
+        "Create a committee review"
+    ));
     assert!(description_has_pattern_keywords("Use swarm intelligence"));
     assert!(description_has_pattern_keywords("Fork-join the workers"));
-    assert!(description_has_pattern_keywords("Fan-out to parallel tasks"));
+    assert!(description_has_pattern_keywords(
+        "Fan-out to parallel tasks"
+    ));
     assert!(description_has_pattern_keywords("Run tasks in parallel"));
     assert!(description_has_pattern_keywords("Loop until converged"));
     assert!(description_has_pattern_keywords("Add a cycle for retries"));

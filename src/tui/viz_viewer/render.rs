@@ -399,7 +399,9 @@ fn find_title_range(plain_line: &str) -> Option<(usize, usize)> {
 
     // Start at first alphanumeric or dot character (skip tree connectors like └→).
     // Dot is included so system tasks like `.assign-foo` have their prefix in range.
-    let text_start = chars.iter().position(|c| c.is_alphanumeric() || *c == '.')?;
+    let text_start = chars
+        .iter()
+        .position(|c| c.is_alphanumeric() || *c == '.')?;
 
     // End before the metadata parenthetical — look for `  (` (two spaces + open paren)
     // which separates the task ID from its status/token info.
@@ -1988,9 +1990,7 @@ pub(super) fn word_wrap_segments(line: &str, width: usize) -> Vec<(usize, usize)
             if pos < n {
                 let curr_is_ws = chars[pos - 1].is_whitespace();
                 let next_is_ws = chars[pos].is_whitespace();
-                if !curr_is_ws && next_is_ws {
-                    last_break = Some(pos);
-                } else if curr_is_ws && !next_is_ws {
+                if (!curr_is_ws && next_is_ws) || (curr_is_ws && !next_is_ws) {
                     last_break = Some(pos);
                 }
             }
@@ -3662,7 +3662,12 @@ fn draw_task_form(frame: &mut Frame, form: &TaskFormState) {
             };
             let marker = if is_selected { "▸ " } else { "  " };
             let display = if title.len() > 30 {
-                format!("{}{} ({}…)", marker, id, &title[..title.floor_char_boundary(27)])
+                format!(
+                    "{}{} ({}…)",
+                    marker,
+                    id,
+                    &title[..title.floor_char_boundary(27)]
+                )
             } else {
                 format!("{}{} ({})", marker, id, title)
             };
@@ -7579,10 +7584,7 @@ mod tests {
     fn test_wrap_segments_multi_word() {
         let line = "hi there world";
         let segs = word_wrap_segments(line, 8);
-        assert_eq!(
-            segments_to_strings(line, &segs),
-            vec!["hi there", "world"]
-        );
+        assert_eq!(segments_to_strings(line, &segs), vec!["hi there", "world"]);
     }
 
     #[test]

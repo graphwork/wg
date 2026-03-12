@@ -127,8 +127,16 @@ fn call_anthropic_native(model: &str, prompt: &str, timeout_secs: u64) -> Result
         cost_usd: 0.0,
         input_tokens: u64::from(response.usage.input_tokens),
         output_tokens: u64::from(response.usage.output_tokens),
-        cache_read_input_tokens: response.usage.cache_read_input_tokens.map(u64::from).unwrap_or(0),
-        cache_creation_input_tokens: response.usage.cache_creation_input_tokens.map(u64::from).unwrap_or(0),
+        cache_read_input_tokens: response
+            .usage
+            .cache_read_input_tokens
+            .map(u64::from)
+            .unwrap_or(0),
+        cache_creation_input_tokens: response
+            .usage
+            .cache_creation_input_tokens
+            .map(u64::from)
+            .unwrap_or(0),
     });
 
     let text: String = response
@@ -145,10 +153,7 @@ fn call_anthropic_native(model: &str, prompt: &str, timeout_secs: u64) -> Result
     if text.is_empty() {
         anyhow::bail!("Empty response from native Anthropic call");
     }
-    Ok(LlmCallResult {
-        text,
-        token_usage,
-    })
+    Ok(LlmCallResult { text, token_usage })
 }
 
 fn call_openai_native(model: &str, prompt: &str, timeout_secs: u64) -> Result<LlmCallResult> {
@@ -189,8 +194,16 @@ fn call_openai_native(model: &str, prompt: &str, timeout_secs: u64) -> Result<Ll
         cost_usd: 0.0,
         input_tokens: u64::from(response.usage.input_tokens),
         output_tokens: u64::from(response.usage.output_tokens),
-        cache_read_input_tokens: response.usage.cache_read_input_tokens.map(u64::from).unwrap_or(0),
-        cache_creation_input_tokens: response.usage.cache_creation_input_tokens.map(u64::from).unwrap_or(0),
+        cache_read_input_tokens: response
+            .usage
+            .cache_read_input_tokens
+            .map(u64::from)
+            .unwrap_or(0),
+        cache_creation_input_tokens: response
+            .usage
+            .cache_creation_input_tokens
+            .map(u64::from)
+            .unwrap_or(0),
     });
 
     let text: String = response
@@ -207,10 +220,7 @@ fn call_openai_native(model: &str, prompt: &str, timeout_secs: u64) -> Result<Ll
     if text.is_empty() {
         anyhow::bail!("Empty response from native OpenAI call");
     }
-    Ok(LlmCallResult {
-        text,
-        token_usage,
-    })
+    Ok(LlmCallResult { text, token_usage })
 }
 
 #[cfg(test)]

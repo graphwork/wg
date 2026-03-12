@@ -321,9 +321,8 @@ pub struct Task {
 /// Returns `true` if the task ID represents a system-generated task.
 /// System tasks use a `.` prefix (e.g. `.evaluate-foo`, `.assign-foo`).
 pub fn is_system_task(task_id: &str) -> bool {
-    task_id.starts_with('.')  
+    task_id.starts_with('.')
 }
-
 
 /// Token usage and cost data from a Claude CLI agent run.
 /// Extracted from the final `type=result` line in the agent's output.log.

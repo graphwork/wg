@@ -351,18 +351,15 @@ pub fn run(
         } else {
             None
         };
-        if let Some(ref aid) = found_id {
-            if let Some(assign_task) = graph.get_task_mut(aid) {
-                match assign_task.status {
-                    workgraph::graph::Status::Open | workgraph::graph::Status::InProgress => {
-                        assign_task.status = workgraph::graph::Status::Abandoned;
-                        println!(
-                            "Abandoned assignment task '{}' (dependencies changed)",
-                            aid
-                        );
-                    }
-                    _ => {}
+        if let Some(ref aid) = found_id
+            && let Some(assign_task) = graph.get_task_mut(aid)
+        {
+            match assign_task.status {
+                workgraph::graph::Status::Open | workgraph::graph::Status::InProgress => {
+                    assign_task.status = workgraph::graph::Status::Abandoned;
+                    println!("Abandoned assignment task '{}' (dependencies changed)", aid);
                 }
+                _ => {}
             }
         }
 

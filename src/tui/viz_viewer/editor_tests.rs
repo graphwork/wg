@@ -579,7 +579,7 @@ mod tui_editor_tests {
 
     #[test]
     fn tui_editor_mouse_click_positions_cursor() {
-        use crate::tui::viz_viewer::event::{route_mouse_to_editor, EditorTarget};
+        use crate::tui::viz_viewer::event::{EditorTarget, route_mouse_to_editor};
 
         let mut app = make_editor_test_app();
         enter_chat_input(&mut app);
@@ -619,7 +619,7 @@ mod tui_editor_tests {
 
     #[test]
     fn tui_editor_mouse_click_positions_cursor_multiline() {
-        use crate::tui::viz_viewer::event::{route_mouse_to_editor, EditorTarget};
+        use crate::tui::viz_viewer::event::{EditorTarget, route_mouse_to_editor};
 
         let mut app = make_editor_test_app();
         enter_chat_input(&mut app);
@@ -657,7 +657,7 @@ mod tui_editor_tests {
 
     #[test]
     fn tui_editor_mouse_click_positions_cursor_exact_col() {
-        use crate::tui::viz_viewer::event::{route_mouse_to_editor, EditorTarget};
+        use crate::tui::viz_viewer::event::{EditorTarget, route_mouse_to_editor};
 
         let mut app = make_editor_test_app();
         enter_chat_input(&mut app);
@@ -690,7 +690,7 @@ mod tui_editor_tests {
 
     #[test]
     fn tui_editor_mouse_click_wrapped_line() {
-        use crate::tui::viz_viewer::event::{route_mouse_to_editor, EditorTarget};
+        use crate::tui::viz_viewer::event::{EditorTarget, route_mouse_to_editor};
 
         let mut app = make_editor_test_app();
         enter_chat_input(&mut app);
@@ -704,8 +704,7 @@ mod tui_editor_tests {
         render_to_string(&mut app, 40, 20);
 
         let prefix_len: u16 = 2;
-        let editor_width =
-            app.last_chat_input_area.width.saturating_sub(prefix_len) as usize;
+        let editor_width = app.last_chat_input_area.width.saturating_sub(prefix_len) as usize;
 
         // Clear and type text that will wrap to 2+ visual lines.
         // We need at least editor_width+1 chars. Use distinct chars so we can verify.

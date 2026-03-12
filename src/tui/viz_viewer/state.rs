@@ -78,10 +78,9 @@ pub fn create_editor_handler() -> EditorEventHandler {
         KeyEventRegister::i(vec![EdKeyEvent::Ctrl('n')]),
         MoveDown(1),
     );
-    handler.key_handler.insert(
-        KeyEventRegister::i(vec![EdKeyEvent::Ctrl('p')]),
-        MoveUp(1),
-    );
+    handler
+        .key_handler
+        .insert(KeyEventRegister::i(vec![EdKeyEvent::Ctrl('p')]), MoveUp(1));
     // Ctrl-U (kill to beginning of line) is already mapped by edtui default
     handler
 }
@@ -217,7 +216,7 @@ fn flash_color_for_kind(kind: AnimationKind) -> (u8, u8, u8) {
         AnimationKind::ContentChange => (160, 160, 200), // soft blue-gray
         AnimationKind::Assignment => (200, 120, 220), // magenta
         AnimationKind::EdgeChange => (100, 180, 200), // teal
-        AnimationKind::Revealed => (120, 120, 140),  // soft gray-blue
+        AnimationKind::Revealed => (120, 120, 140), // soft gray-blue
     }
 }
 
@@ -1142,10 +1141,7 @@ pub fn extract_section_name(line: &str) -> Option<String> {
     if !base.ends_with("──") {
         return None;
     }
-    let inner = base
-        .trim_start_matches('─')
-        .trim_end_matches('─')
-        .trim();
+    let inner = base.trim_start_matches('─').trim_end_matches('─').trim();
     // Section names are things like "Description", "Prompt", "Output", "Output (raw)", etc.
     if !inner.is_empty() {
         Some(inner.to_string())
@@ -4222,7 +4218,11 @@ impl VizApp {
                                                 let snippet =
                                                     trimmed.lines().last().unwrap_or(trimmed);
                                                 let snippet = if snippet.len() > 120 {
-                                                    format!("{}…", &snippet[..snippet.floor_char_boundary(120)])
+                                                    format!(
+                                                        "{}…",
+                                                        &snippet
+                                                            [..snippet.floor_char_boundary(120)]
+                                                    )
                                                 } else {
                                                     snippet.to_string()
                                                 };
@@ -4245,7 +4245,10 @@ impl VizApp {
                                                 .map(|c| {
                                                     let c = c.trim();
                                                     if c.len() > 80 {
-                                                        format!("{name}: {}…", &c[..c.floor_char_boundary(80)])
+                                                        format!(
+                                                            "{name}: {}…",
+                                                            &c[..c.floor_char_boundary(80)]
+                                                        )
                                                     } else {
                                                         format!("{name}: {c}")
                                                     }
@@ -4398,34 +4401,37 @@ impl VizApp {
         // Evaluation phase
         let eval_task_id = format!(".evaluate-{}", task_id);
         let legacy_eval_id = format!("evaluate-{}", task_id);
-        let evaluation = graph.tasks().find(|t| t.id == eval_task_id || t.id == legacy_eval_id).map(|t| {
-            let mut phase = build_phase(t, "Evaluation");
+        let evaluation = graph
+            .tasks()
+            .find(|t| t.id == eval_task_id || t.id == legacy_eval_id)
+            .map(|t| {
+                let mut phase = build_phase(t, "Evaluation");
 
-            // Load evaluation results from agency/evaluations/
-            let evals_dir = self.workgraph_dir.join("agency").join("evaluations");
-            if evals_dir.exists() {
-                let prefix = format!("eval-{}-", task_id);
-                if let Ok(entries) = std::fs::read_dir(&evals_dir) {
-                    let mut eval_files: Vec<_> = entries
-                        .filter_map(|e| e.ok())
-                        .filter(|e| e.file_name().to_string_lossy().starts_with(&prefix))
-                        .collect();
-                    eval_files.sort_by_key(|b| std::cmp::Reverse(b.file_name()));
-                    if let Some(entry) = eval_files.first()
-                        && let Ok(content) = std::fs::read_to_string(entry.path())
-                        && let Ok(eval) = serde_json::from_str::<serde_json::Value>(&content)
-                    {
-                        phase.eval_score = eval.get("score").and_then(|v| v.as_f64());
-                        phase.eval_notes = eval
-                            .get("notes")
-                            .and_then(|v| v.as_str())
-                            .map(|s| s.lines().take(5).collect::<Vec<_>>().join("\n"));
+                // Load evaluation results from agency/evaluations/
+                let evals_dir = self.workgraph_dir.join("agency").join("evaluations");
+                if evals_dir.exists() {
+                    let prefix = format!("eval-{}-", task_id);
+                    if let Ok(entries) = std::fs::read_dir(&evals_dir) {
+                        let mut eval_files: Vec<_> = entries
+                            .filter_map(|e| e.ok())
+                            .filter(|e| e.file_name().to_string_lossy().starts_with(&prefix))
+                            .collect();
+                        eval_files.sort_by_key(|b| std::cmp::Reverse(b.file_name()));
+                        if let Some(entry) = eval_files.first()
+                            && let Ok(content) = std::fs::read_to_string(entry.path())
+                            && let Ok(eval) = serde_json::from_str::<serde_json::Value>(&content)
+                        {
+                            phase.eval_score = eval.get("score").and_then(|v| v.as_f64());
+                            phase.eval_notes = eval
+                                .get("notes")
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.lines().take(5).collect::<Vec<_>>().join("\n"));
+                        }
                     }
                 }
-            }
 
-            phase
-        });
+                phase
+            });
 
         self.agency_lifecycle = Some(AgencyLifecycle {
             task_id,
@@ -4839,7 +4845,11 @@ impl VizApp {
         let mask_env = |var: &str| -> String {
             match std::env::var(var).ok().filter(|k| !k.is_empty()) {
                 Some(key) if key.len() > 8 => {
-                    format!("{}****...{}", &key[..key.floor_char_boundary(3)], &key[key.ceil_char_boundary(key.len() - 4)..])
+                    format!(
+                        "{}****...{}",
+                        &key[..key.floor_char_boundary(3)],
+                        &key[key.ceil_char_boundary(key.len() - 4)..]
+                    )
                 }
                 Some(_) => "****".into(),
                 None => "(not set)".into(),

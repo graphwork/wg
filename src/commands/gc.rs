@@ -8,7 +8,14 @@ use workgraph::parser::{load_graph, save_graph};
 use super::graph_path;
 
 /// Auto-generated task prefixes that should be gc'd alongside their parent task.
-const INTERNAL_PREFIXES: &[&str] = &[".assign-", ".evaluate-", ".verify-flip-", ".respond-to-", "assign-", "evaluate-"];
+const INTERNAL_PREFIXES: &[&str] = &[
+    ".assign-",
+    ".evaluate-",
+    ".verify-flip-",
+    ".respond-to-",
+    "assign-",
+    "evaluate-",
+];
 
 /// Get the best available terminal timestamp for a task.
 /// For done tasks, uses completed_at. For failed/abandoned, uses the last log

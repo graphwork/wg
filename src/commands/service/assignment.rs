@@ -4,7 +4,7 @@
 
 use anyhow::{Context, Result};
 
-use workgraph::agency::{self, short_hash, Agent};
+use workgraph::agency::{self, Agent, short_hash};
 use workgraph::config::{Config, DispatchRole};
 use workgraph::graph::{Task, TokenUsage};
 
@@ -51,12 +51,7 @@ fn build_agent_catalog(
             let tradeoff = agency::find_tradeoff_by_prefix(tradeoffs_dir, &a.tradeoff_id).ok();
             let role_skills = role
                 .as_ref()
-                .map(|r| {
-                    r.component_ids
-                        .iter()
-                        .map(|c| c.clone())
-                        .collect::<Vec<_>>()
-                })
+                .map(|r| r.component_ids.to_vec())
                 .unwrap_or_default();
             AgentEntry {
                 hash: short_hash(&a.id).to_string(),
@@ -67,7 +62,11 @@ fn build_agent_catalog(
                 avg_score: a.performance.avg_score,
                 task_count: a.performance.task_count,
                 capabilities: a.capabilities.clone(),
-                _staleness_flags: a.staleness_flags.iter().map(|f| format!("{:?}", f)).collect(),
+                _staleness_flags: a
+                    .staleness_flags
+                    .iter()
+                    .map(|f| format!("{:?}", f))
+                    .collect(),
             }
         })
         .collect()
@@ -217,8 +216,12 @@ pub(crate) fn run_lightweight_assignment(
     let token_usage = result.token_usage;
 
     // Parse JSON verdict from output (reuse triage JSON extraction logic)
-    let json_str = extract_assignment_json(&result.text)
-        .ok_or_else(|| anyhow::anyhow!("No valid JSON found in assignment output: {}", &result.text[..result.text.len().min(200)]))?;
+    let json_str = extract_assignment_json(&result.text).ok_or_else(|| {
+        anyhow::anyhow!(
+            "No valid JSON found in assignment output: {}",
+            &result.text[..result.text.len().min(200)]
+        )
+    })?;
 
     let verdict: AssignmentVerdict = serde_json::from_str(&json_str)
         .with_context(|| format!("Failed to parse assignment JSON: {}", json_str))?;
@@ -323,7 +326,12 @@ mod tests {
             tags: vec!["implementation".to_string()],
             ..Default::default()
         };
-        let prompt = build_assignment_prompt(&task, "## Mode\nPerformance", "- Agent1 (hash: abc)\n", None);
+        let prompt = build_assignment_prompt(
+            &task,
+            "## Mode\nPerformance",
+            "- Agent1 (hash: abc)\n",
+            None,
+        );
         assert!(prompt.contains("test-task"));
         assert!(prompt.contains("Fix the bug"));
         assert!(prompt.contains("rust"));

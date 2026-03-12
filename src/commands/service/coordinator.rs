@@ -928,17 +928,16 @@ fn build_auto_assign_tasks(
         };
 
         // Resolve the agent hash from the verdict
-        let resolved_agent =
-            match agency::find_agent_by_prefix(&agents_dir, &verdict.agent_hash) {
-                Ok(agent) => agent,
-                Err(e) => {
-                    eprintln!(
-                        "[coordinator] Assignment verdict agent '{}' not found for '{}': {}",
-                        verdict.agent_hash, task_id, e
-                    );
-                    continue;
-                }
-            };
+        let resolved_agent = match agency::find_agent_by_prefix(&agents_dir, &verdict.agent_hash) {
+            Ok(agent) => agent,
+            Err(e) => {
+                eprintln!(
+                    "[coordinator] Assignment verdict agent '{}' not found for '{}': {}",
+                    verdict.agent_hash, task_id, e
+                );
+                continue;
+            }
+        };
 
         // Apply assignment to the original task
         if let Some(task) = graph.get_task_mut(&task_id) {
@@ -1729,10 +1728,7 @@ fn spawn_agents_for_ready_tasks(
         // before being spawned.  The assignment flow sets `task.agent`; if it's
         // still None the task hasn't been assigned yet — skip it so the next
         // tick's Phase 3 can create the .assign-* task.
-        if auto_assign
-            && !workgraph::graph::is_system_task(&task.id)
-            && task.agent.is_none()
-        {
+        if auto_assign && !workgraph::graph::is_system_task(&task.id) && task.agent.is_none() {
             continue;
         }
 
@@ -2241,7 +2237,7 @@ mod tests {
             .unwrap_or_else(|| {
                 eval_task_id
                     .strip_prefix(".evaluate-")
-        .or_else(|| eval_task_id.strip_prefix("evaluate-"))
+                    .or_else(|| eval_task_id.strip_prefix("evaluate-"))
                     .unwrap_or(eval_task_id)
             });
         assert_eq!(source_id, "some-task");
@@ -3273,16 +3269,14 @@ mod tests {
         save_graph(&graph, &wg_dir.join("graph.jsonl")).unwrap();
 
         let result = spawn_agents_for_ready_tasks(
-            wg_dir,
-            &graph,
-            "shell",
-            None,
-            10,
-            true, // auto_assign = true
+            wg_dir, &graph, "shell", None, 10, true, // auto_assign = true
         );
 
         // Task should be skipped (no agent), so nothing spawned
-        assert_eq!(result, 0, "unassigned task should NOT be spawned when auto_assign=true");
+        assert_eq!(
+            result, 0,
+            "unassigned task should NOT be spawned when auto_assign=true"
+        );
     }
 
     /// When auto_assign=true, a ready task WITH an agent field SHOULD be
@@ -3306,7 +3300,10 @@ mod tests {
         // The filter: skip if auto_assign && !is_system && agent.is_none()
         // For system tasks, !is_system is false, so the condition is false → not skipped
         let would_skip = true && !is_system && true; // auto_assign=true, agent=None
-        assert!(!would_skip, "system tasks should never be skipped by auto_assign filter");
+        assert!(
+            !would_skip,
+            "system tasks should never be skipped by auto_assign filter"
+        );
     }
 
     /// When auto_assign=false, tasks without agent field should still be spawned.

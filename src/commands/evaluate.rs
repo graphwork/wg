@@ -306,8 +306,8 @@ pub fn run(
     .context("Evaluation LLM call failed")?;
 
     // Step 7: Parse the JSON output from the evaluator
-    let eval_json =
-        extract_json(&eval_result.text).context("Failed to extract valid JSON from evaluator output")?;
+    let eval_json = extract_json(&eval_result.text)
+        .context("Failed to extract valid JSON from evaluator output")?;
 
     let parsed: EvalOutput = serde_json::from_str(&eval_json)
         .with_context(|| format!("Failed to parse evaluator JSON:\n{}", eval_json))?;
@@ -433,11 +433,11 @@ pub fn run(
     if let Some(usage) = eval_result.token_usage {
         let eval_task_id = format!(".evaluate-{}", task_id);
         let graph_path = super::graph_path(dir);
-        if let Ok(mut graph) = load_graph(&graph_path) {
-            if let Some(eval_task) = graph.get_task_mut(&eval_task_id) {
-                eval_task.token_usage = Some(usage);
-                let _ = workgraph::parser::save_graph(&graph, &graph_path);
-            }
+        if let Ok(mut graph) = load_graph(&graph_path)
+            && let Some(eval_task) = graph.get_task_mut(&eval_task_id)
+        {
+            eval_task.token_usage = Some(usage);
+            let _ = workgraph::parser::save_graph(&graph, &graph_path);
         }
     }
 
@@ -805,18 +805,16 @@ pub fn run_flip(
     }
 
     // Persist combined token usage from both FLIP phases to the .evaluate-* task
-    let combined_usage = combine_token_usage(&[
-        inference_result.token_usage,
-        comparison_result.token_usage,
-    ]);
+    let combined_usage =
+        combine_token_usage(&[inference_result.token_usage, comparison_result.token_usage]);
     if let Some(usage) = combined_usage {
         let eval_task_id = format!(".evaluate-{}", task_id);
         let graph_path = super::graph_path(dir);
-        if let Ok(mut graph) = load_graph(&graph_path) {
-            if let Some(eval_task) = graph.get_task_mut(&eval_task_id) {
-                eval_task.token_usage = Some(usage);
-                let _ = workgraph::parser::save_graph(&graph, &graph_path);
-            }
+        if let Ok(mut graph) = load_graph(&graph_path)
+            && let Some(eval_task) = graph.get_task_mut(&eval_task_id)
+        {
+            eval_task.token_usage = Some(usage);
+            let _ = workgraph::parser::save_graph(&graph, &graph_path);
         }
     }
 
