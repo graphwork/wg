@@ -1490,6 +1490,12 @@ pub enum Commands {
         command: TelegramCommands,
     },
 
+    /// Manage LLM endpoints (add, remove, list, test)
+    Endpoints {
+        #[command(subcommand)]
+        command: EndpointsCommands,
+    },
+
     /// Browse and search available models from OpenRouter
     Models {
         #[command(subcommand)]
@@ -1522,6 +1528,72 @@ pub enum Commands {
         /// Maximum agent turns before stopping
         #[arg(long, default_value = "100")]
         max_turns: usize,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum EndpointsCommands {
+    /// List all configured endpoints
+    List,
+
+    /// Add a new endpoint
+    Add {
+        /// Endpoint name (e.g., "openrouter", "anthropic-prod")
+        name: String,
+
+        /// Provider type: anthropic, openai, openrouter, local
+        #[arg(long)]
+        provider: Option<String>,
+
+        /// API endpoint URL (defaults based on provider)
+        #[arg(long)]
+        url: Option<String>,
+
+        /// Default model for this endpoint
+        #[arg(long)]
+        model: Option<String>,
+
+        /// API key (prefer --api-key-file for security)
+        #[arg(long)]
+        api_key: Option<String>,
+
+        /// Path to a file containing the API key
+        #[arg(long)]
+        api_key_file: Option<String>,
+
+        /// Set as the default endpoint
+        #[arg(long)]
+        default: bool,
+
+        /// Target global config (~/.workgraph/config.toml)
+        #[arg(long)]
+        global: bool,
+    },
+
+    /// Remove an endpoint by name
+    Remove {
+        /// Endpoint name to remove
+        name: String,
+
+        /// Target global config (~/.workgraph/config.toml)
+        #[arg(long)]
+        global: bool,
+    },
+
+    /// Set an endpoint as the default
+    SetDefault {
+        /// Endpoint name to set as default
+        name: String,
+
+        /// Target global config (~/.workgraph/config.toml)
+        #[arg(long)]
+        global: bool,
+    },
+
+    /// Test endpoint connectivity (hits /models API)
+    Test {
+        /// Endpoint name to test
+        name: String,
     },
 }
 
@@ -2832,6 +2904,7 @@ pub fn command_name(cmd: &Commands) -> &'static str {
         Commands::Matrix { .. } => "matrix",
         Commands::Telegram { .. } => "telegram",
         Commands::Chat { .. } => "chat",
+        Commands::Endpoints { .. } => "endpoints",
         Commands::Models { .. } => "models",
         Commands::NativeExec { .. } => "native-exec",
     }
@@ -2900,6 +2973,7 @@ pub fn supports_json(cmd: &Commands) -> bool {
             | Commands::Stats
             | Commands::Chat { .. }
             | Commands::Telegram { .. }
+            | Commands::Endpoints { .. }
             | Commands::Models { .. }
     ) || {
         #[cfg(any(feature = "matrix", feature = "matrix-lite"))]

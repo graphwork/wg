@@ -35,6 +35,7 @@ pub mod dead_agents;
 pub mod discover;
 pub mod done;
 pub mod edit;
+pub mod endpoints;
 pub mod eval_scaffold;
 pub mod evaluate;
 pub mod evolve;

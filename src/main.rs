@@ -1958,6 +1958,40 @@ fn main() -> Result<()> {
             }
             TelegramCommands::Status => commands::telegram::run_status(cli.json),
         },
+        Commands::Endpoints { command } => match command {
+            EndpointsCommands::List => {
+                commands::endpoints::run_list(&workgraph_dir, cli.json)
+            }
+            EndpointsCommands::Add {
+                name,
+                provider,
+                url,
+                model,
+                api_key,
+                api_key_file,
+                default: set_default,
+                global,
+            } => commands::endpoints::run_add(
+                &workgraph_dir,
+                &name,
+                provider.as_deref(),
+                url.as_deref(),
+                model.as_deref(),
+                api_key.as_deref(),
+                api_key_file.as_deref(),
+                set_default,
+                global,
+            ),
+            EndpointsCommands::Remove { name, global } => {
+                commands::endpoints::run_remove(&workgraph_dir, &name, global)
+            }
+            EndpointsCommands::SetDefault { name, global } => {
+                commands::endpoints::run_set_default(&workgraph_dir, &name, global)
+            }
+            EndpointsCommands::Test { name } => {
+                commands::endpoints::run_test(&workgraph_dir, &name)
+            }
+        },
         Commands::Models { command } => match command {
             ModelsCommands::List { tier } => {
                 commands::models::run_list(&workgraph_dir, tier.as_deref(), cli.json)
