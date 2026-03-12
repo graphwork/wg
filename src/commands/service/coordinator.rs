@@ -949,7 +949,21 @@ fn build_placement_context(graph: &workgraph::graph::WorkGraph, task_id: &str) -
         ctx.push_str(&format!("ID: {}\n", task.id));
         ctx.push_str(&format!("Title: {}\n", task.title));
         if let Some(ref desc) = task.description {
-            ctx.push_str(&format!("Description: {}\n", desc));
+            // Only include a brief summary — the placement agent needs topology
+            // context, not implementation details or code snippets.
+            let summary = desc
+                .split("\n\n")
+                .next()
+                .unwrap_or(desc)
+                .lines()
+                .next()
+                .unwrap_or(desc);
+            let summary = if summary.len() > 150 {
+                format!("{}…", &summary[..summary.floor_char_boundary(150)])
+            } else {
+                summary.to_string()
+            };
+            ctx.push_str(&format!("Summary: {}\n", summary));
         }
         if !mentioned_files.is_empty() {
             ctx.push_str(&format!(
