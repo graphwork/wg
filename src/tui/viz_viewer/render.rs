@@ -21,6 +21,40 @@ use crate::tui::markdown::markdown_to_lines;
 /// Minimum terminal width for side-by-side right panel layout.
 const SIDE_MIN_WIDTH: u16 = 100;
 
+/// Creates a [`Line`] with the lightning-wave animation and elapsed time.
+///
+/// Renders [`WAVE_NUM_BOLTS`] `ϟ` characters with a color ripple: the bolt at the
+/// current wave position is bright yellow, adjacent bolts are gold, and distant
+/// bolts are dim gray.  An elapsed-time string is appended after a space.
+fn spinner_wave_line(elapsed: std::time::Duration, indent: &str) -> Line<'static> {
+    let wave_pos = spinner_wave_pos(elapsed);
+    let mut spans: Vec<Span<'static>> = Vec::with_capacity(WAVE_NUM_BOLTS + 3);
+
+    if !indent.is_empty() {
+        spans.push(Span::raw(indent.to_string()));
+    }
+
+    for i in 0..WAVE_NUM_BOLTS {
+        let d = (i as isize - wave_pos as isize).unsigned_abs();
+        let dist = d.min(WAVE_NUM_BOLTS - d);
+        let color = match dist {
+            0 => Color::Indexed(226), // bright yellow — wave peak
+            1 => Color::Indexed(178), // gold — near wave
+            2 => Color::Indexed(240), // gray — fading
+            _ => Color::Indexed(236), // dark gray — base
+        };
+        spans.push(Span::styled(WAVE_BOLT, Style::default().fg(color)));
+    }
+
+    spans.push(Span::raw(" "));
+    spans.push(Span::styled(
+        format_duration_compact(elapsed.as_secs()),
+        Style::default().fg(Color::DarkGray),
+    ));
+
+    Line::from(spans)
+}
+
 pub fn draw(frame: &mut Frame, app: &mut VizApp) {
     // Clear expired jump targets (>2 seconds old).
     if let Some((_, when)) = app.jump_target
@@ -2191,21 +2225,13 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     // Streaming indicator / progressive text when awaiting response.
     if app.chat.awaiting_response {
         if app.chat.streaming_text.is_empty() {
-            // No streaming text yet — show animated spinner with elapsed time.
+            // No streaming text yet — show animated lightning-wave with elapsed time.
             let elapsed = app
                 .chat
                 .awaiting_since
                 .map(|t| t.elapsed())
                 .unwrap_or_default();
-            let frame = spinner_frame(elapsed);
-            let elapsed_str = format_duration_compact(elapsed.as_secs());
-            rendered_lines.push(Line::from(vec![
-                Span::styled(
-                    format!("{frame} "),
-                    Style::default().fg(Color::Yellow),
-                ),
-                Span::styled(elapsed_str, Style::default().fg(Color::DarkGray)),
-            ]));
+            rendered_lines.push(spinner_wave_line(elapsed, ""));
             line_to_message.push(None);
         } else {
             // Show progressive streaming text from the coordinator with markdown
@@ -2298,22 +2324,13 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
                     line_to_message.push(None);
                 }
             }
-            // Append animated spinner with elapsed time to indicate still generating.
+            // Append animated lightning-wave with elapsed time to indicate still generating.
             let elapsed = app
                 .chat
                 .awaiting_since
                 .map(|t| t.elapsed())
                 .unwrap_or_default();
-            let frame = spinner_frame(elapsed);
-            let elapsed_str = format_duration_compact(elapsed.as_secs());
-            rendered_lines.push(Line::from(vec![
-                Span::styled("  ", Style::default()),
-                Span::styled(
-                    format!("{frame} "),
-                    Style::default().fg(Color::Yellow),
-                ),
-                Span::styled(elapsed_str, Style::default().fg(Color::DarkGray)),
-            ]));
+            rendered_lines.push(spinner_wave_line(elapsed, "  "));
             line_to_message.push(None);
         }
         rendered_lines.push(Line::from(""));
