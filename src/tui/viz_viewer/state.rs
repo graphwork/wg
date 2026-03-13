@@ -2,7 +2,9 @@ use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
+use std::sync::Arc;
 use std::time::{Instant, SystemTime};
 
 use anyhow::Result;
@@ -2071,6 +2073,19 @@ pub struct VizApp {
     pub last_refresh_display: String,
     /// Refresh interval.
     refresh_interval: std::time::Duration,
+
+    // ── File system watcher (for real-time streaming) ──
+    /// Flag set by the background file watcher when `.workgraph/` content changes.
+    /// Checked and cleared by `maybe_refresh()` to trigger immediate panel reloads.
+    pub fs_change_pending: Arc<AtomicBool>,
+    /// Keep the watcher alive for the lifetime of the app.
+    _fs_watcher: Option<notify_debouncer_mini::Debouncer<notify::RecommendedWatcher>>,
+    /// Last mtime of the messages file for the currently-viewed task.
+    last_messages_mtime: Option<SystemTime>,
+    /// Last mtime of the daemon.log for coord log panel.
+    last_daemon_log_mtime: Option<SystemTime>,
+    /// Last mtime of the chat outbox for the active coordinator.
+    last_chat_outbox_mtime: Option<SystemTime>,
 }
 
 /// Scroll state for a 2D viewport.
@@ -2243,7 +2258,13 @@ impl VizApp {
             last_refresh: Instant::now(),
             last_refresh_display: chrono::Local::now().format("%H:%M:%S").to_string(),
             refresh_interval: std::time::Duration::from_secs(1),
+            fs_change_pending: Arc::new(AtomicBool::new(false)),
+            _fs_watcher: None,
+            last_messages_mtime: None,
+            last_daemon_log_mtime: None,
+            last_chat_outbox_mtime: None,
         };
+        app.start_fs_watcher();
         app.load_viz();
         app.load_stats();
         app.load_agent_monitor();
@@ -3277,14 +3298,46 @@ impl VizApp {
         self.enforce_animation_cap();
     }
 
+    /// Start a background file watcher on the `.workgraph/` directory.
+    /// Sets `fs_change_pending` flag when any file changes, which triggers
+    /// immediate panel reloads in `maybe_refresh()`.
+    fn start_fs_watcher(&mut self) {
+        use notify_debouncer_mini::new_debouncer;
+        use std::time::Duration;
+
+        let flag = self.fs_change_pending.clone();
+        let debouncer = new_debouncer(Duration::from_millis(50), move |res| {
+            if let Ok(_events) = res {
+                flag.store(true, Ordering::Relaxed);
+            }
+        });
+
+        match debouncer {
+            Ok(mut debouncer) => {
+                let watch_path = self.workgraph_dir.clone();
+                if debouncer
+                    .watcher()
+                    .watch(&watch_path, notify::RecursiveMode::Recursive)
+                    .is_ok()
+                {
+                    self._fs_watcher = Some(debouncer);
+                }
+            }
+            Err(_) => {
+                // File watching unavailable — fall back to polling (existing behavior).
+            }
+        }
+    }
+
     /// Check if the graph has changed on disk and refresh if needed.
     /// Returns `true` if any work was done (graph reloaded, service polled, etc.).
     pub fn maybe_refresh(&mut self) -> bool {
-        // Fast-path: poll streaming file frequently during chat response
-        // generation so text appears progressively, not just once per second.
-        if self.chat.awaiting_response
-            && self.last_refresh.elapsed() >= std::time::Duration::from_millis(150)
-        {
+        // Check if the file watcher detected changes in .workgraph/.
+        let fs_changed = self.fs_change_pending.swap(false, Ordering::Relaxed);
+
+        // Fast-path: when the streaming file changes (via fs watcher or polling),
+        // immediately read it so chat text appears token-by-token.
+        if self.chat.awaiting_response {
             let prev = self.chat.streaming_text.clone();
             let streaming = workgraph::chat::read_streaming(
                 &self.workgraph_dir,
@@ -3297,6 +3350,100 @@ impl VizApp {
                 return true;
             }
         }
+
+        // When file watcher fires, do targeted content-specific reloads
+        // without waiting for the full refresh interval. This makes panels
+        // that show non-graph content (messages, coord log, agent output,
+        // chat outbox) update in real-time.
+        if fs_changed {
+            let mut content_updated = false;
+
+            // Graph-dependent content: check if graph.jsonl itself changed.
+            // Log entries are stored in graph.jsonl, so we need to detect
+            // graph changes here too for immediate log updates.
+            let current_mtime = std::fs::metadata(self.workgraph_dir.join("graph.jsonl"))
+                .and_then(|m| m.modified())
+                .ok();
+            if current_mtime != self.last_graph_mtime {
+                self.last_graph_mtime = current_mtime;
+                // Log pane: reload if active (log entries are in graph.jsonl).
+                if self.right_panel_tab == RightPanelTab::Log {
+                    self.invalidate_log_pane();
+                    self.load_log_pane();
+                    content_updated = true;
+                }
+                // HUD detail: refresh to show updated task info.
+                if self.hud_detail.is_some() {
+                    let prev_scroll = self.hud_scroll;
+                    let prev_task = self.hud_detail.as_ref().map(|d| d.task_id.clone());
+                    self.invalidate_hud();
+                    self.load_hud_detail();
+                    if prev_task == self.hud_detail.as_ref().map(|d| d.task_id.clone()) {
+                        self.hud_scroll = prev_scroll;
+                    }
+                    content_updated = true;
+                }
+            }
+
+            // Messages panel: check if the message file for the viewed task changed.
+            if self.right_panel_tab == RightPanelTab::Messages {
+                if let Some(task_id) = self.selected_task_id().map(String::from) {
+                    let msg_path = self.workgraph_dir.join("messages").join(format!("{}.jsonl", task_id));
+                    let msg_mtime = std::fs::metadata(&msg_path).and_then(|m| m.modified()).ok();
+                    if msg_mtime != self.last_messages_mtime {
+                        self.last_messages_mtime = msg_mtime;
+                        self.save_message_draft();
+                        self.invalidate_messages_panel();
+                        self.load_messages_panel();
+                        content_updated = true;
+                    }
+                }
+            }
+
+            // Coordinator log: check if daemon.log changed.
+            if self.right_panel_tab == RightPanelTab::CoordLog {
+                let log_path = self.workgraph_dir.join("service").join("daemon.log");
+                let log_mtime = std::fs::metadata(&log_path).and_then(|m| m.modified()).ok();
+                if log_mtime != self.last_daemon_log_mtime {
+                    self.last_daemon_log_mtime = log_mtime;
+                    self.load_coord_log();
+                    content_updated = true;
+                }
+            }
+
+            // Chat outbox: check for new coordinator responses.
+            if self.right_panel_tab == RightPanelTab::Chat || self.chat.awaiting_response {
+                let outbox_path = self.workgraph_dir
+                    .join("chat")
+                    .join(self.active_coordinator_id.to_string())
+                    .join("outbox.jsonl");
+                let outbox_mtime = std::fs::metadata(&outbox_path).and_then(|m| m.modified()).ok();
+                if outbox_mtime != self.last_chat_outbox_mtime {
+                    self.last_chat_outbox_mtime = outbox_mtime;
+                    self.check_coordinator_status();
+                    self.poll_chat_messages();
+                    content_updated = true;
+                }
+            }
+
+            // Agent streams (task output): always check when fs changes detected,
+            // since agent output files change independently of graph.jsonl.
+            if !self.agent_streams.is_empty() || self.task_counts.in_progress > 0 {
+                self.update_agent_streams();
+                content_updated = true;
+            }
+
+            // Firehose: update if tab is active.
+            if self.right_panel_tab == RightPanelTab::Firehose {
+                self.update_firehose();
+                content_updated = true;
+            }
+
+            if content_updated {
+                return true;
+            }
+        }
+
         if self.last_refresh.elapsed() < self.refresh_interval {
             return false;
         }
@@ -3388,14 +3535,20 @@ impl VizApp {
         true
     }
 
-    /// Whether a refresh tick is due (enough time has elapsed since last refresh).
+    /// Whether a refresh tick is due (enough time has elapsed since last refresh,
+    /// or the file watcher detected changes).
     pub fn is_refresh_due(&self) -> bool {
-        self.last_refresh.elapsed() >= self.refresh_interval
+        self.fs_change_pending.load(Ordering::Relaxed)
+            || self.last_refresh.elapsed() >= self.refresh_interval
     }
 
     /// Whether any time-based UI elements are active and need periodic redraws
     /// (animations, fading notifications, scrollbar timeouts, etc.).
     pub fn has_timed_ui_elements(&self) -> bool {
+        // File watcher detected changes — keep poll responsive for immediate updates.
+        if self.fs_change_pending.load(Ordering::Relaxed) {
+            return true;
+        }
         // Chat streaming: keep poll interval short for progressive display.
         if self.chat.awaiting_response {
             return true;
@@ -4855,6 +5008,11 @@ impl VizApp {
             archive_browser: ArchiveBrowserState::default(),
             config_panel: ConfigPanelState::default(),
             file_browser: None,
+            fs_change_pending: Arc::new(AtomicBool::new(false)),
+            _fs_watcher: None,
+            last_messages_mtime: None,
+            last_daemon_log_mtime: None,
+            last_chat_outbox_mtime: None,
         }
     }
 
