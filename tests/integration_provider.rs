@@ -227,6 +227,9 @@ fn test_create_provider_prefixed_is_openai() {
 
     let config_content = format!(
         r#"
+[native_executor]
+provider = "openai"
+
 [[llm_endpoints.endpoints]]
 name = "test-openai"
 provider = "openai"
