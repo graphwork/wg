@@ -309,3 +309,302 @@ pub fn run_test(workgraph_dir: &Path, name: &str) -> Result<()> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn setup_dir() -> TempDir {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("config.toml"), "").unwrap();
+        tmp
+    }
+
+    // ── add ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn cli_endpoint_add_persists() {
+        let tmp = setup_dir();
+        run_add(tmp.path(), "my-ep", Some("openai"), Some("https://api.openai.com/v1"), Some("gpt-4o"), Some("sk-test"), None, false, false).unwrap();
+
+        let config = Config::load(tmp.path()).unwrap();
+        assert_eq!(config.llm_endpoints.endpoints.len(), 1);
+        let ep = &config.llm_endpoints.endpoints[0];
+        assert_eq!(ep.name, "my-ep");
+        assert_eq!(ep.provider, "openai");
+        assert_eq!(ep.url.as_deref(), Some("https://api.openai.com/v1"));
+        assert_eq!(ep.model.as_deref(), Some("gpt-4o"));
+        assert_eq!(ep.api_key.as_deref(), Some("sk-test"));
+        assert!(ep.is_default, "first endpoint auto-defaults");
+    }
+
+    #[test]
+    fn cli_endpoint_add_with_key_file() {
+        let tmp = setup_dir();
+        let kf = tmp.path().join("key.txt");
+        std::fs::write(&kf, "sk-from-file\n").unwrap();
+
+        run_add(tmp.path(), "file-ep", Some("anthropic"), None, None, None, Some(kf.to_str().unwrap()), false, false).unwrap();
+
+        let config = Config::load(tmp.path()).unwrap();
+        let ep = &config.llm_endpoints.endpoints[0];
+        assert!(ep.api_key.is_none());
+        assert!(ep.api_key_file.is_some());
+        let key = ep.resolve_api_key(Some(tmp.path())).unwrap();
+        assert_eq!(key.as_deref(), Some("sk-from-file"));
+    }
+
+    #[test]
+    fn cli_endpoint_add_defaults_to_anthropic() {
+        let tmp = setup_dir();
+        run_add(tmp.path(), "bare", None, None, None, None, None, false, false).unwrap();
+        let config = Config::load(tmp.path()).unwrap();
+        assert_eq!(config.llm_endpoints.endpoints[0].provider, "anthropic");
+    }
+
+    #[test]
+    fn cli_endpoint_add_duplicate_errors() {
+        let tmp = setup_dir();
+        run_add(tmp.path(), "dup", Some("openai"), None, None, None, None, false, false).unwrap();
+        let err = run_add(tmp.path(), "dup", Some("openai"), None, None, None, None, false, false).unwrap_err();
+        assert!(err.to_string().contains("already exists"));
+    }
+
+    #[test]
+    fn cli_endpoint_add_first_auto_default() {
+        let tmp = setup_dir();
+        run_add(tmp.path(), "first", Some("openai"), None, None, None, None, false, false).unwrap();
+        let config = Config::load(tmp.path()).unwrap();
+        assert!(config.llm_endpoints.endpoints[0].is_default);
+    }
+
+    #[test]
+    fn cli_endpoint_add_second_not_auto_default() {
+        let tmp = setup_dir();
+        run_add(tmp.path(), "a", Some("openai"), None, None, None, None, false, false).unwrap();
+        run_add(tmp.path(), "b", Some("anthropic"), None, None, None, None, false, false).unwrap();
+        let config = Config::load(tmp.path()).unwrap();
+        assert!(config.llm_endpoints.endpoints[0].is_default);
+        assert!(!config.llm_endpoints.endpoints[1].is_default);
+    }
+
+    #[test]
+    fn cli_endpoint_add_explicit_default_clears_others() {
+        let tmp = setup_dir();
+        run_add(tmp.path(), "a", Some("openai"), None, None, None, None, false, false).unwrap();
+        run_add(tmp.path(), "b", Some("anthropic"), None, None, None, None, true, false).unwrap();
+        let config = Config::load(tmp.path()).unwrap();
+        assert!(!config.llm_endpoints.endpoints[0].is_default);
+        assert!(config.llm_endpoints.endpoints[1].is_default);
+    }
+
+    // ── list ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn cli_endpoint_list_empty() {
+        let tmp = setup_dir();
+        run_list(tmp.path(), false).unwrap();
+        run_list(tmp.path(), true).unwrap();
+    }
+
+    #[test]
+    fn cli_endpoint_list_with_data() {
+        let tmp = setup_dir();
+        run_add(tmp.path(), "ep1", Some("openai"), None, Some("gpt-4o"), Some("sk-1"), None, true, false).unwrap();
+        run_add(tmp.path(), "ep2", Some("anthropic"), None, None, None, None, false, false).unwrap();
+        run_list(tmp.path(), false).unwrap();
+        run_list(tmp.path(), true).unwrap();
+    }
+
+    // ── remove ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn cli_endpoint_remove_cleans_up() {
+        let tmp = setup_dir();
+        run_add(tmp.path(), "x", Some("openai"), None, None, None, None, false, false).unwrap();
+        assert_eq!(Config::load(tmp.path()).unwrap().llm_endpoints.endpoints.len(), 1);
+
+        run_remove(tmp.path(), "x", false).unwrap();
+        assert!(Config::load(tmp.path()).unwrap().llm_endpoints.endpoints.is_empty());
+    }
+
+    #[test]
+    fn cli_endpoint_remove_nonexistent_errors() {
+        let tmp = setup_dir();
+        let err = run_remove(tmp.path(), "nope", false).unwrap_err();
+        assert!(err.to_string().contains("not found"));
+    }
+
+    #[test]
+    fn cli_endpoint_remove_default_promotes_next() {
+        let tmp = setup_dir();
+        run_add(tmp.path(), "a", Some("openai"), None, None, None, None, true, false).unwrap();
+        run_add(tmp.path(), "b", Some("anthropic"), None, None, None, None, false, false).unwrap();
+
+        run_remove(tmp.path(), "a", false).unwrap();
+        let config = Config::load(tmp.path()).unwrap();
+        assert_eq!(config.llm_endpoints.endpoints.len(), 1);
+        assert_eq!(config.llm_endpoints.endpoints[0].name, "b");
+        assert!(config.llm_endpoints.endpoints[0].is_default);
+    }
+
+    // ── set-default ────────────────────────────────────────────────────
+
+    #[test]
+    fn cli_endpoint_set_default_switches() {
+        let tmp = setup_dir();
+        run_add(tmp.path(), "a", Some("openai"), None, None, None, None, true, false).unwrap();
+        run_add(tmp.path(), "b", Some("anthropic"), None, None, None, None, false, false).unwrap();
+
+        run_set_default(tmp.path(), "b", false).unwrap();
+        let config = Config::load(tmp.path()).unwrap();
+        let a = config.llm_endpoints.endpoints.iter().find(|e| e.name == "a").unwrap();
+        let b = config.llm_endpoints.endpoints.iter().find(|e| e.name == "b").unwrap();
+        assert!(!a.is_default);
+        assert!(b.is_default);
+    }
+
+    #[test]
+    fn cli_endpoint_set_default_nonexistent_errors() {
+        let tmp = setup_dir();
+        let err = run_set_default(tmp.path(), "nope", false).unwrap_err();
+        assert!(err.to_string().contains("not found"));
+    }
+
+    // ── test (connectivity) ────────────────────────────────────────────
+
+    fn mock_server(status: u16, body: &str) -> String {
+        use std::io::{Read as _, Write as _};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let url = format!("http://127.0.0.1:{}", addr.port());
+        let body = body.to_string();
+
+        std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut buf = [0u8; 8192];
+                let _ = stream.read(&mut buf);
+                let resp = format!(
+                    "HTTP/1.1 {} OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    status, body.len(), body,
+                );
+                let _ = stream.write_all(resp.as_bytes());
+                let _ = stream.flush();
+            }
+        });
+
+        url
+    }
+
+    #[test]
+    fn cli_endpoint_test_success() {
+        let mock_url = mock_server(200, r#"{"data":[]}"#);
+        let tmp = setup_dir();
+        let mut config = Config::default();
+        config.llm_endpoints.endpoints.push(EndpointConfig {
+            name: "ok-ep".into(),
+            provider: "openai".into(),
+            url: Some(mock_url),
+            model: None,
+            api_key: Some("sk-test".into()),
+            api_key_file: None,
+            is_default: true,
+        });
+        config.save(tmp.path()).unwrap();
+
+        run_test(tmp.path(), "ok-ep").unwrap();
+    }
+
+    #[test]
+    fn cli_endpoint_test_auth_failure_does_not_bail() {
+        let mock_url = mock_server(401, r#"{"error":"unauthorized"}"#);
+        let tmp = setup_dir();
+        let mut config = Config::default();
+        config.llm_endpoints.endpoints.push(EndpointConfig {
+            name: "bad-ep".into(),
+            provider: "openai".into(),
+            url: Some(mock_url),
+            model: None,
+            api_key: Some("sk-bad".into()),
+            api_key_file: None,
+            is_default: true,
+        });
+        config.save(tmp.path()).unwrap();
+
+        run_test(tmp.path(), "bad-ep").unwrap();
+    }
+
+    #[test]
+    fn cli_endpoint_test_no_key() {
+        let mock_url = mock_server(200, r#"{"data":[]}"#);
+        let tmp = setup_dir();
+        let mut config = Config::default();
+        config.llm_endpoints.endpoints.push(EndpointConfig {
+            name: "nokey-ep".into(),
+            provider: "openai".into(),
+            url: Some(mock_url),
+            model: None,
+            api_key: None,
+            api_key_file: None,
+            is_default: true,
+        });
+        config.save(tmp.path()).unwrap();
+
+        run_test(tmp.path(), "nokey-ep").unwrap();
+    }
+
+    #[test]
+    fn cli_endpoint_test_nonexistent_errors() {
+        let tmp = setup_dir();
+        let err = run_test(tmp.path(), "nope").unwrap_err();
+        assert!(err.to_string().contains("not found"));
+    }
+
+    #[test]
+    fn cli_endpoint_test_connection_refused() {
+        let tmp = setup_dir();
+        let mut config = Config::default();
+        config.llm_endpoints.endpoints.push(EndpointConfig {
+            name: "dead".into(),
+            provider: "openai".into(),
+            url: Some("http://127.0.0.1:1".into()),
+            model: None,
+            api_key: Some("sk-x".into()),
+            api_key_file: None,
+            is_default: true,
+        });
+        config.save(tmp.path()).unwrap();
+
+        let err = run_test(tmp.path(), "dead").unwrap_err();
+        assert!(err.to_string().contains("Could not connect"));
+    }
+
+    // ── full lifecycle ─────────────────────────────────────────────────
+
+    #[test]
+    fn cli_endpoint_full_lifecycle() {
+        let tmp = setup_dir();
+
+        run_add(tmp.path(), "ep-a", Some("openai"), None, Some("gpt-4o"), Some("sk-a"), None, true, false).unwrap();
+        run_add(tmp.path(), "ep-b", Some("anthropic"), None, Some("sonnet"), Some("sk-b"), None, false, false).unwrap();
+
+        run_list(tmp.path(), false).unwrap();
+        run_list(tmp.path(), true).unwrap();
+
+        run_set_default(tmp.path(), "ep-b", false).unwrap();
+        let config = Config::load(tmp.path()).unwrap();
+        let b = config.llm_endpoints.endpoints.iter().find(|e| e.name == "ep-b").unwrap();
+        assert!(b.is_default);
+
+        run_remove(tmp.path(), "ep-a", false).unwrap();
+        let config = Config::load(tmp.path()).unwrap();
+        assert_eq!(config.llm_endpoints.endpoints.len(), 1);
+
+        run_remove(tmp.path(), "ep-b", false).unwrap();
+        let config = Config::load(tmp.path()).unwrap();
+        assert!(config.llm_endpoints.endpoints.is_empty());
+    }
+}
