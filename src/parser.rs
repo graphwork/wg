@@ -4,9 +4,6 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
-#[cfg(unix)]
-use std::os::unix::io::AsRawFd;
-
 #[derive(Error, Debug)]
 pub enum ParseError {
     #[error("IO error: {0}")]
@@ -27,17 +24,30 @@ struct FileLock {
 }
 
 impl FileLock {
-    /// Acquire an exclusive lock on a lock file
+    /// Acquire an exclusive lock on a lock file (blocks until available)
     #[cfg(unix)]
     fn acquire<P: AsRef<Path>>(lock_path: P) -> Result<Self, ParseError> {
+        Self::flock_impl(&lock_path, libc::LOCK_EX)
+    }
+
+    #[cfg(not(unix))]
+    fn acquire<P: AsRef<Path>>(_lock_path: P) -> Result<Self, ParseError> {
+        // On non-Unix systems, we can't use flock - return a no-op lock
+        // This is a limitation but workgraph is primarily for Unix systems
+        Ok(FileLock {})
+    }
+
+    /// Try to acquire a shared (read) lock, non-blocking.
+    /// Returns `Ok(Some(lock))` on success, `Ok(None)` if the lock is held
+    /// exclusively by another process (EWOULDBLOCK).
+    #[cfg(unix)]
+    fn try_acquire_shared<P: AsRef<Path>>(lock_path: P) -> Result<Option<Self>, ParseError> {
         use std::os::unix::io::AsRawFd;
 
-        // Ensure the .workgraph directory exists
         if let Some(parent) = lock_path.as_ref().parent() {
             std::fs::create_dir_all(parent)?;
         }
 
-        // Open/create the lock file
         let file = OpenOptions::new()
             .read(true)
             .write(true)
@@ -45,9 +55,46 @@ impl FileLock {
             .truncate(false)
             .open(&lock_path)?;
 
-        // Acquire exclusive lock (LOCK_EX) - blocks until available
         let fd = file.as_raw_fd();
-        let ret = unsafe { libc::flock(fd, libc::LOCK_EX) };
+        let ret = unsafe { libc::flock(fd, libc::LOCK_SH | libc::LOCK_NB) };
+
+        if ret != 0 {
+            let err = std::io::Error::last_os_error();
+            if err.kind() == std::io::ErrorKind::WouldBlock {
+                return Ok(None);
+            }
+            return Err(ParseError::Lock(format!(
+                "Failed to acquire shared lock on {:?}: {}",
+                lock_path.as_ref(),
+                err
+            )));
+        }
+
+        Ok(Some(FileLock { file }))
+    }
+
+    #[cfg(not(unix))]
+    fn try_acquire_shared<P: AsRef<Path>>(_lock_path: P) -> Result<Option<Self>, ParseError> {
+        Ok(Some(FileLock {}))
+    }
+
+    #[cfg(unix)]
+    fn flock_impl<P: AsRef<Path>>(lock_path: P, operation: libc::c_int) -> Result<Self, ParseError> {
+        use std::os::unix::io::AsRawFd;
+
+        if let Some(parent) = lock_path.as_ref().parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&lock_path)?;
+
+        let fd = file.as_raw_fd();
+        let ret = unsafe { libc::flock(fd, operation) };
 
         if ret != 0 {
             return Err(ParseError::Lock(format!(
@@ -59,19 +106,13 @@ impl FileLock {
 
         Ok(FileLock { file })
     }
-
-    #[cfg(not(unix))]
-    fn acquire<P: AsRef<Path>>(_lock_path: P) -> Result<Self, ParseError> {
-        // On non-Unix systems, we can't use flock - return a no-op lock
-        // This is a limitation but workgraph is primarily for Unix systems
-        Ok(FileLock {})
-    }
 }
 
 impl Drop for FileLock {
     fn drop(&mut self) {
         #[cfg(unix)]
         {
+            use std::os::unix::io::AsRawFd;
             // Release the lock (LOCK_UN) - best effort, ignore errors on drop
             let fd = self.file.as_raw_fd();
             unsafe {
@@ -130,13 +171,23 @@ fn load_graph_inner<P: AsRef<Path>>(path: P) -> Result<WorkGraph, ParseError> {
     Ok(graph)
 }
 
-/// Load a work graph from a JSONL file
-/// Uses advisory file locking to prevent concurrent access corruption
+/// Load a work graph from a JSONL file.
+///
+/// Uses a non-blocking shared lock (`LOCK_SH | LOCK_NB`). If another process
+/// holds an exclusive lock (e.g. `modify_graph` in the coordinator), the read
+/// proceeds without the lock. This is safe because `save_graph_inner` uses
+/// atomic writes (temp file + rename), so readers always see a consistent
+/// snapshot — either the pre- or post-write state, never a partial write.
+///
+/// This prevents the TUI (and other read-only callers) from blocking
+/// indefinitely while the coordinator holds an exclusive lock during
+/// long-running modify_graph closures.
 pub fn load_graph<P: AsRef<Path>>(path: P) -> Result<WorkGraph, ParseError> {
     let lock_path = get_lock_path(&path);
-    let _lock = FileLock::acquire(&lock_path)?;
+    // Try a non-blocking shared lock; proceed regardless.
+    let _lock = FileLock::try_acquire_shared(&lock_path)?;
     load_graph_inner(path)
-    // Lock is automatically released when _lock goes out of scope
+    // Lock (if acquired) is automatically released when _lock goes out of scope
 }
 
 /// Save a work graph to a JSONL file (internal, no locking).
