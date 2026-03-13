@@ -1207,8 +1207,8 @@ pub fn format_duration_compact(secs: u64) -> String {
 /// The lightning bolt character for the wave animation (downwards zigzag arrow — reliably 1-cell wide).
 pub const WAVE_BOLT: &str = "↯";
 
-/// Number of lightning bolts in the wave animation (ROYGBIV — 7 rainbow colors).
-pub const WAVE_NUM_BOLTS: usize = 7;
+/// Number of lightning bolts in the wave animation (rainbow: R, O, G, C, V — matching CLI spinner).
+pub const WAVE_NUM_BOLTS: usize = 5;
 
 /// Interval between wave frames in milliseconds.
 const WAVE_FRAME_MS: u128 = 120;

@@ -23,18 +23,19 @@ const SIDE_MIN_WIDTH: u16 = 100;
 
 /// Creates a [`Line`] with the lightning-wave animation and elapsed time.
 ///
-/// Renders [`WAVE_NUM_BOLTS`] `↯` characters in a ROYGBIV rainbow spectrum.
-/// Each bolt has a fixed spectral color; the wave peak bolt is **bold** + bright,
-/// adjacent bolts are bright, and distant bolts fade through mid to dim tiers —
-/// creating a lightning-flash sweep effect across the rainbow.
+/// Renders [`WAVE_NUM_BOLTS`] `↯` characters in a rainbow spectrum matching the
+/// CLI spinner (Red, Orange, Green, Cyan, Violet).  The wave peak bolt is
+/// **bold** + bright, adjacent bolts are bright, and distant bolts fade through
+/// mid to dim tiers — creating a lightning-flash sweep effect across the rainbow.
 fn spinner_wave_line(elapsed: std::time::Duration, indent: &str) -> Line<'static> {
     let wave_pos = spinner_wave_pos(elapsed);
     let mut spans: Vec<Span<'static>> = Vec::with_capacity(WAVE_NUM_BOLTS + 3);
 
-    // ROYGBIV spectral colors — bright / mid / dim tiers per bolt
-    const BRIGHT: [u8; 7] = [196, 214, 226, 46, 33, 63, 129];
-    const MID: [u8; 7] = [124, 172, 178, 34, 25, 61, 91];
-    const DIM: [u8; 7] = [52, 94, 58, 22, 17, 18, 53];
+    // Rainbow spectral colors matching CLI spinner — bright / mid / dim tiers per bolt
+    // Red, Orange, Green, Cyan, Violet (same palette as `wg service start`)
+    const BRIGHT: [u8; 5] = [196, 214, 46, 33, 129];
+    const MID: [u8; 5] = [124, 172, 34, 25, 91];
+    const DIM: [u8; 5] = [52, 94, 22, 17, 53];
 
     if !indent.is_empty() {
         spans.push(Span::raw(indent.to_string()));
