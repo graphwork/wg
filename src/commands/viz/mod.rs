@@ -266,7 +266,30 @@ pub(crate) fn filter_internal_tasks_running_only<'a>(
     tasks: Vec<&'a Task>,
     _existing_annotations: &HashMap<String, AnnotationInfo>,
 ) -> (Vec<&'a Task>, HashMap<String, AnnotationInfo>) {
-    let annotations: HashMap<String, AnnotationInfo> = HashMap::new();
+    let mut annotations: HashMap<String, AnnotationInfo> = HashMap::new();
+
+    // Compute phase annotations for in-progress internal tasks
+    for task in &tasks {
+        if !is_internal_task(task) {
+            continue;
+        }
+        if let Some(pid) = system_task_parent_id(&task.id)
+            && task.status == Status::InProgress
+        {
+            let annotation = compute_phase_annotation(task);
+            annotations
+                .entry(pid)
+                .and_modify(|existing| {
+                    existing.text.push(' ');
+                    existing.text.push_str(annotation);
+                    existing.dot_task_ids.push(task.id.clone());
+                })
+                .or_insert_with(|| AnnotationInfo {
+                    text: annotation.to_string(),
+                    dot_task_ids: vec![task.id.clone()],
+                });
+        }
+    }
 
     let filtered: Vec<&'a Task> = tasks
         .into_iter()
@@ -1202,5 +1225,43 @@ mod tests {
             !ids.contains(".assign-foo"),
             "Internal tasks should be hidden"
         );
+    }
+
+    #[test]
+    fn test_filter_internal_tasks_running_only_computes_annotations() {
+        // filter_internal_tasks_running_only should compute phase annotations
+        // for in-progress internal tasks, just like filter_internal_tasks does.
+        let mut graph = WorkGraph::new();
+        let task_b = make_task("b", "Task B");
+        let mut place_b =
+            make_internal_task(".place-b", "Place agent on b", "placement", vec!["b"]);
+        place_b.status = Status::InProgress;
+        let mut assign_b =
+            make_internal_task(".assign-b", "Assign agent to b", "assignment", vec!["b"]);
+        assign_b.status = Status::Open; // not in-progress, should not annotate
+
+        graph.add_node(Node::Task(task_b));
+        graph.add_node(Node::Task(place_b));
+        graph.add_node(Node::Task(assign_b));
+
+        let empty: HashMap<String, AnnotationInfo> = HashMap::new();
+        let (filtered, annots) =
+            filter_internal_tasks_running_only(&graph, graph.tasks().collect(), &empty);
+
+        // Both b and in-progress .place-b and open .assign-b should be kept
+        let ids: HashSet<&str> = filtered.iter().map(|t| t.id.as_str()).collect();
+        assert!(ids.contains("b"));
+        assert!(ids.contains(".place-b"));
+        assert!(ids.contains(".assign-b"));
+
+        // b should have a placing annotation from the in-progress .place-b
+        assert!(annots.contains_key("b"), "Expected annotation for task b");
+        let b_annot = &annots["b"];
+        assert!(
+            b_annot.text.contains("placing"),
+            "Expected 'placing' in annotation, got: {}",
+            b_annot.text
+        );
+        assert!(b_annot.dot_task_ids.contains(&".place-b".to_string()));
     }
 }
