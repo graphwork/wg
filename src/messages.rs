@@ -646,8 +646,8 @@ impl CoordinatorMessageStatus {
     /// ANSI escape code prefix for terminal coloring.
     pub fn ansi_prefix(&self) -> &'static str {
         match self {
-            CoordinatorMessageStatus::Unseen => "\x1b[90m",  // DarkGray
-            CoordinatorMessageStatus::Seen => "\x1b[33m",    // Yellow
+            CoordinatorMessageStatus::Unseen => "\x1b[90m", // DarkGray
+            CoordinatorMessageStatus::Seen => "\x1b[33m",   // Yellow
             CoordinatorMessageStatus::Replied => "\x1b[32m", // Green
         }
     }
@@ -672,9 +672,7 @@ pub fn coordinator_message_status(
     }
 
     // Senders considered "coordinator-side" (outgoing from the TUI perspective).
-    let is_coordinator_sender = |sender: &str| {
-        matches!(sender, "tui" | "user" | "coordinator")
-    };
+    let is_coordinator_sender = |sender: &str| matches!(sender, "tui" | "user" | "coordinator");
 
     let mut last_incoming_id: u64 = 0;
     let mut last_outgoing_after_incoming_id: u64 = 0;

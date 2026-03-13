@@ -842,7 +842,10 @@ enum ResponseEvent {
     /// A tool call from an assistant message.
     ToolUse { name: String, input: String },
     /// Token usage from an assistant turn (per-turn input + output tokens).
-    TurnStats { input_tokens: u64, output_tokens: u64 },
+    TurnStats {
+        input_tokens: u64,
+        output_tokens: u64,
+    },
     /// A tool result from Claude CLI's internal tool execution.
     ToolResult(String),
     /// The assistant turn is complete (end_turn).

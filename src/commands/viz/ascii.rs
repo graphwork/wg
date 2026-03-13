@@ -374,10 +374,7 @@ pub(crate) fn generate_ascii(
                         format!(" {}✉{}\x1b[0m", color, count_str)
                     }
                 } else {
-                    let icon = coordinator_status
-                        .get(id)
-                        .map(|s| s.icon())
-                        .unwrap_or('✉');
+                    let icon = coordinator_status.get(id).map(|s| s.icon()).unwrap_or('✉');
                     format!(" {}{}", icon, count_str)
                 }
             })
