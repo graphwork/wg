@@ -55,20 +55,6 @@ pub fn run(
         bail!("Agency not initialized. Run `wg agency init` first.");
     }
 
-    // Pre-flight: check that claude CLI is available
-    if Command::new("claude")
-        .env_remove("CLAUDE_CODE_ENTRYPOINT")
-        .env_remove("CLAUDECODE")
-        .arg("--version")
-        .output()
-        .is_err()
-    {
-        bail!(
-            "The 'claude' CLI is required for evolve but was not found in PATH.\n\
-             Install it from https://docs.anthropic.com/en/docs/claude-code and ensure it is on your PATH."
-        );
-    }
-
     // Parse strategy
     let strategy = match strategy {
         Some(s) => Strategy::from_str(s)?,
@@ -136,6 +122,21 @@ pub fn run(
     }
 
     // === Single-shot legacy mode ===
+
+    // Pre-flight: check that claude CLI is available (only needed for single-shot;
+    // fan-out mode creates task graph structures without running an LLM directly)
+    if Command::new("claude")
+        .env_remove("CLAUDE_CODE_ENTRYPOINT")
+        .env_remove("CLAUDECODE")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        bail!(
+            "The 'claude' CLI is required for evolve but was not found in PATH.\n\
+             Install it from https://docs.anthropic.com/en/docs/claude-code and ensure it is on your PATH."
+        );
+    }
 
     // Load evolver skill documents
     let skill_docs = load_evolver_skills(&skills_dir, strategy)?;
