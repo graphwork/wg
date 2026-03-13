@@ -1207,8 +1207,8 @@ pub fn format_duration_compact(secs: u64) -> String {
 /// The lightning bolt character for the wave animation (downwards zigzag arrow — reliably 1-cell wide).
 pub const WAVE_BOLT: &str = "↯";
 
-/// Number of lightning bolts in the wave animation.
-pub const WAVE_NUM_BOLTS: usize = 5;
+/// Number of lightning bolts in the wave animation (ROYGBIV — 7 rainbow colors).
+pub const WAVE_NUM_BOLTS: usize = 7;
 
 /// Interval between wave frames in milliseconds.
 const WAVE_FRAME_MS: u128 = 120;
@@ -5032,14 +5032,18 @@ impl VizApp {
     }
 
     /// Restore a saved draft into the message editor for the current task.
+    /// Skips editor recreation when the text is unchanged, preserving cursor
+    /// position across background refreshes (graph ticks, mtime changes).
     pub fn restore_message_draft(&mut self) {
         if let Some(task_id) = &self.messages_panel.task_id {
             if let Some(draft) = self.message_drafts.get(task_id).cloned() {
-                self.messages_panel.editor = new_emacs_editor_with(&draft);
-            } else {
+                if editor_text(&self.messages_panel.editor) != draft {
+                    self.messages_panel.editor = new_emacs_editor_with(&draft);
+                }
+            } else if !editor_is_empty(&self.messages_panel.editor) {
                 editor_clear(&mut self.messages_panel.editor);
             }
-        } else {
+        } else if !editor_is_empty(&self.messages_panel.editor) {
             editor_clear(&mut self.messages_panel.editor);
         }
     }
