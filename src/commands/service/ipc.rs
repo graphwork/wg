@@ -777,6 +777,7 @@ fn handle_add_task(
         failure_reason: None,
         model: model.map(String::from),
         provider: None,
+        endpoint: None,
         verify: verify.map(String::from),
         agent: None,
         loop_iteration: 0,

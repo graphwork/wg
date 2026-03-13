@@ -264,6 +264,7 @@ pub fn run(
                 failure_reason: None,
                 model: task_model,
                 provider: None,
+                endpoint: None,
                 verify: rendered.verify.clone(),
                 agent: None,
                 loop_iteration: 0,

@@ -960,6 +960,7 @@ mod tests {
             failure_reason: None,
             model: None,
             provider: None,
+            endpoint: None,
             verify: None,
             agent: None,
             loop_iteration: 0,
