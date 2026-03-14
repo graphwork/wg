@@ -638,8 +638,8 @@ impl CoordinatorMessageStatus {
     pub fn icon(&self) -> char {
         match self {
             CoordinatorMessageStatus::Unseen => '✉',
-            CoordinatorMessageStatus::Seen => '✓',
-            CoordinatorMessageStatus::Replied => '↩',
+            CoordinatorMessageStatus::Seen => '↩',
+            CoordinatorMessageStatus::Replied => '✓',
         }
     }
 
