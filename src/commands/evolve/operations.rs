@@ -1,17 +1,91 @@
 use anyhow::{Context, Result, bail};
+use std::collections::HashSet;
 use std::path::Path;
 
 use workgraph::agency::{
     self, AccessControl, ComponentCategory, ContentRef, Lineage, PerformanceRecord, Role,
     TradeoffConfig,
 };
+use workgraph::config::Config;
 
-use super::deferred::{defer_operation, should_defer};
+use super::deferred::{defer_operation, defer_self_mutation, should_defer};
 use super::meta::{
     apply_bizarre_ideation, apply_meta_compose_agent, apply_meta_swap_role,
     apply_meta_swap_tradeoff, apply_random_compose_agent, apply_random_compose_role,
 };
 use super::strategy::EvolverOperation;
+
+/// Resolve the evolver agent's own role and tradeoff IDs from config.
+/// Returns an empty set if no evolver_agent is configured.
+fn evolver_entity_ids(agency_dir: &Path, dir: &Path) -> HashSet<String> {
+    let mut ids = HashSet::new();
+    let config = Config::load_or_default(dir);
+    if let Some(ref agent_hash) = config.agency.evolver_agent {
+        let agent_path = agency_dir
+            .join("agents")
+            .join(format!("{}.yaml", agent_hash));
+        if let Ok(agent) = agency::load_agent(&agent_path) {
+            ids.insert(agent.role_id.clone());
+            ids.insert(agent.tradeoff_id);
+        }
+    }
+    ids
+}
+
+/// Check if an operation is a self-mutation (targets the evolver's own identity)
+/// and defer it if so. Returns `Some(result)` if deferred, `None` if safe to proceed.
+pub(crate) fn check_self_mutation(
+    op: &EvolverOperation,
+    agency_dir: &Path,
+    dir: &Path,
+    run_id: &str,
+) -> Option<Result<serde_json::Value>> {
+    let entity_ids = evolver_entity_ids(agency_dir, dir);
+
+    // Check 1: operation target_id matches evolver's role or tradeoff
+    if !entity_ids.is_empty() {
+        if let Some(ref target) = op.target_id {
+            let target_ids: Vec<&str> = target
+                .split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .collect();
+            if target_ids
+                .iter()
+                .any(|tid| entity_ids.contains(*tid))
+            {
+                return Some(defer_self_mutation(op, dir, run_id).map(|task_id| {
+                    serde_json::json!({
+                        "op": op.op,
+                        "target_id": op.target_id,
+                        "status": "deferred_for_review",
+                        "review_task": task_id,
+                        "reason": "Operation targets evolver's own identity — requires human approval",
+                    })
+                }));
+            }
+        }
+    }
+
+    // Check 2: meta operations targeting the "evolver" slot
+    if matches!(
+        op.op.as_str(),
+        "meta_swap_role" | "meta_swap_tradeoff" | "meta_compose_agent"
+    ) && op.meta_role.as_deref() == Some("evolver")
+    {
+        return Some(defer_self_mutation(op, dir, run_id).map(|task_id| {
+            serde_json::json!({
+                "op": op.op,
+                "meta_role": "evolver",
+                "status": "deferred_for_review",
+                "review_task": task_id,
+                "reason": "Operation targets evolver's own configuration — requires human approval",
+            })
+        }));
+    }
+
+    None
+}
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn apply_operation(
@@ -24,6 +98,14 @@ pub(crate) fn apply_operation(
     agency_dir: &Path,
     dir: &Path,
 ) -> Result<serde_json::Value> {
+    // Self-mutation safety: operations targeting the evolver's own
+    // role or tradeoff are deferred to a verified workgraph task
+    // that requires human approval. This protects both single-shot
+    // and fan-out evolution paths.
+    if let Some(result) = check_self_mutation(op, agency_dir, dir, run_id) {
+        return result;
+    }
+
     match op.op.as_str() {
         // Legacy operations
         "create_role" => apply_create_role(op, run_id, roles_dir),

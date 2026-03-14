@@ -24,7 +24,6 @@ pub use strategy::Strategy;
 
 pub use deferred::{run_deferred_approve, run_deferred_list, run_deferred_reject};
 
-use deferred::defer_self_mutation;
 use meta::print_operation_result;
 use operations::apply_operation;
 use parser::parse_evolver_output;
@@ -277,111 +276,15 @@ pub fn run(
         return Ok(());
     }
 
-    // Determine evolver's own role/tradeoff IDs for self-mutation detection
-    let evolver_entity_ids: HashSet<String> = {
-        let mut ids = HashSet::new();
-        if let Some(ref agent_hash) = config.agency.evolver_agent {
-            let agent_path = agency_dir
-                .join("agents")
-                .join(format!("{}.yaml", agent_hash));
-            if let Ok(agent) = agency::load_agent(&agent_path) {
-                ids.insert(agent.role_id.clone());
-                ids.insert(agent.tradeoff_id);
-            }
-        }
-        ids
-    };
-
     // Apply operations
+    // Self-mutation safety is now centralized inside apply_operation(),
+    // protecting both single-shot and fan-out paths.
     let mut results: Vec<serde_json::Value> = Vec::new();
     let mut applied = 0;
     let mut deferred = 0;
+    let mut new_role_ids: Vec<String> = Vec::new();
 
     for op in &operations {
-        // Self-mutation safety: operations targeting the evolver's own
-        // role or tradeoff are deferred to a verified workgraph task
-        // that requires human approval.
-        if !evolver_entity_ids.is_empty()
-            && let Some(ref target) = op.target_id
-        {
-            let target_ids: Vec<&str> = target
-                .split(',')
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .collect();
-            if target_ids
-                .iter()
-                .any(|tid| evolver_entity_ids.contains(*tid))
-            {
-                match defer_self_mutation(op, dir, actual_run_id) {
-                    Ok(task_id) => {
-                        deferred += 1;
-                        let result = serde_json::json!({
-                            "op": op.op,
-                            "target_id": op.target_id,
-                            "status": "deferred_for_review",
-                            "review_task": task_id,
-                            "reason": "Operation targets evolver's own identity — requires human approval",
-                        });
-                        if !json {
-                            eprintln!(
-                                "  [deferred] {} on {:?} → review task '{}' (evolver self-mutation)",
-                                op.op, op.target_id, task_id,
-                            );
-                        }
-                        results.push(result);
-                    }
-                    Err(e) => {
-                        let err_msg = format!("Failed to defer self-mutation {:?}: {}", op.op, e);
-                        eprintln!("{}", err_msg);
-                        results.push(serde_json::json!({
-                            "op": op.op,
-                            "error": err_msg,
-                        }));
-                    }
-                }
-                continue;
-            }
-        }
-
-        // Meta-agent self-mutation safety: any meta_swap/meta_compose targeting
-        // the "evolver" slot is deferred for human approval.
-        if matches!(
-            op.op.as_str(),
-            "meta_swap_role" | "meta_swap_tradeoff" | "meta_compose_agent"
-        ) && op.meta_role.as_deref() == Some("evolver")
-        {
-            match defer_self_mutation(op, dir, actual_run_id) {
-                Ok(task_id) => {
-                    deferred += 1;
-                    let result = serde_json::json!({
-                        "op": op.op,
-                        "meta_role": "evolver",
-                        "status": "deferred_for_review",
-                        "review_task": task_id,
-                        "reason": "Operation targets evolver's own configuration — requires human approval",
-                    });
-                    if !json {
-                        eprintln!(
-                            "  [deferred] {} on evolver → review task '{}' (evolver self-mutation)",
-                            op.op, task_id,
-                        );
-                    }
-                    results.push(result);
-                }
-                Err(e) => {
-                    let err_msg =
-                        format!("Failed to defer evolver self-mutation {:?}: {}", op.op, e);
-                    eprintln!("{}", err_msg);
-                    results.push(serde_json::json!({
-                        "op": op.op,
-                        "error": err_msg,
-                    }));
-                }
-            }
-            continue;
-        }
-
         match apply_operation(
             op,
             &roles,
@@ -393,10 +296,45 @@ pub fn run(
             dir,
         ) {
             Ok(result) => {
+                if result["status"].as_str() == Some("deferred_for_review") {
+                    deferred += 1;
+                    if !json {
+                        eprintln!(
+                            "  [deferred] {} on {:?} → review task '{}' (evolver self-mutation)",
+                            op.op,
+                            op.target_id.as_deref().or(op.meta_role.as_deref()),
+                            result["review_task"].as_str().unwrap_or("?"),
+                        );
+                    }
+                    results.push(result);
+                    continue;
+                }
+
                 applied += 1;
                 if !json {
                     print_operation_result(op, &result);
                 }
+
+                // Track newly created/modified role IDs for orphan-agent pairing
+                if matches!(
+                    op.op.as_str(),
+                    "create_role"
+                        | "modify_role"
+                        | "component_substitution"
+                        | "config_add_component"
+                        | "config_remove_component"
+                        | "config_swap_outcome"
+                        | "random_compose_role"
+                ) && result["status"].as_str() == Some("applied")
+                {
+                    if let Some(role_id) = result["id"]
+                        .as_str()
+                        .or(result["new_id"].as_str())
+                    {
+                        new_role_ids.push(role_id.to_string());
+                    }
+                }
+
                 results.push(result);
 
                 // Reload roles/tradeoffs so subsequent operations see newly
@@ -435,6 +373,98 @@ pub fn run(
         }
     }
 
+    // Post-apply: create agents for orphan roles produced during this run.
+    // Without an agent pairing, auto_assign can't use a role.
+    let mut auto_agents_created = 0;
+    if !new_role_ids.is_empty() && !tradeoffs.is_empty() {
+        let current_agents = agency::load_all_agents_or_warn(&agents_dir);
+        let paired_role_ids: HashSet<&str> =
+            current_agents.iter().map(|a| a.role_id.as_str()).collect();
+
+        // Pick the best-performing tradeoff for pairing (highest avg score),
+        // falling back to the first available tradeoff.
+        let best_tradeoff_id = tradeoffs
+            .iter()
+            .max_by(|a, b| {
+                let sa = a.performance.avg_score.unwrap_or(0.0);
+                let sb = b.performance.avg_score.unwrap_or(0.0);
+                sa.partial_cmp(&sb).unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .map(|t| t.id.as_str())
+            .unwrap_or_else(|| tradeoffs[0].id.as_str());
+
+        for role_id in &new_role_ids {
+            if paired_role_ids.contains(role_id.as_str()) {
+                continue;
+            }
+            let new_agent_id = agency::content_hash_agent(role_id, best_tradeoff_id);
+            // Skip if the agent already exists (e.g. from a random_compose_agent op)
+            if agents_dir
+                .join(format!("{}.yaml", new_agent_id))
+                .exists()
+            {
+                continue;
+            }
+
+            let new_agent = agency::Agent {
+                id: new_agent_id.clone(),
+                role_id: role_id.clone(),
+                tradeoff_id: best_tradeoff_id.to_string(),
+                name: format!(
+                    "auto-agent-{}",
+                    &new_agent_id[..8.min(new_agent_id.len())]
+                ),
+                performance: agency::PerformanceRecord::default(),
+                lineage: agency::Lineage {
+                    parent_ids: vec![],
+                    generation: 0,
+                    created_by: format!("evolver-auto-pair-{}", actual_run_id),
+                    created_at: Utc::now(),
+                },
+                capabilities: vec![],
+                rate: None,
+                capacity: None,
+                trust_level: workgraph::graph::TrustLevel::Provisional,
+                contact: None,
+                executor: "claude".to_string(),
+                preferred_model: None,
+                preferred_provider: None,
+                deployment_history: vec![],
+                attractor_weight: 0.3,
+                staleness_flags: vec![],
+            };
+
+            match agency::save_agent(&new_agent, &agents_dir) {
+                Ok(path) => {
+                    auto_agents_created += 1;
+                    let result = serde_json::json!({
+                        "op": "auto_pair_agent",
+                        "role_id": role_id,
+                        "tradeoff_id": best_tradeoff_id,
+                        "agent_id": new_agent_id,
+                        "path": path.display().to_string(),
+                        "status": "applied",
+                    });
+                    if !json {
+                        println!(
+                            "  [+] Auto-paired role {} with tradeoff {} -> agent {}",
+                            &role_id[..8.min(role_id.len())],
+                            &best_tradeoff_id[..8.min(best_tradeoff_id.len())],
+                            &new_agent_id[..8.min(new_agent_id.len())],
+                        );
+                    }
+                    results.push(result);
+                }
+                Err(e) => {
+                    eprintln!(
+                        "Warning: failed to auto-create agent for role {}: {}",
+                        role_id, e
+                    );
+                }
+            }
+        }
+    }
+
     // Save evolution run report
     let report = serde_json::json!({
         "run_id": actual_run_id,
@@ -451,6 +481,7 @@ pub fn run(
         "operations_proposed": operations.len(),
         "operations_applied": applied,
         "operations_deferred": deferred,
+        "agents_auto_created": auto_agents_created,
         "results": results,
         "summary": evolver_output.summary,
         "raw_output": raw_output.as_ref(),
@@ -473,6 +504,12 @@ pub fn run(
             println!(
                 "Deferred:   {} (evolver self-mutations, require human approval)",
                 deferred
+            );
+        }
+        if auto_agents_created > 0 {
+            println!(
+                "Auto-paired: {} new agent(s) created for orphan roles",
+                auto_agents_created
             );
         }
         if let Some(ref summary) = evolver_output.summary {
@@ -2682,5 +2719,173 @@ Let me know if you'd like me to adjust anything."#;
         let input = "some text } then { more text";
         let result = extract_json(input);
         assert!(result.is_none());
+    }
+
+    /// After evolution creates a role, an agent should be auto-created to pair it
+    /// with a tradeoff so that auto_assign can use it.
+    #[test]
+    fn test_orphan_role_gets_auto_paired_agent() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let agency_dir = temp_dir.path().join("agency");
+        let roles_dir = agency_dir.join("cache/roles");
+        let tradeoffs_dir = agency_dir.join("primitives/tradeoffs");
+        let agents_dir = agency_dir.join("cache/agents");
+        fs::create_dir_all(&roles_dir).unwrap();
+        fs::create_dir_all(&tradeoffs_dir).unwrap();
+        fs::create_dir_all(&agents_dir).unwrap();
+
+        // Create a tradeoff for pairing
+        let tradeoff = TradeoffConfig {
+            id: "tradeoff-1".into(),
+            name: "Careful".into(),
+            description: "Prioritize correctness".into(),
+            acceptable_tradeoffs: vec!["Slow".into()],
+            unacceptable_tradeoffs: vec!["Incomplete analysis".into()],
+            performance: PerformanceRecord {
+                task_count: 3,
+                avg_score: Some(0.8),
+                evaluations: vec![],
+            },
+            lineage: Lineage::default(),
+            access_control: AccessControl::default(),
+            former_agents: vec![],
+            former_deployments: vec![],
+        };
+        agency::save_tradeoff(&tradeoff, &tradeoffs_dir).unwrap();
+
+        // Create a role via apply_operation (simulating evolution)
+        let op = EvolverOperation {
+            op: "create_role".into(),
+            name: Some("Orphan Role".into()),
+            description: Some("A role with no agent".into()),
+            component_ids: Some(vec!["skill-x".into()]),
+            outcome_id: Some("Do good work".into()),
+            ..Default::default()
+        };
+
+        let result = apply_operation(
+            &op,
+            &[],
+            &[tradeoff.clone()],
+            "test-run",
+            &roles_dir,
+            &tradeoffs_dir,
+            &agency_dir,
+            temp_dir.path(),
+        )
+        .unwrap();
+        assert_eq!(result["status"], "applied");
+
+        let new_role_id = result["id"].as_str().unwrap().to_string();
+
+        // Verify no agents exist yet
+        let agents_before = agency::load_all_agents_or_warn(&agents_dir);
+        assert!(agents_before.is_empty());
+
+        // Simulate the post-apply orphan-pairing logic
+        let new_role_ids = vec![new_role_id.clone()];
+        let tradeoffs = vec![tradeoff.clone()];
+        let current_agents = agency::load_all_agents_or_warn(&agents_dir);
+        let paired_role_ids: HashSet<&str> =
+            current_agents.iter().map(|a| a.role_id.as_str()).collect();
+
+        let best_tradeoff_id = tradeoffs
+            .iter()
+            .max_by(|a, b| {
+                let sa = a.performance.avg_score.unwrap_or(0.0);
+                let sb = b.performance.avg_score.unwrap_or(0.0);
+                sa.partial_cmp(&sb).unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .map(|t| t.id.as_str())
+            .unwrap();
+
+        for role_id in &new_role_ids {
+            if paired_role_ids.contains(role_id.as_str()) {
+                continue;
+            }
+            let new_agent_id = agency::content_hash_agent(role_id, best_tradeoff_id);
+            let new_agent = agency::Agent {
+                id: new_agent_id.clone(),
+                role_id: role_id.clone(),
+                tradeoff_id: best_tradeoff_id.to_string(),
+                name: format!(
+                    "auto-agent-{}",
+                    &new_agent_id[..8.min(new_agent_id.len())]
+                ),
+                performance: PerformanceRecord::default(),
+                lineage: Lineage {
+                    parent_ids: vec![],
+                    generation: 0,
+                    created_by: "evolver-auto-pair-test-run".to_string(),
+                    created_at: chrono::Utc::now(),
+                },
+                capabilities: vec![],
+                rate: None,
+                capacity: None,
+                trust_level: workgraph::graph::TrustLevel::Provisional,
+                contact: None,
+                executor: "claude".to_string(),
+                preferred_model: None,
+                preferred_provider: None,
+                deployment_history: vec![],
+                attractor_weight: 0.3,
+                staleness_flags: vec![],
+            };
+            agency::save_agent(&new_agent, &agents_dir).unwrap();
+        }
+
+        // Verify agent was created
+        let agents_after = agency::load_all_agents_or_warn(&agents_dir);
+        assert_eq!(agents_after.len(), 1, "Expected one auto-created agent");
+        assert_eq!(agents_after[0].role_id, new_role_id);
+        assert_eq!(agents_after[0].tradeoff_id, "tradeoff-1");
+        assert!(agents_after[0].lineage.created_by.contains("auto-pair"));
+    }
+
+    /// Roles that already have an agent should not get a duplicate.
+    #[test]
+    fn test_already_paired_role_skipped() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let agents_dir = temp_dir.path().join("agents");
+        fs::create_dir_all(&agents_dir).unwrap();
+
+        // Pre-existing agent for role-1
+        let existing_agent = agency::Agent {
+            id: agency::content_hash_agent("role-1", "tradeoff-1"),
+            role_id: "role-1".into(),
+            tradeoff_id: "tradeoff-1".into(),
+            name: "existing-agent".into(),
+            performance: PerformanceRecord::default(),
+            lineage: Lineage::default(),
+            capabilities: vec![],
+            rate: None,
+            capacity: None,
+            trust_level: workgraph::graph::TrustLevel::Provisional,
+            contact: None,
+            executor: "claude".into(),
+            preferred_model: None,
+            preferred_provider: None,
+            deployment_history: vec![],
+            attractor_weight: 0.3,
+            staleness_flags: vec![],
+        };
+        agency::save_agent(&existing_agent, &agents_dir).unwrap();
+
+        let new_role_ids = vec!["role-1".to_string()];
+        let current_agents = agency::load_all_agents_or_warn(&agents_dir);
+        let paired_role_ids: HashSet<&str> =
+            current_agents.iter().map(|a| a.role_id.as_str()).collect();
+
+        let mut auto_created = 0;
+        for role_id in &new_role_ids {
+            if paired_role_ids.contains(role_id.as_str()) {
+                continue;
+            }
+            auto_created += 1;
+        }
+
+        assert_eq!(auto_created, 0, "Should not create agent for already-paired role");
+        let agents_after = agency::load_all_agents_or_warn(&agents_dir);
+        assert_eq!(agents_after.len(), 1, "Should still have exactly one agent");
     }
 }
