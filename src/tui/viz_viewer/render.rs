@@ -5033,7 +5033,7 @@ fn draw_status_bar(frame: &mut Frame, app: &VizApp, area: Rect) {
         let mut cp: Vec<Span> = Vec::new();
         if tc.show_uptime {
             cp.push(Span::styled(
-                match tc.service_uptime_secs {
+                match tc.live_uptime_secs() {
                     Some(s) => format!("\u{2191}{}", format_duration_compact(s)),
                     None => "\u{2191}-".into(),
                 },
@@ -5042,7 +5042,7 @@ fn draw_status_bar(frame: &mut Frame, app: &VizApp, area: Rect) {
         }
         if tc.show_cumulative {
             cp.push(Span::styled(
-                format!("\u{03A3}{}", format_duration_compact(tc.cumulative_secs)),
+                format!("\u{03A3}{}", format_duration_compact(tc.live_cumulative_secs())),
                 Style::default().fg(Color::Magenta),
             ));
         }
@@ -5050,7 +5050,7 @@ fn draw_status_bar(frame: &mut Frame, app: &VizApp, area: Rect) {
             cp.push(Span::styled(
                 format!(
                     "\u{26A1}{}({})",
-                    format_duration_compact(tc.active_secs),
+                    format_duration_compact(tc.live_active_secs()),
                     tc.active_agent_count
                 ),
                 Style::default().fg(Color::Green),
@@ -5886,6 +5886,12 @@ fn draw_config_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
         return;
     }
 
+    // If in add-model mode, draw the form instead.
+    if app.config_panel.adding_model {
+        draw_add_model_form(frame, app, area);
+        return;
+    }
+
     // Precompute endpoint index → name for test status display.
     let endpoint_names: HashMap<usize, String> = {
         let config = workgraph::config::Config::load_or_default(&app.workgraph_dir);
@@ -5912,7 +5918,7 @@ fn draw_config_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
             let is_collapsed = app.config_panel.collapsed.contains(&entry.section);
             let arrow = if is_collapsed { "▶" } else { "▼" };
 
-            // Service status indicator on the Service section header
+            // Section header status indicators
             let extra = if entry.section == ConfigSection::Service {
                 if app.config_panel.service_running {
                     format!(
@@ -5925,6 +5931,13 @@ fn draw_config_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
                 } else {
                     "  ○ stopped".to_string()
                 }
+            } else if entry.section == ConfigSection::Models {
+                // Count models (entries with .info suffix minus the add button)
+                let model_count = entries
+                    .iter()
+                    .filter(|e| e.section == ConfigSection::Models && e.key.ends_with(".info"))
+                    .count();
+                format!("  ({} models)", model_count)
             } else {
                 String::new()
             };
@@ -6060,11 +6073,26 @@ fn draw_config_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
             "  "
         };
 
-        let mut spans = vec![
-            Span::styled(cursor, style),
-            Span::styled(label, style),
-            Span::styled(value_display, value_style),
-        ];
+        let mut spans = vec![Span::styled(cursor, style)];
+
+        // For API Keys entries, color the status icon (✓/✗/⚠) separately
+        if entry.section == ConfigSection::ApiKeys && entry.label.len() >= 2 {
+            let icon = &entry.label[..entry.label.char_indices().nth(1).map(|(i, _)| i).unwrap_or(2)];
+            let rest = &entry.label[icon.len()..];
+            let icon_color = match icon.trim() {
+                "✓" => Color::Green,
+                "✗" => Color::Red,
+                "⚠" => Color::Yellow,
+                _ => style.fg.unwrap_or(Color::White),
+            };
+            let rest_padded = format!("{:<width$}", rest, width = label_width.saturating_sub(icon.len()));
+            spans.push(Span::styled(icon.to_string(), Style::default().fg(icon_color).add_modifier(Modifier::BOLD)));
+            spans.push(Span::styled(rest_padded, style));
+        } else {
+            spans.push(Span::styled(label, style));
+        }
+
+        spans.push(Span::styled(value_display, value_style));
 
         // Show endpoint test status inline for endpoint name entries.
         if entry.key.ends_with(".name")
@@ -6144,7 +6172,7 @@ fn draw_config_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
                 ConfigEditKind::Toggle => "Enter/Space: toggle",
             }
         } else {
-            "j/k: navigate  Enter: edit  Space: toggle  Tab: collapse/expand  a: add endpoint  t: test endpoint  g: install global  r: reload"
+            "j/k: navigate  Enter: edit  Space: toggle  Tab: collapse  a: add endpoint  m: add model  t: test  r: reload"
         };
         lines.push((
             Line::from(Span::styled(
@@ -6257,6 +6285,80 @@ fn draw_add_endpoint_form(frame: &mut Frame, app: &VizApp, area: Rect) {
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
         " Enter: confirm field  Tab: next field  Esc: cancel  Ctrl+S: save endpoint",
+        Style::default().fg(Color::DarkGray),
+    )));
+
+    let paragraph = Paragraph::new(lines);
+    frame.render_widget(paragraph, area);
+}
+
+/// Draw the "Add model" form overlay.
+fn draw_add_model_form(frame: &mut Frame, app: &VizApp, area: Rect) {
+    let fields = &app.config_panel.new_model;
+    let active = app.config_panel.new_model_field;
+
+    let field_labels = ["Model ID", "Provider", "Tier", "Cost In/1M", "Cost Out/1M"];
+    let field_values = [
+        &fields.id,
+        &fields.provider,
+        &fields.tier,
+        &fields.cost_in,
+        &fields.cost_out,
+    ];
+
+    let mut lines: Vec<Line> = Vec::new();
+    lines.push(Line::from(Span::styled(
+        "── Add Model ──",
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
+    )));
+    lines.push(Line::from(""));
+
+    for (i, (label, value)) in field_labels.iter().zip(field_values.iter()).enumerate() {
+        let is_active = i == active;
+        let cursor = if is_active { "▸ " } else { "  " };
+        let style = if is_active {
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::White)
+        };
+
+        let display = if is_active && app.config_panel.editing {
+            format!("[{}▏]", app.config_panel.edit_buffer)
+        } else if value.is_empty() {
+            match i {
+                0 => "(e.g. anthropic/claude-sonnet-4-6)".to_string(),
+                1 => "(openrouter)".to_string(),
+                2 => "(budget/mid/frontier)".to_string(),
+                3 => "(USD per 1M tokens)".to_string(),
+                4 => "(USD per 1M tokens)".to_string(),
+                _ => "(empty)".to_string(),
+            }
+        } else {
+            value.to_string()
+        };
+
+        let value_color = if value.is_empty() && !is_active {
+            Color::DarkGray
+        } else if is_active {
+            Color::Yellow
+        } else {
+            Color::Gray
+        };
+
+        lines.push(Line::from(vec![
+            Span::styled(cursor, style),
+            Span::styled(format!("{:<16}", label), style),
+            Span::styled(display, Style::default().fg(value_color)),
+        ]));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        " Enter: confirm field  Tab: next field  Esc: cancel  Ctrl+S: save model",
         Style::default().fg(Color::DarkGray),
     )));
 

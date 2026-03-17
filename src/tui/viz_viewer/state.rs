@@ -1151,6 +1151,9 @@ pub struct TimeCounters {
     pub cumulative_secs: u64,
     pub active_secs: u64,
     pub active_agent_count: usize,
+    /// When the counter values were last computed from disk.
+    /// Used to interpolate ticking counters at render time without extra I/O.
+    pub counters_computed_at: Instant,
     pub session_start: Instant,
     pub last_refresh: Instant,
     pub show_uptime: bool,
@@ -1169,6 +1172,7 @@ impl TimeCounters {
             cumulative_secs: 0,
             active_secs: 0,
             active_agent_count: 0,
+            counters_computed_at: Instant::now(),
             session_start: Instant::now(),
             last_refresh: Instant::now() - std::time::Duration::from_secs(60),
             show_uptime: parts.contains(&"uptime"),
@@ -1186,6 +1190,21 @@ impl TimeCounters {
             || self.show_active
             || self.show_session
             || self.show_compact
+    }
+    /// Current service uptime interpolated to render time (ticks every second).
+    pub fn live_uptime_secs(&self) -> Option<u64> {
+        self.service_uptime_secs
+            .map(|s| s + self.counters_computed_at.elapsed().as_secs())
+    }
+    /// Current cumulative agent-seconds interpolated to render time.
+    pub fn live_cumulative_secs(&self) -> u64 {
+        self.cumulative_secs
+            + self.counters_computed_at.elapsed().as_secs() * self.active_agent_count as u64
+    }
+    /// Current active agent-seconds interpolated to render time.
+    pub fn live_active_secs(&self) -> u64 {
+        self.active_secs
+            + self.counters_computed_at.elapsed().as_secs() * self.active_agent_count as u64
     }
 }
 pub fn format_duration_compact(secs: u64) -> String {
@@ -1591,6 +1610,7 @@ pub enum ConfigEditKind {
 pub enum ConfigSection {
     Endpoints,
     ApiKeys,
+    Models,
     Service,
     TuiSettings,
     AgentDefaults,
@@ -1606,6 +1626,7 @@ impl ConfigSection {
         match self {
             Self::Endpoints => "LLM Endpoints",
             Self::ApiKeys => "API Keys",
+            Self::Models => "Model Registry",
             Self::Service => "Service Settings",
             Self::TuiSettings => "TUI Settings",
             Self::AgentDefaults => "Agent Defaults",
@@ -1622,6 +1643,7 @@ impl ConfigSection {
         &[
             Self::Endpoints,
             Self::ApiKeys,
+            Self::Models,
             Self::Service,
             Self::TuiSettings,
             Self::AgentDefaults,
@@ -1664,6 +1686,12 @@ pub struct ConfigPanelState {
     pub service_pid: Option<u32>,
     /// Per-endpoint test results, keyed by endpoint name.
     pub endpoint_test_results: HashMap<String, EndpointTestStatus>,
+    /// Whether we're in the "add model" flow.
+    pub adding_model: bool,
+    /// Fields for new model being added.
+    pub new_model: NewModelFields,
+    /// Which field in the new-model form is active (0-4).
+    pub new_model_field: usize,
 }
 
 /// Status of an endpoint connectivity test.
@@ -1685,6 +1713,16 @@ pub struct NewEndpointFields {
     pub url: String,
     pub model: String,
     pub api_key: String,
+}
+
+/// Fields for the "add new model" form.
+#[derive(Default, Clone)]
+pub struct NewModelFields {
+    pub id: String,
+    pub provider: String,
+    pub tier: String,
+    pub cost_in: String,
+    pub cost_out: String,
 }
 
 /// A background command result received from a spawned thread.
@@ -6363,6 +6401,7 @@ impl VizApp {
         self.time_counters.cumulative_secs = cumulative as u64;
         self.time_counters.active_secs = active as u64;
         self.time_counters.active_agent_count = active_count;
+        self.time_counters.counters_computed_at = Instant::now();
 
         // Compaction progress
         if self.time_counters.show_compact {
@@ -7235,42 +7274,113 @@ impl VizApp {
         });
 
         // ── 2. API Keys (from environment) ──
-        let mask_env = |var: &str| -> String {
+        // Status indicator: ✓ = set (green), ✗ = missing (red), ⚠ = set but short (yellow)
+        let key_status = |var: &str| -> (String, &'static str) {
             match std::env::var(var).ok().filter(|k| !k.is_empty()) {
                 Some(key) if key.len() > 8 => {
-                    format!(
+                    let masked = format!(
                         "{}****...{}",
                         &key[..key.floor_char_boundary(3)],
                         &key[key.ceil_char_boundary(key.len() - 4)..]
-                    )
+                    );
+                    (masked, "valid")
                 }
-                Some(_) => "****".into(),
-                None => "(not set)".into(),
+                Some(_) => ("****".into(), "short"),
+                None => ("(not set)".into(), "missing"),
             }
+        };
+        let (anthro_val, anthro_status) = key_status("ANTHROPIC_API_KEY");
+        let (openai_val, openai_status) = key_status("OPENAI_API_KEY");
+        let (openrouter_val, openrouter_status) = key_status("OPENROUTER_API_KEY");
+        // Also check endpoint-configured keys
+        let endpoint_has_key = |provider: &str| -> bool {
+            config
+                .llm_endpoints
+                .endpoints
+                .iter()
+                .any(|ep| ep.provider == provider && (ep.api_key.is_some() || ep.api_key_file.is_some()))
+        };
+        let key_label = |name: &str, status: &str, provider: &str| -> String {
+            let icon = match status {
+                "valid" => "✓",
+                "short" => "⚠",
+                _ if endpoint_has_key(provider) => "✓",
+                _ => "✗",
+            };
+            format!("{} {}", icon, name)
         };
         entries.push(ConfigEntry {
             key: "apikey.anthropic".into(),
-            label: "Anthropic".into(),
-            value: mask_env("ANTHROPIC_API_KEY"),
+            label: key_label("Anthropic", anthro_status, "anthropic"),
+            value: anthro_val,
             edit_kind: ConfigEditKind::SecretInput,
             section: ConfigSection::ApiKeys,
         });
         entries.push(ConfigEntry {
             key: "apikey.openai".into(),
-            label: "OpenAI".into(),
-            value: mask_env("OPENAI_API_KEY"),
+            label: key_label("OpenAI", openai_status, "openai"),
+            value: openai_val,
             edit_kind: ConfigEditKind::SecretInput,
             section: ConfigSection::ApiKeys,
         });
         entries.push(ConfigEntry {
             key: "apikey.openrouter".into(),
-            label: "OpenRouter".into(),
-            value: mask_env("OPENROUTER_API_KEY"),
+            label: key_label("OpenRouter", openrouter_status, "openrouter"),
+            value: openrouter_val,
             edit_kind: ConfigEditKind::SecretInput,
             section: ConfigSection::ApiKeys,
         });
 
-        // ── 3. Service Settings ──
+        // ── 3. Model Registry (from models.yaml) ──
+        {
+            let registry = workgraph::models::ModelRegistry::load(&self.workgraph_dir)
+                .unwrap_or_default();
+            let default_id = registry.default_model.clone();
+            let mut models: Vec<&workgraph::models::ModelEntry> = registry.models.values().collect();
+            models.sort_by(|a, b| a.id.cmp(&b.id));
+            for model in &models {
+                let is_default = default_id.as_deref() == Some(&*model.id);
+                let default_marker = if is_default { " *" } else { "" };
+                let ctx = if model.context_window >= 1_000_000 {
+                    format!("{}M", model.context_window / 1_000_000)
+                } else {
+                    format!("{}k", model.context_window / 1_000)
+                };
+                entries.push(ConfigEntry {
+                    key: format!("model.{}.info", model.id),
+                    label: format!("{}{}", model.short_name(), default_marker),
+                    value: format!(
+                        "{} | ${:.2}/{:.2} | {}",
+                        model.tier, model.cost_per_1m_input, model.cost_per_1m_output, ctx
+                    ),
+                    edit_kind: ConfigEditKind::TextInput,
+                    section: ConfigSection::Models,
+                });
+                entries.push(ConfigEntry {
+                    key: format!("model.{}.set_default", model.id),
+                    label: "  Set as default".into(),
+                    value: if is_default { "on".into() } else { "off".into() },
+                    edit_kind: ConfigEditKind::Toggle,
+                    section: ConfigSection::Models,
+                });
+                entries.push(ConfigEntry {
+                    key: format!("model.{}.remove", model.id),
+                    label: "  Remove model".into(),
+                    value: "▸".into(),
+                    edit_kind: ConfigEditKind::Toggle,
+                    section: ConfigSection::Models,
+                });
+            }
+            entries.push(ConfigEntry {
+                key: "model.add".into(),
+                label: "+ Add model".into(),
+                value: String::new(),
+                edit_kind: ConfigEditKind::TextInput,
+                section: ConfigSection::Models,
+            });
+        }
+
+        // ── 4. Service Settings ──
         {
             use crate::commands::service::{ServiceState, is_service_alive};
             let ss = ServiceState::load(&self.workgraph_dir).ok().flatten();
@@ -8281,6 +8391,16 @@ impl VizApp {
                     self.config_panel.editing = false;
                     return;
                 }
+                // Model registry info entries are read-only
+                if key.starts_with("model.") && key.ends_with(".info") {
+                    self.config_panel.editing = false;
+                    return;
+                }
+                // model.add is not a text save — handled in event code
+                if key == "model.add" {
+                    self.config_panel.editing = false;
+                    return;
+                }
             }
         }
         if config.save(&self.workgraph_dir).is_ok() {
@@ -8335,6 +8455,55 @@ impl VizApp {
                 let _ = config.save(&self.workgraph_dir);
                 self.config_panel.save_notification = Some(Instant::now());
                 self.load_config_panel();
+            }
+            return;
+        }
+
+        // Handle model removal
+        if key.ends_with(".remove")
+            && key.starts_with("model.")
+        {
+            if let Some(model_id) = key
+                .strip_prefix("model.")
+                .and_then(|r| r.strip_suffix(".remove"))
+            {
+                if let Ok(mut registry) =
+                    workgraph::models::ModelRegistry::load(&self.workgraph_dir)
+                {
+                    registry.models.remove(model_id);
+                    // Clear default if removed model was default
+                    if registry.default_model.as_deref() == Some(model_id) {
+                        registry.default_model = None;
+                    }
+                    let _ = registry.save(&self.workgraph_dir);
+                    self.config_panel.save_notification = Some(Instant::now());
+                    self.load_config_panel();
+                }
+            }
+            return;
+        }
+
+        // Handle model set-as-default
+        if key.ends_with(".set_default")
+            && key.starts_with("model.")
+        {
+            if let Some(model_id) = key
+                .strip_prefix("model.")
+                .and_then(|r| r.strip_suffix(".set_default"))
+            {
+                if let Ok(mut registry) =
+                    workgraph::models::ModelRegistry::load(&self.workgraph_dir)
+                {
+                    if registry.default_model.as_deref() == Some(model_id) {
+                        // Toggle off: clear default
+                        registry.default_model = None;
+                    } else {
+                        let _ = registry.set_default(model_id);
+                    }
+                    let _ = registry.save(&self.workgraph_dir);
+                    self.config_panel.save_notification = Some(Instant::now());
+                    self.load_config_panel();
+                }
             }
             return;
         }
@@ -8416,6 +8585,46 @@ impl VizApp {
         self.config_panel.adding_endpoint = false;
         self.config_panel.new_endpoint = NewEndpointFields::default();
         self.config_panel.new_endpoint_field = 0;
+        self.load_config_panel();
+    }
+
+    /// Add a new model from the new-model form fields.
+    pub fn add_model(&mut self) {
+        let fields = &self.config_panel.new_model;
+        if fields.id.trim().is_empty() {
+            self.notification = Some(("Model ID is required".to_string(), Instant::now()));
+            return;
+        }
+        let mut registry = workgraph::models::ModelRegistry::load(&self.workgraph_dir)
+            .unwrap_or_default();
+        let tier = match fields.tier.to_lowercase().as_str() {
+            "frontier" => workgraph::models::ModelTier::Frontier,
+            "mid" => workgraph::models::ModelTier::Mid,
+            _ => workgraph::models::ModelTier::Budget,
+        };
+        let cost_in = fields.cost_in.parse::<f64>().unwrap_or(0.0);
+        let cost_out = fields.cost_out.parse::<f64>().unwrap_or(0.0);
+        let provider = if fields.provider.is_empty() {
+            "openrouter".to_string()
+        } else {
+            fields.provider.clone()
+        };
+        let entry = workgraph::models::ModelEntry {
+            id: fields.id.trim().to_string(),
+            provider,
+            cost_per_1m_input: cost_in,
+            cost_per_1m_output: cost_out,
+            context_window: 128_000,
+            capabilities: vec!["coding".into(), "tool_use".into()],
+            tier,
+        };
+        registry.add(entry);
+        if registry.save(&self.workgraph_dir).is_ok() {
+            self.config_panel.save_notification = Some(Instant::now());
+        }
+        self.config_panel.adding_model = false;
+        self.config_panel.new_model = NewModelFields::default();
+        self.config_panel.new_model_field = 0;
         self.load_config_panel();
     }
 
@@ -10736,13 +10945,20 @@ mod tui_config_panel_tests {
                 || key == "endpoint.add"
                 || key.ends_with(".remove")
                 || key.ends_with(".is_default")
+                || key.ends_with(".set_default")
                 || key.starts_with("action.")
                 || key.ends_with(".resolved")
+                || key.ends_with(".info")
+                || key == "model.add"
             {
                 continue;
             }
             // Skip endpoint entries (they need an existing endpoint)
             if key.starts_with("endpoint.") {
+                continue;
+            }
+            // Skip model registry entries (managed via models.yaml, not config.toml)
+            if key.starts_with("model.") {
                 continue;
             }
 
@@ -11039,9 +11255,13 @@ mod tui_config_panel_tests {
             // Skip known read-only/special entries
             if key.starts_with("apikey.")
                 || key == "endpoint.add"
+                || key == "model.add"
                 || key.ends_with(".remove")
                 || key.ends_with(".is_default")
+                || key.ends_with(".set_default")
+                || key.ends_with(".info")
                 || key.starts_with("endpoint.")
+                || key.starts_with("model.")
                 || key.starts_with("action.")
                 || key.ends_with(".resolved")
             {

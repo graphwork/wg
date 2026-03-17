@@ -1435,6 +1435,15 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
             app.input_mode = InputMode::ConfigEdit;
         }
 
+        // Config tab: 'm' starts the add-model flow
+        KeyCode::Char('m') if app.right_panel_tab == RightPanelTab::Config => {
+            app.config_panel.adding_model = true;
+            app.config_panel.new_model = super::state::NewModelFields::default();
+            app.config_panel.new_model_field = 0;
+            app.config_panel.editing = false;
+            app.input_mode = InputMode::ConfigEdit;
+        }
+
         // Agency tab: 'a' = view assignment task detail, 'e' = view evaluation task detail
         KeyCode::Char('a') if app.right_panel_tab == RightPanelTab::Agency => {
             if let Some(ref lifecycle) = app.agency_lifecycle
@@ -2553,8 +2562,24 @@ fn config_enter_edit(app: &mut VizApp) {
         return;
     }
 
-    // Special case: "Remove endpoint" — just toggle (which triggers removal)
+    // Special case: "+ Add model" entry
+    if app.config_panel.entries[idx].key == "model.add" {
+        app.config_panel.adding_model = true;
+        app.config_panel.new_model = super::state::NewModelFields::default();
+        app.config_panel.new_model_field = 0;
+        app.config_panel.editing = false;
+        app.input_mode = InputMode::ConfigEdit;
+        return;
+    }
+
+    // Special case: "Remove endpoint" / "Remove model" — just toggle (which triggers removal)
     if app.config_panel.entries[idx].key.ends_with(".remove") {
+        app.toggle_config_entry();
+        return;
+    }
+
+    // Special case: "Set as default" for models — just toggle
+    if app.config_panel.entries[idx].key.ends_with(".set_default") {
         app.toggle_config_entry();
         return;
     }
@@ -2588,6 +2613,12 @@ fn handle_config_edit_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModif
     // Add-endpoint form mode
     if app.config_panel.adding_endpoint {
         handle_add_endpoint_input(app, code, modifiers);
+        return;
+    }
+
+    // Add-model form mode
+    if app.config_panel.adding_model {
+        handle_add_model_input(app, code, modifiers);
         return;
     }
 
@@ -2742,6 +2773,104 @@ fn get_endpoint_field(fields: &super::state::NewEndpointFields, idx: usize) -> S
         2 => fields.url.clone(),
         3 => fields.model.clone(),
         4 => fields.api_key.clone(),
+        _ => String::new(),
+    }
+}
+
+/// Handle key events for the add-model form.
+fn handle_add_model_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
+    let field = app.config_panel.new_model_field;
+
+    match code {
+        KeyCode::Esc => {
+            app.config_panel.adding_model = false;
+            app.config_panel.editing = false;
+            app.input_mode = InputMode::Normal;
+        }
+        // Ctrl+S saves the model
+        KeyCode::Char('s') if modifiers.contains(KeyModifiers::CONTROL) => {
+            if app.config_panel.editing {
+                set_model_field(
+                    &mut app.config_panel.new_model,
+                    field,
+                    &app.config_panel.edit_buffer.clone(),
+                );
+                app.config_panel.editing = false;
+            }
+            app.add_model();
+            app.input_mode = InputMode::Normal;
+        }
+        // Tab moves to next field
+        KeyCode::Tab => {
+            if app.config_panel.editing {
+                let buf = app.config_panel.edit_buffer.clone();
+                set_model_field(&mut app.config_panel.new_model, field, &buf);
+                app.config_panel.editing = false;
+            }
+            app.config_panel.new_model_field = (field + 1) % 5;
+        }
+        // BackTab moves to previous field
+        KeyCode::BackTab => {
+            if app.config_panel.editing {
+                let buf = app.config_panel.edit_buffer.clone();
+                set_model_field(&mut app.config_panel.new_model, field, &buf);
+                app.config_panel.editing = false;
+            }
+            app.config_panel.new_model_field = if field == 0 { 4 } else { field - 1 };
+        }
+        KeyCode::Enter => {
+            if app.config_panel.editing {
+                let buf = app.config_panel.edit_buffer.clone();
+                set_model_field(&mut app.config_panel.new_model, field, &buf);
+                app.config_panel.editing = false;
+                if field < 4 {
+                    app.config_panel.new_model_field = field + 1;
+                } else {
+                    app.add_model();
+                    app.input_mode = InputMode::Normal;
+                }
+            } else {
+                app.config_panel.edit_buffer =
+                    get_model_field(&app.config_panel.new_model, field);
+                app.config_panel.editing = true;
+            }
+        }
+        KeyCode::Backspace if app.config_panel.editing => {
+            app.config_panel.edit_buffer.pop();
+        }
+        KeyCode::Char(c) if app.config_panel.editing => {
+            app.config_panel.edit_buffer.push(c);
+        }
+        KeyCode::Up | KeyCode::Char('k') if !app.config_panel.editing => {
+            app.config_panel.new_model_field = if field == 0 { 4 } else { field - 1 };
+        }
+        KeyCode::Down | KeyCode::Char('j') if !app.config_panel.editing => {
+            app.config_panel.new_model_field = (field + 1) % 5;
+        }
+        _ => {}
+    }
+}
+
+/// Set a field on the new-model form by index.
+fn set_model_field(fields: &mut super::state::NewModelFields, idx: usize, val: &str) {
+    match idx {
+        0 => fields.id = val.to_string(),
+        1 => fields.provider = val.to_string(),
+        2 => fields.tier = val.to_string(),
+        3 => fields.cost_in = val.to_string(),
+        4 => fields.cost_out = val.to_string(),
+        _ => {}
+    }
+}
+
+/// Get a field from the new-model form by index.
+fn get_model_field(fields: &super::state::NewModelFields, idx: usize) -> String {
+    match idx {
+        0 => fields.id.clone(),
+        1 => fields.provider.clone(),
+        2 => fields.tier.clone(),
+        3 => fields.cost_in.clone(),
+        4 => fields.cost_out.clone(),
         _ => String::new(),
     }
 }
