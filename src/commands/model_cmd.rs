@@ -377,4 +377,29 @@ mod tests {
         assert!(config.registry_lookup("sonnet").is_some());
         assert!(config.registry_lookup("opus").is_some());
     }
+
+    #[test]
+    fn test_model_remove_default_force() {
+        let tmp = setup_dir();
+        let dir = tmp.path();
+
+        // Add a model and set it as default
+        run_add(dir, "my-model", "openai", None, "standard", None, None, None, None, false)
+            .unwrap();
+        run_set_default(dir, "my-model", false).unwrap();
+
+        // Verify it is the default
+        let config = Config::load(dir).unwrap();
+        let default = config
+            .models
+            .get_role(workgraph::config::DispatchRole::Default)
+            .unwrap();
+        assert_eq!(default.model.as_deref(), Some("my-model"));
+
+        // Removing with --force should succeed (the non-force path calls process::exit
+        // which can't be tested in-process)
+        run_remove(dir, "my-model", true, false, false).unwrap();
+        let config = Config::load(dir).unwrap();
+        assert!(!config.model_registry.iter().any(|e| e.id == "my-model"));
+    }
 }

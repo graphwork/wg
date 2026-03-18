@@ -1228,8 +1228,13 @@ pub fn remove_registry_entry(
         warnings.push(format!("tiers.premium = '{}'", id));
     }
 
-    // Check role overrides
+    // Check role overrides (including default, which is excluded from ALL)
     use workgraph::config::DispatchRole;
+    if let Some(ref default_cfg) = config.models.default {
+        if default_cfg.model.as_deref() == Some(id) {
+            warnings.push(format!("[models.default].model = '{}'", id));
+        }
+    }
     for role in DispatchRole::ALL {
         if let Some(role_cfg) = config.models.get_role(*role)
             && role_cfg.model.as_deref() == Some(id)
