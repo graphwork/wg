@@ -1266,6 +1266,41 @@ fn ensure_coordinator_task(dir: &Path) {
         modified = true;
     }
 
+    // Ensure .archive-0 exists — forms a cycle with .coordinator-0
+    // Archives done/abandoned tasks older than the configured retention period.
+    if graph.get_task(".archive-0").is_none() {
+        let task = Task {
+            id: ".archive-0".to_string(),
+            title: "Archive 0".to_string(),
+            description: Some(
+                "Archive task — moves old done/abandoned tasks to archive.jsonl. \
+                 Forms a cycle with the coordinator: coordinator → archive → coordinator."
+                    .to_string(),
+            ),
+            status: workgraph::graph::Status::Open,
+            tags: vec!["archive-loop".to_string()],
+            after: vec![".coordinator-0".to_string()],
+            created_at: Some(Utc::now().to_rfc3339()),
+            log: vec![LogEntry {
+                timestamp: Utc::now().to_rfc3339(),
+                actor: Some("daemon".to_string()),
+                message: "Archive 0 task created by daemon".to_string(),
+            }],
+            ..Default::default()
+        };
+
+        graph.add_node(Node::Task(task));
+        modified = true;
+    }
+
+    // Ensure .coordinator-0 has back-edge to .archive-0
+    if let Some(coord) = graph.get_task_mut(".coordinator-0") {
+        if !coord.after.contains(&".archive-0".to_string()) {
+            coord.after.push(".archive-0".to_string());
+            modified = true;
+        }
+    }
+
     if modified && let Err(e) = save_graph(&graph, &gp) {
         eprintln!(
             "[daemon] Failed to save graph after creating coordinator/compact tasks: {}",
@@ -1413,6 +1448,135 @@ fn run_graph_compaction(dir: &Path, compaction_error_count: &mut u64, logger: &D
                     timestamp: chrono::Utc::now().to_rfc3339(),
                     actor: Some("daemon".to_string()),
                     message: format!("Compaction error: {:#}", e),
+                });
+                if task.log.len() > 50 {
+                    let drain_count = task.log.len() - 50;
+                    task.log.drain(..drain_count);
+                }
+            }
+            let _ = workgraph::parser::save_graph(&graph, &gp);
+        }
+    }
+}
+
+/// Run archival as a visible graph task (`.archive-0`).
+///
+/// Archival is cycle-driven: fires only when `.archive-0` is graph-ready
+/// (status=Open and coordinator dep is terminal). Follows the same pattern
+/// as `run_graph_compaction` for `.compact-0`.
+fn run_graph_archival(dir: &Path, archival_error_count: &mut u64, logger: &DaemonLogger) {
+    let gp = graph_path(dir);
+
+    // Check if .archive-0 is cycle-ready
+    {
+        let graph = match load_graph(&gp) {
+            Ok(g) => g,
+            Err(_) => return,
+        };
+        if graph.get_task(".archive-0").is_none() {
+            return; // No archive task in graph
+        }
+        let cycle_analysis = graph.compute_cycle_analysis();
+        let cycle_ready =
+            workgraph::query::ready_tasks_with_peers_cycle_aware(&graph, dir, &cycle_analysis);
+        if !cycle_ready.iter().any(|t| t.id == ".archive-0") {
+            return; // .archive-0 is not cycle-ready
+        }
+    }
+
+    // Mark .archive-0 as InProgress
+    {
+        let mut graph = match load_graph(&gp) {
+            Ok(g) => g,
+            Err(_) => return,
+        };
+        if let Some(task) = graph.get_task_mut(".archive-0") {
+            task.status = workgraph::graph::Status::InProgress;
+            task.started_at = Some(chrono::Utc::now().to_rfc3339());
+            task.log.push(workgraph::graph::LogEntry {
+                timestamp: chrono::Utc::now().to_rfc3339(),
+                actor: Some("daemon".to_string()),
+                message: "Archival started (cycle-driven)".to_string(),
+            });
+            if let Err(e) = workgraph::parser::save_graph(&graph, &gp) {
+                eprintln!(
+                    "[daemon] Failed to save graph after marking .archive-0 InProgress: {}",
+                    e
+                );
+                return;
+            }
+        }
+    }
+
+    // Run archival
+    let config = workgraph::config::Config::load_or_default(dir);
+    let retention_days = config.coordinator.archive_retention_days;
+
+    match crate::commands::archive::run_automatic(dir, retention_days) {
+        Ok(count) => {
+            if *archival_error_count > 0 {
+                logger.info(&format!(
+                    "Archival recovered after {} consecutive error(s)",
+                    *archival_error_count
+                ));
+            }
+            *archival_error_count = 0;
+            logger.info(&format!(
+                "Archival complete: {} tasks archived (retention: {}d)",
+                count, retention_days
+            ));
+
+            // Mark .archive-0 as Done and increment iteration
+            let mut graph = match load_graph(&gp) {
+                Ok(g) => g,
+                Err(_) => return,
+            };
+            if let Some(task) = graph.get_task_mut(".archive-0") {
+                task.status = workgraph::graph::Status::Done;
+                task.completed_at = Some(chrono::Utc::now().to_rfc3339());
+                task.loop_iteration = task.loop_iteration.saturating_add(1);
+                task.log.push(workgraph::graph::LogEntry {
+                    timestamp: chrono::Utc::now().to_rfc3339(),
+                    actor: Some("daemon".to_string()),
+                    message: format!(
+                        "Archival iteration {} complete: {} tasks archived",
+                        task.loop_iteration, count
+                    ),
+                });
+                // Keep log bounded
+                if task.log.len() > 50 {
+                    let drain_count = task.log.len() - 50;
+                    task.log.drain(..drain_count);
+                }
+            }
+            if let Err(e) = workgraph::parser::save_graph(&graph, &gp) {
+                eprintln!(
+                    "[daemon] Failed to save graph after marking .archive-0 Done: {}",
+                    e
+                );
+            }
+        }
+        Err(e) => {
+            *archival_error_count += 1;
+            if *archival_error_count == 1 || (*archival_error_count).is_multiple_of(5) {
+                logger.error(&format!(
+                    "Archival error (#{} consecutive): {:#}",
+                    *archival_error_count, e
+                ));
+            }
+
+            // Revert .archive-0 to Open for retry
+            let mut graph = match load_graph(&gp) {
+                Ok(g) => g,
+                Err(_) => return,
+            };
+            if let Some(task) = graph.get_task_mut(".archive-0") {
+                task.status = workgraph::graph::Status::Open;
+                task.started_at = None;
+                task.log.push(workgraph::graph::LogEntry {
+                    timestamp: chrono::Utc::now().to_rfc3339(),
+                    actor: Some("daemon".to_string()),
+                    message: format!("Archival error: {:#}", e),
                 });
                 if task.log.len() > 50 {
                     let drain_count = task.log.len() - 50;
@@ -1632,6 +1796,7 @@ pub fn run_daemon(
     let max_coordinators = config.coordinator.max_coordinators;
 
     let mut compaction_error_count: u64 = 0;
+    let mut archival_error_count: u64 = 0;
 
     while running {
         // Reap zombie child processes (agents that have exited).
@@ -1856,6 +2021,9 @@ pub fn run_daemon(
 
                     // Compaction: run when .compact-0 is graph-ready (cycle-driven)
                     run_graph_compaction(&dir, &mut compaction_error_count, &logger);
+
+                    // Archival: run when .archive-0 is graph-ready (cycle-driven)
+                    run_graph_archival(&dir, &mut archival_error_count, &logger);
                 }
                 Err(e) => {
                     coord_state.ticks += 1;

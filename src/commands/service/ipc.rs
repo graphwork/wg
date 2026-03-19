@@ -1000,6 +1000,38 @@ fn handle_create_coordinator(dir: &Path, name: Option<&str>) -> IpcResponse {
         }
     }
 
+    // Create companion .archive-N task forming a visible cycle
+    let archive_id = format!(".archive-{}", next_id);
+    if graph.get_task(&archive_id).is_none() {
+        let archive_task = workgraph::graph::Task {
+            id: archive_id.clone(),
+            title: format!("Archive {}", next_id),
+            description: Some(format!(
+                "Archive task — moves old done/abandoned tasks to archive.jsonl. \
+                 Forms a cycle with coordinator {}.",
+                next_id
+            )),
+            status: workgraph::graph::Status::Open,
+            tags: vec!["archive-loop".to_string()],
+            after: vec![format!(".coordinator-{}", next_id)],
+            created_at: Some(chrono::Utc::now().to_rfc3339()),
+            log: vec![workgraph::graph::LogEntry {
+                timestamp: chrono::Utc::now().to_rfc3339(),
+                actor: Some("daemon".to_string()),
+                message: format!("Archive {} task created via IPC", next_id),
+            }],
+            ..Default::default()
+        };
+        graph.add_node(workgraph::graph::Node::Task(archive_task));
+
+        // Add back-edge from coordinator to archive (cycle)
+        if let Some(coord) = graph.get_task_mut(&format!(".coordinator-{}", next_id))
+            && !coord.after.contains(&archive_id)
+        {
+            coord.after.push(archive_id);
+        }
+    }
+
     if let Err(e) = workgraph::parser::save_graph(&graph, &graph_path) {
         return IpcResponse::error(&format!("Failed to save graph: {}", e));
     }

@@ -1774,6 +1774,13 @@ pub struct CoordinatorConfig {
     /// Each coordinator is a separate Claude CLI process. Default: 4.
     #[serde(default = "default_max_coordinators")]
     pub max_coordinators: usize,
+
+    /// Archive tasks completed/abandoned more than this many days ago.
+    /// The archive cycle (.archive-0) runs periodically and moves old
+    /// done/abandoned tasks to .workgraph/archive.jsonl. Default: 7 days.
+    /// Set to 0 to disable automatic archival.
+    #[serde(default = "default_archive_retention_days")]
+    pub archive_retention_days: u64,
 }
 
 fn default_max_agents() -> usize {
@@ -1820,6 +1827,10 @@ fn default_max_coordinators() -> usize {
     4
 }
 
+fn default_archive_retention_days() -> u64 {
+    7
+}
+
 fn default_agent_timeout() -> String {
     "30m".to_string()
 }
@@ -1843,6 +1854,7 @@ impl Default for CoordinatorConfig {
             eval_frequency: default_eval_frequency(),
             worktree_isolation: false,
             max_coordinators: default_max_coordinators(),
+            archive_retention_days: default_archive_retention_days(),
         }
     }
 }

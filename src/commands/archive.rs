@@ -78,24 +78,43 @@ pub fn parse_duration(s: &str) -> Result<Duration> {
     }
 }
 
-/// Check if a task should be archived based on the --older filter
+/// Check if a task should be archived based on the --older filter.
+/// Only Done and Abandoned tasks are archivable.
 fn should_archive(task: &Task, older_than: Option<&Duration>) -> bool {
-    if task.status != Status::Done {
+    if !matches!(task.status, Status::Done | Status::Abandoned) {
         return false;
     }
 
     if let Some(min_age) = older_than {
-        if let Some(completed_at) = &task.completed_at
-            && let Ok(completed) = DateTime::parse_from_rfc3339(completed_at)
+        // Use completed_at for Done tasks, or created_at as fallback for Abandoned
+        let timestamp = task
+            .completed_at
+            .as_deref()
+            .or(task.created_at.as_deref());
+        if let Some(ts) = timestamp
+            && let Ok(parsed) = DateTime::parse_from_rfc3339(ts)
         {
-            let age = Utc::now().signed_duration_since(completed);
+            let age = Utc::now().signed_duration_since(parsed);
             return age > *min_age;
         }
-        // If no completion timestamp or can't parse, don't archive with --older filter
+        // If no timestamp or can't parse, don't archive with --older filter
         return false;
     }
 
     true
+}
+
+/// Check if a task has active (non-terminal) downstream dependents.
+/// Tasks with active dependents should not be archived.
+pub fn has_active_dependents(task: &Task, graph: &workgraph::graph::WorkGraph) -> bool {
+    for dep_id in &task.before {
+        if let Some(dep) = graph.get_task(dep_id) {
+            if !dep.status.is_terminal() {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// Append tasks to the archive file
@@ -388,12 +407,18 @@ pub fn run(
         let mut tasks = Vec::new();
         for id in ids {
             if let Some(task) = graph.get_task(id) {
-                if task.status != Status::Done {
+                if !matches!(task.status, Status::Done | Status::Abandoned) {
                     anyhow::bail!(
-                        "Task '{}' has status '{}' — only done tasks can be archived. \
+                        "Task '{}' has status '{}' — only done/abandoned tasks can be archived. \
                          Use `wg done {}` first.",
                         id,
                         task.status,
+                        id
+                    );
+                }
+                if has_active_dependents(task, &graph) {
+                    anyhow::bail!(
+                        "Task '{}' has active downstream dependents — cannot archive.",
                         id
                     );
                 }
@@ -407,6 +432,7 @@ pub fn run(
         graph
             .tasks()
             .filter(|t| should_archive(t, older_duration.as_ref()))
+            .filter(|t| !has_active_dependents(t, &graph))
             .cloned()
             .collect()
     };
@@ -475,6 +501,66 @@ pub fn run(
     );
 
     Ok(())
+}
+
+/// Run automatic archival (called by the daemon's archive cycle).
+/// Archives done/abandoned tasks older than `retention_days` that have no active dependents.
+/// Returns the number of tasks archived.
+pub fn run_automatic(dir: &Path, retention_days: u64) -> Result<usize> {
+    if retention_days == 0 {
+        return Ok(0);
+    }
+
+    let path = graph_path(dir);
+    if !path.exists() {
+        return Ok(0);
+    }
+
+    let older_duration = Duration::days(retention_days as i64);
+    let graph = load_graph(&path).context("Failed to load graph")?;
+    let arch_path = archive_path(dir);
+
+    // Find archivable tasks: done/abandoned, old enough, no active dependents, not system tasks
+    let tasks_to_archive: Vec<Task> = graph
+        .tasks()
+        .filter(|t| should_archive(t, Some(&older_duration)))
+        .filter(|t| !has_active_dependents(t, &graph))
+        .filter(|t| !t.id.starts_with('.')) // Skip system/internal tasks
+        .cloned()
+        .collect();
+
+    if tasks_to_archive.is_empty() {
+        return Ok(0);
+    }
+
+    // Append to archive
+    append_to_archive(&tasks_to_archive, &arch_path)?;
+
+    // Save batch metadata for undo
+    let archived_ids: Vec<String> = tasks_to_archive.iter().map(|t| t.id.clone()).collect();
+    save_batch_metadata(dir, &archived_ids)?;
+
+    // Remove from main graph
+    let mut modified_graph = graph;
+    for task in &tasks_to_archive {
+        modified_graph.remove_node(&task.id);
+    }
+    save_graph(&modified_graph, &path).context("Failed to save graph")?;
+    super::notify_graph_changed(dir);
+
+    // Record provenance
+    let config = workgraph::config::Config::load_or_default(dir);
+    let task_ids: Vec<&str> = tasks_to_archive.iter().map(|t| t.id.as_str()).collect();
+    let _ = workgraph::provenance::record(
+        dir,
+        "archive",
+        None,
+        None,
+        serde_json::json!({ "task_ids": task_ids, "automatic": true, "retention_days": retention_days }),
+        config.log.rotation_threshold,
+    );
+
+    Ok(tasks_to_archive.len())
 }
 
 #[cfg(test)]
@@ -1178,7 +1264,10 @@ mod tests {
         let ids = vec!["t1".to_string()];
         let result = run(wg_dir, false, None, false, false, &ids, false);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("only done tasks"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("only done/abandoned tasks"));
     }
 
     #[test]
@@ -1299,5 +1388,181 @@ mod tests {
 
         let loaded = load_batch_metadata(wg_dir).unwrap();
         assert_eq!(loaded, ids);
+    }
+
+    #[test]
+    fn test_should_archive_abandoned_task() {
+        let task = make_task("t1", "Test", Status::Abandoned, None);
+        assert!(should_archive(&task, None));
+    }
+
+    #[test]
+    fn test_should_archive_abandoned_with_older() {
+        // Abandoned task with created_at 40 days ago
+        let mut task = make_task("t1", "Test", Status::Abandoned, None);
+        task.created_at = Some((Utc::now() - Duration::days(40)).to_rfc3339());
+        let min_age = Duration::days(30);
+        assert!(should_archive(&task, Some(&min_age)));
+    }
+
+    #[test]
+    fn test_should_not_archive_recent_abandoned() {
+        let mut task = make_task("t1", "Test", Status::Abandoned, None);
+        task.created_at = Some((Utc::now() - Duration::days(5)).to_rfc3339());
+        let min_age = Duration::days(30);
+        assert!(!should_archive(&task, Some(&min_age)));
+    }
+
+    #[test]
+    fn test_has_active_dependents_blocks_archive() {
+        let mut graph = WorkGraph::new();
+
+        // t1 is done, t2 (depends on t1 via t1.before) is still open
+        let mut t1 = make_task("t1", "Done Task", Status::Done, Some("2024-01-01T00:00:00Z"));
+        t1.before = vec!["t2".to_string()];
+        let t2 = make_task("t2", "Open Task", Status::Open, None);
+
+        graph.add_node(Node::Task(t1.clone()));
+        graph.add_node(Node::Task(t2));
+
+        assert!(has_active_dependents(&t1, &graph));
+    }
+
+    #[test]
+    fn test_no_active_dependents_allows_archive() {
+        let mut graph = WorkGraph::new();
+
+        // t1 is done, t2 (depends on t1) is also done
+        let mut t1 = make_task("t1", "Done Task", Status::Done, Some("2024-01-01T00:00:00Z"));
+        t1.before = vec!["t2".to_string()];
+        let t2 = make_task("t2", "Also Done", Status::Done, Some("2024-01-02T00:00:00Z"));
+
+        graph.add_node(Node::Task(t1.clone()));
+        graph.add_node(Node::Task(t2));
+
+        assert!(!has_active_dependents(&t1, &graph));
+    }
+
+    #[test]
+    fn test_run_automatic() {
+        let dir = tempdir().unwrap();
+        let wg_dir = dir.path();
+        std::fs::create_dir_all(wg_dir).unwrap();
+        let graph_file = wg_dir.join("graph.jsonl");
+
+        // Create a graph with old done task and recent open task
+        let mut graph = WorkGraph::new();
+        let mut done_task = make_task(
+            "t1",
+            "Old Done Task",
+            Status::Done,
+            Some(&(Utc::now() - Duration::days(40)).to_rfc3339()),
+        );
+        done_task.created_at = Some((Utc::now() - Duration::days(40)).to_rfc3339());
+        graph.add_node(Node::Task(done_task));
+        graph.add_node(Node::Task(make_task("t2", "Open Task", Status::Open, None)));
+
+        // Recent done task (should NOT be archived with 30d retention)
+        let mut recent_done = make_task(
+            "t3",
+            "Recent Done",
+            Status::Done,
+            Some(&(Utc::now() - Duration::days(5)).to_rfc3339()),
+        );
+        recent_done.created_at = Some((Utc::now() - Duration::days(5)).to_rfc3339());
+        graph.add_node(Node::Task(recent_done));
+
+        save_graph(&graph, &graph_file).unwrap();
+
+        // Run automatic with 30 day retention
+        let count = run_automatic(wg_dir, 30).unwrap();
+        assert_eq!(count, 1);
+
+        // Verify old done task is archived, recent ones remain
+        let loaded = load_graph(&graph_file).unwrap();
+        assert!(loaded.get_task("t1").is_none()); // archived
+        assert!(loaded.get_task("t2").is_some()); // open, not archived
+        assert!(loaded.get_task("t3").is_some()); // recent done, not archived
+
+        // Verify archived task is in archive file
+        let arch_path = wg_dir.join("archive.jsonl");
+        let archived = load_archive(&arch_path).unwrap();
+        assert_eq!(archived.len(), 1);
+        assert_eq!(archived[0].id, "t1");
+    }
+
+    #[test]
+    fn test_run_automatic_skips_system_tasks() {
+        let dir = tempdir().unwrap();
+        let wg_dir = dir.path();
+        std::fs::create_dir_all(wg_dir).unwrap();
+        let graph_file = wg_dir.join("graph.jsonl");
+
+        let mut graph = WorkGraph::new();
+        let mut sys_task = make_task(
+            ".compact-0",
+            "System Task",
+            Status::Done,
+            Some(&(Utc::now() - Duration::days(40)).to_rfc3339()),
+        );
+        sys_task.created_at = Some((Utc::now() - Duration::days(40)).to_rfc3339());
+        graph.add_node(Node::Task(sys_task));
+        save_graph(&graph, &graph_file).unwrap();
+
+        // System tasks should not be auto-archived
+        let count = run_automatic(wg_dir, 7).unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn test_run_automatic_disabled_with_zero_retention() {
+        let dir = tempdir().unwrap();
+        let wg_dir = dir.path();
+        std::fs::create_dir_all(wg_dir).unwrap();
+        let graph_file = wg_dir.join("graph.jsonl");
+
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(make_task(
+            "t1",
+            "Done Task",
+            Status::Done,
+            Some(&(Utc::now() - Duration::days(40)).to_rfc3339()),
+        )));
+        save_graph(&graph, &graph_file).unwrap();
+
+        // retention_days=0 disables archival
+        let count = run_automatic(wg_dir, 0).unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn test_run_automatic_skips_tasks_with_active_dependents() {
+        let dir = tempdir().unwrap();
+        let wg_dir = dir.path();
+        std::fs::create_dir_all(wg_dir).unwrap();
+        let graph_file = wg_dir.join("graph.jsonl");
+
+        let mut graph = WorkGraph::new();
+        let mut done_task = make_task(
+            "t1",
+            "Done With Deps",
+            Status::Done,
+            Some(&(Utc::now() - Duration::days(40)).to_rfc3339()),
+        );
+        done_task.created_at = Some((Utc::now() - Duration::days(40)).to_rfc3339());
+        done_task.before = vec!["t2".to_string()];
+        graph.add_node(Node::Task(done_task));
+
+        // t2 is still in progress — t1 should not be archived
+        graph.add_node(Node::Task(make_task(
+            "t2",
+            "In Progress Task",
+            Status::InProgress,
+            None,
+        )));
+        save_graph(&graph, &graph_file).unwrap();
+
+        let count = run_automatic(wg_dir, 7).unwrap();
+        assert_eq!(count, 0);
     }
 }

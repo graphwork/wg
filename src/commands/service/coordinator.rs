@@ -2449,8 +2449,12 @@ fn spawn_agents_for_ready_tasks(
             continue;
         }
 
-        // Skip compact tasks — handled directly by the daemon, not spawned as agents
-        if task.tags.iter().any(|t| t == "compact-loop") {
+        // Skip compact/archive tasks — handled directly by the daemon, not spawned as agents
+        if task
+            .tags
+            .iter()
+            .any(|t| t == "compact-loop" || t == "archive-loop")
+        {
             continue;
         }
 
@@ -2927,11 +2931,15 @@ pub fn coordinator_tick(
         eprintln!("[coordinator] Spawning paused: global zero-output backoff active");
         let cycle_analysis = graph.compute_cycle_analysis();
         let final_ready = ready_tasks_with_peers_cycle_aware(&graph, dir, &cycle_analysis);
-        // Exclude compact-loop tasks from ready count — they're handled by
-        // the daemon's compaction subsystem, not by agent spawning.
+        // Exclude compact-loop and archive-loop tasks from ready count — they're handled by
+        // the daemon's compaction/archival subsystems, not by agent spawning.
         let ready_count = final_ready
             .iter()
-            .filter(|t| !t.tags.iter().any(|tag| tag == "compact-loop"))
+            .filter(|t| {
+                !t.tags
+                    .iter()
+                    .any(|tag| tag == "compact-loop" || tag == "archive-loop")
+            })
             .count();
         return Ok(TickResult {
             agents_alive: alive_count,
@@ -2943,11 +2951,15 @@ pub fn coordinator_tick(
     // Phase 6: Spawn agents on ready tasks
     let cycle_analysis = graph.compute_cycle_analysis();
     let final_ready = ready_tasks_with_peers_cycle_aware(&graph, dir, &cycle_analysis);
-    // Exclude compact-loop tasks from ready count — they're handled by
-    // the daemon's compaction subsystem, not by agent spawning.
+    // Exclude compact-loop and archive-loop tasks from ready count — they're handled by
+    // the daemon's compaction/archival subsystems, not by agent spawning.
     let ready_count = final_ready
         .iter()
-        .filter(|t| !t.tags.iter().any(|tag| tag == "compact-loop"))
+        .filter(|t| {
+            !t.tags
+                .iter()
+                .any(|tag| tag == "compact-loop" || tag == "archive-loop")
+        })
         .count();
     drop(final_ready);
     // Resolve task agent model: CLI override > models.task_agent > models.default > agent.model
