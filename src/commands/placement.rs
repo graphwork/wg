@@ -76,34 +76,82 @@ pub fn extract_text_from_stream(raw_stream_path: &Path) -> Result<String> {
     Ok(text_parts.join("\n"))
 }
 
-/// Parse the last non-empty line of text as a placement command.
+/// Parse placement command from agent text output.
+///
+/// Scans all lines (preferring the last match) for a valid command.
+/// Tolerates markdown formatting, backticks, trailing commentary, and extra whitespace.
 ///
 /// Valid formats:
 /// - `wg edit <task-id> --after <dep1>,<dep2> --before <dep3>`
 /// - `no-op`
 pub fn parse_placement_command(text: &str, expected_task_id: &str) -> PlacementParseResult {
-    // Find the last non-empty line
+    if text.trim().is_empty() {
+        return PlacementParseResult::Empty;
+    }
+
+    // Scan all lines in reverse, looking for the last valid command.
+    // This handles LLMs that add commentary after the command.
+    for line in text.lines().rev() {
+        let cleaned = strip_markdown_formatting(line);
+        if cleaned.is_empty() {
+            continue;
+        }
+
+        // Check for no-op
+        if cleaned.eq_ignore_ascii_case("no-op") {
+            return PlacementParseResult::Ok(PlacementCommand::NoOp);
+        }
+
+        // Try to parse as a wg edit command
+        if let Some(cmd) = parse_wg_edit_command(&cleaned, expected_task_id) {
+            return PlacementParseResult::Ok(cmd);
+        }
+    }
+
+    // Fallback: regex extraction anywhere in the text for `wg edit <id> --after/--before ...`
+    if let Some(cmd) = regex_extract_placement(text, expected_task_id) {
+        return PlacementParseResult::Ok(cmd);
+    }
+
+    // Return the last non-empty line as the unparseable content
     let last_line = text
         .lines()
         .rev()
-        .find(|line| !line.trim().is_empty())
-        .map(|line| line.trim());
+        .find(|l| !l.trim().is_empty())
+        .map(|l| l.trim().to_string())
+        .unwrap_or_default();
+    PlacementParseResult::Unparseable(last_line)
+}
 
-    let last_line = match last_line {
-        Some(line) => line,
-        None => return PlacementParseResult::Empty,
-    };
-
-    // Check for no-op
-    if last_line.eq_ignore_ascii_case("no-op") || last_line == "no-op" {
-        return PlacementParseResult::Ok(PlacementCommand::NoOp);
+/// Strip markdown formatting artifacts from a line: backticks, code fences, bullet markers.
+fn strip_markdown_formatting(line: &str) -> String {
+    let s = line.trim();
+    // Skip code fence lines (```bash, ```, etc.)
+    if s.starts_with("```") {
+        return String::new();
     }
+    // Strip surrounding backticks (inline code)
+    let s = s.trim_start_matches('`').trim_end_matches('`').trim();
+    // Strip leading bullet/list markers (- or *)
+    let s = s.strip_prefix("- ").or(Some(s)).unwrap();
+    let s = s.strip_prefix("* ").or(Some(s)).unwrap();
+    s.trim().to_string()
+}
 
-    // Try to parse as a wg edit command
-    match parse_wg_edit_command(last_line, expected_task_id) {
-        Some(cmd) => PlacementParseResult::Ok(cmd),
-        None => PlacementParseResult::Unparseable(last_line.to_string()),
+/// Fallback regex-style extraction: find `wg edit <expected_id> --after/--before ...` anywhere.
+fn regex_extract_placement(text: &str, expected_task_id: &str) -> Option<PlacementCommand> {
+    // Look for "wg edit <task_id>" followed by flags, anywhere in the text
+    let needle = format!("wg edit {}", expected_task_id);
+    for line in text.lines().rev() {
+        let cleaned = strip_markdown_formatting(line);
+        if let Some(start) = cleaned.find(&needle) {
+            // Extract from "wg edit ..." to end of the relevant part
+            let fragment = &cleaned[start..];
+            // Parse just this fragment
+            return parse_wg_edit_command(fragment, expected_task_id);
+        }
     }
+    None
 }
 
 /// Parse a `wg edit <task-id> --after <deps> --before <deps>` command string.
@@ -165,8 +213,8 @@ fn parse_wg_edit_command(line: &str, expected_task_id: &str) -> Option<Placement
                 }
             }
             _ => {
-                // Unknown flag — reject
-                return None;
+                // Unknown token — stop parsing (trailing commentary)
+                break;
             }
         }
         i += 1;
@@ -457,6 +505,113 @@ mod tests {
     fn test_trailing_whitespace_ignored() {
         let result = parse_placement_command(
             "reasoning...\n\nwg edit my-task --after dep-a\n\n  \n",
+            "my-task",
+        );
+        match result {
+            PlacementParseResult::Ok(PlacementCommand::Edit { after, .. }) => {
+                assert_eq!(after, vec!["dep-a"]);
+            }
+            other => panic!("Expected Edit, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_commentary_after_command() {
+        // LLM adds explanation after the command line
+        let result = parse_placement_command(
+            "I've analyzed the dependencies.\n\nwg edit my-task --after dep-a\n\nThis places the task after dep-a because it depends on its output.",
+            "my-task",
+        );
+        match result {
+            PlacementParseResult::Ok(PlacementCommand::Edit { after, .. }) => {
+                assert_eq!(after, vec!["dep-a"]);
+            }
+            other => panic!("Expected Edit, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_code_fence_wrapped() {
+        // LLM wraps command in a full code block
+        let result = parse_placement_command(
+            "Here's the placement:\n\n```bash\nwg edit my-task --after dep-a\n```\n\nDone.",
+            "my-task",
+        );
+        match result {
+            PlacementParseResult::Ok(PlacementCommand::Edit { after, .. }) => {
+                assert_eq!(after, vec!["dep-a"]);
+            }
+            other => panic!("Expected Edit, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_code_fence_no_lang() {
+        let result = parse_placement_command(
+            "```\nwg edit my-task --after dep-a\n```",
+            "my-task",
+        );
+        match result {
+            PlacementParseResult::Ok(PlacementCommand::Edit { after, .. }) => {
+                assert_eq!(after, vec!["dep-a"]);
+            }
+            other => panic!("Expected Edit, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_noop_with_commentary() {
+        let result = parse_placement_command(
+            "After analyzing the graph, no changes are needed.\n\nno-op\n\nThe task is already well-placed.",
+            "my-task",
+        );
+        assert!(matches!(
+            result,
+            PlacementParseResult::Ok(PlacementCommand::NoOp)
+        ));
+    }
+
+    #[test]
+    fn test_noop_backtick_wrapped() {
+        let result = parse_placement_command(
+            "Analysis complete.\n\n`no-op`",
+            "my-task",
+        );
+        assert!(matches!(
+            result,
+            PlacementParseResult::Ok(PlacementCommand::NoOp)
+        ));
+    }
+
+    #[test]
+    fn test_command_embedded_in_text() {
+        // Regex fallback: command appears mid-sentence
+        let result = parse_placement_command(
+            "The correct command is wg edit my-task --after dep-a and that's it.",
+            "my-task",
+        );
+        match result {
+            PlacementParseResult::Ok(PlacementCommand::Edit { after, .. }) => {
+                assert_eq!(after, vec!["dep-a"]);
+            }
+            other => panic!("Expected Edit via regex fallback, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_genuinely_malformed_rejected() {
+        // No valid command anywhere
+        let result = parse_placement_command(
+            "I think the task should go somewhere, but I'm not sure where.\nMaybe after something?",
+            "my-task",
+        );
+        assert!(matches!(result, PlacementParseResult::Unparseable(_)));
+    }
+
+    #[test]
+    fn test_bullet_list_command() {
+        let result = parse_placement_command(
+            "Options:\n- wg edit my-task --after dep-a",
             "my-task",
         );
         match result {
