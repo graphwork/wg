@@ -1004,6 +1004,7 @@ fn publish_creates_all_pipeline_edges_correctly() {
 fn publish_place_task_description_restricts_to_main_task_only() {
     // The .place-* task description must explicitly tell the placement agent
     // to ONLY add edges to the MAIN task, never to dot-tasks.
+    // Context must be minimal: only task ID, title, and active task list.
     let tmp = TempDir::new().unwrap();
     let wg_dir = setup_workgraph(&tmp);
 

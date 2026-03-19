@@ -808,8 +808,8 @@ fn build_placement_tasks(
 /// publish-time scaffolding. Also reopens stale Done `.assign-*` tasks when
 /// the source task was resurrected.
 ///
-/// Phase 2 — Process: For each Open `.assign-*` task, run a lightweight LLM
-/// call to select the best agent, set the agent on the source task, and mark
+/// Phase 2 — Process: For each ready Open `.assign-*` task, run a lightweight
+/// LLM call to select the best agent, set the agent on the source task, and mark
 /// `.assign-*` as Done (which unblocks the source task via graph edges).
 ///
 /// Returns `true` if the graph was modified.
@@ -897,7 +897,19 @@ fn build_auto_assign_tasks(
 
     let assign_task_ids: Vec<String> = graph
         .tasks()
-        .filter(|t| t.id.starts_with(".assign-") && t.status == Status::Open && !t.paused)
+        .filter(|t| {
+            t.id.starts_with(".assign-")
+                && t.status == Status::Open
+                && !t.paused
+                // Check readiness: all after deps must be terminal.
+                // This prevents processing .assign-* before .place-* completes.
+                && t.after.iter().all(|dep_id| {
+                    graph
+                        .get_task(dep_id)
+                        .map(|d| d.status.is_terminal())
+                        .unwrap_or(false)
+                })
+        })
         .map(|t| t.id.clone())
         .collect();
 

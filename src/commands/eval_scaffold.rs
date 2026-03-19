@@ -71,83 +71,25 @@ pub fn scaffold_flip_task(graph: &mut WorkGraph, task_id: &str, config: &Config)
     true
 }
 
-/// Extract file paths from a task description using heuristics.
-fn extract_file_paths(text: &str) -> Vec<String> {
-    let mut paths = Vec::new();
-    for word in text.split_whitespace() {
-        let word = word.trim_matches(|c: char| {
-            !c.is_alphanumeric() && c != '/' && c != '.' && c != '_' && c != '-'
-        });
-        if word.contains('/')
-            && (word.ends_with(".rs")
-                || word.ends_with(".ts")
-                || word.ends_with(".js")
-                || word.ends_with(".py")
-                || word.ends_with(".go")
-                || word.ends_with(".toml")
-                || word.ends_with(".md")
-                || word.ends_with(".yaml")
-                || word.ends_with(".yml")
-                || word.ends_with(".json"))
-        {
-            paths.push(word.to_string());
-        }
-    }
-    paths
-}
-
-/// Build placement context string for a `.place-*` task description.
+/// Build minimal placement context for a `.place-*` task.
 ///
-/// Includes:
-/// - Task summary and placement hints
-/// - Active tasks with their artifacts and titles
-/// - Explicit restriction: only add edges to the MAIN task, not dot-tasks
+/// Intentionally slim: only task ID, title, and a compact list of active task
+/// IDs+titles. The placement agent should ONLY decide dependency edges — giving
+/// it the full description causes scope creep (it tries to solve the problem
+/// instead of placing it).
 fn build_placement_context(graph: &WorkGraph, task_id: &str) -> String {
     use workgraph::graph::is_system_task;
 
     let mut ctx = String::new();
 
     if let Some(task) = graph.get_task(task_id) {
-        let mentioned_files = extract_file_paths(task.description.as_deref().unwrap_or(""));
         ctx.push_str("## Task to place\n");
         ctx.push_str(&format!("ID: {}\n", task.id));
         ctx.push_str(&format!("Title: {}\n", task.title));
-        if let Some(ref desc) = task.description {
-            let summary = desc
-                .split("\n\n")
-                .next()
-                .unwrap_or(desc)
-                .lines()
-                .next()
-                .unwrap_or(desc);
-            let summary = if summary.len() > 150 {
-                format!("{}…", &summary[..summary.floor_char_boundary(150)])
-            } else {
-                summary.to_string()
-            };
-            ctx.push_str(&format!("Summary: {}\n", summary));
-        }
-        if !mentioned_files.is_empty() {
-            ctx.push_str(&format!(
-                "Files mentioned: {}\n",
-                mentioned_files.join(", ")
-            ));
-        }
         if !task.after.is_empty() {
             ctx.push_str(&format!("Existing deps: {}\n", task.after.join(", ")));
         }
         ctx.push('\n');
-
-        if !task.place_near.is_empty() || !task.place_before.is_empty() {
-            ctx.push_str("## Placement hints\n");
-            if !task.place_near.is_empty() {
-                ctx.push_str(&format!("near: {}\n", task.place_near.join(", ")));
-            }
-            if !task.place_before.is_empty() {
-                ctx.push_str(&format!("before: {}\n", task.place_before.join(", ")));
-            }
-            ctx.push('\n');
-        }
     }
 
     ctx.push_str("## Active tasks (non-terminal)\n");
@@ -161,11 +103,7 @@ fn build_placement_context(graph: &WorkGraph, task_id: &str) -> String {
         ctx.push_str("(none)\n");
     } else {
         for t in &active_tasks {
-            ctx.push_str(&format!("- {} ({})", t.id, t.status));
-            if !t.artifacts.is_empty() {
-                ctx.push_str(&format!(" [files: {}]", t.artifacts.join(", ")));
-            }
-            ctx.push('\n');
+            ctx.push_str(&format!("- {} ({})\n", t.id, t.title));
         }
     }
 
@@ -953,7 +891,7 @@ mod tests {
         let mut graph = WorkGraph::new();
         graph.add_node(Node::Task(make_task("my-task", "My Task")));
 
-        // Create a .place-* task first (as coordinator Phase 2.9 would)
+        // Create a .place-* task first (as scaffold_full_pipeline would)
         let place_task = Task {
             id: ".place-my-task".to_string(),
             title: "Place: my-task".to_string(),
@@ -1042,6 +980,7 @@ mod tests {
 
         // All five tasks exist
         assert!(graph.get_task(".place-foo").is_some());
+        // Pipeline tasks exist
         assert!(graph.get_task(".assign-foo").is_some());
         assert!(graph.get_task(".flip-foo").is_some());
         assert!(graph.get_task(".evaluate-foo").is_some());
@@ -1095,7 +1034,7 @@ mod tests {
 
         scaffold_full_pipeline(dir.path(), &mut graph, "foo", "Foo Task", &config);
 
-        // No .place-* when auto_place=false
+        // No .place-* exists
         assert!(graph.get_task(".place-foo").is_none());
         // .assign-* still created (no .place-* dep)
         let assign = graph.get_task(".assign-foo").unwrap();
@@ -1176,7 +1115,7 @@ mod tests {
     }
 
     #[test]
-    fn test_scaffold_full_pipeline_place_description_restricts_to_main_task() {
+    fn test_scaffold_full_pipeline_place_description_is_minimal() {
         let dir = tempdir().unwrap();
         let mut config = Config::default();
         config.agency.auto_place = true;
@@ -1187,7 +1126,7 @@ mod tests {
 
         let place = graph.get_task(".place-foo").unwrap();
         let desc = place.description.as_deref().unwrap_or("");
-        // Description must explicitly restrict edge additions to the main task
+        // Description must restrict edges to the main task
         assert!(
             desc.contains("MAIN task") || desc.contains("main task"),
             "Placement task description should restrict edges to main task, got: {}",
@@ -1197,6 +1136,16 @@ mod tests {
             desc.contains("Do NOT") || desc.contains("do not"),
             "Placement task description should prohibit modifying dot-tasks, got: {}",
             desc
+        );
+        // Minimal context: should NOT contain full task description content
+        // (only ID, title, and active task list)
+        assert!(
+            desc.contains("ID: foo"),
+            "Description should include task ID"
+        );
+        assert!(
+            desc.contains("Title: Foo Task"),
+            "Description should include task title"
         );
     }
 
