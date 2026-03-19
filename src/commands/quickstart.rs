@@ -87,9 +87,26 @@ SERVICE MODE (recommended for parallel work)
   the coordinator handles this.
 
   wg service status           # Check if running, see last tick
+  wg service restart          # Graceful stop then start
   wg agents                   # Who's working on what
   wg list                     # What's done, what's pending
   wg tui                      # Interactive dashboard
+
+  Multi-coordinator sessions:
+
+  wg service create-coordinator   # Create a new coordinator session
+  wg service stop-coordinator <n> # Stop a coordinator session
+  wg service archive-coordinator <n>  # Archive a coordinator session
+  wg service delete-coordinator <n>   # Delete a coordinator session
+
+  Chat with the coordinator:
+
+  wg chat "message"               # Send a message to the coordinator
+  wg chat -i                      # Interactive REPL mode
+  wg chat --attachment file.txt   # Attach a file to the message
+  wg chat --coordinator 1         # Target a specific coordinator session
+  wg chat --history               # Show chat history
+  wg chat --clear                 # Clear chat history
 
 MANUAL MODE (no service running)
 ─────────────────────────────────────────
@@ -106,6 +123,17 @@ DISCOVERING & ADDING WORK
   wg add "Title" -d "Desc"    # Add new task
   wg add "X" --after Y        # Add task blocked by another
 
+  Provider selection (anthropic, openai, openrouter, local):
+
+  wg add "X" --provider openrouter --model google/gemini-2.5-flash
+
+  Execution modes control the agent's capabilities:
+
+  wg add "X" --exec-mode full    # Default: full agent with all tools
+  wg add "X" --exec-mode light   # Read-only tools (research/review tasks)
+  wg add "X" --exec-mode bare    # Only wg CLI (coordination-only tasks)
+  wg add "X" --exec-mode shell   # Shell command, no LLM (use with wg exec --set)
+
   Context scopes control how much context the coordinator injects into the
   agent's prompt when dispatching a task:
 
@@ -113,6 +141,17 @@ DISCOVERING & ADDING WORK
   wg add "X" --context-scope task   # Standard default: task + predecessor context
   wg add "X" --context-scope graph  # Task + transitive dependency chain
   wg add "X" --context-scope full   # Everything: full graph state
+
+  Scheduling — delay dispatch or set an absolute start time:
+
+  wg add "X" --delay 1h              # Ready after 1 hour
+  wg add "X" --not-before 2026-04-01T09:00:00Z  # ISO 8601 timestamp
+
+  Placement hints — control where tasks land in the graph:
+
+  wg add "X" --no-place             # Skip auto-placement, dispatch immediately
+  wg add "X" --place-near task-a    # Place near related tasks
+  wg add "X" --place-before task-b  # Place before specific tasks
 
 TASK STATE COMMANDS
 ─────────────────────────────────────────
@@ -171,11 +210,42 @@ CYCLES (repeating workflows)
   This stops the loop/cycle. Using plain 'wg done' causes the cycle to
   iterate again. Only use plain 'wg done' if you want the next iteration.
 
+  ADVANCED CYCLE OPTIONS:
+
+    wg add "X" --after Y --max-iterations 5 --no-converge
+      # Force all iterations to run — agents cannot signal early stop
+
+    wg add "X" --after Y --max-iterations 10 --no-restart-on-failure
+      # Don't restart the cycle if an iteration fails
+
+    wg add "X" --after Y --max-iterations 10 --max-failure-restarts 1
+      # Allow at most 1 failure-triggered restart (default: 3)
+
   KEY RULES:
   • One cycle, not N copies of tasks — let the iteration mechanism repeat
   • Use --max-iterations to prevent runaway loops (always set a cap)
   • Each agent in the cycle sees its loop_iteration count via wg show
   • Check for convergence: if nothing changed, use --converged to stop
+
+SHELL EXECUTION
+─────────────────────────────────────────
+  Run tasks as shell commands instead of LLM agents:
+
+  wg exec --set build-task "cargo build --release"  # Set shell command
+  wg exec build-task                                 # Run it (claim + exec + done/fail)
+  wg exec --dry-run build-task                       # Preview without running
+  wg exec --clear build-task                         # Remove the shell command
+
+  Use with --exec-mode shell on task creation for fully automated steps.
+
+COMPACT, SWEEP & CHECKPOINT
+─────────────────────────────────────────
+  wg compact                    # Distill graph state into context.md
+  wg sweep                      # Detect and recover orphaned in-progress tasks
+  wg sweep --dry-run            # Preview what sweep would fix
+  wg checkpoint <task-id> -s "Progress summary"  # Save checkpoint
+  wg checkpoint <task-id> --list                 # List checkpoints for a task
+  wg stats                      # Show time counters and agent statistics
 
 HOUSEKEEPING
 ─────────────────────────────────────────
@@ -230,15 +300,41 @@ EXECUTORS & MODELS
 
   Set a default model for all agents:
 
-  wg service start --model anthropic/claude-sonnet-4   # CLI override
-  # Or in .workgraph/config.toml under [coordinator]: model = "anthropic/claude-sonnet-4"
+  wg service start --model anthropic/claude-sonnet-4-6   # CLI override
+  # Or in .workgraph/config.toml under [coordinator]: model = "anthropic/claude-sonnet-4-6"
 
   Per-task model selection (overrides the default):
 
   wg add "Fast task" --model google/gemini-2.5-flash
-  wg add "Heavy task" --model anthropic/claude-opus-4
+  wg add "Heavy task" --model anthropic/claude-opus-4-6
 
   Model hierarchy: task --model > executor model > coordinator model > 'default'
+
+MODEL REGISTRY & API KEYS
+─────────────────────────────────────────
+  Model registry — manage models and per-role routing:
+
+  wg model list                  # Show all models (built-in + user-defined)
+  wg model add <id> --tier <t>  # Add/update a model in the registry
+  wg model remove <id>          # Remove a model from the registry
+  wg model set-default <id>     # Set the default dispatch model
+  wg model routing              # Show per-role model routing
+  wg model set <role> <model>   # Set model for a specific dispatch role
+
+  Browse and search models from OpenRouter:
+
+  wg models list                 # List models from local registry
+  wg models search <query>       # Search OpenRouter by name/description
+  wg models remote               # List all models available on OpenRouter
+  wg models add <id>             # Add a model from OpenRouter to local registry
+  wg models set-default <id>     # Set default model
+  wg models init                 # Initialize models.yaml with defaults
+
+  API key management:
+
+  wg key set <provider>          # Configure an API key for a provider
+  wg key check <provider>        # Validate API key availability
+  wg key list                    # Show key status for all providers
 
 REUSABLE FUNCTIONS
 ─────────────────────────────────────────
@@ -389,7 +485,7 @@ fn json_output() -> serde_json::Value {
             "discovery": {
                 "list": "List all tasks",
                 "show": "View task details and context",
-                "add": "Add a new task (supports --context-scope clean/task/graph/full)",
+                "add": "Add a new task (supports --context-scope, --exec-mode, --provider, --delay, --not-before, --no-place, --place-near, --place-before)",
                 "ready": "See tasks available to work on (manual mode)"
             },
             "work": {
@@ -405,11 +501,35 @@ fn json_output() -> serde_json::Value {
                 "abandon": "Give up permanently"
             }
         },
+        "exec_modes": {
+            "description": "Control agent capabilities per task.",
+            "modes": {
+                "full": "Default: full agent with all tools",
+                "light": "Read-only tools (research/review tasks)",
+                "bare": "Only wg CLI (coordination-only tasks)",
+                "shell": "Shell command, no LLM (use with wg exec --set)"
+            },
+            "usage": "wg add \"task\" --exec-mode <mode>"
+        },
+        "scheduling": {
+            "delay": "wg add \"task\" --delay 1h",
+            "not_before": "wg add \"task\" --not-before 2026-04-01T09:00:00Z",
+            "placement": {
+                "no_place": "wg add \"task\" --no-place (skip auto-placement)",
+                "place_near": "wg add \"task\" --place-near task-a",
+                "place_before": "wg add \"task\" --place-before task-b"
+            }
+        },
         "cycles": {
             "description": "Structural cycles model repeating workflows via after back-edges with CycleConfig.",
             "create": "wg add \"Write\" --after review --max-iterations 3",
             "inspect": ["wg show <task-id>", "wg cycles"],
-            "convergence": "IMPORTANT: Use 'wg done <task-id> --converged' to stop a cycle when work is complete. Plain 'wg done' causes the cycle to iterate again."
+            "convergence": "IMPORTANT: Use 'wg done <task-id> --converged' to stop a cycle when work is complete. Plain 'wg done' causes the cycle to iterate again.",
+            "advanced": {
+                "no_converge": "wg add \"X\" --after Y --max-iterations 5 --no-converge (force all iterations)",
+                "no_restart_on_failure": "wg add \"X\" --after Y --max-iterations 10 --no-restart-on-failure",
+                "max_failure_restarts": "wg add \"X\" --after Y --max-iterations 10 --max-failure-restarts 1"
+            }
         },
         "growing_the_graph": {
             "ethos": "The graph is a shared medium. You are not isolated — you are part of a living system. Your job is not just to complete your task, but to leave the system better than you found it.",
@@ -430,10 +550,62 @@ fn json_output() -> serde_json::Value {
         ],
         "executors_and_models": {
             "switch_executor": "wg config --coordinator-executor amplifier",
-            "set_model_cli": "wg service start --model anthropic/claude-sonnet-4",
-            "set_model_config": "[coordinator] model = \"anthropic/claude-sonnet-4\"",
+            "set_model_cli": "wg service start --model anthropic/claude-sonnet-4-6",
+            "set_model_config": "[coordinator] model = \"anthropic/claude-sonnet-4-6\"",
             "per_task_model": "wg add \"task\" --model google/gemini-2.5-flash",
+            "per_task_provider": "wg add \"task\" --provider openrouter",
             "hierarchy": "task --model > executor model > coordinator model > 'default'"
+        },
+        "model_registry": {
+            "model": {
+                "list": "wg model list",
+                "add": "wg model add <id> --tier <tier>",
+                "remove": "wg model remove <id>",
+                "set_default": "wg model set-default <id>",
+                "routing": "wg model routing",
+                "set_role": "wg model set <role> <model>"
+            },
+            "models": {
+                "list": "wg models list",
+                "search": "wg models search <query>",
+                "remote": "wg models remote",
+                "add": "wg models add <id>",
+                "set_default": "wg models set-default <id>",
+                "init": "wg models init"
+            }
+        },
+        "api_keys": {
+            "set": "wg key set <provider>",
+            "check": "wg key check <provider>",
+            "list": "wg key list"
+        },
+        "shell_execution": {
+            "set_command": "wg exec --set <task> \"command\"",
+            "run": "wg exec <task>",
+            "dry_run": "wg exec --dry-run <task>",
+            "clear": "wg exec --clear <task>"
+        },
+        "compact_sweep_checkpoint": {
+            "compact": "wg compact",
+            "sweep": "wg sweep",
+            "sweep_dry_run": "wg sweep --dry-run",
+            "checkpoint": "wg checkpoint <task> -s \"summary\"",
+            "checkpoint_list": "wg checkpoint <task> --list",
+            "stats": "wg stats"
+        },
+        "multi_coordinator": {
+            "create": "wg service create-coordinator",
+            "stop": "wg service stop-coordinator <n>",
+            "archive": "wg service archive-coordinator <n>",
+            "delete": "wg service delete-coordinator <n>"
+        },
+        "chat": {
+            "send": "wg chat \"message\"",
+            "interactive": "wg chat -i",
+            "attachment": "wg chat --attachment file.txt",
+            "coordinator": "wg chat --coordinator 1",
+            "history": "wg chat --history",
+            "clear": "wg chat --clear"
         },
         "housekeeping": {
             "archive": "wg archive",

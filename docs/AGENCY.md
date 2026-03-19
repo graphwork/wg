@@ -119,6 +119,18 @@ wg add "Implement feature X" --skill rust
 wg evolve run
 ```
 
+Additional automation options:
+
+```bash
+# Auto-place new tasks in the graph (coordinator creates .place-* meta-tasks)
+wg config --auto-place true
+
+# Auto-create new primitives when the store needs expansion
+wg config --auto-create true
+```
+
+When `auto_place` is enabled, the coordinator creates `.place-*` tasks for newly added tasks to determine optimal graph wiring. When `auto_create` is enabled, the coordinator invokes the creator agent to discover and add new primitives after a configurable number of completed tasks (`auto_create_threshold`, default: 20).
+
 ## Lifecycle
 
 ### 1. Create roles and tradeoffs
@@ -411,6 +423,8 @@ wg evolve run --dry-run                           # preview without applying
 | `--trust-level <LEVEL>` | `verified`, `provisional`, or `unknown` |
 | `--contact <STRING>` | Contact info (email, Matrix ID, etc.) |
 | `--executor <NAME>` | Executor backend: `claude` (default), `matrix`, `email`, `shell` |
+| `--model <MODEL>` | Preferred model (e.g., `opus`, `sonnet`, `haiku`, or full model ID) |
+| `--provider <PROVIDER>` | Preferred provider (e.g., `anthropic`, `openrouter`) |
 
 ### `wg assign`
 
@@ -488,6 +502,22 @@ Skill content embedded directly.
 wg role add "Writer" --skill "tone:inline:Write in a clear, technical style" --outcome "Documentation"
 ```
 
+### Installing skills
+
+The workgraph skill can be installed as a Claude Code skill:
+
+```bash
+wg skill install     # installs to ~/.claude/skills/wg/
+```
+
+Other skill management commands:
+
+```bash
+wg skill list                # list all skills used across tasks
+wg skill task <task-id>      # show skills for a specific task
+wg skill find <skill-name>   # find tasks requiring a specific skill
+```
+
 ### Resolution
 
 When a task is dispatched with an agent identity, all skill references on the role are resolved:
@@ -514,6 +544,7 @@ The evolution system improves agency performance by analyzing evaluation data an
 | `component-mutation` | Mutate individual components (skills, outcomes, tradeoffs) at the primitive level |
 | `randomisation` | Randomly compose new roles or agents from existing primitives |
 | `bizarre-ideation` | Generate novel primitives via creative/divergent prompting |
+| `coordinator` | Evolve coordinator prompt files (`evolved-amendments.md`, `common-patterns.md`) |
 | `all` | Use all strategies as appropriate (default) |
 
 ### Operations
@@ -565,10 +596,12 @@ The evolver outputs structured JSON operations. These span three levels of the a
 
 Some operations are too impactful to apply immediately. The evolver automatically defers operations that require human approval:
 
-- **Outcome swaps** (`config_swap_outcome`) — changing a role's target outcome changes what "success" means
-- **Self-mutation** — operations targeting the evolver's own role or tradeoff
+- **Objective changes** (`config_swap_outcome`, or `wording_mutation` on outcomes with `requires_human_oversight`) — changing a role's target outcome changes what "success" means
+- **Bizarre objectives** (`bizarre_ideation` targeting outcomes) — novel outcomes generated via divergent prompting need human review
+- **Protected objectives** — outcomes marked with the `requires_human_oversight` flag in their YAML, or referenced by `random_compose_role`
+- **Self-mutation** — operations targeting the evolver's own role or tradeoff (creates a review task in the graph rather than a deferred-ops file)
 
-Deferred operations are saved to `.workgraph/agency/deferred-ops/` and can be managed with:
+Deferred operations are saved to `.workgraph/agency/deferred/` and can be managed with:
 
 ```bash
 wg evolve review list              # view pending deferred operations
@@ -756,7 +789,7 @@ wg agent lineage <id>        # shows agent + role + tradeoff ancestry
 │   ├── behavioral-rules.md      # (immutable)
 │   ├── evolved-amendments.md    # (mutable — evolver-written rules)
 │   └── common-patterns.md       # (mutable — evolver-written examples)
-└── deferred-ops/                # Deferred evolution operations awaiting approval
+└── deferred/                    # Deferred evolution operations awaiting approval
     └── <op-id>.json
 ```
 
@@ -819,6 +852,9 @@ For the full federation design (conflict resolution, global store, trust propaga
 [agency]
 auto_evaluate = false              # auto-create evaluation tasks on completion
 auto_assign = false                # auto-create assignment tasks for ready work
+auto_place = false                 # auto-place new tasks in the graph via .place-* tasks
+auto_create = false                # auto-invoke creator agent for new primitives
+auto_create_threshold = 20         # completed tasks before triggering creator again
 auto_triage = false                # auto-triage dead agents before respawning
 assigner_model = "haiku"           # model for assigner agents
 evaluator_model = "haiku"          # model for evaluator agents
@@ -829,6 +865,7 @@ assigner_agent = ""                # content-hash of assigner agent
 evaluator_agent = ""               # content-hash of evaluator agent
 evolver_agent = ""                 # content-hash of evolver agent
 creator_agent = ""                 # content-hash of agent-creator agent
+placer_agent = ""                  # content-hash of placer agent
 retention_heuristics = ""          # prose policy for retirement decisions
 triage_timeout = 30                # timeout in seconds for triage calls
 triage_max_log_bytes = 50000       # max bytes of agent log to read for triage
@@ -858,6 +895,8 @@ model = "opus"                     # model for FLIP-triggered verification
 # CLI equivalents
 wg config --auto-evaluate true
 wg config --auto-assign true
+wg config --auto-place true
+wg config --auto-create true
 wg config --auto-triage true
 wg config --assigner-model haiku
 wg config --evaluator-model opus
