@@ -556,6 +556,23 @@ pub enum AssignmentMode {
     ForcedExploration(AssignmentExperiment),
 }
 
+// ---------------------------------------------------------------------------
+// Assignment source tracking
+// ---------------------------------------------------------------------------
+
+/// Tracks how an assignment was sourced — natively via workgraph's built-in
+/// pipeline, or externally via the Agency server.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum AssignmentSource {
+    Native,
+    Agency { agency_task_id: String },
+}
+
+fn default_assignment_source() -> AssignmentSource {
+    AssignmentSource::Native
+}
+
 /// Persisted alongside each task assignment.
 ///
 /// Stored in `.workgraph/agency/assignments/<task_id>.yaml`.
@@ -570,4 +587,53 @@ pub struct TaskAssignmentRecord {
     /// Used to POST evaluation results back to Agency.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agency_task_id: Option<String>,
+    /// How this assignment was sourced (native pipeline vs. Agency server).
+    #[serde(default = "default_assignment_source")]
+    pub assignment_source: AssignmentSource,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Existing YAML files without `assignment_source` should deserialize
+    /// with the default value (Native).
+    #[test]
+    fn test_assignment_record_default_source() {
+        let yaml = r#"
+task_id: my-task
+agent_id: agent-1
+composition_id: comp-1
+timestamp: "2026-03-19T00:00:00Z"
+mode:
+  type: learning
+  base_composition: null
+  dimension:
+    type: novel_composition
+  bizarre_ideation: false
+  ucb_scores: {}
+"#;
+        let record: TaskAssignmentRecord = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(record.assignment_source, AssignmentSource::Native);
+    }
+
+    /// Roundtrip: serialize Agency variant then deserialize back.
+    #[test]
+    fn test_assignment_source_agency_roundtrip() {
+        let source = AssignmentSource::Agency {
+            agency_task_id: "ext-task-42".to_string(),
+        };
+        let yaml = serde_yaml::to_string(&source).unwrap();
+        let deserialized: AssignmentSource = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(deserialized, source);
+    }
+
+    /// Roundtrip: serialize Native variant then deserialize back.
+    #[test]
+    fn test_assignment_source_native_roundtrip() {
+        let source = AssignmentSource::Native;
+        let yaml = serde_yaml::to_string(&source).unwrap();
+        let deserialized: AssignmentSource = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(deserialized, source);
+    }
 }

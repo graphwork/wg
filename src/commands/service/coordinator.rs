@@ -9,7 +9,7 @@ use workgraph::agency;
 use workgraph::agency::evolver::{self, EvolutionTrigger, EvolverState};
 use workgraph::agency::run_mode::{self, AssignmentPath};
 use workgraph::agency::{
-    AssignerModeContext, AssignmentMode, Evaluation, TaskAssignmentRecord,
+    AssignmentSource, AssignerModeContext, AssignmentMode, Evaluation, TaskAssignmentRecord,
     count_assignment_records, eval_source, load_all_evaluations_or_warn,
     render_assigner_mode_context, save_assignment_record,
 };
@@ -1102,6 +1102,7 @@ fn build_auto_assign_tasks(
             timestamp: Utc::now().to_rfc3339(),
             mode: assignment_mode,
             agency_task_id: None,
+            assignment_source: AssignmentSource::Native,
         };
 
         let assignments_dir = agency_dir.join("assignments");

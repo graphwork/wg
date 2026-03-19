@@ -1597,6 +1597,11 @@ pub struct AgencyConfig {
     /// Path to file containing Agency API token. None = no auth.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agency_token_path: Option<String>,
+
+    /// Default assignment source label (e.g. "native", "agency").
+    /// Used to tag new assignments with their provenance.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assignment_source: Option<String>,
 }
 
 impl Default for AgencyConfig {
@@ -1641,6 +1646,7 @@ impl Default for AgencyConfig {
             evolution_reactive_threshold: default_evolution_reactive_threshold(),
             agency_server_url: None,
             agency_token_path: None,
+            assignment_source: None,
         }
     }
 }

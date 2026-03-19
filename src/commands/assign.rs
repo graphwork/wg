@@ -203,6 +203,7 @@ fn run_explicit_assign(dir: &Path, path: &Path, task_id: &str, agent_hash: &str)
                     ucb_scores: std::collections::HashMap::new(),
                 }),
                 agency_task_id: None,
+                assignment_source: agency::AssignmentSource::Native,
             }
         }
     };
