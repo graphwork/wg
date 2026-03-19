@@ -491,10 +491,15 @@ wg service resume   # resume + immediate tick
 ```bash
 wg service status              # daemon and coordinator state
 wg agents                      # all agents with status
+wg agents --alive              # only alive agents
+wg agents --working            # only working agents
+wg agents --dead               # only dead agents
 wg list --status in-progress   # tasks being worked on
-wg tui                         # interactive dashboard
+wg tui                         # interactive dashboard (equiv. to wg viz --all --tui)
+wg tui --no-mouse              # TUI without mouse capture (useful in tmux)
 wg status                      # one-screen summary
 wg analyze                     # comprehensive health report
+wg watch                       # stream workgraph events as JSON lines
 ```
 
 #### TUI views and keybindings
@@ -513,10 +518,18 @@ wg analyze                     # comprehensive health report
 `wg viz` renders the graph as an ASCII diagram. It accepts optional task IDs to focus on specific subgraphs:
 
 ```bash
-wg viz                          # full graph
+wg viz                          # active trees only (default)
+wg viz --all                    # all tasks including fully-done trees
 wg viz my-task                  # only the subgraph containing my-task
 wg viz --show-internal          # include assign-*/evaluate-* meta-tasks
 wg viz --no-tui                 # static output (no interactive TUI)
+wg viz --status open            # filter by status
+wg viz --tag my-tag             # filter by tag (AND semantics with multiple --tag)
+wg viz --critical-path          # highlight the critical path in red
+wg viz --layout tree            # classic DFS layout (default: diamond)
+wg viz --dot                    # output Graphviz DOT format
+wg viz --mermaid                # output Mermaid diagram format
+wg viz --graph                  # 2D spatial graph with box-drawing characters
 ```
 
 ### Executor types
@@ -650,11 +663,11 @@ wg compact              # generate context.md from graph state
 
 ### Sweep
 
-`wg sweep` detects and recovers orphaned in-progress tasks — tasks claimed by agents that are no longer running.
+`wg sweep` detects and recovers orphaned in-progress tasks — tasks claimed by agents that are no longer running. By default it fixes them (unclaims and reopens). Use `--dry-run` to preview without changes.
 
 ```bash
-wg sweep                # detect orphaned tasks
-wg sweep --fix          # unclaim and reopen orphaned tasks
+wg sweep                # detect AND fix orphaned tasks (idempotent)
+wg sweep --dry-run      # report only, don't fix
 ```
 
 ### Checkpoint
@@ -662,8 +675,12 @@ wg sweep --fix          # unclaim and reopen orphaned tasks
 `wg checkpoint` saves a checkpoint for context preservation during long-running tasks. The coordinator also auto-checkpoints alive agents when turn/time thresholds are met.
 
 ```bash
-wg checkpoint <task-id>
+wg checkpoint <task-id> --summary "Completed auth module, starting tests"
+wg checkpoint <task-id> --summary "Progress so far" --file src/auth.rs --file src/tests.rs
+wg checkpoint <task-id> --list   # list existing checkpoints
 ```
+
+The `--summary` flag is required (a ~500-token summary of progress). Optionally list `--file` for files modified since the last checkpoint.
 
 ### Stats
 
@@ -671,6 +688,41 @@ wg checkpoint <task-id>
 
 ```bash
 wg stats                # project-wide stats
+```
+
+### Wait
+
+`wg wait` parks a task in `Waiting` status until a condition is met. The coordinator checks waiting conditions each tick (step 2.7) and automatically resumes satisfied tasks.
+
+```bash
+wg wait <task-id> --until "task:dep-a=done"       # wait for another task to complete
+wg wait <task-id> --until "timer:5m"              # wait for a duration
+wg wait <task-id> --until "message"               # wait for a message
+wg wait <task-id> --until "task:dep-a=done" --checkpoint "Progress so far"
+```
+
+### Reclaim
+
+`wg reclaim` transfers a task from a dead or unresponsive agent to a new one:
+
+```bash
+wg reclaim <task-id> --from <old-agent> --to <new-agent>
+```
+
+### Why-Blocked
+
+`wg why-blocked` shows the full transitive dependency chain explaining why a task is blocked:
+
+```bash
+wg why-blocked <task-id>
+```
+
+### Match
+
+`wg match` finds agents capable of performing a task based on skill requirements:
+
+```bash
+wg match <task-id>
 ```
 
 ### Chat

@@ -27,8 +27,12 @@ The agent service is a background daemon that automatically spawns agents on rea
 
 ```bash
 wg service start                  # start daemon
+wg service start --force          # kill stale daemon first, then start
 wg service status                 # check it's running
 wg agents                         # see spawned agents
+wg agents --alive                 # only alive agents (starting, working, idle)
+wg agents --working               # only working agents
+wg agents --dead                  # only dead agents
 wg service stop                   # stop daemon (agents keep running)
 wg service stop --kill-agents     # stop daemon and agents
 ```
@@ -126,6 +130,15 @@ Start the background daemon.
 wg service start [--max-agents <N>] [--executor <NAME>] [--interval <SECS>] [--model <MODEL>]
 ```
 
+Additional flags:
+
+| Flag | Description |
+|------|-------------|
+| `--port <PORT>` | Enable HTTP API on this port (optional) |
+| `--socket <SOCKET>` | Unix socket path (default: `.workgraph/service/daemon.sock`) |
+| `--force` | Kill any existing daemon before starting (prevents stacked daemons) |
+| `--no-coordinator-agent` | Disable the persistent coordinator agent (LLM chat session) |
+
 CLI flags override config.toml values for the daemon's lifetime. The daemon forks into the background and writes its PID to `.workgraph/service/state.json`.
 
 ### `wg service stop`
@@ -163,6 +176,8 @@ Re-read config.toml or apply specific overrides without restarting.
 ```bash
 wg service reload                              # re-read config.toml
 wg service reload --max-agents 8 --model haiku # apply overrides
+wg service reload --interval 120               # change poll interval
+wg service reload --executor amplifier         # switch executor at runtime
 ```
 
 Sends a `reconfigure` IPC message to the running daemon.
@@ -351,6 +366,27 @@ wg dead-agents --threshold 10         # override heartbeat timeout (minutes)
 
 These commands are useful for manual intervention when the service is not running. `--purge` cleans up finished entries from the registry; combine with `--delete-dirs` to reclaim disk space by removing `.workgraph/agents/<id>/` directories.
 
+### Task reclaim
+
+Transfer a task from a dead or unresponsive agent to a new one without waiting for automatic cleanup:
+
+```bash
+wg reclaim <task-id> --from <old-agent> --to <new-agent>
+```
+
+### Waiting tasks
+
+Agents can park a task in `Waiting` status until a condition is met. The coordinator evaluates waiting conditions each tick (step 2.7) and resumes satisfied tasks automatically.
+
+```bash
+wg wait <task-id> --until "task:dep-a=done"       # wait for another task
+wg wait <task-id> --until "timer:5m"              # wait for a duration
+wg wait <task-id> --until "message"               # wait for a message
+wg wait <task-id> --until "task:dep-a=done" --checkpoint "Progress so far"
+```
+
+The coordinator detects and fails circular waits (task A waiting on task B waiting on task A).
+
 ## Configuration
 
 View merged configuration with source annotations:
@@ -386,6 +422,8 @@ heartbeat_timeout = 5    # minutes before stale (default: 5)
 [agency]
 auto_evaluate = false    # auto-create evaluation tasks
 auto_assign = false      # auto-create assignment tasks
+auto_place = false       # auto-placement analysis on new tasks (see AGENT-GUIDE.md §1b)
+auto_create = false      # auto-invoke creator agent for task elaboration
 auto_triage = false      # triage dead agents with LLM before respawning
 triage_model = "haiku"   # model for triage (default: haiku)
 triage_timeout = 30      # seconds before triage call times out (default: 30)
@@ -460,7 +498,7 @@ For agency meta-tasks:
 
 ## IPC Protocol
 
-The daemon listens on a Unix socket at `/tmp/wg-{project}.sock`.
+The daemon listens on a Unix socket at `.workgraph/service/daemon.sock` (overridable via `wg service start --socket <path>`).
 
 | Command | Description |
 |---------|-------------|
