@@ -928,20 +928,6 @@ wg analyze            # comprehensive health report (all of the above)
 wg watch              # real-time event stream (for external adapters)
 wg trace show <id>    # execution history of a task
 wg trace export       # export trace data for sharing
-wg func extract <id>  # extract workflow pattern into reusable template
-wg func extract --generative <id>... # compare traces → generative function
-wg func apply <id>    # create tasks from a function template
-wg func make-adaptive <id>  # upgrade to adaptive (adds trace memory)
-wg func bootstrap     # bootstrap the extraction meta-function
-wg func list          # list available function templates
-wg func show <id>     # inspect a function template
-
-wg compact            # distill graph state into context.md
-wg sweep              # detect and recover orphaned tasks
-wg checkpoint <id> -s "summary"  # save checkpoint for long tasks
-wg stats              # time counters and agent statistics
-wg model list         # model registry management
-wg key list           # API key status
 ```
 
 See [docs/COMMANDS.md](docs/COMMANDS.md) for the full command reference including `viz`, `plan`, `coordinate`, `archive`, `reschedule`, and more.
@@ -956,6 +942,8 @@ wg sweep                  # detect and recover orphaned in-progress tasks
 wg checkpoint <id> -s "progress summary"  # save checkpoint for long tasks
 wg stats                  # show time counters and agent statistics
 wg exec <id>              # execute a task's shell command (claim + run + done/fail)
+wg model list             # model registry management (see Model registry section)
+wg key list               # API key status (see API key management section)
 wg viz --mermaid          # generate Mermaid flowchart output
 wg viz --graph            # 2D spatial layout with box-drawing characters
 wg archive                # archive completed tasks
