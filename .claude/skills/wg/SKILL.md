@@ -55,7 +55,7 @@ wg tui                   # Interactive TUI dashboard
 - **Don't `wg spawn`** — the service spawns agents automatically
 - **Don't work on tasks yourself** — spawned agents do the work
 
-Always use `wg done` to complete tasks. Do NOT use `wg submit` (deprecated).
+Always use `wg done` to complete tasks. Do NOT use `wg submit` (deprecated). Tasks with `--verify` enter a `pending-validation` state and need `wg approve` or `wg reject` to finalize.
 
 ## If you ARE a spawned agent working on a task
 
@@ -140,11 +140,13 @@ wg done <task-id>        # Mark complete
 
 ```
 open → [claim] → in-progress → [done] → done
+                              → [done --verify] → pending-validation → [approve] → done
+                                                                     → [reject] → open (retry)
                               → [fail] → failed → [retry] → open
                               → [abandon] → abandoned
 ```
 
-**Note:** `wg submit`, `wg approve`, and `wg reject` are deprecated. Always use `wg done`.
+**Note:** `wg submit` is deprecated. Use `wg done`. The `wg approve` and `wg reject` commands are active — they handle tasks in `pending-validation` state (tasks created with `--verify`).
 
 ## Cycles (repeating workflows)
 
@@ -164,6 +166,19 @@ As a spawned agent on a task inside a cycle, check `wg show <task-id>` for `loop
 ```bash
 wg cycles                   # List detected cycles and status
 wg show <task-id>           # See loop_iteration and cycle membership
+```
+
+### Cycle configuration flags
+
+Fine-tune cycle behavior when creating or editing tasks:
+
+```bash
+wg add "Task" --after dep --max-iterations 5 \
+  --cycle-guard "task:check=done"    # Guard: only iterate when check is done
+  --cycle-delay 5m                   # Wait 5 minutes between iterations
+  --no-converge                      # Force all iterations (agents can't signal --converged)
+  --no-restart-on-failure            # Don't auto-restart the cycle on failure
+  --max-failure-restarts 2           # Cap failure-triggered restarts (default: 3)
 ```
 
 ### Pausing and resuming cycles
@@ -195,17 +210,33 @@ wg service resume           # Resume dispatching
 | `wg add "X" --after a,b,c` | Multiple dependencies (comma-separated) |
 | `wg add "X" --skill rust --input src/foo.rs --deliverable docs/out.md` | Task with skills, inputs, deliverables |
 | `wg add "X" --model haiku` | Task with preferred model |
+| `wg add "X" --provider openrouter` | Task with preferred provider |
 | `wg add "X" --context-scope clean` | Set prompt context scope (clean/task/graph/full) |
+| `wg add "X" --exec-mode light` | Set execution weight (full/light/bare/shell) |
 | `wg add "X" --verify "Tests pass"` | Task requiring review before completion |
 | `wg add "X" --tag important --hours 2` | Tags and estimates |
 | `wg add "X" --after Y --max-iterations 3` | Create cycle header with max 3 iterations |
+| `wg add "X" --paused` | Create task in paused state |
+| `wg add "X" --delay 1h` | Task becomes ready after delay (30s, 5m, 1h, 1d) |
+| `wg add "X" --not-before "2026-01-15T09:00:00Z"` | Schedule task for specific time (ISO 8601) |
+| `wg add "X" --no-place` | Skip automatic placement analysis |
+| `wg add "X" --place-near a,b` | Placement hint: near these tasks |
+| `wg add "X" --place-before a,b` | Placement hint: before these tasks |
 | `wg edit <id> --title "New" --description "New"` | Edit task fields |
 | `wg edit <id> --add-after X --remove-after Y` | Modify dependencies |
 | `wg edit <id> --add-after X --max-iterations 3` | Add cycle back-edge |
 | `wg edit <id> --add-tag T --remove-tag T` | Modify tags |
 | `wg edit <id> --add-skill S --remove-skill S` | Modify skills |
 | `wg edit <id> --model sonnet` | Change preferred model |
+| `wg edit <id> --provider anthropic` | Change preferred provider |
 | `wg edit <id> --context-scope graph` | Change context scope |
+| `wg edit <id> --exec-mode bare` | Change execution weight |
+| `wg edit <id> --verify "cargo test passes"` | Set or update verification criteria |
+| `wg edit <id> --delay 30m` | Set scheduling delay |
+| `wg edit <id> --not-before "2026-03-20T00:00:00Z"` | Set absolute schedule |
+| `wg edit <id> --no-converge` | Force all cycle iterations |
+| `wg edit <id> --no-restart-on-failure` | Disable cycle restart on failure |
+| `wg edit <id> --max-failure-restarts 2` | Cap failure-triggered restarts |
 
 ### Task state transitions
 
@@ -214,6 +245,9 @@ wg service resume           # Resume dispatching
 | `wg claim <id>` | Claim task (in-progress) |
 | `wg unclaim <id>` | Release claimed task (back to open) |
 | `wg done <id>` | Complete task |
+| `wg done <id> --converged` | Complete task and signal cycle convergence |
+| `wg approve <id>` | Approve a task in pending-validation (transitions to done) |
+| `wg reject <id> --reason "why"` | Reject a task in pending-validation (reopens for retry) |
 | `wg pause <id>` | Pause task (coordinator skips it) |
 | `wg resume <id>` | Resume a paused task |
 | `wg fail <id> --reason "why"` | Mark task failed |
@@ -289,9 +323,16 @@ wg service resume           # Resume dispatching
 | `wg service start` | Start coordinator daemon |
 | `wg service start --max-agents 5` | Start with parallelism limit |
 | `wg service stop` | Stop daemon |
+| `wg service restart` | Restart daemon (graceful stop then start) |
 | `wg service pause` | Pause coordinator (running agents continue, no new spawns) |
 | `wg service resume` | Resume coordinator dispatching |
 | `wg service status` | Check daemon health |
+| `wg service reload` | Reload daemon configuration without restarting |
+| `wg service tick` | Run a single coordinator tick (debug mode) |
+| `wg service create-coordinator` | Create a new coordinator session |
+| `wg service delete-coordinator` | Delete a coordinator session |
+| `wg service archive-coordinator` | Archive a coordinator session (mark as Done) |
+| `wg service stop-coordinator` | Stop a coordinator session (kill agent, reset to Open) |
 | `wg agents` | List all agents |
 | `wg agents --alive` | Only alive agents |
 | `wg agents --working` | Only working agents |
@@ -306,6 +347,56 @@ wg service resume           # Resume dispatching
 | `wg dead-agents --purge` | Purge dead/done/failed agents from registry |
 | `wg dead-agents --purge --delete-dirs` | Also delete agent work directories when purging |
 | `wg dead-agents --threshold 30` | Override heartbeat timeout threshold (minutes) |
+
+### Messaging
+
+| Command | Purpose |
+|---------|---------|
+| `wg msg send <task> "message"` | Send a message to a task/agent |
+| `wg msg list <task>` | List all messages for a task |
+| `wg msg read <task> --agent <id>` | Read unread messages (marks as read) |
+| `wg msg poll <task> --agent <id>` | Poll for new messages (exit code 0 = new, 1 = none) |
+
+### Chat (coordinator interaction)
+
+| Command | Purpose |
+|---------|---------|
+| `wg chat "message"` | Send a message to the coordinator |
+| `wg chat -i` | Interactive REPL mode |
+| `wg chat --history` | Show chat history |
+| `wg chat --clear` | Clear chat history |
+| `wg chat --attachment path/to/file` | Attach a file to the message |
+| `wg chat --coordinator 1` | Target a specific coordinator (multi-coordinator) |
+
+### Housekeeping & maintenance
+
+| Command | Purpose |
+|---------|---------|
+| `wg compact` | Distill graph state into context.md |
+| `wg sweep` | Detect and recover orphaned in-progress tasks with dead agents |
+| `wg sweep --dry-run` | Preview orphaned tasks without fixing |
+| `wg checkpoint <task> -s "summary"` | Save checkpoint for context preservation |
+| `wg checkpoint <task> --list` | List checkpoints for a task |
+| `wg stats` | Show time counters and agent statistics |
+| `wg gc` | Remove terminal tasks (done/abandoned/failed) from the graph |
+| `wg archive` | Archive completed tasks |
+| `wg archive --dry-run` | Preview what would be archived |
+| `wg archive --older 30d` | Only archive old completions |
+| `wg archive --list` | List archived tasks |
+| `wg reschedule <id> --after 24` | Delay task 24 hours |
+| `wg reschedule <id> --at "2025-01-15T09:00:00Z"` | Schedule at specific time |
+| `wg plan --budget 500 --hours 20` | Plan within constraints |
+| `wg exec <task>` | Execute a task's shell command (claim + run + done/fail) |
+| `wg exec <task> --set "cargo test"` | Set the exec command for a task |
+| `wg exec <task> --clear` | Clear the exec command |
+| `wg exec <task> --dry-run` | Show what would be executed |
+| `wg replay` | Snapshot graph, selectively reset tasks, re-execute with different model |
+| `wg replay --failed-only` | Only reset failed/abandoned tasks |
+| `wg replay --below-score 0.7` | Only reset tasks with evaluation score below threshold |
+| `wg replay --tasks a,b,c` | Reset specific tasks plus transitive dependents |
+| `wg replay --subgraph <id>` | Only replay tasks in subgraph rooted at given task |
+| `wg replay --keep-done 0.9` | Preserve done tasks scoring above threshold (default: 0.9) |
+| `wg replay --plan-only` | Dry run: show what would be reset |
 
 ### Agency (roles, tradeoffs, agents)
 
@@ -389,6 +480,26 @@ wg service resume           # Resume dispatching
 | `wg trace export --visibility <zone>` | Export trace data filtered by visibility zone |
 | `wg trace import <file>` | Import a trace export file as read-only context |
 
+### Model & provider management
+
+| Command | Purpose |
+|---------|---------|
+| `wg model list` | Show all models in the registry (built-in + user-defined) |
+| `wg model add` | Add or update a model in the config registry |
+| `wg model remove <id>` | Remove a model from the config registry |
+| `wg model set-default <id>` | Set the default model for agent dispatch |
+| `wg model routing` | Show per-role model routing configuration |
+| `wg model set <role> <model>` | Set the model for a specific dispatch role |
+| `wg models list` | List models from the local registry |
+| `wg models search <query>` | Search models from OpenRouter by name/ID/description |
+| `wg models remote` | List all models available on OpenRouter |
+| `wg models add` | Add a custom model to the local registry |
+| `wg models set-default <id>` | Set the default model |
+| `wg models init` | Initialize models.yaml with defaults |
+| `wg key set <provider>` | Configure an API key for a provider |
+| `wg key check` | Validate API key availability and status |
+| `wg key list` | Show key configuration status for all providers |
+
 ### Artifacts & resources
 
 | Command | Purpose |
@@ -400,25 +511,14 @@ wg service resume           # Resume dispatching
 | `wg resource list` | List resources |
 | `wg match <task>` | Find capable agents |
 
-### Housekeeping
+### Skills
 
 | Command | Purpose |
 |---------|---------|
-| `wg gc` | Remove terminal tasks (done/abandoned/failed) from the graph |
-| `wg archive` | Archive completed tasks |
-| `wg archive --dry-run` | Preview what would be archived |
-| `wg archive --older 30d` | Only archive old completions |
-| `wg archive --list` | List archived tasks |
-| `wg reschedule <id> --after 24` | Delay task 24 hours |
-| `wg reschedule <id> --at "2025-01-15T09:00:00Z"` | Schedule at specific time |
-| `wg plan --budget 500 --hours 20` | Plan within constraints |
-| `wg replay` | Snapshot graph, selectively reset tasks, re-execute with different model |
-| `wg replay --failed-only` | Only reset failed/abandoned tasks |
-| `wg replay --below-score 0.7` | Only reset tasks with evaluation score below threshold |
-| `wg replay --tasks a,b,c` | Reset specific tasks plus transitive dependents |
-| `wg replay --subgraph <id>` | Only replay tasks in subgraph rooted at given task |
-| `wg replay --keep-done 0.9` | Preserve done tasks scoring above threshold (default: 0.9) |
-| `wg replay --plan-only` | Dry run: show what would be reset |
+| `wg skill list` | List all skills used across tasks |
+| `wg skill task <id>` | Show skills for a specific task |
+| `wg skill find <name>` | Find tasks requiring a specific skill |
+| `wg skill install` | Install the wg Claude Code skill to ~/.claude/skills/wg/ |
 
 ### Setup & configuration
 
@@ -433,19 +533,32 @@ wg service resume           # Resume dispatching
 | `wg config --executor claude` | Set executor |
 | `wg config --model opus` | Set default model |
 | `wg config --max-agents 5` | Set agent limit |
+| `wg config --max-coordinators 2` | Set max concurrent coordinator sessions |
 | `wg config --auto-evaluate true` | Enable auto-evaluation |
 | `wg config --auto-assign true` | Enable auto-assignment |
+| `wg config --auto-place true` | Enable automatic placement analysis on new tasks |
+| `wg config --auto-create true` | Enable automatic creator agent invocation |
 | `wg config --creator-agent <hash>` | Set creator agent (content-hash) |
 | `wg config --creator-model <model>` | Set model for creator agents |
-
-### Skills
-
-| Command | Purpose |
-|---------|---------|
-| `wg skill list` | List all skills used across tasks |
-| `wg skill task <id>` | Show skills for a specific task |
-| `wg skill find <name>` | Find tasks requiring a specific skill |
-| `wg skill install` | Install the wg Claude Code skill to ~/.claude/skills/wg/ |
+| `wg config --eval-gate-threshold 0.7` | Set eval gate threshold (0.0-1.0) |
+| `wg config --eval-gate-all true` | Apply eval gate to all tasks (not just eval-gate tagged) |
+| `wg config --flip-enabled true` | Enable FLIP (roundtrip intent fidelity) evaluation |
+| `wg config --flip-inference-model <m>` | Model for FLIP inference phase |
+| `wg config --flip-comparison-model <m>` | Model for FLIP comparison phase |
+| `wg config --flip-verification-threshold 0.7` | FLIP score threshold for Opus verification |
+| `wg config --flip-verification-model opus` | Model for FLIP-triggered verification |
+| `wg config --chat-history true` | Enable chat history persistence |
+| `wg config --chat-history-max 100` | Max chat history entries |
+| `wg config --retry-context-tokens 2000` | Max tokens of previous-attempt context on retry |
+| `wg config --install-global` | Install project config as global default |
+| `wg config --viz-edge-color mixed` | Viz edge color style (gray/white/mixed) |
+| `wg config --tiers` | Show current tier-to-model assignments |
+| `wg config --tier standard=gpt-4o` | Set which model a tier uses |
+| `wg config --models` | Show all model routing assignments (per-role) |
+| `wg config --set-model <role> <model>` | Set model for a dispatch role |
+| `wg config --set-provider <role> <provider>` | Set provider for a dispatch role |
+| `wg config --set-key <provider> --file <path>` | Set API key file for a provider |
+| `wg config --check-key` | Check OpenRouter API key validity |
 
 ### Output options
 
@@ -485,6 +598,27 @@ Calibrate your approach to your model tier:
 
 If a task feels beyond your model's capability, use `wg fail` with a clear reason rather than producing low-quality output.
 
+### Provider awareness
+
+Tasks can specify a `--provider` (anthropic, openai, openrouter, local) to route to a specific LLM provider. The provider resolves at dispatch time: task.provider > config default.
+
+### Execution modes
+
+Tasks can specify `--exec-mode` to control what tools the agent receives:
+
+| Mode | Description | Use Case |
+|------|-------------|----------|
+| `full` | Full Claude Code tools (file editing, bash, etc.) — default | Standard implementation, debugging |
+| `light` | Read-only tools (no file writes, no destructive commands) | Code review, analysis, audit |
+| `bare` | Only wg CLI instructions, no extra tools | Meta-tasks, workflow management |
+| `shell` | No LLM — direct shell execution of `exec` command | Scripted automation, CI/CD |
+
+```bash
+wg add "Review code" --exec-mode light
+wg add "Run tests" --exec-mode shell
+wg exec run-tests --set "cargo test"
+```
+
 ### Context scopes
 
 Tasks can specify a `--context-scope` that controls how much context the agent receives in its prompt:
@@ -516,3 +650,16 @@ Do the work yourself when:
 - The task is simple and sequential
 - Context from prior steps is critical and hard to transfer
 - Coordination overhead would exceed the work itself
+
+## Multi-coordinator support
+
+The service supports multiple concurrent coordinator sessions. Each coordinator manages its own scope of tasks and agents.
+
+```bash
+wg service create-coordinator        # Create a new coordinator session
+wg service stop-coordinator <id>     # Stop a coordinator (kill agent, reset to Open)
+wg service archive-coordinator <id>  # Archive a coordinator (mark as Done)
+wg service delete-coordinator <id>   # Delete a coordinator session
+wg config --max-coordinators 4       # Set max concurrent coordinators (default: 4)
+wg chat --coordinator 1 "message"    # Target a specific coordinator
+```
