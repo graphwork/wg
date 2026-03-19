@@ -203,6 +203,7 @@ Sets status to `done`, records `completed_at` timestamp, and unblocks dependent 
 | Option | Description |
 |--------|-------------|
 | `--converged` | Stop the cycle — adds a `"converged"` tag to the cycle header, preventing further iterations even if `max_iterations` hasn't been reached |
+| `--skip-verify` | Skip the verify command gate (human escape hatch, blocked when `WG_AGENT_ID` is set) |
 
 **Examples:**
 ```bash
@@ -223,8 +224,14 @@ wg done review-task --converged
 Mark a task as failed (can be retried later).
 
 ```bash
-wg fail <ID> [--reason <TEXT>]
+wg fail <ID> [OPTIONS]
 ```
+
+**Options:**
+| Option | Description |
+|--------|-------------|
+| `--reason <REASON>` | Reason for failure |
+| `--eval-reject` | Reject a done task via evaluation gate — allows failing a task that is already Done because the evaluator determined the work is unacceptable. The task transitions to Failed and its dependents become blocked |
 
 **Example:**
 ```bash
@@ -238,14 +245,21 @@ wg fail deploy-prod --reason "AWS credentials expired"
 Mark a task as abandoned (will not be completed).
 
 ```bash
-wg abandon <ID> [--reason <TEXT>]
+wg abandon <ID> [OPTIONS]
 ```
 
 Abandoned is a terminal state — the task will not be retried.
 
+**Options:**
+| Option | Description |
+|--------|-------------|
+| `--reason <REASON>` | Reason for abandonment |
+| `--superseded-by <IDS>` | Task IDs that supersede/replace this task (comma-separated) |
+
 **Example:**
 ```bash
 wg abandon legacy-migration --reason "Feature deprecated"
+wg abandon old-approach --superseded-by new-approach-a,new-approach-b
 ```
 
 ---
@@ -337,12 +351,28 @@ wg log <ID> <MESSAGE> [--actor <ACTOR>]
 
 # View log entries
 wg log <ID> --list
+
+# View agent prompts and outputs
+wg log <ID> --agent
+
+# View the operations log
+wg log --operations
 ```
+
+**Options:**
+| Option | Description |
+|--------|-------------|
+| `--actor <ACTOR>` | Actor adding the log entry |
+| `--list` | List log entries instead of adding |
+| `--agent` | Show archived agent prompts and outputs for a task |
+| `--operations` | Show the operations log (reads current and rotated files) |
 
 **Examples:**
 ```bash
 wg log implement-api "Completed endpoint handlers" --actor erik
 wg log implement-api --list
+wg log implement-api --agent
+wg log --operations
 ```
 
 ---
@@ -354,14 +384,22 @@ Assign an agent identity to a task (or clear the assignment).
 ```bash
 wg assign <TASK> <AGENT-HASH>    # Assign agent to task
 wg assign <TASK> --clear         # Remove assignment
+wg assign <TASK> --auto          # Auto-select agent via LLM
 ```
 
 When the service spawns that task, the agent's role and tradeoff are injected into the prompt. The agent hash can be a prefix (minimum 4 characters).
+
+**Options:**
+| Option | Description |
+|--------|-------------|
+| `--clear` | Clear the agent assignment from the task |
+| `--auto` | Automatically select an agent using LLM |
 
 **Example:**
 ```bash
 wg assign my-task a3f7c21d
 wg assign my-task --clear
+wg assign my-task --auto
 ```
 
 ---
@@ -396,16 +434,24 @@ wg pause implement-api
 
 ### `wg resume`
 
-Resume a paused task.
+Resume a paused task (propagates to downstream subgraph by default).
 
 ```bash
-wg resume <ID>
+wg resume <ID> [OPTIONS]
 ```
+
+**Options:**
+| Option | Description |
+|--------|-------------|
+| `--only` | Only resume this single task (skip subgraph propagation) |
 
 **Example:**
 ```bash
 wg resume implement-api
-# Task is eligible for coordinator dispatch again
+# Task and downstream subgraph are eligible for coordinator dispatch again
+
+wg resume implement-api --only
+# Only resume this task, not its dependents
 ```
 
 ---
@@ -566,6 +612,7 @@ wg list [--status <STATUS>]
 |--------|-------------|
 | `--status <STATUS>` | Filter by status (open, in-progress, done, failed, abandoned) |
 | `--paused` | Only show paused tasks |
+| `--tag <TAG>` | Filter by tag (repeatable, multiple `--tag` flags use AND semantics) |
 
 ---
 
@@ -1010,6 +1057,7 @@ Supports two modes:
 | `--generative` | Multi-trace mode: compare multiple traces to produce a version 2 (generative) function |
 | `--output <PATH>` | Write to specific path instead of `.workgraph/functions/` |
 | `--force` | Overwrite existing function with same name |
+| `--include-evaluations` | Include coordinator-generated evaluation and assignment tasks (`evaluate-*`, `assign-*`) that are normally filtered out |
 
 **Examples:**
 ```bash
@@ -1457,6 +1505,8 @@ wg agent create <NAME> [OPTIONS]
 | `--trust-level <LEVEL>` | `verified`, `provisional` (default), or `unknown` |
 | `--contact <STRING>` | Contact info (email, Matrix ID, etc.) |
 | `--executor <NAME>` | Executor backend: `claude` (default), `matrix`, `email`, `shell` |
+| `--model <MODEL>` | Preferred model (e.g., opus, sonnet, haiku, or full model ID) |
+| `--provider <PROVIDER>` | Preferred provider (e.g., anthropic, openrouter) |
 
 IDs can be prefixes (minimum unique match).
 
@@ -1516,7 +1566,7 @@ wg evaluate <SUBCOMMAND>
 Trigger LLM-based evaluation of a completed task.
 
 ```bash
-wg evaluate run <TASK> [--evaluator-model <MODEL>] [--dry-run]
+wg evaluate run <TASK> [OPTIONS]
 ```
 
 **Options:**
@@ -1524,6 +1574,7 @@ wg evaluate run <TASK> [--evaluator-model <MODEL>] [--dry-run]
 |--------|-------------|
 | `--evaluator-model <MODEL>` | Model for the evaluator (overrides config) |
 | `--dry-run` | Show what would be evaluated without spawning the evaluator |
+| `--flip` | Run FLIP (roundtrip intent fidelity) evaluation instead of direct evaluation |
 
 The task must be done or failed. Spawns an evaluator agent that scores the task across four dimensions:
 - **correctness** (40%) — output matches desired outcome
@@ -1568,16 +1619,19 @@ wg evaluate record --task deploy-prod --score 0.85 --source "manual" \
 
 #### `wg evaluate show`
 
-Show evaluation history with optional filters.
+Show evaluation history with optional filters. When a positional `TASK` is given, shows both task-level and org-level scores side by side.
 
 ```bash
-wg evaluate show [OPTIONS]
+wg evaluate show [TASK] [OPTIONS]
 ```
+
+**Arguments:**
+- `[TASK]` - Show both task-level and org-level scores side by side for this task (optional)
 
 **Options:**
 | Option | Description |
 |--------|-------------|
-| `--task <TASK>` | Filter by task ID (prefix match) |
+| `--task <TASK>` | Filter by task ID (prefix match, when no positional TASK arg) |
 | `--agent <AGENT>` | Filter by agent ID (prefix match) |
 | `--source <SOURCE>` | Filter by source (exact match or glob, e.g. `"outcome:*"`) |
 | `--limit <N>` | Show only the N most recent evaluations |
@@ -1608,7 +1662,7 @@ wg evolve <SUBCOMMAND>
 #### `wg evolve run`
 
 ```bash
-wg evolve run [--strategy <STRATEGY>] [--budget <N>] [--model <MODEL>] [--dry-run]
+wg evolve run [OPTIONS]
 ```
 
 **Options:**
@@ -1618,6 +1672,11 @@ wg evolve run [--strategy <STRATEGY>] [--budget <N>] [--model <MODEL>] [--dry-ru
 | `--budget <N>` | Maximum number of operations to apply |
 | `--model <MODEL>` | LLM model for the evolver agent |
 | `--dry-run` | Show proposed changes without applying them |
+| `--autopoietic` | Enable autopoietic cycle mode (back-edge from evaluate to partition) |
+| `--max-iterations <N>` | Max cycle iterations (default: 3, requires `--autopoietic`) |
+| `--cycle-delay <SECS>` | Seconds between cycle iterations (default: 3600, requires `--autopoietic`) |
+| `--force-fanout` | Force fan-out mode even with <50 evaluations |
+| `--single-shot` | Force legacy single-shot mode even with ≥50 evaluations |
 
 **Strategies:**
 | Strategy | Description |
@@ -2030,11 +2089,13 @@ wg service start [OPTIONS]
 | Option | Description |
 |--------|-------------|
 | `--port <PORT>` | Port for HTTP API (optional) |
-| `--socket <PATH>` | Unix socket path (default: /tmp/wg-{project}.sock) |
+| `--socket <PATH>` | Unix socket path (default: `.workgraph/service/daemon.sock`) |
 | `--max-agents <N>` | Max parallel agents (overrides config) |
 | `--executor <NAME>` | Executor for spawned agents (overrides config) |
 | `--interval <SECS>` | Background poll interval in seconds (overrides config) |
 | `--model <MODEL>` | Model for spawned agents (overrides config) |
+| `--force` | Kill existing daemon before starting (prevents stacked daemons) |
+| `--no-coordinator-agent` | Disable the persistent coordinator agent (LLM chat session) |
 
 **Example:**
 ```bash
@@ -2805,6 +2866,10 @@ wg viz [OPTIONS] [TASK_ID]...
 | `--show-internal` | Show internal tasks (`assign-*`, `evaluate-*`) normally hidden |
 | `--tui` | Launch interactive TUI mode instead of static output |
 | `--no-tui` | Force static output even when stdout is an interactive terminal |
+| `--no-mouse` | Disable mouse capture in TUI mode (useful in tmux) |
+| `--layout <LAYOUT>` | Layout strategy: `diamond` (default, fan-in nodes under common ancestor) or `tree` (classic DFS order) |
+| `--tag <TAG>` | Filter by tag (repeatable, multiple `--tag` flags use AND semantics) |
+| `--edge-color <STYLE>` | Edge color style: `gray` (default), `white`, or `mixed` (tree=white, arcs=gray) |
 
 **Examples:**
 ```bash
@@ -2840,8 +2905,17 @@ wg viz --no-tui
 Archive completed tasks to a separate file.
 
 ```bash
-wg archive [--dry-run] [--older <DURATION>] [--list]
+wg archive [OPTIONS] [IDS]...
 ```
+
+**Arguments:**
+- `[IDS]...` - Specific task IDs to archive (optional; archives all eligible tasks if omitted)
+
+**Subcommands:**
+| Subcommand | Description |
+|------------|-------------|
+| `search` | Search archived tasks by title, description, and tags |
+| `restore` | Restore an archived task back into the active graph |
 
 **Options:**
 | Option | Description |
@@ -2849,8 +2923,10 @@ wg archive [--dry-run] [--older <DURATION>] [--list]
 | `--dry-run` | Show what would be archived without archiving |
 | `--older <DURATION>` | Only archive tasks older than this (e.g., 30d, 7d, 1w) |
 | `--list` | List already-archived tasks instead of archiving |
+| `-y, --yes` | Skip confirmation prompt for bulk archive operations |
+| `--undo` | Undo the last archive operation (restore all tasks from the last batch) |
 
-**Example:**
+**Examples:**
 ```bash
 wg archive --dry-run
 # Preview which tasks would be archived
@@ -2860,6 +2936,18 @@ wg archive --older 30d
 
 wg archive --list
 # Show previously archived tasks
+
+wg archive my-task-1 my-task-2
+# Archive specific tasks
+
+wg archive --undo
+# Undo the last archive operation
+
+wg archive search "auth"
+# Search archived tasks
+
+wg archive restore my-old-task
+# Restore an archived task back into the active graph
 ```
 
 ---
@@ -3179,6 +3267,7 @@ wg gc [OPTIONS]
 |--------|-------------|
 | `--dry-run` | Show what would be removed without actually removing |
 | `--include-done` | Also remove done tasks (by default only failed + abandoned) |
+| `--older <DURATION>` | Only remove tasks older than this duration (e.g., `30d`, `7d`, `1w`, `24h`) |
 
 **Examples:**
 ```bash
@@ -3190,6 +3279,9 @@ wg gc
 
 wg gc --include-done
 # Also remove completed tasks
+
+wg gc --older 30d
+# Only remove tasks older than 30 days
 ```
 
 ---
