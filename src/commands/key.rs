@@ -214,11 +214,11 @@ fn check_single_provider(ep: &EndpointConfig, workgraph_dir: &Path, json: bool) 
                     "status": "present",
                 });
                 // Try live validation for OpenRouter
-                if ep.provider == "openrouter" {
-                    if let Some(credit_info) = check_openrouter_credits(&resolved_key) {
-                        result["credits"] = credit_info;
-                        result["status"] = serde_json::json!("valid");
-                    }
+                if ep.provider == "openrouter"
+                    && let Some(credit_info) = check_openrouter_credits(&resolved_key)
+                {
+                    result["credits"] = credit_info;
+                    result["status"] = serde_json::json!("valid");
                 }
                 println!("{}", serde_json::to_string_pretty(&result)?);
             } else {
@@ -392,15 +392,15 @@ fn check_openrouter_key_live(
         let data = body.get("data").unwrap_or(&body);
         let mut info = std::collections::HashMap::new();
 
-        if let Some(remaining) = data.get("limit_remaining") {
-            if !remaining.is_null() {
-                info.insert("remaining".to_string(), remaining.clone());
-            }
+        if let Some(remaining) = data.get("limit_remaining")
+            && !remaining.is_null()
+        {
+            info.insert("remaining".to_string(), remaining.clone());
         }
-        if let Some(limit) = data.get("limit") {
-            if !limit.is_null() {
-                info.insert("rate_limit".to_string(), limit.clone());
-            }
+        if let Some(limit) = data.get("limit")
+            && !limit.is_null()
+        {
+            info.insert("rate_limit".to_string(), limit.clone());
         }
         Ok(info)
     } else {

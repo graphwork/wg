@@ -329,10 +329,9 @@ pub fn run(
                         | "config_swap_outcome"
                         | "random_compose_role"
                 ) && result["status"].as_str() == Some("applied")
+                    && let Some(role_id) = result["id"].as_str().or(result["new_id"].as_str())
                 {
-                    if let Some(role_id) = result["id"].as_str().or(result["new_id"].as_str()) {
-                        new_role_ids.push(role_id.to_string());
-                    }
+                    new_role_ids.push(role_id.to_string());
                 }
 
                 results.push(result);

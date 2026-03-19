@@ -43,24 +43,24 @@ pub(crate) fn check_self_mutation(
     let entity_ids = evolver_entity_ids(agency_dir, dir);
 
     // Check 1: operation target_id matches evolver's role or tradeoff
-    if !entity_ids.is_empty() {
-        if let Some(ref target) = op.target_id {
-            let target_ids: Vec<&str> = target
-                .split(',')
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .collect();
-            if target_ids.iter().any(|tid| entity_ids.contains(*tid)) {
-                return Some(defer_self_mutation(op, dir, run_id).map(|task_id| {
-                    serde_json::json!({
-                        "op": op.op,
-                        "target_id": op.target_id,
-                        "status": "deferred_for_review",
-                        "review_task": task_id,
-                        "reason": "Operation targets evolver's own identity — requires human approval",
-                    })
-                }));
-            }
+    if !entity_ids.is_empty()
+        && let Some(ref target) = op.target_id
+    {
+        let target_ids: Vec<&str> = target
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .collect();
+        if target_ids.iter().any(|tid| entity_ids.contains(*tid)) {
+            return Some(defer_self_mutation(op, dir, run_id).map(|task_id| {
+                serde_json::json!({
+                    "op": op.op,
+                    "target_id": op.target_id,
+                    "status": "deferred_for_review",
+                    "review_task": task_id,
+                    "reason": "Operation targets evolver's own identity — requires human approval",
+                })
+            }));
         }
     }
 

@@ -383,12 +383,12 @@ impl EndpointConfig {
             return Ok(Some(key));
         }
         // Explicit env var reference
-        if let Some(ref env_name) = self.api_key_env {
-            if let Ok(key) = std::env::var(env_name) {
-                let key = key.trim().to_string();
-                if !key.is_empty() {
-                    return Ok(Some(key));
-                }
+        if let Some(ref env_name) = self.api_key_env
+            && let Ok(key) = std::env::var(env_name)
+        {
+            let key = key.trim().to_string();
+            if !key.is_empty() {
+                return Ok(Some(key));
             }
         }
         // Environment variable fallback based on provider

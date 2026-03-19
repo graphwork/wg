@@ -8460,47 +8460,41 @@ impl VizApp {
         }
 
         // Handle model removal
-        if key.ends_with(".remove") && key.starts_with("model.") {
-            if let Some(model_id) = key
+        if key.ends_with(".remove")
+            && key.starts_with("model.")
+            && let Some(model_id) = key
                 .strip_prefix("model.")
                 .and_then(|r| r.strip_suffix(".remove"))
-            {
-                if let Ok(mut registry) =
-                    workgraph::models::ModelRegistry::load(&self.workgraph_dir)
-                {
-                    registry.models.remove(model_id);
-                    // Clear default if removed model was default
-                    if registry.default_model.as_deref() == Some(model_id) {
-                        registry.default_model = None;
-                    }
-                    let _ = registry.save(&self.workgraph_dir);
-                    self.config_panel.save_notification = Some(Instant::now());
-                    self.load_config_panel();
-                }
+            && let Ok(mut registry) = workgraph::models::ModelRegistry::load(&self.workgraph_dir)
+        {
+            registry.models.remove(model_id);
+            // Clear default if removed model was default
+            if registry.default_model.as_deref() == Some(model_id) {
+                registry.default_model = None;
             }
+            let _ = registry.save(&self.workgraph_dir);
+            self.config_panel.save_notification = Some(Instant::now());
+            self.load_config_panel();
             return;
         }
 
         // Handle model set-as-default
-        if key.ends_with(".set_default") && key.starts_with("model.") {
-            if let Some(model_id) = key
+        if key.ends_with(".set_default")
+            && key.starts_with("model.")
+            && let Some(model_id) = key
                 .strip_prefix("model.")
                 .and_then(|r| r.strip_suffix(".set_default"))
-            {
-                if let Ok(mut registry) =
-                    workgraph::models::ModelRegistry::load(&self.workgraph_dir)
-                {
-                    if registry.default_model.as_deref() == Some(model_id) {
-                        // Toggle off: clear default
-                        registry.default_model = None;
-                    } else {
-                        let _ = registry.set_default(model_id);
-                    }
-                    let _ = registry.save(&self.workgraph_dir);
-                    self.config_panel.save_notification = Some(Instant::now());
-                    self.load_config_panel();
-                }
+            && let Ok(mut registry) = workgraph::models::ModelRegistry::load(&self.workgraph_dir)
+        {
+            if registry.default_model.as_deref() == Some(model_id) {
+                // Toggle off: clear default
+                registry.default_model = None;
+            } else {
+                let _ = registry.set_default(model_id);
             }
+            let _ = registry.save(&self.workgraph_dir);
+            self.config_panel.save_notification = Some(Instant::now());
+            self.load_config_panel();
             return;
         }
 
