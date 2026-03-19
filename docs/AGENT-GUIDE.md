@@ -634,10 +634,10 @@ Control how much context is assembled into an agent's prompt with `--context-sco
 
 | Scope | What's included | When to use |
 |-------|----------------|-------------|
-| `clean` | Task description only — no dependency context, no graph state | Independent tasks, fresh starts |
-| `task` | Task description + direct predecessor artifacts/logs | Most work — default |
-| `graph` | Task + transitive dependency chain | Deep multi-step pipelines |
-| `full` | Everything: full graph state, all logs, all artifacts | Debugging, recovery, complex integration |
+| `clean` | Core task info only (title, description, dependency context) — no workflow instructions | Independent tasks, fresh starts |
+| `task` | + workflow sections, tags/skills, downstream awareness | Most work — default |
+| `graph` | + project description, subgraph summary (1-hop neighborhood) | Integration, cross-component review |
+| `full` | + system awareness preamble, full graph summary, CLAUDE.md content | Meta-tasks, workflow design |
 
 ```bash
 wg add "Leaf task" --context-scope clean    # minimal prompt

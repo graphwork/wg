@@ -81,7 +81,7 @@ Only **ready** (open, unblocked) tasks appear in `wg ready`.
 Agents represent humans or AIs who perform work. An agent is a unified identity that combines:
 
 - **name**: Display name
-- **role + motivation**: What the agent does and why (required for AI, optional for human)
+- **role + tradeoff**: What the agent does and why (required for AI, optional for human)
 - **capabilities**: Skills for task matching
 - **trust_level**: verified, provisional, or unknown
 - **capacity**: Maximum concurrent task capacity

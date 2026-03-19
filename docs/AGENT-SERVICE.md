@@ -283,10 +283,10 @@ When the coordinator spawns an agent for a task:
    - `bare` — only `wg` CLI (graph orchestration)
    - `shell` — no LLM; runs the task's `exec` command directly
 6. **Context scope resolution**: The task's `context_scope` determines how much context is assembled into the prompt:
-   - `clean` — task description only (no dependency context)
-   - `task` — task description + direct predecessor artifacts/logs (default)
-   - `graph` — task + transitive dependency chain
-   - `full` — everything: full graph state, all logs, all artifacts
+   - `clean` — core task info only (title, description, dependency context) — no workflow instructions
+   - `task` — + workflow sections, tags/skills, downstream awareness (default)
+   - `graph` — + project description, subgraph summary (1-hop neighborhood)
+   - `full` — + system awareness preamble, full graph summary, CLAUDE.md content
    If no scope is set on the task, the assigned role's default scope is used; otherwise `task` is the implicit default.
 7. **Cycle context injection**: If the task is part of a structural cycle, the prompt includes:
    - The current `loop_iteration` (which pass this is)
