@@ -2140,26 +2140,42 @@ fn spawn_eval_inline(
         let escaped_sa_id = sa_id.replace('\'', "'\\''");
         format!(
             r#"unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT
-{eval_cmd} >> '{escaped_output}' 2>&1
+_WG_STDERR=$(mktemp)
+{eval_cmd} >> '{escaped_output}' 2>"$_WG_STDERR"
 EXIT_CODE=$?
+cat "$_WG_STDERR" >> '{escaped_output}'
 if [ $EXIT_CODE -eq 0 ]; then
+    rm -f "$_WG_STDERR"
     wg evaluate record '{escaped_eval_id}' 1.0 --source system --notes "Inline evaluation completed successfully (agent: {escaped_sa_id})" 2>> '{escaped_output}' || true
     wg done '{escaped_eval_id}' 2>> '{escaped_output}'
 else
+    _WG_STDERR_TAIL=$(tail -n 20 "$_WG_STDERR" 2>/dev/null | head -c 2000 || true)
+    _WG_STDERR_FULL=$(tail -n 100 "$_WG_STDERR" 2>/dev/null || true)
+    rm -f "$_WG_STDERR"
+    wg log '{escaped_eval_id}' "Eval stderr: $_WG_STDERR_FULL" 2>> '{escaped_output}' || true
     wg evaluate record '{escaped_eval_id}' 0.0 --source system --notes "Inline evaluation failed with exit code $EXIT_CODE (agent: {escaped_sa_id})" 2>> '{escaped_output}' || true
-    wg fail '{escaped_eval_id}' --reason "wg evaluate exited with code $EXIT_CODE" 2>> '{escaped_output}'
+    REASON=$(printf 'wg evaluate exited with code %s\n---\n%s' "$EXIT_CODE" "$_WG_STDERR_TAIL")
+    wg fail '{escaped_eval_id}' --reason "$REASON" 2>> '{escaped_output}'
 fi
 exit $EXIT_CODE"#,
         )
     } else {
         format!(
             r#"unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT
-{eval_cmd} >> '{escaped_output}' 2>&1
+_WG_STDERR=$(mktemp)
+{eval_cmd} >> '{escaped_output}' 2>"$_WG_STDERR"
 EXIT_CODE=$?
+cat "$_WG_STDERR" >> '{escaped_output}'
 if [ $EXIT_CODE -eq 0 ]; then
+    rm -f "$_WG_STDERR"
     wg done '{escaped_eval_id}' 2>> '{escaped_output}'
 else
-    wg fail '{escaped_eval_id}' --reason "wg evaluate exited with code $EXIT_CODE" 2>> '{escaped_output}'
+    _WG_STDERR_TAIL=$(tail -n 20 "$_WG_STDERR" 2>/dev/null | head -c 2000 || true)
+    _WG_STDERR_FULL=$(tail -n 100 "$_WG_STDERR" 2>/dev/null || true)
+    rm -f "$_WG_STDERR"
+    wg log '{escaped_eval_id}' "Eval stderr: $_WG_STDERR_FULL" 2>> '{escaped_output}' || true
+    REASON=$(printf 'wg evaluate exited with code %s\n---\n%s' "$EXIT_CODE" "$_WG_STDERR_TAIL")
+    wg fail '{escaped_eval_id}' --reason "$REASON" 2>> '{escaped_output}'
 fi
 exit $EXIT_CODE"#,
         )
@@ -2295,12 +2311,20 @@ fn spawn_assign_inline(dir: &Path, assign_task_id: &str) -> Result<(String, u32)
     // Build the script: run assign, then mark done/failed
     let script = format!(
         r#"unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT
-{assign_cmd} >> '{escaped_output}' 2>&1
+_WG_STDERR=$(mktemp)
+{assign_cmd} >> '{escaped_output}' 2>"$_WG_STDERR"
 EXIT_CODE=$?
+cat "$_WG_STDERR" >> '{escaped_output}'
 if [ $EXIT_CODE -eq 0 ]; then
+    rm -f "$_WG_STDERR"
     wg done '{escaped_assign_id}' 2>> '{escaped_output}'
 else
-    wg fail '{escaped_assign_id}' --reason "wg assign exited with code $EXIT_CODE" 2>> '{escaped_output}'
+    _WG_STDERR_TAIL=$(tail -n 20 "$_WG_STDERR" 2>/dev/null | head -c 2000 || true)
+    _WG_STDERR_FULL=$(tail -n 100 "$_WG_STDERR" 2>/dev/null || true)
+    rm -f "$_WG_STDERR"
+    wg log '{escaped_assign_id}' "Assign stderr: $_WG_STDERR_FULL" 2>> '{escaped_output}' || true
+    REASON=$(printf 'wg assign exited with code %s\n---\n%s' "$EXIT_CODE" "$_WG_STDERR_TAIL")
+    wg fail '{escaped_assign_id}' --reason "$REASON" 2>> '{escaped_output}'
 fi
 exit $EXIT_CODE"#,
     );
