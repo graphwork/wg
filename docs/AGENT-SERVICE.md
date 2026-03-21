@@ -213,10 +213,11 @@ wg service tick [--max-agents <N>] [--executor <NAME>] [--model <MODEL>]
 The service supports multiple concurrent coordinator sessions. Manage them with:
 
 ```bash
-wg service create-coordinator   # create a new coordinator session
-wg service stop-coordinator     # stop a coordinator session (kill agent, reset to Open)
-wg service archive-coordinator  # archive a coordinator session (mark as Done)
-wg service delete-coordinator   # delete a coordinator session
+wg service create-coordinator              # create a new coordinator session
+wg service create-coordinator --name foo   # create a named coordinator session
+wg service stop-coordinator <ID>           # stop a coordinator session (kill agent, reset to Open)
+wg service archive-coordinator <ID>        # archive a coordinator session (mark as Done)
+wg service delete-coordinator <ID>         # delete a coordinator session
 ```
 
 Target a specific coordinator from `wg chat`:
@@ -379,9 +380,11 @@ wg reclaim <task-id> --from <old-agent> --to <new-agent>
 Agents can park a task in `Waiting` status until a condition is met. The coordinator evaluates waiting conditions each tick (step 2.7) and resumes satisfied tasks automatically.
 
 ```bash
-wg wait <task-id> --until "task:dep-a=done"       # wait for another task
-wg wait <task-id> --until "timer:5m"              # wait for a duration
-wg wait <task-id> --until "message"               # wait for a message
+wg wait <task-id> --until "task:dep-a=done"       # wait for another task to reach a status
+wg wait <task-id> --until "timer:5m"              # wait for a duration (e.g. 5m, 2h, 30s)
+wg wait <task-id> --until "message"               # wait for any message on the task
+wg wait <task-id> --until "human-input"           # wait specifically for a human message
+wg wait <task-id> --until "file:path/to/file"     # wait for a file to change
 wg wait <task-id> --until "task:dep-a=done" --checkpoint "Progress so far"
 ```
 

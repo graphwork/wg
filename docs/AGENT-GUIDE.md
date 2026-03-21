@@ -348,6 +348,8 @@ Send messages to tasks being worked on by other agents. This enables real-time c
 # Send a message to another task's agent
 wg msg send <task-id> "Hey, I found this is related to your work: ..."
 wg msg send <task-id> "FYI: I changed the API signature in src/api.rs"
+wg msg send <task-id> --from agent-3 "Message with explicit sender"
+wg msg send <task-id> --priority urgent "Blocking issue found"
 
 # Check for messages on your task
 wg msg list <task-id>
@@ -695,9 +697,11 @@ wg stats                # project-wide stats
 `wg wait` parks a task in `Waiting` status until a condition is met. The coordinator checks waiting conditions each tick (step 2.7) and automatically resumes satisfied tasks.
 
 ```bash
-wg wait <task-id> --until "task:dep-a=done"       # wait for another task to complete
-wg wait <task-id> --until "timer:5m"              # wait for a duration
-wg wait <task-id> --until "message"               # wait for a message
+wg wait <task-id> --until "task:dep-a=done"       # wait for another task to reach a status
+wg wait <task-id> --until "timer:5m"              # wait for a duration (e.g. 5m, 2h, 30s)
+wg wait <task-id> --until "message"               # wait for any message on the task
+wg wait <task-id> --until "human-input"           # wait specifically for a human message
+wg wait <task-id> --until "file:path/to/file"     # wait for a file to change
 wg wait <task-id> --until "task:dep-a=done" --checkpoint "Progress so far"
 ```
 
