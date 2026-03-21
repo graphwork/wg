@@ -7955,12 +7955,13 @@ mod tests {
 
     #[test]
     fn test_pink_agency_phase_text() {
-        // Build a graph with a task that has pipeline status annotation (pink).
+        // Build a graph with a task that has [assigning] annotation (magenta/pink).
         // NOTE: In test environments, stdout is not a terminal so ANSI color codes
         // are suppressed by generate_ascii. We verify:
-        // 1. The pipeline status text appears in the output
-        // 2. The format_node logic would produce pink (\x1b[38;5;219m]) when use_color=true
-        // 3. The pipeline annotation is correctly applied
+        // 1. The annotation text [assigning]/[evaluating] appears in the output
+        // 2. The format_node logic would produce magenta (\x1b[35m]) when use_color=true
+        //    (verified by the is_agency_phase check in ascii.rs lines 309-321)
+        // 3. The phase annotation is correctly applied
 
         let mut graph = WorkGraph::new();
         let task = make_task_with_status("my-task", "My Task", Status::Open);
@@ -7970,7 +7971,7 @@ mod tests {
         annotations.insert(
             "my-task".to_string(),
             crate::commands::viz::AnnotationInfo {
-                text: "○place ●assign ○flip ○validate".to_string(),
+                text: "[assigning]".to_string(),
                 dot_task_ids: vec![".assign-my-task".to_string()],
             },
         );
@@ -7991,25 +7992,28 @@ mod tests {
             &HashMap::new(),
         );
 
-        // The pipeline status must appear in the output
+        // The annotation [assigning] must appear in the output
         let task_line_idx = viz.node_line_map["my-task"];
         let line_text = viz.text.lines().nth(task_line_idx).unwrap();
         assert!(
-            line_text.contains("●assign"),
-            "Pipeline status should show '●assign'.\nLine: {:?}",
+            line_text.contains("[assigning]"),
+            "Assigning phase should show [assigning] annotation.\nLine: {:?}",
             line_text
         );
 
-        // In a terminal, the ANSI code \x1b[38;5;219m (true pink) would be present.
+        // In a terminal, the ANSI code \x1b[35m (magenta) would be present.
+        // In non-terminal test environments, no ANSI codes are emitted.
+        // Either way, the annotation text must be present. If ANSI codes ARE
+        // present (some CI environments have tty), they should be magenta.
         if line_text.contains("\x1b[") {
             assert!(
                 line_text.contains("\x1b[38;5;219m"),
-                "If ANSI codes are present, pipeline status should use true pink (\\x1b[38;5;219m).\nLine: {:?}",
+                "If ANSI codes are present, assigning phase should use true pink (\\x1b[38;5;219m).\nLine: {:?}",
                 line_text
             );
         }
 
-        // Test validate phase (evaluate pipeline)
+        // Test evaluating phase
         let mut graph2 = WorkGraph::new();
         let task2 = make_task_with_status("eval-task", "Eval Task", Status::Done);
         graph2.add_node(Node::Task(task2));
@@ -8017,7 +8021,7 @@ mod tests {
         annotations2.insert(
             "eval-task".to_string(),
             crate::commands::viz::AnnotationInfo {
-                text: "✓place ✓assign ○flip ●validate".to_string(),
+                text: "[∴ evaluating]".to_string(),
                 dot_task_ids: vec![".evaluate-eval-task".to_string()],
             },
         );
@@ -8041,32 +8045,28 @@ mod tests {
         let task_line_idx2 = viz2.node_line_map["eval-task"];
         let ansi_line2 = viz2.text.lines().nth(task_line_idx2).unwrap();
         assert!(
-            ansi_line2.contains("●validate"),
-            "Pipeline status should show '●validate'.\nLine: {:?}",
+            ansi_line2.contains("[∴ evaluating]"),
+            "Evaluating phase should show [∴ evaluating] annotation.\nLine: {:?}",
             ansi_line2
         );
         if ansi_line2.contains("\x1b[") {
             assert!(
                 ansi_line2.contains("\x1b[38;5;219m"),
-                "If ANSI codes are present, pipeline status should use true pink (\\x1b[38;5;219m).\nLine: {:?}",
+                "If ANSI codes are present, evaluating phase should use true pink (\\x1b[38;5;219m).\nLine: {:?}",
                 ansi_line2
             );
         }
 
-        // Test full pipeline with all stages
+        // Test validating phase
         let mut graph3 = WorkGraph::new();
-        let task3 = make_task_with_status("full-task", "Full Task", Status::Done);
+        let task3 = make_task_with_status("val-task", "Val Task", Status::InProgress);
         graph3.add_node(Node::Task(task3));
         let mut annotations3 = HashMap::new();
         annotations3.insert(
-            "full-task".to_string(),
+            "val-task".to_string(),
             crate::commands::viz::AnnotationInfo {
-                text: "✓place ✓assign ●flip ○validate".to_string(),
-                dot_task_ids: vec![
-                    ".place-full-task".to_string(),
-                    ".assign-full-task".to_string(),
-                    ".flip-full-task".to_string(),
-                ],
+                text: "[✓ validating]".to_string(),
+                dot_task_ids: vec![".verify-val-task".to_string()],
             },
         );
 
@@ -8086,13 +8086,59 @@ mod tests {
             &HashMap::new(),
         );
 
-        let task_line_idx3 = viz3.node_line_map["full-task"];
+        let task_line_idx3 = viz3.node_line_map["val-task"];
         let ansi_line3 = viz3.text.lines().nth(task_line_idx3).unwrap();
         assert!(
-            ansi_line3.contains("✓place") && ansi_line3.contains("●flip") && ansi_line3.contains("○validate"),
-            "Full pipeline should show all stages.\nLine: {:?}",
+            ansi_line3.contains("[✓ validating]"),
+            "Validating phase should show [✓ validating] annotation.\nLine: {:?}",
             ansi_line3
         );
+
+        // Test both simultaneously
+        let mut graph4 = WorkGraph::new();
+        let task4 = make_task_with_status("both-task", "Both Task", Status::InProgress);
+        graph4.add_node(Node::Task(task4));
+        let mut annotations4 = HashMap::new();
+        annotations4.insert(
+            "both-task".to_string(),
+            crate::commands::viz::AnnotationInfo {
+                text: "[∴ evaluating] [✓ validating]".to_string(),
+                dot_task_ids: vec![
+                    ".evaluate-both-task".to_string(),
+                    ".verify-both-task".to_string(),
+                ],
+            },
+        );
+
+        let tasks4: Vec<_> = graph4.tasks().collect();
+        let task_ids4: HashSet<&str> = tasks4.iter().map(|t| t.id.as_str()).collect();
+        let viz4 = generate_ascii(
+            &graph4,
+            &tasks4,
+            &task_ids4,
+            &annotations4,
+            &HashMap::new(),
+            &HashMap::new(),
+            LayoutMode::Tree,
+            &HashSet::new(),
+            "gray",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+
+        let task_line_idx4 = viz4.node_line_map["both-task"];
+        let ansi_line4 = viz4.text.lines().nth(task_line_idx4).unwrap();
+        assert!(
+            ansi_line4.contains("[∴ evaluating]") && ansi_line4.contains("[✓ validating]"),
+            "Both phases should appear simultaneously.\nLine: {:?}",
+            ansi_line4
+        );
+
+        // Verify the code logic: in ascii.rs, the agency phase detection checks:
+        //   is_agency_phase = use_color && annotations.get(id).map_or(false, |a| a.contains("assigning") || a.contains("evaluating") || a.contains("validating") || a.contains("verifying"))
+        // When true, the phase annotation is wrapped in \x1b[38;5;219m..\x1b[0m (ANSI 256-color 219, true pink).
+        // The task text itself keeps its status color (e.g., green for done).
+        // We've verified the annotation appears; the color logic is deterministic given use_color.
     }
 
     #[test]
@@ -8110,7 +8156,7 @@ mod tests {
         annotations.insert(
             "child".to_string(),
             crate::commands::viz::AnnotationInfo {
-                text: "○place ●assign ○flip ○validate".to_string(),
+                text: "[assigning]".to_string(),
                 dot_task_ids: vec![".assign-child".to_string()],
             },
         );
@@ -9685,7 +9731,7 @@ mod tests {
 
     #[test]
     fn test_e2e_assigning_click_resolves() {
-        // parent + .assign-parent → pipeline status, click resolves to .assign-parent
+        // parent + .assign-parent → [⊞ assigning], click resolves to .assign-parent
         let app = build_e2e_annotation_app(
             "parent",
             "Parent Task",
@@ -9699,7 +9745,7 @@ mod tests {
         assert_eq!(
             app.annotation_hit_regions.len(),
             1,
-            "Expected 1 hit region for pipeline status"
+            "Expected 1 hit region for assigning"
         );
         let region = &app.annotation_hit_regions[0];
         assert_eq!(region.parent_task_id, "parent");
@@ -9708,15 +9754,15 @@ mod tests {
         let plain = &app.plain_lines[region.orig_line];
         let found = &plain[region.col_start..region.col_end];
         assert!(
-            found.contains("assign"),
-            "Hit region should cover pipeline status with assign, got: {:?}",
+            found.contains("assigning"),
+            "Hit region should cover [⊞ assigning], got: {:?}",
             found
         );
     }
 
     #[test]
     fn test_e2e_evaluating_click_resolves() {
-        // parent + .evaluate-parent → pipeline status, click resolves to .evaluate-parent
+        // parent + .evaluate-parent → [∴ evaluating], click resolves to .evaluate-parent
         let app = build_e2e_annotation_app(
             "parent",
             "Parent Task",
@@ -9730,7 +9776,7 @@ mod tests {
         assert_eq!(
             app.annotation_hit_regions.len(),
             1,
-            "Expected 1 hit region for pipeline status"
+            "Expected 1 hit region for evaluating"
         );
         let region = &app.annotation_hit_regions[0];
         assert_eq!(region.parent_task_id, "parent");
@@ -9739,15 +9785,15 @@ mod tests {
         let plain = &app.plain_lines[region.orig_line];
         let found = &plain[region.col_start..region.col_end];
         assert!(
-            found.contains("validate"),
-            "Hit region should cover pipeline status with validate, got: {:?}",
+            found.contains("evaluating"),
+            "Hit region should cover [∴ evaluating], got: {:?}",
             found
         );
     }
 
     #[test]
     fn test_e2e_placing_click_resolves() {
-        // parent + .place-parent → pipeline status, click resolves to .place-parent
+        // parent + .place-parent → [⊞ placing], click resolves to .place-parent
         let app = build_e2e_annotation_app(
             "parent",
             "Parent Task",
@@ -9761,7 +9807,7 @@ mod tests {
         assert_eq!(
             app.annotation_hit_regions.len(),
             1,
-            "Expected 1 hit region for pipeline status"
+            "Expected 1 hit region for placing"
         );
         let region = &app.annotation_hit_regions[0];
         assert_eq!(region.parent_task_id, "parent");
@@ -9770,8 +9816,8 @@ mod tests {
         let plain = &app.plain_lines[region.orig_line];
         let found = &plain[region.col_start..region.col_end];
         assert!(
-            found.contains("place"),
-            "Hit region should cover pipeline status with place, got: {:?}",
+            found.contains("placing"),
+            "Hit region should cover [⊞ placing], got: {:?}",
             found
         );
     }
@@ -9858,17 +9904,17 @@ mod tests {
             "Combined region should carry both dot-task IDs"
         );
 
-        // Verify the annotation text in the plain line covers the pipeline status
+        // Verify the annotation text in the plain line covers both phases
         let plain = &app.plain_lines[region.orig_line];
         let found = &plain[region.col_start..region.col_end];
         assert!(
-            found.contains("assign"),
-            "Pipeline annotation should contain 'assign', got: {:?}",
+            found.contains("assigning"),
+            "Combined annotation should contain 'assigning', got: {:?}",
             found
         );
         assert!(
-            found.contains("validate"),
-            "Pipeline annotation should contain 'validate', got: {:?}",
+            found.contains("evaluating"),
+            "Combined annotation should contain 'evaluating', got: {:?}",
             found
         );
 
@@ -9885,7 +9931,7 @@ mod tests {
 
     #[test]
     fn test_e2e_validating_click_resolves() {
-        // parent + .verify-parent → pipeline status, click resolves to .verify-parent
+        // parent + .verify-parent → [∴ validating], click resolves to .verify-parent
         let app = build_e2e_annotation_app(
             "parent",
             "Parent Task",
@@ -9899,7 +9945,7 @@ mod tests {
         assert_eq!(
             app.annotation_hit_regions.len(),
             1,
-            "Expected 1 hit region for pipeline status"
+            "Expected 1 hit region for validating"
         );
         let region = &app.annotation_hit_regions[0];
         assert_eq!(region.parent_task_id, "parent");
@@ -9908,8 +9954,8 @@ mod tests {
         let plain = &app.plain_lines[region.orig_line];
         let found = &plain[region.col_start..region.col_end];
         assert!(
-            found.contains("validate"),
-            "Hit region should cover pipeline status with validate, got: {:?}",
+            found.contains("validating"),
+            "Hit region should cover [∴ validating], got: {:?}",
             found
         );
     }

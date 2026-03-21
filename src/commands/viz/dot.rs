@@ -471,11 +471,7 @@ mod tests {
 
         assert!(!result.contains("assign-my-task"));
         assert!(result.contains("my-task"));
-        assert!(
-            result.contains("●assign"),
-            "Expected '●assign' in output.\nOutput:\n{}",
-            result
-        );
+        assert!(result.contains("[⊞ assigning]"));
     }
 
     #[test]
@@ -507,11 +503,7 @@ mod tests {
 
         assert!(!result.contains("assign-my-task"));
         assert!(result.contains("my-task"));
-        assert!(
-            result.contains("●assign"),
-            "Expected '●assign' in output.\nOutput:\n{}",
-            result
-        );
+        assert!(result.contains("[⊞ assigning]"));
     }
 
     #[test]

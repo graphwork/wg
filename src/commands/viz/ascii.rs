@@ -315,16 +315,16 @@ pub(crate) fn generate_ascii(
             .map(|a| format!(" {}", a.text))
             .unwrap_or_default();
 
-        // Override phase annotation to true pink for agency pipeline status.
+        // Override phase annotation to true pink for agency phases (assigning/evaluating).
         // Uses ANSI 256-color 219 (light pink) to be visually distinct from magenta/purple
         // which is used for upstream edge tracing.
-        // Detects the compact pipeline format: "✓place ✓assign ●flip ○validate"
         let is_agency_phase = use_color
             && annotations.get(id).is_some_and(|a| {
-                a.text.contains("place")
-                    || a.text.contains("assign")
-                    || a.text.contains("flip")
-                    || a.text.contains("validate")
+                a.text.contains("placing")
+                    || a.text.contains("assigning")
+                    || a.text.contains("evaluating")
+                    || a.text.contains("validating")
+                    || a.text.contains("verifying")
             });
         let phase_info = if is_agency_phase {
             annotations
@@ -1780,13 +1780,9 @@ mod tests {
 
         // Internal task should NOT appear
         assert!(!result.text.contains("assign-my-task"));
-        // Parent task should appear with pipeline status annotation
+        // Parent task should appear with phase annotation
         assert!(result.text.contains("my-task"));
-        assert!(
-            result.text.contains("●assign"),
-            "Expected '●assign' in output.\nOutput:\n{}",
-            result.text
-        );
+        assert!(result.text.contains("[⊞ assigning]"));
     }
 
     #[test]
@@ -1824,13 +1820,9 @@ mod tests {
 
         // Internal task should NOT appear
         assert!(!result.text.contains(".place-my-task"));
-        // Parent task should appear with pipeline status annotation
+        // Parent task should appear with phase annotation
         assert!(result.text.contains("my-task"));
-        assert!(
-            result.text.contains("●place"),
-            "Expected '●place' in output.\nOutput:\n{}",
-            result.text
-        );
+        assert!(result.text.contains("[⊞ placing]"));
     }
 
     #[test]
@@ -1872,11 +1864,7 @@ mod tests {
 
         assert!(!result.text.contains("evaluate-my-task"));
         assert!(result.text.contains("my-task"));
-        assert!(
-            result.text.contains("●validate"),
-            "Expected '●validate' in output.\nOutput:\n{}",
-            result.text
-        );
+        assert!(result.text.contains("[∴ evaluating]"));
     }
 
     #[test]
@@ -3509,8 +3497,8 @@ mod tests {
 
         let plain = strip_ansi_for_map(&result.text);
         assert!(
-            plain.contains("●assign"),
-            "Should contain '●assign' (pipeline status). Plain: {}",
+            plain.contains("[⊞ assigning]"),
+            "Should contain [⊞ assigning]. Plain: {}",
             plain
         );
         // Internal assign task should be filtered out.
