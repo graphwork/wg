@@ -74,19 +74,19 @@ For display, IDs are shown as 8-character prefixes (e.g. `a3f7c21d`). All comman
 
 ## The Full Agency Loop
 
-The agency system runs as a loop: assign identity → execute task → evaluate → evolve. Each step can be manual or automated.
+The agency system runs as a loop: assign identity → execute task → evaluate → FLIP fidelity check → evolve. Each step can be manual or automated.
 
 ```
-┌─────────────┐     ┌───────────┐     ┌───────────┐     ┌──────────┐
-│  1. Assign  │────>│ 2. Execute│────>│3. Evaluate│────>│ 4. Evolve│
-│  identity   │     │   task    │     │  results  │     │  agency  │
-│  to task    │     │  (agent   │     │  (score   │     │  (create │
-│             │     │   runs)   │     │   agent)  │     │   new    │
-│  wg assign  │     │  wg spawn │     │ wg evaluate│    │  roles)  │
-└─────────────┘     └───────────┘     └───────────┘     └──────────┘
-       ▲                                                      │
-       └──────────────────────────────────────────────────────┘
-                    performance data feeds back
+┌─────────────┐     ┌───────────┐     ┌───────────┐     ┌──────────┐     ┌──────────┐
+│  1. Assign  │────>│ 2. Execute│────>│3. Evaluate│────>│ 4. FLIP  │────>│ 5. Evolve│
+│  identity   │     │   task    │     │  results  │     │  fidelity│     │  agency  │
+│  to task    │     │  (agent   │     │  (score   │     │  check   │     │  (create │
+│             │     │   runs)   │     │   agent)  │     │  (+verify│     │   new    │
+│  wg assign  │     │  wg spawn │     │ wg evaluate│    │  if low) │     │  roles)  │
+└─────────────┘     └───────────┘     └───────────┘     └──────────┘     └──────────┘
+       ▲                                                                      │
+       └──────────────────────────────────────────────────────────────────────┘
+                              performance data feeds back
 ```
 
 ### Manual loop
@@ -780,9 +780,15 @@ wg agent lineage <id>        # shows agent + role + tradeoff ancestry
 │   │   └── <sha256>.yaml.retired
 │   └── agents/                  # Agent definitions (role + tradeoff pairs)
 │       └── <sha256>.yaml
+├── assignments/                 # Task-to-agent assignment records
+│   └── <task-id>.yaml
 ├── evaluations/
 │   ├── eval-<task-id>-<timestamp>.json   # Standard evaluations (source: "llm")
 │   └── flip-<task-id>-<timestamp>.json   # FLIP evaluations (source: "flip")
+├── org-evaluations/             # Organization-level evaluations
+│   └── org-eval-<task-id>-<timestamp>.json
+├── evolution_runs/              # Evolution run history
+│   └── evo-<date>.json
 ├── evolver-skills/              # Strategy-specific guidance documents
 │   ├── role-mutation.md
 │   ├── role-crossover.md
@@ -797,8 +803,9 @@ wg agent lineage <id>        # shows agent + role + tradeoff ancestry
 │   ├── behavioral-rules.md      # (immutable)
 │   ├── evolved-amendments.md    # (mutable — evolver-written rules)
 │   └── common-patterns.md       # (mutable — evolver-written examples)
-└── deferred/                    # Deferred evolution operations awaiting approval
-    └── <op-id>.json
+├── deferred/                    # Deferred evolution operations awaiting approval
+│   └── <op-id>.json
+└── creator_state.json           # Auto-create tracking (last count, timestamp)
 ```
 
 Roles, tradeoffs, and agents are stored as YAML. Evaluations are stored as JSON. All filenames are based on the entity's content-hash ID.
