@@ -639,25 +639,16 @@ fn build_inner_command(
             fs::write(&prompt_file, &prompt_content)
                 .with_context(|| format!("Failed to write prompt file: {:?}", prompt_file))?;
 
-            let is_placement = vars.task_id.starts_with(".place-");
-
             let mut cmd_parts = vec![shell_escape(&settings.command)];
             cmd_parts.push("--print".to_string());
             cmd_parts.push("--verbose".to_string());
             cmd_parts.push("--output-format".to_string());
             cmd_parts.push("stream-json".to_string());
             cmd_parts.push("--dangerously-skip-permissions".to_string());
-            if is_placement {
-                // Placement tasks produce structured output (command on last line).
-                // No tools needed — the system parses and executes the output.
-                cmd_parts.push("--max-turns".to_string());
-                cmd_parts.push("1".to_string());
-            } else {
-                cmd_parts.push("--tools".to_string());
-                cmd_parts.push(shell_escape("Bash(wg:*)"));
-                cmd_parts.push("--allowedTools".to_string());
-                cmd_parts.push(shell_escape("Bash(wg:*)"));
-            }
+            cmd_parts.push("--tools".to_string());
+            cmd_parts.push(shell_escape("Bash(wg:*)"));
+            cmd_parts.push("--allowedTools".to_string());
+            cmd_parts.push(shell_escape("Bash(wg:*)"));
             cmd_parts.push("--disable-slash-commands".to_string());
             cmd_parts.push("--system-prompt".to_string());
             cmd_parts.push(shell_escape(&prompt_content));
@@ -846,27 +837,7 @@ fn write_wrapper_script(
     effective_timeout_secs: Option<u64>,
     executor_type: &str,
 ) -> Result<std::path::PathBuf> {
-    let is_placement = task_id.starts_with(".place-");
-    let complete_cmd = if is_placement {
-        // Placement tasks: parse structured output, then mark done/failed.
-        let source_task = task_id.strip_prefix(".place-").unwrap_or(task_id);
-        format!(
-            r#"OUTPUT_DIR=$(dirname "$OUTPUT_FILE")
-        echo "[wrapper] Parsing placement output..." >> "$OUTPUT_FILE"
-        wg apply-placement "$OUTPUT_DIR" {source_task} 2>> "$OUTPUT_FILE"
-        APPLY_EXIT=$?
-        if [ $APPLY_EXIT -eq 0 ]; then
-            echo "[wrapper] Placement output applied, marking task done" >> "$OUTPUT_FILE"
-            wg done "$TASK_ID" 2>> "$OUTPUT_FILE" || echo "[wrapper] WARNING: 'wg done' failed with exit code $?" >> "$OUTPUT_FILE"
-        else
-            echo "[wrapper] Placement output unparseable, marking task failed" >> "$OUTPUT_FILE"
-            wg fail "$TASK_ID" --reason "unparseable placement output" 2>> "$OUTPUT_FILE" || echo "[wrapper] WARNING: 'wg fail' failed with exit code $?" >> "$OUTPUT_FILE"
-        fi"#,
-            source_task = shell_escape(source_task),
-        )
-    } else {
-        "wg done \"$TASK_ID\" 2>> \"$OUTPUT_FILE\" || echo \"[wrapper] WARNING: 'wg done' failed with exit code $?\" >> \"$OUTPUT_FILE\"".to_string()
-    };
+    let complete_cmd = "wg done \"$TASK_ID\" 2>> \"$OUTPUT_FILE\" || echo \"[wrapper] WARNING: 'wg done' failed with exit code $?\" >> \"$OUTPUT_FILE\"".to_string();
     let complete_msg = "[wrapper] Agent exited successfully, marking task done";
 
     let timeout_note = if let Some(secs) = effective_timeout_secs {

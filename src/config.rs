@@ -1454,9 +1454,11 @@ pub struct AgencyConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub placer_agent: Option<String>,
 
-    /// Automatically run placement analysis on newly added tasks.
-    /// When enabled, the coordinator creates `.place-*` meta-tasks
-    /// for tasks that need graph wiring. Default: false.
+    /// Include placement (dependency edge decisions) in the assignment step.
+    /// When enabled, the assignment LLM call also decides dependency edges
+    /// for the source task based on active tasks in the graph.
+    /// Previously created separate `.place-*` tasks; now merged into assignment.
+    /// Default: false.
     #[serde(default)]
     pub auto_place: bool,
 

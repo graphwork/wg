@@ -780,65 +780,6 @@ fn resurrect_done_tasks(graph: &mut workgraph::graph::WorkGraph, dir: &Path) -> 
     modified
 }
 
-/// Handle failed `.place-*` tasks by fallback-publishing the original task.
-///
-/// `.place-*` tasks are created atomically at `wg publish` time (see
-/// `eval_scaffold::scaffold_full_pipeline`). The coordinator no longer creates
-/// them — it only handles the failure case: if a `.place-*` task fails, the
-/// original task is unpaused so dispatch can proceed without placement.
-///
-/// Returns `true` if the graph was modified.
-fn build_placement_tasks(
-    graph: &mut workgraph::graph::WorkGraph,
-    _config: &Config,
-    _dir: &Path,
-) -> bool {
-    let mut modified = false;
-
-    // Handle failed .place-* tasks: fallback-publish the original task.
-    // Never let placement failure permanently block dispatch.
-    let failed_placers: Vec<(String, String)> = graph
-        .tasks()
-        .filter(|t| {
-            t.id.starts_with(".place-")
-                && t.status == Status::Failed
-                && !t.tags.iter().any(|tag| tag == "fallback-published")
-        })
-        .map(|t| {
-            let source_id = t.id.strip_prefix(".place-").unwrap().to_string();
-            (t.id.clone(), source_id)
-        })
-        .collect();
-
-    for (place_id, source_id) in failed_placers {
-        // Publish (unpause) the source task so it proceeds without placement
-        if let Some(source) = graph.get_task_mut(&source_id)
-            && source.paused
-        {
-            source.paused = false;
-            if !source.tags.contains(&"placed".to_string()) {
-                source.tags.push("placed".to_string());
-            }
-            source.log.push(workgraph::graph::LogEntry {
-                timestamp: Utc::now().to_rfc3339(),
-                actor: Some("coordinator".to_string()),
-                message: "Placement failed, publishing without placement".to_string(),
-            });
-            eprintln!(
-                "[coordinator] Placement failed for '{}' — fallback publishing '{}'",
-                place_id, source_id
-            );
-            modified = true;
-        }
-        // Tag the .place-* task so we don't re-process it
-        if let Some(place_task) = graph.get_task_mut(&place_id) {
-            place_task.tags.push("fallback-published".to_string());
-        }
-    }
-
-    modified
-}
-
 /// Auto-assign: scaffold `.assign-*` tasks and run lightweight LLM assignment.
 ///
 /// Phase 1 — Scaffold: For ready unassigned non-system tasks without an
@@ -941,7 +882,6 @@ fn build_auto_assign_tasks(
                 && t.status == Status::Open
                 && !t.paused
                 // Check readiness: all after deps must be terminal.
-                // This prevents processing .assign-* before .place-* completes.
                 && t.after.iter().all(|dep_id| {
                     graph
                         .get_task(dep_id)
@@ -1103,6 +1043,13 @@ fn build_auto_assign_tasks(
             }
         }
 
+        // Build active tasks context for placement (merged into assignment)
+        let active_tasks_context = if config.agency.auto_place {
+            super::assignment::build_active_tasks_context(graph, &source_id)
+        } else {
+            String::new()
+        };
+
         // Run lightweight LLM call for assignment
         let (verdict, assign_token_usage) = match super::assignment::run_lightweight_assignment(
             config,
@@ -1112,6 +1059,7 @@ fn build_auto_assign_tasks(
             &tradeoffs_dir,
             &mode_context,
             underspec_warning.as_deref(),
+            &active_tasks_context,
         ) {
             Ok(v) => v,
             Err(e) => {
@@ -1165,6 +1113,61 @@ fn build_auto_assign_tasks(
                     verdict.reason,
                 ),
             });
+        }
+
+        // Apply placement edges from the verdict (merged placement step)
+        if let Some(ref placement) = verdict.placement {
+            // Pre-validate which deps exist in the graph (avoids borrow conflict)
+            let valid_after: Vec<String> = placement
+                .after
+                .iter()
+                .filter(|dep| !dep.is_empty() && graph.get_task(dep).is_some())
+                .cloned()
+                .collect();
+            let valid_before: Vec<String> = placement
+                .before
+                .iter()
+                .filter(|dep| !dep.is_empty() && graph.get_task(dep).is_some())
+                .cloned()
+                .collect();
+
+            if let Some(task) = graph.get_task_mut(&source_id) {
+                let mut edges_added = Vec::new();
+                for dep in &valid_after {
+                    if !task.after.contains(dep) {
+                        task.after.push(dep.clone());
+                        edges_added.push(format!("--after {}", dep));
+                    }
+                }
+                for dep in &valid_before {
+                    if !task.before.contains(dep) {
+                        task.before.push(dep.clone());
+                        edges_added.push(format!("--before {}", dep));
+                    }
+                }
+                if !edges_added.is_empty() {
+                    task.tags.retain(|t| t != "placed");
+                    task.tags.push("placed".to_string());
+                    task.log.push(LogEntry {
+                        timestamp: Utc::now().to_rfc3339(),
+                        actor: Some("coordinator".to_string()),
+                        message: format!(
+                            "Placement applied (via assignment): {}",
+                            edges_added.join(" "),
+                        ),
+                    });
+                    eprintln!(
+                        "[coordinator] Placement for '{}': {}",
+                        source_id,
+                        edges_added.join(" "),
+                    );
+                } else {
+                    eprintln!(
+                        "[coordinator] Placement for '{}': no valid edges to add",
+                        source_id,
+                    );
+                }
+            }
         }
 
         // Mark the .assign-* task as Done (unblocks source task via graph edge)
@@ -2630,12 +2633,6 @@ fn spawn_agents_for_ready_tasks(
                     .resolve_model_for_role(workgraph::config::DispatchRole::Assigner)
                     .model,
             )
-        } else if task.id.starts_with(".place-") {
-            Some(
-                config
-                    .resolve_model_for_role(workgraph::config::DispatchRole::Placer)
-                    .model,
-            )
         } else {
             default_model.map(String::from)
         };
@@ -2943,11 +2940,8 @@ pub fn coordinator_tick(
         // Phase 2.8: Message-triggered resurrection.
         modified |= resurrect_done_tasks(graph, dir);
 
-        // Phase 2.9: Handle failed .place-* tasks (fallback-publish).
-        // Note: .place-* tasks are now created atomically at `wg publish` time
-        // (see eval_scaffold::scaffold_full_pipeline). The coordinator no longer
-        // creates them — it only handles the failure fallback here.
-        modified |= build_placement_tasks(graph, &config, dir);
+        // Phase 2.9: (Removed) Placement is now merged into the assignment step.
+        // No separate .place-* tasks are created or handled.
 
         modified
     })

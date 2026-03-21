@@ -6,7 +6,18 @@ use anyhow::{Context, Result};
 
 use workgraph::agency::{self, Agent, short_hash};
 use workgraph::config::{Config, DispatchRole};
-use workgraph::graph::{Task, TokenUsage};
+use workgraph::graph::{Task, TokenUsage, WorkGraph, is_system_task};
+
+/// Placement decision: dependency edges to add to the source task.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub(crate) struct PlacementDecision {
+    /// Task IDs to add as `after` dependencies (task runs after these).
+    #[serde(default)]
+    pub after: Vec<String>,
+    /// Task IDs to add as `before` dependencies (task runs before these).
+    #[serde(default)]
+    pub before: Vec<String>,
+}
 
 /// Parsed assignment decision from the LLM.
 #[derive(Debug, serde::Deserialize)]
@@ -26,6 +37,10 @@ pub(crate) struct AssignmentVerdict {
     /// primitive store should be expanded via the creator agent.
     #[serde(default)]
     pub create_needed: bool,
+    /// Optional placement decision: dependency edges to add to the source task.
+    /// When null or absent, no placement changes are made.
+    #[serde(default)]
+    pub placement: Option<PlacementDecision>,
 }
 
 /// Pre-gathered agent catalog entry for prompt rendering.
@@ -109,11 +124,16 @@ fn render_agent_catalog(entries: &[AgentEntry]) -> String {
 }
 
 /// Build the full assignment prompt for the lightweight LLM call.
+///
+/// When `active_tasks_context` is non-empty, the prompt includes an "Active Tasks"
+/// section and placement instructions, asking the LLM to also decide dependency
+/// edges for the source task.
 pub(crate) fn build_assignment_prompt(
     task: &Task,
     mode_context: &str,
     agent_catalog: &str,
     underspec_warning: Option<&str>,
+    active_tasks_context: &str,
 ) -> String {
     let task_id = &task.id;
     let task_title = &task.title;
@@ -140,6 +160,33 @@ pub(crate) fn build_assignment_prompt(
         .unwrap_or_default();
 
     let underspec = underspec_warning.unwrap_or("");
+
+    let placement_section = if active_tasks_context.is_empty() {
+        String::new()
+    } else {
+        format!(
+            r#"
+## Active Tasks (for placement)
+
+{active_tasks_context}
+## Placement Instructions
+
+In addition to agent assignment, decide whether this task needs additional dependency edges.
+Look at the task's existing dependencies and the active tasks above. If the task should
+run after or before any active tasks (beyond its current deps), include a `placement` field.
+Only add edges that are clearly needed — do NOT add edges to system tasks (.assign-*, .flip-*, .evaluate-*, .place-*).
+If no placement changes are needed, set `placement` to null.
+"#
+        )
+    };
+
+    let placement_json = if active_tasks_context.is_empty() {
+        String::new()
+    } else {
+        r#",
+  "placement": null | {"after": ["task-id-1"], "before": ["task-id-2"]}"#
+            .to_string()
+    };
 
     format!(
         r#"You are an agent assignment system. Given a task and available agents, select the best agent and configure execution parameters.
@@ -175,7 +222,7 @@ pub(crate) fn build_assignment_prompt(
 - **task**: Standard implementation (default if unsure).
 - **graph**: Integration tasks spanning multiple components (3+ dependencies).
 - **full**: Meta-tasks about workgraph itself.
-
+{placement_section}
 ## Response
 
 Respond with ONLY a JSON object (no markdown fences, no commentary):
@@ -185,7 +232,7 @@ Respond with ONLY a JSON object (no markdown fences, no commentary):
   "exec_mode": "<shell|bare|light|full>",
   "context_scope": "<clean|task|graph|full>",
   "reason": "<one-sentence explanation>",
-  "create_needed": false
+  "create_needed": false{placement_json}
 }}
 
 Always pick the closest match — never fail to assign. If no agent is a good fit
@@ -197,6 +244,10 @@ should be created for future tasks like this."#
 
 /// Run the lightweight assignment LLM call and parse the verdict.
 /// Returns the assignment verdict and any token usage from the LLM call.
+///
+/// When `active_tasks_context` is non-empty, the prompt includes placement
+/// instructions and the verdict may contain a `placement` field with dependency
+/// edges to apply to the source task.
 pub(crate) fn run_lightweight_assignment(
     config: &Config,
     task: &Task,
@@ -205,13 +256,20 @@ pub(crate) fn run_lightweight_assignment(
     tradeoffs_dir: &std::path::Path,
     mode_context: &str,
     underspec_warning: Option<&str>,
+    active_tasks_context: &str,
 ) -> Result<(AssignmentVerdict, Option<TokenUsage>)> {
     let timeout_secs = config.agency.triage_timeout.unwrap_or(30);
 
     let catalog_entries = build_agent_catalog(agents, roles_dir, tradeoffs_dir);
     let catalog_text = render_agent_catalog(&catalog_entries);
 
-    let prompt = build_assignment_prompt(task, mode_context, &catalog_text, underspec_warning);
+    let prompt = build_assignment_prompt(
+        task,
+        mode_context,
+        &catalog_text,
+        underspec_warning,
+        active_tasks_context,
+    );
 
     let result = workgraph::service::llm::run_lightweight_llm_call(
         config,
@@ -261,6 +319,30 @@ pub(crate) fn run_lightweight_assignment(
     }
 
     Ok((verdict, token_usage))
+}
+
+/// Build a compact list of active (non-terminal, non-paused, non-system) tasks
+/// for placement context. Only includes task IDs and titles to keep the prompt slim.
+pub(crate) fn build_active_tasks_context(graph: &WorkGraph, exclude_task_id: &str) -> String {
+    let active_tasks: Vec<_> = graph
+        .tasks()
+        .filter(|t| {
+            !t.status.is_terminal()
+                && !t.paused
+                && !is_system_task(&t.id)
+                && t.id != exclude_task_id
+        })
+        .collect();
+
+    if active_tasks.is_empty() {
+        return String::new();
+    }
+
+    let mut out = String::new();
+    for t in &active_tasks {
+        out.push_str(&format!("- {} ({})\n", t.id, t.title));
+    }
+    out
 }
 
 /// Extract a JSON object from potentially noisy LLM output.
@@ -339,6 +421,7 @@ mod tests {
             "## Mode\nPerformance",
             "- Agent1 (hash: abc)\n",
             None,
+            "",
         );
         assert!(prompt.contains("test-task"));
         assert!(prompt.contains("Fix the bug"));
@@ -371,5 +454,78 @@ mod tests {
         assert!(result.contains("abc12345"));
         assert!(result.contains("0.85"));
         assert!(result.contains("rust"));
+    }
+
+    #[test]
+    fn test_build_assignment_prompt_includes_placement_when_active_tasks() {
+        let task = Task {
+            id: "test-task".to_string(),
+            title: "Fix the bug".to_string(),
+            status: Status::Open,
+            ..Default::default()
+        };
+        let active_ctx = "- other-task (Other Task)\n- third-task (Third Task)\n";
+        let prompt = build_assignment_prompt(
+            &task,
+            "",
+            "- Agent1 (hash: abc)\n",
+            None,
+            active_ctx,
+        );
+        assert!(prompt.contains("Active Tasks"));
+        assert!(prompt.contains("other-task"));
+        assert!(prompt.contains("Placement Instructions"));
+        assert!(prompt.contains("\"placement\""));
+    }
+
+    #[test]
+    fn test_build_assignment_prompt_no_placement_when_no_active_tasks() {
+        let task = Task {
+            id: "test-task".to_string(),
+            title: "Fix the bug".to_string(),
+            status: Status::Open,
+            ..Default::default()
+        };
+        let prompt = build_assignment_prompt(&task, "", "- Agent1 (hash: abc)\n", None, "");
+        assert!(!prompt.contains("Active Tasks"));
+        assert!(!prompt.contains("Placement Instructions"));
+    }
+
+    #[test]
+    fn test_verdict_with_placement_deserialization() {
+        let json = r#"{
+            "agent_hash": "abc123",
+            "exec_mode": "full",
+            "context_scope": "task",
+            "reason": "best match",
+            "create_needed": false,
+            "placement": {"after": ["dep-a", "dep-b"], "before": ["dep-c"]}
+        }"#;
+        let verdict: AssignmentVerdict = serde_json::from_str(json).unwrap();
+        assert_eq!(verdict.agent_hash, "abc123");
+        let placement = verdict.placement.unwrap();
+        assert_eq!(placement.after, vec!["dep-a", "dep-b"]);
+        assert_eq!(placement.before, vec!["dep-c"]);
+    }
+
+    #[test]
+    fn test_verdict_without_placement_deserialization() {
+        let json = r#"{
+            "agent_hash": "abc123",
+            "reason": "ok"
+        }"#;
+        let verdict: AssignmentVerdict = serde_json::from_str(json).unwrap();
+        assert!(verdict.placement.is_none());
+    }
+
+    #[test]
+    fn test_verdict_null_placement_deserialization() {
+        let json = r#"{
+            "agent_hash": "abc123",
+            "reason": "ok",
+            "placement": null
+        }"#;
+        let verdict: AssignmentVerdict = serde_json::from_str(json).unwrap();
+        assert!(verdict.placement.is_none());
     }
 }

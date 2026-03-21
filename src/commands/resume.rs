@@ -692,9 +692,9 @@ mod tests {
     }
 
     #[test]
-    fn test_publish_creates_place_task_with_auto_place() {
-        // Regression test: wg publish must create .place-* tasks when
-        // auto_place is enabled.
+    fn test_publish_creates_pipeline_tasks_with_auto_place() {
+        // Verify that publish creates .assign-* and .evaluate-* tasks
+        // (placement is merged into assignment, no .place-* tasks created).
         let dir = tempdir().unwrap();
         let mut task = make_task("my-task", "My Task", Status::Open);
         task.paused = true;
@@ -712,8 +712,8 @@ mod tests {
 
         let graph = load_graph(graph_path(dir.path())).unwrap();
         assert!(
-            graph.get_task(".place-my-task").is_some(),
-            ".place-my-task must be created at publish time"
+            graph.get_task(".place-my-task").is_none(),
+            ".place-* tasks should not be created (placement merged into assignment)"
         );
         assert!(
             graph.get_task(".assign-my-task").is_some(),

@@ -1,12 +1,15 @@
 //! Eager lifecycle-task scaffolding.
 //!
-//! Creates `.place-<task>`, `.assign-<task>`, `.flip-<task>`, and
-//! `.evaluate-<task>` tasks at publish time so every published task has a full
-//! lifecycle chain as real graph edges, wired atomically in one graph write:
+//! Creates `.assign-<task>`, `.flip-<task>`, and `.evaluate-<task>` tasks at
+//! publish time so every published task has a full lifecycle chain as real graph
+//! edges, wired atomically in one graph write:
 //!
 //! ```text
-//! .place-foo → .assign-foo → foo → .flip-foo → .evaluate-foo
+//! .assign-foo → foo → .flip-foo → .evaluate-foo
 //! ```
+//!
+//! Note: placement (dependency edge decisions) is now merged into the assignment
+//! step — no separate `.place-*` tasks are created.
 
 use chrono::Utc;
 use std::path::Path;
@@ -71,71 +74,18 @@ pub fn scaffold_flip_task(graph: &mut WorkGraph, task_id: &str, config: &Config)
     true
 }
 
-/// Build minimal placement context for a `.place-*` task.
-///
-/// Intentionally slim: only task ID, title, and a compact list of active task
-/// IDs+titles. The placement agent should ONLY decide dependency edges — giving
-/// it the full description causes scope creep (it tries to solve the problem
-/// instead of placing it).
-fn build_placement_context(graph: &WorkGraph, task_id: &str) -> String {
-    use workgraph::graph::is_system_task;
-
-    let mut ctx = String::new();
-
-    if let Some(task) = graph.get_task(task_id) {
-        ctx.push_str("## Task to place\n");
-        ctx.push_str(&format!("ID: {}\n", task.id));
-        ctx.push_str(&format!("Title: {}\n", task.title));
-        if !task.after.is_empty() {
-            ctx.push_str(&format!("Existing deps: {}\n", task.after.join(", ")));
-        }
-        ctx.push('\n');
-    }
-
-    ctx.push_str("## Active tasks (non-terminal)\n");
-    let active_tasks: Vec<_> = graph
-        .tasks()
-        .filter(|t| {
-            !t.status.is_terminal() && !t.paused && !is_system_task(&t.id) && t.id != task_id
-        })
-        .collect();
-    if active_tasks.is_empty() {
-        ctx.push_str("(none)\n");
-    } else {
-        for t in &active_tasks {
-            ctx.push_str(&format!("- {} ({})\n", t.id, t.title));
-        }
-    }
-
-    ctx.push_str("\n## Your job\n");
-    ctx.push_str(&format!(
-        "Decide where task '{}' belongs in the dependency graph.\n",
-        task_id
-    ));
-    ctx.push_str("Do NOT modify .assign-*, .flip-*, .evaluate-*, or any other dot-task.\n\n");
-    ctx.push_str("## Output format (CRITICAL)\n");
-    ctx.push_str("You MUST output EXACTLY one line as the LAST LINE of your response:\n");
-    ctx.push_str("- A `wg edit` command to add edges: `wg edit ");
-    ctx.push_str(task_id);
-    ctx.push_str(" --after <dep-id>` (or `--before <dep-id>`, or both)\n");
-    ctx.push_str("- OR the word `no-op` if no placement changes are needed\n\n");
-    ctx.push_str("You may reason about the placement above the last line, but the LAST LINE\n");
-    ctx.push_str("must be the command or `no-op`. Do NOT run any commands yourself.\n");
-
-    ctx
-}
-
 /// Scaffold the FULL agency pipeline for a task in one pass:
 ///
 /// ```text
-/// .place-{id} → .assign-{id} → {id} → .flip-{id} → .evaluate-{id}
+/// .assign-{id} → {id} → .flip-{id} → .evaluate-{id}
 /// ```
 ///
-/// All five tasks are created and all dependency edges are wired atomically
+/// All tasks are created and all dependency edges are wired atomically
 /// (caller is responsible for the single `save_graph` / `modify_graph` call).
 ///
-/// - `.place-*` is created if `config.agency.auto_place` is enabled.
 /// - `.assign-*` is created if `config.agency.auto_assign` is enabled.
+///   Placement (dependency edge decisions) is merged into the assignment step
+///   when `config.agency.auto_place` is enabled.
 /// - `.flip-*` is created if FLIP is enabled (globally or per-task tag).
 /// - `.evaluate-*` is created if `config.agency.auto_evaluate` is enabled.
 ///
@@ -165,52 +115,20 @@ pub fn scaffold_full_pipeline(
     // .flip/.evaluate), so .place/.assign might still be missing.  Each
     // individual task creation below has its own idempotency guard.
 
-    let place_task_id = format!(".place-{}", task_id);
     let assign_task_id = format!(".assign-{}", task_id);
     let flip_task_id = format!(".flip-{}", task_id);
     let eval_task_id = format!(".evaluate-{}", task_id);
 
     let mut any_created = false;
 
-    // 1. Create .place-* task (no deps — runs first; agent adds edges to main task)
-    if config.agency.auto_place && graph.get_task(&place_task_id).is_none() {
-        let placement_context = build_placement_context(graph, task_id);
-        let placer_model = config.resolve_model_for_role(workgraph::config::DispatchRole::Placer);
-        let place_task = Task {
-            id: place_task_id.clone(),
-            title: format!("Place: {}", task_id),
-            description: Some(placement_context),
-            status: Status::Open,
-            after: vec![],
-            tags: vec!["placement".to_string(), "agency".to_string()],
-            exec_mode: Some("bare".to_string()),
-            visibility: "internal".to_string(),
-            created_at: Some(Utc::now().to_rfc3339()),
-            model: Some(placer_model.model),
-            provider: placer_model.provider,
-            agent: config.agency.placer_agent.clone(),
-            ..Task::default()
-        };
-        graph.add_node(Node::Task(place_task));
-        any_created = true;
-        eprintln!(
-            "[eval-scaffold] Created placement task '{}' for '{}'",
-            place_task_id, task_id,
-        );
-    }
-
-    // 2. Create .assign-* task (depends on .place-* if it was created, else no deps)
+    // 1. Create .assign-* task (no deps — runs first via lightweight LLM call)
+    // Note: placement is now merged into the assignment step (no separate .place-* tasks).
     if config.agency.auto_assign && graph.get_task(&assign_task_id).is_none() {
-        let assign_after = if graph.get_task(&place_task_id).is_some() {
-            vec![place_task_id.clone()]
-        } else {
-            vec![]
-        };
         let assign_task = Task {
             id: assign_task_id.clone(),
             title: format!("Assign agent for: {}", task_title),
             status: Status::Open,
-            after: assign_after,
+            after: vec![],
             before: vec![task_id.to_string()],
             tags: vec!["assignment".to_string(), "agency".to_string()],
             exec: Some(format!("wg assign {} --auto", task_id)),
@@ -227,7 +145,7 @@ pub fn scaffold_full_pipeline(
         );
     }
 
-    // 3. Wire main task to depend on .assign-* (so it waits for assignment)
+    // 2. Wire main task to depend on .assign-* (so it waits for assignment)
     if graph.get_task(&assign_task_id).is_some()
         && let Some(source) = graph.get_task_mut(task_id)
         && !source.after.iter().any(|a| a == &assign_task_id)
@@ -235,7 +153,7 @@ pub fn scaffold_full_pipeline(
         source.after.push(assign_task_id.clone());
     }
 
-    // 4. Create .flip-* task (depends on main task)
+    // 3. Create .flip-* task (depends on main task)
     let run_flip = should_run_flip(graph, task_id, config);
     if run_flip && graph.get_task(&flip_task_id).is_none() {
         let flip_resolved =
@@ -266,7 +184,7 @@ pub fn scaffold_full_pipeline(
         );
     }
 
-    // 5. Create .evaluate-* task (depends on .flip-* if FLIP enabled, else main task)
+    // 4. Create .evaluate-* task (depends on .flip-* if FLIP enabled, else main task)
     if config.agency.auto_evaluate && graph.get_task(&eval_task_id).is_none() {
         let eval_after = if run_flip {
             vec![flip_task_id.clone()]
@@ -373,28 +291,11 @@ pub fn scaffold_assign_task(graph: &mut WorkGraph, task_id: &str, task_title: &s
         return false;
     }
 
-    // Dual-wiring strategy for .place-* → .assign-* ordering:
-    //
-    // This is one half of a two-sided wiring approach. Either side can run first:
-    //   1. Here (publish-side): if .place-* already exists, add it as a dep.
-    //   2. Coordinator Phase 2.9 (build_placement_tasks): if .assign-* already
-    //      exists when .place-* is created, retroactively add .place-* to
-    //      .assign-*'s after list.
-    //
-    // Whoever arrives second completes the chain. This makes the wiring
-    // idempotent regardless of creation order.
-    let place_task_id = format!(".place-{}", task_id);
-    let after = if graph.get_task(&place_task_id).is_some() {
-        vec![place_task_id.clone()]
-    } else {
-        vec![]
-    };
-
     let assign_task = Task {
         id: assign_task_id.clone(),
         title: format!("Assign agent for: {}", task_title),
         status: Status::Open,
-        after,
+        after: vec![],
         before: vec![task_id.to_string()],
         tags: vec!["assignment".to_string(), "agency".to_string()],
         exec: Some(format!("wg assign {} --auto", task_id)),
@@ -880,7 +781,7 @@ mod tests {
         assert_eq!(assign.title, "Assign agent for: My Task");
         assert_eq!(assign.status, Status::Open);
         assert_eq!(assign.before, vec!["my-task".to_string()]);
-        assert!(assign.after.is_empty()); // No .place-* exists → no deps
+        assert!(assign.after.is_empty()); // No deps (placement merged into assignment)
         assert!(assign.tags.contains(&"assignment".to_string()));
         assert!(assign.tags.contains(&"agency".to_string()));
         assert_eq!(assign.visibility, "internal");
@@ -891,26 +792,16 @@ mod tests {
     }
 
     #[test]
-    fn test_scaffold_assign_depends_on_place_when_exists() {
+    fn test_scaffold_assign_no_place_dependency() {
+        // .assign-* tasks never depend on .place-* (placement is merged into assignment)
         let mut graph = WorkGraph::new();
         graph.add_node(Node::Task(make_task("my-task", "My Task")));
 
-        // Create a .place-* task first (as scaffold_full_pipeline would)
-        let place_task = Task {
-            id: ".place-my-task".to_string(),
-            title: "Place: my-task".to_string(),
-            status: Status::Open,
-            tags: vec!["placement".to_string()],
-            ..Task::default()
-        };
-        graph.add_node(Node::Task(place_task));
-
-        // Now scaffold .assign-* — it should depend on .place-*
         let modified = scaffold_assign_task(&mut graph, "my-task", "My Task");
         assert!(modified);
 
         let assign = graph.get_task(".assign-my-task").unwrap();
-        assert_eq!(assign.after, vec![".place-my-task".to_string()]);
+        assert!(assign.after.is_empty());
         assert_eq!(assign.before, vec!["my-task".to_string()]);
     }
 
@@ -969,7 +860,7 @@ mod tests {
     // --- scaffold_full_pipeline tests ---
 
     #[test]
-    fn test_scaffold_full_pipeline_creates_all_five_tasks() {
+    fn test_scaffold_full_pipeline_creates_all_tasks() {
         let dir = tempdir().unwrap();
         let mut config = Config::default();
         config.agency.auto_place = true;
@@ -982,8 +873,8 @@ mod tests {
         let modified = scaffold_full_pipeline(dir.path(), &mut graph, "foo", "Foo Task", &config);
         assert!(modified);
 
-        // All five tasks exist
-        assert!(graph.get_task(".place-foo").is_some());
+        // No .place-* task (placement is merged into assignment)
+        assert!(graph.get_task(".place-foo").is_none());
         // Pipeline tasks exist
         assert!(graph.get_task(".assign-foo").is_some());
         assert!(graph.get_task(".flip-foo").is_some());
@@ -1003,13 +894,9 @@ mod tests {
 
         scaffold_full_pipeline(dir.path(), &mut graph, "foo", "Foo Task", &config);
 
-        // .place-foo has no deps (runs first)
-        let place = graph.get_task(".place-foo").unwrap();
-        assert!(place.after.is_empty());
-
-        // .assign-foo depends on .place-foo
+        // .assign-foo has no deps (placement is merged into assignment)
         let assign = graph.get_task(".assign-foo").unwrap();
-        assert_eq!(assign.after, vec![".place-foo".to_string()]);
+        assert!(assign.after.is_empty());
         assert_eq!(assign.before, vec!["foo".to_string()]);
 
         // foo depends on .assign-foo
@@ -1026,10 +913,10 @@ mod tests {
     }
 
     #[test]
-    fn test_scaffold_full_pipeline_no_place_when_auto_place_disabled() {
+    fn test_scaffold_full_pipeline_assign_has_no_deps() {
+        // .assign-* tasks never have deps (placement is merged, not a separate step)
         let dir = tempdir().unwrap();
         let mut config = Config::default();
-        config.agency.auto_place = false;
         config.agency.auto_assign = true;
         config.agency.auto_evaluate = true;
         config.agency.flip_enabled = true;
@@ -1038,11 +925,8 @@ mod tests {
 
         scaffold_full_pipeline(dir.path(), &mut graph, "foo", "Foo Task", &config);
 
-        // No .place-* exists
-        assert!(graph.get_task(".place-foo").is_none());
-        // .assign-* still created (no .place-* dep)
         let assign = graph.get_task(".assign-foo").unwrap();
-        assert!(assign.after.is_empty()); // no .place-* dep
+        assert!(assign.after.is_empty());
     }
 
     #[test]
@@ -1119,56 +1003,32 @@ mod tests {
     }
 
     #[test]
-    fn test_scaffold_full_pipeline_place_description_is_minimal() {
+    fn test_scaffold_full_pipeline_no_place_task_created() {
+        // Placement is merged into assignment — no .place-* tasks should be created
         let dir = tempdir().unwrap();
         let mut config = Config::default();
         config.agency.auto_place = true;
+        config.agency.auto_assign = true;
         let mut graph = WorkGraph::new();
         graph.add_node(Node::Task(make_task("foo", "Foo Task")));
 
         scaffold_full_pipeline(dir.path(), &mut graph, "foo", "Foo Task", &config);
 
-        let place = graph.get_task(".place-foo").unwrap();
-        let desc = place.description.as_deref().unwrap_or("");
-        // Description must reference the task being placed
         assert!(
-            desc.contains("task 'foo'"),
-            "Placement task description should reference the task being placed, got: {}",
-            desc
+            graph.get_task(".place-foo").is_none(),
+            ".place-* tasks should not be created (placement merged into assignment)"
         );
         assert!(
-            desc.contains("Do NOT") || desc.contains("do not"),
-            "Placement task description should prohibit modifying dot-tasks, got: {}",
-            desc
-        );
-        // Structured output format: must tell agent to output command on last line
-        assert!(
-            desc.contains("LAST LINE"),
-            "Placement task description should specify structured output format, got: {}",
-            desc
-        );
-        assert!(
-            desc.contains("Do NOT run any commands"),
-            "Placement task description should prohibit running commands, got: {}",
-            desc
-        );
-        // Minimal context: should NOT contain full task description content
-        // (only ID, title, and active task list)
-        assert!(
-            desc.contains("ID: foo"),
-            "Description should include task ID"
-        );
-        assert!(
-            desc.contains("Title: Foo Task"),
-            "Description should include task title"
+            graph.get_task(".assign-foo").is_some(),
+            ".assign-* task should still be created"
         );
     }
 
     #[test]
-    fn test_scaffold_full_pipeline_creates_place_even_if_eval_scheduled() {
+    fn test_scaffold_full_pipeline_creates_assign_even_if_eval_scheduled() {
         // Regression: if scaffold_eval_task ran first (coordinator path) and set
         // the eval-scheduled tag, scaffold_full_pipeline must still create
-        // .place-* and .assign-* tasks.
+        // .assign-* tasks.
         let dir = tempdir().unwrap();
         let mut config = Config::default();
         config.agency.auto_place = true;
@@ -1187,17 +1047,13 @@ mod tests {
         assert!(source.tags.contains(&"eval-scheduled".to_string()));
 
         // Now scaffold_full_pipeline runs (publish path) — must still create
-        // .place-* and .assign-* despite the eval-scheduled tag
+        // .assign-* despite the eval-scheduled tag
         let modified = scaffold_full_pipeline(dir.path(), &mut graph, "foo", "Foo Task", &config);
         assert!(
             modified,
-            "scaffold_full_pipeline should have created .place and .assign"
+            "scaffold_full_pipeline should have created .assign"
         );
 
-        assert!(
-            graph.get_task(".place-foo").is_some(),
-            ".place-foo must exist even when eval-scheduled tag is set"
-        );
         assert!(
             graph.get_task(".assign-foo").is_some(),
             ".assign-foo must exist even when eval-scheduled tag is set"

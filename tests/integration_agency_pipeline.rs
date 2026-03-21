@@ -879,9 +879,10 @@ fn resolve_model_source_reports_tier_override() {
 // ===========================================================================
 
 #[test]
-fn publish_creates_full_pipeline_all_five_tasks() {
-    // wg publish with all agency flags enabled creates all 5 pipeline tasks:
-    // .place-*, .assign-*, main task (already exists), .flip-*, .evaluate-*
+fn publish_creates_full_pipeline_all_tasks() {
+    // wg publish with all agency flags enabled creates pipeline tasks:
+    // .assign-*, main task (already exists), .flip-*, .evaluate-*
+    // Note: .place-* is no longer created (placement merged into assignment)
     let tmp = TempDir::new().unwrap();
     let wg_dir = setup_workgraph(&tmp);
 
@@ -902,10 +903,10 @@ fn publish_creates_full_pipeline_all_five_tasks() {
         show
     );
 
-    // Publish it — this should atomically create all 5 pipeline tasks
+    // Publish it — this should atomically create pipeline tasks
     wg_ok(&wg_dir, &["publish", "my-feature"]);
 
-    // Load the graph and verify all pipeline tasks exist
+    // Load the graph and verify pipeline tasks exist
     use workgraph::parser::load_graph;
     let graph_path = wg_dir.join("graph.jsonl");
     let graph = load_graph(&graph_path).unwrap();
@@ -915,8 +916,8 @@ fn publish_creates_full_pipeline_all_five_tasks() {
         "Main task should exist"
     );
     assert!(
-        graph.get_task(".place-my-feature").is_some(),
-        ".place-my-feature should be created by wg publish"
+        graph.get_task(".place-my-feature").is_none(),
+        ".place-* should NOT be created (placement merged into assignment)"
     );
     assert!(
         graph.get_task(".assign-my-feature").is_some(),
@@ -935,7 +936,8 @@ fn publish_creates_full_pipeline_all_five_tasks() {
 #[test]
 fn publish_creates_all_pipeline_edges_correctly() {
     // Verify the full edge chain after publish:
-    // .place-* → .assign-* → my-feature → .flip-* → .evaluate-*
+    // .assign-* → my-feature → .flip-* → .evaluate-*
+    // (No .place-* — placement is merged into assignment)
     let tmp = TempDir::new().unwrap();
     let wg_dir = setup_workgraph(&tmp);
 
@@ -951,23 +953,11 @@ fn publish_creates_all_pipeline_edges_correctly() {
     let graph_path = wg_dir.join("graph.jsonl");
     let graph = load_graph(&graph_path).unwrap();
 
-    // .place-* has no deps (runs first)
-    let place = graph.get_task(".place-my-feature").unwrap();
-    assert!(
-        place.after.is_empty(),
-        ".place-* should have no deps, got: {:?}",
-        place.after
-    );
-    assert!(
-        place.tags.contains(&"placement".to_string()),
-        ".place-* should have 'placement' tag"
-    );
-
-    // .assign-* depends on .place-*
+    // .assign-* has no deps (placement is merged, runs first)
     let assign = graph.get_task(".assign-my-feature").unwrap();
     assert!(
-        assign.after.contains(&".place-my-feature".to_string()),
-        ".assign-* should depend on .place-*, got after: {:?}",
+        assign.after.is_empty(),
+        ".assign-* should have no deps (placement merged), got after: {:?}",
         assign.after
     );
     assert!(
@@ -1001,14 +991,13 @@ fn publish_creates_all_pipeline_edges_correctly() {
 }
 
 #[test]
-fn publish_place_task_description_restricts_to_main_task_only() {
-    // The .place-* task description must explicitly tell the placement agent
-    // to ONLY add edges to the MAIN task, never to dot-tasks.
-    // Context must be minimal: only task ID, title, and active task list.
+fn publish_no_place_task_created() {
+    // .place-* tasks are no longer created — placement is merged into assignment.
     let tmp = TempDir::new().unwrap();
     let wg_dir = setup_workgraph(&tmp);
 
     wg_ok(&wg_dir, &["config", "--auto-place", "true"]);
+    wg_ok(&wg_dir, &["config", "--auto-assign", "true"]);
     wg_ok(&wg_dir, &["add", "My Task"]);
     wg_ok(&wg_dir, &["publish", "my-task"]);
 
@@ -1016,37 +1005,13 @@ fn publish_place_task_description_restricts_to_main_task_only() {
     let graph_path = wg_dir.join("graph.jsonl");
     let graph = load_graph(&graph_path).unwrap();
 
-    let place = graph.get_task(".place-my-task").unwrap();
-    let desc = place.description.as_deref().unwrap_or("");
-
-    // Description must reference the task being placed
     assert!(
-        desc.contains("task 'my-task'"),
-        "Placement task description should reference the task being placed, got:\n{}",
-        desc
+        graph.get_task(".place-my-task").is_none(),
+        ".place-* tasks should not be created (placement merged into assignment)"
     );
     assert!(
-        desc.contains("Do NOT") || desc.contains("do not") || desc.contains("NEVER"),
-        "Placement task description should prohibit modifying dot-tasks, got:\n{}",
-        desc
-    );
-    let mentions_dot_tasks =
-        desc.contains(".assign") || desc.contains("dot-task") || desc.contains("assign-*");
-    assert!(
-        mentions_dot_tasks,
-        "Description should mention that dot-tasks must not be modified, got:\n{}",
-        desc
-    );
-    // Structured output: must specify command-on-last-line format
-    assert!(
-        desc.contains("LAST LINE"),
-        "Placement task description should specify structured output format, got:\n{}",
-        desc
-    );
-    assert!(
-        desc.contains("Do NOT run any commands"),
-        "Placement task description should prohibit running commands, got:\n{}",
-        desc
+        graph.get_task(".assign-my-task").is_some(),
+        ".assign-* task should still be created"
     );
 }
 
