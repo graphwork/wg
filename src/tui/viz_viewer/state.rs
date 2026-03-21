@@ -1903,6 +1903,11 @@ pub struct VizApp {
     /// Whether mode 1003 (any-event tracking) is enabled for touch support.
     /// Auto-set when running in Termux without mosh.
     pub any_motion_mouse: bool,
+    /// When true, vertical scroll events (ScrollUp/ScrollDown) in the graph area
+    /// are remapped to horizontal scroll (scroll_left/scroll_right). Useful in
+    /// Termux where horizontal swipe gestures are consumed by the terminal and
+    /// never reach the app as ScrollLeft/ScrollRight events.
+    pub scroll_axis_swapped: bool,
 
     // ── Layout areas (set each frame by the renderer, for mouse hit-testing) ──
     /// The graph/viz content area from the last render frame.
@@ -2251,6 +2256,7 @@ impl VizApp {
             system_tasks_just_toggled: false,
             mouse_enabled,
             any_motion_mouse: super::event::detect_termux_touch(),
+            scroll_axis_swapped: false,
             last_graph_area: Rect::default(),
             last_right_panel_area: Rect::default(),
             last_tab_bar_area: Rect::default(),
@@ -5314,6 +5320,7 @@ impl VizApp {
             system_tasks_just_toggled: false,
             mouse_enabled: false,
             any_motion_mouse: false,
+            scroll_axis_swapped: false,
             last_graph_area: Rect::default(),
             last_right_panel_area: Rect::default(),
             last_tab_bar_area: Rect::default(),

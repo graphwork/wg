@@ -1037,6 +1037,11 @@ fn handle_graph_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
             let _ = set_mouse_capture(app.mouse_enabled, app.any_motion_mouse);
         }
 
+        // Toggle scroll axis swap (vertical scroll ↔ horizontal scroll in graph)
+        KeyCode::Char('X') => {
+            app.scroll_axis_swapped = !app.scroll_axis_swapped;
+        }
+
         // Toggle coordinator log view
         KeyCode::Char('L') => app.toggle_coord_log(),
 
@@ -1715,6 +1720,10 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
             if in_text_prompt {
                 // Scroll up in text prompt: move cursor up to trigger viewport change.
                 scroll_editor_up(app, 3, EditorTarget::TextPrompt);
+            } else if in_graph && app.scroll_axis_swapped {
+                // Axis-swap mode: vertical scroll → horizontal scroll in graph.
+                app.record_graph_hscroll_activity();
+                app.scroll.scroll_left(3);
             } else if in_graph {
                 app.record_graph_scroll_activity();
                 app.scroll.scroll_up(3);
@@ -1742,6 +1751,10 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
             if in_text_prompt {
                 // Scroll down in text prompt: move cursor down to trigger viewport change.
                 scroll_editor_down(app, 3, EditorTarget::TextPrompt);
+            } else if in_graph && app.scroll_axis_swapped {
+                // Axis-swap mode: vertical scroll → horizontal scroll in graph.
+                app.record_graph_hscroll_activity();
+                app.scroll.scroll_right(3);
             } else if in_graph {
                 app.record_graph_scroll_activity();
                 app.scroll.scroll_down(3);
@@ -4143,5 +4156,43 @@ mod scrollbar_tests {
                 "Drag on empty space should not change selection"
             );
         }
+    }
+
+    #[test]
+    fn scroll_axis_swap_converts_vertical_to_horizontal() {
+        let (mut app, _tmp) = build_test_app();
+        setup_graph_scroll(&mut app, 100, 20);
+        app.scroll.content_width = 200;
+        app.scroll.viewport_width = 80;
+        app.last_graph_area = Rect {
+            x: 0,
+            y: 0,
+            width: 79,
+            height: 20,
+        };
+        app.last_graph_scrollbar_area = Rect::default();
+        app.last_panel_scrollbar_area = Rect::default();
+        app.last_graph_hscrollbar_area = Rect::default();
+
+        // Without axis swap: ScrollDown scrolls vertically.
+        handle_mouse(&mut app, MouseEventKind::ScrollDown, 10, 40);
+        assert_eq!(app.scroll.offset_y, 3, "Normal ScrollDown scrolls vertically");
+        assert_eq!(app.scroll.offset_x, 0, "Normal ScrollDown does not scroll horizontally");
+
+        // Reset.
+        app.scroll.offset_y = 0;
+
+        // Enable axis swap.
+        app.scroll_axis_swapped = true;
+
+        // With axis swap: ScrollDown scrolls horizontally (right).
+        handle_mouse(&mut app, MouseEventKind::ScrollDown, 10, 40);
+        assert_eq!(app.scroll.offset_y, 0, "Swapped ScrollDown should not scroll vertically");
+        assert_eq!(app.scroll.offset_x, 3, "Swapped ScrollDown should scroll right");
+
+        // With axis swap: ScrollUp scrolls horizontally (left).
+        handle_mouse(&mut app, MouseEventKind::ScrollUp, 10, 40);
+        assert_eq!(app.scroll.offset_y, 0, "Swapped ScrollUp should not scroll vertically");
+        assert_eq!(app.scroll.offset_x, 0, "Swapped ScrollUp should scroll left");
     }
 }

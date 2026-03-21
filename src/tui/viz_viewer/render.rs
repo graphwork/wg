@@ -5198,6 +5198,15 @@ fn draw_status_bar(frame: &mut Frame, app: &VizApp, area: Rect) {
         ));
     }
 
+    // Scroll axis swap indicator (horizontal scroll via vertical swipe)
+    if app.scroll_axis_swapped {
+        spans.push(Span::styled("| ", Style::default().fg(Color::DarkGray)));
+        spans.push(Span::styled(
+            "H-SCROLL ",
+            Style::default().fg(Color::Magenta),
+        ));
+    }
+
     // Sort mode indicator (show when not the default)
     if app.sort_mode != SortMode::ReverseChronological {
         spans.push(Span::styled("| ", Style::default().fg(Color::DarkGray)));
@@ -5856,6 +5865,7 @@ fn draw_help_overlay(frame: &mut Frame) {
         heading("General"),
         binding("s", "Cycle sort: Chrono↓/↑/Status"),
         binding("m", "Toggle mouse capture"),
+        binding("X", "Swap scroll axis (for Termux)"),
         binding("r", "Force refresh"),
         binding(".", "Toggle all system tasks"),
         binding("<", "Toggle running system tasks only"),
