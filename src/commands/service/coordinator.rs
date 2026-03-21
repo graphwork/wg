@@ -837,19 +837,31 @@ fn build_auto_assign_tasks(
             let assign_task_id = format!(".assign-{}", task_id);
 
             if let Some(existing) = graph.get_task(&assign_task_id) {
-                if existing.status == Status::Done {
-                    // Stale: source is ready but unassigned, old .assign is Done.
-                    // Reopen for fresh assignment.
+                let needs_reopen = match existing.status {
+                    Status::Done => true,
+                    Status::Failed | Status::Abandoned => true,
+                    _ => false, // Open or InProgress — Phase 2 will handle
+                };
+                if needs_reopen {
+                    let reason = match existing.status {
+                        Status::Done => {
+                            "Reopened for reassignment (source task resurrected)".to_string()
+                        }
+                        _ => format!(
+                            "Reopened for retry (was {:?}, source task still needs assignment)",
+                            existing.status
+                        ),
+                    };
                     if let Some(t) = graph.get_task_mut(&assign_task_id) {
                         t.status = Status::Open;
                         t.assigned = None;
                         t.completed_at = None;
                         t.description = None;
+                        t.failure_reason = None;
                         t.log.push(LogEntry {
                             timestamp: Utc::now().to_rfc3339(),
                             actor: Some("coordinator".to_string()),
-                            message: "Reopened for reassignment (source task resurrected)"
-                                .to_string(),
+                            message: reason,
                         });
                     }
                     // Ensure blocking edge exists (may be missing for pre-migration tasks)
@@ -4397,6 +4409,91 @@ mod tests {
         assert!(
             assign.is_none() || assign.unwrap().status != Status::Done,
             "stale Done .assign-my-task should be reopened after resurrection"
+        );
+    }
+
+    /// A Failed .assign-* should be reopened when the source task still needs
+    /// assignment.  This prevents a permanent deadlock where the source is
+    /// ready (Failed is terminal → dep satisfied) but has agent=None, and the
+    /// auto_assign gate in spawn_agents_for_ready_tasks skips it.
+    #[test]
+    fn test_assign_reopened_after_failure() {
+        let dir = tempdir().unwrap();
+        let wg_dir = dir.path();
+        std::fs::create_dir_all(wg_dir.join("agency/assignments")).unwrap();
+        std::fs::create_dir_all(wg_dir.join("agency/cache/agents")).unwrap();
+
+        // Source task: ready, no agent (assignment never succeeded)
+        let mut source = Task::default();
+        source.id = "my-task".to_string();
+        source.title = "Stuck task".to_string();
+        source.status = Status::Open;
+        // .assign-* is in `after` but is Failed → terminal → dep satisfied → source is ready
+        source.after = vec![".assign-my-task".to_string()];
+
+        // Failed .assign task
+        let mut failed_assign = Task::default();
+        failed_assign.id = ".assign-my-task".to_string();
+        failed_assign.title = "Assign my-task".to_string();
+        failed_assign.status = Status::Failed;
+        failed_assign.failure_reason = Some("LLM call timed out".to_string());
+        failed_assign.tags = vec!["assignment".to_string(), "agency".to_string()];
+        failed_assign.exec = Some("wg assign my-task --auto".to_string());
+
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(source));
+        graph.add_node(Node::Task(failed_assign));
+
+        let config = Config::load_or_default(wg_dir);
+        let modified = build_auto_assign_tasks(&mut graph, &config, wg_dir);
+
+        assert!(modified, "graph should be modified (failed .assign reopened)");
+        let assign = graph.get_task(".assign-my-task").unwrap();
+        assert_eq!(
+            assign.status,
+            Status::Open,
+            "failed .assign should be reopened for retry"
+        );
+        assert!(
+            assign.failure_reason.is_none(),
+            "failure_reason should be cleared on reopen"
+        );
+    }
+
+    /// An Abandoned .assign-* should also be reopened (same deadlock fix).
+    #[test]
+    fn test_assign_reopened_after_abandonment() {
+        let dir = tempdir().unwrap();
+        let wg_dir = dir.path();
+        std::fs::create_dir_all(wg_dir.join("agency/assignments")).unwrap();
+        std::fs::create_dir_all(wg_dir.join("agency/cache/agents")).unwrap();
+
+        let mut source = Task::default();
+        source.id = "my-task".to_string();
+        source.title = "Stuck task".to_string();
+        source.status = Status::Open;
+        source.after = vec![".assign-my-task".to_string()];
+
+        let mut abandoned_assign = Task::default();
+        abandoned_assign.id = ".assign-my-task".to_string();
+        abandoned_assign.title = "Assign my-task".to_string();
+        abandoned_assign.status = Status::Abandoned;
+        abandoned_assign.tags = vec!["assignment".to_string(), "agency".to_string()];
+        abandoned_assign.exec = Some("wg assign my-task --auto".to_string());
+
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(source));
+        graph.add_node(Node::Task(abandoned_assign));
+
+        let config = Config::load_or_default(wg_dir);
+        let modified = build_auto_assign_tasks(&mut graph, &config, wg_dir);
+
+        assert!(modified, "graph should be modified (abandoned .assign reopened)");
+        let assign = graph.get_task(".assign-my-task").unwrap();
+        assert_eq!(
+            assign.status,
+            Status::Open,
+            "abandoned .assign should be reopened for retry"
         );
     }
 
