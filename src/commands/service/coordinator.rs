@@ -2081,9 +2081,10 @@ fn spawn_eval_inline(
     let graph_path = graph_path(dir);
 
     // Set up minimal agent tracking (before modify_graph so we have the agent_id)
-    let mut agent_registry = AgentRegistry::load(dir)?;
-    let agent_id = format!("agent-{}", agent_registry.next_agent_id);
-
+    // Use load_locked to prevent the non-locked save from clobbering concurrent
+    // registry updates from wg done/wg fail (which also use load_locked).
+    let mut locked_registry = AgentRegistry::load_locked(dir)?;
+    let agent_id = format!("agent-{}", locked_registry.next_agent_id);
     // Create minimal output directory for log capture
     let output_dir = dir.join("agents").join(&agent_id);
     fs::create_dir_all(&output_dir)
@@ -2277,15 +2278,15 @@ exit $EXIT_CODE"#,
     let pid = child.id();
 
     // Register in agent registry for dead-agent detection
-    agent_registry.register_agent_with_model(
+    locked_registry.register_agent_with_model(
         pid,
         eval_task_id,
         "eval",
         &output_file_str,
         evaluator_model,
     );
-    agent_registry
-        .save(dir)
+    locked_registry
+        .save()
         .context("Failed to save agent registry after eval spawn")?;
 
     Ok((agent_id, pid))
@@ -2298,8 +2299,10 @@ fn spawn_assign_inline(dir: &Path, assign_task_id: &str) -> Result<(String, u32)
     let graph_path = graph_path(dir);
 
     // Set up minimal agent tracking (before modify_graph so we have the agent_id)
-    let mut agent_registry = AgentRegistry::load(dir)?;
-    let agent_id = format!("agent-{}", agent_registry.next_agent_id);
+    // Use load_locked to prevent the non-locked save from clobbering concurrent
+    // registry updates from wg done/wg fail (which also use load_locked).
+    let mut locked_registry = AgentRegistry::load_locked(dir)?;
+    let agent_id = format!("agent-{}", locked_registry.next_agent_id);
 
     // Create minimal output directory for log capture
     let output_dir = dir.join("agents").join(&agent_id);
@@ -2441,9 +2444,9 @@ exit $EXIT_CODE"#,
     let pid = child.id();
 
     // Register in agent registry for dead-agent detection
-    agent_registry.register_agent_with_model(pid, assign_task_id, "assign", &output_file_str, None);
-    agent_registry
-        .save(dir)
+    locked_registry.register_agent_with_model(pid, assign_task_id, "assign", &output_file_str, None);
+    locked_registry
+        .save()
         .context("Failed to save agent registry after assign spawn")?;
 
     Ok((agent_id, pid))
