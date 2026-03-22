@@ -9802,14 +9802,14 @@ mod tests {
     }
 
     #[test]
-    fn test_e2e_placing_click_resolves() {
-        // parent + .place-parent → [⊞ placing], click resolves to .place-parent
+    fn test_e2e_assigning_click_resolves_open() {
+        // parent + .assign-parent → [⊞ assigning], click resolves to .assign-parent
         let app = build_e2e_annotation_app(
             "parent",
             "Parent Task",
             Status::Open,
-            ".place-parent",
-            "Place parent",
+            ".assign-parent",
+            "Assign parent",
             "assignment",
             vec![],
         );
@@ -9817,17 +9817,17 @@ mod tests {
         assert_eq!(
             app.annotation_hit_regions.len(),
             1,
-            "Expected 1 hit region for placing"
+            "Expected 1 hit region for assigning"
         );
         let region = &app.annotation_hit_regions[0];
         assert_eq!(region.parent_task_id, "parent");
-        assert_eq!(region.dot_task_ids, vec![".place-parent"]);
+        assert_eq!(region.dot_task_ids, vec![".assign-parent"]);
 
         let plain = &app.plain_lines[region.orig_line];
         let found = &plain[region.col_start..region.col_end];
         assert!(
-            found.contains("placing"),
-            "Hit region should cover [⊞ placing], got: {:?}",
+            found.contains("assigning"),
+            "Hit region should cover [⊞ assigning], got: {:?}",
             found
         );
     }

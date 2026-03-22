@@ -1457,7 +1457,6 @@ pub struct AgencyConfig {
     /// Include placement (dependency edge decisions) in the assignment step.
     /// When enabled, the assignment LLM call also decides dependency edges
     /// for the source task based on active tasks in the graph.
-    /// Previously created separate `.place-*` tasks; now merged into assignment.
     /// Default: false.
     #[serde(default)]
     pub auto_place: bool,

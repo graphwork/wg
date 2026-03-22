@@ -174,7 +174,7 @@ pub(crate) fn build_assignment_prompt(
 In addition to agent assignment, decide whether this task needs additional dependency edges.
 Look at the task's existing dependencies and the active tasks above. If the task should
 run after or before any active tasks (beyond its current deps), include a `placement` field.
-Only add edges that are clearly needed — do NOT add edges to system tasks (.assign-*, .flip-*, .evaluate-*, .place-*).
+Only add edges that are clearly needed — do NOT add edges to system tasks (.assign-*, .flip-*, .evaluate-*).
 If no placement changes are needed, set `placement` to null.
 "#
         )

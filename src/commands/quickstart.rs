@@ -48,8 +48,8 @@ AGENCY SETUP
     wg config --auto-place true      # Auto-place new tasks in the graph
     wg config --auto-create true     # Auto-invoke creator agent for new primitives
 
-  Placement: when auto_place is enabled, the coordinator creates .place-* tasks
-  for newly added tasks to determine optimal graph wiring (dependencies, context).
+  Placement: when auto_place is enabled, the assignment step also decides
+  dependency edges for each task (merged into the .assign-* LLM call).
 
   Model registry: each dispatch role has a tier-based model default. View and
   configure per-role models:
@@ -501,7 +501,7 @@ fn json_output() -> serde_json::Value {
                 "wg config --auto-assign true --auto-evaluate true"
             ],
             "placement": {
-                "description": "When auto_place is enabled, the coordinator creates .place-* tasks for newly added tasks to determine optimal graph wiring.",
+                "description": "When auto_place is enabled, the assignment step also decides dependency edges for each task (merged into the .assign-* LLM call).",
                 "enable": "wg config --auto-place true"
             },
             "auto_create": {

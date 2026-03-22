@@ -336,7 +336,7 @@ fn system_tasks_skip_draft_by_default() {
 
 #[test]
 fn build_placement_tasks_identifies_draft_tasks() {
-    // Unit test: draft (paused, not unplaced, not system) tasks need placement
+    // Unit test: draft (paused, not unplaced, not system) tasks need placement (via assignment step)
     let mut graph = WorkGraph::new();
 
     // Draft task: paused, not unplaced, not system
@@ -364,7 +364,7 @@ fn build_placement_tasks_identifies_draft_tasks() {
     placed_task.tags = vec!["placed".to_string()];
     graph.add_node(Node::Task(placed_task));
 
-    // Check which tasks need placement using the same logic as build_placement_tasks
+    // Check which tasks need placement using the same logic as the assignment step
     let needs_placement: Vec<String> = graph
         .tasks()
         .filter(|t| {
@@ -383,7 +383,7 @@ fn build_placement_tasks_identifies_draft_tasks() {
 #[test]
 fn auto_place_fast_path_with_deps_no_overlap() {
     // When a draft task has --after deps and no file overlap with active tasks,
-    // the coordinator should auto-place it (unpause without creating .place-*)
+    // the coordinator should auto-place it (unpause directly)
     let mut graph = WorkGraph::new();
 
     // An active task with artifacts
@@ -446,7 +446,7 @@ fn auto_place_fast_path_with_deps_no_overlap() {
 
 #[test]
 fn agent_placement_task_without_deps() {
-    // Draft task without deps should create a .place-* task (not auto-place)
+    // Draft task without deps needs placement (handled by assignment step)
     let mut graph = WorkGraph::new();
 
     let mut draft = make_task("no-deps-task", "Task without dependencies");
@@ -478,7 +478,7 @@ fn agent_placement_task_without_deps() {
 
 #[test]
 fn place_task_failure_publishes_original() {
-    // If a .place-* task fails, the original task should get published (unpaused)
+    // Legacy: if a pre-existing .place-* task fails, the original task should get published (unpaused)
     let mut graph = WorkGraph::new();
 
     // Original draft task
@@ -493,7 +493,7 @@ fn place_task_failure_publishes_original() {
     place_task.tags = vec!["placement".to_string()];
     graph.add_node(Node::Task(place_task));
 
-    // Replicate the fallback-publish logic from build_placement_tasks
+    // Replicate the fallback-publish logic for legacy .place-* tasks
     let failed_placers: Vec<(String, String)> = graph
         .tasks()
         .filter(|t| {
@@ -538,7 +538,7 @@ fn place_task_failure_publishes_original() {
 #[test]
 fn placement_hints_appear_in_place_task_description() {
     // When a draft task has place_near/place_before hints, verify they would
-    // appear in the placement context
+    // appear in the assignment step's placement context
     let mut graph = WorkGraph::new();
 
     let mut draft = make_task("hint-task", "Task with placement hints");
@@ -882,7 +882,6 @@ fn resolve_model_source_reports_tier_override() {
 fn publish_creates_full_pipeline_all_tasks() {
     // wg publish with all agency flags enabled creates pipeline tasks:
     // .assign-*, main task (already exists), .flip-*, .evaluate-*
-    // Note: .place-* is no longer created (placement merged into assignment)
     let tmp = TempDir::new().unwrap();
     let wg_dir = setup_workgraph(&tmp);
 
@@ -916,10 +915,6 @@ fn publish_creates_full_pipeline_all_tasks() {
         "Main task should exist"
     );
     assert!(
-        graph.get_task(".place-my-feature").is_none(),
-        ".place-* should NOT be created (placement merged into assignment)"
-    );
-    assert!(
         graph.get_task(".assign-my-feature").is_some(),
         ".assign-my-feature should be created by wg publish"
     );
@@ -937,7 +932,6 @@ fn publish_creates_full_pipeline_all_tasks() {
 fn publish_creates_all_pipeline_edges_correctly() {
     // Verify the full edge chain after publish:
     // .assign-* → my-feature → .flip-* → .evaluate-*
-    // (No .place-* — placement is merged into assignment)
     let tmp = TempDir::new().unwrap();
     let wg_dir = setup_workgraph(&tmp);
 
@@ -992,7 +986,7 @@ fn publish_creates_all_pipeline_edges_correctly() {
 
 #[test]
 fn publish_no_place_task_created() {
-    // .place-* tasks are no longer created — placement is merged into assignment.
+    // Placement is merged into assignment — no separate .place-* tasks are created.
     let tmp = TempDir::new().unwrap();
     let wg_dir = setup_workgraph(&tmp);
 
@@ -1007,7 +1001,7 @@ fn publish_no_place_task_created() {
 
     assert!(
         graph.get_task(".place-my-task").is_none(),
-        ".place-* tasks should not be created (placement merged into assignment)"
+        ".place-* tasks should not be created"
     );
     assert!(
         graph.get_task(".assign-my-task").is_some(),
@@ -1017,11 +1011,9 @@ fn publish_no_place_task_created() {
 
 #[test]
 fn coordinator_does_not_create_place_tasks_for_draft_tasks() {
-    // The coordinator's build_placement_tasks no longer creates .place-* for
-    // draft (paused) tasks. This is now done atomically at wg publish time.
+    // The coordinator does not create .place-* tasks for draft tasks.
     //
-    // We verify by simulating the new coordinator fallback logic: only failed
-    // .place-* tasks trigger the fallback — no new ones are ever created.
+    // Verify that no .place-* tasks are created for draft tasks.
     let mut graph = WorkGraph::new();
 
     let mut draft_task = make_task("unpublished-draft", "Unpublished Draft");
@@ -1029,29 +1021,10 @@ fn coordinator_does_not_create_place_tasks_for_draft_tasks() {
     draft_task.status = Status::Open;
     graph.add_node(Node::Task(draft_task));
 
-    // The new build_placement_tasks only handles the failed-placer fallback.
-    // Replicate that logic: collect failed .place-* tasks only.
-    let failed_placers: Vec<(String, String)> = graph
-        .tasks()
-        .filter(|t| {
-            t.id.starts_with(".place-")
-                && t.status == Status::Failed
-                && !t.tags.iter().any(|tag| tag == "fallback-published")
-        })
-        .map(|t| {
-            let source_id = t.id.strip_prefix(".place-").unwrap().to_string();
-            (t.id.clone(), source_id)
-        })
-        .collect();
-
-    // No failed placers → nothing to do → no .place-* created
-    assert!(
-        failed_placers.is_empty(),
-        "No failed placers should exist for a fresh draft task"
-    );
+    // No .place-* tasks should be created for draft tasks
     assert!(
         graph.get_task(".place-unpublished-draft").is_none(),
-        "Coordinator should NOT create .place-* for draft tasks (wg publish is responsible)"
+        "No .place-* tasks should be created for draft tasks"
     );
 }
 

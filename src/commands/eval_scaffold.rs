@@ -122,7 +122,7 @@ pub fn scaffold_full_pipeline(
     let mut any_created = false;
 
     // 1. Create .assign-* task (no deps — runs first via lightweight LLM call)
-    // Note: placement is now merged into the assignment step (no separate .place-* tasks).
+    // Placement (dependency edge decisions) is handled within the assignment step.
     if config.agency.auto_assign && graph.get_task(&assign_task_id).is_none() {
         let assign_task = Task {
             id: assign_task_id.clone(),
@@ -763,7 +763,7 @@ mod tests {
     fn test_dominated_tags_includes_placement() {
         assert!(
             DOMINATED_TAGS.contains(&"placement"),
-            "DOMINATED_TAGS must include 'placement' to prevent .place-* tasks from spawning eval overhead"
+            "DOMINATED_TAGS must include 'placement' to prevent legacy .place-* tasks from spawning eval overhead"
         );
     }
 
@@ -793,7 +793,7 @@ mod tests {
 
     #[test]
     fn test_scaffold_assign_no_place_dependency() {
-        // .assign-* tasks never depend on .place-* (placement is merged into assignment)
+        // .assign-* tasks have no dependencies (placement is handled within the assignment step)
         let mut graph = WorkGraph::new();
         graph.add_node(Node::Task(make_task("my-task", "My Task")));
 
@@ -873,9 +873,7 @@ mod tests {
         let modified = scaffold_full_pipeline(dir.path(), &mut graph, "foo", "Foo Task", &config);
         assert!(modified);
 
-        // No .place-* task (placement is merged into assignment)
-        assert!(graph.get_task(".place-foo").is_none());
-        // Pipeline tasks exist
+        // Pipeline tasks exist (no separate .place-* task)
         assert!(graph.get_task(".assign-foo").is_some());
         assert!(graph.get_task(".flip-foo").is_some());
         assert!(graph.get_task(".evaluate-foo").is_some());
@@ -1004,7 +1002,7 @@ mod tests {
 
     #[test]
     fn test_scaffold_full_pipeline_no_place_task_created() {
-        // Placement is merged into assignment — no .place-* tasks should be created
+        // Placement is handled by the assignment step — no separate .place-* tasks
         let dir = tempdir().unwrap();
         let mut config = Config::default();
         config.agency.auto_place = true;
@@ -1016,7 +1014,7 @@ mod tests {
 
         assert!(
             graph.get_task(".place-foo").is_none(),
-            ".place-* tasks should not be created (placement merged into assignment)"
+            ".place-* tasks should not be created"
         );
         assert!(
             graph.get_task(".assign-foo").is_some(),

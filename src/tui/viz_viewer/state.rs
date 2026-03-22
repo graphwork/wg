@@ -3398,8 +3398,6 @@ impl VizApp {
                                 })
                                 .unwrap_or_else(|| format!("assigned → {}", source_id));
                             self.push_pipeline_toast(format!("\u{26a1} Assigned: {}", msg));
-                        } else if let Some(source_id) = task.id.strip_prefix(".place-") {
-                            self.push_pipeline_toast(format!("\u{26a1} Placed: {}", source_id));
                         }
                     }
                     // Agent spawn: non-system task went to InProgress.

@@ -351,13 +351,13 @@ pub struct Task {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub supersedes: Option<String>,
     /// When true, task was created with --no-place and should skip automatic placement.
-    /// The placement system will not create a .place-* task for this task.
+    /// The assignment step will not include placement (dependency edge) decisions.
     #[serde(default, skip_serializing_if = "is_bool_false")]
     pub unplaced: bool,
-    /// Placement hint: place near these tasks (IDs). Used by .place-* agents.
+    /// Placement hint: place near these tasks (IDs). Used by the assignment step.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub place_near: Vec<String>,
-    /// Placement hint: place before these tasks (IDs). Used by .place-* agents.
+    /// Placement hint: place before these tasks (IDs). Used by the assignment step.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub place_before: Vec<String>,
 }

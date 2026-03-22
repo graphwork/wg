@@ -279,7 +279,7 @@ fn unpause_task(graph: &mut WorkGraph, task_id: &str, action: &str) {
     });
 }
 
-/// Create the full agency pipeline (`.place-*`, `.assign-*`, `.flip-*`,
+/// Create the full agency pipeline (`.assign-*`, `.flip-*`,
 /// `.evaluate-*`) for each published task in one atomic pass.
 ///
 /// All five tasks and their edges are written together into the same graph
@@ -694,7 +694,7 @@ mod tests {
     #[test]
     fn test_publish_creates_pipeline_tasks_with_auto_place() {
         // Verify that publish creates .assign-* and .evaluate-* tasks
-        // (placement is merged into assignment, no .place-* tasks created).
+        // (placement is handled by the assignment step, no separate .place-* tasks).
         let dir = tempdir().unwrap();
         let mut task = make_task("my-task", "My Task", Status::Open);
         task.paused = true;
@@ -711,10 +711,6 @@ mod tests {
         assert!(result.is_ok());
 
         let graph = load_graph(graph_path(dir.path())).unwrap();
-        assert!(
-            graph.get_task(".place-my-task").is_none(),
-            ".place-* tasks should not be created (placement merged into assignment)"
-        );
         assert!(
             graph.get_task(".assign-my-task").is_some(),
             ".assign-my-task must be created at publish time"
