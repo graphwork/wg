@@ -332,6 +332,27 @@ pub(crate) fn generate_ascii(
                 .get(id)
                 .map(|a| format!(" \x1b[38;5;219m{}\x1b[0m", a.text))
                 .unwrap_or_default()
+        } else if use_color && id == ".compact-0" && annotations.contains_key(id) {
+            // Color the compact-0 annotation based on compaction state:
+            //   ⟳ (running)  → red
+            //   ✓ (done)     → green
+            //   ⚠ (warning)  → yellow
+            //   idle         → gray
+            let ansi = annotations.get(id).map(|a| {
+                if a.text.contains('⟳') {
+                    "\x1b[31m" // red: actively compacting
+                } else if a.text.contains('✓') {
+                    "\x1b[32m" // green: recently completed
+                } else if a.text.contains('⚠') {
+                    "\x1b[33m" // yellow: approaching/past threshold
+                } else {
+                    "\x1b[90m" // gray: idle, far from threshold
+                }
+            }).unwrap_or("\x1b[90m");
+            annotations
+                .get(id)
+                .map(|a| format!(" {}{}\x1b[0m", ansi, a.text))
+                .unwrap_or_default()
         } else {
             phase_info
         };
