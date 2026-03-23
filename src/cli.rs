@@ -1450,6 +1450,10 @@ pub enum Commands {
         /// ASCIINEMA_REC is set.
         #[arg(long)]
         recording: bool,
+
+        /// Record all input events to a JSONL file for replay-based screencasts.
+        #[arg(long, value_name = "FILE")]
+        trace: Option<std::path::PathBuf>,
     },
 
     /// Interactive configuration wizard for first-time setup
@@ -1574,6 +1578,10 @@ pub enum Commands {
         /// Maximum agent turns before stopping
         #[arg(long, default_value = "100")]
         max_turns: usize,
+
+        /// Disable resume from existing conversation journal (start fresh)
+        #[arg(long, default_value = "false")]
+        no_resume: bool,
     },
 
     /// Apply placement agent output (internal, called by wrapper script)

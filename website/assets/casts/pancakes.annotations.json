@@ -1,0 +1,41 @@
+{
+  "title": "Debug Pancakes",
+  "annotations": [
+    {
+      "start": 0.0,
+      "end": 2.0,
+      "text": "TUI shows the full task graph: diagnose → parallel fixes (recipe + presentation) → final taste test.",
+      "phase": "Setup"
+    },
+    {
+      "start": 2.0,
+      "end": 6.0,
+      "text": "An agent picks up diagnose-flat-pancakes and investigates the problem. Diagnosis completes quickly.",
+      "phase": "Diagnose"
+    },
+    {
+      "start": 6.0,
+      "end": 8.0,
+      "text": "Two tasks become ready at once — fix-pancake-recipe and improve-presentation fan out to parallel agents.",
+      "phase": "Fan-out"
+    },
+    {
+      "start": 8.0,
+      "end": 12.0,
+      "text": "Both agents work simultaneously. One fixes the recipe, the other improves plating. Neither blocks the other.",
+      "phase": "Parallel fixes"
+    },
+    {
+      "start": 12.0,
+      "end": 14.0,
+      "text": "Both fixes land. The final-taste-test task unblocks and an agent picks it up to verify the result.",
+      "phase": "Converge"
+    },
+    {
+      "start": 14.0,
+      "end": 17.0,
+      "text": "All four tasks done — pipeline complete. Flat pancakes diagnosed, fixed, and verified end-to-end.",
+      "phase": "Done"
+    }
+  ]
+}

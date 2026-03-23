@@ -154,6 +154,42 @@
       transition: width 0.5s linear;
     }
 
+    /* Annotation panel */
+    .annotation-bar {
+      padding: 0.6rem 1rem;
+      background: var(--wg-bg);
+      border-top: 1px solid var(--wg-border);
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      min-height: 2.5rem;
+    }
+
+    .annotation-phase {
+      font-family: 'SF Mono', 'Fira Code', monospace;
+      color: var(--wg-green);
+      font-size: 0.7rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      background: rgba(63, 185, 80, 0.1);
+      padding: 0.15rem 0.5rem;
+      border-radius: 3px;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+
+    .annotation-text {
+      font-size: 0.82rem;
+      color: var(--wg-text);
+      line-height: 1.4;
+      transition: opacity 0.25s ease;
+    }
+
+    .annotation-text.fading {
+      opacity: 0;
+    }
+
     /* Responsive asciinema player */
     .player-slot :global(div.ap-player) {
       width: 100% !important;
@@ -173,6 +209,7 @@
       .tab-label { font-size: 0.7rem; }
       .tab-meta { display: none; }
       .scene-desc { flex-direction: column; gap: 0.35rem; font-size: 0.8rem; }
+      .annotation-bar { flex-direction: column; gap: 0.35rem; padding: 0.5rem 0.75rem; }
     }
   </style>
 </head>
@@ -213,6 +250,11 @@
 
     <div class="progress-bar"><div class="fill" id="progress-fill"></div></div>
 
+    <div class="annotation-bar" id="annotation-bar">
+      <span class="annotation-phase" id="annotation-phase"></span>
+      <span class="annotation-text" id="annotation-text"></span>
+    </div>
+
     <div class="scene-desc" id="scene-desc">
       <span class="pattern">fan-out &rarr; converge</span>
       <span>Plan a heist movie night — parallel research, pick a movie, send invites</span>
@@ -229,6 +271,7 @@
     {
       id: 'player-heist',
       src: 'assets/casts/heist.cast',
+      annotationSrc: 'assets/casts/heist.annotations.json',
       pattern: 'fan-out \u2192 converge',
       desc: 'Plan a heist movie night \u2014 parallel research, pick a movie, send invites',
       duration: 30
@@ -236,6 +279,7 @@
     {
       id: 'player-haiku',
       src: 'assets/casts/haiku.cast',
+      annotationSrc: 'assets/casts/haiku.annotations.json',
       pattern: 'scatter-gather',
       desc: 'Write three haiku about Rust, then pick the best one \u2014 3-way fan-out + judge',
       duration: 24
@@ -243,6 +287,7 @@
     {
       id: 'player-pancakes',
       src: 'assets/casts/pancakes.cast',
+      annotationSrc: 'assets/casts/pancakes.annotations.json',
       pattern: 'pipeline + fan-out',
       desc: 'Debug flat pancakes \u2014 diagnose, parallel fixes, taste test',
       duration: 16
@@ -250,9 +295,12 @@
   ];
 
   var players = [null, null, null];
+  var annotations = [null, null, null];
   var currentScene = 0;
   var autoAdvanceTimer = null;
   var progressTimer = null;
+  var annotationTimer = null;
+  var lastAnnotationIdx = -1;
 
   // Shared player options
   var PLAYER_OPTS = {
@@ -266,11 +314,86 @@
     terminalLineHeight: 1.2
   };
 
+  // Load annotation JSON for a scene
+  function loadAnnotations(idx) {
+    if (annotations[idx]) return;
+    var xhr = new XMLHttpRequest();
+    xhr.open('GET', SCENES[idx].annotationSrc, true);
+    xhr.onload = function() {
+      if (xhr.status === 200) {
+        try {
+          annotations[idx] = JSON.parse(xhr.responseText).annotations;
+        } catch(e) { annotations[idx] = []; }
+      }
+    };
+    xhr.send();
+  }
+
+  // Find the annotation for a given time
+  function findAnnotation(sceneIdx, time) {
+    var annots = annotations[sceneIdx];
+    if (!annots) return null;
+    for (var i = 0; i < annots.length; i++) {
+      if (time >= annots[i].start && time < annots[i].end) return { index: i, data: annots[i] };
+    }
+    return null;
+  }
+
+  // Update annotation display
+  function updateAnnotation(sceneIdx) {
+    var player = players[sceneIdx];
+    if (!player) return;
+    var time;
+    try { time = player.getCurrentTime(); } catch(e) { return; }
+    if (time === undefined || time === null) return;
+
+    var result = findAnnotation(sceneIdx, time);
+    var phaseEl = document.getElementById('annotation-phase');
+    var textEl = document.getElementById('annotation-text');
+
+    if (!result) {
+      if (lastAnnotationIdx !== -1) {
+        lastAnnotationIdx = -1;
+        textEl.classList.add('fading');
+        setTimeout(function() {
+          phaseEl.textContent = '';
+          textEl.textContent = '';
+          textEl.classList.remove('fading');
+        }, 250);
+      }
+      return;
+    }
+
+    if (result.index !== lastAnnotationIdx) {
+      lastAnnotationIdx = result.index;
+      textEl.classList.add('fading');
+      setTimeout(function() {
+        phaseEl.textContent = result.data.phase || '';
+        textEl.textContent = result.data.text;
+        textEl.classList.remove('fading');
+      }, 250);
+    }
+  }
+
+  // Start polling annotations for the active scene
+  function startAnnotationSync(sceneIdx) {
+    stopAnnotationSync();
+    lastAnnotationIdx = -1;
+    // Show first annotation immediately
+    updateAnnotation(sceneIdx);
+    annotationTimer = setInterval(function() { updateAnnotation(sceneIdx); }, 250);
+  }
+
+  function stopAnnotationSync() {
+    if (annotationTimer) { clearInterval(annotationTimer); annotationTimer = null; }
+  }
+
   function createPlayer(idx) {
     if (players[idx]) return players[idx];
     var scene = SCENES[idx];
     var opts = Object.assign({}, PLAYER_OPTS);
     players[idx] = AsciinemaPlayer.create(scene.src, document.getElementById(scene.id), opts);
+    loadAnnotations(idx);
     return players[idx];
   }
 
@@ -285,11 +408,15 @@
   function clearTimers() {
     if (autoAdvanceTimer) { clearTimeout(autoAdvanceTimer); autoAdvanceTimer = null; }
     if (progressTimer) { clearInterval(progressTimer); progressTimer = null; }
+    stopAnnotationSync();
     document.getElementById('progress-fill').style.width = '0%';
   }
 
   function startAutoAdvance(durationMs) {
-    clearTimers();
+    if (autoAdvanceTimer) clearTimeout(autoAdvanceTimer);
+    if (progressTimer) clearInterval(progressTimer);
+    document.getElementById('progress-fill').style.width = '0%';
+
     var fill = document.getElementById('progress-fill');
     var start = Date.now();
 
@@ -312,6 +439,7 @@
       players[currentScene].seek(0);
       players[currentScene].play();
       startAutoAdvance((SCENES[idx].duration + 3) * 1000);
+      startAnnotationSync(idx);
       return;
     }
 
@@ -349,8 +477,12 @@
         player.play();
       }
       startAutoAdvance((SCENES[idx].duration + 3) * 1000);
+      startAnnotationSync(idx);
     }, 100);
   };
+
+  // Pre-load all annotations
+  SCENES.forEach(function(_, i) { loadAnnotations(i); });
 
   // Initialize first player on load
   createPlayer(0);
@@ -358,6 +490,7 @@
   setTimeout(function() {
     players[0].play();
     startAutoAdvance((SCENES[0].duration + 3) * 1000);
+    startAnnotationSync(0);
   }, 500);
 })();
 </script>

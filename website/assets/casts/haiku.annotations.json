@@ -1,0 +1,41 @@
+{
+  "title": "Haiku Pipeline",
+  "annotations": [
+    {
+      "start": 0.0,
+      "end": 1.5,
+      "text": "User sends a request from the CLI: \"Write three haiku about Rust programming, then pick the best one.\"",
+      "phase": "Prompt"
+    },
+    {
+      "start": 1.5,
+      "end": 5.0,
+      "text": "TUI opens. The coordinator creates the task graph — write-three-haiku fans out to three parallel writers, then pick-the-best gathers results.",
+      "phase": "Planning"
+    },
+    {
+      "start": 5.0,
+      "end": 8.0,
+      "text": "Haiku-writing agents spawn in parallel. Three independent agents each compose a haiku about Rust.",
+      "phase": "Scatter"
+    },
+    {
+      "start": 8.0,
+      "end": 13.0,
+      "text": "Writing completes. Evaluation kicks in — the system scores each haiku before passing results to the judge.",
+      "phase": "Evaluate"
+    },
+    {
+      "start": 13.0,
+      "end": 20.0,
+      "text": "The judge agent reads all three haiku and deliberates. It compares style, adherence to 5-7-5, and Rust relevance.",
+      "phase": "Gather"
+    },
+    {
+      "start": 20.0,
+      "end": 24.0,
+      "text": "Judge picks the winner. All tasks complete — scatter-gather pattern finished in under a minute of wall time.",
+      "phase": "Done"
+    }
+  ]
+}

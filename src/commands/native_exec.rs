@@ -36,6 +36,7 @@ pub fn run(
     endpoint_url: Option<&str>,
     api_key: Option<&str>,
     max_turns: usize,
+    no_resume: bool,
 ) -> Result<()> {
     let prompt = std::fs::read_to_string(prompt_file)
         .with_context(|| format!("Failed to read prompt file: {}", prompt_file))?;
@@ -127,7 +128,9 @@ pub fn run(
         output_log,
         supports_tools,
     )
-    .with_journal(journal_path, task_id.to_string());
+    .with_journal(journal_path, task_id.to_string())
+    .with_resume(!no_resume)
+    .with_working_dir(working_dir.clone());
 
     // Run the async agent loop
     let rt = tokio::runtime::Runtime::new().context("Failed to create tokio runtime")?;

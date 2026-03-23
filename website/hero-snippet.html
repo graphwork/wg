@@ -12,7 +12,12 @@
     - haiku.cast    (344 KB /  5 KB gzipped)
     - pancakes.cast (504 KB /  7 KB gzipped)
 
-  Total asset weight: 975 KB raw, ~25 KB gzipped
+  Annotation files (loaded alongside cast files):
+    - heist.annotations.json
+    - haiku.annotations.json
+    - pancakes.annotations.json
+
+  Total asset weight: 975 KB raw, ~25 KB gzipped (annotations ~1 KB each)
   Player JS+CSS: ~350 KB (CDN-cached)
 -->
 
@@ -58,6 +63,19 @@
 .wg-progress { height: 2px; background: #30363d; position: relative; overflow: hidden; }
 .wg-progress-fill { height: 100%; background: #58a6ff; width: 0%; transition: width 0.5s linear; }
 
+.wg-annotation {
+  padding: 0.6rem 1rem; background: #0d1117; border-top: 1px solid #30363d;
+  display: flex; align-items: center; gap: 0.75rem; min-height: 2.5rem;
+}
+.wg-annotation-phase {
+  font-family: 'SF Mono', 'Fira Code', monospace; color: #3fb950; font-size: 0.7rem;
+  font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;
+  background: rgba(63, 185, 80, 0.1); padding: 0.15rem 0.5rem; border-radius: 3px;
+  white-space: nowrap; flex-shrink: 0;
+}
+.wg-annotation-text { font-size: 0.82rem; color: #e6edf3; line-height: 1.4; transition: opacity 0.25s ease; }
+.wg-annotation-text.fading { opacity: 0; }
+
 @media (max-width: 640px) {
   .wg-hero { padding: 1rem 0.5rem; }
   .wg-hero-title { font-size: 1.2rem; }
@@ -66,6 +84,7 @@
   .wg-tab-label { font-size: 0.7rem; }
   .wg-tab-meta { display: none; }
   .wg-scene-desc { flex-direction: column; gap: 0.35rem; font-size: 0.8rem; }
+  .wg-annotation { flex-direction: column; gap: 0.35rem; padding: 0.5rem 0.75rem; }
 }
 </style>
 
@@ -96,6 +115,10 @@
     <div class="wg-player-slot" data-wg-scene="1"><div id="wg-player-haiku"></div></div>
     <div class="wg-player-slot" data-wg-scene="2"><div id="wg-player-pancakes"></div></div>
     <div class="wg-progress"><div class="wg-progress-fill" id="wg-progress-fill"></div></div>
+    <div class="wg-annotation" id="wg-annotation">
+      <span class="wg-annotation-phase" id="wg-annotation-phase"></span>
+      <span class="wg-annotation-text" id="wg-annotation-text"></span>
+    </div>
     <div class="wg-scene-desc" id="wg-scene-desc">
       <span class="wg-pattern">fan-out &rarr; converge</span>
       <span>Plan a heist movie night — parallel research, pick a movie, send invites</span>
@@ -111,19 +134,71 @@
   var CAST_BASE = 'assets/casts/';
 
   var SCENES = [
-    { id: 'wg-player-heist',    file: 'heist.cast',    pattern: 'fan-out \u2192 converge', desc: 'Plan a heist movie night \u2014 parallel research, pick a movie, send invites', dur: 30 },
-    { id: 'wg-player-haiku',    file: 'haiku.cast',    pattern: 'scatter-gather',         desc: 'Write three haiku about Rust, then pick the best one \u2014 3-way fan-out + judge', dur: 24 },
-    { id: 'wg-player-pancakes', file: 'pancakes.cast', pattern: 'pipeline + fan-out',     desc: 'Debug flat pancakes \u2014 diagnose, parallel fixes, taste test', dur: 16 }
+    { id: 'wg-player-heist',    file: 'heist.cast',    annot: 'heist.annotations.json',    pattern: 'fan-out \u2192 converge', desc: 'Plan a heist movie night \u2014 parallel research, pick a movie, send invites', dur: 30 },
+    { id: 'wg-player-haiku',    file: 'haiku.cast',    annot: 'haiku.annotations.json',    pattern: 'scatter-gather',         desc: 'Write three haiku about Rust, then pick the best one \u2014 3-way fan-out + judge', dur: 24 },
+    { id: 'wg-player-pancakes', file: 'pancakes.cast', annot: 'pancakes.annotations.json', pattern: 'pipeline + fan-out',     desc: 'Debug flat pancakes \u2014 diagnose, parallel fixes, taste test', dur: 16 }
   ];
 
   var players = [null, null, null];
-  var cur = 0, advTmr = null, progTmr = null;
+  var annots = [null, null, null];
+  var cur = 0, advTmr = null, progTmr = null, annotTmr = null, lastAnnotIdx = -1;
 
   var OPTS = { fit: 'width', autoPlay: false, loop: false, speed: 1, idleTimeLimit: 1, theme: 'dracula', fontSize: '0.85em', terminalLineHeight: 1.2 };
+
+  // Load annotation JSON
+  function loadAnnot(i) {
+    if (annots[i]) return;
+    var xhr = new XMLHttpRequest();
+    xhr.open('GET', CAST_BASE + SCENES[i].annot, true);
+    xhr.onload = function() {
+      if (xhr.status === 200) try { annots[i] = JSON.parse(xhr.responseText).annotations; } catch(e) { annots[i] = []; }
+    };
+    xhr.send();
+  }
+
+  function findAnnot(sceneIdx, time) {
+    var a = annots[sceneIdx];
+    if (!a) return null;
+    for (var j = 0; j < a.length; j++) {
+      if (time >= a[j].start && time < a[j].end) return { index: j, data: a[j] };
+    }
+    return null;
+  }
+
+  function updateAnnot(sceneIdx) {
+    var p = players[sceneIdx];
+    if (!p) return;
+    var time; try { time = p.getCurrentTime(); } catch(e) { return; }
+    if (time === undefined || time === null) return;
+    var result = findAnnot(sceneIdx, time);
+    var phaseEl = document.getElementById('wg-annotation-phase');
+    var textEl = document.getElementById('wg-annotation-text');
+    if (!result) {
+      if (lastAnnotIdx !== -1) {
+        lastAnnotIdx = -1;
+        textEl.classList.add('fading');
+        setTimeout(function() { phaseEl.textContent = ''; textEl.textContent = ''; textEl.classList.remove('fading'); }, 250);
+      }
+      return;
+    }
+    if (result.index !== lastAnnotIdx) {
+      lastAnnotIdx = result.index;
+      textEl.classList.add('fading');
+      setTimeout(function() {
+        phaseEl.textContent = result.data.phase || '';
+        textEl.textContent = result.data.text;
+        textEl.classList.remove('fading');
+      }, 250);
+    }
+  }
+
+  function startAnnotSync(i) { stopAnnotSync(); lastAnnotIdx = -1; updateAnnot(i); annotTmr = setInterval(function() { updateAnnot(i); }, 250); }
+  function stopAnnotSync() { if (annotTmr) { clearInterval(annotTmr); annotTmr = null; } }
 
   function mkPlayer(i) {
     if (players[i]) return players[i];
     players[i] = AsciinemaPlayer.create(CAST_BASE + SCENES[i].file, document.getElementById(SCENES[i].id), OPTS);
+    loadAnnot(i);
     return players[i];
   }
 
@@ -131,11 +206,14 @@
     if (advTmr) clearTimeout(advTmr);
     if (progTmr) clearInterval(progTmr);
     advTmr = progTmr = null;
+    stopAnnotSync();
     document.getElementById('wg-progress-fill').style.width = '0%';
   }
 
   function autoAdv(ms) {
-    clearT();
+    if (advTmr) clearTimeout(advTmr);
+    if (progTmr) clearInterval(progTmr);
+    document.getElementById('wg-progress-fill').style.width = '0%';
     var fill = document.getElementById('wg-progress-fill'), t0 = Date.now();
     progTmr = setInterval(function() {
       var p = Math.min(100, ((Date.now() - t0) / ms) * 100);
@@ -149,6 +227,7 @@
     if (i === cur && players[cur]) {
       players[cur].seek(0); players[cur].play();
       autoAdv((SCENES[i].dur + 3) * 1000);
+      startAnnotSync(i);
       return;
     }
     clearT();
@@ -168,7 +247,7 @@
       '<span class="wg-pattern">' + s.pattern + '</span><span>' + s.desc + '</span>';
 
     var p = mkPlayer(i);
-    setTimeout(function() { try { p.seek(0); p.play(); } catch(e) { p.play(); } autoAdv((s.dur + 3) * 1000); }, 100);
+    setTimeout(function() { try { p.seek(0); p.play(); } catch(e) { p.play(); } autoAdv((s.dur + 3) * 1000); startAnnotSync(i); }, 100);
   }
 
   // Bind tab clicks
@@ -176,8 +255,11 @@
     tab.addEventListener('click', function() { wgSwitch(parseInt(this.getAttribute('data-wg-scene'))); });
   });
 
+  // Pre-load all annotations
+  SCENES.forEach(function(_, i) { loadAnnot(i); });
+
   // Init
   mkPlayer(0);
-  setTimeout(function() { players[0].play(); autoAdv((SCENES[0].dur + 3) * 1000); }, 500);
+  setTimeout(function() { players[0].play(); autoAdv((SCENES[0].dur + 3) * 1000); startAnnotSync(0); }, 500);
 })();
 </script>

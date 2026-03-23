@@ -5,7 +5,7 @@
 //! hits the max-turns limit.
 
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use serde::Serialize;
@@ -15,6 +15,7 @@ use super::client::{
 };
 use super::journal::{EndReason, Journal, JournalEntryKind};
 use super::provider::Provider;
+use super::resume::{self, ResumeConfig};
 use super::tools::ToolRegistry;
 use crate::stream_event::{self, StreamWriter, TotalUsage, TurnUsage};
 
@@ -50,6 +51,10 @@ pub struct AgentLoop {
     journal_path: Option<PathBuf>,
     /// Task ID for journal metadata.
     task_id: Option<String>,
+    /// Whether to attempt resume from an existing journal.
+    resume_enabled: bool,
+    /// Working directory for stale-state detection during resume.
+    working_dir: Option<PathBuf>,
 }
 
 /// NDJSON log entry types for the output file.
@@ -141,6 +146,8 @@ impl AgentLoop {
             supports_tools,
             journal_path: None,
             task_id: None,
+            resume_enabled: true,
+            working_dir: None,
         }
     }
 
@@ -151,9 +158,53 @@ impl AgentLoop {
         self
     }
 
+    /// Enable or disable resume from existing journal.
+    /// When enabled (default), the agent will attempt to load a prior conversation
+    /// journal and continue from where the previous agent left off.
+    pub fn with_resume(mut self, enabled: bool) -> Self {
+        self.resume_enabled = enabled;
+        self
+    }
+
+    /// Set the working directory for stale-state detection during resume.
+    pub fn with_working_dir(mut self, working_dir: PathBuf) -> Self {
+        self.working_dir = Some(working_dir);
+        self
+    }
+
     /// Run the agent loop to completion.
     pub async fn run(&self, initial_message: &str) -> Result<AgentResult> {
-        // Open journal if configured
+        // Attempt resume from existing journal
+        let resume_data = if self.resume_enabled {
+            if let Some(ref path) = self.journal_path {
+                let working_dir = self
+                    .working_dir
+                    .as_deref()
+                    .unwrap_or_else(|| Path::new("."));
+                match resume::load_resume_data(path, working_dir, &ResumeConfig::default()) {
+                    Ok(Some(data)) => {
+                        eprintln!(
+                            "[native-agent] Resuming from journal: {} messages, {} stale annotations{}",
+                            data.messages.len(),
+                            data.stale_annotations.len(),
+                            if data.was_compacted { " (compacted)" } else { "" }
+                        );
+                        Some(data)
+                    }
+                    Ok(None) => None,
+                    Err(e) => {
+                        eprintln!("[native-agent] Warning: failed to load resume data: {}", e);
+                        None
+                    }
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        // Open journal if configured (append mode — continues from existing entries)
         let mut journal = if let Some(ref path) = self.journal_path {
             match Journal::open(path) {
                 Ok(j) => Some(j),
@@ -166,7 +217,7 @@ impl AgentLoop {
             None
         };
 
-        // Write Init journal entry
+        // Write Init journal entry for this session
         if let Some(ref mut j) = journal {
             let tool_defs = if self.supports_tools {
                 self.tools.definitions()
@@ -187,25 +238,59 @@ impl AgentLoop {
             sw.write_init("native", Some(self.client.model()), None);
         }
 
-        let initial_content = vec![ContentBlock::Text {
-            text: initial_message.to_string(),
-        }];
+        // Build initial messages — either from resume or fresh start
+        let mut messages: Vec<Message> = if let Some(ref data) = resume_data {
+            // Start with the resumed conversation history
+            let mut msgs = data.messages.clone();
 
-        // Journal the initial user message
-        if let Some(ref mut j) = journal {
-            let _ = j.append(JournalEntryKind::Message {
+            // Build and inject the resume annotation + fresh initial message
+            let annotation = resume::build_resume_annotation(data);
+            let resume_text = format!(
+                "{}\n\n---\n\n{}\n\n[Continuing from prior session. Review the conversation above and pick up where you left off.]",
+                annotation, initial_message
+            );
+
+            msgs.push(Message {
                 role: Role::User,
-                content: initial_content.clone(),
-                usage: None,
-                response_id: None,
-                stop_reason: None,
+                content: vec![ContentBlock::Text {
+                    text: resume_text,
+                }],
             });
-        }
 
-        let mut messages: Vec<Message> = vec![Message {
-            role: Role::User,
-            content: initial_content,
-        }];
+            // Journal the resume user message
+            if let Some(ref mut j) = journal {
+                let _ = j.append(JournalEntryKind::Message {
+                    role: Role::User,
+                    content: msgs.last().unwrap().content.clone(),
+                    usage: None,
+                    response_id: None,
+                    stop_reason: None,
+                });
+            }
+
+            msgs
+        } else {
+            // Fresh start — no resume
+            let initial_content = vec![ContentBlock::Text {
+                text: initial_message.to_string(),
+            }];
+
+            // Journal the initial user message
+            if let Some(ref mut j) = journal {
+                let _ = j.append(JournalEntryKind::Message {
+                    role: Role::User,
+                    content: initial_content.clone(),
+                    usage: None,
+                    response_id: None,
+                    stop_reason: None,
+                });
+            }
+
+            vec![Message {
+                role: Role::User,
+                content: initial_content,
+            }]
+        };
 
         let mut total_usage = Usage::default();
         let mut tool_calls = Vec::new();

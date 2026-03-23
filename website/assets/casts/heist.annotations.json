@@ -1,0 +1,41 @@
+{
+  "title": "Heist Movie Night",
+  "annotations": [
+    {
+      "start": 0.0,
+      "end": 3.0,
+      "text": "TUI opens with the coordinator running. The graph view shows existing tasks on the left, chat panel on the right.",
+      "phase": "Setup"
+    },
+    {
+      "start": 3.0,
+      "end": 7.0,
+      "text": "User types a request: \"Plan a heist movie night — snacks, movie picks, and a debate.\"",
+      "phase": "Prompt"
+    },
+    {
+      "start": 7.0,
+      "end": 12.0,
+      "text": "Coordinator receives the message and creates a task graph — parallel sub-tasks for snacks, movie picks, and debate topics.",
+      "phase": "Planning"
+    },
+    {
+      "start": 12.0,
+      "end": 18.0,
+      "text": "Agents spawn and fan out across tasks. Each works independently — snack research, movie selection, debate prep.",
+      "phase": "Fan-out"
+    },
+    {
+      "start": 18.0,
+      "end": 25.0,
+      "text": "Tasks complete one by one. The graph updates in real-time as agents finish their work and results flow in.",
+      "phase": "Converging"
+    },
+    {
+      "start": 25.0,
+      "end": 31.0,
+      "text": "All parallel tasks converge — the full movie night plan comes together. Agents spawned, worked, and finished autonomously.",
+      "phase": "Done"
+    }
+  ]
+}

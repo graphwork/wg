@@ -556,7 +556,7 @@ fn main() -> Result<()> {
                     max_columns: None, // TUI handles its own sizing
                 };
                 let mouse_override = if no_mouse { Some(false) } else { None };
-                tui::viz_viewer::run(workgraph_dir, options, mouse_override, false)
+                tui::viz_viewer::run(workgraph_dir, options, mouse_override, false, None)
             } else {
                 let fmt = if dot {
                     commands::viz::OutputFormat::Dot
@@ -1937,7 +1937,7 @@ fn main() -> Result<()> {
                 no_coordinator_agent,
             ),
         },
-        Commands::Tui { no_mouse, recording } => {
+        Commands::Tui { no_mouse, recording, trace } => {
             let resolved_edge_color = Config::load_or_default(&workgraph_dir).viz.edge_color;
             let options = commands::viz::VizOptions {
                 all: true,
@@ -1955,7 +1955,7 @@ fn main() -> Result<()> {
                 max_columns: None, // TUI handles its own sizing
             };
             let mouse_override = if no_mouse { Some(false) } else { None };
-            tui::viz_viewer::run(workgraph_dir, options, mouse_override, recording)
+            tui::viz_viewer::run(workgraph_dir, options, mouse_override, recording, trace)
         }
         Commands::Setup => commands::setup::run(),
         Commands::Quickstart => commands::quickstart::run(cli.json),
@@ -2139,6 +2139,7 @@ fn main() -> Result<()> {
             endpoint_url,
             api_key,
             max_turns,
+            no_resume,
         } => commands::native_exec::run(
             &workgraph_dir,
             &prompt_file,
@@ -2150,6 +2151,7 @@ fn main() -> Result<()> {
             endpoint_url.as_deref(),
             api_key.as_deref(),
             max_turns,
+            no_resume,
         ),
         Commands::ApplyPlacement {
             output_dir,
