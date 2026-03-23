@@ -1710,6 +1710,8 @@ pub struct ConfigPanelState {
     pub new_model: NewModelFields,
     /// Which field in the new-model form is active (0-4).
     pub new_model_field: usize,
+    /// Last known mtime of the config file, for auto-refresh detection.
+    pub last_config_mtime: Option<std::time::SystemTime>,
 }
 
 /// Status of an endpoint connectivity test.
@@ -3855,10 +3857,26 @@ impl VizApp {
             self.poll_chat_messages();
         }
 
-        // Poll service health every ~5 seconds.
-        if self.service_health.last_poll.elapsed() >= std::time::Duration::from_secs(5) {
+        // Poll service health every ~2 seconds for responsive agent count updates.
+        if self.service_health.last_poll.elapsed() >= std::time::Duration::from_secs(2) {
             self.update_service_health();
         }
+
+        // Auto-refresh config panel when config.toml changes on disk,
+        // but only when the user is not actively editing.
+        if self.right_panel_tab == RightPanelTab::Config
+            && !self.config_panel.editing
+            && !self.config_panel.adding_endpoint
+            && !self.config_panel.adding_model
+        {
+            let current_mtime = std::fs::metadata(self.workgraph_dir.join("config.toml"))
+                .and_then(|m| m.modified())
+                .ok();
+            if current_mtime != self.config_panel.last_config_mtime {
+                self.load_config_panel();
+            }
+        }
+
         if self.time_counters.last_refresh.elapsed() >= std::time::Duration::from_secs(10) {
             self.update_time_counters();
         }
@@ -6673,9 +6691,14 @@ impl VizApp {
         self.service_health.paused = coord.paused;
         self.service_health.agents_max = coord.max_agents;
 
-        // Load agent registry for alive count and stuck task detection
+        // Load agent registry for alive count and stuck task detection.
+        // Use both status AND PID liveness check to match `wg agents --alive`.
         let registry = workgraph::AgentRegistry::load_or_warn(dir);
-        let alive = registry.active_count();
+        let alive = registry
+            .agents
+            .values()
+            .filter(|a| a.is_alive() && crate::commands::is_process_alive(a.pid))
+            .count();
         self.service_health.agents_alive = alive;
         self.service_health.agents_total = registry.agents.len();
 
@@ -8403,6 +8426,12 @@ impl VizApp {
         if self.config_panel.selected >= self.config_panel.entries.len() {
             self.config_panel.selected = 0;
         }
+
+        // Record config file mtime so we can detect external changes.
+        self.config_panel.last_config_mtime =
+            std::fs::metadata(self.workgraph_dir.join("config.toml"))
+                .and_then(|m| m.modified())
+                .ok();
     }
 
     /// Install the current project config as the global default (force mode).
