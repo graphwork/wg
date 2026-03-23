@@ -1,0 +1,183 @@
+<!--
+  Workgraph Hero Carousel — embeddable snippet
+
+  Dependencies (add to <head>):
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/asciinema-player@3.9.0/dist/bundle/asciinema-player.css">
+
+  Dependencies (add before </body>):
+    <script src="https://cdn.jsdelivr.net/npm/asciinema-player@3.9.0/dist/bundle/asciinema-player.min.js"></script>
+
+  Cast files required in assets/casts/:
+    - heist.cast    (127 KB / 13 KB gzipped)
+    - haiku.cast    (344 KB /  5 KB gzipped)
+    - pancakes.cast (504 KB /  7 KB gzipped)
+
+  Total asset weight: 975 KB raw, ~25 KB gzipped
+  Player JS+CSS: ~350 KB (CDN-cached)
+-->
+
+<style>
+.wg-hero { max-width: 960px; margin: 0 auto; padding: 2rem 1rem; }
+.wg-hero * { box-sizing: border-box; }
+.wg-hero-title { text-align: center; margin-bottom: 0.5rem; font-size: 1.5rem; font-weight: 600; }
+.wg-hero-subtitle { text-align: center; color: #8b949e; margin-bottom: 1.5rem; font-size: 0.95rem; }
+
+.wg-tabs { display: flex; gap: 0; border-bottom: 1px solid #30363d; }
+.wg-tab {
+  flex: 1; padding: 0.75rem 1rem; background: transparent;
+  border: 1px solid transparent; border-bottom: none;
+  color: #8b949e; font-size: 0.85rem; cursor: pointer;
+  text-align: center; transition: color 0.2s, background 0.2s;
+  font-family: inherit; border-radius: 6px 6px 0 0;
+}
+.wg-tab:hover { color: #e6edf3; background: #161b22; }
+.wg-tab.active { color: #e6edf3; background: #161b22; border-color: #30363d; font-weight: 600; }
+.wg-tab-icon { display: block; font-size: 1.25rem; margin-bottom: 0.25rem; }
+.wg-tab-label { display: block; font-size: 0.8rem; }
+.wg-tab-meta { display: block; font-size: 0.7rem; color: #8b949e; margin-top: 0.15rem; }
+
+.wg-player-wrap {
+  background: #161b22; border: 1px solid #30363d; border-top: none;
+  border-radius: 0 0 8px 8px; overflow: hidden; position: relative;
+}
+.wg-player-slot { display: none; }
+.wg-player-slot.active { display: block; }
+
+.wg-scene-desc {
+  padding: 0.75rem 1rem; background: #161b22;
+  border-top: 1px solid #30363d; font-size: 0.85rem; color: #8b949e;
+  display: flex; align-items: center; gap: 0.75rem;
+}
+.wg-scene-desc .wg-pattern {
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  color: #58a6ff; font-size: 0.75rem;
+  background: rgba(88, 166, 255, 0.1);
+  padding: 0.15rem 0.5rem; border-radius: 3px; white-space: nowrap;
+}
+
+.wg-progress { height: 2px; background: #30363d; position: relative; overflow: hidden; }
+.wg-progress-fill { height: 100%; background: #58a6ff; width: 0%; transition: width 0.5s linear; }
+
+@media (max-width: 640px) {
+  .wg-hero { padding: 1rem 0.5rem; }
+  .wg-hero-title { font-size: 1.2rem; }
+  .wg-tab { padding: 0.5rem 0.25rem; }
+  .wg-tab-icon { font-size: 1rem; }
+  .wg-tab-label { font-size: 0.7rem; }
+  .wg-tab-meta { display: none; }
+  .wg-scene-desc { flex-direction: column; gap: 0.35rem; font-size: 0.8rem; }
+}
+</style>
+
+<section class="wg-hero" id="wg-hero-demos">
+  <h2 class="wg-hero-title">See it in action</h2>
+  <p class="wg-hero-subtitle">Real workgraph sessions — from prompt to parallel agents to done</p>
+
+  <div class="wg-tabs" role="tablist">
+    <button class="wg-tab active" role="tab" aria-selected="true" data-wg-scene="0">
+      <span class="wg-tab-icon">&#127909;</span>
+      <span class="wg-tab-label">Heist Movie Night</span>
+      <span class="wg-tab-meta">30s &middot; fan-out</span>
+    </button>
+    <button class="wg-tab" role="tab" aria-selected="false" data-wg-scene="1">
+      <span class="wg-tab-icon">&#128196;</span>
+      <span class="wg-tab-label">Haiku Pipeline</span>
+      <span class="wg-tab-meta">24s &middot; scatter-gather</span>
+    </button>
+    <button class="wg-tab" role="tab" aria-selected="false" data-wg-scene="2">
+      <span class="wg-tab-icon">&#129374;</span>
+      <span class="wg-tab-label">Debug Pancakes</span>
+      <span class="wg-tab-meta">16s &middot; pipeline</span>
+    </button>
+  </div>
+
+  <div class="wg-player-wrap">
+    <div class="wg-player-slot active" data-wg-scene="0"><div id="wg-player-heist"></div></div>
+    <div class="wg-player-slot" data-wg-scene="1"><div id="wg-player-haiku"></div></div>
+    <div class="wg-player-slot" data-wg-scene="2"><div id="wg-player-pancakes"></div></div>
+    <div class="wg-progress"><div class="wg-progress-fill" id="wg-progress-fill"></div></div>
+    <div class="wg-scene-desc" id="wg-scene-desc">
+      <span class="wg-pattern">fan-out &rarr; converge</span>
+      <span>Plan a heist movie night — parallel research, pick a movie, send invites</span>
+    </div>
+  </div>
+</section>
+
+<script>
+(function() {
+  'use strict';
+
+  // Adjust base path to where your .cast files are served
+  var CAST_BASE = 'assets/casts/';
+
+  var SCENES = [
+    { id: 'wg-player-heist',    file: 'heist.cast',    pattern: 'fan-out \u2192 converge', desc: 'Plan a heist movie night \u2014 parallel research, pick a movie, send invites', dur: 30 },
+    { id: 'wg-player-haiku',    file: 'haiku.cast',    pattern: 'scatter-gather',         desc: 'Write three haiku about Rust, then pick the best one \u2014 3-way fan-out + judge', dur: 24 },
+    { id: 'wg-player-pancakes', file: 'pancakes.cast', pattern: 'pipeline + fan-out',     desc: 'Debug flat pancakes \u2014 diagnose, parallel fixes, taste test', dur: 16 }
+  ];
+
+  var players = [null, null, null];
+  var cur = 0, advTmr = null, progTmr = null;
+
+  var OPTS = { fit: 'width', autoPlay: false, loop: false, speed: 1, idleTimeLimit: 1, theme: 'dracula', fontSize: '0.85em', terminalLineHeight: 1.2 };
+
+  function mkPlayer(i) {
+    if (players[i]) return players[i];
+    players[i] = AsciinemaPlayer.create(CAST_BASE + SCENES[i].file, document.getElementById(SCENES[i].id), OPTS);
+    return players[i];
+  }
+
+  function clearT() {
+    if (advTmr) clearTimeout(advTmr);
+    if (progTmr) clearInterval(progTmr);
+    advTmr = progTmr = null;
+    document.getElementById('wg-progress-fill').style.width = '0%';
+  }
+
+  function autoAdv(ms) {
+    clearT();
+    var fill = document.getElementById('wg-progress-fill'), t0 = Date.now();
+    progTmr = setInterval(function() {
+      var p = Math.min(100, ((Date.now() - t0) / ms) * 100);
+      fill.style.width = p + '%';
+      if (p >= 100) clearInterval(progTmr);
+    }, 200);
+    advTmr = setTimeout(function() { wgSwitch((cur + 1) % SCENES.length); }, ms);
+  }
+
+  function wgSwitch(i) {
+    if (i === cur && players[cur]) {
+      players[cur].seek(0); players[cur].play();
+      autoAdv((SCENES[i].dur + 3) * 1000);
+      return;
+    }
+    clearT();
+    if (players[cur]) try { players[cur].pause(); } catch(e) {}
+
+    document.querySelectorAll('.wg-tab').forEach(function(t, idx) {
+      t.classList.toggle('active', idx === i);
+      t.setAttribute('aria-selected', idx === i ? 'true' : 'false');
+    });
+    document.querySelectorAll('.wg-player-slot').forEach(function(s, idx) {
+      s.classList.toggle('active', idx === i);
+    });
+
+    cur = i;
+    var s = SCENES[i];
+    document.getElementById('wg-scene-desc').innerHTML =
+      '<span class="wg-pattern">' + s.pattern + '</span><span>' + s.desc + '</span>';
+
+    var p = mkPlayer(i);
+    setTimeout(function() { try { p.seek(0); p.play(); } catch(e) { p.play(); } autoAdv((s.dur + 3) * 1000); }, 100);
+  }
+
+  // Bind tab clicks
+  document.querySelectorAll('.wg-tab').forEach(function(tab) {
+    tab.addEventListener('click', function() { wgSwitch(parseInt(this.getAttribute('data-wg-scene'))); });
+  });
+
+  // Init
+  mkPlayer(0);
+  setTimeout(function() { players[0].play(); autoAdv((SCENES[0].dur + 3) * 1000); }, 500);
+})();
+</script>

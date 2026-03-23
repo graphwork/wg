@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Workgraph — AI Task Coordination in Action</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/asciinema-player@3.9.0/dist/bundle/asciinema-player.css">
+  <style>
+    :root {
+      --wg-bg: #0d1117;
+      --wg-surface: #161b22;
+      --wg-border: #30363d;
+      --wg-text: #e6edf3;
+      --wg-muted: #8b949e;
+      --wg-accent: #58a6ff;
+      --wg-green: #3fb950;
+      --wg-yellow: #d29922;
+      --wg-purple: #bc8cff;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: var(--wg-bg);
+      color: var(--wg-text);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+    }
+
+    .hero {
+      max-width: 960px;
+      margin: 0 auto;
+      padding: 2rem 1rem;
+    }
+
+    .hero-title {
+      text-align: center;
+      margin-bottom: 0.5rem;
+      font-size: 1.5rem;
+      font-weight: 600;
+    }
+
+    .hero-subtitle {
+      text-align: center;
+      color: var(--wg-muted);
+      margin-bottom: 1.5rem;
+      font-size: 0.95rem;
+    }
+
+    /* Tab selector */
+    .tabs {
+      display: flex;
+      gap: 0;
+      border-bottom: 1px solid var(--wg-border);
+      margin-bottom: 0;
+    }
+
+    .tab {
+      flex: 1;
+      padding: 0.75rem 1rem;
+      background: transparent;
+      border: 1px solid transparent;
+      border-bottom: none;
+      color: var(--wg-muted);
+      font-size: 0.85rem;
+      cursor: pointer;
+      text-align: center;
+      transition: color 0.2s, background 0.2s;
+      font-family: inherit;
+      border-radius: 6px 6px 0 0;
+    }
+
+    .tab:hover {
+      color: var(--wg-text);
+      background: var(--wg-surface);
+    }
+
+    .tab.active {
+      color: var(--wg-text);
+      background: var(--wg-surface);
+      border-color: var(--wg-border);
+      font-weight: 600;
+    }
+
+    .tab-icon {
+      display: block;
+      font-size: 1.25rem;
+      margin-bottom: 0.25rem;
+    }
+
+    .tab-label {
+      display: block;
+      font-size: 0.8rem;
+    }
+
+    .tab-meta {
+      display: block;
+      font-size: 0.7rem;
+      color: var(--wg-muted);
+      margin-top: 0.15rem;
+    }
+
+    /* Player container */
+    .player-wrap {
+      background: var(--wg-surface);
+      border: 1px solid var(--wg-border);
+      border-top: none;
+      border-radius: 0 0 8px 8px;
+      overflow: hidden;
+      position: relative;
+    }
+
+    .player-slot {
+      display: none;
+    }
+
+    .player-slot.active {
+      display: block;
+    }
+
+    /* Description bar below player */
+    .scene-desc {
+      padding: 0.75rem 1rem;
+      background: var(--wg-surface);
+      border-top: 1px solid var(--wg-border);
+      font-size: 0.85rem;
+      color: var(--wg-muted);
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+
+    .scene-desc .pattern {
+      font-family: 'SF Mono', 'Fira Code', monospace;
+      color: var(--wg-accent);
+      font-size: 0.75rem;
+      background: rgba(88, 166, 255, 0.1);
+      padding: 0.15rem 0.5rem;
+      border-radius: 3px;
+      white-space: nowrap;
+    }
+
+    /* Auto-advance indicator */
+    .progress-bar {
+      height: 2px;
+      background: var(--wg-border);
+      position: relative;
+      overflow: hidden;
+    }
+
+    .progress-bar .fill {
+      height: 100%;
+      background: var(--wg-accent);
+      width: 0%;
+      transition: width 0.5s linear;
+    }
+
+    /* Responsive asciinema player */
+    .player-slot :global(div.ap-player) {
+      width: 100% !important;
+    }
+
+    /* Override asciinema-player sizing for responsiveness */
+    .player-slot div[id^="player-"] {
+      width: 100%;
+    }
+
+    /* Mobile adjustments */
+    @media (max-width: 640px) {
+      .hero { padding: 1rem 0.5rem; }
+      .hero-title { font-size: 1.2rem; }
+      .tab { padding: 0.5rem 0.25rem; }
+      .tab-icon { font-size: 1rem; }
+      .tab-label { font-size: 0.7rem; }
+      .tab-meta { display: none; }
+      .scene-desc { flex-direction: column; gap: 0.35rem; font-size: 0.8rem; }
+    }
+  </style>
+</head>
+<body>
+
+<section class="hero" id="hero-demos">
+  <h2 class="hero-title">See it in action</h2>
+  <p class="hero-subtitle">Real workgraph sessions — from prompt to parallel agents to done</p>
+
+  <div class="tabs" role="tablist">
+    <button class="tab active" role="tab" aria-selected="true" data-scene="0" onclick="switchScene(0)">
+      <span class="tab-icon">&#127909;</span>
+      <span class="tab-label">Heist Movie Night</span>
+      <span class="tab-meta">30s &middot; fan-out</span>
+    </button>
+    <button class="tab" role="tab" aria-selected="false" data-scene="1" onclick="switchScene(1)">
+      <span class="tab-icon">&#128196;</span>
+      <span class="tab-label">Haiku Pipeline</span>
+      <span class="tab-meta">24s &middot; scatter-gather</span>
+    </button>
+    <button class="tab" role="tab" aria-selected="false" data-scene="2" onclick="switchScene(2)">
+      <span class="tab-icon">&#129374;</span>
+      <span class="tab-label">Debug Pancakes</span>
+      <span class="tab-meta">16s &middot; pipeline</span>
+    </button>
+  </div>
+
+  <div class="player-wrap">
+    <div class="player-slot active" data-scene="0">
+      <div id="player-heist"></div>
+    </div>
+    <div class="player-slot" data-scene="1">
+      <div id="player-haiku"></div>
+    </div>
+    <div class="player-slot" data-scene="2">
+      <div id="player-pancakes"></div>
+    </div>
+
+    <div class="progress-bar"><div class="fill" id="progress-fill"></div></div>
+
+    <div class="scene-desc" id="scene-desc">
+      <span class="pattern">fan-out &rarr; converge</span>
+      <span>Plan a heist movie night — parallel research, pick a movie, send invites</span>
+    </div>
+  </div>
+</section>
+
+<script src="https://cdn.jsdelivr.net/npm/asciinema-player@3.9.0/dist/bundle/asciinema-player.min.js"></script>
+<script>
+(function() {
+  'use strict';
+
+  var SCENES = [
+    {
+      id: 'player-heist',
+      src: 'assets/casts/heist.cast',
+      pattern: 'fan-out \u2192 converge',
+      desc: 'Plan a heist movie night \u2014 parallel research, pick a movie, send invites',
+      duration: 30
+    },
+    {
+      id: 'player-haiku',
+      src: 'assets/casts/haiku.cast',
+      pattern: 'scatter-gather',
+      desc: 'Write three haiku about Rust, then pick the best one \u2014 3-way fan-out + judge',
+      duration: 24
+    },
+    {
+      id: 'player-pancakes',
+      src: 'assets/casts/pancakes.cast',
+      pattern: 'pipeline + fan-out',
+      desc: 'Debug flat pancakes \u2014 diagnose, parallel fixes, taste test',
+      duration: 16
+    }
+  ];
+
+  var players = [null, null, null];
+  var currentScene = 0;
+  var autoAdvanceTimer = null;
+  var progressTimer = null;
+
+  // Shared player options
+  var PLAYER_OPTS = {
+    fit: 'width',
+    autoPlay: false,
+    loop: false,
+    speed: 1,
+    idleTimeLimit: 1,
+    theme: 'dracula',
+    fontSize: '0.85em',
+    terminalLineHeight: 1.2
+  };
+
+  function createPlayer(idx) {
+    if (players[idx]) return players[idx];
+    var scene = SCENES[idx];
+    var opts = Object.assign({}, PLAYER_OPTS);
+    players[idx] = AsciinemaPlayer.create(scene.src, document.getElementById(scene.id), opts);
+    return players[idx];
+  }
+
+  function updateDesc(idx) {
+    var scene = SCENES[idx];
+    var descEl = document.getElementById('scene-desc');
+    descEl.innerHTML =
+      '<span class="pattern">' + scene.pattern + '</span>' +
+      '<span>' + scene.desc + '</span>';
+  }
+
+  function clearTimers() {
+    if (autoAdvanceTimer) { clearTimeout(autoAdvanceTimer); autoAdvanceTimer = null; }
+    if (progressTimer) { clearInterval(progressTimer); progressTimer = null; }
+    document.getElementById('progress-fill').style.width = '0%';
+  }
+
+  function startAutoAdvance(durationMs) {
+    clearTimers();
+    var fill = document.getElementById('progress-fill');
+    var start = Date.now();
+
+    progressTimer = setInterval(function() {
+      var elapsed = Date.now() - start;
+      var pct = Math.min(100, (elapsed / durationMs) * 100);
+      fill.style.width = pct + '%';
+      if (pct >= 100) clearInterval(progressTimer);
+    }, 200);
+
+    autoAdvanceTimer = setTimeout(function() {
+      var next = (currentScene + 1) % SCENES.length;
+      switchScene(next);
+    }, durationMs);
+  }
+
+  window.switchScene = function(idx) {
+    if (idx === currentScene && players[currentScene]) {
+      // Clicking active tab restarts playback
+      players[currentScene].seek(0);
+      players[currentScene].play();
+      startAutoAdvance((SCENES[idx].duration + 3) * 1000);
+      return;
+    }
+
+    clearTimers();
+
+    // Pause current player
+    if (players[currentScene]) {
+      try { players[currentScene].pause(); } catch(e) {}
+    }
+
+    // Update tabs
+    var tabs = document.querySelectorAll('.tab');
+    tabs.forEach(function(t) {
+      t.classList.remove('active');
+      t.setAttribute('aria-selected', 'false');
+    });
+    tabs[idx].classList.add('active');
+    tabs[idx].setAttribute('aria-selected', 'true');
+
+    // Update player slots
+    var slots = document.querySelectorAll('.player-slot');
+    slots.forEach(function(s) { s.classList.remove('active'); });
+    slots[idx].classList.add('active');
+
+    currentScene = idx;
+    updateDesc(idx);
+
+    // Create player if needed, then play
+    var player = createPlayer(idx);
+    setTimeout(function() {
+      try {
+        player.seek(0);
+        player.play();
+      } catch(e) {
+        player.play();
+      }
+      startAutoAdvance((SCENES[idx].duration + 3) * 1000);
+    }, 100);
+  };
+
+  // Initialize first player on load
+  createPlayer(0);
+  // Auto-play first scene after a short delay
+  setTimeout(function() {
+    players[0].play();
+    startAutoAdvance((SCENES[0].duration + 3) * 1000);
+  }, 500);
+})();
+</script>
+
+</body>
+</html>
