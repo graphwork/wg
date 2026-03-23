@@ -1957,6 +1957,24 @@ fn main() -> Result<()> {
             let mouse_override = if no_mouse { Some(false) } else { None };
             tui::viz_viewer::run(workgraph_dir, options, mouse_override, recording, trace)
         }
+        Commands::Screencast { command } => match command {
+            ScreencastCommands::Render {
+                trace,
+                output,
+                compress_idle,
+                target_duration,
+                width,
+                height,
+            } => commands::screencast_render::run(
+                &workgraph_dir,
+                &trace,
+                &output,
+                &compress_idle,
+                target_duration,
+                width,
+                height,
+            ),
+        },
         Commands::Setup => commands::setup::run(),
         Commands::Quickstart => commands::quickstart::run(cli.json),
         Commands::Status => commands::status::run(&workgraph_dir, cli.json),

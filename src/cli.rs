@@ -1456,6 +1456,12 @@ pub enum Commands {
         trace: Option<std::path::PathBuf>,
     },
 
+    /// Render TUI event traces into asciinema screencasts
+    Screencast {
+        #[command(subcommand)]
+        command: ScreencastCommands,
+    },
+
     /// Interactive configuration wizard for first-time setup
     Setup,
 
@@ -2848,6 +2854,36 @@ pub enum AgentCommands {
 }
 
 #[derive(Subcommand)]
+pub enum ScreencastCommands {
+    /// Render a TUI event trace into an asciinema .cast file
+    Render {
+        /// Path to the trace JSONL file produced by `wg tui --trace`
+        #[arg(long)]
+        trace: std::path::PathBuf,
+
+        /// Output .cast file path
+        #[arg(long)]
+        output: std::path::PathBuf,
+
+        /// Idle compression ratio as threshold:target (e.g. 5:2 compresses gaps >5s to 2s)
+        #[arg(long, default_value = "5:2")]
+        compress_idle: String,
+
+        /// Target total recording duration in seconds (optional)
+        #[arg(long)]
+        target_duration: Option<f64>,
+
+        /// Terminal width for the recording
+        #[arg(long, default_value = "120")]
+        width: u16,
+
+        /// Terminal height for the recording
+        #[arg(long, default_value = "36")]
+        height: u16,
+    },
+}
+
+#[derive(Subcommand)]
 pub enum ServiceCommands {
     /// Start the agent service daemon
     Start {
@@ -3147,6 +3183,7 @@ pub fn command_name(cmd: &Commands) -> &'static str {
         Commands::Agents { .. } => "agents",
         Commands::Kill { .. } => "kill",
         Commands::Service { .. } => "service",
+        Commands::Screencast { .. } => "screencast",
         Commands::Tui { .. } => "tui",
         Commands::Setup => "setup",
         Commands::Quickstart => "quickstart",
@@ -3222,6 +3259,7 @@ pub fn supports_json(cmd: &Commands) -> bool {
             | Commands::Agents { .. }
             | Commands::Kill { .. }
             | Commands::Service { .. }
+            | Commands::Screencast { .. }
             | Commands::Cost { .. }
             | Commands::Check
             | Commands::Cycles

@@ -133,7 +133,7 @@ fn run_event_loop_inner(terminal: &mut DefaultTerminal, app: &mut VizApp) -> Res
 }
 
 /// Route a single crossterm event to the appropriate handler.
-fn dispatch_event(app: &mut VizApp, ev: Event) {
+pub fn dispatch_event(app: &mut VizApp, ev: Event) {
     // Record the event to the trace file (if tracing is enabled).
     if app.tracer.is_some() {
         let ctx = super::trace::capture_state_context(app);

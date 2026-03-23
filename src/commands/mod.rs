@@ -84,6 +84,7 @@ pub mod resume;
 pub mod retry;
 pub mod role;
 pub mod runs_cmd;
+pub mod screencast_render;
 pub mod service;
 pub mod setup;
 pub mod show;
