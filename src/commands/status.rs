@@ -94,6 +94,19 @@ struct CompactionInfo {
     threshold: u64,
     percent: u8,
     last_compaction: Option<String>,
+    /// Duration of the last compaction LLM call in milliseconds.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_compaction_duration_ms: Option<u64>,
+    /// Number of consecutive compaction errors (persisted across restarts).
+    #[serde(skip_serializing_if = "is_zero_u64")]
+    error_count: u64,
+    /// Byte size of context.md written in the last compaction.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_compaction_context_bytes: Option<u64>,
+}
+
+fn is_zero_u64(v: &u64) -> bool {
+    *v == 0
 }
 
 /// Active cycle timing info
@@ -422,13 +435,15 @@ fn gather_compaction_info(dir: &Path) -> Option<CompactionInfo> {
     };
 
     let compactor = CompactorState::load(dir);
-    let last_compaction = compactor.last_compaction;
 
     Some(CompactionInfo {
         accumulated_tokens: accumulated,
         threshold,
         percent,
-        last_compaction,
+        last_compaction: compactor.last_compaction,
+        last_compaction_duration_ms: compactor.last_compaction_duration_ms,
+        error_count: compactor.error_count,
+        last_compaction_context_bytes: compactor.last_compaction_context_bytes,
     })
 }
 

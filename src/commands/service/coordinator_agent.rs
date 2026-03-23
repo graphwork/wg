@@ -2200,6 +2200,7 @@ mod tests {
             last_ops_count: 10,
             last_tick: 3,
             compaction_count: 1,
+            ..Default::default()
         };
         state.save(dir).unwrap();
 

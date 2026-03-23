@@ -1492,6 +1492,13 @@ fn run_graph_compaction(dir: &Path, compaction_error_count: &mut u64, logger: &D
                 ));
             }
 
+            // Persist error count to CompactorState so it survives daemon restarts
+            {
+                let mut cs = workgraph::service::compactor::CompactorState::load(dir);
+                cs.error_count = *compaction_error_count;
+                let _ = cs.save(dir);
+            }
+
             // Mark .compact-0 as failed for this iteration, then reopen for retry
             let mut graph = match load_graph(&gp) {
                 Ok(g) => g,
@@ -1885,7 +1892,9 @@ pub fn run_daemon(
     // Load max_coordinators limit from config
     let max_coordinators = config.coordinator.max_coordinators;
 
-    let mut compaction_error_count: u64 = 0;
+    // Restore error counts from persisted state so they survive daemon restarts
+    let mut compaction_error_count: u64 =
+        workgraph::service::compactor::CompactorState::load(&dir).error_count;
     let mut archival_error_count: u64 = 0;
 
     // Obtain the raw fd for poll()-based waiting. This lets the daemon

@@ -108,6 +108,7 @@ fn test_compactor_state_roundtrip() {
         last_ops_count: 42,
         last_tick: 5,
         compaction_count: 3,
+        ..Default::default()
     };
     state.save(dir).unwrap();
 
@@ -259,6 +260,7 @@ fn test_compactor_state_persists_across_compactions() {
         last_ops_count: 10,
         last_tick: 5,
         compaction_count: 1,
+        ..Default::default()
     };
     state1.save(dir).unwrap();
     assert_eq!(CompactorState::load(dir).compaction_count, 1);
@@ -268,6 +270,7 @@ fn test_compactor_state_persists_across_compactions() {
         last_ops_count: 25,
         last_tick: 10,
         compaction_count: 2,
+        ..Default::default()
     };
     state2.save(dir).unwrap();
 

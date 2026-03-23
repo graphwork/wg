@@ -14,7 +14,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::config::{Config, DispatchRole};
-use crate::graph::{Status, WorkGraph};
+use crate::graph::{Status, TokenUsage, WorkGraph};
 use crate::parser::load_graph;
 use crate::provenance;
 
@@ -40,6 +40,18 @@ pub struct CompactorState {
     pub last_ops_count: usize,
     pub last_tick: u64,
     pub compaction_count: u64,
+    /// Duration of the last compaction LLM call in milliseconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_compaction_duration_ms: Option<u64>,
+    /// Token usage from the last compaction LLM call.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_compaction_tokens: Option<TokenUsage>,
+    /// Byte size of context.md written during the last compaction.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_compaction_context_bytes: Option<u64>,
+    /// Number of consecutive compaction errors (persisted across daemon restarts).
+    #[serde(default)]
+    pub error_count: u64,
 }
 
 impl CompactorState {
@@ -128,6 +140,9 @@ pub fn run_compaction(workgraph_dir: &Path) -> Result<PathBuf> {
     // Build the prompt
     let prompt = build_compactor_prompt(&snapshot);
 
+    // Track duration of the LLM call
+    let call_start = std::time::Instant::now();
+
     // Call the LLM
     let result = super::llm::run_lightweight_llm_call(
         &config,
@@ -137,17 +152,24 @@ pub fn run_compaction(workgraph_dir: &Path) -> Result<PathBuf> {
     )
     .context("Compactor LLM call failed")?;
 
+    let duration_ms = call_start.elapsed().as_millis() as u64;
+
     // Write context.md
     let output_path = context_md_path(workgraph_dir);
     let dir = compactor_dir(workgraph_dir);
     fs::create_dir_all(&dir)?;
     fs::write(&output_path, &result.text)?;
+    let context_bytes = result.text.len() as u64;
 
-    // Update compactor state
+    // Update compactor state with metrics
     let mut state = CompactorState::load(workgraph_dir);
     state.last_compaction = Some(Utc::now().to_rfc3339());
     state.last_ops_count = count_ops(workgraph_dir);
     state.compaction_count += 1;
+    state.last_compaction_duration_ms = Some(duration_ms);
+    state.last_compaction_tokens = result.token_usage;
+    state.last_compaction_context_bytes = Some(context_bytes);
+    state.error_count = 0;
     state.save(workgraph_dir)?;
 
     Ok(output_path)
@@ -406,6 +428,7 @@ mod tests {
             last_ops_count: 42,
             last_tick: 5,
             compaction_count: 3,
+            ..Default::default()
         };
         state.save(dir).unwrap();
 
@@ -422,6 +445,58 @@ mod tests {
         assert_eq!(state.last_ops_count, 0);
         assert_eq!(state.last_tick, 0);
         assert!(state.last_compaction.is_none());
+        assert!(state.last_compaction_duration_ms.is_none());
+        assert!(state.last_compaction_tokens.is_none());
+        assert!(state.last_compaction_context_bytes.is_none());
+        assert_eq!(state.error_count, 0);
+    }
+
+    #[test]
+    fn test_compactor_state_metrics_roundtrip() {
+        use crate::graph::TokenUsage;
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = tmp.path();
+        fs::create_dir_all(dir.join("compactor")).unwrap();
+
+        let state = CompactorState {
+            last_compaction: Some("2026-01-01T00:00:00Z".to_string()),
+            last_ops_count: 5,
+            last_tick: 1,
+            compaction_count: 2,
+            last_compaction_duration_ms: Some(4500),
+            last_compaction_tokens: Some(TokenUsage {
+                cost_usd: 0.001,
+                input_tokens: 800,
+                output_tokens: 200,
+                cache_read_input_tokens: 0,
+                cache_creation_input_tokens: 0,
+            }),
+            last_compaction_context_bytes: Some(1024),
+            error_count: 0,
+        };
+        state.save(dir).unwrap();
+
+        let loaded = CompactorState::load(dir);
+        assert_eq!(loaded.last_compaction_duration_ms, Some(4500));
+        assert_eq!(loaded.last_compaction_context_bytes, Some(1024));
+        let tokens = loaded.last_compaction_tokens.expect("should have tokens");
+        assert_eq!(tokens.input_tokens, 800);
+        assert_eq!(tokens.output_tokens, 200);
+        assert_eq!(loaded.error_count, 0);
+    }
+
+    #[test]
+    fn test_compactor_state_error_count_persists() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = tmp.path();
+        fs::create_dir_all(dir.join("compactor")).unwrap();
+
+        let mut state = CompactorState::default();
+        state.error_count = 3;
+        state.save(dir).unwrap();
+
+        let loaded = CompactorState::load(dir);
+        assert_eq!(loaded.error_count, 3);
     }
 
     #[test]
