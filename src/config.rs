@@ -1721,6 +1721,11 @@ pub struct CoordinatorConfig {
     #[serde(default)]
     pub model: Option<String>,
 
+    /// Provider for the coordinator (e.g., "openrouter", "anthropic").
+    /// Used as a fallback in provider resolution when no task/agent provider is set.
+    #[serde(default)]
+    pub provider: Option<String>,
+
     /// Default context scope for spawned agents (clean, task, graph, full).
     /// Overridden by role.default_context_scope and task.context_scope.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1852,6 +1857,7 @@ impl Default for CoordinatorConfig {
             poll_interval: default_poll_interval(),
             executor: default_executor(),
             model: None,
+            provider: None,
             default_context_scope: None,
             agent_timeout: default_agent_timeout(),
             settling_delay_ms: default_settling_delay_ms(),
