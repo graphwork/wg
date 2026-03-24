@@ -1152,8 +1152,8 @@ fn handle_graph_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
             app.toggle_archive_browser();
         }
 
-        // Digit keys 0-7: switch right panel tab
-        KeyCode::Char(d @ '0'..='7') => {
+        // Digit keys 0-9: switch right panel tab
+        KeyCode::Char(d @ '0'..='9') => {
             let idx = (d as u8 - b'0') as usize;
             if let Some(tab) = RightPanelTab::from_index(idx) {
                 app.right_panel_visible = true;
@@ -1284,7 +1284,7 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
                 KeyCode::Esc => {
                     app.focused_panel = FocusedPanel::Graph;
                 }
-                KeyCode::Char(d @ '0'..='7') => {
+                KeyCode::Char(d @ '0'..='9') => {
                     let idx = (d as u8 - b'0') as usize;
                     if let Some(tab) = RightPanelTab::from_index(idx) {
                         app.right_panel_tab = tab;
@@ -1332,8 +1332,8 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
             app.focused_panel = FocusedPanel::Graph;
         }
 
-        // Number keys 0-6 switch tabs
-        KeyCode::Char(d @ '0'..='7') => {
+        // Number keys 0-8 switch tabs
+        KeyCode::Char(d @ '0'..='9') => {
             let idx = (d as u8 - b'0') as usize;
             if let Some(tab) = RightPanelTab::from_index(idx) {
                 app.right_panel_tab = tab;
