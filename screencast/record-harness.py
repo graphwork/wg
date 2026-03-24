@@ -206,13 +206,24 @@ class RecordingHarness:
         if content != self._prev_content:
             elapsed = time.monotonic() - self._start_time
 
+            # Strip the trailing newline that tmux capture-pane always appends.
+            # Without this, a 38-row pane produces 38 lines + trailing \n,
+            # which after CR+LF conversion becomes 38 rows + trailing \r\n.
+            # That trailing \r\n causes a scroll in the player, creating a
+            # blank line at the bottom and losing the top row.
+            # Only strip ONE trailing \n — blank rows above it are real content.
+            if content.endswith('\n'):
+                content_stripped = content[:-1]
+            else:
+                content_stripped = content
+
             # Convert bare LF to CR+LF for correct terminal rendering.
             # tmux capture-pane outputs lines separated by \n, but terminals
             # need \r\n (CR returns cursor to column 0, LF moves down).
             # Without CR, text "slides" rightward on each line in playback.
             #
             # Strategy: replace any \n that isn't preceded by \r with \r\n.
-            content_fixed = re.sub(r'(?<!\r)\n', '\r\n', content)
+            content_fixed = re.sub(r'(?<!\r)\n', '\r\n', content_stripped)
 
             # Clear screen + home cursor, then write full frame
             frame_data = "\x1b[H\x1b[2J" + content_fixed
@@ -256,6 +267,9 @@ class RecordingHarness:
                     original = event[2]
                     # Fix bare \n (not preceded by \r) in the output data
                     fixed = re.sub(r'(?<!\r)\n', '\r\n', original)
+                    # Strip one trailing \r\n to prevent scroll in player
+                    if fixed.endswith('\r\n'):
+                        fixed = fixed[:-2]
                     if fixed != original:
                         event[2] = fixed
                         fixed_count += 1
