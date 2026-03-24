@@ -49,11 +49,15 @@ pub(super) fn detect_termux_touch() -> bool {
     std::env::var_os("TERMUX_VERSION").is_some() && std::env::var_os("MOSH_SERVER_PID").is_none()
 }
 
-pub fn run_event_loop(terminal: &mut DefaultTerminal, app: &mut VizApp) -> Result<()> {
+pub fn run_event_loop(
+    terminal: &mut DefaultTerminal,
+    app: &mut VizApp,
+    shared_screen: &super::screen_dump::SharedScreen,
+) -> Result<()> {
     // Set initial mouse capture state
     set_mouse_capture(app.mouse_enabled, app.any_motion_mouse)?;
 
-    let result = run_event_loop_inner(terminal, app);
+    let result = run_event_loop_inner(terminal, app, shared_screen);
 
     // Always disable mouse capture on exit
     let _ = set_mouse_capture(false, false);
@@ -61,7 +65,11 @@ pub fn run_event_loop(terminal: &mut DefaultTerminal, app: &mut VizApp) -> Resul
     result
 }
 
-fn run_event_loop_inner(terminal: &mut DefaultTerminal, app: &mut VizApp) -> Result<()> {
+fn run_event_loop_inner(
+    terminal: &mut DefaultTerminal,
+    app: &mut VizApp,
+    shared_screen: &super::screen_dump::SharedScreen,
+) -> Result<()> {
     // Read crossterm events in a background thread and feed them through a
     // channel.  This prevents event::read() from blocking the main loop when
     // the terminal layers (e.g. mosh) deliver a bracketed-paste slowly —
@@ -84,7 +92,9 @@ fn run_event_loop_inner(terminal: &mut DefaultTerminal, app: &mut VizApp) -> Res
         let drained = app.drain_commands();
 
         if needs_redraw || refreshed || drained {
-            terminal.draw(|frame| render::draw(frame, app))?;
+            let completed = terminal.draw(|frame| render::draw(frame, app))?;
+            // Update the shared screen snapshot for IPC dump clients.
+            update_shared_screen(completed.buffer, app, shared_screen);
             needs_redraw = false;
         }
 
@@ -132,6 +142,33 @@ fn run_event_loop_inner(terminal: &mut DefaultTerminal, app: &mut VizApp) -> Res
     }
 }
 
+/// Copy the current terminal buffer into the shared screen snapshot for IPC.
+fn update_shared_screen(
+    buf: &ratatui::buffer::Buffer,
+    app: &VizApp,
+    shared_screen: &super::screen_dump::SharedScreen,
+) {
+    let active_tab = app.right_panel_tab.label();
+    let focused = match app.focused_panel {
+        super::state::FocusedPanel::Graph => "graph",
+        super::state::FocusedPanel::RightPanel => "panel",
+    };
+    let selected = app
+        .selected_task_idx
+        .and_then(|idx| app.task_order.get(idx))
+        .map(|s| s.as_str());
+    let input_mode = format!("{:?}", app.input_mode);
+    super::screen_dump::update_snapshot(
+        shared_screen,
+        buf,
+        active_tab,
+        focused,
+        selected,
+        &input_mode,
+        app.active_coordinator_id,
+    );
+}
+
 /// Route a single crossterm event to the appropriate handler.
 pub fn dispatch_event(app: &mut VizApp, ev: Event) {
     // Record the event to the trace file (if tracing is enabled).
@@ -144,6 +181,11 @@ pub fn dispatch_event(app: &mut VizApp, ev: Event) {
 
     match ev {
         Event::Key(key) if key.kind == KeyEventKind::Press => {
+            // Record key feedback for overlay before handling (so we capture all keys).
+            if app.key_feedback_enabled {
+                let label = key_label(key.code, key.modifiers);
+                app.record_key_feedback(label);
+            }
             handle_key(app, key.code, key.modifiers);
         }
         Event::Paste(text) => {
@@ -154,6 +196,67 @@ pub fn dispatch_event(app: &mut VizApp, ev: Event) {
         }
         Event::Resize(_, _) => {} // handled by next redraw
         _ => {}
+    }
+}
+
+/// Produce a human-readable label for a key press (for the key feedback overlay).
+fn key_label(code: KeyCode, modifiers: KeyModifiers) -> String {
+    let mut parts = Vec::new();
+    if modifiers.contains(KeyModifiers::CONTROL) {
+        parts.push("Ctrl");
+    }
+    if modifiers.contains(KeyModifiers::ALT) {
+        parts.push("Alt");
+    }
+    if modifiers.contains(KeyModifiers::SHIFT) {
+        parts.push("Shift");
+    }
+    let key_name = match code {
+        KeyCode::Char(' ') => "Space".to_string(),
+        KeyCode::Char(c) => {
+            if modifiers.contains(KeyModifiers::SHIFT) && c.is_ascii_alphabetic() {
+                c.to_uppercase().to_string()
+            } else {
+                c.to_string()
+            }
+        }
+        KeyCode::Enter => "Enter".to_string(),
+        KeyCode::Esc => "Esc".to_string(),
+        KeyCode::Tab => "Tab".to_string(),
+        KeyCode::BackTab => "Shift+Tab".to_string(),
+        KeyCode::Backspace => "Bksp".to_string(),
+        KeyCode::Delete => "Del".to_string(),
+        KeyCode::Up => "\u{2191}".to_string(),    // ↑
+        KeyCode::Down => "\u{2193}".to_string(),  // ↓
+        KeyCode::Left => "\u{2190}".to_string(),  // ←
+        KeyCode::Right => "\u{2192}".to_string(), // →
+        KeyCode::Home => "Home".to_string(),
+        KeyCode::End => "End".to_string(),
+        KeyCode::PageUp => "PgUp".to_string(),
+        KeyCode::PageDown => "PgDn".to_string(),
+        KeyCode::F(n) => format!("F{n}"),
+        _ => format!("{code:?}"),
+    };
+    // For Shift+arrow style combos, the key name already includes "Shift" for BackTab,
+    // so avoid duplicate "Shift" prefix.
+    if code == KeyCode::BackTab {
+        return key_name;
+    }
+    if parts.is_empty() {
+        key_name
+    } else {
+        parts.push(&key_name);
+        // Filter duplicate "Shift" for shifted characters.
+        if modifiers.contains(KeyModifiers::SHIFT) && code != KeyCode::BackTab {
+            // For plain chars, Shift is implied in the uppercase char itself
+            if let KeyCode::Char(c) = code {
+                if c.is_ascii_alphabetic() {
+                    // Already uppercased — remove Shift prefix
+                    parts.retain(|p| *p != "Shift");
+                }
+            }
+        }
+        parts.join("+")
     }
 }
 
@@ -939,6 +1042,14 @@ fn handle_graph_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
             app.show_running_system_tasks = !app.show_running_system_tasks;
             app.system_tasks_just_toggled = true;
             app.force_refresh();
+        }
+
+        // *: toggle touch echo (click/touch visual feedback)
+        KeyCode::Char('*') => {
+            app.touch_echo_enabled = !app.touch_echo_enabled;
+            if !app.touch_echo_enabled {
+                app.touch_echoes.clear();
+            }
         }
 
         // Backslash: toggle right panel visibility
@@ -1819,6 +1930,9 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
             }
         }
         MouseEventKind::Down(MouseButton::Left) => {
+            // Touch echo: record click position for visual feedback overlay.
+            app.add_touch_echo(column, row);
+
             // Service health badge click
             let in_service_badge =
                 app.last_service_badge_area.width > 0 && app.last_service_badge_area.contains(pos);

@@ -75,6 +75,12 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
     // Clean up expired splash animations.
     app.cleanup_splash_animations();
 
+    // Clean up expired key feedback entries.
+    app.cleanup_key_feedback();
+
+    // Clean up expired touch echo indicators.
+    app.cleanup_touch_echoes();
+
     // Reset scrollbar areas each frame (re-set by draw_scrollbar / panel scrollbar code).
     app.last_graph_scrollbar_area = Rect::default();
     app.last_panel_scrollbar_area = Rect::default();
@@ -355,6 +361,16 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
     // Pipeline toasts (agency events: assignment, placement, spawn)
     if !app.pipeline_toasts.is_empty() {
         draw_pipeline_toasts(frame, app);
+    }
+
+    // Key feedback overlay (for screencasts/demos)
+    if app.key_feedback_enabled && !app.key_feedback.is_empty() {
+        draw_key_feedback(frame, app);
+    }
+
+    // Touch echo overlay (click/touch visual feedback for screencasts/demos)
+    if app.touch_echo_enabled && !app.touch_echoes.is_empty() {
+        draw_touch_echoes(frame, app);
     }
 }
 
@@ -5499,6 +5515,172 @@ fn draw_pipeline_toasts(frame: &mut Frame, app: &VizApp) {
     }
 }
 
+/// Draw the key feedback overlay showing recent key presses.
+/// Positioned at the bottom-left of the screen, above the hints bar.
+fn draw_key_feedback(frame: &mut Frame, app: &VizApp) {
+    let size = frame.area();
+    if size.width < 10 || size.height < 5 {
+        return;
+    }
+
+    let duration_ms = VizApp::KEY_FEEDBACK_DURATION.as_millis() as u64;
+
+    // Collect visible entries with fade factors.
+    let entries: Vec<(&str, f64)> = app
+        .key_feedback
+        .iter()
+        .filter_map(|(label, when)| {
+            let elapsed_ms = when.elapsed().as_millis() as u64;
+            if elapsed_ms >= duration_ms {
+                return None;
+            }
+            // Fade: full opacity for first 1s, then fade out over remaining time.
+            let fade_start_ms = 1000u64;
+            let fade = if elapsed_ms < fade_start_ms {
+                1.0
+            } else {
+                1.0 - ((elapsed_ms - fade_start_ms) as f64
+                    / (duration_ms - fade_start_ms) as f64)
+            };
+            Some((label.as_str(), fade))
+        })
+        .collect();
+
+    if entries.is_empty() {
+        return;
+    }
+
+    // Build a single-line display: keys separated by thin space.
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    for (i, (label, fade)) in entries.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::raw(" "));
+        }
+        // Cyan tint fading to dark.
+        let brightness = (*fade * 255.0) as u8;
+        let fg = Color::Rgb(
+            (brightness as f64 * 0.7) as u8,
+            brightness,
+            brightness,
+        );
+        let bg = Color::Rgb(
+            (20.0 * fade) as u8,
+            (30.0 * fade) as u8,
+            (40.0 * fade) as u8,
+        );
+        spans.push(Span::styled(
+            format!(" {} ", label),
+            Style::default()
+                .fg(fg)
+                .bg(bg)
+                .add_modifier(if *fade > 0.7 {
+                    Modifier::BOLD
+                } else {
+                    Modifier::empty()
+                }),
+        ));
+    }
+
+    let line = Line::from(spans);
+    let line_width = line.width() as u16;
+
+    // Position: bottom-left, one row above the hints bar.
+    let x = 1;
+    let y = size.height.saturating_sub(2);
+    let w = line_width.min(size.width.saturating_sub(2));
+    let area = Rect::new(x, y, w, 1);
+
+    frame.render_widget(Clear, area);
+    frame.render_widget(Paragraph::new(line), area);
+}
+
+/// Draw touch/click echo indicators — concentric ring shapes that fade out.
+///
+/// Each echo renders a small pattern of unicode characters centered on the
+/// click position. The pattern shrinks and fades over ~0.7 seconds, providing
+/// visual feedback for mouse/touch interaction (useful for screencasts/demos).
+fn draw_touch_echoes(frame: &mut Frame, app: &VizApp) {
+    let area = frame.area();
+    if area.width < 3 || area.height < 3 {
+        return;
+    }
+
+    // Ring patterns at different animation stages (outer → inner as time progresses).
+    // Uses light box-drawing characters for a clean circle-ish look.
+    // Pattern: (dy, dx, char) offsets from center.
+    #[rustfmt::skip]
+    const RING_OUTER: &[(i16, i16, char)] = &[
+        (-1, -1, '╭'), (-1, 0, '─'), (-1, 1, '╮'),
+        ( 0, -1, '│'),               ( 0, 1, '│'),
+        ( 1, -1, '╰'), ( 1, 0, '─'), ( 1, 1, '╯'),
+    ];
+    const DOT_CENTER: char = '●';
+
+    for echo in &app.touch_echoes {
+        let progress = echo.progress();
+        if progress >= 1.0 {
+            continue;
+        }
+
+        // Color: bright cyan → dim → gone. Use RGB for smooth fade.
+        let intensity = (1.0 - progress) as f64;
+        let fg = Color::Rgb(
+            (100.0 * intensity) as u8,
+            (220.0 * intensity) as u8,
+            (255.0 * intensity) as u8,
+        );
+
+        // Phase 1 (0.0–0.4): Show ring + center dot.
+        // Phase 2 (0.4–0.7): Ring fades, center dot shrinks.
+        let show_ring = progress < 0.4;
+
+        if show_ring {
+            for &(dy, dx, ch) in RING_OUTER {
+                let r = echo.row as i16 + dy;
+                let c = echo.col as i16 + dx;
+                if r >= area.y as i16
+                    && r < (area.y + area.height) as i16
+                    && c >= area.x as i16
+                    && c < (area.x + area.width) as i16
+                {
+                    let cell_area = Rect::new(c as u16, r as u16, 1, 1);
+                    frame.render_widget(Clear, cell_area);
+                    frame.render_widget(
+                        Paragraph::new(Span::styled(
+                            ch.to_string(),
+                            Style::default().fg(fg),
+                        )),
+                        cell_area,
+                    );
+                }
+            }
+        }
+
+        // Center dot — always visible while echo is active.
+        if echo.row >= area.y
+            && echo.row < area.y + area.height
+            && echo.col >= area.x
+            && echo.col < area.x + area.width
+        {
+            let center = Rect::new(echo.col, echo.row, 1, 1);
+            frame.render_widget(Clear, center);
+            frame.render_widget(
+                Paragraph::new(Span::styled(
+                    DOT_CENTER.to_string(),
+                    Style::default()
+                        .fg(fg)
+                        .add_modifier(if progress < 0.3 {
+                            Modifier::BOLD
+                        } else {
+                            Modifier::empty()
+                        }),
+                )),
+                center,
+            );
+        }
+    }
+}
+
 fn draw_service_health_detail(frame: &mut Frame, app: &VizApp) {
     let size = frame.area();
     let health = &app.service_health;
@@ -6025,6 +6207,7 @@ fn draw_help_overlay(frame: &mut Frame) {
         binding("r", "Force refresh"),
         binding(".", "Toggle system tasks (visible by default)"),
         binding("<", "Toggle running system tasks only"),
+        binding("*", "Toggle touch echo (click feedback)"),
         binding("L", "Toggle coordinator log"),
         binding("?", "Toggle this help"),
         binding("q", "Quit"),

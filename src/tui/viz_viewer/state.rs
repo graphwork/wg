@@ -294,6 +294,40 @@ fn flash_color_for_kind(kind: AnimationKind) -> (u8, u8, u8) {
     }
 }
 
+// ══════════════════════════════════════════════════════════════════════════════
+// Touch echo (click/touch visual feedback)
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// Maximum number of simultaneous touch echo indicators.
+const MAX_TOUCH_ECHOES: usize = 10;
+
+/// Duration of the touch echo fade animation in seconds.
+const TOUCH_ECHO_DURATION_SECS: f64 = 0.7;
+
+/// A transient visual indicator shown at a click/touch position.
+#[derive(Clone, Debug)]
+pub struct TouchEcho {
+    /// Terminal column where the click occurred.
+    pub col: u16,
+    /// Terminal row where the click occurred.
+    pub row: u16,
+    /// When the echo was created.
+    pub start: Instant,
+}
+
+impl TouchEcho {
+    /// Progress from 0.0 (just appeared) to 1.0 (fully faded).
+    pub fn progress(&self) -> f64 {
+        let elapsed = self.start.elapsed().as_secs_f64();
+        (elapsed / TOUCH_ECHO_DURATION_SECS).min(1.0)
+    }
+
+    /// Whether this echo has fully faded and should be removed.
+    pub fn is_expired(&self) -> bool {
+        self.start.elapsed().as_secs_f64() >= TOUCH_ECHO_DURATION_SECS
+    }
+}
+
 /// Direction of an inspector panel slide animation.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SlideDirection {
@@ -2186,6 +2220,12 @@ pub struct VizApp {
     #[allow(dead_code)]
     pub last_panel_hscrollbar_area: Rect,
 
+    // ── Touch echo (click/touch visual feedback) ──
+    /// Whether touch echo indicators are enabled (toggled with `*`).
+    pub touch_echo_enabled: bool,
+    /// Active touch echo indicators (position + timestamp for fade).
+    pub touch_echoes: Vec<TouchEcho>,
+
     // ── Keyboard enhancement ──
     /// Whether the kitty keyboard protocol was successfully enabled.
     /// When true, Shift+Enter is distinguishable from Enter.
@@ -2227,6 +2267,13 @@ pub struct VizApp {
     // ── Event tracing ──
     /// When `Some`, records all input events to a JSONL file for replay.
     pub tracer: Option<super::trace::EventTracer>,
+
+    // ── Key feedback overlay ──
+    /// Whether to show a key feedback overlay (for screencasts/demos).
+    pub key_feedback_enabled: bool,
+    /// Recent key presses for the feedback overlay, with timestamps.
+    /// Newest entries at the back.
+    pub key_feedback: VecDeque<(String, Instant)>,
 }
 
 /// Scroll state for a 2D viewport.
@@ -2397,6 +2444,8 @@ impl VizApp {
             panel_hscroll_activity: None,
             last_graph_hscrollbar_area: Rect::default(),
             last_panel_hscrollbar_area: Rect::default(),
+            touch_echo_enabled: false,
+            touch_echoes: Vec::new(),
             has_keyboard_enhancement: false,
             editor_handler: create_editor_handler(),
             last_graph_mtime: graph_mtime,
@@ -2412,6 +2461,8 @@ impl VizApp {
             hud_follow: false,
             graph_viz_stale: false,
             tracer: None,
+            key_feedback_enabled: false,
+            key_feedback: VecDeque::new(),
         };
         app.start_fs_watcher();
         // Load graph once for both viz and stats on startup.
@@ -3126,6 +3177,32 @@ impl VizApp {
         }
     }
 
+    /// Add a touch echo at the given terminal position.
+    pub fn add_touch_echo(&mut self, col: u16, row: u16) {
+        if !self.touch_echo_enabled {
+            return;
+        }
+        self.touch_echoes.push(TouchEcho {
+            col,
+            row,
+            start: Instant::now(),
+        });
+        // Cap the number of active echoes.
+        if self.touch_echoes.len() > MAX_TOUCH_ECHOES {
+            self.touch_echoes.remove(0);
+        }
+    }
+
+    /// Remove expired touch echo indicators.
+    pub fn cleanup_touch_echoes(&mut self) {
+        self.touch_echoes.retain(|e| !e.is_expired());
+    }
+
+    /// Whether any touch echoes are still animating.
+    pub fn has_active_touch_echoes(&self) -> bool {
+        self.touch_echo_enabled && !self.touch_echoes.is_empty()
+    }
+
     /// Enforce the maximum animation count by dropping oldest animations.
     fn enforce_animation_cap(&mut self) {
         if self.splash_animations.len() <= MAX_ANIMATIONS {
@@ -3142,6 +3219,46 @@ impl VizApp {
         let to_remove = entries.len() - MAX_ANIMATIONS;
         for (id, _) in entries.into_iter().take(to_remove) {
             self.splash_animations.remove(&id);
+        }
+    }
+
+    // ── Key feedback ──
+
+    /// Duration to show each key press in the overlay.
+    pub(super) const KEY_FEEDBACK_DURATION: std::time::Duration =
+        std::time::Duration::from_millis(1500);
+    /// Maximum number of recent key presses to display.
+    const KEY_FEEDBACK_MAX: usize = 6;
+
+    /// Record a key press for the feedback overlay.
+    pub fn record_key_feedback(&mut self, label: String) {
+        if !self.key_feedback_enabled {
+            return;
+        }
+        let now = Instant::now();
+        // Remove expired entries.
+        while self
+            .key_feedback
+            .front()
+            .is_some_and(|(_, t)| t.elapsed() > Self::KEY_FEEDBACK_DURATION)
+        {
+            self.key_feedback.pop_front();
+        }
+        self.key_feedback.push_back((label, now));
+        // Cap the queue size.
+        while self.key_feedback.len() > Self::KEY_FEEDBACK_MAX {
+            self.key_feedback.pop_front();
+        }
+    }
+
+    /// Remove expired key feedback entries.
+    pub fn cleanup_key_feedback(&mut self) {
+        while self
+            .key_feedback
+            .front()
+            .is_some_and(|(_, t)| t.elapsed() > Self::KEY_FEEDBACK_DURATION)
+        {
+            self.key_feedback.pop_front();
         }
     }
 
@@ -4062,6 +4179,14 @@ impl VizApp {
         }) {
             return true;
         }
+        // Key feedback overlay (fades after 1.5s)
+        if !self.key_feedback.is_empty() {
+            return true;
+        }
+        // Touch echo indicators (fade after ~0.7s)
+        if self.has_active_touch_echoes() {
+            return true;
+        }
         false
     }
 
@@ -4071,6 +4196,7 @@ impl VizApp {
         // During animations, keep frame rate high for smooth visuals
         if self.has_active_animations()
             || self.slide_animation.as_ref().is_some_and(|a| !a.is_done())
+            || self.has_active_touch_echoes()
         {
             return std::time::Duration::from_millis(50);
         }
@@ -5632,6 +5758,8 @@ impl VizApp {
             panel_hscroll_activity: None,
             last_graph_hscrollbar_area: Rect::default(),
             last_panel_hscrollbar_area: Rect::default(),
+            touch_echo_enabled: false,
+            touch_echoes: Vec::new(),
             has_keyboard_enhancement: false,
             editor_handler: create_editor_handler(),
             last_graph_mtime: None,
@@ -5650,6 +5778,8 @@ impl VizApp {
             hud_follow: false,
             graph_viz_stale: false,
             tracer: None,
+            key_feedback_enabled: false,
+            key_feedback: VecDeque::new(),
         }
     }
 
@@ -12136,5 +12266,162 @@ mod archive_browser_tests {
         ab.active = false;
         ab.filter_active = false;
         assert!(!ab.active);
+    }
+}
+
+#[cfg(test)]
+mod touch_echo_tests {
+    use super::*;
+
+    #[test]
+    fn touch_echo_progress_and_expiry() {
+        let echo = TouchEcho {
+            col: 10,
+            row: 5,
+            start: Instant::now(),
+        };
+        // Just created: progress near 0, not expired.
+        assert!(echo.progress() < 0.1);
+        assert!(!echo.is_expired());
+    }
+
+    #[test]
+    fn touch_echo_expired_after_duration() {
+        let echo = TouchEcho {
+            col: 10,
+            row: 5,
+            start: Instant::now() - std::time::Duration::from_secs(1),
+        };
+        // After 1s (> TOUCH_ECHO_DURATION_SECS=0.7): fully expired.
+        assert!(echo.progress() >= 1.0);
+        assert!(echo.is_expired());
+    }
+
+    #[test]
+    fn add_touch_echo_respects_enabled_flag() {
+        let tmp = tempfile::tempdir().unwrap();
+        let graph_path = tmp.path().join("graph.jsonl");
+        std::fs::write(&graph_path, "").unwrap();
+        let config_path = tmp.path().join("config.toml");
+        std::fs::write(&config_path, "").unwrap();
+        let mut app = VizApp::new(
+            tmp.path().to_path_buf(),
+            crate::commands::viz::VizOptions::default(),
+            Some(true),
+        );
+
+        // Disabled by default: adding echo should be a no-op.
+        assert!(!app.touch_echo_enabled);
+        app.add_touch_echo(10, 5);
+        assert!(app.touch_echoes.is_empty());
+
+        // Enable and add.
+        app.touch_echo_enabled = true;
+        app.add_touch_echo(10, 5);
+        assert_eq!(app.touch_echoes.len(), 1);
+        assert_eq!(app.touch_echoes[0].col, 10);
+        assert_eq!(app.touch_echoes[0].row, 5);
+    }
+
+    #[test]
+    fn touch_echo_cap_enforced() {
+        let tmp = tempfile::tempdir().unwrap();
+        let graph_path = tmp.path().join("graph.jsonl");
+        std::fs::write(&graph_path, "").unwrap();
+        let config_path = tmp.path().join("config.toml");
+        std::fs::write(&config_path, "").unwrap();
+        let mut app = VizApp::new(
+            tmp.path().to_path_buf(),
+            crate::commands::viz::VizOptions::default(),
+            Some(true),
+        );
+        app.touch_echo_enabled = true;
+
+        // Add more than MAX_TOUCH_ECHOES.
+        for i in 0..15 {
+            app.add_touch_echo(i, 0);
+        }
+        assert!(app.touch_echoes.len() <= MAX_TOUCH_ECHOES);
+        // The oldest echoes should have been dropped.
+        assert_eq!(app.touch_echoes[0].col, 5); // first 5 dropped (15 - 10 = 5)
+    }
+
+    #[test]
+    fn cleanup_removes_expired_echoes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let graph_path = tmp.path().join("graph.jsonl");
+        std::fs::write(&graph_path, "").unwrap();
+        let config_path = tmp.path().join("config.toml");
+        std::fs::write(&config_path, "").unwrap();
+        let mut app = VizApp::new(
+            tmp.path().to_path_buf(),
+            crate::commands::viz::VizOptions::default(),
+            Some(true),
+        );
+        app.touch_echo_enabled = true;
+
+        // Add an expired echo manually.
+        app.touch_echoes.push(TouchEcho {
+            col: 1,
+            row: 1,
+            start: Instant::now() - std::time::Duration::from_secs(2),
+        });
+        // Add a fresh echo.
+        app.add_touch_echo(2, 2);
+
+        assert_eq!(app.touch_echoes.len(), 2);
+        app.cleanup_touch_echoes();
+        assert_eq!(app.touch_echoes.len(), 1);
+        assert_eq!(app.touch_echoes[0].col, 2);
+    }
+
+    #[test]
+    fn has_active_touch_echoes_respects_enabled() {
+        let tmp = tempfile::tempdir().unwrap();
+        let graph_path = tmp.path().join("graph.jsonl");
+        std::fs::write(&graph_path, "").unwrap();
+        let config_path = tmp.path().join("config.toml");
+        std::fs::write(&config_path, "").unwrap();
+        let mut app = VizApp::new(
+            tmp.path().to_path_buf(),
+            crate::commands::viz::VizOptions::default(),
+            Some(true),
+        );
+
+        // No echoes: false regardless.
+        assert!(!app.has_active_touch_echoes());
+
+        // Enable, add echo: should be true.
+        app.touch_echo_enabled = true;
+        app.add_touch_echo(5, 5);
+        assert!(app.has_active_touch_echoes());
+
+        // Disable: should be false even with echoes present.
+        app.touch_echo_enabled = false;
+        assert!(!app.has_active_touch_echoes());
+    }
+
+    #[test]
+    fn toggle_off_clears_echoes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let graph_path = tmp.path().join("graph.jsonl");
+        std::fs::write(&graph_path, "").unwrap();
+        let config_path = tmp.path().join("config.toml");
+        std::fs::write(&config_path, "").unwrap();
+        let mut app = VizApp::new(
+            tmp.path().to_path_buf(),
+            crate::commands::viz::VizOptions::default(),
+            Some(true),
+        );
+
+        app.touch_echo_enabled = true;
+        app.add_touch_echo(5, 5);
+        app.add_touch_echo(10, 10);
+        assert_eq!(app.touch_echoes.len(), 2);
+
+        // Simulating the toggle-off behavior from the event handler.
+        app.touch_echo_enabled = false;
+        app.touch_echoes.clear();
+        assert!(app.touch_echoes.is_empty());
     }
 }
