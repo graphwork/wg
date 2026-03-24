@@ -1,0 +1,28 @@
+{
+  "annotations": [
+    {
+      "start": 0.0,
+      "end": 3.0,
+      "phase": "SELECT",
+      "text": "Navigate to a task and press 1 to open the Detail tab"
+    },
+    {
+      "start": 3.0,
+      "end": 6.0,
+      "phase": "INSPECT",
+      "text": "Number keys switch tabs: 1\u2009Detail \u2009 2\u2009Log \u2009 4\u2009Agency \u2009 8\u2009Firehose"
+    },
+    {
+      "start": 6.0,
+      "end": 9.0,
+      "phase": "EXPLORE",
+      "text": "Navigating to a different task updates the inspector in real time"
+    },
+    {
+      "start": 9.0,
+      "end": 13.0,
+      "phase": "DETAIL",
+      "text": "Each task shows its full description, dependencies, and status"
+    }
+  ]
+}

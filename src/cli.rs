@@ -2894,6 +2894,25 @@ pub enum ScreencastCommands {
         #[arg(long, default_value = "36")]
         height: u16,
     },
+
+    /// Launch an autopilot that drives the TUI for screencast recording
+    Autopilot {
+        /// Output .cast file path
+        #[arg(long, default_value = "screencast.cast")]
+        output: std::path::PathBuf,
+
+        /// Terminal width
+        #[arg(long, default_value = "80")]
+        cols: u16,
+
+        /// Terminal height
+        #[arg(long, default_value = "24")]
+        rows: u16,
+
+        /// Maximum recording duration in seconds
+        #[arg(long, default_value = "60")]
+        duration: f64,
+    },
 }
 
 #[derive(Subcommand)]

@@ -1,0 +1,28 @@
+{
+  "annotations": [
+    {
+      "start": 0.0,
+      "end": 3.0,
+      "phase": "SELECT",
+      "text": "Select an in-progress task to see its agent activity"
+    },
+    {
+      "start": 3.0,
+      "end": 6.0,
+      "phase": "LOG",
+      "text": "Press 2 for the Log tab \u2014 see agent progress entries in real time"
+    },
+    {
+      "start": 6.0,
+      "end": 9.0,
+      "phase": "FIREHOSE",
+      "text": "Press 8 for Firehose \u2014 raw agent output streaming live"
+    },
+    {
+      "start": 9.0,
+      "end": 13.0,
+      "phase": "MONITOR",
+      "text": "Navigate between tasks to monitor different agents simultaneously"
+    }
+  ]
+}

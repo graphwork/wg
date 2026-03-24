@@ -1,0 +1,28 @@
+{
+  "annotations": [
+    {
+      "start": 0.0,
+      "end": 3.0,
+      "phase": "CHAT",
+      "text": "Press c to enter chat mode \u2014 talk to the coordinator directly"
+    },
+    {
+      "start": 3.0,
+      "end": 6.5,
+      "phase": "TYPE",
+      "text": "Type your message, then Esc to return to the graph without sending"
+    },
+    {
+      "start": 6.5,
+      "end": 10.0,
+      "phase": "NAVIGATE",
+      "text": "Arrow keys + Tab switch between graph and inspector panels"
+    },
+    {
+      "start": 10.0,
+      "end": 14.0,
+      "phase": "INSPECT",
+      "text": "Number keys jump to inspector tabs \u2014 all with keystroke HUD feedback"
+    }
+  ]
+}

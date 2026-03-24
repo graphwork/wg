@@ -1,0 +1,22 @@
+{
+  "annotations": [
+    {
+      "start": 0.0,
+      "end": 3.0,
+      "phase": "LAUNCH",
+      "text": "TUI opens with the task graph on the left, inspector on the right"
+    },
+    {
+      "start": 3.0,
+      "end": 8.0,
+      "phase": "NAVIGATE",
+      "text": "Arrow keys scan through tasks \u2014 the inspector updates instantly for each selection"
+    },
+    {
+      "start": 8.0,
+      "end": 12.0,
+      "phase": "NAVIGATE",
+      "text": "Navigate back up \u2014 task status (done, in-progress, open) shown in the graph"
+    }
+  ]
+}

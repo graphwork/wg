@@ -1,0 +1,328 @@
+<!--
+  Workgraph TUI Interaction Examples — feature section snippet
+
+  Shows 4 focused TUI interaction patterns with keystroke HUD overlay.
+  Each example is 5-15 seconds, demonstrating one pattern.
+
+  Dependencies (add to <head>):
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/asciinema-player@3.9.0/dist/bundle/asciinema-player.css">
+
+  Dependencies (add before </body>):
+    <script src="https://cdn.jsdelivr.net/npm/asciinema-player@3.9.0/dist/bundle/asciinema-player.min.js"></script>
+
+  Cast files required in assets/casts/:
+    - tui-graph-nav.cast
+    - tui-inspector.cast
+    - tui-agent-monitor.cast
+    - tui-key-workflows.cast
+
+  Annotation files:
+    - tui-graph-nav.annotations.json
+    - tui-inspector.annotations.json
+    - tui-agent-monitor.annotations.json
+    - tui-key-workflows.annotations.json
+-->
+
+<style>
+.wg-tui { max-width: 960px; margin: 0 auto; padding: 2rem 1rem; }
+.wg-tui * { box-sizing: border-box; }
+.wg-tui-title { text-align: center; margin-bottom: 0.5rem; font-size: 1.5rem; font-weight: 600; color: #e6edf3; }
+.wg-tui-subtitle { text-align: center; color: #8b949e; margin-bottom: 1.5rem; font-size: 0.95rem; }
+
+.wg-tui-tabs { display: flex; gap: 0; border-bottom: 1px solid #30363d; }
+.wg-tui-tab {
+  flex: 1; padding: 0.75rem 0.5rem; background: transparent;
+  border: 1px solid transparent; border-bottom: none;
+  color: #8b949e; font-size: 0.85rem; cursor: pointer;
+  text-align: center; transition: color 0.2s, background 0.2s;
+  font-family: inherit; border-radius: 6px 6px 0 0;
+}
+.wg-tui-tab:hover { color: #e6edf3; background: #161b22; }
+.wg-tui-tab.active { color: #e6edf3; background: #161b22; border-color: #30363d; font-weight: 600; }
+.wg-tui-tab-icon { display: block; font-size: 1.1rem; margin-bottom: 0.2rem; }
+.wg-tui-tab-label { display: block; font-size: 0.75rem; }
+.wg-tui-tab-keys {
+  display: block; font-size: 0.65rem; color: #8b949e; margin-top: 0.15rem;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+}
+
+.wg-tui-player-wrap {
+  background: #161b22; border: 1px solid #30363d; border-top: none;
+  border-radius: 0 0 8px 8px; overflow: hidden; position: relative;
+}
+.wg-tui-player-slot { display: none; }
+.wg-tui-player-slot.active { display: block; }
+
+.wg-tui-desc {
+  padding: 0.75rem 1rem; background: #161b22;
+  border-top: 1px solid #30363d; font-size: 0.85rem; color: #8b949e;
+  display: flex; align-items: center; gap: 0.75rem;
+}
+.wg-tui-desc .wg-tui-keys-badge {
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  color: #bc8cff; font-size: 0.75rem;
+  background: rgba(188, 140, 255, 0.1);
+  padding: 0.15rem 0.5rem; border-radius: 3px; white-space: nowrap;
+}
+
+.wg-tui-progress { height: 2px; background: #30363d; position: relative; overflow: hidden; }
+.wg-tui-progress-fill { height: 100%; background: #bc8cff; width: 0%; transition: width 0.5s linear; }
+
+.wg-tui-annotation {
+  padding: 0.6rem 1rem; background: #0d1117; border-top: 1px solid #30363d;
+  display: flex; align-items: center; gap: 0.75rem; min-height: 2.5rem;
+}
+.wg-tui-annotation-phase {
+  font-family: 'SF Mono', 'Fira Code', monospace; color: #bc8cff; font-size: 0.7rem;
+  font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;
+  background: rgba(188, 140, 255, 0.1); padding: 0.15rem 0.5rem; border-radius: 3px;
+  white-space: nowrap; flex-shrink: 0;
+}
+.wg-tui-annotation-text { font-size: 0.82rem; color: #e6edf3; line-height: 1.4; transition: opacity 0.25s ease; }
+.wg-tui-annotation-text.fading { opacity: 0; }
+
+@media (max-width: 640px) {
+  .wg-tui { padding: 1rem 0.5rem; }
+  .wg-tui-title { font-size: 1.2rem; }
+  .wg-tui-tab { padding: 0.5rem 0.25rem; }
+  .wg-tui-tab-icon { font-size: 0.9rem; }
+  .wg-tui-tab-label { font-size: 0.65rem; }
+  .wg-tui-tab-keys { display: none; }
+  .wg-tui-desc { flex-direction: column; gap: 0.35rem; font-size: 0.8rem; }
+  .wg-tui-annotation { flex-direction: column; gap: 0.35rem; padding: 0.5rem 0.75rem; }
+}
+</style>
+
+<section class="wg-tui" id="wg-tui-interactions">
+  <h2 class="wg-tui-title">TUI Interaction Patterns</h2>
+  <p class="wg-tui-subtitle">Keyboard-driven workflows with keystroke HUD overlay &mdash; see exactly what to press</p>
+
+  <div class="wg-tui-tabs" role="tablist">
+    <button class="wg-tui-tab active" role="tab" aria-selected="true" data-wg-tui-scene="0">
+      <span class="wg-tui-tab-icon">&#8597;</span>
+      <span class="wg-tui-tab-label">Graph Navigation</span>
+      <span class="wg-tui-tab-keys">&uarr; &darr;</span>
+    </button>
+    <button class="wg-tui-tab" role="tab" aria-selected="false" data-wg-tui-scene="1">
+      <span class="wg-tui-tab-icon">&#128269;</span>
+      <span class="wg-tui-tab-label">Inspector</span>
+      <span class="wg-tui-tab-keys">1 2 4 8</span>
+    </button>
+    <button class="wg-tui-tab" role="tab" aria-selected="false" data-wg-tui-scene="2">
+      <span class="wg-tui-tab-icon">&#128225;</span>
+      <span class="wg-tui-tab-label">Agent Monitoring</span>
+      <span class="wg-tui-tab-keys">2 8</span>
+    </button>
+    <button class="wg-tui-tab" role="tab" aria-selected="false" data-wg-tui-scene="3">
+      <span class="wg-tui-tab-icon">&#9000;</span>
+      <span class="wg-tui-tab-label">Key Workflows</span>
+      <span class="wg-tui-tab-keys">c Tab Esc</span>
+    </button>
+  </div>
+
+  <div class="wg-tui-player-wrap">
+    <div class="wg-tui-player-slot active" data-wg-tui-scene="0"><div id="wg-tui-player-graph-nav"></div></div>
+    <div class="wg-tui-player-slot" data-wg-tui-scene="1"><div id="wg-tui-player-inspector"></div></div>
+    <div class="wg-tui-player-slot" data-wg-tui-scene="2"><div id="wg-tui-player-agent-monitor"></div></div>
+    <div class="wg-tui-player-slot" data-wg-tui-scene="3"><div id="wg-tui-player-key-workflows"></div></div>
+    <div class="wg-tui-progress"><div class="wg-tui-progress-fill" id="wg-tui-progress-fill"></div></div>
+    <div class="wg-tui-annotation" id="wg-tui-annotation">
+      <span class="wg-tui-annotation-phase" id="wg-tui-annotation-phase"></span>
+      <span class="wg-tui-annotation-text" id="wg-tui-annotation-text"></span>
+    </div>
+    <div class="wg-tui-desc" id="wg-tui-desc">
+      <span class="wg-tui-keys-badge">&uarr; &darr;</span>
+      <span>Arrow keys scan through the task graph &mdash; the inspector follows your selection</span>
+    </div>
+  </div>
+</section>
+
+<script>
+(function() {
+  'use strict';
+
+  var CAST_BASE = 'assets/casts/';
+
+  var SCENES = [
+    {
+      id: 'wg-tui-player-graph-nav',
+      file: 'tui-graph-nav.cast',
+      annot: 'tui-graph-nav.annotations.json',
+      keys: '\u2191 \u2193',
+      desc: 'Arrow keys scan through the task graph \u2014 the inspector follows your selection',
+      dur: 14
+    },
+    {
+      id: 'wg-tui-player-inspector',
+      file: 'tui-inspector.cast',
+      annot: 'tui-inspector.annotations.json',
+      keys: '1 2 4 8',
+      desc: 'Number keys switch inspector tabs \u2014 Detail, Log, Agency, Firehose',
+      dur: 12
+    },
+    {
+      id: 'wg-tui-player-agent-monitor',
+      file: 'tui-agent-monitor.cast',
+      annot: 'tui-agent-monitor.annotations.json',
+      keys: '2 8',
+      desc: 'Monitor agents in real time \u2014 log entries and raw output streaming live',
+      dur: 12
+    },
+    {
+      id: 'wg-tui-player-key-workflows',
+      file: 'tui-key-workflows.cast',
+      annot: 'tui-key-workflows.annotations.json',
+      keys: 'c Tab Esc',
+      desc: 'Common workflows \u2014 chat, navigate, and inspect with a few keystrokes',
+      dur: 15
+    }
+  ];
+
+  var players = [null, null, null, null];
+  var annots = [null, null, null, null];
+  var cur = 0, advTmr = null, progTmr = null, annotTmr = null, lastAnnotIdx = -1;
+
+  var OPTS = {
+    fit: 'width', autoPlay: false, loop: false, speed: 1,
+    idleTimeLimit: 1, theme: 'dracula', fontSize: '0.85em', terminalLineHeight: 1.2
+  };
+
+  function loadAnnot(i) {
+    if (annots[i]) return;
+    var xhr = new XMLHttpRequest();
+    xhr.open('GET', CAST_BASE + SCENES[i].annot, true);
+    xhr.onload = function() {
+      if (xhr.status === 200) try { annots[i] = JSON.parse(xhr.responseText).annotations; } catch(e) { annots[i] = []; }
+    };
+    xhr.send();
+  }
+
+  function findAnnot(idx, time) {
+    var a = annots[idx];
+    if (!a) return null;
+    for (var j = 0; j < a.length; j++) {
+      if (time >= a[j].start && time < a[j].end) return { index: j, data: a[j] };
+    }
+    return null;
+  }
+
+  function updateAnnot(idx) {
+    var p = players[idx];
+    if (!p) return;
+    var time; try { time = p.getCurrentTime(); } catch(e) { return; }
+    if (time === undefined || time === null) return;
+    var result = findAnnot(idx, time);
+    var phaseEl = document.getElementById('wg-tui-annotation-phase');
+    var textEl = document.getElementById('wg-tui-annotation-text');
+    if (!result) {
+      if (lastAnnotIdx !== -1) {
+        lastAnnotIdx = -1;
+        textEl.classList.add('fading');
+        setTimeout(function() { phaseEl.textContent = ''; textEl.textContent = ''; textEl.classList.remove('fading'); }, 250);
+      }
+      return;
+    }
+    if (result.index !== lastAnnotIdx) {
+      lastAnnotIdx = result.index;
+      textEl.classList.add('fading');
+      setTimeout(function() {
+        phaseEl.textContent = result.data.phase || '';
+        textEl.textContent = result.data.text;
+        textEl.classList.remove('fading');
+      }, 250);
+    }
+  }
+
+  function startAnnotSync(i) { stopAnnotSync(); lastAnnotIdx = -1; updateAnnot(i); annotTmr = setInterval(function() { updateAnnot(i); }, 250); }
+  function stopAnnotSync() { if (annotTmr) { clearInterval(annotTmr); annotTmr = null; } }
+
+  function mkPlayer(i) {
+    if (players[i]) return players[i];
+    players[i] = AsciinemaPlayer.create(CAST_BASE + SCENES[i].file, document.getElementById(SCENES[i].id), OPTS);
+    loadAnnot(i);
+    return players[i];
+  }
+
+  function clearT() {
+    if (advTmr) clearTimeout(advTmr);
+    if (progTmr) clearInterval(progTmr);
+    advTmr = progTmr = null;
+    stopAnnotSync();
+    document.getElementById('wg-tui-progress-fill').style.width = '0%';
+  }
+
+  function autoAdv(ms) {
+    if (advTmr) clearTimeout(advTmr);
+    if (progTmr) clearInterval(progTmr);
+    document.getElementById('wg-tui-progress-fill').style.width = '0%';
+    var fill = document.getElementById('wg-tui-progress-fill'), t0 = Date.now();
+    progTmr = setInterval(function() {
+      var p = Math.min(100, ((Date.now() - t0) / ms) * 100);
+      fill.style.width = p + '%';
+      if (p >= 100) clearInterval(progTmr);
+    }, 200);
+    advTmr = setTimeout(function() { wgTuiSwitch((cur + 1) % SCENES.length); }, ms);
+  }
+
+  function wgTuiSwitch(i) {
+    if (i === cur && players[cur]) {
+      players[cur].seek(0); players[cur].play();
+      autoAdv((SCENES[i].dur + 3) * 1000);
+      startAnnotSync(i);
+      return;
+    }
+    clearT();
+    if (players[cur]) try { players[cur].pause(); } catch(e) {}
+
+    document.querySelectorAll('.wg-tui-tab').forEach(function(t, idx) {
+      t.classList.toggle('active', idx === i);
+      t.setAttribute('aria-selected', idx === i ? 'true' : 'false');
+    });
+    document.querySelectorAll('.wg-tui-player-slot').forEach(function(s, idx) {
+      s.classList.toggle('active', idx === i);
+    });
+
+    cur = i;
+    var s = SCENES[i];
+    document.getElementById('wg-tui-desc').innerHTML =
+      '<span class="wg-tui-keys-badge">' + s.keys + '</span><span>' + s.desc + '</span>';
+
+    var p = mkPlayer(i);
+    setTimeout(function() {
+      try { p.seek(0); p.play(); } catch(e) { p.play(); }
+      autoAdv((s.dur + 3) * 1000);
+      startAnnotSync(i);
+    }, 100);
+  }
+
+  // Bind tab clicks
+  document.querySelectorAll('.wg-tui-tab').forEach(function(tab) {
+    tab.addEventListener('click', function() { wgTuiSwitch(parseInt(this.getAttribute('data-wg-tui-scene'))); });
+  });
+
+  // Pre-load all annotations
+  SCENES.forEach(function(_, i) { loadAnnot(i); });
+
+  // Initialize first player — but only auto-play when visible (IntersectionObserver)
+  var section = document.getElementById('wg-tui-interactions');
+  if (section && 'IntersectionObserver' in window) {
+    var observer = new IntersectionObserver(function(entries) {
+      entries.forEach(function(entry) {
+        if (entry.isIntersecting) {
+          mkPlayer(0);
+          setTimeout(function() {
+            players[0].play();
+            autoAdv((SCENES[0].dur + 3) * 1000);
+            startAnnotSync(0);
+          }, 500);
+          observer.disconnect();
+        }
+      });
+    }, { threshold: 0.3 });
+    observer.observe(section);
+  } else {
+    mkPlayer(0);
+    setTimeout(function() { players[0].play(); autoAdv((SCENES[0].dur + 3) * 1000); startAnnotSync(0); }, 500);
+  }
+})();
+</script>

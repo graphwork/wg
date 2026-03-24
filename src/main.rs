@@ -1998,6 +1998,18 @@ fn main() -> Result<()> {
                 width,
                 height,
             ),
+            ScreencastCommands::Autopilot {
+                output,
+                cols,
+                rows,
+                duration,
+            } => commands::screencast_autopilot::run(
+                &workgraph_dir,
+                &output,
+                cols,
+                rows,
+                duration,
+            ),
         },
         Commands::Setup => commands::setup::run(),
         Commands::Quickstart => commands::quickstart::run(cli.json),
