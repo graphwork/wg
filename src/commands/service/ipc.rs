@@ -11,7 +11,7 @@ use std::os::unix::net::UnixStream;
 
 use workgraph::config::Config;
 use workgraph::graph::{Node, Status, Task};
-use workgraph::parser::{load_graph, save_graph};
+use workgraph::parser::{load_graph, modify_graph};
 use workgraph::service::registry::AgentRegistry;
 
 use super::{CoordinatorState, DaemonConfig, DaemonLogger, ServiceState};
@@ -997,19 +997,24 @@ fn handle_add_task(
         place_before: vec![],
     };
 
-    graph.add_node(Node::Task(task));
-
-    // Maintain bidirectional after/blocks consistency
-    for dep in after {
-        if let Some(blocker) = graph.get_task_mut(dep)
-            && !blocker.before.contains(&task_id)
-        {
-            blocker.before.push(task_id.clone());
+    // Save atomically via modify_graph
+    let task_for_save = task.clone();
+    let task_id_for_save = task_id.clone();
+    let after_for_save: Vec<String> = after.iter().map(|s| s.to_string()).collect();
+    match modify_graph(&graph_path, |graph| {
+        graph.add_node(Node::Task(task_for_save.clone()));
+        // Maintain bidirectional after/blocks consistency
+        for dep in &after_for_save {
+            if let Some(blocker) = graph.get_task_mut(dep)
+                && !blocker.before.contains(&task_id_for_save)
+            {
+                blocker.before.push(task_id_for_save.clone());
+            }
         }
-    }
-
-    if let Err(e) = save_graph(&graph, &graph_path) {
-        return IpcResponse::error(&format!("Failed to save graph: {}", e));
+        true
+    }) {
+        Ok(_) => {}
+        Err(e) => return IpcResponse::error(&format!("Failed to save graph: {}", e)),
     }
 
     // Notify TUI to auto-focus on the new task (skip internal/system tasks)
@@ -1225,8 +1230,24 @@ fn handle_create_coordinator(dir: &Path, name: Option<&str>) -> IpcResponse {
         }
     }
 
-    if let Err(e) = workgraph::parser::save_graph(&graph, &graph_path) {
-        return IpcResponse::error(&format!("Failed to save graph: {}", e));
+    match workgraph::parser::modify_graph(&graph_path, |fresh| {
+        // Re-apply all mutations to a fresh graph
+        for node in graph.nodes() {
+            match node {
+                workgraph::graph::Node::Task(t) => {
+                    if let Some(ft) = fresh.get_task_mut(&t.id) {
+                        *ft = t.clone();
+                    } else {
+                        fresh.add_node(workgraph::graph::Node::Task(t.clone()));
+                    }
+                }
+                _ => {}
+            }
+        }
+        true
+    }) {
+        Ok(_) => {}
+        Err(e) => return IpcResponse::error(&format!("Failed to save graph: {}", e)),
     }
 
     IpcResponse::success(serde_json::json!({
@@ -1239,27 +1260,30 @@ fn handle_create_coordinator(dir: &Path, name: Option<&str>) -> IpcResponse {
 /// Handle DeleteCoordinator IPC request.
 fn handle_delete_coordinator(dir: &Path, coordinator_id: u32) -> IpcResponse {
     let graph_path = crate::commands::graph_path(dir);
-    let mut graph = match workgraph::parser::load_graph(&graph_path) {
-        Ok(g) => g,
-        Err(e) => return IpcResponse::error(&format!("Failed to load graph: {}", e)),
-    };
-
     let task_id = format!(".coordinator-{}", coordinator_id);
-    let task = match graph.get_task_mut(&task_id) {
-        Some(t) => t,
-        None => return IpcResponse::error(&format!("Coordinator task '{}' not found", task_id)),
-    };
-
-    task.status = workgraph::graph::Status::Abandoned;
-    task.log.push(workgraph::graph::LogEntry {
-        timestamp: chrono::Utc::now().to_rfc3339(),
-        actor: Some("daemon".to_string()),
-        user: Some(workgraph::current_user()),
-        message: format!("Coordinator {} deleted via IPC", coordinator_id),
-    });
-
-    if let Err(e) = workgraph::parser::save_graph(&graph, &graph_path) {
-        return IpcResponse::error(&format!("Failed to save graph: {}", e));
+    let mut result_msg: Option<String> = None;
+    match workgraph::parser::modify_graph(&graph_path, |graph| {
+        let task = match graph.get_task_mut(&task_id) {
+            Some(t) => t,
+            None => {
+                result_msg = Some(format!("Coordinator task '{}' not found", task_id));
+                return false;
+            }
+        };
+        task.status = workgraph::graph::Status::Abandoned;
+        task.log.push(workgraph::graph::LogEntry {
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            actor: Some("daemon".to_string()),
+            user: Some(workgraph::current_user()),
+            message: format!("Coordinator {} deleted via IPC", coordinator_id),
+        });
+        true
+    }) {
+        Ok(_) => {}
+        Err(e) => return IpcResponse::error(&format!("Failed to save graph: {}", e)),
+    }
+    if let Some(msg) = result_msg {
+        return IpcResponse::error(&msg);
     }
 
     IpcResponse::success(serde_json::json!({
@@ -1272,33 +1296,34 @@ fn handle_delete_coordinator(dir: &Path, coordinator_id: u32) -> IpcResponse {
 /// Like DeleteCoordinator but marks the coordinator task as Done instead of Abandoned.
 fn handle_archive_coordinator(dir: &Path, coordinator_id: u32) -> IpcResponse {
     let graph_path = crate::commands::graph_path(dir);
-    let mut graph = match workgraph::parser::load_graph(&graph_path) {
-        Ok(g) => g,
-        Err(e) => return IpcResponse::error(&format!("Failed to load graph: {}", e)),
-    };
-
     let task_id = format!(".coordinator-{}", coordinator_id);
-    let task = match graph.get_task_mut(&task_id) {
-        Some(t) => t,
-        None => return IpcResponse::error(&format!("Coordinator task '{}' not found", task_id)),
-    };
-
-    task.status = workgraph::graph::Status::Done;
-    // Remove coordinator-loop tag so archived coordinator disappears from filtered lists
-    task.tags.retain(|t| t != "coordinator-loop");
-    // Add 'archived' tag so cycle reactivation also skips this coordinator
-    if !task.tags.contains(&"archived".to_string()) {
-        task.tags.push("archived".to_string());
+    let mut result_msg: Option<String> = None;
+    match workgraph::parser::modify_graph(&graph_path, |graph| {
+        let task = match graph.get_task_mut(&task_id) {
+            Some(t) => t,
+            None => {
+                result_msg = Some(format!("Coordinator task '{}' not found", task_id));
+                return false;
+            }
+        };
+        task.status = workgraph::graph::Status::Done;
+        task.tags.retain(|t| t != "coordinator-loop");
+        if !task.tags.contains(&"archived".to_string()) {
+            task.tags.push("archived".to_string());
+        }
+        task.log.push(workgraph::graph::LogEntry {
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            actor: Some("daemon".to_string()),
+            user: Some(workgraph::current_user()),
+            message: format!("Coordinator {} archived via IPC", coordinator_id),
+        });
+        true
+    }) {
+        Ok(_) => {}
+        Err(e) => return IpcResponse::error(&format!("Failed to save graph: {}", e)),
     }
-    task.log.push(workgraph::graph::LogEntry {
-        timestamp: chrono::Utc::now().to_rfc3339(),
-        actor: Some("daemon".to_string()),
-        user: Some(workgraph::current_user()),
-        message: format!("Coordinator {} archived via IPC", coordinator_id),
-    });
-
-    if let Err(e) = workgraph::parser::save_graph(&graph, &graph_path) {
-        return IpcResponse::error(&format!("Failed to save graph: {}", e));
+    if let Some(msg) = result_msg {
+        return IpcResponse::error(&msg);
     }
 
     IpcResponse::success(serde_json::json!({
@@ -1311,41 +1336,48 @@ fn handle_archive_coordinator(dir: &Path, coordinator_id: u32) -> IpcResponse {
 /// Kills any running agent for this coordinator and resets the task to Open.
 fn handle_stop_coordinator(dir: &Path, coordinator_id: u32) -> IpcResponse {
     let graph_path = crate::commands::graph_path(dir);
-    let mut graph = match workgraph::parser::load_graph(&graph_path) {
-        Ok(g) => g,
-        Err(e) => return IpcResponse::error(&format!("Failed to load graph: {}", e)),
-    };
-
     let task_id = format!(".coordinator-{}", coordinator_id);
-    let task = match graph.get_task_mut(&task_id) {
-        Some(t) => t,
-        None => return IpcResponse::error(&format!("Coordinator task '{}' not found", task_id)),
-    };
 
-    // Kill any running agent assigned to this coordinator task
-    if let Some(ref agent_hash) = task.agent {
-        if let Ok(registry) = AgentRegistry::load(dir) {
-            for agent in registry.list_agents() {
-                if agent.task_id == task_id {
-                    let _ = crate::commands::kill::run(dir, &agent.id, false, true);
-                    break;
+    // Kill any running agent (must happen before modify_graph to avoid holding lock)
+    if let Ok(graph) = workgraph::parser::load_graph(&graph_path) {
+        if let Some(task) = graph.get_task(&task_id) {
+            if task.agent.is_some() {
+                if let Ok(registry) = AgentRegistry::load(dir) {
+                    for agent in registry.list_agents() {
+                        if agent.task_id == task_id {
+                            let _ = crate::commands::kill::run(dir, &agent.id, false, true);
+                            break;
+                        }
+                    }
                 }
             }
         }
-        let _ = agent_hash; // suppress unused warning
     }
 
-    task.status = workgraph::graph::Status::Open;
-    task.assigned = None;
-    task.log.push(workgraph::graph::LogEntry {
-        timestamp: chrono::Utc::now().to_rfc3339(),
-        actor: Some("daemon".to_string()),
-        user: Some(workgraph::current_user()),
-        message: format!("Coordinator {} stopped via IPC", coordinator_id),
-    });
-
-    if let Err(e) = workgraph::parser::save_graph(&graph, &graph_path) {
-        return IpcResponse::error(&format!("Failed to save graph: {}", e));
+    let mut result_msg: Option<String> = None;
+    match workgraph::parser::modify_graph(&graph_path, |graph| {
+        let task = match graph.get_task_mut(&task_id) {
+            Some(t) => t,
+            None => {
+                result_msg = Some(format!("Coordinator task '{}' not found", task_id));
+                return false;
+            }
+        };
+        task.status = workgraph::graph::Status::Open;
+        task.assigned = None;
+        task.log.push(workgraph::graph::LogEntry {
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            actor: Some("daemon".to_string()),
+            user: Some(workgraph::current_user()),
+            message: format!("Coordinator {} stopped via IPC", coordinator_id),
+        });
+        true
+    }) {
+        Ok(_) => {}
+        Err(e) => return IpcResponse::error(&format!("Failed to save graph: {}", e)),
+    }
+    if let Some(msg) = result_msg {
+        return IpcResponse::error(&msg);
     }
 
     IpcResponse::success(serde_json::json!({
@@ -2088,5 +2120,86 @@ poll_interval = 120
 
         assert_eq!(coordinators.len(), 1);
         assert_eq!(coordinators[0]["coordinator_id"].as_u64().unwrap(), 0);
+    }
+
+    #[test]
+    fn test_per_user_coord_create_with_user_label() {
+        let temp_dir = TempDir::new().unwrap();
+        let dir = temp_dir.path();
+        fs::create_dir_all(dir.join("service")).unwrap();
+
+        // Create empty graph
+        let graph = workgraph::graph::WorkGraph::new();
+        workgraph::parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
+
+        // Create coordinator labeled "alice"
+        let resp = handle_create_coordinator(dir, Some("alice"));
+        assert!(resp.ok, "create_coordinator should succeed");
+
+        // Verify the coordinator task was created with correct label
+        let graph = workgraph::parser::load_graph(&dir.join("graph.jsonl")).unwrap();
+        let coord = graph.get_task(".coordinator-0").expect("coordinator task should exist");
+        assert_eq!(coord.title, "Coordinator: alice");
+        assert!(coord.tags.contains(&"coordinator-loop".to_string()));
+
+        // Create coordinator labeled "bob"
+        let resp = handle_create_coordinator(dir, Some("bob"));
+        assert!(resp.ok, "create_coordinator for bob should succeed");
+
+        let graph = workgraph::parser::load_graph(&dir.join("graph.jsonl")).unwrap();
+        let coord = graph.get_task(".coordinator-1").expect("second coordinator should exist");
+        assert_eq!(coord.title, "Coordinator: bob");
+
+        // Both coordinators should coexist
+        assert!(graph.get_task(".coordinator-0").is_some());
+        assert!(graph.get_task(".coordinator-1").is_some());
+    }
+
+    #[test]
+    fn test_per_user_coord_two_users_independent_state() {
+        let temp_dir = TempDir::new().unwrap();
+        let dir = temp_dir.path();
+        fs::create_dir_all(dir.join("service")).unwrap();
+
+        // Create empty graph and two coordinators
+        let graph = workgraph::graph::WorkGraph::new();
+        workgraph::parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
+
+        handle_create_coordinator(dir, Some("alice"));
+        handle_create_coordinator(dir, Some("bob"));
+
+        // Write per-coordinator state files
+        let alice_state = CoordinatorState {
+            enabled: true,
+            max_agents: 3,
+            accumulated_tokens: 100,
+            ..Default::default()
+        };
+        alice_state.save_for(dir, 0);
+
+        let bob_state = CoordinatorState {
+            enabled: true,
+            max_agents: 5,
+            accumulated_tokens: 200,
+            ..Default::default()
+        };
+        bob_state.save_for(dir, 1);
+
+        // Verify independent state
+        let alice_loaded = CoordinatorState::load_for(dir, 0).unwrap();
+        assert_eq!(alice_loaded.max_agents, 3);
+        assert_eq!(alice_loaded.accumulated_tokens, 100);
+
+        let bob_loaded = CoordinatorState::load_for(dir, 1).unwrap();
+        assert_eq!(bob_loaded.max_agents, 5);
+        assert_eq!(bob_loaded.accumulated_tokens, 200);
+
+        // Updating alice doesn't affect bob
+        let mut alice_updated = alice_loaded;
+        alice_updated.accumulated_tokens = 999;
+        alice_updated.save_for(dir, 0);
+
+        let bob_check = CoordinatorState::load_for(dir, 1).unwrap();
+        assert_eq!(bob_check.accumulated_tokens, 200, "bob's state should be untouched");
     }
 }

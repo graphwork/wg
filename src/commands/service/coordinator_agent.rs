@@ -2054,53 +2054,52 @@ fn record_coordinator_turn(
     use workgraph::parser::save_graph;
 
     let gp = graph_path(dir);
-    let mut graph = match load_graph(&gp) {
-        Ok(g) => g,
-        Err(_) => return,
-    };
-
-    // Try .coordinator-N first, fall back to legacy .coordinator for ID 0
-    let task_id = format!(".coordinator-{}", coordinator_id);
-    let coordinator_task_id = if graph.get_task(&task_id).is_some() {
-        task_id.as_str()
-    } else if coordinator_id == 0 && graph.get_task(".coordinator").is_some() {
-        ".coordinator"
-    } else {
-        return;
-    };
-    let task = graph.get_task_mut(coordinator_task_id).unwrap();
-
     let latency = turn_start.elapsed();
-    let iteration = task.loop_iteration;
-    task.loop_iteration = iteration.saturating_add(1);
+    let user_msg_owned = user_message.to_string();
 
-    // Truncate user message for the log entry
-    let msg_preview: String = user_message.chars().take(80).collect();
-    let msg_suffix = if user_message.len() > 80 { "..." } else { "" };
+    let task_id = format!(".coordinator-{}", coordinator_id);
 
-    let log_msg = format!(
-        "Turn {}: processed \"{}{}\" ({} chars response, {:.1}s)",
-        iteration + 1,
-        msg_preview,
-        msg_suffix,
-        response_len,
-        latency.as_secs_f64(),
-    );
+    if let Err(e) = workgraph::parser::modify_graph(&gp, |graph| {
+        // Try .coordinator-N first, fall back to legacy .coordinator for ID 0
+        let coordinator_task_id = if graph.get_task(&task_id).is_some() {
+            task_id.as_str()
+        } else if coordinator_id == 0 && graph.get_task(".coordinator").is_some() {
+            ".coordinator"
+        } else {
+            return false;
+        };
+        let task = graph.get_task_mut(coordinator_task_id).unwrap();
 
-    task.log.push(LogEntry {
-        timestamp: chrono::Utc::now().to_rfc3339(),
-        actor: Some("daemon".to_string()),
-        user: Some(workgraph::current_user()),
-        message: log_msg,
-    });
+        let iteration = task.loop_iteration;
+        task.loop_iteration = iteration.saturating_add(1);
 
-    // Keep log bounded (last 100 entries)
-    if task.log.len() > 100 {
-        let drain_count = task.log.len() - 100;
-        task.log.drain(..drain_count);
-    }
+        // Truncate user message for the log entry
+        let msg_preview: String = user_msg_owned.chars().take(80).collect();
+        let msg_suffix = if user_msg_owned.len() > 80 { "..." } else { "" };
 
-    if let Err(e) = save_graph(&graph, &gp) {
+        let log_msg = format!(
+            "Turn {}: processed \"{}{}\" ({} chars response, {:.1}s)",
+            iteration + 1,
+            msg_preview,
+            msg_suffix,
+            response_len,
+            latency.as_secs_f64(),
+        );
+
+        task.log.push(LogEntry {
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            actor: Some("daemon".to_string()),
+            user: Some(workgraph::current_user()),
+            message: log_msg,
+        });
+
+        // Keep log bounded (last 100 entries)
+        if task.log.len() > 100 {
+            let drain_count = task.log.len() - 100;
+            task.log.drain(..drain_count);
+        }
+        true
+    }) {
         eprintln!(
             "[coordinator-agent] Failed to save graph after turn recording: {}",
             e

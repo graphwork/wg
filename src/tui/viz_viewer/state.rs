@@ -13928,34 +13928,34 @@ mod dashboard_tests {
     }
 
     #[test]
-    fn classify_running_recent_output_is_active() {
+    fn classify_working_recent_output_is_active() {
         assert_eq!(
-            DashboardAgentActivity::classify(AgentStatus::Running, Some(10)),
+            DashboardAgentActivity::classify(AgentStatus::Working, Some(10)),
             DashboardAgentActivity::Active,
         );
     }
 
     #[test]
-    fn classify_running_stale_output_is_slow() {
+    fn classify_working_stale_output_is_slow() {
         assert_eq!(
-            DashboardAgentActivity::classify(AgentStatus::Running, Some(60)),
+            DashboardAgentActivity::classify(AgentStatus::Working, Some(60)),
             DashboardAgentActivity::Slow,
         );
     }
 
     #[test]
-    fn classify_running_very_stale_output_is_stuck() {
+    fn classify_working_very_stale_output_is_stuck() {
         assert_eq!(
-            DashboardAgentActivity::classify(AgentStatus::Running, Some(600)),
+            DashboardAgentActivity::classify(AgentStatus::Working, Some(600)),
             DashboardAgentActivity::Stuck,
         );
     }
 
     #[test]
-    fn classify_running_no_output_is_active() {
+    fn classify_working_no_output_is_active() {
         // New agent that hasn't written output yet — treat as active.
         assert_eq!(
-            DashboardAgentActivity::classify(AgentStatus::Running, None),
+            DashboardAgentActivity::classify(AgentStatus::Working, None),
             DashboardAgentActivity::Active,
         );
     }
@@ -13963,7 +13963,7 @@ mod dashboard_tests {
     #[test]
     fn classify_boundary_30s_is_slow() {
         assert_eq!(
-            DashboardAgentActivity::classify(AgentStatus::Running, Some(30)),
+            DashboardAgentActivity::classify(AgentStatus::Working, Some(30)),
             DashboardAgentActivity::Slow,
         );
     }
@@ -13971,7 +13971,7 @@ mod dashboard_tests {
     #[test]
     fn classify_boundary_300s_is_stuck() {
         assert_eq!(
-            DashboardAgentActivity::classify(AgentStatus::Running, Some(300)),
+            DashboardAgentActivity::classify(AgentStatus::Working, Some(300)),
             DashboardAgentActivity::Stuck,
         );
     }
@@ -13979,7 +13979,7 @@ mod dashboard_tests {
     #[test]
     fn classify_boundary_29s_is_active() {
         assert_eq!(
-            DashboardAgentActivity::classify(AgentStatus::Running, Some(29)),
+            DashboardAgentActivity::classify(AgentStatus::Working, Some(29)),
             DashboardAgentActivity::Active,
         );
     }

@@ -300,9 +300,16 @@ impl ServiceState {
     }
 }
 
-/// Path to the coordinator state file
-pub fn coordinator_state_path(dir: &Path) -> PathBuf {
+/// Path to the legacy (shared) coordinator state file.
+/// Used only for backward-compatible fallback reads when no per-ID file exists.
+pub fn coordinator_state_path_legacy(dir: &Path) -> PathBuf {
     dir.join("service").join("coordinator-state.json")
+}
+
+/// Path to a per-coordinator state file: `coordinator-state-{id}.json`.
+pub fn coordinator_state_path(dir: &Path, coordinator_id: u32) -> PathBuf {
+    dir.join("service")
+        .join(format!("coordinator-state-{}.json", coordinator_id))
 }
 
 /// Runtime coordinator state persisted to disk for status queries
@@ -346,27 +353,52 @@ pub struct CoordinatorState {
 }
 
 impl CoordinatorState {
-    pub fn load(dir: &Path) -> Option<Self> {
-        let path = coordinator_state_path(dir);
-        let content = match fs::read_to_string(&path) {
-            Ok(c) => c,
-            Err(_) => return None, // file doesn't exist yet
-        };
-        match serde_json::from_str(&content) {
-            Ok(state) => Some(state),
-            Err(e) => {
-                eprintln!(
-                    "Warning: corrupt coordinator state at {}: {}",
-                    path.display(),
-                    e
-                );
-                None
+    /// Load coordinator state for a specific coordinator ID.
+    /// Checks the per-ID file first, then falls back to the legacy shared file
+    /// for coordinator 0.
+    pub fn load_for(dir: &Path, coordinator_id: u32) -> Option<Self> {
+        let path = coordinator_state_path(dir, coordinator_id);
+        if let Ok(content) = fs::read_to_string(&path) {
+            return match serde_json::from_str(&content) {
+                Ok(state) => Some(state),
+                Err(e) => {
+                    eprintln!(
+                        "Warning: corrupt coordinator state at {}: {}",
+                        path.display(),
+                        e
+                    );
+                    None
+                }
+            };
+        }
+        // Backward compat: fall back to legacy shared file for coordinator 0
+        if coordinator_id == 0 {
+            let legacy = coordinator_state_path_legacy(dir);
+            if let Ok(content) = fs::read_to_string(&legacy) {
+                return match serde_json::from_str(&content) {
+                    Ok(state) => Some(state),
+                    Err(e) => {
+                        eprintln!(
+                            "Warning: corrupt coordinator state at {}: {}",
+                            legacy.display(),
+                            e
+                        );
+                        None
+                    }
+                };
             }
         }
+        None
     }
 
-    pub fn save(&self, dir: &Path) {
-        let path = coordinator_state_path(dir);
+    /// Load coordinator 0 state (backward-compatible shorthand).
+    pub fn load(dir: &Path) -> Option<Self> {
+        Self::load_for(dir, 0)
+    }
+
+    /// Save coordinator state to the per-ID file.
+    pub fn save_for(&self, dir: &Path, coordinator_id: u32) {
+        let path = coordinator_state_path(dir, coordinator_id);
         match serde_json::to_string_pretty(self) {
             Ok(content) => {
                 if let Err(e) = fs::write(&path, content) {
@@ -383,26 +415,33 @@ impl CoordinatorState {
         }
     }
 
-    /// Load coordinator state, defaulting to empty if missing or corrupt.
+    /// Save coordinator 0 state (backward-compatible shorthand).
+    pub fn save(&self, dir: &Path) {
+        self.save_for(dir, 0);
+    }
+
+    /// Load coordinator state for a specific ID, defaulting to empty if missing or corrupt.
+    pub fn load_or_default_for(dir: &Path, coordinator_id: u32) -> Self {
+        Self::load_for(dir, coordinator_id).unwrap_or_default()
+    }
+
+    /// Load coordinator 0 state, defaulting to empty if missing or corrupt.
     /// Corrupt files already emit a warning via `load()`.
     pub fn load_or_default(dir: &Path) -> Self {
         Self::load(dir).unwrap_or_default()
     }
 
-    pub fn remove(dir: &Path) {
-        let path = coordinator_state_path(dir);
+    /// Remove the per-ID state file for a specific coordinator.
+    pub fn remove_for(dir: &Path, coordinator_id: u32) {
+        let path = coordinator_state_path(dir, coordinator_id);
         let _ = fs::remove_file(&path);
     }
 
-    /// Load coordinator state for a specific coordinator ID, defaulting if missing.
-    pub fn load_or_default_for(dir: &Path, _coordinator_id: u32) -> Self {
-        // For now, all coordinators share a single state file.
-        Self::load_or_default(dir)
-    }
-
-    /// Save coordinator state for a specific coordinator ID.
-    pub fn save_for(&self, dir: &Path, _coordinator_id: u32) {
-        self.save(dir)
+    /// Remove coordinator 0 state file(s), including legacy shared file.
+    pub fn remove(dir: &Path) {
+        Self::remove_for(dir, 0);
+        // Also clean up the legacy shared file
+        let _ = fs::remove_file(coordinator_state_path_legacy(dir));
     }
 }
 
@@ -1255,7 +1294,6 @@ fn try_dispatch_notifications(dir: &Path, logger: &DaemonLogger) {
 ///   .coordinator-0 → .compact-0 → .coordinator-0
 fn ensure_coordinator_task(dir: &Path) {
     use workgraph::graph::{CycleConfig, LogEntry, Node, Task};
-    use workgraph::parser::save_graph;
 
     let gp = graph_path(dir);
     let mut graph = match load_graph(&gp) {
@@ -1378,11 +1416,28 @@ fn ensure_coordinator_task(dir: &Path) {
         }
     }
 
-    if modified && let Err(e) = save_graph(&graph, &gp) {
-        eprintln!(
-            "[daemon] Failed to save graph after creating coordinator/compact tasks: {}",
-            e
-        );
+    if modified {
+        if let Err(e) = workgraph::parser::modify_graph(&gp, |fresh| {
+            // Re-apply all mutations
+            for node in graph.nodes() {
+                match node {
+                    workgraph::graph::Node::Task(t) => {
+                        if let Some(ft) = fresh.get_task_mut(&t.id) {
+                            *ft = t.clone();
+                        } else {
+                            fresh.add_node(workgraph::graph::Node::Task(t.clone()));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            true
+        }) {
+            eprintln!(
+                "[daemon] Failed to save graph after creating coordinator/compact tasks: {}",
+                e
+            );
+        }
     }
 }
 
@@ -1413,24 +1468,30 @@ fn run_graph_compaction(dir: &Path, compaction_error_count: &mut u64, logger: &D
             if threshold > 0 {
                 let state = CoordinatorState::load_or_default(dir);
                 if state.accumulated_tokens >= threshold {
-                    if let Some(task) = graph.get_task_mut(".compact-0") {
-                        task.status = workgraph::graph::Status::Open;
-                        task.started_at = None;
-                        task.completed_at = None;
-                        task.log.push(workgraph::graph::LogEntry {
-                            timestamp: chrono::Utc::now().to_rfc3339(),
-                            actor: Some("daemon".to_string()),
-                            user: Some(workgraph::current_user()),
-                            message: format!(
-                                "Re-opened: tokens {} >= threshold {} (coordinator cycle bypass)",
-                                state.accumulated_tokens, threshold
-                            ),
-                        });
-                        if task.log.len() > 50 {
-                            let drain_count = task.log.len() - 50;
-                            task.log.drain(..drain_count);
-                        }
-                        if let Err(e) = workgraph::parser::save_graph(&graph, &gp) {
+                    let acc_tokens = state.accumulated_tokens;
+                        if let Err(e) = workgraph::parser::modify_graph(&gp, |graph| {
+                            if let Some(task) = graph.get_task_mut(".compact-0") {
+                                task.status = workgraph::graph::Status::Open;
+                                task.started_at = None;
+                                task.completed_at = None;
+                                task.log.push(workgraph::graph::LogEntry {
+                                    timestamp: chrono::Utc::now().to_rfc3339(),
+                                    actor: Some("daemon".to_string()),
+                                    user: Some(workgraph::current_user()),
+                                    message: format!(
+                                        "Re-opened: tokens {} >= threshold {} (coordinator cycle bypass)",
+                                        acc_tokens, threshold
+                                    ),
+                                });
+                                if task.log.len() > 50 {
+                                    let drain_count = task.log.len() - 50;
+                                    task.log.drain(..drain_count);
+                                }
+                                true
+                            } else {
+                                false
+                            }
+                        }) {
                             logger.error(&format!(
                                 "Failed to save graph after resetting .compact-0: {}",
                                 e
@@ -1480,26 +1541,26 @@ fn run_graph_compaction(dir: &Path, compaction_error_count: &mut u64, logger: &D
 
     // Mark .compact-0 as InProgress
     {
-        let mut graph = match load_graph(&gp) {
-            Ok(g) => g,
-            Err(_) => return,
-        };
-        if let Some(task) = graph.get_task_mut(".compact-0") {
-            task.status = workgraph::graph::Status::InProgress;
-            task.started_at = Some(chrono::Utc::now().to_rfc3339());
-            task.log.push(workgraph::graph::LogEntry {
-                timestamp: chrono::Utc::now().to_rfc3339(),
-                actor: Some("daemon".to_string()),
-                user: Some(workgraph::current_user()),
-                message: "Compaction started (cycle-driven)".to_string(),
-            });
-            if let Err(e) = workgraph::parser::save_graph(&graph, &gp) {
-                eprintln!(
-                    "[daemon] Failed to save graph after marking .compact-0 InProgress: {}",
-                    e
-                );
-                return;
+        if let Err(e) = workgraph::parser::modify_graph(&gp, |graph| {
+            if let Some(task) = graph.get_task_mut(".compact-0") {
+                task.status = workgraph::graph::Status::InProgress;
+                task.started_at = Some(chrono::Utc::now().to_rfc3339());
+                task.log.push(workgraph::graph::LogEntry {
+                    timestamp: chrono::Utc::now().to_rfc3339(),
+                    actor: Some("daemon".to_string()),
+                    user: Some(workgraph::current_user()),
+                    message: "Compaction started (cycle-driven)".to_string(),
+                });
+                true
+            } else {
+                false
             }
+        }) {
+            eprintln!(
+                "[daemon] Failed to save graph after marking .compact-0 InProgress: {}",
+                e
+            );
+            return;
         }
     }
 
@@ -1528,31 +1589,31 @@ fn run_graph_compaction(dir: &Path, compaction_error_count: &mut u64, logger: &D
             }
 
             // Mark .compact-0 as Done and increment iteration
-            let mut graph = match load_graph(&gp) {
-                Ok(g) => g,
-                Err(_) => return,
-            };
-            if let Some(task) = graph.get_task_mut(".compact-0") {
-                task.status = workgraph::graph::Status::Done;
-                task.completed_at = Some(chrono::Utc::now().to_rfc3339());
-                task.loop_iteration = task.loop_iteration.saturating_add(1);
-                task.log.push(workgraph::graph::LogEntry {
-                    timestamp: chrono::Utc::now().to_rfc3339(),
-                    actor: Some("daemon".to_string()),
-                    user: Some(workgraph::current_user()),
-                    message: format!(
-                        "Compaction iteration {} complete → {}",
-                        task.loop_iteration,
-                        path.display()
-                    ),
-                });
-                // Keep log bounded
-                if task.log.len() > 50 {
-                    let drain_count = task.log.len() - 50;
-                    task.log.drain(..drain_count);
+            let path_display = path.display().to_string();
+            if let Err(e) = workgraph::parser::modify_graph(&gp, |graph| {
+                if let Some(task) = graph.get_task_mut(".compact-0") {
+                    task.status = workgraph::graph::Status::Done;
+                    task.completed_at = Some(chrono::Utc::now().to_rfc3339());
+                    task.loop_iteration = task.loop_iteration.saturating_add(1);
+                    task.log.push(workgraph::graph::LogEntry {
+                        timestamp: chrono::Utc::now().to_rfc3339(),
+                        actor: Some("daemon".to_string()),
+                        user: Some(workgraph::current_user()),
+                        message: format!(
+                            "Compaction iteration {} complete → {}",
+                            task.loop_iteration,
+                            path_display
+                        ),
+                    });
+                    if task.log.len() > 50 {
+                        let drain_count = task.log.len() - 50;
+                        task.log.drain(..drain_count);
+                    }
+                    true
+                } else {
+                    false
                 }
-            }
-            if let Err(e) = workgraph::parser::save_graph(&graph, &gp) {
+            }) {
                 eprintln!(
                     "[daemon] Failed to save graph after marking .compact-0 Done: {}",
                     e
@@ -1576,25 +1637,26 @@ fn run_graph_compaction(dir: &Path, compaction_error_count: &mut u64, logger: &D
             }
 
             // Mark .compact-0 as failed for this iteration, then reopen for retry
-            let mut graph = match load_graph(&gp) {
-                Ok(g) => g,
-                Err(_) => return,
-            };
-            if let Some(task) = graph.get_task_mut(".compact-0") {
-                task.status = workgraph::graph::Status::Open;
-                task.started_at = None;
-                task.log.push(workgraph::graph::LogEntry {
-                    timestamp: chrono::Utc::now().to_rfc3339(),
-                    actor: Some("daemon".to_string()),
-                    user: Some(workgraph::current_user()),
-                    message: format!("Compaction error: {:#}", e),
-                });
-                if task.log.len() > 50 {
-                    let drain_count = task.log.len() - 50;
-                    task.log.drain(..drain_count);
+            let err_msg = format!("Compaction error: {:#}", e);
+            let _ = workgraph::parser::modify_graph(&gp, |graph| {
+                if let Some(task) = graph.get_task_mut(".compact-0") {
+                    task.status = workgraph::graph::Status::Open;
+                    task.started_at = None;
+                    task.log.push(workgraph::graph::LogEntry {
+                        timestamp: chrono::Utc::now().to_rfc3339(),
+                        actor: Some("daemon".to_string()),
+                        user: Some(workgraph::current_user()),
+                        message: err_msg.clone(),
+                    });
+                    if task.log.len() > 50 {
+                        let drain_count = task.log.len() - 50;
+                        task.log.drain(..drain_count);
+                    }
+                    true
+                } else {
+                    false
                 }
-            }
-            let _ = workgraph::parser::save_graph(&graph, &gp);
+            });
         }
     }
 }
@@ -1626,26 +1688,26 @@ fn run_graph_archival(dir: &Path, archival_error_count: &mut u64, logger: &Daemo
 
     // Mark .archive-0 as InProgress
     {
-        let mut graph = match load_graph(&gp) {
-            Ok(g) => g,
-            Err(_) => return,
-        };
-        if let Some(task) = graph.get_task_mut(".archive-0") {
-            task.status = workgraph::graph::Status::InProgress;
-            task.started_at = Some(chrono::Utc::now().to_rfc3339());
-            task.log.push(workgraph::graph::LogEntry {
-                timestamp: chrono::Utc::now().to_rfc3339(),
-                actor: Some("daemon".to_string()),
-                user: Some(workgraph::current_user()),
-                message: "Archival started (cycle-driven)".to_string(),
-            });
-            if let Err(e) = workgraph::parser::save_graph(&graph, &gp) {
-                eprintln!(
-                    "[daemon] Failed to save graph after marking .archive-0 InProgress: {}",
-                    e
-                );
-                return;
+        if let Err(e) = workgraph::parser::modify_graph(&gp, |graph| {
+            if let Some(task) = graph.get_task_mut(".archive-0") {
+                task.status = workgraph::graph::Status::InProgress;
+                task.started_at = Some(chrono::Utc::now().to_rfc3339());
+                task.log.push(workgraph::graph::LogEntry {
+                    timestamp: chrono::Utc::now().to_rfc3339(),
+                    actor: Some("daemon".to_string()),
+                    user: Some(workgraph::current_user()),
+                    message: "Archival started (cycle-driven)".to_string(),
+                });
+                true
+            } else {
+                false
             }
+        }) {
+            eprintln!(
+                "[daemon] Failed to save graph after marking .archive-0 InProgress: {}",
+                e
+            );
+            return;
         }
     }
 
@@ -1668,30 +1730,29 @@ fn run_graph_archival(dir: &Path, archival_error_count: &mut u64, logger: &Daemo
             ));
 
             // Mark .archive-0 as Done and increment iteration
-            let mut graph = match load_graph(&gp) {
-                Ok(g) => g,
-                Err(_) => return,
-            };
-            if let Some(task) = graph.get_task_mut(".archive-0") {
-                task.status = workgraph::graph::Status::Done;
-                task.completed_at = Some(chrono::Utc::now().to_rfc3339());
-                task.loop_iteration = task.loop_iteration.saturating_add(1);
-                task.log.push(workgraph::graph::LogEntry {
-                    timestamp: chrono::Utc::now().to_rfc3339(),
-                    actor: Some("daemon".to_string()),
-                    user: Some(workgraph::current_user()),
-                    message: format!(
-                        "Archival iteration {} complete: {} tasks archived",
-                        task.loop_iteration, count
-                    ),
-                });
-                // Keep log bounded
-                if task.log.len() > 50 {
-                    let drain_count = task.log.len() - 50;
-                    task.log.drain(..drain_count);
+            if let Err(e) = workgraph::parser::modify_graph(&gp, |graph| {
+                if let Some(task) = graph.get_task_mut(".archive-0") {
+                    task.status = workgraph::graph::Status::Done;
+                    task.completed_at = Some(chrono::Utc::now().to_rfc3339());
+                    task.loop_iteration = task.loop_iteration.saturating_add(1);
+                    task.log.push(workgraph::graph::LogEntry {
+                        timestamp: chrono::Utc::now().to_rfc3339(),
+                        actor: Some("daemon".to_string()),
+                        user: Some(workgraph::current_user()),
+                        message: format!(
+                            "Archival iteration {} complete: {} tasks archived",
+                            task.loop_iteration, count
+                        ),
+                    });
+                    if task.log.len() > 50 {
+                        let drain_count = task.log.len() - 50;
+                        task.log.drain(..drain_count);
+                    }
+                    true
+                } else {
+                    false
                 }
-            }
-            if let Err(e) = workgraph::parser::save_graph(&graph, &gp) {
+            }) {
                 eprintln!(
                     "[daemon] Failed to save graph after marking .archive-0 Done: {}",
                     e
@@ -1708,25 +1769,26 @@ fn run_graph_archival(dir: &Path, archival_error_count: &mut u64, logger: &Daemo
             }
 
             // Revert .archive-0 to Open for retry
-            let mut graph = match load_graph(&gp) {
-                Ok(g) => g,
-                Err(_) => return,
-            };
-            if let Some(task) = graph.get_task_mut(".archive-0") {
-                task.status = workgraph::graph::Status::Open;
-                task.started_at = None;
-                task.log.push(workgraph::graph::LogEntry {
-                    timestamp: chrono::Utc::now().to_rfc3339(),
-                    actor: Some("daemon".to_string()),
-                    user: Some(workgraph::current_user()),
-                    message: format!("Archival error: {:#}", e),
-                });
-                if task.log.len() > 50 {
-                    let drain_count = task.log.len() - 50;
-                    task.log.drain(..drain_count);
+            let arch_err_msg = format!("Archival error: {:#}", e);
+            let _ = workgraph::parser::modify_graph(&gp, |graph| {
+                if let Some(task) = graph.get_task_mut(".archive-0") {
+                    task.status = workgraph::graph::Status::Open;
+                    task.started_at = None;
+                    task.log.push(workgraph::graph::LogEntry {
+                        timestamp: chrono::Utc::now().to_rfc3339(),
+                        actor: Some("daemon".to_string()),
+                        user: Some(workgraph::current_user()),
+                        message: arch_err_msg.clone(),
+                    });
+                    if task.log.len() > 50 {
+                        let drain_count = task.log.len() - 50;
+                        task.log.drain(..drain_count);
+                    }
+                    true
+                } else {
+                    false
                 }
-            }
-            let _ = workgraph::parser::save_graph(&graph, &gp);
+            });
         }
     }
 }
@@ -4018,5 +4080,206 @@ mod tests {
         let s = short_hash(&hash);
         assert_eq!(s, "abcdef012345");
         assert_eq!(s.len(), 12, "short_hash should produce 12 hex chars");
+    }
+
+    #[test]
+    fn test_per_user_coord_state_path() {
+        let temp_dir = TempDir::new().unwrap();
+        let path0 = coordinator_state_path(temp_dir.path(), 0);
+        assert_eq!(
+            path0,
+            temp_dir.path().join("service").join("coordinator-state-0.json")
+        );
+        let path1 = coordinator_state_path(temp_dir.path(), 1);
+        assert_eq!(
+            path1,
+            temp_dir.path().join("service").join("coordinator-state-1.json")
+        );
+        let path42 = coordinator_state_path(temp_dir.path(), 42);
+        assert_eq!(
+            path42,
+            temp_dir
+                .path()
+                .join("service")
+                .join("coordinator-state-42.json")
+        );
+    }
+
+    #[test]
+    fn test_per_user_coord_state_per_id_roundtrip() {
+        let temp_dir = TempDir::new().unwrap();
+        let dir = temp_dir.path();
+        fs::create_dir_all(dir.join("service")).unwrap();
+
+        // Save state for coordinator 0
+        let state0 = CoordinatorState {
+            enabled: true,
+            max_agents: 4,
+            accumulated_tokens: 1000,
+            ..Default::default()
+        };
+        state0.save_for(dir, 0);
+
+        // Save state for coordinator 1
+        let state1 = CoordinatorState {
+            enabled: true,
+            max_agents: 2,
+            accumulated_tokens: 5000,
+            ..Default::default()
+        };
+        state1.save_for(dir, 1);
+
+        // Load each and verify independence
+        let loaded0 = CoordinatorState::load_for(dir, 0).unwrap();
+        assert_eq!(loaded0.max_agents, 4);
+        assert_eq!(loaded0.accumulated_tokens, 1000);
+
+        let loaded1 = CoordinatorState::load_for(dir, 1).unwrap();
+        assert_eq!(loaded1.max_agents, 2);
+        assert_eq!(loaded1.accumulated_tokens, 5000);
+
+        // Coordinator 2 should not exist
+        assert!(CoordinatorState::load_for(dir, 2).is_none());
+    }
+
+    #[test]
+    fn test_per_user_coord_backward_compat_legacy_fallback() {
+        let temp_dir = TempDir::new().unwrap();
+        let dir = temp_dir.path();
+        fs::create_dir_all(dir.join("service")).unwrap();
+
+        // Write to legacy shared file (coordinator-state.json)
+        let legacy_state = CoordinatorState {
+            enabled: true,
+            max_agents: 8,
+            accumulated_tokens: 42,
+            ..Default::default()
+        };
+        let legacy_path = coordinator_state_path_legacy(dir);
+        let content = serde_json::to_string_pretty(&legacy_state).unwrap();
+        fs::write(&legacy_path, content).unwrap();
+
+        // No per-ID file for coordinator 0 → should fall back to legacy
+        let loaded = CoordinatorState::load_for(dir, 0).unwrap();
+        assert_eq!(loaded.max_agents, 8);
+        assert_eq!(loaded.accumulated_tokens, 42);
+
+        // load() shorthand should also work (backward compat)
+        let loaded_compat = CoordinatorState::load(dir).unwrap();
+        assert_eq!(loaded_compat.max_agents, 8);
+
+        // Non-zero coordinator should NOT fall back to legacy
+        assert!(CoordinatorState::load_for(dir, 1).is_none());
+    }
+
+    #[test]
+    fn test_per_user_coord_per_id_overrides_legacy() {
+        let temp_dir = TempDir::new().unwrap();
+        let dir = temp_dir.path();
+        fs::create_dir_all(dir.join("service")).unwrap();
+
+        // Write legacy file
+        let legacy = CoordinatorState {
+            max_agents: 8,
+            accumulated_tokens: 100,
+            ..Default::default()
+        };
+        let legacy_path = coordinator_state_path_legacy(dir);
+        fs::write(&legacy_path, serde_json::to_string_pretty(&legacy).unwrap()).unwrap();
+
+        // Write per-ID file for coordinator 0
+        let per_id = CoordinatorState {
+            max_agents: 16,
+            accumulated_tokens: 9999,
+            ..Default::default()
+        };
+        per_id.save_for(dir, 0);
+
+        // Per-ID file should take precedence over legacy
+        let loaded = CoordinatorState::load_for(dir, 0).unwrap();
+        assert_eq!(loaded.max_agents, 16);
+        assert_eq!(loaded.accumulated_tokens, 9999);
+    }
+
+    #[test]
+    fn test_per_user_coord_two_coordinators_no_state_conflict() {
+        let temp_dir = TempDir::new().unwrap();
+        let dir = temp_dir.path();
+        fs::create_dir_all(dir.join("service")).unwrap();
+
+        // Simulate alice's coordinator (ID 1)
+        let mut alice_state = CoordinatorState {
+            enabled: true,
+            max_agents: 3,
+            accumulated_tokens: 0,
+            executor: "claude".to_string(),
+            ..Default::default()
+        };
+        alice_state.save_for(dir, 1);
+
+        // Simulate bob's coordinator (ID 2)
+        let mut bob_state = CoordinatorState {
+            enabled: true,
+            max_agents: 5,
+            accumulated_tokens: 0,
+            executor: "claude".to_string(),
+            ..Default::default()
+        };
+        bob_state.save_for(dir, 2);
+
+        // Update alice's tokens independently
+        alice_state.accumulated_tokens = 500;
+        alice_state.save_for(dir, 1);
+
+        // Update bob's tokens independently
+        bob_state.accumulated_tokens = 1200;
+        bob_state.save_for(dir, 2);
+
+        // Verify no cross-contamination
+        let alice_loaded = CoordinatorState::load_for(dir, 1).unwrap();
+        assert_eq!(alice_loaded.accumulated_tokens, 500);
+        assert_eq!(alice_loaded.max_agents, 3);
+
+        let bob_loaded = CoordinatorState::load_for(dir, 2).unwrap();
+        assert_eq!(bob_loaded.accumulated_tokens, 1200);
+        assert_eq!(bob_loaded.max_agents, 5);
+    }
+
+    #[test]
+    fn test_per_user_coord_remove_per_id() {
+        let temp_dir = TempDir::new().unwrap();
+        let dir = temp_dir.path();
+        fs::create_dir_all(dir.join("service")).unwrap();
+
+        let state = CoordinatorState {
+            enabled: true,
+            ..Default::default()
+        };
+        state.save_for(dir, 3);
+        assert!(CoordinatorState::load_for(dir, 3).is_some());
+
+        CoordinatorState::remove_for(dir, 3);
+        assert!(CoordinatorState::load_for(dir, 3).is_none());
+    }
+
+    #[test]
+    fn test_per_user_coord_remove_cleans_legacy() {
+        let temp_dir = TempDir::new().unwrap();
+        let dir = temp_dir.path();
+        fs::create_dir_all(dir.join("service")).unwrap();
+
+        // Create both legacy and per-ID file for coordinator 0
+        let state = CoordinatorState {
+            enabled: true,
+            ..Default::default()
+        };
+        state.save_for(dir, 0);
+        let legacy_path = coordinator_state_path_legacy(dir);
+        fs::write(&legacy_path, "{}").unwrap();
+
+        // remove() should clean up both
+        CoordinatorState::remove(dir);
+        assert!(CoordinatorState::load_for(dir, 0).is_none());
+        assert!(!legacy_path.exists());
     }
 }
