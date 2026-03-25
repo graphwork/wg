@@ -794,7 +794,8 @@ fn test_all_dispatch_roles_with_full_config() {
     let mut config = Config::default();
 
     // Set every role to a different model+provider
-    let assignments = [
+    // (input_model, provider) pairs for setting config
+    let assignments: &[(DispatchRole, &str, &str)] = &[
         (DispatchRole::TaskAgent, "opus", "anthropic"),
         (DispatchRole::Evaluator, "sonnet", "anthropic"),
         (DispatchRole::FlipInference, "gpt-4o", "openai"),
@@ -807,12 +808,26 @@ fn test_all_dispatch_roles_with_full_config() {
         (DispatchRole::Compactor, "gpt-4o-mini", "openai"),
     ];
 
-    for (role, model, provider) in assignments {
+    for &(role, model, provider) in assignments {
         config.models.set_model(role, model);
         config.models.set_provider(role, provider);
     }
 
-    for (role, expected_model, expected_provider) in assignments {
+    // Registry IDs get resolved to full API model names; non-registry models pass through
+    let expected: &[(DispatchRole, &str, &str)] = &[
+        (DispatchRole::TaskAgent, "claude-opus-4-6", "anthropic"),
+        (DispatchRole::Evaluator, "claude-sonnet-4-20250514", "anthropic"),
+        (DispatchRole::FlipInference, "gpt-4o", "openai"),
+        (DispatchRole::FlipComparison, "claude-haiku-4-5-20251001", "anthropic"),
+        (DispatchRole::Assigner, "gpt-4o-mini", "openai"),
+        (DispatchRole::Evolver, "deepseek-r1", "openrouter"),
+        (DispatchRole::Verification, "claude-opus-4-6", "anthropic"),
+        (DispatchRole::Triage, "claude-haiku-4-5-20251001", "anthropic"),
+        (DispatchRole::Creator, "claude-sonnet-4-20250514", "anthropic"),
+        (DispatchRole::Compactor, "gpt-4o-mini", "openai"),
+    ];
+
+    for &(role, expected_model, expected_provider) in expected {
         let resolved = config.resolve_model_for_role(role);
         assert_eq!(
             resolved.model, expected_model,
