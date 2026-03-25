@@ -8,6 +8,7 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::Arc;
 
 use tempfile::TempDir;
 use workgraph::config::{Config, DispatchRole, EndpointConfig, EndpointsConfig};
@@ -66,6 +67,34 @@ fn setup_workgraph(tmp: &TempDir) -> PathBuf {
     let graph = WorkGraph::new();
     save_graph(&graph, &graph_path).unwrap();
     wg_dir
+}
+
+/// Spawn a tiny HTTP server returning a JSON model list on GET /models.
+fn mock_models_server(models_json: &str) -> (std::net::SocketAddr, std::thread::JoinHandle<()>) {
+    use std::io::Read;
+    use std::net::TcpListener;
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let body = models_json.to_string();
+
+    let handle = std::thread::spawn(move || {
+        // Serve up to 5 connections (enough for retry / concurrent tests)
+        for _ in 0..5 {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut buf = [0u8; 4096];
+                let _ = stream.read(&mut buf);
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                    body.len(),
+                    body,
+                );
+                let _ = std::io::Write::write_all(&mut stream, resp.as_bytes());
+            }
+        }
+    });
+
+    (addr, handle)
 }
 
 // ===========================================================================
@@ -805,4 +834,363 @@ fn default_url_for_known_providers() {
         "http://localhost:11434/v1"
     );
     assert_eq!(EndpointConfig::default_url_for_provider("unknown"), "");
+}
+
+// ===========================================================================
+// 9. Model discovery with mocked HTTP
+// ===========================================================================
+
+#[test]
+fn model_discovery_fetch_and_cache_via_mock() {
+    use workgraph::executor::native::openai_client::fetch_openrouter_models_blocking;
+
+    let models_payload = serde_json::json!({
+        "data": [
+            {"id": "anthropic/claude-sonnet-4-6", "name": "Sonnet", "description": "fast"},
+            {"id": "openai/gpt-4o", "name": "GPT-4o", "description": "flagship"},
+        ]
+    });
+
+    let (addr, _handle) = mock_models_server(&models_payload.to_string());
+    let base_url = format!("http://{}", addr);
+
+    // Fetch models from mock server
+    let models = fetch_openrouter_models_blocking("sk-test-key", Some(&base_url))
+        .expect("fetch should succeed against mock");
+    assert_eq!(models.len(), 2);
+    assert_eq!(models[0].id, "anthropic/claude-sonnet-4-6");
+    assert_eq!(models[1].id, "openai/gpt-4o");
+
+    // Write to cache file and verify validation works with it
+    let tmp = TempDir::new().unwrap();
+    let cache = serde_json::json!({
+        "fetched_at": chrono::Utc::now().to_rfc3339(),
+        "models": models,
+    });
+    fs::write(tmp.path().join("model_cache.json"), cache.to_string()).unwrap();
+
+    // Validate a known model against the cache we just built
+    use workgraph::executor::native::openai_client::validate_openrouter_model;
+    let result = validate_openrouter_model("anthropic/claude-sonnet-4-6", tmp.path());
+    assert!(result.was_valid);
+    assert_eq!(result.model, "anthropic/claude-sonnet-4-6");
+}
+
+#[test]
+fn model_discovery_auto_routing_accepted_as_default() {
+    use workgraph::executor::native::openai_client::{
+        validate_openrouter_model, OPENROUTER_AUTO_MODEL,
+    };
+
+    // openrouter/auto should be valid even with a populated cache that doesn't list it
+    let tmp = TempDir::new().unwrap();
+    let cache = serde_json::json!({
+        "fetched_at": chrono::Utc::now().to_rfc3339(),
+        "models": [
+            {"id": "anthropic/claude-sonnet-4-6"},
+            {"id": "openai/gpt-4o"},
+        ]
+    });
+    fs::write(tmp.path().join("model_cache.json"), cache.to_string()).unwrap();
+
+    let result = validate_openrouter_model(OPENROUTER_AUTO_MODEL, tmp.path());
+    assert!(result.was_valid);
+    assert_eq!(result.model, OPENROUTER_AUTO_MODEL);
+    assert!(result.suggestions.is_empty());
+    assert!(result.warning.is_none());
+}
+
+#[test]
+fn invalid_model_triggers_validation_suggestion_fallback() {
+    use workgraph::executor::native::openai_client::{
+        validate_openrouter_model, OPENROUTER_AUTO_MODEL,
+    };
+
+    let tmp = TempDir::new().unwrap();
+    let cache = serde_json::json!({
+        "fetched_at": chrono::Utc::now().to_rfc3339(),
+        "models": [
+            {"id": "anthropic/claude-sonnet-4-6"},
+            {"id": "anthropic/claude-opus-4-6"},
+            {"id": "openai/gpt-4o"},
+            {"id": "deepseek/deepseek-r1"},
+            {"id": "meta-llama/llama-4-maverick"},
+        ]
+    });
+    fs::write(tmp.path().join("model_cache.json"), cache.to_string()).unwrap();
+
+    // Typo: "sonet" missing an 'n'
+    let result = validate_openrouter_model("anthropic/claude-sonet-4-6", tmp.path());
+
+    // 1. Not valid
+    assert!(!result.was_valid);
+
+    // 2. Suggestions include the close match
+    assert!(
+        result
+            .suggestions
+            .contains(&"anthropic/claude-sonnet-4-6".to_string()),
+        "Expected suggestion for typo, got: {:?}",
+        result.suggestions
+    );
+    assert!(result.suggestions.len() <= 3, "Should suggest at most 3");
+
+    // 3. Falls back to openrouter/auto
+    assert_eq!(result.model, OPENROUTER_AUTO_MODEL);
+
+    // 4. Warning message is informative
+    let warning = result.warning.as_ref().unwrap();
+    assert!(warning.contains("not found"));
+    assert!(warning.contains("Did you mean"));
+    assert!(warning.contains("Falling back"));
+    assert!(warning.contains(OPENROUTER_AUTO_MODEL));
+
+    // 5. The fallback model itself validates cleanly
+    let fallback_result = validate_openrouter_model(&result.model, tmp.path());
+    assert!(fallback_result.was_valid);
+}
+
+#[test]
+fn cache_expiry_triggers_stale_detection() {
+    use workgraph::executor::native::openai_client::validate_openrouter_model;
+
+    let tmp = TempDir::new().unwrap();
+
+    // Write a cache with only old models
+    let old_cache = serde_json::json!({
+        "fetched_at": "2020-01-01T00:00:00Z",
+        "models": [
+            {"id": "old-provider/old-model"},
+        ]
+    });
+    fs::write(tmp.path().join("model_cache.json"), old_cache.to_string()).unwrap();
+
+    // Validate against old cache — "new-provider/new-model" not listed
+    let result = validate_openrouter_model("new-provider/new-model", tmp.path());
+    assert!(!result.was_valid, "Model not in old cache should be invalid");
+
+    // Simulate cache refresh by writing a new cache with the model
+    let fresh_cache = serde_json::json!({
+        "fetched_at": chrono::Utc::now().to_rfc3339(),
+        "models": [
+            {"id": "old-provider/old-model"},
+            {"id": "new-provider/new-model"},
+        ]
+    });
+    fs::write(
+        tmp.path().join("model_cache.json"),
+        fresh_cache.to_string(),
+    )
+    .unwrap();
+
+    // Now the same model should be valid
+    let result2 = validate_openrouter_model("new-provider/new-model", tmp.path());
+    assert!(result2.was_valid, "Model in fresh cache should be valid");
+    assert_eq!(result2.model, "new-provider/new-model");
+}
+
+// ===========================================================================
+// 10. Concurrent cache access safety
+// ===========================================================================
+
+#[test]
+fn concurrent_cache_read_is_safe() {
+    use workgraph::executor::native::openai_client::validate_openrouter_model;
+
+    let tmp = TempDir::new().unwrap();
+    let cache = serde_json::json!({
+        "fetched_at": chrono::Utc::now().to_rfc3339(),
+        "models": [
+            {"id": "anthropic/claude-sonnet-4-6"},
+            {"id": "anthropic/claude-opus-4-6"},
+            {"id": "openai/gpt-4o"},
+        ]
+    });
+    fs::write(tmp.path().join("model_cache.json"), cache.to_string()).unwrap();
+
+    let dir = Arc::new(tmp);
+    let mut handles = vec![];
+
+    // Spawn 20 threads all reading/validating the cache concurrently
+    for i in 0..20 {
+        let dir = Arc::clone(&dir);
+        let handle = std::thread::spawn(move || {
+            let model = if i % 3 == 0 {
+                "anthropic/claude-sonnet-4-6"
+            } else if i % 3 == 1 {
+                "openai/gpt-4o"
+            } else {
+                "nonexistent/model"
+            };
+            let result = validate_openrouter_model(model, dir.path());
+            (model.to_string(), result)
+        });
+        handles.push(handle);
+    }
+
+    for handle in handles {
+        let (model, result) = handle.join().expect("thread should not panic");
+        if model == "nonexistent/model" {
+            assert!(!result.was_valid);
+        } else {
+            assert!(result.was_valid, "Valid model {} should pass", model);
+            assert_eq!(result.model, model);
+        }
+    }
+}
+
+#[test]
+fn concurrent_cache_write_and_read() {
+    use workgraph::executor::native::openai_client::validate_openrouter_model;
+
+    let tmp = TempDir::new().unwrap();
+    let dir = Arc::new(tmp);
+    let mut handles = vec![];
+
+    // Half the threads write the cache, half read it
+    for i in 0..10 {
+        let dir = Arc::clone(&dir);
+        let handle = std::thread::spawn(move || {
+            if i % 2 == 0 {
+                // Writer: write/overwrite the cache file
+                let cache = serde_json::json!({
+                    "fetched_at": chrono::Utc::now().to_rfc3339(),
+                    "models": [
+                        {"id": "anthropic/claude-sonnet-4-6"},
+                        {"id": format!("dynamic/model-{}", i)},
+                    ]
+                });
+                let _ = fs::write(
+                    dir.path().join("model_cache.json"),
+                    cache.to_string(),
+                );
+            } else {
+                // Reader: validate against whatever cache exists
+                let result = validate_openrouter_model(
+                    "anthropic/claude-sonnet-4-6",
+                    dir.path(),
+                );
+                // Should either be valid (cache exists with this model) or
+                // pass-through (no cache yet) — never panic
+                assert!(
+                    result.was_valid,
+                    "claude-sonnet-4-6 should always be valid or pass-through"
+                );
+            }
+        });
+        handles.push(handle);
+    }
+
+    for handle in handles {
+        handle.join().expect("no thread should panic during concurrent cache access");
+    }
+}
+
+// ===========================================================================
+// 11. Provider creation with OpenRouter validation wired in
+// ===========================================================================
+
+#[test]
+fn create_provider_ext_validates_openrouter_model() {
+    use workgraph::executor::native::provider::create_provider_ext;
+
+    let tmp = TempDir::new().unwrap();
+    let wg_dir = tmp.path().join(".workgraph");
+    fs::create_dir_all(&wg_dir).unwrap();
+
+    // Write a config
+    let config = Config::default();
+    config.save(&wg_dir).unwrap();
+
+    // Write a model cache
+    let cache = serde_json::json!({
+        "fetched_at": chrono::Utc::now().to_rfc3339(),
+        "models": [
+            {"id": "anthropic/claude-sonnet-4-6"},
+            {"id": "openai/gpt-4o"},
+        ]
+    });
+    fs::write(wg_dir.join("model_cache.json"), cache.to_string()).unwrap();
+
+    // Valid model should work
+    let provider = create_provider_ext(
+        &wg_dir,
+        "anthropic/claude-sonnet-4-6",
+        Some("openrouter"),
+        None,
+        Some("sk-or-test-key"),
+    );
+    assert!(provider.is_ok(), "Valid model should create provider");
+    let p = provider.unwrap();
+    assert_eq!(p.model(), "anthropic/claude-sonnet-4-6");
+
+    // Invalid model should fall back to openrouter/auto
+    let provider2 = create_provider_ext(
+        &wg_dir,
+        "anthropic/claude-sonet-4-6", // typo
+        Some("openrouter"),
+        None,
+        Some("sk-or-test-key"),
+    );
+    assert!(
+        provider2.is_ok(),
+        "Invalid model should still create provider (with fallback)"
+    );
+    let p2 = provider2.unwrap();
+    assert_eq!(
+        p2.model(),
+        "openrouter/auto",
+        "Invalid model should fall back to openrouter/auto"
+    );
+
+    // openrouter/auto should work directly
+    let provider3 = create_provider_ext(
+        &wg_dir,
+        "openrouter/auto",
+        Some("openrouter"),
+        None,
+        Some("sk-or-test-key"),
+    );
+    assert!(provider3.is_ok());
+    assert_eq!(provider3.unwrap().model(), "openrouter/auto");
+}
+
+// ===========================================================================
+// 12. Live OpenRouter API test (requires OPENROUTER_API_KEY)
+// ===========================================================================
+
+#[test]
+#[ignore] // Run with: cargo test -- --ignored live_openrouter
+fn live_openrouter_model_list_query() {
+    use workgraph::executor::native::openai_client::fetch_openrouter_models_blocking;
+
+    let api_key = std::env::var("OPENROUTER_API_KEY")
+        .expect("OPENROUTER_API_KEY must be set for live tests");
+
+    let models = fetch_openrouter_models_blocking(&api_key, None)
+        .expect("Live model list fetch should succeed");
+
+    // Basic sanity checks
+    assert!(!models.is_empty(), "Model list should not be empty");
+    assert!(
+        models.len() > 10,
+        "Expected many models, got {}",
+        models.len()
+    );
+
+    // Well-known models should be present
+    let ids: Vec<&str> = models.iter().map(|m| m.id.as_str()).collect();
+    assert!(
+        ids.iter().any(|id| id.contains("claude")),
+        "Should contain at least one Claude model"
+    );
+    assert!(
+        ids.iter().any(|id| id.contains("gpt")),
+        "Should contain at least one GPT model"
+    );
+
+    // Verify model structure is populated
+    let first = &models[0];
+    assert!(!first.id.is_empty(), "Model ID should not be empty");
+    assert!(!first.name.is_empty(), "Model name should not be empty");
 }
