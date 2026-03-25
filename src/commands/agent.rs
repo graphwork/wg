@@ -18,7 +18,7 @@ use std::thread;
 use std::time::Duration;
 use workgraph::config::Config;
 use workgraph::graph::{LogEntry, Status};
-use workgraph::parser::{load_graph, save_graph};
+use workgraph::parser::{load_graph, save_graph, modify_graph};
 use workgraph::query::ready_tasks;
 
 use super::graph_path;
@@ -438,21 +438,31 @@ fn run_iteration(dir: &Path, actor_id: &str, json: bool) -> Result<IterationResu
 /// Claim a task for the actor
 fn claim_task(dir: &Path, task_id: &str, actor_id: &str) -> Result<()> {
     let path = graph_path(dir);
-    let mut graph = load_graph(&path).context("Failed to load graph")?;
-
-    let task = graph.get_task_mut_or_err(task_id)?;
-
-    task.status = Status::InProgress;
-    task.assigned = Some(actor_id.to_string());
-    task.started_at = Some(Utc::now().to_rfc3339());
-    task.log.push(LogEntry {
-        timestamp: Utc::now().to_rfc3339(),
-        actor: Some(actor_id.to_string()),
-        user: Some(workgraph::current_user()),
-        message: "Claimed by autonomous agent".to_string(),
-    });
-
-    save_graph(&graph, &path).context("Failed to save graph")?;
+    let mut error: Option<anyhow::Error> = None;
+    modify_graph(&path, |graph| {
+        match graph.get_task_mut(task_id) {
+            Some(task) => {
+                task.status = Status::InProgress;
+                task.assigned = Some(actor_id.to_string());
+                task.started_at = Some(Utc::now().to_rfc3339());
+                task.log.push(LogEntry {
+                    timestamp: Utc::now().to_rfc3339(),
+                    actor: Some(actor_id.to_string()),
+                    user: Some(workgraph::current_user()),
+                    message: "Claimed by autonomous agent".to_string(),
+                });
+                true
+            }
+            None => {
+                error = Some(anyhow::anyhow!("Task '{}' not found", task_id));
+                false
+            }
+        }
+    })
+    .context("Failed to modify graph")?;
+    if let Some(e) = error {
+        return Err(e);
+    }
     super::notify_graph_changed(dir);
     Ok(())
 }
@@ -460,20 +470,30 @@ fn claim_task(dir: &Path, task_id: &str, actor_id: &str) -> Result<()> {
 /// Mark task as completed
 fn complete_task(dir: &Path, task_id: &str, actor_id: &str) -> Result<()> {
     let path = graph_path(dir);
-    let mut graph = load_graph(&path).context("Failed to load graph")?;
-
-    let task = graph.get_task_mut_or_err(task_id)?;
-
-    task.status = Status::Done;
-    task.completed_at = Some(Utc::now().to_rfc3339());
-    task.log.push(LogEntry {
-        timestamp: Utc::now().to_rfc3339(),
-        actor: Some(actor_id.to_string()),
-        user: Some(workgraph::current_user()),
-        message: "Completed by autonomous agent".to_string(),
-    });
-
-    save_graph(&graph, &path).context("Failed to save graph")?;
+    let mut error: Option<anyhow::Error> = None;
+    modify_graph(&path, |graph| {
+        match graph.get_task_mut(task_id) {
+            Some(task) => {
+                task.status = Status::Done;
+                task.completed_at = Some(Utc::now().to_rfc3339());
+                task.log.push(LogEntry {
+                    timestamp: Utc::now().to_rfc3339(),
+                    actor: Some(actor_id.to_string()),
+                    user: Some(workgraph::current_user()),
+                    message: "Completed by autonomous agent".to_string(),
+                });
+                true
+            }
+            None => {
+                error = Some(anyhow::anyhow!("Task '{}' not found", task_id));
+                false
+            }
+        }
+    })
+    .context("Failed to modify graph")?;
+    if let Some(e) = error {
+        return Err(e);
+    }
     super::notify_graph_changed(dir);
     Ok(())
 }
@@ -481,21 +501,31 @@ fn complete_task(dir: &Path, task_id: &str, actor_id: &str) -> Result<()> {
 /// Mark task as failed
 fn fail_task(dir: &Path, task_id: &str, actor_id: &str, reason: &str) -> Result<()> {
     let path = graph_path(dir);
-    let mut graph = load_graph(&path).context("Failed to load graph")?;
-
-    let task = graph.get_task_mut_or_err(task_id)?;
-
-    task.status = Status::Failed;
-    task.retry_count += 1;
-    task.failure_reason = Some(reason.to_string());
-    task.log.push(LogEntry {
-        timestamp: Utc::now().to_rfc3339(),
-        actor: Some(actor_id.to_string()),
-        user: Some(workgraph::current_user()),
-        message: format!("Failed: {}", reason),
-    });
-
-    save_graph(&graph, &path).context("Failed to save graph")?;
+    let mut error: Option<anyhow::Error> = None;
+    modify_graph(&path, |graph| {
+        match graph.get_task_mut(task_id) {
+            Some(task) => {
+                task.status = Status::Failed;
+                task.retry_count += 1;
+                task.failure_reason = Some(reason.to_string());
+                task.log.push(LogEntry {
+                    timestamp: Utc::now().to_rfc3339(),
+                    actor: Some(actor_id.to_string()),
+                    user: Some(workgraph::current_user()),
+                    message: format!("Failed: {}", reason),
+                });
+                true
+            }
+            None => {
+                error = Some(anyhow::anyhow!("Task '{}' not found", task_id));
+                false
+            }
+        }
+    })
+    .context("Failed to modify graph")?;
+    if let Some(e) = error {
+        return Err(e);
+    }
     super::notify_graph_changed(dir);
     Ok(())
 }
