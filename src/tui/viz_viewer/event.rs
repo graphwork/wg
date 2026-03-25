@@ -2794,7 +2794,9 @@ fn vscrollbar_jump_panel(app: &mut VizApp, row: u16) {
             if max_scroll == 0 {
                 return;
             }
-            app.coord_log.scroll = jump(max_scroll);
+            let new_scroll = jump(max_scroll);
+            app.coord_log.scroll = new_scroll;
+            app.coord_log.auto_tail = new_scroll >= max_scroll;
         }
         RightPanelTab::Firehose => {
             let total = app.firehose.total_rendered_lines;

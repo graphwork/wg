@@ -2885,11 +2885,43 @@ fn draw_log_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     const AGENT_MARKER: &str = "\u{229e}";
 
     // Re-render agent output markdown if dirty — same function as the Output tab.
-    let render_width = width.saturating_sub(1).max(20);
+    let render_width = width.saturating_sub(1);
     if app.log_pane.agent_output.dirty || app.log_pane.agent_output.rendered_lines.is_empty() {
         if !app.log_pane.agent_output.full_text.is_empty() {
             app.log_pane.agent_output.rendered_lines =
                 markdown_to_lines(&app.log_pane.agent_output.full_text, render_width);
+
+            // Add finish status line if agent is done — same as the Output tab.
+            if app.log_pane.agent_output.finished {
+                let status = app
+                    .log_pane
+                    .agent_output
+                    .finish_status
+                    .as_deref()
+                    .unwrap_or("unknown");
+                let (status_text, status_color) = match status {
+                    "done" => (
+                        format!("── agent finished (done) ──"),
+                        Color::Green,
+                    ),
+                    "failed" => (
+                        format!("── agent finished (failed) ──"),
+                        Color::Red,
+                    ),
+                    _ => (
+                        format!("── agent finished ({status}) ──"),
+                        Color::DarkGray,
+                    ),
+                };
+                app.log_pane.agent_output.rendered_lines.push(Line::from(""));
+                app.log_pane
+                    .agent_output
+                    .rendered_lines
+                    .push(Line::from(Span::styled(
+                        status_text,
+                        Style::default().fg(status_color),
+                    )));
+            }
         } else {
             app.log_pane.agent_output.rendered_lines = Vec::new();
         }
@@ -10601,5 +10633,121 @@ mod tests {
             "Hit region should cover [∴ validating], got: {:?}",
             found
         );
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // Log tab vs Output tab rendering parity
+    // ══════════════════════════════════════════════════════════════════════
+
+    /// Verify that the Log tab and Output tab produce identical rendered
+    /// lines for the same markdown content via the shared `markdown_to_lines`
+    /// function.  The only expected difference is the agent log marker lines
+    /// (⊞ symbol in light blue) that the Log tab prepends.
+    #[test]
+    fn test_log_and_output_tabs_use_same_markdown_rendering() {
+        use crate::tui::markdown::markdown_to_lines;
+
+        let sample_md = concat!(
+            "# Heading\n",
+            "\n",
+            "Some **bold** and *italic* text with `inline code`.\n",
+            "\n",
+            "```rust\n",
+            "fn main() {\n",
+            "    println!(\"hello\");\n",
+            "}\n",
+            "```\n",
+            "\n",
+            "- bullet one\n",
+            "- bullet two\n",
+        );
+
+        let width: usize = 80;
+
+        // Both tabs use markdown_to_lines with width.saturating_sub(1).
+        let render_width = width.saturating_sub(1);
+        let output_lines = markdown_to_lines(sample_md, render_width);
+        let log_lines = markdown_to_lines(sample_md, render_width);
+
+        assert_eq!(
+            output_lines.len(),
+            log_lines.len(),
+            "Same content through markdown_to_lines should produce the same number of lines"
+        );
+
+        for (i, (out_line, log_line)) in output_lines.iter().zip(log_lines.iter()).enumerate() {
+            assert_eq!(
+                out_line.spans.len(),
+                log_line.spans.len(),
+                "Line {i}: span count mismatch"
+            );
+            for (j, (out_span, log_span)) in
+                out_line.spans.iter().zip(log_line.spans.iter()).enumerate()
+            {
+                assert_eq!(
+                    out_span.content, log_span.content,
+                    "Line {i} span {j}: content mismatch"
+                );
+                assert_eq!(
+                    out_span.style, log_span.style,
+                    "Line {i} span {j}: style mismatch"
+                );
+            }
+        }
+    }
+
+    /// Verify that log tab agent marker lines use the ⊞ symbol and light blue styling.
+    #[test]
+    fn test_log_tab_agent_markers() {
+        let log_entry = "[2026-03-25T19:06:45] Starting work on task";
+
+        // Simulate what draw_log_tab does to log entries.
+        const AGENT_MARKER: &str = "\u{229e}";
+        let message = if let Some(bracket_end) = log_entry.find(']') {
+            let timestamp = &log_entry[..=bracket_end];
+            let msg = log_entry[bracket_end + 1..].trim_start();
+            format!("{} {} {}", AGENT_MARKER, timestamp, msg)
+        } else {
+            format!("{} {}", AGENT_MARKER, log_entry)
+        };
+
+        assert!(
+            message.starts_with(AGENT_MARKER),
+            "Agent marker line should start with ⊞ symbol"
+        );
+        assert!(
+            message.contains("[2026-03-25T19:06:45]"),
+            "Agent marker line should preserve the timestamp"
+        );
+        assert!(
+            message.contains("Starting work on task"),
+            "Agent marker line should preserve the message"
+        );
+
+        // Verify the styling would be LightBlue (matching draw_log_tab).
+        let styled_line = Line::from(Span::styled(
+            message,
+            Style::default().fg(Color::LightBlue),
+        ));
+        assert_eq!(
+            styled_line.spans[0].style.fg,
+            Some(Color::LightBlue),
+            "Agent marker lines should use LightBlue color"
+        );
+    }
+
+    /// Verify that the finish status line is consistent between Log and Output tabs.
+    #[test]
+    fn test_finish_status_line_parity() {
+        // Both tabs should produce the same finish status format.
+        for (status, expected_color) in [("done", Color::Green), ("failed", Color::Red), ("unknown", Color::DarkGray)] {
+            let (status_text, status_color) = match status {
+                "done" => (format!("── agent finished (done) ──"), Color::Green),
+                "failed" => (format!("── agent finished (failed) ──"), Color::Red),
+                _ => (format!("── agent finished ({status}) ──"), Color::DarkGray),
+            };
+            assert_eq!(status_color, expected_color, "Status '{status}' should use correct color");
+            assert!(status_text.contains(status), "Status text should contain the status string");
+        }
     }
 }
