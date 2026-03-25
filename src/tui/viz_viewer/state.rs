@@ -3410,12 +3410,11 @@ impl VizApp {
         {
             if cid != self.active_coordinator_id {
                 self.switch_coordinator(cid);
+                // Only switch to Chat tab when actually changing coordinators.
+                self.right_panel_tab = RightPanelTab::Chat;
             }
-            self.right_panel_tab = RightPanelTab::Chat;
         } else if selected_id == ".coordinator" && self.active_coordinator_id != 0 {
             self.switch_coordinator(0);
-            self.right_panel_tab = RightPanelTab::Chat;
-        } else if selected_id == ".coordinator" {
             self.right_panel_tab = RightPanelTab::Chat;
         }
     }
