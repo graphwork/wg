@@ -501,39 +501,6 @@ pub enum ScrollbarDragTarget {
     PanelHorizontal,
 }
 
-/// Whether the left pane shows the DOT graph or a flat task list.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum GraphMode {
-    /// Traditional DOT/ASCII dependency graph visualization.
-    Graph,
-    /// Flat task list with status indicators.
-    List,
-}
-
-impl GraphMode {
-    pub fn toggle(&self) -> Self {
-        match self {
-            Self::Graph => Self::List,
-            Self::List => Self::Graph,
-        }
-    }
-
-    pub fn label(&self) -> &'static str {
-        match self {
-            Self::Graph => "Graph",
-            Self::List => "List",
-        }
-    }
-}
-
-/// Lightweight task summary for the list view.
-#[derive(Clone, Debug)]
-pub struct TaskListEntry {
-    pub title: String,
-    pub status: Status,
-    pub assigned: Option<String>,
-}
-
 /// Sort mode for task ordering in the graph view.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum SortMode {
@@ -1980,12 +1947,6 @@ pub struct VizApp {
     // ── Help overlay ──
     pub show_help: bool,
 
-    // ── View mode ──
-    /// Whether the left pane shows the DOT graph or a flat task list.
-    pub graph_mode: GraphMode,
-    /// Lightweight task data for the list view, keyed by task ID (refreshed alongside stats).
-    pub task_list_entries: HashMap<String, TaskListEntry>,
-
     // ── System task visibility ──
     /// When true, show system tasks (dot-prefixed) in the graph view.
     pub show_system_tasks: bool,
@@ -2378,12 +2339,6 @@ impl VizApp {
             cycle_timing: Vec::new(),
             show_total_tokens: false,
             show_help: false,
-            graph_mode: if config.tui.default_view == "graph" {
-                GraphMode::Graph
-            } else {
-                GraphMode::List
-            },
-            task_list_entries: HashMap::new(),
             show_system_tasks: config.tui.show_system_tasks,
             show_running_system_tasks: config.tui.show_running_system_tasks,
             system_tasks_just_toggled: false,
@@ -3700,21 +3655,6 @@ impl VizApp {
 
             new_snapshots.insert(task.id.clone(), snapshot);
         }
-
-        // Populate task list entries for the list view.
-        self.task_list_entries = graph
-            .tasks()
-            .map(|t| {
-                (
-                    t.id.clone(),
-                    TaskListEntry {
-                        title: t.title.clone(),
-                        status: t.status,
-                        assigned: t.assigned.clone(),
-                    },
-                )
-            })
-            .collect();
 
         // Count archived tasks
         let archive_path = self.workgraph_dir.join("archive.jsonl");
@@ -5720,8 +5660,6 @@ impl VizApp {
             cycle_timing: Vec::new(),
             show_total_tokens: false,
             show_help: false,
-            graph_mode: GraphMode::Graph,
-            task_list_entries: HashMap::new(),
             show_system_tasks: false,
             show_running_system_tasks: false,
             system_tasks_just_toggled: false,
@@ -8194,13 +8132,6 @@ impl VizApp {
             section: ConfigSection::TuiSettings,
         });
         entries.push(ConfigEntry {
-            key: "tui.default_view".into(),
-            label: "Default view".into(),
-            value: config.tui.default_view.clone(),
-            edit_kind: ConfigEditKind::Choice(vec!["list".into(), "graph".into()]),
-            section: ConfigSection::TuiSettings,
-        });
-        entries.push(ConfigEntry {
             key: "tui.show_system_tasks".into(),
             label: "Show system tasks".into(),
             value: if config.tui.show_system_tasks {
@@ -8885,9 +8816,6 @@ impl VizApp {
                 }
             }
             "tui.counters" => config.tui.counters = new_value,
-            "tui.default_view" => {
-                config.tui.default_view = new_value;
-            }
             "tui.show_system_tasks" => {
                 config.tui.show_system_tasks = new_value == "on";
                 self.show_system_tasks = config.tui.show_system_tasks;
@@ -11799,7 +11727,6 @@ mod tui_config_panel_tests {
             "tui.chat_history",
             "tui.chat_history_max",
             "tui.counters",
-            "tui.default_view",
             "tui.show_system_tasks",
             "tui.show_running_system_tasks",
             // Agent

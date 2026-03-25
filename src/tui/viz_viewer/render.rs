@@ -8,10 +8,10 @@ use unicode_width::UnicodeWidthStr;
 
 use super::state::{
     ChoiceDialogState, ConfigEditKind, ConfigSection, ConfirmAction, ControlPanelFocus,
-    CoordinatorPlusHit, CoordinatorTabHit, EndpointTestStatus, FocusedPanel, GraphMode, InputMode,
-    LayoutMode, RightPanelTab, ServiceHealthLevel, SortMode, TaskFormField, TaskFormState,
-    TextPromptAction, VizApp, WAVE_BOLT, WAVE_NUM_BOLTS, extract_section_name,
-    format_duration_compact, spinner_wave_pos,
+    CoordinatorPlusHit, CoordinatorTabHit, EndpointTestStatus, FocusedPanel, InputMode, LayoutMode,
+    RightPanelTab, ServiceHealthLevel, SortMode, TaskFormField, TaskFormState, TextPromptAction,
+    VizApp, WAVE_BOLT, WAVE_NUM_BOLTS, extract_section_name, format_duration_compact,
+    spinner_wave_pos,
 };
 use workgraph::AgentStatus;
 use workgraph::graph::{TokenUsage, format_tokens};
@@ -805,12 +805,6 @@ fn draw_viz_content(frame: &mut Frame, app: &mut VizApp, area: Rect) {
         return;
     }
 
-    // List mode: render a flat task list instead of the DOT graph.
-    if app.graph_mode == GraphMode::List {
-        draw_task_list(frame, app, area);
-        return;
-    }
-
     let visible_count = app.visible_line_count();
     let start = app.scroll.offset_y;
     let end = (start + area.height as usize).min(visible_count);
@@ -1291,132 +1285,6 @@ fn highlight_fuzzy_match<'a>(
     }
 
     Line::from(new_spans)
-}
-
-/// Render a flat task list view in the left pane.
-fn draw_task_list(frame: &mut Frame, app: &mut VizApp, area: Rect) {
-    use workgraph::graph::Status;
-
-    let task_ids = &app.task_order;
-    let total = task_ids.len();
-
-    // Update content height for scrolling.
-    app.scroll.content_height = total;
-    app.scroll.content_width = area.width as usize;
-
-    let start = app.scroll.offset_y;
-    let end = (start + area.height as usize).min(total);
-
-    if total == 0 {
-        let msg = Paragraph::new(Line::from(Span::styled(
-            " No tasks",
-            Style::default().fg(Color::DarkGray),
-        )));
-        frame.render_widget(msg, area);
-        return;
-    }
-
-    let selected_idx = app.selected_task_idx;
-
-    let mut lines: Vec<Line> = Vec::with_capacity(end.saturating_sub(start));
-
-    for idx in start..end {
-        let task_id = match task_ids.get(idx) {
-            Some(id) => id,
-            None => break,
-        };
-
-        let entry = app.task_list_entries.get(task_id);
-
-        let status = entry.map(|e| e.status).unwrap_or(Status::Open);
-        let (icon, icon_color) = match status {
-            Status::Done => ("\u{2713}", Color::Green),
-            Status::InProgress => ("\u{25cf}", Color::Yellow),
-            Status::Open => ("\u{25cb}", Color::White),
-            Status::Failed => ("\u{2717}", Color::Red),
-            Status::Blocked => ("\u{25cc}", Color::DarkGray),
-            Status::Abandoned => ("\u{2014}", Color::DarkGray),
-            Status::Waiting => ("\u{25ce}", Color::Cyan),
-            Status::PendingValidation => ("\u{2299}", Color::Magenta),
-        };
-
-        let is_selected = selected_idx == Some(idx);
-        let is_system = workgraph::graph::is_system_task(task_id);
-
-        let mut spans = vec![
-            Span::raw(" "),
-            Span::styled(format!("{} ", icon), Style::default().fg(icon_color)),
-        ];
-
-        // Task title (or ID if title is empty).
-        let title = entry.map(|e| e.title.as_str()).unwrap_or("");
-        let display_name = if title.is_empty() { task_id } else { title };
-
-        let name_style = if is_selected {
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD)
-        } else if is_system {
-            Style::default().fg(Color::DarkGray)
-        } else {
-            Style::default().fg(Color::White)
-        };
-        spans.push(Span::styled(display_name.to_string(), name_style));
-
-        // Show task ID if it differs from title, dimmed.
-        if !title.is_empty() {
-            // Derive ID from title to check if they'd produce the same slug
-            let title_slug: String = title
-                .chars()
-                .map(|c| if c.is_alphanumeric() || c == '-' { c.to_ascii_lowercase() } else { '-' })
-                .collect();
-            if task_id != &title_slug {
-                spans.push(Span::styled(
-                    format!("  ({})", task_id),
-                    Style::default().fg(Color::DarkGray),
-                ));
-            }
-        }
-
-        // Show assigned agent (abbreviated).
-        if let Some(ref agent) = entry.and_then(|e| e.assigned.as_ref()) {
-            let short = if agent.len() > 8 {
-                &agent[..8]
-            } else {
-                agent
-            };
-            spans.push(Span::styled(
-                format!("  \u{22b3}{}", short),
-                Style::default().fg(Color::Cyan),
-            ));
-        }
-
-        let mut line = Line::from(spans);
-        if is_selected {
-            line = line.style(Style::default().bg(Color::Rgb(40, 40, 60)));
-        }
-
-        // Apply splash animation if present.
-        if let Some(anim) = app.splash_animations.get(task_id) {
-            let elapsed = anim.start.elapsed().as_secs_f64();
-            let duration = app.animation_mode.speed().duration_secs();
-            if elapsed < duration {
-                let t = (elapsed / duration).min(1.0);
-                let (fr, fg, fb) = anim.flash_color;
-                let r = (fr as f64 * (1.0 - t)) as u8;
-                let g = (fg as f64 * (1.0 - t)) as u8;
-                let b = (fb as f64 * (1.0 - t)) as u8;
-                line = line.style(Style::default().bg(Color::Rgb(r, g, b)));
-            }
-        }
-
-        lines.push(line);
-    }
-
-    let paragraph = Paragraph::new(lines);
-    frame.render_widget(paragraph, area);
-
-    app.last_graph_area = area;
 }
 
 fn draw_archive_browser(frame: &mut Frame, app: &mut VizApp, area: Rect) {
@@ -5116,7 +4984,7 @@ fn action_hints_parts(app: &VizApp) -> (&str, &str, Color, Vec<(&str, &str)>) {
                 }
             }
             FocusedPanel::Graph => (
-                app.graph_mode.label(),
+                "Graph",
                 "NAV",
                 Color::Rgb(120, 120, 120),
                 vec![
@@ -5126,7 +4994,6 @@ fn action_hints_parts(app: &VizApp) -> (&str, &str, Color, Vec<(&str, &str)>) {
                     ("/", "search"),
                     ("a", "add"),
                     ("D", "done"),
-                    ("v", "view"),
                     ("i/I", "resize pane"),
                     ("?", "help"),
                     ("Alt←→", "cycle views"),
@@ -5492,15 +5359,6 @@ fn draw_status_bar(frame: &mut Frame, app: &VizApp, area: Rect) {
         spans.push(Span::styled(
             "H-SCROLL ",
             Style::default().fg(Color::Magenta),
-        ));
-    }
-
-    // View mode indicator (show when not the default list view)
-    if app.graph_mode != GraphMode::List {
-        spans.push(Span::styled("| ", Style::default().fg(Color::DarkGray)));
-        spans.push(Span::styled(
-            format!("{} ", app.graph_mode.label()),
-            Style::default().fg(Color::Cyan),
         ));
     }
 
@@ -6343,7 +6201,6 @@ fn draw_help_overlay(frame: &mut Frame) {
         binding("Esc", "Clear search"),
         blank(),
         heading("General"),
-        binding("v", "Toggle view: List ↔ Graph"),
         binding("s", "Cycle sort: Chrono↓/↑/Status"),
         binding("m", "Toggle mouse capture"),
         binding("X", "Swap scroll axis (for Termux)"),

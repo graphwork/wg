@@ -239,9 +239,6 @@ pub struct TuiConfig {
     /// Comma-separated counters to display: "uptime", "cumulative", "active", "session", "compact"
     #[serde(default = "default_counters")]
     pub counters: String,
-    /// Default view mode: "list" (default) or "graph"
-    #[serde(default = "default_tui_view")]
-    pub default_view: String,
     /// Show all system tasks (dot-prefixed) by default in TUI
     #[serde(default)]
     pub show_system_tasks: bool,
@@ -253,9 +250,6 @@ pub struct TuiConfig {
     pub show_keys: bool,
 }
 
-fn default_tui_view() -> String {
-    "list".to_string()
-}
 fn default_tui_layout() -> String {
     "auto".to_string()
 }
@@ -302,7 +296,6 @@ impl Default for TuiConfig {
             chat_history: true,
             chat_history_max: default_chat_history_max(),
             counters: default_counters(),
-            default_view: default_tui_view(),
             show_system_tasks: false,
             show_running_system_tasks: false,
             show_keys: false,

@@ -1166,12 +1166,6 @@ fn handle_graph_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
         // Sort mode cycle
         KeyCode::Char('s') => app.cycle_sort_mode(),
 
-        // Toggle view mode: List ↔ Graph
-        KeyCode::Char('v') => {
-            app.graph_mode = app.graph_mode.toggle();
-            app.force_refresh();
-        }
-
         // Manual refresh
         KeyCode::Char('r') => app.force_refresh(),
 
