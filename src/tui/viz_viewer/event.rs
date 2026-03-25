@@ -1454,13 +1454,14 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
             app.shrink_viz_pane();
         }
 
-        // Esc: go back to graph focus
+        // Esc: pop nav stack if non-empty, otherwise go back to graph focus
         KeyCode::Esc => {
-            app.focused_panel = FocusedPanel::Graph;
+            nav_stack_pop(app);
         }
 
-        // Number keys 0-8 switch tabs
+        // Number keys 0-9 switch tabs (clears nav stack — manual navigation)
         KeyCode::Char(d @ '0'..='9') => {
+            app.nav_stack.clear();
             let idx = (d as u8 - b'0') as usize;
             if let Some(tab) = RightPanelTab::from_index(idx) {
                 app.right_panel_tab = tab;
@@ -1590,11 +1591,36 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
             } else if app.right_panel_tab == RightPanelTab::Config {
                 config_enter_edit(app);
             } else if app.right_panel_tab == RightPanelTab::Dashboard {
-                // Drill-down: switch to Output tab focused on the selected agent
+                // Drill-down: push Dashboard onto nav stack, switch to Output for selected agent
                 if let Some(row) = app.dashboard.agent_rows.get(app.dashboard.selected_row) {
                     let agent_id = row.agent_id.clone();
+                    app.nav_stack.push(NavEntry::Dashboard);
                     app.output_pane.active_agent_id = Some(agent_id);
                     app.right_panel_tab = RightPanelTab::Output;
+                }
+            } else if app.right_panel_tab == RightPanelTab::Output && !app.nav_stack.is_empty() {
+                // Drill-down from Output: push AgentDetail, go to task Detail
+                if let Some(ref agent_id) = app.output_pane.active_agent_id.clone() {
+                    let task_id = app.dashboard.agent_rows.iter()
+                        .find(|r| r.agent_id == *agent_id)
+                        .map(|r| r.task_id.clone());
+                    if let Some(task_id) = task_id {
+                        app.nav_stack.push(NavEntry::AgentDetail { agent_id: agent_id.clone() });
+                        app.load_hud_detail_for_task(&task_id);
+                        app.right_panel_tab = RightPanelTab::Detail;
+                    }
+                }
+            } else if app.right_panel_tab == RightPanelTab::Detail && !app.nav_stack.is_empty() {
+                // Drill-down from Detail: push TaskDetail, go to Log tab
+                if let Some(ref detail) = app.hud_detail {
+                    let task_id = detail.task_id.clone();
+                    app.nav_stack.push(NavEntry::TaskDetail { task_id: task_id.clone() });
+                    if let Some(idx) = app.task_order.iter().position(|id| *id == task_id) {
+                        app.selected_task_idx = Some(idx);
+                    }
+                    app.invalidate_log_pane();
+                    app.load_log_pane();
+                    app.right_panel_tab = RightPanelTab::Log;
                 }
             }
         }
@@ -1669,9 +1695,10 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
 
         // Dashboard tab: t = task detail, b = back
         KeyCode::Char('t') if app.right_panel_tab == RightPanelTab::Dashboard => {
-            // Jump to task detail for the selected agent's task
+            // Jump to task detail for the selected agent's task (push Dashboard onto nav stack)
             if let Some(row) = app.dashboard.agent_rows.get(app.dashboard.selected_row) {
                 let task_id = row.task_id.clone();
+                app.nav_stack.push(NavEntry::Dashboard);
                 app.load_hud_detail_for_task(&task_id);
                 app.right_panel_tab = RightPanelTab::Detail;
             }
