@@ -332,16 +332,21 @@ def scene_1_launch(h):
     else:
         log("WARNING: TUI render not detected")
 
-    # Give graph more visible space — press I (capital) to shrink inspector
-    h.sleep(1)
+    # Let viewer see the default layout first
+    h.sleep(1.5)
+    h.flush_frame()
+
+    # Shrink inspector to give graph more visible space.
+    # Uppercase I = shrink_viz_pane() which decreases right_panel_percent,
+    # making the inspector smaller and the graph larger.
     for _ in range(3):
         h.send_keys("I")
-        h.sleep(0.4)
+        h.sleep(0.5)
     h.flush_frame()
-    log("Shrunk inspector panel (capital I x3)")
+    log("Shrunk inspector panel (Shift+I x3)")
 
-    # Let viewer orient (graph left, smaller inspector right)
-    h.sleep(2.5)
+    # Let viewer orient to the new layout (graph prominent, smaller inspector)
+    h.sleep(3)
     h.flush_frame()
 
     scenes_captured["scene1_launch"] = found
@@ -429,9 +434,13 @@ def scene_3_agents_spawn(h):
     """Scene 3: Tasks Appear + Agents Spawn — arrow navigation highlights."""
     log("=== Scene 3: Tasks Appear + Agents Spawn ===")
 
-    # Exit chat input to graph focus
+    # Exit chat input, then navigate to graph panel
     h.send_keys("Escape")
-    h.sleep(1)
+    h.sleep(0.8)
+    h.send_keys("Tab")
+    h.sleep(0.8)
+    h.flush_frame()
+    log("ESC → TAB: navigated from text entry to graph view")
 
     # Wait for first task to go in-progress
     log("Waiting for agents to claim tasks...")
@@ -441,27 +450,30 @@ def scene_3_agents_spawn(h):
     else:
         log("WARNING: No in-progress after 120s")
 
-    h.sleep(2)
+    # Let viewer see tasks appearing and agents spawning
+    h.sleep(3)
+    h.flush_frame()
 
-    # Navigate down through tasks — each arrow press updates the inspector
-    # This is the core interaction: graph navigation → inspector responds
+    # Navigate down through tasks — each arrow press updates the inspector.
+    # Deliberate pacing so the viewer can see the selected node changing
+    # and the inspector detail updating for each task.
     log("Arrow key navigation through graph nodes...")
     for i in range(5):
         h.send_keys("Down")
-        h.sleep(1.5)
+        h.sleep(1.8)
         h.flush_frame()
 
-    # Pause so viewer sees the selected node + inspector detail
-    h.sleep(2)
+    # Longer pause so viewer absorbs the selected node + inspector detail
+    h.sleep(3)
     h.flush_frame()
 
     # Navigate back up to show bidirectional navigation
     for i in range(3):
         h.send_keys("Up")
-        h.sleep(1.2)
+        h.sleep(1.5)
         h.flush_frame()
 
-    h.sleep(2)
+    h.sleep(2.5)
     h.flush_frame()
 
     scenes_captured["scene3_agents"] = found
@@ -469,7 +481,11 @@ def scene_3_agents_spawn(h):
 
 
 def scene_4_detail_view(h):
-    """Scene 4: Live Detail View — Detail, Agency, Firehose showcase."""
+    """Scene 4: Live Detail View — Detail, Log, Firehose showcase.
+
+    This is the most important scene. The viewer sees agents producing
+    output in real time and learns to navigate between detail views.
+    """
     log("=== Scene 4: Live Detail View ===")
 
     # Find an in-progress task to inspect
@@ -489,45 +505,58 @@ def scene_4_detail_view(h):
         if "in-progress" in snap.lower() or "progress" in snap.lower():
             break
         h.send_keys("Down")
-        h.sleep(0.8)
+        h.sleep(1)
 
-    # Sub-scene 4a: Detail tab — the most interesting view
+    # Sub-scene 4a: Detail tab (key 1) — task metadata + live refresh
     log("Sub-scene 4a: Detail tab (key 1)")
     h.send_keys("1")
     h.sleep(4)
     h.flush_frame()
 
-    # Navigate to a different node to show detail updating
+    # Navigate to a different task to show the detail view UPDATING
+    # per selection — this demonstrates that arrow keys + detail views
+    # work together as a browsing interface
     h.send_keys("Down")
-    h.sleep(1.5)
+    h.sleep(2)
     h.flush_frame()
+    log("Moved to next task — detail view updated")
+
     h.send_keys("Down")
-    h.sleep(1.5)
+    h.sleep(2)
+    h.flush_frame()
+    log("Moved to another task — detail view updated again")
+
+    # Sub-scene 4b: Log tab (key 2) — reverse-chronological activity log
+    log("Sub-scene 4b: Log tab (key 2)")
+    h.send_keys("2")
+    h.sleep(4)
     h.flush_frame()
 
-    # Sub-scene 4b: Agency tab — show agent assignments
-    log("Sub-scene 4b: Agency tab (key 4)")
-    h.send_keys("4")
-    h.sleep(3)
+    # Navigate to yet another task while on Log tab to show it updates
+    h.send_keys("Up")
+    h.sleep(2)
     h.flush_frame()
 
-    # Sub-scene 4c: Firehose tab — THE money shot
+    # Sub-scene 4c: Firehose tab (key 8) — THE money shot
+    # Merged stream from ALL active agents simultaneously
     log("Sub-scene 4c: Firehose tab (key 8)")
     alive = count_alive_agents()
     log(f"Alive agents: {alive}")
 
     h.send_keys("8")
-    h.sleep(4)
+    # Extended pause to let the viewer watch log output scrolling
+    # as agents produce work in real time. This is the "wow" moment.
+    h.sleep(8)
     h.flush_frame()
 
     if alive >= 1:
-        log("Firehose tab shown with live agents")
+        log("Firehose tab shown with live agents — extended viewing pause")
     else:
         log("No alive agents — firehose may be empty")
 
-    # Sub-scene 4d: Log tab — show task logs in firehose context
-    log("Sub-scene 4d: Log tab (key 2)")
-    h.send_keys("2")
+    # Sub-scene 4d: Back to Detail tab (key 1) to show we can cycle views
+    log("Sub-scene 4d: Back to Detail tab (key 1)")
+    h.send_keys("1")
     h.sleep(3)
     h.flush_frame()
 
@@ -575,23 +604,29 @@ def scene_5_round2(h, use_real_coordinator=True):
         time.sleep(2)
         inject_roast_tasks()
 
-    # Let TUI refresh
+    # Let TUI refresh and show response + new tasks
     h.sleep(5)
     h.flush_frame()
 
-    # Exit chat input
+    # Exit chat input, then navigate to graph panel (ESC → TAB)
     h.send_keys("Escape")
-    h.sleep(1)
+    h.sleep(0.8)
+    h.send_keys("Tab")
+    h.sleep(0.8)
+    h.flush_frame()
+    log("ESC → TAB: navigated from text entry to graph view")
 
-    # Navigate to see new tasks
+    # Navigate down to find the new roast-mode tasks
     for i in range(4):
         h.send_keys("Down")
-        h.sleep(0.8)
+        h.sleep(1.2)
+        h.flush_frame()
 
     snap = h.snapshot()
     has_roast = "snark" in snap.lower() or "roast" in snap.lower()
     log(f"Roast tasks visible: {has_roast}")
 
+    # Pause so viewer can see the expanded graph with new tasks
     h.sleep(3)
     h.flush_frame()
 
@@ -628,18 +663,25 @@ def scene_6_survey_exit(h):
             log(f"Found roast task at position {i}")
             break
         h.send_keys("Down")
-        h.sleep(0.8)
+        h.sleep(1)
 
-    # Show Log tab
+    # Show Log tab for the roast task — let viewer read the content
     h.send_keys("2")
+    h.sleep(4)
+    h.flush_frame()
+
+    # Switch to Detail tab briefly to show completed task output
+    h.send_keys("1")
     h.sleep(3)
     h.flush_frame()
 
-    # Navigate back up to survey the full graph
+    # Navigate back up through the full graph to survey all tasks
     for _ in range(8):
         h.send_keys("Up")
-        h.sleep(0.6)
+        h.sleep(0.8)
+        h.flush_frame()
 
+    # Final pause — let viewer absorb the completed graph
     h.sleep(3)
     h.flush_frame()
 
