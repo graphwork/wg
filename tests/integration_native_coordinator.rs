@@ -254,7 +254,7 @@ fn native_coordinator_config_parsing() {
     configure_native_coordinator(&wg_dir, "deepseek/deepseek-chat-v3");
 
     let config = workgraph::config::Config::load(&wg_dir).unwrap();
-    assert_eq!(config.coordinator.executor, "native");
+    assert_eq!(config.coordinator.executor.as_deref(), Some("native"));
     assert_eq!(
         config.coordinator.model.as_deref(),
         Some("deepseek/deepseek-chat-v3")
