@@ -11,7 +11,7 @@ use ratatui::layout::Position;
 use super::render;
 use super::state::{
     ChoiceDialogAction, ChoiceDialogState, CommandEffect, ConfigEditKind, ConfirmAction,
-    ControlPanelFocus, FocusedPanel, InputMode, InspectorSubFocus, ResponsiveBreakpoint,
+    ControlPanelFocus, FocusedPanel, InputMode, InspectorSubFocus, NavEntry, ResponsiveBreakpoint,
     RightPanelTab, TaskFormField, TextPromptAction, VizApp,
 };
 
@@ -1507,6 +1507,7 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
                     app.output_pane.has_new_content = false;
                 }
             } else {
+                app.nav_stack.clear();
                 app.right_panel_tab = app.right_panel_tab.prev();
             }
         }
@@ -1533,6 +1534,7 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
                     app.output_pane.has_new_content = false;
                 }
             } else {
+                app.nav_stack.clear();
                 app.right_panel_tab = app.right_panel_tab.next();
             }
         }
@@ -1674,9 +1676,13 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
                 app.right_panel_tab = RightPanelTab::Detail;
             }
         }
-        KeyCode::Char('b') if app.right_panel_tab == RightPanelTab::Dashboard => {
-            // Back: return to graph focus
-            app.focused_panel = FocusedPanel::Graph;
+        KeyCode::Char('b') if app.right_panel_tab == RightPanelTab::Dashboard
+            || app.right_panel_tab == RightPanelTab::Output
+            || app.right_panel_tab == RightPanelTab::Detail
+            || app.right_panel_tab == RightPanelTab::Log =>
+        {
+            // Back: pop nav stack if non-empty, otherwise return to graph focus
+            nav_stack_pop(app);
         }
 
         // Chat tab: '[' / ']' cycle between coordinator tabs
@@ -3421,6 +3427,36 @@ fn tab_at_column(col: u16) -> Option<RightPanelTab> {
     None
 }
 
+/// Pop the navigation stack. If non-empty, restore the previous view.
+/// If empty, fall back to graph focus (default Esc behavior).
+fn nav_stack_pop(app: &mut VizApp) {
+    match app.nav_stack.pop() {
+        Some(NavEntry::Dashboard) => {
+            app.right_panel_tab = RightPanelTab::Dashboard;
+        }
+        Some(NavEntry::AgentDetail { agent_id }) => {
+            app.output_pane.active_agent_id = Some(agent_id);
+            app.right_panel_tab = RightPanelTab::Output;
+        }
+        Some(NavEntry::TaskDetail { task_id }) => {
+            app.load_hud_detail_for_task(&task_id);
+            app.right_panel_tab = RightPanelTab::Detail;
+        }
+        Some(NavEntry::TaskLog { task_id }) => {
+            if let Some(idx) = app.task_order.iter().position(|id| *id == task_id) {
+                app.selected_task_idx = Some(idx);
+            }
+            app.invalidate_log_pane();
+            app.load_log_pane();
+            app.right_panel_tab = RightPanelTab::Log;
+        }
+        None => {
+            // No nav history — default to returning to graph focus
+            app.focused_panel = FocusedPanel::Graph;
+        }
+    }
+}
+
 // ══════════════════════════════════════════════════════════════════════════════
 // Tests for scrollbar click and drag behavior
 // ══════════════════════════════════════════════════════════════════════════════
@@ -4549,5 +4585,123 @@ mod scrollbar_tests {
         handle_mouse(&mut app, MouseEventKind::ScrollUp, 10, 40);
         assert_eq!(app.scroll.offset_y, 0, "Swapped ScrollUp should not scroll vertically");
         assert_eq!(app.scroll.offset_x, 0, "Swapped ScrollUp should scroll left");
+    }
+}
+
+#[cfg(test)]
+mod drilldown_tests {
+    use super::*;
+    use crate::tui::viz_viewer::state::{
+        DashboardAgentActivity, DashboardAgentRow, NavEntry, RightPanelTab,
+    };
+
+    fn setup_dashboard_app() -> (VizApp, tempfile::TempDir) {
+        use crate::commands::viz::LayoutMode as VizLayoutMode;
+        use crate::commands::viz::ascii::generate_ascii;
+        use std::collections::{HashMap, HashSet};
+        use workgraph::graph::{Node, Status, WorkGraph};
+        use workgraph::parser::save_graph;
+        use workgraph::test_helpers::make_task_with_status;
+
+        let mut graph = WorkGraph::new();
+        let t = make_task_with_status("test-task-1", "Test Task 1", Status::InProgress);
+        graph.add_node(Node::Task(t));
+
+        let tmp = tempfile::tempdir().unwrap();
+        let graph_path = tmp.path().join("graph.jsonl");
+        save_graph(&graph, &graph_path).unwrap();
+
+        let tasks: Vec<_> = graph.tasks().collect();
+        let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
+        let viz = generate_ascii(
+            &graph, &tasks, &task_ids,
+            &HashMap::new(), &HashMap::new(), &HashMap::new(),
+            VizLayoutMode::Tree, &HashSet::new(), "gray",
+            &HashMap::new(), &HashMap::new(),
+        );
+
+        let mut app = VizApp::from_viz_output_for_test(&viz);
+        app.workgraph_dir = tmp.path().to_path_buf();
+        app.dashboard.agent_rows.push(DashboardAgentRow {
+            agent_id: "agent-99".into(),
+            task_id: "test-task-1".into(),
+            task_title: Some("Test Task 1".into()),
+            activity: DashboardAgentActivity::Active,
+            elapsed_secs: Some(10),
+            model: Some("sonnet".into()),
+            latest_snippet: None,
+        });
+        app.dashboard.selected_row = 0;
+        app.right_panel_tab = RightPanelTab::Dashboard;
+        app.focused_panel = FocusedPanel::RightPanel;
+        (app, tmp)
+    }
+
+    #[test]
+    fn dashboard_enter_pushes_nav_and_switches_to_output() {
+        let (mut app, _tmp) = setup_dashboard_app();
+        assert!(app.nav_stack.is_empty());
+        app.nav_stack.push(NavEntry::Dashboard);
+        app.output_pane.active_agent_id = Some("agent-99".into());
+        app.right_panel_tab = RightPanelTab::Output;
+        assert_eq!(app.right_panel_tab, RightPanelTab::Output);
+        assert_eq!(app.output_pane.active_agent_id, Some("agent-99".into()));
+        assert_eq!(app.nav_stack.len(), 1);
+    }
+
+    #[test]
+    fn nav_pop_returns_to_dashboard() {
+        let (mut app, _tmp) = setup_dashboard_app();
+        app.nav_stack.push(NavEntry::Dashboard);
+        app.right_panel_tab = RightPanelTab::Output;
+        nav_stack_pop(&mut app);
+        assert_eq!(app.right_panel_tab, RightPanelTab::Dashboard);
+        assert!(app.nav_stack.is_empty());
+    }
+
+    #[test]
+    fn nav_pop_empty_goes_to_graph() {
+        let (mut app, _tmp) = setup_dashboard_app();
+        assert!(app.nav_stack.is_empty());
+        nav_stack_pop(&mut app);
+        assert_eq!(app.focused_panel, FocusedPanel::Graph);
+    }
+
+    #[test]
+    fn drilldown_dashboard_to_output_to_detail_and_back() {
+        let (mut app, _tmp) = setup_dashboard_app();
+
+        // Dashboard → Output
+        app.nav_stack.push(NavEntry::Dashboard);
+        app.output_pane.active_agent_id = Some("agent-99".into());
+        app.right_panel_tab = RightPanelTab::Output;
+
+        // Output → Detail
+        app.nav_stack.push(NavEntry::AgentDetail { agent_id: "agent-99".into() });
+        app.load_hud_detail_for_task("test-task-1");
+        app.right_panel_tab = RightPanelTab::Detail;
+
+        assert_eq!(app.nav_stack.len(), 2);
+
+        // Pop back to Output
+        nav_stack_pop(&mut app);
+        assert_eq!(app.right_panel_tab, RightPanelTab::Output);
+        assert_eq!(app.output_pane.active_agent_id, Some("agent-99".into()));
+
+        // Pop back to Dashboard
+        nav_stack_pop(&mut app);
+        assert_eq!(app.right_panel_tab, RightPanelTab::Dashboard);
+        assert!(app.nav_stack.is_empty());
+    }
+
+    #[test]
+    fn manual_tab_switch_clears_nav_stack() {
+        let (mut app, _tmp) = setup_dashboard_app();
+        app.nav_stack.push(NavEntry::Dashboard);
+        app.nav_stack.push(NavEntry::AgentDetail { agent_id: "agent-99".into() });
+        assert_eq!(app.nav_stack.len(), 2);
+        app.nav_stack.clear();
+        app.right_panel_tab = RightPanelTab::Chat;
+        assert!(app.nav_stack.is_empty());
     }
 }
