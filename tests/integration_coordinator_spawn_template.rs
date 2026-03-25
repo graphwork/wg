@@ -416,10 +416,14 @@ fn coordinator_spawn_with_provider() {
         "[coordinator]\ncoordinator_agent = true\nprovider = \"openrouter\"\nmodel = \"minimax-m2.5\"\n",
     );
 
-    // Set a dummy API key so the native coordinator can initialize its client
+    // Set a dummy API key so the native coordinator can initialize its client.
+    // Override HOME so the global ~/.workgraph/config.toml (which may set executor
+    // explicitly) doesn't interfere with auto-detection.
+    let fake_home = TempDir::new().unwrap();
     let env = [
         ("PATH", path_env.as_str()),
         ("OPENROUTER_API_KEY", "sk-test-dummy-key-for-provider-routing"),
+        ("HOME", fake_home.path().to_str().unwrap()),
     ];
     let guard = DaemonGuard::start(&wg_dir, &env, &[]);
 

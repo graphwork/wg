@@ -337,10 +337,31 @@ pub fn is_human_executor(executor: &str) -> bool {
     HUMAN_EXECUTORS.contains(&executor)
 }
 
+/// Providers that are not Anthropic-native and should default to the "native" executor.
+const NON_ANTHROPIC_PROVIDERS: &[&str] = &["openrouter", "openai", "local"];
+
 impl Agent {
     /// Returns true if this agent uses a human executor (matrix, email, shell).
     pub fn is_human(&self) -> bool {
         is_human_executor(&self.executor)
+    }
+
+    /// Return the effective executor, considering provider-based auto-detection.
+    ///
+    /// If executor was explicitly set to a non-default value, returns that.
+    /// Otherwise, if `preferred_provider` is openrouter/openai/local, returns "native".
+    pub fn effective_executor(&self) -> &str {
+        if !is_default_executor(&self.executor) {
+            &self.executor
+        } else if let Some(ref provider) = self.preferred_provider {
+            if NON_ANTHROPIC_PROVIDERS.contains(&provider.as_str()) {
+                "native"
+            } else {
+                &self.executor
+            }
+        } else {
+            &self.executor
+        }
     }
 }
 
