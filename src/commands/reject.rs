@@ -2,101 +2,111 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use std::path::Path;
 use workgraph::graph::{LogEntry, Status};
-use workgraph::parser::save_graph;
+use workgraph::parser::modify_graph;
 
 #[cfg(test)]
 use super::graph_path;
 #[cfg(test)]
-use workgraph::parser::load_graph;
+use workgraph::parser::{load_graph, save_graph};
 
 /// Reject a task that is pending validation, reopening it with feedback.
 /// If rejection_count >= max_rejections, the task is failed instead.
 pub fn run(dir: &Path, id: &str, reason: &str) -> Result<()> {
-    let (mut graph, path) = super::load_workgraph_mut(dir)?;
-
-    let task = graph.get_task_mut_or_err(id)?;
-
-    if task.status != Status::PendingValidation {
-        anyhow::bail!(
-            "Task '{}' is not pending validation (status: {:?}). Only pending-validation tasks can be rejected.",
-            id,
-            task.status
-        );
+    let path = super::graph_path(dir);
+    if !path.exists() {
+        anyhow::bail!("Workgraph not initialized. Run 'wg init' first.");
     }
 
-    task.rejection_count += 1;
-    let rejection_count = task.rejection_count;
-    let max_rejections = task.max_rejections.unwrap_or(3);
+    let mut error: Option<anyhow::Error> = None;
+    let mut rejection_count: u32 = 0;
+    let mut max_rejections: u32 = 3;
+    let mut outcome = "reopened";
 
-    if rejection_count >= max_rejections {
-        // Too many rejections — fail the task
-        task.status = Status::Failed;
-        task.failure_reason = Some(format!(
-            "Exceeded max rejections ({}/{}): {}",
-            rejection_count, max_rejections, reason
-        ));
-        task.log.push(LogEntry {
-            timestamp: Utc::now().to_rfc3339(),
-            actor: std::env::var("WG_AGENT_ID").ok(),
-            message: format!(
-                "Task rejected ({}/{}), failing: {}",
+    let _graph = modify_graph(&path, |graph| {
+        let task = match graph.get_task_mut(id) {
+            Some(t) => t,
+            None => {
+                error = Some(anyhow::anyhow!("Task '{}' not found", id));
+                return false;
+            }
+        };
+
+        if task.status != Status::PendingValidation {
+            error = Some(anyhow::anyhow!(
+                "Task '{}' is not pending validation (status: {:?}). Only pending-validation tasks can be rejected.",
+                id,
+                task.status
+            ));
+            return false;
+        }
+
+        task.rejection_count += 1;
+        rejection_count = task.rejection_count;
+        max_rejections = task.max_rejections.unwrap_or(3);
+
+        if rejection_count >= max_rejections {
+            // Too many rejections — fail the task
+            outcome = "failed";
+            task.status = Status::Failed;
+            task.failure_reason = Some(format!(
+                "Exceeded max rejections ({}/{}): {}",
                 rejection_count, max_rejections, reason
-            ),
-        });
+            ));
+            task.log.push(LogEntry {
+                timestamp: Utc::now().to_rfc3339(),
+                actor: std::env::var("WG_AGENT_ID").ok(),
+                user: Some(workgraph::current_user()),
+                message: format!(
+                    "Task rejected ({}/{}), failing: {}",
+                    rejection_count, max_rejections, reason
+                ),
+            });
+        } else {
+            // Reopen for re-dispatch
+            task.status = Status::Open;
+            task.assigned = None;
+            task.log.push(LogEntry {
+                timestamp: Utc::now().to_rfc3339(),
+                actor: std::env::var("WG_AGENT_ID").ok(),
+                user: Some(workgraph::current_user()),
+                message: format!(
+                    "Task rejected ({}/{}): {}",
+                    rejection_count, max_rejections, reason
+                ),
+            });
+        }
 
-        save_graph(&graph, &path).context("Failed to save graph")?;
-        super::notify_graph_changed(dir);
+        true
+    })
+    .context("Failed to save graph")?;
 
-        let config = workgraph::config::Config::load_or_default(dir);
-        let _ = workgraph::provenance::record(
-            dir,
-            "reject",
-            Some(id),
-            std::env::var("WG_AGENT_ID").ok().as_deref(),
-            serde_json::json!({
-                "reason": reason,
-                "rejection_count": rejection_count,
-                "max_rejections": max_rejections,
-                "outcome": "failed",
-            }),
-            config.log.rotation_threshold,
-        );
+    if let Some(e) = error {
+        return Err(e);
+    }
 
+    super::notify_graph_changed(dir);
+
+    let config = workgraph::config::Config::load_or_default(dir);
+    let _ = workgraph::provenance::record(
+        dir,
+        "reject",
+        Some(id),
+        std::env::var("WG_AGENT_ID").ok().as_deref(),
+        serde_json::json!({
+            "reason": reason,
+            "rejection_count": rejection_count,
+            "max_rejections": max_rejections,
+            "outcome": outcome,
+        }),
+        config.log.rotation_threshold,
+    );
+
+    if outcome == "failed" {
         println!(
             "Rejected '{}' ({}/{} rejections) — task failed",
             id, rejection_count, max_rejections
         );
     } else {
-        // Reopen for re-dispatch
-        task.status = Status::Open;
-        task.assigned = None;
-        task.log.push(LogEntry {
-            timestamp: Utc::now().to_rfc3339(),
-            actor: std::env::var("WG_AGENT_ID").ok(),
-            message: format!(
-                "Task rejected ({}/{}): {}",
-                rejection_count, max_rejections, reason
-            ),
-        });
-
-        save_graph(&graph, &path).context("Failed to save graph")?;
-        super::notify_graph_changed(dir);
-
-        let config = workgraph::config::Config::load_or_default(dir);
-        let _ = workgraph::provenance::record(
-            dir,
-            "reject",
-            Some(id),
-            std::env::var("WG_AGENT_ID").ok().as_deref(),
-            serde_json::json!({
-                "reason": reason,
-                "rejection_count": rejection_count,
-                "max_rejections": max_rejections,
-                "outcome": "reopened",
-            }),
-            config.log.rotation_threshold,
-        );
-
         println!(
             "Rejected '{}' ({}/{} rejections) — reopened for re-dispatch",
             id, rejection_count, max_rejections

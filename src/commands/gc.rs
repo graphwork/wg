@@ -680,6 +680,7 @@ mod tests {
         task.log.push(LogEntry {
             timestamp: old,
             actor: None,
+            user: Some(workgraph::current_user()),
             message: "Task marked as failed".to_string(),
         });
         setup_graph(wg_dir, vec![task]);
@@ -702,6 +703,7 @@ mod tests {
         task.log.push(LogEntry {
             timestamp: recent,
             actor: None,
+            user: Some(workgraph::current_user()),
             message: "Task marked as failed".to_string(),
         });
         setup_graph(wg_dir, vec![task]);

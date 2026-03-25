@@ -990,6 +990,7 @@ mod tests {
                 task_id: Some("pfx/build".to_string()),
                 actor: Some("agent".to_string()),
                 detail: serde_json::Value::Null,
+                user: None,
             },
             OperationEntry {
                 timestamp: "2026-02-20T12:02:00Z".to_string(),
@@ -997,6 +998,7 @@ mod tests {
                 task_id: Some("pfx/test".to_string()),
                 actor: Some("human".to_string()),
                 detail: serde_json::json!({"reason": "Flaky test"}),
+                user: None,
             },
             OperationEntry {
                 timestamp: "2026-02-20T12:03:00Z".to_string(),
@@ -1004,6 +1006,7 @@ mod tests {
                 task_id: Some("pfx/test".to_string()),
                 actor: Some("human".to_string()),
                 detail: serde_json::json!({"detail": "Updated description"}),
+                user: None,
             },
         ];
 
@@ -1029,6 +1032,7 @@ mod tests {
                 task_id: Some("task-1".to_string()),
                 actor: None,
                 detail: serde_json::Value::Null,
+                user: None,
             },
             OperationEntry {
                 timestamp: "2026-02-20T12:02:00Z".to_string(),
@@ -1036,6 +1040,7 @@ mod tests {
                 task_id: Some("task-1".to_string()),
                 actor: None,
                 detail: serde_json::Value::Null,
+                user: None,
             },
         ];
 
@@ -1052,6 +1057,7 @@ mod tests {
             task_id: Some("task-1".to_string()),
             actor: None,
             detail: serde_json::Value::Null,
+            user: None,
         }];
 
         let op_refs: Vec<&OperationEntry> = ops.iter().collect();

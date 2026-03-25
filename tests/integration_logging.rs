@@ -431,6 +431,7 @@ fn rotation_triggers_under_high_volume() {
             op: "bulk_test".to_string(),
             task_id: Some(format!("t{}", i)),
             actor: None,
+            user: None,
             detail: serde_json::json!({ "index": i }),
         };
         provenance::append_operation(&wg_dir, &entry, threshold).unwrap();
@@ -472,6 +473,7 @@ fn rotated_zstd_files_can_be_read_back() {
             op: "readback_test".to_string(),
             task_id: Some(format!("task-{}", i)),
             actor: Some("test-actor".to_string()),
+            user: None,
             detail: serde_json::json!({ "n": i }),
         };
         provenance::append_operation(&wg_dir, &entry, threshold).unwrap();
@@ -529,6 +531,7 @@ fn concurrent_writes_to_operation_log() {
                         op: "concurrent_write".to_string(),
                         task_id: Some(format!("t{}-{}", tid, i)),
                         actor: Some(format!("thread-{}", tid)),
+                        user: None,
                         detail: serde_json::Value::Null,
                     };
                     // Use large threshold to avoid rotation complicating things

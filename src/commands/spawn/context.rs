@@ -600,16 +600,19 @@ mod tests {
             LogEntry {
                 timestamp: "2026-01-01T00:00:00Z".to_string(),
                 actor: Some("agent-1".to_string()),
+                user: Some(workgraph::current_user()),
                 message: "Started work".to_string(),
             },
             LogEntry {
                 timestamp: "2026-01-01T00:01:00Z".to_string(),
                 actor: Some("agent-1".to_string()),
+                user: Some(workgraph::current_user()),
                 message: "Found important result".to_string(),
             },
             LogEntry {
                 timestamp: "2026-01-01T00:02:00Z".to_string(),
                 actor: Some("agent-1".to_string()),
+                user: Some(workgraph::current_user()),
                 message: "Completed successfully".to_string(),
             },
         ];
@@ -1249,6 +1252,7 @@ mod tests {
         task.log = vec![LogEntry {
             timestamp: "2026-03-07T09:00:00Z".to_string(),
             actor: Some("agent-99".to_string()),
+            user: Some(workgraph::current_user()),
             message: "Spawned by coordinator".to_string(),
         }];
 
@@ -1280,11 +1284,13 @@ mod tests {
             LogEntry {
                 timestamp: "2026-03-07T09:00:00Z".to_string(),
                 actor: Some("agent-50".to_string()),
+                user: Some(workgraph::current_user()),
                 message: "Started research".to_string(),
             },
             LogEntry {
                 timestamp: "2026-03-07T09:30:00Z".to_string(),
                 actor: Some("agent-50".to_string()),
+                user: Some(workgraph::current_user()),
                 message: "Found key insight about X".to_string(),
             },
         ];

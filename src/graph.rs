@@ -78,6 +78,9 @@ pub struct LogEntry {
     pub timestamp: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub actor: Option<String>,
+    /// The user who created this log entry (from `current_user()`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user: Option<String>,
     pub message: String,
 }
 
@@ -1424,6 +1427,7 @@ fn reactivate_cycle(
             task.log.push(LogEntry {
                 timestamp: Utc::now().to_rfc3339(),
                 actor: None,
+                user: Some(crate::current_user()),
                 message: if cycle_config.max_iterations == 0 {
                     format!(
                         "Re-activated by cycle iteration (iteration {}/unlimited)",
@@ -1605,6 +1609,7 @@ fn reactivate_cycle_on_failure(
             task.log.push(LogEntry {
                 timestamp: Utc::now().to_rfc3339(),
                 actor: None,
+                user: Some(crate::current_user()),
                 message: format!(
                     "Cycle failure restart budget exhausted ({}/{}). Task '{}' failed — cycle dead-ended.",
                     failure_restarts, max_failure_restarts, failed_task_id
@@ -1660,6 +1665,7 @@ fn reactivate_cycle_on_failure(
             task.log.push(LogEntry {
                 timestamp: Utc::now().to_rfc3339(),
                 actor: None,
+                user: Some(crate::current_user()),
                 message: format!(
                     "Cycle failure restart {}/{} (iteration {}). Failed: [{}]",
                     new_failure_restarts, max_failure_restarts, current_iter, failure_info

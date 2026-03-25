@@ -271,6 +271,7 @@ fn run_inner(
             task.log.push(LogEntry {
                 timestamp: Utc::now().to_rfc3339(),
                 actor: task.assigned.clone(),
+                user: Some(workgraph::current_user()),
                 message: "Task pending external validation".to_string(),
             });
             true
@@ -453,6 +454,7 @@ fn run_inner(
         task.log.push(LogEntry {
             timestamp: Utc::now().to_rfc3339(),
             actor: task.assigned.clone(),
+            user: Some(workgraph::current_user()),
             message: if converged_accepted {
                 "Task marked as done (converged)".to_string()
             } else if converged {
@@ -1010,6 +1012,7 @@ mod tests {
         task.log.push(LogEntry {
             timestamp: Utc::now().to_rfc3339(),
             actor: None,
+            user: None,
             message: "Validated: all tests pass".to_string(),
         });
         setup_workgraph(dir_path, vec![task]);
@@ -1332,6 +1335,7 @@ mod tests {
         task.log.push(LogEntry {
             timestamp: Utc::now().to_rfc3339(),
             actor: None,
+            user: None,
             message: "Validated: all tests pass".to_string(),
         });
         setup_workgraph(dir_path, vec![task]);
@@ -1356,6 +1360,7 @@ mod tests {
         task.log.push(LogEntry {
             timestamp: Utc::now().to_rfc3339(),
             actor: None,
+            user: None,
             message: "Validated: ready".to_string(),
         });
         setup_workgraph(dir_path, vec![task]);

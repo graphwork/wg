@@ -51,6 +51,7 @@ pub fn run(dir: &Path, task_id: &str, actor: Option<&str>, dry_run: bool) -> Res
         task.log.push(LogEntry {
             timestamp: Utc::now().to_rfc3339(),
             actor: actor.map(String::from),
+            user: Some(workgraph::current_user()),
             message: format!("Started execution: {}", exec_cmd),
         });
         save_graph(&graph, &path).context("Failed to save graph")?;
@@ -88,6 +89,7 @@ pub fn run(dir: &Path, task_id: &str, actor: Option<&str>, dry_run: bool) -> Res
         task.log.push(LogEntry {
             timestamp: Utc::now().to_rfc3339(),
             actor: actor.map(String::from),
+            user: Some(workgraph::current_user()),
             message: "Execution completed successfully".to_string(),
         });
         save_graph(&graph, &path).context("Failed to save graph")?;
@@ -101,6 +103,7 @@ pub fn run(dir: &Path, task_id: &str, actor: Option<&str>, dry_run: bool) -> Res
         task.log.push(LogEntry {
             timestamp: Utc::now().to_rfc3339(),
             actor: actor.map(String::from),
+            user: Some(workgraph::current_user()),
             message: format!("Execution failed with exit code {}", exit_code),
         });
         save_graph(&graph, &path).context("Failed to save graph")?;

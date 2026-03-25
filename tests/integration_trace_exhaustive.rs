@@ -729,6 +729,7 @@ fn test_trace_with_rotated_operations_logs() {
         op: "add_task".to_string(),
         task_id: Some("t1".to_string()),
         actor: None,
+        user: None,
         detail: serde_json::json!({"title": "Rotated logs task"}),
     };
     let old_json = format!("{}\n", serde_json::to_string(&old_entry).unwrap());
@@ -745,6 +746,7 @@ fn test_trace_with_rotated_operations_logs() {
         op: "done".to_string(),
         task_id: Some("t1".to_string()),
         actor: Some("agent-1".to_string()),
+        user: None,
         detail: serde_json::Value::Null,
     };
     let new_json = format!("{}\n", serde_json::to_string(&new_entry).unwrap());

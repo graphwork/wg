@@ -54,6 +54,9 @@ pub struct ChatMessage {
     /// When present, the UI can show this in an expanded view instead of just `content`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub full_response: Option<String>,
+    /// The user who sent this message (from `current_user()`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user: Option<String>,
 }
 
 /// Directory for chat files for a specific coordinator.
@@ -209,6 +212,7 @@ fn append_message(
         request_id: request_id.to_string(),
         attachments,
         full_response: full_response.clone(),
+        user: Some(crate::current_user()),
     };
 
     let mut json = serde_json::to_string(&msg).context("Failed to serialize chat message")?;
@@ -1392,5 +1396,33 @@ mod tests {
         clear_streaming(&wg_dir, 0);
         assert_eq!(read_streaming(&wg_dir, 0), "");
         assert_eq!(read_streaming(&wg_dir, 1), "coord 1 text");
+    }
+
+    #[test]
+    fn test_chat_message_serialization_includes_user() {
+        let msg = ChatMessage {
+            id: 1,
+            timestamp: "2026-01-01T00:00:00Z".to_string(),
+            role: "user".to_string(),
+            content: "hello".to_string(),
+            request_id: "req-1".to_string(),
+            attachments: vec![],
+            full_response: None,
+            user: Some("alice".to_string()),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains(r#""user":"alice""#));
+
+        // Round-trip
+        let decoded: ChatMessage = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.user.as_deref(), Some("alice"));
+    }
+
+    #[test]
+    fn test_chat_message_backward_compat_no_user() {
+        // Old messages without `user` field should deserialize with None
+        let json = r#"{"id":1,"timestamp":"2026-01-01T00:00:00Z","role":"user","content":"hi","request_id":"r1"}"#;
+        let msg: ChatMessage = serde_json::from_str(json).unwrap();
+        assert!(msg.user.is_none());
     }
 }

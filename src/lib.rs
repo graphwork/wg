@@ -56,6 +56,15 @@ pub use service::{AgentEntry, AgentRegistry, AgentStatus};
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_helpers;
 
+/// Return the current user identity.
+///
+/// Fallback chain: `WG_USER` env var → `USER` env var → `"unknown"`.
+pub fn current_user() -> String {
+    std::env::var("WG_USER")
+        .or_else(|_| std::env::var("USER"))
+        .unwrap_or_else(|_| "unknown".to_string())
+}
+
 /// Format a duration in seconds to a human-readable string.
 ///
 /// When `compact` is false, includes the next smaller unit if non-zero
@@ -158,5 +167,70 @@ mod tests {
         assert_eq!(format_duration(119, false), "1m 59s");
         assert_eq!(format_duration(120, false), "2m");
         assert_eq!(format_duration(0, true), "0s");
+    }
+
+    #[test]
+    fn test_current_user_returns_wg_user_when_set() {
+        unsafe {
+            let orig_wg = std::env::var("WG_USER").ok();
+            let orig_user = std::env::var("USER").ok();
+
+            std::env::set_var("WG_USER", "alice");
+            assert_eq!(current_user(), "alice");
+
+            // Restore
+            match orig_wg {
+                Some(v) => std::env::set_var("WG_USER", v),
+                None => std::env::remove_var("WG_USER"),
+            }
+            match orig_user {
+                Some(v) => std::env::set_var("USER", v),
+                None => std::env::remove_var("USER"),
+            }
+        }
+    }
+
+    #[test]
+    fn test_current_user_falls_back_to_user_env() {
+        unsafe {
+            let orig_wg = std::env::var("WG_USER").ok();
+            let orig_user = std::env::var("USER").ok();
+
+            std::env::remove_var("WG_USER");
+            std::env::set_var("USER", "bob");
+            assert_eq!(current_user(), "bob");
+
+            // Restore
+            match orig_wg {
+                Some(v) => std::env::set_var("WG_USER", v),
+                None => std::env::remove_var("WG_USER"),
+            }
+            match orig_user {
+                Some(v) => std::env::set_var("USER", v),
+                None => std::env::remove_var("USER"),
+            }
+        }
+    }
+
+    #[test]
+    fn test_current_user_returns_unknown_when_neither_set() {
+        unsafe {
+            let orig_wg = std::env::var("WG_USER").ok();
+            let orig_user = std::env::var("USER").ok();
+
+            std::env::remove_var("WG_USER");
+            std::env::remove_var("USER");
+            assert_eq!(current_user(), "unknown");
+
+            // Restore
+            match orig_wg {
+                Some(v) => std::env::set_var("WG_USER", v),
+                None => {}
+            }
+            match orig_user {
+                Some(v) => std::env::set_var("USER", v),
+                None => {}
+            }
+        }
     }
 }

@@ -466,6 +466,7 @@ pub fn execute_input(workgraph_dir: &Path, task_id: &str, text: &str, actor: &st
     let entry = LogEntry {
         timestamp: Utc::now().to_rfc3339(),
         actor: Some(actor.to_string()),
+        user: Some(crate::current_user()),
         message: text.to_string(),
     };
 

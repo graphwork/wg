@@ -60,6 +60,7 @@ pub fn run(dir: &Path, task_id: &str, from_actor: &str, to_actor: &str) -> Resul
     task.log.push(LogEntry {
         timestamp: now,
         actor: Some(to_actor.to_string()),
+        user: Some(workgraph::current_user()),
         message: log_message,
     });
 

@@ -276,6 +276,7 @@ mod tests {
         task.log = vec![LogEntry {
             timestamp: Utc::now().to_rfc3339(),
             actor: None,
+            user: Some(workgraph::current_user()),
             message: "Done!".to_string(),
         }];
         setup_graph(dir, vec![task]);

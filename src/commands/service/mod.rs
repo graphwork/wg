@@ -1288,6 +1288,7 @@ fn ensure_coordinator_task(dir: &Path) {
             log: vec![LogEntry {
                 timestamp: Utc::now().to_rfc3339(),
                 actor: Some("daemon".to_string()),
+                user: Some(workgraph::current_user()),
                 message: "Coordinator 0 task created by daemon".to_string(),
             }],
             ..Default::default()
@@ -1320,6 +1321,7 @@ fn ensure_coordinator_task(dir: &Path) {
             log: vec![LogEntry {
                 timestamp: Utc::now().to_rfc3339(),
                 actor: Some("daemon".to_string()),
+                user: Some(workgraph::current_user()),
                 message: "Compact 0 task created by daemon".to_string(),
             }],
             ..Default::default()
@@ -1347,6 +1349,7 @@ fn ensure_coordinator_task(dir: &Path) {
             log: vec![LogEntry {
                 timestamp: Utc::now().to_rfc3339(),
                 actor: Some("daemon".to_string()),
+                user: Some(workgraph::current_user()),
                 message: "Archive 0 task created by daemon".to_string(),
             }],
             ..Default::default()
@@ -1406,6 +1409,7 @@ fn run_graph_compaction(dir: &Path, compaction_error_count: &mut u64, logger: &D
                         task.log.push(workgraph::graph::LogEntry {
                             timestamp: chrono::Utc::now().to_rfc3339(),
                             actor: Some("daemon".to_string()),
+                            user: Some(workgraph::current_user()),
                             message: format!(
                                 "Re-opened: tokens {} >= threshold {} (coordinator cycle bypass)",
                                 state.accumulated_tokens, threshold
@@ -1475,6 +1479,7 @@ fn run_graph_compaction(dir: &Path, compaction_error_count: &mut u64, logger: &D
             task.log.push(workgraph::graph::LogEntry {
                 timestamp: chrono::Utc::now().to_rfc3339(),
                 actor: Some("daemon".to_string()),
+                user: Some(workgraph::current_user()),
                 message: "Compaction started (cycle-driven)".to_string(),
             });
             if let Err(e) = workgraph::parser::save_graph(&graph, &gp) {
@@ -1523,6 +1528,7 @@ fn run_graph_compaction(dir: &Path, compaction_error_count: &mut u64, logger: &D
                 task.log.push(workgraph::graph::LogEntry {
                     timestamp: chrono::Utc::now().to_rfc3339(),
                     actor: Some("daemon".to_string()),
+                    user: Some(workgraph::current_user()),
                     message: format!(
                         "Compaction iteration {} complete → {}",
                         task.loop_iteration,
@@ -1569,6 +1575,7 @@ fn run_graph_compaction(dir: &Path, compaction_error_count: &mut u64, logger: &D
                 task.log.push(workgraph::graph::LogEntry {
                     timestamp: chrono::Utc::now().to_rfc3339(),
                     actor: Some("daemon".to_string()),
+                    user: Some(workgraph::current_user()),
                     message: format!("Compaction error: {:#}", e),
                 });
                 if task.log.len() > 50 {
@@ -1618,6 +1625,7 @@ fn run_graph_archival(dir: &Path, archival_error_count: &mut u64, logger: &Daemo
             task.log.push(workgraph::graph::LogEntry {
                 timestamp: chrono::Utc::now().to_rfc3339(),
                 actor: Some("daemon".to_string()),
+                user: Some(workgraph::current_user()),
                 message: "Archival started (cycle-driven)".to_string(),
             });
             if let Err(e) = workgraph::parser::save_graph(&graph, &gp) {
@@ -1660,6 +1668,7 @@ fn run_graph_archival(dir: &Path, archival_error_count: &mut u64, logger: &Daemo
                 task.log.push(workgraph::graph::LogEntry {
                     timestamp: chrono::Utc::now().to_rfc3339(),
                     actor: Some("daemon".to_string()),
+                    user: Some(workgraph::current_user()),
                     message: format!(
                         "Archival iteration {} complete: {} tasks archived",
                         task.loop_iteration, count
@@ -1698,6 +1707,7 @@ fn run_graph_archival(dir: &Path, archival_error_count: &mut u64, logger: &Daemo
                 task.log.push(workgraph::graph::LogEntry {
                     timestamp: chrono::Utc::now().to_rfc3339(),
                     actor: Some("daemon".to_string()),
+                    user: Some(workgraph::current_user()),
                     message: format!("Archival error: {:#}", e),
                 });
                 if task.log.len() > 50 {

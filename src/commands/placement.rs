@@ -288,6 +288,7 @@ pub fn apply_placement_command(cmd: &PlacementCommand, dir: &Path) -> Result<boo
                 task.log.push(workgraph::graph::LogEntry {
                     timestamp: chrono::Utc::now().to_rfc3339(),
                     actor: Some("placement".to_string()),
+                    user: Some(workgraph::current_user()),
                     message: format!(
                         "Placement applied: {}{}",
                         if !after.is_empty() {

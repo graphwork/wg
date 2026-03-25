@@ -56,6 +56,7 @@ pub fn run(dir: &Path, id: &str, reason: Option<&str>, superseded_by: &[String])
         task.log.push(LogEntry {
             timestamp: Utc::now().to_rfc3339(),
             actor: task.assigned.clone(),
+            user: Some(workgraph::current_user()),
             message: log_message,
         });
 
@@ -88,6 +89,7 @@ pub fn run(dir: &Path, id: &str, reason: Option<&str>, superseded_by: &[String])
                 t.log.push(LogEntry {
                     timestamp: Utc::now().to_rfc3339(),
                     actor: None,
+                    user: Some(workgraph::current_user()),
                     message: format!("Auto-abandoned: parent '{}' was abandoned", id),
                 });
             }

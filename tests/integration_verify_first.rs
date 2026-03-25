@@ -392,6 +392,7 @@ fn test_eval_prompt_includes_verify_findings() {
         log_entries: &[LogEntry {
             timestamp: "2025-01-01T00:00:00Z".to_string(),
             actor: Some("agent-1".to_string()),
+            user: None,
             message: "Implemented feature X".to_string(),
         }],
         started_at: Some("2025-01-01T00:00:00Z"),

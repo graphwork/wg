@@ -333,6 +333,7 @@ mod tests {
             task_id: Some("my-task".to_string()),
             actor: Some("agent-1".to_string()),
             detail: serde_json::json!({"reason": "completed"}),
+            user: None,
         };
         let event = op_to_watch_event(&op).unwrap();
         assert_eq!(event.event_type, "task.completed");
@@ -349,6 +350,7 @@ mod tests {
             task_id: None,
             actor: None,
             detail: serde_json::Value::Null,
+            user: None,
         };
         assert!(op_to_watch_event(&op).is_none());
     }

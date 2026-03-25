@@ -351,6 +351,7 @@ mod tests {
             log: vec![LogEntry {
                 timestamp: "2026-02-28T12:30:00Z".to_string(),
                 actor: None,
+                user: Some(workgraph::current_user()),
                 message: "Progress update".to_string(),
             }],
         };

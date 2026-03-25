@@ -702,6 +702,7 @@ fn test_replay_field_clearing_and_preservation() {
     t1.log = vec![workgraph::graph::LogEntry {
         timestamp: "2026-02-18T10:00:00+00:00".to_string(),
         actor: None,
+        user: None,
         message: "Started work".to_string(),
     }];
 

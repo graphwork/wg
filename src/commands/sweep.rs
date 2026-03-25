@@ -175,6 +175,7 @@ pub fn run(dir: &Path, dry_run: bool, json: bool) -> Result<SweepResult> {
             task.log.push(LogEntry {
                 timestamp: Utc::now().to_rfc3339(),
                 actor: Some("sweep".to_string()),
+                user: Some(workgraph::current_user()),
                 message: format!("Sweep: task unclaimed — {}", o.reason),
             });
             fixed.push(o.task_id.clone());
@@ -284,6 +285,7 @@ pub fn reconcile_orphaned_tasks(dir: &Path, graph_path: &Path) -> Result<usize> 
             task.log.push(LogEntry {
                 timestamp: Utc::now().to_rfc3339(),
                 actor: Some("reconcile".to_string()),
+                user: Some(workgraph::current_user()),
                 message: format!(
                     "Reconciliation: task recovered from orphaned state (agent: {})",
                     agent_desc

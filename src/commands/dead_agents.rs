@@ -146,6 +146,7 @@ pub fn run_cleanup(
                 task.log.push(LogEntry {
                     timestamp: Utc::now().to_rfc3339(),
                     actor: None,
+                    user: Some(workgraph::current_user()),
                     message: format!(
                         "Task unclaimed: agent '{}' (PID {}) detected as dead (no heartbeat for {} seconds)",
                         dead_agent.agent_id,

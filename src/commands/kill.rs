@@ -186,6 +186,7 @@ fn unclaim_task(dir: &Path, task_id: &str, agent_id: &str) -> Result<()> {
             task.log.push(LogEntry {
                 timestamp: Utc::now().to_rfc3339(),
                 actor: None,
+                user: Some(workgraph::current_user()),
                 message: format!("Task unclaimed: agent '{}' was killed", agent_id),
             });
 

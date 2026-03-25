@@ -24,6 +24,9 @@ pub struct OperationEntry {
     pub task_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub actor: Option<String>,
+    /// The user who performed this operation (from `current_user()`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user: Option<String>,
     #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
     pub detail: serde_json::Value,
 }
@@ -88,6 +91,7 @@ pub fn record(
         op: op.to_string(),
         task_id: task_id.map(String::from),
         actor: actor.map(String::from),
+        user: Some(crate::current_user()),
         detail,
     };
     append_operation(workgraph_dir, &entry, threshold)
@@ -186,6 +190,7 @@ mod tests {
             op: op.to_string(),
             task_id: task_id.map(String::from),
             actor: None,
+            user: None,
             detail: serde_json::Value::Null,
         }
     }
@@ -322,5 +327,36 @@ mod tests {
 
         let all = read_all_operations(&dir).unwrap();
         assert_eq!(all.len(), 3);
+    }
+
+    #[test]
+    fn test_record_includes_user_field() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join(".workgraph");
+
+        unsafe {
+            let orig = std::env::var("WG_USER").ok();
+            std::env::set_var("WG_USER", "testuser");
+
+            record(&dir, "test_op", Some("t1"), None, serde_json::Value::Null, DEFAULT_ROTATION_THRESHOLD).unwrap();
+
+            let all = read_all_operations(&dir).unwrap();
+            assert_eq!(all.len(), 1);
+            assert_eq!(all[0].user.as_deref(), Some("testuser"));
+
+            // Restore
+            match orig {
+                Some(v) => std::env::set_var("WG_USER", v),
+                None => std::env::remove_var("WG_USER"),
+            }
+        }
+    }
+
+    #[test]
+    fn test_operation_entry_backward_compat_no_user() {
+        // Entries without `user` field should deserialize with None
+        let json = r#"{"timestamp":"2026-01-01T00:00:00Z","op":"add","task_id":"t1","actor":null,"detail":null}"#;
+        let entry: OperationEntry = serde_json::from_str(json).unwrap();
+        assert!(entry.user.is_none());
     }
 }

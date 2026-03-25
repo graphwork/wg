@@ -2,35 +2,56 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use std::path::Path;
 use workgraph::graph::{LogEntry, Status};
-use workgraph::parser::save_graph;
+use workgraph::parser::modify_graph;
 
 #[cfg(test)]
 use super::graph_path;
 #[cfg(test)]
-use workgraph::parser::load_graph;
+use workgraph::parser::{load_graph, save_graph};
 
 /// Approve a task that is pending validation, transitioning it to Done.
 pub fn run(dir: &Path, id: &str) -> Result<()> {
-    let (mut graph, path) = super::load_workgraph_mut(dir)?;
-
-    let task = graph.get_task_mut_or_err(id)?;
-
-    if task.status != Status::PendingValidation {
-        anyhow::bail!(
-            "Task '{}' is not pending validation (status: {:?}). Only pending-validation tasks can be approved.",
-            id,
-            task.status
-        );
+    let path = super::graph_path(dir);
+    if !path.exists() {
+        anyhow::bail!("Workgraph not initialized. Run 'wg init' first.");
     }
 
-    task.status = Status::Done;
-    task.log.push(LogEntry {
-        timestamp: Utc::now().to_rfc3339(),
-        actor: std::env::var("WG_AGENT_ID").ok(),
-        message: "Task approved by validator".to_string(),
-    });
+    let mut error: Option<anyhow::Error> = None;
 
-    save_graph(&graph, &path).context("Failed to save graph")?;
+    let _graph = modify_graph(&path, |graph| {
+        let task = match graph.get_task_mut(id) {
+            Some(t) => t,
+            None => {
+                error = Some(anyhow::anyhow!("Task '{}' not found", id));
+                return false;
+            }
+        };
+
+        if task.status != Status::PendingValidation {
+            error = Some(anyhow::anyhow!(
+                "Task '{}' is not pending validation (status: {:?}). Only pending-validation tasks can be approved.",
+                id,
+                task.status
+            ));
+            return false;
+        }
+
+        task.status = Status::Done;
+        task.log.push(LogEntry {
+            timestamp: Utc::now().to_rfc3339(),
+            actor: std::env::var("WG_AGENT_ID").ok(),
+            user: Some(workgraph::current_user()),
+            message: "Task approved by validator".to_string(),
+        });
+
+        true
+    })
+    .context("Failed to save graph")?;
+
+    if let Some(e) = error {
+        return Err(e);
+    }
+
     super::notify_graph_changed(dir);
 
     // Record operation

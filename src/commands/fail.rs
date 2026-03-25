@@ -112,6 +112,7 @@ fn run_inner(dir: &Path, id: &str, reason: Option<&str>, eval_reject: bool) -> R
         task.log.push(LogEntry {
             timestamp: Utc::now().to_rfc3339(),
             actor: task.assigned.clone(),
+            user: Some(workgraph::current_user()),
             message: log_message,
         });
 

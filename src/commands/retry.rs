@@ -49,6 +49,7 @@ pub fn run(dir: &Path, id: &str) -> Result<()> {
     task.log.push(LogEntry {
         timestamp: Utc::now().to_rfc3339(),
         actor: None,
+        user: Some(workgraph::current_user()),
         message: format!("Task reset for retry (attempt #{})", task.retry_count + 1),
     });
 

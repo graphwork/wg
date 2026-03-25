@@ -448,6 +448,7 @@ fn claim_task(dir: &Path, task_id: &str, actor_id: &str) -> Result<()> {
     task.log.push(LogEntry {
         timestamp: Utc::now().to_rfc3339(),
         actor: Some(actor_id.to_string()),
+        user: Some(workgraph::current_user()),
         message: "Claimed by autonomous agent".to_string(),
     });
 
@@ -468,6 +469,7 @@ fn complete_task(dir: &Path, task_id: &str, actor_id: &str) -> Result<()> {
     task.log.push(LogEntry {
         timestamp: Utc::now().to_rfc3339(),
         actor: Some(actor_id.to_string()),
+        user: Some(workgraph::current_user()),
         message: "Completed by autonomous agent".to_string(),
     });
 
@@ -489,6 +491,7 @@ fn fail_task(dir: &Path, task_id: &str, actor_id: &str, reason: &str) -> Result<
     task.log.push(LogEntry {
         timestamp: Utc::now().to_rfc3339(),
         actor: Some(actor_id.to_string()),
+        user: Some(workgraph::current_user()),
         message: format!("Failed: {}", reason),
     });
 

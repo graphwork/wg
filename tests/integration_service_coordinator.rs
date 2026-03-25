@@ -353,6 +353,7 @@ fn test_cleanup_unclaims_in_progress_task() {
         task.log.push(LogEntry {
             timestamp: Utc::now().to_rfc3339(),
             actor: None,
+            user: None,
             message: format!("Task unclaimed: agent '{}' process exited", agent_id),
         });
     }
@@ -1887,6 +1888,7 @@ fn test_rapid_respawn_detection_recent_deaths_in_log() {
         task.log.push(LogEntry {
             timestamp: ts.to_rfc3339(),
             actor: None,
+            user: None,
             message: format!(
                 "Task unclaimed: agent 'agent-{}' (PID {}) process exited",
                 i,
@@ -1918,6 +1920,7 @@ fn test_rapid_respawn_fails_task_at_threshold() {
         task.log.push(LogEntry {
             timestamp: ts.to_rfc3339(),
             actor: None,
+            user: None,
             message: format!(
                 "Task unclaimed: agent 'agent-{}' (PID {}) process exited",
                 i,

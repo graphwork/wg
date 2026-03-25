@@ -23,6 +23,7 @@ fn make_log_entry(actor: &str, message: &str) -> LogEntry {
     LogEntry {
         timestamp: Utc::now().to_rfc3339(),
         actor: Some(actor.to_string()),
+        user: None,
         message: message.to_string(),
     }
 }

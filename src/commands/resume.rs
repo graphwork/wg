@@ -275,6 +275,7 @@ fn unpause_task(graph: &mut WorkGraph, task_id: &str, action: &str) {
     task.log.push(LogEntry {
         timestamp: Utc::now().to_rfc3339(),
         actor: None,
+        user: Some(workgraph::current_user()),
         message: format!("Task {}", action),
     });
 }

@@ -2090,6 +2090,7 @@ fn record_coordinator_turn(
     task.log.push(LogEntry {
         timestamp: chrono::Utc::now().to_rfc3339(),
         actor: Some("daemon".to_string()),
+        user: Some(workgraph::current_user()),
         message: log_msg,
     });
 

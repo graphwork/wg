@@ -4967,6 +4967,7 @@ mod tests {
         coordinator.log.push(LogEntry {
             timestamp: Utc::now().to_rfc3339(),
             actor: None,
+            user: Some(workgraph::current_user()),
             message: "Processing turn".to_string(),
         });
         graph.add_node(Node::Task(coordinator));

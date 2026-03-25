@@ -526,16 +526,19 @@ fn test_full_agency_lifecycle_new_design() {
         LogEntry {
             timestamp: "2025-06-01T09:00:00Z".to_string(),
             actor: Some("coordinator".to_string()),
+            user: None,
             message: "Task claimed by agent".to_string(),
         },
         LogEntry {
             timestamp: "2025-06-01T10:30:00Z".to_string(),
             actor: Some("agent".to_string()),
+            user: None,
             message: "Implemented core test runner".to_string(),
         },
         LogEntry {
             timestamp: "2025-06-01T11:00:00Z".to_string(),
             actor: Some("agent".to_string()),
+            user: None,
             message: "Added edge case coverage".to_string(),
         },
     ];
@@ -998,11 +1001,13 @@ fn test_output_capture_standalone() {
         LogEntry {
             timestamp: "2025-07-01T08:00:00Z".to_string(),
             actor: Some("agent".to_string()),
+            user: None,
             message: "Started work".to_string(),
         },
         LogEntry {
             timestamp: "2025-07-01T10:00:00Z".to_string(),
             actor: None,
+            user: None,
             message: "Completed".to_string(),
         },
     ];

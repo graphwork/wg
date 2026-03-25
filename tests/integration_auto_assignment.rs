@@ -1306,6 +1306,7 @@ Begin working on the task now.
         task.log = vec![workgraph::graph::LogEntry {
             timestamp: chrono::Utc::now().to_rfc3339(),
             actor: Some("agent-1".to_string()),
+            user: None,
             message: "Implemented fizzbuzz with pattern matching".to_string(),
         }];
         setup_workgraph(&wg_dir, vec![task]);

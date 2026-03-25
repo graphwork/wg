@@ -371,6 +371,7 @@ pub fn sweep_zero_output_agents(dir: &Path) -> ZeroOutputSweepResult {
                     task.log.push(LogEntry {
                         timestamp: Utc::now().to_rfc3339(),
                         actor: Some("zero-output-detector".to_string()),
+                        user: Some(workgraph::current_user()),
                         message: format!(
                             "Circuit breaker tripped: agent '{}' (PID {}) killed after {}s \
                              with zero output. Max respawns ({}) exceeded — task failed.",
@@ -394,6 +395,7 @@ pub fn sweep_zero_output_agents(dir: &Path) -> ZeroOutputSweepResult {
                     task.log.push(LogEntry {
                         timestamp: Utc::now().to_rfc3339(),
                         actor: Some("zero-output-detector".to_string()),
+                        user: Some(workgraph::current_user()),
                         message: format!(
                             "Zero-output agent '{}' (PID {}) killed after {}s. \
                              Task reset for respawn (attempt {}/{}).",

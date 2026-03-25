@@ -158,6 +158,7 @@ pub fn run(dir: &Path, id: &str, until: &str, checkpoint: Option<&str>) -> Resul
     task.log.push(LogEntry {
         timestamp: Utc::now().to_rfc3339(),
         actor: task.assigned.clone(),
+        user: Some(workgraph::current_user()),
         message: format!("Agent parked. Waiting for: {}", until),
     });
 

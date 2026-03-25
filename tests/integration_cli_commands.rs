@@ -359,6 +359,7 @@ fn add_log_entry_persists() {
     task.log.push(LogEntry {
         timestamp: Utc::now().to_rfc3339(),
         actor: Some("agent-1".to_string()),
+        user: None,
         message: "Starting work".to_string(),
     });
     save_graph(&graph, &path).unwrap();

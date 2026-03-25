@@ -460,6 +460,7 @@ fn evaluate_waiting_tasks(graph: &mut workgraph::graph::WorkGraph, dir: &Path) -
                 t.log.push(LogEntry {
                     timestamp: Utc::now().to_rfc3339(),
                     actor: Some("coordinator".to_string()),
+                    user: Some(workgraph::current_user()),
                     message: format!("Failed: circular wait detected ({})", cycle.join(" -> ")),
                 });
                 modified = true;
@@ -529,6 +530,7 @@ fn evaluate_waiting_tasks(graph: &mut workgraph::graph::WorkGraph, dir: &Path) -
                 t.log.push(LogEntry {
                     timestamp: Utc::now().to_rfc3339(),
                     actor: Some("coordinator".to_string()),
+                    user: Some(workgraph::current_user()),
                     message: format!("Failed: {}", reason),
                 });
                 modified = true;
@@ -560,6 +562,7 @@ fn evaluate_waiting_tasks(graph: &mut workgraph::graph::WorkGraph, dir: &Path) -
                 t.log.push(LogEntry {
                     timestamp: Utc::now().to_rfc3339(),
                     actor: Some("coordinator".to_string()),
+                    user: Some(workgraph::current_user()),
                     message: "Wait condition satisfied. Task ready for resume.".to_string(),
                 });
                 modified = true;
@@ -729,6 +732,7 @@ fn resurrect_done_tasks(graph: &mut workgraph::graph::WorkGraph, dir: &Path) -> 
                 t.log.push(LogEntry {
                     timestamp: Utc::now().to_rfc3339(),
                     actor: Some("coordinator".to_string()),
+                    user: Some(workgraph::current_user()),
                     message: format!(
                         "Resurrection: created child task '{}' ({} pending message(s), downstream active)",
                         child_id,
@@ -754,6 +758,7 @@ fn resurrect_done_tasks(graph: &mut workgraph::graph::WorkGraph, dir: &Path) -> 
                 t.log.push(LogEntry {
                     timestamp: Utc::now().to_rfc3339(),
                     actor: Some("coordinator".to_string()),
+                    user: Some(workgraph::current_user()),
                     message: format!(
                         "Resurrection: reopened due to {} pending message(s)",
                         triggering_msgs.len()
@@ -780,6 +785,7 @@ fn resurrect_done_tasks(graph: &mut workgraph::graph::WorkGraph, dir: &Path) -> 
                 assign_task.log.push(LogEntry {
                     timestamp: Utc::now().to_rfc3339(),
                     actor: Some("coordinator".to_string()),
+                    user: Some(workgraph::current_user()),
                     message: "Reopened for reassignment (source task resurrected)".to_string(),
                 });
                 eprintln!(
@@ -874,6 +880,7 @@ fn build_auto_assign_tasks(
                         t.log.push(LogEntry {
                             timestamp: Utc::now().to_rfc3339(),
                             actor: Some("coordinator".to_string()),
+                            user: Some(workgraph::current_user()),
                             message: reason,
                         });
                     }
@@ -1041,6 +1048,7 @@ fn build_auto_assign_tasks(
                         assign_task.log.push(LogEntry {
                             timestamp: Utc::now().to_rfc3339(),
                             actor: Some("coordinator".to_string()),
+                            user: Some(workgraph::current_user()),
                             message: format!(
                                 "Assigned via Agency (agency_task_id={})",
                                 response.agency_task_id,
@@ -1143,6 +1151,7 @@ fn build_auto_assign_tasks(
             task.log.push(LogEntry {
                 timestamp: Utc::now().to_rfc3339(),
                 actor: Some("coordinator".to_string()),
+                user: Some(workgraph::current_user()),
                 message: format!(
                     "Lightweight assignment: agent={} ({}), exec_mode={}, context_scope={}, reason={}",
                     resolved_agent.name,
@@ -1190,6 +1199,7 @@ fn build_auto_assign_tasks(
                     task.log.push(LogEntry {
                         timestamp: Utc::now().to_rfc3339(),
                         actor: Some("coordinator".to_string()),
+                        user: Some(workgraph::current_user()),
                         message: format!(
                             "Placement applied (via assignment): {}",
                             edges_added.join(" "),
@@ -1236,6 +1246,7 @@ fn build_auto_assign_tasks(
             assign_task.log.push(LogEntry {
                 timestamp: Utc::now().to_rfc3339(),
                 actor: Some("coordinator".to_string()),
+                user: Some(workgraph::current_user()),
                 message: format!("Assigned via LLM (path: {:?})", assignment_path,),
             });
         }
@@ -1754,6 +1765,7 @@ fn build_flip_verification_tasks(
             source.log.push(LogEntry {
                 timestamp: Utc::now().to_rfc3339(),
                 actor: Some("coordinator".to_string()),
+                user: Some(workgraph::current_user()),
                 message: format!(
                     "FLIP score {:.2} below threshold {:.2} — triggering Opus verification",
                     eval.score, threshold,
@@ -2213,6 +2225,7 @@ fn spawn_eval_inline(
         task.log.push(LogEntry {
             timestamp: Utc::now().to_rfc3339(),
             actor: Some(agent_id_clone.clone()),
+            user: Some(workgraph::current_user()),
             message: format!("Spawned eval inline{}", eval_model_msg),
         });
 
@@ -2344,6 +2357,7 @@ exit $EXIT_CODE"#,
                     t.log.push(LogEntry {
                         timestamp: Utc::now().to_rfc3339(),
                         actor: Some(agent_id_rollback.clone()),
+                        user: Some(workgraph::current_user()),
                         message: format!("Eval spawn failed, reverting claim: {}", err_msg),
                     });
                     true
@@ -2427,6 +2441,7 @@ fn spawn_assign_inline(dir: &Path, assign_task_id: &str) -> Result<(String, u32)
         task.log.push(LogEntry {
             timestamp: Utc::now().to_rfc3339(),
             actor: Some(agent_id_clone.clone()),
+            user: Some(workgraph::current_user()),
             message: "Spawned assignment inline".to_string(),
         });
 
@@ -2510,6 +2525,7 @@ exit $EXIT_CODE"#,
                     t.log.push(LogEntry {
                         timestamp: Utc::now().to_rfc3339(),
                         actor: Some(agent_id_rollback.clone()),
+                        user: Some(workgraph::current_user()),
                         message: format!("Assignment spawn failed, reverting claim: {}", err_msg),
                     });
                     true
@@ -2593,6 +2609,7 @@ fn check_respawn_throttle(task: &Task, graph_path: &Path) -> std::result::Result
             t.log.push(LogEntry {
                 timestamp: now.to_rfc3339(),
                 actor: Some("coordinator".to_string()),
+                user: Some(workgraph::current_user()),
                 message: format!(
                     "Failed: rapid respawn loop detected ({} deaths in {}s window)",
                     death_count, RESPAWN_WINDOW_SECS

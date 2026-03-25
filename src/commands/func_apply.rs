@@ -1832,6 +1832,7 @@ mod tests {
             log: vec![LogEntry {
                 timestamp: "2026-02-21T12:00:00Z".to_string(),
                 actor: Some("agent".to_string()),
+                user: Some(workgraph::current_user()),
                 message: planner_yaml.to_string(),
             }],
             ..Task::default()
