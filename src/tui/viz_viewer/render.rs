@@ -6205,7 +6205,7 @@ fn draw_help_overlay(frame: &mut Frame) {
         binding("m", "Toggle mouse capture"),
         binding("X", "Swap scroll axis (for Termux)"),
         binding("r", "Force refresh"),
-        binding(".", "Toggle system tasks (visible by default)"),
+        binding(".", "Toggle system tasks (hidden by default)"),
         binding("<", "Toggle running system tasks only"),
         binding("*", "Toggle touch echo (click feedback)"),
         binding("L", "Toggle coordinator log"),
