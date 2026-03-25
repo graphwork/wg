@@ -263,6 +263,73 @@ fn run_shell_command(cmd: &str) -> Result<String> {
     }
 }
 
+/// Create or attach to a user's tmux session (`<user>-wg`).
+///
+/// Uses the `--user` flag or falls back to `$WG_USER`. Propagates `WG_USER`
+/// inside the session. Gives a graceful error with install instructions if
+/// tmux is not installed.
+pub fn connect(user: Option<&str>) -> Result<()> {
+    // Resolve user
+    let user = match user {
+        Some(u) => u.to_string(),
+        None => std::env::var("WG_USER").context(
+            "No user specified. Pass --user <name> or set the WG_USER environment variable.",
+        )?,
+    };
+
+    // Check tmux is installed
+    let tmux_found = Command::new("which")
+        .arg("tmux")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+
+    if !tmux_found {
+        anyhow::bail!(
+            "tmux is not installed.\n\n\
+             Install it with your package manager:\n\
+             \n\
+             \x20 Ubuntu/Debian:  sudo apt install tmux\n\
+             \x20 Fedora/RHEL:    sudo dnf install tmux\n\
+             \x20 macOS:          brew install tmux\n\
+             \x20 Arch:           sudo pacman -S tmux\n"
+        );
+    }
+
+    let session_name = format!("{}-wg", user);
+
+    // Check if the session already exists
+    let has_session = Command::new("tmux")
+        .args(["has-session", "-t", &session_name])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+
+    if has_session {
+        println!("Attaching to existing tmux session '{}'...", session_name);
+        let status = Command::new("tmux")
+            .args(["attach-session", "-t", &session_name])
+            .env("WG_USER", &user)
+            .status()
+            .context("Failed to attach to tmux session")?;
+        if !status.success() {
+            anyhow::bail!("tmux attach-session exited with status {}", status);
+        }
+    } else {
+        println!("Creating tmux session '{}'...", session_name);
+        let status = Command::new("tmux")
+            .args(["new-session", "-s", &session_name])
+            .env("WG_USER", &user)
+            .status()
+            .context("Failed to create tmux session")?;
+        if !status.success() {
+            anyhow::bail!("tmux new-session exited with status {}", status);
+        }
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -352,5 +419,54 @@ mod tests {
 
         let result = run(&wg_dir, &opts);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_connect_no_user_no_env() {
+        // Clear WG_USER so the fallback fails
+        unsafe { std::env::remove_var("WG_USER") };
+        let result = connect(None);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("No user specified"),
+            "Expected 'No user specified' error, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_connect_uses_wg_user_env() {
+        // Set WG_USER and verify the function gets past user resolution.
+        // It will either succeed (tmux installed) or fail at tmux check —
+        // either way it should NOT fail with "No user specified".
+        unsafe { std::env::set_var("WG_USER", "testuser") };
+        let result = connect(None);
+        // If tmux is not installed, the error should be about tmux, not about user
+        if let Err(e) = &result {
+            let msg = e.to_string();
+            assert!(
+                !msg.contains("No user specified"),
+                "Should have resolved user from WG_USER, got: {}",
+                msg
+            );
+        }
+        unsafe { std::env::remove_var("WG_USER") };
+    }
+
+    #[test]
+    fn test_connect_explicit_user_overrides_env() {
+        unsafe { std::env::set_var("WG_USER", "envuser") };
+        // Pass explicit user — should get past user resolution
+        let result = connect(Some("explicit"));
+        if let Err(e) = &result {
+            let msg = e.to_string();
+            assert!(
+                !msg.contains("No user specified"),
+                "Explicit user should override env, got: {}",
+                msg
+            );
+        }
+        unsafe { std::env::remove_var("WG_USER") };
     }
 }

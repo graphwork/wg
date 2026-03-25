@@ -2953,6 +2953,13 @@ pub enum ServerCommands {
         #[arg(long, default_value = "7681")]
         ttyd_port: u16,
     },
+
+    /// Create or attach to a user's tmux session
+    Connect {
+        /// User name (defaults to $WG_USER)
+        #[arg(long)]
+        user: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]

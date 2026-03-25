@@ -2035,6 +2035,9 @@ fn main() -> Result<()> {
                 };
                 commands::server::run(&workgraph_dir, &opts)
             }
+            ServerCommands::Connect { user } => {
+                commands::server::connect(user.as_deref())
+            }
         },
         Commands::Setup => commands::setup::run(),
         Commands::Quickstart => commands::quickstart::run(cli.json),
