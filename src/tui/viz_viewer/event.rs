@@ -1546,7 +1546,7 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
         }
 
         // Enter: in chat tab, enter chat input mode; in messages tab, enter message input mode;
-        // in config tab, start editing the selected setting.
+        // in config tab, start editing the selected setting; in log tab, toggle section.
         KeyCode::Enter => {
             if app.right_panel_tab == RightPanelTab::Chat {
                 app.chat_input_dismissed = false;
@@ -1558,7 +1558,22 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
                 app.input_mode = InputMode::MessageInput;
             } else if app.right_panel_tab == RightPanelTab::Config {
                 config_enter_edit(app);
+            } else if app.right_panel_tab == RightPanelTab::Log {
+                app.log_toggle_nearest_section();
             }
+        }
+
+        // Log tab: Space toggles nearest expandable section
+        KeyCode::Char(' ') if app.right_panel_tab == RightPanelTab::Log => {
+            app.log_toggle_nearest_section();
+        }
+
+        // Log tab: 'e' expand all sections, 'E' collapse all
+        KeyCode::Char('e') if app.right_panel_tab == RightPanelTab::Log => {
+            app.log_expand_all();
+        }
+        KeyCode::Char('E') if app.right_panel_tab == RightPanelTab::Log => {
+            app.log_collapse_all();
         }
 
         // Config tab: Space toggles boolean entries

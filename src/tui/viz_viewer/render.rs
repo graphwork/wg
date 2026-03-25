@@ -2867,6 +2867,11 @@ fn draw_log_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
                 "No log entries for selected task.",
                 Style::default().fg(Color::DarkGray),
             )),
+            Line::from(""),
+            Line::from(Span::styled(
+                "  Enter/Space  expand section   e/E  expand/collapse all",
+                Style::default().fg(Color::DarkGray),
+            )),
         ]);
         frame.render_widget(msg, area);
         return;
@@ -2879,11 +2884,16 @@ fn draw_log_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
         return;
     }
 
-    // Display in forward chronological order (oldest first, newest at bottom), with word wrapping.
     let wrap_width = area.width as usize;
+    let has_agent = app.log_pane.expandable.agent_id.is_some();
 
+    // Build rendered lines with expandable sections interleaved.
     let mut wrapped_lines: Vec<Line> = Vec::new();
-    for s in &app.log_pane.rendered_lines {
+    // Track which line indices correspond to section headers (for nearest_visible_section).
+    let mut section_header_lines: Vec<(usize, usize)> = Vec::new(); // (line_idx, section_idx)
+
+    for (entry_idx, s) in app.log_pane.rendered_lines.iter().enumerate() {
+        // Render the log entry line (with timestamp and word wrap).
         if let Some(bracket_end) = s.find(']') {
             let timestamp = &s[..=bracket_end];
             let message = &s[bracket_end + 1..];
@@ -2911,7 +2921,6 @@ fn draw_log_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
                 }
             }
         } else {
-            // No timestamp — plain word wrap.
             if wrap_width > 0 && s.width() > wrap_width {
                 let wrapped = word_wrap(s, wrap_width);
                 for wl in wrapped {
@@ -2919,6 +2928,102 @@ fn draw_log_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
                 }
             } else {
                 wrapped_lines.push(Line::from(Span::raw(s.as_str())));
+            }
+        }
+
+        // Add expandable section header after this entry (if agent output is available).
+        if has_agent && !app.log_pane.json_mode {
+            let section_idx = entry_idx;
+            let is_expanded = app.log_pane.expandable.expanded_sections.contains(&section_idx);
+
+            // Get summary info.
+            let summary = app
+                .log_pane
+                .expandable
+                .section_summaries
+                .get(&section_idx);
+            let has_content = app
+                .log_pane
+                .expandable
+                .section_text
+                .get(&section_idx)
+                .map(|t| !t.is_empty())
+                .unwrap_or(false);
+
+            // Only show section header if we know there's content, or haven't checked yet.
+            let show_header = has_content || !app.log_pane.expandable.section_cache.contains_key(&section_idx);
+
+            if show_header {
+                let header_line_idx = wrapped_lines.len();
+                section_header_lines.push((header_line_idx, section_idx));
+
+                if is_expanded {
+                    let (msg_count, _token_count) = summary.copied().unwrap_or((0, 0));
+                    let header_text = if msg_count > 0 {
+                        format!("  \u{25be} [{} messages]", msg_count)
+                    } else {
+                        "  \u{25be} [expanded]".to_string()
+                    };
+                    wrapped_lines.push(Line::from(Span::styled(
+                        header_text,
+                        Style::default().fg(Color::Cyan),
+                    )));
+
+                    // Render expanded content.
+                    let content_width = wrap_width.saturating_sub(4); // Account for "  ┊ " prefix.
+                    let section_lines = if let Some(cached) =
+                        app.log_pane.expandable.section_cache.get(&section_idx)
+                    {
+                        cached.clone()
+                    } else if let Some(text) = app.log_pane.expandable.section_text.get(&section_idx) {
+                        if !text.is_empty() {
+                            let lines = markdown_to_lines(text, content_width.max(20));
+                            lines
+                        } else {
+                            Vec::new()
+                        }
+                    } else {
+                        Vec::new()
+                    };
+
+                    // Cache the rendered lines.
+                    if !app.log_pane.expandable.section_cache.contains_key(&section_idx) {
+                        app.log_pane
+                            .expandable
+                            .section_cache
+                            .insert(section_idx, section_lines.clone());
+                    }
+
+                    for line in &section_lines {
+                        // Prefix each line with "  ┊ " in dark gray.
+                        let mut spans = vec![Span::styled(
+                            "  \u{250a} ",
+                            Style::default().fg(Color::DarkGray),
+                        )];
+                        spans.extend(line.spans.iter().cloned());
+                        wrapped_lines.push(Line::from(spans));
+                    }
+                } else {
+                    // Collapsed section header.
+                    let (msg_count, token_count) = summary.copied().unwrap_or((0, 0));
+                    let header_text = if msg_count > 0 || token_count > 0 {
+                        if token_count >= 1000 {
+                            format!(
+                                "  \u{25b8} [expand: {} messages, {:.1}k tokens]",
+                                msg_count,
+                                token_count as f64 / 1000.0
+                            )
+                        } else {
+                            format!("  \u{25b8} [expand: {} messages]", msg_count)
+                        }
+                    } else {
+                        "  \u{25b8} [expand]".to_string()
+                    };
+                    wrapped_lines.push(Line::from(Span::styled(
+                        header_text,
+                        Style::default().fg(Color::Cyan),
+                    )));
+                }
             }
         }
     }
@@ -2930,6 +3035,22 @@ fn draw_log_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
         .scroll
         .min(total_lines.saturating_sub(viewport_h));
     let end = (scroll + viewport_h).min(total_lines);
+
+    // Find the nearest visible section header for Enter/Space toggling.
+    app.log_pane.expandable.nearest_visible_section = section_header_lines
+        .iter()
+        .filter(|(line_idx, _)| *line_idx >= scroll && *line_idx < end)
+        .map(|(_, section_idx)| *section_idx)
+        .next()
+        .or_else(|| {
+            // If no header is visible, find the closest one above the viewport.
+            section_header_lines
+                .iter()
+                .rev()
+                .filter(|(line_idx, _)| *line_idx < scroll)
+                .map(|(_, section_idx)| *section_idx)
+                .next()
+        });
 
     let visible_lines: Vec<Line> = wrapped_lines[scroll..end].to_vec();
 
@@ -3201,7 +3322,7 @@ fn draw_output_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     if agent_ids.is_empty() {
         let msg = Paragraph::new(vec![
             Line::from(Span::styled(
-                "Agent Output",
+                "Live Agent Output",
                 Style::default()
                     .fg(Color::Cyan)
                     .add_modifier(Modifier::BOLD),
@@ -3441,8 +3562,28 @@ fn draw_output_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
         .agent_texts
         .get(&active_agent_id)
         .unwrap();
+    let is_active_agent_working = !text_entry.finished;
     let end = (scroll + viewport_h).min(total_lines);
-    let visible: Vec<Line> = text_entry.rendered_lines[scroll..end].to_vec();
+    let mut visible: Vec<Line> = text_entry.rendered_lines[scroll..end].to_vec();
+
+    // Add streaming spinner at the bottom if the agent is still working.
+    if is_active_agent_working && end >= total_lines {
+        let elapsed = app
+            .agent_monitor
+            .agents
+            .iter()
+            .find(|a| a.agent_id == active_agent_id)
+            .and_then(|a| a.started_at.as_ref())
+            .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+            .map(|dt| {
+                let now = chrono::Utc::now();
+                let dur = now - dt.with_timezone(&chrono::Utc);
+                std::time::Duration::from_secs(dur.num_seconds().max(0) as u64)
+            })
+            .unwrap_or_default();
+        visible.push(Line::from(""));
+        visible.push(spinner_wave_line(elapsed, ""));
+    }
 
     let paragraph = Paragraph::new(visible);
     frame.render_widget(paragraph, content_area);
@@ -6376,6 +6517,12 @@ fn draw_help_overlay(frame: &mut Frame) {
         binding("0-7", "Switch tab: Chat/.../Files/Coord"),
         binding("R", "Toggle raw JSON in Detail tab"),
         binding("Space", "Toggle section collapse in Detail"),
+        blank(),
+        heading("Log Tab (expandable)"),
+        binding("Enter/Space", "Toggle expand section"),
+        binding("e", "Expand all sections"),
+        binding("E", "Collapse all sections"),
+        binding("J", "Toggle raw JSON mode"),
         blank(),
         heading("Edge Tracing"),
         binding("t", "Toggle trace on/off"),

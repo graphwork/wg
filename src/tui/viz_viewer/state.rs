@@ -435,7 +435,7 @@ impl RightPanelTab {
             Self::Files => "Files",
             Self::CoordLog => "Coord",
             Self::Firehose => "Fire",
-            Self::Output => "Out",
+            Self::Output => "Live",
         }
     }
 
@@ -1473,6 +1473,32 @@ pub struct LogPaneState {
     pub viewport_height: usize,
     /// Total wrapped line count (set each frame by render, used for scroll bounds).
     pub total_wrapped_lines: usize,
+    /// Expandable log section state.
+    pub expandable: ExpandableLogState,
+}
+
+/// State for expandable sections in the Log tab.
+/// Each "section" is the gap between two consecutive log entries,
+/// representing agent output that occurred between those timestamps.
+pub struct ExpandableLogState {
+    /// Which sections are expanded (index into log entries — section i is between entry i and i+1).
+    pub expanded_sections: HashSet<usize>,
+    /// Whether all sections are expanded.
+    pub all_expanded: bool,
+    /// Cached per-section rendered content (section_index -> rendered lines).
+    pub section_cache: HashMap<usize, Vec<ratatui::text::Line<'static>>>,
+    /// Agent ID for the current task (for looking up output.log).
+    pub agent_id: Option<String>,
+    /// Per-section summary: (message_count, token_estimate).
+    pub section_summaries: HashMap<usize, (usize, usize)>,
+    /// Raw section text content (section_index -> raw text before markdown rendering).
+    pub section_text: HashMap<usize, String>,
+    /// Log entry timestamps (ISO 8601) for mapping to output.log ranges.
+    pub entry_timestamps: Vec<String>,
+    /// Task ID this expandable state was built for (to detect staleness).
+    pub task_id: Option<String>,
+    /// The section header nearest to the top of the visible viewport (set by renderer).
+    pub nearest_visible_section: Option<usize>,
 }
 
 impl Default for LogPaneState {
@@ -1485,6 +1511,23 @@ impl Default for LogPaneState {
             task_id: None,
             viewport_height: 0,
             total_wrapped_lines: 0,
+            expandable: ExpandableLogState::default(),
+        }
+    }
+}
+
+impl Default for ExpandableLogState {
+    fn default() -> Self {
+        Self {
+            expanded_sections: HashSet::new(),
+            all_expanded: false,
+            section_cache: HashMap::new(),
+            agent_id: None,
+            section_summaries: HashMap::new(),
+            section_text: HashMap::new(),
+            entry_timestamps: Vec::new(),
+            task_id: None,
+            nearest_visible_section: None,
         }
     }
 }
@@ -5359,13 +5402,38 @@ impl VizApp {
 
         self.log_pane.rendered_lines.clear();
 
+        // Reset expandable state if task changed.
+        if self.log_pane.expandable.task_id.as_deref() != Some(&task_id) {
+            self.log_pane.expandable = ExpandableLogState::default();
+        }
+
         if task.log.is_empty() {
             self.log_pane
                 .rendered_lines
                 .push("(no log entries)".to_string());
         } else {
             let now = chrono::Utc::now();
+            let mut timestamps = Vec::new();
+            // Find agent_id from log entries (actor field) or from "Spawned" message.
+            let mut agent_id: Option<String> = None;
             for entry in &task.log {
+                timestamps.push(entry.timestamp.clone());
+                // Try to extract agent_id from actor field.
+                if agent_id.is_none() {
+                    if let Some(ref actor) = entry.actor {
+                        if actor.starts_with("agent-") {
+                            agent_id = Some(actor.clone());
+                        }
+                    }
+                    // Also check message for "[agent-XXXX]" pattern.
+                    if agent_id.is_none() && entry.message.contains("[agent-") {
+                        if let Some(start) = entry.message.find("[agent-") {
+                            if let Some(end) = entry.message[start..].find(']') {
+                                agent_id = Some(entry.message[start + 1..start + end].to_string());
+                            }
+                        }
+                    }
+                }
                 if self.log_pane.json_mode {
                     // Raw JSON format for debugging.
                     let json = serde_json::json!({
@@ -5382,6 +5450,20 @@ impl VizApp {
                         .push(format!("[{}] {}", time_str, entry.message));
                 }
             }
+
+            // Also check the agent registry for an agent working on this task.
+            if agent_id.is_none() {
+                for entry in &self.agent_monitor.agents {
+                    if entry.task_id.as_deref() == Some(&task_id) {
+                        agent_id = Some(entry.agent_id.clone());
+                        break;
+                    }
+                }
+            }
+
+            self.log_pane.expandable.entry_timestamps = timestamps;
+            self.log_pane.expandable.agent_id = agent_id;
+            self.log_pane.expandable.task_id = Some(task_id.clone());
         }
 
         // If auto-tail is on, scroll to bottom so newest entries are visible.
@@ -5396,6 +5478,166 @@ impl VizApp {
     /// Force reload of log pane content.
     pub fn invalidate_log_pane(&mut self) {
         self.log_pane.task_id = None;
+        // Clear cached expanded content so it reloads from disk.
+        self.log_pane.expandable.section_cache.clear();
+        self.log_pane.expandable.section_text.clear();
+        self.log_pane.expandable.section_summaries.clear();
+    }
+
+    /// Toggle expand/collapse of a specific log section.
+    pub fn log_toggle_section(&mut self, section_idx: usize) {
+        if self.log_pane.expandable.expanded_sections.contains(&section_idx) {
+            self.log_pane.expandable.expanded_sections.remove(&section_idx);
+        } else {
+            self.log_pane.expandable.expanded_sections.insert(section_idx);
+            // Load section content on first expand.
+            self.load_log_section_content(section_idx);
+        }
+        self.log_pane.expandable.all_expanded = false;
+    }
+
+    /// Expand all log sections.
+    pub fn log_expand_all(&mut self) {
+        let n = self.log_pane.expandable.entry_timestamps.len();
+        for i in 0..n.saturating_sub(1) {
+            self.log_pane.expandable.expanded_sections.insert(i);
+            self.load_log_section_content(i);
+        }
+        // Also expand the last section (after the final entry).
+        if n > 0 {
+            self.log_pane.expandable.expanded_sections.insert(n - 1);
+            self.load_log_section_content(n - 1);
+        }
+        self.log_pane.expandable.all_expanded = true;
+    }
+
+    /// Collapse all log sections.
+    pub fn log_collapse_all(&mut self) {
+        self.log_pane.expandable.expanded_sections.clear();
+        self.log_pane.expandable.all_expanded = false;
+    }
+
+    /// Load the content for a specific expandable section from the agent's output.log.
+    /// Section i covers the time between log entry i and log entry i+1.
+    fn load_log_section_content(&mut self, section_idx: usize) {
+        // Skip if already cached.
+        if self.log_pane.expandable.section_cache.contains_key(&section_idx) {
+            return;
+        }
+
+        let agent_id = match &self.log_pane.expandable.agent_id {
+            Some(id) => id.clone(),
+            None => return,
+        };
+
+        let timestamps = &self.log_pane.expandable.entry_timestamps;
+        if timestamps.is_empty() {
+            return;
+        }
+
+        let start_ts = if section_idx < timestamps.len() {
+            &timestamps[section_idx]
+        } else {
+            return;
+        };
+        let end_ts = if section_idx + 1 < timestamps.len() {
+            Some(&timestamps[section_idx + 1])
+        } else {
+            None // Last section — everything after the final log entry.
+        };
+
+        let log_path = self.workgraph_dir.join("agents").join(&agent_id).join("output.log");
+        let content = match std::fs::read_to_string(&log_path) {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+
+        // Parse timestamps for range filtering.
+        let start_dt = match chrono::DateTime::parse_from_rfc3339(start_ts) {
+            Ok(dt) => dt.with_timezone(&chrono::Utc),
+            Err(_) => return,
+        };
+        let end_dt = end_ts.and_then(|ts| {
+            chrono::DateTime::parse_from_rfc3339(ts)
+                .ok()
+                .map(|dt| dt.with_timezone(&chrono::Utc))
+        });
+
+        // Filter JSONL lines by timestamp range.
+        let mut filtered_lines = Vec::new();
+        let mut msg_count = 0usize;
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if !trimmed.starts_with('{') {
+                continue;
+            }
+            let val: serde_json::Value = match serde_json::from_str(trimmed) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+
+            // Extract timestamp from the JSONL line.
+            let line_ts = val
+                .get("timestamp")
+                .or_else(|| val.get("message").and_then(|m| m.get("created")))
+                .and_then(|v| v.as_str())
+                .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                .map(|dt| dt.with_timezone(&chrono::Utc));
+
+            if let Some(line_dt) = line_ts {
+                if line_dt < start_dt {
+                    continue;
+                }
+                if let Some(ref end) = end_dt {
+                    if line_dt >= *end {
+                        continue;
+                    }
+                }
+            }
+
+            // Count messages for summary.
+            let msg_type = val.get("type").and_then(|v| v.as_str()).unwrap_or("");
+            if msg_type == "assistant" {
+                msg_count += 1;
+            }
+
+            filtered_lines.push(trimmed.to_string());
+        }
+
+        let filtered_content = filtered_lines.join("\n");
+        let text = extract_assistant_text_from_log(&filtered_content);
+
+        // Estimate token count (~4 chars per token).
+        let token_estimate = text.len() / 4;
+
+        self.log_pane.expandable.section_summaries.insert(section_idx, (msg_count, token_estimate));
+        self.log_pane.expandable.section_text.insert(section_idx, text);
+        // Clear rendered cache — will be rebuilt by draw_log_tab.
+        self.log_pane.expandable.section_cache.remove(&section_idx);
+    }
+
+    /// Toggle the first visible section header in the log pane.
+    /// Called by Enter/Space in the Log tab.
+    pub fn log_toggle_nearest_section(&mut self) {
+        // Find which section header is closest to the current scroll position.
+        // Each log entry takes at least 1 line; section headers appear after each entry.
+        // We approximate by using the entry index based on scroll position.
+        let n_entries = self.log_pane.rendered_lines.len();
+        if n_entries == 0 {
+            return;
+        }
+        // Simple heuristic: use scroll position to estimate which entry we're near.
+        // We'll toggle the section nearest to the viewport top.
+        let n_timestamps = self.log_pane.expandable.entry_timestamps.len();
+        if n_timestamps == 0 {
+            return;
+        }
+        // Find the first section that has a header in the visible area.
+        // For now, use a simple approach: toggle based on current scroll line index.
+        // The render will map log entries to line positions.
+        // Use the stored line_to_section mapping if available, otherwise toggle section 0.
+        let target = self.log_pane.expandable.nearest_visible_section.unwrap_or(0);
+        self.log_toggle_section(target);
     }
 
     /// Scroll log pane up.
@@ -6669,8 +6911,8 @@ impl VizApp {
 
             text_entry.file_offset = file_len;
 
-            // Extract assistant text from the new JSONL lines.
-            let new_text = extract_assistant_text_from_log(&new_data);
+            // Extract assistant text + tool results from the new JSONL lines.
+            let new_text = extract_enriched_text_from_log(&new_data);
             if !new_text.is_empty() {
                 if !text_entry.full_text.is_empty() {
                     text_entry.full_text.push_str("\n\n");
@@ -10046,6 +10288,132 @@ fn extract_assistant_text_from_log(content: &str) -> String {
                     parts.push(summary);
                 }
                 _ => {}
+            }
+        }
+    }
+
+    parts.join("\n\n")
+}
+
+/// Extract assistant text + tool result summaries from output.log JSONL content.
+/// Similar to `extract_assistant_text_from_log` but includes compact tool result
+/// summaries for a more dynamic live view.
+fn extract_enriched_text_from_log(content: &str) -> String {
+    let mut parts: Vec<String> = Vec::new();
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if !trimmed.starts_with('{') {
+            continue;
+        }
+        let val: serde_json::Value = match serde_json::from_str(trimmed) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+
+        let msg_type = val.get("type").and_then(|v| v.as_str()).unwrap_or("");
+
+        if msg_type == "assistant" {
+            let content_arr = match val
+                .get("message")
+                .and_then(|m| m.get("content"))
+                .and_then(|c| c.as_array())
+            {
+                Some(arr) => arr,
+                None => continue,
+            };
+
+            for block in content_arr {
+                let block_type = block.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                match block_type {
+                    "text" => {
+                        if let Some(text) = block.get("text").and_then(|v| v.as_str()) {
+                            let trimmed_text = text.trim();
+                            if !trimmed_text.is_empty() {
+                                parts.push(trimmed_text.to_string());
+                            }
+                        }
+                    }
+                    "tool_use" => {
+                        let name =
+                            block.get("name").and_then(|v| v.as_str()).unwrap_or("tool");
+                        let detail = match name {
+                            "Bash" => block
+                                .get("input")
+                                .and_then(|i| i.get("command"))
+                                .and_then(|v| v.as_str())
+                                .map(|c| {
+                                    let c = c.trim();
+                                    if c.len() > 80 {
+                                        format!("{}…", &c[..c.floor_char_boundary(80)])
+                                    } else {
+                                        c.to_string()
+                                    }
+                                }),
+                            "Read" | "Write" | "Edit" => block
+                                .get("input")
+                                .and_then(|i| i.get("file_path"))
+                                .and_then(|v| v.as_str())
+                                .map(|p| p.to_string()),
+                            "Grep" | "Glob" => block
+                                .get("input")
+                                .and_then(|i| i.get("pattern"))
+                                .and_then(|v| v.as_str())
+                                .map(|p| p.to_string()),
+                            _ => None,
+                        };
+                        let summary = match detail {
+                            Some(d) => format!("┌─ {} ────\n│ {}\n└─", name, d),
+                            None => format!("┌─ {} ────\n└─", name),
+                        };
+                        parts.push(summary);
+                    }
+                    _ => {}
+                }
+            }
+        } else if msg_type == "result" {
+            // Tool result — show a compact one-line summary.
+            let content_arr = val
+                .get("content")
+                .and_then(|c| c.as_array());
+            let _tool_name = val.get("tool_name").and_then(|v| v.as_str()).unwrap_or("");
+
+            if let Some(arr) = content_arr {
+                for block in arr {
+                    if let Some(text) = block.get("text").and_then(|v| v.as_str()) {
+                        let line_count = text.lines().count();
+                        let is_error = block
+                            .get("is_error")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false);
+                        let first_line = text.lines().next().unwrap_or("").trim();
+                        let short = if first_line.len() > 60 {
+                            format!("{}…", &first_line[..first_line.floor_char_boundary(60)])
+                        } else {
+                            first_line.to_string()
+                        };
+                        let prefix = if is_error { "  ↳ error:" } else { "  ↳" };
+                        if line_count > 1 {
+                            parts.push(format!("{} {} ({} lines)", prefix, short, line_count));
+                        } else {
+                            parts.push(format!("{} {}", prefix, short));
+                        }
+                    }
+                }
+            } else if let Some(text) = val.get("content").and_then(|c| c.as_str()) {
+                // Simple string content.
+                let line_count = text.lines().count();
+                let first_line = text.lines().next().unwrap_or("").trim();
+                let short = if first_line.len() > 60 {
+                    format!("{}…", &first_line[..first_line.floor_char_boundary(60)])
+                } else {
+                    first_line.to_string()
+                };
+                if line_count > 1 {
+                    parts.push(format!("  ↳ {} ({} lines)", short, line_count));
+                } else {
+                    parts.push(format!("  ↳ {}", short));
+                }
             }
         }
     }
