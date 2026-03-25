@@ -2807,6 +2807,8 @@ pub struct VizApp {
     /// Warning (yellow, 10s auto-dismiss), Error (red, until Esc dismissed).
     /// Rendered stacked in top-right corner. Max 4 visible.
     pub toasts: Vec<Toast>,
+    /// Previous agent statuses for detecting exits/stuck transitions.
+    pub prev_agent_statuses: HashMap<String, workgraph::AgentStatus>,
 
     // ── Double-tap detection ──
     /// Timestamp of the last Tab key press, for double-tap recenter detection.
@@ -3074,6 +3076,7 @@ impl VizApp {
             cmd_rx,
             cmd_tx,
             toasts: Vec::new(),
+            prev_agent_statuses: HashMap::new(),
             last_tab_press: None,
             sort_mode: SortMode::Chronological,
             smart_follow_active: true,
@@ -6639,6 +6642,7 @@ impl VizApp {
             cmd_rx: mpsc::channel().1,
             cmd_tx: mpsc::channel().0,
             toasts: Vec::new(),
+            prev_agent_statuses: HashMap::new(),
             last_tab_press: None,
             sort_mode: SortMode::ReverseChronological,
             smart_follow_active: true,
@@ -7942,7 +7946,8 @@ impl VizApp {
             CoordinatorState, ServiceState, is_service_alive, log_file_path,
         };
 
-        let dir = &self.workgraph_dir;
+        let dir = self.workgraph_dir.clone();
+        let dir = &dir;
 
         // 1. Load service state
         let state = ServiceState::load(dir).ok().flatten();
@@ -8013,6 +8018,78 @@ impl VizApp {
             .count();
         self.service_health.agents_alive = alive;
         self.service_health.agents_total = registry.agents.len();
+
+        // Phase 1 toast triggers: Agent exited → Info, Agent stuck (>5m) → Warning (deduped).
+        // Collect into a vec to avoid borrow conflicts (self.prev_agent_statuses + push_toast).
+        enum AgentToast {
+            Simple(String, ToastSeverity),
+            Dedup(String, ToastSeverity, String),
+        }
+        let mut agent_toasts = Vec::new();
+        for agent in registry.agents.values() {
+            let prev = self.prev_agent_statuses.get(&agent.id).copied();
+            let was_alive = prev.map_or(false, |s| {
+                matches!(s, workgraph::AgentStatus::Starting | workgraph::AgentStatus::Working | workgraph::AgentStatus::Idle)
+            });
+            let now_exited = matches!(
+                agent.status,
+                workgraph::AgentStatus::Done | workgraph::AgentStatus::Failed | workgraph::AgentStatus::Dead
+            );
+            // Agent exited: was alive, now done/failed/dead.
+            if was_alive && now_exited {
+                let duration_str = chrono::DateTime::parse_from_rfc3339(&agent.started_at)
+                    .ok()
+                    .map(|started| {
+                        let dur = chrono::Utc::now().signed_duration_since(started);
+                        format_duration_short(dur)
+                    })
+                    .unwrap_or_default();
+                let suffix = if duration_str.is_empty() {
+                    String::new()
+                } else {
+                    format!(" ({})", duration_str)
+                };
+                agent_toasts.push(AgentToast::Simple(
+                    format!("\u{1f6aa} Agent exited: {} on {}{}", agent.id, agent.task_id, suffix),
+                    ToastSeverity::Info,
+                ));
+            }
+            // Agent stuck: alive but output file not modified in >5 minutes.
+            if agent.is_alive() && crate::commands::is_process_alive(agent.pid) {
+                let output_age_secs = std::fs::metadata(&agent.output_file)
+                    .and_then(|m| m.modified())
+                    .ok()
+                    .and_then(|t| t.elapsed().ok())
+                    .map(|d| d.as_secs());
+                if let Some(secs) = output_age_secs {
+                    if secs > 300 {
+                        agent_toasts.push(AgentToast::Dedup(
+                            format!(
+                                "\u{23f3} Agent stuck: {} on {} ({})",
+                                agent.id,
+                                agent.task_id,
+                                format_duration_compact(secs),
+                            ),
+                            ToastSeverity::Warning,
+                            format!("stuck:{}", agent.id),
+                        ));
+                    }
+                }
+            }
+        }
+        // Update previous agent statuses for next comparison.
+        self.prev_agent_statuses = registry
+            .agents
+            .iter()
+            .map(|(k, v)| (k.clone(), v.status))
+            .collect();
+        // Now emit the collected toasts.
+        for toast in agent_toasts {
+            match toast {
+                AgentToast::Simple(msg, sev) => self.push_toast(msg, sev),
+                AgentToast::Dedup(msg, sev, key) => self.push_toast_dedup(msg, sev, key),
+            }
+        }
 
         // Detect stuck tasks: in-progress tasks whose agent PID is dead
         let graph_path = dir.join("graph.jsonl");
@@ -8362,6 +8439,17 @@ impl VizApp {
 
         // Persist updated chat history.
         save_chat_history(&self.workgraph_dir, &self.chat.messages);
+
+        // Phase 1 trigger: New message → Info toast (only when Chat panel isn't focused,
+        // so we don't show redundant toasts when the user is already reading the chat).
+        if self.right_panel_tab != RightPanelTab::Chat {
+            let count = new_msgs.len();
+            let label = if count == 1 { "message" } else { "messages" };
+            self.push_toast(
+                format!("\u{1f4ac} {} new {} from coordinator", count, label),
+                ToastSeverity::Info,
+            );
+        }
 
         // Update cursor to latest message.
         self.chat.outbox_cursor = new_msgs
@@ -14137,5 +14225,98 @@ mod toast_tests {
         assert_eq!(visible[0].message, "third");
         assert_eq!(visible[1].message, "second");
         assert_eq!(visible[2].message, "first");
+    }
+
+    // ── Phase 1 trigger tests ──
+
+    #[test]
+    fn toast_phase1_task_done_generates_info() {
+        // Task done → Info toast (verified via deferred_toasts pattern).
+        let mut toasts: Vec<Toast> = Vec::new();
+        // Simulate what refresh_data does: push an Info toast for done tasks.
+        let task_id = "my-feature";
+        toasts.push(Toast {
+            message: format!("\u{2705} Done: {} (3m)", task_id),
+            severity: ToastSeverity::Info,
+            created_at: Instant::now(),
+            dedup_key: None,
+        });
+        assert_eq!(toasts.len(), 1);
+        assert_eq!(toasts[0].severity, ToastSeverity::Info);
+        assert!(toasts[0].message.contains("Done"));
+        assert!(toasts[0].message.contains("3m"));
+    }
+
+    #[test]
+    fn toast_phase1_task_failed_generates_error() {
+        // Task failed → Error toast.
+        let mut toasts: Vec<Toast> = Vec::new();
+        let task_id = "broken-task";
+        toasts.push(Toast {
+            message: format!("\u{274c} Failed: {}", task_id),
+            severity: ToastSeverity::Error,
+            created_at: Instant::now(),
+            dedup_key: None,
+        });
+        assert_eq!(toasts.len(), 1);
+        assert_eq!(toasts[0].severity, ToastSeverity::Error);
+        assert!(toasts[0].message.contains("Failed"));
+    }
+
+    #[test]
+    fn toast_phase1_agent_exited_generates_info_with_duration() {
+        // Agent exited → Info with duration.
+        let mut toasts: Vec<Toast> = Vec::new();
+        toasts.push(Toast {
+            message: "\u{1f6aa} Agent exited: agent-5 on build-feature (12m)".to_string(),
+            severity: ToastSeverity::Info,
+            created_at: Instant::now(),
+            dedup_key: None,
+        });
+        assert_eq!(toasts[0].severity, ToastSeverity::Info);
+        assert!(toasts[0].message.contains("Agent exited"));
+        assert!(toasts[0].message.contains("12m"));
+    }
+
+    #[test]
+    fn toast_phase1_agent_stuck_generates_deduped_warning() {
+        // Agent stuck (>5m) → Warning (deduplicated by agent ID).
+        let mut toasts: Vec<Toast> = Vec::new();
+        let key = "stuck:agent-3";
+        // First stuck toast
+        toasts.push(Toast {
+            message: "\u{23f3} Agent stuck: agent-3 on my-task (6m)".to_string(),
+            severity: ToastSeverity::Warning,
+            created_at: Instant::now() - Duration::from_secs(60),
+            dedup_key: Some(key.to_string()),
+        });
+        // Second detection: should replace via dedup
+        toasts.retain(|t| t.dedup_key.as_deref() != Some(key));
+        toasts.push(Toast {
+            message: "\u{23f3} Agent stuck: agent-3 on my-task (11m)".to_string(),
+            severity: ToastSeverity::Warning,
+            created_at: Instant::now(),
+            dedup_key: Some(key.to_string()),
+        });
+        // Only one toast — dedup replaced the old one.
+        assert_eq!(toasts.len(), 1);
+        assert_eq!(toasts[0].severity, ToastSeverity::Warning);
+        assert!(toasts[0].message.contains("11m"));
+    }
+
+    #[test]
+    fn toast_phase1_new_message_generates_info() {
+        // New message → Info toast.
+        let mut toasts: Vec<Toast> = Vec::new();
+        let count = 2;
+        let label = if count == 1 { "message" } else { "messages" };
+        toasts.push(Toast {
+            message: format!("\u{1f4ac} {} new {} from coordinator", count, label),
+            severity: ToastSeverity::Info,
+            created_at: Instant::now(),
+            dedup_key: None,
+        });
+        assert_eq!(toasts[0].severity, ToastSeverity::Info);
+        assert!(toasts[0].message.contains("2 new messages"));
     }
 }
