@@ -3143,7 +3143,7 @@ impl VizApp {
             show_running_system_tasks: config.tui.show_running_system_tasks,
             system_tasks_just_toggled: false,
             mouse_enabled,
-            any_motion_mouse: super::event::detect_termux_touch(),
+            any_motion_mouse: super::event::detect_any_motion_support(),
             scroll_axis_swapped: false,
             last_graph_area: Rect::default(),
             last_right_panel_area: Rect::default(),
