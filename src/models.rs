@@ -313,8 +313,12 @@ impl ModelRegistry {
     pub fn set_default(&mut self, id: &str) -> Result<()> {
         if !self.models.contains_key(id) {
             anyhow::bail!(
-                "Model '{}' not found in registry. Use 'wg models list' to see available models.",
-                id
+                "Model '{}' not found in registry.\n  \
+                 Try: `wg models search {}` to find valid alternatives\n  \
+                 Or:  `wg models list` to see the local registry\n  \
+                 Tip: `openrouter/auto` is a safe default that auto-routes to the best model.",
+                id,
+                id.split('/').last().unwrap_or(id),
             );
         }
         self.default_model = Some(id.to_string());

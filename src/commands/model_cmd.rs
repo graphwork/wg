@@ -144,8 +144,13 @@ pub fn run_set_default(dir: &Path, alias: &str, global: bool) -> Result<()> {
     let merged = Config::load_merged(dir)?;
     if merged.registry_lookup(alias).is_none() {
         anyhow::bail!(
-            "Model '{}' not found in the registry. Add it first with: wg model add {} --provider <provider>",
+            "Model '{}' not found in the registry.\n  \
+             Try: `wg models search {}` to find valid alternatives\n  \
+             Or:  `wg models list` to see the local registry\n  \
+             Add: `wg model add {} --provider <provider>` to register it\n  \
+             Tip: `openrouter/auto` is a safe default that auto-routes to the best model.",
             alias,
+            alias.split('/').last().unwrap_or(alias),
             alias,
         );
     }

@@ -1401,9 +1401,13 @@ pub fn validate_openrouter_model(
     };
 
     // Fall back to openrouter/auto
+    let search_hint = model.split('/').last().unwrap_or(model);
     let warning = format!(
-        "Model '{}' not found in OpenRouter model list.{}\n  Falling back to '{}'.",
-        model, suggestions_str, OPENROUTER_AUTO_MODEL,
+        "Model '{}' not found in OpenRouter model list.{}\n  \
+         Falling back to '{}'.\n  \
+         Hint: run `wg models search {}` to find valid alternatives, \
+         or `wg models list` to see the local registry.",
+        model, suggestions_str, OPENROUTER_AUTO_MODEL, search_hint,
     );
 
     ModelValidationResult {
@@ -2872,6 +2876,16 @@ mod tests {
         assert!(warning.contains("not found"));
         assert!(warning.contains("Falling back"));
         assert!(warning.contains(OPENROUTER_AUTO_MODEL));
+        assert!(
+            warning.contains("wg models search"),
+            "warning should suggest `wg models search`, got: {}",
+            warning
+        );
+        assert!(
+            warning.contains("wg models list"),
+            "warning should suggest `wg models list`, got: {}",
+            warning
+        );
     }
 
     #[test]

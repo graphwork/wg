@@ -1181,7 +1181,12 @@ fn resolve_model_via_registry(
         } else {
             // Short alias that's not registered — error so the user knows to register it.
             anyhow::bail!(
-                "Model '{}' not found in config. Register it first with:\n  wg model add {} --provider <provider> --model-id <model-id>",
+                "Model '{}' not found in config.\n  \
+                 Try: `wg models search {}` to find valid alternatives\n  \
+                 Or:  `wg models list` to see the local registry\n  \
+                 Add: `wg model add {} --provider <provider> --model-id <model-id>` to register it\n  \
+                 Tip: `openrouter/auto` is a safe default that auto-routes to the best model.",
+                model_str,
                 model_str,
                 model_str,
             );
