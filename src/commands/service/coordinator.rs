@@ -2680,7 +2680,7 @@ fn check_respawn_throttle(task: &Task, graph_path: &Path) -> std::result::Result
 ///
 /// Returns `false` for Anthropic models, bare Anthropic model names, and
 /// built-in tier aliases (`haiku`, `sonnet`, `opus`).
-fn requires_native_executor(model: &str, config: &Config) -> bool {
+pub(crate) fn requires_native_executor(model: &str, config: &Config) -> bool {
     // Direct provider/model format check
     if model.contains('/') {
         return !model.starts_with("anthropic/");

@@ -430,15 +430,23 @@ fn agent_thread_main(
     logger: &DaemonLogger,
     event_log: &SharedEventLog,
 ) {
-    // Use the native coordinator loop when the executor is "native" OR when the
-    // provider is non-Anthropic (openrouter, openai, local). The Claude CLI only
-    // understands Anthropic models, so non-Anthropic providers must go through the
-    // native path which makes direct API calls via OpenAI-compatible endpoints.
+    // Use the native coordinator loop when the executor is "native", the provider
+    // is non-Anthropic (openrouter, openai, local), OR the model itself requires a
+    // non-Anthropic provider (e.g. "deepseek/deepseek-chat", "google/gemini-*").
+    // The Claude CLI only understands Anthropic models, so everything else must go
+    // through the native path which makes direct API calls.
+    let model_requires_native = model
+        .map(|m| {
+            let config = workgraph::config::Config::load_or_default(dir);
+            super::coordinator::requires_native_executor(m, &config)
+        })
+        .unwrap_or(false);
     let use_native = executor == "native"
         || matches!(
             provider,
             Some("openrouter") | Some("openai") | Some("local")
-        );
+        )
+        || model_requires_native;
     if use_native {
         native_coordinator_loop(
             dir,
