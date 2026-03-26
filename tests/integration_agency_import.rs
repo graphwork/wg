@@ -89,11 +89,7 @@ fn write_fixture_csv(dir: &Path) -> PathBuf {
     )
     .unwrap();
     // Unknown type — should be skipped
-    writeln!(
-        f,
-        "persona,Ghost Agent,A mysterious entity,x,y,misc,0.50"
-    )
-    .unwrap();
+    writeln!(f, "persona,Ghost Agent,A mysterious entity,x,y,misc,0.50").unwrap();
     csv_path
 }
 
@@ -123,16 +119,29 @@ fn test_import_creates_correct_file_counts() {
 
     let csv_path = write_fixture_csv(tmp.path());
 
-    let stdout = wg_ok(
-        &wg_dir,
-        &["agency", "import", csv_path.to_str().unwrap()],
-    );
+    let stdout = wg_ok(&wg_dir, &["agency", "import", csv_path.to_str().unwrap()]);
 
     // Verify output mentions counts
-    assert!(stdout.contains("Components: 2"), "Expected 2 components in output, got:\n{}", stdout);
-    assert!(stdout.contains("Outcomes:   1"), "Expected 1 outcome in output, got:\n{}", stdout);
-    assert!(stdout.contains("Tradeoffs:  1"), "Expected 1 tradeoff in output, got:\n{}", stdout);
-    assert!(stdout.contains("Skipped:    1"), "Expected 1 skipped in output, got:\n{}", stdout);
+    assert!(
+        stdout.contains("Components: 2"),
+        "Expected 2 components in output, got:\n{}",
+        stdout
+    );
+    assert!(
+        stdout.contains("Outcomes:   1"),
+        "Expected 1 outcome in output, got:\n{}",
+        stdout
+    );
+    assert!(
+        stdout.contains("Tradeoffs:  1"),
+        "Expected 1 tradeoff in output, got:\n{}",
+        stdout
+    );
+    assert!(
+        stdout.contains("Skipped:    1"),
+        "Expected 1 skipped in output, got:\n{}",
+        stdout
+    );
 
     // Verify file counts on disk
     let components_dir = wg_dir.join("agency/primitives/components");
@@ -168,10 +177,7 @@ fn test_reimport_is_idempotent() {
     let csv_path = write_fixture_csv(tmp.path());
 
     // First import
-    wg_ok(
-        &wg_dir,
-        &["agency", "import", csv_path.to_str().unwrap()],
-    );
+    wg_ok(&wg_dir, &["agency", "import", csv_path.to_str().unwrap()]);
 
     let components_dir = wg_dir.join("agency/primitives/components");
     let outcomes_dir = wg_dir.join("agency/primitives/outcomes");
@@ -182,10 +188,7 @@ fn test_reimport_is_idempotent() {
     let trade_count_1 = count_yaml_files(&tradeoffs_dir);
 
     // Second import — same CSV
-    wg_ok(
-        &wg_dir,
-        &["agency", "import", csv_path.to_str().unwrap()],
-    );
+    wg_ok(&wg_dir, &["agency", "import", csv_path.to_str().unwrap()]);
 
     assert_eq!(
         count_yaml_files(&components_dir),
@@ -265,10 +268,7 @@ fn test_invalid_csv_missing_columns() {
 
     // The import should still succeed — missing columns get empty defaults
     // But the imported component will have empty description/content
-    let output = wg_cmd(
-        &wg_dir,
-        &["agency", "import", bad_csv.to_str().unwrap()],
-    );
+    let output = wg_cmd(&wg_dir, &["agency", "import", bad_csv.to_str().unwrap()]);
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
 
     // It should process without crashing (missing fields default to "")
@@ -290,10 +290,7 @@ fn test_invalid_csv_nonexistent_file() {
     let wg_dir = tmp.path().join(".workgraph");
     fs::create_dir_all(&wg_dir).unwrap();
 
-    let output = wg_cmd(
-        &wg_dir,
-        &["agency", "import", "/nonexistent/path/data.csv"],
-    );
+    let output = wg_cmd(&wg_dir, &["agency", "import", "/nonexistent/path/data.csv"]);
 
     assert!(
         !output.status.success(),
@@ -318,10 +315,7 @@ fn test_imported_yaml_has_correct_fields() {
 
     let csv_path = write_fixture_csv(tmp.path());
 
-    wg_ok(
-        &wg_dir,
-        &["agency", "import", csv_path.to_str().unwrap()],
-    );
+    wg_ok(&wg_dir, &["agency", "import", csv_path.to_str().unwrap()]);
 
     // Check a component YAML
     let components_dir = wg_dir.join("agency/primitives/components");
@@ -471,7 +465,12 @@ fn test_custom_provenance_tag() {
     for dir in &dirs {
         for entry in fs::read_dir(dir).unwrap() {
             let entry = entry.unwrap();
-            if entry.path().extension().map(|x| x == "yaml").unwrap_or(false) {
+            if entry
+                .path()
+                .extension()
+                .map(|x| x == "yaml")
+                .unwrap_or(false)
+            {
                 let content = fs::read_to_string(entry.path()).unwrap();
                 let yaml: serde_yaml::Value = serde_yaml::from_str(&content).unwrap();
                 let map = yaml.as_mapping().unwrap();

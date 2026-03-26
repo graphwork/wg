@@ -487,7 +487,10 @@ fn gather_cycle_timing(dir: &Path) -> Vec<CycleTimingInfo> {
 
         // Next due: use ready_after if present, otherwise compute from last_completed + delay
         let next_due = owner.ready_after.clone().or_else(|| {
-            let delay_secs = cc.delay.as_ref().and_then(|d| workgraph::graph::parse_delay(d))?;
+            let delay_secs = cc
+                .delay
+                .as_ref()
+                .and_then(|d| workgraph::graph::parse_delay(d))?;
             let last_ts = last_completed.as_ref()?.parse::<DateTime<Utc>>().ok()?;
             let next = last_ts + chrono::Duration::seconds(delay_secs as i64);
             if next > now {
@@ -649,10 +652,7 @@ fn print_status(status: &StatusOutput) {
                         let now = Utc::now();
                         if parsed > now {
                             let secs = (parsed - now).num_seconds();
-                            format!(
-                                "next: in {}",
-                                workgraph::format_duration(secs, true)
-                            )
+                            format!("next: in {}", workgraph::format_duration(secs, true))
                         } else {
                             "next: ready".to_string()
                         }

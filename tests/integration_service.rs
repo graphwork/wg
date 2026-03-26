@@ -701,5 +701,4 @@ auto_evaluate = false
         agent_pid,
         "New agent should have a different PID"
     );
-
 }

@@ -10,7 +10,7 @@ use workgraph::agency;
 use workgraph::agency::evolver::{self, EvolutionTrigger, EvolverState};
 use workgraph::agency::run_mode::{self, AssignmentPath};
 use workgraph::agency::{
-    AssignmentSource, AssignerModeContext, AssignmentMode, Evaluation, TaskAssignmentRecord,
+    AssignerModeContext, AssignmentMode, AssignmentSource, Evaluation, TaskAssignmentRecord,
     count_assignment_records, eval_source, load_all_evaluations_or_warn,
     render_assigner_mode_context, save_assignment_record,
 };
@@ -74,7 +74,8 @@ fn cleanup_and_count_alive(
     // but whose processes are still alive (e.g., Claude CLI hung after `wg done`).
     // Send SIGTERM to free the agent slot.
     {
-        let graph = load_graph(graph_path).context("Failed to load graph for task-aware reaping")?;
+        let graph =
+            load_graph(graph_path).context("Failed to load graph for task-aware reaping")?;
         let mut locked_registry = AgentRegistry::load_locked(dir)?;
         let mut killed = Vec::new();
         for agent in locked_registry.registry.agents.values() {
@@ -1023,11 +1024,7 @@ fn build_auto_assign_tasks(
         {
             let task_title_ref = task_title.as_str();
             let task_desc_ref = task_desc.as_deref().unwrap_or("");
-            match agency::request_agency_assignment(
-                task_title_ref,
-                task_desc_ref,
-                &config.agency,
-            ) {
+            match agency::request_agency_assignment(task_title_ref, task_desc_ref, &config.agency) {
                 Ok(response) => {
                     eprintln!(
                         "[coordinator] Agency assignment for '{}': agency_task_id={}",
@@ -1747,7 +1744,10 @@ fn build_flip_verification_tasks(
         if graph.get_task(&assign_verify_id).is_none() {
             let assign_task = Task {
                 id: assign_verify_id.clone(),
-                title: format!("Assign agent for: Verify (FLIP {:.2}): {}", eval.score, source_title),
+                title: format!(
+                    "Assign agent for: Verify (FLIP {:.2}): {}",
+                    eval.score, source_title
+                ),
                 status: Status::Open,
                 after: vec![],
                 before: vec![verify_task_id.clone()],
@@ -2553,7 +2553,13 @@ exit $EXIT_CODE"#,
     let pid = child.id();
 
     // Register in agent registry for dead-agent detection
-    locked_registry.register_agent_with_model(pid, assign_task_id, "assign", &output_file_str, None);
+    locked_registry.register_agent_with_model(
+        pid,
+        assign_task_id,
+        "assign",
+        &output_file_str,
+        None,
+    );
     locked_registry
         .save()
         .context("Failed to save agent registry after assign spawn")?;
@@ -2810,16 +2816,15 @@ fn spawn_agents_for_ready_tasks(
             .agent
             .as_ref()
             .and_then(|agent_hash| agency::find_agent_by_prefix(&agents_dir, agent_hash).ok());
-        let mut effective_executor = if task.exec.is_some()
-            || task.exec_mode.as_deref() == Some("shell")
-        {
-            "shell".to_string()
-        } else {
-            agent_entity
-                .as_ref()
-                .map(|agent| agent.effective_executor().to_string())
-                .unwrap_or_else(|| executor.to_string())
-        };
+        let mut effective_executor =
+            if task.exec.is_some() || task.exec_mode.as_deref() == Some("shell") {
+                "shell".to_string()
+            } else {
+                agent_entity
+                    .as_ref()
+                    .map(|agent| agent.effective_executor().to_string())
+                    .unwrap_or_else(|| executor.to_string())
+            };
 
         // Resolve model per-task: system tasks use their respective role models,
         // all other tasks use the default (TaskAgent) model.
@@ -3208,10 +3213,7 @@ pub fn coordinator_tick(
         let cycle_analysis = graph.compute_cycle_analysis();
         let final_ready = ready_tasks_with_peers_cycle_aware(&graph, dir, &cycle_analysis);
         // Exclude daemon-managed loop tasks from ready count.
-        let ready_count = final_ready
-            .iter()
-            .filter(|t| !is_daemon_managed(t))
-            .count();
+        let ready_count = final_ready.iter().filter(|t| !is_daemon_managed(t)).count();
         return Ok(TickResult {
             agents_alive: alive_count,
             tasks_ready: ready_count,
@@ -3223,10 +3225,7 @@ pub fn coordinator_tick(
     let cycle_analysis = graph.compute_cycle_analysis();
     let final_ready = ready_tasks_with_peers_cycle_aware(&graph, dir, &cycle_analysis);
     // Exclude daemon-managed loop tasks from ready count.
-    let ready_count = final_ready
-        .iter()
-        .filter(|t| !is_daemon_managed(t))
-        .count();
+    let ready_count = final_ready.iter().filter(|t| !is_daemon_managed(t)).count();
     drop(final_ready);
     // Resolve task agent model: CLI override > models.task_agent > models.default > agent.model
     let effective_model = model.map(String::from).unwrap_or_else(|| {
@@ -4514,7 +4513,10 @@ mod tests {
     #[test]
     fn test_requires_native_for_non_anthropic_models() {
         let config = Config::default();
-        assert!(requires_native_executor("google/gemini-2.0-flash-001", &config));
+        assert!(requires_native_executor(
+            "google/gemini-2.0-flash-001",
+            &config
+        ));
         assert!(requires_native_executor("deepseek/deepseek-chat", &config));
         assert!(requires_native_executor("qwen/qwen-2.5-72b", &config));
         assert!(requires_native_executor("meta-llama/llama-3-70b", &config));
@@ -4524,9 +4526,18 @@ mod tests {
     #[test]
     fn test_does_not_require_native_for_anthropic_models() {
         let config = Config::default();
-        assert!(!requires_native_executor("anthropic/claude-sonnet-4-6", &config));
-        assert!(!requires_native_executor("anthropic/claude-opus-4-6", &config));
-        assert!(!requires_native_executor("anthropic/claude-3.5-haiku", &config));
+        assert!(!requires_native_executor(
+            "anthropic/claude-sonnet-4-6",
+            &config
+        ));
+        assert!(!requires_native_executor(
+            "anthropic/claude-opus-4-6",
+            &config
+        ));
+        assert!(!requires_native_executor(
+            "anthropic/claude-3.5-haiku",
+            &config
+        ));
     }
 
     #[test]
@@ -4543,14 +4554,16 @@ mod tests {
     fn test_requires_native_for_registry_alias_non_anthropic() {
         // Registry aliases with non-Anthropic providers should require native
         let mut config = Config::default();
-        config.model_registry.push(workgraph::config::ModelRegistryEntry {
-            id: "gemini-flash".to_string(),
-            provider: "openrouter".to_string(),
-            model: "google/gemini-2.0-flash-001".to_string(),
-            tier: workgraph::config::Tier::Fast,
-            endpoint: None,
-            ..Default::default()
-        });
+        config
+            .model_registry
+            .push(workgraph::config::ModelRegistryEntry {
+                id: "gemini-flash".to_string(),
+                provider: "openrouter".to_string(),
+                model: "google/gemini-2.0-flash-001".to_string(),
+                tier: workgraph::config::Tier::Fast,
+                endpoint: None,
+                ..Default::default()
+            });
         assert!(requires_native_executor("gemini-flash", &config));
     }
 
@@ -4699,7 +4712,10 @@ mod tests {
         let config = Config::load_or_default(wg_dir);
         let modified = build_auto_assign_tasks(&mut graph, &config, wg_dir);
 
-        assert!(modified, "graph should be modified (failed .assign reopened)");
+        assert!(
+            modified,
+            "graph should be modified (failed .assign reopened)"
+        );
         let assign = graph.get_task(".assign-my-task").unwrap();
         assert_eq!(
             assign.status,
@@ -4740,7 +4756,10 @@ mod tests {
         let config = Config::load_or_default(wg_dir);
         let modified = build_auto_assign_tasks(&mut graph, &config, wg_dir);
 
-        assert!(modified, "graph should be modified (abandoned .assign reopened)");
+        assert!(
+            modified,
+            "graph should be modified (abandoned .assign reopened)"
+        );
         let assign = graph.get_task(".assign-my-task").unwrap();
         assert_eq!(
             assign.status,
@@ -4893,13 +4912,19 @@ mod tests {
             "should be tagged as assignment"
         );
         assert!(
-            assign.exec.as_deref().unwrap().contains("wg assign .verify-my-task --auto"),
+            assign
+                .exec
+                .as_deref()
+                .unwrap()
+                .contains("wg assign .verify-my-task --auto"),
             "should exec agency assignment"
         );
 
         // Check that .verify-my-task depends on .assign-verify-my-task
         assert!(
-            verify.after.contains(&".assign-.verify-my-task".to_string()),
+            verify
+                .after
+                .contains(&".assign-.verify-my-task".to_string()),
             "verify task should be blocked by its assignment task"
         );
     }
@@ -4957,6 +4982,9 @@ mod tests {
         // The .assign-verify task should not be duplicated — the existing one stays
         // (idempotency check inside the function)
         let assign = graph.get_task(".assign-.verify-t1").unwrap();
-        assert_eq!(assign.title, "Existing assign", "should keep existing assignment");
+        assert_eq!(
+            assign.title, "Existing assign",
+            "should keep existing assignment"
+        );
     }
 }

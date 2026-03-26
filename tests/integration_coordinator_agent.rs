@@ -114,7 +114,11 @@ fn stop_daemon(wg_dir: &Path) {
 
 /// Stop daemon with custom env vars.
 fn stop_daemon_env(wg_dir: &Path, env_vars: &[(&str, &str)]) {
-    let _ = wg_cmd_env(wg_dir, &["service", "stop", "--force", "--kill-agents"], env_vars);
+    let _ = wg_cmd_env(
+        wg_dir,
+        &["service", "stop", "--force", "--kill-agents"],
+        env_vars,
+    );
 }
 
 /// Wait for the daemon socket to appear.

@@ -73,10 +73,8 @@ pub fn run(dir: &Path, id: &str, reason: Option<&str>, superseded_by: &[String])
                 if t.status.is_terminal() {
                     return false;
                 }
-                let is_system_dep =
-                    t.id.starts_with('.') && t.after.contains(&id.to_string());
-                let is_eval_scaffold =
-                    t.id == eval_id || t.id == flip_id || t.id == verify_id;
+                let is_system_dep = t.id.starts_with('.') && t.after.contains(&id.to_string());
+                let is_eval_scaffold = t.id == eval_id || t.id == flip_id || t.id == verify_id;
                 is_system_dep || is_eval_scaffold
             })
             .map(|t| t.id.clone())

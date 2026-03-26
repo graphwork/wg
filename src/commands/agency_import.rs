@@ -13,12 +13,7 @@ use workgraph::agency::{
 /// - type=skill → RoleComponent
 /// - type=outcome → DesiredOutcome
 /// - type=tradeoff → TradeoffConfig
-pub fn run(
-    workgraph_dir: &Path,
-    csv_path: &str,
-    dry_run: bool,
-    tag: Option<&str>,
-) -> Result<()> {
+pub fn run(workgraph_dir: &Path, csv_path: &str, dry_run: bool, tag: Option<&str>) -> Result<()> {
     let provenance_tag = tag.unwrap_or("agency-import");
     let agency_dir = workgraph_dir.join("agency");
 
@@ -26,8 +21,8 @@ pub fn run(
         agency::init(&agency_dir).context("Failed to initialize agency directory")?;
     }
 
-    let csv_content =
-        std::fs::read_to_string(csv_path).with_context(|| format!("Failed to read '{}'", csv_path))?;
+    let csv_content = std::fs::read_to_string(csv_path)
+        .with_context(|| format!("Failed to read '{}'", csv_path))?;
     let mut reader = csv::Reader::from_reader(csv_content.as_bytes());
 
     let mut components_count = 0u32;
@@ -68,8 +63,7 @@ pub fn run(
             "skill" => {
                 let content = ContentRef::Inline(description.clone());
                 let category = ComponentCategory::Translated;
-                let id =
-                    agency::content_hash_component(&description, &category, &content);
+                let id = agency::content_hash_component(&description, &category, &content);
 
                 if dry_run {
                     println!("  [component] {} ({})", name, agency::short_hash(&id));
@@ -87,8 +81,9 @@ pub fn run(
                         former_deployments: vec![],
                     };
                     let dir = agency_dir.join("primitives/components");
-                    agency::save_component(&component, &dir)
-                        .with_context(|| format!("Failed to save component {}", agency::short_hash(&id)))?;
+                    agency::save_component(&component, &dir).with_context(|| {
+                        format!("Failed to save component {}", agency::short_hash(&id))
+                    })?;
                 }
                 components_count += 1;
             }
@@ -116,8 +111,9 @@ pub fn run(
                         former_deployments: vec![],
                     };
                     let dir = agency_dir.join("primitives/outcomes");
-                    agency::save_outcome(&outcome, &dir)
-                        .with_context(|| format!("Failed to save outcome {}", agency::short_hash(&id)))?;
+                    agency::save_outcome(&outcome, &dir).with_context(|| {
+                        format!("Failed to save outcome {}", agency::short_hash(&id))
+                    })?;
                 }
                 outcomes_count += 1;
             }
@@ -132,8 +128,7 @@ pub fn run(
                     .map(|s| s.trim().to_string())
                     .filter(|s| !s.is_empty())
                     .collect();
-                let id =
-                    agency::content_hash_tradeoff(&acceptable, &unacceptable, &description);
+                let id = agency::content_hash_tradeoff(&acceptable, &unacceptable, &description);
 
                 if dry_run {
                     println!("  [tradeoff] {} ({})", name, agency::short_hash(&id));
@@ -151,8 +146,9 @@ pub fn run(
                         former_deployments: vec![],
                     };
                     let dir = agency_dir.join("primitives/tradeoffs");
-                    agency::save_tradeoff(&tradeoff, &dir)
-                        .with_context(|| format!("Failed to save tradeoff {}", agency::short_hash(&id)))?;
+                    agency::save_tradeoff(&tradeoff, &dir).with_context(|| {
+                        format!("Failed to save tradeoff {}", agency::short_hash(&id))
+                    })?;
                 }
                 tradeoffs_count += 1;
             }
@@ -190,7 +186,11 @@ mod tests {
     fn write_fixture_csv(dir: &Path) -> std::path::PathBuf {
         let csv_path = dir.join("test_agency.csv");
         let mut f = std::fs::File::create(&csv_path).unwrap();
-        writeln!(f, "type,name,description,col4,col5,domain_tags,quality_score").unwrap();
+        writeln!(
+            f,
+            "type,name,description,col4,col5,domain_tags,quality_score"
+        )
+        .unwrap();
         writeln!(
             f,
             "skill,Code Review,Reviews code for correctness and style,Translated,Reviews code for correctness and style,programming,0.85"
@@ -297,6 +297,9 @@ mod tests {
             .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
             .collect();
 
-        assert_eq!(names1, names2, "Content hashes should be stable across imports");
+        assert_eq!(
+            names1, names2,
+            "Content hashes should be stable across imports"
+        );
     }
 }

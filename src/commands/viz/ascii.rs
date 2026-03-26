@@ -338,17 +338,20 @@ pub(crate) fn generate_ascii(
             //   ✓ (done)     → green
             //   ⚠ (warning)  → yellow
             //   idle         → gray
-            let ansi = annotations.get(id).map(|a| {
-                if a.text.contains('⟳') {
-                    "\x1b[31m" // red: actively compacting
-                } else if a.text.contains('✓') {
-                    "\x1b[32m" // green: recently completed
-                } else if a.text.contains('⚠') {
-                    "\x1b[33m" // yellow: approaching/past threshold
-                } else {
-                    "\x1b[90m" // gray: idle, far from threshold
-                }
-            }).unwrap_or("\x1b[90m");
+            let ansi = annotations
+                .get(id)
+                .map(|a| {
+                    if a.text.contains('⟳') {
+                        "\x1b[31m" // red: actively compacting
+                    } else if a.text.contains('✓') {
+                        "\x1b[32m" // green: recently completed
+                    } else if a.text.contains('⚠') {
+                        "\x1b[33m" // yellow: approaching/past threshold
+                    } else {
+                        "\x1b[90m" // gray: idle, far from threshold
+                    }
+                })
+                .unwrap_or("\x1b[90m");
             annotations
                 .get(id)
                 .map(|a| format!(" {}{}\x1b[0m", ansi, a.text))

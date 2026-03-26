@@ -1627,8 +1627,14 @@ mod tests {
             Some("totally-unknown-model".to_string()),
             "Unknown non-task model should pass through unchanged"
         );
-        assert_eq!(provider, None, "No registry provider for truly unknown model");
-        assert_eq!(endpoint, None, "No registry endpoint for truly unknown model");
+        assert_eq!(
+            provider, None,
+            "No registry provider for truly unknown model"
+        );
+        assert_eq!(
+            endpoint, None,
+            "No registry endpoint for truly unknown model"
+        );
     }
 
     #[test]
@@ -1678,13 +1684,9 @@ mod tests {
         let config = Config::load_or_default(dir);
 
         let full_model = "deepseek/deepseek-chat".to_string();
-        let (model, provider, endpoint) = resolve_model_via_registry(
-            Some(full_model.clone()),
-            Some(&full_model),
-            &config,
-            dir,
-        )
-        .unwrap();
+        let (model, provider, endpoint) =
+            resolve_model_via_registry(Some(full_model.clone()), Some(&full_model), &config, dir)
+                .unwrap();
 
         assert_eq!(
             model,
@@ -1707,13 +1709,9 @@ mod tests {
         let config = Config::load_or_default(dir);
 
         let full_model = "anthropic/claude-3.5-sonnet".to_string();
-        let (model, provider, endpoint) = resolve_model_via_registry(
-            Some(full_model.clone()),
-            Some(&full_model),
-            &config,
-            dir,
-        )
-        .unwrap();
+        let (model, provider, endpoint) =
+            resolve_model_via_registry(Some(full_model.clone()), Some(&full_model), &config, dir)
+                .unwrap();
 
         assert_eq!(
             model,
@@ -1740,19 +1738,15 @@ mod tests {
         let config = Config::load_or_default(dir);
 
         let unknown = "some-unknown-alias".to_string();
-        let result = resolve_model_via_registry(
-            Some(unknown.clone()),
-            Some(&unknown),
-            &config,
-            dir,
-        );
+        let result =
+            resolve_model_via_registry(Some(unknown.clone()), Some(&unknown), &config, dir);
 
+        assert!(result.is_err(), "Short unknown aliases should still error");
         assert!(
-            result.is_err(),
-            "Short unknown aliases should still error"
-        );
-        assert!(
-            result.unwrap_err().to_string().contains("not found in config"),
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("not found in config"),
             "Error should mention registration"
         );
     }

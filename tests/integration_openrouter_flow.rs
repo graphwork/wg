@@ -1036,7 +1036,7 @@ is_default = true
 mod auto_routing_tests {
     use super::*;
     use workgraph::executor::native::openai_client::{
-        validate_openrouter_model, OPENROUTER_AUTO_MODEL,
+        OPENROUTER_AUTO_MODEL, validate_openrouter_model,
     };
 
     #[test]

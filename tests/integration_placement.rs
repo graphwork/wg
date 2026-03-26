@@ -221,10 +221,7 @@ fn test_placement_unparseable_fails() {
     );
 
     let (success, stderr) = run_apply_placement(&wg_dir, &output_dir, "my-task");
-    assert!(
-        !success,
-        "apply-placement with garbage output should fail"
-    );
+    assert!(!success, "apply-placement with garbage output should fail");
     assert!(
         stderr.contains("unparseable") || stderr.contains("FAILED"),
         "Should report unparseable error. stderr: {}",
@@ -259,10 +256,7 @@ fn test_placement_empty_output_fails() {
     f.flush().unwrap();
 
     let (success, stderr) = run_apply_placement(&wg_dir, &output_dir, "my-task");
-    assert!(
-        !success,
-        "apply-placement with empty output should fail"
-    );
+    assert!(!success, "apply-placement with empty output should fail");
     assert!(
         stderr.contains("no text output") || stderr.contains("FAILED"),
         "Should report empty output error. stderr: {}",
@@ -325,10 +319,7 @@ fn test_placement_wrong_task_id_fails() {
     write_stream_file(&output_dir, "wg edit other-task --after my-task");
 
     let (success, _stderr) = run_apply_placement(&wg_dir, &output_dir, "my-task");
-    assert!(
-        !success,
-        "apply-placement with wrong task ID should fail"
-    );
+    assert!(!success, "apply-placement with wrong task ID should fail");
 }
 
 // ---------------------------------------------------------------------------
@@ -493,8 +484,5 @@ fn test_placement_edit_no_edges_fails() {
     write_stream_file(&output_dir, "wg edit my-task");
 
     let (success, _stderr) = run_apply_placement(&wg_dir, &output_dir, "my-task");
-    assert!(
-        !success,
-        "wg edit with no --after or --before should fail"
-    );
+    assert!(!success, "wg edit with no --after or --before should fail");
 }

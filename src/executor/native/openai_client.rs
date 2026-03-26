@@ -530,21 +530,20 @@ impl OpenAiClient {
         let has_tool_use = content_blocks
             .iter()
             .any(|b| matches!(b, ContentBlock::ToolUse { .. }));
-        let stop_reason = if has_tool_use
-            && !matches!(choice.finish_reason.as_deref(), Some("tool_calls"))
-        {
-            // Model produced tool calls (possibly text-extracted) but finish_reason
-            // wasn't "tool_calls" — override so the agent loop processes them.
-            Some(StopReason::ToolUse)
-        } else {
-            match choice.finish_reason.as_deref() {
-                Some("stop") => Some(StopReason::EndTurn),
-                Some("tool_calls") => Some(StopReason::ToolUse),
-                Some("length") => Some(StopReason::MaxTokens),
-                Some("content_filter") => Some(StopReason::StopSequence),
-                _ => None,
-            }
-        };
+        let stop_reason =
+            if has_tool_use && !matches!(choice.finish_reason.as_deref(), Some("tool_calls")) {
+                // Model produced tool calls (possibly text-extracted) but finish_reason
+                // wasn't "tool_calls" — override so the agent loop processes them.
+                Some(StopReason::ToolUse)
+            } else {
+                match choice.finish_reason.as_deref() {
+                    Some("stop") => Some(StopReason::EndTurn),
+                    Some("tool_calls") => Some(StopReason::ToolUse),
+                    Some("length") => Some(StopReason::MaxTokens),
+                    Some("content_filter") => Some(StopReason::StopSequence),
+                    _ => None,
+                }
+            };
 
         let usage = oai
             .usage
@@ -1308,13 +1307,11 @@ fn extract_tool_calls_from_text(text: &str) -> (String, Vec<ContentBlock>) {
         };
 
         // Find the matching closing tag
-        let close_patterns = [
-            "</tool_call>",
-            "<|/tool_call|>",
-            "<|tool_call_end|>",
-        ];
+        let close_patterns = ["</tool_call>", "<|/tool_call|>", "<|tool_call_end|>"];
         let close_match = close_patterns.iter().find_map(|pat| {
-            remaining[start..].find(pat).map(|offset| (start + offset, pat.len()))
+            remaining[start..]
+                .find(pat)
+                .map(|offset| (start + offset, pat.len()))
         });
         // Also check for :tool_call> closing (e.g., </minimax:tool_call>)
         let close_match = close_match.or_else(|| {
@@ -1324,7 +1321,10 @@ fn extract_tool_calls_from_text(text: &str) -> (String, Vec<ContentBlock>) {
                     .rfind('<')
                     .map(|p| start + 1 + p)
                     .unwrap_or(start + 1 + offset.saturating_sub(1));
-                (tag_start, offset + ":tool_call>".len() - (tag_start - start - 1))
+                (
+                    tag_start,
+                    offset + ":tool_call>".len() - (tag_start - start - 1),
+                )
             })
         });
 
@@ -2863,7 +2863,8 @@ mod tests {
 
     #[test]
     fn test_extract_tool_call_with_string_arguments() {
-        let text = r#"<tool_call>{"name": "bash", "arguments": "{\"command\": \"ls\"}"}</tool_call>"#;
+        let text =
+            r#"<tool_call>{"name": "bash", "arguments": "{\"command\": \"ls\"}"}</tool_call>"#;
         let (remaining, calls) = extract_tool_calls_from_text(text);
         assert_eq!(calls.len(), 1);
         assert!(
@@ -2898,7 +2899,11 @@ mod tests {
 
         let resp = OpenAiClient::translate_response(oai).unwrap();
         // Should have extracted the tool call AND overridden stop_reason
-        assert!(resp.content.iter().any(|b| matches!(b, ContentBlock::ToolUse { name, .. } if name == "bash")));
+        assert!(
+            resp.content
+                .iter()
+                .any(|b| matches!(b, ContentBlock::ToolUse { name, .. } if name == "bash"))
+        );
         assert_eq!(resp.stop_reason, Some(StopReason::ToolUse));
     }
 
@@ -2928,7 +2933,9 @@ mod tests {
         let resp = OpenAiClient::translate_response(oai).unwrap();
         // Should have 2 blocks: text + structured tool call
         assert_eq!(resp.content.len(), 2);
-        assert!(matches!(&resp.content[0], ContentBlock::Text { text } if text == "Running command."));
+        assert!(
+            matches!(&resp.content[0], ContentBlock::Text { text } if text == "Running command.")
+        );
         assert!(matches!(&resp.content[1], ContentBlock::ToolUse { id, .. } if id == "call_real"));
     }
 
@@ -2944,7 +2951,11 @@ mod tests {
         )
         .unwrap();
 
-        assert!(resp.content.iter().any(|b| matches!(b, ContentBlock::ToolUse { name, .. } if name == "bash")));
+        assert!(
+            resp.content
+                .iter()
+                .any(|b| matches!(b, ContentBlock::ToolUse { name, .. } if name == "bash"))
+        );
         assert_eq!(resp.stop_reason, Some(StopReason::ToolUse));
     }
 

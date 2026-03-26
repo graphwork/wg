@@ -38,7 +38,10 @@ pub fn run(dir: &Path, task_id: &str, actor: Option<&str>, dry_run: bool) -> Res
         task_status = task.status.clone();
 
         if exec_cmd_opt.is_none() {
-            error = Some(anyhow::anyhow!("Task '{}' has no exec command defined", task_id));
+            error = Some(anyhow::anyhow!(
+                "Task '{}' has no exec command defined",
+                task_id
+            ));
             return false;
         }
         if task.status == Status::Done {
@@ -61,7 +64,10 @@ pub fn run(dir: &Path, task_id: &str, actor: Option<&str>, dry_run: bool) -> Res
                 timestamp: Utc::now().to_rfc3339(),
                 actor: actor.map(String::from),
                 user: Some(workgraph::current_user()),
-                message: format!("Started execution: {}", exec_cmd_opt.as_deref().unwrap_or("")),
+                message: format!(
+                    "Started execution: {}",
+                    exec_cmd_opt.as_deref().unwrap_or("")
+                ),
             });
             return true;
         }
@@ -155,16 +161,14 @@ pub fn set_exec(dir: &Path, task_id: &str, command: &str) -> Result<()> {
     }
 
     let mut error: Option<anyhow::Error> = None;
-    modify_graph(&path, |graph| {
-        match graph.get_task_mut(task_id) {
-            Some(task) => {
-                task.exec = Some(command.to_string());
-                true
-            }
-            None => {
-                error = Some(anyhow::anyhow!("Task '{}' not found", task_id));
-                false
-            }
+    modify_graph(&path, |graph| match graph.get_task_mut(task_id) {
+        Some(task) => {
+            task.exec = Some(command.to_string());
+            true
+        }
+        None => {
+            error = Some(anyhow::anyhow!("Task '{}' not found", task_id));
+            false
         }
     })
     .context("Failed to modify graph")?;
@@ -186,20 +190,18 @@ pub fn clear_exec(dir: &Path, task_id: &str) -> Result<()> {
 
     let mut error: Option<anyhow::Error> = None;
     let mut was_none = false;
-    modify_graph(&path, |graph| {
-        match graph.get_task_mut(task_id) {
-            Some(task) => {
-                if task.exec.is_none() {
-                    was_none = true;
-                    return false;
-                }
-                task.exec = None;
-                true
+    modify_graph(&path, |graph| match graph.get_task_mut(task_id) {
+        Some(task) => {
+            if task.exec.is_none() {
+                was_none = true;
+                return false;
             }
-            None => {
-                error = Some(anyhow::anyhow!("Task '{}' not found", task_id));
-                false
-            }
+            task.exec = None;
+            true
+        }
+        None => {
+            error = Some(anyhow::anyhow!("Task '{}' not found", task_id));
+            false
         }
     })
     .context("Failed to modify graph")?;

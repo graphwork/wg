@@ -172,10 +172,7 @@ fn regex_extract_placement(text: &str, expected_task_id: &str) -> Option<Placeme
 /// a different task than expected.
 fn parse_wg_edit_command(line: &str, expected_task_id: &str) -> Option<PlacementCommand> {
     // Strip backtick fencing if present (agent may wrap in code block)
-    let line = line
-        .trim_start_matches('`')
-        .trim_end_matches('`')
-        .trim();
+    let line = line.trim_start_matches('`').trim_end_matches('`').trim();
 
     let mut parts = line.split_whitespace();
 
@@ -430,10 +427,8 @@ mod tests {
 
     #[test]
     fn test_parse_edit_both() {
-        let result = parse_placement_command(
-            "wg edit my-task --after dep-a --before dep-b",
-            "my-task",
-        );
+        let result =
+            parse_placement_command("wg edit my-task --after dep-a --before dep-b", "my-task");
         match result {
             PlacementParseResult::Ok(PlacementCommand::Edit {
                 task_id,
@@ -450,10 +445,8 @@ mod tests {
 
     #[test]
     fn test_parse_edit_comma_separated_deps() {
-        let result = parse_placement_command(
-            "wg edit my-task --after dep-a,dep-b,dep-c",
-            "my-task",
-        );
+        let result =
+            parse_placement_command("wg edit my-task --after dep-a,dep-b,dep-c", "my-task");
         match result {
             PlacementParseResult::Ok(PlacementCommand::Edit { after, .. }) => {
                 assert_eq!(after, vec!["dep-a", "dep-b", "dep-c"]);
@@ -464,10 +457,8 @@ mod tests {
 
     #[test]
     fn test_parse_edit_backtick_wrapped() {
-        let result = parse_placement_command(
-            "reasoning...\n\n`wg edit my-task --after dep-a`",
-            "my-task",
-        );
+        let result =
+            parse_placement_command("reasoning...\n\n`wg edit my-task --after dep-a`", "my-task");
         match result {
             PlacementParseResult::Ok(PlacementCommand::Edit { after, .. }) => {
                 assert_eq!(after, vec!["dep-a"]);
@@ -593,10 +584,7 @@ mod tests {
 
     #[test]
     fn test_code_fence_no_lang() {
-        let result = parse_placement_command(
-            "```\nwg edit my-task --after dep-a\n```",
-            "my-task",
-        );
+        let result = parse_placement_command("```\nwg edit my-task --after dep-a\n```", "my-task");
         match result {
             PlacementParseResult::Ok(PlacementCommand::Edit { after, .. }) => {
                 assert_eq!(after, vec!["dep-a"]);
@@ -653,10 +641,8 @@ mod tests {
 
     #[test]
     fn test_bullet_list_command() {
-        let result = parse_placement_command(
-            "Options:\n- wg edit my-task --after dep-a",
-            "my-task",
-        );
+        let result =
+            parse_placement_command("Options:\n- wg edit my-task --after dep-a", "my-task");
         match result {
             PlacementParseResult::Ok(PlacementCommand::Edit { after, .. }) => {
                 assert_eq!(after, vec!["dep-a"]);
@@ -723,8 +709,7 @@ mod tests {
 
     #[test]
     fn test_noop_in_code_fence() {
-        let result =
-            parse_placement_command("Here's my answer:\n\n```\nno-op\n```", "my-task");
+        let result = parse_placement_command("Here's my answer:\n\n```\nno-op\n```", "my-task");
         assert!(matches!(
             result,
             PlacementParseResult::Ok(PlacementCommand::NoOp)
@@ -733,8 +718,7 @@ mod tests {
 
     #[test]
     fn test_command_with_trailing_period() {
-        let result =
-            parse_placement_command("wg edit my-task --after dep-a.", "my-task");
+        let result = parse_placement_command("wg edit my-task --after dep-a.", "my-task");
         match result {
             PlacementParseResult::Ok(PlacementCommand::Edit { after, .. }) => {
                 assert_eq!(after, vec!["dep-a"]);

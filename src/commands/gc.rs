@@ -96,7 +96,9 @@ pub fn run(dir: &Path, dry_run: bool, include_done: bool, older: Option<&str>) -
 
             let has_external_dependent = cycle.members.iter().any(|id| {
                 all_tasks.iter().any(|t| {
-                    !t.status.is_terminal() && t.after.contains(id) && !cycle.members.contains(&t.id)
+                    !t.status.is_terminal()
+                        && t.after.contains(id)
+                        && !cycle.members.contains(&t.id)
                 })
             });
 

@@ -1143,8 +1143,7 @@ mod tests {
 
         // Register an agent with a dead PID
         let mut registry = AgentRegistry::new();
-        let agent_id =
-            registry.register_agent(999999999, "task-1", "test", "/tmp/output.log");
+        let agent_id = registry.register_agent(999999999, "task-1", "test", "/tmp/output.log");
         registry.save(wg_dir).unwrap();
 
         // Run the reaper
@@ -1201,8 +1200,7 @@ mod tests {
 
         // Register an agent with a dead PID but FRESH start time (within grace period)
         let mut registry = AgentRegistry::new();
-        let _agent_id =
-            registry.register_agent(999999999, "task-1", "test", "/tmp/output.log");
+        let _agent_id = registry.register_agent(999999999, "task-1", "test", "/tmp/output.log");
         // started_at is already "now" from register_agent, which is within grace period
         registry.save(wg_dir).unwrap();
 

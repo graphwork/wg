@@ -439,24 +439,22 @@ fn run_iteration(dir: &Path, actor_id: &str, json: bool) -> Result<IterationResu
 fn claim_task(dir: &Path, task_id: &str, actor_id: &str) -> Result<()> {
     let path = graph_path(dir);
     let mut error: Option<anyhow::Error> = None;
-    modify_graph(&path, |graph| {
-        match graph.get_task_mut(task_id) {
-            Some(task) => {
-                task.status = Status::InProgress;
-                task.assigned = Some(actor_id.to_string());
-                task.started_at = Some(Utc::now().to_rfc3339());
-                task.log.push(LogEntry {
-                    timestamp: Utc::now().to_rfc3339(),
-                    actor: Some(actor_id.to_string()),
-                    user: Some(workgraph::current_user()),
-                    message: "Claimed by autonomous agent".to_string(),
-                });
-                true
-            }
-            None => {
-                error = Some(anyhow::anyhow!("Task '{}' not found", task_id));
-                false
-            }
+    modify_graph(&path, |graph| match graph.get_task_mut(task_id) {
+        Some(task) => {
+            task.status = Status::InProgress;
+            task.assigned = Some(actor_id.to_string());
+            task.started_at = Some(Utc::now().to_rfc3339());
+            task.log.push(LogEntry {
+                timestamp: Utc::now().to_rfc3339(),
+                actor: Some(actor_id.to_string()),
+                user: Some(workgraph::current_user()),
+                message: "Claimed by autonomous agent".to_string(),
+            });
+            true
+        }
+        None => {
+            error = Some(anyhow::anyhow!("Task '{}' not found", task_id));
+            false
         }
     })
     .context("Failed to modify graph")?;
@@ -471,23 +469,21 @@ fn claim_task(dir: &Path, task_id: &str, actor_id: &str) -> Result<()> {
 fn complete_task(dir: &Path, task_id: &str, actor_id: &str) -> Result<()> {
     let path = graph_path(dir);
     let mut error: Option<anyhow::Error> = None;
-    modify_graph(&path, |graph| {
-        match graph.get_task_mut(task_id) {
-            Some(task) => {
-                task.status = Status::Done;
-                task.completed_at = Some(Utc::now().to_rfc3339());
-                task.log.push(LogEntry {
-                    timestamp: Utc::now().to_rfc3339(),
-                    actor: Some(actor_id.to_string()),
-                    user: Some(workgraph::current_user()),
-                    message: "Completed by autonomous agent".to_string(),
-                });
-                true
-            }
-            None => {
-                error = Some(anyhow::anyhow!("Task '{}' not found", task_id));
-                false
-            }
+    modify_graph(&path, |graph| match graph.get_task_mut(task_id) {
+        Some(task) => {
+            task.status = Status::Done;
+            task.completed_at = Some(Utc::now().to_rfc3339());
+            task.log.push(LogEntry {
+                timestamp: Utc::now().to_rfc3339(),
+                actor: Some(actor_id.to_string()),
+                user: Some(workgraph::current_user()),
+                message: "Completed by autonomous agent".to_string(),
+            });
+            true
+        }
+        None => {
+            error = Some(anyhow::anyhow!("Task '{}' not found", task_id));
+            false
         }
     })
     .context("Failed to modify graph")?;
@@ -502,24 +498,22 @@ fn complete_task(dir: &Path, task_id: &str, actor_id: &str) -> Result<()> {
 fn fail_task(dir: &Path, task_id: &str, actor_id: &str, reason: &str) -> Result<()> {
     let path = graph_path(dir);
     let mut error: Option<anyhow::Error> = None;
-    modify_graph(&path, |graph| {
-        match graph.get_task_mut(task_id) {
-            Some(task) => {
-                task.status = Status::Failed;
-                task.retry_count += 1;
-                task.failure_reason = Some(reason.to_string());
-                task.log.push(LogEntry {
-                    timestamp: Utc::now().to_rfc3339(),
-                    actor: Some(actor_id.to_string()),
-                    user: Some(workgraph::current_user()),
-                    message: format!("Failed: {}", reason),
-                });
-                true
-            }
-            None => {
-                error = Some(anyhow::anyhow!("Task '{}' not found", task_id));
-                false
-            }
+    modify_graph(&path, |graph| match graph.get_task_mut(task_id) {
+        Some(task) => {
+            task.status = Status::Failed;
+            task.retry_count += 1;
+            task.failure_reason = Some(reason.to_string());
+            task.log.push(LogEntry {
+                timestamp: Utc::now().to_rfc3339(),
+                actor: Some(actor_id.to_string()),
+                user: Some(workgraph::current_user()),
+                message: format!("Failed: {}", reason),
+            });
+            true
+        }
+        None => {
+            error = Some(anyhow::anyhow!("Task '{}' not found", task_id));
+            false
         }
     })
     .context("Failed to modify graph")?;

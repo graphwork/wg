@@ -14,8 +14,8 @@ use notify::RecursiveMode;
 use notify_debouncer_mini::new_debouncer;
 use std::fs;
 use std::io::Write;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
 
@@ -196,7 +196,13 @@ fn test_multi_user_watcher_inotify_capacity() {
     let watch_dir = dir.path().to_path_buf();
 
     // Create a modest directory tree simulating .workgraph/ structure.
-    for subdir in &["service", "agency", "agency/roles", "agency/tradeoffs", "functions"] {
+    for subdir in &[
+        "service",
+        "agency",
+        "agency/roles",
+        "agency/tradeoffs",
+        "functions",
+    ] {
         fs::create_dir_all(watch_dir.join(subdir)).expect("create subdir");
     }
 
@@ -253,9 +259,17 @@ fn test_multi_user_watcher_subdirectory_events() {
     std::thread::sleep(Duration::from_millis(100));
 
     // Write to different subdirectories.
-    atomic_write(&watch_dir.join("service"), "state.json", "{\"status\": \"running\"}");
+    atomic_write(
+        &watch_dir.join("service"),
+        "state.json",
+        "{\"status\": \"running\"}",
+    );
     std::thread::sleep(Duration::from_millis(80));
-    atomic_write(&watch_dir.join("agency"), "roles.json", "{\"role\": \"test\"}");
+    atomic_write(
+        &watch_dir.join("agency"),
+        "roles.json",
+        "{\"role\": \"test\"}",
+    );
     std::thread::sleep(Duration::from_millis(80));
     atomic_write(&watch_dir, "graph.jsonl", "{\"task\": \"root\"}");
 

@@ -879,7 +879,7 @@ fn model_discovery_fetch_and_cache_via_mock() {
 #[test]
 fn model_discovery_auto_routing_accepted_as_default() {
     use workgraph::executor::native::openai_client::{
-        validate_openrouter_model, OPENROUTER_AUTO_MODEL,
+        OPENROUTER_AUTO_MODEL, validate_openrouter_model,
     };
 
     // openrouter/auto should be valid even with a populated cache that doesn't list it
@@ -903,7 +903,7 @@ fn model_discovery_auto_routing_accepted_as_default() {
 #[test]
 fn invalid_model_triggers_validation_suggestion_fallback() {
     use workgraph::executor::native::openai_client::{
-        validate_openrouter_model, OPENROUTER_AUTO_MODEL,
+        OPENROUTER_AUTO_MODEL, validate_openrouter_model,
     };
 
     let tmp = TempDir::new().unwrap();
@@ -967,7 +967,10 @@ fn cache_expiry_triggers_stale_detection() {
 
     // Validate against old cache — "new-provider/new-model" not listed
     let result = validate_openrouter_model("new-provider/new-model", tmp.path());
-    assert!(!result.was_valid, "Model not in old cache should be invalid");
+    assert!(
+        !result.was_valid,
+        "Model not in old cache should be invalid"
+    );
 
     // Simulate cache refresh by writing a new cache with the model
     let fresh_cache = serde_json::json!({
@@ -977,11 +980,7 @@ fn cache_expiry_triggers_stale_detection() {
             {"id": "new-provider/new-model"},
         ]
     });
-    fs::write(
-        tmp.path().join("model_cache.json"),
-        fresh_cache.to_string(),
-    )
-    .unwrap();
+    fs::write(tmp.path().join("model_cache.json"), fresh_cache.to_string()).unwrap();
 
     // Now the same model should be valid
     let result2 = validate_openrouter_model("new-provider/new-model", tmp.path());
@@ -1060,16 +1059,10 @@ fn concurrent_cache_write_and_read() {
                         {"id": format!("dynamic/model-{}", i)},
                     ]
                 });
-                let _ = fs::write(
-                    dir.path().join("model_cache.json"),
-                    cache.to_string(),
-                );
+                let _ = fs::write(dir.path().join("model_cache.json"), cache.to_string());
             } else {
                 // Reader: validate against whatever cache exists
-                let result = validate_openrouter_model(
-                    "anthropic/claude-sonnet-4-6",
-                    dir.path(),
-                );
+                let result = validate_openrouter_model("anthropic/claude-sonnet-4-6", dir.path());
                 // Should either be valid (cache exists with this model) or
                 // pass-through (no cache yet) — never panic
                 assert!(
@@ -1082,7 +1075,9 @@ fn concurrent_cache_write_and_read() {
     }
 
     for handle in handles {
-        handle.join().expect("no thread should panic during concurrent cache access");
+        handle
+            .join()
+            .expect("no thread should panic during concurrent cache access");
     }
 }
 
@@ -1164,8 +1159,8 @@ fn create_provider_ext_validates_openrouter_model() {
 fn live_openrouter_model_list_query() {
     use workgraph::executor::native::openai_client::fetch_openrouter_models_blocking;
 
-    let api_key = std::env::var("OPENROUTER_API_KEY")
-        .expect("OPENROUTER_API_KEY must be set for live tests");
+    let api_key =
+        std::env::var("OPENROUTER_API_KEY").expect("OPENROUTER_API_KEY must be set for live tests");
 
     let models = fetch_openrouter_models_blocking(&api_key, None)
         .expect("Live model list fetch should succeed");

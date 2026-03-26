@@ -35,10 +35,7 @@ fn anthropic_mock_sse_response(model: &str) -> String {
         r#"{{"type":"message_start","message":{{"id":"msg_mock","type":"message","role":"assistant","content":[],"model":"{model}","stop_reason":null,"usage":{{"input_tokens":10,"output_tokens":0}}}}}}"#,
         model = model,
     );
-    let text = format!(
-        "hello from {model}",
-        model = model,
-    );
+    let text = format!("hello from {model}", model = model,);
     format!(
         "event: message_start\ndata: {msg}\n\n\
          event: content_block_start\ndata: {{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{{\"type\":\"text\",\"text\":\"\"}}}}\n\n\
@@ -816,14 +813,30 @@ fn test_all_dispatch_roles_with_full_config() {
     // Registry IDs get resolved to full API model names; non-registry models pass through
     let expected: &[(DispatchRole, &str, &str)] = &[
         (DispatchRole::TaskAgent, "claude-opus-4-6", "anthropic"),
-        (DispatchRole::Evaluator, "claude-sonnet-4-20250514", "anthropic"),
+        (
+            DispatchRole::Evaluator,
+            "claude-sonnet-4-20250514",
+            "anthropic",
+        ),
         (DispatchRole::FlipInference, "gpt-4o", "openai"),
-        (DispatchRole::FlipComparison, "claude-haiku-4-5-20251001", "anthropic"),
+        (
+            DispatchRole::FlipComparison,
+            "claude-haiku-4-5-20251001",
+            "anthropic",
+        ),
         (DispatchRole::Assigner, "gpt-4o-mini", "openai"),
         (DispatchRole::Evolver, "deepseek-r1", "openrouter"),
         (DispatchRole::Verification, "claude-opus-4-6", "anthropic"),
-        (DispatchRole::Triage, "claude-haiku-4-5-20251001", "anthropic"),
-        (DispatchRole::Creator, "claude-sonnet-4-20250514", "anthropic"),
+        (
+            DispatchRole::Triage,
+            "claude-haiku-4-5-20251001",
+            "anthropic",
+        ),
+        (
+            DispatchRole::Creator,
+            "claude-sonnet-4-20250514",
+            "anthropic",
+        ),
         (DispatchRole::Compactor, "gpt-4o-mini", "openai"),
     ];
 

@@ -1706,8 +1706,7 @@ fn run_graph_compaction(dir: &Path, compaction_error_count: &mut u64, logger: &D
                         user: Some(workgraph::current_user()),
                         message: format!(
                             "Compaction iteration {} complete → {}",
-                            task.loop_iteration,
-                            path_display
+                            task.loop_iteration, path_display
                         ),
                     });
                     if task.log.len() > 50 {
@@ -2465,18 +2464,14 @@ pub fn run_daemon(
                 if exe_initial_hash.is_none() {
                     if let Some(rx) = &exe_hash_receiver {
                         if let Ok(h) = rx.try_recv() {
-                            logger.info(&format!(
-                                "Binary hash recorded: {}",
-                                short_hash(&h),
-                            ));
+                            logger.info(&format!("Binary hash recorded: {}", short_hash(&h),));
                             exe_initial_hash = Some(h);
                         }
                     }
                 }
 
                 // Cheap metadata check: skip hash if mtime+size unchanged.
-                if let (Some(initial_meta), Some(old_hash)) =
-                    (&exe_initial_meta, &exe_initial_hash)
+                if let (Some(initial_meta), Some(old_hash)) = (&exe_initial_meta, &exe_initial_hash)
                 {
                     let meta_changed = fs::metadata(path).ok().is_some_and(|m| {
                         m.modified().ok() != initial_meta.modified().ok()
@@ -2505,8 +2500,10 @@ pub fn run_daemon(
                                         // Shut down coordinator agents (LLM sessions).
                                         // Running task agents are separate processes
                                         // and survive exec.
-                                        let agents_to_shutdown: Vec<(u32, coordinator_agent::CoordinatorAgent)> =
-                                            coordinator_agents.drain().collect();
+                                        let agents_to_shutdown: Vec<(
+                                            u32,
+                                            coordinator_agent::CoordinatorAgent,
+                                        )> = coordinator_agents.drain().collect();
                                         for (cid, agent) in agents_to_shutdown {
                                             logger.info(&format!(
                                                 "Shutting down coordinator agent {} before exec-restart",
@@ -3223,10 +3220,7 @@ pub fn run_thaw(dir: &Path, json: bool) -> Result<()> {
         } else {
             let mut msg = format!("Thawed {} agent(s). Service resumed.", thawed_count);
             if dead_count > 0 {
-                msg.push_str(&format!(
-                    " ({} agent(s) died while frozen.)",
-                    dead_count
-                ));
+                msg.push_str(&format!(" ({} agent(s) died while frozen.)", dead_count));
             }
             println!("{}", msg);
         }
@@ -3389,9 +3383,7 @@ pub fn is_service_paused(dir: &Path) -> bool {
 #[cfg(unix)]
 pub fn send_request(dir: &Path, request: &IpcRequest) -> Result<IpcResponse> {
     let state = ServiceState::load(dir)?.ok_or_else(|| {
-        anyhow::anyhow!(
-            "Service not running (no state file). Start it with 'wg service start'."
-        )
+        anyhow::anyhow!("Service not running (no state file). Start it with 'wg service start'.")
     })?;
 
     if !is_process_alive(state.pid) {
@@ -3420,7 +3412,9 @@ pub fn send_request(dir: &Path, request: &IpcRequest) -> Result<IpcResponse> {
     let mut last_err = None;
     for attempt in 0..=MAX_RETRIES {
         if attempt > 0 {
-            std::thread::sleep(Duration::from_millis(BASE_BACKOFF_MS * (1 << (attempt - 1))));
+            std::thread::sleep(Duration::from_millis(
+                BASE_BACKOFF_MS * (1 << (attempt - 1)),
+            ));
         }
 
         match UnixStream::connect(&socket) {
@@ -4074,10 +4068,7 @@ mod tests {
         );
         // The re-open log entry should be present
         assert!(
-            compact
-                .log
-                .iter()
-                .any(|e| e.message.contains("Re-opened")),
+            compact.log.iter().any(|e| e.message.contains("Re-opened")),
             "should have a Re-opened log entry"
         );
     }
@@ -4151,7 +4142,10 @@ mod tests {
 
         let hash1 = compute_exe_hash(&path).unwrap();
         let hash2 = compute_exe_hash(&path).unwrap();
-        assert_eq!(hash1, hash2, "hashing the same file twice should be identical");
+        assert_eq!(
+            hash1, hash2,
+            "hashing the same file twice should be identical"
+        );
 
         // Verify against known SHA-256 of "hello world"
         let expected = "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9";
@@ -4167,7 +4161,10 @@ mod tests {
 
         fs::write(&path, b"version 2").unwrap();
         let hash2 = compute_exe_hash(&path).unwrap();
-        assert_ne!(hash1, hash2, "different content should produce different hashes");
+        assert_ne!(
+            hash1, hash2,
+            "different content should produce different hashes"
+        );
     }
 
     #[test]
@@ -4178,10 +4175,11 @@ mod tests {
 
     #[test]
     fn test_short_hash_format() {
-        let hash = [0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89,
-                     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+        let hash = [
+            0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00,
+        ];
         let s = short_hash(&hash);
         assert_eq!(s, "abcdef012345");
         assert_eq!(s.len(), 12, "short_hash should produce 12 hex chars");
@@ -4193,12 +4191,18 @@ mod tests {
         let path0 = coordinator_state_path(temp_dir.path(), 0);
         assert_eq!(
             path0,
-            temp_dir.path().join("service").join("coordinator-state-0.json")
+            temp_dir
+                .path()
+                .join("service")
+                .join("coordinator-state-0.json")
         );
         let path1 = coordinator_state_path(temp_dir.path(), 1);
         assert_eq!(
             path1,
-            temp_dir.path().join("service").join("coordinator-state-1.json")
+            temp_dir
+                .path()
+                .join("service")
+                .join("coordinator-state-1.json")
         );
         let path42 = coordinator_state_path(temp_dir.path(), 42);
         assert_eq!(

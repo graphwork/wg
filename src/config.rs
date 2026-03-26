@@ -4422,10 +4422,11 @@ model = "haiku"
             is_default: false,
         });
         let v = config.validate_config();
-        assert!(v
-            .errors
-            .iter()
-            .all(|e| e.rule != "missing-api-key-file" && e.rule != "empty-api-key-file"));
+        assert!(
+            v.errors
+                .iter()
+                .all(|e| e.rule != "missing-api-key-file" && e.rule != "empty-api-key-file")
+        );
     }
 
     #[test]

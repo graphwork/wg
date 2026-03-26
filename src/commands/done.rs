@@ -418,18 +418,16 @@ fn run_inner(
     let mut already_done = false;
 
     // Resolve token usage outside the lock (registry read + file I/O).
-    let token_usage = AgentRegistry::load(dir)
-        .ok()
-        .and_then(|registry| {
-            let agent = registry.get_agent_by_task(id)?;
-            let output_path = std::path::Path::new(&agent.output_file);
-            let abs_path = if output_path.is_absolute() {
-                output_path.to_path_buf()
-            } else {
-                dir.parent().unwrap_or(dir).join(output_path)
-            };
-            parse_token_usage(&abs_path).or_else(|| parse_wg_tokens(&abs_path))
-        });
+    let token_usage = AgentRegistry::load(dir).ok().and_then(|registry| {
+        let agent = registry.get_agent_by_task(id)?;
+        let output_path = std::path::Path::new(&agent.output_file);
+        let abs_path = if output_path.is_absolute() {
+            output_path.to_path_buf()
+        } else {
+            dir.parent().unwrap_or(dir).join(output_path)
+        };
+        parse_token_usage(&abs_path).or_else(|| parse_wg_tokens(&abs_path))
+    });
 
     let id_owned = id.to_string();
     let graph = modify_graph(&path, |graph| {
@@ -1435,7 +1433,11 @@ mod tests {
         setup_workgraph(dir_path, vec![task]);
 
         let result = run(dir_path, "t1", false, false);
-        assert!(result.is_ok(), "Pipe in verify command should work: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Pipe in verify command should work: {:?}",
+            result.err()
+        );
 
         let path = graph_path(dir_path);
         let graph = load_graph(&path).unwrap();

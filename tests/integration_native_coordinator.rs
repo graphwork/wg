@@ -19,8 +19,8 @@ use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
 
@@ -231,9 +231,7 @@ fn native_coordinator_model_registry_has_openrouter_models() {
         "Registry should contain qwen/qwen3-235b-a22b"
     );
     assert!(
-        registry
-            .models
-            .contains_key("anthropic/claude-sonnet-4-6"),
+        registry.models.contains_key("anthropic/claude-sonnet-4-6"),
         "Registry should contain anthropic/claude-sonnet-4-6"
     );
 
@@ -292,9 +290,16 @@ fn native_coordinator_provider_routing_openrouter() {
         None,
         Some("test-api-key-not-real"),
     );
-    assert!(result.is_ok(), "Provider creation should succeed with API key override");
+    assert!(
+        result.is_ok(),
+        "Provider creation should succeed with API key override"
+    );
     let provider = result.unwrap();
-    assert_eq!(provider.name(), "openai", "OpenRouter model should use openai provider");
+    assert_eq!(
+        provider.name(),
+        "openai",
+        "OpenRouter model should use openai provider"
+    );
     assert_eq!(provider.model(), "deepseek/deepseek-chat-v3");
 }
 
@@ -312,7 +317,10 @@ fn native_coordinator_provider_routing_anthropic() {
         None,
         Some("test-api-key-not-real"),
     );
-    assert!(result.is_ok(), "Provider creation should succeed with API key override");
+    assert!(
+        result.is_ok(),
+        "Provider creation should succeed with API key override"
+    );
     let provider = result.unwrap();
     assert_eq!(
         provider.name(),
@@ -399,7 +407,10 @@ api_base = "https://openrouter.ai/api/v1"
         None,
         Some("test-api-key-not-real"),
     );
-    assert!(result.is_ok(), "Provider should succeed with config api_base");
+    assert!(
+        result.is_ok(),
+        "Provider should succeed with config api_base"
+    );
 }
 
 // ===========================================================================
@@ -478,7 +489,6 @@ impl MockNativeProvider {
             call_count: Arc::new(AtomicUsize::new(0)),
         }
     }
-
 }
 
 #[async_trait::async_trait]
@@ -632,8 +642,13 @@ async fn native_coordinator_journal_with_openrouter_model() {
 
     // Verify Init entry records the openai provider and model
     match &entries[0].kind {
-        JournalEntryKind::Init { provider, model, .. } => {
-            assert_eq!(provider, "openai", "Should record openai provider for OpenRouter");
+        JournalEntryKind::Init {
+            provider, model, ..
+        } => {
+            assert_eq!(
+                provider, "openai",
+                "Should record openai provider for OpenRouter"
+            );
             assert_eq!(model, "deepseek/deepseek-chat-v3");
         }
         _ => panic!("First entry should be Init"),
@@ -662,10 +677,7 @@ fn native_coordinator_service_startup_no_api_key() {
 
     // Write native_executor config to set provider = "openai" explicitly
     let existing = fs::read_to_string(wg_dir.join("config.toml")).unwrap();
-    let appended = format!(
-        "{}\n[native_executor]\nprovider = \"openai\"\n",
-        existing
-    );
+    let appended = format!("{}\n[native_executor]\nprovider = \"openai\"\n", existing);
     fs::write(wg_dir.join("config.toml"), appended).unwrap();
 
     let env = [
@@ -693,7 +705,8 @@ fn native_coordinator_service_startup_no_api_key() {
     // Wait for daemon to log something about the native coordinator
     let logged = wait_for(Duration::from_secs(5), 100, || {
         let log = read_daemon_log(&wg_dir);
-        log.contains("Native coordinator") || log.contains("native")
+        log.contains("Native coordinator")
+            || log.contains("native")
             || log.contains("Failed to spawn coordinator agent")
     });
     assert!(
@@ -714,10 +727,7 @@ fn native_coordinator_service_startup_with_api_key() {
     // Write native_executor config to set provider = "openai" explicitly
     // (overrides WG_LLM_PROVIDER env var that may be inherited).
     let existing = fs::read_to_string(wg_dir.join("config.toml")).unwrap();
-    let appended = format!(
-        "{}\n[native_executor]\nprovider = \"openai\"\n",
-        existing
-    );
+    let appended = format!("{}\n[native_executor]\nprovider = \"openai\"\n", existing);
     fs::write(wg_dir.join("config.toml"), appended).unwrap();
 
     let env = [
@@ -836,10 +846,7 @@ fn native_coordinator_chat_routing() {
 
     // Write native_executor config to set provider = "openai" explicitly
     let existing = fs::read_to_string(wg_dir.join("config.toml")).unwrap();
-    let appended = format!(
-        "{}\n[native_executor]\nprovider = \"openai\"\n",
-        existing
-    );
+    let appended = format!("{}\n[native_executor]\nprovider = \"openai\"\n", existing);
     fs::write(wg_dir.join("config.toml"), appended).unwrap();
 
     let env = [
@@ -1005,7 +1012,16 @@ PATH = "{}"
     assert!(ready, "Service daemon should become ready");
 
     // Add a shell task
-    wg_ok(&wg_dir, &["add", "Shell dispatch test", "--id", "shell-dispatch-test", "--immediate"]);
+    wg_ok(
+        &wg_dir,
+        &[
+            "add",
+            "Shell dispatch test",
+            "--id",
+            "shell-dispatch-test",
+            "--immediate",
+        ],
+    );
 
     // Patch the task to add exec field
     let graph_path = wg_dir.join("graph.jsonl");
@@ -1014,7 +1030,8 @@ PATH = "{}"
     for line in content.lines() {
         if line.contains("\"id\":\"shell-dispatch-test\"") {
             let mut val: serde_json::Value = serde_json::from_str(line).unwrap();
-            val["exec"] = serde_json::Value::String("echo 'dispatched by native coordinator'".to_string());
+            val["exec"] =
+                serde_json::Value::String("echo 'dispatched by native coordinator'".to_string());
             new_lines.push(serde_json::to_string(&val).unwrap());
         } else {
             new_lines.push(line.to_string());
@@ -1097,7 +1114,12 @@ fn native_coordinator_real_e2e_chat() {
     // Send a simple chat message
     let chat_output = wg_cmd(
         &wg_dir,
-        &["chat", "What is 2 + 2? Reply with just the number.", "--timeout", "60"],
+        &[
+            "chat",
+            "What is 2 + 2? Reply with just the number.",
+            "--timeout",
+            "60",
+        ],
     );
     let stdout = String::from_utf8_lossy(&chat_output.stdout).to_string();
     assert!(
@@ -1175,7 +1197,9 @@ fn native_coordinator_real_e2e_error_recovery() {
 
     // Both messages should have been processed
     let log = read_daemon_log(&wg_dir);
-    let processing_count = log.matches("Native coordinator: processing request_id=").count();
+    let processing_count = log
+        .matches("Native coordinator: processing request_id=")
+        .count();
     assert!(
         processing_count >= 2,
         "Should have processed at least 2 requests. Count: {}\nLog:\n{}",

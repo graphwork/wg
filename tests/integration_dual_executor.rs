@@ -14,8 +14,8 @@
 use std::fs;
 use std::io::Write;
 use std::path::Path;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use tempfile::TempDir;
 
@@ -25,7 +25,7 @@ use workgraph::executor::native::client::{
 };
 use workgraph::executor::native::journal::{self, Journal, JournalEntryKind};
 use workgraph::executor::native::provider::Provider;
-use workgraph::executor::native::resume::{load_resume_data, ResumeConfig};
+use workgraph::executor::native::resume::{ResumeConfig, load_resume_data};
 use workgraph::executor::native::tools::ToolRegistry;
 
 // ── Mock providers ──────────────────────────────────────────────────────
@@ -234,7 +234,9 @@ fn setup_workgraph(dir: &Path) {
 }
 
 /// Extract all entries of a specific kind from a journal for comparison.
-fn extract_entry_types(entries: &[workgraph::executor::native::journal::JournalEntry]) -> Vec<&str> {
+fn extract_entry_types(
+    entries: &[workgraph::executor::native::journal::JournalEntry],
+) -> Vec<&str> {
     entries
         .iter()
         .map(|e| match &e.kind {
@@ -286,7 +288,11 @@ fn verify_journal_format(j_path: &Path) {
         });
 
         // Must have required fields
-        assert!(val.get("seq").is_some(), "Line {} missing 'seq' field", i + 1);
+        assert!(
+            val.get("seq").is_some(),
+            "Line {} missing 'seq' field",
+            i + 1
+        );
         assert!(
             val.get("timestamp").is_some(),
             "Line {} missing 'timestamp' field",
@@ -361,12 +367,20 @@ async fn scenario_1_openrouter_end_to_end() {
 
     // Expected: Init, User, Assistant(tool_use), ToolExec, User(tool_result), Assistant(final), End
     assert!(types.contains(&"init"), "Journal should have Init entry");
-    assert!(types.contains(&"tool_execution"), "Journal should have ToolExecution entry");
-    assert!(types.last() == Some(&"end"), "Journal should end with End entry");
+    assert!(
+        types.contains(&"tool_execution"),
+        "Journal should have ToolExecution entry"
+    );
+    assert!(
+        types.last() == Some(&"end"),
+        "Journal should end with End entry"
+    );
 
     // Verify Init entry records the OpenAI provider
     match &entries[0].kind {
-        JournalEntryKind::Init { provider, model, .. } => {
+        JournalEntryKind::Init {
+            provider, model, ..
+        } => {
             assert_eq!(provider, "openai", "Init should record openai provider");
             assert_eq!(
                 model, "anthropic/claude-sonnet-4-20250514",
@@ -424,13 +438,24 @@ async fn scenario_2_anthropic_end_to_end() {
     let types = extract_entry_types(&entries);
 
     assert!(types.contains(&"init"), "Journal should have Init entry");
-    assert!(types.contains(&"tool_execution"), "Journal should have ToolExecution entry");
-    assert!(types.last() == Some(&"end"), "Journal should end with End entry");
+    assert!(
+        types.contains(&"tool_execution"),
+        "Journal should have ToolExecution entry"
+    );
+    assert!(
+        types.last() == Some(&"end"),
+        "Journal should end with End entry"
+    );
 
     // Verify Init entry records the Anthropic provider
     match &entries[0].kind {
-        JournalEntryKind::Init { provider, model, .. } => {
-            assert_eq!(provider, "anthropic", "Init should record anthropic provider");
+        JournalEntryKind::Init {
+            provider, model, ..
+        } => {
+            assert_eq!(
+                provider, "anthropic",
+                "Init should record anthropic provider"
+            );
             assert_eq!(
                 model, "claude-sonnet-4-20250514",
                 "Init should record the model"
@@ -600,7 +625,10 @@ async fn scenario_4_kill_and_resume_openrouter() {
 
     // Verify first session journal
     let entries_s1 = Journal::read_all(&j_path).unwrap();
-    assert!(entries_s1.len() >= 6, "First session should have at least 6 entries");
+    assert!(
+        entries_s1.len() >= 6,
+        "First session should have at least 6 entries"
+    );
 
     // Verify the Init recorded "openai" provider
     match &entries_s1[0].kind {
@@ -622,9 +650,8 @@ async fn scenario_4_kill_and_resume_openrouter() {
 
     // === Second session: new agent resumes from the crashed journal ===
     {
-        let provider = MockOpenRouterProvider::simple_text(
-            "Resumed from OpenRouter journal. Task complete.",
-        );
+        let provider =
+            MockOpenRouterProvider::simple_text("Resumed from OpenRouter journal. Task complete.");
         let registry = ToolRegistry::default_all(&wg_dir, tmp.path());
         let output_log = wg_dir.join("kill-or-s2.ndjson");
 
@@ -666,7 +693,10 @@ async fn scenario_4_kill_and_resume_openrouter() {
 
     // Should end with End entry
     assert!(
-        matches!(final_entries.last().unwrap().kind, JournalEntryKind::End { .. }),
+        matches!(
+            final_entries.last().unwrap().kind,
+            JournalEntryKind::End { .. }
+        ),
         "Journal should end with End entry"
     );
 }
@@ -713,7 +743,9 @@ async fn scenario_5_kill_and_resume_anthropic() {
     // Verify first session Init recorded "anthropic" provider
     let entries_s1 = Journal::read_all(&j_path).unwrap();
     match &entries_s1[0].kind {
-        JournalEntryKind::Init { provider, model, .. } => {
+        JournalEntryKind::Init {
+            provider, model, ..
+        } => {
             assert_eq!(provider, "anthropic");
             assert_eq!(model, "claude-sonnet-4-20250514");
         }
@@ -788,7 +820,10 @@ async fn scenario_5_kill_and_resume_anthropic() {
 
     // Should end with End entry
     assert!(
-        matches!(final_entries.last().unwrap().kind, JournalEntryKind::End { .. }),
+        matches!(
+            final_entries.last().unwrap().kind,
+            JournalEntryKind::End { .. }
+        ),
         "Journal should end with End entry"
     );
 }
@@ -951,7 +986,10 @@ async fn scenario_6_compaction_on_resume() {
     // The journal should have the resume session appended
     let final_entries = Journal::read_all(&j_path).unwrap();
     assert!(
-        matches!(final_entries.last().unwrap().kind, JournalEntryKind::End { .. }),
+        matches!(
+            final_entries.last().unwrap().kind,
+            JournalEntryKind::End { .. }
+        ),
         "Resumed journal should end with End entry"
     );
 

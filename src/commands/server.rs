@@ -92,7 +92,10 @@ pub fn run(dir: &Path, opts: &ServerInitOpts) -> Result<()> {
     let sock_path = dir.join("service").join("daemon.sock");
     actions.push(Action {
         description: "Set daemon.sock to 0660 (when created)".into(),
-        command: Some(format!("chmod 0660 {} 2>/dev/null || true", sock_path.display())),
+        command: Some(format!(
+            "chmod 0660 {} 2>/dev/null || true",
+            sock_path.display()
+        )),
         status: ActionStatus::Pending,
     });
 
@@ -141,10 +144,14 @@ pub fn run(dir: &Path, opts: &ServerInitOpts) -> Result<()> {
             if let Some(ref cmd) = action.command {
                 match action.status {
                     ActionStatus::Skipped(_) => {
-                        println!("  SKIP  {}: {}", action.description, match &action.status {
-                            ActionStatus::Skipped(r) => r.as_str(),
-                            _ => "",
-                        });
+                        println!(
+                            "  SKIP  {}: {}",
+                            action.description,
+                            match &action.status {
+                                ActionStatus::Skipped(r) => r.as_str(),
+                                _ => "",
+                            }
+                        );
                         continue;
                     }
                     _ => {}
@@ -185,11 +192,14 @@ pub fn run(dir: &Path, opts: &ServerInitOpts) -> Result<()> {
     println!("\n## Summary\n");
     println!("  Project:    {}", project_name);
     println!("  Group:      {}", group);
-    println!("  Users:      {}", if opts.users.is_empty() {
-        "(none specified — use --user)".to_string()
-    } else {
-        opts.users.join(", ")
-    });
+    println!(
+        "  Users:      {}",
+        if opts.users.is_empty() {
+            "(none specified — use --user)".to_string()
+        } else {
+            opts.users.join(", ")
+        }
+    );
     println!("  Directory:  {}", wg_dir);
     println!("  tmux session: {}", tmux_session);
     if opts.ttyd {
@@ -198,7 +208,10 @@ pub fn run(dir: &Path, opts: &ServerInitOpts) -> Result<()> {
     if opts.caddy {
         println!("  Caddy:      enabled");
     }
-    println!("  Mode:       {}", if opts.apply { "applied" } else { "dry-run" });
+    println!(
+        "  Mode:       {}",
+        if opts.apply { "applied" } else { "dry-run" }
+    );
 
     Ok(())
 }
@@ -400,7 +413,11 @@ mod tests {
         let mut actions = Vec::new();
         check_prerequisite("nonexistent-tool-xyz", true, &mut actions);
         assert_eq!(actions.len(), 1);
-        assert!(actions[0].description.contains("Install nonexistent-tool-xyz"));
+        assert!(
+            actions[0]
+                .description
+                .contains("Install nonexistent-tool-xyz")
+        );
     }
 
     #[test]

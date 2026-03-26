@@ -318,7 +318,10 @@ pub fn run() -> Result<()> {
     };
 
     println!();
-    println!("  Executor auto-set to '{}' for {} provider.", default_executor, provider);
+    println!(
+        "  Executor auto-set to '{}' for {} provider.",
+        default_executor, provider
+    );
 
     let override_executor = Confirm::new()
         .with_prompt("Override executor?")
@@ -558,10 +561,7 @@ fn configure_openrouter(
             .map(|e| format!("{} — {}", e.id, e.model))
             .collect();
 
-        let default_idx = entries
-            .iter()
-            .position(|e| e.id == "sonnet")
-            .unwrap_or(0);
+        let default_idx = entries.iter().position(|e| e.id == "sonnet").unwrap_or(0);
 
         let idx = Select::new()
             .with_prompt("Default model?")
@@ -592,10 +592,7 @@ fn configure_openai(
     println!("OpenAI configuration");
     println!("────────────────────");
 
-    let api_key_options = &[
-        "Environment variable (OPENAI_API_KEY)",
-        "Key file",
-    ];
+    let api_key_options = &["Environment variable (OPENAI_API_KEY)", "Key file"];
     let key_idx = Select::new()
         .with_prompt("How should the API key be provided?")
         .items(api_key_options)
@@ -617,11 +614,7 @@ fn configure_openai(
         (None, Some(key_path))
     };
 
-    let current_model = existing
-        .coordinator
-        .model
-        .as_deref()
-        .unwrap_or("gpt-4o");
+    let current_model = existing.coordinator.model.as_deref().unwrap_or("gpt-4o");
     let model_id: String = Input::new()
         .with_prompt("Default model ID")
         .default(current_model.to_string())
@@ -659,11 +652,7 @@ fn configure_local(
         .default("http://localhost:11434/v1".to_string())
         .interact_text()?;
 
-    let current_model = existing
-        .coordinator
-        .model
-        .as_deref()
-        .unwrap_or("llama3");
+    let current_model = existing.coordinator.model.as_deref().unwrap_or("llama3");
     let model_id: String = Input::new()
         .with_prompt("Default model ID")
         .default(current_model.to_string())
@@ -710,11 +699,7 @@ fn configure_custom_provider(
         .default(String::new())
         .interact_text()?;
 
-    let current_model = existing
-        .coordinator
-        .model
-        .as_deref()
-        .unwrap_or("default");
+    let current_model = existing.coordinator.model.as_deref().unwrap_or("default");
     let model_id: String = Input::new()
         .with_prompt("Default model ID")
         .default(current_model.to_string())
@@ -1212,10 +1197,7 @@ mod tests {
         // Executor and provider
         assert_eq!(config.coordinator.executor, Some("native".to_string()));
         assert_eq!(config.agent.executor, "native");
-        assert_eq!(
-            config.coordinator.provider,
-            Some("openrouter".to_string())
-        );
+        assert_eq!(config.coordinator.provider, Some("openrouter".to_string()));
 
         // models.default
         let models_default = config.models.default.as_ref().unwrap();
@@ -1267,7 +1249,10 @@ mod tests {
         let reloaded: Config = toml::from_str(&toml_str).unwrap();
 
         // Verify everything survives round-trip
-        assert_eq!(reloaded.coordinator.provider, Some("openrouter".to_string()));
+        assert_eq!(
+            reloaded.coordinator.provider,
+            Some("openrouter".to_string())
+        );
         assert_eq!(reloaded.coordinator.effective_executor(), "native");
         assert_eq!(reloaded.llm_endpoints.endpoints.len(), 1);
         assert!(!reloaded.model_registry.is_empty());

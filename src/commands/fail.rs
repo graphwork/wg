@@ -52,18 +52,16 @@ fn run_inner(dir: &Path, id: &str, reason: Option<&str>, eval_reject: bool) -> R
     let path = super::graph_path(dir);
 
     // Resolve token usage outside the lock (registry read + file I/O).
-    let token_usage = AgentRegistry::load(dir)
-        .ok()
-        .and_then(|registry| {
-            let agent = registry.get_agent_by_task(id)?;
-            let output_path = std::path::Path::new(&agent.output_file);
-            let abs_path = if output_path.is_absolute() {
-                output_path.to_path_buf()
-            } else {
-                dir.parent().unwrap_or(dir).join(output_path)
-            };
-            parse_token_usage(&abs_path).or_else(|| parse_wg_tokens(&abs_path))
-        });
+    let token_usage = AgentRegistry::load(dir).ok().and_then(|registry| {
+        let agent = registry.get_agent_by_task(id)?;
+        let output_path = std::path::Path::new(&agent.output_file);
+        let abs_path = if output_path.is_absolute() {
+            output_path.to_path_buf()
+        } else {
+            dir.parent().unwrap_or(dir).join(output_path)
+        };
+        parse_token_usage(&abs_path).or_else(|| parse_wg_tokens(&abs_path))
+    });
 
     // Atomically load the freshest graph, apply the mutation, and save.
     // Using modify_graph prevents lost updates from concurrent graph writers.

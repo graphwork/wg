@@ -124,8 +124,9 @@ impl Journal {
     pub fn open(path: &Path) -> Result<Self> {
         // Ensure parent directory exists
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("Failed to create journal directory: {}", parent.display()))?;
+            std::fs::create_dir_all(parent).with_context(|| {
+                format!("Failed to create journal directory: {}", parent.display())
+            })?;
         }
 
         // Determine current seq by reading existing entries
@@ -412,7 +413,11 @@ mod tests {
         assert_eq!(entries[2].seq, 3);
 
         // No End entry — conversation was interrupted
-        assert!(!entries.iter().any(|e| matches!(e.kind, JournalEntryKind::End { .. })));
+        assert!(
+            !entries
+                .iter()
+                .any(|e| matches!(e.kind, JournalEntryKind::End { .. }))
+        );
 
         // Can resume from this state
         let mut journal = Journal::open(&path).unwrap();

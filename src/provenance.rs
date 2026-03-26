@@ -338,7 +338,15 @@ mod tests {
             let orig = std::env::var("WG_USER").ok();
             std::env::set_var("WG_USER", "testuser");
 
-            record(&dir, "test_op", Some("t1"), None, serde_json::Value::Null, DEFAULT_ROTATION_THRESHOLD).unwrap();
+            record(
+                &dir,
+                "test_op",
+                Some("t1"),
+                None,
+                serde_json::Value::Null,
+                DEFAULT_ROTATION_THRESHOLD,
+            )
+            .unwrap();
 
             let all = read_all_operations(&dir).unwrap();
             assert_eq!(all.len(), 1);

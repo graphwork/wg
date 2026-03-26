@@ -87,10 +87,7 @@ fn should_archive(task: &Task, older_than: Option<&Duration>) -> bool {
 
     if let Some(min_age) = older_than {
         // Use completed_at for Done tasks, or created_at as fallback for Abandoned
-        let timestamp = task
-            .completed_at
-            .as_deref()
-            .or(task.created_at.as_deref());
+        let timestamp = task.completed_at.as_deref().or(task.created_at.as_deref());
         if let Some(ts) = timestamp
             && let Ok(parsed) = DateTime::parse_from_rfc3339(ts)
         {
@@ -1292,10 +1289,12 @@ mod tests {
         let ids = vec!["t1".to_string()];
         let result = run(wg_dir, false, None, false, false, &ids, false);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("only done/abandoned tasks"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("only done/abandoned tasks")
+        );
     }
 
     #[test]
@@ -1446,7 +1445,12 @@ mod tests {
         let mut graph = WorkGraph::new();
 
         // t1 is done, t2 (depends on t1 via t1.before) is still open
-        let mut t1 = make_task("t1", "Done Task", Status::Done, Some("2024-01-01T00:00:00Z"));
+        let mut t1 = make_task(
+            "t1",
+            "Done Task",
+            Status::Done,
+            Some("2024-01-01T00:00:00Z"),
+        );
         t1.before = vec!["t2".to_string()];
         let t2 = make_task("t2", "Open Task", Status::Open, None);
 
@@ -1461,9 +1465,19 @@ mod tests {
         let mut graph = WorkGraph::new();
 
         // t1 is done, t2 (depends on t1) is also done
-        let mut t1 = make_task("t1", "Done Task", Status::Done, Some("2024-01-01T00:00:00Z"));
+        let mut t1 = make_task(
+            "t1",
+            "Done Task",
+            Status::Done,
+            Some("2024-01-01T00:00:00Z"),
+        );
         t1.before = vec!["t2".to_string()];
-        let t2 = make_task("t2", "Also Done", Status::Done, Some("2024-01-02T00:00:00Z"));
+        let t2 = make_task(
+            "t2",
+            "Also Done",
+            Status::Done,
+            Some("2024-01-02T00:00:00Z"),
+        );
 
         graph.add_node(Node::Task(t1.clone()));
         graph.add_node(Node::Task(t2));

@@ -4,8 +4,8 @@
 
 use std::fs;
 use std::path::Path;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use tempfile::TempDir;
 
@@ -159,7 +159,12 @@ async fn test_journal_created_on_agent_run() {
 
     let entries = Journal::read_all(&j_path).unwrap();
     // Expect: Init, User message, Assistant message, End
-    assert_eq!(entries.len(), 4, "Expected 4 journal entries, got {}", entries.len());
+    assert_eq!(
+        entries.len(),
+        4,
+        "Expected 4 journal entries, got {}",
+        entries.len()
+    );
 
     // Check Init entry
     assert_eq!(entries[0].seq, 1);
@@ -252,13 +257,21 @@ async fn test_journal_entries_provider_agnostic_format() {
 
     // Each line should be valid JSON
     for (i, line) in lines.iter().enumerate() {
-        let val: serde_json::Value =
-            serde_json::from_str(line).unwrap_or_else(|e| panic!("Line {} is not valid JSON: {}", i + 1, e));
+        let val: serde_json::Value = serde_json::from_str(line)
+            .unwrap_or_else(|e| panic!("Line {} is not valid JSON: {}", i + 1, e));
 
         // Every entry has seq and timestamp
         assert!(val["seq"].is_number(), "Line {} missing seq", i + 1);
-        assert!(val["timestamp"].is_string(), "Line {} missing timestamp", i + 1);
-        assert!(val["entry_type"].is_string(), "Line {} missing entry_type", i + 1);
+        assert!(
+            val["timestamp"].is_string(),
+            "Line {} missing timestamp",
+            i + 1
+        );
+        assert!(
+            val["entry_type"].is_string(),
+            "Line {} missing entry_type",
+            i + 1
+        );
     }
 
     // Verify Init entry uses canonical types (no provider-specific fields)
@@ -313,22 +326,30 @@ async fn test_journal_with_tool_calls() {
     let entries = Journal::read_all(&j_path).unwrap();
 
     // Expected: Init, User msg, Assistant msg (tool_use), ToolExecution, User msg (tool_result), Assistant msg (final), End
-    assert_eq!(entries.len(), 7, "Expected 7 entries, got {}: {:?}",
+    assert_eq!(
         entries.len(),
-        entries.iter().map(|e| match &e.kind {
-            JournalEntryKind::Init { .. } => "Init",
-            JournalEntryKind::Message { role, .. } => match role {
-                workgraph::executor::native::client::Role::User => "User",
-                workgraph::executor::native::client::Role::Assistant => "Assistant",
-            },
-            JournalEntryKind::ToolExecution { .. } => "ToolExecution",
-            JournalEntryKind::Compaction { .. } => "Compaction",
-            JournalEntryKind::End { .. } => "End",
-        }).collect::<Vec<_>>()
+        7,
+        "Expected 7 entries, got {}: {:?}",
+        entries.len(),
+        entries
+            .iter()
+            .map(|e| match &e.kind {
+                JournalEntryKind::Init { .. } => "Init",
+                JournalEntryKind::Message { role, .. } => match role {
+                    workgraph::executor::native::client::Role::User => "User",
+                    workgraph::executor::native::client::Role::Assistant => "Assistant",
+                },
+                JournalEntryKind::ToolExecution { .. } => "ToolExecution",
+                JournalEntryKind::Compaction { .. } => "Compaction",
+                JournalEntryKind::End { .. } => "End",
+            })
+            .collect::<Vec<_>>()
     );
 
     // Verify ToolExecution entry
-    let tool_exec = entries.iter().find(|e| matches!(e.kind, JournalEntryKind::ToolExecution { .. }));
+    let tool_exec = entries
+        .iter()
+        .find(|e| matches!(e.kind, JournalEntryKind::ToolExecution { .. }));
     assert!(tool_exec.is_some(), "Should have a ToolExecution entry");
     match &tool_exec.unwrap().kind {
         JournalEntryKind::ToolExecution {
@@ -345,12 +366,19 @@ async fn test_journal_with_tool_calls() {
     }
 
     // Verify ordering: ToolExecution comes after assistant's tool_use and before user's tool_result
-    let tool_exec_idx = entries.iter().position(|e| matches!(e.kind, JournalEntryKind::ToolExecution { .. })).unwrap();
+    let tool_exec_idx = entries
+        .iter()
+        .position(|e| matches!(e.kind, JournalEntryKind::ToolExecution { .. }))
+        .unwrap();
     // The entry before ToolExecution should be the assistant's tool_use message
     match &entries[tool_exec_idx - 1].kind {
         JournalEntryKind::Message { role, content, .. } => {
             assert_eq!(*role, workgraph::executor::native::client::Role::Assistant);
-            assert!(content.iter().any(|b| matches!(b, ContentBlock::ToolUse { .. })));
+            assert!(
+                content
+                    .iter()
+                    .any(|b| matches!(b, ContentBlock::ToolUse { .. }))
+            );
         }
         _ => panic!("Entry before ToolExecution should be assistant message with tool_use"),
     }
@@ -358,7 +386,11 @@ async fn test_journal_with_tool_calls() {
     match &entries[tool_exec_idx + 1].kind {
         JournalEntryKind::Message { role, content, .. } => {
             assert_eq!(*role, workgraph::executor::native::client::Role::User);
-            assert!(content.iter().any(|b| matches!(b, ContentBlock::ToolResult { .. })));
+            assert!(
+                content
+                    .iter()
+                    .any(|b| matches!(b, ContentBlock::ToolResult { .. }))
+            );
         }
         _ => panic!("Entry after ToolExecution should be user message with tool_result"),
     }
@@ -398,7 +430,11 @@ async fn test_journal_survives_crash() {
     {
         use std::io::Write;
         let mut file = fs::OpenOptions::new().append(true).open(&j_path).unwrap();
-        write!(file, "{{\"seq\":5,\"timestamp\":\"2026-01-01T00:00:00Z\",\"entry_type\":\"message\"").unwrap();
+        write!(
+            file,
+            "{{\"seq\":5,\"timestamp\":\"2026-01-01T00:00:00Z\",\"entry_type\":\"message\""
+        )
+        .unwrap();
         // No closing brace, no newline — simulates a crash mid-write
     }
 
@@ -411,8 +447,14 @@ async fn test_journal_survives_crash() {
     );
 
     // Verify the entries are intact
-    assert!(matches!(entries_after_crash[0].kind, JournalEntryKind::Init { .. }));
-    assert!(matches!(entries_after_crash[3].kind, JournalEntryKind::End { .. }));
+    assert!(matches!(
+        entries_after_crash[0].kind,
+        JournalEntryKind::Init { .. }
+    ));
+    assert!(matches!(
+        entries_after_crash[3].kind,
+        JournalEntryKind::End { .. }
+    ));
 
     // Can reopen and continue writing
     let mut journal = Journal::open(&j_path).unwrap();
@@ -431,7 +473,11 @@ async fn test_journal_survives_crash() {
         .unwrap();
 
     let final_entries = Journal::read_all(&j_path).unwrap();
-    assert_eq!(final_entries.len(), 5, "Should have 4 original + 1 new entry");
+    assert_eq!(
+        final_entries.len(),
+        5,
+        "Should have 4 original + 1 new entry"
+    );
     assert_eq!(final_entries[4].seq, 5);
 }
 

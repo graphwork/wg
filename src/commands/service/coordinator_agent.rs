@@ -731,7 +731,8 @@ fn agent_thread_main(
                         .saturating_add(input_toks)
                         .saturating_add(output_toks);
                     if total > 0 {
-                        let mut cs = super::CoordinatorState::load_or_default_for(dir, coordinator_id);
+                        let mut cs =
+                            super::CoordinatorState::load_or_default_for(dir, coordinator_id);
                         cs.accumulated_tokens = cs.accumulated_tokens.saturating_add(total);
                         cs.save_for(dir, coordinator_id);
                         logger.info(&format!(
@@ -1217,8 +1218,8 @@ fn collect_response(
                 // Accumulate per-turn token usage across all sub-turns in the exchange.
                 total_input_tokens = total_input_tokens.saturating_add(input_tokens);
                 total_output_tokens = total_output_tokens.saturating_add(output_tokens);
-                total_cache_creation_input_tokens = total_cache_creation_input_tokens
-                    .saturating_add(cache_creation_input_tokens);
+                total_cache_creation_input_tokens =
+                    total_cache_creation_input_tokens.saturating_add(cache_creation_input_tokens);
             }
             Ok(ResponseEvent::TurnComplete) => {
                 // The assistant finished its turn.
@@ -1460,7 +1461,11 @@ fn native_coordinator_loop(
     let merged_config = workgraph::config::Config::load_merged(dir).unwrap_or_else(|_| config);
     let (effective_model, registry_provider, registry_endpoint) =
         if let Some(entry) = merged_config.registry_lookup(&raw_model) {
-            (entry.model.clone(), Some(entry.provider.clone()), entry.endpoint.clone())
+            (
+                entry.model.clone(),
+                Some(entry.provider.clone()),
+                entry.endpoint.clone(),
+            )
         } else {
             (raw_model.clone(), None, None)
         };
@@ -1587,9 +1592,7 @@ fn native_coordinator_loop(
         // Add user message to conversation
         conversation.push(Message {
             role: Role::User,
-            content: vec![ContentBlock::Text {
-                text: full_content,
-            }],
+            content: vec![ContentBlock::Text { text: full_content }],
         });
 
         // Process the message through the API, handling tool calls
@@ -1639,10 +1642,7 @@ fn native_coordinator_loop(
                 match rt.block_on(client.send_streaming(&api_request, &on_text)) {
                     Ok(r) => r,
                     Err(e) => {
-                        logger.error(&format!(
-                            "Native coordinator: API request failed: {}",
-                            e
-                        ));
+                        logger.error(&format!("Native coordinator: API request failed: {}", e));
                         let _ = chat::append_outbox_for(
                             dir,
                             coordinator_id,
@@ -1658,10 +1658,10 @@ fn native_coordinator_loop(
             api_turns += 1;
 
             // Track token usage
-            total_input_tokens = total_input_tokens
-                .saturating_add(u64::from(response.usage.input_tokens));
-            total_output_tokens = total_output_tokens
-                .saturating_add(u64::from(response.usage.output_tokens));
+            total_input_tokens =
+                total_input_tokens.saturating_add(u64::from(response.usage.input_tokens));
+            total_output_tokens =
+                total_output_tokens.saturating_add(u64::from(response.usage.output_tokens));
             total_cache_creation = total_cache_creation.saturating_add(
                 response
                     .usage
@@ -1688,19 +1688,14 @@ fn native_coordinator_loop(
                         }
                         ContentBlock::ToolUse { id, name, input } => {
                             has_tool_calls = true;
-                            let input_str =
-                                serde_json::to_string(input).unwrap_or_default();
+                            let input_str = serde_json::to_string(input).unwrap_or_default();
 
                             // Stream tool call header to TUI
                             st.push_str(&format!("\n┌─ {} ", name));
-                            st.push_str(
-                                &"─".repeat(40usize.saturating_sub(name.len() + 4)),
-                            );
+                            st.push_str(&"─".repeat(40usize.saturating_sub(name.len() + 4)));
                             st.push('\n');
                             if name == "bash" || name == "Bash" {
-                                if let Some(cmd) =
-                                    input.get("command").and_then(|c| c.as_str())
-                                {
+                                if let Some(cmd) = input.get("command").and_then(|c| c.as_str()) {
                                     st.push_str(&format!("│ $ {}\n", cmd));
                                 } else {
                                     format_tool_input(&mut st, &input_str);
@@ -1714,8 +1709,7 @@ fn native_coordinator_loop(
                                 name: name.clone(),
                                 input: input_str,
                             });
-                            tool_use_blocks
-                                .push((id.clone(), name.clone(), input.clone()));
+                            tool_use_blocks.push((id.clone(), name.clone(), input.clone()));
                         }
                         _ => {}
                     }
@@ -1876,13 +1870,7 @@ fn native_coordinator_loop(
         // Record turn and run evaluation
         if let Some((resp_len, ref resp_summary)) = response_info {
             turn_count += 1;
-            record_coordinator_turn(
-                dir,
-                coordinator_id,
-                &request.message,
-                resp_len,
-                turn_start,
-            );
+            record_coordinator_turn(dir, coordinator_id, &request.message, resp_len, turn_start);
 
             let eval_config = workgraph::config::Config::load_or_default(dir);
             if should_evaluate_turn(turn_count, &eval_config.coordinator.eval_frequency) {
@@ -1893,9 +1881,7 @@ fn native_coordinator_loop(
                 std::thread::Builder::new()
                     .name("coordinator-eval".to_string())
                     .spawn(move || {
-                        evaluate_coordinator_turn(
-                            &eval_dir, eval_turn, &eval_msg, &eval_resp,
-                        );
+                        evaluate_coordinator_turn(&eval_dir, eval_turn, &eval_msg, &eval_resp);
                     })
                     .ok();
             }

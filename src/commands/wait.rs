@@ -164,9 +164,7 @@ pub fn run(dir: &Path, id: &str, until: &str, checkpoint: Option<&str>) -> Resul
         };
 
         // Now mutate
-        let task = graph
-            .get_task_mut(id)
-            .expect("task verified above");
+        let task = graph.get_task_mut(id).expect("task verified above");
 
         task.status = Status::Waiting;
         task.wait_condition = Some(wait_spec);

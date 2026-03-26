@@ -385,7 +385,10 @@ impl Autopilot {
 
     /// Execute the adaptive autopilot script.
     fn run_script(&mut self) -> Result<()> {
-        eprintln!("[autopilot] starting adaptive script ({:.0}s budget)", self.config.duration);
+        eprintln!(
+            "[autopilot] starting adaptive script ({:.0}s budget)",
+            self.config.duration
+        );
 
         // Phase 1: Wait for TUI to start
         eprintln!("[autopilot] phase 1: waiting for TUI...");
@@ -556,13 +559,7 @@ impl Autopilot {
 
 // ── Entry point ──────────────────────────────────────────────────────────────
 
-pub fn run(
-    workgraph_dir: &Path,
-    output: &Path,
-    cols: u16,
-    rows: u16,
-    duration: f64,
-) -> Result<()> {
+pub fn run(workgraph_dir: &Path, output: &Path, cols: u16, rows: u16, duration: f64) -> Result<()> {
     // Verify tmux is available.
     let tmux_check = Command::new("tmux").arg("-V").output();
     match tmux_check {
@@ -573,8 +570,8 @@ pub fn run(
         _ => bail!("tmux is required but not found. Install it with: apt install tmux"),
     }
 
-    let wg_dir = std::fs::canonicalize(workgraph_dir)
-        .unwrap_or_else(|_| workgraph_dir.to_path_buf());
+    let wg_dir =
+        std::fs::canonicalize(workgraph_dir).unwrap_or_else(|_| workgraph_dir.to_path_buf());
 
     // The project root is one level up from .workgraph
     let project_dir = wg_dir.parent().unwrap_or(&wg_dir);
@@ -587,7 +584,10 @@ pub fn run(
         project_dir.display()
     );
 
-    eprintln!("[autopilot] launching TUI in tmux session '{}' ({}x{})", session_name, cols, rows);
+    eprintln!(
+        "[autopilot] launching TUI in tmux session '{}' ({}x{})",
+        session_name, cols, rows
+    );
     eprintln!("[autopilot] cmd: {}", tui_cmd);
 
     let session = TmuxSession::create(&session_name, cols, rows, project_dir, &tui_cmd)?;
@@ -647,7 +647,8 @@ mod tests {
         drop(writer);
 
         let contents = std::fs::read_to_string(&path).unwrap();
-        let header: serde_json::Value = serde_json::from_str(contents.lines().next().unwrap()).unwrap();
+        let header: serde_json::Value =
+            serde_json::from_str(contents.lines().next().unwrap()).unwrap();
         assert_eq!(header["version"], 2);
         assert_eq!(header["width"], 80);
         assert_eq!(header["height"], 24);
@@ -672,5 +673,4 @@ mod tests {
         };
         assert_eq!(state.visible_task_count(), 3);
     }
-
 }

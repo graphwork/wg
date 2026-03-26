@@ -45,7 +45,10 @@ pub fn show(dir: &Path, scope: Option<ConfigScope>, json: bool) -> Result<()> {
         );
         println!("  interval = {}", config.coordinator.interval);
         println!("  poll_interval = {}", config.coordinator.poll_interval);
-        println!("  executor = \"{}\"", config.coordinator.effective_executor());
+        println!(
+            "  executor = \"{}\"",
+            config.coordinator.effective_executor()
+        );
         if let Some(ref m) = config.coordinator.model {
             println!("  model = \"{}\"", m);
         }
@@ -219,10 +222,7 @@ pub fn show(dir: &Path, scope: Option<ConfigScope>, json: bool) -> Result<()> {
         println!("  chat_history = {}", config.tui.chat_history);
         println!("  chat_history_max = {}", config.tui.chat_history_max);
         println!("  counters = \"{}\"", config.tui.counters);
-        println!(
-            "  show_system_tasks = {}",
-            config.tui.show_system_tasks
-        );
+        println!("  show_system_tasks = {}", config.tui.show_system_tasks);
         println!(
             "  show_running_system_tasks = {}",
             config.tui.show_running_system_tasks

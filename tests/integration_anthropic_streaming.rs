@@ -138,7 +138,10 @@ async fn anthropic_streaming_text_content_accumulation() {
         .with_base_url(&base_url)
         .with_streaming(true);
 
-    let response = client.send(&test_request("claude-haiku-4-5")).await.unwrap();
+    let response = client
+        .send(&test_request("claude-haiku-4-5"))
+        .await
+        .unwrap();
 
     assert_eq!(response.id, "msg_test1");
     assert!(!response.content.is_empty());
@@ -293,10 +296,7 @@ async fn anthropic_streaming_text_and_tool_call() {
         ContentBlock::ToolUse { id, name, input } => {
             assert_eq!(id, "toolu_mixed1");
             assert_eq!(name, "bash");
-            assert_eq!(
-                input.get("command").and_then(|v| v.as_str()),
-                Some("ls")
-            );
+            assert_eq!(input.get("command").and_then(|v| v.as_str()), Some("ls"));
         }
         other => panic!("Expected ToolUse, got: {:?}", other),
     }
@@ -327,7 +327,10 @@ async fn anthropic_non_streaming_fallback() {
         .with_base_url(&base_url)
         .with_streaming(false);
 
-    let response = client.send(&test_request("claude-haiku-4-5")).await.unwrap();
+    let response = client
+        .send(&test_request("claude-haiku-4-5"))
+        .await
+        .unwrap();
 
     assert_eq!(response.id, "msg_nostre");
     let text = match &response.content[0] {
@@ -424,7 +427,10 @@ async fn anthropic_streaming_is_default() {
         .unwrap()
         .with_base_url(&base_url);
 
-    let response = client.send(&test_request("claude-haiku-4-5")).await.unwrap();
+    let response = client
+        .send(&test_request("claude-haiku-4-5"))
+        .await
+        .unwrap();
     assert_eq!(response.id, "msg_default_stream");
     let text = match &response.content[0] {
         ContentBlock::Text { text } => text.as_str(),
@@ -597,15 +603,24 @@ async fn anthropic_and_openai_produce_identical_canonical_format() {
         ContentBlock::Text { text } => text.as_str(),
         other => panic!("OpenAI: expected Text, got: {:?}", other),
     };
-    assert_eq!(a_text, o_text, "Both providers should produce identical text content");
+    assert_eq!(
+        a_text, o_text,
+        "Both providers should produce identical text content"
+    );
 
     // Both have EndTurn stop reason
     assert_eq!(anthropic_resp.stop_reason, Some(StopReason::EndTurn));
     assert_eq!(openai_resp.stop_reason, Some(StopReason::EndTurn));
 
     // Both have matching token counts
-    assert_eq!(anthropic_resp.usage.input_tokens, openai_resp.usage.input_tokens);
-    assert_eq!(anthropic_resp.usage.output_tokens, openai_resp.usage.output_tokens);
+    assert_eq!(
+        anthropic_resp.usage.input_tokens,
+        openai_resp.usage.input_tokens
+    );
+    assert_eq!(
+        anthropic_resp.usage.output_tokens,
+        openai_resp.usage.output_tokens
+    );
 
     // The canonical Message type serializes identically for both
     let a_msg = Message {
@@ -618,5 +633,8 @@ async fn anthropic_and_openai_produce_identical_canonical_format() {
     };
     let a_json = serde_json::to_string(&a_msg).unwrap();
     let o_json = serde_json::to_string(&o_msg).unwrap();
-    assert_eq!(a_json, o_json, "Canonical Message JSON must be identical across providers");
+    assert_eq!(
+        a_json, o_json,
+        "Canonical Message JSON must be identical across providers"
+    );
 }

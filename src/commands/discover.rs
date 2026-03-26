@@ -177,7 +177,10 @@ fn print_task(task: &workgraph::graph::Task, with_artifacts: bool) {
 
     if let Some(last_log) = task.log.last() {
         let msg = if last_log.message.len() > 100 {
-            format!("{}...", &last_log.message[..last_log.message.floor_char_boundary(97)])
+            format!(
+                "{}...",
+                &last_log.message[..last_log.message.floor_char_boundary(97)]
+            )
         } else {
             last_log.message.clone()
         };

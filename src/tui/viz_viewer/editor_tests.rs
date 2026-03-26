@@ -1135,7 +1135,9 @@ mod tui_editor_tests {
 
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
-        terminal.draw(|frame| render::draw(frame, &mut app)).unwrap();
+        terminal
+            .draw(|frame| render::draw(frame, &mut app))
+            .unwrap();
         // If we got here without panicking, rendering works.
     }
 }

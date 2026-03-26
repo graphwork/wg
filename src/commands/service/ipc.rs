@@ -620,11 +620,7 @@ fn handle_shutdown(dir: &Path, kill_agents: bool, logger: &DaemonLogger) -> IpcR
 /// Handle freeze: send SIGSTOP to all alive agent processes, pause coordinator,
 /// and update registry + coordinator state.
 #[cfg(unix)]
-fn handle_freeze(
-    dir: &Path,
-    daemon_cfg: &mut DaemonConfig,
-    logger: &DaemonLogger,
-) -> IpcResponse {
+fn handle_freeze(dir: &Path, daemon_cfg: &mut DaemonConfig, logger: &DaemonLogger) -> IpcResponse {
     use workgraph::service::registry::AgentStatus;
 
     let mut coord_state = CoordinatorState::load_or_default(dir);
@@ -651,7 +647,10 @@ fn handle_freeze(
         if unsafe { libc::kill(pid, libc::SIGSTOP) } == 0 {
             frozen_pids.push(agent.pid);
             agent.status = AgentStatus::Frozen;
-            logger.info(&format!("Sent SIGSTOP to agent {} (PID {})", agent.id, agent.pid));
+            logger.info(&format!(
+                "Sent SIGSTOP to agent {} (PID {})",
+                agent.id, agent.pid
+            ));
         } else {
             let err = std::io::Error::last_os_error();
             logger.warn(&format!(
@@ -699,11 +698,7 @@ fn handle_freeze(
 /// Handle thaw: send SIGCONT to all frozen agent processes, resume coordinator,
 /// and update registry + coordinator state.
 #[cfg(unix)]
-fn handle_thaw(
-    dir: &Path,
-    daemon_cfg: &mut DaemonConfig,
-    logger: &DaemonLogger,
-) -> IpcResponse {
+fn handle_thaw(dir: &Path, daemon_cfg: &mut DaemonConfig, logger: &DaemonLogger) -> IpcResponse {
     use crate::commands::is_process_alive;
     use workgraph::service::registry::AgentStatus;
 
@@ -743,7 +738,10 @@ fn handle_thaw(
         if unsafe { libc::kill(pid, libc::SIGCONT) } == 0 {
             agent.status = AgentStatus::Working;
             thawed_pids.push(agent.pid);
-            logger.info(&format!("Sent SIGCONT to agent {} (PID {})", agent.id, agent.pid));
+            logger.info(&format!(
+                "Sent SIGCONT to agent {} (PID {})",
+                agent.id, agent.pid
+            ));
         } else {
             let err = std::io::Error::last_os_error();
             logger.warn(&format!(
@@ -782,11 +780,7 @@ fn handle_thaw(
 }
 
 #[cfg(not(unix))]
-fn handle_thaw(
-    _dir: &Path,
-    _daemon_cfg: &mut DaemonConfig,
-    _logger: &DaemonLogger,
-) -> IpcResponse {
+fn handle_thaw(_dir: &Path, _daemon_cfg: &mut DaemonConfig, _logger: &DaemonLogger) -> IpcResponse {
     IpcResponse::error("Thaw is only supported on Unix systems")
 }
 
@@ -2138,7 +2132,9 @@ poll_interval = 120
 
         // Verify the coordinator task was created with correct label
         let graph = workgraph::parser::load_graph(&dir.join("graph.jsonl")).unwrap();
-        let coord = graph.get_task(".coordinator-0").expect("coordinator task should exist");
+        let coord = graph
+            .get_task(".coordinator-0")
+            .expect("coordinator task should exist");
         assert_eq!(coord.title, "Coordinator: alice");
         assert!(coord.tags.contains(&"coordinator-loop".to_string()));
 
@@ -2147,7 +2143,9 @@ poll_interval = 120
         assert!(resp.ok, "create_coordinator for bob should succeed");
 
         let graph = workgraph::parser::load_graph(&dir.join("graph.jsonl")).unwrap();
-        let coord = graph.get_task(".coordinator-1").expect("second coordinator should exist");
+        let coord = graph
+            .get_task(".coordinator-1")
+            .expect("second coordinator should exist");
         assert_eq!(coord.title, "Coordinator: bob");
 
         // Both coordinators should coexist
@@ -2200,6 +2198,9 @@ poll_interval = 120
         alice_updated.save_for(dir, 0);
 
         let bob_check = CoordinatorState::load_for(dir, 1).unwrap();
-        assert_eq!(bob_check.accumulated_tokens, 200, "bob's state should be untouched");
+        assert_eq!(
+            bob_check.accumulated_tokens, 200,
+            "bob's state should be untouched"
+        );
     }
 }

@@ -179,11 +179,7 @@ struct DaemonGuard<'a> {
 }
 
 impl<'a> DaemonGuard<'a> {
-    fn start(
-        wg_dir: &'a Path,
-        env_vars: &[(&str, &str)],
-        extra_args: &[&str],
-    ) -> Self {
+    fn start(wg_dir: &'a Path, env_vars: &[(&str, &str)], extra_args: &[&str]) -> Self {
         let env_vec: Vec<(String, String)> = env_vars
             .iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))
@@ -286,10 +282,7 @@ fn coordinator_spawn_default_command() {
         std::env::var("PATH").unwrap_or_default()
     );
 
-    write_config(
-        &wg_dir,
-        "[coordinator]\ncoordinator_agent = true\n",
-    );
+    write_config(&wg_dir, "[coordinator]\ncoordinator_agent = true\n");
 
     let env = [
         ("PATH", path_env.as_str()),
@@ -308,10 +301,7 @@ fn coordinator_spawn_default_command() {
 
     // Verify the mock "claude" binary was invoked (arg[0] contains "claude")
     let args = read_captured_args(&args_file);
-    assert!(
-        !args.is_empty(),
-        "No args captured — mock not invoked?"
-    );
+    assert!(!args.is_empty(), "No args captured — mock not invoked?");
     assert!(
         args[0].ends_with("/claude"),
         "Expected default command 'claude', but arg[0] = {:?}",
@@ -359,10 +349,7 @@ args = ["--print", "--verbose", "--permission-mode", "bypassPermissions", "--out
     )
     .unwrap();
 
-    write_config(
-        &wg_dir,
-        "[coordinator]\ncoordinator_agent = true\n",
-    );
+    write_config(&wg_dir, "[coordinator]\ncoordinator_agent = true\n");
 
     let env = [
         ("PATH", path_env.as_str()),
@@ -380,10 +367,7 @@ args = ["--print", "--verbose", "--permission-mode", "bypassPermissions", "--out
 
     // Verify the custom command was used
     let args = read_captured_args(&args_file);
-    assert!(
-        !args.is_empty(),
-        "No args captured — mock not invoked?"
-    );
+    assert!(!args.is_empty(), "No args captured — mock not invoked?");
     assert!(
         args[0].ends_with("/my-custom-cli"),
         "Expected custom command 'my-custom-cli', but arg[0] = {:?}",
@@ -422,7 +406,10 @@ fn coordinator_spawn_with_provider() {
     let fake_home = TempDir::new().unwrap();
     let env = [
         ("PATH", path_env.as_str()),
-        ("OPENROUTER_API_KEY", "sk-test-dummy-key-for-provider-routing"),
+        (
+            "OPENROUTER_API_KEY",
+            "sk-test-dummy-key-for-provider-routing",
+        ),
         ("HOME", fake_home.path().to_str().unwrap()),
     ];
     let guard = DaemonGuard::start(&wg_dir, &env, &[]);
@@ -492,10 +479,7 @@ args = ["--print", "--verbose", "--permission-mode", "bypassPermissions", "--out
 
     // Set coordinator config — use an unknown provider name so it stays on the
     // CLI path (only openrouter/openai/local route to native).
-    write_config(
-        &wg_dir,
-        "[coordinator]\ncoordinator_agent = true\n",
-    );
+    write_config(&wg_dir, "[coordinator]\ncoordinator_agent = true\n");
 
     let env = [
         ("PATH", path_env.as_str()),
@@ -512,10 +496,7 @@ args = ["--print", "--verbose", "--permission-mode", "bypassPermissions", "--out
     );
 
     let args = read_captured_args(&args_file);
-    assert!(
-        !args.is_empty(),
-        "No args captured"
-    );
+    assert!(!args.is_empty(), "No args captured");
 
     // Verify executor config overrode the default "claude" command
     assert!(

@@ -5,8 +5,8 @@
 use std::fs;
 use std::io::Write;
 use std::path::Path;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use tempfile::TempDir;
 
@@ -16,7 +16,7 @@ use workgraph::executor::native::client::{
 };
 use workgraph::executor::native::journal::{self, Journal, JournalEntryKind};
 use workgraph::executor::native::provider::Provider;
-use workgraph::executor::native::resume::{load_resume_data, ResumeConfig};
+use workgraph::executor::native::resume::{ResumeConfig, load_resume_data};
 use workgraph::executor::native::tools::ToolRegistry;
 
 /// A mock provider that returns pre-scripted responses.
@@ -123,11 +123,7 @@ fn setup_workgraph(dir: &Path) {
 }
 
 /// Helper: run an agent to completion, simulating a first session.
-async fn run_first_session(
-    wg_dir: &Path,
-    task_id: &str,
-    provider: MockProvider,
-) {
+async fn run_first_session(wg_dir: &Path, task_id: &str, provider: MockProvider) {
     let j_path = journal::journal_path(wg_dir, task_id);
     let registry = ToolRegistry::default_all(wg_dir, wg_dir.parent().unwrap());
     let output_log = wg_dir.join("test.ndjson");
@@ -157,10 +153,18 @@ async fn test_agent_resumes_from_journal() {
     let j_path = journal::journal_path(&wg_dir, task_id);
 
     // === First session: agent runs and completes ===
-    run_first_session(&wg_dir, task_id, MockProvider::simple_text("First session done.")).await;
+    run_first_session(
+        &wg_dir,
+        task_id,
+        MockProvider::simple_text("First session done."),
+    )
+    .await;
 
     let entries_after_first = Journal::read_all(&j_path).unwrap();
-    assert!(entries_after_first.len() >= 3, "Should have Init + messages + End");
+    assert!(
+        entries_after_first.len() >= 3,
+        "Should have Init + messages + End"
+    );
 
     // === Simulate crash: remove End entry by writing new entries without it ===
     // (In practice, a crash means no End entry. We'll create a new journal
@@ -168,27 +172,41 @@ async fn test_agent_resumes_from_journal() {
     let crash_journal_path = journal::journal_path(&wg_dir, "resume-crash");
     {
         let mut journal = Journal::open(&crash_journal_path).unwrap();
-        journal.append(JournalEntryKind::Init {
-            model: "mock-model-v1".to_string(),
-            provider: "mock".to_string(),
-            system_prompt: "You are a test agent.".to_string(),
-            tools: vec![],
-            task_id: Some("resume-crash".to_string()),
-        }).unwrap();
-        journal.append(JournalEntryKind::Message {
-            role: workgraph::executor::native::client::Role::User,
-            content: vec![ContentBlock::Text { text: "Start the task.".to_string() }],
-            usage: None,
-            response_id: None,
-            stop_reason: None,
-        }).unwrap();
-        journal.append(JournalEntryKind::Message {
-            role: workgraph::executor::native::client::Role::Assistant,
-            content: vec![ContentBlock::Text { text: "I'll start by reading the code...".to_string() }],
-            usage: Some(Usage { input_tokens: 100, output_tokens: 50, ..Usage::default() }),
-            response_id: Some("resp-1".to_string()),
-            stop_reason: Some(StopReason::ToolUse),
-        }).unwrap();
+        journal
+            .append(JournalEntryKind::Init {
+                model: "mock-model-v1".to_string(),
+                provider: "mock".to_string(),
+                system_prompt: "You are a test agent.".to_string(),
+                tools: vec![],
+                task_id: Some("resume-crash".to_string()),
+            })
+            .unwrap();
+        journal
+            .append(JournalEntryKind::Message {
+                role: workgraph::executor::native::client::Role::User,
+                content: vec![ContentBlock::Text {
+                    text: "Start the task.".to_string(),
+                }],
+                usage: None,
+                response_id: None,
+                stop_reason: None,
+            })
+            .unwrap();
+        journal
+            .append(JournalEntryKind::Message {
+                role: workgraph::executor::native::client::Role::Assistant,
+                content: vec![ContentBlock::Text {
+                    text: "I'll start by reading the code...".to_string(),
+                }],
+                usage: Some(Usage {
+                    input_tokens: 100,
+                    output_tokens: 50,
+                    ..Usage::default()
+                }),
+                response_id: Some("resp-1".to_string()),
+                stop_reason: Some(StopReason::ToolUse),
+            })
+            .unwrap();
         // No End entry — simulates crash
     }
 
@@ -217,7 +235,11 @@ async fn test_agent_resumes_from_journal() {
 
     // Original: Init + User + Assistant (3 entries)
     // Resume session: Init + User (resume msg) + Assistant + End (4 entries)
-    assert!(entries.len() >= 6, "Should have original + resume entries, got {}", entries.len());
+    assert!(
+        entries.len() >= 6,
+        "Should have original + resume entries, got {}",
+        entries.len()
+    );
 
     // The resume user message should mention "RESUMED"
     let resume_msg = entries.iter().find(|e| {
@@ -231,7 +253,10 @@ async fn test_agent_resumes_from_journal() {
             false
         }
     });
-    assert!(resume_msg.is_some(), "Should have a resume annotation message");
+    assert!(
+        resume_msg.is_some(),
+        "Should have a resume annotation message"
+    );
 }
 
 // ── Test: large journal gets compacted before resume ───────────────────
@@ -248,31 +273,47 @@ async fn test_large_journal_compacted_on_resume() {
     // Create a journal with many large messages that exceed the budget
     {
         let mut journal = Journal::open(&j_path).unwrap();
-        journal.append(JournalEntryKind::Init {
-            model: "mock-model-v1".to_string(),
-            provider: "mock".to_string(),
-            system_prompt: "You are a test agent.".to_string(),
-            tools: vec![],
-            task_id: Some(task_id.to_string()),
-        }).unwrap();
+        journal
+            .append(JournalEntryKind::Init {
+                model: "mock-model-v1".to_string(),
+                provider: "mock".to_string(),
+                system_prompt: "You are a test agent.".to_string(),
+                tools: vec![],
+                task_id: Some(task_id.to_string()),
+            })
+            .unwrap();
 
         // Write 40 large message pairs (user + assistant) to exceed budget
         for i in 0..40 {
             let large_text = format!("Message {} with lots of content: {}", i, "x".repeat(5000));
-            journal.append(JournalEntryKind::Message {
-                role: workgraph::executor::native::client::Role::User,
-                content: vec![ContentBlock::Text { text: large_text.clone() }],
-                usage: None,
-                response_id: None,
-                stop_reason: None,
-            }).unwrap();
-            journal.append(JournalEntryKind::Message {
-                role: workgraph::executor::native::client::Role::Assistant,
-                content: vec![ContentBlock::Text { text: large_text }],
-                usage: Some(Usage { input_tokens: 1000, output_tokens: 500, ..Usage::default() }),
-                response_id: Some(format!("resp-{}", i)),
-                stop_reason: if i == 39 { Some(StopReason::ToolUse) } else { Some(StopReason::EndTurn) },
-            }).unwrap();
+            journal
+                .append(JournalEntryKind::Message {
+                    role: workgraph::executor::native::client::Role::User,
+                    content: vec![ContentBlock::Text {
+                        text: large_text.clone(),
+                    }],
+                    usage: None,
+                    response_id: None,
+                    stop_reason: None,
+                })
+                .unwrap();
+            journal
+                .append(JournalEntryKind::Message {
+                    role: workgraph::executor::native::client::Role::Assistant,
+                    content: vec![ContentBlock::Text { text: large_text }],
+                    usage: Some(Usage {
+                        input_tokens: 1000,
+                        output_tokens: 500,
+                        ..Usage::default()
+                    }),
+                    response_id: Some(format!("resp-{}", i)),
+                    stop_reason: if i == 39 {
+                        Some(StopReason::ToolUse)
+                    } else {
+                        Some(StopReason::EndTurn)
+                    },
+                })
+                .unwrap();
         }
         // No End entry — simulates crash
     }
@@ -287,7 +328,10 @@ async fn test_large_journal_compacted_on_resume() {
         .unwrap()
         .expect("Should load resume data");
 
-    assert!(resume_data.was_compacted, "Journal should have been compacted");
+    assert!(
+        resume_data.was_compacted,
+        "Journal should have been compacted"
+    );
     assert!(
         resume_data.messages.len() < 80,
         "Compacted messages ({}) should be fewer than original (80)",
@@ -297,7 +341,11 @@ async fn test_large_journal_compacted_on_resume() {
     // First message should be the compaction summary
     match &resume_data.messages[0].content[0] {
         ContentBlock::Text { text } => {
-            assert!(text.contains("compacted"), "Summary should mention compaction: {}", text);
+            assert!(
+                text.contains("compacted"),
+                "Summary should mention compaction: {}",
+                text
+            );
         }
         _ => panic!("Expected text content in compaction summary"),
     }
@@ -341,50 +389,66 @@ async fn test_stale_tool_results_detected() {
     // Create a journal that recorded reading this file
     {
         let mut journal = Journal::open(&j_path).unwrap();
-        journal.append(JournalEntryKind::Init {
-            model: "mock-model-v1".to_string(),
-            provider: "mock".to_string(),
-            system_prompt: "You are a test agent.".to_string(),
-            tools: vec![],
-            task_id: Some(task_id.to_string()),
-        }).unwrap();
-        journal.append(JournalEntryKind::Message {
-            role: workgraph::executor::native::client::Role::User,
-            content: vec![ContentBlock::Text { text: "Read the file.".to_string() }],
-            usage: None,
-            response_id: None,
-            stop_reason: None,
-        }).unwrap();
-        journal.append(JournalEntryKind::Message {
-            role: workgraph::executor::native::client::Role::Assistant,
-            content: vec![ContentBlock::ToolUse {
-                id: "tu-1".to_string(),
+        journal
+            .append(JournalEntryKind::Init {
+                model: "mock-model-v1".to_string(),
+                provider: "mock".to_string(),
+                system_prompt: "You are a test agent.".to_string(),
+                tools: vec![],
+                task_id: Some(task_id.to_string()),
+            })
+            .unwrap();
+        journal
+            .append(JournalEntryKind::Message {
+                role: workgraph::executor::native::client::Role::User,
+                content: vec![ContentBlock::Text {
+                    text: "Read the file.".to_string(),
+                }],
+                usage: None,
+                response_id: None,
+                stop_reason: None,
+            })
+            .unwrap();
+        journal
+            .append(JournalEntryKind::Message {
+                role: workgraph::executor::native::client::Role::Assistant,
+                content: vec![ContentBlock::ToolUse {
+                    id: "tu-1".to_string(),
+                    name: "read_file".to_string(),
+                    input: serde_json::json!({"path": test_file.to_str().unwrap()}),
+                }],
+                usage: Some(Usage {
+                    input_tokens: 50,
+                    output_tokens: 20,
+                    ..Usage::default()
+                }),
+                response_id: Some("resp-1".to_string()),
+                stop_reason: Some(StopReason::ToolUse),
+            })
+            .unwrap();
+        journal
+            .append(JournalEntryKind::ToolExecution {
+                tool_use_id: "tu-1".to_string(),
                 name: "read_file".to_string(),
                 input: serde_json::json!({"path": test_file.to_str().unwrap()}),
-            }],
-            usage: Some(Usage { input_tokens: 50, output_tokens: 20, ..Usage::default() }),
-            response_id: Some("resp-1".to_string()),
-            stop_reason: Some(StopReason::ToolUse),
-        }).unwrap();
-        journal.append(JournalEntryKind::ToolExecution {
-            tool_use_id: "tu-1".to_string(),
-            name: "read_file".to_string(),
-            input: serde_json::json!({"path": test_file.to_str().unwrap()}),
-            output: "fn original() {}".to_string(),
-            is_error: false,
-            duration_ms: 5,
-        }).unwrap();
-        journal.append(JournalEntryKind::Message {
-            role: workgraph::executor::native::client::Role::User,
-            content: vec![ContentBlock::ToolResult {
-                tool_use_id: "tu-1".to_string(),
-                content: "fn original() {}".to_string(),
+                output: "fn original() {}".to_string(),
                 is_error: false,
-            }],
-            usage: None,
-            response_id: None,
-            stop_reason: None,
-        }).unwrap();
+                duration_ms: 5,
+            })
+            .unwrap();
+        journal
+            .append(JournalEntryKind::Message {
+                role: workgraph::executor::native::client::Role::User,
+                content: vec![ContentBlock::ToolResult {
+                    tool_use_id: "tu-1".to_string(),
+                    content: "fn original() {}".to_string(),
+                    is_error: false,
+                }],
+                usage: None,
+                response_id: None,
+                stop_reason: None,
+            })
+            .unwrap();
         // Crash — no End entry
     }
 
@@ -397,7 +461,10 @@ async fn test_stale_tool_results_detected() {
         .unwrap()
         .expect("Should load resume data");
 
-    assert!(!resume_data.stale_annotations.is_empty(), "Should detect stale file");
+    assert!(
+        !resume_data.stale_annotations.is_empty(),
+        "Should detect stale file"
+    );
     assert!(
         resume_data.stale_annotations[0].contains("STALE"),
         "Annotation should mention STALE: {}",
@@ -426,7 +493,10 @@ async fn test_stale_tool_results_detected() {
     .with_working_dir(tmp.path().to_path_buf());
 
     let result = agent.run("Continue.").await.unwrap();
-    assert_eq!(result.final_text, "Noted the stale state and re-read files.");
+    assert_eq!(
+        result.final_text,
+        "Noted the stale state and re-read files."
+    );
 
     // Verify the resume message in the journal contains the stale annotation
     let entries = Journal::read_all(&j_path).unwrap();
@@ -440,7 +510,10 @@ async fn test_stale_tool_results_detected() {
             false
         }
     });
-    assert!(has_stale_annotation, "Journal should contain stale annotation");
+    assert!(
+        has_stale_annotation,
+        "Journal should contain stale annotation"
+    );
 }
 
 // ── Test: --no-resume flag causes fresh start ──────────────────────────
@@ -457,27 +530,41 @@ async fn test_no_resume_flag_fresh_start() {
     // Create a journal from a "prior session"
     {
         let mut journal = Journal::open(&j_path).unwrap();
-        journal.append(JournalEntryKind::Init {
-            model: "mock-model-v1".to_string(),
-            provider: "mock".to_string(),
-            system_prompt: "You are a test agent.".to_string(),
-            tools: vec![],
-            task_id: Some(task_id.to_string()),
-        }).unwrap();
-        journal.append(JournalEntryKind::Message {
-            role: workgraph::executor::native::client::Role::User,
-            content: vec![ContentBlock::Text { text: "Prior session message.".to_string() }],
-            usage: None,
-            response_id: None,
-            stop_reason: None,
-        }).unwrap();
-        journal.append(JournalEntryKind::Message {
-            role: workgraph::executor::native::client::Role::Assistant,
-            content: vec![ContentBlock::Text { text: "Prior session response.".to_string() }],
-            usage: Some(Usage { input_tokens: 50, output_tokens: 25, ..Usage::default() }),
-            response_id: Some("resp-1".to_string()),
-            stop_reason: Some(StopReason::ToolUse),
-        }).unwrap();
+        journal
+            .append(JournalEntryKind::Init {
+                model: "mock-model-v1".to_string(),
+                provider: "mock".to_string(),
+                system_prompt: "You are a test agent.".to_string(),
+                tools: vec![],
+                task_id: Some(task_id.to_string()),
+            })
+            .unwrap();
+        journal
+            .append(JournalEntryKind::Message {
+                role: workgraph::executor::native::client::Role::User,
+                content: vec![ContentBlock::Text {
+                    text: "Prior session message.".to_string(),
+                }],
+                usage: None,
+                response_id: None,
+                stop_reason: None,
+            })
+            .unwrap();
+        journal
+            .append(JournalEntryKind::Message {
+                role: workgraph::executor::native::client::Role::Assistant,
+                content: vec![ContentBlock::Text {
+                    text: "Prior session response.".to_string(),
+                }],
+                usage: Some(Usage {
+                    input_tokens: 50,
+                    output_tokens: 25,
+                    ..Usage::default()
+                }),
+                response_id: Some("resp-1".to_string()),
+                stop_reason: Some(StopReason::ToolUse),
+            })
+            .unwrap();
         // No End — simulates crash
     }
 
@@ -521,7 +608,10 @@ async fn test_no_resume_flag_fresh_start() {
             false
         }
     });
-    assert!(!has_resume_annotation, "Should NOT have resume annotation when --no-resume is used");
+    assert!(
+        !has_resume_annotation,
+        "Should NOT have resume annotation when --no-resume is used"
+    );
 }
 
 // ── Test: kill agent mid-task, unclaim, new agent resumes and completes ─
@@ -610,7 +700,8 @@ async fn test_kill_and_resume_integration() {
     let final_entries = Journal::read_all(&j_path).unwrap();
 
     // Should have: original entries (without End) + resume Init + resume User + resume Assistant + End
-    assert!(final_entries.len() >= 9,
+    assert!(
+        final_entries.len() >= 9,
         "Expected at least 9 entries in final journal, got {}",
         final_entries.len()
     );
@@ -630,7 +721,10 @@ async fn test_kill_and_resume_integration() {
 
     // Should end with an End entry
     assert!(
-        matches!(final_entries.last().unwrap().kind, JournalEntryKind::End { .. }),
+        matches!(
+            final_entries.last().unwrap().kind,
+            JournalEntryKind::End { .. }
+        ),
         "Journal should end with End entry"
     );
 }
@@ -649,13 +743,15 @@ async fn test_resume_empty_journal() {
     // Create a journal with only an Init entry (agent crashed immediately)
     {
         let mut journal = Journal::open(&j_path).unwrap();
-        journal.append(JournalEntryKind::Init {
-            model: "mock-model-v1".to_string(),
-            provider: "mock".to_string(),
-            system_prompt: "You are a test agent.".to_string(),
-            tools: vec![],
-            task_id: Some(task_id.to_string()),
-        }).unwrap();
+        journal
+            .append(JournalEntryKind::Init {
+                model: "mock-model-v1".to_string(),
+                provider: "mock".to_string(),
+                system_prompt: "You are a test agent.".to_string(),
+                tools: vec![],
+                task_id: Some(task_id.to_string()),
+            })
+            .unwrap();
     }
 
     // Resume should behave as fresh start (no messages to resume from)
@@ -692,27 +788,41 @@ async fn test_resume_provider_agnostic() {
     // Create a journal that looks like it came from an "openai" provider
     {
         let mut journal = Journal::open(&j_path).unwrap();
-        journal.append(JournalEntryKind::Init {
-            model: "gpt-4o".to_string(),
-            provider: "openai".to_string(),
-            system_prompt: "You are a test agent.".to_string(),
-            tools: vec![],
-            task_id: Some(task_id.to_string()),
-        }).unwrap();
-        journal.append(JournalEntryKind::Message {
-            role: workgraph::executor::native::client::Role::User,
-            content: vec![ContentBlock::Text { text: "Hello from OpenAI session.".to_string() }],
-            usage: None,
-            response_id: None,
-            stop_reason: None,
-        }).unwrap();
-        journal.append(JournalEntryKind::Message {
-            role: workgraph::executor::native::client::Role::Assistant,
-            content: vec![ContentBlock::Text { text: "Working on it...".to_string() }],
-            usage: Some(Usage { input_tokens: 50, output_tokens: 25, ..Usage::default() }),
-            response_id: Some("chatcmpl-abc".to_string()),
-            stop_reason: Some(StopReason::ToolUse),
-        }).unwrap();
+        journal
+            .append(JournalEntryKind::Init {
+                model: "gpt-4o".to_string(),
+                provider: "openai".to_string(),
+                system_prompt: "You are a test agent.".to_string(),
+                tools: vec![],
+                task_id: Some(task_id.to_string()),
+            })
+            .unwrap();
+        journal
+            .append(JournalEntryKind::Message {
+                role: workgraph::executor::native::client::Role::User,
+                content: vec![ContentBlock::Text {
+                    text: "Hello from OpenAI session.".to_string(),
+                }],
+                usage: None,
+                response_id: None,
+                stop_reason: None,
+            })
+            .unwrap();
+        journal
+            .append(JournalEntryKind::Message {
+                role: workgraph::executor::native::client::Role::Assistant,
+                content: vec![ContentBlock::Text {
+                    text: "Working on it...".to_string(),
+                }],
+                usage: Some(Usage {
+                    input_tokens: 50,
+                    output_tokens: 25,
+                    ..Usage::default()
+                }),
+                response_id: Some("chatcmpl-abc".to_string()),
+                stop_reason: Some(StopReason::ToolUse),
+            })
+            .unwrap();
     }
 
     // Resume with a "mock" provider (different from journal's "openai") — should work

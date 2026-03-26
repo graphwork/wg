@@ -583,7 +583,8 @@ pub fn generate_viz_output_from_graph(
             .get_task(".compact-0")
             .map(|t| t.status)
             .unwrap_or(Status::Open);
-        let total_tokens = crate::commands::service::CoordinatorState::total_accumulated_tokens(dir);
+        let total_tokens =
+            crate::commands::service::CoordinatorState::total_accumulated_tokens(dir);
         let config = workgraph::config::Config::load(dir).unwrap_or_default();
         let threshold = config.effective_compaction_threshold();
         let compactor_state = workgraph::service::compactor::CompactorState::load(dir);
@@ -1329,8 +1330,7 @@ mod tests {
         let mut assign_b =
             make_internal_task(".assign-b", "Assign agent to b", "assignment", vec!["b"]);
         assign_b.status = Status::InProgress;
-        let mut eval_b =
-            make_internal_task(".evaluate-b", "Evaluate b", "evaluation", vec!["b"]);
+        let mut eval_b = make_internal_task(".evaluate-b", "Evaluate b", "evaluation", vec!["b"]);
         eval_b.status = Status::Open; // Open = not yet active, should NOT annotate
 
         graph.add_node(Node::Task(task_b));
@@ -1529,22 +1529,28 @@ mod tests {
     #[test]
     fn test_compact_annotation_recently_completed() {
         // Use a timestamp 10 seconds ago
-        let ts = (chrono::Utc::now() - chrono::Duration::seconds(10))
-            .to_rfc3339();
+        let ts = (chrono::Utc::now() - chrono::Duration::seconds(10)).to_rfc3339();
         let text = compact_node_annotation(Status::Open, 0, 1000, Some(&ts));
         // Should show "✓ compacted Xs ago" for recent completion
         assert!(text.contains('✓'), "Expected ✓ in: {}", text);
-        assert!(text.contains("compacted"), "Expected 'compacted' in: {}", text);
+        assert!(
+            text.contains("compacted"),
+            "Expected 'compacted' in: {}",
+            text
+        );
     }
 
     #[test]
     fn test_compact_annotation_old_completion_shows_pressure() {
         // Timestamp 2 minutes ago — should fall through to pressure display
-        let ts = (chrono::Utc::now() - chrono::Duration::seconds(120))
-            .to_rfc3339();
+        let ts = (chrono::Utc::now() - chrono::Duration::seconds(120)).to_rfc3339();
         let text = compact_node_annotation(Status::Open, 300, 1000, Some(&ts));
         // Should show pressure, not "compacted X ago"
-        assert!(!text.contains('✓'), "Old completion should not show ✓: {}", text);
+        assert!(
+            !text.contains('✓'),
+            "Old completion should not show ✓: {}",
+            text
+        );
         assert_eq!(text, "[idle · 30% ctx]");
     }
 }

@@ -1656,7 +1656,11 @@ pub fn format_vitals(vitals: &VitalsState) -> String {
     let mut parts = Vec::new();
 
     // Agent count
-    let dot = if vitals.agents_alive > 0 { "●" } else { "○" };
+    let dot = if vitals.agents_alive > 0 {
+        "●"
+    } else {
+        "○"
+    };
     parts.push(format!("{} {} agents", dot, vitals.agents_alive));
 
     // Task counts
@@ -1919,7 +1923,6 @@ pub struct LogPaneState {
     pub has_new_content: bool,
 }
 
-
 impl Default for LogPaneState {
     fn default() -> Self {
         Self {
@@ -2078,10 +2081,7 @@ fn format_event_summary(
     let tid = task_id.as_deref().unwrap_or("");
     match op {
         "add_task" => {
-            let title = detail
-                .get("title")
-                .and_then(|t| t.as_str())
-                .unwrap_or(tid);
+            let title = detail.get("title").and_then(|t| t.as_str()).unwrap_or(tid);
             format!("Task created: {}", title)
         }
         "claim" => {
@@ -4023,12 +4023,11 @@ impl VizApp {
     /// Returns true if any toasts were removed (needs redraw).
     pub fn cleanup_toasts(&mut self) -> bool {
         let before = self.toasts.len();
-        self.toasts.retain(|t| {
-            match t.severity.auto_dismiss_duration() {
+        self.toasts
+            .retain(|t| match t.severity.auto_dismiss_duration() {
                 Some(dur) => t.created_at.elapsed() < dur,
                 None => true,
-            }
-        });
+            });
         self.toasts.len() != before
     }
 
@@ -4465,7 +4464,8 @@ impl VizApp {
                                         .to_string()
                                 })
                                 .unwrap_or_else(|| format!("assigned → {}", source_id));
-                            deferred_toasts.push((format!("\u{26a1} Assigned: {}", msg), ToastSeverity::Info));
+                            deferred_toasts
+                                .push((format!("\u{26a1} Assigned: {}", msg), ToastSeverity::Info));
                         }
                     }
                     // Agent spawn: non-system task went to InProgress.
@@ -4478,24 +4478,32 @@ impl VizApp {
                         } else {
                             agent_id
                         };
-                        deferred_toasts.push((format!(
-                            "\u{26a1} Spawned: {} on {}",
-                            short, task.id
-                        ), ToastSeverity::Info));
+                        deferred_toasts.push((
+                            format!("\u{26a1} Spawned: {} on {}", short, task.id),
+                            ToastSeverity::Info,
+                        ));
                     }
 
                     // Phase 1 toast triggers — non-system tasks only.
                     if !workgraph::graph::is_system_task(&task.id) {
                         match snapshot.status {
                             Status::Done => {
-                                if old.status == Status::InProgress || old.status == Status::PendingValidation {
-                                    let duration_str = task.started_at.as_deref()
+                                if old.status == Status::InProgress
+                                    || old.status == Status::PendingValidation
+                                {
+                                    let duration_str = task
+                                        .started_at
+                                        .as_deref()
                                         .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
                                         .and_then(|started| {
-                                            task.completed_at.as_deref()
-                                                .and_then(|c| chrono::DateTime::parse_from_rfc3339(c).ok())
+                                            task.completed_at
+                                                .as_deref()
+                                                .and_then(|c| {
+                                                    chrono::DateTime::parse_from_rfc3339(c).ok()
+                                                })
                                                 .map(|completed| {
-                                                    let dur = completed.signed_duration_since(started);
+                                                    let dur =
+                                                        completed.signed_duration_since(started);
                                                     format_duration_short(dur)
                                                 })
                                         })
@@ -4507,7 +4515,10 @@ impl VizApp {
                                         ));
                                     } else {
                                         deferred_toasts.push((
-                                            format!("\u{2705} Done: {} ({})", task.id, duration_str),
+                                            format!(
+                                                "\u{2705} Done: {} ({})",
+                                                task.id, duration_str
+                                            ),
                                             ToastSeverity::Info,
                                         ));
                                     }
@@ -4527,7 +4538,6 @@ impl VizApp {
                             _ => {}
                         }
                     }
-
                 }
                 // Agent assignment change.
                 else if old.assigned != snapshot.assigned && snapshot.assigned.is_some() {
@@ -4760,8 +4770,7 @@ impl VizApp {
                     self.invalidate_hud();
                     self.load_hud_detail();
                     if prev_hud_task.is_some()
-                        && prev_hud_task
-                            == self.hud_detail.as_ref().map(|d| d.task_id.clone())
+                        && prev_hud_task == self.hud_detail.as_ref().map(|d| d.task_id.clone())
                     {
                         if prev_hud_follow {
                             self.hud_scroll = usize::MAX; // renderer clamps to actual max
@@ -4881,9 +4890,7 @@ impl VizApp {
                     .as_ref()
                     .and_then(|d| d.output_path.as_ref())
                     .and_then(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok());
-                if new_output_mtime.is_some()
-                    && new_output_mtime != self.last_detail_output_mtime
-                {
+                if new_output_mtime.is_some() && new_output_mtime != self.last_detail_output_mtime {
                     self.last_detail_output_mtime = new_output_mtime;
                     let prev_hud_follow = self.hud_follow;
                     let prev_hud_task = self.hud_detail.as_ref().map(|d| d.task_id.clone());
@@ -4891,8 +4898,7 @@ impl VizApp {
                     self.invalidate_hud();
                     self.load_hud_detail();
                     if prev_hud_task.is_some()
-                        && prev_hud_task
-                            == self.hud_detail.as_ref().map(|d| d.task_id.clone())
+                        && prev_hud_task == self.hud_detail.as_ref().map(|d| d.task_id.clone())
                     {
                         if prev_hud_follow {
                             self.hud_scroll = usize::MAX;
@@ -5127,8 +5133,7 @@ impl VizApp {
         // Sticky annotations awaiting expiry — need periodic redraws to
         // remove them once the hold period elapses.
         if self.sticky_annotations.values().any(|s| {
-            s.last_seen.elapsed()
-                < std::time::Duration::from_secs(STICKY_ANNOTATION_HOLD_SECS + 1)
+            s.last_seen.elapsed() < std::time::Duration::from_secs(STICKY_ANNOTATION_HOLD_SECS + 1)
         }) {
             return true;
         }
@@ -5275,7 +5280,10 @@ impl VizApp {
                 }
             }
         }
-        self.push_toast(format!("Sort: {}", self.sort_mode.label()), ToastSeverity::Info);
+        self.push_toast(
+            format!("Sort: {}", self.sort_mode.label()),
+            ToastSeverity::Info,
+        );
     }
 
     /// Apply the current sort mode to reorder `task_order`.
@@ -5786,8 +5794,10 @@ impl VizApp {
             }
             // Next due: use ready_after if present, otherwise compute from last_completed + delay
             let next_due = task.ready_after.clone().or_else(|| {
-                let delay_secs =
-                    cc.delay.as_ref().and_then(|d| workgraph::graph::parse_delay(d))?;
+                let delay_secs = cc
+                    .delay
+                    .as_ref()
+                    .and_then(|d| workgraph::graph::parse_delay(d))?;
                 let last_ts = task
                     .last_iteration_completed_at
                     .as_ref()?
@@ -5989,8 +5999,10 @@ impl VizApp {
                 }
             }
             let next_due = task.ready_after.clone().or_else(|| {
-                let delay_secs =
-                    cc.delay.as_ref().and_then(|d| workgraph::graph::parse_delay(d))?;
+                let delay_secs = cc
+                    .delay
+                    .as_ref()
+                    .and_then(|d| workgraph::graph::parse_delay(d))?;
                 let last_ts = task
                     .last_iteration_completed_at
                     .as_ref()?
@@ -6289,7 +6301,6 @@ impl VizApp {
         // Mark agent output as dirty so markdown is re-rendered.
         self.log_pane.agent_output.dirty = true;
     }
-
 
     /// Scroll log pane up.
     pub fn log_scroll_up(&mut self, amount: usize) {
@@ -7282,14 +7293,27 @@ impl VizApp {
                                 self.force_refresh();
                                 self.switch_coordinator(cid as u32);
                                 self.right_panel_tab = RightPanelTab::Chat;
-                                self.push_toast(format!("Coordinator {} created", cid), ToastSeverity::Info);
+                                self.push_toast(
+                                    format!("Coordinator {} created", cid),
+                                    ToastSeverity::Info,
+                                );
                             }
                         } else {
-                            self.push_toast("New coordinator created".to_string(), ToastSeverity::Info);
+                            self.push_toast(
+                                "New coordinator created".to_string(),
+                                ToastSeverity::Info,
+                            );
                         }
                     } else {
-                        let err = result.output.lines().find(|l| !l.is_empty()).unwrap_or("unknown");
-                        self.push_toast(format!("Failed to create coordinator: {}", err), ToastSeverity::Error);
+                        let err = result
+                            .output
+                            .lines()
+                            .find(|l| !l.is_empty())
+                            .unwrap_or("unknown");
+                        self.push_toast(
+                            format!("Failed to create coordinator: {}", err),
+                            ToastSeverity::Error,
+                        );
                     }
                     self.force_refresh();
                 }
@@ -7302,8 +7326,15 @@ impl VizApp {
                         self.force_refresh();
                         self.push_toast(format!("Closed coordinator {}", cid), ToastSeverity::Info);
                     } else {
-                        let err = result.output.lines().find(|l| !l.is_empty()).unwrap_or("unknown");
-                        self.push_toast(format!("Failed to delete coordinator: {}", err), ToastSeverity::Error);
+                        let err = result
+                            .output
+                            .lines()
+                            .find(|l| !l.is_empty())
+                            .unwrap_or("unknown");
+                        self.push_toast(
+                            format!("Failed to delete coordinator: {}", err),
+                            ToastSeverity::Error,
+                        );
                     }
                 }
                 CommandEffect::ArchiveCoordinator(cid) => {
@@ -7313,19 +7344,39 @@ impl VizApp {
                         }
                         self.coordinator_chats.remove(&cid);
                         self.force_refresh();
-                        self.push_toast(format!("Archived coordinator {}", cid), ToastSeverity::Info);
+                        self.push_toast(
+                            format!("Archived coordinator {}", cid),
+                            ToastSeverity::Info,
+                        );
                     } else {
-                        let err = result.output.lines().find(|l| !l.is_empty()).unwrap_or("unknown");
-                        self.push_toast(format!("Failed to archive coordinator: {}", err), ToastSeverity::Error);
+                        let err = result
+                            .output
+                            .lines()
+                            .find(|l| !l.is_empty())
+                            .unwrap_or("unknown");
+                        self.push_toast(
+                            format!("Failed to archive coordinator: {}", err),
+                            ToastSeverity::Error,
+                        );
                     }
                 }
                 CommandEffect::StopCoordinator(cid) => {
                     if result.success {
                         self.force_refresh();
-                        self.push_toast(format!("Stopped coordinator {}", cid), ToastSeverity::Info);
+                        self.push_toast(
+                            format!("Stopped coordinator {}", cid),
+                            ToastSeverity::Info,
+                        );
                     } else {
-                        let err = result.output.lines().find(|l| !l.is_empty()).unwrap_or("unknown");
-                        self.push_toast(format!("Failed to stop coordinator: {}", err), ToastSeverity::Error);
+                        let err = result
+                            .output
+                            .lines()
+                            .find(|l| !l.is_empty())
+                            .unwrap_or("unknown");
+                        self.push_toast(
+                            format!("Failed to stop coordinator: {}", err),
+                            ToastSeverity::Error,
+                        );
                     }
                 }
                 CommandEffect::EndpointTest(ep_name) => {
@@ -7697,8 +7748,7 @@ impl VizApp {
                     }
                     "tool_call" => {
                         // Native executor tool call log
-                        let name =
-                            val.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+                        let name = val.get("name").and_then(|v| v.as_str()).unwrap_or("?");
                         let detail = match name {
                             "Bash" | "bash" => val
                                 .get("input")
@@ -7707,10 +7757,7 @@ impl VizApp {
                                 .map(|c| {
                                     let c = c.trim();
                                     if c.len() > 80 {
-                                        format!(
-                                            "{name}: {}…",
-                                            &c[..c.floor_char_boundary(80)]
-                                        )
+                                        format!("{name}: {}…", &c[..c.floor_char_boundary(80)])
                                     } else {
                                         format!("{name}: {c}")
                                     }
@@ -7727,8 +7774,7 @@ impl VizApp {
                                 .map(|p| format!("{name}: {p}")),
                             _ => None,
                         };
-                        info.latest_snippet =
-                            Some(detail.unwrap_or_else(|| name.to_string()));
+                        info.latest_snippet = Some(detail.unwrap_or_else(|| name.to_string()));
                         info.latest_is_tool = true;
                     }
                     "user" | "result" => {
@@ -7762,7 +7808,8 @@ impl VizApp {
             .map(|a| (a.agent_id.clone(), a.task_id.clone(), a.status.clone()))
             .collect();
 
-        let visible_ids: HashSet<String> = visible_agents.iter().map(|(id, _, _)| id.clone()).collect();
+        let visible_ids: HashSet<String> =
+            visible_agents.iter().map(|(id, _, _)| id.clone()).collect();
 
         // Remove agents that are no longer visible (Dead agents with no recent activity).
         self.output_pane
@@ -7799,9 +7846,7 @@ impl VizApp {
                 .or_default();
 
             // Mark finished agents.
-            if !text_entry.finished
-                && matches!(status, AgentStatus::Done | AgentStatus::Failed)
-            {
+            if !text_entry.finished && matches!(status, AgentStatus::Done | AgentStatus::Failed) {
                 text_entry.finished = true;
                 text_entry.finish_status = Some(match status {
                     AgentStatus::Done => "done".to_string(),
@@ -8330,11 +8375,18 @@ impl VizApp {
         for agent in registry.agents.values() {
             let prev = self.prev_agent_statuses.get(&agent.id).copied();
             let was_alive = prev.map_or(false, |s| {
-                matches!(s, workgraph::AgentStatus::Starting | workgraph::AgentStatus::Working | workgraph::AgentStatus::Idle)
+                matches!(
+                    s,
+                    workgraph::AgentStatus::Starting
+                        | workgraph::AgentStatus::Working
+                        | workgraph::AgentStatus::Idle
+                )
             });
             let now_exited = matches!(
                 agent.status,
-                workgraph::AgentStatus::Done | workgraph::AgentStatus::Failed | workgraph::AgentStatus::Dead
+                workgraph::AgentStatus::Done
+                    | workgraph::AgentStatus::Failed
+                    | workgraph::AgentStatus::Dead
             );
             // Agent exited: was alive, now done/failed/dead.
             if was_alive && now_exited {
@@ -8351,7 +8403,10 @@ impl VizApp {
                     format!(" ({})", duration_str)
                 };
                 agent_toasts.push(AgentToast::Simple(
-                    format!("\u{1f6aa} Agent exited: {} on {}{}", agent.id, agent.task_id, suffix),
+                    format!(
+                        "\u{1f6aa} Agent exited: {} on {}{}",
+                        agent.id, agent.task_id, suffix
+                    ),
                     ToastSeverity::Info,
                 ));
             }
@@ -8467,8 +8522,7 @@ impl VizApp {
     pub fn update_vitals(&mut self) {
         // Agent count: reuse service_health (already refreshed)
         self.vitals.agents_alive = self.service_health.agents_alive;
-        self.vitals.daemon_running =
-            self.service_health.level != ServiceHealthLevel::Red;
+        self.vitals.daemon_running = self.service_health.level != ServiceHealthLevel::Red;
 
         // Task counts: reuse already-computed task_counts
         self.vitals.open = self.task_counts.open;
@@ -8477,17 +8531,15 @@ impl VizApp {
 
         // Last event time: operations.jsonl mtime (cheap stat syscall)
         let ops_path = self.workgraph_dir.join("log").join("operations.jsonl");
-        self.vitals.last_event_time = std::fs::metadata(&ops_path)
-            .and_then(|m| m.modified())
-            .ok();
+        self.vitals.last_event_time = std::fs::metadata(&ops_path).and_then(|m| m.modified()).ok();
 
         // Coordinator last tick: parse from coordinator-state
         use crate::commands::service::CoordinatorState;
         let coord = CoordinatorState::load_or_default_for(&self.workgraph_dir, 0);
         self.vitals.coord_last_tick = coord.last_tick.as_ref().and_then(|ts| {
-            chrono::DateTime::parse_from_rfc3339(ts)
-                .ok()
-                .map(|dt| SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(dt.timestamp() as u64))
+            chrono::DateTime::parse_from_rfc3339(ts).ok().map(|dt| {
+                SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(dt.timestamp() as u64)
+            })
         });
     }
 
@@ -8641,11 +8693,7 @@ impl VizApp {
         }
         self.service_health.agents_max = new_val;
         self.exec_command(
-            vec![
-                "config".into(),
-                "--max-agents".into(),
-                new_val.to_string(),
-            ],
+            vec!["config".into(), "--max-agents".into(), new_val.to_string()],
             CommandEffect::RefreshAndNotify(format!("Set max_agents = {}", new_val)),
         );
         self.set_service_feedback(format!("Agent slots: {}", new_val));
@@ -9370,12 +9418,18 @@ impl VizApp {
             Some(task) => match &task.assigned {
                 Some(id) => id.clone(),
                 None => {
-                    self.push_toast(format!("No active agent on '{}'", task_id), ToastSeverity::Warning);
+                    self.push_toast(
+                        format!("No active agent on '{}'", task_id),
+                        ToastSeverity::Warning,
+                    );
                     return;
                 }
             },
             None => {
-                self.push_toast(format!("Task '{}' not found", task_id), ToastSeverity::Warning);
+                self.push_toast(
+                    format!("Task '{}' not found", task_id),
+                    ToastSeverity::Warning,
+                );
                 return;
             }
         };
@@ -10237,7 +10291,10 @@ impl VizApp {
         match install_global_to(&self.workgraph_dir, &global_path, &global_dir, true) {
             Ok(()) => {
                 self.config_panel.save_notification = Some(std::time::Instant::now());
-                self.push_toast("Installed project config as global default".to_string(), ToastSeverity::Info);
+                self.push_toast(
+                    "Installed project config as global default".to_string(),
+                    ToastSeverity::Info,
+                );
             }
             Err(e) => {
                 self.push_toast(format!("Install failed: {}", e), ToastSeverity::Error);
@@ -10744,7 +10801,10 @@ impl VizApp {
     pub fn add_endpoint(&mut self) {
         let fields = &self.config_panel.new_endpoint;
         if fields.name.trim().is_empty() {
-            self.push_toast("Endpoint name is required".to_string(), ToastSeverity::Warning);
+            self.push_toast(
+                "Endpoint name is required".to_string(),
+                ToastSeverity::Warning,
+            );
             return;
         }
         let mut config = Config::load_or_default(&self.workgraph_dir);
@@ -11384,8 +11444,7 @@ fn extract_enriched_text_from_log(content: &str) -> String {
                         }
                     }
                     "tool_use" => {
-                        let name =
-                            block.get("name").and_then(|v| v.as_str()).unwrap_or("tool");
+                        let name = block.get("name").and_then(|v| v.as_str()).unwrap_or("tool");
                         let detail = match name {
                             "Bash" => block
                                 .get("input")
@@ -11435,8 +11494,7 @@ fn extract_enriched_text_from_log(content: &str) -> String {
                             }
                         }
                         "tool_use" => {
-                            let name =
-                                block.get("name").and_then(|v| v.as_str()).unwrap_or("tool");
+                            let name = block.get("name").and_then(|v| v.as_str()).unwrap_or("tool");
                             let summary = format!("┌─ {} ────\n└─", name);
                             parts.push(summary);
                         }
@@ -11447,7 +11505,10 @@ fn extract_enriched_text_from_log(content: &str) -> String {
         } else if msg_type == "tool_call" {
             // Native executor format: {"type":"tool_call","name":"...","input":...,"output":"...","is_error":bool}
             let name = val.get("name").and_then(|v| v.as_str()).unwrap_or("tool");
-            let is_error = val.get("is_error").and_then(|v| v.as_bool()).unwrap_or(false);
+            let is_error = val
+                .get("is_error")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
 
             let detail = match name {
                 "Bash" | "bash" => val
@@ -11481,10 +11542,8 @@ fn extract_enriched_text_from_log(content: &str) -> String {
 
             // Show tool output summary
             if let Some(output) = val.get("output").and_then(|v| v.as_str()) {
-                let clean = String::from_utf8(
-                    strip_ansi_escapes::strip(output.as_bytes()),
-                )
-                .unwrap_or_else(|_| output.to_string());
+                let clean = String::from_utf8(strip_ansi_escapes::strip(output.as_bytes()))
+                    .unwrap_or_else(|_| output.to_string());
                 let line_count = clean.lines().count();
                 let first_line = clean.lines().next().unwrap_or("").trim();
                 let short = if first_line.len() > 60 {
@@ -11506,18 +11565,14 @@ fn extract_enriched_text_from_log(content: &str) -> String {
             // Tool result — show a compact one-line summary.
             // Strip ANSI escape codes since tool output (e.g. from Bash) may
             // contain terminal colors that would appear as raw escape sequences.
-            let content_arr = val
-                .get("content")
-                .and_then(|c| c.as_array());
+            let content_arr = val.get("content").and_then(|c| c.as_array());
             let _tool_name = val.get("tool_name").and_then(|v| v.as_str()).unwrap_or("");
 
             if let Some(arr) = content_arr {
                 for block in arr {
                     if let Some(text) = block.get("text").and_then(|v| v.as_str()) {
-                        let clean = String::from_utf8(
-                            strip_ansi_escapes::strip(text.as_bytes()),
-                        )
-                        .unwrap_or_else(|_| text.to_string());
+                        let clean = String::from_utf8(strip_ansi_escapes::strip(text.as_bytes()))
+                            .unwrap_or_else(|_| text.to_string());
                         let line_count = clean.lines().count();
                         let is_error = block
                             .get("is_error")
@@ -11539,10 +11594,8 @@ fn extract_enriched_text_from_log(content: &str) -> String {
                 }
             } else if let Some(text) = val.get("content").and_then(|c| c.as_str()) {
                 // Simple string content — also strip ANSI.
-                let clean = String::from_utf8(
-                    strip_ansi_escapes::strip(text.as_bytes()),
-                )
-                .unwrap_or_else(|_| text.to_string());
+                let clean = String::from_utf8(strip_ansi_escapes::strip(text.as_bytes()))
+                    .unwrap_or_else(|_| text.to_string());
                 let line_count = clean.lines().count();
                 let first_line = clean.lines().next().unwrap_or("").trim();
                 let short = if first_line.len() > 60 {
@@ -14277,7 +14330,9 @@ mod activity_feed_tests {
 
     #[test]
     fn parse_status_changes() {
-        for op in &["abandon", "pause", "resume", "retry", "unclaim", "edit", "assign"] {
+        for op in &[
+            "abandon", "pause", "resume", "retry", "unclaim", "edit", "assign",
+        ] {
             let line = make_op_line(op, Some("some-task"), None);
             let event = ActivityEvent::parse(&line).unwrap();
             assert_eq!(
@@ -14315,7 +14370,15 @@ mod activity_feed_tests {
 
     #[test]
     fn parse_user_actions() {
-        for op in &["gc", "archive", "link", "unlink", "publish", "trace_export", "artifact_add"] {
+        for op in &[
+            "gc",
+            "archive",
+            "link",
+            "unlink",
+            "publish",
+            "trace_export",
+            "artifact_add",
+        ] {
             let line = make_op_line(op, Some("t"), None);
             let event = ActivityEvent::parse(&line).unwrap();
             assert_eq!(
@@ -14341,10 +14404,7 @@ mod activity_feed_tests {
             parse_time_short("2026-03-25T14:30:45.123+00:00"),
             "14:30:45"
         );
-        assert_eq!(
-            parse_time_short("2026-01-01T00:00:00Z"),
-            "00:00:00"
-        );
+        assert_eq!(parse_time_short("2026-01-01T00:00:00Z"), "00:00:00");
     }
 
     // ── Ring buffer tests ──
@@ -14364,7 +14424,10 @@ mod activity_feed_tests {
         }
         assert_eq!(state.events.len(), ACTIVITY_FEED_MAX_EVENTS);
         // The oldest remaining should be task-50 (first 50 were evicted).
-        assert_eq!(state.events.front().unwrap().task_id.as_deref(), Some("task-50"));
+        assert_eq!(
+            state.events.front().unwrap().task_id.as_deref(),
+            Some("task-50")
+        );
         let expected_last = format!("task-{}", ACTIVITY_FEED_MAX_EVENTS + 49);
         assert_eq!(
             state.events.back().unwrap().task_id.as_deref(),
@@ -14403,7 +14466,9 @@ mod activity_feed_tests {
         state.viewport_height = 20;
 
         // Scroll to bottom.
-        let max_scroll = state.total_wrapped_lines.saturating_sub(state.viewport_height);
+        let max_scroll = state
+            .total_wrapped_lines
+            .saturating_sub(state.viewport_height);
         state.scroll = max_scroll;
         state.auto_tail = true;
 
@@ -14426,11 +14491,8 @@ mod activity_feed_tests {
 
     #[test]
     fn format_archive_summary() {
-        let line = make_op_line_with_detail(
-            "archive",
-            None,
-            serde_json::json!({"task_ids": ["a", "b"]}),
-        );
+        let line =
+            make_op_line_with_detail("archive", None, serde_json::json!({"task_ids": ["a", "b"]}));
         let event = ActivityEvent::parse(&line).unwrap();
         assert!(event.summary.contains("2 tasks"));
     }
@@ -14962,8 +15024,15 @@ mod nav_stack_tests {
     fn pop_returns_last_pushed() {
         let mut stack = NavStack::default();
         stack.push(NavEntry::Dashboard);
-        stack.push(NavEntry::AgentDetail { agent_id: "a1".into() });
-        assert_eq!(stack.pop(), Some(NavEntry::AgentDetail { agent_id: "a1".into() }));
+        stack.push(NavEntry::AgentDetail {
+            agent_id: "a1".into(),
+        });
+        assert_eq!(
+            stack.pop(),
+            Some(NavEntry::AgentDetail {
+                agent_id: "a1".into()
+            })
+        );
         assert_eq!(stack.pop(), Some(NavEntry::Dashboard));
     }
 
@@ -14979,7 +15048,9 @@ mod nav_stack_tests {
     fn clear_empties_the_stack() {
         let mut stack = NavStack::default();
         stack.push(NavEntry::Dashboard);
-        stack.push(NavEntry::TaskDetail { task_id: "t1".into() });
+        stack.push(NavEntry::TaskDetail {
+            task_id: "t1".into(),
+        });
         stack.clear();
         assert!(stack.is_empty());
         assert_eq!(stack.len(), 0);
@@ -14989,12 +15060,26 @@ mod nav_stack_tests {
     fn full_drilldown_chain_push_and_pop() {
         let mut stack = NavStack::default();
         stack.push(NavEntry::Dashboard);
-        stack.push(NavEntry::AgentDetail { agent_id: "agent-42".into() });
-        stack.push(NavEntry::TaskDetail { task_id: "implement-feature".into() });
+        stack.push(NavEntry::AgentDetail {
+            agent_id: "agent-42".into(),
+        });
+        stack.push(NavEntry::TaskDetail {
+            task_id: "implement-feature".into(),
+        });
         assert_eq!(stack.len(), 3);
 
-        assert_eq!(stack.pop(), Some(NavEntry::TaskDetail { task_id: "implement-feature".into() }));
-        assert_eq!(stack.pop(), Some(NavEntry::AgentDetail { agent_id: "agent-42".into() }));
+        assert_eq!(
+            stack.pop(),
+            Some(NavEntry::TaskDetail {
+                task_id: "implement-feature".into()
+            })
+        );
+        assert_eq!(
+            stack.pop(),
+            Some(NavEntry::AgentDetail {
+                agent_id: "agent-42".into()
+            })
+        );
         assert_eq!(stack.pop(), Some(NavEntry::Dashboard));
         assert!(stack.is_empty());
     }
@@ -15003,10 +15088,19 @@ mod nav_stack_tests {
     fn nav_entry_equality() {
         assert_eq!(NavEntry::Dashboard, NavEntry::Dashboard);
         assert_ne!(
-            NavEntry::AgentDetail { agent_id: "a".into() },
-            NavEntry::AgentDetail { agent_id: "b".into() }
+            NavEntry::AgentDetail {
+                agent_id: "a".into()
+            },
+            NavEntry::AgentDetail {
+                agent_id: "b".into()
+            }
         );
-        assert_ne!(NavEntry::Dashboard, NavEntry::TaskDetail { task_id: "t".into() });
+        assert_ne!(
+            NavEntry::Dashboard,
+            NavEntry::TaskDetail {
+                task_id: "t".into()
+            }
+        );
     }
 }
 

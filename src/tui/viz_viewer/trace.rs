@@ -50,22 +50,10 @@ pub struct TraceEntry {
 #[derive(Serialize)]
 #[serde(tag = "type")]
 pub enum TracedEvent {
-    Key {
-        code: String,
-        modifiers: String,
-    },
-    Mouse {
-        kind: String,
-        row: u16,
-        col: u16,
-    },
-    Paste {
-        len: usize,
-    },
-    Resize {
-        width: u16,
-        height: u16,
-    },
+    Key { code: String, modifiers: String },
+    Mouse { kind: String, row: u16, col: u16 },
+    Paste { len: usize },
+    Resize { width: u16, height: u16 },
     FocusGained,
     FocusLost,
 }
@@ -108,7 +96,11 @@ impl EventTracer {
             Event::FocusLost => TracedEvent::FocusLost,
         };
 
-        let entry = TraceEntry { t, event, state: ctx };
+        let entry = TraceEntry {
+            t,
+            event,
+            state: ctx,
+        };
         // Best-effort: ignore write errors to avoid disrupting the TUI.
         let _ = serde_json::to_writer(&mut self.writer, &entry);
         let _ = self.writer.write_all(b"\n");
@@ -239,7 +231,9 @@ pub fn capture_state_context(app: &super::state::VizApp) -> StateContext {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+    use crossterm::event::{
+        KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    };
     use std::io::{BufRead, BufReader};
 
     fn test_ctx() -> StateContext {
@@ -275,10 +269,7 @@ mod tests {
                 test_ctx(),
             );
             // Resize event
-            tracer.record(
-                &Event::Resize(120, 40),
-                test_ctx(),
-            );
+            tracer.record(&Event::Resize(120, 40), test_ctx());
             tracer.flush();
         }
         // Read back and verify each line is valid JSON
@@ -289,7 +280,10 @@ mod tests {
         for line in &lines {
             let v: serde_json::Value = serde_json::from_str(line).unwrap();
             assert!(v["t"].is_f64(), "timestamp should be a float");
-            assert!(v["event"]["type"].is_string(), "event type should be present");
+            assert!(
+                v["event"]["type"].is_string(),
+                "event type should be present"
+            );
             assert_eq!(v["state"]["focused_panel"], "graph");
         }
         // Check specific event types
@@ -328,7 +322,10 @@ mod tests {
         for line in reader.lines() {
             let v: serde_json::Value = serde_json::from_str(&line.unwrap()).unwrap();
             let t = v["t"].as_f64().unwrap();
-            assert!(t >= prev_t, "timestamps must be monotonically non-decreasing");
+            assert!(
+                t >= prev_t,
+                "timestamps must be monotonically non-decreasing"
+            );
             prev_t = t;
         }
     }

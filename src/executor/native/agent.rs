@@ -187,7 +187,11 @@ impl AgentLoop {
                             "[native-agent] Resuming from journal: {} messages, {} stale annotations{}",
                             data.messages.len(),
                             data.stale_annotations.len(),
-                            if data.was_compacted { " (compacted)" } else { "" }
+                            if data.was_compacted {
+                                " (compacted)"
+                            } else {
+                                ""
+                            }
                         );
                         Some(data)
                     }
@@ -252,9 +256,7 @@ impl AgentLoop {
 
             msgs.push(Message {
                 role: Role::User,
-                content: vec![ContentBlock::Text {
-                    text: resume_text,
-                }],
+                content: vec![ContentBlock::Text { text: resume_text }],
             });
 
             // Journal the resume user message

@@ -9,10 +9,10 @@ use crossterm::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers, MouseButton, MouseEvent,
     MouseEventKind,
 };
+use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
 use ratatui::prelude::*;
-use ratatui::Terminal;
 use serde::{Deserialize, Serialize};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -33,29 +33,17 @@ struct TraceEntry {
 #[derive(Deserialize)]
 #[serde(tag = "type")]
 enum TracedEventData {
-    Key {
-        code: String,
-        modifiers: String,
-    },
-    Mouse {
-        kind: String,
-        row: u16,
-        col: u16,
-    },
-    Paste {
-        len: usize,
-    },
-    Resize {
-        width: u16,
-        height: u16,
-    },
+    Key { code: String, modifiers: String },
+    Mouse { kind: String, row: u16, col: u16 },
+    Paste { len: usize },
+    Resize { width: u16, height: u16 },
     FocusGained,
     FocusLost,
 }
 
 fn parse_trace(path: &Path) -> Result<Vec<TraceEntry>> {
-    let file =
-        std::fs::File::open(path).with_context(|| format!("cannot open trace: {}", path.display()))?;
+    let file = std::fs::File::open(path)
+        .with_context(|| format!("cannot open trace: {}", path.display()))?;
     let reader = BufReader::new(file);
     let mut entries = Vec::new();
     for (i, line) in reader.lines().enumerate() {
@@ -487,7 +475,8 @@ pub fn run(
 
     // 2. Compute compressed timestamps
     let raw_times: Vec<f64> = entries.iter().map(|e| e.t).collect();
-    let compressed_times = compress_timestamps(&raw_times, idle_threshold, compress_to, target_duration);
+    let compressed_times =
+        compress_timestamps(&raw_times, idle_threshold, compress_to, target_duration);
 
     // 3. Set up headless TUI
     let viz_options = VizOptions {
@@ -648,7 +637,10 @@ mod tests {
 
     #[test]
     fn parse_mouse_kind_scroll() {
-        assert_eq!(parse_mouse_kind("ScrollDown"), Some(MouseEventKind::ScrollDown));
+        assert_eq!(
+            parse_mouse_kind("ScrollDown"),
+            Some(MouseEventKind::ScrollDown)
+        );
         assert_eq!(parse_mouse_kind("ScrollUp"), Some(MouseEventKind::ScrollUp));
     }
 

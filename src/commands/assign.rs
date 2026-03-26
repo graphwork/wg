@@ -119,11 +119,7 @@ fn run_auto_assign(dir: &Path, path: &Path, task_id: &str) -> Result<()> {
     {
         let task_title = &task.title;
         let task_desc = task.description.as_deref().unwrap_or("");
-        match agency::request_agency_assignment(
-            task_title,
-            task_desc,
-            &config.agency,
-        ) {
+        match agency::request_agency_assignment(task_title, task_desc, &config.agency) {
             Ok(response) => {
                 eprintln!(
                     "[assign] Agency assignment for '{}': agency_task_id={}",

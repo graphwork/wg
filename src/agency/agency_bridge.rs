@@ -97,7 +97,10 @@ pub fn post_evaluation_to_agency(
     let client = match client {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("Warning: could not build HTTP client for agency bridge: {}", e);
+            eprintln!(
+                "Warning: could not build HTTP client for agency bridge: {}",
+                e
+            );
             return Ok(());
         }
     };
@@ -150,17 +153,13 @@ pub fn request_agency_assignment(
         .agency_server_url
         .as_deref()
         .filter(|u| !u.is_empty())
-        .ok_or_else(|| {
-            AgencyError::NotFound("agency_server_url not configured".to_string())
-        })?;
+        .ok_or_else(|| AgencyError::NotFound("agency_server_url not configured".to_string()))?;
 
     let project_id = config
         .agency_project_id
         .as_deref()
         .filter(|p| !p.is_empty())
-        .ok_or_else(|| {
-            AgencyError::NotFound("agency_project_id not configured".to_string())
-        })?;
+        .ok_or_else(|| AgencyError::NotFound("agency_project_id not configured".to_string()))?;
 
     let token = match &config.agency_token_path {
         Some(path) => match fs::read_to_string(path) {

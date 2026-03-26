@@ -259,12 +259,10 @@ pub fn reconcile_orphaned_tasks(dir: &Path, graph_path: &Path) -> Result<usize> 
                             }
                         }
                     },
-                    None => {
-                        !task
-                            .tags
-                            .iter()
-                            .any(|t| t == "coordinator-loop" || t == "compact-loop")
-                    }
+                    None => !task
+                        .tags
+                        .iter()
+                        .any(|t| t == "coordinator-loop" || t == "compact-loop"),
                 };
 
                 if dominated {

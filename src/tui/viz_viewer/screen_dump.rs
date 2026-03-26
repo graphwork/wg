@@ -336,9 +336,9 @@ pub fn client_dump(workgraph_dir: &Path) -> Result<ScreenSnapshot> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::widgets::Paragraph;
-    use ratatui::Terminal;
 
     #[test]
     fn buffer_to_text_basic() {

@@ -189,9 +189,11 @@ pub fn record_evaluation_with_inference(
         let assignments_dir = agency_dir.join("assignments");
         if let Ok(record) = load_assignment_record_by_task(&assignments_dir, &evaluation.task_id) {
             if let Some(ref agency_task_id) = record.agency_task_id {
-                if let Err(e) =
-                    super::agency_bridge::post_evaluation_to_agency(evaluation, agency_task_id, config)
-                {
+                if let Err(e) = super::agency_bridge::post_evaluation_to_agency(
+                    evaluation,
+                    agency_task_id,
+                    config,
+                ) {
                     eprintln!(
                         "Warning: agency bridge POST failed for task '{}': {}",
                         evaluation.task_id, e

@@ -180,12 +180,8 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
                     app.scroll.viewport_height = 0;
                     app.scroll.viewport_width = 0;
                     if main_area.width > 1 {
-                        app.last_fullscreen_restore_area = Rect::new(
-                            main_area.x,
-                            main_area.y,
-                            1,
-                            main_area.height,
-                        );
+                        app.last_fullscreen_restore_area =
+                            Rect::new(main_area.x, main_area.y, 1, main_area.height);
                     } else {
                         app.last_fullscreen_restore_area = Rect::default();
                     }
@@ -194,7 +190,8 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
                 LayoutMode::Off => {
                     let strip_width = if main_area.width > 1 { 1u16 } else { 0 };
                     let graph_width = main_area.width.saturating_sub(strip_width);
-                    let graph_area = Rect::new(main_area.x, main_area.y, graph_width, main_area.height);
+                    let graph_area =
+                        Rect::new(main_area.x, main_area.y, graph_width, main_area.height);
                     app.last_graph_area = graph_area;
                     app.last_right_panel_area = Rect::default();
                     app.last_divider_area = Rect::default();
@@ -221,8 +218,7 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
                         // In narrow mode, use a compact side-by-side split.
                         // Graph gets 40%, inspector gets 60% (minimum useful inspector width).
                         let right_pct = app.right_panel_percent.max(50).min(70);
-                        let right_width =
-                            (main_area.width as u32 * right_pct as u32 / 100) as u16;
+                        let right_width = (main_area.width as u32 * right_pct as u32 / 100) as u16;
                         let left_width = main_area.width.saturating_sub(right_width);
                         let split = Layout::default()
                             .direction(Direction::Horizontal)
@@ -255,12 +251,8 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
                     app.scroll.viewport_width = 0;
                     // Left restore strip (1 col).
                     if main_area.width > 1 {
-                        app.last_fullscreen_restore_area = Rect::new(
-                            main_area.x,
-                            main_area.y,
-                            1,
-                            main_area.height,
-                        );
+                        app.last_fullscreen_restore_area =
+                            Rect::new(main_area.x, main_area.y, 1, main_area.height);
                     } else {
                         app.last_fullscreen_restore_area = Rect::default();
                     }
@@ -270,7 +262,8 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
                     // Right minimized strip (1 col) when there's room.
                     let strip_width = if main_area.width > 1 { 1u16 } else { 0 };
                     let graph_width = main_area.width.saturating_sub(strip_width);
-                    let graph_area = Rect::new(main_area.x, main_area.y, graph_width, main_area.height);
+                    let graph_area =
+                        Rect::new(main_area.x, main_area.y, graph_width, main_area.height);
                     app.last_graph_area = graph_area;
                     app.last_right_panel_area = Rect::default();
                     app.last_divider_area = Rect::default();
@@ -290,13 +283,16 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
                     }
                     app.last_fullscreen_restore_area = Rect::default();
                 }
-                LayoutMode::ThirdInspector | LayoutMode::HalfInspector | LayoutMode::TwoThirdsInspector => {
+                LayoutMode::ThirdInspector
+                | LayoutMode::HalfInspector
+                | LayoutMode::TwoThirdsInspector => {
                     app.last_minimized_strip_area = Rect::default();
                     app.last_fullscreen_restore_area = Rect::default();
                     if app.right_panel_visible {
                         if area.width >= SIDE_MIN_WIDTH {
-                            let right_width =
-                                (main_area.width as u32 * app.right_panel_percent as u32 / 100) as u16;
+                            let right_width = (main_area.width as u32
+                                * app.right_panel_percent as u32
+                                / 100) as u16;
                             let left_width = main_area.width.saturating_sub(right_width);
                             let split = Layout::default()
                                 .direction(Direction::Horizontal)
@@ -309,9 +305,9 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
                             app.scroll.viewport_height = split[0].height as usize;
                             app.scroll.viewport_width = split[0].width as usize;
                         } else {
-                            let panel_height = (main_area.height as u32 * app.right_panel_percent as u32
-                                / 100)
-                                .max(5) as u16;
+                            let panel_height =
+                                (main_area.height as u32 * app.right_panel_percent as u32 / 100)
+                                    .max(5) as u16;
                             let top_height = main_area.height.saturating_sub(panel_height);
                             let split = Layout::default()
                                 .direction(Direction::Vertical)
@@ -383,7 +379,12 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
                     let strip = app.last_fullscreen_restore_area;
                     let panel_area = if strip.width > 0 {
                         draw_restore_strip(frame, strip, app.fullscreen_restore_hover);
-                        Rect::new(main_area.x + 1, main_area.y, main_area.width - 1, main_area.height)
+                        Rect::new(
+                            main_area.x + 1,
+                            main_area.y,
+                            main_area.width - 1,
+                            main_area.height,
+                        )
                     } else {
                         main_area
                     };
@@ -414,8 +415,7 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
                 _ => {
                     if app.right_panel_visible {
                         let right_pct = app.right_panel_percent.max(50).min(70);
-                        let right_width =
-                            (main_area.width as u32 * right_pct as u32 / 100) as u16;
+                        let right_width = (main_area.width as u32 * right_pct as u32 / 100) as u16;
                         let left_width = main_area.width.saturating_sub(right_width);
                         let split = Layout::default()
                             .direction(Direction::Horizontal)
@@ -470,7 +470,12 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
                     let strip = app.last_fullscreen_restore_area;
                     let panel_area = if strip.width > 0 {
                         draw_restore_strip(frame, strip, app.fullscreen_restore_hover);
-                        Rect::new(main_area.x + 1, main_area.y, main_area.width - 1, main_area.height)
+                        Rect::new(
+                            main_area.x + 1,
+                            main_area.y,
+                            main_area.width - 1,
+                            main_area.height,
+                        )
                     } else {
                         main_area
                     };
@@ -498,11 +503,14 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
                         app.scroll.has_horizontal_overflow() && app.graph_hscrollbar_visible(),
                     );
                 }
-                LayoutMode::ThirdInspector | LayoutMode::HalfInspector | LayoutMode::TwoThirdsInspector => {
+                LayoutMode::ThirdInspector
+                | LayoutMode::HalfInspector
+                | LayoutMode::TwoThirdsInspector => {
                     if app.right_panel_visible {
                         if area.width >= SIDE_MIN_WIDTH {
-                            let right_width =
-                                (main_area.width as u32 * app.right_panel_percent as u32 / 100) as u16;
+                            let right_width = (main_area.width as u32
+                                * app.right_panel_percent as u32
+                                / 100) as u16;
                             let left_width = main_area.width.saturating_sub(right_width);
                             let split = Layout::default()
                                 .direction(Direction::Horizontal)
@@ -527,13 +535,14 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
                                 app.scroll.content_width,
                                 app.scroll.viewport_width,
                                 app.scroll.offset_x,
-                                app.scroll.has_horizontal_overflow() && app.graph_hscrollbar_visible(),
+                                app.scroll.has_horizontal_overflow()
+                                    && app.graph_hscrollbar_visible(),
                             );
                             draw_right_panel(frame, app, right_area);
                         } else {
-                            let panel_height = (main_area.height as u32 * app.right_panel_percent as u32
-                                / 100)
-                                .max(5) as u16;
+                            let panel_height =
+                                (main_area.height as u32 * app.right_panel_percent as u32 / 100)
+                                    .max(5) as u16;
                             let top_height = main_area.height.saturating_sub(panel_height);
                             let split = Layout::default()
                                 .direction(Direction::Vertical)
@@ -558,7 +567,8 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
                                 app.scroll.content_width,
                                 app.scroll.viewport_width,
                                 app.scroll.offset_x,
-                                app.scroll.has_horizontal_overflow() && app.graph_hscrollbar_visible(),
+                                app.scroll.has_horizontal_overflow()
+                                    && app.graph_hscrollbar_visible(),
                             );
                             draw_right_panel(frame, app, right_area);
                         }
@@ -1740,12 +1750,16 @@ fn draw_horizontal_scrollbar(
 /// Draw the 1-col restore strip on the left edge in FullInspector mode.
 /// Clicking/dragging from this strip restores the normal split view.
 fn draw_restore_strip(frame: &mut Frame, area: Rect, hover: bool) {
-    let fg = if hover { Color::Yellow } else { Color::DarkGray };
+    let fg = if hover {
+        Color::Yellow
+    } else {
+        Color::DarkGray
+    };
     let text: String = (0..area.height).map(|_| '▌').collect();
-    let lines: Vec<Line> = text.chars().map(|c| Line::from(Span::styled(
-        c.to_string(),
-        Style::default().fg(fg),
-    ))).collect();
+    let lines: Vec<Line> = text
+        .chars()
+        .map(|c| Line::from(Span::styled(c.to_string(), Style::default().fg(fg))))
+        .collect();
     let paragraph = Paragraph::new(lines);
     frame.render_widget(paragraph, area);
 }
@@ -1753,12 +1767,16 @@ fn draw_restore_strip(frame: &mut Frame, area: Rect, hover: bool) {
 /// Draw the 1-col minimized strip on the right edge in Off mode.
 /// Clicking this strip restores the normal split view.
 fn draw_minimized_strip(frame: &mut Frame, area: Rect, hover: bool) {
-    let fg = if hover { Color::Yellow } else { Color::DarkGray };
+    let fg = if hover {
+        Color::Yellow
+    } else {
+        Color::DarkGray
+    };
     let text: String = (0..area.height).map(|_| '▐').collect();
-    let lines: Vec<Line> = text.chars().map(|c| Line::from(Span::styled(
-        c.to_string(),
-        Style::default().fg(fg),
-    ))).collect();
+    let lines: Vec<Line> = text
+        .chars()
+        .map(|c| Line::from(Span::styled(c.to_string(), Style::default().fg(fg))))
+        .collect();
     let paragraph = Paragraph::new(lines);
     frame.render_widget(paragraph, area);
 }
@@ -1784,8 +1802,8 @@ fn draw_right_panel(frame: &mut Frame, app: &mut VizApp, area: Rect) {
         app.last_divider_area = Rect::default();
     }
 
-    let divider_active = app.divider_hover
-        || app.scrollbar_drag == Some(super::state::ScrollbarDragTarget::Divider);
+    let divider_active =
+        app.divider_hover || app.scrollbar_drag == Some(super::state::ScrollbarDragTarget::Divider);
 
     // In full-panel mode: no borders (edge-to-edge content for clean copy-paste).
     // In split mode: minimal single-line border, dim when unfocused.
@@ -3229,20 +3247,14 @@ fn draw_log_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
                     .as_deref()
                     .unwrap_or("unknown");
                 let (status_text, status_color) = match status {
-                    "done" => (
-                        format!("── agent finished (done) ──"),
-                        Color::Green,
-                    ),
-                    "failed" => (
-                        format!("── agent finished (failed) ──"),
-                        Color::Red,
-                    ),
-                    _ => (
-                        format!("── agent finished ({status}) ──"),
-                        Color::DarkGray,
-                    ),
+                    "done" => (format!("── agent finished (done) ──"), Color::Green),
+                    "failed" => (format!("── agent finished (failed) ──"), Color::Red),
+                    _ => (format!("── agent finished ({status}) ──"), Color::DarkGray),
                 };
-                app.log_pane.agent_output.rendered_lines.push(Line::from(""));
+                app.log_pane
+                    .agent_output
+                    .rendered_lines
+                    .push(Line::from(""));
                 app.log_pane
                     .agent_output
                     .rendered_lines
@@ -3381,12 +3393,7 @@ fn draw_log_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
             .log_pane
             .agent_id
             .as_ref()
-            .and_then(|aid| {
-                app.agent_monitor
-                    .agents
-                    .iter()
-                    .find(|a| a.agent_id == *aid)
-            })
+            .and_then(|aid| app.agent_monitor.agents.iter().find(|a| a.agent_id == *aid))
             .and_then(|a| a.started_at.as_ref())
             .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
             .map(|dt| {
@@ -3629,9 +3636,7 @@ fn activity_event_style(kind: &ActivityEventKind) -> (Color, Style) {
         ),
         ActivityEventKind::AgentFailed => (
             Color::Red,
-            Style::default()
-                .fg(Color::Red)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
         ),
         ActivityEventKind::CoordinatorTick => {
             (Color::DarkGray, Style::default().fg(Color::DarkGray))
@@ -3839,9 +3844,9 @@ fn draw_output_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
         ];
         fn dot_color_from_id(agent_id: &str) -> Color {
             // Simple hash from agent ID string.
-            let hash: u32 = agent_id.bytes().fold(0u32, |acc, b| {
-                acc.wrapping_mul(31).wrapping_add(b as u32)
-            });
+            let hash: u32 = agent_id
+                .bytes()
+                .fold(0u32, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u32));
             DOT_COLORS[hash as usize % DOT_COLORS.len()]
         }
 
@@ -3970,23 +3975,11 @@ fn draw_output_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
 
             // Add finish status line if agent is done.
             if text_entry.finished {
-                let status = text_entry
-                    .finish_status
-                    .as_deref()
-                    .unwrap_or("unknown");
+                let status = text_entry.finish_status.as_deref().unwrap_or("unknown");
                 let (status_text, status_color) = match status {
-                    "done" => (
-                        format!("── agent finished (done) ──"),
-                        Color::Green,
-                    ),
-                    "failed" => (
-                        format!("── agent finished (failed) ──"),
-                        Color::Red,
-                    ),
-                    _ => (
-                        format!("── agent finished ({status}) ──"),
-                        Color::DarkGray,
-                    ),
+                    "done" => (format!("── agent finished (done) ──"), Color::Green),
+                    "failed" => (format!("── agent finished (failed) ──"), Color::Red),
+                    _ => (format!("── agent finished ({status}) ──"), Color::DarkGray),
                 };
                 text_entry.rendered_lines.push(Line::from(""));
                 text_entry.rendered_lines.push(Line::from(Span::styled(
@@ -4026,11 +4019,7 @@ fn draw_output_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
         scroll
     };
 
-    let text_entry = app
-        .output_pane
-        .agent_texts
-        .get(&active_agent_id)
-        .unwrap();
+    let text_entry = app.output_pane.agent_texts.get(&active_agent_id).unwrap();
     let is_active_agent_working = !text_entry.finished;
     let end = (scroll + viewport_h).min(total_lines);
     let mut visible: Vec<Line> = text_entry.rendered_lines[scroll..end].to_vec();
@@ -4167,10 +4156,7 @@ fn draw_dashboard_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
                     Style::default().fg(Color::White),
                 ),
                 Span::styled("  Ticks: ", Style::default().fg(Color::DarkGray)),
-                Span::styled(
-                    format!("{}", card.ticks),
-                    Style::default().fg(Color::White),
-                ),
+                Span::styled(format!("{}", card.ticks), Style::default().fg(Color::White)),
             ]));
 
             // Model + tokens
@@ -4281,10 +4267,7 @@ fn draw_dashboard_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
                     };
                     lines.push(Line::from(vec![
                         Span::styled("    ", Style::default()),
-                        Span::styled(
-                            truncated,
-                            Style::default().fg(Color::Rgb(100, 100, 100)),
-                        ),
+                        Span::styled(truncated, Style::default().fg(Color::Rgb(100, 100, 100))),
                     ]));
                 }
             }
@@ -6424,7 +6407,10 @@ fn draw_status_bar(frame: &mut Frame, app: &VizApp, area: Rect) {
                 _ => Color::DarkGray,
             };
             spans.push(Span::styled(
-                format!("⟳{}[{}/{}·{}]", short_id, ct.iteration, ct.max_iterations, timing),
+                format!(
+                    "⟳{}[{}/{}·{}]",
+                    short_id, ct.iteration, ct.max_iterations, timing
+                ),
                 Style::default().fg(color),
             ));
         }
@@ -6627,10 +6613,7 @@ fn draw_vitals_bar(frame: &mut Frame, app: &VizApp, area: Rect) {
                         VitalsStaleness::Stale => Color::Yellow,
                         VitalsStaleness::Dead => Color::Red,
                     };
-                    (
-                        format!("coord ● {}", format_duration_compact(secs)),
-                        color,
-                    )
+                    (format!("coord ● {}", format_duration_compact(secs)), color)
                 }
                 Err(_) => ("coord ● 0s".to_string(), Color::Green),
             },
@@ -6646,8 +6629,7 @@ fn draw_vitals_bar(frame: &mut Frame, app: &VizApp, area: Rect) {
 
     spans.push(Span::styled(" ", Style::default()));
 
-    let bar = Paragraph::new(Line::from(spans))
-        .style(Style::default().bg(Color::Rgb(25, 25, 25)));
+    let bar = Paragraph::new(Line::from(spans)).style(Style::default().bg(Color::Rgb(25, 25, 25)));
     frame.render_widget(bar, area);
 }
 
@@ -6797,8 +6779,7 @@ fn draw_key_feedback(frame: &mut Frame, app: &VizApp) {
             let fade = if elapsed_ms < fade_start_ms {
                 1.0
             } else {
-                1.0 - ((elapsed_ms - fade_start_ms) as f64
-                    / (duration_ms - fade_start_ms) as f64)
+                1.0 - ((elapsed_ms - fade_start_ms) as f64 / (duration_ms - fade_start_ms) as f64)
             };
             Some((label.as_str(), fade))
         })
@@ -6816,11 +6797,7 @@ fn draw_key_feedback(frame: &mut Frame, app: &VizApp) {
         }
         // Cyan tint fading to dark.
         let brightness = (*fade * 255.0) as u8;
-        let fg = Color::Rgb(
-            (brightness as f64 * 0.7) as u8,
-            brightness,
-            brightness,
-        );
+        let fg = Color::Rgb((brightness as f64 * 0.7) as u8, brightness, brightness);
         let bg = Color::Rgb(
             (20.0 * fade) as u8,
             (30.0 * fade) as u8,
@@ -6828,14 +6805,11 @@ fn draw_key_feedback(frame: &mut Frame, app: &VizApp) {
         );
         spans.push(Span::styled(
             format!(" {} ", label),
-            Style::default()
-                .fg(fg)
-                .bg(bg)
-                .add_modifier(if *fade > 0.7 {
-                    Modifier::BOLD
-                } else {
-                    Modifier::empty()
-                }),
+            Style::default().fg(fg).bg(bg).add_modifier(if *fade > 0.7 {
+                Modifier::BOLD
+            } else {
+                Modifier::empty()
+            }),
         ));
     }
 
@@ -6904,10 +6878,7 @@ fn draw_touch_echoes(frame: &mut Frame, app: &VizApp) {
                     let cell_area = Rect::new(c as u16, r as u16, 1, 1);
                     frame.render_widget(Clear, cell_area);
                     frame.render_widget(
-                        Paragraph::new(Span::styled(
-                            ch.to_string(),
-                            Style::default().fg(fg),
-                        )),
+                        Paragraph::new(Span::styled(ch.to_string(), Style::default().fg(fg))),
                         cell_area,
                     );
                 }
@@ -6925,13 +6896,11 @@ fn draw_touch_echoes(frame: &mut Frame, app: &VizApp) {
             frame.render_widget(
                 Paragraph::new(Span::styled(
                     DOT_CENTER.to_string(),
-                    Style::default()
-                        .fg(fg)
-                        .add_modifier(if progress < 0.3 {
-                            Modifier::BOLD
-                        } else {
-                            Modifier::empty()
-                        }),
+                    Style::default().fg(fg).add_modifier(if progress < 0.3 {
+                        Modifier::BOLD
+                    } else {
+                        Modifier::empty()
+                    }),
                 )),
                 center,
             );
@@ -11660,10 +11629,7 @@ mod tests {
         );
 
         // Verify the styling would be LightBlue (matching draw_log_tab).
-        let styled_line = Line::from(Span::styled(
-            message,
-            Style::default().fg(Color::LightBlue),
-        ));
+        let styled_line = Line::from(Span::styled(message, Style::default().fg(Color::LightBlue)));
         assert_eq!(
             styled_line.spans[0].style.fg,
             Some(Color::LightBlue),
@@ -11675,14 +11641,24 @@ mod tests {
     #[test]
     fn test_finish_status_line_parity() {
         // Both tabs should produce the same finish status format.
-        for (status, expected_color) in [("done", Color::Green), ("failed", Color::Red), ("unknown", Color::DarkGray)] {
+        for (status, expected_color) in [
+            ("done", Color::Green),
+            ("failed", Color::Red),
+            ("unknown", Color::DarkGray),
+        ] {
             let (status_text, status_color) = match status {
                 "done" => (format!("── agent finished (done) ──"), Color::Green),
                 "failed" => (format!("── agent finished (failed) ──"), Color::Red),
                 _ => (format!("── agent finished ({status}) ──"), Color::DarkGray),
             };
-            assert_eq!(status_color, expected_color, "Status '{status}' should use correct color");
-            assert!(status_text.contains(status), "Status text should contain the status string");
+            assert_eq!(
+                status_color, expected_color,
+                "Status '{status}' should use correct color"
+            );
+            assert!(
+                status_text.contains(status),
+                "Status text should contain the status string"
+            );
         }
     }
 
@@ -11695,28 +11671,58 @@ mod tests {
         use crate::tui::viz_viewer::state::ResponsiveBreakpoint;
 
         // Compact: < 50
-        assert_eq!(ResponsiveBreakpoint::from_width(0), ResponsiveBreakpoint::Compact);
-        assert_eq!(ResponsiveBreakpoint::from_width(30), ResponsiveBreakpoint::Compact);
-        assert_eq!(ResponsiveBreakpoint::from_width(40), ResponsiveBreakpoint::Compact);
-        assert_eq!(ResponsiveBreakpoint::from_width(49), ResponsiveBreakpoint::Compact);
+        assert_eq!(
+            ResponsiveBreakpoint::from_width(0),
+            ResponsiveBreakpoint::Compact
+        );
+        assert_eq!(
+            ResponsiveBreakpoint::from_width(30),
+            ResponsiveBreakpoint::Compact
+        );
+        assert_eq!(
+            ResponsiveBreakpoint::from_width(40),
+            ResponsiveBreakpoint::Compact
+        );
+        assert_eq!(
+            ResponsiveBreakpoint::from_width(49),
+            ResponsiveBreakpoint::Compact
+        );
 
         // Narrow: 50–80
-        assert_eq!(ResponsiveBreakpoint::from_width(50), ResponsiveBreakpoint::Narrow);
-        assert_eq!(ResponsiveBreakpoint::from_width(60), ResponsiveBreakpoint::Narrow);
-        assert_eq!(ResponsiveBreakpoint::from_width(80), ResponsiveBreakpoint::Narrow);
+        assert_eq!(
+            ResponsiveBreakpoint::from_width(50),
+            ResponsiveBreakpoint::Narrow
+        );
+        assert_eq!(
+            ResponsiveBreakpoint::from_width(60),
+            ResponsiveBreakpoint::Narrow
+        );
+        assert_eq!(
+            ResponsiveBreakpoint::from_width(80),
+            ResponsiveBreakpoint::Narrow
+        );
 
         // Full: > 80
-        assert_eq!(ResponsiveBreakpoint::from_width(81), ResponsiveBreakpoint::Full);
-        assert_eq!(ResponsiveBreakpoint::from_width(100), ResponsiveBreakpoint::Full);
-        assert_eq!(ResponsiveBreakpoint::from_width(200), ResponsiveBreakpoint::Full);
+        assert_eq!(
+            ResponsiveBreakpoint::from_width(81),
+            ResponsiveBreakpoint::Full
+        );
+        assert_eq!(
+            ResponsiveBreakpoint::from_width(100),
+            ResponsiveBreakpoint::Full
+        );
+        assert_eq!(
+            ResponsiveBreakpoint::from_width(200),
+            ResponsiveBreakpoint::Full
+        );
     }
 
     #[test]
     fn test_responsive_compact_40_cols_no_panic() {
         // Render at 40-col width (phone-like, Termux/Blink Shell).
+        use crate::tui::viz_viewer::state::ResponsiveBreakpoint;
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
-        use crate::tui::viz_viewer::state::ResponsiveBreakpoint;
 
         let (viz, _) = build_hud_test_graph();
         let mut app = build_app_from_viz_output(&viz, "a");
@@ -11733,9 +11739,9 @@ mod tests {
     #[test]
     fn test_responsive_narrow_60_cols_no_panic() {
         // Render at 60-col width (narrow terminal).
+        use crate::tui::viz_viewer::state::ResponsiveBreakpoint;
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
-        use crate::tui::viz_viewer::state::ResponsiveBreakpoint;
 
         let (viz, _) = build_hud_test_graph();
         let mut app = build_app_from_viz_output(&viz, "a");
@@ -11751,9 +11757,9 @@ mod tests {
     #[test]
     fn test_responsive_full_100_cols_no_panic() {
         // Render at 100-col width (standard terminal).
+        use crate::tui::viz_viewer::state::ResponsiveBreakpoint;
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
-        use crate::tui::viz_viewer::state::ResponsiveBreakpoint;
 
         let (viz, _) = build_hud_test_graph();
         let mut app = build_app_from_viz_output(&viz, "a");
@@ -11770,9 +11776,9 @@ mod tests {
     fn test_responsive_compact_single_panel_graph_view() {
         // In compact mode with SinglePanelView::Graph, the graph area should
         // span the full main area (minus status/hints bars).
+        use crate::tui::viz_viewer::state::{ResponsiveBreakpoint, SinglePanelView};
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
-        use crate::tui::viz_viewer::state::{ResponsiveBreakpoint, SinglePanelView};
 
         let (viz, _) = build_hud_test_graph();
         let mut app = build_app_from_viz_output(&viz, "a");
@@ -11796,9 +11802,9 @@ mod tests {
     fn test_responsive_compact_single_panel_detail_view() {
         // In compact mode with SinglePanelView::Detail, only the inspector
         // should render — graph area should be zeroed out.
+        use crate::tui::viz_viewer::state::{ResponsiveBreakpoint, SinglePanelView};
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
-        use crate::tui::viz_viewer::state::{ResponsiveBreakpoint, SinglePanelView};
 
         let (viz, _) = build_hud_test_graph();
         let mut app = build_app_from_viz_output(&viz, "a");
@@ -11850,9 +11856,9 @@ mod tests {
     fn test_responsive_narrow_split_layout() {
         // In narrow mode (50-80 cols) with inspector visible, should use
         // side-by-side split with constrained proportions.
+        use crate::tui::viz_viewer::state::ResponsiveBreakpoint;
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
-        use crate::tui::viz_viewer::state::ResponsiveBreakpoint;
 
         let (viz, _) = build_hud_test_graph();
         let mut app = build_app_from_viz_output(&viz, "a");
@@ -11867,7 +11873,10 @@ mod tests {
         assert_eq!(app.responsive_breakpoint, ResponsiveBreakpoint::Narrow);
         // Both panels should be visible.
         assert!(app.last_graph_area.width > 0, "graph should have width");
-        assert!(app.last_right_panel_area.width > 0, "inspector should have width");
+        assert!(
+            app.last_right_panel_area.width > 0,
+            "inspector should have width"
+        );
         // Total widths should sum to terminal width.
         assert_eq!(
             app.last_graph_area.width + app.last_right_panel_area.width,
@@ -11880,9 +11889,9 @@ mod tests {
     fn test_responsive_resize_dynamic_breakpoint() {
         // Simulate resize by drawing at different widths and verifying
         // breakpoint changes dynamically.
+        use crate::tui::viz_viewer::state::ResponsiveBreakpoint;
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
-        use crate::tui::viz_viewer::state::ResponsiveBreakpoint;
 
         let (viz, _) = build_hud_test_graph();
         let mut app = build_app_from_viz_output(&viz, "a");
@@ -12031,9 +12040,9 @@ mod tests {
     fn test_single_panel_log_view_renders() {
         // In compact mode with SinglePanelView::Log, the right panel renders
         // with the Log tab active, and graph area is zeroed.
+        use crate::tui::viz_viewer::state::{ResponsiveBreakpoint, RightPanelTab, SinglePanelView};
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
-        use crate::tui::viz_viewer::state::{ResponsiveBreakpoint, RightPanelTab, SinglePanelView};
 
         let (viz, _) = build_hud_test_graph();
         let mut app = build_app_from_viz_output(&viz, "a");
@@ -12064,9 +12073,21 @@ mod tests {
     fn test_single_panel_next_prev_inverse() {
         use crate::tui::viz_viewer::state::SinglePanelView;
 
-        for view in [SinglePanelView::Graph, SinglePanelView::Detail, SinglePanelView::Log] {
-            assert_eq!(view.next().prev(), view, "next then prev should return to original");
-            assert_eq!(view.prev().next(), view, "prev then next should return to original");
+        for view in [
+            SinglePanelView::Graph,
+            SinglePanelView::Detail,
+            SinglePanelView::Log,
+        ] {
+            assert_eq!(
+                view.next().prev(),
+                view,
+                "next then prev should return to original"
+            );
+            assert_eq!(
+                view.prev().next(),
+                view,
+                "prev then next should return to original"
+            );
         }
     }
 
@@ -12076,9 +12097,9 @@ mod tests {
 
     /// Render the vitals bar into a test buffer and return the text content.
     fn render_vitals_to_string(vitals: &super::super::state::VitalsState, width: u16) -> String {
-        use ratatui::backend::TestBackend;
-        use ratatui::Terminal;
         use super::super::state::VitalsState;
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
 
         let (viz, _) = build_test_graph_chain_plus_isolated();
         let mut app = build_app_from_viz_output(&viz, "a");
@@ -12124,12 +12145,36 @@ mod tests {
             daemon_running: false,
         };
         let text = render_vitals_to_string(&v, 120);
-        assert!(text.contains("0 agents"), "should show agent count, got: {}", text);
-        assert!(text.contains("5 open"), "should show open count, got: {}", text);
-        assert!(text.contains("0 running"), "should show running count, got: {}", text);
-        assert!(text.contains("10 done"), "should show done count, got: {}", text);
-        assert!(text.contains("no events"), "should show no events, got: {}", text);
-        assert!(text.contains("coord"), "should show coord status, got: {}", text);
+        assert!(
+            text.contains("0 agents"),
+            "should show agent count, got: {}",
+            text
+        );
+        assert!(
+            text.contains("5 open"),
+            "should show open count, got: {}",
+            text
+        );
+        assert!(
+            text.contains("0 running"),
+            "should show running count, got: {}",
+            text
+        );
+        assert!(
+            text.contains("10 done"),
+            "should show done count, got: {}",
+            text
+        );
+        assert!(
+            text.contains("no events"),
+            "should show no events, got: {}",
+            text
+        );
+        assert!(
+            text.contains("coord"),
+            "should show coord status, got: {}",
+            text
+        );
         assert!(text.contains("down"), "should show down, got: {}", text);
     }
 
@@ -12149,12 +12194,36 @@ mod tests {
             daemon_running: true,
         };
         let text = render_vitals_to_string(&v, 120);
-        assert!(text.contains("2 agents"), "should show agent count, got: {}", text);
-        assert!(text.contains("8 open"), "should show open count, got: {}", text);
-        assert!(text.contains("3 running"), "should show running count, got: {}", text);
-        assert!(text.contains("45 done"), "should show done count, got: {}", text);
-        assert!(text.contains("last event"), "should show last event, got: {}", text);
-        assert!(text.contains("coord"), "should show coord status, got: {}", text);
+        assert!(
+            text.contains("2 agents"),
+            "should show agent count, got: {}",
+            text
+        );
+        assert!(
+            text.contains("8 open"),
+            "should show open count, got: {}",
+            text
+        );
+        assert!(
+            text.contains("3 running"),
+            "should show running count, got: {}",
+            text
+        );
+        assert!(
+            text.contains("45 done"),
+            "should show done count, got: {}",
+            text
+        );
+        assert!(
+            text.contains("last event"),
+            "should show last event, got: {}",
+            text
+        );
+        assert!(
+            text.contains("coord"),
+            "should show coord status, got: {}",
+            text
+        );
     }
 
     #[test]
@@ -12171,6 +12240,10 @@ mod tests {
             daemon_running: true,
         };
         let text = render_vitals_to_string(&v, 120);
-        assert!(text.contains("1 agents"), "should show 1 agent, got: {}", text);
+        assert!(
+            text.contains("1 agents"),
+            "should show 1 agent, got: {}",
+            text
+        );
     }
 }

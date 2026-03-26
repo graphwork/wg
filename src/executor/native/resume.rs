@@ -75,8 +75,12 @@ pub fn load_resume_data(
         return Ok(None);
     }
 
-    let entries = super::journal::Journal::read_all(journal_path)
-        .with_context(|| format!("Failed to read journal for resume: {}", journal_path.display()))?;
+    let entries = super::journal::Journal::read_all(journal_path).with_context(|| {
+        format!(
+            "Failed to read journal for resume: {}",
+            journal_path.display()
+        )
+    })?;
 
     if entries.is_empty() {
         return Ok(None);
@@ -235,8 +239,10 @@ fn summarize_messages(messages: &[Message]) -> String {
                     let trimmed = text.trim();
                     if !trimmed.is_empty() {
                         if trimmed.len() > 200 {
-                            key_texts
-                                .push(format!("{}...", &trimmed[..trimmed.floor_char_boundary(200)]));
+                            key_texts.push(format!(
+                                "{}...",
+                                &trimmed[..trimmed.floor_char_boundary(200)]
+                            ));
                         } else {
                             key_texts.push(trimmed.to_string());
                         }
@@ -252,7 +258,9 @@ fn summarize_messages(messages: &[Message]) -> String {
                     };
                     tool_calls_seen.push(format!("{}({})", name, input_summary));
                 }
-                ContentBlock::ToolResult { content, is_error, .. } => {
+                ContentBlock::ToolResult {
+                    content, is_error, ..
+                } => {
                     if *is_error {
                         let preview = if content.len() > 100 {
                             format!("{}...", &content[..content.floor_char_boundary(100)])
@@ -269,10 +277,7 @@ fn summarize_messages(messages: &[Message]) -> String {
     let mut summary = String::new();
 
     if !tool_calls_seen.is_empty() {
-        summary.push_str(&format!(
-            "Tools called: {}\n",
-            tool_calls_seen.join(", ")
-        ));
+        summary.push_str(&format!("Tools called: {}\n", tool_calls_seen.join(", ")));
     }
 
     if !parts.is_empty() {
@@ -523,9 +528,7 @@ pub fn build_resume_annotation(resume_data: &ResumeData) -> String {
                 .collect::<Vec<_>>()
                 .join("\n")
         ));
-        parts.push(
-            "Re-read any affected files before relying on prior tool results.".to_string(),
-        );
+        parts.push("Re-read any affected files before relying on prior tool results.".to_string());
     }
 
     parts.join("\n")
@@ -538,10 +541,7 @@ mod tests {
     use crate::executor::native::journal::{Journal, JournalEntryKind};
     use tempfile::TempDir;
 
-    fn make_journal_with_messages(
-        dir: &Path,
-        messages: &[(Role, &str)],
-    ) -> std::path::PathBuf {
+    fn make_journal_with_messages(dir: &Path, messages: &[(Role, &str)]) -> std::path::PathBuf {
         let path = dir.join("conversation.jsonl");
         let mut journal = Journal::open(&path).unwrap();
 
@@ -637,7 +637,10 @@ mod tests {
         assert_eq!(resume.original_entry_count, 3); // Init + 2 messages
         assert!(!resume.was_compacted);
         assert!(resume.stale_annotations.is_empty());
-        assert_eq!(resume.system_prompt.as_deref(), Some("You are a test agent."));
+        assert_eq!(
+            resume.system_prompt.as_deref(),
+            Some("You are a test agent.")
+        );
     }
 
     #[test]
@@ -668,7 +671,11 @@ mod tests {
         let mut messages = Vec::new();
         for i in 0..20 {
             messages.push(Message {
-                role: if i % 2 == 0 { Role::User } else { Role::Assistant },
+                role: if i % 2 == 0 {
+                    Role::User
+                } else {
+                    Role::Assistant
+                },
                 content: vec![ContentBlock::Text {
                     text: format!("Message {}", i),
                 }],
@@ -683,7 +690,11 @@ mod tests {
         // First message should be the compaction summary
         match &compacted[0].content[0] {
             ContentBlock::Text { text } => {
-                assert!(text.contains("compacted"), "Summary should mention compaction: {}", text);
+                assert!(
+                    text.contains("compacted"),
+                    "Summary should mention compaction: {}",
+                    text
+                );
             }
             _ => panic!("Expected text content in compaction summary"),
         }
@@ -724,7 +735,11 @@ mod tests {
 
         // File unchanged — no stale annotations
         let annotations = detect_stale_state(&entries, tmp.path());
-        assert!(annotations.is_empty(), "No stale annotations expected: {:?}", annotations);
+        assert!(
+            annotations.is_empty(),
+            "No stale annotations expected: {:?}",
+            annotations
+        );
 
         // Now modify the file
         std::fs::write(&test_file, "fn main() { println!(\"hello\"); }").unwrap();

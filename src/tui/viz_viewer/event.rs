@@ -1603,11 +1603,16 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
             } else if app.right_panel_tab == RightPanelTab::Output && !app.nav_stack.is_empty() {
                 // Drill-down from Output: push AgentDetail, go to task Detail
                 if let Some(ref agent_id) = app.output_pane.active_agent_id.clone() {
-                    let task_id = app.dashboard.agent_rows.iter()
+                    let task_id = app
+                        .dashboard
+                        .agent_rows
+                        .iter()
                         .find(|r| r.agent_id == *agent_id)
                         .map(|r| r.task_id.clone());
                     if let Some(task_id) = task_id {
-                        app.nav_stack.push(NavEntry::AgentDetail { agent_id: agent_id.clone() });
+                        app.nav_stack.push(NavEntry::AgentDetail {
+                            agent_id: agent_id.clone(),
+                        });
                         app.load_hud_detail_for_task(&task_id);
                         app.right_panel_tab = RightPanelTab::Detail;
                     }
@@ -1616,7 +1621,9 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
                 // Drill-down from Detail: push TaskDetail, go to Log tab
                 if let Some(ref detail) = app.hud_detail {
                     let task_id = detail.task_id.clone();
-                    app.nav_stack.push(NavEntry::TaskDetail { task_id: task_id.clone() });
+                    app.nav_stack.push(NavEntry::TaskDetail {
+                        task_id: task_id.clone(),
+                    });
                     if let Some(idx) = app.task_order.iter().position(|id| *id == task_id) {
                         app.selected_task_idx = Some(idx);
                     }
@@ -1705,10 +1712,11 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
                 app.right_panel_tab = RightPanelTab::Detail;
             }
         }
-        KeyCode::Char('b') if app.right_panel_tab == RightPanelTab::Dashboard
-            || app.right_panel_tab == RightPanelTab::Output
-            || app.right_panel_tab == RightPanelTab::Detail
-            || app.right_panel_tab == RightPanelTab::Log =>
+        KeyCode::Char('b')
+            if app.right_panel_tab == RightPanelTab::Dashboard
+                || app.right_panel_tab == RightPanelTab::Output
+                || app.right_panel_tab == RightPanelTab::Detail
+                || app.right_panel_tab == RightPanelTab::Log =>
         {
             // Back: pop nav stack if non-empty, otherwise return to graph focus
             nav_stack_pop(app);
@@ -2071,16 +2079,14 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
         app.last_panel_scrollbar_area.height > 0 && app.last_panel_scrollbar_area.contains(pos);
     let in_coordinator_bar =
         app.last_coordinator_bar_area.height > 0 && app.last_coordinator_bar_area.contains(pos);
-    let in_divider =
-        app.last_divider_area.width > 0 && app.last_divider_area.contains(pos);
+    let in_divider = app.last_divider_area.width > 0 && app.last_divider_area.contains(pos);
     let in_minimized_strip =
         app.last_minimized_strip_area.width > 0 && app.last_minimized_strip_area.contains(pos);
-    let in_fullscreen_restore =
-        app.last_fullscreen_restore_area.width > 0 && app.last_fullscreen_restore_area.contains(pos);
+    let in_fullscreen_restore = app.last_fullscreen_restore_area.width > 0
+        && app.last_fullscreen_restore_area.contains(pos);
 
     // Track hover state for the divider (visual indicator).
-    app.divider_hover = in_divider
-        || app.scrollbar_drag == Some(ScrollbarDragTarget::Divider);
+    app.divider_hover = in_divider || app.scrollbar_drag == Some(ScrollbarDragTarget::Divider);
     // Track hover state for tri-state strips.
     app.minimized_strip_hover = in_minimized_strip;
     app.fullscreen_restore_hover = in_fullscreen_restore;
@@ -2489,17 +2495,18 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
                 // Dragging the divider: compute new right_panel_percent from mouse column.
                 // The right panel starts at `column` and extends to the right edge.
                 // Use graph+panel width when available, fall back to total known area.
-                let total_width = if app.last_graph_area.width > 0 && app.last_right_panel_area.width > 0 {
-                    app.last_graph_area.width + app.last_right_panel_area.width
-                } else if app.last_graph_area.width > 0 {
-                    // Coming from FullInspector restore — panel area not yet set.
-                    // Estimate total from graph area + rough frame width.
-                    app.last_graph_area.width.max(80)
-                } else if app.last_right_panel_area.width > 0 {
-                    app.last_right_panel_area.width.max(80)
-                } else {
-                    0
-                };
+                let total_width =
+                    if app.last_graph_area.width > 0 && app.last_right_panel_area.width > 0 {
+                        app.last_graph_area.width + app.last_right_panel_area.width
+                    } else if app.last_graph_area.width > 0 {
+                        // Coming from FullInspector restore — panel area not yet set.
+                        // Estimate total from graph area + rough frame width.
+                        app.last_graph_area.width.max(80)
+                    } else if app.last_right_panel_area.width > 0 {
+                        app.last_right_panel_area.width.max(80)
+                    } else {
+                        0
+                    };
                 if total_width > 0 {
                     let left_x = app.last_graph_area.x;
                     let right_edge = left_x + total_width;
@@ -2530,8 +2537,7 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
                     } else {
                         let clamped = raw_pct.max(15).min(85);
                         app.right_panel_percent = clamped;
-                        app.layout_mode =
-                            super::state::VizApp::layout_mode_for_percent(clamped);
+                        app.layout_mode = super::state::VizApp::layout_mode_for_percent(clamped);
                     }
                 }
             } else if app.scrollbar_drag == Some(ScrollbarDragTarget::Graph) {
@@ -4672,8 +4678,14 @@ mod scrollbar_tests {
 
         // Without axis swap: ScrollDown scrolls vertically.
         handle_mouse(&mut app, MouseEventKind::ScrollDown, 10, 40);
-        assert_eq!(app.scroll.offset_y, 3, "Normal ScrollDown scrolls vertically");
-        assert_eq!(app.scroll.offset_x, 0, "Normal ScrollDown does not scroll horizontally");
+        assert_eq!(
+            app.scroll.offset_y, 3,
+            "Normal ScrollDown scrolls vertically"
+        );
+        assert_eq!(
+            app.scroll.offset_x, 0,
+            "Normal ScrollDown does not scroll horizontally"
+        );
 
         // Reset.
         app.scroll.offset_y = 0;
@@ -4683,13 +4695,25 @@ mod scrollbar_tests {
 
         // With axis swap: ScrollDown scrolls horizontally (right).
         handle_mouse(&mut app, MouseEventKind::ScrollDown, 10, 40);
-        assert_eq!(app.scroll.offset_y, 0, "Swapped ScrollDown should not scroll vertically");
-        assert_eq!(app.scroll.offset_x, 3, "Swapped ScrollDown should scroll right");
+        assert_eq!(
+            app.scroll.offset_y, 0,
+            "Swapped ScrollDown should not scroll vertically"
+        );
+        assert_eq!(
+            app.scroll.offset_x, 3,
+            "Swapped ScrollDown should scroll right"
+        );
 
         // With axis swap: ScrollUp scrolls horizontally (left).
         handle_mouse(&mut app, MouseEventKind::ScrollUp, 10, 40);
-        assert_eq!(app.scroll.offset_y, 0, "Swapped ScrollUp should not scroll vertically");
-        assert_eq!(app.scroll.offset_x, 0, "Swapped ScrollUp should scroll left");
+        assert_eq!(
+            app.scroll.offset_y, 0,
+            "Swapped ScrollUp should not scroll vertically"
+        );
+        assert_eq!(
+            app.scroll.offset_x, 0,
+            "Swapped ScrollUp should scroll left"
+        );
     }
 }
 
@@ -4719,10 +4743,17 @@ mod drilldown_tests {
         let tasks: Vec<_> = graph.tasks().collect();
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
         let viz = generate_ascii(
-            &graph, &tasks, &task_ids,
-            &HashMap::new(), &HashMap::new(), &HashMap::new(),
-            VizLayoutMode::Tree, &HashSet::new(), "gray",
-            &HashMap::new(), &HashMap::new(),
+            &graph,
+            &tasks,
+            &task_ids,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            VizLayoutMode::Tree,
+            &HashSet::new(),
+            "gray",
+            &HashMap::new(),
+            &HashMap::new(),
         );
 
         let mut app = VizApp::from_viz_output_for_test(&viz);
@@ -4782,7 +4813,9 @@ mod drilldown_tests {
         app.right_panel_tab = RightPanelTab::Output;
 
         // Output → Detail
-        app.nav_stack.push(NavEntry::AgentDetail { agent_id: "agent-99".into() });
+        app.nav_stack.push(NavEntry::AgentDetail {
+            agent_id: "agent-99".into(),
+        });
         app.load_hud_detail_for_task("test-task-1");
         app.right_panel_tab = RightPanelTab::Detail;
 
@@ -4803,7 +4836,9 @@ mod drilldown_tests {
     fn manual_tab_switch_clears_nav_stack() {
         let (mut app, _tmp) = setup_dashboard_app();
         app.nav_stack.push(NavEntry::Dashboard);
-        app.nav_stack.push(NavEntry::AgentDetail { agent_id: "agent-99".into() });
+        app.nav_stack.push(NavEntry::AgentDetail {
+            agent_id: "agent-99".into(),
+        });
         assert_eq!(app.nav_stack.len(), 2);
         app.nav_stack.clear();
         app.right_panel_tab = RightPanelTab::Chat;

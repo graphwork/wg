@@ -401,8 +401,10 @@ fn print_human_readable(details: &TaskDetails) {
 
         // Next due: compute from ready_after or last_iteration_completed_at + delay
         let next_due = details.ready_after.clone().or_else(|| {
-            let delay_secs =
-                cc.delay.as_ref().and_then(|d| workgraph::graph::parse_delay(d))?;
+            let delay_secs = cc
+                .delay
+                .as_ref()
+                .and_then(|d| workgraph::graph::parse_delay(d))?;
             let last_ts = details
                 .last_iteration_completed_at
                 .as_ref()?

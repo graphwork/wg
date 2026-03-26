@@ -535,9 +535,8 @@ fn main() -> Result<()> {
                 .unwrap_or_else(|| Config::load_or_default(&workgraph_dir).viz.edge_color);
 
             // Resolve max columns: --columns flag > terminal width > None
-            let max_columns = columns.or_else(|| {
-                crossterm::terminal::size().ok().map(|(cols, _)| cols)
-            });
+            let max_columns =
+                columns.or_else(|| crossterm::terminal::size().ok().map(|(cols, _)| cols));
 
             if use_tui {
                 let options = commands::viz::VizOptions {
@@ -1945,7 +1944,12 @@ fn main() -> Result<()> {
                 no_coordinator_agent,
             ),
         },
-        Commands::Tui { no_mouse, recording, trace, show_keys } => {
+        Commands::Tui {
+            no_mouse,
+            recording,
+            trace,
+            show_keys,
+        } => {
             let config = Config::load_or_default(&workgraph_dir);
             let resolved_edge_color = config.viz.edge_color;
             let options = commands::viz::VizOptions {
@@ -1965,7 +1969,14 @@ fn main() -> Result<()> {
             };
             let mouse_override = if no_mouse { Some(false) } else { None };
             let show_keys = show_keys || config.tui.show_keys;
-            tui::viz_viewer::run(workgraph_dir, options, mouse_override, recording, trace, show_keys)
+            tui::viz_viewer::run(
+                workgraph_dir,
+                options,
+                mouse_override,
+                recording,
+                trace,
+                show_keys,
+            )
         }
         Commands::TuiDump {} => {
             let snap = tui::viz_viewer::screen_dump::client_dump(&workgraph_dir)?;
@@ -2008,13 +2019,7 @@ fn main() -> Result<()> {
                 cols,
                 rows,
                 duration,
-            } => commands::screencast_autopilot::run(
-                &workgraph_dir,
-                &output,
-                cols,
-                rows,
-                duration,
-            ),
+            } => commands::screencast_autopilot::run(&workgraph_dir, &output, cols, rows, duration),
         },
         Commands::Server { command } => match command {
             ServerCommands::Init {
@@ -2035,9 +2040,7 @@ fn main() -> Result<()> {
                 };
                 commands::server::run(&workgraph_dir, &opts)
             }
-            ServerCommands::Connect { user } => {
-                commands::server::connect(user.as_deref())
-            }
+            ServerCommands::Connect { user } => commands::server::connect(user.as_deref()),
         },
         Commands::Setup => commands::setup::run(),
         Commands::Quickstart => commands::quickstart::run(cli.json),
