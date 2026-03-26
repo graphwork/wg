@@ -2510,32 +2510,26 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
                     // The panel width = distance from mouse column to the right edge.
                     let panel_width = right_edge.saturating_sub(column);
                     let raw_pct = (panel_width as u32 * 100 / total_width as u32) as u16;
-                    // Snap to extreme states at thresholds; otherwise clamp to 15–85%.
-                    if raw_pct > 90 {
-                        // Dragged far left → full-screen inspector.
-                        if app.layout_mode.is_normal_split() {
-                            app.last_split_mode = app.layout_mode;
-                            app.last_split_percent = app.right_panel_percent;
-                        }
-                        app.layout_mode = super::state::LayoutMode::FullInspector;
-                        app.right_panel_visible = true;
-                        app.focused_panel = super::state::FocusedPanel::RightPanel;
-                        app.scrollbar_drag = None;
-                    } else if raw_pct < 10 {
-                        // Dragged far right → minimized inspector.
-                        if app.layout_mode.is_normal_split() {
-                            app.last_split_mode = app.layout_mode;
-                            app.last_split_percent = app.right_panel_percent;
-                        }
-                        app.layout_mode = super::state::LayoutMode::Off;
-                        app.right_panel_visible = false;
-                        app.focused_panel = super::state::FocusedPanel::Graph;
-                        app.scrollbar_drag = None;
-                    } else {
-                        let clamped = raw_pct.clamp(15, 85);
-                        app.right_panel_percent = clamped;
-                        app.layout_mode = super::state::VizApp::layout_mode_for_percent(clamped);
+                    // Smooth single-column dragging: full 0–100% range with no
+                    // snap thresholds or clamping.  Stay in a normal-split
+                    // LayoutMode during the drag so both panel areas remain
+                    // valid for next-frame hit-testing (FullInspector / Off
+                    // restructure layout areas and would break the drag).
+                    let pct = raw_pct.clamp(0, 100);
+                    app.right_panel_percent = pct;
+                    app.right_panel_visible = true;
+                    // Preserve last non-extreme split state for restore.
+                    if pct > 0 && pct < 100 {
+                        app.last_split_percent = pct;
+                        app.last_split_mode = app.layout_mode;
                     }
+                    // Map to a normal-split LayoutMode (avoid FullInspector/Off
+                    // during drag — those modes restructure layout areas).
+                    app.layout_mode = if pct >= 100 {
+                        super::state::LayoutMode::TwoThirdsInspector
+                    } else {
+                        super::state::VizApp::layout_mode_for_percent(pct)
+                    };
                 }
             } else if app.scrollbar_drag == Some(ScrollbarDragTarget::Graph) {
                 app.record_graph_scroll_activity();
@@ -2569,6 +2563,18 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
             }
         }
         MouseEventKind::Up(MouseButton::Left) => {
+            // Finalize layout mode when divider drag ends at an extreme.
+            if app.scrollbar_drag == Some(ScrollbarDragTarget::Divider) {
+                if app.right_panel_percent >= 100 {
+                    app.layout_mode = super::state::LayoutMode::FullInspector;
+                    app.right_panel_visible = true;
+                    app.focused_panel = super::state::FocusedPanel::RightPanel;
+                } else if app.right_panel_percent == 0 {
+                    app.layout_mode = super::state::LayoutMode::Off;
+                    app.right_panel_visible = false;
+                    app.focused_panel = super::state::FocusedPanel::Graph;
+                }
+            }
             if app.scrollbar_drag.is_some() {
                 app.scrollbar_drag = None;
             }
