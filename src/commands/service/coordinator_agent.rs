@@ -533,6 +533,21 @@ fn agent_thread_main(
             ));
         }
 
+        // Archive-rotate chat files if they exceed configured thresholds
+        if let Err(e) = chat::check_and_rotate_for(dir, coordinator_id) {
+            logger.warn(&format!(
+                "Coordinator agent: failed to check/rotate chat archives: {}",
+                e
+            ));
+        }
+        // Clean up expired archives
+        if let Err(e) = chat::cleanup_archives_for(dir, coordinator_id) {
+            logger.warn(&format!(
+                "Coordinator agent: failed to clean up chat archives: {}",
+                e
+            ));
+        }
+
         // Spawn the Claude CLI process
         logger.info("Coordinator agent: spawning Claude CLI process");
         let spawn_result = spawn_claude_process(dir, executor, model, provider, logger);

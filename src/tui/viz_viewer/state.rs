@@ -1022,6 +1022,10 @@ pub struct ChatState {
     pub skipped_history_count: usize,
     /// In-chat search state.
     pub search: ChatSearchState,
+    /// Whether archive files have been loaded into the scrollback.
+    pub archives_loaded: bool,
+    /// Whether there are archive files available to load.
+    pub has_archives: bool,
 }
 
 /// State for in-chat search (/ key when chat tab is focused).
@@ -1084,6 +1088,8 @@ impl Default for ChatState {
             total_history_count: 0,
             skipped_history_count: 0,
             search: ChatSearchState::default(),
+            archives_loaded: false,
+            has_archives: false,
         }
     }
 }
@@ -9372,6 +9378,12 @@ impl VizApp {
         ) {
             self.chat.outbox_cursor = msgs.last().map(|m| m.id).unwrap_or(0);
         }
+
+        // Check if archive files exist for scrollback beyond the active file.
+        self.chat.archives_loaded = false;
+        self.chat.has_archives = workgraph::chat::list_archives_for(&self.workgraph_dir, coordinator_id)
+            .map(|a| !a.is_empty())
+            .unwrap_or(false);
     }
 
     /// Save all coordinator chat states to disk (called on TUI exit).
@@ -9397,9 +9409,14 @@ impl VizApp {
 
     /// Load the next page of older chat messages for the active coordinator.
     /// Prepends older messages to the beginning of `self.chat.messages`.
+    /// When the active file is exhausted, loads from archive files.
     /// Returns true if new messages were loaded.
     pub fn load_more_chat_history(&mut self) -> bool {
         if self.no_history || !self.chat.has_more_history {
+            // Check if we can still load from archives
+            if !self.no_history && !self.chat.archives_loaded {
+                return self.load_archive_history();
+            }
             return false;
         }
 
@@ -9412,6 +9429,10 @@ impl VizApp {
 
         if older_messages.is_empty() {
             self.chat.has_more_history = false;
+            // Try loading from archives when active file is exhausted
+            if !self.chat.archives_loaded {
+                return self.load_archive_history();
+            }
             return false;
         }
 
@@ -9426,6 +9447,102 @@ impl VizApp {
         self.chat.has_more_history = self.chat.skipped_history_count > 0;
 
         true
+    }
+
+    /// Load messages from archived chat history files.
+    /// Archives are loaded in reverse chronological order (newest archive first).
+    /// Returns true if any messages were loaded.
+    fn load_archive_history(&mut self) -> bool {
+        self.chat.archives_loaded = true;
+
+        let archives = match workgraph::chat::list_archives_for(
+            &self.workgraph_dir,
+            self.active_coordinator_id,
+        ) {
+            Ok(a) => a,
+            Err(_) => return false,
+        };
+
+        if archives.is_empty() {
+            self.chat.has_archives = false;
+            return false;
+        }
+
+        self.chat.has_archives = true;
+
+        // Load all archive messages. Archives are already sorted oldest-first.
+        // We need to convert them to TUI ChatMessage format.
+        let mut archive_messages: Vec<ChatMessage> = Vec::new();
+        for archive_path in &archives {
+            if let Ok(msgs) = workgraph::chat::read_archive_messages(archive_path) {
+                for msg in msgs {
+                    let role = match msg.role.as_str() {
+                        "user" => ChatRole::User,
+                        "coordinator" => ChatRole::Coordinator,
+                        _ => ChatRole::System,
+                    };
+                    archive_messages.push(ChatMessage {
+                        role,
+                        text: msg.content,
+                        full_text: msg.full_response,
+                        attachments: msg.attachments.iter().map(|a| {
+                            std::path::Path::new(&a.path)
+                                .file_name()
+                                .and_then(|f| f.to_str())
+                                .unwrap_or(&a.path)
+                                .to_string()
+                        }).collect(),
+                        edited: false,
+                        inbox_id: None,
+                        user: msg.user,
+                        target_task: None,
+                        msg_timestamp: Some(msg.timestamp),
+                        read_at: None,
+                        msg_queue_id: None,
+                    });
+                }
+            }
+        }
+
+        if archive_messages.is_empty() {
+            return false;
+        }
+
+        // Also check for TUI history archives (chat-history-*.jsonl in archive dir)
+        let archive_dir = self.workgraph_dir.join("chat").join(self.active_coordinator_id.to_string()).join("archive");
+        if archive_dir.exists() {
+            if let Ok(entries) = std::fs::read_dir(&archive_dir) {
+                let mut tui_archives: Vec<std::path::PathBuf> = entries
+                    .filter_map(|e| e.ok())
+                    .map(|e| e.path())
+                    .filter(|p| {
+                        p.file_name()
+                            .and_then(|n| n.to_str())
+                            .map(|n| n.starts_with("chat-history-") && n.ends_with(".jsonl"))
+                            .unwrap_or(false)
+                    })
+                    .collect();
+                tui_archives.sort();
+                for path in &tui_archives {
+                    let result = load_jsonl_tail(path, usize::MAX);
+                    archive_messages.extend(result.messages);
+                }
+            }
+        }
+
+        // Sort archive messages by timestamp, then prepend to current messages.
+        archive_messages.sort_by(|a, b| {
+            let ts_a = a.msg_timestamp.as_deref().unwrap_or("");
+            let ts_b = b.msg_timestamp.as_deref().unwrap_or("");
+            ts_a.cmp(ts_b)
+        });
+
+        let loaded = archive_messages.len();
+        archive_messages.append(&mut self.chat.messages);
+        self.chat.messages = archive_messages;
+        self.chat.skipped_history_count = 0;
+
+        loaded > 0
     }
 
     /// Poll for new coordinator responses in the outbox and streaming updates.

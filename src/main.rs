@@ -1000,8 +1000,14 @@ fn main() -> Result<()> {
             coordinator,
             history_depth,
             no_history,
+            rotate,
+            cleanup,
         } => {
-            if clear {
+            if rotate {
+                commands::chat::run_rotate(&workgraph_dir, coordinator)
+            } else if cleanup {
+                commands::chat::run_cleanup(&workgraph_dir, coordinator)
+            } else if clear {
                 commands::chat::run_clear(&workgraph_dir, coordinator)
             } else if history {
                 commands::chat::run_history(&workgraph_dir, cli.json, coordinator, history_depth)

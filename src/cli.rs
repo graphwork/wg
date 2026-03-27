@@ -886,6 +886,14 @@ pub enum Commands {
         /// affects the initial display.
         #[arg(long)]
         no_history: bool,
+
+        /// Rotate chat files to archive (force-rotate regardless of thresholds)
+        #[arg(long)]
+        rotate: bool,
+
+        /// Clean up archived files older than the retention period
+        #[arg(long)]
+        cleanup: bool,
     },
 
     /// Manage resources

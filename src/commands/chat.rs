@@ -301,6 +301,39 @@ pub fn run_clear(dir: &Path, coordinator_id: u32) -> Result<()> {
     Ok(())
 }
 
+/// Force-rotate chat files to archive for a specific coordinator.
+pub fn run_rotate(dir: &Path, coordinator_id: u32) -> Result<()> {
+    let rotated_ipc = chat::force_rotate_for(dir, coordinator_id)?;
+    let rotated_tui = chat::force_rotate_tui_history_for(dir, coordinator_id)?;
+
+    if rotated_ipc || rotated_tui {
+        println!("Chat files rotated to archive for coordinator {}.", coordinator_id);
+        let archives = chat::list_archives_for(dir, coordinator_id)?;
+        println!("{} archived file(s) total.", archives.len());
+    } else {
+        println!("No chat files to rotate for coordinator {}.", coordinator_id);
+    }
+
+    // Also run retention cleanup
+    let cleaned = chat::cleanup_archives_for(dir, coordinator_id)?;
+    if cleaned > 0 {
+        println!("Cleaned up {} expired archive(s).", cleaned);
+    }
+
+    Ok(())
+}
+
+/// Clean up expired archived chat files for a specific coordinator.
+pub fn run_cleanup(dir: &Path, coordinator_id: u32) -> Result<()> {
+    let cleaned = chat::cleanup_archives_for(dir, coordinator_id)?;
+    if cleaned > 0 {
+        println!("Cleaned up {} expired archive(s) for coordinator {}.", cleaned, coordinator_id);
+    } else {
+        println!("No expired archives to clean up for coordinator {}.", coordinator_id);
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

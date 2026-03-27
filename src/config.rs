@@ -73,6 +73,44 @@ pub struct Config {
     /// Model registry entries
     #[serde(default)]
     pub model_registry: Vec<ModelRegistryEntry>,
+
+    /// Chat archive rotation settings
+    #[serde(default)]
+    pub chat: ChatConfig,
+}
+
+/// Chat archive rotation configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatConfig {
+    /// Maximum size in bytes before rotating the active chat file (default: 1MB).
+    #[serde(default = "default_chat_max_file_size")]
+    pub max_file_size: u64,
+    /// Maximum number of messages before rotating (default: 10000).
+    #[serde(default = "default_chat_max_messages")]
+    pub max_messages: usize,
+    /// Retention period in days for archived files (default: 30). 0 = keep forever.
+    #[serde(default = "default_chat_retention_days")]
+    pub retention_days: u32,
+}
+
+fn default_chat_max_file_size() -> u64 {
+    1_048_576 // 1 MB
+}
+fn default_chat_max_messages() -> usize {
+    10_000
+}
+fn default_chat_retention_days() -> u32 {
+    30
+}
+
+impl Default for ChatConfig {
+    fn default() -> Self {
+        Self {
+            max_file_size: default_chat_max_file_size(),
+            max_messages: default_chat_max_messages(),
+            retention_days: default_chat_retention_days(),
+        }
+    }
 }
 
 /// Help display configuration

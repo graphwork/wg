@@ -22,6 +22,8 @@ use std::io::{BufRead, BufReader, Read as _, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use crate::config::Config;
+
 /// A file attachment on a chat message.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Attachment {
@@ -858,6 +860,281 @@ pub fn clear(workgraph_dir: &Path) -> Result<()> {
     Ok(())
 }
 
+// --- Archive rotation ---
+
+/// Directory for archived chat files for a specific coordinator.
+fn archive_dir_for(workgraph_dir: &Path, coordinator_id: u32) -> PathBuf {
+    chat_dir_for(workgraph_dir, coordinator_id).join("archive")
+}
+
+/// Check if a JSONL file needs rotation based on config thresholds.
+/// Returns true if either the file size or message count exceeds the configured limit.
+fn needs_rotation(path: &Path, config: &Config) -> bool {
+    if !path.exists() {
+        return false;
+    }
+    // Check file size
+    if let Ok(meta) = fs::metadata(path) {
+        if meta.len() >= config.chat.max_file_size {
+            return true;
+        }
+    }
+    // Check message count
+    if let Ok(file) = fs::File::open(path) {
+        let count = BufReader::new(file)
+            .lines()
+            .filter_map(|l| l.ok())
+            .filter(|l| !l.trim().is_empty())
+            .count();
+        if count >= config.chat.max_messages {
+            return true;
+        }
+    }
+    false
+}
+
+/// Rotate a single JSONL file to the archive directory.
+/// Renames the current file to `chat-YYYYMMDD-HHMMSS.jsonl` in the archive dir
+/// so that a fresh file can be started.
+fn rotate_to_archive(path: &Path, archive_dir: &Path) -> Result<()> {
+    if !path.exists() {
+        return Ok(());
+    }
+    let _lock = ChatLock::exclusive(path)?;
+
+    // Double-check the file still exists and is non-empty after acquiring lock.
+    if !path.exists() {
+        return Ok(());
+    }
+    if let Ok(meta) = fs::metadata(path) {
+        if meta.len() == 0 {
+            return Ok(());
+        }
+    }
+
+    fs::create_dir_all(archive_dir)
+        .with_context(|| format!("Failed to create archive dir: {}", archive_dir.display()))?;
+
+    let timestamp = Utc::now().format("%Y%m%d-%H%M%S");
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("chat");
+    let archive_name = format!("{}-{}.jsonl", stem, timestamp);
+    let dest = archive_dir.join(&archive_name);
+
+    fs::rename(path, &dest)
+        .with_context(|| format!("Failed to rotate {} to {}", path.display(), dest.display()))?;
+
+    Ok(())
+}
+
+/// Check and rotate both inbox and outbox for a coordinator if they exceed thresholds.
+/// Returns true if any file was rotated.
+pub fn check_and_rotate_for(workgraph_dir: &Path, coordinator_id: u32) -> Result<bool> {
+    let config = Config::load_or_default(workgraph_dir);
+    let archive_dir = archive_dir_for(workgraph_dir, coordinator_id);
+    let mut rotated = false;
+
+    let inbox = inbox_path_for(workgraph_dir, coordinator_id);
+    if needs_rotation(&inbox, &config) {
+        rotate_to_archive(&inbox, &archive_dir)?;
+        rotated = true;
+    }
+
+    let outbox = outbox_path_for(workgraph_dir, coordinator_id);
+    if needs_rotation(&outbox, &config) {
+        rotate_to_archive(&outbox, &archive_dir)?;
+        rotated = true;
+    }
+
+    Ok(rotated)
+}
+
+/// Force-rotate both inbox and outbox for a coordinator regardless of thresholds.
+/// Returns true if any file was rotated.
+pub fn force_rotate_for(workgraph_dir: &Path, coordinator_id: u32) -> Result<bool> {
+    let archive_dir = archive_dir_for(workgraph_dir, coordinator_id);
+    let mut rotated = false;
+
+    let inbox = inbox_path_for(workgraph_dir, coordinator_id);
+    if inbox.exists() {
+        rotate_to_archive(&inbox, &archive_dir)?;
+        rotated = true;
+    }
+
+    let outbox = outbox_path_for(workgraph_dir, coordinator_id);
+    if outbox.exists() {
+        rotate_to_archive(&outbox, &archive_dir)?;
+        rotated = true;
+    }
+
+    Ok(rotated)
+}
+
+/// Also rotate the TUI chat history file for a coordinator.
+pub fn rotate_tui_history_for(workgraph_dir: &Path, coordinator_id: u32) -> Result<bool> {
+    let config = Config::load_or_default(workgraph_dir);
+    let history_path = workgraph_dir.join(format!("chat-history-{}.jsonl", coordinator_id));
+    if !history_path.exists() {
+        return Ok(false);
+    }
+
+    let archive_dir = archive_dir_for(workgraph_dir, coordinator_id);
+
+    if needs_rotation(&history_path, &config) {
+        rotate_to_archive(&history_path, &archive_dir)?;
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+/// Force-rotate the TUI chat history file regardless of thresholds.
+pub fn force_rotate_tui_history_for(workgraph_dir: &Path, coordinator_id: u32) -> Result<bool> {
+    let history_path = workgraph_dir.join(format!("chat-history-{}.jsonl", coordinator_id));
+    if !history_path.exists() {
+        return Ok(false);
+    }
+    let archive_dir = archive_dir_for(workgraph_dir, coordinator_id);
+    rotate_to_archive(&history_path, &archive_dir)?;
+    Ok(true)
+}
+
+/// List archived JSONL files for a coordinator, sorted oldest-first.
+pub fn list_archives_for(workgraph_dir: &Path, coordinator_id: u32) -> Result<Vec<PathBuf>> {
+    let archive_dir = archive_dir_for(workgraph_dir, coordinator_id);
+    if !archive_dir.exists() {
+        return Ok(vec![]);
+    }
+
+    let mut files: Vec<PathBuf> = fs::read_dir(&archive_dir)?
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("jsonl"))
+        .collect();
+
+    files.sort(); // Filename-based sort gives chronological order due to timestamp prefix
+    Ok(files)
+}
+
+/// Read all messages from a single archived JSONL file.
+pub fn read_archive_messages(path: &Path) -> Result<Vec<ChatMessage>> {
+    read_messages(path)
+}
+
+/// Read all messages across active + archived files for a coordinator,
+/// returning them in chronological order.
+/// This is the unified view for scrollback.
+pub fn read_all_history_for(workgraph_dir: &Path, coordinator_id: u32) -> Result<Vec<ChatMessage>> {
+    let mut all_messages = Vec::new();
+
+    // Read archived files (oldest first)
+    let archives = list_archives_for(workgraph_dir, coordinator_id)?;
+    for archive_path in &archives {
+        let msgs = read_messages_inner(archive_path).unwrap_or_default();
+        all_messages.extend(msgs);
+    }
+
+    // Read active inbox + outbox
+    let inbox_msgs = read_messages(&inbox_path_for(workgraph_dir, coordinator_id))?;
+    let outbox_msgs = read_messages(&outbox_path_for(workgraph_dir, coordinator_id))?;
+    all_messages.extend(inbox_msgs);
+    all_messages.extend(outbox_msgs);
+
+    // Sort by timestamp for chronological order
+    all_messages.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
+    Ok(all_messages)
+}
+
+/// Search for messages matching a query across active + archived files.
+/// Returns matching messages with the file they were found in.
+pub fn search_all_history_for(
+    workgraph_dir: &Path,
+    coordinator_id: u32,
+    query: &str,
+) -> Result<Vec<ChatMessage>> {
+    let query_lower = query.to_lowercase();
+    let all = read_all_history_for(workgraph_dir, coordinator_id)?;
+    Ok(all
+        .into_iter()
+        .filter(|m| m.content.to_lowercase().contains(&query_lower))
+        .collect())
+}
+
+/// Clean up archived files older than the configured retention period.
+/// Returns the number of files removed.
+pub fn cleanup_archives_for(workgraph_dir: &Path, coordinator_id: u32) -> Result<usize> {
+    let config = Config::load_or_default(workgraph_dir);
+    if config.chat.retention_days == 0 {
+        return Ok(0); // 0 = keep forever
+    }
+
+    let cutoff = Utc::now() - chrono::Duration::days(config.chat.retention_days as i64);
+    let cutoff_str = cutoff.format("%Y%m%d-%H%M%S").to_string();
+
+    let archives = list_archives_for(workgraph_dir, coordinator_id)?;
+    let mut removed = 0;
+
+    for archive_path in &archives {
+        // Extract timestamp from filename: e.g. "inbox-20260301-120000.jsonl"
+        let stem = archive_path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("");
+        // The timestamp is the last 15 chars of the stem (YYYYMMDD-HHMMSS)
+        if stem.len() >= 15 {
+            let ts_part = &stem[stem.len() - 15..];
+            if ts_part < cutoff_str.as_str() {
+                if fs::remove_file(archive_path).is_ok() {
+                    removed += 1;
+                }
+            }
+        }
+    }
+
+    Ok(removed)
+}
+
+/// Clean up archives for all coordinators.
+pub fn cleanup_all_archives(workgraph_dir: &Path) -> Result<usize> {
+    let chat_dir = workgraph_dir.join("chat");
+    if !chat_dir.exists() {
+        return Ok(0);
+    }
+
+    let mut total = 0;
+    for entry in fs::read_dir(&chat_dir)? {
+        let entry = entry?;
+        if entry.file_type()?.is_dir() {
+            if let Some(name) = entry.file_name().to_str() {
+                if let Ok(cid) = name.parse::<u32>() {
+                    total += cleanup_archives_for(workgraph_dir, cid)?;
+                }
+            }
+        }
+    }
+    Ok(total)
+}
+
+/// Called after appending a message to check if rotation is needed.
+/// This provides automatic rotation on write.
+pub fn maybe_rotate_after_write(workgraph_dir: &Path, coordinator_id: u32) -> Result<()> {
+    let config = Config::load_or_default(workgraph_dir);
+    let archive_dir = archive_dir_for(workgraph_dir, coordinator_id);
+
+    let inbox = inbox_path_for(workgraph_dir, coordinator_id);
+    if needs_rotation(&inbox, &config) {
+        rotate_to_archive(&inbox, &archive_dir)?;
+    }
+
+    let outbox = outbox_path_for(workgraph_dir, coordinator_id);
+    if needs_rotation(&outbox, &config) {
+        rotate_to_archive(&outbox, &archive_dir)?;
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1594,5 +1871,209 @@ mod tests {
         // Final read: all 100 messages present
         let msgs = read_inbox(&wg_dir).unwrap();
         assert_eq!(msgs.len(), 100);
+    }
+
+    // --- Archive rotation tests ---
+
+    fn setup_with_config(max_size: u64, max_messages: usize, retention_days: u32) -> (TempDir, PathBuf) {
+        let (tmp, wg_dir) = setup();
+        let config_content = format!(
+            "[chat]\nmax_file_size = {}\nmax_messages = {}\nretention_days = {}\n",
+            max_size, max_messages, retention_days
+        );
+        fs::write(wg_dir.join("config.toml"), config_content).unwrap();
+        (tmp, wg_dir)
+    }
+
+    #[test]
+    fn test_force_rotate_creates_archive() {
+        let (_tmp, wg_dir) = setup();
+
+        // Write some messages
+        append_inbox(&wg_dir, "msg 1", "req-1").unwrap();
+        append_inbox(&wg_dir, "msg 2", "req-2").unwrap();
+        append_outbox(&wg_dir, "resp 1", "req-1").unwrap();
+
+        // Force rotate
+        let rotated = force_rotate_for(&wg_dir, 0).unwrap();
+        assert!(rotated);
+
+        // Active files should be gone (renamed)
+        assert!(!inbox_path(&wg_dir).exists());
+        assert!(!outbox_path(&wg_dir).exists());
+
+        // Archive should have files
+        let archives = list_archives_for(&wg_dir, 0).unwrap();
+        assert_eq!(archives.len(), 2); // inbox + outbox
+
+        // New messages should go to fresh files
+        append_inbox(&wg_dir, "new msg", "req-3").unwrap();
+        let msgs = read_inbox(&wg_dir).unwrap();
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].content, "new msg");
+        assert_eq!(msgs[0].id, 1); // Fresh ID sequence
+    }
+
+    #[test]
+    fn test_check_and_rotate_by_message_count() {
+        let (_tmp, wg_dir) = setup_with_config(10_000_000, 5, 30);
+
+        // Write 4 messages (under threshold)
+        for i in 0..4 {
+            append_inbox(&wg_dir, &format!("msg {}", i), &format!("req-{}", i)).unwrap();
+        }
+        let rotated = check_and_rotate_for(&wg_dir, 0).unwrap();
+        assert!(!rotated, "Should not rotate under threshold");
+
+        // Write one more (at threshold: 5)
+        append_inbox(&wg_dir, "msg 4", "req-4").unwrap();
+        let rotated = check_and_rotate_for(&wg_dir, 0).unwrap();
+        assert!(rotated, "Should rotate at threshold");
+
+        let archives = list_archives_for(&wg_dir, 0).unwrap();
+        assert!(!archives.is_empty());
+    }
+
+    #[test]
+    fn test_check_and_rotate_by_file_size() {
+        // Set max file size to 100 bytes
+        let (_tmp, wg_dir) = setup_with_config(100, 1_000_000, 30);
+
+        // Write a message large enough to exceed 100 bytes
+        let big_msg = "x".repeat(200);
+        append_inbox(&wg_dir, &big_msg, "req-big").unwrap();
+
+        let rotated = check_and_rotate_for(&wg_dir, 0).unwrap();
+        assert!(rotated, "Should rotate when file size exceeds threshold");
+    }
+
+    #[test]
+    fn test_read_all_history_includes_archives() {
+        let (_tmp, wg_dir) = setup();
+
+        // Write and archive some messages
+        append_inbox(&wg_dir, "old msg 1", "req-1").unwrap();
+        append_outbox(&wg_dir, "old resp 1", "req-1").unwrap();
+        force_rotate_for(&wg_dir, 0).unwrap();
+
+        // Write new messages
+        append_inbox(&wg_dir, "new msg 1", "req-2").unwrap();
+        append_outbox(&wg_dir, "new resp 1", "req-2").unwrap();
+
+        // Read all history
+        let all = read_all_history_for(&wg_dir, 0).unwrap();
+        assert_eq!(all.len(), 4, "Should have 2 archived + 2 active messages");
+    }
+
+    #[test]
+    fn test_search_all_history_spans_archives() {
+        let (_tmp, wg_dir) = setup();
+
+        // Write and archive
+        append_inbox(&wg_dir, "the old needle", "req-1").unwrap();
+        force_rotate_for(&wg_dir, 0).unwrap();
+
+        // Write to active
+        append_inbox(&wg_dir, "the new needle", "req-2").unwrap();
+        append_inbox(&wg_dir, "no match here", "req-3").unwrap();
+
+        let results = search_all_history_for(&wg_dir, 0, "needle").unwrap();
+        assert_eq!(results.len(), 2, "Should find needle in both archive and active");
+    }
+
+    #[test]
+    fn test_cleanup_removes_old_archives() {
+        // Retention period of 0 = keep forever
+        let (_tmp, wg_dir) = setup_with_config(1_000_000, 10_000, 0);
+
+        append_inbox(&wg_dir, "msg", "req-1").unwrap();
+        force_rotate_for(&wg_dir, 0).unwrap();
+
+        let cleaned = cleanup_archives_for(&wg_dir, 0).unwrap();
+        assert_eq!(cleaned, 0, "Should not clean up when retention_days=0");
+
+        let archives = list_archives_for(&wg_dir, 0).unwrap();
+        assert!(!archives.is_empty());
+    }
+
+    #[test]
+    fn test_cleanup_with_old_timestamps() {
+        let (_tmp, wg_dir) = setup_with_config(1_000_000, 10_000, 1);
+
+        // Create a fake archive file with an old timestamp
+        let archive_dir = archive_dir_for(&wg_dir, 0);
+        fs::create_dir_all(&archive_dir).unwrap();
+        let old_archive = archive_dir.join("inbox-20200101-000000.jsonl");
+        fs::write(&old_archive, "{}\n").unwrap();
+
+        // Create a recent archive
+        let recent_archive = archive_dir.join("inbox-29990101-000000.jsonl");
+        fs::write(&recent_archive, "{}\n").unwrap();
+
+        let cleaned = cleanup_archives_for(&wg_dir, 0).unwrap();
+        assert_eq!(cleaned, 1, "Should only clean up the old archive");
+        assert!(!old_archive.exists());
+        assert!(recent_archive.exists());
+    }
+
+    #[test]
+    fn test_list_archives_sorted() {
+        let (_tmp, wg_dir) = setup();
+
+        // Write and rotate multiple times
+        append_inbox(&wg_dir, "batch 1", "req-1").unwrap();
+        force_rotate_for(&wg_dir, 0).unwrap();
+
+        // Small sleep so timestamps differ
+        std::thread::sleep(Duration::from_millis(1100));
+
+        append_inbox(&wg_dir, "batch 2", "req-2").unwrap();
+        force_rotate_for(&wg_dir, 0).unwrap();
+
+        let archives = list_archives_for(&wg_dir, 0).unwrap();
+        assert!(archives.len() >= 2, "Should have at least 2 archive files");
+
+        // Verify they are sorted (oldest first)
+        for i in 1..archives.len() {
+            assert!(
+                archives[i] > archives[i - 1],
+                "Archives should be sorted chronologically"
+            );
+        }
+    }
+
+    #[test]
+    fn test_rotate_no_files() {
+        let (_tmp, wg_dir) = setup();
+
+        // Should not error on empty
+        let rotated = force_rotate_for(&wg_dir, 0).unwrap();
+        assert!(!rotated);
+
+        let rotated = check_and_rotate_for(&wg_dir, 0).unwrap();
+        assert!(!rotated);
+    }
+
+    #[test]
+    fn test_multi_coordinator_archive_isolation() {
+        let (_tmp, wg_dir) = setup();
+
+        // Write to coordinator 0 and 1
+        append_inbox_for(&wg_dir, 0, "coord 0 msg", "req-0").unwrap();
+        append_inbox_for(&wg_dir, 1, "coord 1 msg", "req-1").unwrap();
+
+        // Rotate only coordinator 0
+        force_rotate_for(&wg_dir, 0).unwrap();
+
+        // Coordinator 0 should have archives, 1 should not
+        let archives_0 = list_archives_for(&wg_dir, 0).unwrap();
+        let archives_1 = list_archives_for(&wg_dir, 1).unwrap();
+        assert!(!archives_0.is_empty());
+        assert!(archives_1.is_empty());
+
+        // Coordinator 1's active inbox should be untouched
+        let msgs_1 = read_inbox_for(&wg_dir, 1).unwrap();
+        assert_eq!(msgs_1.len(), 1);
+        assert_eq!(msgs_1[0].content, "coord 1 msg");
     }
 }
