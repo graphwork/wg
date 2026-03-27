@@ -1042,6 +1042,12 @@ fn handle_normal_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
 }
 
 fn handle_graph_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
+    // When the history browser is active, intercept keys for history navigation.
+    if app.history_browser.active {
+        handle_history_browser_key(app, code, modifiers);
+        return;
+    }
+
     // When the archive browser is active, intercept keys for archive navigation.
     if app.archive_browser.active {
         handle_archive_key(app, code, modifiers);
@@ -1071,6 +1077,11 @@ fn handle_graph_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
             } else {
                 app.kill_focused_agent();
             }
+        }
+
+        // Ctrl+H: open history browser
+        KeyCode::Char('h') if modifiers.contains(KeyModifiers::CONTROL) => {
+            app.open_history_browser();
         }
 
         // Search
@@ -1461,6 +1472,85 @@ fn handle_archive_key(app: &mut VizApp, code: KeyCode, _modifiers: KeyModifiers)
     }
 }
 
+fn handle_history_browser_key(app: &mut VizApp, code: KeyCode, _modifiers: KeyModifiers) {
+    if app.history_browser.preview_expanded {
+        // Preview mode: scrolling through full content of selected segment
+        match code {
+            KeyCode::Esc | KeyCode::Char('q') => {
+                app.history_browser.preview_expanded = false;
+                app.history_browser.preview_scroll = 0;
+            }
+            KeyCode::Enter => {
+                // Inject and close
+                app.inject_selected_history();
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                app.history_browser.preview_scroll =
+                    app.history_browser.preview_scroll.saturating_sub(1);
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                app.history_browser.preview_scroll =
+                    app.history_browser.preview_scroll.saturating_add(1);
+            }
+            KeyCode::PageUp => {
+                app.history_browser.preview_scroll =
+                    app.history_browser.preview_scroll.saturating_sub(20);
+            }
+            KeyCode::PageDown => {
+                app.history_browser.preview_scroll =
+                    app.history_browser.preview_scroll.saturating_add(20);
+            }
+            _ => {}
+        }
+        return;
+    }
+
+    match code {
+        // Close history browser
+        KeyCode::Esc | KeyCode::Char('q') => {
+            app.close_history_browser();
+        }
+
+        // Navigation
+        KeyCode::Up | KeyCode::Char('k') => {
+            if app.history_browser.selected > 0 {
+                app.history_browser.selected -= 1;
+            }
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            let count = app.history_browser.segments.len();
+            if count > 0 && app.history_browser.selected < count - 1 {
+                app.history_browser.selected += 1;
+            }
+        }
+        KeyCode::Home | KeyCode::Char('g') => {
+            app.history_browser.selected = 0;
+            app.history_browser.scroll = 0;
+        }
+        KeyCode::End | KeyCode::Char('G') => {
+            let count = app.history_browser.segments.len();
+            if count > 0 {
+                app.history_browser.selected = count - 1;
+            }
+        }
+
+        // Enter: inject selected segment
+        KeyCode::Enter => {
+            app.inject_selected_history();
+        }
+
+        // Space: toggle preview expansion
+        KeyCode::Char(' ') => {
+            if !app.history_browser.segments.is_empty() {
+                app.history_browser.preview_expanded = true;
+                app.history_browser.preview_scroll = 0;
+            }
+        }
+
+        _ => {}
+    }
+}
+
 fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
     // Files tab has its own key handler — intercept early.
     // When search mode is active, only Ctrl+C stays global; everything else
@@ -1511,6 +1601,10 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
             } else {
                 app.kill_focused_agent();
             }
+        }
+        // Ctrl+H: open history browser
+        KeyCode::Char('h') if modifiers.contains(KeyModifiers::CONTROL) => {
+            app.open_history_browser();
         }
 
         // Tab: switch panel focus back to graph

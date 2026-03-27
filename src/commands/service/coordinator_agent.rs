@@ -2944,4 +2944,55 @@ mod tests {
         // Should not contain chat summary section
         assert!(!ctx.contains("Conversation Context Summary"));
     }
+
+    #[test]
+    fn test_coordinator_context_includes_injected_history() {
+        use workgraph::test_helpers::{make_task_with_status, setup_workgraph};
+
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+
+        setup_workgraph(
+            dir,
+            vec![make_task_with_status("task-1", "A task", Status::Open)],
+        );
+
+        // Write injected context
+        workgraph::chat::write_injected_context(dir, 0, "We discussed auth last week").unwrap();
+
+        let ctx = build_coordinator_context(dir, "2026-01-01T00:00:00Z", None, 0).unwrap();
+
+        // Injected history should appear
+        assert!(
+            ctx.contains("### Injected History Context"),
+            "missing injected history section header"
+        );
+        assert!(
+            ctx.contains("We discussed auth last week"),
+            "missing injected history body"
+        );
+
+        // After consumption, the file should be gone (take_injected_context removes it)
+        assert!(
+            workgraph::chat::take_injected_context(dir, 0).is_none(),
+            "injected context should be consumed after build_coordinator_context"
+        );
+    }
+
+    #[test]
+    fn test_coordinator_context_no_injected_history_when_absent() {
+        use workgraph::test_helpers::{make_task_with_status, setup_workgraph};
+
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+
+        setup_workgraph(
+            dir,
+            vec![make_task_with_status("task-1", "A task", Status::Open)],
+        );
+
+        let ctx = build_coordinator_context(dir, "2026-01-01T00:00:00Z", None, 0).unwrap();
+
+        assert!(!ctx.contains("Injected History Context"));
+    }
 }

@@ -2181,6 +2181,60 @@ impl ArchiveBrowserState {
     }
 }
 
+/// State for the Ctrl+H history browser overlay.
+/// Allows users to browse past conversation segments and inject them into
+/// the coordinator's active context.
+pub struct HistoryBrowserState {
+    /// Whether the history browser is currently open.
+    pub active: bool,
+    /// Loaded history segments available for selection.
+    pub segments: Vec<workgraph::chat::HistorySegment>,
+    /// Currently selected segment index.
+    pub selected: usize,
+    /// Scroll offset (first visible row).
+    pub scroll: usize,
+    /// Whether we're showing the full preview of the selected segment.
+    pub preview_expanded: bool,
+    /// Preview scroll offset within the expanded preview.
+    pub preview_scroll: usize,
+}
+
+impl Default for HistoryBrowserState {
+    fn default() -> Self {
+        Self {
+            active: false,
+            segments: Vec::new(),
+            selected: 0,
+            scroll: 0,
+            preview_expanded: false,
+            preview_scroll: 0,
+        }
+    }
+}
+
+impl HistoryBrowserState {
+    /// Load segments from disk for the given coordinator.
+    pub fn load(&mut self, workgraph_dir: &std::path::Path, coordinator_id: u32) {
+        match workgraph::chat::load_history_segments(workgraph_dir, coordinator_id) {
+            Ok(segs) => {
+                self.segments = segs;
+                self.selected = 0;
+                self.scroll = 0;
+                self.preview_expanded = false;
+                self.preview_scroll = 0;
+            }
+            Err(_) => {
+                self.segments.clear();
+            }
+        }
+    }
+
+    /// Get the currently selected segment (if any).
+    pub fn selected_segment(&self) -> Option<&workgraph::chat::HistorySegment> {
+        self.segments.get(self.selected)
+    }
+}
+
 /// Live JSONL stream state for a single agent.
 pub struct AgentStreamInfo {
     /// File position (byte offset) — resume reading from here.
@@ -3305,6 +3359,9 @@ pub struct VizApp {
     // ── Archive browser state ──
     pub archive_browser: ArchiveBrowserState,
 
+    // ── History browser state (Ctrl+H) ──
+    pub history_browser: HistoryBrowserState,
+
     // ── File browser state (panel 6) ──
     pub file_browser: Option<super::file_browser::FileBrowser>,
 
@@ -3608,6 +3665,7 @@ impl VizApp {
             task_message_statuses: HashMap::new(),
             config_panel: ConfigPanelState::default(),
             archive_browser: ArchiveBrowserState::default(),
+            history_browser: HistoryBrowserState::default(),
             file_browser: None,
             cmd_rx,
             cmd_tx,
@@ -7389,6 +7447,7 @@ impl VizApp {
             last_refresh_display: String::new(),
             refresh_interval: std::time::Duration::from_secs(3600),
             archive_browser: ArchiveBrowserState::default(),
+            history_browser: HistoryBrowserState::default(),
             config_panel: ConfigPanelState::default(),
             file_browser: None,
             fs_change_pending: Arc::new(AtomicBool::new(false)),
@@ -10304,6 +10363,48 @@ impl VizApp {
             ],
             CommandEffect::RefreshAndNotify(format!("Restored '{}'", task_id)),
         );
+    }
+
+    /// Open the history browser (Ctrl+H), loading segments for the active coordinator.
+    pub fn open_history_browser(&mut self) {
+        self.history_browser.load(&self.workgraph_dir, self.active_coordinator_id);
+        self.history_browser.active = true;
+    }
+
+    /// Close the history browser without injecting.
+    pub fn close_history_browser(&mut self) {
+        self.history_browser.active = false;
+        self.history_browser.preview_expanded = false;
+        self.history_browser.preview_scroll = 0;
+    }
+
+    /// Inject the selected history segment into the coordinator's context.
+    pub fn inject_selected_history(&mut self) {
+        let content = match self.history_browser.selected_segment() {
+            Some(seg) => seg.content.clone(),
+            None => return,
+        };
+        let label = self
+            .history_browser
+            .selected_segment()
+            .map(|s| s.label.clone())
+            .unwrap_or_default();
+        let cid = self.active_coordinator_id;
+        match workgraph::chat::write_injected_context(&self.workgraph_dir, cid, &content) {
+            Ok(()) => {
+                self.close_history_browser();
+                self.push_toast(
+                    format!("Injected: {}", label),
+                    ToastSeverity::Info,
+                );
+            }
+            Err(e) => {
+                self.push_toast(
+                    format!("Failed to inject context: {}", e),
+                    ToastSeverity::Error,
+                );
+            }
+        }
     }
 
     /// Submit the task creation form — runs `wg add` in background.

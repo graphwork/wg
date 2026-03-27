@@ -1139,6 +1139,12 @@ fn is_selected_task_line(app: &VizApp, orig_idx: usize) -> bool {
 }
 
 fn draw_viz_content(frame: &mut Frame, app: &mut VizApp, area: Rect) {
+    // When the history browser is active, render it instead of the graph.
+    if app.history_browser.active {
+        draw_history_browser(frame, app, area);
+        return;
+    }
+
     // When the archive browser is active, render it instead of the graph.
     if app.archive_browser.active {
         draw_archive_browser(frame, app, area);
@@ -1723,6 +1729,173 @@ fn draw_archive_browser(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     frame.render_widget(paragraph, area);
 
     // Store the area for graph pane compatibility
+    app.last_graph_area = area;
+}
+
+fn draw_history_browser(frame: &mut Frame, app: &mut VizApp, area: Rect) {
+    let seg_count = app.history_browser.segments.len();
+    let preview_expanded = app.history_browser.preview_expanded;
+
+    if preview_expanded {
+        // Full preview mode: show the selected segment's content
+        let (label, content) = match app.history_browser.selected_segment() {
+            Some(seg) => (seg.label.clone(), seg.content.clone()),
+            None => {
+                app.last_graph_area = area;
+                return;
+            }
+        };
+        let content_lines: Vec<&str> = content.lines().collect();
+        let total = content_lines.len();
+        let viewport_h = area.height.saturating_sub(2) as usize;
+        let scroll = app.history_browser.preview_scroll.min(total.saturating_sub(viewport_h));
+        app.history_browser.preview_scroll = scroll;
+
+        let mut lines: Vec<Line> = Vec::with_capacity(area.height as usize);
+
+        // Header
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!(" {} ", label),
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                " [Enter:inject  Esc:back  j/k:scroll]",
+                Style::default().fg(Color::Rgb(100, 100, 100)),
+            ),
+        ]));
+
+        // Content lines
+        let end = (scroll + viewport_h).min(total);
+        for i in scroll..end {
+            lines.push(Line::from(Span::styled(
+                format!("  {}", content_lines[i]),
+                Style::default().fg(Color::Rgb(200, 200, 200)),
+            )));
+        }
+
+        // Fill remaining
+        while lines.len() < area.height as usize {
+            lines.push(Line::from(""));
+        }
+
+        let paragraph =
+            Paragraph::new(lines).style(Style::default().bg(Color::Rgb(20, 20, 30)));
+        frame.render_widget(paragraph, area);
+
+        app.last_graph_area = area;
+        return;
+    }
+
+    // List mode: show segments with preview of selected
+    let list_height = (area.height as usize).saturating_sub(2);
+    let list_rows = (list_height / 2).max(3).min(seg_count + 1);
+    let preview_rows = list_height.saturating_sub(list_rows);
+
+    // Auto-scroll list
+    {
+        let hb = &app.history_browser;
+        let scroll = if hb.selected < hb.scroll {
+            hb.selected
+        } else if hb.selected >= hb.scroll + list_rows {
+            hb.selected.saturating_sub(list_rows - 1)
+        } else {
+            hb.scroll
+        };
+        app.history_browser.scroll = scroll;
+    }
+
+    let mut lines: Vec<Line> = Vec::with_capacity(area.height as usize);
+
+    // Header
+    let header = if seg_count == 0 {
+        " History Browser — no segments available".to_string()
+    } else {
+        format!(
+            " History Browser ({} segments) — coordinator #{}",
+            seg_count, app.active_coordinator_id
+        )
+    };
+    lines.push(Line::from(vec![
+        Span::styled(
+            header,
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            " [Enter:inject  Space:preview  Esc:close]",
+            Style::default().fg(Color::Rgb(100, 100, 100)),
+        ),
+    ]));
+
+    // Segment list
+    let scroll = app.history_browser.scroll;
+    let end = (scroll + list_rows).min(seg_count);
+    for i in scroll..end {
+        let seg = &app.history_browser.segments[i];
+        let is_selected = i == app.history_browser.selected;
+
+        let source_tag = match seg.source {
+            workgraph::chat::HistorySource::ContextSummary => "📋",
+            workgraph::chat::HistorySource::ActiveChat => "💬",
+            workgraph::chat::HistorySource::Archive => "📦",
+        };
+
+        let line_text = format!("  {} {} ", source_tag, seg.label);
+
+        let style = if is_selected {
+            Style::default()
+                .fg(Color::White)
+                .bg(Color::Rgb(40, 60, 90))
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::Rgb(180, 180, 180))
+        };
+
+        lines.push(Line::from(Span::styled(line_text, style)));
+    }
+
+    // Separator
+    if seg_count > 0 {
+        lines.push(Line::from(Span::styled(
+            format!("  {}", "─".repeat(area.width.saturating_sub(4) as usize)),
+            Style::default().fg(Color::Rgb(60, 60, 80)),
+        )));
+    }
+
+    // Preview of selected segment
+    if let Some(seg) = app.history_browser.selected_segment() {
+        let preview_lines: Vec<&str> = seg.preview.lines().collect();
+        for (i, pline) in preview_lines.iter().enumerate() {
+            if i >= preview_rows.saturating_sub(1) {
+                break;
+            }
+            lines.push(Line::from(Span::styled(
+                format!("  {}", pline),
+                Style::default().fg(Color::Rgb(140, 140, 160)),
+            )));
+        }
+        if preview_lines.len() > preview_rows.saturating_sub(1) {
+            lines.push(Line::from(Span::styled(
+                "  ... (Space to expand)".to_string(),
+                Style::default()
+                    .fg(Color::Rgb(100, 100, 120))
+                    .add_modifier(Modifier::ITALIC),
+            )));
+        }
+    }
+
+    // Fill remaining rows
+    while lines.len() < area.height as usize {
+        lines.push(Line::from(""));
+    }
+
+    let paragraph = Paragraph::new(lines).style(Style::default().bg(Color::Rgb(20, 20, 30)));
+    frame.render_widget(paragraph, area);
+
     app.last_graph_area = area;
 }
 

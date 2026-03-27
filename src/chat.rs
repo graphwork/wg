@@ -1135,6 +1135,176 @@ pub fn maybe_rotate_after_write(workgraph_dir: &Path, coordinator_id: u32) -> Re
     Ok(())
 }
 
+// --- Injected history context ---
+
+/// Path to the injected history context file for a coordinator.
+/// This file is written by the TUI history browser (Ctrl+H) and read by
+/// `build_coordinator_context` on the next coordinator turn.
+pub fn injected_context_path(workgraph_dir: &Path, coordinator_id: u32) -> PathBuf {
+    chat_dir_for(workgraph_dir, coordinator_id).join("injected-context.md")
+}
+
+/// Write injected history context for a coordinator.
+/// Overwrites any previously injected content. The coordinator will consume
+/// this on its next turn and then `clear_injected_context` should be called.
+pub fn write_injected_context(
+    workgraph_dir: &Path,
+    coordinator_id: u32,
+    content: &str,
+) -> Result<()> {
+    let dir = chat_dir_for(workgraph_dir, coordinator_id);
+    fs::create_dir_all(&dir)?;
+    let path = injected_context_path(workgraph_dir, coordinator_id);
+    fs::write(&path, content).context("Failed to write injected context")?;
+    Ok(())
+}
+
+/// Read and clear injected history context for a coordinator.
+/// Returns the content if the file exists and is non-empty, then removes the file.
+pub fn take_injected_context(workgraph_dir: &Path, coordinator_id: u32) -> Option<String> {
+    let path = injected_context_path(workgraph_dir, coordinator_id);
+    if !path.exists() {
+        return None;
+    }
+    let content = fs::read_to_string(&path).ok()?;
+    let _ = fs::remove_file(&path);
+    let content = content.trim().to_string();
+    if content.is_empty() {
+        return None;
+    }
+    Some(content)
+}
+
+/// A segment of conversation history that can be browsed and injected.
+#[derive(Debug, Clone)]
+pub struct HistorySegment {
+    /// Human-readable label (e.g. "Context Summary" or "Mar 25 inbox archive").
+    pub label: String,
+    /// Source type for display purposes.
+    pub source: HistorySource,
+    /// Preview text (first ~200 chars).
+    pub preview: String,
+    /// Full content to inject.
+    pub content: String,
+}
+
+/// Where a history segment came from.
+#[derive(Debug, Clone, PartialEq)]
+pub enum HistorySource {
+    /// Compacted context summary.
+    ContextSummary,
+    /// Active inbox/outbox messages.
+    ActiveChat,
+    /// Archived inbox/outbox file.
+    Archive,
+}
+
+/// Load browsable history segments for a coordinator.
+/// Returns a list of segments: context summary (if exists), active messages,
+/// and archived message files — each as a selectable unit.
+pub fn load_history_segments(
+    workgraph_dir: &Path,
+    coordinator_id: u32,
+) -> Result<Vec<HistorySegment>> {
+    let mut segments = Vec::new();
+
+    // 1. Context summary (from compaction)
+    let summary_path = chat_dir_for(workgraph_dir, coordinator_id).join("context-summary.md");
+    if summary_path.exists() {
+        if let Ok(content) = fs::read_to_string(&summary_path) {
+            let content = content.trim().to_string();
+            if !content.is_empty() {
+                let preview = truncate_preview(&content, 200);
+                segments.push(HistorySegment {
+                    label: "Context Summary (compacted)".to_string(),
+                    source: HistorySource::ContextSummary,
+                    preview,
+                    content,
+                });
+            }
+        }
+    }
+
+    // 2. Archived files (oldest first)
+    let archives = list_archives_for(workgraph_dir, coordinator_id)?;
+    for archive_path in &archives {
+        if let Ok(msgs) = read_messages_inner(archive_path) {
+            if msgs.is_empty() {
+                continue;
+            }
+            let label = archive_path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("archive")
+                .to_string();
+            let content = format_messages_as_text(&msgs);
+            let preview = truncate_preview(&content, 200);
+            segments.push(HistorySegment {
+                label: format!("Archive: {}", label),
+                source: HistorySource::Archive,
+                preview,
+                content,
+            });
+        }
+    }
+
+    // 3. Active inbox + outbox
+    let inbox_msgs = read_messages(&inbox_path_for(workgraph_dir, coordinator_id))?;
+    let outbox_msgs = read_messages(&outbox_path_for(workgraph_dir, coordinator_id))?;
+    if !inbox_msgs.is_empty() || !outbox_msgs.is_empty() {
+        let mut active_msgs = inbox_msgs;
+        active_msgs.extend(outbox_msgs);
+        active_msgs.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
+        let content = format_messages_as_text(&active_msgs);
+        let preview = truncate_preview(&content, 200);
+        segments.push(HistorySegment {
+            label: format!("Active conversation ({} messages)", active_msgs.len()),
+            source: HistorySource::ActiveChat,
+            preview,
+            content,
+        });
+    }
+
+    Ok(segments)
+}
+
+/// Format messages as human-readable text for injection.
+fn format_messages_as_text(messages: &[ChatMessage]) -> String {
+    let mut out = String::new();
+    for msg in messages {
+        let time = if let Some(t_pos) = msg.timestamp.find('T') {
+            let time_part = &msg.timestamp[t_pos + 1..];
+            if time_part.len() >= 19 {
+                &time_part[..19]
+            } else if time_part.len() >= 8 {
+                &time_part[..8]
+            } else {
+                time_part
+            }
+        } else {
+            &msg.timestamp
+        };
+        // Truncate very long messages
+        let content = if msg.content.len() > 1000 {
+            format!("{}...", &msg.content[..msg.content.floor_char_boundary(1000)])
+        } else {
+            msg.content.clone()
+        };
+        out.push_str(&format!("[{}] {}: {}\n", time, msg.role, content));
+    }
+    out
+}
+
+/// Truncate text to a preview length, adding "..." if truncated.
+fn truncate_preview(text: &str, max_len: usize) -> String {
+    if text.len() <= max_len {
+        text.to_string()
+    } else {
+        let boundary = text.floor_char_boundary(max_len);
+        format!("{}...", &text[..boundary])
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2075,5 +2245,139 @@ mod tests {
         let msgs_1 = read_inbox_for(&wg_dir, 1).unwrap();
         assert_eq!(msgs_1.len(), 1);
         assert_eq!(msgs_1[0].content, "coord 1 msg");
+    }
+
+    // --- Injected context tests ---
+
+    #[test]
+    fn test_injected_context_write_and_take() {
+        let (_tmp, wg_dir) = setup();
+
+        // Initially no injected context
+        assert!(take_injected_context(&wg_dir, 0).is_none());
+
+        // Write some context
+        write_injected_context(&wg_dir, 0, "Some historical context").unwrap();
+
+        // Take should return it and clear
+        let content = take_injected_context(&wg_dir, 0);
+        assert_eq!(content.as_deref(), Some("Some historical context"));
+
+        // Second take should be None (file deleted)
+        assert!(take_injected_context(&wg_dir, 0).is_none());
+    }
+
+    #[test]
+    fn test_injected_context_empty_is_none() {
+        let (_tmp, wg_dir) = setup();
+
+        write_injected_context(&wg_dir, 0, "  \n  ").unwrap();
+        // Empty/whitespace content should return None
+        assert!(take_injected_context(&wg_dir, 0).is_none());
+    }
+
+    #[test]
+    fn test_injected_context_per_coordinator() {
+        let (_tmp, wg_dir) = setup();
+
+        write_injected_context(&wg_dir, 0, "Context for coord 0").unwrap();
+        write_injected_context(&wg_dir, 1, "Context for coord 1").unwrap();
+
+        assert_eq!(
+            take_injected_context(&wg_dir, 0).as_deref(),
+            Some("Context for coord 0")
+        );
+        assert_eq!(
+            take_injected_context(&wg_dir, 1).as_deref(),
+            Some("Context for coord 1")
+        );
+    }
+
+    #[test]
+    fn test_injected_context_path() {
+        let path = injected_context_path(std::path::Path::new("/tmp/wg"), 0);
+        assert_eq!(
+            path,
+            std::path::PathBuf::from("/tmp/wg/chat/0/injected-context.md")
+        );
+    }
+
+    #[test]
+    fn test_load_history_segments_empty() {
+        let (_tmp, wg_dir) = setup();
+        let segments = load_history_segments(&wg_dir, 0).unwrap();
+        assert!(segments.is_empty());
+    }
+
+    #[test]
+    fn test_load_history_segments_with_active_messages() {
+        let (_tmp, wg_dir) = setup();
+
+        // Add some messages
+        append_inbox(&wg_dir, "hello", "req-1").unwrap();
+        append_inbox(&wg_dir, "world", "req-2").unwrap();
+
+        let segments = load_history_segments(&wg_dir, 0).unwrap();
+        assert_eq!(segments.len(), 1); // Just active conversation
+        assert_eq!(segments[0].source, HistorySource::ActiveChat);
+        assert!(segments[0].content.contains("hello"));
+        assert!(segments[0].content.contains("world"));
+    }
+
+    #[test]
+    fn test_load_history_segments_with_context_summary() {
+        let (_tmp, wg_dir) = setup();
+
+        // Write a context summary
+        let chat_dir = wg_dir.join("chat").join("0");
+        fs::create_dir_all(&chat_dir).unwrap();
+        fs::write(
+            chat_dir.join("context-summary.md"),
+            "# Summary\nKey decisions made.",
+        )
+        .unwrap();
+
+        let segments = load_history_segments(&wg_dir, 0).unwrap();
+        assert_eq!(segments.len(), 1);
+        assert_eq!(segments[0].source, HistorySource::ContextSummary);
+        assert!(segments[0].content.contains("Key decisions"));
+    }
+
+    #[test]
+    fn test_truncate_preview() {
+        assert_eq!(truncate_preview("short", 100), "short");
+        let long = "a".repeat(300);
+        let preview = truncate_preview(&long, 200);
+        assert!(preview.len() <= 204); // 200 chars + "..."
+        assert!(preview.ends_with("..."));
+    }
+
+    #[test]
+    fn test_format_messages_as_text() {
+        let msgs = vec![
+            ChatMessage {
+                id: 1,
+                timestamp: "2026-03-27T10:00:00Z".to_string(),
+                role: "user".to_string(),
+                content: "hello".to_string(),
+                request_id: "req-1".to_string(),
+                attachments: vec![],
+                full_response: None,
+                user: None,
+            },
+            ChatMessage {
+                id: 2,
+                timestamp: "2026-03-27T10:01:00Z".to_string(),
+                role: "coordinator".to_string(),
+                content: "hi there".to_string(),
+                request_id: "req-1".to_string(),
+                attachments: vec![],
+                full_response: None,
+                user: None,
+            },
+        ];
+        let text = format_messages_as_text(&msgs);
+        assert!(text.contains("[10:00:00] user: hello"));
+        assert!(text.contains("coordinator: hi there"));
     }
 }
