@@ -2330,6 +2330,7 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
                     app.last_split_percent = pct;
                     app.last_split_mode = app.layout_mode;
                 }
+                app.divider_drag_offset = 0; // divider placed at click position
                 app.scrollbar_drag = Some(ScrollbarDragTarget::Divider);
             } else if in_fullscreen_right || in_fullscreen_top || in_fullscreen_bottom {
                 // Click on any fullscreen border: restore to normal split.
@@ -2351,6 +2352,11 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
                 vscrollbar_jump_panel(app, row);
             } else if in_divider {
                 // Click on divider between graph and inspector: start resize drag.
+                // Record offset from click column to the actual divider border
+                // so the first Drag event won't shift the border due to integer
+                // rounding in the percent↔width conversion.
+                app.divider_drag_offset =
+                    column as i16 - app.last_right_panel_area.x as i16;
                 app.scrollbar_drag = Some(ScrollbarDragTarget::Divider);
             } else if in_graph_hscrollbar {
                 app.focused_panel = FocusedPanel::Graph;
@@ -2618,8 +2624,12 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
                 if total_width > 0 {
                     let left_x = app.last_graph_area.x;
                     let right_edge = left_x + total_width;
-                    // The panel width = distance from mouse column to the right edge.
-                    let panel_width = right_edge.saturating_sub(column);
+                    // Apply the click-to-divider offset so the border stays
+                    // anchored at its original column (no integer-rounding jump).
+                    let adjusted = (column as i32 - app.divider_drag_offset as i32)
+                        .clamp(left_x as i32, right_edge as i32)
+                        as u16;
+                    let panel_width = right_edge.saturating_sub(adjusted);
                     let raw_pct = (panel_width as u32 * 100 / total_width as u32) as u16;
                     // Smooth single-column dragging: full 0–100% range with no
                     // snap thresholds or clamping.  Stay in a normal-split
@@ -2688,6 +2698,7 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
             }
             if app.scrollbar_drag.is_some() {
                 app.scrollbar_drag = None;
+                app.divider_drag_offset = 0;
             }
             app.graph_pan_last = None;
         }
