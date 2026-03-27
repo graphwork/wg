@@ -2504,7 +2504,7 @@ impl Config {
                 && self
                     .registry_lookup(model)
                     .map(|e| e.provider == "anthropic")
-                    .unwrap_or(true); // bare unknown models assumed Anthropic
+                    .unwrap_or(false); // unknown models are not assumed Anthropic
             if is_anthropic_only_model {
                 result.errors.push(ConfigDiagnostic {
                     rule: "provider-model-mismatch".into(),
