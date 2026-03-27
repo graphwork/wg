@@ -14,6 +14,8 @@ pub struct ImportCounts {
     pub role_components: u32,
     pub desired_outcomes: u32,
     pub trade_off_configs: u32,
+    /// Rows skipped (unknown type). Used for display in run_from_bytes.
+    #[allow(dead_code)]
     pub skipped: u32,
 }
 
