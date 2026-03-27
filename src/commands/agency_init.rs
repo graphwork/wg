@@ -4,6 +4,8 @@ use workgraph::agency::{self, Agent, Lineage, PerformanceRecord};
 use workgraph::config::Config;
 use workgraph::graph::TrustLevel;
 
+use super::agency_import;
+
 /// `wg agency init` — bootstrap agency with starter roles, tradeoffs, a default
 /// agent, and enable auto_assign + auto_evaluate in config.
 pub fn run(workgraph_dir: &Path) -> Result<()> {
@@ -19,6 +21,9 @@ pub fn run(workgraph_dir: &Path) -> Result<()> {
             roles_created, tradeoffs_created
         );
     }
+
+    // 1b. Auto-import bundled CSV if available and not already imported
+    try_csv_import(workgraph_dir)?;
 
     // 2. Create a default agent: Programmer + Careful
     let agents_dir = agency_dir.join("cache/agents");
@@ -236,6 +241,47 @@ pub fn run(workgraph_dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Try to auto-import primitives from the bundled CSV (`agency/starter.csv`).
+///
+/// Conditions for import:
+/// 1. The bundled CSV exists at `<project_root>/agency/starter.csv`
+/// 2. No import manifest exists yet at `.workgraph/agency/import-manifest.yaml`
+///
+/// If the CSV is missing, this is a no-op (hardcoded starters remain as fallback).
+/// If the manifest already exists, we skip to avoid re-importing on repeated `wg agency init`.
+fn try_csv_import(workgraph_dir: &Path) -> Result<()> {
+    let manifest = agency_import::manifest_path(workgraph_dir);
+    if manifest.exists() {
+        return Ok(());
+    }
+
+    // Resolve project root: .workgraph lives inside it
+    let project_root = match workgraph_dir.parent() {
+        Some(root) => root,
+        None => return Ok(()),
+    };
+
+    let csv_path = project_root.join("agency/starter.csv");
+    if !csv_path.exists() {
+        return Ok(());
+    }
+
+    let csv_str = csv_path
+        .to_str()
+        .ok_or_else(|| anyhow::anyhow!("Non-UTF8 path for bundled CSV"))?;
+
+    println!("Importing primitives from bundled CSV...");
+    let counts = agency_import::run(workgraph_dir, csv_str, false, Some("bundled-starter"))?;
+
+    let total = counts.role_components + counts.desired_outcomes + counts.trade_off_configs;
+    println!(
+        "Imported {} primitives from agency/starter.csv ({} components, {} outcomes, {} tradeoffs).",
+        total, counts.role_components, counts.desired_outcomes, counts.trade_off_configs
+    );
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -363,5 +409,133 @@ mod tests {
         );
         assert_eq!(config1.agency.evolver_agent, config2.agency.evolver_agent);
         assert_eq!(config1.agency.creator_agent, config2.agency.creator_agent);
+    }
+
+    /// Helper: write a small 9-column Agency CSV fixture.
+    fn write_test_csv(project_root: &Path) -> std::path::PathBuf {
+        let agency_dir = project_root.join("agency");
+        std::fs::create_dir_all(&agency_dir).unwrap();
+        let csv_path = agency_dir.join("starter.csv");
+        let csv = "\
+type,name,description,quality,domain_specificity,domain,origin_instance_id,parent_content_hash,scope
+role_component,Test Skill A,Skill A description,80,0,,inst-1,,task
+role_component,Test Skill B,Skill B description,90,0,,inst-2,,task
+desired_outcome,Test Outcome,Outcome description,85,0,,inst-3,,task
+trade_off_config,Test Tradeoff,Tradeoff description,70,0,,inst-4,,task
+";
+        std::fs::write(&csv_path, csv).unwrap();
+        csv_path
+    }
+
+    #[test]
+    fn test_agency_init_auto_imports_csv() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project_root = tmp.path();
+        let wg_dir = project_root.join(".workgraph");
+        std::fs::create_dir_all(&wg_dir).unwrap();
+
+        // Place a bundled CSV at project_root/agency/starter.csv
+        write_test_csv(project_root);
+
+        run(&wg_dir).unwrap();
+
+        // Manifest should be written
+        let manifest_path = wg_dir.join("agency/import-manifest.yaml");
+        assert!(
+            manifest_path.exists(),
+            "import-manifest.yaml should be created"
+        );
+
+        // Parse manifest and verify counts
+        let manifest_str = std::fs::read_to_string(&manifest_path).unwrap();
+        let manifest: agency_import::ImportManifest =
+            serde_yaml::from_str(&manifest_str).unwrap();
+        assert_eq!(manifest.counts.role_components, 2);
+        assert_eq!(manifest.counts.desired_outcomes, 1);
+        assert_eq!(manifest.counts.trade_off_configs, 1);
+        assert!(!manifest.content_hash.is_empty());
+        assert!(manifest.source.contains("starter.csv"));
+
+        // Components should include both the hardcoded starters AND CSV imports
+        let components_dir = wg_dir.join("agency/primitives/components");
+        let comp_count = std::fs::read_dir(&components_dir).unwrap().count();
+        // 8 hardcoded + 2 from CSV (may overlap in content-hash, so >= 8+2 is approximate)
+        assert!(
+            comp_count >= 10,
+            "Expected at least 10 components (8 hardcoded + 2 CSV), got {}",
+            comp_count
+        );
+    }
+
+    #[test]
+    fn test_agency_init_skips_reimport_when_manifest_exists() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project_root = tmp.path();
+        let wg_dir = project_root.join(".workgraph");
+        std::fs::create_dir_all(&wg_dir).unwrap();
+
+        write_test_csv(project_root);
+
+        // First run: imports CSV and writes manifest
+        run(&wg_dir).unwrap();
+
+        let manifest_path = wg_dir.join("agency/import-manifest.yaml");
+        let manifest1 = std::fs::read_to_string(&manifest_path).unwrap();
+
+        // Second run: should skip (manifest exists)
+        run(&wg_dir).unwrap();
+
+        let manifest2 = std::fs::read_to_string(&manifest_path).unwrap();
+        // Manifest should be unchanged (same content, not rewritten)
+        assert_eq!(manifest1, manifest2, "Manifest should not be rewritten on second init");
+    }
+
+    #[test]
+    fn test_agency_init_fallback_without_csv() {
+        // Without a bundled CSV, init should still work using hardcoded starters
+        let tmp = tempfile::tempdir().unwrap();
+        let wg_dir = tmp.path().join(".workgraph");
+        std::fs::create_dir_all(&wg_dir).unwrap();
+
+        run(&wg_dir).unwrap();
+
+        // No manifest should be created
+        let manifest_path = wg_dir.join("agency/import-manifest.yaml");
+        assert!(
+            !manifest_path.exists(),
+            "import-manifest.yaml should NOT exist without CSV"
+        );
+
+        // But hardcoded starters should be present
+        let components_dir = wg_dir.join("agency/primitives/components");
+        let comp_count = std::fs::read_dir(&components_dir).unwrap().count();
+        assert!(
+            comp_count >= 8,
+            "Expected at least 8 hardcoded components, got {}",
+            comp_count
+        );
+    }
+
+    #[test]
+    fn test_import_manifest_has_correct_content_hash() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project_root = tmp.path();
+        let wg_dir = project_root.join(".workgraph");
+        std::fs::create_dir_all(&wg_dir).unwrap();
+
+        let csv_path = write_test_csv(project_root);
+
+        run(&wg_dir).unwrap();
+
+        // Compute expected hash independently
+        let csv_bytes = std::fs::read(&csv_path).unwrap();
+        use sha2::{Digest, Sha256};
+        let expected_hash = format!("{:x}", Sha256::new_with_prefix(&csv_bytes).finalize());
+
+        let manifest_path = wg_dir.join("agency/import-manifest.yaml");
+        let manifest: agency_import::ImportManifest =
+            serde_yaml::from_str(&std::fs::read_to_string(&manifest_path).unwrap()).unwrap();
+
+        assert_eq!(manifest.content_hash, expected_hash);
     }
 }

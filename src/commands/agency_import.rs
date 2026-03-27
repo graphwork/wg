@@ -1,10 +1,73 @@
 use anyhow::{Context, Result};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::path::Path;
 use workgraph::agency::{
     self, AccessControl, AccessPolicy, ComponentCategory, ContentRef, DesiredOutcome, Lineage,
     PerformanceRecord, RoleComponent, TradeoffConfig,
 };
+
+/// Counts of primitives imported from a CSV file.
+#[derive(Debug, Clone, Default)]
+pub struct ImportCounts {
+    pub role_components: u32,
+    pub desired_outcomes: u32,
+    pub trade_off_configs: u32,
+    pub skipped: u32,
+}
+
+/// Provenance manifest written after a successful CSV import.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ImportManifest {
+    pub source: String,
+    pub version: String,
+    pub imported_at: String,
+    pub counts: ManifestCounts,
+    pub content_hash: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ManifestCounts {
+    pub role_components: u32,
+    pub desired_outcomes: u32,
+    pub trade_off_configs: u32,
+}
+
+/// Path to the import manifest within the workgraph agency directory.
+pub fn manifest_path(workgraph_dir: &Path) -> std::path::PathBuf {
+    workgraph_dir.join("agency/import-manifest.yaml")
+}
+
+/// Compute SHA-256 hex digest of file contents.
+fn sha256_hex(data: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(data);
+    format!("{:x}", hasher.finalize())
+}
+
+/// Write (or update) the import manifest after a successful import.
+pub fn write_manifest(
+    workgraph_dir: &Path,
+    source: &str,
+    csv_content: &[u8],
+    counts: &ImportCounts,
+) -> Result<()> {
+    let manifest = ImportManifest {
+        source: source.to_string(),
+        version: format!("v{}", env!("CARGO_PKG_VERSION")),
+        imported_at: chrono::Utc::now().to_rfc3339(),
+        counts: ManifestCounts {
+            role_components: counts.role_components,
+            desired_outcomes: counts.desired_outcomes,
+            trade_off_configs: counts.trade_off_configs,
+        },
+        content_hash: sha256_hex(csv_content),
+    };
+    let path = manifest_path(workgraph_dir);
+    std::fs::write(&path, serde_yaml::to_string(&manifest)?)
+        .context("Failed to write import manifest")?;
+    Ok(())
+}
 
 /// Detected CSV format based on header or column count.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,7 +106,7 @@ fn detect_format(headers: &csv::StringRecord) -> CsvFormat {
 ///
 /// Both formats are auto-detected. Legacy type names (skill/outcome/tradeoff) are also
 /// accepted in the 9-column format and vice versa.
-pub fn run(workgraph_dir: &Path, csv_path: &str, dry_run: bool, tag: Option<&str>) -> Result<()> {
+pub fn run(workgraph_dir: &Path, csv_path: &str, dry_run: bool, tag: Option<&str>) -> Result<ImportCounts> {
     let provenance_tag = tag.unwrap_or("agency-import");
     let agency_dir = workgraph_dir.join("agency");
 
@@ -51,8 +114,9 @@ pub fn run(workgraph_dir: &Path, csv_path: &str, dry_run: bool, tag: Option<&str
         agency::init(&agency_dir).context("Failed to initialize agency directory")?;
     }
 
-    let csv_content = std::fs::read_to_string(csv_path)
+    let csv_bytes = std::fs::read(csv_path)
         .with_context(|| format!("Failed to read '{}'", csv_path))?;
+    let csv_content = String::from_utf8_lossy(&csv_bytes);
     let mut reader = csv::Reader::from_reader(csv_content.as_bytes());
 
     let format = detect_format(reader.headers().context("Failed to read CSV headers")?);
@@ -243,6 +307,13 @@ pub fn run(workgraph_dir: &Path, csv_path: &str, dry_run: bool, tag: Option<&str
         }
     }
 
+    let counts = ImportCounts {
+        role_components: components_count,
+        desired_outcomes: outcomes_count,
+        trade_off_configs: tradeoffs_count,
+        skipped,
+    };
+
     let mode = if dry_run { " (dry run)" } else { "" };
     println!("Agency import complete{}:", mode);
     println!("  Components: {}", components_count);
@@ -252,7 +323,12 @@ pub fn run(workgraph_dir: &Path, csv_path: &str, dry_run: bool, tag: Option<&str
         println!("  Skipped:    {}", skipped);
     }
 
-    Ok(())
+    // Write/update the provenance manifest on non-dry-run imports
+    if !dry_run {
+        write_manifest(workgraph_dir, csv_path, &csv_bytes, &counts)?;
+    }
+
+    Ok(counts)
 }
 
 /// Parse columns from Agency's 9-column CSV format.
@@ -694,5 +770,69 @@ mod tests {
             "quality_score",
         ]);
         assert_eq!(detect_format(&header), CsvFormat::Legacy);
+    }
+
+    #[test]
+    fn test_import_writes_manifest() {
+        let tmp = tempfile::tempdir().unwrap();
+        let wg_dir = tmp.path().join(".workgraph");
+        std::fs::create_dir_all(&wg_dir).unwrap();
+
+        let csv_path = write_agency_format_csv(tmp.path());
+        let counts = run(&wg_dir, csv_path.to_str().unwrap(), false, None).unwrap();
+
+        assert_eq!(counts.role_components, 2);
+        assert_eq!(counts.desired_outcomes, 1);
+        assert_eq!(counts.trade_off_configs, 1);
+
+        // Manifest should exist
+        let mp = manifest_path(&wg_dir);
+        assert!(mp.exists(), "Manifest should be written after import");
+
+        let manifest: ImportManifest =
+            serde_yaml::from_str(&std::fs::read_to_string(&mp).unwrap()).unwrap();
+        assert_eq!(manifest.counts.role_components, 2);
+        assert_eq!(manifest.counts.desired_outcomes, 1);
+        assert_eq!(manifest.counts.trade_off_configs, 1);
+        assert!(!manifest.content_hash.is_empty());
+    }
+
+    #[test]
+    fn test_import_dry_run_no_manifest() {
+        let tmp = tempfile::tempdir().unwrap();
+        let wg_dir = tmp.path().join(".workgraph");
+        std::fs::create_dir_all(&wg_dir).unwrap();
+
+        let csv_path = write_agency_format_csv(tmp.path());
+        run(&wg_dir, csv_path.to_str().unwrap(), true, None).unwrap();
+
+        let mp = manifest_path(&wg_dir);
+        assert!(
+            !mp.exists(),
+            "Manifest should NOT be written on dry run"
+        );
+    }
+
+    #[test]
+    fn test_reimport_updates_manifest() {
+        let tmp = tempfile::tempdir().unwrap();
+        let wg_dir = tmp.path().join(".workgraph");
+        std::fs::create_dir_all(&wg_dir).unwrap();
+
+        let csv_path = write_agency_format_csv(tmp.path());
+
+        // First import
+        run(&wg_dir, csv_path.to_str().unwrap(), false, None).unwrap();
+        let mp = manifest_path(&wg_dir);
+        let manifest1: ImportManifest =
+            serde_yaml::from_str(&std::fs::read_to_string(&mp).unwrap()).unwrap();
+
+        // Re-import (idempotent — same content hash)
+        run(&wg_dir, csv_path.to_str().unwrap(), false, None).unwrap();
+        let manifest2: ImportManifest =
+            serde_yaml::from_str(&std::fs::read_to_string(&mp).unwrap()).unwrap();
+
+        assert_eq!(manifest1.content_hash, manifest2.content_hash);
+        assert_eq!(manifest1.counts.role_components, manifest2.counts.role_components);
     }
 }

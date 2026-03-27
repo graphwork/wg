@@ -1137,7 +1137,7 @@ fn main() -> Result<()> {
                 csv_path,
                 dry_run,
                 tag,
-            } => commands::agency_import::run(&workgraph_dir, &csv_path, dry_run, tag.as_deref()),
+            } => commands::agency_import::run(&workgraph_dir, &csv_path, dry_run, tag.as_deref()).map(|_| ()),
             AgencyCommands::Push {
                 target,
                 entity_ids,
