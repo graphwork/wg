@@ -990,6 +990,15 @@ fn main() -> Result<()> {
                 }
             }
         }
+        Commands::User { command } => match command {
+            UserCommands::Init { name } => {
+                commands::user::run_init(&workgraph_dir, name.as_deref())
+            }
+            UserCommands::List => commands::user::run_list(&workgraph_dir, cli.json),
+            UserCommands::Archive { name } => {
+                commands::user::run_archive(&workgraph_dir, name.as_deref())
+            }
+        },
         Commands::Chat {
             message,
             interactive,

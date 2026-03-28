@@ -1130,6 +1130,9 @@ fn route_chat_to_agent(
                 &msg.request_id,
             );
         }
+
+        // Forward the chat message to the user board
+        coordinator::forward_chat_to_user_board(dir, &msg.content);
     }
 
     // Advance the coordinator cursor past these messages
@@ -1543,6 +1546,59 @@ fn ensure_coordinator_task(dir: &Path) {
             "[daemon] Failed to save graph after creating coordinator/compact tasks: {}",
             e
         );
+    }
+}
+
+/// Ensure a user board exists for the current user on coordinator startup.
+///
+/// Auto-creates `.user-{NAME}-0` if no active board exists for the user.
+/// The user board persists across coordinator restarts since it's a regular
+/// graph task stored in `graph.jsonl`.
+fn ensure_user_board(dir: &Path) {
+    use workgraph::graph::{
+        Node, create_user_board_task, is_user_board, next_user_board_seq,
+    };
+
+    let gp = graph_path(dir);
+    let graph = match load_graph(&gp) {
+        Ok(g) => g,
+        Err(_) => return, // No graph yet — nothing to do
+    };
+
+    let handle = workgraph::current_user();
+
+    // Check if an active (non-terminal) user board already exists
+    let prefix = format!(".user-{}-", handle);
+    let has_active = graph
+        .tasks()
+        .any(|t| is_user_board(&t.id) && t.id.starts_with(&prefix) && !t.status.is_terminal());
+
+    if has_active {
+        return; // Already have an active user board
+    }
+
+    let seq = next_user_board_seq(&graph, &handle);
+    let task = create_user_board_task(&handle, seq);
+    let task_id = task.id.clone();
+
+    if let Err(e) = workgraph::parser::modify_graph(&gp, |fresh| {
+        // Double-check inside the lock that it doesn't already exist
+        let still_needs = !fresh.tasks().any(|t| {
+            is_user_board(&t.id) && t.id.starts_with(&prefix) && !t.status.is_terminal()
+        });
+        if still_needs {
+            fresh.add_node(Node::Task(task.clone()));
+            true
+        } else {
+            false
+        }
+    }) {
+        eprintln!(
+            "[daemon] Failed to create user board '{}': {}",
+            task_id, e
+        );
+    } else {
+        eprintln!("[daemon] Auto-created user board '{}'", task_id);
     }
 }
 
@@ -2084,6 +2140,9 @@ pub fn run_daemon(
 
     // Ensure the .coordinator cycle task exists in the graph (Phase 2).
     ensure_coordinator_task(&dir);
+
+    // Ensure a user board exists for the current user (Phase 2.1).
+    ensure_user_board(&dir);
 
     // Auto-bootstrap agency when auto_evolve is enabled and agency isn't initialized.
     if config.agency.auto_evolve {

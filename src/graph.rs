@@ -371,6 +371,101 @@ pub fn is_system_task(task_id: &str) -> bool {
     task_id.starts_with('.')
 }
 
+/// Returns `true` if the task ID represents a user board (`.user-*`).
+pub fn is_user_board(task_id: &str) -> bool {
+    task_id.starts_with(".user-")
+}
+
+/// Resolve a user board alias like `.user-erik` to the active `.user-erik-N`.
+/// Returns the original ID if it's already fully qualified or not a user board alias.
+pub fn resolve_user_board_alias(graph: &WorkGraph, id: &str) -> String {
+    if !id.starts_with(".user-") {
+        return id.to_string();
+    }
+    let suffix = &id[".user-".len()..];
+    // If suffix already ends with -N (numeric), it's fully qualified
+    if suffix
+        .rsplit('-')
+        .next()
+        .map_or(false, |s| s.parse::<u32>().is_ok())
+    {
+        return id.to_string();
+    }
+    // Find highest active .user-{handle}-N
+    let prefix = format!("{}-", id);
+    graph
+        .tasks()
+        .filter(|t| t.id.starts_with(&prefix))
+        .filter(|t| !t.status.is_terminal())
+        .filter_map(|t| {
+            t.id.rsplit('-')
+                .next()
+                .and_then(|n| n.parse::<u32>().ok())
+                .map(|n| (n, t.id.clone()))
+        })
+        .max_by_key(|(n, _)| *n)
+        .map(|(_, id)| id)
+        .unwrap_or_else(|| id.to_string())
+}
+
+/// Create a user board task for the given handle and sequence number.
+/// Returns the task ID and the fully constructed Task.
+pub fn create_user_board_task(handle: &str, seq: u32) -> Task {
+    let task_id = format!(".user-{}-{}", handle, seq);
+    Task {
+        id: task_id,
+        title: format!("User board: {}", handle),
+        description: Some(format!(
+            "User board for {} — persistent conversation surface.",
+            handle
+        )),
+        status: Status::InProgress,
+        tags: vec!["user-board".to_string()],
+        created_at: Some(chrono::Utc::now().to_rfc3339()),
+        started_at: Some(chrono::Utc::now().to_rfc3339()),
+        ..Task::default()
+    }
+}
+
+/// Find the next available sequence number for a user board handle.
+/// Scans existing `.user-{handle}-N` tasks and returns max(N) + 1, or 0 if none exist.
+pub fn next_user_board_seq(graph: &WorkGraph, handle: &str) -> u32 {
+    let prefix = format!(".user-{}-", handle);
+    graph
+        .tasks()
+        .filter(|t| t.id.starts_with(&prefix))
+        .filter_map(|t| {
+            t.id.rsplit('-')
+                .next()
+                .and_then(|n| n.parse::<u32>().ok())
+        })
+        .max()
+        .map(|n| n + 1)
+        .unwrap_or(0)
+}
+
+/// Extract the handle portion from a user board task ID.
+/// E.g., `.user-erik-0` → `Some("erik")`, `.user-alice-bob-3` → `Some("alice-bob")`.
+/// Returns `None` if the ID doesn't match the `.user-{handle}-{N}` pattern.
+pub fn user_board_handle(task_id: &str) -> Option<&str> {
+    let rest = task_id.strip_prefix(".user-")?;
+    // The last `-N` segment is the sequence number
+    let last_dash = rest.rfind('-')?;
+    let seq_part = &rest[last_dash + 1..];
+    if seq_part.parse::<u32>().is_ok() {
+        Some(&rest[..last_dash])
+    } else {
+        None
+    }
+}
+
+/// Extract the sequence number from a user board task ID.
+/// E.g., `.user-erik-0` → `Some(0)`.
+pub fn user_board_seq(task_id: &str) -> Option<u32> {
+    let rest = task_id.strip_prefix(".user-")?;
+    rest.rsplit('-').next().and_then(|s| s.parse::<u32>().ok())
+}
+
 /// Token usage and cost data from a Claude CLI agent run.
 /// Extracted from the final `type=result` line in the agent's output.log.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -2568,5 +2663,123 @@ mod tests {
 
         // No reactivation — the only member is archived
         assert!(reactivated.is_empty());
+    }
+
+    // ---- User board helper tests ----
+
+    #[test]
+    fn test_is_user_board() {
+        assert!(is_user_board(".user-erik-0"));
+        assert!(is_user_board(".user-alice-bob-3"));
+        assert!(is_user_board(".user-x"));
+        assert!(!is_user_board("user-erik-0"));
+        assert!(!is_user_board(".coordinator-0"));
+        assert!(!is_user_board("some-task"));
+    }
+
+    #[test]
+    fn test_user_board_handle() {
+        assert_eq!(user_board_handle(".user-erik-0"), Some("erik"));
+        assert_eq!(user_board_handle(".user-erik-5"), Some("erik"));
+        assert_eq!(user_board_handle(".user-alice-bob-3"), Some("alice-bob"));
+        assert_eq!(user_board_handle(".user-x"), None); // no -N suffix
+        assert_eq!(user_board_handle("not-a-board"), None);
+    }
+
+    #[test]
+    fn test_user_board_seq() {
+        assert_eq!(user_board_seq(".user-erik-0"), Some(0));
+        assert_eq!(user_board_seq(".user-erik-42"), Some(42));
+        assert_eq!(user_board_seq(".user-alice-bob-3"), Some(3));
+        assert_eq!(user_board_seq("not-a-board"), None);
+    }
+
+    #[test]
+    fn test_resolve_user_board_alias_no_match() {
+        let graph = WorkGraph::new();
+        // No tasks in graph — alias returns original
+        assert_eq!(resolve_user_board_alias(&graph, ".user-erik"), ".user-erik");
+    }
+
+    #[test]
+    fn test_resolve_user_board_alias_finds_active() {
+        let mut graph = WorkGraph::new();
+        let mut t0 = make_task(".user-erik-0", "Board 0");
+        t0.status = Status::Done;
+        let mut t1 = make_task(".user-erik-1", "Board 1");
+        t1.status = Status::InProgress;
+        graph.add_node(Node::Task(t0));
+        graph.add_node(Node::Task(t1));
+
+        assert_eq!(
+            resolve_user_board_alias(&graph, ".user-erik"),
+            ".user-erik-1"
+        );
+    }
+
+    #[test]
+    fn test_resolve_user_board_alias_skips_terminal() {
+        let mut graph = WorkGraph::new();
+        let mut t0 = make_task(".user-erik-0", "Board 0");
+        t0.status = Status::Done;
+        let mut t1 = make_task(".user-erik-1", "Board 1");
+        t1.status = Status::Done;
+        graph.add_node(Node::Task(t0));
+        graph.add_node(Node::Task(t1));
+
+        // All boards are terminal — no active board found
+        assert_eq!(resolve_user_board_alias(&graph, ".user-erik"), ".user-erik");
+    }
+
+    #[test]
+    fn test_resolve_user_board_alias_fully_qualified_passthrough() {
+        let graph = WorkGraph::new();
+        // Already has -N suffix — passthrough
+        assert_eq!(
+            resolve_user_board_alias(&graph, ".user-erik-0"),
+            ".user-erik-0"
+        );
+    }
+
+    #[test]
+    fn test_resolve_user_board_alias_non_user_board_passthrough() {
+        let graph = WorkGraph::new();
+        assert_eq!(
+            resolve_user_board_alias(&graph, "my-task"),
+            "my-task"
+        );
+    }
+
+    #[test]
+    fn test_next_user_board_seq_empty() {
+        let graph = WorkGraph::new();
+        assert_eq!(next_user_board_seq(&graph, "erik"), 0);
+    }
+
+    #[test]
+    fn test_next_user_board_seq_existing() {
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(make_task(".user-erik-0", "Board 0")));
+        graph.add_node(Node::Task(make_task(".user-erik-1", "Board 1")));
+        assert_eq!(next_user_board_seq(&graph, "erik"), 2);
+    }
+
+    #[test]
+    fn test_create_user_board_task() {
+        let task = create_user_board_task("erik", 0);
+        assert_eq!(task.id, ".user-erik-0");
+        assert_eq!(task.status, Status::InProgress);
+        assert!(task.tags.contains(&"user-board".to_string()));
+        assert!(task.assigned.is_none());
+        assert!(task.agent.is_none());
+        assert!(task.created_at.is_some());
+        assert!(task.started_at.is_some());
+    }
+
+    #[test]
+    fn test_create_user_board_task_seq_increment() {
+        let task = create_user_board_task("alice", 5);
+        assert_eq!(task.id, ".user-alice-5");
+        assert_eq!(task.status, Status::InProgress);
     }
 }

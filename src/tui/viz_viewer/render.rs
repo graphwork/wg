@@ -10,8 +10,8 @@ use super::state::{
     ActivityEventKind, ChoiceDialogState, ConfigEditKind, ConfigSection, ConfirmAction,
     ControlPanelFocus, CoordinatorPlusHit, CoordinatorTabHit, EndpointTestStatus, FocusedPanel,
     InputMode, LayoutMode, ResponsiveBreakpoint, RightPanelTab, ServiceHealthLevel,
-    SinglePanelView, SortMode, TaskFormField, TaskFormState, TextPromptAction, ToastSeverity,
-    VitalsStaleness, VizApp, WAVE_BOLT, WAVE_NUM_BOLTS, extract_section_name,
+    SinglePanelView, SortMode, TabBarEntryKind, TaskFormField, TaskFormState, TextPromptAction,
+    ToastSeverity, VitalsStaleness, VizApp, WAVE_BOLT, WAVE_NUM_BOLTS, extract_section_name,
     format_duration_compact, format_relative_time, spinner_wave_pos, vitals_staleness_color,
 };
 use workgraph::AgentStatus;
@@ -1204,6 +1204,23 @@ fn draw_viz_content(frame: &mut Frame, app: &mut VizApp, area: Rect) {
         HashSet::new()
     };
 
+    // Precompute user board line indices for messages-to-board visual link.
+    // When the Messages tab is active on a user board, those lines get a subtle yellow highlight.
+    let messages_on_user_board = app.right_panel_visible
+        && app.right_panel_tab == RightPanelTab::Messages
+        && app.selected_task_idx
+            .and_then(|idx| app.task_order.get(idx))
+            .is_some_and(|id| workgraph::graph::is_user_board(id));
+    let user_board_lines: HashSet<usize> = if messages_on_user_board {
+        app.node_line_map
+            .iter()
+            .filter(|(id, _)| workgraph::graph::is_user_board(id))
+            .map(|(_, &line)| line)
+            .collect()
+    } else {
+        HashSet::new()
+    };
+
     for visible_idx in start..end {
         let orig_idx = app.visible_to_original(visible_idx);
 
@@ -1321,6 +1338,13 @@ fn draw_viz_content(frame: &mut Frame, app: &mut VizApp, area: Rect) {
             let last = text_lines.last_mut().unwrap();
             // Subtle dark cyan background to mark the coordinator row.
             *last = std::mem::take(last).style(Style::default().bg(Color::Rgb(0, 40, 50)));
+        }
+
+        // Messages-to-user-board visual link: apply a subtle yellow tint to user
+        // board task lines when the Messages tab is active on a user board.
+        if user_board_lines.contains(&orig_idx) {
+            let last = text_lines.last_mut().unwrap();
+            *last = std::mem::take(last).style(Style::default().bg(Color::Rgb(50, 40, 0)));
         }
     }
 
@@ -2152,7 +2176,13 @@ fn draw_right_panel(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     } else {
         let is_focused = app.focused_panel == FocusedPanel::RightPanel;
         let is_chat_tab = app.right_panel_tab == RightPanelTab::Chat;
+        let is_user_board_active = app.right_panel_tab == RightPanelTab::Messages
+            && app.selected_task_idx
+                .and_then(|idx| app.task_order.get(idx))
+                .is_some_and(|id| workgraph::graph::is_user_board(id));
         let border_color = if divider_active {
+            Color::Yellow
+        } else if is_user_board_active {
             Color::Yellow
         } else if is_chat_tab && app.chat.coordinator_active {
             Color::Cyan
@@ -2581,8 +2611,10 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     let search_bar_height: u16 = if chat_search_active { 1 } else { 0 };
     let msg_area_height = area.height.saturating_sub(input_height).saturating_sub(search_bar_height);
 
-    // Coordinator tab bar — always visible so the user can discover [+] even with 1 coordinator
+    // Coordinator + user board tab bar — always visible so the user can discover [+]
     let coordinator_entries = app.list_coordinator_ids_and_labels();
+    let user_board_entries = app.list_user_board_entries();
+    let total_tab_count = coordinator_entries.len() + user_board_entries.len();
     let tab_bar_height: u16 = 1;
 
     {
@@ -2611,17 +2643,24 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
             DOT_COLORS[hash as usize % DOT_COLORS.len()]
         }
 
+        // Determine which user board is currently selected (if any).
+        let selected_user_board: Option<String> = app.selected_task_idx
+            .and_then(|idx| app.task_order.get(idx))
+            .filter(|id| workgraph::graph::is_user_board(id))
+            .cloned();
+
         let bar_x = tab_area.x;
         let max_width = tab_area.width as usize;
         let mut spans = Vec::new();
         let mut tab_hits = Vec::new();
         let mut col: usize = 1; // start after leading space
         let mut overflow = false;
+        let mut tab_index: usize = 0; // combined index across all tabs
 
         // Leading space
         spans.push(Span::raw(" "));
 
-        for (i, (cid, label)) in coordinator_entries.iter().enumerate() {
+        for (_i, (cid, label)) in coordinator_entries.iter().enumerate() {
             let cid = *cid;
             let is_active = cid == app.active_coordinator_id;
             let color = dot_color(cid);
@@ -2633,12 +2672,12 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
             // Content: dot(1) + " "(1) + label + state + " "(1) + close
             let tab_content_width = 1 + 1 + label_width + state_width + 1 + close_width;
             // Separator: "│" between tabs (1 column wide)
-            let sep_w: usize = if i > 0 { 1 } else { 0 };
+            let sep_w: usize = if tab_index > 0 { 1 } else { 0 };
 
             let total_tab_width = sep_w + tab_content_width;
 
             // Check if this tab fits (also need room for "… [+]" = 5 if there are more tabs)
-            let remaining_tabs = coordinator_entries.len() - i - 1;
+            let remaining_tabs = total_tab_count - tab_index - 1;
             let suffix_width = if remaining_tabs > 0 { 6 } else { 4 }; // "… [+]" or " [+]"
             if col + total_tab_width + suffix_width > max_width && remaining_tabs > 0 {
                 overflow = true;
@@ -2646,7 +2685,7 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
             }
 
             // Separator
-            if i > 0 {
+            if tab_index > 0 {
                 spans.push(Span::styled("│", Style::default().fg(Color::DarkGray)));
                 col += sep_w;
             }
@@ -2701,12 +2740,85 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
             let tab_end = (bar_x as usize + col) as u16;
 
             tab_hits.push(CoordinatorTabHit {
-                cid,
+                kind: TabBarEntryKind::Coordinator(cid),
                 tab_start,
                 tab_end,
                 close_start,
                 close_end,
             });
+            tab_index += 1;
+        }
+
+        // User board tabs — yellow color scheme
+        if !overflow {
+            for (task_id, label) in user_board_entries.iter() {
+                let is_active = selected_user_board.as_deref() == Some(task_id.as_str());
+                let label_width = label.len();
+                // User board tabs: " ◉ Label ✕ " (no state indicator)
+                let close_width: usize = 2; // " ✕"
+                let tab_content_width = 1 + 1 + label_width + 1 + close_width;
+                let sep_w: usize = if tab_index > 0 { 1 } else { 0 };
+
+                let total_tab_width = sep_w + tab_content_width;
+
+                let remaining_tabs = total_tab_count - tab_index - 1;
+                let suffix_width = if remaining_tabs > 0 { 6 } else { 4 };
+                if col + total_tab_width + suffix_width > max_width && remaining_tabs > 0 {
+                    overflow = true;
+                    break;
+                }
+
+                // Separator
+                if tab_index > 0 {
+                    spans.push(Span::styled("│", Style::default().fg(Color::DarkGray)));
+                    col += sep_w;
+                }
+
+                let tab_start = (bar_x as usize + col) as u16;
+
+                // Dot — yellow for user boards
+                if is_active {
+                    spans.push(Span::styled(
+                        " ◉",
+                        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                    ));
+                } else {
+                    spans.push(Span::styled(" ●", Style::default().fg(Color::DarkGray)));
+                }
+                col += 2;
+
+                // Label
+                let label_style = if is_active {
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::DarkGray)
+                };
+                spans.push(Span::styled(format!(" {}", label), label_style));
+                col += 1 + label_width;
+
+                // Close button
+                let close_start = (bar_x as usize + col) as u16;
+                spans.push(Span::styled(" ✕", Style::default().fg(Color::Red)));
+                col += 2;
+                let close_end = (bar_x as usize + col) as u16;
+
+                // Trailing space
+                spans.push(Span::raw(" "));
+                col += 1;
+
+                let tab_end = (bar_x as usize + col) as u16;
+
+                tab_hits.push(CoordinatorTabHit {
+                    kind: TabBarEntryKind::UserBoard(task_id.clone()),
+                    tab_start,
+                    tab_end,
+                    close_start,
+                    close_end,
+                });
+                tab_index += 1;
+            }
         }
 
         if overflow {

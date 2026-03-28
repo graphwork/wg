@@ -802,6 +802,12 @@ pub enum Commands {
         command: MsgCommands,
     },
 
+    /// Manage per-user conversation boards (.user-NAME)
+    User {
+        #[command(subcommand)]
+        command: UserCommands,
+    },
+
     /// Save a checkpoint for context preservation during long-running tasks
     Checkpoint {
         /// Task ID
@@ -1996,6 +2002,24 @@ pub enum MsgCommands {
         /// Agent ID (default: from WG_AGENT_ID env var, or "user")
         #[arg(long)]
         agent: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum UserCommands {
+    /// Create a user board (defaults to current user)
+    Init {
+        /// User handle (default: $WG_USER or $USER)
+        name: Option<String>,
+    },
+
+    /// List all user boards (active + archived)
+    List,
+
+    /// Archive the active board and create a successor
+    Archive {
+        /// User handle (default: $WG_USER or $USER)
+        name: Option<String>,
     },
 }
 
@@ -3312,6 +3336,7 @@ pub fn command_name(cmd: &Commands) -> &'static str {
         Commands::Log { .. } => "log",
         Commands::Tokens { .. } => "tokens",
         Commands::Msg { .. } => "msg",
+        Commands::User { .. } => "user",
         Commands::Resource { .. } => "resource",
         Commands::Skill { .. } => "skill",
         Commands::Agency { .. } => "agency",
@@ -3393,6 +3418,7 @@ pub fn supports_json(cmd: &Commands) -> bool {
             | Commands::Log { .. }
             | Commands::Tokens { .. }
             | Commands::Msg { .. }
+            | Commands::User { .. }
             | Commands::Resource { .. }
             | Commands::Skill { .. }
             | Commands::Agency { .. }

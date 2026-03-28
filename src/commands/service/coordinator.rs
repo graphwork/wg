@@ -134,7 +134,7 @@ fn cleanup_and_count_alive(
 }
 
 /// Tags for daemon-managed loop tasks that should not be spawned as regular agents.
-const DAEMON_MANAGED_TAGS: &[&str] = &["compact-loop", "archive-loop", "coordinator-loop"];
+const DAEMON_MANAGED_TAGS: &[&str] = &["compact-loop", "archive-loop", "coordinator-loop", "user-board"];
 
 /// Check whether a task is managed by the daemon (not spawned as a regular agent).
 fn is_daemon_managed(task: &workgraph::graph::Task) -> bool {
@@ -3337,6 +3337,9 @@ fn process_chat_inbox_for(dir: &Path, coordinator_id: u32) {
                 coordinator_id, msg.request_id, e
             );
         }
+
+        // Forward the chat message to the user board
+        forward_chat_to_user_board(dir, &msg.content);
     }
 
     if let Some(last) = new_messages.last()
@@ -3345,6 +3348,37 @@ fn process_chat_inbox_for(dir: &Path, coordinator_id: u32) {
         eprintln!(
             "[coordinator] Failed to update chat coordinator cursor for {}: {}",
             coordinator_id, e
+        );
+    }
+}
+
+/// Forward a chat message to the current user's active user board.
+///
+/// Resolves the active `.user-{handle}` board and sends the message via the
+/// task messaging system. This ensures the user board captures the full
+/// conversation history from coordinator chat interactions.
+pub fn forward_chat_to_user_board(dir: &Path, content: &str) {
+    use workgraph::graph::resolve_user_board_alias;
+
+    let handle = workgraph::current_user();
+    let alias = format!(".user-{}", handle);
+
+    let graph_path = super::graph_path(dir);
+    let graph = match workgraph::parser::load_graph(&graph_path) {
+        Ok(g) => g,
+        Err(_) => return,
+    };
+
+    let resolved = resolve_user_board_alias(&graph, &alias);
+    // If alias wasn't resolved (no active board), skip silently
+    if resolved == alias {
+        return;
+    }
+
+    if let Err(e) = messages::send_message(dir, &resolved, content, "user", "normal") {
+        eprintln!(
+            "[coordinator] Failed to forward chat to user board '{}': {}",
+            resolved, e
         );
     }
 }

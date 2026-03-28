@@ -104,6 +104,7 @@ pub mod trace_export;
 pub mod trace_import;
 pub mod tradeoff;
 pub mod trajectory;
+pub mod user;
 pub mod velocity;
 pub mod viz;
 pub mod wait;

@@ -3,7 +3,8 @@ use chrono::Utc;
 use std::path::Path;
 use workgraph::agency::capture_task_output;
 use workgraph::graph::{
-    LogEntry, Status, evaluate_cycle_iteration, parse_token_usage, parse_wg_tokens,
+    LogEntry, Node, Status, create_user_board_task, evaluate_cycle_iteration, parse_token_usage,
+    parse_wg_tokens, user_board_handle, user_board_seq,
 };
 use workgraph::parser::modify_graph;
 use workgraph::query;
@@ -510,6 +511,34 @@ fn run_inner(
     );
 
     println!("Marked '{}' as done", id);
+
+    // User board auto-increment: if a user board is archived (done), create the successor.
+    if let Some(task) = graph.get_task(id) {
+        if task.tags.iter().any(|t| t == "user-board") {
+            if let Some(handle) = user_board_handle(id) {
+                let current_seq = user_board_seq(id).unwrap_or(0);
+                let next_seq = current_seq + 1;
+                let successor = create_user_board_task(handle, next_seq);
+                let successor_id = successor.id.clone();
+                let graph_path = super::graph_path(dir);
+                if let Err(e) = modify_graph(&graph_path, |graph| {
+                    // Also add 'archived' tag to the current board
+                    if let Some(t) = graph.get_task_mut(id) {
+                        if !t.tags.contains(&"archived".to_string()) {
+                            t.tags.push("archived".to_string());
+                        }
+                    }
+                    graph.add_node(Node::Task(successor));
+                    true
+                }) {
+                    eprintln!("Warning: failed to create successor board: {}", e);
+                } else {
+                    println!("Created successor board '{}'", successor_id);
+                    super::notify_graph_changed(dir);
+                }
+            }
+        }
+    }
 
     for task_id in &cycle_reactivated {
         println!("  Cycle: re-activated '{}'", task_id);
