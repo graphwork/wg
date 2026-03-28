@@ -2604,6 +2604,57 @@ wg service archive-coordinator 1
 
 ---
 
+### `wg service freeze`
+
+Freeze all agents (SIGSTOP) and pause the service. Agents are suspended in place and no new agents are spawned.
+
+```bash
+wg service freeze
+```
+
+**Example:**
+```bash
+wg service freeze
+# Suspend all running agents and pause the coordinator
+```
+
+---
+
+### `wg service thaw`
+
+Thaw frozen agents (SIGCONT) and resume the service.
+
+```bash
+wg service thaw
+```
+
+**Example:**
+```bash
+wg service thaw
+# Resume suspended agents and restart coordinator dispatch
+```
+
+---
+
+### `wg service interrupt-coordinator`
+
+Interrupt a coordinator's current generation (sends SIGINT, preserves context).
+
+```bash
+wg service interrupt-coordinator <ID>
+```
+
+**Arguments:**
+- `ID` — Coordinator ID to interrupt (required)
+
+**Example:**
+```bash
+wg service interrupt-coordinator 0
+# Interrupts the coordinator's current LLM generation without killing the session
+```
+
+---
+
 ### `wg service stop-coordinator`
 
 Stop a coordinator session (kill agent, reset to Open).
@@ -3158,6 +3209,7 @@ wg viz [OPTIONS] [TASK_ID]...
 | `--layout <LAYOUT>` | Layout strategy: `diamond` (default, fan-in nodes under common ancestor) or `tree` (classic DFS order) |
 | `--tag <TAG>` | Filter by tag (repeatable, multiple `--tag` flags use AND semantics) |
 | `--edge-color <STYLE>` | Edge color style: `gray` (default), `white`, or `mixed` (tree=white, arcs=gray) |
+| `--columns <COLUMNS>` | Force a specific output width in columns (default: auto-detect terminal width) |
 
 **Examples:**
 ```bash
@@ -3302,6 +3354,8 @@ With no options (or `--show`), displays current configuration.
 | `--coordinator-interval <SECS>` | Set coordinator tick interval |
 | `--poll-interval <SECS>` | Set service daemon background poll interval |
 | `--coordinator-executor <NAME>` | Set coordinator executor |
+| `--coordinator-model <MODEL>` | Set coordinator model (e.g., opus, sonnet, haiku) |
+| `--coordinator-provider <PROVIDER>` | Set coordinator provider (e.g., openrouter, anthropic) |
 | `--max-coordinators <N>` | Set max concurrent coordinator agents (LLM sessions). Default: 4 |
 | `--auto-evaluate <BOOL>` | Enable/disable automatic evaluation |
 | `--auto-assign <BOOL>` | Enable/disable automatic identity assignment |
@@ -3438,21 +3492,32 @@ wg quickstart
 Launch the interactive terminal dashboard.
 
 ```bash
-wg tui [--refresh-rate <MS>]
+wg tui [OPTIONS]
 ```
 
 **Options:**
 | Option | Description |
 |--------|-------------|
-| `--refresh-rate <MS>` | Data refresh rate in milliseconds (default: 2000) |
+| `--no-mouse` | Disable mouse capture (useful in tmux) |
+| `--recording` | Recording mode: disable mouse capture and keyboard enhancement queries for clean asciinema/terminal recording. Auto-enabled when `ASCIINEMA_REC` is set |
+| `--trace <FILE>` | Record all input events to a JSONL file for replay-based screencasts |
+| `--show-keys` | Show key press feedback overlay (useful for screencasts/demos). Also enabled by `tui.show_keys` config |
+| `--history-depth <N>` | Load only the last N chat messages on startup (overrides default pagination window) |
+| `--no-history` | Start with a clean chat view (no history loaded). History is still persisted — this only affects the initial display |
 
 **Example:**
 ```bash
 wg tui
-# Opens the interactive TUI with default 2s refresh
+# Opens the interactive TUI dashboard
 
-wg tui --refresh-rate 500
-# Open TUI with faster 500ms refresh rate
+wg tui --recording
+# Launch TUI in recording mode for clean asciinema capture
+
+wg tui --trace events.jsonl --show-keys
+# Record input events with key press overlay for screencasts
+
+wg tui --no-history --no-mouse
+# Clean chat view, no mouse capture (good for tmux)
 ```
 
 ---
@@ -3689,6 +3754,142 @@ wg telegram status
 ```bash
 wg telegram status
 # Shows whether Telegram is configured and the current chat ID
+```
+
+---
+
+### `wg screencast`
+
+Render TUI event traces into asciinema screencasts.
+
+```bash
+wg screencast <COMMAND>
+```
+
+**Subcommands:**
+| Subcommand | Description |
+|------------|-------------|
+| `render` | Render a TUI event trace into an asciinema `.cast` file |
+| `autopilot` | Launch an autopilot that drives the TUI for screencast recording |
+
+#### `wg screencast render`
+
+```bash
+wg screencast render --trace <TRACE> --output <OUTPUT> [OPTIONS]
+```
+
+**Options:**
+| Option | Description |
+|--------|-------------|
+| `--trace <TRACE>` | Path to the trace JSONL file produced by `wg tui --trace` (required) |
+| `--output <OUTPUT>` | Output `.cast` file path (required) |
+| `--compress-idle <RATIO>` | Idle compression ratio as threshold:target (e.g., `5:2` compresses gaps >5s to 2s) [default: `5:2`] |
+| `--target-duration <SECS>` | Target total recording duration in seconds |
+| `--width <WIDTH>` | Terminal width for the recording [default: 120] |
+| `--height <HEIGHT>` | Terminal height for the recording [default: 36] |
+
+**Example:**
+```bash
+wg screencast render --trace events.jsonl --output demo.cast
+# Render a trace file into an asciinema screencast
+
+wg screencast render --trace events.jsonl --output demo.cast \
+  --compress-idle 3:1 --target-duration 30 --width 100 --height 30
+# Render with custom compression, target duration, and dimensions
+```
+
+#### `wg screencast autopilot`
+
+```bash
+wg screencast autopilot [OPTIONS]
+```
+
+**Options:**
+| Option | Description |
+|--------|-------------|
+| `--output <OUTPUT>` | Output `.cast` file path [default: `screencast.cast`] |
+| `--cols <COLS>` | Terminal width [default: 80] |
+| `--rows <ROWS>` | Terminal height [default: 24] |
+| `--duration <DURATION>` | Maximum recording duration in seconds [default: 60] |
+
+**Example:**
+```bash
+wg screencast autopilot --output demo.cast --duration 30
+# Launch autopilot to drive the TUI and record a 30-second screencast
+```
+
+---
+
+### `wg server`
+
+Multi-user server setup automation.
+
+```bash
+wg server <COMMAND>
+```
+
+**Subcommands:**
+| Subcommand | Description |
+|------------|-------------|
+| `init` | Initialize multi-user server setup (dry-run by default) |
+| `connect` | Create or attach to a user's tmux session |
+
+#### `wg server init`
+
+```bash
+wg server init [OPTIONS]
+```
+
+**Options:**
+| Option | Description |
+|--------|-------------|
+| `--apply` | Actually apply changes (default is dry-run) |
+| `--group <GROUP>` | Unix group name (default: `wg-<project>`) |
+| `--user <USERS>` | Users to add to the project group (repeatable) |
+| `--ttyd` | Generate ttyd configuration for web terminal access |
+| `--caddy` | Generate Caddy reverse-proxy configuration |
+| `--ttyd-port <PORT>` | Port for ttyd web terminal [default: 7681] |
+
+**Example:**
+```bash
+wg server init --user alice --user bob --ttyd --caddy
+# Dry-run: preview multi-user server setup with web terminal and reverse proxy
+
+wg server init --apply --user alice --user bob
+# Apply the multi-user server configuration
+```
+
+#### `wg server connect`
+
+```bash
+wg server connect [--user <USER>]
+```
+
+**Options:**
+| Option | Description |
+|--------|-------------|
+| `--user <USER>` | User name (defaults to `$WG_USER`) |
+
+**Example:**
+```bash
+wg server connect --user alice
+# Create or attach to Alice's tmux session
+```
+
+---
+
+### `wg tui-dump`
+
+Dump the current TUI screen contents (requires a running `wg tui`).
+
+```bash
+wg tui-dump
+```
+
+**Example:**
+```bash
+wg tui-dump
+# Print the current TUI screen to stdout (useful for debugging or automated testing)
 ```
 
 ---
