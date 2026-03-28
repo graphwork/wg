@@ -106,6 +106,11 @@ Each tick does:
  4.6 [IF auto_evolve enabled]
      Trigger agent evolution when evaluation data warrants it.
 
+ 4.7 [IF auto_create enabled]
+     Invoke the creator agent to expand the primitive store (roles,
+     tradeoffs) when enough tasks have completed since the last
+     invocation (threshold: auto_create_threshold, default 20).
+
  5. Check for ready tasks (after agency phases may have created new ones)
     → If no ready tasks, stop here (early return)
     Cycle headers get back-edge exemption: predecessors within the
@@ -167,6 +172,22 @@ Show daemon status, uptime, coordinator state, and agent summary.
 
 ```bash
 wg service status
+```
+
+### `wg service freeze`
+
+Freeze all running agents (sends SIGSTOP) and pause the coordinator. Useful for temporarily halting all work without killing agents.
+
+```bash
+wg service freeze
+```
+
+### `wg service thaw`
+
+Thaw all frozen agents (sends SIGCONT) and resume the coordinator.
+
+```bash
+wg service thaw
 ```
 
 ### `wg service reload`
@@ -267,6 +288,14 @@ Every spawned agent receives these environment variables:
 | `WG_AGENT_ID` | The agent registry ID (e.g., `agent-7`) |
 | `WG_EXECUTOR_TYPE` | The executor type (e.g., `claude`, `amplifier`) |
 | `WG_MODEL` | The effective model selected for this agent (set only when a model is resolved) |
+| `WG_USER` | The current user identity |
+| `WG_ENDPOINT` / `WG_ENDPOINT_NAME` | The endpoint name (set when an endpoint is configured) |
+| `WG_LLM_PROVIDER` | The LLM provider (e.g., `anthropic`, `openrouter`) |
+| `WG_ENDPOINT_URL` | The endpoint URL (set when an endpoint is configured) |
+| `WG_API_KEY` | The API key for the endpoint (set when an endpoint is configured) |
+| `WG_WORKTREE_PATH` | Path to the agent's isolated git worktree (set when worktree isolation is active) |
+| `WG_BRANCH` | The worktree branch name (set when worktree isolation is active) |
+| `WG_PROJECT_ROOT` | Path to the main project root (set when worktree isolation is active) |
 
 Agents can read these to adapt behavior based on their runtime context.
 
@@ -425,8 +454,9 @@ heartbeat_timeout = 5    # minutes before stale (default: 5)
 [agency]
 auto_evaluate = false    # auto-create evaluation tasks
 auto_assign = false      # auto-create assignment tasks
-auto_place = false       # auto-placement analysis on new tasks (see AGENT-GUIDE.md §1b)
-auto_create = false      # auto-invoke creator agent for task elaboration
+auto_place = false       # auto-placement analysis merged into assignment step (see AGENT-GUIDE.md §1b)
+auto_create = false      # auto-invoke creator agent for primitive store expansion
+auto_create_threshold = 20  # completed tasks before next creator invocation (default: 20)
 auto_triage = false      # triage dead agents with LLM before respawning
 triage_model = "haiku"   # model for triage (default: haiku)
 triage_timeout = 30      # seconds before triage call times out (default: 30)
@@ -514,7 +544,19 @@ The daemon listens on a Unix socket at `.workgraph/service/daemon.sock` (overrid
 | `shutdown` | Graceful shutdown |
 | `pause` | Pause coordinator |
 | `resume` | Resume coordinator |
+| `freeze` | SIGSTOP all running agents and pause coordinator |
+| `thaw` | SIGCONT all frozen agents and resume coordinator |
 | `reconfigure` | Update config at runtime |
+| `add_task` | Create a task (cross-repo dispatch) |
+| `query_task` | Query a task's status (cross-repo query) |
+| `send_message` | Send a message to a task's message queue |
+| `user_chat` | Send a chat message to the coordinator agent |
+| `create_coordinator` | Create a new coordinator instance |
+| `delete_coordinator` | Delete a coordinator instance |
+| `archive_coordinator` | Archive a coordinator (mark as Done) |
+| `stop_coordinator` | Stop a coordinator (kill agent, reset to Open) |
+| `interrupt_coordinator` | Interrupt a coordinator's current generation (SIGINT, does not kill) |
+| `list_coordinators` | List all active coordinators |
 
 Commands that modify the graph (`wg done`, `wg add`, `wg edit`, `wg fail`, etc.) automatically send `graph_changed` to trigger an immediate tick.
 

@@ -83,19 +83,21 @@ The `superseded_by` field creates a traceable link from the old task to its repl
 
 ### Placement flow
 
-When `auto_place` is enabled (`wg config --auto-place true`), newly added tasks go through placement analysis before becoming available for assignment:
+When `auto_place` is enabled (`wg config --auto-place true`), placement analysis is merged into the assignment step. Rather than creating separate `.place-*` tasks, the coordinator performs placement analysis inline when building `.assign-*` tasks for ready unassigned work:
 
 ```
-wg add "New task" → Draft state → coordinator creates .place-<task-id>
-                                → placement agent analyzes graph context
-                                → determines optimal dependencies and wiring
-                                → task transitions to Open (ready for assignment)
+wg add "New task" → Open state → coordinator creates .assign-<task-id>
+                                → assignment agent analyzes graph context
+                                  (including placement when auto_place is on)
+                                → determines optimal dependencies, wiring,
+                                  and agent assignment
+                                → task is assigned and ready for dispatch
 ```
 
-The placement agent (dispatched at the `fast` tier, typically haiku) examines the current graph structure and the new task's description to decide:
-- Which existing tasks should be `--after` dependencies
-- Whether the task needs specific context scope
-- Optimal position in the task graph
+The assignment agent examines the current graph structure and the task's description to decide:
+- Which existing tasks should be `--after` dependencies (when auto_place is on)
+- The best agent identity to assign
+- Whether the task needs specific context scope or exec mode
 
 If `auto_place` is disabled, tasks are added directly in Open state and the user must wire dependencies manually with `--after`.
 
@@ -528,17 +530,26 @@ wg service start --max-agents 4   # limit parallel agents
 
 ### Coordinator tick
 
-Each tick: reap zombies → clean dead agents → count alive → find ready tasks → spawn agents.
+Each tick runs these phases in order:
+
+1. Process chat inbox → clean dead agents → zero-output detection → auto-checkpoint
+2. Graph maintenance: cycle iteration, cycle failure restart, waiting task evaluation, message-triggered resurrection
+3. Agency scaffolding: auto-assign, auto-evaluate, FLIP verification, auto-evolve, auto-create
+4. Find ready tasks → spawn agents
 
 Ticks happen on two triggers:
 - **Immediate:** any graph change (`wg done`, `wg add`, etc.) triggers a tick via IPC
 - **Poll:** safety-net every 60 seconds catches missed events
 
-### Pause/resume
+See [AGENT-SERVICE.md](AGENT-SERVICE.md) for the full step-by-step tick breakdown.
+
+### Pause/resume/freeze
 
 ```bash
 wg service pause    # running agents continue, no new spawns
 wg service resume   # resume + immediate tick
+wg service freeze   # SIGSTOP all agents + pause coordinator
+wg service thaw     # SIGCONT all agents + resume coordinator
 ```
 
 ### Monitoring
@@ -589,12 +600,13 @@ wg viz --graph                  # 2D spatial graph with box-drawing characters
 
 ### Executor types
 
-The coordinator spawns agents via an executor. Two built-in executors:
+The coordinator spawns agents via an executor. Three built-in executors:
 
 | Executor | What it does | When to use |
 |----------|-------------|-------------|
 | **claude** | Pipes prompt into `claude --print` (Anthropic CLI) | Default — Claude Code agents |
 | **amplifier** | Pipes prompt into `amplifier run --mode single` | OpenRouter-backed models, multi-provider setups |
+| **shell** | Runs the task's `exec` command directly (no LLM) | Scripts, builds, non-AI work |
 
 ```bash
 wg config --coordinator-executor claude      # default
@@ -602,9 +614,12 @@ wg config --coordinator-executor amplifier   # switch to amplifier
 ```
 
 Spawned agents receive environment variables indicating their runtime context:
-- `WG_EXECUTOR_TYPE` — the executor that spawned them (e.g., `claude`, `amplifier`)
-- `WG_MODEL` — the effective model selected for this agent
 - `WG_TASK_ID` — the task ID being worked on
+- `WG_AGENT_ID` — the agent registry ID (e.g., `agent-7`)
+- `WG_EXECUTOR_TYPE` — the executor that spawned them (e.g., `claude`, `amplifier`)
+- `WG_MODEL` — the effective model selected for this agent (set only when a model is resolved)
+- `WG_USER` — the current user identity
+- `WG_WORKTREE_PATH` / `WG_BRANCH` / `WG_PROJECT_ROOT` — worktree isolation paths (set when worktree isolation is active)
 
 ### Configuration
 
@@ -622,6 +637,8 @@ heartbeat_timeout = 5   # minutes before agent is considered dead
 [agency]
 auto_evaluate = false
 auto_assign = false
+auto_place = false          # placement analysis merged into assignment step
+auto_create = false         # auto-invoke creator agent for primitive store expansion
 assigner_model = "haiku"    # lightweight model for assignment (default via wg agency init)
 evaluator_model = "haiku"   # lightweight model for evaluation (default via wg agency init)
 ```
