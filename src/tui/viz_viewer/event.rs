@@ -2504,8 +2504,11 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
             } else if in_fullscreen_restore {
                 // Click on full-screen restore strip: transition to normal split
                 // and start divider drag so user can fine-tune position.
-                // Compute initial percent from the mouse column so the divider
-                // appears at the click location (no visual jump).
+                // Place the divider at the current visual border (right edge of
+                // the restore strip) instead of the click column, so the panel
+                // width is preserved and there is no resize jump on click.
+                // The drag offset captures where the user grabbed relative to
+                // the border so subsequent drag events feel anchored.
                 app.right_panel_visible = true;
                 let total_width = {
                     let restore_w = app.last_fullscreen_restore_area.width;
@@ -2515,7 +2518,11 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
                 .max(1);
                 let left_x = app.last_fullscreen_restore_area.x;
                 let right_edge = left_x + total_width;
-                let panel_width = right_edge.saturating_sub(column);
+                // Use the visual border position (not the click column) so the
+                // panel doesn't shrink on initial mousedown.
+                let border_col = app.last_fullscreen_restore_area.x
+                    + app.last_fullscreen_restore_area.width;
+                let panel_width = right_edge.saturating_sub(border_col);
                 let pct =
                     ((panel_width as u32 * 100) / total_width as u32).clamp(1, 99) as u16;
                 app.right_panel_percent = pct;
@@ -2524,7 +2531,21 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
                     app.last_split_percent = pct;
                     app.last_split_mode = app.layout_mode;
                 }
-                app.divider_drag_offset = 0; // divider placed at click position
+                // Pre-update layout areas so the drag handler can compute
+                // consistent total_width before the next render frame
+                // (graph_area is still empty from FullInspector mode).
+                let right_width =
+                    (total_width as u32 * pct as u32 / 100) as u16;
+                let left_width = total_width.saturating_sub(right_width);
+                app.last_graph_area.x = left_x;
+                app.last_graph_area.width = left_width;
+                let new_panel_x = left_x + left_width;
+                app.last_right_panel_area.x = new_panel_x;
+                app.last_right_panel_area.width = right_width;
+                // Offset: click position relative to the new divider column,
+                // so subsequent drags track relative to the grab point.
+                app.divider_drag_offset =
+                    column as i16 - new_panel_x as i16;
                 app.scrollbar_drag = Some(ScrollbarDragTarget::Divider);
             } else if in_fullscreen_right || in_fullscreen_top || in_fullscreen_bottom {
                 // Click on any fullscreen border: restore to normal split.
@@ -5088,6 +5109,85 @@ mod scrollbar_tests {
             app.scrollbar_drag,
             Some(ScrollbarDragTarget::Graph),
             "Scrollbar should win over divider when they overlap"
+        );
+    }
+
+    #[test]
+    fn fullscreen_restore_click_does_not_shrink_panel() {
+        // Regression: clicking the restore strip in FullInspector mode used to
+        // compute panel_width from the click column and clamp pct to 99, causing
+        // a ~2 column shrink before the user even moved the mouse.
+        let (mut app, _tmp) = build_test_app();
+
+        // Simulate FullInspector layout with a 200-column main area.
+        let main_width: u16 = 200;
+        let main_height: u16 = 40;
+        app.layout_mode = super::super::state::LayoutMode::FullInspector;
+        app.right_panel_visible = true;
+        // Restore strip: 1 col on the left.
+        app.last_fullscreen_restore_area = Rect {
+            x: 0,
+            y: 0,
+            width: 1,
+            height: main_height,
+        };
+        // Right border: 1 col on the right.
+        app.last_fullscreen_right_border_area = Rect {
+            x: main_width - 1,
+            y: 0,
+            width: 1,
+            height: main_height,
+        };
+        // Panel content: everything between the borders.
+        let panel_content_width = main_width - 2; // 198
+        app.last_right_panel_area = Rect {
+            x: 1,
+            y: 1,
+            width: panel_content_width,
+            height: main_height - 2,
+        };
+        app.last_graph_area = Rect::default();
+        // Clear any areas that shouldn't be active in FullInspector.
+        app.last_divider_area = Rect::default();
+        app.last_graph_scrollbar_area = Rect::default();
+        app.last_panel_scrollbar_area = Rect::default();
+        app.last_graph_hscrollbar_area = Rect::default();
+        app.last_minimized_strip_area = Rect::default();
+        app.last_fullscreen_top_border_area = Rect::default();
+        app.last_fullscreen_bottom_border_area = Rect::default();
+
+        // Click on the restore strip (column 0).
+        handle_mouse(&mut app, MouseEventKind::Down(MouseButton::Left), 10, 0);
+
+        // Drag should be initiated.
+        assert_eq!(
+            app.scrollbar_drag,
+            Some(ScrollbarDragTarget::Divider),
+            "Clicking restore strip should start divider drag"
+        );
+
+        // The panel percent should preserve the panel width (not shrink it).
+        // total_width = 198 + 1 + 1 = 200. border_col = 1.
+        // panel_width = 200 - 1 = 199. pct = 199*100/200 = 99.
+        // right_width = 200*99/100 = 198. Panel width preserved!
+        let right_width = (main_width as u32 * app.right_panel_percent as u32 / 100) as u16;
+        assert_eq!(
+            right_width, panel_content_width,
+            "Panel width ({right_width}) should match original FullInspector width ({panel_content_width})"
+        );
+
+        // The drag offset should be non-zero: click at col 0, divider at col 2.
+        assert_ne!(
+            app.divider_drag_offset, 0,
+            "Drag offset should compensate for click-to-border distance"
+        );
+
+        // Verify: first drag event to the same column should not change pct.
+        let pct_before_drag = app.right_panel_percent;
+        handle_mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), 10, 0);
+        assert_eq!(
+            app.right_panel_percent, pct_before_drag,
+            "First drag at same position should not change panel percent"
         );
     }
 }
