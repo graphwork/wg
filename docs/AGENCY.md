@@ -432,6 +432,24 @@ wg evolve run --single-shot                       # force legacy single-shot mod
 | `--model <MODEL>` | Preferred model (e.g., `opus`, `sonnet`, `haiku`, or full model ID) |
 | `--provider <PROVIDER>` | Preferred provider (e.g., `anthropic`, `openrouter`) |
 
+### `wg agency`
+
+| Command | Description |
+|---------|-------------|
+| `wg agency init` | Seed agency with starter roles and tradeoffs |
+| `wg agency stats [--min-evals <N>] [--by-model]` | Show agency performance analytics |
+| `wg agency create [--model <MODEL>] [--dry-run]` | Invoke the creator agent to discover and add new primitives |
+| `wg agency import [CSV_PATH] [--url <URL>] [--upstream] [--dry-run] [--tag <TAG>] [--force] [--check]` | Import Agency starter.csv primitives into WorkGraph |
+| `wg agency migrate [--dry-run]` | Migrate old-format agency store to primitive+cache format |
+| `wg agency deferred` | List pending deferred evolver operations (alias for `wg evolve review list`) |
+| `wg agency approve <id>` | Approve a deferred operation (alias for `wg evolve review approve`) |
+| `wg agency reject <id>` | Reject a deferred operation (alias for `wg evolve review reject`) |
+| `wg agency scan <root-dir> [--max-depth <N>]` | Scan filesystem for agency stores |
+| `wg agency remote add\|list\|show\|remove` | Manage named references to other agency stores |
+| `wg agency pull <source> [OPTIONS]` | Pull entities from another store |
+| `wg agency push <target> [OPTIONS]` | Push local entities to another store |
+| `wg agency merge <source1> <source2> ... [OPTIONS]` | Merge entities from multiple stores |
+
 ### `wg assign`
 
 ```bash
@@ -460,19 +478,6 @@ wg evolve run [--strategy <name>] [--budget <N>] [--model <model>] [--dry-run]
               [--autopoietic] [--max-iterations <N>] [--cycle-delay <secs>]
               [--force-fanout] [--single-shot]
 ```
-
-### `wg agency stats`
-
-```bash
-wg agency stats [--min-evals <N>] [--by-model]
-```
-
-Shows: role leaderboard, tradeoff leaderboard, synergy matrix, tag breakdown, under-explored combinations.
-
-| Flag | Description |
-|------|-------------|
-| `--min-evals <N>` | Minimum evaluations to consider a pair "explored" (default: 3) |
-| `--by-model` | Group stats by model, showing per-model score breakdown |
 
 ## Skill System
 
@@ -916,6 +921,7 @@ agency_server_url = ""            # URL of Agency server for evaluation feedback
 agency_token_path = ""            # path to file containing Agency API token
 agency_project_id = ""            # project ID on the Agency server
 assignment_source = ""            # default assignment source label (e.g. "native", "agency")
+upstream_url = ""                 # URL for upstream agency bureau CSV (used by `wg agency import --upstream`)
 
 # Per-role model routing (alternative to legacy model fields above)
 [models.flip_inference]

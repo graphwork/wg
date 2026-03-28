@@ -12,6 +12,7 @@ GETTING STARTED
   wg agency init              # Bootstrap roles, tradeoffs, and a default agent
   wg service start            # Start the coordinator
   wg add "My first task"      # Add work — the service dispatches automatically
+  wg status                   # Quick one-screen overview of your project
 
 SKILL & BUNDLE SETUP (required for agents to use wg)
 ─────────────────────────────────────────
@@ -88,7 +89,13 @@ SERVICE MODE (recommended for parallel work)
 
   wg service status           # Check if running, see last tick
   wg service restart          # Graceful stop then start
+  wg service pause            # Pause coordinator (no new spawns, running agents continue)
+  wg service resume           # Resume coordinator
+  wg service freeze           # SIGSTOP all agents and pause service
+  wg service thaw             # SIGCONT agents and resume service
   wg agents                   # Who's working on what
+  wg kill <agent-id>          # Kill a running agent (graceful SIGTERM)
+  wg kill --all               # Kill all running agents
   wg list                     # What's done, what's pending
   wg tui                      # Interactive dashboard
 
@@ -122,6 +129,7 @@ DISCOVERING & ADDING WORK
   wg show <task-id>           # View task details and context
   wg add "Title" -d "Desc"    # Add new task
   wg add "X" --after Y        # Add task blocked by another
+  wg edit <task-id>           # Edit title, description, deps, model, tags, etc.
 
   Provider selection (anthropic, openai, openrouter, local):
 
@@ -158,7 +166,9 @@ TASK STATE COMMANDS
   wg done <task-id>           # Mark task complete (loop fires if present)
   wg done <task-id> --converged  # Complete and STOP the loop
   wg fail <task-id> --reason  # Mark failed (can be retried)
+  wg retry <task-id>          # Retry a failed task (resets to open)
   wg abandon <task-id>        # Give up permanently
+  wg pause <task-id>          # Pause task (coordinator skips it until resumed)
   wg wait <task-id> --until "condition"  # Park task until condition is met
   wg resume <task-id>         # Resume a paused/waiting task
 
@@ -337,6 +347,7 @@ TIPS
 • Run 'wg log' BEFORE starting work to track progress
 • Use 'wg context' to understand what dependencies produced
 • Check 'wg blocked <task-id>' if a task isn't appearing in ready list
+• Use 'wg why-blocked <task-id>' for the full transitive blocking chain
 
 EXECUTORS & MODELS
 ─────────────────────────────────────────
@@ -376,6 +387,14 @@ MODEL REGISTRY & API KEYS
   wg models add <id>             # Add a model from OpenRouter to local registry
   wg models set-default <id>     # Set default model
   wg models init                 # Initialize models.yaml with defaults
+
+  Endpoint management (for OpenRouter, custom hosts, etc.):
+
+  wg endpoints list              # List all configured endpoints
+  wg endpoints add               # Add a new endpoint
+  wg endpoints remove <name>     # Remove an endpoint
+  wg endpoints set-default <name>  # Set default endpoint
+  wg endpoints test <name>       # Test endpoint connectivity
 
   API key management:
 
@@ -470,7 +489,8 @@ fn json_output() -> serde_json::Value {
             "wg setup",
             "wg agency init",
             "wg service start",
-            "wg add \"My first task\""
+            "wg add \"My first task\"",
+            "wg status"
         ],
         "skill_bundle_setup": {
             "description": "Spawned agents need the right skill or bundle installed to understand wg commands.",
@@ -521,7 +541,15 @@ fn json_output() -> serde_json::Value {
                 "start": "wg service start --max-agents 5",
                 "workflow": "Add tasks with dependencies → coordinator spawns agents on ready tasks",
                 "warning": "Do NOT manually wg spawn or wg claim while the service is running",
-                "monitor": ["wg service status", "wg agents", "wg list", "wg tui"]
+                "monitor": ["wg service status", "wg agents", "wg list", "wg tui"],
+                "control": {
+                    "pause": "wg service pause (no new spawns, running agents continue)",
+                    "resume": "wg service resume",
+                    "freeze": "wg service freeze (SIGSTOP all agents + pause)",
+                    "thaw": "wg service thaw (SIGCONT agents + resume)"
+                },
+                "kill_agent": "wg kill <agent-id>",
+                "kill_all": "wg kill --all"
             },
             "manual": {
                 "description": "For when no service is running. You claim and work tasks yourself.",
@@ -533,7 +561,9 @@ fn json_output() -> serde_json::Value {
                 "list": "List all tasks",
                 "show": "View task details and context",
                 "add": "Add a new task (supports --context-scope, --exec-mode, --provider, --delay, --not-before, --no-place, --place-near, --place-before)",
-                "ready": "See tasks available to work on (manual mode)"
+                "edit": "Edit an existing task (title, description, deps, model, tags, etc.)",
+                "ready": "See tasks available to work on (manual mode)",
+                "status": "Quick one-screen status overview"
             },
             "work": {
                 "claim": "Claim a task for work (manual mode only)",
@@ -545,7 +575,9 @@ fn json_output() -> serde_json::Value {
                 "done": "Mark task complete",
                 "done_converged": "Complete task and stop loop (wg done <id> --converged)",
                 "fail": "Mark failed (can be retried)",
+                "retry": "Retry a failed task (resets to open)",
                 "abandon": "Give up permanently",
+                "pause": "Pause task (coordinator skips it until resumed)",
                 "wait": "Park task until condition met (wg wait <id> --until \"condition\")",
                 "resume": "Resume a paused/waiting task",
                 "reschedule": "Set not_before timestamp (wg reschedule <id> --after 24)"
@@ -627,7 +659,8 @@ fn json_output() -> serde_json::Value {
             "If no coordinator: ready → claim → work → done",
             "Run 'wg log' BEFORE starting work to track progress",
             "Use 'wg context' to understand what dependencies produced",
-            "Check 'wg blocked <task-id>' if a task isn't appearing in ready list"
+            "Check 'wg blocked <task-id>' if a task isn't appearing in ready list",
+            "Use 'wg why-blocked <task-id>' for the full transitive blocking chain"
         ],
         "executors_and_models": {
             "switch_executor": "wg config --coordinator-executor amplifier",
@@ -654,6 +687,13 @@ fn json_output() -> serde_json::Value {
                 "set_default": "wg models set-default <id>",
                 "init": "wg models init"
             }
+        },
+        "endpoints": {
+            "list": "wg endpoints list",
+            "add": "wg endpoints add",
+            "remove": "wg endpoints remove <name>",
+            "set_default": "wg endpoints set-default <name>",
+            "test": "wg endpoints test <name>"
         },
         "api_keys": {
             "set": "wg key set <provider>",
