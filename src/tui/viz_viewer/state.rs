@@ -848,10 +848,20 @@ pub struct ChoiceDialogState {
     pub options: Vec<(char, String, String)>,
 }
 
-/// Hit area for a single coordinator tab in the tab bar.
+/// What kind of entry a tab bar hit represents.
+#[derive(Clone, Debug)]
+pub enum TabBarEntryKind {
+    /// A coordinator tab (identified by numeric coordinator ID).
+    Coordinator(u32),
+    /// A user board tab (identified by task ID, e.g. `.user-erik-0`).
+    UserBoard(String),
+}
+
+/// Hit area for a single tab in the coordinator/user-board tab bar.
 #[derive(Clone, Debug)]
 pub struct CoordinatorTabHit {
-    pub cid: u32,
+    /// The kind of entry this hit represents.
+    pub kind: TabBarEntryKind,
     /// Column range for the entire tab (clicking switches coordinator).
     pub tab_start: u16,
     pub tab_end: u16,
@@ -4269,8 +4279,9 @@ impl VizApp {
     }
 
     /// If the currently selected task is a coordinator task, switch to that
-    /// coordinator and show the Chat tab. Call this only from user-initiated
-    /// selection changes (keyboard / mouse), NOT from automatic graph refreshes.
+    /// coordinator and show the Chat tab. If it's a user board task, switch
+    /// to the Messages tab. Call this only from user-initiated selection
+    /// changes (keyboard / mouse), NOT from automatic graph refreshes.
     fn sync_coordinator_from_selection(&mut self) {
         let selected_id = match self.selected_task_idx {
             Some(idx) => match self.task_order.get(idx) {
@@ -4291,6 +4302,9 @@ impl VizApp {
         } else if selected_id == ".coordinator" && self.active_coordinator_id != 0 {
             self.switch_coordinator(0);
             self.right_panel_tab = RightPanelTab::Chat;
+        } else if workgraph::graph::is_user_board(&selected_id) {
+            // Switch to Messages tab for user board tasks.
+            self.right_panel_tab = RightPanelTab::Messages;
         }
     }
 
@@ -10328,6 +10342,30 @@ impl VizApp {
         if entries.is_empty() {
             entries.push((0, "C0".to_string()));
         }
+        entries
+    }
+
+    /// Get user board entries from the graph.
+    /// Returns Vec of (task_id, label) for active `.user-*` tasks.
+    pub fn list_user_board_entries(&self) -> Vec<(String, String)> {
+        let graph_path = self.workgraph_dir.join("graph.jsonl");
+        let graph = match workgraph::parser::load_graph(&graph_path) {
+            Ok(g) => g,
+            Err(_) => return Vec::new(),
+        };
+        let mut entries: Vec<(String, String)> = graph
+            .tasks()
+            .filter(|t| workgraph::graph::is_user_board(&t.id))
+            .filter(|t| !t.status.is_terminal())
+            .filter(|t| !t.tags.iter().any(|tag| tag == "archived"))
+            .map(|t| {
+                let label = workgraph::graph::user_board_handle(&t.id)
+                    .map(|h| h.to_string())
+                    .unwrap_or_else(|| t.id.clone());
+                (t.id.clone(), label)
+            })
+            .collect();
+        entries.sort_by(|(a, _), (b, _)| a.cmp(b));
         entries
     }
 

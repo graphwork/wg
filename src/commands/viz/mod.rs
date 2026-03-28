@@ -159,7 +159,7 @@ fn is_internal_task(task: &Task) -> bool {
     if task
         .tags
         .iter()
-        .any(|t| t == "coordinator-loop" || t == "compact-loop")
+        .any(|t| t == "coordinator-loop" || t == "compact-loop" || t == "user-board")
     {
         return false;
     }

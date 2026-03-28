@@ -12,7 +12,7 @@ use super::render;
 use super::state::{
     ChoiceDialogAction, ChoiceDialogState, CommandEffect, ConfigEditKind, ConfirmAction,
     ControlPanelFocus, FocusedPanel, InputMode, InspectorSubFocus, NavEntry, ResponsiveBreakpoint,
-    RightPanelTab, TaskFormField, TextPromptAction, VizApp,
+    RightPanelTab, TabBarEntryKind, TaskFormField, TextPromptAction, VizApp,
 };
 
 /// Apply the current mouse capture state to the terminal.
@@ -2438,43 +2438,60 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
                 return;
             }
             if in_coordinator_bar {
-                // Click on coordinator tab bar: switch coordinator, create, or close.
+                // Click on coordinator/user-board tab bar.
                 app.focused_panel = FocusedPanel::RightPanel;
-                app.right_panel_tab = RightPanelTab::Chat;
 
                 // Check [+] button first
                 let plus = &app.coordinator_plus_hit;
                 if column >= plus.start && column < plus.end {
+                    app.right_panel_tab = RightPanelTab::Chat;
                     super::state::editor_clear(&mut app.text_prompt.editor);
                     app.input_mode = InputMode::TextPrompt(TextPromptAction::CreateCoordinator);
                     return;
                 }
 
                 // Check each tab's hit area
-                for hit in &app.coordinator_tab_hits {
+                // Clone tab_hits to avoid borrow conflict with app methods.
+                let tab_hits: Vec<_> = app.coordinator_tab_hits.clone();
+                for hit in &tab_hits {
                     if column >= hit.tab_start && column < hit.tab_end {
-                        // Check if click is on the close button — open choice dialog
-                        if hit.close_start != hit.close_end
-                            && column >= hit.close_start
-                            && column < hit.close_end
-                        {
-                            let cid = hit.cid;
-                            let options = vec![
-                                ('a', "Archive".into(), "Mark as done — work complete".into()),
-                                (
-                                    's',
-                                    "Stop".into(),
-                                    "Pause coordinator — resume later".into(),
-                                ),
-                                ('x', "Abandon".into(), "Permanently discard".into()),
-                            ];
-                            app.input_mode = InputMode::ChoiceDialog(ChoiceDialogState {
-                                action: ChoiceDialogAction::RemoveCoordinator(cid),
-                                selected: 0,
-                                options,
-                            });
-                        } else {
-                            app.switch_coordinator(hit.cid);
+                        match &hit.kind {
+                            TabBarEntryKind::Coordinator(cid) => {
+                                app.right_panel_tab = RightPanelTab::Chat;
+                                // Check if click is on the close button — open choice dialog
+                                if hit.close_start != hit.close_end
+                                    && column >= hit.close_start
+                                    && column < hit.close_end
+                                {
+                                    let cid = *cid;
+                                    let options = vec![
+                                        ('a', "Archive".into(), "Mark as done — work complete".into()),
+                                        (
+                                            's',
+                                            "Stop".into(),
+                                            "Pause coordinator — resume later".into(),
+                                        ),
+                                        ('x', "Abandon".into(), "Permanently discard".into()),
+                                    ];
+                                    app.input_mode = InputMode::ChoiceDialog(ChoiceDialogState {
+                                        action: ChoiceDialogAction::RemoveCoordinator(cid),
+                                        selected: 0,
+                                        options,
+                                    });
+                                } else {
+                                    app.switch_coordinator(*cid);
+                                }
+                            }
+                            TabBarEntryKind::UserBoard(task_id) => {
+                                // Select the user board task and switch to Messages tab.
+                                let task_id = task_id.clone();
+                                if let Some(idx) = app.task_order.iter().position(|id| *id == task_id) {
+                                    app.selected_task_idx = Some(idx);
+                                    app.recompute_trace();
+                                    app.scroll_to_selected_task();
+                                }
+                                app.right_panel_tab = RightPanelTab::Messages;
+                            }
                         }
                         return;
                     }
