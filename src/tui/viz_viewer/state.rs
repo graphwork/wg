@@ -10301,13 +10301,12 @@ impl VizApp {
     }
 
     /// Get coordinator IDs with display labels from the graph.
-    /// Returns Vec of (id, label) where label is the task title if available,
-    /// otherwise "C{id}".
+    /// Returns Vec of (id, label) where label is `coord:N` (sequential).
     pub fn list_coordinator_ids_and_labels(&self) -> Vec<(u32, String)> {
         let graph_path = self.workgraph_dir.join("graph.jsonl");
         let graph = match workgraph::parser::load_graph(&graph_path) {
             Ok(g) => g,
-            Err(_) => return vec![(0, "C0".to_string())],
+            Err(_) => return vec![(0, "coord:1".to_string())],
         };
         let mut entries: Vec<(u32, String)> = graph
             .tasks()
@@ -10325,22 +10324,18 @@ impl VizApp {
                                 None
                             }
                         })?;
-                // Use task title as label if it's not a generic "Coordinator" title
-                let label = if !t.title.is_empty()
-                    && t.title != "Coordinator"
-                    && !t.title.starts_with("coordinator")
-                {
-                    t.title.clone()
-                } else {
-                    format!("C{}", cid)
-                };
-                Some((cid, label))
+                // Placeholder label — will be replaced with sequential numbering below
+                Some((cid, String::new()))
             })
             .collect();
         entries.sort_by_key(|(id, _)| *id);
         entries.dedup_by_key(|(id, _)| *id);
         if entries.is_empty() {
-            entries.push((0, "C0".to_string()));
+            entries.push((0, String::new()));
+        }
+        // Assign sequential coord:N labels based on sorted order
+        for (i, (_cid, label)) in entries.iter_mut().enumerate() {
+            *label = format!("coord:{}", i + 1);
         }
         entries
     }
