@@ -1132,7 +1132,7 @@ fn route_chat_to_agent(
         }
 
         // Forward the chat message to the user board
-        coordinator::forward_chat_to_user_board(dir, &msg.content);
+        coordinator::forward_chat_to_user_board(dir, &msg.content, coordinator_id);
     }
 
     // Advance the coordinator cursor past these messages

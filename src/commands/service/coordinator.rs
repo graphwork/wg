@@ -3339,7 +3339,7 @@ fn process_chat_inbox_for(dir: &Path, coordinator_id: u32) {
         }
 
         // Forward the chat message to the user board
-        forward_chat_to_user_board(dir, &msg.content);
+        forward_chat_to_user_board(dir, &msg.content, coordinator_id);
     }
 
     if let Some(last) = new_messages.last()
@@ -3357,7 +3357,10 @@ fn process_chat_inbox_for(dir: &Path, coordinator_id: u32) {
 /// Resolves the active `.user-{handle}` board and sends the message via the
 /// task messaging system. This ensures the user board captures the full
 /// conversation history from coordinator chat interactions.
-pub fn forward_chat_to_user_board(dir: &Path, content: &str) {
+///
+/// The `coordinator_id` is included as routing context so the user board
+/// shows which coordinator/chat surface each message came from.
+pub fn forward_chat_to_user_board(dir: &Path, content: &str, coordinator_id: u32) {
     use workgraph::graph::resolve_user_board_alias;
 
     let handle = workgraph::current_user();
@@ -3375,7 +3378,10 @@ pub fn forward_chat_to_user_board(dir: &Path, content: &str) {
         return;
     }
 
-    if let Err(e) = messages::send_message(dir, &resolved, content, "user", "normal") {
+    // Prefix with routing context so the user board shows where the message came from
+    let routed_content = format!("user [coord:{}]: {}", coordinator_id, content);
+
+    if let Err(e) = messages::send_message(dir, &resolved, &routed_content, "user", "normal") {
         eprintln!(
             "[coordinator] Failed to forward chat to user board '{}': {}",
             resolved, e
