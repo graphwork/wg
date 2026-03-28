@@ -134,7 +134,7 @@ fn cleanup_and_count_alive(
 }
 
 /// Tags for daemon-managed loop tasks that should not be spawned as regular agents.
-const DAEMON_MANAGED_TAGS: &[&str] = &["compact-loop", "archive-loop", "coordinator-loop"];
+const DAEMON_MANAGED_TAGS: &[&str] = &["compact-loop", "archive-loop", "coordinator-loop", "user-board"];
 
 /// Check whether a task is managed by the daemon (not spawned as a regular agent).
 fn is_daemon_managed(task: &workgraph::graph::Task) -> bool {

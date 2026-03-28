@@ -4,7 +4,11 @@ use anyhow::{Context, Result};
 use std::io::Read;
 use std::path::Path;
 
+use workgraph::graph::{
+    Node, create_user_board_task, is_user_board, next_user_board_seq, resolve_user_board_alias,
+};
 use workgraph::messages;
+use workgraph::parser::modify_graph;
 
 /// Status icon for CLI display.
 fn status_icon_for(status: &messages::DeliveryStatus) -> &'static str {
@@ -25,9 +29,46 @@ pub fn run_send(
     priority: &str,
     stdin: bool,
 ) -> Result<()> {
-    // Validate task exists in the graph
+    // Resolve user board alias (.user-erik → .user-erik-N)
     let (graph, _path) = super::load_workgraph(dir)?;
-    graph.get_task_or_err(task_id)?;
+    let resolved_id = resolve_user_board_alias(&graph, task_id);
+
+    // Lazy init: if targeting a user board that doesn't exist, auto-create it
+    let effective_id = if graph.get_task(&resolved_id).is_none() && is_user_board(&resolved_id) {
+        // Extract handle from the alias (e.g., ".user-erik" → "erik")
+        let handle = resolved_id
+            .strip_prefix(".user-")
+            .unwrap_or(&resolved_id);
+        // Strip trailing -N if it's there
+        let handle = if let Some(pos) = handle.rfind('-') {
+            let suffix = &handle[pos + 1..];
+            if suffix.parse::<u32>().is_ok() {
+                &handle[..pos]
+            } else {
+                handle
+            }
+        } else {
+            handle
+        };
+        let seq = next_user_board_seq(&graph, handle);
+        let task = create_user_board_task(handle, seq);
+        let new_id = task.id.clone();
+        let graph_path = super::graph_path(dir);
+        modify_graph(&graph_path, |graph| {
+            graph.add_node(Node::Task(task));
+            true
+        })
+        .context("Failed to auto-create user board")?;
+        eprintln!("Auto-created user board '{}'", new_id);
+        super::notify_graph_changed(dir);
+        new_id
+    } else if graph.get_task(&resolved_id).is_some() {
+        resolved_id
+    } else {
+        // Not a user board — use original error path
+        graph.get_task_or_err(task_id)?;
+        task_id.to_string()
+    };
 
     let message_body = if stdin {
         let mut buf = String::new();
@@ -44,19 +85,20 @@ pub fn run_send(
         anyhow::bail!("Message body cannot be empty");
     }
 
-    let id = messages::send_message(dir, task_id, &message_body, sender, priority)?;
-    println!("Message #{} sent to '{}'", id, task_id);
+    let id = messages::send_message(dir, &effective_id, &message_body, sender, priority)?;
+    println!("Message #{} sent to '{}'", id, effective_id);
 
     Ok(())
 }
 
 /// List all messages for a task.
 pub fn run_list(dir: &Path, task_id: &str, json: bool) -> Result<()> {
-    // Validate task exists
+    // Resolve user board alias and validate task exists
     let (graph, _path) = super::load_workgraph(dir)?;
-    graph.get_task_or_err(task_id)?;
+    let task_id = resolve_user_board_alias(&graph, task_id);
+    graph.get_task_or_err(&task_id)?;
 
-    let msgs = messages::list_messages(dir, task_id)?;
+    let msgs = messages::list_messages(dir, &task_id)?;
 
     if json {
         println!("{}", serde_json::to_string_pretty(&msgs)?);
@@ -94,11 +136,12 @@ pub fn run_list(dir: &Path, task_id: &str, json: bool) -> Result<()> {
 
 /// Read unread messages for an agent (advances cursor).
 pub fn run_read(dir: &Path, task_id: &str, agent_id: &str, json: bool) -> Result<()> {
-    // Validate task exists
+    // Resolve user board alias and validate task exists
     let (graph, _path) = super::load_workgraph(dir)?;
-    graph.get_task_or_err(task_id)?;
+    let task_id = resolve_user_board_alias(&graph, task_id);
+    graph.get_task_or_err(&task_id)?;
 
-    let unread = messages::read_unread(dir, task_id, agent_id)?;
+    let unread = messages::read_unread(dir, &task_id, agent_id)?;
 
     if json {
         println!("{}", serde_json::to_string_pretty(&unread)?);
@@ -146,11 +189,12 @@ pub fn run_read(dir: &Path, task_id: &str, agent_id: &str, json: bool) -> Result
 ///
 /// Does NOT advance the cursor (messages remain "unread" for `read`).
 pub fn run_poll(dir: &Path, task_id: &str, agent_id: &str, json: bool) -> Result<bool> {
-    // Validate task exists
+    // Resolve user board alias and validate task exists
     let (graph, _path) = super::load_workgraph(dir)?;
-    graph.get_task_or_err(task_id)?;
+    let task_id = resolve_user_board_alias(&graph, task_id);
+    graph.get_task_or_err(&task_id)?;
 
-    let new_msgs = messages::poll_messages(dir, task_id, agent_id)?;
+    let new_msgs = messages::poll_messages(dir, &task_id, agent_id)?;
 
     if new_msgs.is_empty() {
         if !json {
