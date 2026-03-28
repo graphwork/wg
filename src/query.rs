@@ -373,20 +373,51 @@ pub fn ready_tasks_cycle_aware<'a>(
                 {
                     return true;
                 }
+                // Self-loop: task depends on itself with cycle_config.
+                // Always exempt — a self-loop always deadlocks itself.
+                if *blocker_id == task.id && task.cycle_config.is_some() {
+                    return true;
+                }
                 // First-iteration bootstrap: on iteration 0, when the task has
                 // cycle_config and the blocker is in the same SCC, exempt the
                 // blocker regardless of whether it has cycle_config. This lets
                 // headers bootstrap past workers (not just other headers).
                 if task.loop_iteration == 0 && task.cycle_config.is_some() {
-                    // Self-loop: task depends on itself
-                    if *blocker_id == task.id {
-                        return true;
-                    }
                     if graph.get_task(blocker_id).is_some()
                         && let Some(tc) = cycle_analysis.task_to_cycle.get(&task.id)
                         && cycle_analysis.task_to_cycle.get(blocker_id) == Some(tc)
                     {
                         return true;
+                    }
+                }
+                // Path 3: Cycle deadlock breaker.
+                // After reactivation, all SCC members are Open but none can start
+                // because each blocks the others. This only happens when ALL
+                // members have cycle_config (Path 1 can't exempt any worker).
+                // Detect this and exempt in-SCC blockers for the cycle header
+                // to break the deadlock. Only the header is exempted, preserving
+                // dispatch ordering within the cycle.
+                if task.cycle_config.is_some() {
+                    if let Some(&cycle_idx) = cycle_analysis.task_to_cycle.get(&task.id) {
+                        let cycle = &cycle_analysis.cycles[cycle_idx];
+                        if cycle.header == task.id {
+                            let all_members_open_with_config =
+                                cycle.members.iter().all(|mid| {
+                                    graph
+                                        .get_task(mid)
+                                        .map(|t| {
+                                            t.status == Status::Open
+                                                && t.cycle_config.is_some()
+                                        })
+                                        .unwrap_or(false)
+                                });
+                            if all_members_open_with_config
+                                && cycle_analysis.task_to_cycle.get(blocker_id)
+                                    == Some(&cycle_idx)
+                            {
+                                return true;
+                            }
+                        }
                     }
                 }
                 false
@@ -429,16 +460,41 @@ pub fn ready_tasks_with_peers_cycle_aware<'a>(
                 {
                     return true;
                 }
+                // Self-loop: task depends on itself with cycle_config.
+                if *blocker_id == task.id && task.cycle_config.is_some() {
+                    return true;
+                }
                 // First-iteration bootstrap (same as above).
                 if task.loop_iteration == 0 && task.cycle_config.is_some() {
-                    if *blocker_id == task.id {
-                        return true;
-                    }
                     if graph.get_task(blocker_id).is_some()
                         && let Some(tc) = cycle_analysis.task_to_cycle.get(&task.id)
                         && cycle_analysis.task_to_cycle.get(blocker_id) == Some(tc)
                     {
                         return true;
+                    }
+                }
+                // Path 3: Cycle deadlock breaker (same as above).
+                if task.cycle_config.is_some() {
+                    if let Some(&cycle_idx) = cycle_analysis.task_to_cycle.get(&task.id) {
+                        let cycle = &cycle_analysis.cycles[cycle_idx];
+                        if cycle.header == task.id {
+                            let all_members_open_with_config =
+                                cycle.members.iter().all(|mid| {
+                                    graph
+                                        .get_task(mid)
+                                        .map(|t| {
+                                            t.status == Status::Open
+                                                && t.cycle_config.is_some()
+                                        })
+                                        .unwrap_or(false)
+                                });
+                            if all_members_open_with_config
+                                && cycle_analysis.task_to_cycle.get(blocker_id)
+                                    == Some(&cycle_idx)
+                            {
+                                return true;
+                            }
+                        }
                     }
                 }
                 false
@@ -1936,9 +1992,10 @@ mod tests {
     }
 
     #[test]
-    fn test_cycle_aware_iteration_1_no_bootstrap() {
+    fn test_cycle_aware_iteration_1_deadlock_breaker() {
         // After iteration 0, the bootstrap exemption should NOT apply.
-        // Tasks on iteration 1+ should use the existing header/worker exemption.
+        // But when all SCC members are Open (deadlocked), the cycle header
+        // should be exempted via Path 3 (deadlock breaker).
         let mut graph = WorkGraph::new();
 
         let mut a = make_task("a", "Task A");
@@ -1957,14 +2014,13 @@ mod tests {
         let cycle_analysis = CycleAnalysis::from_graph(&graph);
         let ready = ready_tasks_cycle_aware(&graph, &cycle_analysis);
 
-        // Neither should be ready via bootstrap (loop_iteration > 0).
-        // The existing worker exemption doesn't apply either (both have cycle_config).
-        // This is the steady-state behavior — after reactivate_cycle runs,
-        // the header waits for workers. With symmetric configs, a sequencing
-        // mechanism is needed (that's the existing behavior, unchanged).
-        assert!(
-            ready.is_empty(),
-            "Bootstrap exemption should not fire on iteration > 0"
+        // The cycle header should be ready via Path 3 (deadlock breaker),
+        // since all SCC members are Open. The non-header waits.
+        assert_eq!(ready.len(), 1, "Exactly one task (the header) should be ready");
+        let header_id = &cycle_analysis.cycles[0].header;
+        assert_eq!(
+            ready[0].id, *header_id,
+            "Only the cycle header should be ready to break the deadlock"
         );
     }
 

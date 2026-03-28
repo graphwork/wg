@@ -5541,3 +5541,337 @@ fn test_converged_non_header_with_evaluate_all() {
     assert_eq!(graph.get_task("a").unwrap().status, Status::Done);
     assert_eq!(graph.get_task("b").unwrap().status, Status::Done);
 }
+
+// ===========================================================================
+// Cycle deadlock breaker (Path 3): symmetric cycle_config
+// ===========================================================================
+
+#[test]
+fn test_deadlock_breaker_two_task_symmetric_cycle() {
+    // A ↔ B, both have cycle_config. After reactivation at iteration 1,
+    // all members are Open with cycle_config — deadlock without Path 3.
+    // The cycle header should be exempted to break the deadlock.
+    let mut a = make_task("a", "Task A");
+    a.after = vec!["b".to_string()];
+    a.cycle_config = Some(CycleConfig {
+        max_iterations: 3,
+        guard: None,
+        delay: None,
+        no_converge: false,
+        restart_on_failure: true,
+        max_failure_restarts: None,
+    });
+    a.loop_iteration = 1;
+
+    let mut b = make_task("b", "Task B");
+    b.after = vec!["a".to_string()];
+    b.cycle_config = Some(CycleConfig {
+        max_iterations: 3,
+        guard: None,
+        delay: None,
+        no_converge: false,
+        restart_on_failure: true,
+        max_failure_restarts: None,
+    });
+    b.loop_iteration = 1;
+
+    let graph = build_graph(vec![a, b]);
+    let analysis = graph.compute_cycle_analysis();
+
+    let ready = ready_tasks_cycle_aware(&graph, &analysis);
+
+    // Exactly one task (the header) should be ready via Path 3.
+    assert_eq!(
+        ready.len(),
+        1,
+        "Exactly one task should be ready (deadlock breaker). Got: {:?}",
+        ready.iter().map(|t| &t.id).collect::<Vec<_>>()
+    );
+    assert_eq!(
+        ready[0].id, analysis.cycles[0].header,
+        "The cycle header should be the one that becomes ready"
+    );
+}
+
+#[test]
+fn test_deadlock_breaker_three_task_symmetric_cycle() {
+    // A → B → C → A, all have cycle_config. After reactivation at iteration 1,
+    // deadlock without Path 3. The cycle header should break it.
+    let mut a = make_task("a", "Task A");
+    a.after = vec!["c".to_string()];
+    a.cycle_config = Some(CycleConfig {
+        max_iterations: 3,
+        guard: None,
+        delay: None,
+        no_converge: false,
+        restart_on_failure: true,
+        max_failure_restarts: None,
+    });
+    a.loop_iteration = 1;
+
+    let mut b = make_task("b", "Task B");
+    b.after = vec!["a".to_string()];
+    b.cycle_config = Some(CycleConfig {
+        max_iterations: 3,
+        guard: None,
+        delay: None,
+        no_converge: false,
+        restart_on_failure: true,
+        max_failure_restarts: None,
+    });
+    b.loop_iteration = 1;
+
+    let mut c = make_task("c", "Task C");
+    c.after = vec!["b".to_string()];
+    c.cycle_config = Some(CycleConfig {
+        max_iterations: 3,
+        guard: None,
+        delay: None,
+        no_converge: false,
+        restart_on_failure: true,
+        max_failure_restarts: None,
+    });
+    c.loop_iteration = 1;
+
+    let graph = build_graph(vec![a, b, c]);
+    let analysis = graph.compute_cycle_analysis();
+
+    let ready = ready_tasks_cycle_aware(&graph, &analysis);
+
+    // Exactly one task (the header) should be ready.
+    assert_eq!(
+        ready.len(),
+        1,
+        "Exactly one task should be ready (deadlock breaker). Got: {:?}",
+        ready.iter().map(|t| &t.id).collect::<Vec<_>>()
+    );
+    assert_eq!(
+        ready[0].id, analysis.cycles[0].header,
+        "The cycle header should be the one that becomes ready"
+    );
+}
+
+#[test]
+fn test_deadlock_breaker_does_not_fire_when_member_in_progress() {
+    // A ↔ B, both have cycle_config, but B is InProgress.
+    // Path 3 should NOT fire (not all members Open — no deadlock).
+    let mut a = make_task("a", "Task A");
+    a.after = vec!["b".to_string()];
+    a.cycle_config = Some(CycleConfig {
+        max_iterations: 3,
+        guard: None,
+        delay: None,
+        no_converge: false,
+        restart_on_failure: true,
+        max_failure_restarts: None,
+    });
+    a.loop_iteration = 1;
+
+    let mut b = make_task("b", "Task B");
+    b.after = vec!["a".to_string()];
+    b.status = Status::InProgress;
+    b.cycle_config = Some(CycleConfig {
+        max_iterations: 3,
+        guard: None,
+        delay: None,
+        no_converge: false,
+        restart_on_failure: true,
+        max_failure_restarts: None,
+    });
+    b.loop_iteration = 1;
+
+    let graph = build_graph(vec![a, b]);
+    let analysis = graph.compute_cycle_analysis();
+
+    let ready = ready_tasks_cycle_aware(&graph, &analysis);
+
+    assert!(
+        ready.is_empty(),
+        "No task should be ready when one member is InProgress. Got: {:?}",
+        ready.iter().map(|t| &t.id).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn test_deadlock_breaker_asymmetric_config_not_triggered() {
+    // A(cc) → B(no cc), B → A. Asymmetric cycle_config.
+    // Path 1 (worker exemption) handles B. Path 3 should NOT fire for A.
+    let mut a = make_task("a", "Task A");
+    a.after = vec!["b".to_string()];
+    a.cycle_config = Some(CycleConfig {
+        max_iterations: 3,
+        guard: None,
+        delay: None,
+        no_converge: false,
+        restart_on_failure: true,
+        max_failure_restarts: None,
+    });
+    a.loop_iteration = 1;
+
+    let mut b = make_task("b", "Task B");
+    b.after = vec!["a".to_string()];
+    // b has NO cycle_config
+    b.loop_iteration = 1;
+
+    let graph = build_graph(vec![a, b]);
+    let analysis = graph.compute_cycle_analysis();
+
+    let ready = ready_tasks_cycle_aware(&graph, &analysis);
+    let ready_ids: Vec<&str> = ready.iter().map(|t| t.id.as_str()).collect();
+
+    // B should be ready via Path 1 (worker exemption).
+    // A should NOT be ready (Path 3 doesn't fire because not all members have cycle_config).
+    assert!(
+        ready_ids.contains(&"b"),
+        "B should be ready via worker exemption. Ready: {:?}",
+        ready_ids
+    );
+    assert!(
+        !ready_ids.contains(&"a"),
+        "A should NOT be ready (Path 3 should not fire for asymmetric config). Ready: {:?}",
+        ready_ids
+    );
+}
+
+#[test]
+fn test_deadlock_breaker_self_loop_iteration_1() {
+    // Self-loop: A depends on A, has cycle_config, iteration 1.
+    // Path 2 doesn't fire (iteration > 0). Path 3 should handle it:
+    // single member SCC, all members Open with cycle_config, A is header.
+    let mut a = make_task("a", "Task A");
+    a.after = vec!["a".to_string()];
+    a.cycle_config = Some(CycleConfig {
+        max_iterations: 3,
+        guard: None,
+        delay: None,
+        no_converge: false,
+        restart_on_failure: true,
+        max_failure_restarts: None,
+    });
+    a.loop_iteration = 1;
+
+    let graph = build_graph(vec![a]);
+    let analysis = graph.compute_cycle_analysis();
+
+    let ready = ready_tasks_cycle_aware(&graph, &analysis);
+
+    assert_eq!(
+        ready.len(),
+        1,
+        "Self-loop should be ready via deadlock breaker on iteration 1"
+    );
+    assert_eq!(ready[0].id, "a");
+}
+
+#[test]
+fn test_deadlock_breaker_e2e_two_task_cycle() {
+    // End-to-end: create a 2-task symmetric cycle, complete iteration 0,
+    // verify both reopen, then verify the header becomes ready on iteration 1.
+    let tmp = TempDir::new().unwrap();
+    let wg_dir = setup_workgraph(&tmp, vec![]);
+
+    // Create A and B with mutual dependencies and cycle_config
+    wg_ok(
+        &wg_dir,
+        &["add", "Task A", "--id", "a", "--max-iterations", "3", "--immediate"],
+    );
+    wg_ok(
+        &wg_dir,
+        &[
+            "add", "Task B", "--id", "b", "--after", "a",
+            "--max-iterations", "3", "--immediate",
+        ],
+    );
+
+    // Complete iteration 0
+    wg_ok(&wg_dir, &["done", "a"]);
+    wg_ok(&wg_dir, &["done", "b"]);
+
+    // Both should be re-opened at iteration 1
+    let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
+    assert_eq!(graph.get_task("a").unwrap().status, Status::Open);
+    assert_eq!(graph.get_task("b").unwrap().status, Status::Open);
+    assert_eq!(graph.get_task("a").unwrap().loop_iteration, 1);
+    assert_eq!(graph.get_task("b").unwrap().loop_iteration, 1);
+
+    // Verify both have cycle_config (auto back-edge gives b cycle_config too)
+    assert!(
+        graph.get_task("a").unwrap().cycle_config.is_some(),
+        "A should have cycle_config"
+    );
+    assert!(
+        graph.get_task("b").unwrap().cycle_config.is_some(),
+        "B should have cycle_config (auto back-edge)"
+    );
+
+    // The cycle header should be ready via Path 3
+    let analysis = graph.compute_cycle_analysis();
+    let ready = ready_tasks_cycle_aware(&graph, &analysis);
+
+    assert!(
+        !ready.is_empty(),
+        "At least one task should be ready after deadlock breaker. \
+         Cycle header: {}, members: {:?}",
+        analysis.cycles[0].header,
+        analysis.cycles[0].members
+    );
+
+    let ready_ids: Vec<&str> = ready.iter().map(|t| t.id.as_str()).collect();
+    assert!(
+        ready_ids.contains(&analysis.cycles[0].header.as_str()),
+        "The cycle header should be ready. Ready: {:?}, Header: {}",
+        ready_ids,
+        analysis.cycles[0].header
+    );
+}
+
+#[test]
+fn test_deadlock_breaker_e2e_three_task_cycle() {
+    // End-to-end: 3-task symmetric cycle via CLI, verify deadlock broken.
+    let tmp = TempDir::new().unwrap();
+    let wg_dir = setup_workgraph(&tmp, vec![]);
+
+    wg_ok(
+        &wg_dir,
+        &["add", "Task A", "--id", "a", "--max-iterations", "3", "--immediate"],
+    );
+    wg_ok(
+        &wg_dir,
+        &[
+            "add", "Task B", "--id", "b", "--after", "a",
+            "--max-iterations", "3", "--immediate",
+        ],
+    );
+    wg_ok(
+        &wg_dir,
+        &[
+            "add", "Task C", "--id", "c", "--after", "b",
+            "--max-iterations", "3", "--immediate",
+        ],
+    );
+
+    // Complete iteration 0 in order
+    wg_ok(&wg_dir, &["done", "a"]);
+    wg_ok(&wg_dir, &["done", "b"]);
+    wg_ok(&wg_dir, &["done", "c"]);
+
+    // All should be re-opened at iteration 1
+    let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
+    for id in &["a", "b", "c"] {
+        let task = graph.get_task(id).unwrap();
+        assert_eq!(task.status, Status::Open, "{} should be Open", id);
+        assert_eq!(task.loop_iteration, 1, "{} should be at iteration 1", id);
+    }
+
+    // Verify the deadlock breaker fires
+    let analysis = graph.compute_cycle_analysis();
+    let ready = ready_tasks_cycle_aware(&graph, &analysis);
+
+    assert!(
+        !ready.is_empty(),
+        "At least one task should be ready after deadlock breaker in 3-task cycle. \
+         Cycle header: {}, members: {:?}",
+        analysis.cycles[0].header,
+        analysis.cycles[0].members
+    );
+}
