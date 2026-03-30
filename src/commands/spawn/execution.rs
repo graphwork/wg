@@ -130,6 +130,27 @@ pub(crate) fn spawn_agent_inner(
     // Create template variables
     let mut vars = TemplateVars::from_task(task, Some(&task_context), Some(dir));
 
+    // Detect failed dependencies for triage mode
+    let mut failed_deps_lines = Vec::new();
+    for dep_id in &task.after {
+        if let Some(dep_task) = graph.get_task(dep_id) {
+            if dep_task.status == Status::Failed {
+                let reason = dep_task
+                    .failure_reason
+                    .as_deref()
+                    .unwrap_or("unknown");
+                failed_deps_lines.push(format!(
+                    "- {}: \"{}\" — Reason: {}",
+                    dep_id, dep_task.title, reason
+                ));
+            }
+        }
+    }
+    if !failed_deps_lines.is_empty() {
+        vars.has_failed_deps = true;
+        vars.failed_deps_info = failed_deps_lines.join("\n");
+    }
+
     // Get task exec command for shell executor
     let task_exec = task.exec.clone();
     // Get task model preference

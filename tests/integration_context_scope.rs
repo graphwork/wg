@@ -488,6 +488,8 @@ fn test_pattern_glossary_included_when_keywords_present() {
         task_verify: None,
         max_child_tasks: 10,
         max_task_depth: 8,
+        has_failed_deps: false,
+        failed_deps_info: String::new(),
     };
     let ctx = ScopeContext::default();
     let prompt = build_prompt(&vars, ContextScope::Clean, &ctx);
@@ -537,6 +539,8 @@ fn test_pattern_glossary_excluded_when_no_keywords() {
         task_verify: None,
         max_child_tasks: 10,
         max_task_depth: 8,
+        has_failed_deps: false,
+        failed_deps_info: String::new(),
     };
     let ctx = ScopeContext::default();
     let prompt = build_prompt(&vars, ContextScope::Clean, &ctx);

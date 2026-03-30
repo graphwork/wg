@@ -301,6 +301,36 @@ pub fn description_has_pattern_keywords(description: &str) -> bool {
     PATTERN_TRIGGER_KEYWORDS.iter().any(|kw| lower.contains(kw))
 }
 
+/// Triage mode prompt section: injected when any dependency has status=Failed.
+/// Instructs the agent to create fix tasks and requeue instead of proceeding.
+pub const TRIAGE_MODE_SECTION: &str = "\
+## Failed Dependency Protocol
+
+Before starting your own work, check your dependency context.
+If ANY dependency has status=Failed:
+
+1. **DO NOT** proceed with your own task work.
+2. Read the failure reason and logs from the failed dependency.
+3. Assess whether you can create fix tasks:
+   a. If the failure is clear and scoped → create fix task(s) via `wg add`
+   b. If the failure is ambiguous or cascading → create a research/investigate task
+   c. If you cannot determine a fix → `wg fail` with reason explaining the blocker
+4. Create fix tasks that block the failed dep (so it re-runs after the fix):
+   ```
+   wg add \"Fix: <description>\" --before <failed-dep-id> \\
+     --verify \"<validation command>\" \\
+     -d \"<details from failure logs>\"
+   ```
+5. Retry the failed dependency:
+   ```
+   wg retry <failed-dep-id>
+   ```
+6. Requeue yourself:
+   ```
+   wg requeue {{task_id}} --reason \"Created fix tasks for failed dep <dep-id>\"
+   ```
+7. **Exit immediately** (do not do any other work).\n";
+
 /// Additional context for scope-based prompt assembly beyond TemplateVars.
 #[derive(Debug, Default, Clone)]
 pub struct ScopeContext {
@@ -383,6 +413,18 @@ pub fn build_prompt(vars: &TemplateVars, scope: ContextScope, ctx: &ScopeContext
         vars.task_context
     ));
 
+    // All scopes: triage mode (injected when any dependency is Failed)
+    if vars.has_failed_deps {
+        let mut triage_section = format!(
+            "## Failed Dependencies Detected — TRIAGE MODE\n\n\
+             The following dependencies have FAILED:\n{}",
+            vars.failed_deps_info
+        );
+        triage_section.push_str("\n\nYou are in TRIAGE mode. Do NOT proceed with your normal task work.\nFollow the Failed Dependency Protocol below.\n");
+        parts.push(triage_section);
+        parts.push(vars.apply(TRIAGE_MODE_SECTION));
+    }
+
     // All scopes: previous attempt context (injected on retry)
     if !ctx.previous_attempt_context.is_empty() {
         parts.push(ctx.previous_attempt_context.clone());
@@ -458,6 +500,10 @@ pub struct TemplateVars {
     pub task_verify: Option<String>,
     pub max_child_tasks: u32,
     pub max_task_depth: u32,
+    /// True when any dependency of the task has status=Failed (triggers triage mode)
+    pub has_failed_deps: bool,
+    /// Info about failed dependencies for triage prompt injection
+    pub failed_deps_info: String,
 }
 
 impl TemplateVars {
@@ -529,6 +575,8 @@ impl TemplateVars {
             task_verify: task.verify.clone(),
             max_child_tasks: guardrails.max_child_tasks_per_agent,
             max_task_depth: guardrails.max_task_depth,
+            has_failed_deps: false,
+            failed_deps_info: String::new(),
         }
     }
 
@@ -976,6 +1024,7 @@ mod tests {
             session_id: None,
             wait_condition: None,
             checkpoint: None,
+            triage_count: 0,
             resurrection_count: 0,
             last_resurrected_at: None,
             validation: None,
@@ -2035,5 +2084,54 @@ args = ["--custom-flag"]
         let task2 = make_test_task("task-2", "Test2");
         let vars2 = TemplateVars::from_task(&task2, None, None);
         assert_eq!(vars2.task_verify, None);
+    }
+
+    #[test]
+    fn test_build_prompt_triage_mode_injected_when_failed_deps() {
+        let task = make_test_task("task-1", "Downstream task");
+        let mut vars = TemplateVars::from_task(&task, Some("dep context"), None);
+        vars.has_failed_deps = true;
+        vars.failed_deps_info =
+            "- dep-a: \"Build parser\" — Reason: cargo test failed".to_string();
+        let ctx = ScopeContext::default();
+        let prompt = build_prompt(&vars, ContextScope::Task, &ctx);
+
+        assert!(
+            prompt.contains("TRIAGE MODE"),
+            "Prompt should contain TRIAGE MODE header"
+        );
+        assert!(
+            prompt.contains("dep-a"),
+            "Prompt should include the failed dep info"
+        );
+        assert!(
+            prompt.contains("Failed Dependency Protocol"),
+            "Prompt should include the protocol section"
+        );
+        assert!(
+            prompt.contains("wg requeue task-1"),
+            "Prompt should include task-specific requeue command"
+        );
+        assert!(
+            prompt.contains("wg retry"),
+            "Prompt should include retry instruction"
+        );
+    }
+
+    #[test]
+    fn test_build_prompt_no_triage_when_no_failed_deps() {
+        let task = make_test_task("task-1", "Normal task");
+        let vars = TemplateVars::from_task(&task, Some("dep context"), None);
+        let ctx = ScopeContext::default();
+        let prompt = build_prompt(&vars, ContextScope::Task, &ctx);
+
+        assert!(
+            !prompt.contains("TRIAGE MODE"),
+            "Prompt should NOT contain TRIAGE MODE when no failed deps"
+        );
+        assert!(
+            !prompt.contains("Failed Dependency Protocol"),
+            "Prompt should NOT contain triage protocol when no failed deps"
+        );
     }
 }

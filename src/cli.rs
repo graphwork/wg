@@ -322,6 +322,17 @@ pub enum Commands {
         id: String,
     },
 
+    /// Requeue an in-progress task for failed-dependency triage (resets to open)
+    Requeue {
+        /// Task ID to requeue
+        #[arg(value_name = "TASK")]
+        id: String,
+
+        /// Reason for requeue (what fix tasks were created)
+        #[arg(long)]
+        reason: String,
+    },
+
     /// Approve a task pending validation (transitions to Done)
     Approve {
         /// Task ID to approve
@@ -3292,6 +3303,7 @@ pub fn command_name(cmd: &Commands) -> &'static str {
         Commands::Fail { .. } => "fail",
         Commands::Abandon { .. } => "abandon",
         Commands::Retry { .. } => "retry",
+        Commands::Requeue { .. } => "requeue",
         Commands::Approve { .. } => "approve",
         Commands::Reject { .. } => "reject",
         Commands::Claim { .. } => "claim",

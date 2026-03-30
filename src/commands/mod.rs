@@ -80,6 +80,7 @@ pub mod replay;
 pub mod reschedule;
 pub mod resource;
 pub mod resources;
+pub mod requeue;
 pub mod resume;
 pub mod retry;
 pub mod role;

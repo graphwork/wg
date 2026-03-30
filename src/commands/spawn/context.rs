@@ -40,6 +40,27 @@ pub(crate) fn build_task_context(
                     ));
                 }
             }
+
+            // Include context for Failed dependencies (triage support)
+            if dep_task.status == Status::Failed {
+                let reason = dep_task
+                    .failure_reason
+                    .as_deref()
+                    .unwrap_or("unknown");
+                context_parts.push(format!(
+                    "From {} (FAILED): reason: {}",
+                    dep_id, reason
+                ));
+                if !dep_task.log.is_empty() {
+                    let logs: Vec<&LogEntry> = dep_task.log.iter().rev().take(3).collect();
+                    for entry in logs.iter().rev() {
+                        context_parts.push(format!(
+                            "From {} logs: {} {}",
+                            dep_id, entry.timestamp, entry.message
+                        ));
+                    }
+                }
+            }
         }
     }
 
@@ -1321,5 +1342,96 @@ mod tests {
         assert!(result.contains("2026-03-07T10:00:00Z"));
         assert!(result.contains("Some work done"));
         assert!(result.contains("Continue from where they left off"));
+    }
+
+    #[test]
+    fn test_build_task_context_includes_failed_dep_info() {
+        let mut graph = WorkGraph::new();
+
+        let mut dep_task = make_task("dep-a", "Build parser");
+        dep_task.status = Status::Failed;
+        dep_task.failure_reason = Some("cargo test test_parse_config failed".to_string());
+        dep_task.log = vec![
+            LogEntry {
+                timestamp: "2026-01-01T00:00:00Z".to_string(),
+                actor: Some("agent-1".to_string()),
+                user: None,
+                message: "Parser fails on nested keys".to_string(),
+            },
+        ];
+        graph.add_node(Node::Task(dep_task));
+
+        let mut task = make_task("task-b", "Use parser");
+        task.after = vec!["dep-a".to_string()];
+        graph.add_node(Node::Task(task.clone()));
+
+        let context = build_task_context(&graph, &task);
+        assert!(
+            context.contains("(FAILED)"),
+            "Context should mention FAILED status, got: {}",
+            context
+        );
+        assert!(
+            context.contains("cargo test test_parse_config failed"),
+            "Context should include failure reason, got: {}",
+            context
+        );
+        assert!(
+            context.contains("Parser fails on nested keys"),
+            "Context should include recent log, got: {}",
+            context
+        );
+    }
+
+    #[test]
+    fn test_build_task_context_failed_dep_unknown_reason() {
+        let mut graph = WorkGraph::new();
+
+        let mut dep_task = make_task("dep-x", "Failing task");
+        dep_task.status = Status::Failed;
+        // No failure_reason set
+        graph.add_node(Node::Task(dep_task));
+
+        let mut task = make_task("task-y", "Downstream");
+        task.after = vec!["dep-x".to_string()];
+        graph.add_node(Node::Task(task.clone()));
+
+        let context = build_task_context(&graph, &task);
+        assert!(context.contains("(FAILED)"));
+        assert!(context.contains("unknown"));
+    }
+
+    #[test]
+    fn test_build_task_context_mixed_done_and_failed_deps() {
+        let mut graph = WorkGraph::new();
+
+        let mut done_dep = make_task("dep-ok", "Done task");
+        done_dep.status = Status::Done;
+        done_dep.artifacts = vec!["result.txt".to_string()];
+        done_dep.log = vec![LogEntry {
+            timestamp: "2026-01-01T00:00:00Z".to_string(),
+            actor: None,
+            user: None,
+            message: "Completed".to_string(),
+        }];
+        graph.add_node(Node::Task(done_dep));
+
+        let mut failed_dep = make_task("dep-fail", "Failed task");
+        failed_dep.status = Status::Failed;
+        failed_dep.failure_reason = Some("OOM".to_string());
+        graph.add_node(Node::Task(failed_dep));
+
+        let mut task = make_task("task-z", "Multi-dep task");
+        task.after = vec!["dep-ok".to_string(), "dep-fail".to_string()];
+        graph.add_node(Node::Task(task.clone()));
+
+        let context = build_task_context(&graph, &task);
+        // Should have Done dep's artifacts
+        assert!(context.contains("result.txt"));
+        // Should have Done dep's log
+        assert!(context.contains("Completed"));
+        // Should have Failed dep's info
+        assert!(context.contains("(FAILED)"));
+        assert!(context.contains("OOM"));
     }
 }

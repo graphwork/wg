@@ -198,6 +198,11 @@ pub struct GuardrailsConfig {
     /// Prevents infinite decomposition chains. Default: 8.
     #[serde(default = "default_max_task_depth")]
     pub max_task_depth: u32,
+
+    /// Maximum times a task can be requeued via failed-dependency triage.
+    /// Prevents infinite triage loops. Default: 3.
+    #[serde(default = "default_max_triage_attempts")]
+    pub max_triage_attempts: u32,
 }
 
 fn default_max_child_tasks_per_agent() -> u32 {
@@ -208,11 +213,16 @@ fn default_max_task_depth() -> u32 {
     8
 }
 
+fn default_max_triage_attempts() -> u32 {
+    3
+}
+
 impl Default for GuardrailsConfig {
     fn default() -> Self {
         Self {
             max_child_tasks_per_agent: default_max_child_tasks_per_agent(),
             max_task_depth: default_max_task_depth(),
+            max_triage_attempts: default_max_triage_attempts(),
         }
     }
 }
@@ -921,10 +931,11 @@ pub struct TierConfig {
 /// Per-role model+provider assignment.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RoleModelConfig {
-    /// Provider name (e.g., "anthropic", "openai", "openrouter", "local")
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// **Deprecated**: Use provider:model format in the `model` field instead.
+    /// Kept for deserialization of old configs; never written back.
+    #[serde(default, skip_serializing)]
     pub provider: Option<String>,
-    /// Model name within the provider (e.g., "opus", "sonnet", "haiku", "gpt-4o")
+    /// Model spec in provider:model format (e.g., "claude:opus", "openrouter:deepseek/deepseek-chat")
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     /// Tier override: resolve model via tier system instead of direct model
@@ -1027,6 +1038,8 @@ impl ModelRoutingConfig {
         let slot = self.get_role_mut(role);
         if let Some(cfg) = slot {
             cfg.model = Some(model.to_string());
+            // Clear deprecated separate provider field — provider is now embedded in model spec
+            cfg.provider = None;
         } else {
             *slot = Some(RoleModelConfig {
                 provider: None,
@@ -1397,13 +1410,21 @@ impl Config {
     /// Effective tier config (internal).
     fn effective_tiers(&self) -> TierConfig {
         TierConfig {
-            fast: self.tiers.fast.clone().or_else(|| Some("haiku".into())),
+            fast: self
+                .tiers
+                .fast
+                .clone()
+                .or_else(|| Some("claude:haiku".into())),
             standard: self
                 .tiers
                 .standard
                 .clone()
-                .or_else(|| Some("sonnet".into())),
-            premium: self.tiers.premium.clone().or_else(|| Some("opus".into())),
+                .or_else(|| Some("claude:sonnet".into())),
+            premium: self
+                .tiers
+                .premium
+                .clone()
+                .or_else(|| Some("claude:opus".into())),
         }
     }
 
@@ -2129,9 +2150,9 @@ pub struct CoordinatorConfig {
     #[serde(default)]
     pub model: Option<String>,
 
-    /// Provider for the coordinator (e.g., "openrouter", "anthropic").
-    /// Used as a fallback in provider resolution when no task/agent provider is set.
-    #[serde(default)]
+    /// **Deprecated**: Use provider:model format in the `model` field instead.
+    /// Kept for deserialization of old configs; never written back.
+    #[serde(default, skip_serializing)]
     pub provider: Option<String>,
 
     /// Default context scope for spawned agents (clean, task, graph, full).
@@ -2270,17 +2291,18 @@ impl CoordinatorConfig {
         if let Some(ref executor) = self.executor {
             // Explicitly set in config — honour it
             executor.clone()
-        } else if let Some(ref provider) = self.provider {
-            if NON_ANTHROPIC_PROVIDERS.contains(&provider.as_str()) {
-                "native".to_string()
-            } else {
-                "claude".to_string()
-            }
         } else if let Some(ref model) = self.model {
-            // Infer executor from provider:model prefix
+            // Infer executor from provider:model prefix (preferred path)
             let spec = parse_model_spec(model);
             if let Some(ref prefix) = spec.provider {
                 provider_to_executor(prefix).to_string()
+            } else {
+                "claude".to_string()
+            }
+        } else if let Some(ref provider) = self.provider {
+            // Deprecated: separate provider field fallback
+            if NON_ANTHROPIC_PROVIDERS.contains(&provider.as_str()) {
+                "native".to_string()
             } else {
                 "claude".to_string()
             }
@@ -2336,7 +2358,7 @@ fn default_executor() -> String {
 }
 
 fn default_model() -> String {
-    "opus".to_string()
+    "claude:opus".to_string()
 }
 
 fn default_interval() -> u64 {

@@ -326,6 +326,9 @@ pub struct Task {
     /// Checkpoint summary written by agent before parking via `wg wait`
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checkpoint: Option<String>,
+    /// Number of times this task has been requeued via failed-dependency triage
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub triage_count: u32,
     /// Number of times this task has been resurrected (Done → Open) due to messages
     #[serde(default, skip_serializing_if = "is_zero")]
     pub resurrection_count: u32,
@@ -894,6 +897,8 @@ struct TaskHelper {
     #[serde(default)]
     checkpoint: Option<String>,
     #[serde(default)]
+    triage_count: u32,
+    #[serde(default)]
     resurrection_count: u32,
     #[serde(default)]
     last_resurrected_at: Option<String>,
@@ -981,6 +986,7 @@ impl<'de> Deserialize<'de> for Task {
             session_id: helper.session_id,
             wait_condition: helper.wait_condition,
             checkpoint: helper.checkpoint,
+            triage_count: helper.triage_count,
             resurrection_count: helper.resurrection_count,
             last_resurrected_at: helper.last_resurrected_at,
             validation: helper.validation,
@@ -1530,6 +1536,7 @@ fn reactivate_cycle(
             task.assigned = None;
             task.started_at = None;
             task.completed_at = None;
+            task.triage_count = 0;
             task.loop_iteration = new_iteration;
             if *member_id == config_owner_id {
                 task.ready_after = ready_after.clone();
@@ -1766,6 +1773,7 @@ fn reactivate_cycle_on_failure(
             task.started_at = None;
             task.completed_at = None;
             task.failure_reason = None;
+            task.triage_count = 0;
             // loop_iteration stays the same — this is a retry of the same iteration
             if *member_id == config_owner_id {
                 task.ready_after = ready_after.clone();
