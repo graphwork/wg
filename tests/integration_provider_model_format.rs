@@ -580,6 +580,133 @@ fn load_model_choices_with_descriptions_fallback() {
 // Compaction threshold resolves provider:model correctly
 // ===========================================================================
 
+// ===========================================================================
+// CLI: wg config --coordinator-model rejects bare names
+// ===========================================================================
+
+#[test]
+fn cli_config_set_coordinator_model_rejects_bare_name() {
+    let tmp = TempDir::new().unwrap();
+    let wg_dir = setup_workgraph(&tmp);
+    let output = wg_cmd(&wg_dir, &["config", "--coordinator-model", "haiku"]);
+    assert!(
+        !output.status.success(),
+        "wg config --coordinator-model haiku should fail"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    assert!(
+        stderr.contains("provider:model") || stderr.contains("provider"),
+        "Error should mention provider:model format: {}",
+        stderr
+    );
+}
+
+#[test]
+fn cli_config_set_coordinator_model_accepts_provider_format() {
+    let tmp = TempDir::new().unwrap();
+    let wg_dir = setup_workgraph(&tmp);
+    wg_ok(&wg_dir, &["config", "--coordinator-model", "claude:sonnet"]);
+
+    let show = wg_ok(&wg_dir, &["config", "--show"]);
+    assert!(
+        show.contains("claude:sonnet"),
+        "Config should contain claude:sonnet: {}",
+        show
+    );
+}
+
+// ===========================================================================
+// CLI: wg config --set-model rejects bare names
+// ===========================================================================
+
+#[test]
+fn cli_config_set_model_role_rejects_bare_name() {
+    let tmp = TempDir::new().unwrap();
+    let wg_dir = setup_workgraph(&tmp);
+    let output = wg_cmd(&wg_dir, &["config", "--set-model", "default", "sonnet"]);
+    assert!(
+        !output.status.success(),
+        "wg config --set-model default sonnet should fail"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    assert!(
+        stderr.contains("provider:model") || stderr.contains("provider"),
+        "Error should mention provider:model format: {}",
+        stderr
+    );
+}
+
+#[test]
+fn cli_config_set_model_role_accepts_provider_format() {
+    let tmp = TempDir::new().unwrap();
+    let wg_dir = setup_workgraph(&tmp);
+    wg_ok(
+        &wg_dir,
+        &["config", "--set-model", "default", "claude:opus"],
+    );
+}
+
+// ===========================================================================
+// Strict parser rejects common bare model names exhaustively
+// ===========================================================================
+
+#[test]
+fn strict_rejects_common_bare_model_names() {
+    let bare_names = [
+        "opus",
+        "sonnet",
+        "haiku",
+        "gpt-4o",
+        "gpt-4o-mini",
+        "deepseek-chat-v3",
+        "gemini-2.5-pro",
+        "claude-opus-4-6",
+        "claude-sonnet-4-6",
+    ];
+    for name in &bare_names {
+        let result = parse_model_spec_strict(name);
+        assert!(
+            result.is_err(),
+            "Bare model name '{}' should be rejected by strict parser",
+            name
+        );
+        let err = result.unwrap_err();
+        assert!(
+            err.message.contains("provider:model"),
+            "Error for '{}' should mention provider:model format: {}",
+            name,
+            err.message
+        );
+    }
+}
+
+// ===========================================================================
+// Strict parser rejects legacy slash-only format (no provider prefix)
+// ===========================================================================
+
+#[test]
+fn strict_rejects_various_legacy_slash_formats() {
+    let legacy_formats = [
+        "anthropic/claude-opus-4-6",
+        "openai/gpt-4o",
+        "google/gemini-2.5-pro",
+        "deepseek/deepseek-chat-v3",
+        "meta-llama/llama-4-maverick",
+    ];
+    for name in &legacy_formats {
+        let result = parse_model_spec_strict(name);
+        assert!(
+            result.is_err(),
+            "Legacy slash format '{}' should be rejected by strict parser",
+            name
+        );
+    }
+}
+
+// ===========================================================================
+// Compaction threshold resolves provider:model correctly
+// ===========================================================================
+
 #[test]
 fn compaction_threshold_parses_provider_prefix() {
     let mut config = Config::default();
