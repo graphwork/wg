@@ -2288,7 +2288,7 @@ pub struct CoordinatorConfig {
 }
 
 fn default_max_agents() -> usize {
-    4
+    8
 }
 
 fn default_coordinator_interval() -> u64 {
