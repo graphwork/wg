@@ -138,6 +138,7 @@ const DAEMON_MANAGED_TAGS: &[&str] = &[
     "compact-loop",
     "archive-loop",
     "coordinator-loop",
+    "registry-refresh-loop",
     "user-board",
 ];
 

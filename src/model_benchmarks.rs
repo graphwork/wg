@@ -423,6 +423,155 @@ fn parse_or_pricing(model: &OpenRouterModel) -> BenchmarkPricing {
     }
 }
 
+// ── Registry Diff ──────────────────────────────────────────────────────
+
+/// A single change detected between two registry snapshots.
+#[derive(Debug, Clone)]
+pub enum RegistryChange {
+    /// A model entered the top-N by fitness score.
+    EnteredTopN { model_id: String, rank: usize, score: f64 },
+    /// A model exited the top-N by fitness score.
+    ExitedTopN { model_id: String, old_rank: usize },
+    /// A model's fitness score changed significantly.
+    ScoreDelta { model_id: String, old_score: f64, new_score: f64, delta: f64 },
+    /// A model's tier changed.
+    TierChanged { model_id: String, old_tier: String, new_tier: String },
+    /// A new model appeared in the registry.
+    ModelAdded { model_id: String, tier: String },
+    /// A model was removed from the registry.
+    ModelRemoved { model_id: String, tier: String },
+}
+
+impl std::fmt::Display for RegistryChange {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RegistryChange::EnteredTopN { model_id, rank, score } => {
+                write!(f, "  + {} entered top-N (rank {}, score {:.1})", model_id, rank, score)
+            }
+            RegistryChange::ExitedTopN { model_id, old_rank } => {
+                write!(f, "  - {} exited top-N (was rank {})", model_id, old_rank)
+            }
+            RegistryChange::ScoreDelta { model_id, old_score, new_score, delta } => {
+                let arrow = if *delta > 0.0 { "↑" } else { "↓" };
+                write!(f, "  ~ {} score {:.1} → {:.1} ({}{:.1})", model_id, old_score, new_score, arrow, delta.abs())
+            }
+            RegistryChange::TierChanged { model_id, old_tier, new_tier } => {
+                write!(f, "  * {} tier {} → {}", model_id, old_tier, new_tier)
+            }
+            RegistryChange::ModelAdded { model_id, tier } => {
+                write!(f, "  + {} added ({})", model_id, tier)
+            }
+            RegistryChange::ModelRemoved { model_id, tier } => {
+                write!(f, "  - {} removed ({})", model_id, tier)
+            }
+        }
+    }
+}
+
+/// Compare two registries and return a list of significant changes.
+///
+/// `top_n` controls how many models are considered for enter/exit tracking (default 20).
+/// `score_threshold` is the minimum absolute score change to report (default 2.0).
+pub fn diff_registries(
+    old: &BenchmarkRegistry,
+    new: &BenchmarkRegistry,
+    top_n: usize,
+    score_threshold: f64,
+) -> Vec<RegistryChange> {
+    let mut changes = Vec::new();
+
+    // Build ranked lists for top-N tracking.
+    let old_ranked = old.ranked();
+    let new_ranked = new.ranked();
+
+    let old_top: Vec<&str> = old_ranked.iter().take(top_n).map(|m| m.id.as_str()).collect();
+    let new_top: Vec<&str> = new_ranked.iter().take(top_n).map(|m| m.id.as_str()).collect();
+
+    // Models that entered the top-N.
+    for (rank, &model_id) in new_top.iter().enumerate() {
+        if !old_top.contains(&model_id) {
+            if let Some(m) = new.models.get(model_id) {
+                changes.push(RegistryChange::EnteredTopN {
+                    model_id: model_id.to_string(),
+                    rank: rank + 1,
+                    score: m.fitness.score.unwrap_or(0.0),
+                });
+            }
+        }
+    }
+
+    // Models that exited the top-N.
+    for (rank, &model_id) in old_top.iter().enumerate() {
+        if !new_top.contains(&model_id) {
+            changes.push(RegistryChange::ExitedTopN {
+                model_id: model_id.to_string(),
+                old_rank: rank + 1,
+            });
+        }
+    }
+
+    // Score deltas and tier changes for models present in both.
+    for (id, new_model) in &new.models {
+        if let Some(old_model) = old.models.get(id) {
+            // Score delta.
+            if let (Some(old_score), Some(new_score)) =
+                (old_model.fitness.score, new_model.fitness.score)
+            {
+                let delta = new_score - old_score;
+                if delta.abs() >= score_threshold {
+                    changes.push(RegistryChange::ScoreDelta {
+                        model_id: id.clone(),
+                        old_score,
+                        new_score,
+                        delta,
+                    });
+                }
+            }
+
+            // Tier change.
+            if old_model.tier != new_model.tier {
+                changes.push(RegistryChange::TierChanged {
+                    model_id: id.clone(),
+                    old_tier: old_model.tier.clone(),
+                    new_tier: new_model.tier.clone(),
+                });
+            }
+        } else {
+            // Newly added model.
+            changes.push(RegistryChange::ModelAdded {
+                model_id: id.clone(),
+                tier: new_model.tier.clone(),
+            });
+        }
+    }
+
+    // Removed models.
+    for (id, old_model) in &old.models {
+        if !new.models.contains_key(id) {
+            changes.push(RegistryChange::ModelRemoved {
+                model_id: id.clone(),
+                tier: old_model.tier.clone(),
+            });
+        }
+    }
+
+    changes
+}
+
+/// Format a list of registry changes as a human-readable summary.
+pub fn format_changes(changes: &[RegistryChange]) -> String {
+    if changes.is_empty() {
+        return "No significant changes detected.".to_string();
+    }
+
+    let mut lines = Vec::new();
+    lines.push(format!("{} change(s) detected:", changes.len()));
+    for change in changes {
+        lines.push(change.to_string());
+    }
+    lines.join("\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -577,5 +726,133 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let result = BenchmarkRegistry::load(dir.path()).unwrap();
         assert!(result.is_none());
+    }
+
+    fn make_test_model(id: &str, tier: &str, score: Option<f64>) -> ModelBenchmark {
+        ModelBenchmark {
+            id: id.to_string(),
+            name: id.to_string(),
+            pricing: BenchmarkPricing {
+                input_per_mtok: 3.0,
+                output_per_mtok: 15.0,
+                cache_read_per_mtok: None,
+                cache_write_per_mtok: None,
+            },
+            context_window: Some(128_000),
+            max_output_tokens: Some(8_000),
+            supports_tools: true,
+            benchmarks: Benchmarks::default(),
+            popularity: Popularity::default(),
+            fitness: Fitness {
+                score,
+                components: FitnessComponents::default(),
+            },
+            tier: tier.to_string(),
+            pricing_updated_at: "2026-04-01T00:00:00Z".to_string(),
+        }
+    }
+
+    fn make_test_registry(models: Vec<ModelBenchmark>) -> BenchmarkRegistry {
+        let mut map = BTreeMap::new();
+        for m in models {
+            map.insert(m.id.clone(), m);
+        }
+        BenchmarkRegistry {
+            version: 1,
+            fetched_at: "2026-04-01T00:00:00Z".to_string(),
+            source: RegistrySource {
+                openrouter_api: "https://openrouter.ai/api/v1/models".to_string(),
+            },
+            models: map,
+        }
+    }
+
+    #[test]
+    fn test_diff_no_changes() {
+        let reg = make_test_registry(vec![
+            make_test_model("a/model-1", "frontier", Some(80.0)),
+        ]);
+        let changes = diff_registries(&reg, &reg, 20, 2.0);
+        // Same registry → no score deltas, no tier changes, no adds/removes
+        // (top-N enter/exit won't fire either since sets are identical)
+        assert!(changes.is_empty(), "Expected no changes, got: {:?}", changes);
+    }
+
+    #[test]
+    fn test_diff_model_added() {
+        let old = make_test_registry(vec![
+            make_test_model("a/model-1", "frontier", Some(80.0)),
+        ]);
+        let new = make_test_registry(vec![
+            make_test_model("a/model-1", "frontier", Some(80.0)),
+            make_test_model("b/model-2", "mid", Some(50.0)),
+        ]);
+        let changes = diff_registries(&old, &new, 20, 2.0);
+        assert!(changes.iter().any(|c| matches!(c, RegistryChange::ModelAdded { model_id, .. } if model_id == "b/model-2")));
+    }
+
+    #[test]
+    fn test_diff_model_removed() {
+        let old = make_test_registry(vec![
+            make_test_model("a/model-1", "frontier", Some(80.0)),
+            make_test_model("b/model-2", "mid", Some(50.0)),
+        ]);
+        let new = make_test_registry(vec![
+            make_test_model("a/model-1", "frontier", Some(80.0)),
+        ]);
+        let changes = diff_registries(&old, &new, 20, 2.0);
+        assert!(changes.iter().any(|c| matches!(c, RegistryChange::ModelRemoved { model_id, .. } if model_id == "b/model-2")));
+    }
+
+    #[test]
+    fn test_diff_tier_changed() {
+        let old = make_test_registry(vec![
+            make_test_model("a/model-1", "mid", Some(50.0)),
+        ]);
+        let new = make_test_registry(vec![
+            make_test_model("a/model-1", "frontier", Some(50.0)),
+        ]);
+        let changes = diff_registries(&old, &new, 20, 2.0);
+        assert!(changes.iter().any(|c| matches!(c, RegistryChange::TierChanged { model_id, old_tier, new_tier, .. }
+            if model_id == "a/model-1" && old_tier == "mid" && new_tier == "frontier")));
+    }
+
+    #[test]
+    fn test_diff_score_delta() {
+        let old = make_test_registry(vec![
+            make_test_model("a/model-1", "frontier", Some(70.0)),
+        ]);
+        let new = make_test_registry(vec![
+            make_test_model("a/model-1", "frontier", Some(75.0)),
+        ]);
+        let changes = diff_registries(&old, &new, 20, 2.0);
+        assert!(changes.iter().any(|c| matches!(c, RegistryChange::ScoreDelta { delta, .. } if (*delta - 5.0).abs() < 0.01)));
+    }
+
+    #[test]
+    fn test_diff_score_below_threshold() {
+        let old = make_test_registry(vec![
+            make_test_model("a/model-1", "frontier", Some(70.0)),
+        ]);
+        let new = make_test_registry(vec![
+            make_test_model("a/model-1", "frontier", Some(71.0)),
+        ]);
+        let changes = diff_registries(&old, &new, 20, 2.0);
+        assert!(!changes.iter().any(|c| matches!(c, RegistryChange::ScoreDelta { .. })));
+    }
+
+    #[test]
+    fn test_format_changes_empty() {
+        assert_eq!(format_changes(&[]), "No significant changes detected.");
+    }
+
+    #[test]
+    fn test_format_changes_non_empty() {
+        let changes = vec![
+            RegistryChange::ModelAdded { model_id: "test/m".to_string(), tier: "mid".to_string() },
+        ];
+        let text = format_changes(&changes);
+        assert!(text.contains("1 change(s) detected"));
+        assert!(text.contains("test/m added"));
     }
 }

@@ -2098,6 +2098,14 @@ pub struct CoordinatorConfig {
     /// Set to 0 to disable automatic archival.
     #[serde(default = "default_archive_retention_days")]
     pub archive_retention_days: u64,
+
+    /// How often to refresh the model benchmark registry from OpenRouter,
+    /// in seconds. The daemon manages a `.registry-refresh-0` cycle task
+    /// that fetches fresh model data, computes fitness scores, and diffs
+    /// against the previous registry. Default: 86400 (24 hours).
+    /// Set to 0 to disable automatic registry refresh.
+    #[serde(default = "default_registry_refresh_interval")]
+    pub registry_refresh_interval: u64,
 }
 
 fn default_max_agents() -> usize {
@@ -2146,6 +2154,10 @@ fn default_max_coordinators() -> usize {
 
 fn default_archive_retention_days() -> u64 {
     7
+}
+
+fn default_registry_refresh_interval() -> u64 {
+    86400 // 24 hours
 }
 
 fn default_agent_timeout() -> String {
@@ -2207,6 +2219,7 @@ impl Default for CoordinatorConfig {
             worktree_isolation: false,
             max_coordinators: default_max_coordinators(),
             archive_retention_days: default_archive_retention_days(),
+            registry_refresh_interval: default_registry_refresh_interval(),
         }
     }
 }

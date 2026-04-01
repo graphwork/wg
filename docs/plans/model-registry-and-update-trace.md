@@ -180,110 +180,57 @@ reliability = min(provider_count / 5, 1.0) * 50
 
 ## 4. Update Trace Design (Workgraph Cycle)
 
-The update trace is a workgraph cycle — a set of tasks connected by back-edges — not an external cron job. This keeps all recurring work visible in the graph.
+The update trace is a daemon-managed cycle task — visible in the graph as `.registry-refresh-0`, following the same pattern as `.compact-0` and `.archive-0`. This keeps all recurring work visible without requiring an external cron.
 
-### 4.1 Cycle structure
+### 4.1 Cycle structure (implemented)
 
 ```
-.registry-fetch-0 → .registry-score-0 → .registry-diff-0 → .registry-fetch-0
-                                                    ↓
-                                              .registry-smoke-0 (conditional)
+.coordinator-0 → .registry-refresh-0 → .coordinator-0
 ```
 
-Created via:
+The `.registry-refresh-0` task is a single daemon-managed task that performs all three operations atomically:
+1. **Fetch** — calls OpenRouter `/api/v1/models` for fresh pricing/architecture data
+2. **Score** — computes fitness scores and tier classifications using the formula in §3
+3. **Diff** — compares the new registry against the previous snapshot and logs changes
 
-```bash
-# Create the cycle with a 24-hour delay between iterations
-wg add ".registry-fetch-0" \
-  --verify "model_benchmarks.json exists and is valid JSON with >0 models" \
-  --max-iterations 0 \
-  --cycle-delay 86400 \
-  --model claude:haiku \
-  -d "## Description
-Fetch fresh model data from OpenRouter and Artificial Analysis APIs.
+This is simpler than the originally-proposed 3-task pipeline (`.registry-fetch-0 → .registry-score-0 → .registry-diff-0`) because all three operations are mechanical (no LLM needed) and execute in under a second. A multi-task pipeline would add overhead without benefit.
 
-## Steps
-1. Call OpenRouter /api/v1/models → extract pricing, context_window, modality, tool support
-2. Call Artificial Analysis /api/v2/data/llms/models → extract benchmark scores
-3. Join on model ID (fuzzy match: strip date suffixes, normalize slashes)
-4. Write raw fetched data to .workgraph/model_benchmarks_raw.json
+The task is created automatically on `wg service start` via `ensure_coordinator_task()` and tagged `registry-refresh-loop` so the coordinator knows not to spawn an agent for it.
 
-## Validation
-- [ ] model_benchmarks_raw.json contains pricing for >= 100 models
-- [ ] model_benchmarks_raw.json contains benchmark scores for >= 20 models
-- [ ] All API calls completed without error"
+### 4.2 Time gating
 
-wg add ".registry-score-0" --after ".registry-fetch-0" \
-  --verify "model_benchmarks.json has fitness.score for all models with benchmarks" \
-  --model claude:haiku \
-  -d "## Description
-Compute composite fitness scores and tier classifications.
+The refresh is gated by `coordinator.registry_refresh_interval` in `config.toml`:
 
-## Steps
-1. Read .workgraph/model_benchmarks_raw.json
-2. Compute fitness score per model (formula in design doc)
-3. Classify tiers based on thresholds
-4. Write .workgraph/model_benchmarks.json (the canonical registry)
+| Parameter | Default | Rationale |
+|-----------|---------|-----------|
+| `registry_refresh_interval` | `86400` (24h) | Daily is frequent enough to catch new models while being respectful of the API. Set to `0` to disable. |
 
-## Validation
-- [ ] Every model with coding_index OR intelligence_index has a fitness.score
-- [ ] Tier distribution is reasonable (not all frontier or all budget)
-- [ ] model_benchmarks.json validates against schema v1"
+The daemon checks `model_benchmarks.json`'s `fetched_at` timestamp to determine if enough time has elapsed. On first run (no existing registry), the refresh runs immediately.
 
-wg add ".registry-diff-0" --after ".registry-score-0" \
-  --verify "diff report written to .workgraph/model_benchmarks_diff.md" \
-  --model claude:haiku \
-  --back-edge ".registry-fetch-0" \
-  -d "## Description
-Compare current registry with previous version and flag changes.
+### 4.3 Change detection
 
-## Steps
-1. Load previous model_benchmarks.json (from git or backup)
-2. Diff against new version
-3. Flag: new models entering top-N, models dropping out of top-N, tier changes, >5% score swings
-4. Write .workgraph/model_benchmarks_diff.md with summary
-5. If a model was promoted to frontier tier, optionally create a smoke test task
+The diff engine (`model_benchmarks::diff_registries`) detects and reports:
+- **Top-N enter/exit**: models entering or leaving the top 20 by fitness score
+- **Score deltas**: absolute fitness score changes ≥ 2.0 points
+- **Tier changes**: model promoted/demoted between frontier/mid/budget
+- **Model additions/removals**: new models appearing or disappearing from the registry
 
-## Validation
-- [ ] Diff report lists additions, removals, tier changes, and score deltas
-- [ ] If a new model enters top-10 by fitness, it is flagged prominently"
-```
-
-### 4.2 Cycle parameters
-
-| Parameter | Value | Rationale |
-|-----------|-------|-----------|
-| `--max-iterations 0` | Unlimited | Registry should stay up-to-date as long as workgraph is running |
-| `--cycle-delay 86400` | 24 hours | AA benchmarks update per-model (not on a fixed schedule). Daily is frequent enough to catch new models within a day while staying well under the 1k/day API limit. |
-| `--model claude:haiku` | Budget model | Fetch/score/diff are mechanical tasks — no reasoning needed, minimize cost. |
-
-### 4.3 Smoke test trigger (conditional)
-
-When `.registry-diff-0` detects a model promoted to frontier tier that isn't already in the `config.toml` registry, it creates a one-shot smoke test task:
-
-```bash
-wg add ".smoke-test-${MODEL_ID}" \
-  --after ".registry-diff-0" \
-  --model "${MODEL_ID}" \
-  --verify "Agent completes a simple coding task and produces valid output" \
-  -d "## Description
-Smoke test for newly-promoted model ${MODEL_ID}.
-Run a small coding task to verify the model works with workgraph's agent system.
-
-## Validation
-- [ ] Model accepts tool_use format
-- [ ] Model produces syntactically valid code
-- [ ] Model follows task instructions"
-```
-
-This is advisory — the test result is logged but doesn't block registry updates.
+Changes are logged to the task's log entries (visible via `wg show .registry-refresh-0`) and to the daemon log.
 
 ### 4.4 Manual trigger
 
 The cycle runs automatically when `wg service start` is active. For manual one-shot updates:
 
 ```bash
-wg spawn .registry-fetch-0   # runs one full fetch→score→diff pass
+wg models fetch              # runs one fetch+score pass (existing CLI command)
+```
+
+### 4.5 Configuration
+
+```toml
+[coordinator]
+# How often to refresh the model registry (seconds). Default: 86400 (24h). 0 = disabled.
+registry_refresh_interval = 86400
 ```
 
 ---
@@ -448,10 +395,10 @@ The alias table is small (10-20 entries) and updated as part of the fetch cycle 
 ├── config.toml                    # User-configured model routing (existing)
 ├── models.yaml                    # Static model catalog (existing, deprecated path)
 ├── model_benchmarks.json          # Benchmark + fitness registry (new, machine-managed)
-├── model_benchmarks_raw.json      # Raw fetched data before scoring (new, intermediate)
-├── model_benchmarks_diff.md       # Latest change report (new, human-readable)
 └── model_cache.json               # OpenRouter API response cache (existing)
 ```
+
+Note: The original design proposed `model_benchmarks_raw.json` and `model_benchmarks_diff.md` as intermediate files. The implementation combines fetch+score+diff into a single atomic operation, so these intermediate files are not needed. Diff results are logged directly to the task log.
 
 ---
 
@@ -463,9 +410,10 @@ The alias table is small (10-20 entries) and updated as part of the fetch cycle 
 
 ---
 
-## 10. Open Questions for Implementation
+## 10. Open Questions / Future Work
 
-1. **AA API key management.** Where should the Artificial Analysis API key be stored? Options: `config.toml`, environment variable (`AA_API_KEY`), or `.workgraph/secrets/`. Recommendation: environment variable, consistent with `OPENAI_API_KEY` pattern.
-2. **Cycle bootstrap.** The `.registry-fetch-0` cycle needs to be created on `wg init` or on first `wg service start`. Recommendation: create lazily on first `wg service start` if it doesn't exist.
+1. **AA API integration.** The current implementation only fetches from OpenRouter. Artificial Analysis benchmark scores (coding_index, intelligence_index, agentic) would significantly improve fitness scoring. This requires an AA API key (`AA_API_KEY` env var) and a fetch + fuzzy-match join step.
+2. ~~**Cycle bootstrap.**~~ **Resolved.** `.registry-refresh-0` is created lazily on `wg service start` by `ensure_coordinator_task()`.
 3. **Stale threshold.** How old can `model_benchmarks.json` be before it's ignored by `resolve_model_for_role()`? Recommendation: 7 days (configurable in `config.toml`).
-4. **Agentic score source.** The AA API may expose an `agentic_index` field not documented in the research. The implementation should check the actual API response and use it if available, falling back to OpenRouter SSR scraping if not.
+4. **Smoke test trigger.** The design proposed automatic smoke-test tasks for newly-promoted models. This is not yet implemented — it would require `do_registry_refresh()` to call `wg add` when a tier promotion is detected.
+5. **Model selection integration.** The benchmark registry currently enriches display commands (`wg models benchmarks`). Full integration into `resolve_model_for_role()` (§5.2) is future work — users can reference specific models or tiers via `wg config --model`.

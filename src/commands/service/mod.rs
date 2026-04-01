@@ -1527,6 +1527,43 @@ fn ensure_coordinator_task(dir: &Path) {
         modified = true;
     }
 
+    // Ensure .registry-refresh-0 exists — daemon-managed cycle for model registry updates.
+    // Fetches fresh model data from OpenRouter, computes fitness scores, and diffs changes.
+    if graph.get_task(".registry-refresh-0").is_none() {
+        let task = Task {
+            id: ".registry-refresh-0".to_string(),
+            title: "Registry Refresh 0".to_string(),
+            description: Some(
+                "Model registry refresh — fetches model data from OpenRouter, \
+                 computes fitness scores, and diffs against previous registry. \
+                 Daemon-managed cycle task."
+                    .to_string(),
+            ),
+            status: workgraph::graph::Status::Open,
+            tags: vec!["registry-refresh-loop".to_string()],
+            after: vec![".coordinator-0".to_string()],
+            created_at: Some(Utc::now().to_rfc3339()),
+            log: vec![LogEntry {
+                timestamp: Utc::now().to_rfc3339(),
+                actor: Some("daemon".to_string()),
+                user: Some(workgraph::current_user()),
+                message: "Registry Refresh 0 task created by daemon".to_string(),
+            }],
+            ..Default::default()
+        };
+
+        graph.add_node(Node::Task(task));
+        modified = true;
+    }
+
+    // Ensure .coordinator-0 has back-edge to .registry-refresh-0
+    if let Some(coord) = graph.get_task_mut(".coordinator-0")
+        && !coord.after.contains(&".registry-refresh-0".to_string())
+    {
+        coord.after.push(".registry-refresh-0".to_string());
+        modified = true;
+    }
+
     if modified
         && let Err(e) = workgraph::parser::modify_graph(&gp, |fresh| {
             // Re-apply all mutations
@@ -1947,6 +1984,217 @@ fn run_graph_archival(dir: &Path, archival_error_count: &mut u64, logger: &Daemo
     }
 }
 
+/// Run model registry refresh as a visible graph task (`.registry-refresh-0`).
+///
+/// Time-gated: only fires when at least `registry_refresh_interval` seconds
+/// have elapsed since the last successful refresh (stored in
+/// `model_benchmarks.json`'s `fetched_at` field). Set interval to 0 to disable.
+fn run_registry_refresh(
+    dir: &Path,
+    refresh_error_count: &mut u64,
+    logger: &DaemonLogger,
+) {
+    let config = workgraph::config::Config::load_or_default(dir);
+    let interval = config.coordinator.registry_refresh_interval;
+    if interval == 0 {
+        return; // Disabled
+    }
+
+    let gp = graph_path(dir);
+
+    // Check if .registry-refresh-0 is cycle-ready
+    {
+        let graph = match load_graph(&gp) {
+            Ok(g) => g,
+            Err(_) => return,
+        };
+        if graph.get_task(".registry-refresh-0").is_none() {
+            return;
+        }
+        let cycle_analysis = graph.compute_cycle_analysis();
+        let cycle_ready =
+            workgraph::query::ready_tasks_with_peers_cycle_aware(&graph, dir, &cycle_analysis);
+        if !cycle_ready.iter().any(|t| t.id == ".registry-refresh-0") {
+            return;
+        }
+    }
+
+    // Time gate: check if enough time has elapsed since the last fetch.
+    {
+        if let Ok(Some(existing)) =
+            workgraph::model_benchmarks::BenchmarkRegistry::load(dir)
+        {
+            if let Ok(fetched) =
+                chrono::DateTime::parse_from_rfc3339(&existing.fetched_at)
+            {
+                let age = chrono::Utc::now().signed_duration_since(fetched);
+                if age.num_seconds() < interval as i64 {
+                    return; // Not yet time
+                }
+            }
+        }
+        // If no existing registry or unparseable date, proceed (initial population).
+    }
+
+    // Mark .registry-refresh-0 as InProgress
+    {
+        if let Err(e) = workgraph::parser::modify_graph(&gp, |graph| {
+            if let Some(task) = graph.get_task_mut(".registry-refresh-0") {
+                task.status = workgraph::graph::Status::InProgress;
+                task.started_at = Some(chrono::Utc::now().to_rfc3339());
+                task.log.push(workgraph::graph::LogEntry {
+                    timestamp: chrono::Utc::now().to_rfc3339(),
+                    actor: Some("daemon".to_string()),
+                    user: Some(workgraph::current_user()),
+                    message: "Registry refresh started".to_string(),
+                });
+                true
+            } else {
+                false
+            }
+        }) {
+            eprintln!(
+                "[daemon] Failed to mark .registry-refresh-0 InProgress: {}",
+                e
+            );
+            return;
+        }
+    }
+
+    // Run the actual refresh
+    match do_registry_refresh(dir) {
+        Ok(summary) => {
+            if *refresh_error_count > 0 {
+                logger.info(&format!(
+                    "Registry refresh recovered after {} consecutive error(s)",
+                    *refresh_error_count
+                ));
+            }
+            *refresh_error_count = 0;
+            logger.info(&format!("Registry refresh complete: {}", summary));
+
+            // Mark .registry-refresh-0 as Done and increment iteration
+            let summary_clone = summary.clone();
+            if let Err(e) = workgraph::parser::modify_graph(&gp, |graph| {
+                if let Some(task) = graph.get_task_mut(".registry-refresh-0") {
+                    task.status = workgraph::graph::Status::Done;
+                    task.completed_at = Some(chrono::Utc::now().to_rfc3339());
+                    task.loop_iteration = task.loop_iteration.saturating_add(1);
+                    task.log.push(workgraph::graph::LogEntry {
+                        timestamp: chrono::Utc::now().to_rfc3339(),
+                        actor: Some("daemon".to_string()),
+                        user: Some(workgraph::current_user()),
+                        message: format!(
+                            "Registry refresh iteration {} complete: {}",
+                            task.loop_iteration, summary_clone
+                        ),
+                    });
+                    if task.log.len() > 50 {
+                        let drain_count = task.log.len() - 50;
+                        task.log.drain(..drain_count);
+                    }
+                    true
+                } else {
+                    false
+                }
+            }) {
+                eprintln!(
+                    "[daemon] Failed to mark .registry-refresh-0 Done: {}",
+                    e
+                );
+            }
+        }
+        Err(e) => {
+            *refresh_error_count += 1;
+            if *refresh_error_count == 1 || (*refresh_error_count).is_multiple_of(5) {
+                logger.error(&format!(
+                    "Registry refresh error (#{} consecutive): {:#}",
+                    *refresh_error_count, e
+                ));
+            }
+
+            // Revert .registry-refresh-0 to Open for retry
+            let err_msg = format!("Registry refresh error: {:#}", e);
+            let _ = workgraph::parser::modify_graph(&gp, |graph| {
+                if let Some(task) = graph.get_task_mut(".registry-refresh-0") {
+                    task.status = workgraph::graph::Status::Open;
+                    task.started_at = None;
+                    task.log.push(workgraph::graph::LogEntry {
+                        timestamp: chrono::Utc::now().to_rfc3339(),
+                        actor: Some("daemon".to_string()),
+                        user: Some(workgraph::current_user()),
+                        message: err_msg.clone(),
+                    });
+                    if task.log.len() > 50 {
+                        let drain_count = task.log.len() - 50;
+                        task.log.drain(..drain_count);
+                    }
+                    true
+                } else {
+                    false
+                }
+            });
+        }
+    }
+}
+
+/// Execute the actual registry refresh: fetch from OpenRouter, diff, save.
+/// Returns a human-readable summary string on success.
+fn do_registry_refresh(dir: &Path) -> Result<String> {
+    use workgraph::executor::native::openai_client::{
+        fetch_openrouter_models_blocking, resolve_openai_api_key_from_dir,
+    };
+    use workgraph::model_benchmarks::{
+        self, BenchmarkRegistry, diff_registries, format_changes,
+    };
+
+    // Load existing registry (if any) for diffing.
+    let old_registry = BenchmarkRegistry::load(dir)?;
+
+    // Fetch fresh model data from OpenRouter.
+    let api_key = resolve_openai_api_key_from_dir(dir)?;
+    let base_url = std::env::var("OPENAI_BASE_URL")
+        .or_else(|_| std::env::var("OPENROUTER_BASE_URL"))
+        .ok();
+    let or_models = fetch_openrouter_models_blocking(&api_key, base_url.as_deref())?;
+
+    let mut registry = model_benchmarks::build_from_openrouter(&or_models);
+
+    // Preserve existing benchmark scores (manually or externally added).
+    if let Some(ref existing) = old_registry {
+        for (id, existing_model) in &existing.models {
+            if let Some(new_model) = registry.models.get_mut(id) {
+                if existing_model.benchmarks.coding_index.is_some()
+                    || existing_model.benchmarks.intelligence_index.is_some()
+                    || existing_model.benchmarks.agentic.is_some()
+                {
+                    new_model.benchmarks = existing_model.benchmarks.clone();
+                }
+                if existing_model.popularity.provider_count.is_some() {
+                    new_model.popularity = existing_model.popularity.clone();
+                }
+            }
+        }
+    }
+
+    // Compute fitness scores.
+    model_benchmarks::compute_fitness_scores(&mut registry);
+
+    // Diff against the old registry.
+    let diff_summary = if let Some(ref old) = old_registry {
+        let changes = diff_registries(old, &registry, 20, 2.0);
+        format_changes(&changes)
+    } else {
+        "Initial population (no previous registry)".to_string()
+    };
+
+    // Save the new registry.
+    let model_count = registry.models.len();
+    registry.save(dir)?;
+
+    Ok(format!("{} models, diff: {}", model_count, diff_summary))
+}
+
 /// Run the actual daemon loop (called by forked process)
 #[cfg(unix)]
 pub fn run_daemon(
@@ -2222,6 +2470,7 @@ pub fn run_daemon(
     let mut compaction_error_count: u64 =
         workgraph::service::compactor::CompactorState::load(&dir).error_count;
     let mut archival_error_count: u64 = 0;
+    let mut refresh_error_count: u64 = 0;
 
     // Obtain the raw fd for poll()-based waiting. This lets the daemon
     // sleep until an IPC connection arrives OR a timeout expires, instead
@@ -2509,6 +2758,9 @@ pub fn run_daemon(
 
                     // Archival: run when .archive-0 is graph-ready (cycle-driven)
                     run_graph_archival(&dir, &mut archival_error_count, &logger);
+
+                    // Registry refresh: run when .registry-refresh-0 is graph-ready and interval elapsed
+                    run_registry_refresh(&dir, &mut refresh_error_count, &logger);
                 }
                 Err(e) => {
                     coord_state.ticks += 1;
