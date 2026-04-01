@@ -350,92 +350,127 @@ mod provider_env_var_tests {
 mod agent_model_preference_tests {
     use workgraph::config::{Config, DispatchRole, EndpointConfig, EndpointsConfig};
 
-    /// Replicate resolve_model from spawn/execution.rs:
-    /// Priority: task.model > agent.preferred_model > executor.model > coordinator.model
-    fn resolve_model(
-        task_model: Option<String>,
-        agent_preferred_model: Option<String>,
-        executor_model: Option<String>,
-        coordinator_model: Option<&str>,
-    ) -> Option<String> {
-        task_model
-            .or(agent_preferred_model)
-            .or(executor_model)
-            .or_else(|| coordinator_model.map(String::from))
+    /// Replicate resolve_model_and_provider from spawn/execution.rs:
+    /// Unified model+provider resolution using parse_model_spec at each tier.
+    struct ResolvedModelProvider {
+        model: Option<String>,
+        provider: Option<String>,
     }
 
-    /// Replicate resolve_provider from spawn/execution.rs:
-    /// Priority: task.provider > agent.preferred_provider > role_config.provider
-    fn resolve_provider(
+    fn resolve_model_and_provider(
+        task_model: Option<String>,
         task_provider: Option<String>,
+        agent_preferred_model: Option<String>,
         agent_preferred_provider: Option<String>,
-        role_config_provider: Option<String>,
-    ) -> Option<String> {
-        task_provider
-            .or(agent_preferred_provider)
-            .or(role_config_provider)
+        executor_model: Option<String>,
+        role_model: Option<String>,
+        role_provider: Option<String>,
+        coordinator_model: Option<&str>,
+        coordinator_provider: Option<String>,
+    ) -> ResolvedModelProvider {
+        struct Tier {
+            model: Option<String>,
+            provider: Option<String>,
+        }
+        impl Tier {
+            fn new(model: Option<String>, provider: Option<String>) -> Self {
+                if provider.is_some() {
+                    return Self { model, provider };
+                }
+                if let Some(ref m) = model {
+                    let spec = workgraph::config::parse_model_spec(m);
+                    if let Some(ref p) = spec.provider {
+                        return Self {
+                            model,
+                            provider: Some(
+                                workgraph::config::provider_to_native_provider(p).to_string(),
+                            ),
+                        };
+                    }
+                }
+                Self { model, provider }
+            }
+        }
+        let tiers = [
+            Tier::new(task_model, task_provider),
+            Tier::new(agent_preferred_model, agent_preferred_provider),
+            Tier::new(executor_model, None),
+            Tier::new(role_model, role_provider),
+            Tier::new(coordinator_model.map(|s| s.to_string()), coordinator_provider),
+        ];
+        ResolvedModelProvider {
+            model: tiers.iter().find_map(|t| t.model.clone()),
+            provider: tiers.iter().find_map(|t| t.provider.clone()),
+        }
     }
 
     #[test]
     fn integration_openrouter_agent_preferred_model_used_when_no_task_model() {
-        let result = resolve_model(
-            None,
-            Some("anthropic/claude-opus-4-6".to_string()),
+        let r = resolve_model_and_provider(
+            None, None,
+            Some("anthropic/claude-opus-4-6".to_string()), None,
             Some("executor-default".to_string()),
-            Some("coordinator-fallback"),
+            None, None,
+            Some("coordinator-fallback"), None,
         );
-        assert_eq!(result, Some("anthropic/claude-opus-4-6".to_string()));
+        assert_eq!(r.model, Some("anthropic/claude-opus-4-6".to_string()));
     }
 
     #[test]
     fn integration_openrouter_task_model_overrides_agent() {
-        let result = resolve_model(
-            Some("task-specific-model".to_string()),
-            Some("agent-preferred-model".to_string()),
+        let r = resolve_model_and_provider(
+            Some("task-specific-model".to_string()), None,
+            Some("agent-preferred-model".to_string()), None,
             Some("executor-model".to_string()),
-            Some("coordinator-model"),
+            None, None,
+            Some("coordinator-model"), None,
         );
-        assert_eq!(result, Some("task-specific-model".to_string()));
+        assert_eq!(r.model, Some("task-specific-model".to_string()));
     }
 
     #[test]
     fn integration_openrouter_agent_preferred_provider() {
-        let result = resolve_provider(
+        let r = resolve_model_and_provider(
+            None, None,
+            None, Some("openrouter".to_string()),
             None,
-            Some("openrouter".to_string()),
-            Some("anthropic".to_string()),
+            None, Some("anthropic".to_string()),
+            None, None,
         );
-        assert_eq!(result, Some("openrouter".to_string()));
+        assert_eq!(r.provider, Some("openrouter".to_string()));
     }
 
     #[test]
     fn integration_openrouter_task_provider_overrides_agent_provider() {
-        let result = resolve_provider(
-            Some("openai".to_string()),
-            Some("openrouter".to_string()),
-            Some("anthropic".to_string()),
+        let r = resolve_model_and_provider(
+            None, Some("openai".to_string()),
+            None, Some("openrouter".to_string()),
+            None,
+            None, Some("anthropic".to_string()),
+            None, None,
         );
-        assert_eq!(result, Some("openai".to_string()));
+        assert_eq!(r.provider, Some("openai".to_string()));
     }
 
     #[test]
     fn integration_openrouter_no_agent_falls_through_to_executor() {
-        let result = resolve_model(
-            None,
-            None, // no agent assigned
+        let r = resolve_model_and_provider(
+            None, None,
+            None, None,
             Some("executor-default".to_string()),
-            Some("coordinator-fallback"),
+            None, None,
+            Some("coordinator-fallback"), None,
         );
-        assert_eq!(result, Some("executor-default".to_string()));
+        assert_eq!(r.model, Some("executor-default".to_string()));
     }
 
     #[test]
     fn integration_openrouter_all_none_returns_none() {
-        let model = resolve_model(None, None, None, None);
-        assert_eq!(model, None);
-
-        let provider = resolve_provider(None, None, None);
-        assert_eq!(provider, None);
+        let r = resolve_model_and_provider(
+            None, None, None, None, None, None, None, None, None,
+        );
+        assert_eq!(r.model, None);
+        assert_eq!(r.provider, None);
     }
 
     #[test]

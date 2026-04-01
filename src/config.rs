@@ -2962,38 +2962,35 @@ impl Config {
             .unwrap_or(&self.agent.model);
         // Extract provider from model spec (provider:model format) instead of deprecated field
         let spec = parse_model_spec(model);
-        let provider = spec.provider.as_deref();
 
-        // Rule 1: executor='claude' but model is non-Anthropic — auto-routed to native
-        if executor == "claude" && model.contains('/') && !model.starts_with("anthropic/") {
-            result.warnings.push(ConfigDiagnostic {
-                rule: "executor-model-auto-route".into(),
-                message: format!(
+        // Rule 1: executor='claude' but model has a non-Anthropic provider prefix or
+        // looks like a non-Anthropic model (contains '/' without an Anthropic provider).
+        // Uses parse_model_spec to check provider instead of raw string heuristics.
+        let is_anthropic_provider = |p: &str| -> bool { p == "anthropic" || p == "claude" };
+        let model_looks_non_anthropic = if let Some(ref p) = spec.provider {
+            // Model has provider:model format — check the provider
+            !is_anthropic_provider(p)
+        } else {
+            // Bare model — use '/' heuristic as fallback (e.g. "deepseek/deepseek-v3")
+            spec.model_id.contains('/') && !spec.model_id.starts_with("anthropic/")
+        };
+        if executor == "claude" && model_looks_non_anthropic {
+            let diagnostic_message = if let Some(ref p) = spec.provider {
+                format!(
+                    "executor = 'claude' but model = '{}' has non-Anthropic provider '{}'. \
+                     Will auto-route to native executor.",
+                    model, p
+                )
+            } else {
+                format!(
                     "executor = 'claude' but model = '{}' is non-Anthropic. \
                      Will auto-route to native executor.",
                     model
-                ),
-                fix: format!(
-                    "Set executor = 'native' to make this explicit, \
-                     or change the model to an Anthropic model.",
-                ),
-            });
-        }
-
-        // Rule 2: executor='claude' but provider is non-Anthropic — auto-routed to native
-        // "claude" and "anthropic" are both considered Anthropic providers
-        let is_anthropic_provider = |p: &str| -> bool { p == "anthropic" || p == "claude" };
-        if executor == "claude"
-            && let Some(p) = provider
-            && !is_anthropic_provider(p)
-        {
+                )
+            };
             result.warnings.push(ConfigDiagnostic {
-                rule: "executor-provider-auto-route".into(),
-                message: format!(
-                    "executor = 'claude' but provider = '{}'. \
-                     Will auto-route to native executor.",
-                    p
-                ),
+                rule: "executor-model-auto-route".into(),
+                message: diagnostic_message,
                 fix: format!(
                     "Set executor = 'native' to make this explicit, \
                      or use claude:MODEL format for Anthropic models.",
@@ -3003,12 +3000,14 @@ impl Config {
 
         // Rule: non-Anthropic provider + Anthropic-only model alias (e.g. provider=openrouter, model=opus)
         // OpenRouter/OpenAI won't understand bare Anthropic aliases like "opus" or "sonnet".
-        if let Some(p) = provider
+        // Uses spec.model_id (from parse_model_spec) for registry lookup instead of raw model string.
+        if let Some(ref p) = spec.provider
             && !is_anthropic_provider(p)
         {
-            let is_anthropic_only_model = !model.contains('/')
+            let model_id = &spec.model_id;
+            let is_anthropic_only_model = !model_id.contains('/')
                 && self
-                    .registry_lookup(model)
+                    .registry_lookup(model_id)
                     .map(|e| e.provider == "anthropic")
                     .unwrap_or(false); // unknown models are not assumed Anthropic
             if is_anthropic_only_model {
@@ -3017,12 +3016,11 @@ impl Config {
                     message: format!(
                         "coordinator provider = '{}' but model = '{}' is an Anthropic model alias. \
                          Provider '{}' won't recognize this model name.",
-                        p, model, p
+                        p, model_id, p
                     ),
                     fix: format!(
-                        "Use a {}-compatible model (e.g. 'deepseek/deepseek-chat'), \
-                         or set provider = 'anthropic' to use '{model}' via Anthropic.",
-                        p
+                        "Use a {p}-compatible model (e.g. 'deepseek/deepseek-chat'), \
+                         or set provider = 'anthropic' to use '{model_id}' via Anthropic.",
                     ),
                 });
             }

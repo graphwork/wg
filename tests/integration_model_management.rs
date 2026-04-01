@@ -226,29 +226,58 @@ mod model_management_new_user_setup {
 mod model_management_per_task_override {
     use super::*;
 
-    /// Replicate resolve_model from spawn/execution.rs:
-    /// Priority: task.model > agent.preferred_model > executor.model > coordinator.model
-    fn resolve_model(
-        task_model: Option<String>,
-        agent_preferred_model: Option<String>,
-        executor_model: Option<String>,
-        coordinator_model: Option<&str>,
-    ) -> Option<String> {
-        task_model
-            .or(agent_preferred_model)
-            .or(executor_model)
-            .or_else(|| coordinator_model.map(String::from))
+    /// Replicate resolve_model_and_provider from spawn/execution.rs:
+    /// Unified model+provider resolution using parse_model_spec at each tier.
+    struct ResolvedModelProvider {
+        model: Option<String>,
+        provider: Option<String>,
     }
 
-    /// Replicate resolve_provider from spawn/execution.rs
-    fn resolve_provider(
+    fn resolve_model_and_provider(
+        task_model: Option<String>,
         task_provider: Option<String>,
+        agent_preferred_model: Option<String>,
         agent_preferred_provider: Option<String>,
-        role_config_provider: Option<String>,
-    ) -> Option<String> {
-        task_provider
-            .or(agent_preferred_provider)
-            .or(role_config_provider)
+        executor_model: Option<String>,
+        role_model: Option<String>,
+        role_provider: Option<String>,
+        coordinator_model: Option<&str>,
+        coordinator_provider: Option<String>,
+    ) -> ResolvedModelProvider {
+        struct Tier {
+            model: Option<String>,
+            provider: Option<String>,
+        }
+        impl Tier {
+            fn new(model: Option<String>, provider: Option<String>) -> Self {
+                if provider.is_some() {
+                    return Self { model, provider };
+                }
+                if let Some(ref m) = model {
+                    let spec = workgraph::config::parse_model_spec(m);
+                    if let Some(ref p) = spec.provider {
+                        return Self {
+                            model,
+                            provider: Some(
+                                workgraph::config::provider_to_native_provider(p).to_string(),
+                            ),
+                        };
+                    }
+                }
+                Self { model, provider }
+            }
+        }
+        let tiers = [
+            Tier::new(task_model, task_provider),
+            Tier::new(agent_preferred_model, agent_preferred_provider),
+            Tier::new(executor_model, None),
+            Tier::new(role_model, role_provider),
+            Tier::new(coordinator_model.map(|s| s.to_string()), coordinator_provider),
+        ];
+        ResolvedModelProvider {
+            model: tiers.iter().find_map(|t| t.model.clone()),
+            provider: tiers.iter().find_map(|t| t.provider.clone()),
+        }
     }
 
     #[test]
@@ -281,8 +310,10 @@ mod model_management_per_task_override {
 
         // Simulate task with --model my-custom
         let task_model = Some("my-custom".to_string());
-        let resolved = resolve_model(task_model, None, None, Some("claude:sonnet"));
-        assert_eq!(resolved, Some("my-custom".to_string()));
+        let resolved = resolve_model_and_provider(
+            task_model, None, None, None, None, None, None, Some("claude:sonnet"), None,
+        );
+        assert_eq!(resolved.model, Some("my-custom".to_string()));
 
         // Registry lookup resolves the alias
         let merged = Config::load_merged(dir).unwrap();
@@ -299,8 +330,10 @@ mod model_management_per_task_override {
         set_default_model(dir, "claude:sonnet");
 
         // No task model → falls through to coordinator model
-        let resolved = resolve_model(None, None, None, Some("claude:sonnet"));
-        assert_eq!(resolved, Some("claude:sonnet".to_string()));
+        let resolved = resolve_model_and_provider(
+            None, None, None, None, None, None, None, Some("claude:sonnet"), None,
+        );
+        assert_eq!(resolved.model, Some("claude:sonnet".to_string()));
 
         // "sonnet" should resolve via builtin registry
         let merged = Config::load_merged(dir).unwrap();
@@ -310,57 +343,67 @@ mod model_management_per_task_override {
 
     #[test]
     fn task_model_overrides_all_levels() {
-        let resolved = resolve_model(
-            Some("task-override".to_string()),
-            Some("agent-preferred".to_string()),
+        let resolved = resolve_model_and_provider(
+            Some("task-override".to_string()), None,
+            Some("agent-preferred".to_string()), None,
             Some("executor-default".to_string()),
-            Some("coordinator-fallback"),
+            None, None,
+            Some("coordinator-fallback"), None,
         );
-        assert_eq!(resolved, Some("task-override".to_string()));
+        assert_eq!(resolved.model, Some("task-override".to_string()));
     }
 
     #[test]
     fn agent_preferred_when_no_task() {
-        let resolved = resolve_model(
-            None,
-            Some("agent-preferred".to_string()),
+        let resolved = resolve_model_and_provider(
+            None, None,
+            Some("agent-preferred".to_string()), None,
             Some("executor-default".to_string()),
-            Some("coordinator-fallback"),
+            None, None,
+            Some("coordinator-fallback"), None,
         );
-        assert_eq!(resolved, Some("agent-preferred".to_string()));
+        assert_eq!(resolved.model, Some("agent-preferred".to_string()));
     }
 
     #[test]
     fn executor_when_no_agent() {
-        let resolved = resolve_model(
-            None,
-            None,
+        let resolved = resolve_model_and_provider(
+            None, None, None, None,
             Some("executor-default".to_string()),
-            Some("coordinator-fallback"),
+            None, None,
+            Some("coordinator-fallback"), None,
         );
-        assert_eq!(resolved, Some("executor-default".to_string()));
+        assert_eq!(resolved.model, Some("executor-default".to_string()));
     }
 
     #[test]
     fn coordinator_fallback() {
-        let resolved = resolve_model(None, None, None, Some("coordinator-fallback"));
-        assert_eq!(resolved, Some("coordinator-fallback".to_string()));
+        let resolved = resolve_model_and_provider(
+            None, None, None, None, None, None, None,
+            Some("coordinator-fallback"), None,
+        );
+        assert_eq!(resolved.model, Some("coordinator-fallback".to_string()));
     }
 
     #[test]
     fn all_none_returns_none() {
-        let resolved = resolve_model(None, None, None, None);
-        assert_eq!(resolved, None);
+        let resolved = resolve_model_and_provider(
+            None, None, None, None, None, None, None, None, None,
+        );
+        assert_eq!(resolved.model, None);
+        assert_eq!(resolved.provider, None);
     }
 
     #[test]
     fn task_provider_overrides_all() {
-        let resolved = resolve_provider(
-            Some("openai".to_string()),
-            Some("openrouter".to_string()),
-            Some("anthropic".to_string()),
+        let resolved = resolve_model_and_provider(
+            None, Some("openai".to_string()),
+            None, Some("openrouter".to_string()),
+            None,
+            None, Some("anthropic".to_string()),
+            None, None,
         );
-        assert_eq!(resolved, Some("openai".to_string()));
+        assert_eq!(resolved.provider, Some("openai".to_string()));
     }
 
     #[test]

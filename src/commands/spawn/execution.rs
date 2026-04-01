@@ -165,13 +165,23 @@ pub(crate) fn spawn_agent_inner(
         anyhow::bail!("Task '{}' has no exec command for shell executor", task_id);
     }
 
-    // Model resolution hierarchy:
-    //   task.model > agent.preferred_model > executor.model > model param (CLI --model or coordinator.model)
-    let effective_model_raw = resolve_model(
+    // --- Unified model + provider resolution ---
+    // Resolves model and provider in a single pass through the precedence hierarchy.
+    // At each tier, if the model uses `provider:model` format, the provider is
+    // extracted automatically via parse_model_spec().
+    let task_provider = graph.get_task(task_id).and_then(|t| t.provider.clone());
+    let resolved_task_agent =
+        config.resolve_model_for_role(workgraph::config::DispatchRole::TaskAgent);
+    let resolved = resolve_model_and_provider(
         task_model.clone(),
+        task_provider.clone(),
         agent_preferred_model,
+        agent_preferred_provider.clone(),
         executor_config.executor.model.clone(),
+        Some(resolved_task_agent.model.clone()),
+        resolved_task_agent.provider.clone(),
         model,
+        config.coordinator.provider.clone(),
     );
 
     // --- Model registry alias resolution ---
@@ -180,7 +190,7 @@ pub(crate) fn spawn_agent_inner(
     // (haiku/sonnet/opus) are kept as-is for backward compatibility with the
     // Claude CLI, which understands them natively.
     let (effective_model, registry_provider, registry_endpoint) =
-        resolve_model_via_registry(effective_model_raw, task_model.as_ref(), &config, dir)?;
+        resolve_model_via_registry(resolved.model, task_model.as_ref(), &config, dir)?;
 
     // --- Pre-flight model validation ---
     // Validate OpenRouter-style models against the cached model list before spawning.
@@ -270,21 +280,12 @@ pub(crate) fn spawn_agent_inner(
     // Use resolved exec_mode (already accounts for role defaults)
     let exec_mode = resolved_exec_mode.as_str();
 
-    // Resolve per-role provider and endpoint for all executor types.
-    // Priority: task.provider > registry entry > agent.preferred_provider > role-based config.
-    let task_provider = graph.get_task(task_id).and_then(|t| t.provider.clone());
+    // Provider is already resolved by resolve_model_and_provider() above.
+    // The registry may contribute a provider if the model matched a registry entry;
+    // use it only when the tier cascade didn't already produce one.
     let task_endpoint = graph.get_task(task_id).and_then(|t| t.endpoint.clone());
-    let resolved_task_agent =
-        config.resolve_model_for_role(workgraph::config::DispatchRole::TaskAgent);
-    let effective_provider: Option<String> = resolve_provider(
-        task_provider.clone(),
-        registry_provider.clone(),
-        resolve_provider(
-            agent_preferred_provider.clone(),
-            resolved_task_agent.provider.clone(),
-            config.coordinator.provider.clone(),
-        ),
-    );
+    let effective_provider: Option<String> =
+        resolved.provider.or(registry_provider.clone());
 
     // Endpoint resolution cascade:
     //   1. task.endpoint — explicit endpoint name on the task
@@ -1111,30 +1112,93 @@ exit $EXIT_CODE
     Ok(wrapper_path)
 }
 
-/// Resolve model from the precedence hierarchy.
-/// Priority: task.model > agent.preferred_model > executor.model > coordinator.model
-pub(crate) fn resolve_model(
-    task_model: Option<String>,
-    agent_preferred_model: Option<String>,
-    executor_model: Option<String>,
-    coordinator_model: Option<&str>,
-) -> Option<String> {
-    task_model
-        .or(agent_preferred_model)
-        .or(executor_model)
-        .or_else(|| coordinator_model.map(std::string::ToString::to_string))
+/// A resolved model+provider pair from the unified resolution cascade.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ResolvedModelProvider {
+    /// The winning model string, potentially still containing a `provider:` prefix.
+    /// Downstream `resolve_model_via_registry()` handles prefix stripping.
+    pub model: Option<String>,
+    /// The resolved provider, extracted from the highest-priority tier that
+    /// supplies one — either an explicit provider field or a `provider:model` spec.
+    pub provider: Option<String>,
 }
 
-/// Resolve provider from the precedence hierarchy.
-/// Priority: task.provider > agent.preferred_provider > role_config.provider
-pub(crate) fn resolve_provider(
+/// A single tier in the model/provider resolution cascade.
+/// Each tier may supply a model, a provider, or both. If the model string
+/// contains a `provider:model` spec, the provider is extracted automatically.
+struct ResolutionTier {
+    model: Option<String>,
+    provider: Option<String>,
+}
+
+impl ResolutionTier {
+    fn new(model: Option<String>, provider: Option<String>) -> Self {
+        // If there's an explicit provider, use it directly.
+        // Otherwise, try to extract provider from the model spec.
+        if provider.is_some() {
+            return Self { model, provider };
+        }
+        if let Some(ref m) = model {
+            let spec = workgraph::config::parse_model_spec(m);
+            if let Some(ref p) = spec.provider {
+                return Self {
+                    model,
+                    provider: Some(
+                        workgraph::config::provider_to_native_provider(p).to_string(),
+                    ),
+                };
+            }
+        }
+        Self { model, provider }
+    }
+}
+
+/// Resolve model and provider from the unified precedence hierarchy.
+///
+/// Resolution tiers (highest to lowest priority):
+///   1. Task-level (task.model, task.provider)
+///   2. Agent preferences (agent.preferred_model, agent.preferred_provider)
+///   3. Executor defaults (executor.model)
+///   4. Role-based config (role_config.model, role_config.provider)
+///   5. Coordinator defaults (coordinator.model, coordinator.provider)
+///
+/// At each tier, if the model string uses `provider:model` format, the provider
+/// is extracted from it via `parse_model_spec()`. An explicit provider at the
+/// same tier takes precedence over a provider embedded in the model spec.
+///
+/// Model and provider are resolved independently: the highest-priority tier
+/// that supplies a model wins for model, and likewise for provider. This means
+/// a task can set `model = "openrouter:deepseek-v3"` (setting both) or just
+/// `provider = "openrouter"` (overriding only the provider).
+///
+/// The returned model string retains any `provider:` prefix so that downstream
+/// `resolve_model_via_registry()` can handle prefix stripping per executor type.
+pub(crate) fn resolve_model_and_provider(
+    task_model: Option<String>,
     task_provider: Option<String>,
+    agent_preferred_model: Option<String>,
     agent_preferred_provider: Option<String>,
-    role_config_provider: Option<String>,
-) -> Option<String> {
-    task_provider
-        .or(agent_preferred_provider)
-        .or(role_config_provider)
+    executor_model: Option<String>,
+    role_model: Option<String>,
+    role_provider: Option<String>,
+    coordinator_model: Option<&str>,
+    coordinator_provider: Option<String>,
+) -> ResolvedModelProvider {
+    let tiers = [
+        ResolutionTier::new(task_model, task_provider),
+        ResolutionTier::new(agent_preferred_model, agent_preferred_provider),
+        ResolutionTier::new(executor_model, None),
+        ResolutionTier::new(role_model, role_provider),
+        ResolutionTier::new(
+            coordinator_model.map(|s| s.to_string()),
+            coordinator_provider,
+        ),
+    ];
+
+    let model = tiers.iter().find_map(|t| t.model.clone());
+    let provider = tiers.iter().find_map(|t| t.provider.clone());
+
+    ResolvedModelProvider { model, provider }
 }
 
 /// Built-in tier alias IDs that the Claude CLI understands natively.
@@ -1252,93 +1316,204 @@ fn resolve_model_via_registry(
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_resolve_model_task_overrides_agent() {
-        let result = resolve_model(
-            Some("task-model".to_string()),
-            Some("agent-model".to_string()),
-            Some("executor-model".to_string()),
-            Some("coordinator-model"),
-        );
-        assert_eq!(result, Some("task-model".to_string()));
+    // --- resolve_model_and_provider tests ---
+
+    /// Helper to call resolve_model_and_provider with all None defaults except specified args.
+    fn resolve(
+        task_model: Option<&str>,
+        task_provider: Option<&str>,
+        agent_model: Option<&str>,
+        agent_provider: Option<&str>,
+        executor_model: Option<&str>,
+        role_model: Option<&str>,
+        role_provider: Option<&str>,
+        coordinator_model: Option<&str>,
+        coordinator_provider: Option<&str>,
+    ) -> ResolvedModelProvider {
+        resolve_model_and_provider(
+            task_model.map(|s| s.to_string()),
+            task_provider.map(|s| s.to_string()),
+            agent_model.map(|s| s.to_string()),
+            agent_provider.map(|s| s.to_string()),
+            executor_model.map(|s| s.to_string()),
+            role_model.map(|s| s.to_string()),
+            role_provider.map(|s| s.to_string()),
+            coordinator_model,
+            coordinator_provider.map(|s| s.to_string()),
+        )
     }
 
     #[test]
-    fn test_resolve_model_agent_preferred_when_no_task_model() {
-        let result = resolve_model(
+    fn test_unified_model_task_overrides_agent() {
+        let r = resolve(
+            Some("task-model"), None,
+            Some("agent-model"), None,
+            Some("executor-model"),
+            None, None,
+            Some("coordinator-model"), None,
+        );
+        assert_eq!(r.model, Some("task-model".to_string()));
+    }
+
+    #[test]
+    fn test_unified_model_agent_when_no_task() {
+        let r = resolve(
+            None, None,
+            Some("agent-model"), None,
+            Some("executor-model"),
+            None, None,
+            Some("coordinator-model"), None,
+        );
+        assert_eq!(r.model, Some("agent-model".to_string()));
+    }
+
+    #[test]
+    fn test_unified_model_executor_when_no_agent() {
+        let r = resolve(
+            None, None,
+            None, None,
+            Some("executor-model"),
+            None, None,
+            Some("coordinator-model"), None,
+        );
+        assert_eq!(r.model, Some("executor-model".to_string()));
+    }
+
+    #[test]
+    fn test_unified_model_role_when_no_executor() {
+        let r = resolve(
+            None, None,
+            None, None,
             None,
-            Some("agent-model".to_string()),
-            Some("executor-model".to_string()),
-            Some("coordinator-model"),
+            Some("role-model"), None,
+            Some("coordinator-model"), None,
         );
-        assert_eq!(result, Some("agent-model".to_string()));
+        assert_eq!(r.model, Some("role-model".to_string()));
     }
 
     #[test]
-    fn test_resolve_model_executor_when_no_agent() {
-        let result = resolve_model(
+    fn test_unified_model_coordinator_fallback() {
+        let r = resolve(
+            None, None, None, None, None, None, None,
+            Some("coordinator-model"), None,
+        );
+        assert_eq!(r.model, Some("coordinator-model".to_string()));
+    }
+
+    #[test]
+    fn test_unified_none_when_all_empty() {
+        let r = resolve(None, None, None, None, None, None, None, None, None);
+        assert_eq!(r.model, None);
+        assert_eq!(r.provider, None);
+    }
+
+    #[test]
+    fn test_unified_provider_task_overrides_agent() {
+        let r = resolve(
+            None, Some("task-provider"),
+            None, Some("agent-provider"),
             None,
+            None, Some("config-provider"),
+            None, None,
+        );
+        assert_eq!(r.provider, Some("task-provider".to_string()));
+    }
+
+    #[test]
+    fn test_unified_provider_agent_when_no_task() {
+        let r = resolve(
+            None, None,
+            None, Some("agent-provider"),
             None,
-            Some("executor-model".to_string()),
-            Some("coordinator-model"),
+            None, Some("config-provider"),
+            None, None,
         );
-        assert_eq!(result, Some("executor-model".to_string()));
+        assert_eq!(r.provider, Some("agent-provider".to_string()));
     }
 
     #[test]
-    fn test_resolve_model_coordinator_fallback() {
-        let result = resolve_model(None, None, None, Some("coordinator-model"));
-        assert_eq!(result, Some("coordinator-model".to_string()));
-    }
-
-    #[test]
-    fn test_resolve_model_none_when_all_empty() {
-        let result = resolve_model(None, None, None, None);
-        assert_eq!(result, None);
-    }
-
-    #[test]
-    fn test_resolve_provider_task_overrides_agent() {
-        let result = resolve_provider(
-            Some("task-provider".to_string()),
-            Some("agent-provider".to_string()),
-            Some("config-provider".to_string()),
+    fn test_unified_provider_config_fallback() {
+        let r = resolve(
+            None, None, None, None, None,
+            None, Some("config-provider"),
+            None, None,
         );
-        assert_eq!(result, Some("task-provider".to_string()));
+        assert_eq!(r.provider, Some("config-provider".to_string()));
     }
 
     #[test]
-    fn test_resolve_provider_agent_preferred_when_no_task() {
-        let result = resolve_provider(
-            None,
-            Some("agent-provider".to_string()),
-            Some("config-provider".to_string()),
+    fn test_unified_provider_none_when_all_empty() {
+        let r = resolve(None, None, None, None, None, None, None, None, None);
+        assert_eq!(r.provider, None);
+    }
+
+    #[test]
+    fn test_unified_provider_from_model_spec() {
+        // provider:model in task.model extracts provider automatically
+        let r = resolve(
+            Some("openrouter:deepseek/deepseek-v3"), None,
+            None, None, None, None, None, None, None,
         );
-        assert_eq!(result, Some("agent-provider".to_string()));
+        assert_eq!(r.model, Some("openrouter:deepseek/deepseek-v3".to_string()));
+        assert_eq!(r.provider, Some("openrouter".to_string()));
     }
 
     #[test]
-    fn test_resolve_provider_config_fallback() {
-        let result = resolve_provider(None, None, Some("config-provider".to_string()));
-        assert_eq!(result, Some("config-provider".to_string()));
-    }
-
-    #[test]
-    fn test_resolve_provider_none_when_all_empty() {
-        let result = resolve_provider(None, None, None);
-        assert_eq!(result, None);
-    }
-
-    #[test]
-    fn test_unassigned_task_uses_executor_model() {
-        // Simulates an unassigned task: no agent prefs
-        let result = resolve_model(
-            None,
-            None, // no agent
-            Some("executor-default".to_string()),
-            Some("coordinator-fallback"),
+    fn test_unified_explicit_provider_beats_model_spec() {
+        // An explicit task_provider takes precedence over provider in model spec
+        let r = resolve(
+            Some("openrouter:deepseek/deepseek-v3"), Some("anthropic"),
+            None, None, None, None, None, None, None,
         );
-        assert_eq!(result, Some("executor-default".to_string()));
+        assert_eq!(r.provider, Some("anthropic".to_string()));
+    }
+
+    #[test]
+    fn test_unified_model_spec_at_agent_tier() {
+        // provider:model at agent tier extracts provider when no task-level provider
+        let r = resolve(
+            None, None,
+            Some("openai:gpt-5"), None,
+            None, None, None, None, None,
+        );
+        assert_eq!(r.model, Some("openai:gpt-5".to_string()));
+        assert_eq!(r.provider, Some("openai".to_string()));
+    }
+
+    #[test]
+    fn test_unified_model_spec_at_coordinator_tier() {
+        // provider:model at coordinator tier as last resort
+        let r = resolve(
+            None, None, None, None, None, None, None,
+            Some("claude:opus"), None,
+        );
+        assert_eq!(r.model, Some("claude:opus".to_string()));
+        assert_eq!(r.provider, Some("anthropic".to_string()));
+    }
+
+    #[test]
+    fn test_unified_unassigned_task_uses_executor_model() {
+        let r = resolve(
+            None, None,
+            None, None,
+            Some("executor-default"),
+            None, None,
+            Some("coordinator-fallback"), None,
+        );
+        assert_eq!(r.model, Some("executor-default".to_string()));
+    }
+
+    #[test]
+    fn test_unified_task_provider_overrides_lower_model_spec() {
+        // Task has explicit provider, coordinator has provider:model
+        // Task provider should win even though coordinator model has a spec
+        let r = resolve(
+            None, Some("anthropic"),
+            None, None, None, None, None,
+            Some("openrouter:deepseek/deepseek-v3"), None,
+        );
+        assert_eq!(r.provider, Some("anthropic".to_string()));
+        assert_eq!(r.model, Some("openrouter:deepseek/deepseek-v3".to_string()));
     }
 
     /// Helper to build an EndpointsConfig for endpoint resolution tests.
