@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use std::path::Path;
 use workgraph::agency::capture_task_output;
+use workgraph::config::Config;
 use workgraph::graph::{
     LogEntry, Node, Status, create_user_board_task, evaluate_cycle_iteration, parse_token_usage,
     parse_wg_tokens, user_board_handle, user_board_seq,
@@ -15,19 +16,37 @@ use super::graph_path;
 #[cfg(test)]
 use workgraph::parser::load_graph;
 
-/// Run a verify command in a shell, returning Ok(()) if it passes or an error if it fails/times out.
-fn run_verify_command(verify_cmd: &str, project_root: &Path) -> Result<()> {
+/// Result of running a verify command.
+struct VerifyOutput {
+    pub stdout: String,
+    pub stderr: String,
+    pub exit_code: String,
+}
+
+/// Run a verify command in a shell.
+/// Returns Ok(VerifyOutput) with captured output on success,
+/// or Err(VerifyOutput) with captured output on failure.
+fn run_verify_command(verify_cmd: &str, project_root: &Path) -> std::result::Result<VerifyOutput, VerifyOutput> {
     use std::process::Command;
     use std::time::{Duration, Instant};
 
-    let mut child = Command::new("sh")
+    let mut child = match Command::new("sh")
         .arg("-c")
         .arg(verify_cmd)
         .current_dir(project_root)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
-        .with_context(|| format!("Failed to spawn verify command: {}", verify_cmd))?;
+    {
+        Ok(c) => c,
+        Err(e) => {
+            return Err(VerifyOutput {
+                stdout: String::new(),
+                stderr: format!("Failed to spawn verify command: {}", e),
+                exit_code: "spawn-error".to_string(),
+            });
+        }
+    };
 
     // Read stdout and stderr in background threads to prevent pipe buffer deadlock.
     // Without this, a child producing >64KB of output blocks on write and never exits.
@@ -57,47 +76,49 @@ fn run_verify_command(verify_cmd: &str, project_root: &Path) -> Result<()> {
                 if start.elapsed() >= timeout {
                     let _ = child.kill();
                     let _ = child.wait();
-                    anyhow::bail!(
-                        "Verify command timed out after {}s: {}",
-                        timeout.as_secs(),
-                        verify_cmd,
-                    );
+                    let stdout = stdout_handle.map(|h| h.join().unwrap_or_default()).unwrap_or_default();
+                    let stderr = stderr_handle.map(|h| h.join().unwrap_or_default()).unwrap_or_default();
+                    return Err(VerifyOutput {
+                        stdout,
+                        stderr: format!("Verify command timed out after {}s\n{}", timeout.as_secs(), stderr),
+                        exit_code: "timeout".to_string(),
+                    });
                 }
                 std::thread::sleep(Duration::from_millis(100));
             }
             Err(e) => {
-                anyhow::bail!("Failed to wait on verify command: {}", e);
+                return Err(VerifyOutput {
+                    stdout: String::new(),
+                    stderr: format!("Failed to wait on verify command: {}", e),
+                    exit_code: "wait-error".to_string(),
+                });
             }
         }
     };
 
+    let stdout = stdout_handle
+        .map(|h| h.join().unwrap_or_default())
+        .unwrap_or_default();
+    let stderr = stderr_handle
+        .map(|h| h.join().unwrap_or_default())
+        .unwrap_or_default();
+    let exit_code = status
+        .code()
+        .map(|c| c.to_string())
+        .unwrap_or_else(|| "signal".to_string());
+
     if status.success() {
-        Ok(())
+        Ok(VerifyOutput {
+            stdout,
+            stderr,
+            exit_code,
+        })
     } else {
-        let stdout = stdout_handle
-            .map(|h| h.join().unwrap_or_default())
-            .unwrap_or_default();
-        let stderr = stderr_handle
-            .map(|h| h.join().unwrap_or_default())
-            .unwrap_or_default();
-        let mut combined = stderr;
-        if !stdout.is_empty() {
-            if !combined.is_empty() {
-                combined.push('\n');
-            }
-            combined.push_str(&stdout);
-        }
-        let truncated: String = combined.chars().take(500).collect();
-        let code = status
-            .code()
-            .map(|c| c.to_string())
-            .unwrap_or_else(|| "signal".to_string());
-        anyhow::bail!(
-            "Verify command failed (exit code {}): {}\nOutput: {}",
-            code,
-            verify_cmd,
-            truncated,
-        );
+        Err(VerifyOutput {
+            stdout,
+            stderr,
+            exit_code,
+        })
     }
 }
 
@@ -211,8 +232,156 @@ fn run_inner(
         } else {
             let project_root = dir.parent().unwrap_or(dir);
             eprintln!("Running verify command: {}", verify_cmd);
-            run_verify_command(&verify_cmd, project_root)?;
-            eprintln!("Verify command passed");
+            match run_verify_command(&verify_cmd, project_root) {
+                Ok(output) => {
+                    // Log verify success with captured output
+                    let id_for_log = id.to_string();
+                    let stdout_preview: String = output.stdout.chars().take(200).collect();
+                    let stderr_preview: String = output.stderr.chars().take(200).collect();
+                    if !stdout_preview.is_empty() || !stderr_preview.is_empty() {
+                        let mut log_msg = "Verify passed.".to_string();
+                        if !stdout_preview.is_empty() {
+                            log_msg.push_str(&format!(" stdout: {}", stdout_preview));
+                        }
+                        if !stderr_preview.is_empty() {
+                            log_msg.push_str(&format!(" stderr: {}", stderr_preview));
+                        }
+                        let _ = modify_graph(&path, |g| {
+                            if let Some(t) = g.get_task_mut(&id_for_log) {
+                                // Reset verify failures on success
+                                t.verify_failures = 0;
+                                t.log.push(LogEntry {
+                                    timestamp: Utc::now().to_rfc3339(),
+                                    actor: Some("verify".to_string()),
+                                    user: None,
+                                    message: log_msg.clone(),
+                                });
+                                true
+                            } else {
+                                false
+                            }
+                        });
+                        // Reload graph after mutation
+                        let (new_graph, _) = super::load_workgraph_mut(dir)?;
+                        graph = new_graph;
+                    } else {
+                        // Reset verify failures on success even without output
+                        let _ = modify_graph(&path, |g| {
+                            if let Some(t) = g.get_task_mut(&id_for_log) {
+                                t.verify_failures = 0;
+                                true
+                            } else {
+                                false
+                            }
+                        });
+                        let (new_graph, _) = super::load_workgraph_mut(dir)?;
+                        graph = new_graph;
+                    }
+                    eprintln!("Verify command passed");
+                }
+                Err(output) => {
+                    // Verify failed — increment counter and log output
+                    let id_for_circuit = id.to_string();
+                    let verify_cmd_clone = verify_cmd.clone();
+                    let stdout_preview: String = output.stdout.chars().take(500).collect();
+                    let stderr_preview: String = output.stderr.chars().take(500).collect();
+                    let exit_code = output.exit_code.clone();
+
+                    let config = Config::load_or_default(dir);
+                    let max_verify_failures = config.coordinator.max_verify_failures;
+
+                    modify_graph(&path, |g| {
+                        let task = match g.get_task_mut(&id_for_circuit) {
+                            Some(t) => t,
+                            None => return false,
+                        };
+                        task.verify_failures += 1;
+                        let failures = task.verify_failures;
+
+                        // Log the verify failure with output
+                        let mut log_msg = format!(
+                            "Verify FAILED (exit code {}, attempt {}/{}). Command: {}",
+                            exit_code,
+                            failures,
+                            if max_verify_failures > 0 {
+                                max_verify_failures.to_string()
+                            } else {
+                                "unlimited".to_string()
+                            },
+                            verify_cmd_clone,
+                        );
+                        if !stdout_preview.is_empty() {
+                            log_msg.push_str(&format!("\nstdout: {}", stdout_preview));
+                        }
+                        if !stderr_preview.is_empty() {
+                            log_msg.push_str(&format!("\nstderr: {}", stderr_preview));
+                        }
+                        task.log.push(LogEntry {
+                            timestamp: Utc::now().to_rfc3339(),
+                            actor: Some("verify".to_string()),
+                            user: None,
+                            message: log_msg,
+                        });
+
+                        // Circuit breaker: auto-fail after threshold
+                        if max_verify_failures > 0 && failures >= max_verify_failures {
+                            task.status = Status::Failed;
+                            task.assigned = None;
+                            task.failure_reason = Some(format!(
+                                "Verify command failed {} consecutive times. Command: `{}`. \
+                                 Last exit code: {}. Last stderr: {}. \
+                                 This may be descriptive text instead of an executable command.",
+                                failures,
+                                verify_cmd_clone,
+                                exit_code,
+                                if stderr_preview.is_empty() {
+                                    "(empty)".to_string()
+                                } else {
+                                    stderr_preview.clone()
+                                },
+                            ));
+                            task.log.push(LogEntry {
+                                timestamp: Utc::now().to_rfc3339(),
+                                actor: Some("verify-circuit-breaker".to_string()),
+                                user: None,
+                                message: format!(
+                                    "Circuit breaker tripped: verify command failed {} times, auto-failing task",
+                                    failures,
+                                ),
+                            });
+                        }
+                        true
+                    })
+                    .context("Failed to save verify failure state")?;
+
+                    // Reload graph to check if circuit breaker tripped
+                    let (new_graph, _) = super::load_workgraph_mut(dir)?;
+                    if let Some(task) = new_graph.get_task(id) {
+                        if task.status == Status::Failed {
+                            eprintln!(
+                                "Verify circuit breaker tripped for '{}': {} consecutive failures. Task auto-failed.",
+                                id, task.verify_failures,
+                            );
+                            super::notify_graph_changed(dir);
+                            // Return Ok — the task is now Failed, not an error in the command
+                            return Ok(());
+                        }
+                    }
+
+                    // Not yet at threshold — propagate error so agent retries
+                    let mut error_msg = format!(
+                        "Verify command failed (exit code {}): {}",
+                        exit_code, verify_cmd,
+                    );
+                    if !stderr_preview.is_empty() {
+                        error_msg.push_str(&format!("\nstderr: {}", stderr_preview));
+                    }
+                    if !stdout_preview.is_empty() {
+                        error_msg.push_str(&format!("\nstdout: {}", stdout_preview));
+                    }
+                    anyhow::bail!(error_msg);
+                }
+            }
         }
     }
 
@@ -243,12 +412,24 @@ fn run_inner(
             let project_root = dir.parent().unwrap_or(dir);
             for cmd in &commands {
                 eprintln!("Running validation command: {}", cmd);
-                run_verify_command(cmd, project_root).with_context(|| {
-                    format!(
-                        "Integrated validation failed for '{}': command failed: {}",
-                        id, cmd
-                    )
-                })?;
+                match run_verify_command(cmd, project_root) {
+                    Ok(_) => {}
+                    Err(output) => {
+                        let stderr: String = output.stderr.chars().take(500).collect();
+                        let stdout: String = output.stdout.chars().take(500).collect();
+                        let mut msg = format!(
+                            "Integrated validation failed for '{}': command failed (exit code {}): {}",
+                            id, output.exit_code, cmd,
+                        );
+                        if !stderr.is_empty() {
+                            msg.push_str(&format!("\nstderr: {}", stderr));
+                        }
+                        if !stdout.is_empty() {
+                            msg.push_str(&format!("\nstdout: {}", stdout));
+                        }
+                        anyhow::bail!(msg);
+                    }
+                }
             }
             eprintln!("All validation commands passed");
         }
@@ -1490,5 +1671,208 @@ mod tests {
         let graph = load_graph(&path).unwrap();
         let task = graph.get_task("t1").unwrap();
         assert_eq!(task.status, Status::InProgress);
+    }
+
+    #[test]
+    fn test_verify_circuit_breaker_increments_failures() {
+        let dir = tempdir().unwrap();
+        let dir_path = dir.path();
+
+        let mut task = make_task("t1", "Task with failing verify", Status::InProgress);
+        task.verify = Some("echo 'bad output' >&2; exit 1".to_string());
+        setup_workgraph(dir_path, vec![task]);
+
+        // First failure: should increment verify_failures and bail
+        let result = run(dir_path, "t1", false, false);
+        assert!(result.is_err());
+
+        let path = graph_path(dir_path);
+        let graph = load_graph(&path).unwrap();
+        let task = graph.get_task("t1").unwrap();
+        assert_eq!(task.verify_failures, 1);
+        assert_eq!(task.status, Status::InProgress);
+        // Check that verify failure was logged
+        assert!(
+            task.log.iter().any(|e| e.message.contains("Verify FAILED") && e.actor == Some("verify".to_string())),
+            "Expected verify failure log entry, got: {:?}",
+            task.log
+        );
+    }
+
+    #[test]
+    fn test_verify_circuit_breaker_trips_after_threshold() {
+        let dir = tempdir().unwrap();
+        let dir_path = dir.path();
+
+        let mut task = make_task("t1", "Task with failing verify", Status::InProgress);
+        task.verify = Some("echo 'FAIL: test not found' >&2; exit 1".to_string());
+        setup_workgraph(dir_path, vec![task]);
+
+        // Default threshold is 3 — fail 3 times
+        for i in 0..3 {
+            let result = run(dir_path, "t1", false, false);
+            if i < 2 {
+                // First two failures: should error (not yet at threshold)
+                assert!(result.is_err(), "attempt {} should fail with error", i);
+            } else {
+                // Third failure: circuit breaker trips, returns Ok (task is auto-failed)
+                assert!(
+                    result.is_ok(),
+                    "attempt {} should succeed (circuit breaker trips): {:?}",
+                    i,
+                    result
+                );
+            }
+        }
+
+        let path = graph_path(dir_path);
+        let graph = load_graph(&path).unwrap();
+        let task = graph.get_task("t1").unwrap();
+        assert_eq!(task.status, Status::Failed);
+        assert_eq!(task.verify_failures, 3);
+
+        // Check failure reason includes verify command and error output
+        let reason = task.failure_reason.as_ref().unwrap();
+        assert!(
+            reason.contains("failed 3 consecutive times"),
+            "failure_reason should mention count, got: {}",
+            reason
+        );
+        assert!(
+            reason.contains("exit 1"),
+            "failure_reason should include exit code, got: {}",
+            reason
+        );
+        assert!(
+            reason.contains("FAIL: test not found"),
+            "failure_reason should include stderr, got: {}",
+            reason
+        );
+
+        // Check circuit breaker log entry
+        assert!(
+            task.log.iter().any(|e| e.actor == Some("verify-circuit-breaker".to_string())
+                && e.message.contains("Circuit breaker tripped")),
+            "Expected circuit breaker log entry, got: {:?}",
+            task.log
+        );
+    }
+
+    #[test]
+    fn test_verify_success_resets_failure_count() {
+        let dir = tempdir().unwrap();
+        let dir_path = dir.path();
+
+        // Start with a task that already has some verify failures
+        let mut task = make_task("t1", "Task with verify", Status::InProgress);
+        task.verify = Some("exit 0".to_string());
+        task.verify_failures = 2; // previous failures
+        setup_workgraph(dir_path, vec![task]);
+
+        let result = run(dir_path, "t1", false, false);
+        assert!(result.is_ok());
+
+        let path = graph_path(dir_path);
+        let graph = load_graph(&path).unwrap();
+        let task = graph.get_task("t1").unwrap();
+        assert_eq!(task.status, Status::Done);
+        assert_eq!(task.verify_failures, 0, "verify_failures should be reset on success");
+    }
+
+    #[test]
+    fn test_verify_failure_logs_stdout_and_stderr() {
+        let dir = tempdir().unwrap();
+        let dir_path = dir.path();
+
+        let mut task = make_task("t1", "Task with verbose verify", Status::InProgress);
+        task.verify = Some("echo 'stdout line' && echo 'stderr line' >&2 && exit 1".to_string());
+        setup_workgraph(dir_path, vec![task]);
+
+        let result = run(dir_path, "t1", false, false);
+        assert!(result.is_err());
+
+        let path = graph_path(dir_path);
+        let graph = load_graph(&path).unwrap();
+        let task = graph.get_task("t1").unwrap();
+
+        // Verify log entry includes both stdout and stderr
+        let verify_log = task
+            .log
+            .iter()
+            .find(|e| e.message.contains("Verify FAILED"))
+            .expect("should have verify failure log");
+        assert!(
+            verify_log.message.contains("stdout line"),
+            "log should contain stdout, got: {}",
+            verify_log.message
+        );
+        assert!(
+            verify_log.message.contains("stderr line"),
+            "log should contain stderr, got: {}",
+            verify_log.message
+        );
+    }
+
+    #[test]
+    fn test_verify_circuit_breaker_distinguishes_from_agent_failures() {
+        // Verify failures use the "verify" actor, circuit breaker uses "verify-circuit-breaker"
+        // Regular triage/agent failures use "triage" actor
+        let dir = tempdir().unwrap();
+        let dir_path = dir.path();
+
+        let mut task = make_task("t1", "Task with verify", Status::InProgress);
+        task.verify = Some("exit 1".to_string());
+        setup_workgraph(dir_path, vec![task]);
+
+        let _ = run(dir_path, "t1", false, false);
+
+        let path = graph_path(dir_path);
+        let graph = load_graph(&path).unwrap();
+        let task = graph.get_task("t1").unwrap();
+
+        // All verify-related logs should use "verify" actor
+        let verify_logs: Vec<_> = task.log.iter().filter(|e| e.message.contains("Verify")).collect();
+        assert!(!verify_logs.is_empty());
+        for log in &verify_logs {
+            assert_eq!(
+                log.actor,
+                Some("verify".to_string()),
+                "Verify failure logs should use 'verify' actor, not agent/triage actor"
+            );
+        }
+    }
+
+    #[test]
+    fn test_verify_circuit_breaker_configurable_threshold() {
+        // Test that the config controls the threshold.
+        // We write a config with max_verify_failures = 2.
+        let dir = tempdir().unwrap();
+        let dir_path = dir.path();
+
+        let mut task = make_task("t1", "Task with failing verify", Status::InProgress);
+        task.verify = Some("exit 1".to_string());
+        setup_workgraph(dir_path, vec![task]);
+
+        // Write config with lower threshold (dir_path is the .workgraph dir in tests)
+        let config_path = dir_path.join("config.toml");
+        std::fs::write(
+            &config_path,
+            "[coordinator]\nmax_verify_failures = 2\n",
+        )
+        .unwrap();
+
+        // First failure
+        let result = run(dir_path, "t1", false, false);
+        assert!(result.is_err());
+
+        // Second failure — should trip circuit breaker at threshold 2
+        let result = run(dir_path, "t1", false, false);
+        assert!(result.is_ok(), "Circuit breaker should trip at threshold 2");
+
+        let path = graph_path(dir_path);
+        let graph = load_graph(&path).unwrap();
+        let task = graph.get_task("t1").unwrap();
+        assert_eq!(task.status, Status::Failed);
+        assert_eq!(task.verify_failures, 2);
     }
 }

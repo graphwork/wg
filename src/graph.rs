@@ -350,6 +350,12 @@ pub struct Task {
     /// Maximum rejections before task fails (default 3)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_rejections: Option<u32>,
+    /// Number of consecutive verify command failures (circuit breaker counter)
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub verify_failures: u32,
+    /// Number of consecutive spawn failures (spawn circuit breaker counter)
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub spawn_failures: u32,
     /// Tasks that this task was replaced by (set on abandon with --superseded-by)
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub superseded_by: Vec<String>,
@@ -909,6 +915,10 @@ struct TaskHelper {
     #[serde(default)]
     max_rejections: Option<u32>,
     #[serde(default)]
+    verify_failures: u32,
+    #[serde(default)]
+    spawn_failures: u32,
+    #[serde(default)]
     superseded_by: Vec<String>,
     #[serde(default)]
     supersedes: Option<String>,
@@ -990,6 +1000,8 @@ impl<'de> Deserialize<'de> for Task {
             test_required: helper.test_required,
             rejection_count: helper.rejection_count,
             max_rejections: helper.max_rejections,
+            verify_failures: helper.verify_failures,
+            spawn_failures: helper.spawn_failures,
             superseded_by: helper.superseded_by,
             supersedes: helper.supersedes,
             unplaced: helper.unplaced,

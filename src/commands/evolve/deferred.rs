@@ -137,6 +137,7 @@ pub(crate) fn defer_self_mutation(
         rejection_count: 0,
         max_rejections: None,
         exec_mode: None,
+        verify_failures: 0,
         superseded_by: vec![],
         supersedes: None,
         unplaced: false,

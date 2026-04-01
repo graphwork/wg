@@ -95,6 +95,8 @@ struct TaskDetails {
     #[serde(skip_serializing_if = "Option::is_none")]
     checkpoint: Option<String>,
     #[serde(default, skip_serializing_if = "is_zero")]
+    verify_failures: u32,
+    #[serde(default, skip_serializing_if = "is_zero")]
     resurrection_count: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     last_resurrected_at: Option<String>,
@@ -224,6 +226,7 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
         session_id: task.session_id.clone(),
         wait_condition: task.wait_condition.clone(),
         checkpoint: task.checkpoint.clone(),
+        verify_failures: task.verify_failures,
         resurrection_count: task.resurrection_count,
         last_resurrected_at: task.last_resurrected_at.clone(),
         superseded_by: task.superseded_by.clone(),
@@ -602,6 +605,7 @@ mod tests {
             session_id: None,
             wait_condition: None,
             checkpoint: None,
+            verify_failures: 0,
             resurrection_count: 0,
             last_resurrected_at: None,
             superseded_by: vec![],

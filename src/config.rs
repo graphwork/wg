@@ -2166,6 +2166,14 @@ pub struct CoordinatorConfig {
     /// Set to 0 to disable the circuit breaker (unlimited retries).
     #[serde(default = "default_max_verify_failures")]
     pub max_verify_failures: u32,
+
+    /// Maximum consecutive spawn failures before a task is auto-failed.
+    /// When the coordinator fails to spawn an agent for a task this many times
+    /// in a row, the task transitions to Failed with a descriptive error
+    /// including exec_mode, executor, and last error. Default: 5.
+    /// Set to 0 to disable the circuit breaker (unlimited retries).
+    #[serde(default = "default_max_spawn_failures")]
+    pub max_spawn_failures: u32,
 }
 
 fn default_max_agents() -> usize {
@@ -2218,6 +2226,10 @@ fn default_archive_retention_days() -> u64 {
 
 fn default_max_verify_failures() -> u32 {
     3
+}
+
+fn default_max_spawn_failures() -> u32 {
+    5
 }
 
 fn default_registry_refresh_interval() -> u64 {
