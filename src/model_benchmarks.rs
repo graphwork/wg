@@ -100,6 +100,12 @@ pub struct Benchmarks {
 pub struct Popularity {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_count: Option<u32>,
+    /// Total completions/requests (from OpenRouter stats or manual annotation).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_count: Option<u64>,
+    /// Weekly rank by usage on OpenRouter (1 = most used).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weekly_rank: Option<u32>,
 }
 
 /// Computed fitness score and components.
@@ -338,6 +344,8 @@ pub fn build_from_openrouter(models: &[OpenRouterModel]) -> BenchmarkRegistry {
             benchmarks: Benchmarks::default(),
             popularity: Popularity {
                 provider_count: None,
+                request_count: None,
+                weekly_rank: None,
             },
             fitness: Fitness::default(),
             tier: "budget".to_string(), // Will be reclassified after scoring.
@@ -572,6 +580,162 @@ pub fn format_changes(changes: &[RegistryChange]) -> String {
     lines.join("\n")
 }
 
+// ── Popularity-weighted ranking for OpenRouter profile ─────────────────
+
+/// A model ranked by the popularity-weighted algorithm for a specific tier.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RankedModel {
+    /// OpenRouter model ID.
+    pub id: String,
+    /// Human-readable name.
+    pub name: String,
+    /// Popularity score component (0–100, PRIMARY signal).
+    pub popularity_score: f64,
+    /// Benchmark score component (0–100, SECONDARY signal).
+    pub benchmark_score: f64,
+    /// Composite ranking score.
+    pub composite_score: f64,
+    /// Assigned pricing tier: "fast", "standard", or "premium".
+    pub tier: String,
+}
+
+/// Ranked model lists per pricing tier.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RankedTiers {
+    /// Models ranked for the fast (haiku-class) tier.
+    pub fast: Vec<RankedModel>,
+    /// Models ranked for the standard (sonnet-class) tier.
+    pub standard: Vec<RankedModel>,
+    /// Models ranked for the premium (opus-class) tier.
+    pub premium: Vec<RankedModel>,
+}
+
+/// Pricing tier boundaries for OpenRouter models (output $/MTok).
+///
+/// Models are bucketed by output pricing into haiku-class, sonnet-class, or opus-class.
+const TIER_BOUNDARY_FAST_MAX: f64 = 3.0;
+const TIER_BOUNDARY_PREMIUM_MIN: f64 = 18.0;
+
+/// Compute a popularity score (0–100) for a model.
+///
+/// Popularity is the PRIMARY ranking signal. It captures real-world reliability,
+/// API quality, and community trust that benchmarks miss.
+///
+/// Signals (weighted):
+///   - weekly_rank: 50% (lower is better; rank 1 → 100, rank 200+ → 0)
+///   - request_count: 30% (log-scaled relative to max in registry)
+///   - provider_count: 20% (more providers = more trusted/available)
+fn compute_popularity_score(pop: &Popularity, max_request_count: u64) -> f64 {
+    let rank_score = pop
+        .weekly_rank
+        .map(|r| ((200.0 - r.min(200) as f64) / 200.0) * 100.0)
+        .unwrap_or(0.0);
+
+    let request_score = if max_request_count > 0 {
+        pop.request_count
+            .map(|rc| {
+                if rc == 0 {
+                    0.0
+                } else {
+                    let log_rc = (rc as f64).ln();
+                    let log_max = (max_request_count as f64).ln();
+                    (log_rc / log_max).min(1.0) * 100.0
+                }
+            })
+            .unwrap_or(0.0)
+    } else {
+        0.0
+    };
+
+    let provider_score = pop
+        .provider_count
+        .map(|pc| (pc.min(10) as f64 / 10.0) * 100.0)
+        .unwrap_or(0.0);
+
+    rank_score * 0.50 + request_score * 0.30 + provider_score * 0.20
+}
+
+/// Assign a pricing-based tier label for the OpenRouter profile.
+pub fn pricing_tier_label(output_per_mtok: f64) -> &'static str {
+    if output_per_mtok >= TIER_BOUNDARY_PREMIUM_MIN {
+        "premium"
+    } else if output_per_mtok >= TIER_BOUNDARY_FAST_MAX {
+        "standard"
+    } else {
+        "fast"
+    }
+}
+
+/// Run the popularity-weighted ranking algorithm on the benchmark registry.
+///
+/// Returns ranked lists per tier (fast/standard/premium), ordered best-first.
+/// Only includes models that support tool use (required for agentic work).
+///
+/// Composite score = popularity * 0.70 + benchmarks * 0.30
+/// (Popularity is the PRIMARY signal per design principle.)
+pub fn rank_models_for_profile(registry: &BenchmarkRegistry) -> RankedTiers {
+    let max_request_count = registry
+        .models
+        .values()
+        .filter_map(|m| m.popularity.request_count)
+        .max()
+        .unwrap_or(0);
+
+    let mut fast = Vec::new();
+    let mut standard = Vec::new();
+    let mut premium = Vec::new();
+
+    for model in registry.models.values() {
+        if !model.supports_tools {
+            continue;
+        }
+
+        let ptier = pricing_tier_label(model.pricing.output_per_mtok);
+        let popularity_score =
+            compute_popularity_score(&model.popularity, max_request_count);
+        let benchmark_score = model.fitness.components.quality.unwrap_or(0.0);
+        let composite_score = popularity_score * 0.70 + benchmark_score * 0.30;
+
+        let ranked = RankedModel {
+            id: model.id.clone(),
+            name: model.name.clone(),
+            popularity_score,
+            benchmark_score,
+            composite_score,
+            tier: ptier.to_string(),
+        };
+
+        match ptier {
+            "fast" => fast.push(ranked),
+            "standard" => standard.push(ranked),
+            "premium" => premium.push(ranked),
+            _ => {}
+        }
+    }
+
+    fast.sort_by(|a, b| {
+        b.composite_score
+            .partial_cmp(&a.composite_score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    standard.sort_by(|a, b| {
+        b.composite_score
+            .partial_cmp(&a.composite_score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    premium.sort_by(|a, b| {
+        b.composite_score
+            .partial_cmp(&a.composite_score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    RankedTiers {
+        fast,
+        standard,
+        premium,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -687,6 +851,7 @@ mod tests {
                 },
                 popularity: Popularity {
                     provider_count: Some(3),
+                    ..Default::default()
                 },
                 fitness: Fitness::default(),
                 tier: "mid".to_string(),
@@ -854,5 +1019,205 @@ mod tests {
         let text = format_changes(&changes);
         assert!(text.contains("1 change(s) detected"));
         assert!(text.contains("test/m added"));
+    }
+
+    // ── Popularity-weighted ranking tests ──────────────────────────────
+
+    fn make_ranked_model(
+        id: &str,
+        name: &str,
+        output_price: f64,
+        tools: bool,
+        popularity: Popularity,
+        quality: Option<f64>,
+    ) -> ModelBenchmark {
+        ModelBenchmark {
+            id: id.to_string(),
+            name: name.to_string(),
+            pricing: BenchmarkPricing {
+                input_per_mtok: output_price * 0.2,
+                output_per_mtok: output_price,
+                cache_read_per_mtok: None,
+                cache_write_per_mtok: None,
+            },
+            context_window: Some(128_000),
+            max_output_tokens: Some(8_000),
+            supports_tools: tools,
+            benchmarks: Benchmarks::default(),
+            popularity,
+            fitness: Fitness {
+                score: quality,
+                components: FitnessComponents {
+                    quality,
+                    value: None,
+                    reliability: None,
+                },
+            },
+            tier: "budget".to_string(),
+            pricing_updated_at: "2026-04-01T00:00:00Z".to_string(),
+        }
+    }
+
+    #[test]
+    fn test_pricing_tier_label() {
+        assert_eq!(pricing_tier_label(0.5), "fast");
+        assert_eq!(pricing_tier_label(2.99), "fast");
+        assert_eq!(pricing_tier_label(3.0), "standard");
+        assert_eq!(pricing_tier_label(15.0), "standard");
+        assert_eq!(pricing_tier_label(18.0), "premium");
+        assert_eq!(pricing_tier_label(25.0), "premium");
+    }
+
+    #[test]
+    fn test_popularity_score_full_data() {
+        let pop = Popularity {
+            provider_count: Some(5),
+            request_count: Some(1_000_000),
+            weekly_rank: Some(1),
+        };
+        let score = compute_popularity_score(&pop, 1_000_000);
+        // rank: (200-1)/200 * 100 * 0.5 = 49.75
+        // request: ln(1M)/ln(1M) * 100 * 0.3 = 30.0
+        // provider: 5/10 * 100 * 0.2 = 10.0
+        // total ≈ 89.75
+        assert!(score > 85.0 && score < 95.0, "score was {}", score);
+    }
+
+    #[test]
+    fn test_popularity_score_no_data() {
+        let pop = Popularity::default();
+        let score = compute_popularity_score(&pop, 1_000_000);
+        assert_eq!(score, 0.0);
+    }
+
+    #[test]
+    fn test_popularity_score_only_providers() {
+        let pop = Popularity {
+            provider_count: Some(10),
+            request_count: None,
+            weekly_rank: None,
+        };
+        let score = compute_popularity_score(&pop, 0);
+        // provider: 10/10 * 100 * 0.2 = 20.0
+        assert!((score - 20.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_rank_models_filters_no_tools() {
+        let registry = make_test_registry(vec![
+            make_ranked_model(
+                "a/with-tools",
+                "With Tools",
+                1.0,
+                true,
+                Popularity { provider_count: Some(5), request_count: Some(1000), weekly_rank: Some(1) },
+                Some(50.0),
+            ),
+            make_ranked_model(
+                "b/no-tools",
+                "No Tools",
+                1.0,
+                false,
+                Popularity { provider_count: Some(10), request_count: Some(10000), weekly_rank: Some(1) },
+                Some(90.0),
+            ),
+        ]);
+
+        let ranked = rank_models_for_profile(&registry);
+        // b/no-tools should be excluded
+        let all_ids: Vec<&str> = ranked.fast.iter()
+            .chain(ranked.standard.iter())
+            .chain(ranked.premium.iter())
+            .map(|r| r.id.as_str())
+            .collect();
+        assert!(all_ids.contains(&"a/with-tools"));
+        assert!(!all_ids.contains(&"b/no-tools"));
+    }
+
+    #[test]
+    fn test_rank_models_tier_assignment() {
+        let registry = make_test_registry(vec![
+            make_ranked_model("a/cheap", "Cheap", 1.0, true, Popularity::default(), None),
+            make_ranked_model("b/mid", "Mid", 10.0, true, Popularity::default(), None),
+            make_ranked_model("c/premium", "Premium", 25.0, true, Popularity::default(), None),
+        ]);
+
+        let ranked = rank_models_for_profile(&registry);
+        assert_eq!(ranked.fast.len(), 1);
+        assert_eq!(ranked.fast[0].id, "a/cheap");
+        assert_eq!(ranked.standard.len(), 1);
+        assert_eq!(ranked.standard[0].id, "b/mid");
+        assert_eq!(ranked.premium.len(), 1);
+        assert_eq!(ranked.premium[0].id, "c/premium");
+    }
+
+    #[test]
+    fn test_rank_models_popularity_dominates() {
+        // Model A has high popularity, low benchmarks.
+        // Model B has low popularity, high benchmarks.
+        // With 70% popularity weight, A should rank higher.
+        let registry = make_test_registry(vec![
+            make_ranked_model(
+                "a/popular",
+                "Popular",
+                1.0,
+                true,
+                Popularity { provider_count: Some(8), request_count: Some(500_000), weekly_rank: Some(2) },
+                Some(30.0),
+            ),
+            make_ranked_model(
+                "b/benchmark-king",
+                "Benchmark King",
+                1.0,
+                true,
+                Popularity { provider_count: Some(1), request_count: Some(100), weekly_rank: Some(150) },
+                Some(90.0),
+            ),
+        ]);
+
+        let ranked = rank_models_for_profile(&registry);
+        assert!(ranked.fast.len() >= 2);
+        assert_eq!(ranked.fast[0].id, "a/popular", "Popular model should rank first");
+    }
+
+    #[test]
+    fn test_rank_models_sorted_descending() {
+        let registry = make_test_registry(vec![
+            make_ranked_model(
+                "a/low",
+                "Low",
+                1.0,
+                true,
+                Popularity { provider_count: Some(1), ..Default::default() },
+                None,
+            ),
+            make_ranked_model(
+                "b/high",
+                "High",
+                1.0,
+                true,
+                Popularity { provider_count: Some(10), ..Default::default() },
+                None,
+            ),
+            make_ranked_model(
+                "c/mid",
+                "Mid",
+                1.0,
+                true,
+                Popularity { provider_count: Some(5), ..Default::default() },
+                None,
+            ),
+        ]);
+
+        let ranked = rank_models_for_profile(&registry);
+        assert_eq!(ranked.fast.len(), 3);
+        // Verify descending order
+        for i in 0..ranked.fast.len() - 1 {
+            assert!(
+                ranked.fast[i].composite_score >= ranked.fast[i + 1].composite_score,
+                "Expected descending order at index {}: {} >= {}",
+                i, ranked.fast[i].composite_score, ranked.fast[i + 1].composite_score,
+            );
+        }
     }
 }
