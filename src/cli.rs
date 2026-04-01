@@ -1803,6 +1803,24 @@ pub enum ModelsCommands {
 
     /// Initialize the models.yaml with defaults
     Init,
+
+    /// Fetch model data from OpenRouter and build the benchmark registry
+    Fetch {
+        /// Skip the local cache and fetch fresh data from the API
+        #[arg(long)]
+        no_cache: bool,
+    },
+
+    /// Show the benchmark registry with fitness scores and tier classification
+    Benchmarks {
+        /// Filter by tier (frontier, mid, budget)
+        #[arg(long)]
+        tier: Option<String>,
+
+        /// Maximum number of models to display
+        #[arg(long, default_value = "50")]
+        limit: usize,
+    },
 }
 
 #[derive(Subcommand)]

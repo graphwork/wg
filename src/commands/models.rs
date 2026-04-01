@@ -379,6 +379,170 @@ fn format_context_window(tokens: u64) -> String {
     }
 }
 
+// ── Benchmark registry commands ─────────────────────────────────────────
+
+use workgraph::model_benchmarks::{self, BenchmarkRegistry};
+
+/// Fetch model data from OpenRouter and write the benchmark registry.
+pub fn run_fetch(workgraph_dir: &Path, no_cache: bool) -> Result<()> {
+    let or_models = get_remote_models(workgraph_dir, no_cache)?;
+    eprintln!("Building benchmark registry from {} models...", or_models.len());
+
+    let mut registry = model_benchmarks::build_from_openrouter(&or_models);
+
+    // If an existing registry has benchmark scores, preserve them.
+    if let Some(existing) = BenchmarkRegistry::load(workgraph_dir)? {
+        for (id, existing_model) in &existing.models {
+            if let Some(new_model) = registry.models.get_mut(id) {
+                // Preserve any benchmark scores that were manually or externally added.
+                if existing_model.benchmarks.coding_index.is_some()
+                    || existing_model.benchmarks.intelligence_index.is_some()
+                    || existing_model.benchmarks.agentic.is_some()
+                {
+                    new_model.benchmarks = existing_model.benchmarks.clone();
+                }
+                if existing_model.popularity.provider_count.is_some() {
+                    new_model.popularity = existing_model.popularity.clone();
+                }
+            }
+        }
+    }
+
+    // Compute fitness scores.
+    model_benchmarks::compute_fitness_scores(&mut registry);
+
+    let model_count = registry.models.len();
+    let scored_count = registry
+        .models
+        .values()
+        .filter(|m| m.fitness.score.is_some())
+        .count();
+    let tier_counts = count_tiers(&registry);
+
+    registry.save(workgraph_dir)?;
+
+    println!("Benchmark registry updated: {} models", model_count);
+    if scored_count > 0 {
+        println!("  Scored: {} models with fitness data", scored_count);
+    }
+    println!(
+        "  Tiers: {} frontier, {} mid, {} budget",
+        tier_counts.0, tier_counts.1, tier_counts.2
+    );
+    println!(
+        "  Saved to: {}/model_benchmarks.json",
+        workgraph_dir.display()
+    );
+
+    Ok(())
+}
+
+/// Display the benchmark registry with fitness scores and tiers.
+pub fn run_benchmarks(
+    workgraph_dir: &Path,
+    tier: Option<&str>,
+    limit: usize,
+    json: bool,
+) -> Result<()> {
+    let registry = BenchmarkRegistry::load(workgraph_dir)?
+        .context("No benchmark registry found. Run `wg models fetch` first.")?;
+
+    let models: Vec<_> = if let Some(tier_filter) = tier {
+        registry.ranked_by_tier(tier_filter).into_iter().take(limit).collect()
+    } else {
+        registry.ranked().into_iter().take(limit).collect()
+    };
+
+    if json {
+        let json_val: Vec<serde_json::Value> = models
+            .iter()
+            .map(|m| {
+                serde_json::json!({
+                    "id": m.id,
+                    "name": m.name,
+                    "tier": m.tier,
+                    "fitness_score": m.fitness.score,
+                    "quality": m.fitness.components.quality,
+                    "value": m.fitness.components.value,
+                    "reliability": m.fitness.components.reliability,
+                    "input_per_mtok": m.pricing.input_per_mtok,
+                    "output_per_mtok": m.pricing.output_per_mtok,
+                    "context_window": m.context_window,
+                    "supports_tools": m.supports_tools,
+                    "benchmarks": {
+                        "coding_index": m.benchmarks.coding_index,
+                        "intelligence_index": m.benchmarks.intelligence_index,
+                        "agentic": m.benchmarks.agentic,
+                    },
+                })
+            })
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&json_val)?);
+        return Ok(());
+    }
+
+    if models.is_empty() {
+        println!("No models found.");
+        return Ok(());
+    }
+
+    println!(
+        "{:<42} {:<10} {:>8} {:>10} {:>11} {:>8} TOOLS",
+        "MODEL", "TIER", "FITNESS", "IN/1M", "OUT/1M", "CTX"
+    );
+    println!("{}", "-".repeat(105));
+
+    for model in &models {
+        let fitness_str = model
+            .fitness
+            .score
+            .map(|s| format!("{:.1}", s))
+            .unwrap_or_else(|| "—".to_string());
+        let ctx = model
+            .context_window
+            .map(format_context_window)
+            .unwrap_or_else(|| "?".to_string());
+        let tools = if model.supports_tools { "yes" } else { "no" };
+        let cost_in = if model.pricing.input_per_mtok > 0.0 {
+            format!("${:.4}", model.pricing.input_per_mtok)
+        } else {
+            "free".to_string()
+        };
+        let cost_out = if model.pricing.output_per_mtok > 0.0 {
+            format!("${:.4}", model.pricing.output_per_mtok)
+        } else {
+            "free".to_string()
+        };
+
+        println!(
+            "{:<42} {:<10} {:>8} {:>10} {:>11} {:>8} {}",
+            model.id, model.tier, fitness_str, cost_in, cost_out, ctx, tools,
+        );
+    }
+
+    println!(
+        "\n{} model(s) shown. Fetched: {}",
+        models.len(),
+        registry.fetched_at
+    );
+
+    Ok(())
+}
+
+fn count_tiers(registry: &BenchmarkRegistry) -> (usize, usize, usize) {
+    let mut frontier = 0;
+    let mut mid = 0;
+    let mut budget = 0;
+    for model in registry.models.values() {
+        match model.tier.as_str() {
+            "frontier" => frontier += 1,
+            "mid" => mid += 1,
+            _ => budget += 1,
+        }
+    }
+    (frontier, mid, budget)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

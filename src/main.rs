@@ -2195,6 +2195,12 @@ fn main() -> Result<()> {
                 commands::models::run_set_default(&workgraph_dir, &id)
             }
             ModelsCommands::Init => commands::models::run_init(&workgraph_dir),
+            ModelsCommands::Fetch { no_cache } => {
+                commands::models::run_fetch(&workgraph_dir, no_cache)
+            }
+            ModelsCommands::Benchmarks { tier, limit } => {
+                commands::models::run_benchmarks(&workgraph_dir, tier.as_deref(), limit, cli.json)
+            }
         },
         Commands::Model { command } => match command {
             ModelCommands::List { tier } => {
