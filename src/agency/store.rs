@@ -1,4 +1,5 @@
-use std::fs;
+use std::fs::{self, File};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
@@ -37,10 +38,37 @@ fn load_yaml<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T, AgencyErr
     Ok(serde_yaml::from_str(&contents)?)
 }
 
-fn save_yaml<T: serde::Serialize>(val: &T, dir: &Path, id: &str) -> Result<PathBuf, AgencyError> {
+fn save_yaml<T: serde::Serialize + serde::de::DeserializeOwned>(
+    val: &T,
+    dir: &Path,
+    id: &str,
+) -> Result<PathBuf, AgencyError> {
     fs::create_dir_all(dir)?;
     let path = dir.join(format!("{}.yaml", id));
-    fs::write(&path, serde_yaml::to_string(val)?)?;
+    let tmp_path = dir.join(format!(".{}.yaml.tmp", id));
+
+    let content = serde_yaml::to_string(val)?;
+
+    // Validate: ensure the serialized YAML round-trips successfully
+    let _: T = serde_yaml::from_str(&content)?;
+
+    // Write to temp file, sync, then atomic rename
+    let write_result = (|| -> Result<(), AgencyError> {
+        {
+            let mut file = File::create(&tmp_path)?;
+            file.write_all(content.as_bytes())?;
+            file.sync_all()?;
+        }
+        fs::rename(&tmp_path, &path)?;
+        Ok(())
+    })();
+
+    // Clean up temp file on failure
+    if write_result.is_err() {
+        let _ = fs::remove_file(&tmp_path);
+    }
+
+    write_result?;
     Ok(path)
 }
 
@@ -51,12 +79,45 @@ fn load_all_yaml<T: serde::de::DeserializeOwned + HasId>(
     if !dir.exists() {
         return Ok(items);
     }
+    let mut skipped: Vec<String> = Vec::new();
+    let mut total_yaml: usize = 0;
     for entry in fs::read_dir(dir)? {
         let entry = entry?;
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) == Some("yaml") {
-            items.push(load_yaml(&path)?);
+            total_yaml += 1;
+            match load_yaml(&path) {
+                Ok(item) => items.push(item),
+                Err(e) => {
+                    eprintln!(
+                        "Warning: skipping corrupt YAML file {}: {}",
+                        path.display(),
+                        e
+                    );
+                    skipped.push(path.display().to_string());
+                }
+            }
         }
+    }
+    // Fail only if there were YAML files but ALL of them are corrupt
+    if !skipped.is_empty() && items.is_empty() {
+        return Err(AgencyError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "All {} YAML file(s) in {} are corrupt (skipped: {})",
+                total_yaml,
+                dir.display(),
+                skipped.join(", ")
+            ),
+        )));
+    }
+    if !skipped.is_empty() {
+        eprintln!(
+            "Warning: skipped {}/{} corrupt YAML file(s) in {}",
+            skipped.len(),
+            total_yaml,
+            dir.display()
+        );
     }
     items.sort_by(|a, b| a.entity_id().cmp(b.entity_id()));
     Ok(items)
@@ -221,7 +282,29 @@ pub fn load_evaluation(path: &Path) -> Result<Evaluation, AgencyError> {
 pub fn save_evaluation(eval: &Evaluation, dir: &Path) -> Result<PathBuf, AgencyError> {
     fs::create_dir_all(dir)?;
     let path = dir.join(format!("{}.json", eval.id));
-    fs::write(&path, serde_json::to_string_pretty(eval)?)?;
+    let tmp_path = dir.join(format!(".{}.json.tmp", eval.id));
+
+    let content = serde_json::to_string_pretty(eval)?;
+
+    // Validate: ensure the serialized JSON round-trips successfully
+    let _: Evaluation = serde_json::from_str(&content)?;
+
+    // Write to temp file, sync, then atomic rename
+    let write_result = (|| -> Result<(), AgencyError> {
+        {
+            let mut file = File::create(&tmp_path)?;
+            file.write_all(content.as_bytes())?;
+            file.sync_all()?;
+        }
+        fs::rename(&tmp_path, &path)?;
+        Ok(())
+    })();
+
+    if write_result.is_err() {
+        let _ = fs::remove_file(&tmp_path);
+    }
+
+    write_result?;
     Ok(path)
 }
 pub fn load_all_evaluations(dir: &Path) -> Result<Vec<Evaluation>, AgencyError> {

@@ -1593,7 +1593,7 @@ mod tests {
     }
 
     #[test]
-    fn transfer_errors_on_corrupt_target_yaml() {
+    fn transfer_skips_corrupt_target_yaml_gracefully() {
         let tmp = TempDir::new().unwrap();
         let source = setup_store(&tmp, "source");
         let target = setup_store(&tmp, "target");
@@ -1607,19 +1607,19 @@ mod tests {
         let corrupt_path = target.roles_dir().join("corrupt.yaml");
         std::fs::write(&corrupt_path, "{{{{not valid yaml!!!!").unwrap();
 
+        // Transfer should succeed — corrupt files are skipped with warnings
         let result = transfer(&source, &target, &TransferOptions::default());
         assert!(
-            result.is_err(),
-            "transfer should fail on corrupt target YAML"
+            result.is_ok(),
+            "transfer should skip corrupt target YAML gracefully, got: {:?}",
+            result.unwrap_err()
         );
-        let err_msg = result.unwrap_err().to_string();
+
+        // The valid role should still be present after transfer
+        let roles = target.load_roles().unwrap();
         assert!(
-            err_msg.contains("yaml")
-                || err_msg.contains("YAML")
-                || err_msg.contains("parse")
-                || err_msg.contains("scan"),
-            "error should mention YAML parsing: {}",
-            err_msg
+            roles.iter().any(|r| r.id == "r1"),
+            "valid role r1 should survive transfer alongside corrupt file"
         );
     }
 

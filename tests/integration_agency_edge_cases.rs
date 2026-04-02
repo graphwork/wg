@@ -788,7 +788,7 @@ fn test_load_corrupted_evaluation_json() {
     assert!(result.is_err());
 }
 
-/// load_all_roles fails (returns Err) if one YAML file in the dir is corrupted.
+/// load_all_roles skips corrupted YAML files gracefully and returns valid ones.
 #[test]
 fn test_load_all_roles_with_one_corrupted() {
     let tmp = TempDir::new().unwrap();
@@ -804,12 +804,15 @@ fn test_load_all_roles_with_one_corrupted() {
     // Write a corrupted role
     std::fs::write(roles_dir.join("bad.yaml"), "not valid yaml {{{{").unwrap();
 
-    // load_all_roles should return an error because it can't deserialize the corrupted file
+    // load_all_roles should skip the corrupt file and return valid ones
     let result = agency::load_all_roles(&roles_dir);
     assert!(
-        result.is_err(),
-        "load_all_roles should fail with corrupted file"
+        result.is_ok(),
+        "load_all_roles should skip corrupt files gracefully"
     );
+    let roles = result.unwrap();
+    assert_eq!(roles.len(), 1, "should load the one valid role");
+    assert_eq!(roles[0].name, "Good Role");
 }
 
 /// An empty YAML file produces a deserialization error (not a panic).
