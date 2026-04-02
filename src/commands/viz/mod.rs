@@ -159,7 +159,7 @@ fn is_internal_task(task: &Task) -> bool {
     if task
         .tags
         .iter()
-        .any(|t| t == "coordinator-loop" || t == "compact-loop" || t == "user-board")
+        .any(|t| t == "coordinator-loop" || t == "compact-loop" || t == "user-board" || t == "evolution")
     {
         return false;
     }
@@ -1276,6 +1276,52 @@ mod tests {
         // Regular system tasks should still be internal
         let assign = make_internal_task("assign-foo", "Assign", "assignment", vec![]);
         assert!(is_internal_task(&assign));
+    }
+
+    #[test]
+    fn test_evolve_task_not_internal() {
+        // Evolve tasks (tagged "evolution") should NOT be filtered as internal,
+        // even though they have system task IDs (starting with '.').
+        let evolve = Task {
+            id: ".evolve-auto-20260402-150000".to_string(),
+            title: "Auto-evolve: threshold".to_string(),
+            status: Status::Open,
+            tags: vec!["evolution".to_string(), "agency".to_string()],
+            ..Task::default()
+        };
+        assert!(
+            !is_internal_task(&evolve),
+            "Evolve tasks should not be filtered as internal"
+        );
+
+        // Evolve pipeline subtasks should also be visible
+        let partition = Task {
+            id: ".evolve-partition-1".to_string(),
+            title: "Partition".to_string(),
+            tags: vec!["evolution".to_string(), "partition".to_string()],
+            ..Task::default()
+        };
+        assert!(!is_internal_task(&partition));
+
+        let analyze = Task {
+            id: ".evolve-analyze-mutation-1".to_string(),
+            title: "Analyze".to_string(),
+            tags: vec!["evolution".to_string(), "analyzer".to_string()],
+            ..Task::default()
+        };
+        assert!(!is_internal_task(&analyze));
+
+        // Other system tasks should still be internal
+        let assign = make_internal_task("assign-foo", "Assign", "assignment", vec![]);
+        assert!(is_internal_task(&assign));
+
+        let flip = Task {
+            id: ".flip-foo".to_string(),
+            title: "FLIP: foo".to_string(),
+            tags: vec!["evaluation".to_string()],
+            ..Task::default()
+        };
+        assert!(is_internal_task(&flip));
     }
 
     #[test]
