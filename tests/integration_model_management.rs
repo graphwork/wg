@@ -1400,3 +1400,169 @@ mod model_management_config_persistence {
         assert_eq!(triage.model.as_deref(), Some("claude:haiku"));
     }
 }
+
+// ===========================================================================
+// 7. Unified API key resolution through endpoint system
+// ===========================================================================
+mod unified_key_resolution {
+    use super::*;
+    use serial_test::serial;
+    use workgraph::executor::native::openai_client::resolve_openai_api_key_from_dir;
+
+    /// When llm_endpoints has an inline api_key and no env vars are set,
+    /// resolve_openai_api_key_from_dir should find the key.
+    #[test]
+    #[serial]
+    fn test_endpoint_key_used_when_no_env_vars() {
+        let tmp = setup_workgraph_dir();
+        let dir = tmp.path();
+
+        // Add an openrouter endpoint with an inline key
+        add_endpoint(
+            dir,
+            EndpointConfig {
+                name: "openrouter".into(),
+                provider: "openrouter".into(),
+                url: Some("https://openrouter.ai/api/v1".into()),
+                model: None,
+                api_key: Some("sk-or-endpoint-key".into()),
+                api_key_file: None,
+                api_key_env: None,
+                is_default: true,
+            },
+        );
+
+        // Clear env vars
+        let saved_or = std::env::var("OPENROUTER_API_KEY").ok();
+        let saved_oai = std::env::var("OPENAI_API_KEY").ok();
+        unsafe { std::env::remove_var("OPENROUTER_API_KEY") };
+        unsafe { std::env::remove_var("OPENAI_API_KEY") };
+
+        let key = resolve_openai_api_key_from_dir(dir).unwrap();
+        assert_eq!(key, "sk-or-endpoint-key");
+
+        // Restore env
+        match saved_or {
+            Some(v) => unsafe { std::env::set_var("OPENROUTER_API_KEY", v) },
+            None => unsafe { std::env::remove_var("OPENROUTER_API_KEY") },
+        }
+        match saved_oai {
+            Some(v) => unsafe { std::env::set_var("OPENAI_API_KEY", v) },
+            None => unsafe { std::env::remove_var("OPENAI_API_KEY") },
+        }
+    }
+
+    /// When llm_endpoints has api_key_file and no env vars are set,
+    /// resolve_openai_api_key_from_dir should read the key from file.
+    #[test]
+    #[serial]
+    fn test_endpoint_key_file_used_when_no_env_vars() {
+        let tmp = setup_workgraph_dir();
+        let dir = tmp.path();
+
+        // Write key to a file
+        let key_file = dir.join("api.key");
+        fs::write(&key_file, "sk-or-from-file\n").unwrap();
+
+        add_endpoint(
+            dir,
+            EndpointConfig {
+                name: "openrouter".into(),
+                provider: "openrouter".into(),
+                url: None,
+                model: None,
+                api_key: None,
+                api_key_file: Some(key_file.to_string_lossy().into_owned()),
+                api_key_env: None,
+                is_default: true,
+            },
+        );
+
+        // Clear env vars
+        let saved_or = std::env::var("OPENROUTER_API_KEY").ok();
+        let saved_oai = std::env::var("OPENAI_API_KEY").ok();
+        unsafe { std::env::remove_var("OPENROUTER_API_KEY") };
+        unsafe { std::env::remove_var("OPENAI_API_KEY") };
+
+        let key = resolve_openai_api_key_from_dir(dir).unwrap();
+        assert_eq!(key, "sk-or-from-file");
+
+        // Restore env
+        match saved_or {
+            Some(v) => unsafe { std::env::set_var("OPENROUTER_API_KEY", v) },
+            None => unsafe { std::env::remove_var("OPENROUTER_API_KEY") },
+        }
+        match saved_oai {
+            Some(v) => unsafe { std::env::set_var("OPENAI_API_KEY", v) },
+            None => unsafe { std::env::remove_var("OPENAI_API_KEY") },
+        }
+    }
+
+    /// Env var fallback still works when no endpoints are configured.
+    #[test]
+    #[serial]
+    fn test_env_var_fallback_still_works() {
+        let tmp = setup_workgraph_dir();
+        let dir = tmp.path();
+
+        // No endpoints added — just default config
+        let saved_or = std::env::var("OPENROUTER_API_KEY").ok();
+        let saved_oai = std::env::var("OPENAI_API_KEY").ok();
+        unsafe { std::env::set_var("OPENROUTER_API_KEY", "sk-or-env-fallback") };
+        unsafe { std::env::remove_var("OPENAI_API_KEY") };
+
+        let key = resolve_openai_api_key_from_dir(dir).unwrap();
+        assert_eq!(key, "sk-or-env-fallback");
+
+        // Restore env
+        match saved_or {
+            Some(v) => unsafe { std::env::set_var("OPENROUTER_API_KEY", v) },
+            None => unsafe { std::env::remove_var("OPENROUTER_API_KEY") },
+        }
+        match saved_oai {
+            Some(v) => unsafe { std::env::set_var("OPENAI_API_KEY", v) },
+            None => unsafe { std::env::remove_var("OPENAI_API_KEY") },
+        }
+    }
+
+    /// Config::resolve_api_key_for_provider works end-to-end via Config::load_merged.
+    #[test]
+    #[serial]
+    fn test_config_resolve_api_key_for_provider_end_to_end() {
+        let tmp = setup_workgraph_dir();
+        let dir = tmp.path();
+
+        add_endpoint(
+            dir,
+            EndpointConfig {
+                name: "my-ep".into(),
+                provider: "openrouter".into(),
+                url: None,
+                model: None,
+                api_key: Some("sk-or-e2e-test".into()),
+                api_key_file: None,
+                api_key_env: None,
+                is_default: true,
+            },
+        );
+
+        let saved_or = std::env::var("OPENROUTER_API_KEY").ok();
+        let saved_oai = std::env::var("OPENAI_API_KEY").ok();
+        unsafe { std::env::remove_var("OPENROUTER_API_KEY") };
+        unsafe { std::env::remove_var("OPENAI_API_KEY") };
+
+        let config = Config::load_merged(dir).unwrap();
+        let key = config.resolve_api_key_for_provider("openrouter", dir).unwrap();
+        assert_eq!(key, "sk-or-e2e-test");
+
+        // Restore env
+        match saved_or {
+            Some(v) => unsafe { std::env::set_var("OPENROUTER_API_KEY", v) },
+            None => unsafe { std::env::remove_var("OPENROUTER_API_KEY") },
+        }
+        match saved_oai {
+            Some(v) => unsafe { std::env::set_var("OPENAI_API_KEY", v) },
+            None => unsafe { std::env::remove_var("OPENAI_API_KEY") },
+        }
+    }
+}

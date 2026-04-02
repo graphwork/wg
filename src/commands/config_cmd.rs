@@ -1383,12 +1383,14 @@ pub fn check_key(dir: &Path, json: bool) -> Result<()> {
             if json {
                 println!(
                     "{}",
-                    serde_json::json!({"error": "No API key found. Set OPENROUTER_API_KEY or OPENAI_API_KEY."})
+                    serde_json::json!({"error": "No API key found. Run `wg endpoints add`, set OPENROUTER_API_KEY, or add [native_executor] api_key to config."})
                 );
             } else {
                 eprintln!("Error: No API key found.");
-                eprintln!("Set OPENROUTER_API_KEY or OPENAI_API_KEY environment variable,");
-                eprintln!("or add [native_executor] api_key to .workgraph/config.toml");
+                eprintln!("Configure a key via:");
+                eprintln!("  - wg endpoints add (recommended)");
+                eprintln!("  - Set OPENROUTER_API_KEY or OPENAI_API_KEY environment variable");
+                eprintln!("  - Add [native_executor] api_key to .workgraph/config.toml");
             }
             std::process::exit(1);
         }

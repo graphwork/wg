@@ -1120,60 +1120,22 @@ impl super::provider::Provider for OpenAiClient {
 
 /// Resolve an OpenAI-compatible API key.
 ///
-/// Priority: OPENROUTER_API_KEY > OPENAI_API_KEY > config file
+/// Delegates to `Config::resolve_api_key_for_provider("openrouter", ...)` which checks:
+/// 1. `[llm_endpoints]` — matching endpoint's api_key / api_key_file / key_env
+/// 2. Environment variables (OPENROUTER_API_KEY, OPENAI_API_KEY)
+/// 3. `[native_executor]` api_key (legacy path)
 fn resolve_openai_api_key() -> Result<String> {
-    for var in &["OPENROUTER_API_KEY", "OPENAI_API_KEY"] {
-        if let Ok(key) = std::env::var(var)
-            && !key.is_empty()
-        {
-            return Ok(key);
-        }
-    }
-
-    // Try config file
-    if let Ok(content) = std::fs::read_to_string(".workgraph/config.toml")
-        && let Ok(val) = toml::from_str::<toml::Value>(&content)
-        && let Some(key) = val
-            .get("native_executor")
-            .and_then(|v| v.get("api_key"))
-            .and_then(|v| v.as_str())
-        && !key.is_empty()
-    {
-        return Ok(key.to_string());
-    }
-
-    Err(anyhow!(
-        "No OpenAI-compatible API key found. Set OPENROUTER_API_KEY or OPENAI_API_KEY \
-         environment variable, or add [native_executor] api_key to .workgraph/config.toml"
-    ))
+    let workgraph_dir = std::path::Path::new(".workgraph");
+    resolve_openai_api_key_from_dir(workgraph_dir)
 }
 
 /// Resolve API key from a specific workgraph directory.
+///
+/// Loads config and delegates to `Config::resolve_api_key_for_provider`.
 pub fn resolve_openai_api_key_from_dir(workgraph_dir: &std::path::Path) -> Result<String> {
-    for var in &["OPENROUTER_API_KEY", "OPENAI_API_KEY"] {
-        if let Ok(key) = std::env::var(var)
-            && !key.is_empty()
-        {
-            return Ok(key);
-        }
-    }
-
-    let config_path = workgraph_dir.join("config.toml");
-    if let Ok(content) = std::fs::read_to_string(&config_path)
-        && let Ok(val) = toml::from_str::<toml::Value>(&content)
-        && let Some(key) = val
-            .get("native_executor")
-            .and_then(|v| v.get("api_key"))
-            .and_then(|v| v.as_str())
-        && !key.is_empty()
-    {
-        return Ok(key.to_string());
-    }
-
-    Err(anyhow!(
-        "No OpenAI-compatible API key found. Set OPENROUTER_API_KEY or OPENAI_API_KEY \
-         environment variable, or add [native_executor] api_key to .workgraph/config.toml"
-    ))
+    use crate::config::Config;
+    let config = Config::load_merged(workgraph_dir).unwrap_or_default();
+    config.resolve_api_key_for_provider("openrouter", workgraph_dir)
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────
