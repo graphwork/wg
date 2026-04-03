@@ -120,6 +120,8 @@ fn smoke_native_tool_loop_terminates_reasonably() {
     let _out = run_native_exec(&wg_dir, prompt, "termination-test", "minimax/minimax-m2.7", &api_key);
     let elapsed = start.elapsed().as_secs();
 
-    assert!(elapsed < 180, "Agent took {}s — too long for simple task", elapsed);
+    // 600s is generous — the task itself is trivial, but OpenRouter API latency
+    // can spike under load, and the minimax model sometimes takes extra turns.
+    assert!(elapsed < 600, "Agent took {}s — too long for simple task", elapsed);
     eprintln!("[smoke] Termination test passed in {}s", elapsed);
 }
