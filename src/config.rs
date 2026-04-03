@@ -83,6 +83,11 @@ pub struct Config {
     /// Chat archive rotation settings
     #[serde(default)]
     pub chat: ChatConfig,
+
+    /// True when `agent.model` was explicitly set in local config.
+    /// Used by `resolve_model_for_role` to skip tier defaults in favor of agent.model.
+    #[serde(skip)]
+    pub agent_model_is_local: bool,
 }
 
 /// Chat archive rotation configuration.
@@ -1675,7 +1680,11 @@ impl Config {
         }
 
         // 3. Role default_tier() → tiers.<tier> → registry lookup
-        if let Some(mut resolved) = self.resolve_tier(role.default_tier()) {
+        //    Skipped when agent.model was explicitly set in local config, because
+        //    the user's local model choice should take precedence over tier defaults.
+        if !self.agent_model_is_local
+            && let Some(mut resolved) = self.resolve_tier(role.default_tier())
+        {
             // Allow role/default provider to override registry provider
             if let Some(p) = resolve_provider(role) {
                 resolved.provider = Some(p);
@@ -2496,6 +2505,63 @@ pub fn merge_toml(global: toml::Value, local: toml::Value) -> toml::Value {
     }
 }
 
+/// When local config explicitly sets `agent.model`, strip any `models.<role>.model`
+/// entries that exist only in the global config (not overridden locally).
+fn strip_global_only_model_roles(
+    merged: &mut toml::Value,
+    global_val: &toml::Value,
+    local_val: &toml::Value,
+) {
+    let local_has_agent_model = local_val
+        .get("agent")
+        .and_then(|a| a.get("model"))
+        .and_then(|m| m.as_str())
+        .is_some();
+    if !local_has_agent_model {
+        return;
+    }
+    let global_models = match global_val.get("models").and_then(|m| m.as_table()) {
+        Some(m) => m,
+        None => return,
+    };
+    let local_models = local_val.get("models").and_then(|m| m.as_table());
+    let roles_to_strip: Vec<String> = global_models
+        .keys()
+        .filter(|role_key| {
+            let has_global_model = global_models
+                .get(role_key.as_str())
+                .and_then(|r| r.get("model"))
+                .is_some();
+            let has_local_role = local_models
+                .map(|lm| lm.contains_key(role_key.as_str()))
+                .unwrap_or(false);
+            has_global_model && !has_local_role
+        })
+        .cloned()
+        .collect();
+    if roles_to_strip.is_empty() {
+        return;
+    }
+    if let Some(merged_models) = merged.get_mut("models").and_then(|m| m.as_table_mut()) {
+        for role_key in &roles_to_strip {
+            if let Some(role_table) = merged_models
+                .get_mut(role_key.as_str())
+                .and_then(|r| r.as_table_mut())
+            {
+                role_table.remove("model");
+                if role_table.is_empty() {
+                    merged_models.remove(role_key.as_str());
+                }
+            }
+        }
+        if merged_models.is_empty() {
+            if let Some(root) = merged.as_table_mut() {
+                root.remove("models");
+            }
+        }
+    }
+}
+
 /// Walk a TOML Value table and record source per leaf key (dot-separated path).
 fn record_sources(
     val: &toml::Value,
@@ -2581,10 +2647,18 @@ impl Config {
         let global_val = Self::load_toml_value(&global_path)?;
         let local_val = Self::load_toml_value(&local_path)?;
 
-        let merged = merge_toml(global_val, local_val);
-        let config: Config = merged
+        let agent_model_is_local = local_val
+            .get("agent")
+            .and_then(|a| a.get("model"))
+            .and_then(|m| m.as_str())
+            .is_some();
+
+        let mut merged = merge_toml(global_val.clone(), local_val.clone());
+        strip_global_only_model_roles(&mut merged, &global_val, &local_val);
+        let mut config: Config = merged
             .try_into()
             .map_err(|e| anyhow::anyhow!("Failed to deserialize merged config: {}", e))?;
+        config.agent_model_is_local = agent_model_is_local;
 
         config.validate_model_format()?;
 
@@ -2773,11 +2847,19 @@ impl Config {
         record_sources(&global_val, "", &ConfigSource::Global, &mut sources);
         record_sources(&local_val, "", &ConfigSource::Local, &mut sources);
 
+        let agent_model_is_local = local_val
+            .get("agent")
+            .and_then(|a| a.get("model"))
+            .and_then(|m| m.as_str())
+            .is_some();
+
         // Merge and deserialize
-        let merged = merge_toml(global_val, local_val);
-        let config: Config = merged
+        let mut merged = merge_toml(global_val.clone(), local_val.clone());
+        strip_global_only_model_roles(&mut merged, &global_val, &local_val);
+        let mut config: Config = merged
             .try_into()
             .map_err(|e| anyhow::anyhow!("Failed to deserialize merged config: {}", e))?;
+        config.agent_model_is_local = agent_model_is_local;
 
         // Fill in defaults for keys not present in either file
         let default_config = Config::default();
@@ -3455,6 +3537,106 @@ model = "haiku"
                 .unwrap(),
             "haiku"
         );
+    }
+
+    #[test]
+    fn test_strip_global_only_model_roles_basic() {
+        let global: toml::Value = toml::from_str(r#"
+[agent]
+model = "claude:opus"
+[models.task_agent]
+model = "claude:opus"
+"#).unwrap();
+        let local: toml::Value = toml::from_str(r#"
+[agent]
+model = "openrouter:minimax/minimax-m2.7"
+"#).unwrap();
+        let mut merged = merge_toml(global.clone(), local.clone());
+        strip_global_only_model_roles(&mut merged, &global, &local);
+        let has_task_agent_model = merged.get("models").and_then(|m| m.get("task_agent")).and_then(|t| t.get("model")).is_some();
+        assert!(!has_task_agent_model, "global models.task_agent.model should be stripped when local sets agent.model");
+        assert_eq!(merged.get("agent").unwrap().get("model").unwrap().as_str().unwrap(), "openrouter:minimax/minimax-m2.7");
+    }
+
+    #[test]
+    fn test_strip_global_model_roles_preserves_local_override() {
+        let global: toml::Value = toml::from_str(r#"
+[agent]
+model = "claude:opus"
+[models.task_agent]
+model = "claude:opus"
+"#).unwrap();
+        let local: toml::Value = toml::from_str(r#"
+[agent]
+model = "openrouter:minimax/minimax-m2.7"
+[models.task_agent]
+model = "openrouter:minimax/minimax-m2.7"
+"#).unwrap();
+        let mut merged = merge_toml(global.clone(), local.clone());
+        strip_global_only_model_roles(&mut merged, &global, &local);
+        let task_model = merged.get("models").unwrap().get("task_agent").unwrap().get("model").unwrap().as_str().unwrap();
+        assert_eq!(task_model, "openrouter:minimax/minimax-m2.7");
+    }
+
+    #[test]
+    fn test_strip_global_model_roles_no_local_agent_model() {
+        let global: toml::Value = toml::from_str(r#"
+[agent]
+model = "claude:opus"
+[models.task_agent]
+model = "claude:sonnet"
+"#).unwrap();
+        let local: toml::Value = toml::from_str(r#"
+[coordinator]
+max_agents = 2
+"#).unwrap();
+        let mut merged = merge_toml(global.clone(), local.clone());
+        strip_global_only_model_roles(&mut merged, &global, &local);
+        let task_model = merged.get("models").unwrap().get("task_agent").unwrap().get("model").unwrap().as_str().unwrap();
+        assert_eq!(task_model, "claude:sonnet");
+    }
+
+    #[test]
+    fn test_local_agent_model_overrides_global_task_agent_in_resolution() {
+        let global: toml::Value = toml::from_str(r#"
+[agent]
+model = "claude:opus"
+[models.task_agent]
+model = "claude:opus"
+"#).unwrap();
+        let local: toml::Value = toml::from_str(r#"
+[agent]
+model = "openrouter:minimax/minimax-m2.7"
+"#).unwrap();
+        let mut merged = merge_toml(global.clone(), local.clone());
+        strip_global_only_model_roles(&mut merged, &global, &local);
+        let mut config: Config = merged.try_into().unwrap();
+        config.agent_model_is_local = true;
+        let resolved = config.resolve_model_for_role(DispatchRole::TaskAgent);
+        assert_eq!(resolved.model, "minimax/minimax-m2.7", "TaskAgent should resolve to local agent.model");
+        assert_eq!(resolved.provider, Some("openrouter".to_string()));
+    }
+
+    #[test]
+    fn test_local_models_task_agent_preserved_in_resolution() {
+        let global: toml::Value = toml::from_str(r#"
+[agent]
+model = "claude:opus"
+[models.task_agent]
+model = "claude:opus"
+"#).unwrap();
+        let local: toml::Value = toml::from_str(r#"
+[agent]
+model = "openrouter:minimax/minimax-m2.7"
+[models.task_agent]
+model = "openrouter:qwen/qwen3-235b"
+"#).unwrap();
+        let mut merged = merge_toml(global.clone(), local.clone());
+        strip_global_only_model_roles(&mut merged, &global, &local);
+        let mut config: Config = merged.try_into().unwrap();
+        config.agent_model_is_local = true;
+        let resolved = config.resolve_model_for_role(DispatchRole::TaskAgent);
+        assert_eq!(resolved.model, "qwen/qwen3-235b", "Local models.task_agent.model should be preserved");
     }
 
     #[test]
