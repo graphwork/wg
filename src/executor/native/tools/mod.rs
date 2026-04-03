@@ -139,3 +139,141 @@ pub fn truncate_output(output: String) -> String {
         output
     }
 }
+
+/// Per-tool output size limits for smart truncation.
+pub struct ToolTruncationConfig {
+    /// Maximum character count before truncation kicks in.
+    pub max_chars: usize,
+}
+
+impl ToolTruncationConfig {
+    /// Returns the truncation config for a given tool name.
+    pub fn for_tool(tool_name: &str) -> Self {
+        let max_chars = match tool_name {
+            "bash" => 8_000,
+            "read_file" => 16_000,
+            "grep" => 4_000,
+            "glob" => 4_000,
+            "wg_show" => 2_000,
+            "wg_list" => 4_000,
+            _ => MAX_TOOL_OUTPUT_SIZE,
+        };
+        Self { max_chars }
+    }
+}
+
+/// Smart truncation with head+tail preservation.
+///
+/// When output exceeds `max_chars`, shows the first half and last half
+/// with an omission notice in between.
+pub fn truncate_tool_output(output: &str, max_chars: usize) -> String {
+    if output.len() <= max_chars {
+        return output.to_string();
+    }
+
+    let total_chars = output.len();
+    let total_lines = output.lines().count();
+
+    let half = max_chars / 2;
+    let head_end = output.floor_char_boundary(half);
+    let raw_tail_start = total_chars.saturating_sub(half);
+    let tail_start = output.floor_char_boundary(raw_tail_start).max(head_end);
+
+    let head = &output[..head_end];
+    let tail = &output[tail_start..];
+    let omitted_chars = total_chars - head.len() - tail.len();
+    let head_lines = head.lines().count();
+    let tail_lines = tail.lines().count();
+    let omitted_lines = total_lines.saturating_sub(head_lines + tail_lines);
+
+    format!(
+        "{}\n\n[... {} chars omitted ({} lines). \
+         Showing first/last ~{} chars. \
+         Use read_file or grep for specific content. ...]\n\n{}",
+        head, omitted_chars, omitted_lines, half, tail
+    )
+}
+
+/// Apply smart truncation for a specific tool type.
+pub fn truncate_for_tool(output: &str, tool_name: &str) -> String {
+    let config = ToolTruncationConfig::for_tool(tool_name);
+    truncate_tool_output(output, config.max_chars)
+}
+
+#[cfg(test)]
+mod truncation_tests {
+    use super::*;
+
+    #[test]
+    fn test_truncation_under_limit_passthrough() {
+        let short = "hello world";
+        let result = truncate_tool_output(short, 8_000);
+        assert_eq!(result, short);
+    }
+
+    #[test]
+    fn test_truncation_exact_limit_passthrough() {
+        let exact = "a".repeat(8_000);
+        let result = truncate_tool_output(&exact, 8_000);
+        assert_eq!(result, exact);
+    }
+
+    #[test]
+    fn test_truncation_preserves_head_tail() {
+        let head_content = "HEAD_START\n".repeat(100);
+        let middle_content = "MIDDLE_FILLER\n".repeat(500);
+        let tail_content = "TAIL_END\n".repeat(100);
+        let full = format!("{}{}{}", head_content, middle_content, tail_content);
+
+        let result = truncate_tool_output(&full, 4_000);
+
+        assert!(result.starts_with("HEAD_START"));
+        assert!(result.ends_with("TAIL_END\n"));
+        assert!(result.contains("chars omitted"));
+        assert!(result.contains("lines)"));
+        assert!(result.contains("Use read_file or grep"));
+        assert!(result.len() < full.len());
+    }
+
+    #[test]
+    fn test_truncation_bash() {
+        let config = ToolTruncationConfig::for_tool("bash");
+        assert_eq!(config.max_chars, 8_000);
+
+        let big_output = "x".repeat(10_000);
+        let result = truncate_tool_output(&big_output, config.max_chars);
+        assert!(result.contains("chars omitted"));
+        assert!(result.starts_with("xxxx"));
+        assert!(result.ends_with("xxxx"));
+    }
+
+    #[test]
+    fn test_truncation_configs() {
+        assert_eq!(ToolTruncationConfig::for_tool("bash").max_chars, 8_000);
+        assert_eq!(ToolTruncationConfig::for_tool("read_file").max_chars, 16_000);
+        assert_eq!(ToolTruncationConfig::for_tool("grep").max_chars, 4_000);
+        assert_eq!(ToolTruncationConfig::for_tool("glob").max_chars, 4_000);
+        assert_eq!(ToolTruncationConfig::for_tool("wg_show").max_chars, 2_000);
+        assert_eq!(ToolTruncationConfig::for_tool("wg_list").max_chars, 4_000);
+        assert_eq!(ToolTruncationConfig::for_tool("unknown").max_chars, MAX_TOOL_OUTPUT_SIZE);
+    }
+
+    #[test]
+    fn test_truncation_omission_notice_has_counts() {
+        let lines: Vec<String> = (0..1000)
+            .map(|i| format!("line {}: some content here", i))
+            .collect();
+        let big = lines.join("\n");
+        let result = truncate_tool_output(&big, 2_000);
+
+        assert!(result.contains("chars omitted"));
+        assert!(result.contains("lines)"));
+    }
+
+    #[test]
+    fn test_truncation_multibyte_safe() {
+        let content = "\u{1f980}".repeat(5000);
+        let result = truncate_tool_output(&content, 4_000);
+        assert!(result.contains("chars omitted"));
+    }
+}

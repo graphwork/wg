@@ -1,19 +1,23 @@
 //! File tools: read_file, write_file, edit_file, glob, grep.
 
 use std::fs;
+use std::sync::Arc;
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
+use tokio::sync::Mutex;
 use regex::Regex;
 use serde_json::json;
 
-use super::{Tool, ToolOutput, ToolRegistry, truncate_output};
+use super::file_cache::FileCache;
+use super::{Tool, ToolOutput, ToolRegistry, truncate_for_tool};
 use crate::executor::native::client::ToolDefinition;
 
 /// Register all file tools into the registry.
 pub fn register_file_tools(registry: &mut ToolRegistry) {
-    registry.register(Box::new(ReadFileTool));
+    let cache = Arc::new(Mutex::new(FileCache::new()));
+    registry.register(Box::new(ReadFileTool { cache }));
     registry.register(Box::new(WriteFileTool));
     registry.register(Box::new(EditFileTool));
     registry.register(Box::new(GlobTool));
@@ -22,7 +26,9 @@ pub fn register_file_tools(registry: &mut ToolRegistry) {
 
 // ── read_file ───────────────────────────────────────────────────────────
 
-struct ReadFileTool;
+struct ReadFileTool {
+    cache: Arc<Mutex<FileCache>>,
+}
 
 #[async_trait]
 impl Tool for ReadFileTool {
@@ -56,7 +62,7 @@ impl Tool for ReadFileTool {
     }
 
     async fn execute(&self, input: &serde_json::Value) -> ToolOutput {
-        let path = match input.get("path").and_then(|v| v.as_str()) {
+        let path_str = match input.get("path").and_then(|v| v.as_str()) {
             Some(p) => p,
             None => return ToolOutput::error("Missing required parameter: path".to_string()),
         };
@@ -64,28 +70,61 @@ impl Tool for ReadFileTool {
         let offset = input.get("offset").and_then(|v| v.as_u64()).unwrap_or(1) as usize;
         let limit = input.get("limit").and_then(|v| v.as_u64()).unwrap_or(2000) as usize;
 
-        match fs::read_to_string(path) {
-            Ok(content) => {
-                let lines: Vec<&str> = content.lines().collect();
-                let start = if offset > 0 { offset - 1 } else { 0 };
-                let end = (start + limit).min(lines.len());
-
-                let mut output = String::new();
-                for (i, line) in lines[start..end].iter().enumerate() {
-                    let line_num = start + i + 1;
-                    // Truncate long lines
-                    let truncated = if line.len() > 2000 {
-                        &line[..line.floor_char_boundary(2000)]
-                    } else {
-                        line
-                    };
-                    output.push_str(&format!("{:>6}\t{}\n", line_num, truncated));
-                }
-
-                ToolOutput::success(truncate_output(output))
+        // Get mtime for cache validation; error on stat failure.
+        let mtime = match fs::metadata(path_str).and_then(|m| m.modified()) {
+            Ok(t) => t,
+            Err(e) => {
+                return ToolOutput::error(format!("Failed to read file '{}': {}", path_str, e));
             }
-            Err(e) => ToolOutput::error(format!("Failed to read file '{}': {}", path, e)),
+        };
+
+        let path_buf = PathBuf::from(path_str);
+
+        // Try cache first
+        let cached: Option<String> = {
+            let mut cache = self.cache.lock().await;
+            cache.get(&path_buf, mtime)
+        };
+
+        let (content, from_cache) = if let Some(hit) = cached {
+            (hit, true)
+        } else {
+            match fs::read_to_string(path_str) {
+                Ok(content) => {
+                    let mut cache = self.cache.lock().await;
+                    cache.insert(path_buf, content.clone(), mtime);
+                    (content, false)
+                }
+                Err(e) => {
+                    return ToolOutput::error(format!(
+                        "Failed to read file '{}': {}",
+                        path_str, e
+                    ));
+                }
+            }
+        };
+
+        let lines: Vec<&str> = content.lines().collect();
+        let start = if offset > 0 { offset - 1 } else { 0 };
+        let end = (start + limit).min(lines.len());
+
+        let mut output = String::new();
+        for (i, line) in lines[start..end].iter().enumerate() {
+            let line_num = start + i + 1;
+            // Truncate long lines
+            let truncated = if line.len() > 2000 {
+                &line[..line.floor_char_boundary(2000)]
+            } else {
+                line
+            };
+            output.push_str(&format!("{:>6}\t{}\n", line_num, truncated));
         }
+
+        if from_cache {
+            output.push_str("\n[cached read, file unchanged]\n");
+        }
+
+        ToolOutput::success(truncate_for_tool(&output, "read_file"))
     }
 }
 
@@ -288,7 +327,7 @@ impl Tool for GlobTool {
                 if results.is_empty() {
                     ToolOutput::success("No files matched the pattern.".to_string())
                 } else {
-                    ToolOutput::success(truncate_output(results.join("\n")))
+                    ToolOutput::success(truncate_for_tool(&results.join("\n"), "glob"))
                 }
             }
             Err(e) => ToolOutput::error(format!("Invalid glob pattern '{}': {}", pattern, e)),
@@ -400,7 +439,7 @@ impl Tool for GrepTool {
                     max_results
                 ));
             }
-            ToolOutput::success(truncate_output(output))
+            ToolOutput::success(truncate_for_tool(&output, "grep"))
         }
     }
 }

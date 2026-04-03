@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use serde_json::json;
 use tokio::process::Command;
 
-use super::{Tool, ToolOutput, truncate_output};
+use super::{Tool, ToolOutput, truncate_for_tool};
 use crate::executor::native::client::ToolDefinition;
 
 const DEFAULT_TIMEOUT_MS: u64 = 120_000; // 2 minutes
@@ -95,17 +95,17 @@ impl Tool for BashTool {
                     if result.is_empty() {
                         ToolOutput::success("(no output)".to_string())
                     } else {
-                        ToolOutput::success(truncate_output(result))
+                        ToolOutput::success(truncate_for_tool(&result, "bash"))
                     }
                 } else {
                     let code = output.status.code().unwrap_or(-1);
                     if result.is_empty() {
                         ToolOutput::error(format!("Command exited with code {}", code))
                     } else {
-                        ToolOutput::error(truncate_output(format!(
-                            "Exit code: {}\n{}",
-                            code, result
-                        )))
+                        ToolOutput::error(truncate_for_tool(
+                            &format!("Exit code: {}\n{}", code, result),
+                            "bash",
+                        ))
                     }
                 }
             }

@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use chrono::Utc;
 use serde_json::json;
 
-use super::{Tool, ToolOutput, ToolRegistry, truncate_output};
+use super::{Tool, ToolOutput, ToolRegistry, truncate_for_tool};
 use crate::executor::native::client::ToolDefinition;
 use crate::graph::{LogEntry, Node, Status, Task};
 use crate::parser::{load_graph, modify_graph};
@@ -150,7 +150,7 @@ impl Tool for WgShowTool {
             }
         }
 
-        ToolOutput::success(truncate_output(output))
+        ToolOutput::success(truncate_for_tool(&output, "wg_show"))
     }
 }
 
@@ -216,7 +216,7 @@ impl Tool for WgListTool {
         if lines.is_empty() {
             ToolOutput::success("No tasks found.".to_string())
         } else {
-            ToolOutput::success(truncate_output(lines.join("\n")))
+            ToolOutput::success(truncate_for_tool(&lines.join("\n"), "wg_list"))
         }
     }
 }
