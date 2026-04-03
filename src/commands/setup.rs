@@ -137,6 +137,7 @@ pub fn build_config(choices: &SetupChoices, base: Option<&Config>) -> Config {
             api_key_file: ep.api_key_file.clone(),
             api_key_env: ep.api_key_env.clone(),
             is_default: true,
+            context_window: None,
         };
         config.llm_endpoints = EndpointsConfig {
             endpoints: vec![endpoint],
@@ -2442,6 +2443,7 @@ mod tests {
                 api_key_file: None,
                 api_key_env: None,
                 is_default: true,
+            context_window: None,
             });
         let status = check_existing_config(&config);
         assert!(status.contains("my-ep"));

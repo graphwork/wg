@@ -12244,6 +12244,7 @@ impl VizApp {
                 api_key_file: None,
                 api_key_env: None,
                 is_default: is_first,
+                context_window: None,
             });
         if config.save(&self.workgraph_dir).is_ok() {
             self.config_panel.save_notification = Some(Instant::now());

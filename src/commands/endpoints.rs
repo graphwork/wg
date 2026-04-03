@@ -755,6 +755,7 @@ mod tests {
             api_key_file: None,
             api_key_env: None,
             is_default: true,
+            context_window: None,
         });
         config.save(tmp.path()).unwrap();
 
@@ -775,6 +776,7 @@ mod tests {
             api_key_file: None,
             api_key_env: None,
             is_default: true,
+            context_window: None,
         });
         config.save(tmp.path()).unwrap();
 
@@ -795,6 +797,7 @@ mod tests {
             api_key_file: None,
             api_key_env: None,
             is_default: true,
+            context_window: None,
         });
         config.save(tmp.path()).unwrap();
 
@@ -821,6 +824,7 @@ mod tests {
             api_key_file: None,
             api_key_env: None,
             is_default: true,
+            context_window: None,
         });
         config.save(tmp.path()).unwrap();
 

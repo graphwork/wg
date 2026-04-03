@@ -220,7 +220,11 @@ impl AgentLoop {
                     .working_dir
                     .as_deref()
                     .unwrap_or_else(|| Path::new("."));
-                match resume::load_resume_data(path, working_dir, &ResumeConfig::default()) {
+                let resume_config = ResumeConfig {
+                    context_window_tokens: self.client.context_window(),
+                    ..ResumeConfig::default()
+                };
+                match resume::load_resume_data(path, working_dir, &resume_config) {
                     Ok(Some(data)) => {
                         eprintln!(
                             "[native-agent] Resuming from journal: {} messages, {} stale annotations{}",

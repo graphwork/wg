@@ -411,6 +411,7 @@ pub struct EndpointConfig {
     /// Whether this is the default endpoint for new agents
     #[serde(default)]
     pub is_default: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]    pub context_window: Option<u64>,
 }
 
 fn default_provider() -> String {

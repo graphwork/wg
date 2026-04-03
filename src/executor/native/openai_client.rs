@@ -226,6 +226,7 @@ pub struct OpenAiClient {
     provider_hint: Option<String>,
     /// Whether to use SSE streaming for requests.
     use_streaming: bool,
+    context_window_tokens: usize,
 }
 
 impl OpenAiClient {
@@ -247,6 +248,7 @@ impl OpenAiClient {
             max_tokens: DEFAULT_MAX_TOKENS,
             provider_hint: None,
             use_streaming: false,
+            context_window_tokens: 128_000,
         })
     }
 
@@ -309,6 +311,8 @@ impl OpenAiClient {
         self.max_tokens = max_tokens;
         self
     }
+
+    pub fn with_context_window(mut self, tokens: usize) -> Self {        self.context_window_tokens = tokens;        self    }
 
     /// Set a provider hint for provider-specific behavior.
     ///
@@ -1099,6 +1103,8 @@ impl super::provider::Provider for OpenAiClient {
     fn max_tokens(&self) -> u32 {
         self.max_tokens
     }
+
+    fn context_window(&self) -> usize {        self.context_window_tokens    }
 
     async fn send(&self, request: &MessagesRequest) -> Result<MessagesResponse> {
         if self.use_streaming {
