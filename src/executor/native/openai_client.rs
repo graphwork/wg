@@ -509,8 +509,10 @@ impl OpenAiClient {
         // Add tool calls if present
         if let Some(tool_calls) = choice.message.tool_calls {
             for tc in tool_calls {
-                let input: serde_json::Value =
-                    serde_json::from_str(&tc.function.arguments).unwrap_or_default();
+                let input: serde_json::Value = match serde_json::from_str(&tc.function.arguments) {
+                    Ok(v) => v,
+                    Err(e) => make_parse_error_input(&tc.function.arguments, &e.to_string()),
+                };
                 content_blocks.push(ContentBlock::ToolUse {
                     id: tc.id,
                     name: tc.function.name,
@@ -1326,12 +1328,14 @@ fn extract_tool_calls_from_text(text: &str) -> (String, Vec<ContentBlock>) {
         if let Some(tc) = parse_tool_call_json(inner, &mut call_counter) {
             tool_calls.push(tc);
         }
-        // Remove the whole tag from remaining text
-        remaining = format!(
-            "{}{}",
-            remaining[..start].trim_end(),
-            remaining[end + "<|/plugin|>".len()..].trim_start()
-        );
+        // Remove the whole tag from remaining text, preserving newline between segments
+        let before = remaining[..start].trim_end();
+        let after = remaining[end + "<|/plugin|>".len()..].trim_start();
+        remaining = if !before.is_empty() && !after.is_empty() {
+            format!("{}\n{}", before, after)
+        } else {
+            format!("{}{}", before, after)
+        };
     }
 
     // Trim the remaining text
@@ -1374,6 +1378,17 @@ fn parse_tool_call_json(json_str: &str, counter: &mut u32) -> Option<ContentBloc
         id: format!("text_call_{}", counter),
         name,
         input,
+    })
+}
+
+/// Build a structured error input for when tool arguments fail to parse.
+///
+/// The agent loop checks for `__parse_error` in tool inputs and returns
+/// an error tool result, allowing the model to self-correct.
+fn make_parse_error_input(raw_arguments: &str, error_message: &str) -> serde_json::Value {
+    serde_json::json!({
+        "__parse_error": error_message,
+        "__raw_arguments": raw_arguments,
     })
 }
 
@@ -1710,7 +1725,10 @@ fn assemble_oai_stream_response(
 
     for (_index, (id, name, arguments)) in tool_calls {
         let input: serde_json::Value =
-            serde_json::from_str(&arguments).unwrap_or(serde_json::Value::Null);
+            match serde_json::from_str(&arguments) {
+                Ok(v) => v,
+                Err(e) => make_parse_error_input(&arguments, &e.to_string()),
+            };
         content_blocks.push(ContentBlock::ToolUse { id, name, input });
     }
 
@@ -2049,6 +2067,55 @@ mod tests {
         let mut buf = "data: {\"cr\":true}\r\n\r\n".to_string();
         let data = parse_next_oai_sse_data(&mut buf).unwrap();
         assert_eq!(data, r#"{"cr":true}"#);
+    }
+
+
+    // ── Parse error handling tests ────────────────────────────────────────
+
+    #[test]
+    fn test_json_parse_malformed_returns_error() {
+        let mut tool_calls = std::collections::BTreeMap::new();
+        tool_calls.insert(
+            0,
+            (
+                "call_bad".to_string(),
+                "bash".to_string(),
+                r#"{invalid json here}"#.to_string(),
+            ),
+        );
+
+        let resp = assemble_oai_stream_response(
+            "gen-parse-err".to_string(),
+            String::new(),
+            tool_calls,
+            Some("tool_calls".to_string()),
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(resp.content.len(), 1);
+        let ContentBlock::ToolUse { id, name, input } = &resp.content[0] else {
+            panic!("Expected ToolUse block");
+        };
+        assert_eq!(id, "call_bad");
+        assert_eq!(name, "bash");
+        assert!(input.get("__parse_error").is_some());
+        assert!(input.get("__raw_arguments").is_some());
+        assert_eq!(
+            input.get("__raw_arguments").and_then(|v| v.as_str()),
+            Some("{invalid json here}")
+        );
+    }
+
+    #[test]
+    fn test_make_parse_error_input() {
+        let input =
+            make_parse_error_input(r#"{"broken":true"#, "expected `}` at line 1 column 14");
+        assert!(input.get("__parse_error").is_some());
+        assert_eq!(
+            input.get("__parse_error").and_then(|v| v.as_str()),
+            Some("expected `}` at line 1 column 14")
+        );
     }
 
     // ── Stream assembly tests ───────────────────────────────────────────

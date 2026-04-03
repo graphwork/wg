@@ -421,7 +421,26 @@ impl AgentLoop {
                             }
                             let tool_start = std::time::Instant::now();
 
-                            let output = self.tools.execute(name, input).await;
+                            // Detect parse errors from malformed JSON in tool arguments.
+                            let output = if input.get("__parse_error").is_some() {
+                                let error_msg = input
+                                    .get("__parse_error")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("unknown parse error");
+                                let raw_args = input
+                                    .get("__raw_arguments")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("");
+                                crate::executor::native::tools::ToolOutput {
+                                    content: format!(
+                                        "ERROR: Tool arguments JSON parse failed: {}. Raw arguments: {}",
+                                        error_msg, raw_args
+                                    ),
+                                    is_error: true,
+                                }
+                            } else {
+                                self.tools.execute(name, input).await
+                            };
 
                             let duration_ms = tool_start.elapsed().as_millis() as u64;
 
