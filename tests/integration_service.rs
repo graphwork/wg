@@ -34,6 +34,14 @@ fn wg_binary() -> PathBuf {
     path
 }
 
+/// Derive a fake HOME from the wg_dir path so global config doesn't leak in.
+fn fake_home_for(wg_dir: &Path) -> PathBuf {
+    wg_dir
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| wg_dir.to_path_buf())
+}
+
 /// Helper: run `wg` with given args in a specific workgraph directory.
 fn wg_cmd(wg_dir: &Path, args: &[&str]) -> std::process::Output {
     let wg = wg_binary();
@@ -41,6 +49,7 @@ fn wg_cmd(wg_dir: &Path, args: &[&str]) -> std::process::Output {
         .arg("--dir")
         .arg(wg_dir)
         .args(args)
+        .env("HOME", fake_home_for(wg_dir))
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

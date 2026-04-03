@@ -32,11 +32,20 @@ fn wg_binary() -> PathBuf {
     path
 }
 
+/// Derive a fake HOME from the wg_dir path so global config doesn't leak in.
+fn fake_home_for(wg_dir: &Path) -> PathBuf {
+    wg_dir
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| wg_dir.to_path_buf())
+}
+
 fn wg_cmd_env(wg_dir: &Path, args: &[&str], env_vars: &[(&str, &str)]) -> std::process::Output {
     let mut cmd = Command::new(wg_binary());
     cmd.arg("--dir")
         .arg(wg_dir)
         .args(args)
+        .env("HOME", fake_home_for(wg_dir))
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
