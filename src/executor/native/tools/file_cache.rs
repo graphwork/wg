@@ -78,10 +78,12 @@ impl FileCache {
         );
     }
 
+    #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
         self.entries.len()
     }
 
+    #[cfg(test)]
     pub(crate) fn total_size(&self) -> usize {
         self.total_size
     }
