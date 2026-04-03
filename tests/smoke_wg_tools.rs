@@ -7,7 +7,6 @@
 //! Run with: cargo test smoke_wg_tools -- --ignored
 //! Requires: OPENROUTER_API_KEY environment variable
 
-use std::fs;
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 
@@ -24,9 +23,9 @@ use workgraph::parser::{load_graph, save_graph};
 /// Setup workgraph directory and graph file.
 /// Returns the path to the graph.jsonl file.
 fn setup_workgraph(dir: &Path) -> PathBuf {
-    let wg_dir = dir.join(".workgraph");
-    fs::create_dir_all(&wg_dir).unwrap();
-    let graph_path = wg_dir.join("graph.jsonl");
+    // Match the pattern from integration_native_executor.rs:
+    // graph.jsonl is created directly in dir, not in .workgraph subdirectory
+    let graph_path = dir.join("graph.jsonl");
     let graph = WorkGraph::new();
     save_graph(&graph, &graph_path).unwrap();
     graph_path
