@@ -1529,6 +1529,7 @@ mod tests {
                     api_key_env: None,
                     model: None,
                     is_default: true,
+                    context_window: None,
                 },
                 workgraph::config::EndpointConfig {
                     name: "my-anthropic".to_string(),
@@ -1539,6 +1540,7 @@ mod tests {
                     api_key_env: None,
                     model: None,
                     is_default: false,
+                    context_window: None,
                 },
             ],
         }
