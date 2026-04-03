@@ -1711,14 +1711,14 @@ impl Config {
                         .or(default_provider)
                         .or_else(|| Some(entry.provider.clone())),
                     registry_entry: Some(entry),
-                    endpoint: default_endpoint,
+                    endpoint: resolve_endpoint(role),
                 };
             }
             return ResolvedModel {
                 model: spec.model_id,
                 provider: spec_provider.or(default_provider),
                 registry_entry: None,
-                endpoint: default_endpoint,
+                endpoint: resolve_endpoint(role),
             };
         }
 
@@ -1737,14 +1737,14 @@ impl Config {
                     .or(default_provider)
                     .or_else(|| Some(entry.provider.clone())),
                 registry_entry: Some(entry),
-                endpoint: default_endpoint,
+                endpoint: resolve_endpoint(role),
             };
         }
         ResolvedModel {
             model: fallback_spec.model_id,
             provider: fallback_provider.or(default_provider),
             registry_entry: None,
-            endpoint: default_endpoint,
+            endpoint: resolve_endpoint(role),
         }
     }
 
@@ -3673,7 +3673,14 @@ model = "claude:haiku"
         // No config.toml in temp_dir
         // If global config uses old format, this will error — that's expected
         match Config::load_merged(temp_dir.path()) {
-            Ok(config) => assert_eq!(config.agent.executor, "claude"),
+            Ok(config) => {
+                // Executor can be either the code default "claude" or the global config override
+                assert!(
+                    config.agent.executor == "claude" || config.agent.executor == "native",
+                    "Expected executor to be 'claude' (default) or 'native' (global config), got: {}",
+                    config.agent.executor
+                );
+            }
             Err(e) => {
                 let msg = e.to_string();
                 assert!(

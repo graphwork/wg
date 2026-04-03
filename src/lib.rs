@@ -172,8 +172,12 @@ mod tests {
         assert_eq!(format_duration(0, true), "0s");
     }
 
+    // Mutex to serialize tests that mutate env vars (process-global state).
+    static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn test_current_user_returns_wg_user_when_set() {
+        let _lock = ENV_MUTEX.lock().unwrap();
         unsafe {
             let orig_wg = std::env::var("WG_USER").ok();
             let orig_user = std::env::var("USER").ok();
@@ -195,6 +199,7 @@ mod tests {
 
     #[test]
     fn test_current_user_falls_back_to_user_env() {
+        let _lock = ENV_MUTEX.lock().unwrap();
         unsafe {
             let orig_wg = std::env::var("WG_USER").ok();
             let orig_user = std::env::var("USER").ok();
@@ -217,6 +222,7 @@ mod tests {
 
     #[test]
     fn test_current_user_returns_unknown_when_neither_set() {
+        let _lock = ENV_MUTEX.lock().unwrap();
         unsafe {
             let orig_wg = std::env::var("WG_USER").ok();
             let orig_user = std::env::var("USER").ok();
