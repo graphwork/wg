@@ -8384,6 +8384,10 @@ impl VizApp {
         use crate::commands::service::CoordinatorState;
 
         // ── Coordinator cards (one per coordinator) ──
+        // Use fresh registry active_count for agents_alive instead of stale
+        // CoordinatorState.agents_alive (which is only updated at tick boundaries).
+        let fresh_alive = workgraph::AgentRegistry::load_or_warn(&self.workgraph_dir)
+            .active_count();
         let all_states = CoordinatorState::load_all(&self.workgraph_dir);
         self.dashboard.coordinator_cards = if all_states.is_empty() {
             vec![DashboardCoordinatorCard {
@@ -8399,7 +8403,7 @@ impl VizApp {
                     paused: cs.paused,
                     frozen: cs.frozen,
                     ticks: cs.ticks,
-                    agents_alive: cs.agents_alive,
+                    agents_alive: fresh_alive,
                     tasks_ready: cs.tasks_ready,
                     max_agents: cs.max_agents,
                     model: cs.model.clone(),
@@ -9286,13 +9290,13 @@ impl VizApp {
         self.service_health.agents_max = coord.max_agents;
 
         // Load agent registry for alive count and stuck task detection.
-        // Use both status AND PID liveness check to match `wg agents --alive`.
+        // Use status-based count (active_count) to match `wg service status` / `wg status`.
+        // The daemon's cleanup routines (triage, dead-agent reaping) keep registry
+        // statuses accurate. PID-based liveness checks are unreliable from the TUI
+        // process because the daemon may have already reaped the zombie (removing it
+        // from the process table) before updating the registry status.
         let registry = workgraph::AgentRegistry::load_or_warn(dir);
-        let alive = registry
-            .agents
-            .values()
-            .filter(|a| a.is_alive() && crate::commands::is_process_alive(a.pid))
-            .count();
+        let alive = registry.active_count();
         self.service_health.agents_alive = alive;
         self.service_health.agents_total = registry.agents.len();
 
