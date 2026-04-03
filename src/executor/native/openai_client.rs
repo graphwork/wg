@@ -1311,6 +1311,29 @@ fn extract_tool_calls_from_text(text: &str) -> (String, Vec<ContentBlock>) {
         );
     }
 
+    // Pattern 4: Hermes/Qwen3 <|plugin|>...<|/plugin|> format
+    loop {
+        let Some(start) = remaining.find("<|plugin|>") else {
+            break;
+        };
+        let search_from = start + "<|plugin|>".len();
+        let Some(end_offset) = remaining[search_from..].find("<|/plugin|>") else {
+            break;
+        };
+        let end = search_from + end_offset;
+        let inner = remaining[search_from..end].trim();
+
+        if let Some(tc) = parse_tool_call_json(inner, &mut call_counter) {
+            tool_calls.push(tc);
+        }
+        // Remove the whole tag from remaining text
+        remaining = format!(
+            "{}{}",
+            remaining[..start].trim_end(),
+            remaining[end + "<|/plugin|>".len()..].trim_start()
+        );
+    }
+
     // Trim the remaining text
     let remaining = remaining.trim().to_string();
 
@@ -2823,6 +2846,58 @@ mod tests {
         let (remaining, calls) = extract_tool_calls_from_text(text);
         assert!(calls.is_empty());
         assert_eq!(remaining, text);
+    }
+
+    #[test]
+    fn test_extract_tool_calls_hermes_format() {
+        // Hermes/LLaMA-3 style with <|plugin|>...<|/plugin|> tags
+        let text = r#"Let me run that command.
+<|plugin|>{"name": "bash", "arguments": {"command": "ls -la"}}<|/plugin|>
+Done."#;
+        let (remaining, calls) = extract_tool_calls_from_text(text);
+        assert_eq!(calls.len(), 1);
+        assert!(
+            matches!(&calls[0], ContentBlock::ToolUse { name, input, .. }
+                if name == "bash" && input["command"] == "ls -la")
+        );
+        assert_eq!(remaining.trim(), "Let me run that command.\nDone.");
+    }
+
+    #[test]
+    fn test_extract_tool_calls_plugin_format() {
+        // Qwen3/Hermes style <|plugin|> format
+        let text = r#"<|plugin|>{"name": "read_file", "arguments": {"path": "/etc/hosts"}}<|/plugin|>"#;
+        let (remaining, calls) = extract_tool_calls_from_text(text);
+        assert_eq!(calls.len(), 1);
+        assert!(
+            matches!(&calls[0], ContentBlock::ToolUse { name, input, .. }
+                if name == "read_file" && input["path"] == "/etc/hosts")
+        );
+        assert!(remaining.is_empty());
+    }
+
+    #[test]
+    fn test_extract_multiple_plugin_format_calls() {
+        // Multiple tool calls in <|plugin|> format
+        let text = r#"<|plugin|>{"name": "bash", "arguments": {"command": "pwd"}}<|/plugin|>
+<|plugin|>{"name": "bash", "arguments": {"command": "ls"}}<|/plugin|>"#;
+        let (remaining, calls) = extract_tool_calls_from_text(text);
+        assert_eq!(calls.len(), 2);
+        assert!(matches!(&calls[0], ContentBlock::ToolUse { name, .. } if name == "bash"));
+        assert!(matches!(&calls[1], ContentBlock::ToolUse { name, .. } if name == "bash"));
+        assert!(remaining.is_empty());
+    }
+
+    #[test]
+    fn test_extract_tool_calls_mixed_formats() {
+        // Mix of <tool_call> and <|plugin|> formats
+        let text = r#"<tool_call>{"name": "bash", "arguments": {"command": "echo a"}}</tool_call>
+<|plugin|>{"name": "bash", "arguments": {"command": "echo b"}}<|/plugin|>"#;
+        let (remaining, calls) = extract_tool_calls_from_text(text);
+        assert_eq!(calls.len(), 2);
+        assert!(matches!(&calls[0], ContentBlock::ToolUse { name, .. } if name == "bash"));
+        assert!(matches!(&calls[1], ContentBlock::ToolUse { name, .. } if name == "bash"));
+        assert!(remaining.is_empty());
     }
 
     #[test]
