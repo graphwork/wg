@@ -62,6 +62,8 @@ pub struct AgentLoop {
     summary_interval_turns: usize,
     /// Path to the agent's session summary file.
     session_summary_path: Option<PathBuf>,
+    /// Path to the `.streaming` file for TUI live display of streaming text.
+    streaming_file_path: Option<PathBuf>,
 }
 
 /// NDJSON log entry types for the output file.
@@ -143,6 +145,9 @@ impl AgentLoop {
             .map(|p| p.join(stream_event::STREAM_FILE_NAME));
         let stream_writer = stream_path.map(StreamWriter::new);
 
+        // Derive .streaming path from output_log directory
+        let streaming_file_path = output_log.parent().map(|p| p.join(".streaming"));
+
         Self {
             client,
             tools,
@@ -157,6 +162,7 @@ impl AgentLoop {
             working_dir: None,
             summary_interval_turns: DEFAULT_SUMMARY_INTERVAL_TURNS,
             session_summary_path: None,
+            streaming_file_path,
         }
     }
 
@@ -353,11 +359,33 @@ impl AgentLoop {
                 stream: false,
             };
 
+            // Build streaming callback that writes text chunks to stream.jsonl
+            // and updates the .streaming file for TUI live display.
+            let streaming_file = self.streaming_file_path.clone();
+            let stream_writer_clone = self.stream_writer.clone();
+            let on_text = move |text: String| {
+                // Write TextChunk to stream.jsonl
+                if let Some(ref sw) = stream_writer_clone {
+                    sw.write_text_chunk(&text);
+                }
+                // Update .streaming file with accumulated text
+                if let Some(ref path) = streaming_file {
+                    let mut accumulated = std::fs::read_to_string(path).unwrap_or_default();
+                    accumulated.push_str(&text);
+                    let _ = std::fs::write(path, &accumulated);
+                }
+            };
+
             let response = self
                 .client
-                .send(&request)
+                .send_streaming(&request, &on_text)
                 .await
                 .context("API request failed")?;
+
+            // Clean up .streaming file after each turn
+            if let Some(ref path) = self.streaming_file_path {
+                let _ = std::fs::remove_file(path);
+            }
 
             total_usage.add(&response.usage);
             turns += 1;

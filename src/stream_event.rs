@@ -43,6 +43,8 @@ pub enum StreamEvent {
     },
     /// Periodic heartbeat.
     Heartbeat { timestamp_ms: i64 },
+    /// A text chunk from real-time streaming output.
+    TextChunk { text: String, timestamp_ms: i64 },
     /// Final event — aggregated usage and outcome.
     Result {
         success: bool,
@@ -86,6 +88,7 @@ impl StreamEvent {
             | StreamEvent::ToolStart { timestamp_ms, .. }
             | StreamEvent::ToolEnd { timestamp_ms, .. }
             | StreamEvent::Heartbeat { timestamp_ms }
+            | StreamEvent::TextChunk { timestamp_ms, .. }
             | StreamEvent::Result { timestamp_ms, .. } => *timestamp_ms,
         }
     }
@@ -136,6 +139,7 @@ pub fn read_stream_events(path: &Path, offset: u64) -> Result<(Vec<StreamEvent>,
 // ── NDJSON file writing ─────────────────────────────────────────────────
 
 /// Writer that appends StreamEvent records as NDJSON to a file.
+#[derive(Clone)]
 pub struct StreamWriter {
     path: std::path::PathBuf,
 }
@@ -199,6 +203,14 @@ impl StreamWriter {
     /// Write a Heartbeat event.
     pub fn write_heartbeat(&self) {
         self.write_event(&StreamEvent::Heartbeat {
+            timestamp_ms: now_ms(),
+        });
+    }
+
+    /// Write a TextChunk event for a streaming text delta.
+    pub fn write_text_chunk(&self, text: &str) {
+        self.write_event(&StreamEvent::TextChunk {
+            text: text.to_string(),
             timestamp_ms: now_ms(),
         });
     }
@@ -411,7 +423,7 @@ impl AgentStreamState {
                 StreamEvent::ToolEnd { .. } => {
                     self.current_tool = None;
                 }
-                StreamEvent::Heartbeat { .. } => {}
+                StreamEvent::Heartbeat { .. } | StreamEvent::TextChunk { .. } => {}
                 StreamEvent::Result { usage, .. } => {
                     // Final usage overwrites accumulated
                     self.accumulated_usage = usage.clone();
