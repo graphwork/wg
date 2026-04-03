@@ -19,6 +19,9 @@ use super::resume::{self, ResumeConfig};
 use super::tools::ToolRegistry;
 use crate::stream_event::{self, StreamWriter, TotalUsage, TurnUsage};
 
+/// Default number of turns between session summary extractions.
+pub const DEFAULT_SUMMARY_INTERVAL_TURNS: usize = 10;
+
 /// Record of a single tool call.
 #[derive(Debug, Clone, Serialize)]
 pub struct ToolCallRecord {
@@ -55,6 +58,10 @@ pub struct AgentLoop {
     resume_enabled: bool,
     /// Working directory for stale-state detection during resume.
     working_dir: Option<PathBuf>,
+    /// Number of turns between session summary extractions.
+    summary_interval_turns: usize,
+    /// Path to the agent's session summary file.
+    session_summary_path: Option<PathBuf>,
 }
 
 /// NDJSON log entry types for the output file.
@@ -148,6 +155,8 @@ impl AgentLoop {
             task_id: None,
             resume_enabled: true,
             working_dir: None,
+            summary_interval_turns: DEFAULT_SUMMARY_INTERVAL_TURNS,
+            session_summary_path: None,
         }
     }
 
@@ -170,6 +179,30 @@ impl AgentLoop {
     pub fn with_working_dir(mut self, working_dir: PathBuf) -> Self {
         self.working_dir = Some(working_dir);
         self
+    }
+
+    /// Set the session summary extraction interval (in turns).
+    /// Default is 10 turns. Set to 0 to disable.
+    pub fn with_summary_interval(mut self, turns: usize) -> Self {
+        self.summary_interval_turns = turns;
+        self
+    }
+
+    /// Set the session summary file path.
+    /// This is typically `.workgraph/agents/<agent-id>/session-summary.md`.
+    pub fn with_session_summary_path(mut self, path: PathBuf) -> Self {
+        self.session_summary_path = Some(path);
+        self
+    }
+
+    /// Get the session summary extraction interval (in turns).
+    pub fn summary_interval_turns(&self) -> usize {
+        self.summary_interval_turns
+    }
+
+    /// Get the session summary file path, if configured.
+    pub fn session_summary_path(&self) -> Option<&PathBuf> {
+        self.session_summary_path.as_ref()
     }
 
     /// Run the agent loop to completion.
