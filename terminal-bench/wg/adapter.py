@@ -29,6 +29,12 @@ from wg.tb_logging import TrialLogger
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Benchmark model — ALL conditions MUST use this for reproducibility
+# Format: workgraph-style "provider:model"; converted to litellm "provider/model" at call site
+# ---------------------------------------------------------------------------
+BENCHMARK_MODEL = "openrouter:minimax/minimax-m2.7"
+
 
 # ---------------------------------------------------------------------------
 # Tool definitions (OpenAI function-calling schema)
@@ -947,7 +953,10 @@ class WorkgraphAgent(BaseAgent):
             {"role": "user", "content": f"## Task\n\n{instruction}"},
         ]
 
-        model = self.model_name or "minimax/minimax-m2.7"
+        # Use the benchmark model (from BENCHMARK_MODEL constant or CLI override).
+        # Convert workgraph "provider:model" format to litellm "provider/model" format.
+        model_raw = self.model_name or BENCHMARK_MODEL
+        model = model_raw.replace(":", "/", 1) if ":" in model_raw else model_raw
 
         # Initialize structured trial logger
         trial_log = TrialLogger(
@@ -1157,6 +1166,7 @@ class ConditionAAgent(WorkgraphAgent):
 
     def __init__(self, *args, **kwargs):
         kwargs["condition"] = "A"
+        kwargs["model_name"] = BENCHMARK_MODEL
         super().__init__(*args, **kwargs)
 
 
@@ -1169,6 +1179,7 @@ class ConditionBAgent(WorkgraphAgent):
 
     def __init__(self, *args, **kwargs):
         kwargs["condition"] = "B"
+        kwargs["model_name"] = BENCHMARK_MODEL
         super().__init__(*args, **kwargs)
 
 
@@ -1181,6 +1192,7 @@ class ConditionCAgent(WorkgraphAgent):
 
     def __init__(self, *args, **kwargs):
         kwargs["condition"] = "C"
+        kwargs["model_name"] = BENCHMARK_MODEL
         super().__init__(*args, **kwargs)
 
 
@@ -1193,6 +1205,7 @@ class ConditionDAgent(WorkgraphAgent):
 
     def __init__(self, *args, **kwargs):
         kwargs["condition"] = "D"
+        kwargs["model_name"] = BENCHMARK_MODEL
         kwargs.setdefault("max_turns", 200)
         super().__init__(*args, **kwargs)
 
@@ -1206,5 +1219,6 @@ class ConditionEAgent(WorkgraphAgent):
 
     def __init__(self, *args, **kwargs):
         kwargs["condition"] = "E"
+        kwargs["model_name"] = BENCHMARK_MODEL
         kwargs.setdefault("max_turns", 300)
         super().__init__(*args, **kwargs)
