@@ -16,6 +16,7 @@ import logging
 import os
 import shlex
 import shutil
+import time
 import uuid
 from pathlib import Path
 from typing import Any
@@ -24,6 +25,7 @@ import litellm
 from harbor.agents.base import BaseAgent
 from harbor.environments.base import BaseEnvironment
 from harbor.models.agent.context import AgentContext
+from wg.tb_logging import TrialLogger
 
 logger = logging.getLogger(__name__)
 
@@ -946,24 +948,23 @@ class WorkgraphAgent(BaseAgent):
         ]
 
         model = self.model_name or "minimax/minimax-m2.7"
-        total_input_tokens = 0
-        total_output_tokens = 0
-        total_cost = 0.0
 
-        log_path = self.logs_dir / "agent_loop.ndjson"
+        # Initialize structured trial logger
+        trial_log = TrialLogger(
+            logs_dir=self.logs_dir,
+            condition=self.condition,
+            root_task_id=root_task_id,
+            model=model,
+        )
 
-        # Condition D/E: verification and termination tracking
-        verification_count = 0
-        wg_tool_call_count = 0
-        termination_type = "max_turns"
-        verification_commands: list[str] = []
-
-        # Condition E: organization-specific tracking
-        decomposition_tasks: list[str] = []
-        verification_verdicts: list[tuple[int, str, str]] = []
-        triage_count = 0
+        # Snapshot wg state after init (for B/C/D/E)
+        if self.condition in ("B", "C", "D", "E") and wg_dir and wg_bin:
+            snapshot = await _exec_wg_cmd_host(wg_dir, wg_bin, ["list"])
+            trial_log.record_wg_snapshot("after_init", snapshot)
 
         for turn in range(self.max_turns):
+            trial_log.begin_turn(turn)
+
             try:
                 response = await litellm.acompletion(
                     model=model,
@@ -975,47 +976,21 @@ class WorkgraphAgent(BaseAgent):
                 )
             except Exception as e:
                 logger.error(f"LLM call failed on turn {turn}: {e}")
-                self._log_event(log_path, {
-                    "type": "error",
-                    "turn": turn,
-                    "error": str(e),
-                })
+                trial_log.record_error(str(e))
                 break
 
-            # Track token usage
-            usage = response.usage
-            if usage:
-                total_input_tokens += getattr(usage, "prompt_tokens", 0)
-                total_output_tokens += getattr(usage, "completion_tokens", 0)
-                if hasattr(usage, "cost_usd"):
-                    total_cost += usage.cost_usd or 0.0
+            # Record LLM response (tokens, content, tool calls) via TrialLogger
+            trial_log.record_llm_response(response)
 
             choice = response.choices[0]
             message = choice.message
-
-            # Log the turn
-            self._log_event(log_path, {
-                "type": "turn",
-                "turn": turn,
-                "finish_reason": choice.finish_reason,
-                "content": message.content,
-                "tool_calls": (
-                    [
-                        {"name": tc.function.name, "arguments": tc.function.arguments}
-                        for tc in message.tool_calls
-                    ]
-                    if message.tool_calls
-                    else None
-                ),
-            })
 
             # Add assistant message to history
             messages.append(message.model_dump())
 
             # If no tool calls, the agent is done
             if not message.tool_calls:
-                if termination_type == "max_turns":
-                    termination_type = "no_tool_calls"
+                trial_log.end_turn(had_tool_calls=False)
                 break
 
             # Execute each tool call
@@ -1030,39 +1005,13 @@ class WorkgraphAgent(BaseAgent):
                         f"Failed to parse tool args for {fn_name}: {tc.function.arguments}"
                     )
 
-                # Condition D: track wg tool calls and verification commands
-                if fn_name.startswith("wg_"):
-                    wg_tool_call_count += 1
-                if fn_name == "bash":
-                    cmd = fn_args.get("command", "")
-                    if any(kw in cmd.lower() for kw in [
-                        "test", "pytest", "make test", "cargo test",
-                        "npm test", "check", "verify", "./verify",
-                    ]):
-                        verification_count += 1
-                        verification_commands.append(cmd[:200])
+                # Check for termination signals before execution
                 if fn_name == "wg_done" and fn_args.get("task_id") == root_task_id:
-                    termination_type = "wg_done"
                     done_or_failed = True
                 elif fn_name == "wg_fail" and fn_args.get("task_id") == root_task_id:
-                    termination_type = "wg_fail"
                     done_or_failed = True
 
-                # Condition E: track decomposition, verification verdicts, triage
-                if self.condition == "E":
-                    if fn_name == "wg_add":
-                        task_title = fn_args.get("title", "")
-                        decomposition_tasks.append(task_title)
-                        if task_title.startswith("Fix:"):
-                            triage_count += 1
-                    if fn_name == "wg_log":
-                        msg = fn_args.get("message", "")
-                        if "VERIFY:" in msg:
-                            if "PASS" in msg:
-                                verification_verdicts.append((turn, "PASS", msg))
-                            elif "FAIL" in msg:
-                                verification_verdicts.append((turn, "FAIL", msg))
-
+                tool_start = time.monotonic()
                 try:
                     result = await execute_tool(
                         environment, fn_name, fn_args,
@@ -1071,11 +1020,15 @@ class WorkgraphAgent(BaseAgent):
                 except Exception as e:
                     result = f"Tool execution error: {e}"
                     logger.error(f"Tool {fn_name} failed: {e}")
+                tool_elapsed = time.monotonic() - tool_start
 
                 # Truncate very long outputs
                 if len(result) > 50000:
                     truncated = len(result) - 50000
                     result = result[:50000] + f"\n\n[truncated {truncated} characters]"
+
+                # Record tool call with structured logging
+                trial_log.record_tool_call(fn_name, fn_args, result, tool_elapsed)
 
                 messages.append({
                     "role": "tool",
@@ -1083,66 +1036,66 @@ class WorkgraphAgent(BaseAgent):
                     "content": result,
                 })
 
-                self._log_event(log_path, {
-                    "type": "tool_result",
-                    "turn": turn,
-                    "tool": fn_name,
-                    "result_length": len(result),
-                })
+            trial_log.end_turn(had_tool_calls=True)
+
+            # Snapshot wg state after decomposition (wg_add calls)
+            if self.condition in ("D", "E") and wg_dir and wg_bin:
+                if any(
+                    tc.function.name == "wg_add"
+                    for tc in (message.tool_calls or [])
+                ):
+                    snapshot = await _exec_wg_cmd_host(wg_dir, wg_bin, ["list"])
+                    trial_log.record_wg_snapshot("after_decomposition", snapshot)
 
             # Condition D/E: stop loop after agent declares done/failed on root task
             if self.condition in ("D", "E") and done_or_failed:
+                # Snapshot wg state before termination
+                if wg_dir and wg_bin:
+                    snapshot = await _exec_wg_cmd_host(wg_dir, wg_bin, ["list"])
+                    trial_log.record_wg_snapshot("before_done", snapshot)
                 break
 
-        # Populate Harbor's AgentContext with results
-        context.n_input_tokens = total_input_tokens
-        context.n_output_tokens = total_output_tokens
-        context.cost_usd = total_cost
-        metadata = {
+        # Build metadata from TrialLogger's accumulators
+        metadata: dict[str, Any] = {
             "condition": self.condition,
-            "turns": turn + 1 if turn < self.max_turns else self.max_turns,
+            "turns": trial_log.total_turns,
             "root_task_id": root_task_id,
             "model": model,
+            "termination_type": trial_log.termination_type,
         }
-        if self.condition == "D":
+        if self.condition in ("D", "E"):
             metadata.update({
                 "agent_identity": getattr(self, "_agent_identity", None),
-                "verification_iterations": verification_count,
-                "self_termination_type": termination_type,
-                "wg_tool_calls": wg_tool_call_count,
-                "verification_commands": verification_commands,
+                "verification_iterations": trial_log.verification_count,
+                "self_termination_type": trial_log.termination_type,
+                "wg_tool_calls": sum(trial_log.wg_command_counts.values()),
+                "verification_commands": trial_log.verification_commands,
             })
-        elif self.condition == "E":
+        if self.condition == "E":
             metadata.update({
-                "agent_identity": getattr(self, "_agent_identity", None),
-                # D-compatible metrics
-                "verification_iterations": verification_count,
-                "self_termination_type": termination_type,
-                "wg_tool_calls": wg_tool_call_count,
-                "verification_commands": verification_commands,
-                # E-specific metrics
-                "decomposition_task_count": len(decomposition_tasks),
-                "decomposition_tasks": decomposition_tasks[:20],
-                "verification_verdicts": [
-                    {"turn": v[0], "verdict": v[1], "message": v[2]}
-                    for v in verification_verdicts
-                ],
-                "triage_count": triage_count,
+                "decomposition_task_count": len(trial_log.decomposition_tasks),
+                "decomposition_tasks": trial_log.decomposition_tasks[:20],
+                "verification_verdicts": trial_log.verification_verdicts,
+                "triage_count": trial_log.triage_count,
                 "organization_phases": {
-                    "decompose": bool(decomposition_tasks),
-                    "verify_independent": any(v[1] for v in verification_verdicts),
-                    "triage_on_fail": triage_count > 0,
+                    "decompose": bool(trial_log.decomposition_tasks),
+                    "verify_independent": any(
+                        v.get("verdict") for v in trial_log.verification_verdicts
+                    ),
+                    "triage_on_fail": trial_log.triage_count > 0,
                 },
             })
+
+        # Populate Harbor's AgentContext
+        context.n_input_tokens = trial_log.total_input_tokens
+        context.n_output_tokens = trial_log.total_output_tokens
+        context.cost_usd = trial_log.total_cost
         context.metadata = metadata
 
-        self._log_event(log_path, {
-            "type": "result",
-            "total_input_tokens": total_input_tokens,
-            "total_output_tokens": total_output_tokens,
-            "total_cost_usd": total_cost,
-            "turns": context.metadata["turns"],
-            "condition": self.condition,
+        # Write per-trial summary (JSON + final NDJSON event)
+        trial_log.write_summary(extra_metadata={
+            k: v for k, v in metadata.items()
+            if k not in ("condition", "model", "root_task_id")
         })
 
         # Save workgraph state for analysis (Condition B, C, D, and E)
@@ -1160,7 +1113,7 @@ class WorkgraphAgent(BaseAgent):
 
         # Extract planning turn for Condition C analysis
         if self.condition == "C":
-            self._extract_planning_turn(log_path)
+            self._extract_planning_turn(trial_log._log_path)
 
     def _log_event(self, path: Path, event: dict) -> None:
         """Append an NDJSON event to the log file."""
