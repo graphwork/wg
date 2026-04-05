@@ -65,7 +65,11 @@ fn run_verify_command(verify_cmd: &str, project_root: &Path) -> std::result::Res
         })
     });
 
-    let timeout = Duration::from_secs(120);
+    let timeout_secs: u64 = std::env::var("WG_VERIFY_TIMEOUT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(120);
+    let timeout = Duration::from_secs(timeout_secs);
     let start = Instant::now();
 
     // Poll with short sleeps to implement timeout without external crate
