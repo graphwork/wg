@@ -217,6 +217,244 @@ Add POST /auth/token endpoint.
 - Decomposition overhead exceeds the work itself
 - The subtasks would all modify the same files (serialize instead)\n";
 
+// --- Adaptive decomposition intelligence ---
+
+/// Task complexity classification for decomposition guidance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskComplexity {
+    /// Single-step task: implement directly without decomposition.
+    Atomic,
+    /// Multi-step task: benefits from structured decomposition.
+    MultiStep,
+}
+
+/// Signal words/phrases that indicate an atomic (single-step) task.
+const ATOMIC_SIGNALS: &[&str] = &[
+    "single function",
+    "fix bug in",
+    "one file",
+    "write a regex",
+    "rename",
+    "typo",
+    "fix typo",
+    "update comment",
+    "change the",
+    "add a field",
+    "remove the",
+    "delete the",
+    "bump version",
+    "simple fix",
+    "small change",
+    "one-liner",
+    "hotfix",
+    "quick fix",
+    "minor tweak",
+];
+
+/// Signal words/phrases that indicate a multi-step task.
+const MULTI_STEP_SIGNALS: &[&str] = &[
+    "build pipeline",
+    "configure + test",
+    "configure and test",
+    "multiple files",
+    "install",
+    "set up",
+    "setup",
+    "end-to-end",
+    "e2e",
+    "integrate",
+    "migration",
+    "refactor",
+    "implement feature",
+    "build a",
+    "create a system",
+    "design and implement",
+    "pipeline",
+    "workflow",
+    "multi-step",
+    "several steps",
+    "phases",
+    "stage 1",
+    "step 1",
+    "then",
+    "after that",
+    "followed by",
+    "next,",
+    "finally,",
+    "first,",
+    "second,",
+    "third,",
+];
+
+/// Classify a task as atomic or multi-step based on description signals.
+///
+/// Uses a scoring heuristic: counts signal matches in the description
+/// (case-insensitive). Multi-step wins ties since the cost of unnecessary
+/// guidance is lower than the cost of missing decomposition structure.
+pub fn classify_task_complexity(description: &str) -> TaskComplexity {
+    let lower = description.to_lowercase();
+    let atomic_score: usize = ATOMIC_SIGNALS
+        .iter()
+        .filter(|s| lower.contains(*s))
+        .count();
+    let multi_score: usize = MULTI_STEP_SIGNALS
+        .iter()
+        .filter(|s| lower.contains(*s))
+        .count();
+
+    // Also check for structural signals: bullet lists with 3+ items suggest multi-step
+    let bullet_count = lower
+        .lines()
+        .filter(|l| {
+            let trimmed = l.trim();
+            trimmed.starts_with("- [ ]")
+                || trimmed.starts_with("- ")
+                || trimmed.starts_with("* ")
+                || trimmed.starts_with("1.")
+                || trimmed.starts_with("2.")
+                || trimmed.starts_with("3.")
+        })
+        .count();
+    let multi_score = if bullet_count >= 3 {
+        multi_score + 1
+    } else {
+        multi_score
+    };
+
+    if atomic_score > multi_score {
+        TaskComplexity::Atomic
+    } else if multi_score > 0 {
+        TaskComplexity::MultiStep
+    } else {
+        // Default: if no signals matched, lean toward multi-step for
+        // longer descriptions (>200 chars) and atomic for short ones
+        if lower.len() > 200 {
+            TaskComplexity::MultiStep
+        } else {
+            TaskComplexity::Atomic
+        }
+    }
+}
+
+/// Decomposition template: pipeline pattern (A -> B -> C).
+const DECOMP_TEMPLATE_PIPELINE: &str = "\
+#### Pipeline (sequential steps)
+When work must proceed in order (e.g., parse -> transform -> write):
+```bash
+wg add 'Step 1: Parse input' --after {{task_id}} --verify 'cargo test test_parse'
+wg add 'Step 2: Transform data' --after step-1-parse-input --verify 'cargo test test_transform'
+wg add 'Step 3: Write output' --after step-2-transform-data --verify 'cargo test test_write'
+```
+Each step depends on the previous. Use `--verify` on each for automatic validation.";
+
+/// Decomposition template: fan-out-merge pattern (A -> [B,C,D] -> E).
+const DECOMP_TEMPLATE_FAN_OUT: &str = "\
+#### Fan-out-merge (parallel work + integration)
+When work has independent parts that converge (e.g., implement N modules):
+```bash
+wg add 'Part A: Module X' --after {{task_id}} --verify 'cargo test test_module_x'
+wg add 'Part B: Module Y' --after {{task_id}} --verify 'cargo test test_module_y'
+wg add 'Part C: Module Z' --after {{task_id}} --verify 'cargo test test_module_z'
+wg add 'Integrate modules' --after part-a-module-x,part-b-module-y,part-c-module-z \\
+  --verify 'cargo test test_integration'
+```
+**CRITICAL:** The integration task (`--after` all parts) merges the work. Never leave parallel tasks unmerged.";
+
+/// Decomposition template: iterate-until-pass pattern (loop).
+const DECOMP_TEMPLATE_ITERATE: &str = "\
+#### Iterate-until-pass (refinement loop)
+When work requires multiple passes (e.g., optimize -> benchmark -> optimize):
+```bash
+wg add 'Refine implementation' --after {{task_id}} --max-iterations 3 \\
+  --verify 'cargo test && cargo bench | grep -q \"target met\"'
+```
+Use `wg done --converged` when the work meets criteria. Use `wg fail` if a pass doesn't work so the cycle restarts.";
+
+/// Build adaptive decomposition guidance based on task classification.
+///
+/// When `decomp_guidance` is enabled in config, this replaces the static
+/// `AUTOPOIETIC_GUIDANCE` with task-specific advice:
+/// - ATOMIC tasks get a "implement directly" hint
+/// - MULTI-STEP tasks get classification explanation + decomposition templates
+///
+/// The function still includes all standard guardrails and validation guidance.
+pub fn build_decomposition_guidance(
+    task_description: &str,
+    task_id: &str,
+    max_child_tasks: u32,
+    max_task_depth: u32,
+) -> String {
+    let complexity = classify_task_complexity(task_description);
+    let mut parts = Vec::new();
+
+    parts.push("## Task Decomposition\n".to_string());
+
+    match complexity {
+        TaskComplexity::Atomic => {
+            parts.push(format!(
+                "This appears to be a **single-step task**. Implement directly without decomposition.\n\
+                 \n\
+                 If you discover the task is more complex than expected, you can still decompose — \
+                 but start by attempting a direct implementation.\n\
+                 \n\
+                 You may still create new tasks for bugs, missing docs, or follow-up work you discover:\n\
+                 - **Bug/issue found**: \
+                 `wg add 'Fix: ...' --after {task_id} -d 'Found while working on {task_id}'`\n\
+                 - **Follow-up needed**: `wg add 'Verify: ...' --after {task_id}`",
+            ));
+        }
+        TaskComplexity::MultiStep => {
+            parts.push(
+                "This appears to be a **multi-step task**. Consider decomposing with dependencies.\n\
+                 \n\
+                 When creating subtasks, ALWAYS use `--after` to express dependencies. \
+                 Flat task lists without dependency edges are an anti-pattern — they run \
+                 in arbitrary order and produce race conditions.\n\
+                 \n\
+                 ### Decomposition Templates\n\
+                 Choose the pattern that best fits your task:"
+                    .to_string(),
+            );
+            parts.push(DECOMP_TEMPLATE_PIPELINE.replace("{{task_id}}", task_id));
+            parts.push(DECOMP_TEMPLATE_FAN_OUT.replace("{{task_id}}", task_id));
+            parts.push(DECOMP_TEMPLATE_ITERATE.replace("{{task_id}}", task_id));
+        }
+    }
+
+    // Common guidance for both classifications
+    parts.push(format!(
+        "\n### Include validation criteria in subtasks\n\
+         Every code subtask description MUST include a `## Validation` section with concrete acceptance criteria. \
+         Use `--verify` to attach machine-checkable criteria:\n\
+         ```bash\n\
+         wg add 'Implement auth endpoint' --after {task_id} \\\n  \
+         --verify 'cargo test test_auth_ passes; endpoint returns 401 for bad tokens' \\\n  \
+         -d '## Description\nAdd POST /auth/token endpoint.\n\n\
+         ## Validation\n\
+         - [ ] Failing test written first: test_auth_rejects_expired_token\n\
+         - [ ] Implementation makes the test pass\n\
+         - [ ] cargo test passes with no regressions'\n\
+         ```",
+    ));
+
+    parts.push(format!(
+        "\n### Guardrails\n\
+         - You can create up to **{max_child_tasks}** subtasks per session (configurable via `wg config`)\n\
+         - Task chains have a maximum depth of **{max_task_depth}** levels\n\
+         - Always include an integrator at join points — don't leave parallel work unmerged",
+    ));
+
+    parts.push(
+        "\n### When NOT to decompose\n\
+         - The task is small and well-scoped (just do it)\n\
+         - Decomposition overhead exceeds the work itself\n\
+         - The subtasks would all modify the same files (serialize instead)"
+            .to_string(),
+    );
+
+    parts.join("\n")
+}
+
 /// Git hygiene rules for agents working in a shared repository.
 pub const GIT_HYGIENE_SECTION: &str = "\
 ## Git Hygiene (Shared Repo Rules)
@@ -254,6 +492,75 @@ const WG_CONTEXT_HINT: &str = "\
 - Use `wg show <task-id>` to inspect any task's details, status, artifacts, and logs
 - Use `wg context` to view the current task's full context
 - Use `wg list` to see all tasks and their statuses\n";
+
+/// Default workgraph usage guide for non-Claude models.
+///
+/// Injected into the prompt when the executor is non-Claude (native) so that models
+/// without CLAUDE.md context understand wg basics. Users can override this by placing
+/// a custom guide at `.workgraph/wg-guide.md`.
+pub const DEFAULT_WG_GUIDE: &str = "\
+**Workgraph (wg)** is a task coordination graph for AI agents. You are an agent \
+working on one task in this graph. Other agents work on other tasks concurrently.
+
+### Task Lifecycle
+Tasks move through: `open` → `in-progress` → `done` / `failed` / `abandoned`.
+Some tasks have a `pending-validation` step before `done` (when `--verify` is set).
+
+### Core Commands
+
+| Command | Purpose |
+|---------|---------|
+| `wg show <id>` | View task details, status, deps, logs |
+| `wg log <id> \"msg\"` | Log progress (recoverable breadcrumbs) |
+| `wg artifact <id> path` | Record a file you created/modified |
+| `wg done <id>` | Mark your task complete |
+| `wg fail <id> --reason \"...\"` | Mark your task failed |
+| `wg add \"title\" -d \"desc\"` | Create a new task |
+| `wg list` | List all tasks |
+| `wg ready` | List tasks ready to be worked on |
+| `wg msg read <id>` | Check for messages on your task |
+| `wg msg send <id> \"msg\"` | Send a message on your task |
+
+### Dependencies with `--after`
+Use `--after` to express that one task depends on another. This is CRITICAL \
+for correct execution order.
+
+```bash
+# Task B depends on Task A completing first
+wg add \"Task B\" --after task-a
+
+# Task C depends on multiple predecessors
+wg add \"Task C\" --after task-a,task-b
+
+# Subtask that depends on current task
+wg add \"Subtask\" --after $CURRENT_TASK_ID
+```
+
+**Always use `--after` when creating subtasks.** Without it, tasks form a flat \
+unordered list and may execute in the wrong order.
+
+### Verification with `--verify`
+Attach a shell command that gates task completion:
+
+```bash
+wg add \"Implement feature\" --verify \"cargo test test_feature passes\"
+```
+
+When `wg done` is called, the verify command runs automatically. If it fails, \
+the task stays open.
+
+### When to Decompose vs Implement Directly
+- **Implement directly** if the task is small, well-scoped, and touches ≤ 2-3 files
+- **Decompose** (create subtasks with `wg add --after`) if:
+  - The task has 3+ independent parts
+  - You discover bugs or missing prereqs outside your scope
+  - The work would take multiple distinct phases
+
+### Environment Variables
+- `$WG_AGENT_ID` — your unique agent identifier
+- `$WG_TASK_ID` — the task you are working on
+- `$WG_EXECUTOR_TYPE` — executor type (native, claude, etc.)
+- `$WG_MODEL` — the model you are running as\n";
 
 /// Pattern keyword trigger words. If any of these appear (case-insensitive, word-boundary)
 /// in the task description, the glossary section is included in the prompt.
@@ -350,6 +657,12 @@ pub struct ScopeContext {
     pub queued_messages: String,
     /// Context from a previous agent attempt (injected on retry)
     pub previous_attempt_context: String,
+    /// Workgraph usage guide for non-Claude models (injected when model lacks CLAUDE.md)
+    pub wg_guide_content: String,
+    /// Discovered test files formatted for prompt injection (task+ scope)
+    pub discovered_tests: String,
+    /// Whether adaptive decomposition guidance is enabled (from config)
+    pub decomp_guidance: bool,
 }
 
 /// Build a scope-aware prompt for built-in executors.
@@ -402,6 +715,11 @@ pub fn build_prompt(vars: &TemplateVars, scope: ContextScope, ctx: &ScopeContext
         ));
     }
 
+    // Task+ scope: discovered test files
+    if scope >= ContextScope::Task && !ctx.discovered_tests.is_empty() {
+        parts.push(ctx.discovered_tests.clone());
+    }
+
     // Task+ scope: tags and skills (R4)
     if scope >= ContextScope::Task && !ctx.tags_skills_info.is_empty() {
         parts.push(ctx.tags_skills_info.clone());
@@ -444,13 +762,30 @@ pub fn build_prompt(vars: &TemplateVars, scope: ContextScope, ctx: &ScopeContext
         parts.push(vars.task_loop_info.clone());
     }
 
+    // Task+ scope: wg usage guide for non-Claude models
+    if scope >= ContextScope::Task && !ctx.wg_guide_content.is_empty() {
+        parts.push(format!(
+            "## Workgraph Usage Guide\n\n{}",
+            ctx.wg_guide_content
+        ));
+    }
+
     // Task+ scope: workflow sections (with {{task_id}} substitution)
     if scope >= ContextScope::Task {
         parts.push(vars.apply(REQUIRED_WORKFLOW_SECTION));
         parts.push(GIT_HYGIENE_SECTION.to_string());
         parts.push(vars.apply(MESSAGE_POLLING_SECTION));
         parts.push(vars.apply(ETHOS_SECTION));
-        parts.push(vars.apply(AUTOPOIETIC_GUIDANCE));
+        if ctx.decomp_guidance {
+            parts.push(build_decomposition_guidance(
+                &vars.task_description,
+                &vars.task_id,
+                vars.max_child_tasks,
+                vars.max_task_depth,
+            ));
+        } else {
+            parts.push(vars.apply(AUTOPOIETIC_GUIDANCE));
+        }
         parts.push(GRAPH_PATTERNS_SECTION.to_string());
         parts.push(REUSABLE_FUNCTIONS_SECTION.to_string());
         parts.push(vars.apply(CRITICAL_WG_CLI_SECTION));
@@ -1948,6 +2283,7 @@ args = ["--custom-flag"]
             claude_md_content: "Always use bun.".to_string(),
             queued_messages: String::new(),
             previous_attempt_context: String::new(),
+            ..ScopeContext::default()
         };
         let prompt = build_prompt(&vars, ContextScope::Full, &ctx);
 
@@ -2134,6 +2470,323 @@ args = ["--custom-flag"]
         assert!(
             !prompt.contains("Failed Dependency Protocol"),
             "Prompt should NOT contain triage protocol when no failed deps"
+        );
+    }
+
+    #[test]
+    fn test_build_prompt_injects_wg_guide_for_non_claude() {
+        let task = make_test_task("task-1", "Native model task");
+        let vars = TemplateVars::from_task(&task, Some("dep context"), None);
+        let ctx = ScopeContext {
+            wg_guide_content: "This is the wg guide for non-Claude models.".to_string(),
+            ..Default::default()
+        };
+        let prompt = build_prompt(&vars, ContextScope::Task, &ctx);
+
+        assert!(
+            prompt.contains("## Workgraph Usage Guide"),
+            "Task scope should include wg guide when content is present"
+        );
+        assert!(
+            prompt.contains("This is the wg guide for non-Claude models."),
+            "Guide content should appear in the prompt"
+        );
+    }
+
+    #[test]
+    fn test_build_prompt_no_wg_guide_for_claude() {
+        let task = make_test_task("task-1", "Claude model task");
+        let vars = TemplateVars::from_task(&task, Some("dep context"), None);
+        // Empty wg_guide_content simulates Claude executor (guide not injected)
+        let ctx = ScopeContext::default();
+        let prompt = build_prompt(&vars, ContextScope::Task, &ctx);
+
+        assert!(
+            !prompt.contains("## Workgraph Usage Guide"),
+            "Task scope should NOT include wg guide when content is empty"
+        );
+    }
+
+    #[test]
+    fn test_build_prompt_wg_guide_not_injected_at_clean_scope() {
+        let task = make_test_task("task-1", "Clean scope task");
+        let vars = TemplateVars::from_task(&task, Some("dep context"), None);
+        let ctx = ScopeContext {
+            wg_guide_content: "Guide content".to_string(),
+            ..Default::default()
+        };
+        let prompt = build_prompt(&vars, ContextScope::Clean, &ctx);
+
+        assert!(
+            !prompt.contains("## Workgraph Usage Guide"),
+            "Clean scope should NOT include wg guide"
+        );
+    }
+
+    #[test]
+    fn test_default_wg_guide_covers_key_topics() {
+        let guide = DEFAULT_WG_GUIDE;
+
+        // Must cover --after for dependency edges
+        assert!(
+            guide.contains("--after"),
+            "Guide must explain --after for dependencies"
+        );
+
+        // Must cover --verify for automated gates
+        assert!(
+            guide.contains("--verify"),
+            "Guide must explain --verify for automated gates"
+        );
+
+        // Must cover wg log, wg done, wg fail
+        assert!(guide.contains("wg log"), "Guide must cover wg log");
+        assert!(guide.contains("wg done"), "Guide must cover wg done");
+        assert!(guide.contains("wg fail"), "Guide must cover wg fail");
+
+        // Must cover decomposition guidance
+        assert!(
+            guide.contains("Decompose"),
+            "Guide must cover when to decompose"
+        );
+    }
+
+    // --- Adaptive decomposition intelligence tests ---
+
+    #[test]
+    fn test_classify_atomic_single_function() {
+        assert_eq!(
+            classify_task_complexity("Fix bug in the parse function"),
+            TaskComplexity::Atomic
+        );
+    }
+
+    #[test]
+    fn test_classify_atomic_typo() {
+        assert_eq!(
+            classify_task_complexity("Fix typo in README"),
+            TaskComplexity::Atomic
+        );
+    }
+
+    #[test]
+    fn test_classify_atomic_rename() {
+        assert_eq!(
+            classify_task_complexity("Rename variable foo to bar"),
+            TaskComplexity::Atomic
+        );
+    }
+
+    #[test]
+    fn test_classify_multi_step_pipeline() {
+        assert_eq!(
+            classify_task_complexity("Build pipeline to parse, transform, and load data"),
+            TaskComplexity::MultiStep
+        );
+    }
+
+    #[test]
+    fn test_classify_multi_step_sequential_signals() {
+        assert_eq!(
+            classify_task_complexity("First, parse the input. Then, validate it. Finally, write the output."),
+            TaskComplexity::MultiStep
+        );
+    }
+
+    #[test]
+    fn test_classify_multi_step_bullet_list() {
+        let desc = "Implement the feature:\n\
+                     - Add the model\n\
+                     - Add the controller\n\
+                     - Add the view\n\
+                     - Write tests";
+        assert_eq!(
+            classify_task_complexity(desc),
+            TaskComplexity::MultiStep
+        );
+    }
+
+    #[test]
+    fn test_classify_multi_step_integration() {
+        assert_eq!(
+            classify_task_complexity("Integrate the auth module with the user service"),
+            TaskComplexity::MultiStep
+        );
+    }
+
+    #[test]
+    fn test_classify_short_ambiguous_defaults_atomic() {
+        assert_eq!(
+            classify_task_complexity("Do the thing"),
+            TaskComplexity::Atomic
+        );
+    }
+
+    #[test]
+    fn test_classify_long_ambiguous_defaults_multi_step() {
+        let long_desc = "a".repeat(201);
+        assert_eq!(
+            classify_task_complexity(&long_desc),
+            TaskComplexity::MultiStep
+        );
+    }
+
+    #[test]
+    fn test_adaptive_guidance_atomic_task() {
+        let guidance = build_decomposition_guidance(
+            "Fix typo in the README",
+            "fix-typo",
+            10,
+            8,
+        );
+        assert!(
+            guidance.contains("single-step task"),
+            "Atomic task should get single-step guidance"
+        );
+        assert!(
+            !guidance.contains("Decomposition Templates"),
+            "Atomic task should NOT get decomposition templates"
+        );
+        assert!(
+            guidance.contains("Guardrails"),
+            "Both types should include guardrails"
+        );
+    }
+
+    #[test]
+    fn test_adaptive_guidance_multi_step_task() {
+        let guidance = build_decomposition_guidance(
+            "Build pipeline to parse and transform data, then write output",
+            "build-pipeline",
+            10,
+            8,
+        );
+        assert!(
+            guidance.contains("multi-step task"),
+            "Multi-step task should get multi-step guidance"
+        );
+        assert!(
+            guidance.contains("Decomposition Templates"),
+            "Multi-step task should get decomposition templates"
+        );
+        assert!(
+            guidance.contains("Pipeline"),
+            "Templates should include Pipeline pattern"
+        );
+        assert!(
+            guidance.contains("Fan-out-merge"),
+            "Templates should include Fan-out-merge pattern"
+        );
+        assert!(
+            guidance.contains("Iterate-until-pass"),
+            "Templates should include Iterate-until-pass pattern"
+        );
+        assert!(
+            guidance.contains("--after build-pipeline"),
+            "Templates should use the task_id in --after examples"
+        );
+    }
+
+    #[test]
+    fn test_adaptive_guidance_includes_task_id() {
+        let guidance = build_decomposition_guidance(
+            "Fix typo in README",
+            "my-task-42",
+            10,
+            8,
+        );
+        assert!(
+            guidance.contains("my-task-42"),
+            "Guidance should reference the task ID"
+        );
+    }
+
+    #[test]
+    fn test_adaptive_guidance_includes_guardrails() {
+        let guidance = build_decomposition_guidance(
+            "Build a system",
+            "sys-task",
+            15,
+            12,
+        );
+        assert!(
+            guidance.contains("**15**"),
+            "Guardrails should show max_child_tasks"
+        );
+        assert!(
+            guidance.contains("**12**"),
+            "Guardrails should show max_task_depth"
+        );
+    }
+
+    #[test]
+    fn test_build_prompt_uses_adaptive_guidance_when_enabled() {
+        let mut task = make_test_task("task-1", "Build pipeline");
+        task.description = Some("Build pipeline to parse, transform, and write data".to_string());
+        let vars = TemplateVars::from_task(&task, Some("dep ctx"), None);
+        let ctx = ScopeContext {
+            decomp_guidance: true,
+            ..Default::default()
+        };
+        let prompt = build_prompt(&vars, ContextScope::Task, &ctx);
+
+        assert!(
+            prompt.contains("multi-step task"),
+            "Adaptive guidance should classify pipeline task as multi-step"
+        );
+        assert!(
+            prompt.contains("Decomposition Templates"),
+            "Adaptive guidance should include templates for multi-step task"
+        );
+    }
+
+    #[test]
+    fn test_build_prompt_uses_static_guidance_when_disabled() {
+        let task = make_test_task("task-1", "Build pipeline");
+        let vars = TemplateVars::from_task(&task, Some("dep ctx"), None);
+        let ctx = ScopeContext {
+            decomp_guidance: false,
+            ..Default::default()
+        };
+        let prompt = build_prompt(&vars, ContextScope::Task, &ctx);
+
+        assert!(
+            !prompt.contains("multi-step task"),
+            "Static guidance should NOT contain adaptive classification"
+        );
+        assert!(
+            prompt.contains("You are encouraged to create new tasks"),
+            "Static guidance should contain original AUTOPOIETIC_GUIDANCE text"
+        );
+    }
+
+    #[test]
+    fn test_build_prompt_atomic_adaptive_no_templates() {
+        let mut task = make_test_task("task-1", "Fix typo");
+        task.description = Some("Fix typo in the README file".to_string());
+        let vars = TemplateVars::from_task(&task, Some("dep ctx"), None);
+        let ctx = ScopeContext {
+            decomp_guidance: true,
+            ..Default::default()
+        };
+        let prompt = build_prompt(&vars, ContextScope::Task, &ctx);
+
+        assert!(
+            prompt.contains("single-step task"),
+            "Adaptive guidance should classify fix-typo as atomic"
+        );
+        assert!(
+            !prompt.contains("Decomposition Templates"),
+            "Atomic tasks should NOT get decomposition templates"
+        );
+    }
+
+    #[test]
+    fn test_classify_mixed_signals_multi_step_wins_tie() {
+        // "rename" is atomic, "refactor" is multi-step => multi-step wins ties
+        assert_eq!(
+            classify_task_complexity("Rename and refactor the module"),
+            TaskComplexity::MultiStep
         );
     }
 }

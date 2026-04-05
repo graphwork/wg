@@ -152,24 +152,44 @@ The coordinator dispatches anything you add. You don't need permission.
 
 ## Task Decomposition
 
-You are encouraged to create new tasks as you discover work. The coordinator will dispatch them automatically.
+This appears to be a **multi-step task**. Consider decomposing with dependencies.
 
-### When to decompose
-- Your task has 3+ independent parts that could run in parallel
-- You discover a bug, missing doc, or needed refactor outside your scope
-- A prerequisite doesn't exist yet and needs to be created first
-- Your task is too large for a single agent session
+When creating subtasks, ALWAYS use `--after` to express dependencies. Flat task lists without dependency edges are an anti-pattern — they run in arbitrary order and produce race conditions.
 
-### How to decompose
-- **Fan out parallel work**: `wg add 'Part A' --after test-task-123` and `wg add 'Part B' --after test-task-123`
-- **Create a synthesis task**: After fan-out, add an integrator: `wg add 'Integrate results' --after part-a,part-b`
-- **Pipeline decomposition**: `wg add 'Step 1' --after test-task-123 && wg add 'Step 2' --after step-1`
-- **Bug/issue found**: `wg add 'Fix: ...' --after test-task-123 -d 'Found while working on test-task-123'`
+### Decomposition Templates
+Choose the pattern that best fits your task:
+#### Pipeline (sequential steps)
+When work must proceed in order (e.g., parse -> transform -> write):
+```bash
+wg add 'Step 1: Parse input' --after test-task-123 --verify 'cargo test test_parse'
+wg add 'Step 2: Transform data' --after step-1-parse-input --verify 'cargo test test_transform'
+wg add 'Step 3: Write output' --after step-2-transform-data --verify 'cargo test test_write'
+```
+Each step depends on the previous. Use `--verify` on each for automatic validation.
+#### Fan-out-merge (parallel work + integration)
+When work has independent parts that converge (e.g., implement N modules):
+```bash
+wg add 'Part A: Module X' --after test-task-123 --verify 'cargo test test_module_x'
+wg add 'Part B: Module Y' --after test-task-123 --verify 'cargo test test_module_y'
+wg add 'Part C: Module Z' --after test-task-123 --verify 'cargo test test_module_z'
+wg add 'Integrate modules' --after part-a-module-x,part-b-module-y,part-c-module-z \
+  --verify 'cargo test test_integration'
+```
+**CRITICAL:** The integration task (`--after` all parts) merges the work. Never leave parallel tasks unmerged.
+#### Iterate-until-pass (refinement loop)
+When work requires multiple passes (e.g., optimize -> benchmark -> optimize):
+```bash
+wg add 'Refine implementation' --after test-task-123 --max-iterations 3 \
+  --verify 'cargo test && cargo bench | grep -q "target met"'
+```
+Use `wg done --converged` when the work meets criteria. Use `wg fail` if a pass doesn't work so the cycle restarts.
 
 ### Include validation criteria in subtasks
 Every code subtask description MUST include a `## Validation` section with concrete acceptance criteria. Use `--verify` to attach machine-checkable criteria:
 ```bash
-wg add 'Implement auth endpoint' --after test-task-123 --verify 'cargo test test_auth_ passes; endpoint returns 401 for bad tokens' -d '## Description
+wg add 'Implement auth endpoint' --after test-task-123 \
+  --verify 'cargo test test_auth_ passes; endpoint returns 401 for bad tokens' \
+  -d '## Description
 Add POST /auth/token endpoint.
 
 ## Validation
@@ -187,7 +207,6 @@ Add POST /auth/token endpoint.
 - The task is small and well-scoped (just do it)
 - Decomposition overhead exceeds the work itself
 - The subtasks would all modify the same files (serialize instead)
-
 
 ## Graph Patterns (see docs/AGENT-GUIDE.md for details)
 

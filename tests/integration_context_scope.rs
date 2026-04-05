@@ -319,6 +319,7 @@ fn test_full_scope_prompt_includes_everything() {
         claude_md_content: "Always use workgraph.".to_string(),
         queued_messages: String::new(),
         previous_attempt_context: String::new(),
+        ..ScopeContext::default()
     };
 
     let prompt = build_prompt(&vars, ContextScope::Full, &ctx);

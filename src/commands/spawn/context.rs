@@ -156,7 +156,168 @@ pub(crate) fn build_scope_context(
     // Note: cursor advancement happens after spawn in execution.rs,
     // where the agent_id is known.
 
+    // Adaptive decomposition guidance toggle (from config)
+    ctx.decomp_guidance = config.guardrails.decomp_guidance;
+
     ctx
+}
+
+/// Test file glob patterns recognized by the pre-spawn scanner.
+///
+/// Each entry is `(glob_pattern, verify_command_template)`.
+/// The template uses `{file}` as a placeholder for the matched path.
+const TEST_FILE_PATTERNS: &[(&str, &str)] = &[
+    // Python
+    ("test_*.py", "python -m pytest {file}"),
+    ("*_test.py", "python -m pytest {file}"),
+    // Rust (Rust tests are typically inline; but test binaries live in tests/)
+    ("test_*.rs", "cargo test"),
+    ("*_test.rs", "cargo test"),
+    // Go
+    ("*_test.go", "go test ./..."),
+    // JavaScript / TypeScript
+    ("*.test.js", "npx jest {file}"),
+    ("*.test.ts", "npx jest {file}"),
+    ("*.test.tsx", "npx jest {file}"),
+    ("*.test.mjs", "npx jest {file}"),
+    ("*.spec.js", "npx jest {file}"),
+    ("*.spec.ts", "npx jest {file}"),
+    ("*.spec.tsx", "npx jest {file}"),
+];
+
+/// Directories to scan for test files (relative to project root).
+const TEST_DIRS: &[&str] = &["tests", "test", "spec", "src/tests", "src/test"];
+
+/// Discover test files in the project directory before spawning an agent.
+///
+/// Returns a list of test file paths (relative to `project_root`).
+/// Scans both well-known test directories and the project root for
+/// files matching common test naming conventions.
+pub(crate) fn discover_test_files(project_root: &Path) -> Vec<String> {
+    let mut found = Vec::new();
+
+    // Collect directories to scan: known test dirs + project root
+    let mut scan_dirs: Vec<std::path::PathBuf> = TEST_DIRS
+        .iter()
+        .map(|d| project_root.join(d))
+        .filter(|d| d.is_dir())
+        .collect();
+    // Also scan project root itself (for top-level test files)
+    scan_dirs.push(project_root.to_path_buf());
+
+    for dir in &scan_dirs {
+        let entries = match fs::read_dir(dir) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let file_name = match path.file_name().and_then(|n| n.to_str()) {
+                Some(n) => n.to_string(),
+                None => continue,
+            };
+            for (pattern, _) in TEST_FILE_PATTERNS {
+                if glob_match(pattern, &file_name) {
+                    // Make path relative to project root
+                    if let Ok(rel) = path.strip_prefix(project_root) {
+                        let rel_str = rel.to_string_lossy().to_string();
+                        if !found.contains(&rel_str) {
+                            found.push(rel_str);
+                        }
+                    }
+                    break; // matched — no need to check other patterns
+                }
+            }
+        }
+    }
+
+    found.sort();
+    found
+}
+
+/// Build a verify command from discovered test files.
+///
+/// Selects the most appropriate test runner based on the file types found.
+/// Returns `None` if no test files were discovered.
+pub(crate) fn build_auto_verify_command(test_files: &[String]) -> Option<String> {
+    if test_files.is_empty() {
+        return None;
+    }
+
+    // Detect project type from test file extensions
+    let has_rust = test_files.iter().any(|f| f.ends_with(".rs"));
+    let has_python = test_files.iter().any(|f| f.ends_with(".py"));
+    let has_go = test_files.iter().any(|f| f.ends_with(".go"));
+    let has_js = test_files
+        .iter()
+        .any(|f| f.ends_with(".js") || f.ends_with(".ts") || f.ends_with(".tsx") || f.ends_with(".mjs"));
+
+    // For mixed projects or Rust projects, use cargo test
+    if has_rust {
+        return Some("cargo test".to_string());
+    }
+    if has_go {
+        return Some("go test ./...".to_string());
+    }
+    if has_python {
+        // Use the specific test files for targeted verification
+        let py_files: Vec<&str> = test_files
+            .iter()
+            .filter(|f| f.ends_with(".py"))
+            .map(|s| s.as_str())
+            .collect();
+        return Some(format!("python -m pytest {}", py_files.join(" ")));
+    }
+    if has_js {
+        return Some("npx jest".to_string());
+    }
+
+    None
+}
+
+/// Format discovered test files for injection into the agent prompt.
+pub(crate) fn format_test_discovery_context(test_files: &[String]) -> String {
+    if test_files.is_empty() {
+        return String::new();
+    }
+
+    let mut lines = vec![
+        "## Discovered Test Files\n".to_string(),
+        "The following test files exist in this project and will be used to verify your work:".to_string(),
+    ];
+    for f in test_files {
+        lines.push(format!("- `{}`", f));
+    }
+    lines.push(String::new());
+    lines.push(
+        "**You MUST run these tests before calling `wg done`.** \
+         If any test fails, fix the issue before marking the task complete."
+            .to_string(),
+    );
+
+    lines.join("\n")
+}
+
+/// Simple glob matching for test file patterns.
+/// Supports only `*` (matches any sequence of non-dot chars within a segment)
+/// and leading/trailing wildcards.
+fn glob_match(pattern: &str, name: &str) -> bool {
+    if let Some(suffix) = pattern.strip_prefix('*') {
+        // *_test.py → name ends with "_test.py"
+        name.ends_with(suffix)
+    } else if let Some(prefix) = pattern.strip_suffix('*') {
+        // test_* → name starts with "test_"
+        name.starts_with(prefix)
+    } else if pattern.contains('*') {
+        // e.g. *.test.js — split on first *
+        let (before, after) = pattern.split_once('*').unwrap();
+        name.starts_with(before) && name.ends_with(after)
+    } else {
+        name == pattern
+    }
 }
 
 /// Inline artifact content for graph+ scopes.
@@ -389,6 +550,23 @@ fn read_claude_md(workgraph_dir: &Path) -> String {
 
     let claude_md_path = project_root.join("CLAUDE.md");
     std::fs::read_to_string(&claude_md_path).unwrap_or_default()
+}
+
+/// Read the workgraph usage guide for non-Claude models.
+///
+/// Checks for a user-customizable guide at `.workgraph/wg-guide.md`. If that file
+/// exists, its content is used. Otherwise falls back to the built-in default guide
+/// embedded in the binary.
+pub(crate) fn read_wg_guide(workgraph_dir: &Path) -> String {
+    let custom_path = workgraph_dir.join("wg-guide.md");
+    if custom_path.exists() {
+        if let Ok(content) = std::fs::read_to_string(&custom_path) {
+            if !content.trim().is_empty() {
+                return content;
+            }
+        }
+    }
+    workgraph::service::executor::DEFAULT_WG_GUIDE.to_string()
 }
 
 /// Resolve the effective exec_mode for a task using the priority hierarchy:
@@ -1425,5 +1603,184 @@ mod tests {
         // Should have Failed dep's info
         assert!(context.contains("(FAILED)"));
         assert!(context.contains("OOM"));
+    }
+
+    #[test]
+    fn test_glob_match_prefix() {
+        assert!(glob_match("test_*.py", "test_foo.py"));
+        assert!(glob_match("test_*.py", "test_outputs.py"));
+        assert!(!glob_match("test_*.py", "foo_test.py"));
+        assert!(!glob_match("test_*.py", "test_foo.rs"));
+    }
+
+    #[test]
+    fn test_glob_match_suffix() {
+        assert!(glob_match("*_test.py", "foo_test.py"));
+        assert!(glob_match("*_test.go", "widget_test.go"));
+        assert!(!glob_match("*_test.py", "test_foo.py"));
+    }
+
+    #[test]
+    fn test_glob_match_middle() {
+        assert!(glob_match("*.test.js", "app.test.js"));
+        assert!(glob_match("*.test.ts", "widget.test.ts"));
+        assert!(glob_match("*.spec.js", "app.spec.js"));
+        assert!(!glob_match("*.test.js", "test_app.js"));
+    }
+
+    #[test]
+    fn test_glob_match_exact() {
+        assert!(glob_match("Makefile", "Makefile"));
+        assert!(!glob_match("Makefile", "makefile"));
+    }
+
+    #[test]
+    fn test_discover_test_files_finds_python_tests() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+
+        // Create test directory with test files
+        let tests_dir = root.join("tests");
+        fs::create_dir_all(&tests_dir).unwrap();
+        fs::write(tests_dir.join("test_outputs.py"), "# test").unwrap();
+        fs::write(tests_dir.join("widget_test.py"), "# test").unwrap();
+        fs::write(tests_dir.join("helper.py"), "# not a test").unwrap();
+
+        let found = discover_test_files(root);
+        assert!(found.contains(&"tests/test_outputs.py".to_string()));
+        assert!(found.contains(&"tests/widget_test.py".to_string()));
+        assert!(!found.iter().any(|f| f.contains("helper.py")));
+    }
+
+    #[test]
+    fn test_discover_test_files_finds_rust_tests() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+
+        let tests_dir = root.join("tests");
+        fs::create_dir_all(&tests_dir).unwrap();
+        fs::write(tests_dir.join("test_integration.rs"), "// test").unwrap();
+
+        let found = discover_test_files(root);
+        assert!(found.contains(&"tests/test_integration.rs".to_string()));
+    }
+
+    #[test]
+    fn test_discover_test_files_finds_js_tests() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+
+        fs::write(root.join("app.test.js"), "// test").unwrap();
+        fs::write(root.join("widget.spec.ts"), "// test").unwrap();
+
+        let found = discover_test_files(root);
+        assert!(found.contains(&"app.test.js".to_string()));
+        assert!(found.contains(&"widget.spec.ts".to_string()));
+    }
+
+    #[test]
+    fn test_discover_test_files_empty_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let found = discover_test_files(tmp.path());
+        assert!(found.is_empty());
+    }
+
+    #[test]
+    fn test_build_auto_verify_command_rust() {
+        let files = vec!["tests/test_integration.rs".to_string()];
+        assert_eq!(
+            build_auto_verify_command(&files),
+            Some("cargo test".to_string())
+        );
+    }
+
+    #[test]
+    fn test_build_auto_verify_command_python() {
+        let files = vec![
+            "tests/test_outputs.py".to_string(),
+            "tests/test_parser.py".to_string(),
+        ];
+        assert_eq!(
+            build_auto_verify_command(&files),
+            Some("python -m pytest tests/test_outputs.py tests/test_parser.py".to_string())
+        );
+    }
+
+    #[test]
+    fn test_build_auto_verify_command_go() {
+        let files = vec!["widget_test.go".to_string()];
+        assert_eq!(
+            build_auto_verify_command(&files),
+            Some("go test ./...".to_string())
+        );
+    }
+
+    #[test]
+    fn test_build_auto_verify_command_js() {
+        let files = vec!["app.test.js".to_string()];
+        assert_eq!(
+            build_auto_verify_command(&files),
+            Some("npx jest".to_string())
+        );
+    }
+
+    #[test]
+    fn test_build_auto_verify_command_empty() {
+        let files: Vec<String> = vec![];
+        assert_eq!(build_auto_verify_command(&files), None);
+    }
+
+    #[test]
+    fn test_format_test_discovery_context() {
+        let files = vec![
+            "tests/test_outputs.py".to_string(),
+            "tests/test_parser.py".to_string(),
+        ];
+        let ctx = format_test_discovery_context(&files);
+        assert!(ctx.contains("## Discovered Test Files"));
+        assert!(ctx.contains("tests/test_outputs.py"));
+        assert!(ctx.contains("tests/test_parser.py"));
+        assert!(ctx.contains("MUST run these tests"));
+    }
+
+    #[test]
+    fn test_format_test_discovery_context_empty() {
+        let ctx = format_test_discovery_context(&[]);
+        assert!(ctx.is_empty());
+    }
+
+    #[test]
+    fn test_read_wg_guide_returns_default_when_no_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let wg_dir = tmp.path().join(".workgraph");
+        std::fs::create_dir_all(&wg_dir).unwrap();
+
+        let guide = read_wg_guide(&wg_dir);
+        assert_eq!(guide, workgraph::service::executor::DEFAULT_WG_GUIDE);
+    }
+
+    #[test]
+    fn test_read_wg_guide_reads_custom_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let wg_dir = tmp.path().join(".workgraph");
+        std::fs::create_dir_all(&wg_dir).unwrap();
+
+        let custom_guide = "Custom wg guide for this project.";
+        std::fs::write(wg_dir.join("wg-guide.md"), custom_guide).unwrap();
+
+        let guide = read_wg_guide(&wg_dir);
+        assert_eq!(guide, custom_guide);
+    }
+
+    #[test]
+    fn test_read_wg_guide_falls_back_on_empty_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let wg_dir = tmp.path().join(".workgraph");
+        std::fs::create_dir_all(&wg_dir).unwrap();
+
+        std::fs::write(wg_dir.join("wg-guide.md"), "  \n  ").unwrap();
+
+        let guide = read_wg_guide(&wg_dir);
+        assert_eq!(guide, workgraph::service::executor::DEFAULT_WG_GUIDE);
     }
 }

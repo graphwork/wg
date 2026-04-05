@@ -99,6 +99,9 @@ fn test_scope_context() -> ScopeContext {
         claude_md_content: "Use workgraph for task management.\nAlways run tests before marking done.".into(),
         queued_messages: String::new(),
         previous_attempt_context: String::new(),
+        wg_guide_content: String::new(),
+        discovered_tests: String::new(),
+        decomp_guidance: true,
     }
 }
 
