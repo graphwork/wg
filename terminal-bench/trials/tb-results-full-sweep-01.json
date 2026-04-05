@@ -1,0 +1,2473 @@
+{
+  "sweep": "full-sweep-01",
+  "conditions": [
+    "a",
+    "c",
+    "d",
+    "e"
+  ],
+  "tasks": [
+    "file-ops",
+    "text-processing",
+    "debugging",
+    "shell-scripting",
+    "data-processing",
+    "algorithm",
+    "ml"
+  ],
+  "replicas": 3,
+  "total_trials": 84,
+  "trials": [
+    {
+      "task_id": "tb-a-file-ops-r0",
+      "condition": "A",
+      "task_type": "file-ops",
+      "replica": 0,
+      "status": "done",
+      "verify_result": "passed",
+      "flip_score": 0.03,
+      "flip_dimensions": {
+        "hallucination_rate": 0.95,
+        "semantic_match": 0.0,
+        "specificity_match": 0.1,
+        "requirement_coverage": 0.0
+      },
+      "llm_score": 0.91,
+      "llm_dimensions": {
+        "completeness": 1.0,
+        "efficiency": 0.8,
+        "style_adherence": 0.9,
+        "intent_fidelity": 0.03,
+        "downstream_usability": 1.0,
+        "coordination_overhead": 0.9,
+        "blocking_impact": 0.9,
+        "correctness": 1.0
+      }
+    },
+    {
+      "task_id": "tb-a-file-ops-r1",
+      "condition": "A",
+      "task_type": "file-ops",
+      "replica": 1,
+      "status": "done",
+      "verify_result": "passed",
+      "flip_score": 0.095,
+      "flip_dimensions": {
+        "semantic_match": 0.05,
+        "requirement_coverage": 0.1,
+        "specificity_match": 0.15,
+        "hallucination_rate": 0.85
+      },
+      "llm_score": 0.87,
+      "llm_dimensions": {
+        "intent_fidelity": 0.095,
+        "completeness": 0.9,
+        "downstream_usability": 0.9,
+        "correctness": 0.9,
+        "blocking_impact": 0.9,
+        "efficiency": 0.9,
+        "style_adherence": 0.7,
+        "coordination_overhead": 0.9
+      }
+    },
+    {
+      "task_id": "tb-a-file-ops-r2",
+      "condition": "A",
+      "task_type": "file-ops",
+      "replica": 2,
+      "status": "done",
+      "verify_result": "passed",
+      "flip_score": 0.495,
+      "flip_dimensions": {
+        "requirement_coverage": 0.35,
+        "specificity_match": 0.25,
+        "semantic_match": 0.7,
+        "hallucination_rate": 0.4
+      },
+      "llm_score": 0.81,
+      "llm_dimensions": {
+        "downstream_usability": 0.7,
+        "completeness": 0.85,
+        "intent_fidelity": 0.495,
+        "style_adherence": 0.8,
+        "efficiency": 0.8,
+        "coordination_overhead": 0.85,
+        "blocking_impact": 0.9,
+        "correctness": 0.9
+      }
+    },
+    {
+      "task_id": "tb-a-text-processing-r0",
+      "condition": "A",
+      "task_type": "text-processing",
+      "replica": 0,
+      "status": "done",
+      "verify_result": "passed",
+      "flip_score": 0.24,
+      "flip_dimensions": {
+        "hallucination_rate": 0.35,
+        "requirement_coverage": 0.15,
+        "specificity_match": 0.05,
+        "semantic_match": 0.3
+      },
+      "llm_score": 0.65,
+      "llm_dimensions": {
+        "correctness": 0.8,
+        "style_adherence": 0.7,
+        "efficiency": 0.9,
+        "coordination_overhead": 0.6,
+        "completeness": 0.8,
+        "intent_fidelity": 0.24,
+        "blocking_impact": 0.9,
+        "downstream_usability": 0.4
+      }
+    },
+    {
+      "task_id": "tb-a-text-processing-r1",
+      "condition": "A",
+      "task_type": "text-processing",
+      "replica": 1,
+      "status": "done",
+      "verify_result": "passed",
+      "flip_score": 0.0,
+      "flip_dimensions": {
+        "requirement_coverage": 0.0,
+        "specificity_match": 0.0,
+        "semantic_match": 0.0,
+        "hallucination_rate": 1.0
+      },
+      "llm_score": 0.24,
+      "llm_dimensions": {
+        "coordination_overhead": 0.2,
+        "style_adherence": 0.1,
+        "blocking_impact": 0.3,
+        "correctness": 0.2,
+        "intent_fidelity": 0.0,
+        "downstream_usability": 0.2,
+        "completeness": 0.3,
+        "efficiency": 0.4
+      }
+    },
+    {
+      "task_id": "tb-a-text-processing-r2",
+      "condition": "A",
+      "task_type": "text-processing",
+      "replica": 2,
+      "status": "done",
+      "verify_result": "passed",
+      "flip_score": 0.702,
+      "flip_dimensions": {
+        "specificity_match": 0.38,
+        "semantic_match": 1.0,
+        "hallucination_rate": 0.18,
+        "requirement_coverage": 0.48
+      },
+      "llm_score": 0.6,
+      "llm_dimensions": {
+        "blocking_impact": 0.7,
+        "coordination_overhead": 0.3,
+        "correctness": 0.8,
+        "completeness": 0.9,
+        "efficiency": 0.6,
+        "style_adherence": 0.5,
+        "downstream_usability": 0.3,
+        "intent_fidelity": 0.702
+      }
+    },
+    {
+      "task_id": "tb-a-debugging-r0",
+      "condition": "A",
+      "task_type": "debugging",
+      "replica": 0,
+      "status": "done",
+      "verify_result": "passed",
+      "flip_score": 0.0,
+      "flip_dimensions": {
+        "specificity_match": 0.0,
+        "semantic_match": 0.0,
+        "hallucination_rate": 1.0,
+        "requirement_coverage": 0.0
+      },
+      "llm_score": 0.82,
+      "llm_dimensions": {
+        "blocking_impact": 0.9,
+        "correctness": 0.9,
+        "efficiency": 0.9,
+        "completeness": 0.9,
+        "coordination_overhead": 0.7,
+        "downstream_usability": 0.7,
+        "style_adherence": 0.8,
+        "intent_fidelity": 0.0
+      }
+    },
+    {
+      "task_id": "tb-a-debugging-r1",
+      "condition": "A",
+      "task_type": "debugging",
+      "replica": 1,
+      "status": "done",
+      "verify_result": "passed",
+      "flip_score": 0.67,
+      "flip_dimensions": {
+        "specificity_match": 0.3,
+        "semantic_match": 0.9,
+        "requirement_coverage": 0.55,
+        "hallucination_rate": 0.15
+      },
+      "llm_score": 0.74,
+      "llm_dimensions": {
+        "efficiency": 0.8,
+        "style_adherence": 0.6,
+        "coordination_overhead": 0.8,
+        "blocking_impact": 0.9,
+        "correctness": 0.9,
+        "completeness": 0.9,
+        "downstream_usability": 0.5,
+        "intent_fidelity": 0.67
+      }
+    },
+    {
+      "task_id": "tb-a-debugging-r2",
+      "condition": "A",
+      "task_type": "debugging",
+      "replica": 2,
+      "status": "done",
+      "verify_result": "passed",
+      "flip_score": 0.01,
+      "flip_dimensions": {
+        "hallucination_rate": 0.98,
+        "requirement_coverage": 0.0,
+        "semantic_match": 0.0,
+        "specificity_match": 0.0
+      },
+      "llm_score": 0.74,
+      "llm_dimensions": {
+        "style_adherence": 0.8,
+        "blocking_impact": 0.95,
+        "downstream_usability": 0.4,
+        "efficiency": 0.95,
+        "coordination_overhead": 0.9,
+        "completeness": 0.9,
+        "intent_fidelity": 0.01,
+        "correctness": 0.95
+      }
+    },
+    {
+      "task_id": "tb-a-shell-scripting-r0",
+      "condition": "A",
+      "task_type": "shell-scripting",
+      "replica": 0,
+      "status": "done",
+      "verify_result": "passed",
+      "flip_score": 0.28,
+      "flip_dimensions": {
+        "semantic_match": 0.35,
+        "hallucination_rate": 0.65,
+        "requirement_coverage": 0.1,
+        "specificity_match": 0.15
+      },
+      "llm_score": 0.83,
+      "llm_dimensions": {
+        "efficiency": 0.85,
+        "style_adherence": 0.8,
+        "blocking_impact": 0.95,
+        "intent_fidelity": 0.28,
+        "coordination_overhead": 0.9,
+        "completeness": 0.85,
+        "correctness": 0.9,
+        "downstream_usability": 0.6
+      }
+    },
+    {
+      "task_id": "tb-a-shell-scripting-r1",
+      "condition": "A",
+      "task_type": "shell-scripting",
+      "replica": 1,
+      "status": "done",
+      "verify_result": "passed",
+      "flip_score": 0.0,
+      "flip_dimensions": {
+        "requirement_coverage": 0.0,
+        "semantic_match": 0.0,
+        "hallucination_rate": 1.0,
+        "specificity_match": 0.0
+      },
+      "llm_score": null,
+      "llm_dimensions": {}
+    },
+    {
+      "task_id": "tb-a-shell-scripting-r2",
+      "condition": "A",
+      "task_type": "shell-scripting",
+      "replica": 2,
+      "status": "done",
+      "verify_result": "passed",
+      "flip_score": 0.045,
+      "flip_dimensions": {
+        "hallucination_rate": 0.95,
+        "specificity_match": 0.2,
+        "semantic_match": 0.0,
+        "requirement_coverage": 0.0
+      },
+      "llm_score": 0.91,
+      "llm_dimensions": {
+        "coordination_overhead": 0.9,
+        "correctness": 1.0,
+        "style_adherence": 0.8,
+        "efficiency": 1.0,
+        "intent_fidelity": 0.045,
+        "completeness": 1.0,
+        "downstream_usability": 0.6,
+        "blocking_impact": 1.0
+      }
+    },
+    {
+      "task_id": "tb-a-data-processing-r0",
+      "condition": "A",
+      "task_type": "data-processing",
+      "replica": 0,
+      "status": "done",
+      "verify_result": "passed",
+      "flip_score": 0.125,
+      "flip_dimensions": {
+        "semantic_match": 0.15,
+        "hallucination_rate": 0.9,
+        "requirement_coverage": 0.05,
+        "specificity_match": 0.2
+      },
+      "llm_score": 0.7,
+      "llm_dimensions": {
+        "intent_fidelity": 0.125,
+        "completeness": 0.9,
+        "correctness": 0.9,
+        "coordination_overhead": 0.7,
+        "style_adherence": 0.7,
+        "blocking_impact": 0.9,
+        "downstream_usability": 0.4,
+        "efficiency": 0.8
+      }
+    },
+    {
+      "task_id": "tb-a-data-processing-r1",
+      "condition": "A",
+      "task_type": "data-processing",
+      "replica": 1,
+      "status": "done",
+      "verify_result": "passed",
+      "flip_score": 0.0,
+      "flip_dimensions": {
+        "hallucination_rate": 1.0,
+        "specificity_match": 0.0,
+        "requirement_coverage": 0.0,
+        "semantic_match": 0.0
+      },
+      "llm_score": 0.81,
+      "llm_dimensions": {
+        "completeness": 0.9,
+        "efficiency": 0.8,
+        "blocking_impact": 0.8,
+        "correctness": 0.9,
+        "style_adherence": 0.6,
+        "downstream_usability": 0.8,
+        "intent_fidelity": 0.0,
+        "coordination_overhead": 0.6
+      }
+    },
+    {
+      "task_id": "tb-a-data-processing-r2",
+      "condition": "A",
+      "task_type": "data-processing",
+      "replica": 2,
+      "status": "done",
+      "verify_result": "passed",
+      "flip_score": 0.0,
+      "flip_dimensions": {
+        "specificity_match": 0.0,
+        "hallucination_rate": 1.0,
+        "semantic_match": 0.0,
+        "requirement_coverage": 0.0
+      },
+      "llm_score": 0.7,
+      "llm_dimensions": {
+        "correctness": 0.9,
+        "style_adherence": 0.7,
+        "efficiency": 0.9,
+        "downstream_usability": 0.4,
+        "completeness": 0.8,
+        "coordination_overhead": 0.8,
+        "intent_fidelity": 0.0,
+        "blocking_impact": 0.9
+      }
+    },
+    {
+      "task_id": "tb-a-algorithm-r0",
+      "condition": "A",
+      "task_type": "algorithm",
+      "replica": 0,
+      "status": "done",
+      "verify_result": "passed",
+      "flip_score": 0.03,
+      "flip_dimensions": {
+        "semantic_match": 0.0,
+        "specificity_match": 0.15,
+        "hallucination_rate": 1.0,
+        "requirement_coverage": 0.0
+      },
+      "llm_score": 0.68,
+      "llm_dimensions": {
+        "downstream_usability": 0.4,
+        "correctness": 1.0,
+        "blocking_impact": 0.9,
+        "completeness": 0.9,
+        "style_adherence": 0.3,
+        "efficiency": 0.8,
+        "intent_fidelity": 0.03,
+        "coordination_overhead": 0.7
+      }
+    },
+    {
+      "task_id": "tb-a-algorithm-r1",
+      "condition": "A",
+      "task_type": "algorithm",
+      "replica": 1,
+      "status": "done",
+      "verify_result": "passed",
+      "flip_score": 0.065,
+      "flip_dimensions": {
+        "semantic_match": 0.0,
+        "requirement_coverage": 0.0,
+        "specificity_match": 0.3,
+        "hallucination_rate": 0.95
+      },
+      "llm_score": 0.91,
+      "llm_dimensions": {
+        "intent_fidelity": 0.065,
+        "correctness": 0.95,
+        "completeness": 1.0,
+        "downstream_usability": 0.85,
+        "coordination_overhead": 0.8,
+        "blocking_impact": 0.95,
+        "efficiency": 0.9,
+        "style_adherence": 0.8
+      }
+    },
+    {
+      "task_id": "tb-a-algorithm-r2",
+      "condition": "A",
+      "task_type": "algorithm",
+      "replica": 2,
+      "status": "done",
+      "verify_result": "passed",
+      "flip_score": 0.0,
+      "flip_dimensions": {
+        "semantic_match": 0.0,
+        "specificity_match": 0.0,
+        "hallucination_rate": 1.0,
+        "requirement_coverage": 0.0
+      },
+      "llm_score": 0.84,
+      "llm_dimensions": {
+        "intent_fidelity": 0.0,
+        "downstream_usability": 0.6,
+        "completeness": 1.0,
+        "coordination_overhead": 0.4,
+        "blocking_impact": 0.9,
+        "correctness": 1.0,
+        "efficiency": 0.9,
+        "style_adherence": 0.7
+      }
+    },
+    {
+      "task_id": "tb-a-ml-r0",
+      "condition": "A",
+      "task_type": "ml",
+      "replica": 0,
+      "status": "done",
+      "verify_result": "passed",
+      "flip_score": 0.0,
+      "flip_dimensions": {
+        "semantic_match": 0.0,
+        "requirement_coverage": 0.0,
+        "specificity_match": 0.0,
+        "hallucination_rate": 1.0
+      },
+      "llm_score": 0.1,
+      "llm_dimensions": {
+        "coordination_overhead": 0.1,
+        "blocking_impact": 0.3,
+        "correctness": 0.0,
+        "style_adherence": 0.0,
+        "downstream_usability": 0.0,
+        "intent_fidelity": 0.0,
+        "efficiency": 0.2,
+        "completeness": 0.0
+      }
+    },
+    {
+      "task_id": "tb-a-ml-r1",
+      "condition": "A",
+      "task_type": "ml",
+      "replica": 1,
+      "status": "done",
+      "verify_result": "passed",
+      "flip_score": 0.0,
+      "flip_dimensions": {
+        "specificity_match": 0.0,
+        "semantic_match": 0.0,
+        "requirement_coverage": 0.0,
+        "hallucination_rate": 1.0
+      },
+      "llm_score": 0.94,
+      "llm_dimensions": {
+        "completeness": 1.0,
+        "blocking_impact": 1.0,
+        "coordination_overhead": 0.9,
+        "downstream_usability": 0.8,
+        "style_adherence": 0.9,
+        "efficiency": 0.9,
+        "intent_fidelity": 0.0,
+        "correctness": 1.0
+      }
+    },
+    {
+      "task_id": "tb-a-ml-r2",
+      "condition": "A",
+      "task_type": "ml",
+      "replica": 2,
+      "status": "done",
+      "verify_result": "passed",
+      "flip_score": 0.025,
+      "flip_dimensions": {
+        "specificity_match": 0.1,
+        "semantic_match": 0.0,
+        "requirement_coverage": 0.0,
+        "hallucination_rate": 0.95
+      },
+      "llm_score": 0.92,
+      "llm_dimensions": {
+        "efficiency": 0.95,
+        "correctness": 1.0,
+        "coordination_overhead": 0.8,
+        "intent_fidelity": 0.025,
+        "completeness": 1.0,
+        "downstream_usability": 0.85,
+        "style_adherence": 0.9,
+        "blocking_impact": 1.0
+      }
+    },
+    {
+      "task_id": "tb-c-file-ops-r0",
+      "condition": "C",
+      "task_type": "file-ops",
+      "replica": 0,
+      "status": "done",
+      "verify_result": "passed",
+      "flip_score": 0.505,
+      "flip_dimensions": {
+        "requirement_coverage": 0.25,
+        "hallucination_rate": 0.1,
+        "specificity_match": 0.2,
+        "semantic_match": 0.75
+      },
+      "llm_score": 0.82,
+      "llm_dimensions": {
+        "style_adherence": 0.8,
+        "correctness": 0.9,
+        "blocking_impact": 0.8,
+        "completeness": 0.9,
+        "coordination_overhead": 0.8,
+        "efficiency": 0.8,
+        "intent_fidelity": 0.505,
+        "downstream_usability": 0.9
+      }
+    },
+    {
+      "task_id": "tb-c-file-ops-r1",
+      "condition": "C",
+      "task_type": "file-ops",
+      "replica": 1,
+      "status": "done",
+      "verify_result": "passed",
+      "flip_score": 0.06,
+      "flip_dimensions": {
+        "semantic_match": 0.05,
+        "requirement_coverage": 0.05,
+        "hallucination_rate": 0.95,
+        "specificity_match": 0.1
+      },
+      "llm_score": null,
+      "llm_dimensions": {}
+    },
+    {
+      "task_id": "tb-c-file-ops-r2",
+      "condition": "C",
+      "task_type": "file-ops",
+      "replica": 2,
+      "status": "done",
+      "verify_result": "passed",
+      "flip_score": 0.08,
+      "flip_dimensions": {
+        "requirement_coverage": 0.05,
+        "hallucination_rate": 0.95,
+        "semantic_match": 0.1,
+        "specificity_match": 0.1
+      },
+      "llm_score": 0.63,
+      "llm_dimensions": {
+        "correctness": 0.6,
+        "blocking_impact": 0.8,
+        "style_adherence": 0.5,
+        "completeness": 0.7,
+        "efficiency": 0.9,
+        "coordination_overhead": 0.4,
+        "downstream_usability": 0.6,
+        "intent_fidelity": 0.08
+      }
+    },
+    {
+      "task_id": "tb-c-text-processing-r0",
+      "condition": "C",
+      "task_type": "text-processing",
+      "replica": 0,
+      "status": "done",
+      "verify_result": "passed",
+      "flip_score": 0.72,
+      "flip_dimensions": {
+        "hallucination_rate": 0.1,
+        "semantic_match": 1.0,
+        "specificity_match": 0.4,
+        "requirement_coverage": 0.5
+      },
+      "llm_score": 0.42,
+      "llm_dimensions": {
+        "style_adherence": 0.5,
+        "correctness": 0.6,
+        "intent_fidelity": 0.72,
+        "blocking_impact": 0.7,
+        "downstream_usability": 0.1,
+        "efficiency": 0.3,
+        "completeness": 0.4,
+        "coordination_overhead": 0.4
+      }
+    },
+    {
+      "task_id": "tb-c-text-processing-r1",
+      "condition": "C",
+      "task_type": "text-processing",
+      "replica": 1,
+      "status": "done",
+      "verify_result": "passed",
+      "flip_score": 0.62,
+      "flip_dimensions": {
+        "specificity_match": 0.25,
+        "semantic_match": 0.9,
+        "hallucination_rate": 0.15,
+        "requirement_coverage": 0.4
+      },
+      "llm_score": 0.89,
+      "llm_dimensions": {
+        "correctness": 0.9,
+        "downstream_usability": 0.85,
+        "intent_fidelity": 0.62,
+        "completeness": 0.9,
+        "efficiency": 0.85,
+        "coordination_overhead": 0.9,
+        "blocking_impact": 0.95,
+        "style_adherence": 0.9
+      }
+    },
+    {
+      "task_id": "tb-c-text-processing-r2",
+      "condition": "C",
+      "task_type": "text-processing",
+      "replica": 2,
+      "status": "done",
+      "verify_result": "passed",
+      "flip_score": 0.883,
+      "flip_dimensions": {
+        "requirement_coverage": 0.95,
+        "specificity_match": 0.6,
+        "hallucination_rate": 0.22,
+        "semantic_match": 1.0
+      },
+      "llm_score": 0.95,
+      "llm_dimensions": {
+        "completeness": 1.0,
+        "blocking_impact": 1.0,
+        "correctness": 1.0,
+        "downstream_usability": 0.9,
+        "style_adherence": 0.7,
+        "efficiency": 0.9,
+        "coordination_overhead": 1.0,
+        "intent_fidelity": 0.883
+      }
+    },
+    {
+      "task_id": "tb-c-debugging-r0",
+      "condition": "C",
+      "task_type": "debugging",
+      "replica": 0,
+      "status": "done",
+      "verify_result": "passed",
+      "flip_score": 0.96,
+      "flip_dimensions": {
+        "hallucination_rate": 0.05,
+        "requirement_coverage": 0.95,
+        "specificity_match": 0.9,
+        "semantic_match": 1.0
+      },
+      "llm_score": 0.95,
+      "llm_dimensions": {
+        "style_adherence": 0.9,
+        "downstream_usability": 0.9,
+        "efficiency": 0.9,
+        "coordination_overhead": 0.9,
+        "correctness": 1.0,
+        "completeness": 1.0,
+        "intent_fidelity": 0.96,
+        "blocking_impact": 0.9
+      }
+    },
+    {
+      "task_id": "tb-c-debugging-r1",
+      "condition": "C",
+      "task_type": "debugging",
+      "replica": 1,
+      "status": "done",
+      "verify_result": "passed",
+      "flip_score": 0.84,
+      "flip_dimensions": {
+        "specificity_match": 0.55,
+        "hallucination_rate": 0.15,
+        "semantic_match": 1.0,
+        "requirement_coverage": 0.8
+      },
+      "llm_score": 0.89,
+      "llm_dimensions": {
+        "coordination_overhead": 0.9,
+        "downstream_usability": 0.9,
+        "blocking_impact": 0.9,
+        "efficiency": 0.9,
+        "style_adherence": 0.8,
+        "correctness": 1.0,
+        "intent_fidelity": 0.84,
+        "completeness": 1.0
+      }
+    },
+    {
+      "task_id": "tb-c-debugging-r2",
+      "condition": "C",
+      "task_type": "debugging",
+      "replica": 2,
+      "status": "done",
+      "verify_result": "passed",
+      "flip_score": 0.97,
+      "flip_dimensions": {
+        "semantic_match": 1.0,
+        "requirement_coverage": 0.95,
+        "specificity_match": 0.95,
+        "hallucination_rate": 0.05
+      },
+      "llm_score": 0.81,
+      "llm_dimensions": {
+        "style_adherence": 0.7,
+        "blocking_impact": 0.95,
+        "completeness": 0.9,
+        "correctness": 0.9,
+        "efficiency": 0.9,
+        "intent_fidelity": 0.97,
+        "downstream_usability": 0.6,
+        "coordination_overhead": 0.9
+      }
+    },
+    {
+      "task_id": "tb-c-shell-scripting-r0",
+      "condition": "C",
+      "task_type": "shell-scripting",
+      "replica": 0,
+      "status": "done",
+      "verify_result": "passed",
+      "flip_score": 0.926,
+      "flip_dimensions": {
+        "specificity_match": 0.85,
+        "semantic_match": 1.0,
+        "requirement_coverage": 0.9,
+        "hallucination_rate": 0.14
+      },
+      "llm_score": 0.74,
+      "llm_dimensions": {
+        "correctness": 0.9,
+        "style_adherence": 0.9,
+        "blocking_impact": 0.9,
+        "efficiency": 0.8,
+        "completeness": 0.9,
+        "intent_fidelity": 0.926,
+        "coordination_overhead": 0.9,
+        "downstream_usability": 0.4
+      }
+    },
+    {
+      "task_id": "tb-c-shell-scripting-r1",
+      "condition": "C",
+      "task_type": "shell-scripting",
+      "replica": 1,
+      "status": "done",
+      "verify_result": "passed",
+      "flip_score": 0.93,
+      "flip_dimensions": {
+        "hallucination_rate": 0.15,
+        "specificity_match": 0.8,
+        "requirement_coverage": 0.95,
+        "semantic_match": 1.0
+      },
+      "llm_score": 0.84,
+      "llm_dimensions": {
+        "correctness": 0.9,
+        "downstream_usability": 0.7,
+        "intent_fidelity": 0.93,
+        "efficiency": 0.9,
+        "blocking_impact": 0.9,
+        "completeness": 0.85,
+        "coordination_overhead": 0.85,
+        "style_adherence": 0.8
+      }
+    },
+    {
+      "task_id": "tb-c-shell-scripting-r2",
+      "condition": "C",
+      "task_type": "shell-scripting",
+      "replica": 2,
+      "status": "done",
+      "verify_result": "passed",
+      "flip_score": 0.81,
+      "flip_dimensions": {
+        "specificity_match": 0.35,
+        "requirement_coverage": 0.85,
+        "hallucination_rate": 0.12,
+        "semantic_match": 1.0
+      },
+      "llm_score": 0.92,
+      "llm_dimensions": {
+        "completeness": 0.95,
+        "blocking_impact": 0.95,
+        "correctness": 0.95,
+        "coordination_overhead": 0.95,
+        "efficiency": 0.9,
+        "downstream_usability": 0.9,
+        "style_adherence": 0.8,
+        "intent_fidelity": 0.81
+      }
+    },
+    {
+      "task_id": "tb-c-data-processing-r0",
+      "condition": "C",
+      "task_type": "data-processing",
+      "replica": 0,
+      "status": "done",
+      "verify_result": "passed",
+      "flip_score": 0.68,
+      "flip_dimensions": {
+        "specificity_match": 0.3,
+        "hallucination_rate": 0.35,
+        "requirement_coverage": 0.5,
+        "semantic_match": 1.0
+      },
+      "llm_score": 0.91,
+      "llm_dimensions": {
+        "completeness": 0.95,
+        "correctness": 0.95,
+        "coordination_overhead": 0.95,
+        "style_adherence": 0.85,
+        "blocking_impact": 0.85,
+        "efficiency": 0.75,
+        "intent_fidelity": 0.68,
+        "downstream_usability": 0.9
+      }
+    },
+    {
+      "task_id": "tb-c-data-processing-r1",
+      "condition": "C",
+      "task_type": "data-processing",
+      "replica": 1,
+      "status": "done",
+      "verify_result": "passed",
+      "flip_score": 0.7,
+      "flip_dimensions": {
+        "semantic_match": 1.0,
+        "specificity_match": 0.4,
+        "hallucination_rate": 0.15,
+        "requirement_coverage": 0.45
+      },
+      "llm_score": 0.93,
+      "llm_dimensions": {
+        "efficiency": 0.9,
+        "style_adherence": 0.85,
+        "coordination_overhead": 0.95,
+        "correctness": 0.95,
+        "blocking_impact": 0.95,
+        "completeness": 0.95,
+        "downstream_usability": 0.9,
+        "intent_fidelity": 0.7
+      }
+    },
+    {
+      "task_id": "tb-c-data-processing-r2",
+      "condition": "C",
+      "task_type": "data-processing",
+      "replica": 2,
+      "status": "done",
+      "verify_result": "passed",
+      "flip_score": 0.74,
+      "flip_dimensions": {
+        "requirement_coverage": 0.65,
+        "semantic_match": 1.0,
+        "specificity_match": 0.4,
+        "hallucination_rate": 0.35
+      },
+      "llm_score": 0.97,
+      "llm_dimensions": {
+        "correctness": 1.0,
+        "style_adherence": 0.8,
+        "coordination_overhead": 1.0,
+        "intent_fidelity": 0.74,
+        "completeness": 1.0,
+        "efficiency": 0.9,
+        "blocking_impact": 1.0,
+        "downstream_usability": 1.0
+      }
+    },
+    {
+      "task_id": "tb-c-algorithm-r0",
+      "condition": "C",
+      "task_type": "algorithm",
+      "replica": 0,
+      "status": "done",
+      "verify_result": "passed",
+      "flip_score": 0.72,
+      "flip_dimensions": {
+        "requirement_coverage": 0.6,
+        "hallucination_rate": 0.3,
+        "semantic_match": 1.0,
+        "specificity_match": 0.35
+      },
+      "llm_score": 0.98,
+      "llm_dimensions": {
+        "coordination_overhead": 1.0,
+        "style_adherence": 0.9,
+        "blocking_impact": 1.0,
+        "completeness": 1.0,
+        "efficiency": 0.95,
+        "intent_fidelity": 0.72,
+        "correctness": 1.0,
+        "downstream_usability": 0.95
+      }
+    },
+    {
+      "task_id": "tb-c-algorithm-r1",
+      "condition": "C",
+      "task_type": "algorithm",
+      "replica": 1,
+      "status": "done",
+      "verify_result": "passed",
+      "flip_score": 0.63,
+      "flip_dimensions": {
+        "hallucination_rate": 0.4,
+        "requirement_coverage": 0.4,
+        "semantic_match": 1.0,
+        "specificity_match": 0.25
+      },
+      "llm_score": 0.76,
+      "llm_dimensions": {
+        "downstream_usability": 0.85,
+        "style_adherence": 0.5,
+        "completeness": 0.9,
+        "efficiency": 0.7,
+        "coordination_overhead": 0.7,
+        "intent_fidelity": 0.63,
+        "blocking_impact": 0.8,
+        "correctness": 0.75
+      }
+    },
+    {
+      "task_id": "tb-c-algorithm-r2",
+      "condition": "C",
+      "task_type": "algorithm",
+      "replica": 2,
+      "status": "done",
+      "verify_result": "passed",
+      "flip_score": 0.79,
+      "flip_dimensions": {
+        "semantic_match": 1.0,
+        "requirement_coverage": 0.65,
+        "specificity_match": 0.55,
+        "hallucination_rate": 0.15
+      },
+      "llm_score": 0.93,
+      "llm_dimensions": {
+        "efficiency": 0.9,
+        "style_adherence": 0.85,
+        "completeness": 1.0,
+        "downstream_usability": 0.9,
+        "correctness": 0.95,
+        "blocking_impact": 0.9,
+        "coordination_overhead": 0.95,
+        "intent_fidelity": 0.79
+      }
+    },
+    {
+      "task_id": "tb-c-ml-r0",
+      "condition": "C",
+      "task_type": "ml",
+      "replica": 0,
+      "status": "done",
+      "verify_result": "passed",
+      "flip_score": 0.65,
+      "flip_dimensions": {
+        "hallucination_rate": 0.3,
+        "specificity_match": 0.35,
+        "semantic_match": 1.0,
+        "requirement_coverage": 0.35
+      },
+      "llm_score": 0.91,
+      "llm_dimensions": {
+        "intent_fidelity": 0.65,
+        "completeness": 0.95,
+        "blocking_impact": 0.85,
+        "efficiency": 0.85,
+        "correctness": 0.95,
+        "downstream_usability": 0.85,
+        "style_adherence": 0.9,
+        "coordination_overhead": 0.9
+      }
+    },
+    {
+      "task_id": "tb-c-ml-r1",
+      "condition": "C",
+      "task_type": "ml",
+      "replica": 1,
+      "status": "done",
+      "verify_result": "passed",
+      "flip_score": 0.74,
+      "flip_dimensions": {
+        "requirement_coverage": 0.65,
+        "specificity_match": 0.5,
+        "hallucination_rate": 0.3,
+        "semantic_match": 0.95
+      },
+      "llm_score": 0.98,
+      "llm_dimensions": {
+        "downstream_usability": 0.9,
+        "blocking_impact": 1.0,
+        "intent_fidelity": 0.74,
+        "style_adherence": 0.95,
+        "correctness": 1.0,
+        "efficiency": 1.0,
+        "completeness": 1.0,
+        "coordination_overhead": 1.0
+      }
+    },
+    {
+      "task_id": "tb-c-ml-r2",
+      "condition": "C",
+      "task_type": "ml",
+      "replica": 2,
+      "status": "done",
+      "verify_result": "passed",
+      "flip_score": 0.68,
+      "flip_dimensions": {
+        "semantic_match": 0.95,
+        "requirement_coverage": 0.55,
+        "specificity_match": 0.35,
+        "hallucination_rate": 0.28
+      },
+      "llm_score": 1.0,
+      "llm_dimensions": {
+        "efficiency": 1.0,
+        "coordination_overhead": 1.0,
+        "blocking_impact": 1.0,
+        "intent_fidelity": 0.68,
+        "completeness": 1.0,
+        "downstream_usability": 1.0,
+        "style_adherence": 1.0,
+        "correctness": 1.0
+      }
+    },
+    {
+      "task_id": "tb-d-file-ops-r0",
+      "condition": "D",
+      "task_type": "file-ops",
+      "replica": 0,
+      "status": "done",
+      "verify_result": "passed",
+      "flip_score": 0.65,
+      "flip_dimensions": {
+        "semantic_match": 0.95,
+        "hallucination_rate": 0.15,
+        "specificity_match": 0.25,
+        "requirement_coverage": 0.45
+      },
+      "llm_score": 0.94,
+      "llm_dimensions": {
+        "style_adherence": 0.8,
+        "blocking_impact": 0.9,
+        "downstream_usability": 0.9,
+        "coordination_overhead": 0.9,
+        "intent_fidelity": 0.65,
+        "completeness": 1.0,
+        "correctness": 1.0,
+        "efficiency": 0.9
+      }
+    },
+    {
+      "task_id": "tb-d-file-ops-r1",
+      "condition": "D",
+      "task_type": "file-ops",
+      "replica": 1,
+      "status": "done",
+      "verify_result": "passed",
+      "flip_score": 0.726,
+      "flip_dimensions": {
+        "specificity_match": 0.38,
+        "semantic_match": 0.95,
+        "requirement_coverage": 0.6,
+        "hallucination_rate": 0.1
+      },
+      "llm_score": 0.9,
+      "llm_dimensions": {
+        "style_adherence": 0.8,
+        "intent_fidelity": 0.726,
+        "downstream_usability": 0.9,
+        "efficiency": 0.8,
+        "coordination_overhead": 0.9,
+        "correctness": 0.95,
+        "completeness": 0.95,
+        "blocking_impact": 0.85
+      }
+    },
+    {
+      "task_id": "tb-d-file-ops-r2",
+      "condition": "D",
+      "task_type": "file-ops",
+      "replica": 2,
+      "status": "done",
+      "verify_result": "passed",
+      "flip_score": 0.7,
+      "flip_dimensions": {
+        "semantic_match": 0.95,
+        "requirement_coverage": 0.53,
+        "specificity_match": 0.4,
+        "hallucination_rate": 0.18
+      },
+      "llm_score": 0.72,
+      "llm_dimensions": {
+        "completeness": 0.9,
+        "efficiency": 0.8,
+        "correctness": 0.9,
+        "downstream_usability": 0.3,
+        "style_adherence": 0.8,
+        "coordination_overhead": 0.8,
+        "intent_fidelity": 0.7,
+        "blocking_impact": 0.9
+      }
+    },
+    {
+      "task_id": "tb-d-text-processing-r0",
+      "condition": "D",
+      "task_type": "text-processing",
+      "replica": 0,
+      "status": "done",
+      "verify_result": "passed",
+      "flip_score": 0.94,
+      "flip_dimensions": {
+        "specificity_match": 0.85,
+        "semantic_match": 1.0,
+        "requirement_coverage": 0.9,
+        "hallucination_rate": 0.02
+      },
+      "llm_score": 0.96,
+      "llm_dimensions": {
+        "efficiency": 0.9,
+        "intent_fidelity": 0.94,
+        "downstream_usability": 0.8,
+        "correctness": 1.0,
+        "style_adherence": 1.0,
+        "blocking_impact": 1.0,
+        "coordination_overhead": 1.0,
+        "completeness": 1.0
+      }
+    },
+    {
+      "task_id": "tb-d-text-processing-r1",
+      "condition": "D",
+      "task_type": "text-processing",
+      "replica": 1,
+      "status": "done",
+      "verify_result": "passed",
+      "flip_score": 0.905,
+      "flip_dimensions": {
+        "semantic_match": 1.0,
+        "hallucination_rate": 0.0,
+        "requirement_coverage": 0.85,
+        "specificity_match": 0.75
+      },
+      "llm_score": 0.93,
+      "llm_dimensions": {
+        "efficiency": 0.9,
+        "blocking_impact": 1.0,
+        "coordination_overhead": 0.95,
+        "correctness": 0.95,
+        "intent_fidelity": 0.905,
+        "downstream_usability": 0.9,
+        "completeness": 0.95,
+        "style_adherence": 0.85
+      }
+    },
+    {
+      "task_id": "tb-d-text-processing-r2",
+      "condition": "D",
+      "task_type": "text-processing",
+      "replica": 2,
+      "status": "done",
+      "verify_result": "passed",
+      "flip_score": 0.7,
+      "flip_dimensions": {
+        "specificity_match": 0.38,
+        "semantic_match": 0.95,
+        "requirement_coverage": 0.5,
+        "hallucination_rate": 0.08
+      },
+      "llm_score": 0.85,
+      "llm_dimensions": {
+        "correctness": 0.9,
+        "coordination_overhead": 0.5,
+        "style_adherence": 0.9,
+        "completeness": 1.0,
+        "intent_fidelity": 0.7,
+        "downstream_usability": 0.9,
+        "efficiency": 0.65,
+        "blocking_impact": 0.7
+      }
+    },
+    {
+      "task_id": "tb-d-debugging-r0",
+      "condition": "D",
+      "task_type": "debugging",
+      "replica": 0,
+      "status": "done",
+      "verify_result": "passed",
+      "flip_score": 0.78,
+      "flip_dimensions": {
+        "semantic_match": 1.0,
+        "hallucination_rate": 0.0,
+        "specificity_match": 0.35,
+        "requirement_coverage": 0.7
+      },
+      "llm_score": 0.92,
+      "llm_dimensions": {
+        "blocking_impact": 0.9,
+        "correctness": 0.95,
+        "efficiency": 0.85,
+        "coordination_overhead": 0.9,
+        "completeness": 0.95,
+        "intent_fidelity": 0.78,
+        "style_adherence": 0.9,
+        "downstream_usability": 0.9
+      }
+    },
+    {
+      "task_id": "tb-d-debugging-r1",
+      "condition": "D",
+      "task_type": "debugging",
+      "replica": 1,
+      "status": "done",
+      "verify_result": "passed",
+      "flip_score": 0.73,
+      "flip_dimensions": {
+        "semantic_match": 0.85,
+        "requirement_coverage": 0.75,
+        "hallucination_rate": 0.11,
+        "specificity_match": 0.4
+      },
+      "llm_score": 0.93,
+      "llm_dimensions": {
+        "coordination_overhead": 0.95,
+        "downstream_usability": 0.9,
+        "efficiency": 0.9,
+        "completeness": 0.95,
+        "correctness": 0.95,
+        "blocking_impact": 0.95,
+        "intent_fidelity": 0.73,
+        "style_adherence": 0.9
+      }
+    },
+    {
+      "task_id": "tb-d-debugging-r2",
+      "condition": "D",
+      "task_type": "debugging",
+      "replica": 2,
+      "status": "done",
+      "verify_result": "passed",
+      "flip_score": 0.68,
+      "flip_dimensions": {
+        "semantic_match": 1.0,
+        "hallucination_rate": 0.3,
+        "requirement_coverage": 0.45,
+        "specificity_match": 0.35
+      },
+      "llm_score": 0.94,
+      "llm_dimensions": {
+        "coordination_overhead": 0.9,
+        "intent_fidelity": 0.68,
+        "efficiency": 0.9,
+        "style_adherence": 0.7,
+        "completeness": 1.0,
+        "downstream_usability": 1.0,
+        "blocking_impact": 1.0,
+        "correctness": 1.0
+      }
+    },
+    {
+      "task_id": "tb-d-shell-scripting-r0",
+      "condition": "D",
+      "task_type": "shell-scripting",
+      "replica": 0,
+      "status": "done",
+      "verify_result": "passed",
+      "flip_score": 0.805,
+      "flip_dimensions": {
+        "semantic_match": 0.9,
+        "requirement_coverage": 0.85,
+        "hallucination_rate": 0.3,
+        "specificity_match": 0.6
+      },
+      "llm_score": 0.88,
+      "llm_dimensions": {
+        "correctness": 0.9,
+        "coordination_overhead": 0.9,
+        "efficiency": 0.9,
+        "style_adherence": 0.8,
+        "completeness": 1.0,
+        "blocking_impact": 0.9,
+        "downstream_usability": 0.8,
+        "intent_fidelity": 0.805
+      }
+    },
+    {
+      "task_id": "tb-d-shell-scripting-r1",
+      "condition": "D",
+      "task_type": "shell-scripting",
+      "replica": 1,
+      "status": "done",
+      "verify_result": "passed",
+      "flip_score": 0.84,
+      "flip_dimensions": {
+        "semantic_match": 1.0,
+        "hallucination_rate": 0.15,
+        "requirement_coverage": 0.75,
+        "specificity_match": 0.65
+      },
+      "llm_score": 0.91,
+      "llm_dimensions": {
+        "efficiency": 0.85,
+        "coordination_overhead": 0.9,
+        "blocking_impact": 0.9,
+        "downstream_usability": 0.85,
+        "correctness": 0.95,
+        "completeness": 0.95,
+        "style_adherence": 0.9,
+        "intent_fidelity": 0.84
+      }
+    },
+    {
+      "task_id": "tb-d-shell-scripting-r2",
+      "condition": "D",
+      "task_type": "shell-scripting",
+      "replica": 2,
+      "status": "done",
+      "verify_result": "passed",
+      "flip_score": 0.667,
+      "flip_dimensions": {
+        "requirement_coverage": 0.55,
+        "semantic_match": 0.9,
+        "specificity_match": 0.4,
+        "hallucination_rate": 0.38
+      },
+      "llm_score": 0.83,
+      "llm_dimensions": {
+        "intent_fidelity": 0.667,
+        "downstream_usability": 0.9,
+        "blocking_impact": 0.9,
+        "style_adherence": 0.7,
+        "coordination_overhead": 0.8,
+        "efficiency": 0.7,
+        "completeness": 0.9,
+        "correctness": 0.9
+      }
+    },
+    {
+      "task_id": "tb-d-data-processing-r0",
+      "condition": "D",
+      "task_type": "data-processing",
+      "replica": 0,
+      "status": "done",
+      "verify_result": "passed",
+      "flip_score": 0.8,
+      "flip_dimensions": {
+        "specificity_match": 0.5,
+        "semantic_match": 1.0,
+        "requirement_coverage": 0.7,
+        "hallucination_rate": 0.1
+      },
+      "llm_score": 0.82,
+      "llm_dimensions": {
+        "blocking_impact": 0.8,
+        "downstream_usability": 0.9,
+        "correctness": 0.9,
+        "efficiency": 0.7,
+        "intent_fidelity": 0.8,
+        "style_adherence": 0.8,
+        "coordination_overhead": 0.6,
+        "completeness": 0.9
+      }
+    },
+    {
+      "task_id": "tb-d-data-processing-r1",
+      "condition": "D",
+      "task_type": "data-processing",
+      "replica": 1,
+      "status": "done",
+      "verify_result": "passed",
+      "flip_score": 0.698,
+      "flip_dimensions": {
+        "hallucination_rate": 0.18,
+        "requirement_coverage": 0.62,
+        "specificity_match": 0.35,
+        "semantic_match": 0.9
+      },
+      "llm_score": 0.88,
+      "llm_dimensions": {
+        "efficiency": 0.9,
+        "downstream_usability": 0.9,
+        "coordination_overhead": 0.95,
+        "correctness": 0.95,
+        "intent_fidelity": 0.698,
+        "style_adherence": 0.75,
+        "completeness": 0.95,
+        "blocking_impact": 0.95
+      }
+    },
+    {
+      "task_id": "tb-d-data-processing-r2",
+      "condition": "D",
+      "task_type": "data-processing",
+      "replica": 2,
+      "status": "done",
+      "verify_result": "passed",
+      "flip_score": 0.65,
+      "flip_dimensions": {
+        "specificity_match": 0.35,
+        "hallucination_rate": 0.2,
+        "requirement_coverage": 0.54,
+        "semantic_match": 0.85
+      },
+      "llm_score": null,
+      "llm_dimensions": {}
+    },
+    {
+      "task_id": "tb-d-algorithm-r0",
+      "condition": "D",
+      "task_type": "algorithm",
+      "replica": 0,
+      "status": "done",
+      "verify_result": "passed",
+      "flip_score": 0.826,
+      "flip_dimensions": {
+        "hallucination_rate": 0.1,
+        "requirement_coverage": 0.72,
+        "specificity_match": 0.6,
+        "semantic_match": 1.0
+      },
+      "llm_score": 0.88,
+      "llm_dimensions": {
+        "efficiency": 0.9,
+        "coordination_overhead": 0.95,
+        "correctness": 0.95,
+        "intent_fidelity": 0.826,
+        "completeness": 0.95,
+        "downstream_usability": 0.85,
+        "blocking_impact": 0.95,
+        "style_adherence": 0.85
+      }
+    },
+    {
+      "task_id": "tb-d-algorithm-r1",
+      "condition": "D",
+      "task_type": "algorithm",
+      "replica": 1,
+      "status": "done",
+      "verify_result": "passed",
+      "flip_score": 0.82,
+      "flip_dimensions": {
+        "semantic_match": 1.0,
+        "hallucination_rate": 0.12,
+        "specificity_match": 0.45,
+        "requirement_coverage": 0.82
+      },
+      "llm_score": 0.98,
+      "llm_dimensions": {
+        "efficiency": 0.9,
+        "coordination_overhead": 1.0,
+        "blocking_impact": 1.0,
+        "correctness": 1.0,
+        "intent_fidelity": 0.82,
+        "style_adherence": 0.9,
+        "completeness": 1.0,
+        "downstream_usability": 0.9
+      }
+    },
+    {
+      "task_id": "tb-d-algorithm-r2",
+      "condition": "D",
+      "task_type": "algorithm",
+      "replica": 2,
+      "status": "done",
+      "verify_result": "passed",
+      "flip_score": 0.87,
+      "flip_dimensions": {
+        "requirement_coverage": 0.8,
+        "semantic_match": 1.0,
+        "specificity_match": 0.65,
+        "hallucination_rate": 0.0
+      },
+      "llm_score": 0.93,
+      "llm_dimensions": {
+        "intent_fidelity": 0.87,
+        "coordination_overhead": 0.95,
+        "style_adherence": 0.9,
+        "downstream_usability": 0.9,
+        "correctness": 0.95,
+        "completeness": 0.95,
+        "blocking_impact": 0.95,
+        "efficiency": 0.9
+      }
+    },
+    {
+      "task_id": "tb-d-ml-r0",
+      "condition": "D",
+      "task_type": "ml",
+      "replica": 0,
+      "status": "done",
+      "verify_result": "passed",
+      "flip_score": 0.685,
+      "flip_dimensions": {
+        "requirement_coverage": 0.45,
+        "specificity_match": 0.25,
+        "semantic_match": 1.0,
+        "hallucination_rate": 0.0
+      },
+      "llm_score": 0.89,
+      "llm_dimensions": {
+        "blocking_impact": 0.95,
+        "style_adherence": 0.8,
+        "downstream_usability": 0.8,
+        "efficiency": 0.85,
+        "coordination_overhead": 0.95,
+        "intent_fidelity": 0.685,
+        "correctness": 0.95,
+        "completeness": 0.9
+      }
+    },
+    {
+      "task_id": "tb-d-ml-r1",
+      "condition": "D",
+      "task_type": "ml",
+      "replica": 1,
+      "status": "done",
+      "verify_result": "passed",
+      "flip_score": 0.66,
+      "flip_dimensions": {
+        "hallucination_rate": 0.55,
+        "requirement_coverage": 0.45,
+        "semantic_match": 1.0,
+        "specificity_match": 0.4
+      },
+      "llm_score": 0.9,
+      "llm_dimensions": {
+        "downstream_usability": 0.85,
+        "style_adherence": 0.9,
+        "blocking_impact": 0.9,
+        "intent_fidelity": 0.66,
+        "completeness": 0.95,
+        "correctness": 0.9,
+        "coordination_overhead": 0.9,
+        "efficiency": 0.85
+      }
+    },
+    {
+      "task_id": "tb-d-ml-r2",
+      "condition": "D",
+      "task_type": "ml",
+      "replica": 2,
+      "status": "done",
+      "verify_result": "passed",
+      "flip_score": 0.73,
+      "flip_dimensions": {
+        "specificity_match": 0.45,
+        "requirement_coverage": 0.55,
+        "semantic_match": 1.0,
+        "hallucination_rate": 0.25
+      },
+      "llm_score": 0.96,
+      "llm_dimensions": {
+        "completeness": 1.0,
+        "correctness": 1.0,
+        "coordination_overhead": 0.95,
+        "blocking_impact": 0.95,
+        "intent_fidelity": 0.73,
+        "style_adherence": 0.9,
+        "efficiency": 0.95,
+        "downstream_usability": 0.9
+      }
+    },
+    {
+      "task_id": "tb-e-file-ops-r0",
+      "condition": "E",
+      "task_type": "file-ops",
+      "replica": 0,
+      "status": "done",
+      "verify_result": "passed",
+      "flip_score": 0.68,
+      "flip_dimensions": {
+        "requirement_coverage": 0.45,
+        "semantic_match": 1.0,
+        "specificity_match": 0.3,
+        "hallucination_rate": 0.15
+      },
+      "llm_score": 0.91,
+      "llm_dimensions": {
+        "efficiency": 0.8,
+        "style_adherence": 0.9,
+        "correctness": 0.95,
+        "completeness": 0.95,
+        "coordination_overhead": 0.9,
+        "blocking_impact": 0.85,
+        "intent_fidelity": 0.68,
+        "downstream_usability": 0.9
+      }
+    },
+    {
+      "task_id": "tb-e-file-ops-r1",
+      "condition": "E",
+      "task_type": "file-ops",
+      "replica": 1,
+      "status": "done",
+      "verify_result": "passed",
+      "flip_score": 0.855,
+      "flip_dimensions": {
+        "specificity_match": 0.6,
+        "semantic_match": 0.95,
+        "requirement_coverage": 0.85,
+        "hallucination_rate": 0.0
+      },
+      "llm_score": 0.76,
+      "llm_dimensions": {
+        "blocking_impact": 0.9,
+        "efficiency": 0.9,
+        "style_adherence": 0.8,
+        "completeness": 0.9,
+        "correctness": 0.9,
+        "intent_fidelity": 0.855,
+        "coordination_overhead": 0.8,
+        "downstream_usability": 0.4
+      }
+    },
+    {
+      "task_id": "tb-e-file-ops-r2",
+      "condition": "E",
+      "task_type": "file-ops",
+      "replica": 2,
+      "status": "done",
+      "verify_result": "passed",
+      "flip_score": 0.81,
+      "flip_dimensions": {
+        "specificity_match": 0.45,
+        "hallucination_rate": 0.0,
+        "semantic_match": 1.0,
+        "requirement_coverage": 0.73
+      },
+      "llm_score": 0.82,
+      "llm_dimensions": {
+        "completeness": 0.9,
+        "efficiency": 0.8,
+        "blocking_impact": 0.9,
+        "downstream_usability": 0.7,
+        "style_adherence": 0.8,
+        "intent_fidelity": 0.81,
+        "coordination_overhead": 0.9,
+        "correctness": 0.8
+      }
+    },
+    {
+      "task_id": "tb-e-text-processing-r0",
+      "condition": "E",
+      "task_type": "text-processing",
+      "replica": 0,
+      "status": "done",
+      "verify_result": "passed",
+      "flip_score": 0.95,
+      "flip_dimensions": {
+        "semantic_match": 1.0,
+        "hallucination_rate": 0.05,
+        "requirement_coverage": 0.95,
+        "specificity_match": 0.85
+      },
+      "llm_score": 0.87,
+      "llm_dimensions": {
+        "completeness": 0.9,
+        "blocking_impact": 0.95,
+        "efficiency": 0.9,
+        "style_adherence": 0.8,
+        "correctness": 0.9,
+        "intent_fidelity": 0.95,
+        "downstream_usability": 0.9,
+        "coordination_overhead": 0.9
+      }
+    },
+    {
+      "task_id": "tb-e-text-processing-r1",
+      "condition": "E",
+      "task_type": "text-processing",
+      "replica": 1,
+      "status": "done",
+      "verify_result": "passed",
+      "flip_score": 0.949,
+      "flip_dimensions": {
+        "requirement_coverage": 0.88,
+        "specificity_match": 0.95,
+        "semantic_match": 1.0,
+        "hallucination_rate": 0.05
+      },
+      "llm_score": 0.96,
+      "llm_dimensions": {
+        "completeness": 1.0,
+        "downstream_usability": 0.85,
+        "blocking_impact": 1.0,
+        "style_adherence": 0.9,
+        "intent_fidelity": 0.949,
+        "correctness": 1.0,
+        "efficiency": 0.95,
+        "coordination_overhead": 0.95
+      }
+    },
+    {
+      "task_id": "tb-e-text-processing-r2",
+      "condition": "E",
+      "task_type": "text-processing",
+      "replica": 2,
+      "status": "done",
+      "verify_result": "passed",
+      "flip_score": 0.695,
+      "flip_dimensions": {
+        "specificity_match": 0.4,
+        "requirement_coverage": 0.5,
+        "semantic_match": 0.95,
+        "hallucination_rate": 0.15
+      },
+      "llm_score": 0.82,
+      "llm_dimensions": {
+        "downstream_usability": 0.9,
+        "intent_fidelity": 0.695,
+        "style_adherence": 0.85,
+        "coordination_overhead": 0.7,
+        "efficiency": 0.8,
+        "correctness": 0.9,
+        "completeness": 0.95,
+        "blocking_impact": 0.8
+      }
+    },
+    {
+      "task_id": "tb-e-debugging-r0",
+      "condition": "E",
+      "task_type": "debugging",
+      "replica": 0,
+      "status": "done",
+      "verify_result": "passed",
+      "flip_score": 0.88,
+      "flip_dimensions": {
+        "requirement_coverage": 0.85,
+        "semantic_match": 1.0,
+        "hallucination_rate": 0.08,
+        "specificity_match": 0.65
+      },
+      "llm_score": 0.91,
+      "llm_dimensions": {
+        "correctness": 0.95,
+        "downstream_usability": 0.8,
+        "style_adherence": 0.85,
+        "intent_fidelity": 0.88,
+        "coordination_overhead": 0.9,
+        "blocking_impact": 0.95,
+        "completeness": 0.95,
+        "efficiency": 0.9
+      }
+    },
+    {
+      "task_id": "tb-e-debugging-r1",
+      "condition": "E",
+      "task_type": "debugging",
+      "replica": 1,
+      "status": "done",
+      "verify_result": "passed",
+      "flip_score": 0.86,
+      "flip_dimensions": {
+        "specificity_match": 0.55,
+        "hallucination_rate": 0.1,
+        "semantic_match": 1.0,
+        "requirement_coverage": 0.85
+      },
+      "llm_score": 0.93,
+      "llm_dimensions": {
+        "efficiency": 0.9,
+        "coordination_overhead": 0.95,
+        "blocking_impact": 0.9,
+        "correctness": 0.95,
+        "intent_fidelity": 0.86,
+        "completeness": 1.0,
+        "downstream_usability": 0.9,
+        "style_adherence": 0.85
+      }
+    },
+    {
+      "task_id": "tb-e-debugging-r2",
+      "condition": "E",
+      "task_type": "debugging",
+      "replica": 2,
+      "status": "done",
+      "verify_result": "passed",
+      "flip_score": 0.935,
+      "flip_dimensions": {
+        "hallucination_rate": 0.0,
+        "requirement_coverage": 0.95,
+        "semantic_match": 1.0,
+        "specificity_match": 0.75
+      },
+      "llm_score": 0.91,
+      "llm_dimensions": {
+        "efficiency": 0.85,
+        "intent_fidelity": 0.935,
+        "style_adherence": 0.9,
+        "downstream_usability": 0.85,
+        "coordination_overhead": 0.9,
+        "blocking_impact": 0.9,
+        "correctness": 0.95,
+        "completeness": 0.95
+      }
+    },
+    {
+      "task_id": "tb-e-shell-scripting-r0",
+      "condition": "E",
+      "task_type": "shell-scripting",
+      "replica": 0,
+      "status": "done",
+      "verify_result": "passed",
+      "flip_score": 0.94,
+      "flip_dimensions": {
+        "hallucination_rate": 0.15,
+        "semantic_match": 1.0,
+        "requirement_coverage": 0.95,
+        "specificity_match": 0.85
+      },
+      "llm_score": 0.9,
+      "llm_dimensions": {
+        "intent_fidelity": 0.94,
+        "blocking_impact": 1.0,
+        "efficiency": 0.9,
+        "downstream_usability": 0.9,
+        "style_adherence": 0.8,
+        "completeness": 1.0,
+        "correctness": 1.0,
+        "coordination_overhead": 1.0
+      }
+    },
+    {
+      "task_id": "tb-e-shell-scripting-r1",
+      "condition": "E",
+      "task_type": "shell-scripting",
+      "replica": 1,
+      "status": "done",
+      "verify_result": "passed",
+      "flip_score": 0.685,
+      "flip_dimensions": {
+        "semantic_match": 0.87,
+        "requirement_coverage": 0.5,
+        "specificity_match": 0.6,
+        "hallucination_rate": 0.33
+      },
+      "llm_score": 0.88,
+      "llm_dimensions": {
+        "intent_fidelity": 0.685,
+        "efficiency": 0.9,
+        "correctness": 0.95,
+        "downstream_usability": 0.7,
+        "blocking_impact": 0.9,
+        "coordination_overhead": 0.85,
+        "completeness": 0.9,
+        "style_adherence": 0.9
+      }
+    },
+    {
+      "task_id": "tb-e-shell-scripting-r2",
+      "condition": "E",
+      "task_type": "shell-scripting",
+      "replica": 2,
+      "status": "done",
+      "verify_result": "passed",
+      "flip_score": 0.82,
+      "flip_dimensions": {
+        "requirement_coverage": 0.8,
+        "specificity_match": 0.5,
+        "semantic_match": 1.0,
+        "hallucination_rate": 0.17
+      },
+      "llm_score": 0.86,
+      "llm_dimensions": {
+        "completeness": 0.9,
+        "style_adherence": 0.8,
+        "intent_fidelity": 0.82,
+        "correctness": 0.9,
+        "blocking_impact": 0.8,
+        "downstream_usability": 0.8,
+        "coordination_overhead": 0.9,
+        "efficiency": 0.8
+      }
+    },
+    {
+      "task_id": "tb-e-data-processing-r0",
+      "condition": "E",
+      "task_type": "data-processing",
+      "replica": 0,
+      "status": "done",
+      "verify_result": "passed",
+      "flip_score": 0.77,
+      "flip_dimensions": {
+        "semantic_match": 1.0,
+        "requirement_coverage": 0.65,
+        "specificity_match": 0.45,
+        "hallucination_rate": 0.15
+      },
+      "llm_score": 0.98,
+      "llm_dimensions": {
+        "style_adherence": 0.9,
+        "blocking_impact": 1.0,
+        "completeness": 1.0,
+        "coordination_overhead": 1.0,
+        "correctness": 1.0,
+        "intent_fidelity": 0.77,
+        "downstream_usability": 1.0,
+        "efficiency": 0.9
+      }
+    },
+    {
+      "task_id": "tb-e-data-processing-r1",
+      "condition": "E",
+      "task_type": "data-processing",
+      "replica": 1,
+      "status": "done",
+      "verify_result": "passed",
+      "flip_score": 0.73,
+      "flip_dimensions": {
+        "semantic_match": 0.95,
+        "requirement_coverage": 0.6,
+        "specificity_match": 0.45,
+        "hallucination_rate": 0.15
+      },
+      "llm_score": 0.93,
+      "llm_dimensions": {
+        "efficiency": 0.9,
+        "downstream_usability": 0.9,
+        "intent_fidelity": 0.73,
+        "blocking_impact": 0.95,
+        "correctness": 0.95,
+        "coordination_overhead": 0.95,
+        "completeness": 0.95,
+        "style_adherence": 0.85
+      }
+    },
+    {
+      "task_id": "tb-e-data-processing-r2",
+      "condition": "E",
+      "task_type": "data-processing",
+      "replica": 2,
+      "status": "done",
+      "verify_result": "passed",
+      "flip_score": 0.695,
+      "flip_dimensions": {
+        "hallucination_rate": 0.4,
+        "semantic_match": 0.85,
+        "requirement_coverage": 0.65,
+        "specificity_match": 0.5
+      },
+      "llm_score": 0.84,
+      "llm_dimensions": {
+        "downstream_usability": 0.8,
+        "correctness": 0.9,
+        "coordination_overhead": 0.8,
+        "style_adherence": 0.7,
+        "blocking_impact": 0.8,
+        "completeness": 0.9,
+        "efficiency": 0.8,
+        "intent_fidelity": 0.695
+      }
+    },
+    {
+      "task_id": "tb-e-algorithm-r0",
+      "condition": "E",
+      "task_type": "algorithm",
+      "replica": 0,
+      "status": "done",
+      "verify_result": "passed",
+      "flip_score": 0.9,
+      "flip_dimensions": {
+        "requirement_coverage": 0.8,
+        "specificity_match": 0.85,
+        "semantic_match": 1.0,
+        "hallucination_rate": 0.05
+      },
+      "llm_score": 0.94,
+      "llm_dimensions": {
+        "efficiency": 0.9,
+        "correctness": 1.0,
+        "blocking_impact": 1.0,
+        "completeness": 1.0,
+        "intent_fidelity": 0.9,
+        "coordination_overhead": 1.0,
+        "downstream_usability": 0.8,
+        "style_adherence": 0.8
+      }
+    },
+    {
+      "task_id": "tb-e-algorithm-r1",
+      "condition": "E",
+      "task_type": "algorithm",
+      "replica": 1,
+      "status": "done",
+      "verify_result": "passed",
+      "flip_score": 0.76,
+      "flip_dimensions": {
+        "semantic_match": 0.96,
+        "specificity_match": 0.4,
+        "hallucination_rate": 0.05,
+        "requirement_coverage": 0.68
+      },
+      "llm_score": 0.91,
+      "llm_dimensions": {
+        "coordination_overhead": 0.95,
+        "completeness": 0.9,
+        "correctness": 0.95,
+        "style_adherence": 0.8,
+        "efficiency": 0.85,
+        "blocking_impact": 0.9,
+        "intent_fidelity": 0.76,
+        "downstream_usability": 0.9
+      }
+    },
+    {
+      "task_id": "tb-e-algorithm-r2",
+      "condition": "E",
+      "task_type": "algorithm",
+      "replica": 2,
+      "status": "done",
+      "verify_result": "passed",
+      "flip_score": 0.68,
+      "flip_dimensions": {
+        "requirement_coverage": 0.4,
+        "specificity_match": 0.4,
+        "hallucination_rate": 0.18,
+        "semantic_match": 1.0
+      },
+      "llm_score": null,
+      "llm_dimensions": {}
+    },
+    {
+      "task_id": "tb-e-ml-r0",
+      "condition": "E",
+      "task_type": "ml",
+      "replica": 0,
+      "status": "done",
+      "verify_result": "passed",
+      "flip_score": 0.78,
+      "flip_dimensions": {
+        "requirement_coverage": 0.65,
+        "semantic_match": 1.0,
+        "hallucination_rate": 0.15,
+        "specificity_match": 0.5
+      },
+      "llm_score": 0.91,
+      "llm_dimensions": {
+        "efficiency": 0.9,
+        "blocking_impact": 0.95,
+        "style_adherence": 0.9,
+        "intent_fidelity": 0.78,
+        "downstream_usability": 0.85,
+        "coordination_overhead": 0.95,
+        "correctness": 0.95,
+        "completeness": 0.9
+      }
+    },
+    {
+      "task_id": "tb-e-ml-r1",
+      "condition": "E",
+      "task_type": "ml",
+      "replica": 1,
+      "status": "done",
+      "verify_result": "passed",
+      "flip_score": 0.7,
+      "flip_dimensions": {
+        "hallucination_rate": 0.15,
+        "requirement_coverage": 0.5,
+        "semantic_match": 1.0,
+        "specificity_match": 0.35
+      },
+      "llm_score": 0.82,
+      "llm_dimensions": {
+        "completeness": 1.0,
+        "downstream_usability": 0.9,
+        "efficiency": 0.8,
+        "intent_fidelity": 0.7,
+        "style_adherence": 0.6,
+        "blocking_impact": 0.9,
+        "coordination_overhead": 0.9,
+        "correctness": 0.9
+      }
+    },
+    {
+      "task_id": "tb-e-ml-r2",
+      "condition": "E",
+      "task_type": "ml",
+      "replica": 2,
+      "status": "done",
+      "verify_result": "passed",
+      "flip_score": 0.61,
+      "flip_dimensions": {
+        "semantic_match": 0.95,
+        "specificity_match": 0.25,
+        "hallucination_rate": 0.4,
+        "requirement_coverage": 0.4
+      },
+      "llm_score": 0.91,
+      "llm_dimensions": {
+        "intent_fidelity": 0.61,
+        "downstream_usability": 0.8,
+        "coordination_overhead": 0.95,
+        "blocking_impact": 0.95,
+        "style_adherence": 0.85,
+        "efficiency": 0.9,
+        "completeness": 0.95,
+        "correctness": 0.95
+      }
+    }
+  ],
+  "per_condition": {
+    "A": {
+      "total": 21,
+      "passed": 21,
+      "failed": 0,
+      "pass_rate": 1.0,
+      "mean_flip_score": 0.1339,
+      "mean_llm_score": 0.736
+    },
+    "C": {
+      "total": 21,
+      "passed": 21,
+      "failed": 0,
+      "pass_rate": 1.0,
+      "mean_flip_score": 0.6969,
+      "mean_llm_score": 0.8615
+    },
+    "D": {
+      "total": 21,
+      "passed": 21,
+      "failed": 0,
+      "pass_rate": 1.0,
+      "mean_flip_score": 0.7553,
+      "mean_llm_score": 0.8975
+    },
+    "E": {
+      "total": 21,
+      "passed": 21,
+      "failed": 0,
+      "pass_rate": 1.0,
+      "mean_flip_score": 0.7945,
+      "mean_llm_score": 0.8885
+    }
+  },
+  "per_task": {
+    "file-ops": {
+      "total": 12,
+      "passed": 12,
+      "failed": 0,
+      "pass_rate": 1.0,
+      "mean_flip_score": 0.4738,
+      "mean_llm_score": 0.8264
+    },
+    "text-processing": {
+      "total": 12,
+      "passed": 12,
+      "failed": 0,
+      "pass_rate": 1.0,
+      "mean_flip_score": 0.692,
+      "mean_llm_score": 0.7617
+    },
+    "debugging": {
+      "total": 12,
+      "passed": 12,
+      "failed": 0,
+      "pass_rate": 1.0,
+      "mean_flip_score": 0.6929,
+      "mean_llm_score": 0.8742
+    },
+    "shell-scripting": {
+      "total": 12,
+      "passed": 12,
+      "failed": 0,
+      "pass_rate": 1.0,
+      "mean_flip_score": 0.6457,
+      "mean_llm_score": 0.8636
+    },
+    "data-processing": {
+      "total": 12,
+      "passed": 12,
+      "failed": 0,
+      "pass_rate": 1.0,
+      "mean_flip_score": 0.549,
+      "mean_llm_score": 0.8609
+    },
+    "algorithm": {
+      "total": 12,
+      "passed": 12,
+      "failed": 0,
+      "pass_rate": 1.0,
+      "mean_flip_score": 0.5909,
+      "mean_llm_score": 0.8855
+    },
+    "ml": {
+      "total": 12,
+      "passed": 12,
+      "failed": 0,
+      "pass_rate": 1.0,
+      "mean_flip_score": 0.5217,
+      "mean_llm_score": 0.8533
+    }
+  },
+  "per_condition_task": {
+    "A-file-ops": {
+      "total": 3,
+      "passed": 3,
+      "pass_rate": 1.0,
+      "mean_flip_score": 0.2067,
+      "mean_llm_score": 0.8633
+    },
+    "A-text-processing": {
+      "total": 3,
+      "passed": 3,
+      "pass_rate": 1.0,
+      "mean_flip_score": 0.314,
+      "mean_llm_score": 0.4967
+    },
+    "A-debugging": {
+      "total": 3,
+      "passed": 3,
+      "pass_rate": 1.0,
+      "mean_flip_score": 0.2267,
+      "mean_llm_score": 0.7667
+    },
+    "A-shell-scripting": {
+      "total": 3,
+      "passed": 3,
+      "pass_rate": 1.0,
+      "mean_flip_score": 0.1083,
+      "mean_llm_score": 0.87
+    },
+    "A-data-processing": {
+      "total": 3,
+      "passed": 3,
+      "pass_rate": 1.0,
+      "mean_flip_score": 0.0417,
+      "mean_llm_score": 0.7367
+    },
+    "A-algorithm": {
+      "total": 3,
+      "passed": 3,
+      "pass_rate": 1.0,
+      "mean_flip_score": 0.0317,
+      "mean_llm_score": 0.81
+    },
+    "A-ml": {
+      "total": 3,
+      "passed": 3,
+      "pass_rate": 1.0,
+      "mean_flip_score": 0.0083,
+      "mean_llm_score": 0.6533
+    },
+    "C-file-ops": {
+      "total": 3,
+      "passed": 3,
+      "pass_rate": 1.0,
+      "mean_flip_score": 0.215,
+      "mean_llm_score": 0.725
+    },
+    "C-text-processing": {
+      "total": 3,
+      "passed": 3,
+      "pass_rate": 1.0,
+      "mean_flip_score": 0.741,
+      "mean_llm_score": 0.7533
+    },
+    "C-debugging": {
+      "total": 3,
+      "passed": 3,
+      "pass_rate": 1.0,
+      "mean_flip_score": 0.9233,
+      "mean_llm_score": 0.8833
+    },
+    "C-shell-scripting": {
+      "total": 3,
+      "passed": 3,
+      "pass_rate": 1.0,
+      "mean_flip_score": 0.8887,
+      "mean_llm_score": 0.8333
+    },
+    "C-data-processing": {
+      "total": 3,
+      "passed": 3,
+      "pass_rate": 1.0,
+      "mean_flip_score": 0.7067,
+      "mean_llm_score": 0.9367
+    },
+    "C-algorithm": {
+      "total": 3,
+      "passed": 3,
+      "pass_rate": 1.0,
+      "mean_flip_score": 0.7133,
+      "mean_llm_score": 0.89
+    },
+    "C-ml": {
+      "total": 3,
+      "passed": 3,
+      "pass_rate": 1.0,
+      "mean_flip_score": 0.69,
+      "mean_llm_score": 0.9633
+    },
+    "D-file-ops": {
+      "total": 3,
+      "passed": 3,
+      "pass_rate": 1.0,
+      "mean_flip_score": 0.692,
+      "mean_llm_score": 0.8533
+    },
+    "D-text-processing": {
+      "total": 3,
+      "passed": 3,
+      "pass_rate": 1.0,
+      "mean_flip_score": 0.8483,
+      "mean_llm_score": 0.9133
+    },
+    "D-debugging": {
+      "total": 3,
+      "passed": 3,
+      "pass_rate": 1.0,
+      "mean_flip_score": 0.73,
+      "mean_llm_score": 0.93
+    },
+    "D-shell-scripting": {
+      "total": 3,
+      "passed": 3,
+      "pass_rate": 1.0,
+      "mean_flip_score": 0.7707,
+      "mean_llm_score": 0.8733
+    },
+    "D-data-processing": {
+      "total": 3,
+      "passed": 3,
+      "pass_rate": 1.0,
+      "mean_flip_score": 0.716,
+      "mean_llm_score": 0.85
+    },
+    "D-algorithm": {
+      "total": 3,
+      "passed": 3,
+      "pass_rate": 1.0,
+      "mean_flip_score": 0.8387,
+      "mean_llm_score": 0.93
+    },
+    "D-ml": {
+      "total": 3,
+      "passed": 3,
+      "pass_rate": 1.0,
+      "mean_flip_score": 0.6917,
+      "mean_llm_score": 0.9167
+    },
+    "E-file-ops": {
+      "total": 3,
+      "passed": 3,
+      "pass_rate": 1.0,
+      "mean_flip_score": 0.7817,
+      "mean_llm_score": 0.83
+    },
+    "E-text-processing": {
+      "total": 3,
+      "passed": 3,
+      "pass_rate": 1.0,
+      "mean_flip_score": 0.8647,
+      "mean_llm_score": 0.8833
+    },
+    "E-debugging": {
+      "total": 3,
+      "passed": 3,
+      "pass_rate": 1.0,
+      "mean_flip_score": 0.8917,
+      "mean_llm_score": 0.9167
+    },
+    "E-shell-scripting": {
+      "total": 3,
+      "passed": 3,
+      "pass_rate": 1.0,
+      "mean_flip_score": 0.815,
+      "mean_llm_score": 0.88
+    },
+    "E-data-processing": {
+      "total": 3,
+      "passed": 3,
+      "pass_rate": 1.0,
+      "mean_flip_score": 0.7317,
+      "mean_llm_score": 0.9167
+    },
+    "E-algorithm": {
+      "total": 3,
+      "passed": 3,
+      "pass_rate": 1.0,
+      "mean_flip_score": 0.78,
+      "mean_llm_score": 0.925
+    },
+    "E-ml": {
+      "total": 3,
+      "passed": 3,
+      "pass_rate": 1.0,
+      "mean_flip_score": 0.6967,
+      "mean_llm_score": 0.88
+    }
+  },
+  "flip_verify_correlation": {
+    "mean_flip_of_passed": 0.5951,
+    "mean_flip_of_failed": null,
+    "n_passed_with_flip": 84,
+    "n_failed_with_flip": 0,
+    "low_flip_threshold": 0.3,
+    "low_flip_count": 20,
+    "low_flip_and_failed": 0,
+    "low_flip_and_passed": 20,
+    "high_flip_threshold": 0.5,
+    "high_flip_and_failed": 0,
+    "high_flip_and_passed": 63
+  }
+}
