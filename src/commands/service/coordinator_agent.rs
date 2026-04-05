@@ -1488,46 +1488,56 @@ fn native_coordinator_loop(
     let _ = std::fs::create_dir_all(prompt_file.parent().unwrap());
     let _ = std::fs::write(&prompt_file, &system_prompt);
 
-    // Resolve model: coordinator config > WG_MODEL env > default
-    let raw_model = model
-        .map(String::from)
-        .or_else(|| std::env::var("WG_MODEL").ok())
-        .unwrap_or_else(|| "claude-sonnet-4-5-20250514".to_string());
-
-    // Parse provider:model spec. If the model has an explicit provider prefix,
-    // extract it for provider resolution and use the model_id for registry lookup.
-    let spec = workgraph::config::parse_model_spec(&raw_model);
-    let spec_provider = spec
-        .provider
-        .as_deref()
-        .map(workgraph::config::provider_to_native_provider)
-        .map(String::from);
-
-    // Resolve model alias through the model registry. This converts aliases
-    // like "minimax-m2.5" → "minimax/minimax-m2.5" (the actual API model ID)
-    // and also extracts provider/endpoint from the registry entry.
+    // Load config early — needed for model resolution cascade.
     let config = workgraph::config::Config::load_or_default(dir);
     let merged_config = workgraph::config::Config::load_merged(dir).unwrap_or(config);
-    let (effective_model, registry_provider, registry_endpoint) =
-        if let Some(entry) = merged_config.registry_lookup(&spec.model_id) {
-            (
-                entry.model.clone(),
-                Some(entry.provider.clone()),
-                entry.endpoint.clone(),
-            )
-        } else if spec.provider.is_some() {
-            // Has provider prefix but not in registry — use model_id as-is
-            (spec.model_id.clone(), None, None)
-        } else {
-            (raw_model.clone(), None, None)
-        };
 
-    // Provider resolution: spec prefix > explicit override > registry entry > default
-    let effective_provider = spec_provider
-        .or_else(|| provider.map(String::from))
-        .or(registry_provider)
-        .or_else(|| merged_config.coordinator.provider.clone());
-    let effective_endpoint = registry_endpoint;
+    // Resolve model: coordinator config > WG_MODEL env > config role cascade
+    let explicit_model = model
+        .map(String::from)
+        .or_else(|| std::env::var("WG_MODEL").ok());
+
+    let (effective_model, effective_provider, effective_endpoint) =
+        if let Some(raw_model) = explicit_model {
+            // Explicit model specified — resolve through registry
+            let spec = workgraph::config::parse_model_spec(&raw_model);
+            let spec_provider = spec
+                .provider
+                .as_deref()
+                .map(workgraph::config::provider_to_native_provider)
+                .map(String::from);
+
+            let (model, registry_provider, registry_endpoint) =
+                if let Some(entry) = merged_config.registry_lookup(&spec.model_id) {
+                    (
+                        entry.model.clone(),
+                        Some(entry.provider.clone()),
+                        entry.endpoint.clone(),
+                    )
+                } else if spec.provider.is_some() {
+                    // Has provider prefix but not in registry — use model_id as-is
+                    (spec.model_id.clone(), None, None)
+                } else {
+                    (raw_model.clone(), None, None)
+                };
+
+            let prov = spec_provider
+                .or_else(|| provider.map(String::from))
+                .or(registry_provider)
+                .or_else(|| merged_config.coordinator.provider.clone());
+
+            (model, prov, registry_endpoint)
+        } else {
+            // No explicit model — use the config's role-based resolution cascade
+            // (role config → tier defaults → registry lookup → agent.model fallback)
+            let resolved = merged_config
+                .resolve_model_for_role(workgraph::config::DispatchRole::Default);
+            let prov = provider.map(String::from).or(resolved.provider);
+            let endpoint = resolved
+                .endpoint
+                .or_else(|| resolved.registry_entry.and_then(|e| e.endpoint.clone()));
+            (resolved.model, prov, endpoint)
+        };
 
     // Create the tokio runtime for async API calls
     let rt = match tokio::runtime::Runtime::new() {
