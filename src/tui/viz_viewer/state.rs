@@ -11775,7 +11775,7 @@ impl VizApp {
             entries.push(ConfigEntry {
                 key: "tiers.fast".into(),
                 label: "Fast".into(),
-                value: effective.fast.clone().unwrap_or_else(|| "haiku".into()),
+                value: effective.fast.clone().unwrap_or_else(|| workgraph::config::Tier::Fast.default_alias().into()),
                 edit_kind: ConfigEditKind::TextInput,
                 section: ConfigSection::ModelTiers,
             });
@@ -11785,14 +11785,14 @@ impl VizApp {
                 value: effective
                     .standard
                     .clone()
-                    .unwrap_or_else(|| "sonnet".into()),
+                    .unwrap_or_else(|| workgraph::config::Tier::Standard.default_alias().into()),
                 edit_kind: ConfigEditKind::TextInput,
                 section: ConfigSection::ModelTiers,
             });
             entries.push(ConfigEntry {
                 key: "tiers.premium".into(),
                 label: "Premium".into(),
-                value: effective.premium.clone().unwrap_or_else(|| "opus".into()),
+                value: effective.premium.clone().unwrap_or_else(|| workgraph::config::Tier::Premium.default_alias().into()),
                 edit_kind: ConfigEditKind::TextInput,
                 section: ConfigSection::ModelTiers,
             });

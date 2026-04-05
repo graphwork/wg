@@ -897,6 +897,20 @@ impl std::fmt::Display for Tier {
     }
 }
 
+impl Tier {
+    /// Default model alias for each tier (single source of truth).
+    ///
+    /// Used as the fallback display string in the TUI and as the base for
+    /// provider-prefixed defaults in `effective_tiers()`.
+    pub fn default_alias(&self) -> &'static str {
+        match self {
+            Self::Fast => "haiku",
+            Self::Standard => "sonnet",
+            Self::Premium => "opus",
+        }
+    }
+}
+
 impl std::str::FromStr for Tier {
     type Err = anyhow::Error;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -1551,19 +1565,19 @@ impl Config {
                 .fast
                 .clone()
                 .or(profile_tiers.fast)
-                .or_else(|| Some("claude:haiku".into())),
+                .or_else(|| Some(format!("claude:{}", Tier::Fast.default_alias()))),
             standard: self
                 .tiers
                 .standard
                 .clone()
                 .or(profile_tiers.standard)
-                .or_else(|| Some("claude:sonnet".into())),
+                .or_else(|| Some(format!("claude:{}", Tier::Standard.default_alias()))),
             premium: self
                 .tiers
                 .premium
                 .clone()
                 .or(profile_tiers.premium)
-                .or_else(|| Some("claude:opus".into())),
+                .or_else(|| Some(format!("claude:{}", Tier::Premium.default_alias()))),
         }
     }
 
