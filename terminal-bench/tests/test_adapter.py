@@ -23,6 +23,7 @@ import pytest
 from wg.adapter import (
     BENCHMARK_MODEL,
     CONDITION_CONFIG,
+    FEDERATION_CONDITIONS,
     ConditionAAgent,
     ConditionBAgent,
     ConditionCAgent,
@@ -31,9 +32,13 @@ from wg.adapter import (
     ConditionFAgent,
     WorkgraphAgent,
     _collect_agent_metrics,
+    _ensure_hub_initialized,
     _exec_wg_cmd_host,
+    _federation_pull,
+    _federation_push,
     _poll_task_completion,
     _write_trial_bundle,
+    _write_trial_federation_config,
     _write_trial_wg_config,
 )
 
@@ -704,6 +709,195 @@ class TestBenchmarkModel:
         provider, model = BENCHMARK_MODEL.split(":", 1)
         assert len(provider) > 0
         assert len(model) > 0
+
+
+# ---------------------------------------------------------------------------
+# Federation tests
+# ---------------------------------------------------------------------------
+
+
+class TestFederationConditions:
+    """Validate FEDERATION_CONDITIONS set."""
+
+    def test_federation_conditions_are_agency_conditions(self):
+        """Only conditions with agency or F should federate."""
+        assert FEDERATION_CONDITIONS == {"D", "E", "F"}
+
+    def test_non_federation_conditions(self):
+        """A, B, C should NOT be in FEDERATION_CONDITIONS."""
+        for cond in ("A", "B", "C"):
+            assert cond not in FEDERATION_CONDITIONS
+
+
+class TestEnsureHubInitialized:
+    """Test hub auto-initialization."""
+
+    def test_initializes_new_hub(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            hub_path = os.path.join(tmpdir, "hub")
+            run_async(_ensure_hub_initialized(hub_path, WG_BIN))
+            # Agency dir should exist
+            agency_dir = os.path.join(hub_path, ".workgraph", "agency")
+            assert os.path.isdir(agency_dir)
+
+    def test_skips_existing_hub(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            hub_path = os.path.join(tmpdir, "hub")
+            # First init
+            run_async(_ensure_hub_initialized(hub_path, WG_BIN))
+            # Create a marker to detect re-init
+            marker = os.path.join(hub_path, ".workgraph", "agency", "marker")
+            with open(marker, "w") as f:
+                f.write("exists")
+            # Second call should skip init (marker should still exist)
+            run_async(_ensure_hub_initialized(hub_path, WG_BIN))
+            assert os.path.isfile(marker)
+
+
+class TestWriteTrialFederationConfig:
+    """Test federation.yaml generation."""
+
+    def test_writes_federation_yaml(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            wg_dir = os.path.join(tmpdir, ".workgraph")
+            os.makedirs(wg_dir)
+            hub_path = "/tmp/fake-hub"
+            run_async(_write_trial_federation_config(wg_dir, hub_path))
+            fed_path = os.path.join(wg_dir, "federation.yaml")
+            assert os.path.isfile(fed_path)
+
+            import yaml
+            with open(fed_path) as f:
+                config = yaml.safe_load(f)
+            assert "remotes" in config
+            assert "hub" in config["remotes"]
+            assert config["remotes"]["hub"]["path"] == "/tmp/fake-hub/.workgraph/agency"
+
+
+class TestFederationPullPush:
+    """Integration tests for federation pull/push."""
+
+    def test_pull_from_hub(self):
+        """Pull primitives from an initialized hub into a trial graph."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Set up hub
+            hub_path = os.path.join(tmpdir, "hub")
+            run_async(_ensure_hub_initialized(hub_path, WG_BIN))
+
+            # Set up trial
+            trial_dir = os.path.join(tmpdir, "trial")
+            trial_wg = os.path.join(trial_dir, ".workgraph")
+            run_async(_exec_wg_cmd_host(trial_wg, WG_BIN, ["init"]))
+
+            # Pull from hub
+            result = run_async(_federation_pull(trial_wg, WG_BIN, hub_path))
+            # Should not error
+            assert "[exit code:" not in result or "exit code: 0" in result or "Pulled" in result or "pulled" in result.lower() or result.strip() == "(no output)"
+
+            # Trial should now have agency data
+            trial_agency = os.path.join(trial_wg, "agency")
+            assert os.path.isdir(trial_agency)
+
+    def test_push_to_hub(self):
+        """Push data from a trial graph to the hub."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Set up hub
+            hub_path = os.path.join(tmpdir, "hub")
+            run_async(_ensure_hub_initialized(hub_path, WG_BIN))
+
+            # Set up trial with agency
+            trial_dir = os.path.join(tmpdir, "trial")
+            trial_wg = os.path.join(trial_dir, ".workgraph")
+            run_async(_exec_wg_cmd_host(trial_wg, WG_BIN, ["init"]))
+            run_async(_exec_wg_cmd_host(trial_wg, WG_BIN, ["agency", "init"]))
+
+            # Push to hub
+            result = run_async(_federation_push(trial_wg, WG_BIN, hub_path))
+            # Should not error
+            assert "[wg command error:" not in result
+
+    def test_roundtrip_pull_push(self):
+        """Pull from hub, do work in trial, push back."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Set up hub
+            hub_path = os.path.join(tmpdir, "hub")
+            run_async(_ensure_hub_initialized(hub_path, WG_BIN))
+
+            # Set up trial
+            trial_dir = os.path.join(tmpdir, "trial")
+            trial_wg = os.path.join(trial_dir, ".workgraph")
+            run_async(_exec_wg_cmd_host(trial_wg, WG_BIN, ["init"]))
+
+            # Pull primitives from hub
+            pull_result = run_async(_federation_pull(trial_wg, WG_BIN, hub_path))
+            assert "[wg command error:" not in pull_result
+
+            # Create and complete a task in the trial
+            run_async(_exec_wg_cmd_host(trial_wg, WG_BIN, [
+                "add", "Test task", "--id", "fed-test-1",
+            ]))
+            run_async(_exec_wg_cmd_host(trial_wg, WG_BIN, ["done", "fed-test-1"]))
+
+            # Push results back to hub
+            push_result = run_async(_federation_push(trial_wg, WG_BIN, hub_path))
+            assert "[wg command error:" not in push_result
+
+
+class TestWorkgraphAgentFederationParams:
+    """Test federation parameters on WorkgraphAgent."""
+
+    def test_default_no_federation(self):
+        agent = WorkgraphAgent()
+        assert agent.federation_hub is None
+        assert agent.pull_primitives is True
+        assert agent.push_evaluations is True
+        assert agent.evolve_after_n == 0
+
+    def test_custom_federation_hub(self):
+        agent = WorkgraphAgent(federation_hub="/tmp/hub")
+        assert agent.federation_hub == "/tmp/hub"
+
+    def test_disable_pull(self):
+        agent = WorkgraphAgent(federation_hub="/tmp/hub", pull_primitives=False)
+        assert agent.pull_primitives is False
+
+    def test_disable_push(self):
+        agent = WorkgraphAgent(federation_hub="/tmp/hub", push_evaluations=False)
+        assert agent.push_evaluations is False
+
+    def test_evolve_after_n(self):
+        agent = WorkgraphAgent(federation_hub="/tmp/hub", evolve_after_n=5)
+        assert agent.evolve_after_n == 5
+
+
+class TestFederationHubStructure:
+    """Test the tb-evaluations hub directory structure."""
+
+    HUB_PATH = os.path.join(
+        os.path.dirname(os.path.dirname(__file__)),
+        "tb-evaluations",
+    )
+
+    def test_hub_directory_exists(self):
+        assert os.path.isdir(self.HUB_PATH), f"Hub not found at {self.HUB_PATH}"
+
+    def test_hub_has_workgraph(self):
+        wg_dir = os.path.join(self.HUB_PATH, ".workgraph")
+        assert os.path.isdir(wg_dir)
+
+    def test_hub_has_agency(self):
+        agency_dir = os.path.join(self.HUB_PATH, ".workgraph", "agency")
+        assert os.path.isdir(agency_dir)
+
+    def test_hub_has_config(self):
+        config_path = os.path.join(self.HUB_PATH, ".workgraph", "config.toml")
+        assert os.path.isfile(config_path)
+        content = open(config_path).read()
+        assert "max_agents = 0" in content
+
+    def test_hub_has_gitignore(self):
+        gitignore = os.path.join(self.HUB_PATH, ".gitignore")
+        assert os.path.isfile(gitignore)
 
 
 if __name__ == "__main__":

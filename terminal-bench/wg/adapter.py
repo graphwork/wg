@@ -24,6 +24,8 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 from harbor.agents.base import BaseAgent
 from harbor.environments.base import BaseEnvironment
 from harbor.models.agent.context import AgentContext
@@ -194,6 +196,63 @@ async def _write_trial_bundle(
 
 
 # ---------------------------------------------------------------------------
+# Conditions that use federation (agency conditions only)
+# ---------------------------------------------------------------------------
+
+FEDERATION_CONDITIONS = {"D", "E", "F"}
+
+
+# ---------------------------------------------------------------------------
+# Federation helpers
+# ---------------------------------------------------------------------------
+
+async def _ensure_hub_initialized(hub_path: str, wg_bin: str) -> None:
+    """Initialize the federation hub if it doesn't exist."""
+    wg_dir = os.path.join(hub_path, ".workgraph")
+    if os.path.isdir(os.path.join(wg_dir, "agency")):
+        return  # already initialized
+
+    os.makedirs(hub_path, exist_ok=True)
+    await _exec_wg_cmd_host(wg_dir, wg_bin, ["init"])
+    await _exec_wg_cmd_host(wg_dir, wg_bin, ["agency", "init"])
+    logger.info(f"Initialized federation hub at {hub_path}")
+
+
+async def _write_trial_federation_config(wg_dir: str, hub_path: str) -> None:
+    """Write .workgraph/federation.yaml pointing to the hub."""
+    hub_agency = os.path.join(hub_path, ".workgraph", "agency")
+    config = {
+        "remotes": {
+            "hub": {
+                "path": hub_agency,
+                "description": "TB evaluation hub for federation",
+            }
+        }
+    }
+    federation_path = os.path.join(wg_dir, "federation.yaml")
+    with open(federation_path, "w") as f:
+        yaml.dump(config, f, default_flow_style=False)
+
+
+async def _federation_pull(wg_dir: str, wg_bin: str, hub_path: str) -> str:
+    """Pull roles/tradeoffs/agents from the hub into a trial graph."""
+    hub_agency = os.path.join(hub_path, ".workgraph", "agency")
+    return await _exec_wg_cmd_host(
+        wg_dir, wg_bin,
+        ["agency", "pull", hub_agency, "--no-evaluations"],
+    )
+
+
+async def _federation_push(wg_dir: str, wg_bin: str, hub_path: str) -> str:
+    """Push evaluations and performance data from a trial graph to the hub."""
+    hub_agency = os.path.join(hub_path, ".workgraph", "agency")
+    return await _exec_wg_cmd_host(
+        wg_dir, wg_bin,
+        ["agency", "push", hub_agency],
+    )
+
+
+# ---------------------------------------------------------------------------
 # Task completion polling
 # ---------------------------------------------------------------------------
 
@@ -333,6 +392,10 @@ class WorkgraphAgent(BaseAgent):
         timeout: float = DEFAULT_TRIAL_TIMEOUT,
         poll_interval: float = DEFAULT_POLL_INTERVAL,
         wg_binary_host_path: str | None = None,
+        federation_hub: str | None = None,
+        pull_primitives: bool = True,
+        push_evaluations: bool = True,
+        evolve_after_n: int = 0,
         *args,
         **kwargs,
     ):
@@ -344,6 +407,10 @@ class WorkgraphAgent(BaseAgent):
         self.timeout = timeout
         self.poll_interval = poll_interval
         self._wg_binary_host_path = wg_binary_host_path or self._find_wg_binary()
+        self.federation_hub = federation_hub
+        self.pull_primitives = pull_primitives
+        self.push_evaluations = push_evaluations
+        self.evolve_after_n = evolve_after_n
 
     def _find_wg_binary(self) -> str:
         """Locate the wg binary on the host."""
@@ -382,11 +449,26 @@ class WorkgraphAgent(BaseAgent):
         # Write custom bundle if needed (e.g. Condition A: no wg tools)
         await _write_trial_bundle(self._wg_graph_dir, self.condition)
 
-        # Bootstrap agency for conditions D and E
+        # Federation: pull primitives from hub for agency conditions
         cfg = CONDITION_CONFIG[self.condition]
+        hub_has_agency = False
+        if (
+            self.federation_hub
+            and self.condition in FEDERATION_CONDITIONS
+            and self.pull_primitives
+        ):
+            await _ensure_hub_initialized(self.federation_hub, wg_bin)
+            await _write_trial_federation_config(self._wg_graph_dir, self.federation_hub)
+            pull_result = await _federation_pull(self._wg_graph_dir, wg_bin, self.federation_hub)
+            logger.info(f"Federation pull from hub: {pull_result.strip()}")
+            hub_has_agency = True
+
+        # Bootstrap agency for conditions D, E, F
         if cfg["agency"]:
+            if not hub_has_agency:
+                # No hub available — bootstrap from starters
+                await _exec_wg_cmd_host(self._wg_graph_dir, wg_bin, ["agency", "init"])
             role, tradeoff = cfg["agency"]
-            await _exec_wg_cmd_host(self._wg_graph_dir, wg_bin, ["agency", "init"])
             agent_name = "solver" if self.condition == "D" else "orchestrator"
             await _exec_wg_cmd_host(self._wg_graph_dir, wg_bin, [
                 "agent", "create", agent_name,
@@ -490,6 +572,33 @@ class WorkgraphAgent(BaseAgent):
         trial_log.total_cost = metrics["total_cost_usd"]
         trial_log.total_turns = metrics["total_turns"]
 
+        # Federation: evaluate completed tasks and push results to hub
+        federation_pushed = False
+        if (
+            self.federation_hub
+            and self.condition in FEDERATION_CONDITIONS
+            and self.push_evaluations
+        ):
+            # Run evaluation on the root task (generates evaluation JSON)
+            eval_result = await _exec_wg_cmd_host(
+                wg_dir, wg_bin,
+                ["evaluate", "run", root_task_id],
+            )
+            logger.info(f"Evaluation result: {eval_result.strip()}")
+
+            # Push evaluations + performance data to hub
+            push_result = await _federation_push(wg_dir, wg_bin, self.federation_hub)
+            logger.info(f"Federation push to hub: {push_result.strip()}")
+            federation_pushed = True
+
+            # Optionally trigger evolution on the hub
+            if self.evolve_after_n > 0:
+                hub_wg_dir = os.path.join(self.federation_hub, ".workgraph")
+                evolve_result = await _exec_wg_cmd_host(
+                    hub_wg_dir, wg_bin, ["evolve", "run"],
+                )
+                logger.info(f"Hub evolution: {evolve_result.strip()}")
+
         # Build metadata
         metadata: dict[str, Any] = {
             "condition": self.condition,
@@ -503,6 +612,10 @@ class WorkgraphAgent(BaseAgent):
 
         if cfg["agency"]:
             metadata["agent_identity"] = getattr(self, "_agent_identity", None)
+
+        if federation_pushed:
+            metadata["federation_hub"] = self.federation_hub
+            metadata["federation_pushed"] = True
 
         # Populate Harbor's AgentContext
         context.n_input_tokens = metrics["total_input_tokens"]

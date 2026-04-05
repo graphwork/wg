@@ -1,0 +1,7 @@
+# Large generated data — don't check in
+.workgraph/agency/evaluations/
+.workgraph/service/
+
+# DO check in evolved primitives (they're the value)
+!.workgraph/agency/cache/
+!.workgraph/agency/primitives/
