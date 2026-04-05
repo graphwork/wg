@@ -1814,7 +1814,7 @@ fn build_flip_verification_tasks(
 ///
 /// Returns `true` if the graph was modified.
 fn build_separate_verify_tasks(
-    dir: &Path,
+    _dir: &Path,
     graph: &mut workgraph::graph::WorkGraph,
     config: &Config,
 ) -> bool {
