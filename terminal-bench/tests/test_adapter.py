@@ -36,6 +36,7 @@ from wg.adapter import (
     _exec_wg_cmd_host,
     _federation_pull,
     _federation_push,
+    _normalize_model,
     _poll_task_completion,
     _write_trial_bundle,
     _write_trial_federation_config,
@@ -517,6 +518,39 @@ class TestConditionAgents:
             assert agent.model_name == BENCHMARK_MODEL, (
                 f"{AgentCls.__name__} should use BENCHMARK_MODEL"
             )
+
+    def test_condition_agents_accept_harbor_model(self):
+        """Condition agents use Harbor's model_name when provided."""
+        for AgentCls in (ConditionAAgent, ConditionBAgent, ConditionFAgent):
+            agent = AgentCls(model_name="openrouter/custom/model-1.0")
+            assert agent.model_name == "openrouter/custom/model-1.0", (
+                f"{AgentCls.__name__} should accept Harbor's model_name"
+            )
+
+
+class TestModelNormalization:
+    """Test _normalize_model conversion between Harbor and wg formats."""
+
+    def test_wg_format_passthrough(self):
+        assert _normalize_model("openrouter:minimax/minimax-m2.7") == "openrouter:minimax/minimax-m2.7"
+
+    def test_harbor_format_conversion(self):
+        assert _normalize_model("openrouter/minimax/minimax-m2.7") == "openrouter:minimax/minimax-m2.7"
+
+    def test_openai_format_conversion(self):
+        assert _normalize_model("openai/gpt-4o") == "openai:gpt-4o"
+
+    def test_unknown_provider_passthrough(self):
+        assert _normalize_model("custom-model-v1") == "custom-model-v1"
+
+    def test_bare_model_passthrough(self):
+        assert _normalize_model("claude-sonnet-4-6") == "claude-sonnet-4-6"
+
+    def test_benchmark_model_is_valid(self):
+        """BENCHMARK_MODEL must be in wg format with known provider."""
+        assert ":" in BENCHMARK_MODEL
+        provider = BENCHMARK_MODEL.split(":")[0]
+        assert provider in ("openrouter", "openai", "anthropic")
 
 
 # ---------------------------------------------------------------------------

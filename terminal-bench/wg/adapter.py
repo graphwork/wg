@@ -14,6 +14,25 @@ Supports six conditions:
   Condition D (treatment): wg tools + autopoietic verification + agency identity
   Condition E (treatment): wg tools + organization generation + independent verification
   Condition F (treatment): wg tools + distilled context injection + empirical verification
+
+Model routing end-to-end:
+  Harbor path (Docker agent loop via LiteLLM):
+    Harbor -m flag → ConditionXAgent.__init__(model_name=...) → setdefault(BENCHMARK_MODEL)
+    → setup(): _normalize_model() converts Harbor "/" format to wg ":" format
+    → run(): _run_docker_agent_loop() converts wg ":" back to LiteLLM "/" format
+    → litellm.acompletion(model="openrouter/minimax/minimax-m2.7")
+    Requires OPENROUTER_API_KEY in environment for OpenRouter models.
+
+  Host-native path (standalone runners like run_full_a_prime_vs_f.py):
+    Runner sets BENCHMARK_MODEL → writes config.toml [agent].model + [coordinator].model
+    → wg add --model <model> → wg service start --model <model>
+    → coordinator spawns agent via wg native-exec --model <model>
+    → native_exec.rs: create_provider_ext() parses "openrouter:model" → OpenAI-compat client
+    → API calls go directly to OpenRouter (no LiteLLM in path)
+
+  Environment isolation:
+    _exec_wg_cmd_host() strips ALL WG_* env vars + CLAUDECODE from subprocess.
+    This prevents parent agent/service model/executor config from leaking into trials.
 """
 
 import asyncio
@@ -113,15 +132,12 @@ async def _exec_wg_cmd_host(wg_dir: str, wg_bin: str, subcmd: list[str]) -> str:
     The workgraph state lives on the host in a temp directory per trial.
     """
     cmd = [wg_bin, "--dir", wg_dir] + subcmd
-    # Strip env vars from the parent workgraph service that would override
-    # the trial's own model/executor configuration.
+    # Strip ALL WG_* env vars and CLAUDECODE from the parent agent/service
+    # so the trial's own config.toml is the sole source of truth for model,
+    # executor, and provider settings.
     clean_env = {
         k: v for k, v in os.environ.items()
-        if k not in (
-            "WG_MODEL", "WG_EXECUTOR_TYPE", "WG_AGENT_ID", "WG_TASK_ID",
-            "WG_LLM_PROVIDER", "WG_ENDPOINT", "WG_ENDPOINT_NAME",
-            "WG_ENDPOINT_URL", "WG_API_KEY",
-        )
+        if not k.startswith("WG_") and k != "CLAUDECODE"
     }
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -143,6 +159,33 @@ async def _exec_wg_cmd_host(wg_dir: str, wg_bin: str, subcmd: list[str]) -> str:
         return "[wg command timed out after 60s]"
     except Exception as e:
         return f"[wg command error: {e}]"
+
+
+# ---------------------------------------------------------------------------
+# Model format normalization
+# ---------------------------------------------------------------------------
+
+# Known LiteLLM provider prefixes that use "/" in their model format
+# but should use ":" in workgraph format.
+_KNOWN_PROVIDERS = {"openrouter", "openai", "anthropic", "together_ai", "groq", "ollama"}
+
+
+def _normalize_model(model: str) -> str:
+    """Normalize a model string to workgraph format (provider:model).
+
+    Harbor and LiteLLM use "/" separators ("openrouter/minimax/minimax-m2.7")
+    while workgraph uses ":" ("openrouter:minimax/minimax-m2.7").
+
+    If the model already uses ":" format, it is returned as-is.
+    If the first path segment is a known provider, convert the first "/" to ":".
+    Otherwise return unchanged.
+    """
+    if ":" in model:
+        return model  # Already in wg format
+    parts = model.split("/", 1)
+    if len(parts) == 2 and parts[0] in _KNOWN_PROVIDERS:
+        return f"{parts[0]}:{parts[1]}"
+    return model
 
 
 # ---------------------------------------------------------------------------
@@ -506,6 +549,12 @@ async def _run_docker_agent_loop(
 ) -> dict[str, Any]:
     """Run an LLM agent loop with commands routed through Docker via environment.exec().
 
+    Model routing:
+      1. The ``model`` parameter uses wg format ("openrouter:minimax/minimax-m2.7").
+      2. It is converted to LiteLLM format ("openrouter/minimax/minimax-m2.7").
+      3. LiteLLM routes to the correct provider using the prefix and the
+         matching API key env var (e.g. OPENROUTER_API_KEY).
+
     Returns metrics dict with turns, tokens, termination info.
     """
     import litellm
@@ -531,6 +580,24 @@ async def _run_docker_agent_loop(
 
     # Resolve litellm model name: "openrouter:minimax/minimax-m2.7" → "openrouter/minimax/minimax-m2.7"
     litellm_model = model.replace(":", "/", 1) if ":" in model else model
+
+    # --- Model routing validation ---
+    # Verify that the required API key is present for the target provider.
+    # This catches misconfigurations early instead of silently falling back
+    # to a different model/provider.
+    if litellm_model.startswith("openrouter/"):
+        api_key = os.environ.get("OPENROUTER_API_KEY", "")
+        if not api_key:
+            raise RuntimeError(
+                f"Model '{litellm_model}' requires OPENROUTER_API_KEY but it is not set. "
+                "Set it in the environment before running the trial."
+            )
+        logger.info(
+            f"[model-routing] Using OpenRouter model '{litellm_model}' "
+            f"(API key: ...{api_key[-4:]})"
+        )
+    else:
+        logger.info(f"[model-routing] Using LiteLLM model '{litellm_model}'")
 
     messages = [
         {"role": "system", "content": system_prompt},
@@ -567,6 +634,22 @@ async def _run_docker_agent_loop(
             logger.error(f"LLM call failed at turn {turn}: {e}")
             metrics["termination_type"] = "llm_error"
             break
+
+        # Verify model routing on first turn — log the model the API actually used
+        if turn == 1:
+            resp_model = getattr(response, "model", None)
+            logger.info(
+                f"[model-routing] Turn 1 response model: '{resp_model}' "
+                f"(requested: '{litellm_model}')"
+            )
+            if resp_model and "claude" in str(resp_model).lower() and "minimax" in litellm_model:
+                logger.error(
+                    f"[model-routing] MODEL MISMATCH: requested '{litellm_model}' "
+                    f"but got '{resp_model}' — trial results are invalid!"
+                )
+                metrics["termination_type"] = "model_mismatch"
+                metrics["actual_model"] = resp_model
+                break
 
         # Track tokens
         usage = response.usage
@@ -758,9 +841,11 @@ class WorkgraphAgent(BaseAgent):
         await _exec_wg_cmd_host(self._wg_graph_dir, wg_bin, ["init"])
         logger.info(f"Initialized trial workgraph at {self._wg_graph_dir}")
 
-        # Determine model
+        # Determine model — normalize Harbor format ("openrouter/minimax/minimax-m2.7")
+        # to workgraph format ("openrouter:minimax/minimax-m2.7").
         model_raw = self.model_name or BENCHMARK_MODEL
-        self._model = model_raw
+        self._model = _normalize_model(model_raw)
+        logger.info(f"[model-routing] Trial model: '{self._model}' (raw from Harbor: '{model_raw}')")
 
         # Write wg config for the trial
         await _write_trial_wg_config(
@@ -854,6 +939,7 @@ class WorkgraphAgent(BaseAgent):
             "turns": metrics["total_turns"],
             "root_task_id": root_task_id,
             "model": self._model,
+            "actual_model": metrics.get("actual_model"),
             "termination_type": metrics["termination_type"],
             "elapsed_s": elapsed,
             "docker_agent_loop": True,
@@ -893,7 +979,7 @@ class ConditionAAgent(WorkgraphAgent):
 
     def __init__(self, *args, **kwargs):
         kwargs["condition"] = "A"
-        kwargs["model_name"] = BENCHMARK_MODEL
+        kwargs.setdefault("model_name", BENCHMARK_MODEL)
         super().__init__(*args, **kwargs)
 
 
@@ -906,7 +992,7 @@ class ConditionBAgent(WorkgraphAgent):
 
     def __init__(self, *args, **kwargs):
         kwargs["condition"] = "B"
-        kwargs["model_name"] = BENCHMARK_MODEL
+        kwargs.setdefault("model_name", BENCHMARK_MODEL)
         super().__init__(*args, **kwargs)
 
 
@@ -919,7 +1005,7 @@ class ConditionCAgent(WorkgraphAgent):
 
     def __init__(self, *args, **kwargs):
         kwargs["condition"] = "C"
-        kwargs["model_name"] = BENCHMARK_MODEL
+        kwargs.setdefault("model_name", BENCHMARK_MODEL)
         super().__init__(*args, **kwargs)
 
 
@@ -932,7 +1018,7 @@ class ConditionDAgent(WorkgraphAgent):
 
     def __init__(self, *args, **kwargs):
         kwargs["condition"] = "D"
-        kwargs["model_name"] = BENCHMARK_MODEL
+        kwargs.setdefault("model_name", BENCHMARK_MODEL)
         super().__init__(*args, **kwargs)
 
 
@@ -945,7 +1031,7 @@ class ConditionEAgent(WorkgraphAgent):
 
     def __init__(self, *args, **kwargs):
         kwargs["condition"] = "E"
-        kwargs["model_name"] = BENCHMARK_MODEL
+        kwargs.setdefault("model_name", BENCHMARK_MODEL)
         super().__init__(*args, **kwargs)
 
 
@@ -958,7 +1044,7 @@ class ConditionFAgent(WorkgraphAgent):
 
     def __init__(self, *args, **kwargs):
         kwargs["condition"] = "F"
-        kwargs["model_name"] = BENCHMARK_MODEL
+        kwargs.setdefault("model_name", BENCHMARK_MODEL)
         super().__init__(*args, **kwargs)
 
     @staticmethod
