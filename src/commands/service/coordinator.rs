@@ -1761,8 +1761,8 @@ fn build_flip_verification_tasks(
                 actor: Some("coordinator".to_string()),
                 user: Some(workgraph::current_user()),
                 message: format!(
-                    "FLIP score {:.2} below threshold {:.2} — triggering Opus verification",
-                    eval.score, threshold,
+                    "FLIP score {:.2} below threshold {:.2} — triggering verification (model: {})",
+                    eval.score, threshold, verification_model,
                 ),
             });
         }

@@ -211,9 +211,11 @@ fn unknown_model_id_in_tier_config_graceful_fallback() {
         resolved.registry_entry.is_none(),
         "Unknown model should not have registry entry"
     );
-    assert!(
-        resolved.provider.is_none(),
-        "Unknown model should not have provider"
+    // Unknown model inherits provider from agent.model prefix ("claude:opus" → "anthropic")
+    assert_eq!(
+        resolved.provider.as_deref(),
+        Some("anthropic"),
+        "Unknown model should inherit provider from agent.model fallback"
     );
 }
 

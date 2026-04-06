@@ -1645,12 +1645,34 @@ impl Config {
             .get_role(DispatchRole::Default)
             .and_then(|c| c.endpoint.clone());
 
-        // Helper: resolve provider for a role, cascading to default if unset.
+        // Infer provider from coordinator.model and agent.model prefixes as
+        // final fallbacks.  This ensures that when a user sets e.g.
+        // `coordinator.model = "openrouter:anthropic/claude-sonnet-4-20250514"`
+        // the OpenRouter provider cascades to ALL roles (eval, FLIP, verification)
+        // without needing explicit `[models.default].provider` config.
+        let coordinator_model_provider = self
+            .coordinator
+            .model
+            .as_deref()
+            .and_then(|m| {
+                parse_model_spec(m)
+                    .provider
+                    .map(|p| provider_to_native_provider(&p).to_string())
+            });
+        let agent_model_provider = parse_model_spec(&self.agent.model)
+            .provider
+            .map(|p| provider_to_native_provider(&p).to_string());
+
+        // Helper: resolve provider for a role, cascading through:
+        //   models.<role>.provider → models.default.provider
+        //   → coordinator.model prefix → agent.model prefix
         let resolve_provider = |role: DispatchRole| -> Option<String> {
             self.models
                 .get_role(role)
                 .and_then(|c| c.provider.clone())
                 .or_else(|| default_provider.clone())
+                .or_else(|| coordinator_model_provider.clone())
+                .or_else(|| agent_model_provider.clone())
         };
 
         // Helper: resolve endpoint for a role, cascading to default if unset.
