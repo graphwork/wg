@@ -405,7 +405,7 @@ fn test_per_role_different_providers() {
     // TaskAgent → OpenRouter (frontier model)
     config
         .models
-        .set_model(DispatchRole::TaskAgent, "anthropic/claude-opus-4-6");
+        .set_model(DispatchRole::TaskAgent, &format!("anthropic/{CLAUDE_OPUS_MODEL_ID}"));
     config
         .models
         .set_provider(DispatchRole::TaskAgent, "openrouter");
@@ -420,7 +420,7 @@ fn test_per_role_different_providers() {
     assert_eq!(evaluator.provider, Some("anthropic".to_string()));
 
     let task_agent = config.resolve_model_for_role(DispatchRole::TaskAgent);
-    assert_eq!(task_agent.model, "anthropic/claude-opus-4-6");
+    assert_eq!(task_agent.model, format!("anthropic/{CLAUDE_OPUS_MODEL_ID}"));
     assert_eq!(task_agent.provider, Some("openrouter".to_string()));
 }
 
@@ -625,7 +625,7 @@ fn test_model_registry_default_models() {
     let registry = ModelRegistry::with_defaults();
 
     // Should contain models from multiple providers
-    assert!(registry.get("anthropic/claude-opus-4-6").is_some());
+    assert!(registry.get(&format!("anthropic/{CLAUDE_OPUS_MODEL_ID}")).is_some());
     assert!(registry.get("openai/gpt-4o").is_some());
     assert!(registry.get("deepseek/deepseek-chat").is_some());
     assert!(registry.get("google/gemini-2.5-pro").is_some());
@@ -635,7 +635,7 @@ fn test_model_registry_default_models() {
 fn test_model_registry_tier_classification() {
     let registry = ModelRegistry::with_defaults();
 
-    let opus = registry.get("anthropic/claude-opus-4-6").unwrap();
+    let opus = registry.get(&format!("anthropic/{CLAUDE_OPUS_MODEL_ID}")).unwrap();
     assert_eq!(opus.tier, ModelTier::Frontier);
 
     let haiku = registry.get("anthropic/claude-haiku-4-5").unwrap();

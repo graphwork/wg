@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use tempfile::TempDir;
+use workgraph::config::CLAUDE_SONNET_MODEL_ID;
 use workgraph::graph::WorkGraph;
 use workgraph::parser::save_graph;
 
@@ -96,6 +97,7 @@ fn setup_workgraph(tmp: &TempDir) -> PathBuf {
 fn cli_endpoints_add_creates_config_entry() {
     let tmp = TempDir::new().unwrap();
     let wg_dir = setup_workgraph(&tmp);
+    let sonnet_model = format!("anthropic/{CLAUDE_SONNET_MODEL_ID}");
 
     let output = wg_ok(
         &wg_dir,
@@ -108,7 +110,7 @@ fn cli_endpoints_add_creates_config_entry() {
             "--api-key",
             "sk-or-test-123",
             "--model",
-            "anthropic/claude-sonnet-4-20250514",
+            &sonnet_model,
         ],
     );
     assert!(output.contains("Added endpoint 'test-ep'"));
@@ -232,6 +234,7 @@ fn cli_endpoints_list_json_empty() {
 fn cli_endpoints_list_shows_all_fields() {
     let tmp = TempDir::new().unwrap();
     let wg_dir = setup_workgraph(&tmp);
+    let sonnet_model = format!("anthropic/{CLAUDE_SONNET_MODEL_ID}");
 
     wg_ok(
         &wg_dir,
@@ -244,7 +247,7 @@ fn cli_endpoints_list_shows_all_fields() {
             "--api-key",
             "sk-or-test-key-abcdef",
             "--model",
-            "anthropic/claude-sonnet-4-20250514",
+            &sonnet_model,
             "--url",
             "https://openrouter.ai/api/v1",
         ],
@@ -254,7 +257,7 @@ fn cli_endpoints_list_shows_all_fields() {
     assert!(list.contains("full-ep"));
     assert!(list.contains("openrouter"));
     assert!(list.contains("(default)"));
-    assert!(list.contains("anthropic/claude-sonnet-4-20250514"));
+    assert!(list.contains(&sonnet_model));
 
     // JSON format includes structured fields
     let json_list = wg_ok(&wg_dir, &["--json", "endpoints", "list"]);
@@ -262,7 +265,7 @@ fn cli_endpoints_list_shows_all_fields() {
     let ep = &parsed[0];
     assert_eq!(ep["name"], "full-ep");
     assert_eq!(ep["provider"], "openrouter");
-    assert_eq!(ep["model"], "anthropic/claude-sonnet-4-20250514");
+    assert_eq!(ep["model"], sonnet_model.as_str());
     assert_eq!(ep["is_default"], true);
     // API key should be masked in output
     let key_str = ep["api_key"].as_str().unwrap();
@@ -508,6 +511,7 @@ fn cli_endpoints_add_duplicate_errors() {
 fn cli_endpoints_full_lifecycle() {
     let tmp = TempDir::new().unwrap();
     let wg_dir = setup_workgraph(&tmp);
+    let sonnet_model = format!("anthropic/{CLAUDE_SONNET_MODEL_ID}");
 
     // Add two endpoints
     wg_ok(
@@ -521,7 +525,7 @@ fn cli_endpoints_full_lifecycle() {
             "--api-key",
             "sk-or-1",
             "--model",
-            "anthropic/claude-sonnet-4-20250514",
+            &sonnet_model,
         ],
     );
     wg_ok(

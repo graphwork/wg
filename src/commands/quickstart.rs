@@ -368,7 +368,7 @@ EXECUTORS & MODELS
   Per-task model selection (overrides the default):
 
   wg add "Fast task" --model google/gemini-2.5-flash
-  wg add "Heavy task" --model anthropic/claude-opus-4-6
+  wg add "Heavy task" --model opus
 
   Model hierarchy: task --model > executor model > coordinator model > 'default'
 

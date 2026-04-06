@@ -13,7 +13,8 @@ use std::process::{Command, Stdio};
 use tempfile::TempDir;
 
 use workgraph::config::{
-    Config, KNOWN_PROVIDERS, RoleModelConfig, parse_model_spec, parse_model_spec_strict,
+    Config, CLAUDE_OPUS_MODEL_ID, KNOWN_PROVIDERS, RoleModelConfig, parse_model_spec,
+    parse_model_spec_strict,
 };
 use workgraph::graph::WorkGraph;
 use workgraph::models::{ModelEntry, ModelRegistry, ModelTier};
@@ -187,7 +188,7 @@ fn lenient_double_colon() {
 #[test]
 fn config_spec_anthropic_maps_to_claude_prefix() {
     let entry = ModelEntry {
-        id: "anthropic/claude-opus-4-6".into(),
+        id: format!("anthropic/{CLAUDE_OPUS_MODEL_ID}"),
         provider: "anthropic".into(),
         cost_per_1m_input: 15.0,
         cost_per_1m_output: 75.0,
@@ -195,7 +196,7 @@ fn config_spec_anthropic_maps_to_claude_prefix() {
         capabilities: vec!["tool_use".into()],
         tier: ModelTier::Frontier,
     };
-    assert_eq!(entry.config_spec(), "claude:claude-opus-4-6");
+    assert_eq!(entry.config_spec(), format!("claude:{CLAUDE_OPUS_MODEL_ID}"));
 }
 
 #[test]
@@ -649,6 +650,7 @@ fn cli_config_set_model_role_accepts_provider_format() {
 
 #[test]
 fn strict_rejects_common_bare_model_names() {
+    let opus_bare = CLAUDE_OPUS_MODEL_ID.to_string();
     let bare_names = [
         "opus",
         "sonnet",
@@ -657,7 +659,7 @@ fn strict_rejects_common_bare_model_names() {
         "gpt-4o-mini",
         "deepseek-chat-v3",
         "gemini-2.5-pro",
-        "claude-opus-4-6",
+        opus_bare.as_str(),
         "claude-sonnet-4-6",
     ];
     for name in &bare_names {
@@ -683,8 +685,9 @@ fn strict_rejects_common_bare_model_names() {
 
 #[test]
 fn strict_rejects_various_legacy_slash_formats() {
+    let opus_legacy = format!("anthropic/{CLAUDE_OPUS_MODEL_ID}");
     let legacy_formats = [
-        "anthropic/claude-opus-4-6",
+        opus_legacy.as_str(),
         "openai/gpt-4o",
         "google/gemini-2.5-pro",
         "deepseek/deepseek-chat-v3",

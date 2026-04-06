@@ -15,6 +15,7 @@ use tempfile::TempDir;
 
 use workgraph::config::{
     Config, DispatchRole, EndpointConfig, EndpointsConfig, ModelRegistryEntry, Tier,
+    CLAUDE_HAIKU_MODEL_ID, CLAUDE_SONNET_MODEL_ID,
 };
 use workgraph::graph::WorkGraph;
 use workgraph::parser::save_graph;
@@ -138,7 +139,7 @@ mod model_management_new_user_setup {
             ModelRegistryEntry {
                 id: "my-fast".to_string(),
                 provider: "openrouter".to_string(),
-                model: "anthropic/claude-haiku-4-5-20251001".to_string(),
+                model: format!("anthropic/{CLAUDE_HAIKU_MODEL_ID}"),
                 tier: Tier::Fast,
                 endpoint: Some("my-openrouter".to_string()),
                 context_window: 200_000,
@@ -160,7 +161,7 @@ mod model_management_new_user_setup {
             .find(|e| e.id == "my-fast")
             .unwrap();
         assert_eq!(entry.provider, "openrouter");
-        assert_eq!(entry.model, "anthropic/claude-haiku-4-5-20251001");
+        assert_eq!(entry.model, format!("anthropic/{CLAUDE_HAIKU_MODEL_ID}"));
         assert_eq!(entry.endpoint.as_deref(), Some("my-openrouter"));
 
         // Step 4: Set default model (like `wg model set-default`)
@@ -174,7 +175,7 @@ mod model_management_new_user_setup {
         // Step 5: Verify the full lookup chain works
         let merged = Config::load_merged(dir).unwrap();
         let resolved = merged.registry_lookup("my-fast").unwrap();
-        assert_eq!(resolved.model, "anthropic/claude-haiku-4-5-20251001");
+        assert_eq!(resolved.model, format!("anthropic/{CLAUDE_HAIKU_MODEL_ID}"));
         assert_eq!(resolved.provider, "openrouter");
         assert_eq!(resolved.endpoint.as_deref(), Some("my-openrouter"));
 
@@ -1081,7 +1082,7 @@ mod model_management_config_persistence {
                 name: "persist-ep".to_string(),
                 provider: "openrouter".to_string(),
                 url: Some("https://openrouter.ai/api/v1".to_string()),
-                model: Some("anthropic/claude-sonnet-4-20250514".to_string()),
+                model: Some(format!("anthropic/{CLAUDE_SONNET_MODEL_ID}")),
                 api_key: Some("sk-persist-key".to_string()),
                 api_key_file: None,
                 api_key_env: None,
@@ -1091,14 +1092,12 @@ mod model_management_config_persistence {
         );
 
         // Reload and verify
+        let sonnet_model = format!("anthropic/{CLAUDE_SONNET_MODEL_ID}");
         let loaded = Config::load(dir).unwrap();
         let ep = loaded.llm_endpoints.find_by_name("persist-ep").unwrap();
         assert_eq!(ep.provider, "openrouter");
         assert_eq!(ep.url.as_deref(), Some("https://openrouter.ai/api/v1"));
-        assert_eq!(
-            ep.model.as_deref(),
-            Some("anthropic/claude-sonnet-4-20250514")
-        );
+        assert_eq!(ep.model.as_deref(), Some(sonnet_model.as_str()));
         assert_eq!(ep.api_key.as_deref(), Some("sk-persist-key"));
         assert!(ep.is_default);
     }
@@ -1246,7 +1245,7 @@ mod model_management_config_persistence {
             ModelRegistryEntry {
                 id: "round-model".to_string(),
                 provider: "openrouter".to_string(),
-                model: "anthropic/claude-sonnet-4-20250514".to_string(),
+                model: format!("anthropic/{CLAUDE_SONNET_MODEL_ID}"),
                 tier: Tier::Standard,
                 endpoint: Some("round-ep".to_string()),
                 context_window: 200_000,
@@ -1287,7 +1286,8 @@ mod model_management_config_persistence {
             .iter()
             .find(|e| e.id == "round-model")
             .unwrap();
-        assert_eq!(entry.model, "anthropic/claude-sonnet-4-20250514");
+        let sonnet_model = format!("anthropic/{CLAUDE_SONNET_MODEL_ID}");
+        assert_eq!(entry.model, sonnet_model);
         assert_eq!(entry.endpoint.as_deref(), Some("round-ep"));
 
         // Default model
@@ -1301,7 +1301,7 @@ mod model_management_config_persistence {
         // Verify registry lookup still works after reload
         let merged = Config::load_merged(dir).unwrap();
         let resolved = merged.registry_lookup("round-model").unwrap();
-        assert_eq!(resolved.model, "anthropic/claude-sonnet-4-20250514");
+        assert_eq!(resolved.model, sonnet_model);
         assert_eq!(resolved.endpoint.as_deref(), Some("round-ep"));
 
         // Verify endpoint lookup from registry entry

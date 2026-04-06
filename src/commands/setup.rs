@@ -1753,7 +1753,7 @@ fn guide_notification_setup() -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use workgraph::config::Config;
+    use workgraph::config::{Config, CLAUDE_SONNET_MODEL_ID};
 
     #[test]
     fn test_build_config_defaults() {
@@ -2543,8 +2543,8 @@ mod tests {
     fn test_validate_api_key_anthropic_uses_x_api_key() {
         // Just verify Anthropic path doesn't panic — actual header verification
         // would need a more sophisticated mock
-        let body = r#"{"data": [{"id": "claude-sonnet-4-20250514"}]}"#;
-        let mock_url = mock_server(200, body);
+        let body = format!(r#"{{"data": [{{"id": "{CLAUDE_SONNET_MODEL_ID}"}}]}}"#);
+        let mock_url = mock_server(200, &body);
 
         let result = validate_api_key("anthropic", "sk-ant-test", Some(&mock_url)).unwrap();
         assert!(result.success);

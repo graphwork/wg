@@ -18,7 +18,7 @@ use workgraph::provenance;
 /// Extract the model from a task's spawn log entry.
 ///
 /// Spawn log entries have the format:
-///   "Spawned by coordinator --executor claude --model anthropic/claude-opus-4-6"
+///   "Spawned by coordinator --executor claude --model opus"
 /// Returns the model string if found.
 fn extract_spawn_model(log: &[LogEntry]) -> Option<String> {
     for entry in log {

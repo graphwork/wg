@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
+use workgraph::config::CLAUDE_SONNET_MODEL_ID;
 
 extern crate libc;
 
@@ -535,10 +536,10 @@ fn coordinator_spawn_model_passthrough() {
     );
 
     // Configure a specific model using provider:model format
-    write_config(
-        &wg_dir,
-        "[coordinator]\ncoordinator_agent = true\nmodel = \"claude:claude-sonnet-4-20250514\"\n",
+    let config_str = format!(
+        "[coordinator]\ncoordinator_agent = true\nmodel = \"claude:{CLAUDE_SONNET_MODEL_ID}\"\n"
     );
+    write_config(&wg_dir, &config_str);
 
     let env = [
         ("PATH", path_env.as_str()),
@@ -564,9 +565,9 @@ fn coordinator_spawn_model_passthrough() {
     );
     let model_value = &args[model_idx.unwrap() + 1];
     assert_eq!(
-        model_value, "claude-sonnet-4-20250514",
-        "Expected model 'claude-sonnet-4-20250514', got '{}'",
-        model_value
+        model_value, CLAUDE_SONNET_MODEL_ID,
+        "Expected model '{}', got '{}'",
+        CLAUDE_SONNET_MODEL_ID, model_value
     );
 }
 

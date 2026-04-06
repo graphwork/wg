@@ -7,6 +7,7 @@
 use std::io::{Read, Write};
 use std::net::TcpListener;
 
+use workgraph::config::CLAUDE_SONNET_MODEL_ID;
 use workgraph::executor::native::client::{
     AnthropicClient, ContentBlock, Message, MessagesRequest, Role, StopReason, ToolDefinition,
 };
@@ -453,7 +454,7 @@ fn anthropic_prefix_routes_to_anthropic_provider() {
 
     // Mock server returning Anthropic format
     let mock_body = format!(
-        r#"{{"id":"msg_route","type":"message","role":"assistant","content":[{{"type":"text","text":"hello"}}],"model":"claude-sonnet-4-20250514","stop_reason":"end_turn","usage":{{"input_tokens":10,"output_tokens":5}}}}"#,
+        r#"{{"id":"msg_route","type":"message","role":"assistant","content":[{{"type":"text","text":"hello"}}],"model":"{CLAUDE_SONNET_MODEL_ID}","stop_reason":"end_turn","usage":{{"input_tokens":10,"output_tokens":5}}}}"#,
     );
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
@@ -484,15 +485,16 @@ is_default = true
     );
     std::fs::write(tmp.path().join("config.toml"), config_content).unwrap();
 
-    // "anthropic/claude-sonnet-4-20250514" should route to Anthropic, stripping prefix
+    // "anthropic/<model>" should route to Anthropic, stripping prefix
+    let prefixed_model = format!("anthropic/{CLAUDE_SONNET_MODEL_ID}");
     let provider = workgraph::executor::native::provider::create_provider(
         tmp.path(),
-        "anthropic/claude-sonnet-4-20250514",
+        &prefixed_model,
     )
     .unwrap();
     assert_eq!(provider.name(), "anthropic");
     // Model should have prefix stripped
-    assert_eq!(provider.model(), "claude-sonnet-4-20250514");
+    assert_eq!(provider.model(), CLAUDE_SONNET_MODEL_ID);
 }
 
 // ===========================================================================

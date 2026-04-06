@@ -7,6 +7,7 @@
 use std::io::{Read, Write};
 use std::net::TcpListener;
 
+use workgraph::config::CLAUDE_SONNET_MODEL_ID;
 use workgraph::executor::native::client::{
     ContentBlock, Message, MessagesRequest, Role, StopReason, ToolDefinition,
 };
@@ -561,9 +562,10 @@ fn from_endpoint_sets_streaming_for_openrouter() {
         context_window: None,
     };
 
+    let sonnet_model = format!("anthropic/{CLAUDE_SONNET_MODEL_ID}");
     let client =
-        OpenAiClient::from_endpoint(&ep, "anthropic/claude-sonnet-4-20250514", None).unwrap();
+        OpenAiClient::from_endpoint(&ep, &sonnet_model, None).unwrap();
     // OpenRouter provider should auto-enable streaming
     assert_eq!(client.name(), "openrouter");
-    assert_eq!(client.model, "anthropic/claude-sonnet-4-20250514");
+    assert_eq!(client.model, sonnet_model);
 }

@@ -19,6 +19,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use tempfile::TempDir;
 
+use workgraph::config::{CLAUDE_SONNET_MODEL_ID};
 use workgraph::executor::native::agent::AgentLoop;
 use workgraph::executor::native::client::{
     ContentBlock, MessagesRequest, MessagesResponse, Role, StopReason, Usage,
@@ -34,6 +35,7 @@ use workgraph::executor::native::tools::ToolRegistry;
 struct MockOpenRouterProvider {
     responses: Vec<MessagesResponse>,
     call_count: Arc<AtomicUsize>,
+    model_id: String,
 }
 
 impl MockOpenRouterProvider {
@@ -41,6 +43,7 @@ impl MockOpenRouterProvider {
         Self {
             responses,
             call_count: Arc::new(AtomicUsize::new(0)),
+            model_id: format!("anthropic/{CLAUDE_SONNET_MODEL_ID}"),
         }
     }
 
@@ -104,7 +107,7 @@ impl Provider for MockOpenRouterProvider {
     }
 
     fn model(&self) -> &str {
-        "anthropic/claude-sonnet-4-20250514"
+        &self.model_id
     }
 
     fn max_tokens(&self) -> u32 {
@@ -202,7 +205,7 @@ impl Provider for MockAnthropicProvider {
     }
 
     fn model(&self) -> &str {
-        "claude-sonnet-4-20250514"
+        CLAUDE_SONNET_MODEL_ID
     }
 
     fn max_tokens(&self) -> u32 {
@@ -379,13 +382,14 @@ async fn scenario_1_openrouter_end_to_end() {
     );
 
     // Verify Init entry records the OpenAI provider
+    let expected_or_model = format!("anthropic/{CLAUDE_SONNET_MODEL_ID}");
     match &entries[0].kind {
         JournalEntryKind::Init {
             provider, model, ..
         } => {
             assert_eq!(provider, "openai", "Init should record openai provider");
             assert_eq!(
-                model, "anthropic/claude-sonnet-4-20250514",
+                model, &expected_or_model,
                 "Init should record the model"
             );
         }
@@ -459,7 +463,7 @@ async fn scenario_2_anthropic_end_to_end() {
                 "Init should record anthropic provider"
             );
             assert_eq!(
-                model, "claude-sonnet-4-20250514",
+                model, CLAUDE_SONNET_MODEL_ID,
                 "Init should record the model"
             );
         }
@@ -749,7 +753,7 @@ async fn scenario_5_kill_and_resume_anthropic() {
             provider, model, ..
         } => {
             assert_eq!(provider, "anthropic");
-            assert_eq!(model, "claude-sonnet-4-20250514");
+            assert_eq!(model, CLAUDE_SONNET_MODEL_ID);
         }
         _ => panic!("First entry should be Init"),
     }
@@ -846,7 +850,7 @@ async fn scenario_6_compaction_on_resume() {
         let mut journal = Journal::open(&j_path).unwrap();
         journal
             .append(JournalEntryKind::Init {
-                model: "anthropic/claude-sonnet-4-20250514".to_string(),
+                model: format!("anthropic/{CLAUDE_SONNET_MODEL_ID}"),
                 provider: "openai".to_string(),
                 system_prompt: "You are a test agent working on a large task.".to_string(),
                 tools: vec![],

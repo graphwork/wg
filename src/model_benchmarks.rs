@@ -1241,6 +1241,7 @@ pub fn rank_models_for_profile(registry: &BenchmarkRegistry) -> RankedTiers {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::CLAUDE_OPUS_MODEL_ID;
 
     #[test]
     fn test_compute_quality_all_present() {
@@ -1749,14 +1750,15 @@ mod tests {
 
     #[test]
     fn test_apply_curated_benchmarks_prefix_match() {
-        // "anthropic/claude-opus-4" prefix should match "anthropic/claude-opus-4-6"
+        // "anthropic/claude-opus-4" prefix should match the full opus model ID
+        let opus_key = format!("anthropic/{CLAUDE_OPUS_MODEL_ID}");
         let mut registry = make_test_registry(vec![
-            make_test_model("anthropic/claude-opus-4-6", "budget", None),
+            make_test_model(&opus_key, "budget", None),
         ]);
         let applied = apply_curated_benchmarks(&mut registry);
         assert_eq!(applied, 1);
 
-        let model = registry.models.get("anthropic/claude-opus-4-6").unwrap();
+        let model = registry.models.get(&opus_key).unwrap();
         assert!(model.benchmarks.coding_index.unwrap() > 70.0);
     }
 
