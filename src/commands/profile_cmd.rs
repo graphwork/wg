@@ -330,7 +330,7 @@ pub fn show(dir: &Path, json: bool, verbose: bool) -> Result<()> {
             }
 
             println!();
-            println!("  Ranked Alternatives (by popularity-weighted score):");
+            println!("  Ranked Alternatives (by benchmark-weighted score):");
             print_ranked_tier("fast", &ranked.fast, verbose);
             print_ranked_tier("standard", &ranked.standard, verbose);
             print_ranked_tier("premium", &ranked.premium, verbose);

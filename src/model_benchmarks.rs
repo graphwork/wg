@@ -1848,13 +1848,46 @@ pub fn pricing_tier_label(output_per_mtok: f64) -> &'static str {
     }
 }
 
-/// Run the popularity-weighted ranking algorithm on the benchmark registry.
+/// Assign a profile tier based on model quality and pricing together.
+///
+/// Profile tiers map to deployment scenarios:
+/// - **fast**: cheap models suited for high-throughput, latency-sensitive work
+/// - **standard**: mid-range models with good quality/cost balance
+/// - **premium**: frontier models with top-tier quality (expensive is expected)
+///
+/// The classification uses BOTH pricing and quality — a cheap frontier-quality
+/// model still goes to "fast" (it's a bargain), and an expensive budget-quality
+/// model goes to "standard" (not worth premium pricing).
+fn profile_tier_for_model(model: &ModelBenchmark) -> &'static str {
+    let quality = model.fitness.components.quality.unwrap_or(0.0);
+    let output_price = model.pricing.output_per_mtok;
+
+    // Premium: expensive AND high quality. Both must be true — an expensive
+    // model with low quality is a bad premium candidate.
+    if output_price >= TIER_BOUNDARY_PREMIUM_MIN
+        && (model.tier == "frontier" || quality >= 50.0)
+    {
+        return "premium";
+    }
+
+    // Fast: cheap models. A cheap model with great benchmarks is still "fast"
+    // because it excels at the fast use-case (affordable, high-throughput).
+    if output_price < TIER_BOUNDARY_FAST_MAX {
+        return "fast";
+    }
+
+    // Expensive but low quality → standard (not worth premium).
+    // Mid-priced models → standard regardless of quality.
+    "standard"
+}
+
+/// Run the benchmark-weighted ranking algorithm on the benchmark registry.
 ///
 /// Returns ranked lists per tier (fast/standard/premium), ordered best-first.
 /// Only includes models that support tool use (required for agentic work).
 ///
-/// Composite score = popularity * 0.70 + benchmarks * 0.30
-/// (Popularity is the PRIMARY signal per design principle.)
+/// Composite score = benchmarks * 0.50 + usage * 0.30 + pricing_efficiency * 0.20
+/// (Benchmarks are the PRIMARY signal; usage and pricing efficiency are secondary.)
 pub fn rank_models_for_profile(registry: &BenchmarkRegistry) -> RankedTiers {
     let max_request_count = registry
         .models
@@ -1872,11 +1905,13 @@ pub fn rank_models_for_profile(registry: &BenchmarkRegistry) -> RankedTiers {
             continue;
         }
 
-        let ptier = pricing_tier_label(model.pricing.output_per_mtok);
+        let tier = profile_tier_for_model(model);
         let popularity_score =
             compute_popularity_score(&model.popularity, max_request_count);
         let benchmark_score = model.fitness.components.quality.unwrap_or(0.0);
-        let composite_score = popularity_score * 0.70 + benchmark_score * 0.30;
+        let pricing_efficiency = model.fitness.components.value.unwrap_or(0.0);
+        let composite_score =
+            benchmark_score * 0.50 + popularity_score * 0.30 + pricing_efficiency * 0.20;
 
         let ranked = RankedModel {
             id: model.id.clone(),
@@ -1884,7 +1919,7 @@ pub fn rank_models_for_profile(registry: &BenchmarkRegistry) -> RankedTiers {
             popularity_score,
             benchmark_score,
             composite_score,
-            tier: ptier.to_string(),
+            tier: tier.to_string(),
             input_per_mtok: Some(model.pricing.input_per_mtok),
             output_per_mtok: Some(model.pricing.output_per_mtok),
             context_window: model.context_window,
@@ -1892,7 +1927,7 @@ pub fn rank_models_for_profile(registry: &BenchmarkRegistry) -> RankedTiers {
             is_curated: !model.is_proxy,
         };
 
-        match ptier {
+        match tier {
             "fast" => fast.push(ranked),
             "standard" => standard.push(ranked),
             "premium" => premium.push(ranked),
@@ -1900,21 +1935,24 @@ pub fn rank_models_for_profile(registry: &BenchmarkRegistry) -> RankedTiers {
         }
     }
 
-    fast.sort_by(|a, b| {
-        b.composite_score
-            .partial_cmp(&a.composite_score)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-    standard.sort_by(|a, b| {
-        b.composite_score
-            .partial_cmp(&a.composite_score)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-    premium.sort_by(|a, b| {
-        b.composite_score
-            .partial_cmp(&a.composite_score)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
+    // Sort by composite score descending, then context window (larger = better),
+    // then alphabetical as final tiebreaker.
+    let sort_ranked = |v: &mut Vec<RankedModel>| {
+        v.sort_by(|a, b| {
+            b.composite_score
+                .partial_cmp(&a.composite_score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| {
+                    let ctx_a = a.context_window.unwrap_or(0);
+                    let ctx_b = b.context_window.unwrap_or(0);
+                    ctx_b.cmp(&ctx_a)
+                })
+                .then_with(|| a.id.cmp(&b.id))
+        });
+    };
+    sort_ranked(&mut fast);
+    sort_ranked(&mut standard);
+    sort_ranked(&mut premium);
 
     RankedTiers {
         fast,
@@ -2327,26 +2365,33 @@ mod tests {
 
     #[test]
     fn test_rank_models_tier_assignment() {
-        let registry = make_test_registry(vec![
-            make_ranked_model("a/cheap", "Cheap", 1.0, true, Popularity::default(), None),
-            make_ranked_model("b/mid", "Mid", 10.0, true, Popularity::default(), None),
-            make_ranked_model("c/premium", "Premium", 25.0, true, Popularity::default(), None),
-        ]);
+        // Tier assignment uses both pricing and quality:
+        // - fast: cheap (output < $3/MTok)
+        // - standard: mid-priced ($3–$18/MTok)
+        // - premium: expensive (>= $18/MTok) AND high quality
+        let mut cheap = make_ranked_model("a/cheap", "Cheap", 1.0, true, Popularity::default(), Some(40.0));
+        cheap.tier = "budget".to_string();
+        let mut mid = make_ranked_model("b/mid", "Mid", 10.0, true, Popularity::default(), Some(50.0));
+        mid.tier = "mid".to_string();
+        let mut expensive = make_ranked_model("c/premium", "Premium", 25.0, true, Popularity::default(), Some(70.0));
+        expensive.tier = "frontier".to_string();
+
+        let registry = make_test_registry(vec![cheap, mid, expensive]);
 
         let ranked = rank_models_for_profile(&registry);
-        assert_eq!(ranked.fast.len(), 1);
+        assert_eq!(ranked.fast.len(), 1, "Expected 1 fast model: {:?}", ranked.fast.iter().map(|r| &r.id).collect::<Vec<_>>());
         assert_eq!(ranked.fast[0].id, "a/cheap");
-        assert_eq!(ranked.standard.len(), 1);
+        assert_eq!(ranked.standard.len(), 1, "Expected 1 standard model: {:?}", ranked.standard.iter().map(|r| &r.id).collect::<Vec<_>>());
         assert_eq!(ranked.standard[0].id, "b/mid");
-        assert_eq!(ranked.premium.len(), 1);
+        assert_eq!(ranked.premium.len(), 1, "Expected 1 premium model: {:?}", ranked.premium.iter().map(|r| &r.id).collect::<Vec<_>>());
         assert_eq!(ranked.premium[0].id, "c/premium");
     }
 
     #[test]
-    fn test_rank_models_popularity_dominates() {
+    fn test_rank_models_benchmarks_dominate() {
         // Model A has high popularity, low benchmarks.
         // Model B has low popularity, high benchmarks.
-        // With 70% popularity weight, A should rank higher.
+        // With 50% benchmark weight vs 30% popularity, B should rank higher.
         let registry = make_test_registry(vec![
             make_ranked_model(
                 "a/popular",
@@ -2368,7 +2413,7 @@ mod tests {
 
         let ranked = rank_models_for_profile(&registry);
         assert!(ranked.fast.len() >= 2);
-        assert_eq!(ranked.fast[0].id, "a/popular", "Popular model should rank first");
+        assert_eq!(ranked.fast[0].id, "b/benchmark-king", "High-benchmark model should rank first");
     }
 
     #[test]
