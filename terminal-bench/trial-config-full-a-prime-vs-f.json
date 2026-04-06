@@ -1,0 +1,23 @@
+{
+  "description": "Full A' vs F benchmark: 2 conditions × 7 tasks × 3 replicas = 42 trials. Uses same model as A' pilot (openrouter:minimax/minimax-m2.7) for fair comparison.",
+  "run_id": "full-a-prime-vs-f",
+  "conditions": ["A'", "F"],
+  "tasks": ["file-ops", "text-processing", "debugging", "shell-scripting", "data-processing", "algorithm", "ml"],
+  "replicas": 3,
+  "model": "openrouter:minimax/minimax-m2.7",
+  "timeout_per_trial": 1800,
+  "pilot_results": {
+    "a_prime": {
+      "pass_rate": "14/14 (100%)",
+      "mean_time_s": 181.8,
+      "source": "terminal-bench/results/pilot-condition-a-prime-native/pilot-condition-a-prime.md"
+    },
+    "f": {
+      "pass_rate": "14/14 (100%)",
+      "mean_time_s": 0.98,
+      "mode": "lifecycle-only (no LLM)",
+      "source": "terminal-bench/results/pilot-condition-f.md"
+    }
+  },
+  "federation_hub": "terminal-bench/tb-evaluations"
+}
