@@ -322,6 +322,11 @@ mod tests {
             benchmark_score: 70.0,
             composite_score: 75.0,
             tier: tier.to_string(),
+            input_per_mtok: None,
+            output_per_mtok: None,
+            context_window: None,
+            supports_tools: true,
+            is_curated: true,
         }
     }
 

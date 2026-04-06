@@ -2176,9 +2176,15 @@ pub enum ProfileCommands {
         premium: Option<String>,
     },
     /// Show current profile and resolved model mappings
-    Show,
+    Show {
+        /// Show raw metrics (pricing, context length, benchmark scores) per model
+        #[arg(long, short = 'v')]
+        verbose: bool,
+    },
     /// List available profiles
     List,
+    /// Refresh model data from OpenRouter and recompute rankings
+    Refresh,
 }
 
 #[derive(Subcommand)]

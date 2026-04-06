@@ -184,8 +184,50 @@ fn load_ranked_tiers(dir: &Path) -> Result<Option<RankedTiers>> {
     profile::load_ranked_tiers(dir)
 }
 
+/// Refresh model data from OpenRouter and recompute rankings.
+pub fn refresh(dir: &Path) -> Result<()> {
+    use crate::commands::models::run_fetch;
+
+    eprintln!("Refreshing model data from OpenRouter...");
+    run_fetch(dir, true)?;
+
+    // Re-rank if dynamic profile is active.
+    let mut config = Config::load_merged(dir)?;
+    let is_dynamic = config
+        .profile
+        .as_deref()
+        .and_then(profile::get_profile)
+        .map(|p| p.is_dynamic())
+        .unwrap_or(false);
+
+    if is_dynamic {
+        let ranked = auto_configure_dynamic(dir, &mut config)?;
+        config.save(dir)?;
+        println!();
+        println!("Rankings updated:");
+        println!(
+            "  fast:     {} candidates",
+            ranked.fast.len()
+        );
+        println!(
+            "  standard: {} candidates",
+            ranked.standard.len()
+        );
+        println!(
+            "  premium:  {} candidates",
+            ranked.premium.len()
+        );
+    } else {
+        println!();
+        println!("Registry updated. Set a dynamic profile to auto-rank:");
+        println!("  wg profile set openrouter");
+    }
+
+    Ok(())
+}
+
 /// Show current profile and resolved model mappings.
-pub fn show(dir: &Path, json: bool) -> Result<()> {
+pub fn show(dir: &Path, json: bool, verbose: bool) -> Result<()> {
     let config = Config::load_merged(dir)?;
 
     let effective_tiers = config.effective_tiers_public();
@@ -268,11 +310,30 @@ pub fn show(dir: &Path, json: bool) -> Result<()> {
     // Show ranked alternatives for dynamic profiles.
     if is_dynamic {
         if let Some(ref ranked) = ranked_tiers {
+            // Show data freshness.
+            if let Some(ref registry) = BenchmarkRegistry::load(dir)? {
+                let stale = registry.is_stale(24);
+                let scored = registry
+                    .models
+                    .values()
+                    .filter(|m| m.fitness.score.is_some())
+                    .count();
+                let total = registry.models.len();
+                println!();
+                println!(
+                    "  Registry: {} models ({} scored), fetched {}{}",
+                    total,
+                    scored,
+                    &registry.fetched_at[..10],
+                    if stale { " (stale — run `wg profile refresh`)" } else { "" },
+                );
+            }
+
             println!();
             println!("  Ranked Alternatives (by popularity-weighted score):");
-            print_ranked_tier("fast", &ranked.fast);
-            print_ranked_tier("standard", &ranked.standard);
-            print_ranked_tier("premium", &ranked.premium);
+            print_ranked_tier("fast", &ranked.fast, verbose);
+            print_ranked_tier("standard", &ranked.standard, verbose);
+            print_ranked_tier("premium", &ranked.premium, verbose);
         } else {
             println!();
             println!("  No ranked data available. Run `wg profile set openrouter` to auto-configure.");
@@ -283,26 +344,51 @@ pub fn show(dir: &Path, json: bool) -> Result<()> {
 }
 
 /// Print a ranked tier's alternatives.
-fn print_ranked_tier(tier_name: &str, ranked: &[model_benchmarks::RankedModel]) {
+fn print_ranked_tier(tier_name: &str, ranked: &[model_benchmarks::RankedModel], verbose: bool) {
     if ranked.is_empty() {
         return;
     }
+
+    let curated_count = ranked.iter().filter(|m| m.is_curated).count();
+    let proxy_count = ranked.len() - curated_count;
+
     println!();
-    println!("    {} tier ({} candidates):", tier_name, ranked.len());
-    for (i, model) in ranked.iter().take(10).enumerate() {
+    println!(
+        "    {} tier ({} candidates, {} curated, {} proxy)",
+        tier_name, ranked.len(), curated_count, proxy_count
+    );
+
+    let display_count = if verbose { 20 } else { 10 };
+    for (i, model) in ranked.iter().take(display_count).enumerate() {
         let marker = if i == 0 { " ← selected" } else { "" };
+        let source = if model.is_curated { "" } else { " ~" };
         println!(
-            "      {:>2}. {:<40} pop:{:>5.1}  bench:{:>5.1}  score:{:>5.1}{}",
+            "      {:>2}. {:<40} pop:{:>5.1}  bench:{:>5.1}  score:{:>5.1}{}{}",
             i + 1,
             model.id,
             model.popularity_score,
             model.benchmark_score,
             model.composite_score,
+            source,
             marker,
         );
+
+        if verbose {
+            let in_price = model.input_per_mtok.unwrap_or(0.0);
+            let out_price = model.output_per_mtok.unwrap_or(0.0);
+            let ctx = model
+                .context_window
+                .map(|c| format!("{}k", c / 1000))
+                .unwrap_or_else(|| "?".to_string());
+            let tools = if model.supports_tools { "tools" } else { "no-tools" };
+            println!(
+                "          in:${:.2}/MTok  out:${:.2}/MTok  ctx:{}  {}",
+                in_price, out_price, ctx, tools,
+            );
+        }
     }
-    if ranked.len() > 10 {
-        println!("      ... and {} more", ranked.len() - 10);
+    if ranked.len() > display_count {
+        println!("      ... and {} more", ranked.len() - display_count);
     }
 }
 
@@ -368,3 +454,4 @@ pub fn list(dir: &Path, json: bool) -> Result<()> {
 
     Ok(())
 }
+

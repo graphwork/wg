@@ -1535,11 +1535,14 @@ fn main() -> Result<()> {
             ProfileCommands::Set { name, fast, standard, premium } => {
                 commands::profile_cmd::set(&workgraph_dir, &name, fast.as_deref(), standard.as_deref(), premium.as_deref())
             }
-            ProfileCommands::Show => {
-                commands::profile_cmd::show(&workgraph_dir, cli.json)
+            ProfileCommands::Show { verbose } => {
+                commands::profile_cmd::show(&workgraph_dir, cli.json, verbose)
             }
             ProfileCommands::List => {
                 commands::profile_cmd::list(&workgraph_dir, cli.json)
+            }
+            ProfileCommands::Refresh => {
+                commands::profile_cmd::refresh(&workgraph_dir)
             }
         },
         Commands::Config {
