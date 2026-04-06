@@ -1379,6 +1379,7 @@ fn resolve_model_via_registry(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use workgraph::config::CLAUDE_OPUS_MODEL_ID;
 
     // --- resolve_model_and_provider tests ---
 
@@ -1876,10 +1877,10 @@ mod tests {
         let config = Config::load_or_default(dir);
 
         // Model came from executor/coordinator, not from task — should pass through.
-        // "claude-opus-4-6" matches the builtin "opus" entry's model field, so
+        // CLAUDE_OPUS_MODEL_ID matches the builtin "opus" entry's model field, so
         // it resolves with provider info from that entry.
         let (model, provider, _endpoint) = resolve_model_via_registry(
-            Some("claude-opus-4-6".to_string()),
+            Some(CLAUDE_OPUS_MODEL_ID.to_string()),
             None, // no task model
             &config,
             dir,
@@ -1888,7 +1889,7 @@ mod tests {
 
         assert_eq!(
             model,
-            Some("claude-opus-4-6".to_string()),
+            Some(CLAUDE_OPUS_MODEL_ID.to_string()),
             "Non-task model should resolve to the same model ID"
         );
         assert_eq!(

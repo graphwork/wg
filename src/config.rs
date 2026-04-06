@@ -11,6 +11,12 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+/// Default Anthropic API model IDs.
+/// Update these constants when new Claude model versions are released.
+pub const CLAUDE_HAIKU_MODEL_ID: &str = "claude-haiku-4-5-20251001";
+pub const CLAUDE_SONNET_MODEL_ID: &str = "claude-sonnet-4-20250514";
+pub const CLAUDE_OPUS_MODEL_ID: &str = "claude-opus-4-6";
+
 /// Main configuration structure
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Config {
@@ -1430,7 +1436,7 @@ impl Config {
             ModelRegistryEntry {
                 id: "haiku".into(),
                 provider: "anthropic".into(),
-                model: "claude-haiku-4-5-20251001".into(),
+                model: CLAUDE_HAIKU_MODEL_ID.into(),
                 tier: Tier::Fast,
                 context_window: 200_000,
                 max_output_tokens: 8192,
@@ -1444,7 +1450,7 @@ impl Config {
             ModelRegistryEntry {
                 id: "sonnet".into(),
                 provider: "anthropic".into(),
-                model: "claude-sonnet-4-20250514".into(),
+                model: CLAUDE_SONNET_MODEL_ID.into(),
                 tier: Tier::Standard,
                 context_window: 200_000,
                 max_output_tokens: 16384,
@@ -1458,7 +1464,7 @@ impl Config {
             ModelRegistryEntry {
                 id: "opus".into(),
                 provider: "anthropic".into(),
-                model: "claude-opus-4-6".into(),
+                model: CLAUDE_OPUS_MODEL_ID.into(),
                 tier: Tier::Premium,
                 context_window: 200_000,
                 max_output_tokens: 32000,
@@ -1473,7 +1479,7 @@ impl Config {
             ModelRegistryEntry {
                 id: "claude:haiku".into(),
                 provider: "anthropic".into(),
-                model: "claude-haiku-4-5-20251001".into(),
+                model: CLAUDE_HAIKU_MODEL_ID.into(),
                 tier: Tier::Fast,
                 context_window: 200_000,
                 max_output_tokens: 8192,
@@ -1487,7 +1493,7 @@ impl Config {
             ModelRegistryEntry {
                 id: "claude:sonnet".into(),
                 provider: "anthropic".into(),
-                model: "claude-sonnet-4-20250514".into(),
+                model: CLAUDE_SONNET_MODEL_ID.into(),
                 tier: Tier::Standard,
                 context_window: 200_000,
                 max_output_tokens: 16384,
@@ -1501,7 +1507,7 @@ impl Config {
             ModelRegistryEntry {
                 id: "claude:opus".into(),
                 provider: "anthropic".into(),
-                model: "claude-opus-4-6".into(),
+                model: CLAUDE_OPUS_MODEL_ID.into(),
                 tier: Tier::Premium,
                 context_window: 200_000,
                 max_output_tokens: 32000,
@@ -1647,7 +1653,7 @@ impl Config {
 
         // Infer provider from coordinator.model and agent.model prefixes as
         // final fallbacks.  This ensures that when a user sets e.g.
-        // `coordinator.model = "openrouter:anthropic/claude-sonnet-4-20250514"`
+        // `coordinator.model = "openrouter:anthropic/claude-sonnet-4-6"`
         // the OpenRouter provider cascades to ALL roles (eval, FLIP, verification)
         // without needing explicit `[models.default].provider` config.
         let coordinator_model_provider = self
@@ -3212,7 +3218,7 @@ impl Config {
                         ),
                         fix: format!(
                             "Add a [[model_registry]] entry for '{}', use a known ID \
-                             ({}), or use provider/model format (e.g., 'anthropic/claude-sonnet-4-20250514').",
+                             ({}), or use a tier name (e.g., 'haiku', 'sonnet', 'opus').",
                             m,
                             registry_ids.iter().copied().collect::<Vec<_>>().join(", ")
                         ),
@@ -3794,7 +3800,7 @@ model = "claude:haiku"
         // With no config, triage resolves via Fast tier → haiku registry entry
         let config = Config::default();
         let resolved = config.resolve_model_for_role(DispatchRole::Triage);
-        assert_eq!(resolved.model, "claude-haiku-4-5-20251001");
+        assert_eq!(resolved.model, CLAUDE_HAIKU_MODEL_ID);
         assert_eq!(resolved.provider, Some("anthropic".to_string()));
         assert!(resolved.registry_entry.is_some());
         assert_eq!(resolved.registry_entry.unwrap().id, "haiku");
@@ -3805,7 +3811,7 @@ model = "claude:haiku"
         // With no config, flip_inference resolves via Standard tier → sonnet registry entry
         let config = Config::default();
         let resolved = config.resolve_model_for_role(DispatchRole::FlipInference);
-        assert_eq!(resolved.model, "claude-sonnet-4-20250514");
+        assert_eq!(resolved.model, CLAUDE_SONNET_MODEL_ID);
         assert!(resolved.registry_entry.is_some());
     }
 
@@ -3813,14 +3819,14 @@ model = "claude:haiku"
     fn test_resolve_flip_comparison_default() {
         let config = Config::default();
         let resolved = config.resolve_model_for_role(DispatchRole::FlipComparison);
-        assert_eq!(resolved.model, "claude-haiku-4-5-20251001");
+        assert_eq!(resolved.model, CLAUDE_HAIKU_MODEL_ID);
     }
 
     #[test]
     fn test_resolve_verification_default() {
         let config = Config::default();
         let resolved = config.resolve_model_for_role(DispatchRole::Verification);
-        assert_eq!(resolved.model, "claude-opus-4-6");
+        assert_eq!(resolved.model, CLAUDE_OPUS_MODEL_ID);
     }
 
     #[test]
@@ -3843,7 +3849,7 @@ model = "claude:haiku"
         // Evaluator resolves via Standard tier → sonnet registry entry
         let config = Config::default();
         let resolved = config.resolve_model_for_role(DispatchRole::Evaluator);
-        assert_eq!(resolved.model, "claude-sonnet-4-20250514");
+        assert_eq!(resolved.model, CLAUDE_SONNET_MODEL_ID);
     }
 
     #[test]
@@ -3859,7 +3865,7 @@ model = "claude:haiku"
         });
 
         let resolved = config.resolve_model_for_role(DispatchRole::Triage);
-        assert_eq!(resolved.model, "claude-haiku-4-5-20251001");
+        assert_eq!(resolved.model, CLAUDE_HAIKU_MODEL_ID);
         assert_eq!(
             resolved.provider,
             Some("openrouter".to_string()),
@@ -3867,15 +3873,15 @@ model = "claude:haiku"
         );
 
         let resolved = config.resolve_model_for_role(DispatchRole::FlipInference);
-        assert_eq!(resolved.model, "claude-sonnet-4-20250514");
+        assert_eq!(resolved.model, CLAUDE_SONNET_MODEL_ID);
         assert_eq!(resolved.provider, Some("openrouter".to_string()));
 
         let resolved = config.resolve_model_for_role(DispatchRole::FlipComparison);
-        assert_eq!(resolved.model, "claude-haiku-4-5-20251001");
+        assert_eq!(resolved.model, CLAUDE_HAIKU_MODEL_ID);
         assert_eq!(resolved.provider, Some("openrouter".to_string()));
 
         let resolved = config.resolve_model_for_role(DispatchRole::Verification);
-        assert_eq!(resolved.model, "claude-opus-4-6");
+        assert_eq!(resolved.model, CLAUDE_OPUS_MODEL_ID);
         assert_eq!(resolved.provider, Some("openrouter".to_string()));
     }
 
@@ -3943,7 +3949,7 @@ model = "claude:haiku"
         });
 
         let resolved = config.resolve_model_for_role(DispatchRole::Evaluator);
-        assert_eq!(resolved.model, "claude-sonnet-4-20250514");
+        assert_eq!(resolved.model, CLAUDE_SONNET_MODEL_ID);
         assert_eq!(
             resolved.provider,
             Some("openrouter".to_string()),
@@ -4053,7 +4059,7 @@ model = "claude:haiku"
     fn test_resolve_tier_with_registry() {
         let config = Config::default();
         let resolved = config.resolve_tier(Tier::Fast).unwrap();
-        assert_eq!(resolved.model, "claude-haiku-4-5-20251001");
+        assert_eq!(resolved.model, CLAUDE_HAIKU_MODEL_ID);
         assert_eq!(resolved.provider, Some("anthropic".to_string()));
         assert!(resolved.registry_entry.is_some());
     }
@@ -4079,7 +4085,7 @@ model = "claude:haiku"
             endpoint: None,
         });
         let resolved = config.resolve_model_for_role(DispatchRole::Evaluator);
-        assert_eq!(resolved.model, "claude-opus-4-6");
+        assert_eq!(resolved.model, CLAUDE_OPUS_MODEL_ID);
     }
 
     #[test]
@@ -4264,7 +4270,7 @@ model = "claude:haiku"
                 name: "openrouter".to_string(),
                 provider: "openrouter".to_string(),
                 url: Some("https://openrouter.ai/api/v1".to_string()),
-                model: Some("anthropic/claude-sonnet-4-20250514".to_string()),
+                model: Some(format!("anthropic/{CLAUDE_SONNET_MODEL_ID}")),
                 api_key: Some("sk-or-test".to_string()),
                 api_key_file: None,
                 api_key_env: None,
@@ -4272,13 +4278,11 @@ model = "claude:haiku"
             context_window: None,
 }],
         };
+        let expected_model = format!("anthropic/{CLAUDE_SONNET_MODEL_ID}");
         let ep = endpoints.find_for_provider("openrouter").unwrap();
         assert_eq!(ep.url.as_deref(), Some("https://openrouter.ai/api/v1"));
         assert_eq!(ep.api_key.as_deref(), Some("sk-or-test"));
-        assert_eq!(
-            ep.model.as_deref(),
-            Some("anthropic/claude-sonnet-4-20250514")
-        );
+        assert_eq!(ep.model.as_deref(), Some(expected_model.as_str()));
     }
 
     // ---- EndpointsConfig::find_default tests ----
@@ -4855,7 +4859,7 @@ model = "claude:haiku"
             endpoint: None,
         });
         let resolved = config.resolve_model_for_role(DispatchRole::Evaluator);
-        assert_eq!(resolved.model, "claude-sonnet-4-20250514");
+        assert_eq!(resolved.model, CLAUDE_SONNET_MODEL_ID);
         assert!(resolved.registry_entry.is_some());
         assert_eq!(resolved.registry_entry.unwrap().id, "sonnet");
     }
@@ -4894,7 +4898,7 @@ model = "claude:haiku"
             endpoint: None,
         });
         let resolved = config.resolve_model_for_role(DispatchRole::Evaluator);
-        assert_eq!(resolved.model, "claude-sonnet-4-20250514");
+        assert_eq!(resolved.model, CLAUDE_SONNET_MODEL_ID);
         assert_eq!(resolved.provider, Some("openrouter".to_string()));
         assert!(resolved.registry_entry.is_some());
     }
@@ -5395,7 +5399,7 @@ provider = "openrouter"
         let resolved = config.resolve_tier(Tier::Premium).unwrap();
         // "claude" prefix → maps to "anthropic" native provider, but "opus"
         // is in the built-in registry, so registry should take precedence
-        assert_eq!(resolved.model, "claude-opus-4-6");
+        assert_eq!(resolved.model, CLAUDE_OPUS_MODEL_ID);
         assert_eq!(resolved.provider, Some("anthropic".to_string()));
         assert!(resolved.registry_entry.is_some());
     }

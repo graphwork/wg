@@ -11,6 +11,7 @@ use tempfile::TempDir;
 
 use workgraph::config::{
     Config, DispatchRole, ModelRegistryEntry, RoleModelConfig, Tier, TierConfig,
+    CLAUDE_HAIKU_MODEL_ID, CLAUDE_OPUS_MODEL_ID, CLAUDE_SONNET_MODEL_ID,
 };
 use workgraph::graph::{Node, Status, Task, WorkGraph, is_system_task};
 use workgraph::parser::save_graph;
@@ -154,7 +155,7 @@ fn role_with_explicit_model_ignores_tier() {
     let resolved = config.resolve_model_for_role(DispatchRole::Triage);
     assert_eq!(resolved.model, "my-explicit-model");
     // Premium tier would resolve to opus, so explicit model wins
-    assert_ne!(resolved.model, "claude-opus-4-6");
+    assert_ne!(resolved.model, CLAUDE_OPUS_MODEL_ID);
 }
 
 #[test]
@@ -167,7 +168,7 @@ fn role_with_tier_override_resolves_via_registry() {
         endpoint: None,
     });
     let resolved = config.resolve_model_for_role(DispatchRole::Evaluator);
-    assert_eq!(resolved.model, "claude-opus-4-6");
+    assert_eq!(resolved.model, CLAUDE_OPUS_MODEL_ID);
     assert!(resolved.registry_entry.is_some());
     assert_eq!(resolved.registry_entry.unwrap().id, "opus");
 }
@@ -181,9 +182,9 @@ fn all_roles_resolve_via_default_tier() {
         let resolved = config.resolve_model_for_role(*role);
         let tier = role.default_tier();
         let expected_model = match tier {
-            Tier::Fast => "claude-haiku-4-5-20251001",
-            Tier::Standard => "claude-sonnet-4-20250514",
-            Tier::Premium => "claude-opus-4-6",
+            Tier::Fast => CLAUDE_HAIKU_MODEL_ID,
+            Tier::Standard => CLAUDE_SONNET_MODEL_ID,
+            Tier::Premium => CLAUDE_OPUS_MODEL_ID,
         };
         assert_eq!(
             resolved.model, expected_model,
@@ -193,7 +194,7 @@ fn all_roles_resolve_via_default_tier() {
     }
     // Also test the Default role
     let resolved = config.resolve_model_for_role(DispatchRole::Default);
-    assert_eq!(resolved.model, "claude-sonnet-4-20250514"); // Standard tier
+    assert_eq!(resolved.model, CLAUDE_SONNET_MODEL_ID); // Standard tier
 }
 
 #[test]

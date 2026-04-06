@@ -13,6 +13,7 @@ use tempfile::TempDir;
 
 use workgraph::config::{
     Config, DispatchRole, EndpointConfig, EndpointsConfig, ModelRoutingConfig, RoleModelConfig,
+    CLAUDE_HAIKU_MODEL_ID, CLAUDE_OPUS_MODEL_ID, CLAUDE_SONNET_MODEL_ID,
 };
 use workgraph::executor::native::client::AnthropicClient;
 use workgraph::executor::native::openai_client::OpenAiClient;
@@ -529,7 +530,7 @@ fn test_fallback_chain_role_to_default_to_agent() {
     // 1. No config at all → resolves via Premium tier → opus registry entry
     let resolved = config.resolve_model_for_role(DispatchRole::Evolver);
     assert_eq!(
-        resolved.model, "claude-opus-4-6",
+        resolved.model, CLAUDE_OPUS_MODEL_ID,
         "Without any config, Evolver should resolve via Premium tier"
     );
     assert_eq!(resolved.provider, Some("anthropic".to_string()));
@@ -544,7 +545,7 @@ fn test_fallback_chain_role_to_default_to_agent() {
     });
     let resolved = config.resolve_model_for_role(DispatchRole::Evolver);
     assert_eq!(
-        resolved.model, "claude-opus-4-6",
+        resolved.model, CLAUDE_OPUS_MODEL_ID,
         "Tier resolution (step 4) takes priority over models.default (step 5)"
     );
     assert_eq!(
@@ -570,38 +571,38 @@ fn test_fallback_tier_defaults() {
     // Some roles have built-in tier defaults (between legacy and models.default)
     let config = Config::default();
 
-    // Triage → Fast tier → "claude-haiku-4-5-20251001"
+    // Triage → Fast tier → haiku
     assert_eq!(
         config.resolve_model_for_role(DispatchRole::Triage).model,
-        "claude-haiku-4-5-20251001"
+        CLAUDE_HAIKU_MODEL_ID
     );
 
-    // Compactor → Fast tier → "claude-haiku-4-5-20251001"
+    // Compactor → Fast tier → haiku
     assert_eq!(
         config.resolve_model_for_role(DispatchRole::Compactor).model,
-        "claude-haiku-4-5-20251001"
+        CLAUDE_HAIKU_MODEL_ID
     );
 
-    // FlipInference → Standard tier → "claude-sonnet-4-20250514"
+    // FlipInference → Standard tier → sonnet
     assert_eq!(
         config
             .resolve_model_for_role(DispatchRole::FlipInference)
             .model,
-        "claude-sonnet-4-20250514"
+        CLAUDE_SONNET_MODEL_ID
     );
 
-    // Verification → Premium tier → "claude-opus-4-6"
+    // Verification → Premium tier → opus
     assert_eq!(
         config
             .resolve_model_for_role(DispatchRole::Verification)
             .model,
-        "claude-opus-4-6"
+        CLAUDE_OPUS_MODEL_ID
     );
 
-    // Evaluator → Standard tier → "claude-sonnet-4-20250514"
+    // Evaluator → Standard tier → sonnet
     assert_eq!(
         config.resolve_model_for_role(DispatchRole::Evaluator).model,
-        "claude-sonnet-4-20250514"
+        CLAUDE_SONNET_MODEL_ID
     );
 }
 
@@ -789,29 +790,29 @@ fn test_all_dispatch_roles_with_full_config() {
 
     // Registry IDs get resolved to full API model names; non-registry models pass through
     let expected: &[(DispatchRole, &str, &str)] = &[
-        (DispatchRole::TaskAgent, "claude-opus-4-6", "anthropic"),
+        (DispatchRole::TaskAgent, CLAUDE_OPUS_MODEL_ID, "anthropic"),
         (
             DispatchRole::Evaluator,
-            "claude-sonnet-4-20250514",
+            CLAUDE_SONNET_MODEL_ID,
             "anthropic",
         ),
         (DispatchRole::FlipInference, "gpt-4o", "openai"),
         (
             DispatchRole::FlipComparison,
-            "claude-haiku-4-5-20251001",
+            CLAUDE_HAIKU_MODEL_ID,
             "anthropic",
         ),
         (DispatchRole::Assigner, "gpt-4o-mini", "openai"),
         (DispatchRole::Evolver, "deepseek-r1", "openrouter"),
-        (DispatchRole::Verification, "claude-opus-4-6", "anthropic"),
+        (DispatchRole::Verification, CLAUDE_OPUS_MODEL_ID, "anthropic"),
         (
             DispatchRole::Triage,
-            "claude-haiku-4-5-20251001",
+            CLAUDE_HAIKU_MODEL_ID,
             "anthropic",
         ),
         (
             DispatchRole::Creator,
-            "claude-sonnet-4-20250514",
+            CLAUDE_SONNET_MODEL_ID,
             "anthropic",
         ),
         (DispatchRole::Compactor, "gpt-4o-mini", "openai"),

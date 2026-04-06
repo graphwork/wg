@@ -500,13 +500,13 @@ fn call_openai_native(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{Config, DispatchRole, ModelRegistryEntry, Tier};
+    use crate::config::{Config, DispatchRole, ModelRegistryEntry, Tier, CLAUDE_HAIKU_MODEL_ID};
 
     #[test]
     fn test_lightweight_llm_dispatch_resolves_model() {
         let config = Config::default();
         let resolved = config.resolve_model_for_role(DispatchRole::Triage);
-        assert_eq!(resolved.model, "claude-haiku-4-5-20251001");
+        assert_eq!(resolved.model, CLAUDE_HAIKU_MODEL_ID);
         assert_eq!(
             resolved.provider,
             Some("anthropic".to_string()),
@@ -528,11 +528,13 @@ mod tests {
     #[test]
     fn test_lightweight_llm_parse_stream_json_output() {
         // Simulate Claude CLI stream-json output
-        let stdout = r#"{"type":"system","session_id":"abc","model":"claude-haiku-4-5-20251001"}
-{"type":"assistant","message":{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"text","text":"The answer is 42."}],"usage":{"input_tokens":100,"output_tokens":20}}}
-{"type":"result","total_cost_usd":0.0012,"usage":{"input_tokens":100,"output_tokens":20,"cache_read_input_tokens":50,"cache_creation_input_tokens":10}}
-"#;
-        let (text, token_usage) = parse_stream_json_output(stdout);
+        let stdout = format!(
+            r#"{{"type":"system","session_id":"abc","model":"{CLAUDE_HAIKU_MODEL_ID}"}}
+{{"type":"assistant","message":{{"id":"msg_1","type":"message","role":"assistant","content":[{{"type":"text","text":"The answer is 42."}}],"usage":{{"input_tokens":100,"output_tokens":20}}}}}}
+{{"type":"result","total_cost_usd":0.0012,"usage":{{"input_tokens":100,"output_tokens":20,"cache_read_input_tokens":50,"cache_creation_input_tokens":10}}}}
+"#
+        );
+        let (text, token_usage) = parse_stream_json_output(&stdout);
         assert_eq!(text, "The answer is 42.");
         let usage = token_usage.expect("should have token usage");
         assert!((usage.cost_usd - 0.0012).abs() < f64::EPSILON);
@@ -564,7 +566,7 @@ mod tests {
         let entry = ModelRegistryEntry {
             id: "haiku".to_string(),
             provider: "anthropic".to_string(),
-            model: "claude-haiku-4-5-20251001".to_string(),
+            model: CLAUDE_HAIKU_MODEL_ID.to_string(),
             tier: Tier::Fast,
             endpoint: None,
             context_window: 200_000,

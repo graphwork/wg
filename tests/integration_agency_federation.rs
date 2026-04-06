@@ -12,6 +12,7 @@ use workgraph::agency::{
     self, AgencyStore, Agent, Evaluation, EvaluationRef, Lineage, LocalStore, PerformanceRecord,
     Role, TradeoffConfig,
 };
+use workgraph::config::CLAUDE_OPUS_MODEL_ID;
 use workgraph::federation::{
     self, EntityFilter, FederationConfig, Remote, TransferOptions, TransferSummary,
 };
@@ -2362,7 +2363,7 @@ fn evaluation_dimensions_preserved() {
     eval.dimensions.insert("quality".to_string(), 0.9);
     eval.dimensions.insert("speed".to_string(), 0.8);
     eval.dimensions.insert("correctness".to_string(), 0.85);
-    eval.model = Some("claude-opus-4-6".to_string());
+    eval.model = Some(CLAUDE_OPUS_MODEL_ID.to_string());
     source.save_evaluation(&eval).unwrap();
 
     federation::transfer(&source, &target, &TransferOptions::default()).unwrap();
@@ -2374,7 +2375,7 @@ fn evaluation_dimensions_preserved() {
     assert_eq!(transferred.dimensions["quality"], 0.9);
     assert_eq!(transferred.dimensions["speed"], 0.8);
     assert_eq!(transferred.dimensions["correctness"], 0.85);
-    assert_eq!(transferred.model.as_deref(), Some("claude-opus-4-6"));
+    assert_eq!(transferred.model.as_deref(), Some(CLAUDE_OPUS_MODEL_ID));
 }
 
 /// Evaluations from two sources, partially overlapping, merged into target.

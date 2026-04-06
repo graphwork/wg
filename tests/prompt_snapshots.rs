@@ -8,6 +8,7 @@ use workgraph::agency::{
     self, EvaluatorInput, ResolvedSkill, Role, TradeoffConfig, render_evaluator_prompt,
     render_identity_prompt,
 };
+use workgraph::config::CLAUDE_SONNET_MODEL_ID;
 use workgraph::context_scope::ContextScope;
 use workgraph::graph::LogEntry;
 use workgraph::service::executor::{ScopeContext, TemplateVars, build_prompt};
@@ -79,7 +80,7 @@ fn test_template_vars() -> TemplateVars {
         task_identity: "## Agent Identity\n\nYou are a Builder agent.".into(),
         working_dir: "/home/user/project".into(),
         skills_preamble: "".into(),
-        model: "claude-sonnet-4-20250514".into(),
+        model: CLAUDE_SONNET_MODEL_ID.into(),
         task_loop_info: "".into(),
         task_verify: None,
         max_child_tasks: 10,

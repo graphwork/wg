@@ -16,8 +16,10 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
 
+use workgraph::config::CLAUDE_HAIKU_MODEL_ID;
+
 /// The cheap/fast model to use for integration tests.
-const HAIKU_MODEL: &str = "claude-haiku-4-5-20251001";
+const HAIKU_MODEL: &str = CLAUDE_HAIKU_MODEL_ID;
 
 // ---------------------------------------------------------------------------
 // Helpers
