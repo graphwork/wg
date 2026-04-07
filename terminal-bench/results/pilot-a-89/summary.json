@@ -1,0 +1,2436 @@
+{
+  "run_id": "pilot-a-89",
+  "condition": "A",
+  "timestamp": "2026-04-07T01:16:35.734524+00:00",
+  "model": "openrouter:minimax/minimax-m2.7",
+  "max_agents": 1,
+  "max_concurrent_trials": 4,
+  "total_wall_clock_s": 25783.88,
+  "model_verification": {
+    "requested_model": "openrouter:minimax/minimax-m2.7",
+    "all_agents_used_m2_7": true,
+    "no_claude_fallback": true,
+    "executor_type": "docker_agent_loop",
+    "wg_context_leaked": false
+  },
+  "stats": {
+    "total": 89,
+    "passed": 37,
+    "failed": 52,
+    "errors": 0,
+    "timed_out": 0,
+    "pass_rate": 0.4157,
+    "mean_time_s": 289.71,
+    "total_tokens": 18151787,
+    "total_input_tokens": 17634354,
+    "total_output_tokens": 517433,
+    "total_turns": 1598,
+    "total_cost_usd": 0.0,
+    "total_agents_spawned": 89
+  },
+  "trials": [
+    {
+      "trial_id": "adaptive-rejection-sampler__MuV74Gw",
+      "problem_id": "adaptive-rejection-sampler",
+      "condition": "A",
+      "replica": 0,
+      "model": "openrouter:minimax/minimax-m2.7",
+      "status": "failed",
+      "reward": 0.0,
+      "elapsed_s": 158.04,
+      "metrics": {
+        "total_input_tokens": 8194,
+        "total_output_tokens": 4515,
+        "total_cost_usd": 0.0,
+        "total_turns": 3,
+        "num_agents_spawned": 1
+      },
+      "verification": {
+        "env_sanitized": true,
+        "model_verified": true,
+        "condition_verified": true,
+        "agent_info": {
+          "name": "workgraph-condition-a",
+          "model": "minimax/minimax-m2.7",
+          "provider": "openrouter"
+        }
+      }
+    },
+    {
+      "trial_id": "bn-fit-modify__Ad6fd5V",
+      "problem_id": "bn-fit-modify",
+      "condition": "A",
+      "replica": 0,
+      "model": "openrouter:minimax/minimax-m2.7",
+      "status": "done",
+      "reward": 1.0,
+      "elapsed_s": 296.39,
+      "metrics": {
+        "total_input_tokens": 413319,
+        "total_output_tokens": 11458,
+        "total_cost_usd": 0.0,
+        "total_turns": 21,
+        "num_agents_spawned": 1
+      },
+      "verification": {
+        "env_sanitized": true,
+        "model_verified": true,
+        "condition_verified": true,
+        "agent_info": {
+          "name": "workgraph-condition-a",
+          "model": "minimax/minimax-m2.7",
+          "provider": "openrouter"
+        }
+      }
+    },
+    {
+      "trial_id": "break-filter-js-from-html__4F8daWo",
+      "problem_id": "break-filter-js-from-html",
+      "condition": "A",
+      "replica": 0,
+      "model": "openrouter:minimax/minimax-m2.7",
+      "status": "done",
+      "reward": 1.0,
+      "elapsed_s": 185.22,
+      "metrics": {
+        "total_input_tokens": 179656,
+        "total_output_tokens": 7293,
+        "total_cost_usd": 0.0,
+        "total_turns": 29,
+        "num_agents_spawned": 1
+      },
+      "verification": {
+        "env_sanitized": true,
+        "model_verified": true,
+        "condition_verified": true,
+        "agent_info": {
+          "name": "workgraph-condition-a",
+          "model": "minimax/minimax-m2.7",
+          "provider": "openrouter"
+        }
+      }
+    },
+    {
+      "trial_id": "build-cython-ext__Vo9Z3Yv",
+      "problem_id": "build-cython-ext",
+      "condition": "A",
+      "replica": 0,
+      "model": "openrouter:minimax/minimax-m2.7",
+      "status": "done",
+      "reward": 1.0,
+      "elapsed_s": 248.78,
+      "metrics": {
+        "total_input_tokens": 1236350,
+        "total_output_tokens": 6648,
+        "total_cost_usd": 0.0,
+        "total_turns": 50,
+        "num_agents_spawned": 1
+      },
+      "verification": {
+        "env_sanitized": true,
+        "model_verified": true,
+        "condition_verified": true,
+        "agent_info": {
+          "name": "workgraph-condition-a",
+          "model": "minimax/minimax-m2.7",
+          "provider": "openrouter"
+        }
+      }
+    },
+    {
+      "trial_id": "build-pmars__fZJLcYd",
+      "problem_id": "build-pmars",
+      "condition": "A",
+      "replica": 0,
+      "model": "openrouter:minimax/minimax-m2.7",
+      "status": "done",
+      "reward": 1.0,
+      "elapsed_s": 126.31,
+      "metrics": {
+        "total_input_tokens": 161478,
+        "total_output_tokens": 3294,
+        "total_cost_usd": 0.0,
+        "total_turns": 28,
+        "num_agents_spawned": 1
+      },
+      "verification": {
+        "env_sanitized": true,
+        "model_verified": true,
+        "condition_verified": true,
+        "agent_info": {
+          "name": "workgraph-condition-a",
+          "model": "minimax/minimax-m2.7",
+          "provider": "openrouter"
+        }
+      }
+    },
+    {
+      "trial_id": "build-pov-ray__pG7XeHR",
+      "problem_id": "build-pov-ray",
+      "condition": "A",
+      "replica": 0,
+      "model": "openrouter:minimax/minimax-m2.7",
+      "status": "done",
+      "reward": 1.0,
+      "elapsed_s": 109.09,
+      "metrics": {
+        "total_input_tokens": 212880,
+        "total_output_tokens": 2138,
+        "total_cost_usd": 0.0,
+        "total_turns": 23,
+        "num_agents_spawned": 1
+      },
+      "verification": {
+        "env_sanitized": true,
+        "model_verified": true,
+        "condition_verified": true,
+        "agent_info": {
+          "name": "workgraph-condition-a",
+          "model": "minimax/minimax-m2.7",
+          "provider": "openrouter"
+        }
+      }
+    },
+    {
+      "trial_id": "caffe-cifar-10__GHgfEk4",
+      "problem_id": "caffe-cifar-10",
+      "condition": "A",
+      "replica": 0,
+      "model": "openrouter:minimax/minimax-m2.7",
+      "status": "failed",
+      "reward": 0.0,
+      "elapsed_s": 896.59,
+      "metrics": {
+        "total_input_tokens": 203616,
+        "total_output_tokens": 2841,
+        "total_cost_usd": 0.0,
+        "total_turns": 41,
+        "num_agents_spawned": 1
+      },
+      "verification": {
+        "env_sanitized": true,
+        "model_verified": true,
+        "condition_verified": true,
+        "agent_info": {
+          "name": "workgraph-condition-a",
+          "model": "minimax/minimax-m2.7",
+          "provider": "openrouter"
+        }
+      }
+    },
+    {
+      "trial_id": "cancel-async-tasks__3Hf3hxa",
+      "problem_id": "cancel-async-tasks",
+      "condition": "A",
+      "replica": 0,
+      "model": "openrouter:minimax/minimax-m2.7",
+      "status": "done",
+      "reward": 1.0,
+      "elapsed_s": 188.03,
+      "metrics": {
+        "total_input_tokens": 57945,
+        "total_output_tokens": 5900,
+        "total_cost_usd": 0.0,
+        "total_turns": 13,
+        "num_agents_spawned": 1
+      },
+      "verification": {
+        "env_sanitized": true,
+        "model_verified": true,
+        "condition_verified": true,
+        "agent_info": {
+          "name": "workgraph-condition-a",
+          "model": "minimax/minimax-m2.7",
+          "provider": "openrouter"
+        }
+      }
+    },
+    {
+      "trial_id": "chess-best-move__zPQAYzk",
+      "problem_id": "chess-best-move",
+      "condition": "A",
+      "replica": 0,
+      "model": "openrouter:minimax/minimax-m2.7",
+      "status": "failed",
+      "reward": 0.0,
+      "elapsed_s": 923.13,
+      "metrics": {
+        "total_input_tokens": 0,
+        "total_output_tokens": 0,
+        "total_cost_usd": 0.0,
+        "total_turns": 0,
+        "num_agents_spawned": 1
+      },
+      "verification": {
+        "env_sanitized": true,
+        "model_verified": true,
+        "condition_verified": true,
+        "agent_info": {
+          "name": "workgraph-condition-a",
+          "model": "minimax/minimax-m2.7",
+          "provider": "openrouter"
+        }
+      }
+    },
+    {
+      "trial_id": "circuit-fibsqrt__wccJH2Q",
+      "problem_id": "circuit-fibsqrt",
+      "condition": "A",
+      "replica": 0,
+      "model": "openrouter:minimax/minimax-m2.7",
+      "status": "failed",
+      "reward": 0.0,
+      "elapsed_s": 129.3,
+      "metrics": {
+        "total_input_tokens": 4032,
+        "total_output_tokens": 4276,
+        "total_cost_usd": 0.0,
+        "total_turns": 2,
+        "num_agents_spawned": 1
+      },
+      "verification": {
+        "env_sanitized": true,
+        "model_verified": true,
+        "condition_verified": true,
+        "agent_info": {
+          "name": "workgraph-condition-a",
+          "model": "minimax/minimax-m2.7",
+          "provider": "openrouter"
+        }
+      }
+    },
+    {
+      "trial_id": "cobol-modernization__HZ3f6tu",
+      "problem_id": "cobol-modernization",
+      "condition": "A",
+      "replica": 0,
+      "model": "openrouter:minimax/minimax-m2.7",
+      "status": "done",
+      "reward": 1.0,
+      "elapsed_s": 414.48,
+      "metrics": {
+        "total_input_tokens": 547755,
+        "total_output_tokens": 12885,
+        "total_cost_usd": 0.0,
+        "total_turns": 50,
+        "num_agents_spawned": 1
+      },
+      "verification": {
+        "env_sanitized": true,
+        "model_verified": true,
+        "condition_verified": true,
+        "agent_info": {
+          "name": "workgraph-condition-a",
+          "model": "minimax/minimax-m2.7",
+          "provider": "openrouter"
+        }
+      }
+    },
+    {
+      "trial_id": "code-from-image__3Z2Xowa",
+      "problem_id": "code-from-image",
+      "condition": "A",
+      "replica": 0,
+      "model": "openrouter:minimax/minimax-m2.7",
+      "status": "done",
+      "reward": 1.0,
+      "elapsed_s": 81.69,
+      "metrics": {
+        "total_input_tokens": 67170,
+        "total_output_tokens": 2274,
+        "total_cost_usd": 0.0,
+        "total_turns": 12,
+        "num_agents_spawned": 1
+      },
+      "verification": {
+        "env_sanitized": true,
+        "model_verified": true,
+        "condition_verified": true,
+        "agent_info": {
+          "name": "workgraph-condition-a",
+          "model": "minimax/minimax-m2.7",
+          "provider": "openrouter"
+        }
+      }
+    },
+    {
+      "trial_id": "compile-compcert__kazRptc",
+      "problem_id": "compile-compcert",
+      "condition": "A",
+      "replica": 0,
+      "model": "openrouter:minimax/minimax-m2.7",
+      "status": "failed",
+      "reward": 0.0,
+      "elapsed_s": 1001.18,
+      "metrics": {
+        "total_input_tokens": 398192,
+        "total_output_tokens": 4555,
+        "total_cost_usd": 0.0,
+        "total_turns": 50,
+        "num_agents_spawned": 1
+      },
+      "verification": {
+        "env_sanitized": true,
+        "model_verified": true,
+        "condition_verified": true,
+        "agent_info": {
+          "name": "workgraph-condition-a",
+          "model": "minimax/minimax-m2.7",
+          "provider": "openrouter"
+        }
+      }
+    },
+    {
+      "trial_id": "configure-git-webserver__r9USoRX",
+      "problem_id": "configure-git-webserver",
+      "condition": "A",
+      "replica": 0,
+      "model": "openrouter:minimax/minimax-m2.7",
+      "status": "failed",
+      "reward": 0.0,
+      "elapsed_s": 349.97,
+      "metrics": {
+        "total_input_tokens": 274717,
+        "total_output_tokens": 4626,
+        "total_cost_usd": 0.0,
+        "total_turns": 50,
+        "num_agents_spawned": 1
+      },
+      "verification": {
+        "env_sanitized": true,
+        "model_verified": true,
+        "condition_verified": true,
+        "agent_info": {
+          "name": "workgraph-condition-a",
+          "model": "minimax/minimax-m2.7",
+          "provider": "openrouter"
+        }
+      }
+    },
+    {
+      "trial_id": "constraints-scheduling__QQZyFsn",
+      "problem_id": "constraints-scheduling",
+      "condition": "A",
+      "replica": 0,
+      "model": "openrouter:minimax/minimax-m2.7",
+      "status": "failed",
+      "reward": 0.0,
+      "elapsed_s": 77.18,
+      "metrics": {
+        "total_input_tokens": 12171,
+        "total_output_tokens": 2610,
+        "total_cost_usd": 0.0,
+        "total_turns": 4,
+        "num_agents_spawned": 1
+      },
+      "verification": {
+        "env_sanitized": true,
+        "model_verified": true,
+        "condition_verified": true,
+        "agent_info": {
+          "name": "workgraph-condition-a",
+          "model": "minimax/minimax-m2.7",
+          "provider": "openrouter"
+        }
+      }
+    },
+    {
+      "trial_id": "count-dataset-tokens__CVTadJ8",
+      "problem_id": "count-dataset-tokens",
+      "condition": "A",
+      "replica": 0,
+      "model": "openrouter:minimax/minimax-m2.7",
+      "status": "done",
+      "reward": 1.0,
+      "elapsed_s": 212.0,
+      "metrics": {
+        "total_input_tokens": 80783,
+        "total_output_tokens": 2752,
+        "total_cost_usd": 0.0,
+        "total_turns": 12,
+        "num_agents_spawned": 1
+      },
+      "verification": {
+        "env_sanitized": true,
+        "model_verified": true,
+        "condition_verified": true,
+        "agent_info": {
+          "name": "workgraph-condition-a",
+          "model": "minimax/minimax-m2.7",
+          "provider": "openrouter"
+        }
+      }
+    },
+    {
+      "trial_id": "crack-7z-hash__WGmp4do",
+      "problem_id": "crack-7z-hash",
+      "condition": "A",
+      "replica": 0,
+      "model": "openrouter:minimax/minimax-m2.7",
+      "status": "done",
+      "reward": 1.0,
+      "elapsed_s": 271.37,
+      "metrics": {
+        "total_input_tokens": 88563,
+        "total_output_tokens": 1078,
+        "total_cost_usd": 0.0,
+        "total_turns": 16,
+        "num_agents_spawned": 1
+      },
+      "verification": {
+        "env_sanitized": true,
+        "model_verified": true,
+        "condition_verified": true,
+        "agent_info": {
+          "name": "workgraph-condition-a",
+          "model": "minimax/minimax-m2.7",
+          "provider": "openrouter"
+        }
+      }
+    },
+    {
+      "trial_id": "custom-memory-heap-crash__unEwqbc",
+      "problem_id": "custom-memory-heap-crash",
+      "condition": "A",
+      "replica": 0,
+      "model": "openrouter:minimax/minimax-m2.7",
+      "status": "done",
+      "reward": 1.0,
+      "elapsed_s": 576.58,
+      "metrics": {
+        "total_input_tokens": 234019,
+        "total_output_tokens": 13154,
+        "total_cost_usd": 0.0,
+        "total_turns": 19,
+        "num_agents_spawned": 1
+      },
+      "verification": {
+        "env_sanitized": true,
+        "model_verified": true,
+        "condition_verified": true,
+        "agent_info": {
+          "name": "workgraph-condition-a",
+          "model": "minimax/minimax-m2.7",
+          "provider": "openrouter"
+        }
+      }
+    },
+    {
+      "trial_id": "db-wal-recovery__KbrNHK7",
+      "problem_id": "db-wal-recovery",
+      "condition": "A",
+      "replica": 0,
+      "model": "openrouter:minimax/minimax-m2.7",
+      "status": "failed",
+      "reward": 0.0,
+      "elapsed_s": 1055.29,
+      "metrics": {
+        "total_input_tokens": 411643,
+        "total_output_tokens": 5228,
+        "total_cost_usd": 0.0,
+        "total_turns": 50,
+        "num_agents_spawned": 1
+      },
+      "verification": {
+        "env_sanitized": true,
+        "model_verified": true,
+        "condition_verified": true,
+        "agent_info": {
+          "name": "workgraph-condition-a",
+          "model": "minimax/minimax-m2.7",
+          "provider": "openrouter"
+        }
+      }
+    },
+    {
+      "trial_id": "distribution-search__PjYmpUy",
+      "problem_id": "distribution-search",
+      "condition": "A",
+      "replica": 0,
+      "model": "openrouter:minimax/minimax-m2.7",
+      "status": "done",
+      "reward": 1.0,
+      "elapsed_s": 294.88,
+      "metrics": {
+        "total_input_tokens": 281397,
+        "total_output_tokens": 20223,
+        "total_cost_usd": 0.0,
+        "total_turns": 19,
+        "num_agents_spawned": 1
+      },
+      "verification": {
+        "env_sanitized": true,
+        "model_verified": true,
+        "condition_verified": true,
+        "agent_info": {
+          "name": "workgraph-condition-a",
+          "model": "minimax/minimax-m2.7",
+          "provider": "openrouter"
+        }
+      }
+    },
+    {
+      "trial_id": "dna-assembly__6LMwMaf",
+      "problem_id": "dna-assembly",
+      "condition": "A",
+      "replica": 0,
+      "model": "openrouter:minimax/minimax-m2.7",
+      "status": "failed",
+      "reward": 0.0,
+      "elapsed_s": 172.7,
+      "metrics": {
+        "total_input_tokens": 767,
+        "total_output_tokens": 46,
+        "total_cost_usd": 0.0,
+        "total_turns": 2,
+        "num_agents_spawned": 1
+      },
+      "verification": {
+        "env_sanitized": true,
+        "model_verified": true,
+        "condition_verified": true,
+        "agent_info": {
+          "name": "workgraph-condition-a",
+          "model": "minimax/minimax-m2.7",
+          "provider": "openrouter"
+        }
+      }
+    },
+    {
+      "trial_id": "dna-insert__NTh4HhH",
+      "problem_id": "dna-insert",
+      "condition": "A",
+      "replica": 0,
+      "model": "openrouter:minimax/minimax-m2.7",
+      "status": "failed",
+      "reward": 0.0,
+      "elapsed_s": 171.93,
+      "metrics": {
+        "total_input_tokens": 17196,
+        "total_output_tokens": 2371,
+        "total_cost_usd": 0.0,
+        "total_turns": 5,
+        "num_agents_spawned": 1
+      },
+      "verification": {
+        "env_sanitized": true,
+        "model_verified": true,
+        "condition_verified": true,
+        "agent_info": {
+          "name": "workgraph-condition-a",
+          "model": "minimax/minimax-m2.7",
+          "provider": "openrouter"
+        }
+      }
+    },
+    {
+      "trial_id": "extract-elf__54SBMqM",
+      "problem_id": "extract-elf",
+      "condition": "A",
+      "replica": 0,
+      "model": "openrouter:minimax/minimax-m2.7",
+      "status": "done",
+      "reward": 1.0,
+      "elapsed_s": 224.15,
+      "metrics": {
+        "total_input_tokens": 478740,
+        "total_output_tokens": 10801,
+        "total_cost_usd": 0.0,
+        "total_turns": 22,
+        "num_agents_spawned": 1
+      },
+      "verification": {
+        "env_sanitized": true,
+        "model_verified": true,
+        "condition_verified": true,
+        "agent_info": {
+          "name": "workgraph-condition-a",
+          "model": "minimax/minimax-m2.7",
+          "provider": "openrouter"
+        }
+      }
+    },
+    {
+      "trial_id": "extract-moves-from-video__CmCStuh",
+      "problem_id": "extract-moves-from-video",
+      "condition": "A",
+      "replica": 0,
+      "model": "openrouter:minimax/minimax-m2.7",
+      "status": "failed",
+      "reward": 0.0,
+      "elapsed_s": 798.12,
+      "metrics": {
+        "total_input_tokens": 345678,
+        "total_output_tokens": 15964,
+        "total_cost_usd": 0.0,
+        "total_turns": 35,
+        "num_agents_spawned": 1
+      },
+      "verification": {
+        "env_sanitized": true,
+        "model_verified": true,
+        "condition_verified": true,
+        "agent_info": {
+          "name": "workgraph-condition-a",
+          "model": "minimax/minimax-m2.7",
+          "provider": "openrouter"
+        }
+      }
+    },
+    {
+      "trial_id": "feal-differential-cryptanalysis__hBND9BS",
+      "problem_id": "feal-differential-cryptanalysis",
+      "condition": "A",
+      "replica": 0,
+      "model": "openrouter:minimax/minimax-m2.7",
+      "status": "failed",
+      "reward": 0.0,
+      "elapsed_s": 128.53,
+      "metrics": {
+        "total_input_tokens": 1619,
+        "total_output_tokens": 4143,
+        "total_cost_usd": 0.0,
+        "total_turns": 2,
+        "num_agents_spawned": 1
+      },
+      "verification": {
+        "env_sanitized": true,
+        "model_verified": true,
+        "condition_verified": true,
+        "agent_info": {
+          "name": "workgraph-condition-a",
+          "model": "minimax/minimax-m2.7",
+          "provider": "openrouter"
+        }
+      }
+    },
+    {
+      "trial_id": "feal-linear-cryptanalysis__W7nYWei",
+      "problem_id": "feal-linear-cryptanalysis",
+      "condition": "A",
+      "replica": 0,
+      "model": "openrouter:minimax/minimax-m2.7",
+      "status": "failed",
+      "reward": 0.0,
+      "elapsed_s": 115.64,
+      "metrics": {
+        "total_input_tokens": 4785,
+        "total_output_tokens": 4221,
+        "total_cost_usd": 0.0,
+        "total_turns": 2,
+        "num_agents_spawned": 1
+      },
+      "verification": {
+        "env_sanitized": true,
+        "model_verified": true,
+        "condition_verified": true,
+        "agent_info": {
+          "name": "workgraph-condition-a",
+          "model": "minimax/minimax-m2.7",
+          "provider": "openrouter"
+        }
+      }
+    },
+    {
+      "trial_id": "filter-js-from-html__k44AbHz",
+      "problem_id": "filter-js-from-html",
+      "condition": "A",
+      "replica": 0,
+      "model": "openrouter:minimax/minimax-m2.7",
+      "status": "failed",
+      "reward": 0.0,
+      "elapsed_s": 458.16,
+      "metrics": {
+        "total_input_tokens": 280440,
+        "total_output_tokens": 15346,
+        "total_cost_usd": 0.0,
+        "total_turns": 25,
+        "num_agents_spawned": 1
+      },
+      "verification": {
+        "env_sanitized": true,
+        "model_verified": true,
+        "condition_verified": true,
+        "agent_info": {
+          "name": "workgraph-condition-a",
+          "model": "minimax/minimax-m2.7",
+          "provider": "openrouter"
+        }
+      }
+    },
+    {
+      "trial_id": "financial-document-processor__ScnBdQk",
+      "problem_id": "financial-document-processor",
+      "condition": "A",
+      "replica": 0,
+      "model": "openrouter:minimax/minimax-m2.7",
+      "status": "failed",
+      "reward": 0.0,
+      "elapsed_s": 239.08,
+      "metrics": {
+        "total_input_tokens": 16436,
+        "total_output_tokens": 1530,
+        "total_cost_usd": 0.0,
+        "total_turns": 9,
+        "num_agents_spawned": 1
+      },
+      "verification": {
+        "env_sanitized": true,
+        "model_verified": true,
+        "condition_verified": true,
+        "agent_info": {
+          "name": "workgraph-condition-a",
+          "model": "minimax/minimax-m2.7",
+          "provider": "openrouter"
+        }
+      }
+    },
+    {
+      "trial_id": "fix-code-vulnerability__QnHCddr",
+      "problem_id": "fix-code-vulnerability",
+      "condition": "A",
+      "replica": 0,
+      "model": "openrouter:minimax/minimax-m2.7",
+      "status": "failed",
+      "reward": 0.0,
+      "elapsed_s": 261.7,
+      "metrics": {
+        "total_input_tokens": 185991,
+        "total_output_tokens": 1802,
+        "total_cost_usd": 0.0,
+        "total_turns": 16,
+        "num_agents_spawned": 1
+      },
+      "verification": {
+        "env_sanitized": true,
+        "model_verified": true,
+        "condition_verified": true,
+        "agent_info": {
+          "name": "workgraph-condition-a",
+          "model": "minimax/minimax-m2.7",
+          "provider": "openrouter"
+        }
+      }
+    },
+    {
+      "trial_id": "fix-git__W4TaVCP",
+      "problem_id": "fix-git",
+      "condition": "A",
+      "replica": 0,
+      "model": "openrouter:minimax/minimax-m2.7",
+      "status": "done",
+      "reward": 1.0,
+      "elapsed_s": 59.47,
+      "metrics": {
+        "total_input_tokens": 19082,
+        "total_output_tokens": 1563,
+        "total_cost_usd": 0.0,
+        "total_turns": 10,
+        "num_agents_spawned": 1
+      },
+      "verification": {
+        "env_sanitized": true,
+        "model_verified": true,
+        "condition_verified": true,
+        "agent_info": {
+          "name": "workgraph-condition-a",
+          "model": "minimax/minimax-m2.7",
+          "provider": "openrouter"
+        }
+      }
+    },
+    {
+      "trial_id": "fix-ocaml-gc__X539RRj",
+      "problem_id": "fix-ocaml-gc",
+      "condition": "A",
+      "replica": 0,
+      "model": "openrouter:minimax/minimax-m2.7",
+      "status": "failed",
+      "reward": 0.0,
+      "elapsed_s": 476.61,
+      "metrics": {
+        "total_input_tokens": 689024,
+        "total_output_tokens": 13941,
+        "total_cost_usd": 0.0,
+        "total_turns": 30,
+        "num_agents_spawned": 1
+      },
+      "verification": {
+        "env_sanitized": true,
+        "model_verified": true,
+        "condition_verified": true,
+        "agent_info": {
+          "name": "workgraph-condition-a",
+          "model": "minimax/minimax-m2.7",
+          "provider": "openrouter"
+        }
+      }
+    },
+    {
+      "trial_id": "gcode-to-text__jz5PDDp",
+      "problem_id": "gcode-to-text",
+      "condition": "A",
+      "replica": 0,
+      "model": "openrouter:minimax/minimax-m2.7",
+      "status": "failed",
+      "reward": 0.0,
+      "elapsed_s": 167.17,
+      "metrics": {
+        "total_input_tokens": 387,
+        "total_output_tokens": 61,
+        "total_cost_usd": 0.0,
+        "total_turns": 2,
+        "num_agents_spawned": 1
+      },
+      "verification": {
+        "env_sanitized": true,
+        "model_verified": true,
+        "condition_verified": true,
+        "agent_info": {
+          "name": "workgraph-condition-a",
+          "model": "minimax/minimax-m2.7",
+          "provider": "openrouter"
+        }
+      }
+    },
+    {
+      "trial_id": "git-leak-recovery__8KAsNHE",
+      "problem_id": "git-leak-recovery",
+      "condition": "A",
+      "replica": 0,
+      "model": "openrouter:minimax/minimax-m2.7",
+      "status": "done",
+      "reward": 1.0,
+      "elapsed_s": 62.44,
+      "metrics": {
+        "total_input_tokens": 16400,
+        "total_output_tokens": 1687,
+        "total_cost_usd": 0.0,
+        "total_turns": 10,
+        "num_agents_spawned": 1
+      },
+      "verification": {
+        "env_sanitized": true,
+        "model_verified": true,
+        "condition_verified": true,
+        "agent_info": {
+          "name": "workgraph-condition-a",
+          "model": "minimax/minimax-m2.7",
+          "provider": "openrouter"
+        }
+      }
+    },
+    {
+      "trial_id": "git-multibranch__yyQxnhf",
+      "problem_id": "git-multibranch",
+      "condition": "A",
+      "replica": 0,
+      "model": "openrouter:minimax/minimax-m2.7",
+      "status": "done",
+      "reward": 1.0,
+      "elapsed_s": 209.69,
+      "metrics": {
+        "total_input_tokens": 166224,
+        "total_output_tokens": 4013,
+        "total_cost_usd": 0.0,
+        "total_turns": 41,
+        "num_agents_spawned": 1
+      },
+      "verification": {
+        "env_sanitized": true,
+        "model_verified": true,
+        "condition_verified": true,
+        "agent_info": {
+          "name": "workgraph-condition-a",
+          "model": "minimax/minimax-m2.7",
+          "provider": "openrouter"
+        }
+      }
+    },
+    {
+      "trial_id": "gpt2-codegolf__9Twa7jd",
+      "problem_id": "gpt2-codegolf",
+      "condition": "A",
+      "replica": 0,
+      "model": "openrouter:minimax/minimax-m2.7",
+      "status": "failed",
+      "reward": 0.0,
+      "elapsed_s": 325.98,
+      "metrics": {
+        "total_input_tokens": 379907,
+        "total_output_tokens": 23273,
+        "total_cost_usd": 0.0,
+        "total_turns": 22,
+        "num_agents_spawned": 1
+      },
+      "verification": {
+        "env_sanitized": true,
+        "model_verified": true,
+        "condition_verified": true,
+        "agent_info": {
+          "name": "workgraph-condition-a",
+          "model": "minimax/minimax-m2.7",
+          "provider": "openrouter"
+        }
+      }
+    },
+    {
+      "trial_id": "headless-terminal__4qZ2tre",
+      "problem_id": "headless-terminal",
+      "condition": "A",
+      "replica": 0,
+      "model": "openrouter:minimax/minimax-m2.7",
+      "status": "failed",
+      "reward": 0.0,
+      "elapsed_s": 134.29,
+      "metrics": {
+        "total_input_tokens": 3410,
+        "total_output_tokens": 4310,
+        "total_cost_usd": 0.0,
+        "total_turns": 5,
+        "num_agents_spawned": 1
+      },
+      "verification": {
+        "env_sanitized": true,
+        "model_verified": true,
+        "condition_verified": true,
+        "agent_info": {
+          "name": "workgraph-condition-a",
+          "model": "minimax/minimax-m2.7",
+          "provider": "openrouter"
+        }
+      }
+    },
+    {
+      "trial_id": "hf-model-inference__gJbJjj5",
+      "problem_id": "hf-model-inference",
+      "condition": "A",
+      "replica": 0,
+      "model": "openrouter:minimax/minimax-m2.7",
+      "status": "done",
+      "reward": 1.0,
+      "elapsed_s": 65.99,
+      "metrics": {
+        "total_input_tokens": 14000,
+        "total_output_tokens": 1832,
+        "total_cost_usd": 0.0,
+        "total_turns": 8,
+        "num_agents_spawned": 1
+      },
+      "verification": {
+        "env_sanitized": true,
+        "model_verified": true,
+        "condition_verified": true,
+        "agent_info": {
+          "name": "workgraph-condition-a",
+          "model": "minimax/minimax-m2.7",
+          "provider": "openrouter"
+        }
+      }
+    },
+    {
+      "trial_id": "install-windows-3.11__roWdyDK",
+      "problem_id": "install-windows-3.11",
+      "condition": "A",
+      "replica": 0,
+      "model": "openrouter:minimax/minimax-m2.7",
+      "status": "failed",
+      "reward": 0.0,
+      "elapsed_s": 586.41,
+      "metrics": {
+        "total_input_tokens": 405375,
+        "total_output_tokens": 8137,
+        "total_cost_usd": 0.0,
+        "total_turns": 42,
+        "num_agents_spawned": 1
+      },
+      "verification": {
+        "env_sanitized": true,
+        "model_verified": true,
+        "condition_verified": true,
+        "agent_info": {
+          "name": "workgraph-condition-a",
+          "model": "minimax/minimax-m2.7",
+          "provider": "openrouter"
+        }
+      }
+    },
+    {
+      "trial_id": "kv-store-grpc__rGDjDSC",
+      "problem_id": "kv-store-grpc",
+      "condition": "A",
+      "replica": 0,
+      "model": "openrouter:minimax/minimax-m2.7",
+      "status": "done",
+      "reward": 1.0,
+      "elapsed_s": 70.63,
+      "metrics": {
+        "total_input_tokens": 45658,
+        "total_output_tokens": 2102,
+        "total_cost_usd": 0.0,
+        "total_turns": 15,
+        "num_agents_spawned": 1
+      },
+      "verification": {
+        "env_sanitized": true,
+        "model_verified": true,
+        "condition_verified": true,
+        "agent_info": {
+          "name": "workgraph-condition-a",
+          "model": "minimax/minimax-m2.7",
+          "provider": "openrouter"
+        }
+      }
+    },
+    {
+      "trial_id": "large-scale-text-editing__ZfnHWda",
+      "problem_id": "large-scale-text-editing",
+      "condition": "A",
+      "replica": 0,
+      "model": "openrouter:minimax/minimax-m2.7",
+      "status": "done",
+      "reward": 1.0,
+      "elapsed_s": 259.06,
+      "metrics": {
+        "total_input_tokens": 124768,
+        "total_output_tokens": 5237,
+        "total_cost_usd": 0.0,
+        "total_turns": 23,
+        "num_agents_spawned": 1
+      },
+      "verification": {
+        "env_sanitized": true,
+        "model_verified": true,
+        "condition_verified": true,
+        "agent_info": {
+          "name": "workgraph-condition-a",
+          "model": "minimax/minimax-m2.7",
+          "provider": "openrouter"
+        }
+      }
+    },
+    {
+      "trial_id": "largest-eigenval__hkN4G7F",
+      "problem_id": "largest-eigenval",
+      "condition": "A",
+      "replica": 0,
+      "model": "openrouter:minimax/minimax-m2.7",
+      "status": "failed",
+      "reward": 0.0,
+      "elapsed_s": 218.05,
+      "metrics": {
+        "total_input_tokens": 305492,
+        "total_output_tokens": 12013,
+        "total_cost_usd": 0.0,
+        "total_turns": 32,
+        "num_agents_spawned": 1
+      },
+      "verification": {
+        "env_sanitized": true,
+        "model_verified": true,
+        "condition_verified": true,
+        "agent_info": {
+          "name": "workgraph-condition-a",
+          "model": "minimax/minimax-m2.7",
+          "provider": "openrouter"
+        }
+      }
+    },
+    {
+      "trial_id": "llm-inference-batching-scheduler__6BpbLHU",
+      "problem_id": "llm-inference-batching-scheduler",
+      "condition": "A",
+      "replica": 0,
+      "model": "openrouter:minimax/minimax-m2.7",
+      "status": "done",
+      "reward": 1.0,
+      "elapsed_s": 377.92,
+      "metrics": {
+        "total_input_tokens": 834407,
+        "total_output_tokens": 29463,
+        "total_cost_usd": 0.0,
+        "total_turns": 34,
+        "num_agents_spawned": 1
+      },
+      "verification": {
+        "env_sanitized": true,
+        "model_verified": true,
+        "condition_verified": true,
+        "agent_info": {
+          "name": "workgraph-condition-a",
+          "model": "minimax/minimax-m2.7",
+          "provider": "openrouter"
+        }
+      }
+    },
+    {
+      "trial_id": "log-summary-date-ranges__VZver24",
+      "problem_id": "log-summary-date-ranges",
+      "condition": "A",
+      "replica": 0,
+      "model": "openrouter:minimax/minimax-m2.7",
+      "status": "done",
+      "reward": 1.0,
+      "elapsed_s": 55.49,
+      "metrics": {
+        "total_input_tokens": 44039,
+        "total_output_tokens": 2342,
+        "total_cost_usd": 0.0,
+        "total_turns": 7,
+        "num_agents_spawned": 1
+      },
+      "verification": {
+        "env_sanitized": true,
+        "model_verified": true,
+        "condition_verified": true,
+        "agent_info": {
+          "name": "workgraph-condition-a",
+          "model": "minimax/minimax-m2.7",
+          "provider": "openrouter"
+        }
+      }
+    },
+    {
+      "trial_id": "mailman__NET7wKa",
+      "problem_id": "mailman",
+      "condition": "A",
+      "replica": 0,
+      "model": "openrouter:minimax/minimax-m2.7",
+      "status": "done",
+      "reward": 1.0,
+      "elapsed_s": 246.22,
+      "metrics": {
+        "total_input_tokens": 817199,
+        "total_output_tokens": 9969,
+        "total_cost_usd": 0.0,
+        "total_turns": 50,
+        "num_agents_spawned": 1
+      },
+      "verification": {
+        "env_sanitized": true,
+        "model_verified": true,
+        "condition_verified": true,
+        "agent_info": {
+          "name": "workgraph-condition-a",
+          "model": "minimax/minimax-m2.7",
+          "provider": "openrouter"
+        }
+      }
+    },
+    {
+      "trial_id": "make-doom-for-mips__ktGby69",
+      "problem_id": "make-doom-for-mips",
+      "condition": "A",
+      "replica": 0,
+      "model": "openrouter:minimax/minimax-m2.7",
+      "status": "failed",
+      "reward": 0.0,
+      "elapsed_s": 380.06,
+      "metrics": {
+        "total_input_tokens": 2189894,
+        "total_output_tokens": 12961,
+        "total_cost_usd": 0.0,
+        "total_turns": 50,
+        "num_agents_spawned": 1
+      },
+      "verification": {
+        "env_sanitized": true,
+        "model_verified": true,
+        "condition_verified": true,
+        "agent_info": {
+          "name": "workgraph-condition-a",
+          "model": "minimax/minimax-m2.7",
+          "provider": "openrouter"
+        }
+      }
+    },
+    {
+      "trial_id": "make-mips-interpreter__aBR6LrF",
+      "problem_id": "make-mips-interpreter",
+      "condition": "A",
+      "replica": 0,
+      "model": "openrouter:minimax/minimax-m2.7",
+      "status": "failed",
+      "reward": 0.0,
+      "elapsed_s": 236.83,
+      "metrics": {
+        "total_input_tokens": 263230,
+        "total_output_tokens": 1465,
+        "total_cost_usd": 0.0,
+        "total_turns": 16,
+        "num_agents_spawned": 1
+      },
+      "verification": {
+        "env_sanitized": true,
+        "model_verified": true,
+        "condition_verified": true,
+        "agent_info": {
+          "name": "workgraph-condition-a",
+          "model": "minimax/minimax-m2.7",
+          "provider": "openrouter"
+        }
+      }
+    },
+    {
+      "trial_id": "mcmc-sampling-stan__vkGJZBr",
+      "problem_id": "mcmc-sampling-stan",
+      "condition": "A",
+      "replica": 0,
+      "model": "openrouter:minimax/minimax-m2.7",
+      "status": "failed",
+      "reward": 0.0,
+      "elapsed_s": 192.56,
+      "metrics": {
+        "total_input_tokens": 684,
+        "total_output_tokens": 270,
+        "total_cost_usd": 0.0,
+        "total_turns": 2,
+        "num_agents_spawned": 1
+      },
+      "verification": {
+        "env_sanitized": true,
+        "model_verified": true,
+        "condition_verified": true,
+        "agent_info": {
+          "name": "workgraph-condition-a",
+          "model": "minimax/minimax-m2.7",
+          "provider": "openrouter"
+        }
+      }
+    },
+    {
+      "trial_id": "merge-diff-arc-agi-task__Vh8hSNj",
+      "problem_id": "merge-diff-arc-agi-task",
+      "condition": "A",
+      "replica": 0,
+      "model": "openrouter:minimax/minimax-m2.7",
+      "status": "done",
+      "reward": 1.0,
+      "elapsed_s": 275.18,
+      "metrics": {
+        "total_input_tokens": 444379,
+        "total_output_tokens": 14498,
+        "total_cost_usd": 0.0,
+        "total_turns": 27,
+        "num_agents_spawned": 1
+      },
+      "verification": {
+        "env_sanitized": true,
+        "model_verified": true,
+        "condition_verified": true,
+        "agent_info": {
+          "name": "workgraph-condition-a",
+          "model": "minimax/minimax-m2.7",
+          "provider": "openrouter"
+        }
+      }
+    },
+    {
+      "trial_id": "model-extraction-relu-logits__xpZj47u",
+      "problem_id": "model-extraction-relu-logits",
+      "condition": "A",
+      "replica": 0,
+      "model": "openrouter:minimax/minimax-m2.7",
+      "status": "failed",
+      "reward": 0.0,
+      "elapsed_s": 301.35,
+      "metrics": {
+        "total_input_tokens": 35932,
+        "total_output_tokens": 6010,
+        "total_cost_usd": 0.0,
+        "total_turns": 11,
+        "num_agents_spawned": 1
+      },
+      "verification": {
+        "env_sanitized": true,
+        "model_verified": true,
+        "condition_verified": true,
+        "agent_info": {
+          "name": "workgraph-condition-a",
+          "model": "minimax/minimax-m2.7",
+          "provider": "openrouter"
+        }
+      }
+    },
+    {
+      "trial_id": "modernize-scientific-stack__52gEahR",
+      "problem_id": "modernize-scientific-stack",
+      "condition": "A",
+      "replica": 0,
+      "model": "openrouter:minimax/minimax-m2.7",
+      "status": "done",
+      "reward": 1.0,
+      "elapsed_s": 300.41,
+      "metrics": {
+        "total_input_tokens": 16733,
+        "total_output_tokens": 1915,
+        "total_cost_usd": 0.0,
+        "total_turns": 6,
+        "num_agents_spawned": 1
+      },
+      "verification": {
+        "env_sanitized": true,
+        "model_verified": true,
+        "condition_verified": true,
+        "agent_info": {
+          "name": "workgraph-condition-a",
+          "model": "minimax/minimax-m2.7",
+          "provider": "openrouter"
+        }
+      }
+    },
+    {
+      "trial_id": "mteb-leaderboard__QSseJtK",
+      "problem_id": "mteb-leaderboard",
+      "condition": "A",
+      "replica": 0,
+      "model": "openrouter:minimax/minimax-m2.7",
+      "status": "failed",
+      "reward": 0.0,
+      "elapsed_s": 565.67,
+      "metrics": {
+        "total_input_tokens": 420971,
+        "total_output_tokens": 3809,
+        "total_cost_usd": 0.0,
+        "total_turns": 45,
+        "num_agents_spawned": 1
+      },
+      "verification": {
+        "env_sanitized": true,
+        "model_verified": true,
+        "condition_verified": true,
+        "agent_info": {
+          "name": "workgraph-condition-a",
+          "model": "minimax/minimax-m2.7",
+          "provider": "openrouter"
+        }
+      }
+    },
+    {
+      "trial_id": "mteb-retrieve__V2P4VDb",
+      "problem_id": "mteb-retrieve",
+      "condition": "A",
+      "replica": 0,
+      "model": "openrouter:minimax/minimax-m2.7",
+      "status": "failed",
+      "reward": 0.0,
+      "elapsed_s": 271.73,
+      "metrics": {
+        "total_input_tokens": 6995,
+        "total_output_tokens": 1089,
+        "total_cost_usd": 0.0,
+        "total_turns": 5,
+        "num_agents_spawned": 1
+      },
+      "verification": {
+        "env_sanitized": true,
+        "model_verified": true,
+        "condition_verified": true,
+        "agent_info": {
+          "name": "workgraph-condition-a",
+          "model": "minimax/minimax-m2.7",
+          "provider": "openrouter"
+        }
+      }
+    },
+    {
+      "trial_id": "multi-source-data-merger__VgqRKD8",
+      "problem_id": "multi-source-data-merger",
+      "condition": "A",
+      "replica": 0,
+      "model": "openrouter:minimax/minimax-m2.7",
+      "status": "done",
+      "reward": 1.0,
+      "elapsed_s": 70.4,
+      "metrics": {
+        "total_input_tokens": 21636,
+        "total_output_tokens": 2846,
+        "total_cost_usd": 0.0,
+        "total_turns": 7,
+        "num_agents_spawned": 1
+      },
+      "verification": {
+        "env_sanitized": true,
+        "model_verified": true,
+        "condition_verified": true,
+        "agent_info": {
+          "name": "workgraph-condition-a",
+          "model": "minimax/minimax-m2.7",
+          "provider": "openrouter"
+        }
+      }
+    },
+    {
+      "trial_id": "nginx-request-logging__8D8EUJD",
+      "problem_id": "nginx-request-logging",
+      "condition": "A",
+      "replica": 0,
+      "model": "openrouter:minimax/minimax-m2.7",
+      "status": "done",
+      "reward": 1.0,
+      "elapsed_s": 54.49,
+      "metrics": {
+        "total_input_tokens": 5729,
+        "total_output_tokens": 1720,
+        "total_cost_usd": 0.0,
+        "total_turns": 3,
+        "num_agents_spawned": 1
+      },
+      "verification": {
+        "env_sanitized": true,
+        "model_verified": true,
+        "condition_verified": true,
+        "agent_info": {
+          "name": "workgraph-condition-a",
+          "model": "minimax/minimax-m2.7",
+          "provider": "openrouter"
+        }
+      }
+    },
+    {
+      "trial_id": "openssl-selfsigned-cert__PMKKgCV",
+      "problem_id": "openssl-selfsigned-cert",
+      "condition": "A",
+      "replica": 0,
+      "model": "openrouter:minimax/minimax-m2.7",
+      "status": "done",
+      "reward": 1.0,
+      "elapsed_s": 218.67,
+      "metrics": {
+        "total_input_tokens": 12415,
+        "total_output_tokens": 1673,
+        "total_cost_usd": 0.0,
+        "total_turns": 8,
+        "num_agents_spawned": 1
+      },
+      "verification": {
+        "env_sanitized": true,
+        "model_verified": true,
+        "condition_verified": true,
+        "agent_info": {
+          "name": "workgraph-condition-a",
+          "model": "minimax/minimax-m2.7",
+          "provider": "openrouter"
+        }
+      }
+    },
+    {
+      "trial_id": "overfull-hbox__kXZMSsR",
+      "problem_id": "overfull-hbox",
+      "condition": "A",
+      "replica": 0,
+      "model": "openrouter:minimax/minimax-m2.7",
+      "status": "failed",
+      "reward": 0.0,
+      "elapsed_s": 290.42,
+      "metrics": {
+        "total_input_tokens": 85967,
+        "total_output_tokens": 3331,
+        "total_cost_usd": 0.0,
+        "total_turns": 17,
+        "num_agents_spawned": 1
+      },
+      "verification": {
+        "env_sanitized": true,
+        "model_verified": true,
+        "condition_verified": true,
+        "agent_info": {
+          "name": "workgraph-condition-a",
+          "model": "minimax/minimax-m2.7",
+          "provider": "openrouter"
+        }
+      }
+    },
+    {
+      "trial_id": "password-recovery__hBqt6kd",
+      "problem_id": "password-recovery",
+      "condition": "A",
+      "replica": 0,
+      "model": "openrouter:minimax/minimax-m2.7",
+      "status": "failed",
+      "reward": 0.0,
+      "elapsed_s": 444.45,
+      "metrics": {
+        "total_input_tokens": 827289,
+        "total_output_tokens": 15540,
+        "total_cost_usd": 0.0,
+        "total_turns": 42,
+        "num_agents_spawned": 1
+      },
+      "verification": {
+        "env_sanitized": true,
+        "model_verified": true,
+        "condition_verified": true,
+        "agent_info": {
+          "name": "workgraph-condition-a",
+          "model": "minimax/minimax-m2.7",
+          "provider": "openrouter"
+        }
+      }
+    },
+    {
+      "trial_id": "path-tracing-reverse__q8hho79",
+      "problem_id": "path-tracing-reverse",
+      "condition": "A",
+      "replica": 0,
+      "model": "openrouter:minimax/minimax-m2.7",
+      "status": "failed",
+      "reward": 0.0,
+      "elapsed_s": 214.11,
+      "metrics": {
+        "total_input_tokens": 199828,
+        "total_output_tokens": 2068,
+        "total_cost_usd": 0.0,
+        "total_turns": 13,
+        "num_agents_spawned": 1
+      },
+      "verification": {
+        "env_sanitized": true,
+        "model_verified": true,
+        "condition_verified": true,
+        "agent_info": {
+          "name": "workgraph-condition-a",
+          "model": "minimax/minimax-m2.7",
+          "provider": "openrouter"
+        }
+      }
+    },
+    {
+      "trial_id": "path-tracing__MKuNnWh",
+      "problem_id": "path-tracing",
+      "condition": "A",
+      "replica": 0,
+      "model": "openrouter:minimax/minimax-m2.7",
+      "status": "failed",
+      "reward": 0.0,
+      "elapsed_s": 300.48,
+      "metrics": {
+        "total_input_tokens": 12297,
+        "total_output_tokens": 1346,
+        "total_cost_usd": 0.0,
+        "total_turns": 8,
+        "num_agents_spawned": 1
+      },
+      "verification": {
+        "env_sanitized": true,
+        "model_verified": true,
+        "condition_verified": true,
+        "agent_info": {
+          "name": "workgraph-condition-a",
+          "model": "minimax/minimax-m2.7",
+          "provider": "openrouter"
+        }
+      }
+    },
+    {
+      "trial_id": "polyglot-c-py__Gd89GgZ",
+      "problem_id": "polyglot-c-py",
+      "condition": "A",
+      "replica": 0,
+      "model": "openrouter:minimax/minimax-m2.7",
+      "status": "failed",
+      "reward": 0.0,
+      "elapsed_s": 183.88,
+      "metrics": {
+        "total_input_tokens": 61808,
+        "total_output_tokens": 5288,
+        "total_cost_usd": 0.0,
+        "total_turns": 10,
+        "num_agents_spawned": 1
+      },
+      "verification": {
+        "env_sanitized": true,
+        "model_verified": true,
+        "condition_verified": true,
+        "agent_info": {
+          "name": "workgraph-condition-a",
+          "model": "minimax/minimax-m2.7",
+          "provider": "openrouter"
+        }
+      }
+    },
+    {
+      "trial_id": "polyglot-rust-c__sKMBDcS",
+      "problem_id": "polyglot-rust-c",
+      "condition": "A",
+      "replica": 0,
+      "model": "openrouter:minimax/minimax-m2.7",
+      "status": "failed",
+      "reward": 0.0,
+      "elapsed_s": 108.02,
+      "metrics": {
+        "total_input_tokens": 478,
+        "total_output_tokens": 4096,
+        "total_cost_usd": 0.0,
+        "total_turns": 2,
+        "num_agents_spawned": 1
+      },
+      "verification": {
+        "env_sanitized": true,
+        "model_verified": true,
+        "condition_verified": true,
+        "agent_info": {
+          "name": "workgraph-condition-a",
+          "model": "minimax/minimax-m2.7",
+          "provider": "openrouter"
+        }
+      }
+    },
+    {
+      "trial_id": "portfolio-optimization__T5RmPkR",
+      "problem_id": "portfolio-optimization",
+      "condition": "A",
+      "replica": 0,
+      "model": "openrouter:minimax/minimax-m2.7",
+      "status": "done",
+      "reward": 1.0,
+      "elapsed_s": 140.75,
+      "metrics": {
+        "total_input_tokens": 31415,
+        "total_output_tokens": 2792,
+        "total_cost_usd": 0.0,
+        "total_turns": 9,
+        "num_agents_spawned": 1
+      },
+      "verification": {
+        "env_sanitized": true,
+        "model_verified": true,
+        "condition_verified": true,
+        "agent_info": {
+          "name": "workgraph-condition-a",
+          "model": "minimax/minimax-m2.7",
+          "provider": "openrouter"
+        }
+      }
+    },
+    {
+      "trial_id": "protein-assembly__vswxu8c",
+      "problem_id": "protein-assembly",
+      "condition": "A",
+      "replica": 0,
+      "model": "openrouter:minimax/minimax-m2.7",
+      "status": "failed",
+      "reward": 0.0,
+      "elapsed_s": 142.65,
+      "metrics": {
+        "total_input_tokens": 0,
+        "total_output_tokens": 0,
+        "total_cost_usd": 0.0,
+        "total_turns": 1,
+        "num_agents_spawned": 1
+      },
+      "verification": {
+        "env_sanitized": true,
+        "model_verified": true,
+        "condition_verified": true,
+        "agent_info": {
+          "name": "workgraph-condition-a",
+          "model": "minimax/minimax-m2.7",
+          "provider": "openrouter"
+        }
+      }
+    },
+    {
+      "trial_id": "prove-plus-comm__5hNAWkM",
+      "problem_id": "prove-plus-comm",
+      "condition": "A",
+      "replica": 0,
+      "model": "openrouter:minimax/minimax-m2.7",
+      "status": "done",
+      "reward": 1.0,
+      "elapsed_s": 285.82,
+      "metrics": {
+        "total_input_tokens": 8620,
+        "total_output_tokens": 1781,
+        "total_cost_usd": 0.0,
+        "total_turns": 6,
+        "num_agents_spawned": 1
+      },
+      "verification": {
+        "env_sanitized": true,
+        "model_verified": true,
+        "condition_verified": true,
+        "agent_info": {
+          "name": "workgraph-condition-a",
+          "model": "minimax/minimax-m2.7",
+          "provider": "openrouter"
+        }
+      }
+    },
+    {
+      "trial_id": "pypi-server__9eAz54a",
+      "problem_id": "pypi-server",
+      "condition": "A",
+      "replica": 0,
+      "model": "openrouter:minimax/minimax-m2.7",
+      "status": "done",
+      "reward": 1.0,
+      "elapsed_s": 110.9,
+      "metrics": {
+        "total_input_tokens": 161622,
+        "total_output_tokens": 3574,
+        "total_cost_usd": 0.0,
+        "total_turns": 31,
+        "num_agents_spawned": 1
+      },
+      "verification": {
+        "env_sanitized": true,
+        "model_verified": true,
+        "condition_verified": true,
+        "agent_info": {
+          "name": "workgraph-condition-a",
+          "model": "minimax/minimax-m2.7",
+          "provider": "openrouter"
+        }
+      }
+    },
+    {
+      "trial_id": "pytorch-model-cli__C33NCwN",
+      "problem_id": "pytorch-model-cli",
+      "condition": "A",
+      "replica": 0,
+      "model": "openrouter:minimax/minimax-m2.7",
+      "status": "done",
+      "reward": 1.0,
+      "elapsed_s": 413.14,
+      "metrics": {
+        "total_input_tokens": 101027,
+        "total_output_tokens": 4505,
+        "total_cost_usd": 0.0,
+        "total_turns": 24,
+        "num_agents_spawned": 1
+      },
+      "verification": {
+        "env_sanitized": true,
+        "model_verified": true,
+        "condition_verified": true,
+        "agent_info": {
+          "name": "workgraph-condition-a",
+          "model": "minimax/minimax-m2.7",
+          "provider": "openrouter"
+        }
+      }
+    },
+    {
+      "trial_id": "pytorch-model-recovery__fhu65vC",
+      "problem_id": "pytorch-model-recovery",
+      "condition": "A",
+      "replica": 0,
+      "model": "openrouter:minimax/minimax-m2.7",
+      "status": "done",
+      "reward": 1.0,
+      "elapsed_s": 303.99,
+      "metrics": {
+        "total_input_tokens": 31524,
+        "total_output_tokens": 4427,
+        "total_cost_usd": 0.0,
+        "total_turns": 7,
+        "num_agents_spawned": 1
+      },
+      "verification": {
+        "env_sanitized": true,
+        "model_verified": true,
+        "condition_verified": true,
+        "agent_info": {
+          "name": "workgraph-condition-a",
+          "model": "minimax/minimax-m2.7",
+          "provider": "openrouter"
+        }
+      }
+    },
+    {
+      "trial_id": "qemu-alpine-ssh__QJU3f4Z",
+      "problem_id": "qemu-alpine-ssh",
+      "condition": "A",
+      "replica": 0,
+      "model": "openrouter:minimax/minimax-m2.7",
+      "status": "done",
+      "reward": 1.0,
+      "elapsed_s": 289.22,
+      "metrics": {
+        "total_input_tokens": 99264,
+        "total_output_tokens": 3257,
+        "total_cost_usd": 0.0,
+        "total_turns": 32,
+        "num_agents_spawned": 1
+      },
+      "verification": {
+        "env_sanitized": true,
+        "model_verified": true,
+        "condition_verified": true,
+        "agent_info": {
+          "name": "workgraph-condition-a",
+          "model": "minimax/minimax-m2.7",
+          "provider": "openrouter"
+        }
+      }
+    },
+    {
+      "trial_id": "qemu-startup__kY26mdY",
+      "problem_id": "qemu-startup",
+      "condition": "A",
+      "replica": 0,
+      "model": "openrouter:minimax/minimax-m2.7",
+      "status": "done",
+      "reward": 1.0,
+      "elapsed_s": 92.37,
+      "metrics": {
+        "total_input_tokens": 7529,
+        "total_output_tokens": 1355,
+        "total_cost_usd": 0.0,
+        "total_turns": 6,
+        "num_agents_spawned": 1
+      },
+      "verification": {
+        "env_sanitized": true,
+        "model_verified": true,
+        "condition_verified": true,
+        "agent_info": {
+          "name": "workgraph-condition-a",
+          "model": "minimax/minimax-m2.7",
+          "provider": "openrouter"
+        }
+      }
+    },
+    {
+      "trial_id": "query-optimize__AHnZjAp",
+      "problem_id": "query-optimize",
+      "condition": "A",
+      "replica": 0,
+      "model": "openrouter:minimax/minimax-m2.7",
+      "status": "failed",
+      "reward": 0.0,
+      "elapsed_s": 464.7,
+      "metrics": {
+        "total_input_tokens": 451,
+        "total_output_tokens": 152,
+        "total_cost_usd": 0.0,
+        "total_turns": 2,
+        "num_agents_spawned": 1
+      },
+      "verification": {
+        "env_sanitized": true,
+        "model_verified": true,
+        "condition_verified": true,
+        "agent_info": {
+          "name": "workgraph-condition-a",
+          "model": "minimax/minimax-m2.7",
+          "provider": "openrouter"
+        }
+      }
+    },
+    {
+      "trial_id": "raman-fitting__amLgayM",
+      "problem_id": "raman-fitting",
+      "condition": "A",
+      "replica": 0,
+      "model": "openrouter:minimax/minimax-m2.7",
+      "status": "failed",
+      "reward": 0.0,
+      "elapsed_s": 397.14,
+      "metrics": {
+        "total_input_tokens": 149173,
+        "total_output_tokens": 10158,
+        "total_cost_usd": 0.0,
+        "total_turns": 14,
+        "num_agents_spawned": 1
+      },
+      "verification": {
+        "env_sanitized": true,
+        "model_verified": true,
+        "condition_verified": true,
+        "agent_info": {
+          "name": "workgraph-condition-a",
+          "model": "minimax/minimax-m2.7",
+          "provider": "openrouter"
+        }
+      }
+    },
+    {
+      "trial_id": "regex-chess__JXcqhrH",
+      "problem_id": "regex-chess",
+      "condition": "A",
+      "replica": 0,
+      "model": "openrouter:minimax/minimax-m2.7",
+      "status": "failed",
+      "reward": 0.0,
+      "elapsed_s": 160.59,
+      "metrics": {
+        "total_input_tokens": 0,
+        "total_output_tokens": 0,
+        "total_cost_usd": 0.0,
+        "total_turns": 1,
+        "num_agents_spawned": 1
+      },
+      "verification": {
+        "env_sanitized": true,
+        "model_verified": true,
+        "condition_verified": true,
+        "agent_info": {
+          "name": "workgraph-condition-a",
+          "model": "minimax/minimax-m2.7",
+          "provider": "openrouter"
+        }
+      }
+    },
+    {
+      "trial_id": "regex-log__VmfMCEt",
+      "problem_id": "regex-log",
+      "condition": "A",
+      "replica": 0,
+      "model": "openrouter:minimax/minimax-m2.7",
+      "status": "failed",
+      "reward": 0.0,
+      "elapsed_s": 87.56,
+      "metrics": {
+        "total_input_tokens": 0,
+        "total_output_tokens": 0,
+        "total_cost_usd": 0.0,
+        "total_turns": 1,
+        "num_agents_spawned": 1
+      },
+      "verification": {
+        "env_sanitized": true,
+        "model_verified": true,
+        "condition_verified": true,
+        "agent_info": {
+          "name": "workgraph-condition-a",
+          "model": "minimax/minimax-m2.7",
+          "provider": "openrouter"
+        }
+      }
+    },
+    {
+      "trial_id": "reshard-c4-data__8xKtt8h",
+      "problem_id": "reshard-c4-data",
+      "condition": "A",
+      "replica": 0,
+      "model": "openrouter:minimax/minimax-m2.7",
+      "status": "done",
+      "reward": 1.0,
+      "elapsed_s": 230.52,
+      "metrics": {
+        "total_input_tokens": 571253,
+        "total_output_tokens": 7781,
+        "total_cost_usd": 0.0,
+        "total_turns": 34,
+        "num_agents_spawned": 1
+      },
+      "verification": {
+        "env_sanitized": true,
+        "model_verified": true,
+        "condition_verified": true,
+        "agent_info": {
+          "name": "workgraph-condition-a",
+          "model": "minimax/minimax-m2.7",
+          "provider": "openrouter"
+        }
+      }
+    },
+    {
+      "trial_id": "rstan-to-pystan__ymRLMrV",
+      "problem_id": "rstan-to-pystan",
+      "condition": "A",
+      "replica": 0,
+      "model": "openrouter:minimax/minimax-m2.7",
+      "status": "failed",
+      "reward": 0.0,
+      "elapsed_s": 318.1,
+      "metrics": {
+        "total_input_tokens": 60530,
+        "total_output_tokens": 3273,
+        "total_cost_usd": 0.0,
+        "total_turns": 13,
+        "num_agents_spawned": 1
+      },
+      "verification": {
+        "env_sanitized": true,
+        "model_verified": true,
+        "condition_verified": true,
+        "agent_info": {
+          "name": "workgraph-condition-a",
+          "model": "minimax/minimax-m2.7",
+          "provider": "openrouter"
+        }
+      }
+    },
+    {
+      "trial_id": "sam-cell-seg__FS7wi2N",
+      "problem_id": "sam-cell-seg",
+      "condition": "A",
+      "replica": 0,
+      "model": "openrouter:minimax/minimax-m2.7",
+      "status": "failed",
+      "reward": 0.0,
+      "elapsed_s": 574.09,
+      "metrics": {
+        "total_input_tokens": 582748,
+        "total_output_tokens": 8676,
+        "total_cost_usd": 0.0,
+        "total_turns": 40,
+        "num_agents_spawned": 1
+      },
+      "verification": {
+        "env_sanitized": true,
+        "model_verified": true,
+        "condition_verified": true,
+        "agent_info": {
+          "name": "workgraph-condition-a",
+          "model": "minimax/minimax-m2.7",
+          "provider": "openrouter"
+        }
+      }
+    },
+    {
+      "trial_id": "sanitize-git-repo__ehrBrwn",
+      "problem_id": "sanitize-git-repo",
+      "condition": "A",
+      "replica": 0,
+      "model": "openrouter:minimax/minimax-m2.7",
+      "status": "failed",
+      "reward": 0.0,
+      "elapsed_s": 102.31,
+      "metrics": {
+        "total_input_tokens": 36785,
+        "total_output_tokens": 5039,
+        "total_cost_usd": 0.0,
+        "total_turns": 6,
+        "num_agents_spawned": 1
+      },
+      "verification": {
+        "env_sanitized": true,
+        "model_verified": true,
+        "condition_verified": true,
+        "agent_info": {
+          "name": "workgraph-condition-a",
+          "model": "minimax/minimax-m2.7",
+          "provider": "openrouter"
+        }
+      }
+    },
+    {
+      "trial_id": "schemelike-metacircular-eval__n5hjXXU",
+      "problem_id": "schemelike-metacircular-eval",
+      "condition": "A",
+      "replica": 0,
+      "model": "openrouter:minimax/minimax-m2.7",
+      "status": "failed",
+      "reward": 0.0,
+      "elapsed_s": 125.09,
+      "metrics": {
+        "total_input_tokens": 96035,
+        "total_output_tokens": 5472,
+        "total_cost_usd": 0.0,
+        "total_turns": 19,
+        "num_agents_spawned": 1
+      },
+      "verification": {
+        "env_sanitized": true,
+        "model_verified": true,
+        "condition_verified": true,
+        "agent_info": {
+          "name": "workgraph-condition-a",
+          "model": "minimax/minimax-m2.7",
+          "provider": "openrouter"
+        }
+      }
+    },
+    {
+      "trial_id": "sparql-university__mRmQtiX",
+      "problem_id": "sparql-university",
+      "condition": "A",
+      "replica": 0,
+      "model": "openrouter:minimax/minimax-m2.7",
+      "status": "done",
+      "reward": 1.0,
+      "elapsed_s": 262.04,
+      "metrics": {
+        "total_input_tokens": 66542,
+        "total_output_tokens": 5681,
+        "total_cost_usd": 0.0,
+        "total_turns": 7,
+        "num_agents_spawned": 1
+      },
+      "verification": {
+        "env_sanitized": true,
+        "model_verified": true,
+        "condition_verified": true,
+        "agent_info": {
+          "name": "workgraph-condition-a",
+          "model": "minimax/minimax-m2.7",
+          "provider": "openrouter"
+        }
+      }
+    },
+    {
+      "trial_id": "sqlite-db-truncate__tQqLVTu",
+      "problem_id": "sqlite-db-truncate",
+      "condition": "A",
+      "replica": 0,
+      "model": "openrouter:minimax/minimax-m2.7",
+      "status": "failed",
+      "reward": 0.0,
+      "elapsed_s": 535.21,
+      "metrics": {
+        "total_input_tokens": 163992,
+        "total_output_tokens": 17957,
+        "total_cost_usd": 0.0,
+        "total_turns": 17,
+        "num_agents_spawned": 1
+      },
+      "verification": {
+        "env_sanitized": true,
+        "model_verified": true,
+        "condition_verified": true,
+        "agent_info": {
+          "name": "workgraph-condition-a",
+          "model": "minimax/minimax-m2.7",
+          "provider": "openrouter"
+        }
+      }
+    },
+    {
+      "trial_id": "sqlite-with-gcov__535tWhA",
+      "problem_id": "sqlite-with-gcov",
+      "condition": "A",
+      "replica": 0,
+      "model": "openrouter:minimax/minimax-m2.7",
+      "status": "failed",
+      "reward": 0.0,
+      "elapsed_s": 248.47,
+      "metrics": {
+        "total_input_tokens": 32150,
+        "total_output_tokens": 573,
+        "total_cost_usd": 0.0,
+        "total_turns": 9,
+        "num_agents_spawned": 1
+      },
+      "verification": {
+        "env_sanitized": true,
+        "model_verified": true,
+        "condition_verified": true,
+        "agent_info": {
+          "name": "workgraph-condition-a",
+          "model": "minimax/minimax-m2.7",
+          "provider": "openrouter"
+        }
+      }
+    },
+    {
+      "trial_id": "torch-pipeline-parallelism__m6WcaNV",
+      "problem_id": "torch-pipeline-parallelism",
+      "condition": "A",
+      "replica": 0,
+      "model": "openrouter:minimax/minimax-m2.7",
+      "status": "failed",
+      "reward": 0.0,
+      "elapsed_s": 318.78,
+      "metrics": {
+        "total_input_tokens": 719,
+        "total_output_tokens": 4096,
+        "total_cost_usd": 0.0,
+        "total_turns": 1,
+        "num_agents_spawned": 1
+      },
+      "verification": {
+        "env_sanitized": true,
+        "model_verified": true,
+        "condition_verified": true,
+        "agent_info": {
+          "name": "workgraph-condition-a",
+          "model": "minimax/minimax-m2.7",
+          "provider": "openrouter"
+        }
+      }
+    },
+    {
+      "trial_id": "torch-tensor-parallelism__FPEaXcc",
+      "problem_id": "torch-tensor-parallelism",
+      "condition": "A",
+      "replica": 0,
+      "model": "openrouter:minimax/minimax-m2.7",
+      "status": "failed",
+      "reward": 0.0,
+      "elapsed_s": 179.14,
+      "metrics": {
+        "total_input_tokens": 606,
+        "total_output_tokens": 2357,
+        "total_cost_usd": 0.0,
+        "total_turns": 2,
+        "num_agents_spawned": 1
+      },
+      "verification": {
+        "env_sanitized": true,
+        "model_verified": true,
+        "condition_verified": true,
+        "agent_info": {
+          "name": "workgraph-condition-a",
+          "model": "minimax/minimax-m2.7",
+          "provider": "openrouter"
+        }
+      }
+    },
+    {
+      "trial_id": "train-fasttext__rSGCJ8v",
+      "problem_id": "train-fasttext",
+      "condition": "A",
+      "replica": 0,
+      "model": "openrouter:minimax/minimax-m2.7",
+      "status": "failed",
+      "reward": 0.0,
+      "elapsed_s": 478.94,
+      "metrics": {
+        "total_input_tokens": 50374,
+        "total_output_tokens": 3092,
+        "total_cost_usd": 0.0,
+        "total_turns": 19,
+        "num_agents_spawned": 1
+      },
+      "verification": {
+        "env_sanitized": true,
+        "model_verified": true,
+        "condition_verified": true,
+        "agent_info": {
+          "name": "workgraph-condition-a",
+          "model": "minimax/minimax-m2.7",
+          "provider": "openrouter"
+        }
+      }
+    },
+    {
+      "trial_id": "tune-mjcf__ag2AcCf",
+      "problem_id": "tune-mjcf",
+      "condition": "A",
+      "replica": 0,
+      "model": "openrouter:minimax/minimax-m2.7",
+      "status": "failed",
+      "reward": 0.0,
+      "elapsed_s": 386.47,
+      "metrics": {
+        "total_input_tokens": 174313,
+        "total_output_tokens": 8721,
+        "total_cost_usd": 0.0,
+        "total_turns": 23,
+        "num_agents_spawned": 1
+      },
+      "verification": {
+        "env_sanitized": true,
+        "model_verified": true,
+        "condition_verified": true,
+        "agent_info": {
+          "name": "workgraph-condition-a",
+          "model": "minimax/minimax-m2.7",
+          "provider": "openrouter"
+        }
+      }
+    },
+    {
+      "trial_id": "video-processing__mVyCbVR",
+      "problem_id": "video-processing",
+      "condition": "A",
+      "replica": 0,
+      "model": "openrouter:minimax/minimax-m2.7",
+      "status": "failed",
+      "reward": 0.0,
+      "elapsed_s": 285.39,
+      "metrics": {
+        "total_input_tokens": 112464,
+        "total_output_tokens": 7791,
+        "total_cost_usd": 0.0,
+        "total_turns": 19,
+        "num_agents_spawned": 1
+      },
+      "verification": {
+        "env_sanitized": true,
+        "model_verified": true,
+        "condition_verified": true,
+        "agent_info": {
+          "name": "workgraph-condition-a",
+          "model": "minimax/minimax-m2.7",
+          "provider": "openrouter"
+        }
+      }
+    },
+    {
+      "trial_id": "vulnerable-secret__qCnBGaw",
+      "problem_id": "vulnerable-secret",
+      "condition": "A",
+      "replica": 0,
+      "model": "openrouter:minimax/minimax-m2.7",
+      "status": "done",
+      "reward": 1.0,
+      "elapsed_s": 196.95,
+      "metrics": {
+        "total_input_tokens": 104674,
+        "total_output_tokens": 4335,
+        "total_cost_usd": 0.0,
+        "total_turns": 13,
+        "num_agents_spawned": 1
+      },
+      "verification": {
+        "env_sanitized": true,
+        "model_verified": true,
+        "condition_verified": true,
+        "agent_info": {
+          "name": "workgraph-condition-a",
+          "model": "minimax/minimax-m2.7",
+          "provider": "openrouter"
+        }
+      }
+    },
+    {
+      "trial_id": "winning-avg-corewars__o2nSHMR",
+      "problem_id": "winning-avg-corewars",
+      "condition": "A",
+      "replica": 0,
+      "model": "openrouter:minimax/minimax-m2.7",
+      "status": "failed",
+      "reward": 0.0,
+      "elapsed_s": 645.8,
+      "metrics": {
+        "total_input_tokens": 311097,
+        "total_output_tokens": 22576,
+        "total_cost_usd": 0.0,
+        "total_turns": 27,
+        "num_agents_spawned": 1
+      },
+      "verification": {
+        "env_sanitized": true,
+        "model_verified": true,
+        "condition_verified": true,
+        "agent_info": {
+          "name": "workgraph-condition-a",
+          "model": "minimax/minimax-m2.7",
+          "provider": "openrouter"
+        }
+      }
+    },
+    {
+      "trial_id": "write-compressor__6Ur5iwU",
+      "problem_id": "write-compressor",
+      "condition": "A",
+      "replica": 0,
+      "model": "openrouter:minimax/minimax-m2.7",
+      "status": "failed",
+      "reward": 0.0,
+      "elapsed_s": 118.11,
+      "metrics": {
+        "total_input_tokens": 2278,
+        "total_output_tokens": 4172,
+        "total_cost_usd": 0.0,
+        "total_turns": 2,
+        "num_agents_spawned": 1
+      },
+      "verification": {
+        "env_sanitized": true,
+        "model_verified": true,
+        "condition_verified": true,
+        "agent_info": {
+          "name": "workgraph-condition-a",
+          "model": "minimax/minimax-m2.7",
+          "provider": "openrouter"
+        }
+      }
+    }
+  ]
+}

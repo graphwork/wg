@@ -1,0 +1,47 @@
+{
+    "job_name": "pilot-a-89",
+    "jobs_dir": "results/pilot-a-89",
+    "n_attempts": 1,
+    "timeout_multiplier": 1.0,
+    "debug": false,
+    "n_concurrent_trials": 4,
+    "quiet": false,
+    "retry": {
+        "max_retries": 2,
+        "include_exceptions": null,
+        "exclude_exceptions": [
+            "AgentTimeoutError",
+            "VerifierTimeoutError"
+        ],
+        "wait_multiplier": 1.0,
+        "min_wait_sec": 1.0,
+        "max_wait_sec": 60.0
+    },
+    "environment": {
+        "type": "docker",
+        "delete": true
+    },
+    "verifier": {
+        "disable": false
+    },
+    "metrics": [],
+    "agents": [
+        {
+            "import_path": "wg.adapter:ConditionAAgent",
+            "model_name": "openrouter/minimax/minimax-m2.7",
+            "kwargs": {
+                "max_turns": 50,
+                "temperature": 0.0
+            },
+            "env": {}
+        }
+    ],
+    "datasets": [
+        {
+            "name": "terminal-bench",
+            "version": "2.0"
+        }
+    ],
+    "tasks": [],
+    "artifacts": []
+}
