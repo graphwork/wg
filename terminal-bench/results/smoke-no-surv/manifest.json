@@ -1,0 +1,55 @@
+{
+  "version": 1,
+  "created": "2026-04-07T19:50:59.313063+00:00",
+  "conditions": [
+    "F"
+  ],
+  "replicas": 1,
+  "model": "openrouter:minimax/minimax-m2.7",
+  "total_trials": 4,
+  "seed": null,
+  "trial_order": [
+    "condF-debugging-r0",
+    "condF-build-cython-ext-r0",
+    "condF-file-ops-r0",
+    "condF-algorithm-r0"
+  ],
+  "trials": {
+    "condF-file-ops-r0": {
+      "trial_id": "condF-file-ops-r0",
+      "condition": "F",
+      "task_id": "file-ops",
+      "difficulty": "easy",
+      "replica": 0,
+      "status": "done",
+      "attempts": 1
+    },
+    "condF-debugging-r0": {
+      "trial_id": "condF-debugging-r0",
+      "condition": "F",
+      "task_id": "debugging",
+      "difficulty": "medium",
+      "replica": 0,
+      "status": "done",
+      "attempts": 1
+    },
+    "condF-algorithm-r0": {
+      "trial_id": "condF-algorithm-r0",
+      "condition": "F",
+      "task_id": "algorithm",
+      "difficulty": "hard",
+      "replica": 0,
+      "status": "done",
+      "attempts": 1
+    },
+    "condF-build-cython-ext-r0": {
+      "trial_id": "condF-build-cython-ext-r0",
+      "condition": "F",
+      "task_id": "build-cython-ext",
+      "difficulty": "hard",
+      "replica": 0,
+      "status": "done",
+      "attempts": 1
+    }
+  }
+}

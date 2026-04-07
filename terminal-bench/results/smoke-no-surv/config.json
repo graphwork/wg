@@ -1,0 +1,16 @@
+{
+  "conditions": [
+    "F"
+  ],
+  "replicas": 1,
+  "model": "openrouter:minimax/minimax-m2.7",
+  "max_concurrent": 2,
+  "initial_concurrent": 2,
+  "ramp_after": 999,
+  "timeout": 1800,
+  "max_retries": 2,
+  "unique_tasks": 4,
+  "total_trials": 4,
+  "seed": null,
+  "started": "2026-04-07T19:50:59.313210+00:00"
+}

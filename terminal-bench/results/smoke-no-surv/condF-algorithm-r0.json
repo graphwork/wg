@@ -1,0 +1,21 @@
+{
+  "trial_id": "condF-algorithm-r0",
+  "condition": "F",
+  "task_id": "algorithm",
+  "difficulty": "hard",
+  "replica": 0,
+  "model": "openrouter:minimax/minimax-m2.7",
+  "status": "done",
+  "elapsed_s": 46.78,
+  "metrics": {
+    "total_input_tokens": 60322,
+    "total_output_tokens": 2353,
+    "total_cost_usd": 0.0,
+    "total_turns": 9,
+    "num_agents_spawned": 1,
+    "model_used": "minimax/minimax-m2.7"
+  },
+  "verify_output": "",
+  "surveillance": null,
+  "error": null
+}

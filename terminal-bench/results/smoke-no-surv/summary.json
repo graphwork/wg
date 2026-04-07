@@ -1,0 +1,164 @@
+{
+  "run_id": "smoke-no-surv",
+  "timestamp": "2026-04-07T19:53:05.084774+00:00",
+  "model": "openrouter:minimax/minimax-m2.7",
+  "replicas": 1,
+  "conditions": [
+    "F"
+  ],
+  "unique_tasks": 4,
+  "description": "Smoke test: condition F without surveillance loops (stripped runner). 4 tasks x 1 replica to verify no regressions from removing surveillance infrastructure.",
+  "total_trials": 4,
+  "total_wall_clock_s": 125.77,
+  "condition_stats": {
+    "F": {
+      "condition": "F",
+      "total": 4,
+      "passed": 4,
+      "failed": 0,
+      "pass_rate": 1.0,
+      "mean_time_s": 53.3,
+      "token_stats": {
+        "total_input_tokens": 419590,
+        "total_output_tokens": 10887,
+        "total_tokens": 430477,
+        "total_cost_usd": 0.0,
+        "total_turns": 54,
+        "total_agents_spawned": 5,
+        "mean_tokens_per_trial": 107619.0
+      },
+      "difficulty_stats": {
+        "easy": {
+          "total": 1,
+          "passed": 1,
+          "pass_rate": 1.0,
+          "mean_time_s": 41.98
+        },
+        "medium": {
+          "total": 1,
+          "passed": 1,
+          "pass_rate": 1.0,
+          "mean_time_s": 36.94
+        },
+        "hard": {
+          "total": 2,
+          "passed": 2,
+          "pass_rate": 1.0,
+          "mean_time_s": 67.13
+        }
+      },
+      "task_stats": {
+        "file-ops": {
+          "total": 1,
+          "passed": 1,
+          "pass_rate": 1.0,
+          "mean_time_s": 41.98
+        },
+        "debugging": {
+          "total": 1,
+          "passed": 1,
+          "pass_rate": 1.0,
+          "mean_time_s": 36.94
+        },
+        "algorithm": {
+          "total": 1,
+          "passed": 1,
+          "pass_rate": 1.0,
+          "mean_time_s": 46.78
+        },
+        "build-cython-ext": {
+          "total": 1,
+          "passed": 1,
+          "pass_rate": 1.0,
+          "mean_time_s": 87.49
+        }
+      }
+    }
+  },
+  "trials": [
+    {
+      "trial_id": "condF-debugging-r0",
+      "condition": "F",
+      "task_id": "debugging",
+      "difficulty": "medium",
+      "replica": 0,
+      "model": "openrouter:minimax/minimax-m2.7",
+      "status": "done",
+      "elapsed_s": 36.94,
+      "metrics": {
+        "total_input_tokens": 76125,
+        "total_output_tokens": 1697,
+        "total_cost_usd": 0.0,
+        "total_turns": 11,
+        "num_agents_spawned": 1,
+        "model_used": "minimax/minimax-m2.7"
+      },
+      "verify_output": "",
+      "surveillance": null,
+      "error": null
+    },
+    {
+      "trial_id": "condF-file-ops-r0",
+      "condition": "F",
+      "task_id": "file-ops",
+      "difficulty": "easy",
+      "replica": 0,
+      "model": "openrouter:minimax/minimax-m2.7",
+      "status": "done",
+      "elapsed_s": 41.98,
+      "metrics": {
+        "total_input_tokens": 84565,
+        "total_output_tokens": 1734,
+        "total_cost_usd": 0.0,
+        "total_turns": 13,
+        "num_agents_spawned": 2,
+        "model_used": "minimax/minimax-m2.7"
+      },
+      "verify_output": "============================= test session starts ==============================\nplatform linux -- Python 3.12.3, pytest-9.0.2, pluggy-1.6.0 -- /usr/bin/python3\ncachedir: .pytest_cache\nrootdir: /tmp/project/src/tests\nplugins: anyio-4.13.0\ncollecting ... collected 1 item\n\n../../../../tmp/project/src/tests/test_utils.py::TestUtils::test_add PASSED [100%]\n\n============================== 1 passed in 0.00s ===============================\n",
+      "surveillance": null,
+      "error": null
+    },
+    {
+      "trial_id": "condF-build-cython-ext-r0",
+      "condition": "F",
+      "task_id": "build-cython-ext",
+      "difficulty": "hard",
+      "replica": 0,
+      "model": "openrouter:minimax/minimax-m2.7",
+      "status": "done",
+      "elapsed_s": 87.49,
+      "metrics": {
+        "total_input_tokens": 198578,
+        "total_output_tokens": 5103,
+        "total_cost_usd": 0.0,
+        "total_turns": 21,
+        "num_agents_spawned": 1,
+        "model_used": "minimax/minimax-m2.7"
+      },
+      "verify_output": "OK\n============================= test session starts ==============================\nplatform linux -- Python 3.12.3, pytest-9.0.2, pluggy-1.6.0 -- /usr/bin/python3\ncachedir: .pytest_cache\nrootdir: /tmp/cython-ext\nplugins: anyio-4.13.0\ncollecting ... collected 15 items\n\ntests/test_fastmath.py::TestDotProduct::test_basic_vectors PASSED        [  6%]\ntests/test_fastmath.py::TestDotProduct::test_same_vector PASSED          [ 13%]\ntests/test_fastmath.py::TestDotProduct::test_orthogonal_vectors PASSED",
+      "surveillance": null,
+      "error": null
+    },
+    {
+      "trial_id": "condF-algorithm-r0",
+      "condition": "F",
+      "task_id": "algorithm",
+      "difficulty": "hard",
+      "replica": 0,
+      "model": "openrouter:minimax/minimax-m2.7",
+      "status": "done",
+      "elapsed_s": 46.78,
+      "metrics": {
+        "total_input_tokens": 60322,
+        "total_output_tokens": 2353,
+        "total_cost_usd": 0.0,
+        "total_turns": 9,
+        "num_agents_spawned": 1,
+        "model_used": "minimax/minimax-m2.7"
+      },
+      "verify_output": "",
+      "surveillance": null,
+      "error": null
+    }
+  ]
+}

@@ -1,0 +1,21 @@
+{
+  "trial_id": "condF-debugging-r0",
+  "condition": "F",
+  "task_id": "debugging",
+  "difficulty": "medium",
+  "replica": 0,
+  "model": "openrouter:minimax/minimax-m2.7",
+  "status": "done",
+  "elapsed_s": 36.94,
+  "metrics": {
+    "total_input_tokens": 76125,
+    "total_output_tokens": 1697,
+    "total_cost_usd": 0.0,
+    "total_turns": 11,
+    "num_agents_spawned": 1,
+    "model_used": "minimax/minimax-m2.7"
+  },
+  "verify_output": "",
+  "surveillance": null,
+  "error": null
+}
