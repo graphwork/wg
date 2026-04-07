@@ -1,0 +1,28 @@
+{
+  "run_id": "pilot-01",
+  "conditions": [
+    "A",
+    "D"
+  ],
+  "tasks": [
+    "file-ops",
+    "debugging"
+  ],
+  "replicas": 3,
+  "model": null,
+  "trial_task_ids": [
+    "tb-a-file-ops-r0",
+    "tb-a-file-ops-r1",
+    "tb-a-file-ops-r2",
+    "tb-a-debugging-r0",
+    "tb-a-debugging-r1",
+    "tb-a-debugging-r2",
+    "tb-d-file-ops-r0",
+    "tb-d-file-ops-r1",
+    "tb-d-file-ops-r2",
+    "tb-d-debugging-r0",
+    "tb-d-debugging-r1",
+    "tb-d-debugging-r2"
+  ],
+  "fanin_task_id": "tb-collect-pilot-01"
+}
