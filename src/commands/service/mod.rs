@@ -2466,6 +2466,23 @@ pub fn run_daemon(
     // Load max_coordinators limit from config
     let max_coordinators = config.coordinator.max_coordinators;
 
+    // Autonomous heartbeat: periodically inject a synthetic prompt into the
+    // coordinator agent so it reviews graph state and takes action without
+    // human interaction. Used for TB heartbeat orchestration (Condition G Phase 3).
+    let heartbeat_interval_secs = config.coordinator.heartbeat_interval;
+    let heartbeat_interval: Option<Duration> = if heartbeat_interval_secs > 0 {
+        logger.info(&format!(
+            "Autonomous heartbeat enabled: interval={}s",
+            heartbeat_interval_secs
+        ));
+        Some(Duration::from_secs(heartbeat_interval_secs))
+    } else {
+        None
+    };
+    let mut last_heartbeat = Instant::now(); // first heartbeat after one interval
+    let mut heartbeat_tick_number: u64 = 0;
+    let daemon_start_time = Instant::now();
+
     // Restore error counts from persisted state so they survive daemon restarts
     let mut compaction_error_count: u64 =
         workgraph::service::compactor::CompactorState::load(&dir).error_count;
@@ -2503,6 +2520,12 @@ pub fn run_daemon(
                 .saturating_sub(last_coordinator_tick.elapsed());
             poll_timeout_ms =
                 poll_timeout_ms.min(until_tick.as_millis().min(i32::MAX as u128) as i32);
+        }
+        // Also wake for heartbeat interval if enabled.
+        if let Some(hb_interval) = heartbeat_interval {
+            let until_hb = hb_interval.saturating_sub(last_heartbeat.elapsed());
+            poll_timeout_ms =
+                poll_timeout_ms.min(until_hb.as_millis().min(i32::MAX as u128) as i32);
         }
         // Floor: don't spin faster than 50ms even with a deadline in the past.
         poll_timeout_ms = poll_timeout_ms.max(50);
@@ -2698,6 +2721,14 @@ pub fn run_daemon(
             if last_coordinator_tick.elapsed() >= daemon_cfg.poll_interval {
                 should_tick = true;
             }
+            // Autonomous heartbeat: also trigger a coordinator tick when the
+            // heartbeat interval elapses, so the mechanical tick phases (cleanup,
+            // spawn) run alongside the heartbeat prompt injection.
+            if let Some(hb_interval) = heartbeat_interval
+                && last_heartbeat.elapsed() >= hb_interval
+            {
+                should_tick = true;
+            }
         }
         if should_tick {
             last_coordinator_tick = Instant::now();
@@ -2769,6 +2800,41 @@ pub fn run_daemon(
                     }
                     coord_state.save(&dir);
                     logger.error(&format!("Coordinator tick error: {}", e));
+                }
+            }
+
+            // --- Autonomous heartbeat ---
+            // If heartbeat is enabled and the interval has elapsed, inject a
+            // synthetic prompt into the coordinator agent. This runs inside the
+            // should_tick block so it piggybacks on the coordinator tick timing
+            // but also fires independently when the heartbeat interval is shorter
+            // than the poll interval.
+            if let Some(hb_interval) = heartbeat_interval
+                && last_heartbeat.elapsed() >= hb_interval
+                && enable_coordinator_agent
+            {
+                last_heartbeat = Instant::now();
+                heartbeat_tick_number += 1;
+                // Send heartbeat to coordinator 0 (primary coordinator).
+                if let Some(agent) = coordinator_agents.get(&0) {
+                    match agent.send_heartbeat(
+                        heartbeat_tick_number,
+                        daemon_start_time,
+                        None, // budget_secs: None for non-TB runs
+                    ) {
+                        Ok(()) => {
+                            logger.info(&format!(
+                                "Heartbeat #{} sent to coordinator agent",
+                                heartbeat_tick_number
+                            ));
+                        }
+                        Err(e) => {
+                            logger.warn(&format!(
+                                "Failed to send heartbeat #{}: {}",
+                                heartbeat_tick_number, e
+                            ));
+                        }
+                    }
                 }
             }
 

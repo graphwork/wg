@@ -2179,6 +2179,14 @@ pub struct CoordinatorConfig {
     #[serde(default = "default_coordinator_agent")]
     pub coordinator_agent: bool,
 
+    /// Autonomous heartbeat interval in seconds for the coordinator agent.
+    /// When set (> 0), the daemon sends a synthetic heartbeat prompt to the
+    /// coordinator agent at this interval, triggering it to review graph state,
+    /// dispatch work, recover from failures, and adapt strategy — without any
+    /// human interaction. Set to 0 to disable. Default: 0 (disabled).
+    #[serde(default)]
+    pub heartbeat_interval: u64,
+
     /// How often to run the compactor (every N coordinator ticks). 0 = disabled.
     #[serde(default = "default_compactor_interval")]
     pub compactor_interval: u32,
@@ -2393,6 +2401,7 @@ impl Default for CoordinatorConfig {
             agent_timeout: default_agent_timeout(),
             settling_delay_ms: default_settling_delay_ms(),
             coordinator_agent: default_coordinator_agent(),
+            heartbeat_interval: 0,
             compactor_interval: default_compactor_interval(),
             compactor_ops_threshold: default_compactor_ops_threshold(),
             compaction_token_threshold: default_compaction_token_threshold(),

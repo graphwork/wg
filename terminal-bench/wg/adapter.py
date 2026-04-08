@@ -130,7 +130,10 @@ CONDITION_CONFIG = {
         "agency": None,
         "exclude_wg_tools": False,
         "max_agents": 8,
-        "autopoietic": True,
+        "autopoietic": False,            # Phase 3: coordinator orchestrates, not seed agent
+        "coordinator_agent": True,        # Phase 3: persistent coordinator agent
+        "heartbeat_interval": 30,         # Phase 3: 30s autonomous heartbeat
+        "coordinator_model": "sonnet",    # Phase 3: capable model for coordinator reasoning
     },
 }
 
@@ -671,10 +674,11 @@ async def _run_native_executor(
     api_key = os.environ.get("OPENROUTER_API_KEY", "")
     env_exports = f'export OPENROUTER_API_KEY="{api_key}"'
 
-    # Start the service.  For Condition G (autopoietic), use the coordinator
-    # to dispatch sub-tasks the seed agent creates.  For other conditions,
-    # --no-coordinator-agent avoids overhead for single-task trials.
-    no_coord = "" if cfg.get("autopoietic") else " --no-coordinator-agent"
+    # Start the service.  For Condition G (Phase 3 heartbeat), the coordinator
+    # agent is always enabled — it orchestrates via heartbeat prompts.
+    # For other conditions, --no-coordinator-agent avoids overhead.
+    needs_coordinator = cfg.get("coordinator_agent") or cfg.get("autopoietic")
+    no_coord = "" if needs_coordinator else " --no-coordinator-agent"
     start_cmd = (
         f'{env_exports} && '
         f'wg service start --model "{model}"{no_coord}'
@@ -690,13 +694,12 @@ async def _run_native_executor(
         }
 
     # Poll for task completion.
-    # For autopoietic conditions (G), the seed task finishes quickly after
-    # building sub-tasks.  We poll until the entire graph is quiescent —
-    # no open or in-progress tasks remain.
-    # For other conditions, we just poll the single root task.
+    # For multi-agent conditions (G), the coordinator creates sub-tasks.
+    # We poll until the entire graph is quiescent — no open or in-progress
+    # tasks remain. For other conditions, we just poll the single root task.
     start_time = time.monotonic()
     status = "timeout"
-    is_autopoietic = cfg.get("autopoietic", False)
+    is_autopoietic = cfg.get("autopoietic", False) or cfg.get("coordinator_agent", False)
 
     while True:
         elapsed = time.monotonic() - start_time
@@ -766,6 +769,13 @@ def _build_config_toml_content(condition: str, model: str) -> str:
         f'worktree_isolation = false',
         "max_verify_failures = 0",
         "max_spawn_failures = 0",
+    ]
+    # Phase 3 heartbeat: coordinator_agent + heartbeat_interval
+    if cfg.get("coordinator_agent"):
+        lines.append("coordinator_agent = true")
+    if cfg.get("heartbeat_interval"):
+        lines.append(f'heartbeat_interval = {cfg["heartbeat_interval"]}')
+    lines += [
         "",
         "[agent]",
         f'model = "{model}"',

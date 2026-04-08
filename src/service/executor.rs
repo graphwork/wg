@@ -94,6 +94,18 @@ You MUST use these commands to track your work:
 - Run `wg done` BEFORE you finish responding
 - If the task description is unclear, do your best interpretation\n";
 
+/// Research Hints section: encourages agents to investigate before implementing.
+/// Added as part of TB heartbeat orchestration (Condition G Phase 3).
+pub const RESEARCH_HINTS_SECTION: &str = "\
+## Research Before Implementing
+
+Before writing code, understand the problem:
+- Read all referenced files and test cases
+- If the task involves unfamiliar technology, search for documentation in the workspace
+- Check existing patterns in the codebase (grep for similar implementations)
+- Read error messages carefully — they often contain the fix
+- For build systems (CMake, Cython, Cargo): check for existing config files first\n";
+
 /// Graph Patterns section: vocabulary, golden rule, subtask guidance, cycle awareness.
 pub const GRAPH_PATTERNS_SECTION: &str = "\
 ## Graph Patterns (see docs/AGENT-GUIDE.md for details)
@@ -786,6 +798,7 @@ pub fn build_prompt(vars: &TemplateVars, scope: ContextScope, ctx: &ScopeContext
         } else {
             parts.push(vars.apply(AUTOPOIETIC_GUIDANCE));
         }
+        parts.push(RESEARCH_HINTS_SECTION.to_string());
         parts.push(GRAPH_PATTERNS_SECTION.to_string());
         parts.push(REUSABLE_FUNCTIONS_SECTION.to_string());
         parts.push(vars.apply(CRITICAL_WG_CLI_SECTION));
@@ -967,9 +980,10 @@ impl TemplateVars {
 
         // Resolve skills from the role, using the project root (parent of .workgraph/)
         let workgraph_root = wg_dir.parent().unwrap_or(wg_dir);
-        let resolved_skills = agency::resolve_all_skills(&role, workgraph_root);
+        let resolved_skills = agency::resolve_all_components(&role, workgraph_root, &agency_dir);
+        let outcome = agency::resolve_outcome(&role.outcome_id, &agency_dir);
 
-        agency::render_identity_prompt(&role, &motivation, &resolved_skills)
+        agency::render_identity_prompt_rich(&role, &motivation, &resolved_skills, outcome.as_ref())
     }
 
     /// Read skills preamble from project-level `.claude/skills/` directory.

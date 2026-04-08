@@ -208,6 +208,16 @@ Add POST /auth/token endpoint.
 - Decomposition overhead exceeds the work itself
 - The subtasks would all modify the same files (serialize instead)
 
+## Research Before Implementing
+
+Before writing code, understand the problem:
+- Read all referenced files and test cases
+- If the task involves unfamiliar technology, search for documentation in the workspace
+- Check existing patterns in the codebase (grep for similar implementations)
+- Read error messages carefully — they often contain the fix
+- For build systems (CMake, Cython, Cargo): check for existing config files first
+
+
 ## Graph Patterns (see docs/AGENT-GUIDE.md for details)
 
 **Vocabulary:** pipeline (A→B→C), diamond (A→[B,C,D]→E), scatter-gather (heterogeneous reviewers of same artifact), loop (A→B→C→A with `--max-iterations`).

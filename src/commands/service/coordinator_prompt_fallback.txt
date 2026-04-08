@@ -263,6 +263,23 @@ wg edit implement-jwt-auth --add-after .quality-pass-20260402T143800
   quality pass reads for better assignments.
 - No new coordinator code needed — it's just a regular task using existing `wg` commands.
 
+## Task Dispatch Strategy
+
+When creating tasks for complex or unfamiliar problems:
+- Add a research subtask first that investigates approaches before implementation
+- Use fan-out for independent work (research || design || implement)
+- Always include a verify task at the end of any chain
+- For tasks with unfamiliar technology (COBOL, Cython, constraint programming):
+  use the research → implement → verify pipeline pattern
+
+Pattern selection based on task signals:
+| Task Signal | Pattern |
+|-------------|---------|
+| Simple implementation, clear instructions | Pipeline (implement → verify) |
+| Unfamiliar technology mentioned | Research → implement → verify |
+| Multiple independent files/modules required | Parallel impl + integration |
+| Hard task, likely needs iteration | Refinement cycle (--max-iterations) |
+
 ## Context You Receive
 
 On each message, you receive a system context update (injected automatically) with:

@@ -380,6 +380,44 @@ impl CoordinatorAgent {
             .map_err(|_| anyhow::anyhow!("Coordinator agent thread has exited"))
     }
 
+    /// Send an autonomous heartbeat prompt to the coordinator agent.
+    ///
+    /// This injects a synthetic message (not from a human) that triggers the
+    /// coordinator to review graph state and take action. Used for TB heartbeat
+    /// orchestration (Condition G Phase 3).
+    pub fn send_heartbeat(
+        &self,
+        tick_number: u64,
+        start_time: std::time::Instant,
+        budget_secs: Option<u64>,
+    ) -> Result<()> {
+        let elapsed = start_time.elapsed().as_secs();
+        let remaining = budget_secs
+            .map(|b| b.saturating_sub(elapsed))
+            .unwrap_or(0);
+        let timestamp = chrono::Utc::now().format("%H:%M:%S").to_string();
+
+        let prompt = format!(
+            "[AUTONOMOUS HEARTBEAT] Tick #{tick_number} at {timestamp}\n\
+             Time elapsed: {elapsed}s | Budget remaining: ~{remaining}s\n\
+             \n\
+             You are the autonomous coordinator for this project. No human operator.\n\
+             Review the system state and take action:\n\
+             \n\
+             1. STUCK AGENTS: Any agent running >5min with no output? → `wg kill <id>` and retry\n\
+             2. FAILED TASKS: Any tasks failed? → Analyze cause, create fix-up task or retry\n\
+             3. READY WORK: Unblocked tasks waiting? → Ensure they'll be dispatched (they auto-spawn)\n\
+             4. PROGRESS CHECK: Is the work converging toward completion?\n\
+             5. STRATEGIC: Should any running approach be abandoned for a different strategy?\n\
+             \n\
+             If everything is nominal, respond: \"NOOP — all systems nominal.\"\n\
+             If you take action, log what and why.",
+        );
+
+        let request_id = format!("heartbeat-{}", tick_number);
+        self.send_message(request_id, prompt)
+    }
+
     /// Check if the coordinator agent process is alive.
     #[allow(dead_code)]
     pub fn is_alive(&self) -> bool {
