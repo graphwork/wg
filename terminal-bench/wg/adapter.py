@@ -2,10 +2,11 @@
 Terminal Bench Agent Adapter for Harbor Framework.
 
 Supports two execution modes:
-  1. Docker-aware: LLM agent loop in Python, routes commands through
-     harbor's environment.exec() into Docker containers. (Default for harbor.)
-  2. Host-native: Delegates to wg service start + native-exec.
-     (Only works when verification runs on the host, e.g. run_full_a_prime_vs_f.py.)
+  1. wg-native (default): Installs wg inside the Docker container and runs
+     the native executor (wg service start + native-exec) entirely inside
+     Docker via environment.exec(). No LiteLLM dependency.
+  2. Docker-aware LiteLLM (legacy/deprecated): Python LLM agent loop that
+     routes commands through environment.exec(). Kept as fallback.
 
 Supports six conditions:
   Condition A (control): bash + file tools only, no graph, no resume
@@ -16,12 +17,14 @@ Supports six conditions:
   Condition F (treatment): wg tools + distilled context injection + empirical verification
 
 Model routing end-to-end:
-  Harbor path (Docker agent loop via LiteLLM):
+  wg-native path (inside Docker container):
     Harbor -m flag → ConditionXAgent.__init__(model_name=...) → setdefault(BENCHMARK_MODEL)
-    → setup(): _normalize_model() converts Harbor "/" format to wg ":" format
-    → run(): _run_docker_agent_loop() converts wg ":" back to LiteLLM "/" format
-    → litellm.acompletion(model="openrouter/minimax/minimax-m2.7")
-    Requires OPENROUTER_API_KEY in environment for OpenRouter models.
+    → setup(): upload wg binary into container, wg init, write config.toml
+    → run(): wg add "task" → wg service start → native-exec agent
+    → native_exec.rs: create_provider_ext() parses "openrouter:model" → OpenAI-compat client
+    → API calls go directly to OpenRouter (no LiteLLM in path)
+    OPENROUTER_API_KEY exported in the shell before wg service start so the
+    daemon and its child processes inherit it.
 
   Host-native path (standalone runners like run_full_a_prime_vs_f.py):
     Runner sets BENCHMARK_MODEL → writes config.toml [agent].model + [coordinator].model
@@ -40,6 +43,7 @@ import json
 import logging
 import os
 import shutil
+import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -416,6 +420,265 @@ async def _collect_agent_metrics(wg_dir: str) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Container-based artifact and metric collection (for wg-native path)
+# ---------------------------------------------------------------------------
+
+async def _download_wg_artifacts(
+    environment: BaseEnvironment,
+    target_dir: Path | str,
+) -> Path:
+    """Download the entire .workgraph/ directory from the container.
+
+    Tars the directory inside the container, downloads the tarball,
+    and extracts it into target_dir/wg-artifacts/.
+
+    Returns the path to the extracted artifacts directory.
+    """
+    target = Path(target_dir)
+    artifacts_dir = target / "wg-artifacts"
+    artifacts_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        # Tar up .workgraph/ inside the container
+        tar_result = await environment.exec(
+            command="tar czf /tmp/wg-artifacts.tar.gz .workgraph/ 2>/dev/null || true",
+            timeout_sec=60,
+        )
+
+        # Download the tarball
+        local_tar = str(artifacts_dir / "wg-artifacts.tar.gz")
+        await environment.download_file("/tmp/wg-artifacts.tar.gz", local_tar)
+
+        # Extract locally
+        import tarfile
+        with tarfile.open(local_tar, "r:gz") as tf:
+            tf.extractall(path=str(artifacts_dir))
+
+        # Remove the tarball (keep only extracted content)
+        os.remove(local_tar)
+
+        logger.info(f"Downloaded wg artifacts to {artifacts_dir}")
+    except Exception as e:
+        logger.warning(f"Failed to download wg artifacts: {e}")
+
+    return artifacts_dir
+
+
+async def _collect_agent_metrics_from_container(
+    environment: BaseEnvironment,
+    artifacts_dir: Path | str | None = None,
+) -> dict[str, Any]:
+    """Collect metrics from stream.jsonl files.
+
+    If artifacts_dir is provided (already downloaded), reads from there.
+    Otherwise downloads from the container.
+    """
+    # If we already have the artifacts locally, use them directly
+    if artifacts_dir is not None:
+        wg_dir = os.path.join(str(artifacts_dir), ".workgraph")
+        if os.path.isdir(os.path.join(wg_dir, "agents")):
+            return await _collect_agent_metrics(wg_dir)
+
+    # Fallback: download just the agents dir
+    local_tmp = tempfile.mkdtemp(prefix="tb-metrics-")
+    try:
+        local_agents = os.path.join(local_tmp, "agents")
+        await environment.download_dir(".workgraph/agents/", local_agents)
+        return await _collect_agent_metrics(local_tmp)
+    except Exception as e:
+        logger.warning(f"download_dir failed, falling back to exec cat: {e}")
+        result = await environment.exec(
+            command="cat .workgraph/agents/*/stream.jsonl 2>/dev/null || true"
+        )
+        return _parse_stream_jsonl_text(result.stdout or "")
+    finally:
+        shutil.rmtree(local_tmp, ignore_errors=True)
+
+
+def _parse_stream_jsonl_text(text: str) -> dict[str, Any]:
+    """Parse stream.jsonl content from a raw text blob (fallback path)."""
+    metrics: dict[str, Any] = {
+        "total_input_tokens": 0,
+        "total_output_tokens": 0,
+        "total_cost_usd": 0.0,
+        "total_turns": 0,
+        "tool_calls": [],
+    }
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        event_type = event.get("type")
+        if event_type == "turn":
+            metrics["total_turns"] += 1
+            usage = event.get("usage")
+            if usage:
+                metrics["total_input_tokens"] += usage.get("input_tokens", 0)
+                metrics["total_output_tokens"] += usage.get("output_tokens", 0)
+            metrics["tool_calls"].extend(event.get("tools_used", []))
+        elif event_type == "result":
+            usage = event.get("usage", {})
+            cost = usage.get("cost_usd")
+            if cost:
+                metrics["total_cost_usd"] += cost
+    return metrics
+
+
+# ---------------------------------------------------------------------------
+# Native executor: run wg inside Docker container
+# ---------------------------------------------------------------------------
+
+async def _run_native_executor(
+    environment: BaseEnvironment,
+    task_instruction: str,
+    model: str,
+    condition: str,
+    timeout_secs: float = DEFAULT_TRIAL_TIMEOUT,
+    poll_interval: float = DEFAULT_POLL_INTERVAL,
+) -> dict[str, Any]:
+    """Run the wg native executor entirely inside the Docker container.
+
+    Adds a task to the in-container graph, starts the wg service (which
+    forks a daemon that spawns native-exec), and polls until the task
+    reaches a terminal status.
+
+    Returns a metrics dict (status, task_id, elapsed_s, plus token/cost
+    data from stream.jsonl).
+    """
+    task_id = f"tb-{uuid.uuid4().hex[:8]}"
+
+    # Write the task instruction to a file inside the container to avoid
+    # shell quoting issues with arbitrary instruction text.
+    eof_marker = f"WGINST{uuid.uuid4().hex[:6]}"
+    write_instruction_cmd = (
+        f"cat > /tmp/tb-instruction.txt <<'{eof_marker}'\n"
+        f"{task_instruction}\n"
+        f"{eof_marker}"
+    )
+    await environment.exec(command=write_instruction_cmd)
+
+    # Add the task to the graph.  Use --description-file if available,
+    # otherwise fall back to -d with the file content.
+    add_cmd = (
+        f'wg add "TB task" --id {task_id} '
+        f'-d "$(cat /tmp/tb-instruction.txt)"'
+    )
+    add_result = await environment.exec(command=add_cmd)
+    if add_result.return_code != 0:
+        logger.error(f"wg add failed: {add_result.stderr}")
+        return {
+            "status": "setup_error",
+            "task_id": task_id,
+            "elapsed_s": 0.0,
+            "error": f"wg add failed: {add_result.stderr}",
+        }
+
+    # Build the env export line.  OPENROUTER_API_KEY must be inherited by
+    # the daemon process that wg service start forks.
+    api_key = os.environ.get("OPENROUTER_API_KEY", "")
+    env_exports = f'export OPENROUTER_API_KEY="{api_key}"'
+
+    # Start the service.  --no-coordinator-agent avoids the overhead of a
+    # coordinator agent when we only have a single task.
+    start_cmd = (
+        f'{env_exports} && '
+        f'wg service start --model "{model}" --no-coordinator-agent'
+    )
+    start_result = await environment.exec(command=start_cmd, timeout_sec=30)
+    if start_result.return_code != 0:
+        logger.error(f"wg service start failed: {start_result.stderr}")
+        return {
+            "status": "setup_error",
+            "task_id": task_id,
+            "elapsed_s": 0.0,
+            "error": f"wg service start failed: {start_result.stderr}",
+        }
+
+    # Poll for task completion
+    start_time = time.monotonic()
+    status = "timeout"
+
+    while True:
+        elapsed = time.monotonic() - start_time
+        if elapsed > timeout_secs:
+            # Kill the service to avoid burning API credits
+            await environment.exec(command="wg service stop")
+            break
+
+        show_result = await environment.exec(command=f"wg show {task_id}")
+        if show_result.return_code == 0 and show_result.stdout:
+            for line in show_result.stdout.splitlines():
+                stripped = line.strip()
+                if stripped.startswith("Status:"):
+                    parsed = stripped.split(":", 1)[1].strip().lower()
+                    if parsed in ("done", "failed", "abandoned"):
+                        status = parsed
+                        break
+        if status != "timeout":
+            break
+
+        await asyncio.sleep(poll_interval)
+
+    final_elapsed = time.monotonic() - start_time
+
+    # Stop the service cleanly
+    await environment.exec(command="wg service stop")
+
+    # Collect metrics from stream.jsonl inside the container.
+    # Caller may provide artifacts_dir if they already downloaded artifacts.
+    metrics = await _collect_agent_metrics_from_container(environment)
+    metrics["status"] = status
+    metrics["task_id"] = task_id
+    metrics["elapsed_s"] = final_elapsed
+
+    return metrics
+
+
+# ---------------------------------------------------------------------------
+# Build config.toml content as a string (for in-container writing)
+# ---------------------------------------------------------------------------
+
+def _build_config_toml_content(condition: str, model: str) -> str:
+    """Return config.toml content string for the given condition."""
+    cfg = CONDITION_CONFIG[condition]
+    lines = [
+        "[coordinator]",
+        f'max_agents = {cfg["max_agents"]}',
+        f'executor = "native"',
+        f'model = "{model}"',
+        f'worktree_isolation = false',
+        "max_verify_failures = 0",
+        "max_spawn_failures = 0",
+        "",
+        "[agent]",
+        f'model = "{model}"',
+        f'context_scope = "{cfg["context_scope"]}"',
+        f'exec_mode = "{cfg["exec_mode"]}"',
+        "",
+        "[agency]",
+        "auto_assign = false",
+        "auto_evaluate = false",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def _build_bundle_toml_content() -> str:
+    """Return bundle TOML content for Condition A (no wg tools)."""
+    return (
+        'name = "implementer"\n'
+        'description = "Full implementation agent without wg tools (Condition A baseline)."\n'
+        'tools = ["bash", "read_file", "write_file", "edit_file", "glob", "grep"]\n'
+        'context_scope = "clean"\n'
+        'system_prompt_suffix = ""\n'
+    )
+
+
+# ---------------------------------------------------------------------------
 # Distilled context guide for Condition F
 # ---------------------------------------------------------------------------
 
@@ -477,7 +740,8 @@ CONDITION_F_MEMORY = """## Workgraph Project Memory (Distilled)
 
 
 # ---------------------------------------------------------------------------
-# Docker-aware LLM agent loop
+# DEPRECATED: Docker-aware LLM agent loop (replaced by _run_native_executor)
+# Kept as fallback for conditions that haven't been migrated yet.
 # ---------------------------------------------------------------------------
 
 # Tool definitions for the LLM (OpenAI function-calling format)
@@ -832,64 +1096,80 @@ class WorkgraphAgent(BaseAgent):
         return shutil.which("wg") or "wg"
 
     async def setup(self, environment: BaseEnvironment) -> None:
-        """Create per-trial graph directory and configure the native executor."""
-        import tempfile
+        """Install wg inside the Docker container and configure the trial graph.
 
-        self._wg_temp_dir = tempfile.mkdtemp(prefix="tb-wg-")
-        self._wg_graph_dir = os.path.join(self._wg_temp_dir, ".workgraph")
-        wg_bin = self._wg_binary_host_path
-
-        # Initialize workgraph
-        await _exec_wg_cmd_host(self._wg_graph_dir, wg_bin, ["init"])
-        logger.info(f"Initialized trial workgraph at {self._wg_graph_dir}")
-
-        # Determine model — normalize Harbor format ("openrouter/minimax/minimax-m2.7")
-        # to workgraph format ("openrouter:minimax/minimax-m2.7").
+        Steps:
+          1. Upload the host wg binary into the container
+          2. Run ``wg init`` inside the container
+          3. Write config.toml (condition-specific) inside the container
+          4. Write custom bundle if needed (Condition A: no wg tools)
+          5. Bootstrap agency for conditions D/E (inside the container)
+        """
+        # Determine model — normalize Harbor format to wg format
         model_raw = self.model_name or BENCHMARK_MODEL
         self._model = _normalize_model(model_raw)
         logger.info(f"[model-routing] Trial model: '{self._model}' (raw from Harbor: '{model_raw}')")
 
-        # Write wg config for the trial
-        await _write_trial_wg_config(
-            self._wg_temp_dir, self._wg_graph_dir,
-            self.condition, self._model,
+        # Store the environment for use in run() / teardown
+        self._environment = environment
+
+        # 1. Upload wg binary into the container
+        wg_bin = self._wg_binary_host_path
+        await environment.upload_file(wg_bin, "/usr/local/bin/wg")
+        await environment.exec(command="chmod +x /usr/local/bin/wg")
+
+        # Verify wg is functional inside the container
+        check = await environment.exec(command="wg --version")
+        if check.return_code != 0:
+            raise RuntimeError(
+                f"wg binary not functional inside container: {check.stderr}"
+            )
+        logger.info(f"wg installed in container: {(check.stdout or '').strip()}")
+
+        # Ensure git is available (wg init requires it)
+        git_check = await environment.exec(command="which git || apt-get install -y git 2>/dev/null")
+        if git_check.return_code != 0:
+            logger.warning("git may not be available in container")
+
+        # 2. Initialize workgraph inside the container
+        init_result = await environment.exec(command="wg init")
+        if init_result.return_code != 0:
+            raise RuntimeError(
+                f"wg init failed inside container: {init_result.stderr}"
+            )
+        logger.info("Initialized trial workgraph inside container")
+
+        # 3. Write config.toml inside the container
+        config_content = _build_config_toml_content(self.condition, self._model)
+        eof = f"WGCFG{uuid.uuid4().hex[:6]}"
+        await environment.exec(
+            command=f"cat > .workgraph/config.toml <<'{eof}'\n{config_content}\n{eof}"
         )
 
-        # Write custom bundle if needed (e.g. Condition A: no wg tools)
-        await _write_trial_bundle(self._wg_graph_dir, self.condition)
-
-        # Federation: pull primitives from hub for agency conditions
+        # 4. Write custom bundle if needed (Condition A: no wg tools)
         cfg = CONDITION_CONFIG[self.condition]
-        hub_has_agency = False
-        if (
-            self.federation_hub
-            and self.condition in FEDERATION_CONDITIONS
-            and self.pull_primitives
-        ):
-            await _ensure_hub_initialized(self.federation_hub, wg_bin)
-            await _write_trial_federation_config(self._wg_graph_dir, self.federation_hub)
-            pull_result = await _federation_pull(self._wg_graph_dir, wg_bin, self.federation_hub)
-            logger.info(f"Federation pull from hub: {pull_result.strip()}")
-            hub_has_agency = True
+        if cfg.get("exclude_wg_tools"):
+            bundle_content = _build_bundle_toml_content()
+            beof = f"WGBUN{uuid.uuid4().hex[:6]}"
+            await environment.exec(command="mkdir -p .workgraph/bundles")
+            await environment.exec(
+                command=f"cat > .workgraph/bundles/implementer.toml <<'{beof}'\n{bundle_content}\n{beof}"
+            )
 
-        # Bootstrap agency for conditions D, E, F
+        # 5. Bootstrap agency for conditions D/E (inside the container)
         if cfg["agency"]:
-            if not hub_has_agency:
-                # No hub available — bootstrap from starters
-                await _exec_wg_cmd_host(self._wg_graph_dir, wg_bin, ["agency", "init"])
+            await environment.exec(command="wg agency init")
             role, tradeoff = cfg["agency"]
             agent_name = "solver" if self.condition == "D" else "orchestrator"
-            await _exec_wg_cmd_host(self._wg_graph_dir, wg_bin, [
-                "agent", "create", agent_name,
-                "--role", role,
-                "--tradeoff", tradeoff,
-            ])
+            await environment.exec(
+                command=f'wg agent create {agent_name} --role {role} --tradeoff {tradeoff}'
+            )
             self._agent_identity = {
                 "name": agent_name,
                 "role": role,
                 "tradeoff": tradeoff,
             }
-            logger.info(f"Condition {self.condition}: agency bootstrapped, {agent_name} created")
+            logger.info(f"Condition {self.condition}: agency bootstrapped in container")
 
     async def run(
         self,
@@ -897,12 +1177,8 @@ class WorkgraphAgent(BaseAgent):
         environment: BaseEnvironment,
         context: AgentContext,
     ) -> None:
-        """Run LLM agent loop with commands routed through Docker."""
+        """Run wg native executor inside the Docker container."""
         root_task_id = f"tb-{uuid.uuid4().hex[:8]}"
-
-        # Resolve max_turns and temperature from kwargs
-        max_turns = getattr(self, "_max_turns", 9999)
-        temperature = getattr(self, "_temperature", 0.0)
 
         # Initialize trial logger
         trial_log = TrialLogger(
@@ -914,46 +1190,77 @@ class WorkgraphAgent(BaseAgent):
 
         trial_log.begin_turn(0)
 
-        # Run Docker-aware agent loop
-        metrics = await _run_docker_agent_loop(
-            instruction=instruction,
+        # Run the native executor inside the container
+        metrics = await _run_native_executor(
             environment=environment,
+            task_instruction=instruction,
             model=self._model,
             condition=self.condition,
-            max_turns=max_turns,
             timeout_secs=self.timeout,
-            temperature=temperature,
+            poll_interval=self.poll_interval,
         )
+
+        # Download the entire .workgraph/ directory from the container
+        # for paper analysis (graph structure, agent logs, service logs, etc.)
+        artifacts_dir = await _download_wg_artifacts(environment, self.logs_dir)
+
+        # If _run_native_executor returned empty metrics (e.g. download_dir
+        # failed inside it), try again using the downloaded artifacts.
+        if metrics.get("total_turns", 0) == 0 and artifacts_dir is not None:
+            artifact_metrics = await _collect_agent_metrics_from_container(
+                environment, artifacts_dir=artifacts_dir,
+            )
+            # Merge artifact metrics into the main metrics dict (don't
+            # overwrite status/task_id/elapsed_s)
+            for k in ("total_input_tokens", "total_output_tokens",
+                       "total_cost_usd", "total_turns", "tool_calls"):
+                if artifact_metrics.get(k):
+                    metrics[k] = artifact_metrics[k]
 
         trial_log.end_turn(had_tool_calls=True)
 
-        trial_log.total_input_tokens = metrics["total_input_tokens"]
-        trial_log.total_output_tokens = metrics["total_output_tokens"]
+        trial_log.total_input_tokens = metrics.get("total_input_tokens", 0)
+        trial_log.total_output_tokens = metrics.get("total_output_tokens", 0)
         trial_log.total_cost = metrics.get("total_cost_usd", 0.0)
-        trial_log.total_turns = metrics["total_turns"]
-        trial_log.termination_type = metrics["termination_type"]
+        trial_log.total_turns = metrics.get("total_turns", 0)
 
-        elapsed = metrics["elapsed_s"]
+        # Map native executor status to termination type
+        status = metrics.get("status", "unknown")
+        if status == "done":
+            trial_log.termination_type = "natural_stop"
+        elif status == "failed":
+            trial_log.termination_type = "wg_fail"
+        elif status == "timeout":
+            trial_log.termination_type = "timeout"
+        elif status == "setup_error":
+            trial_log.termination_type = "llm_error"
+        else:
+            trial_log.termination_type = status
+
+        elapsed = metrics.get("elapsed_s", 0.0)
 
         # Build metadata
         metadata: dict[str, Any] = {
             "condition": self.condition,
-            "turns": metrics["total_turns"],
+            "turns": metrics.get("total_turns", 0),
             "root_task_id": root_task_id,
+            "wg_task_id": metrics.get("task_id"),
             "model": self._model,
-            "actual_model": metrics.get("actual_model"),
-            "termination_type": metrics["termination_type"],
+            "termination_type": trial_log.termination_type,
             "elapsed_s": elapsed,
-            "docker_agent_loop": True,
+            "native_executor": True,
         }
 
         cfg = CONDITION_CONFIG[self.condition]
         if cfg["agency"]:
             metadata["agent_identity"] = getattr(self, "_agent_identity", None)
 
+        if metrics.get("error"):
+            metadata["error"] = metrics["error"]
+
         # Populate Harbor's AgentContext
-        context.n_input_tokens = metrics["total_input_tokens"]
-        context.n_output_tokens = metrics["total_output_tokens"]
+        context.n_input_tokens = metrics.get("total_input_tokens", 0)
+        context.n_output_tokens = metrics.get("total_output_tokens", 0)
         context.cost_usd = metrics.get("total_cost_usd", 0.0)
         context.metadata = metadata
 
@@ -962,10 +1269,6 @@ class WorkgraphAgent(BaseAgent):
             k: v for k, v in metadata.items()
             if k not in ("condition", "model", "root_task_id")
         })
-
-        # Cleanup temp dir if it exists
-        if hasattr(self, "_wg_temp_dir"):
-            shutil.rmtree(self._wg_temp_dir, ignore_errors=True)
 
 
 # ---------------------------------------------------------------------------
