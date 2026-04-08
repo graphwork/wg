@@ -775,6 +775,9 @@ def _build_config_toml_content(condition: str, model: str) -> str:
         lines.append("coordinator_agent = true")
     if cfg.get("heartbeat_interval"):
         lines.append(f'heartbeat_interval = {cfg["heartbeat_interval"]}')
+    # Graceful completion: inject trial budget so heartbeat shifts to wind-down
+    if cfg.get("coordinator_agent"):
+        lines.append(f"trial_budget_secs = {int(DEFAULT_TRIAL_TIMEOUT)}")
     lines += [
         "",
         "[agent]",

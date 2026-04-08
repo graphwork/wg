@@ -126,6 +126,11 @@ impl StateInjector {
             sections.push(format!("### Context Pressure\n{}", warning));
         }
 
+        // 4. Time budget awareness
+        if let Some(time_section) = Self::collect_time_budget() {
+            sections.push(time_section);
+        }
+
         if sections.is_empty() {
             return None;
         }
@@ -160,6 +165,54 @@ impl StateInjector {
             lines.push(format!("- **{}**{}: {}", msg.sender, priority, msg.body));
         }
         Some(lines.join("\n"))
+    }
+
+    /// Check time budget from environment variables and return a time-awareness section.
+    ///
+    /// Reads `WG_TASK_TIMEOUT_SECS` and `WG_SPAWN_EPOCH` set at agent spawn time.
+    /// Returns a prompt section when both are set, informing the agent of remaining time.
+    fn collect_time_budget() -> Option<String> {
+        let timeout_secs: u64 = std::env::var("WG_TASK_TIMEOUT_SECS").ok()?.parse().ok()?;
+        let spawn_epoch: u64 = std::env::var("WG_SPAWN_EPOCH").ok()?.parse().ok()?;
+
+        let now_epoch = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let elapsed = now_epoch.saturating_sub(spawn_epoch);
+        let remaining = timeout_secs.saturating_sub(elapsed);
+        let budget_min = timeout_secs / 60;
+        let elapsed_min = elapsed / 60;
+        let remaining_min = remaining / 60;
+        let eighty_pct_min = (timeout_secs * 80 / 100) / 60;
+        let pct_used = if timeout_secs > 0 {
+            (elapsed * 100 / timeout_secs).min(100)
+        } else {
+            100
+        };
+
+        let mut section = format!(
+            "### Time Budget\n\
+             - Total budget: {}s ({}min)\n\
+             - Elapsed: {}s ({}min) — {}% used\n\
+             - Remaining: {}s ({}min)",
+            timeout_secs, budget_min, elapsed, elapsed_min, pct_used, remaining, remaining_min,
+        );
+
+        if pct_used >= 80 {
+            section.push_str(&format!(
+                "\n\n**CRITICAL — past {}min (80% of budget).** \
+                 Stop iterating and commit your best work NOW:\n\
+                 1. `git add <files> && git commit -m \"partial: <description>\"`\n\
+                 2. `wg log <task-id> \"Partial progress: <what's done, what remains>\"`\n\
+                 3. `wg done <task-id>`\n\n\
+                 Do NOT start new iterations, refactoring, or polish. \
+                 Committed partial progress is infinitely more valuable than uncommitted perfect work.",
+                eighty_pct_min,
+            ));
+        }
+
+        Some(section)
     }
 
     /// Check for graph state changes (dependency status changes).

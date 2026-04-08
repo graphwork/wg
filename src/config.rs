@@ -2214,6 +2214,11 @@ pub struct CoordinatorConfig {
     #[serde(default = "default_eval_frequency")]
     pub eval_frequency: String,
 
+    /// Total trial time budget in seconds. When set, heartbeat prompts include
+    /// remaining time and shift to wind-down behavior near the deadline.
+    #[serde(default)]
+    pub trial_budget_secs: Option<u64>,
+
     /// Enable git worktree isolation for spawned agents.
     /// When true, each agent gets its own worktree at .wg-worktrees/<agent-id>/.
     #[serde(default)]
@@ -2407,6 +2412,7 @@ impl Default for CoordinatorConfig {
             compaction_token_threshold: default_compaction_token_threshold(),
             compaction_threshold_ratio: default_compaction_threshold_ratio(),
             eval_frequency: default_eval_frequency(),
+            trial_budget_secs: None,
             worktree_isolation: false,
             max_coordinators: default_max_coordinators(),
             archive_retention_days: default_archive_retention_days(),

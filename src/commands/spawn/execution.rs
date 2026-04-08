@@ -478,6 +478,18 @@ pub(crate) fn spawn_agent_inner(
     cmd.env("WG_TASK_ID", task_id);
     cmd.env("WG_AGENT_ID", &temp_agent_id);
     cmd.env("WG_EXECUTOR_TYPE", &settings.executor_type);
+    // Time budget: inject timeout and spawn epoch for graceful completion
+    if let Some(secs) = effective_timeout_secs {
+        cmd.env("WG_TASK_TIMEOUT_SECS", secs.to_string());
+    }
+    cmd.env(
+        "WG_SPAWN_EPOCH",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+            .to_string(),
+    );
     // Propagate user identity to spawned agents
     cmd.env("WG_USER", workgraph::current_user());
     if let Some(ref m) = effective_model {

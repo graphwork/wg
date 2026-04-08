@@ -392,23 +392,46 @@ impl CoordinatorAgent {
         budget_secs: Option<u64>,
     ) -> Result<()> {
         let elapsed = start_time.elapsed().as_secs();
-        let remaining = budget_secs
-            .map(|b| b.saturating_sub(elapsed))
-            .unwrap_or(0);
+        let remaining = budget_secs.map(|b| b.saturating_sub(elapsed));
+        let remaining_display = remaining
+            .map(|r| format!("~{}s", r))
+            .unwrap_or_else(|| "unlimited".to_string());
         let timestamp = chrono::Utc::now().format("%H:%M:%S").to_string();
+
+        let phase_guidance = match remaining {
+            Some(r) if r < 120 => {
+                "⚠️ EMERGENCY — <2 minutes remaining!\n\
+                 1. Do NOT create or dispatch any new tasks\n\
+                 2. For each in-progress task: if the agent has committed code, \
+                    run `wg done <task>` to force-complete it\n\
+                 3. Kill any agents that appear stuck: `wg kill <id>`\n\
+                 4. Accept partial progress — it's better than nothing"
+            }
+            Some(r) if r < 300 => {
+                "⚠️ WIND-DOWN — <5 minutes remaining!\n\
+                 1. Do NOT create new tasks or spawn new agents\n\
+                 2. Send wrap-up message to ALL in-progress agents:\n\
+                    `wg msg send <task> \"TIME CRITICAL: <5min remaining. \
+                    Commit your current work NOW, run wg done, stop iterating.\"`\n\
+                 3. If a task's tests pass, force-complete it with `wg done <task>`\n\
+                 4. Focus on preserving progress, not perfection"
+            }
+            _ => {
+                "Review the system state and take action:\n\
+                 1. STUCK AGENTS: Any agent running >5min with no output? → `wg kill <id>` and retry\n\
+                 2. FAILED TASKS: Any tasks failed? → Analyze cause, create fix-up task or retry\n\
+                 3. READY WORK: Unblocked tasks waiting? → Ensure they'll be dispatched (they auto-spawn)\n\
+                 4. PROGRESS CHECK: Is the work converging toward completion?\n\
+                 5. STRATEGIC: Should any running approach be abandoned for a different strategy?"
+            }
+        };
 
         let prompt = format!(
             "[AUTONOMOUS HEARTBEAT] Tick #{tick_number} at {timestamp}\n\
-             Time elapsed: {elapsed}s | Budget remaining: ~{remaining}s\n\
+             Time elapsed: {elapsed}s | Budget remaining: {remaining_display}\n\
              \n\
              You are the autonomous coordinator for this project. No human operator.\n\
-             Review the system state and take action:\n\
-             \n\
-             1. STUCK AGENTS: Any agent running >5min with no output? → `wg kill <id>` and retry\n\
-             2. FAILED TASKS: Any tasks failed? → Analyze cause, create fix-up task or retry\n\
-             3. READY WORK: Unblocked tasks waiting? → Ensure they'll be dispatched (they auto-spawn)\n\
-             4. PROGRESS CHECK: Is the work converging toward completion?\n\
-             5. STRATEGIC: Should any running approach be abandoned for a different strategy?\n\
+             {phase_guidance}\n\
              \n\
              If everything is nominal, respond: \"NOOP — all systems nominal.\"\n\
              If you take action, log what and why.",

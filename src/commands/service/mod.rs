@@ -2820,7 +2820,7 @@ pub fn run_daemon(
                     match agent.send_heartbeat(
                         heartbeat_tick_number,
                         daemon_start_time,
-                        None, // budget_secs: None for non-TB runs
+                        config.coordinator.trial_budget_secs,
                     ) {
                         Ok(()) => {
                             logger.info(&format!(
