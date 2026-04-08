@@ -1093,11 +1093,13 @@ class WorkgraphAgent(BaseAgent):
         (Debian bookworm) for compatibility with TB Docker containers.
         The host-native binary may require a newer glibc than containers have.
         """
+        # Look for bookworm-out build relative to the repo root (works for any user)
+        repo_root = Path(__file__).resolve().parent.parent
         candidates = [
-            "/home/erik/workgraph/target/bookworm-out/wg",
+            str(repo_root / "target" / "bookworm-out" / "wg"),
             os.path.expanduser("~/.cargo/bin/wg"),
-            "/home/erik/workgraph/target/release/wg",
-            "/home/erik/workgraph/target/debug/wg",
+            str(repo_root / "target" / "release" / "wg"),
+            str(repo_root / "target" / "debug" / "wg"),
         ]
         for p in candidates:
             if os.path.isfile(p):
