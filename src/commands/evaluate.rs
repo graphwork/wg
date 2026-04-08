@@ -272,6 +272,10 @@ pub fn run(
     });
 
     // Step 4: Build evaluator prompt
+    let evaluated_outcome = role
+        .as_ref()
+        .and_then(|r| resolve_outcome(&r.outcome_id, &agency_dir));
+    let evaluated_outcome_name = evaluated_outcome.as_ref().map(|o| o.name.as_str());
     let evaluator_input = EvaluatorInput {
         task_title: &task.title,
         task_description: task.description.as_deref(),
@@ -290,6 +294,7 @@ pub fn run(
         flip_score,
         verify_status: verify_status_owned.as_deref(),
         verify_findings: verify_findings_owned.as_deref(),
+        resolved_outcome_name: evaluated_outcome_name,
     };
 
     let prompt = render_evaluator_prompt(&evaluator_input);

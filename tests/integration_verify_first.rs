@@ -406,6 +406,7 @@ fn test_eval_prompt_includes_verify_findings() {
         verify_findings: Some(
             "[2025-01-01] (agent-v): Tests pass\n[2025-01-01] (agent-v): Artifacts verified",
         ),
+        resolved_outcome_name: None,
     };
 
     let prompt = render_evaluator_prompt(&input);
@@ -469,6 +470,7 @@ fn test_eval_prompt_no_verify_section_when_absent() {
         flip_score: None,
         verify_status: None,
         verify_findings: None,
+        resolved_outcome_name: None,
     };
 
     let prompt = render_evaluator_prompt(&input);

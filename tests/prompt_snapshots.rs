@@ -192,6 +192,7 @@ fn snapshot_evaluator_prompt_full() {
         flip_score: None,
         verify_status: None,
         verify_findings: None,
+        resolved_outcome_name: None,
     };
 
     let output = render_evaluator_prompt(&input);
@@ -218,6 +219,7 @@ fn snapshot_evaluator_prompt_minimal() {
         flip_score: None,
         verify_status: None,
         verify_findings: None,
+        resolved_outcome_name: None,
     };
 
     let output = render_evaluator_prompt(&input);
@@ -246,6 +248,7 @@ fn snapshot_evaluator_prompt_with_evaluator_identity() {
         flip_score: None,
         verify_status: None,
         verify_findings: None,
+        resolved_outcome_name: None,
     };
 
     let output = render_evaluator_prompt(&input);
@@ -286,6 +289,7 @@ fn snapshot_evaluator_prompt_with_downstream_tasks() {
         flip_score: None,
         verify_status: None,
         verify_findings: None,
+        resolved_outcome_name: None,
     };
 
     let output = render_evaluator_prompt(&input);

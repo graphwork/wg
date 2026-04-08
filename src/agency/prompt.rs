@@ -348,6 +348,9 @@ pub struct EvaluatorInput<'a> {
     pub verify_status: Option<&'a str>,
     /// Log entries from the .verify-<task> task, if available.
     pub verify_findings: Option<&'a str>,
+    /// Resolved outcome name for the evaluated agent's role (avoids showing raw hash).
+    /// When `None`, falls back to `role.outcome_id` (which may be a content hash).
+    pub resolved_outcome_name: Option<&'a str>,
 }
 
 /// Render the evaluator prompt that an LLM evaluator will receive.
@@ -404,7 +407,10 @@ pub fn render_evaluator_prompt(input: &EvaluatorInput) -> String {
     if let Some(role) = input.role {
         let _ = writeln!(out, "**Role:** {} ({})", role.name, role.id);
         let _ = writeln!(out, "{}\n", role.description);
-        let _ = writeln!(out, "**Desired Outcome:** {}\n", role.outcome_id);
+        let outcome_display = input
+            .resolved_outcome_name
+            .unwrap_or(&role.outcome_id);
+        let _ = writeln!(out, "**Desired Outcome:** {}\n", outcome_display);
     } else {
         out.push_str("*No role was assigned.*\n\n");
     }
@@ -1229,6 +1235,7 @@ mod tests {
             flip_score: None,
             verify_status: None,
             verify_findings: None,
+            resolved_outcome_name: None,
         };
 
         let output = render_evaluator_prompt(&input);
@@ -1323,6 +1330,7 @@ mod tests {
             flip_score: None,
             verify_status: None,
             verify_findings: None,
+            resolved_outcome_name: None,
         };
 
         let output = render_evaluator_prompt(&input);
@@ -1365,6 +1373,7 @@ mod tests {
             flip_score: None,
             verify_status: None,
             verify_findings: None,
+            resolved_outcome_name: None,
         };
 
         let output = render_evaluator_prompt(&input);
@@ -1420,6 +1429,7 @@ mod tests {
             flip_score: None,
             verify_status: None,
             verify_findings: None,
+            resolved_outcome_name: None,
         };
 
         let output = render_evaluator_prompt(&input);
@@ -1466,6 +1476,7 @@ mod tests {
             verify_findings: Some(
                 "[2025-01-01] (agent-1): Tests pass\n[2025-01-01] (agent-1): Artifacts verified",
             ),
+            resolved_outcome_name: None,
         };
 
         let output = render_evaluator_prompt(&input);
@@ -1500,6 +1511,7 @@ mod tests {
             flip_score: None,
             verify_status: None,
             verify_findings: None,
+            resolved_outcome_name: None,
         };
 
         let output = render_evaluator_prompt(&input);
@@ -1531,6 +1543,7 @@ mod tests {
             flip_score: Some(0.85),
             verify_status: None,
             verify_findings: None,
+            resolved_outcome_name: None,
         };
 
         let output = render_evaluator_prompt(&input);
@@ -1741,5 +1754,67 @@ mod tests {
         assert!(output.contains("All work is complete."));
         // No criteria section when empty
         assert!(!output.contains("**Success Criteria:**"));
+    }
+
+    // -- regression test: hash IDs must be dereferenced, not shown raw ----------
+
+    #[test]
+    fn identity_prompt_shows_content_not_hashes() {
+        // Simulates the bug: a role has hash-based component_ids and outcome_id.
+        // resolve_all_components + resolve_outcome must dereference them so the
+        // rendered prompt contains actual text, not raw hashes.
+        use super::super::starters::seed_starters;
+
+        let dir = TempDir::new().unwrap();
+        let agency_dir = dir.path().join(".workgraph/agency");
+        seed_starters(&agency_dir).unwrap();
+
+        // Pick any seeded role (they all have hash-based component_ids/outcome_id)
+        let roles = super::super::starters::special_agent_roles();
+        let role = roles.iter().find(|r| r.name == "Evaluator").unwrap();
+
+        let tradeoffs = super::super::starters::special_agent_tradeoffs();
+        let tradeoff = tradeoffs
+            .iter()
+            .find(|t| t.name == "Evaluator Balanced")
+            .unwrap();
+
+        let workgraph_root = agency_dir.parent().unwrap();
+        let resolved_skills = resolve_all_components(role, workgraph_root, &agency_dir);
+        let outcome = resolve_outcome(&role.outcome_id, &agency_dir);
+
+        let prompt =
+            render_identity_prompt_rich(role, tradeoff, &resolved_skills, outcome.as_ref());
+
+        // The prompt MUST NOT contain any raw hash IDs from the role
+        for comp_id in &role.component_ids {
+            assert!(
+                !prompt.contains(comp_id),
+                "Prompt should not contain raw component hash '{}', got:\n{}",
+                comp_id,
+                prompt
+            );
+        }
+        assert!(
+            !prompt.contains(&role.outcome_id),
+            "Prompt should not contain raw outcome hash '{}', got:\n{}",
+            role.outcome_id,
+            prompt
+        );
+
+        // It MUST contain actual content
+        assert!(prompt.contains("#### Skills"));
+        assert!(prompt.contains("#### Desired Outcome"));
+        assert!(
+            outcome.is_some(),
+            "Outcome should resolve from the store"
+        );
+        let outcome = outcome.unwrap();
+        assert!(
+            prompt.contains(&outcome.name),
+            "Prompt should contain outcome name '{}', got:\n{}",
+            outcome.name,
+            prompt
+        );
     }
 }
