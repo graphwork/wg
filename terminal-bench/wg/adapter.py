@@ -477,79 +477,67 @@ async def _download_wg_artifacts(
 # Condition G: autopoietic meta-prompt
 # ---------------------------------------------------------------------------
 
-CONDITION_G_META_PROMPT = """## Autopoietic Workgraph — Seed Task
+CONDITION_G_META_PROMPT = """You are a graph architect. You do NOT implement solutions yourself.
 
-You are the seed agent in an autopoietic workgraph. Your job is to **build a
-self-correcting workgraph** that solves the task below, then **shut down
-cleanly when done**.
+Your job:
+1. Read the task below and understand what needs to be done
+2. Explore the working directory (`ls`, `cat`) to understand the codebase
+3. Check `ls tests/` to find the test scripts that verify success
+4. Build a workgraph that solves the problem, then mark YOUR task done
 
-### Required graph structure
+DO NOT write code. DO NOT modify files. Only create wg tasks.
 
-Build a workgraph with this shape:
+## Graph design
 
-1. **Analyze the problem first.** Read the task, check what's in the
-   working directory, look at `tests/` to understand what success looks like.
-2. **Decompose into parallel sub-tasks.** Break the work into independent
-   pieces that can run simultaneously. Up to 8 agents can work in parallel.
-   Tasks without `--after` edges between them run concurrently.
-3. **Verify task** (depends on ALL work tasks): runs the tests in `tests/`
-   to check if the solution is correct. Look at `ls tests/` to find test
-   scripts (typically `bash tests/test.sh` or `python3 tests/test_outputs.py`).
-4. **Cycle back-edge**: a fix/iterate task depends on verify, and the first
-   work task depends back on it, creating a loop. Cap with `--max-iterations 5`.
+Create tasks using `wg add`, then wire them into a self-correcting cycle:
 
-Example setup (adapt to the problem — **parallelize aggressively**):
-```
-wg add "Analyze problem and plan" --no-place
-wg add "Implement part A" --after analyze-problem-and-plan --no-place
-wg add "Implement part B" --after analyze-problem-and-plan --no-place
-wg add "Implement part C" --after analyze-problem-and-plan --no-place
-wg add "Run tests and check" --after implement-part-a --after implement-part-b --after implement-part-c --no-place
-wg add "Fix issues from test failures" --after run-tests-and-check --no-place
-wg edit implement-part-a --add-after fix-issues-from-test-failures --max-iterations 5
+```bash
+# 1. Work tasks (parallelize where possible — up to 8 agents run concurrently)
+wg add "Implement the solution" --no-place -d "Description of what to do..."
+
+# 2. Verify task (runs after work, checks if tests pass)
+wg add "Run tests and verify" --after implement-the-solution --no-place \
+  -d "Run the test suite: bash tests/test.sh (or python3 tests/test_outputs.py).
+If tests PASS: wg done <your-task-id> --converged
+If tests FAIL: wg log <your-task-id> 'what failed and why', then wg done <your-task-id>"
+
+# 3. Close the loop: work task cycles back through verify
+wg edit implement-the-solution --add-after run-tests-and-verify --max-iterations 5
 ```
 
-**Speed matters.** The more you parallelize, the faster each iteration
-completes, and the more iterations you can fit in the time budget. A serial
-chain of 5 tasks is slow. Five parallel tasks with a single verify gate is fast.
+The verify agent signals `--converged` when tests pass (stops the loop) or
+plain `wg done` when tests fail (triggers another iteration with failure
+context visible to the next work agent via `wg context`).
 
-### CRITICAL: How the verify task must behave
+## Important details for sub-task descriptions
 
-The verify task agent MUST do exactly this:
-1. Run the test suite (e.g. `bash tests/test.sh` or the appropriate command)
-2. If tests **pass**: run `wg done <my-task-id> --converged` — this STOPS
-   the cycle and signals success. The system shuts down.
-3. If tests **fail**: log what went wrong with `wg log <my-task-id> "..."`,
-   then run `wg done <my-task-id>` (WITHOUT --converged) — this triggers
-   another iteration of the cycle. The work agent will wake up again with
-   the failure context visible via `wg context`.
+Worker agents don't see this prompt. They only see the description you write
+in `wg add -d "..."`. So put ALL necessary context in each task's description:
+- What files to read/modify
+- What the expected output is
+- How to verify (test command)
+- For the verify task: EXACTLY when to use `--converged` vs plain `wg done`
 
-**If you do not signal `--converged`, the system will loop until max
-iterations or timeout. If you never call `wg done` at all, the system
-hangs. Every task MUST eventually call `wg done`.**
+## After building the graph
 
-### Additional guidance
+Call `wg done {seed_task_id}` to mark this seed task complete. The
+coordinator dispatches worker agents to your tasks automatically.
 
-- **Break down complex problems.** If the work has independent parts, use
-  multiple sub-tasks with `--after` edges. Fan out for parallelism.
-- **React to failures.** On iteration 2+, check `wg context` and `wg log`
-  to see what previous iterations tried and why they failed.
-- **Log your reasoning.** Use `wg log <id> "message"` so future iterations
-  have context about what was attempted.
-- After building the graph, mark THIS seed task as done: `wg done <seed-id>`.
-  The coordinator will dispatch agents to the tasks you created.
+## The task to solve
 
-### Key commands
-- `wg add "title" --after dep --no-place` — create a task
-- `wg edit <id> --add-after <id> --max-iterations N` — create a cycle
-- `wg done <id> --converged` — STOP the cycle (tests pass, we're done)
-- `wg done <id>` — continue the cycle (tests fail, try again)
-- `wg log <id> "message"` — log progress for other agents/iterations
-- `wg context <id>` — see context from dependencies and previous iterations
-- `wg show <id>` — check task status and loop_iteration count
+"""
 
-### The task to solve
 
+# ---------------------------------------------------------------------------
+# Condition G: architect bundle TOML (written into container)
+# ---------------------------------------------------------------------------
+
+ARCHITECT_BUNDLE_TOML = """\
+name = "architect"
+description = "Graph architect agent: reads the problem, designs the workgraph, delegates all implementation."
+tools = ["bash", "read_file", "glob", "grep", "wg_show", "wg_list", "wg_add", "wg_done", "wg_fail", "wg_log", "wg_artifact"]
+context_scope = "clean"
+system_prompt_suffix = ""
 """
 
 
@@ -644,7 +632,17 @@ async def _run_native_executor(
     # For Condition G, prepend the autopoietic meta-prompt to the instruction
     # so the agent knows to build a self-correcting workgraph.
     if cfg.get("autopoietic"):
-        full_instruction = CONDITION_G_META_PROMPT + task_instruction
+        # Inject the seed task ID so the architect knows what to wg done
+        meta = CONDITION_G_META_PROMPT.replace("{seed_task_id}", task_id)
+        full_instruction = meta + task_instruction
+
+        # Write the architect bundle into the container so the seed task
+        # gets clean context (no REQUIRED_WORKFLOW competing with our prompt)
+        b64_bundle = base64.b64encode(ARCHITECT_BUNDLE_TOML.encode()).decode()
+        await environment.exec(command="mkdir -p .workgraph/bundles")
+        await environment.exec(
+            command=f"echo '{b64_bundle}' | base64 -d > .workgraph/bundles/architect.toml"
+        )
     else:
         full_instruction = task_instruction
 
@@ -662,8 +660,11 @@ async def _run_native_executor(
     # Add the task to the graph using the instruction file.
     # --no-place skips the placement pipeline and makes the task immediately
     # available for dispatch (otherwise interactive default is paused/draft).
+    # For autopoietic conditions, the seed task uses exec-mode "architect"
+    # which maps to the architect bundle (clean context, no REQUIRED_WORKFLOW).
+    exec_mode_flag = ' --exec-mode architect' if cfg.get("autopoietic") else ''
     add_cmd = (
-        f'wg add "TB task" --id {task_id} --no-place '
+        f'wg add "TB task" --id {task_id} --no-place{exec_mode_flag} '
         f'-d "$(cat /tmp/tb-instruction.txt)"'
     )
     add_result = await environment.exec(command=add_cmd)
