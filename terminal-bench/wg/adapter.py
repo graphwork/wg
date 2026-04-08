@@ -1094,7 +1094,8 @@ class WorkgraphAgent(BaseAgent):
         The host-native binary may require a newer glibc than containers have.
         """
         # Look for bookworm-out build relative to the repo root (works for any user)
-        repo_root = Path(__file__).resolve().parent.parent
+        # adapter.py is at terminal-bench/wg/adapter.py, so .parent.parent.parent = repo root
+        repo_root = Path(__file__).resolve().parent.parent.parent
         candidates = [
             str(repo_root / "target" / "bookworm-out" / "wg"),
             os.path.expanduser("~/.cargo/bin/wg"),
