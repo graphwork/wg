@@ -721,10 +721,8 @@ fn test_dispatch_reiteration_header_ready_after_reopen() {
 #[test]
 fn test_dispatch_cycle_header_not_exempt_from_forward_deps() {
     // Context-scopes scenario: design → integrate → verify (cycle via back-edges).
-    // verify has cycle_config. Auto-back-edges add verify to design.after and
-    // integrate.after, forming an SCC = {design, integrate, verify}.
-    //
-    // External dep x (Done) → design makes design the deterministic entry/header.
+    // verify has cycle_config. SCC = {design, integrate, verify}.
+    // Havlak DFS (sorted task IDs) visits design first → header = design.
     // Back-edges from DFS: verify→design, verify→integrate.
     //
     // When design is Done:
@@ -752,27 +750,26 @@ fn test_dispatch_cycle_header_not_exempt_from_forward_deps() {
     let graph = build_graph(vec![x, design, integrate, verify]);
     let analysis = graph.compute_cycle_analysis();
 
-    // verify has cycle_config, so it becomes the effective header.
-    // Back-edges are edges from cycle members INTO verify.
+    // Havlak header is "design" (alphabetically first in SCC).
+    // Back-edges: (verify, design) and (verify, integrate).
     assert_eq!(
-        analysis.cycles[0].header, "verify",
-        "Verify should be the cycle header (it has cycle_config)"
+        analysis.cycles[0].header, "design",
+        "Design should be the cycle header (alphabetically first in SCC)"
     );
 
     let ready = ready_tasks_cycle_aware(&graph, &analysis);
     let ready_ids: Vec<&str> = ready.iter().map(|t| t.id.as_str()).collect();
 
-    // verify is the header; its cycle-member deps (integrate, design) are
-    // back-edges, so verify is ready. design is already Done.
+    // design is Done. integrate: design Done + verify back-edge skipped → READY.
     assert!(
-        ready_ids.contains(&"verify"),
-        "Verify should be ready (cycle header, back-edges skipped). Ready: {:?}",
+        ready_ids.contains(&"integrate"),
+        "Integrate should be ready (design Done, verify back-edge skipped). Ready: {:?}",
         ready_ids
     );
-    // integrate depends on verify (not a back-edge) which is Open → blocked
+    // verify depends on integrate (not a back-edge) which is Open → blocked
     assert!(
-        !ready_ids.contains(&"integrate"),
-        "Integrate must NOT be ready (forward dep on verify is Open). Ready: {:?}",
+        !ready_ids.contains(&"verify"),
+        "Verify must NOT be ready (forward dep on integrate is Open). Ready: {:?}",
         ready_ids
     );
 }
@@ -3685,20 +3682,20 @@ fn test_deep_three_task_cycle_reopen_and_ordering() {
     assert_eq!(graph.get_task("b").unwrap().loop_iteration, 1);
     assert_eq!(graph.get_task("c").unwrap().loop_iteration, 1);
 
-    // C has cycle_config → C is the effective header. Back-edge is B→C
-    // (edge from cycle member into header). C is ready (B back-edge skipped).
-    // B depends on C (not a back-edge) → B blocked.
+    // SCC is {b, c}. Havlak DFS visits b first (alphabetically) → header = b.
+    // Back-edge: (c, b). B's dep on C is skipped. B ready (A Done, C skipped).
+    // C depends on B (forward, not back-edge) → C blocked.
     let analysis = graph.compute_cycle_analysis();
     let ready = ready_tasks_cycle_aware(&graph, &analysis);
     let ready_ids: Vec<&str> = ready.iter().map(|t| t.id.as_str()).collect();
     assert!(
-        ready_ids.contains(&"c"),
-        "C should be ready after re-open (cycle header, B back-edge skipped). Ready: {:?}",
+        ready_ids.contains(&"b"),
+        "B should be ready after re-open (cycle header, C back-edge skipped, A Done). Ready: {:?}",
         ready_ids
     );
     assert!(
-        !ready_ids.contains(&"b"),
-        "B should NOT be ready (forward dep on C is Open). Ready: {:?}",
+        !ready_ids.contains(&"c"),
+        "C should NOT be ready (forward dep on B is Open). Ready: {:?}",
         ready_ids
     );
 }
