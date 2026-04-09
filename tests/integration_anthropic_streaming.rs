@@ -485,8 +485,8 @@ is_default = true
     );
     std::fs::write(tmp.path().join("config.toml"), config_content).unwrap();
 
-    // "anthropic/<model>" should route to Anthropic, stripping prefix
-    let prefixed_model = format!("anthropic/{CLAUDE_SONNET_MODEL_ID}");
+    // "claude:<model>" should route to Anthropic, stripping prefix
+    let prefixed_model = format!("claude:{CLAUDE_SONNET_MODEL_ID}");
     let provider = workgraph::executor::native::provider::create_provider(
         tmp.path(),
         &prefixed_model,
