@@ -199,6 +199,146 @@ impl Tool for WriteFileTool {
 
 // ── edit_file ───────────────────────────────────────────────────────────
 
+/// Returns a snippet of content around the expected match position.
+/// Shows lines before and after for context with >>> marker on the relevant line.
+fn context_snippet(content: &str, expected_pos: usize, context_lines: usize) -> String {
+    let lines: Vec<&str> = content.lines().collect();
+    if lines.is_empty() {
+        return String::new();
+    }
+
+    // Find which line contains expected_pos
+    let mut char_count = 0usize;
+    let mut line_containing_pos = 0usize;
+
+    for (i, line) in lines.iter().enumerate() {
+        let line_len = line.len() + 1; // +1 for newline
+        if char_count + line_len > expected_pos {
+            line_containing_pos = i;
+            break;
+        }
+        char_count += line_len;
+    }
+
+    let start = line_containing_pos.saturating_sub(context_lines);
+    let end = (line_containing_pos + context_lines + 1).min(lines.len());
+
+    let mut snippet = String::new();
+    for (i, line) in lines[start..end].iter().enumerate() {
+        let line_num = start + i + 1;
+        let marker = if start + i == line_containing_pos { ">>>" } else { "   " };
+        snippet.push_str(&format!("{}{:>4}| {}\n", marker, line_num, line));
+    }
+    snippet
+}
+
+/// Detects line ending type in content
+fn detect_line_endings(content: &str) -> &'static str {
+    if content.contains("\r\n") {
+        "CRLF (\\r\\n)"
+    } else if content.contains('\n') {
+        "LF (\\n)"
+    } else if content.contains('\r') {
+        "CR (\\r)"
+    } else {
+        "none (file may be a single line)"
+    }
+}
+
+/// Finds a similar region in content that might be what the user intended
+fn find_similar_region<'a>(content: &'a str, search: &str) -> Option<(usize, String, String)> {
+    // Get the first line of the search string (strip newlines)
+    let search_trimmed = search.trim();
+    if search_trimmed.is_empty() {
+        return None;
+    }
+
+    let search_lines: Vec<&str> = search_trimmed.lines().collect();
+    if search_lines.is_empty() {
+        return None;
+    }
+
+    let first_line = search_lines[0].trim();
+    if first_line.len() < 3 {
+        return None;
+    }
+
+    // Try to find a line that shares significant prefix content
+    let mut best_match: Option<(usize, &str)> = None;
+    let mut best_score = 0;
+
+    for (line_num, line) in content.lines().enumerate() {
+        let line_trimmed = line.trim();
+        if line_trimmed.is_empty() {
+            continue;
+        }
+
+        // Calculate similarity based on common prefix
+        let common_len = line_trimmed
+            .chars()
+            .zip(first_line.chars())
+            .take_while(|(a, b)| a == b)
+            .count();
+
+        if common_len >= 3 && common_len > best_score {
+            best_score = common_len;
+            best_match = Some((line_num, line_trimmed));
+        }
+    }
+
+    if let Some((line_num, matched_line)) = best_match {
+        // Calculate position for context snippet
+        let mut pos = 0usize;
+        for (i, line) in content.lines().enumerate() {
+            if i == line_num {
+                break;
+            }
+            pos += line.len() + 1;
+        }
+
+        let snippet = context_snippet(content, pos, 3);
+
+        // Build suggestion
+        let mut suggestion = String::new();
+        if matched_line != first_line {
+            // Check for trailing whitespace differences
+            let exp_trailing = first_line.trim_end();
+            let act_trailing = matched_line.trim_end();
+            if exp_trailing != act_trailing {
+                suggestion.push_str(&format!(
+                    "  Leading content differs:\n    expected: '{}'\n    actual:   '{}'\n",
+                    exp_trailing.replace('\n', "\\n").replace('\r', "\\r").replace('\t', "\\t"),
+                    act_trailing.replace('\n', "\\n").replace('\r', "\\r").replace('\t', "\\t")
+                ));
+            }
+
+            // Check for trailing whitespace
+            if first_line.len() != matched_line.len() {
+                if first_line.ends_with(' ') && !matched_line.ends_with(' ') {
+                    suggestion.push_str("  Note: expected trailing space is missing\n");
+                } else if !first_line.ends_with(' ') && matched_line.ends_with(' ') {
+                    suggestion.push_str("  Note: unexpected trailing space present\n");
+                }
+            }
+
+            // Check newline differences
+            let exp_has_newline = first_line.ends_with('\n') || first_line.ends_with('\r');
+            let act_has_newline = matched_line.ends_with('\n') || matched_line.ends_with('\r');
+            if exp_has_newline != act_has_newline {
+                suggestion.push_str("  Note: newline handling differs (check if trailing newline is included)\n");
+            }
+        }
+
+        if suggestion.is_empty() {
+            suggestion.push_str("  No obvious whitespace differences detected");
+        }
+
+        return Some((pos, snippet, suggestion));
+    }
+
+    None
+}
+
 struct EditFileTool;
 
 #[async_trait]
@@ -253,16 +393,76 @@ impl Tool for EditFileTool {
 
         let count = content.matches(old_string).count();
         if count == 0 {
-            return ToolOutput::error(format!(
-                "old_string not found in '{}'. Make sure the string matches exactly.",
-                path
-            ));
+            let line_ending = detect_line_endings(&content);
+            let line_ending_suggestion: &str = if old_string.contains('\n') || old_string.contains('\r') {
+                "\n\nTip: If your old_string contains newlines, make sure they match the file's line endings."
+            } else {
+                ""
+            };
+
+            let similar_content = find_similar_region(&content, old_string);
+
+            let error_msg = if let Some((pos, snippet, suggestion)) = similar_content {
+                format!(
+                    "old_string not found in '{}'.\n\n\
+                    File line endings: {}{}\n\n\
+                    Similar content found at position {}:\n\
+                    {}\n\
+                    {}\
+                    \n\
+                    Common issues to check:\n\
+                    - Extra or missing spaces/tabs at line ends\n\
+                    - Different line endings (\\n vs \\r\\n)\n\
+                    - Inclusion or exclusion of trailing newlines\n\
+                    - Whitespace characters that look identical but differ (e.g., space vs tab)",
+                    path, line_ending, line_ending_suggestion, pos, snippet, suggestion
+                )
+            } else {
+                format!(
+                    "old_string not found in '{}'.\n\n\
+                    File line endings: {}{}\n\n\
+                    File preview:\n\
+                    {}\n\n\
+                    Common issues to check:\n\
+                    - Extra or missing spaces/tabs at line ends\n\
+                    - Different line endings (\\n vs \\r\\n)\n\
+                    - Inclusion or exclusion of trailing newlines\n\
+                    - Whitespace characters that look identical but differ (e.g., space vs tab)",
+                    path,
+                    line_ending,
+                    line_ending_suggestion,
+                    context_snippet(&content, 0, 10)
+                )
+            };
+            return ToolOutput::error(error_msg);
         }
         if count > 1 {
-            return ToolOutput::error(format!(
-                "old_string found {} times in '{}'. It must be unique. Provide more context.",
+            // Find all match positions and show context for each
+            let mut matches = Vec::new();
+            let mut search_start = 0usize;
+            while let Some(pos) = content[search_start..].find(old_string) {
+                let abs_pos = search_start + pos;
+                let line_num = content[..abs_pos].chars().filter(|&c| c == '\n').count() + 1;
+                matches.push((abs_pos, line_num));
+                search_start = abs_pos + 1;
+            }
+
+            let mut error_msg = format!(
+                "old_string found {} times in '{}'. It must be unique.\n\n\
+                Matches occurred at:",
                 count, path
-            ));
+            );
+
+            for (pos, line_num) in &matches {
+                let snippet = context_snippet(&content, *pos, 2);
+                error_msg.push_str(&format!(
+                    "\n\n--- Match at line {}, position {} ---\n{}",
+                    line_num, pos, snippet
+                ));
+            }
+
+            error_msg.push_str("\n\nTip: Provide more surrounding context to make the match unique.");
+            return ToolOutput::error(error_msg);
         }
 
         let new_content = content.replacen(old_string, new_string, 1);
