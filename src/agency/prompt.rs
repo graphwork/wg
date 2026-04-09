@@ -160,14 +160,9 @@ pub fn resolve_all_components(
                     Ok(resolved) => resolved.content,
                     Err(_) => comp.description.clone(),
                 };
-                let category_label = match comp.category {
-                    ComponentCategory::Translated => "Translated",
-                    ComponentCategory::Enhanced => "Enhanced",
-                    ComponentCategory::Novel => "Novel",
-                };
                 return Some(ResolvedSkill {
                     name: comp.name,
-                    content: format!("[{}] {}\n{}", category_label, comp.description, content),
+                    content: format!("{}\n{}", comp.description, content),
                 });
             }
 
@@ -177,14 +172,9 @@ pub fn resolve_all_components(
                     Ok(resolved) => resolved.content,
                     Err(_) => comp.description.clone(),
                 };
-                let category_label = match comp.category {
-                    ComponentCategory::Translated => "Translated",
-                    ComponentCategory::Enhanced => "Enhanced",
-                    ComponentCategory::Novel => "Novel",
-                };
                 return Some(ResolvedSkill {
                     name: comp.name,
-                    content: format!("[{}] {}\n{}", category_label, comp.description, content),
+                    content: format!("{}\n{}", comp.description, content),
                 });
             }
 
@@ -1590,7 +1580,6 @@ mod tests {
         let resolved = resolve_all_components(&role, dir.path(), &agency_dir);
         assert_eq!(resolved.len(), 1);
         assert_eq!(resolved[0].name, "Rust Expert");
-        assert!(resolved[0].content.contains("[Translated]"));
         assert!(
             resolved[0]
                 .content
@@ -1650,7 +1639,7 @@ mod tests {
         assert_eq!(resolved.len(), 2);
         // Store component
         assert_eq!(resolved[0].name, "Testing");
-        assert!(resolved[0].content.contains("[Enhanced]"));
+        assert!(resolved[0].content.contains("Write comprehensive tests."));
         assert!(resolved[0].content.contains("Always test edge cases."));
         // Inline fallback
         assert_eq!(resolved[1].name, "inline");
