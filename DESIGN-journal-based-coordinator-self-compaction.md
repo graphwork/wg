@@ -1,288 +1,231 @@
 # Design: Journal-Based Coordinator Self-Compaction
 
-**Date:** 2026-04-09
-**Status:** Draft
+**Date:** 2026-04-09  
+**Status:** Ready for Implementation  
 **Type:** Architecture Enhancement
 
 ---
 
-## Problem Statement
+## Context
 
-The current coordinator compaction system (`run_graph_compaction` in `src/commands/service/mod.rs:1643`) is **externally driven** — the daemon must poll, check token thresholds, and trigger compaction on behalf of the coordinator. This creates coupling and timing issues.
+The Coordinator is a long-lived Claude CLI subprocess with unbounded LLM context growth. The current system spawns `.compact-*` tasks which compact the graph state summary (`.workgraph/compactor/context.md`), NOT the coordinator's own LLM conversation history.
 
-**Goal:** Enable the coordinator to compact **itself** using its own conversation journal, without requiring daemon-mediated token counting or explicit `.compact-*` task lifecycle management.
+The `accumulated_tokens` field IS tracked but used only to trigger `.compact-*` tasks, not self-compaction.
+
+**API Critical Note:** With prompt caching, `input_tokens` is near-zero (cached), `cache_creation` is where new content accumulates.
 
 ---
 
-## Background
+## 1. Data Structures
 
-### Current Compaction Architecture
+### Journal File Location
+`.workgraph/coordinator/journal.md`
 
-The existing system has **two independent compaction layers**:
-
-| Layer | Location | Trigger | Token Counting |
-|-------|----------|---------|----------------|
-| **Native Executor** | `src/executor/native/resume.rs:698–845` | Per-turn pressure check (char-count proxy) | Rough (÷4.0 char estimation) |
-| **Coordinator** | `src/commands/service/mod.rs:1643–1857` | Daemon poll + token threshold | Accurate (API-reported) |
-
-Coordinator compaction:
-- Runs inside the daemon's main event loop
-- Checks `CoordinatorState::accumulated_tokens` against `effective_compaction_threshold()`
-- Marks `.compact-0` as InProgress → calls `compactor::run_compaction()` → marks Done
-- Resets `accumulated_tokens` to 0 after successful compaction
-
-### The Journal
-
-The native executor already writes a **conversation journal** (`src/executor/native/journal.rs`) to `.workgraph/output/<task-id>/conversation.jsonl`. Each entry is a JSON line with:
+### Compaction Marker Format
+```
+=== COMPACTION 2026-04-09T20:30:00Z ===
 
 ```json
-{"seq":1,"timestamp":"2026-04-09T10:00:00Z","entry_type":"init",...}
-{"seq":2,"timestamp":"2026-04-09T10:00:01Z","entry_type":"message",...}
-{"seq":3,"timestamp":"2026-04-09T10:00:05Z","entry_type":"tool_execution",...}
-{"seq":4,"timestamp":"2026-04-09T10:00:10Z","entry_type":"compaction",...}
-```
-
-**Existing compaction journal entry** (`JournalEntryKind::Compaction`):
-```rust
-Compaction {
-    compacted_through_seq: u64,    // Last seq that was compacted
-    summary: String,                // Human-readable summary
-    original_message_count: u32,   // How many messages were compacted
-    original_token_count: u32,     // Token count in compacted region (always 0)
+{
+  "message_count": 150,
+  "cache_creation_tokens": 180000,
+  "summary": "Summarized conversation covering task assignments, graph state changes, and coordinator decisions from initial setup through iteration 50.",
+  "model_used": "minimax/minimax-m2.7",
+  "messages_before": 150,
+  "messages_after": 50
 }
 ```
 
-The `seq` field provides a monotonically increasing sequence number — ideal for determining how much conversation history remains uncompacted.
+===
+
+### Summary Format (JSON fields)
+- `message_count`: u32 - Number of messages collapsed into summary
+- `cache_creation_tokens`: u32 - Tokens accumulated at compaction time
+- `summary`: string - Text summary of collapsed conversation
+- `model_used`: string - Model used for summarization
+- `messages_before`: u32 - Count of messages before compaction
+- `messages_after`: u32 - Count of messages retained after compaction
 
 ---
 
-## Design: Coordinator Self-Compaction via Journal
+## 2. Trigger Logic
 
-### Core Idea
+### Token Threshold
+- Default: 80% of model context limit (180,000 tokens for 200K context models)
+- Configurable via `coordinator.compaction.threshold` (0.0-1.0)
 
-The coordinator agent (running as a native executor) already has access to its own conversation journal. Rather than relying on the daemon to count tokens externally, the coordinator can:
+### CRITICAL: Count cache_creation, NOT input_tokens
 
-1. **Read its own journal** to determine conversation length
-2. **Trigger self-compaction** when the conversation exceeds a threshold
-3. **Write a `Compaction` journal entry** marking what was summarized
-4. **Continue running** with the compacted context
+```rust
+// WRONG - input_tokens is near-zero with prompt caching
+let tokens = response.usage.input_tokens;
 
-This shifts compaction from an **external daemon action** to an **internal agent action**.
-
-### Advantages
-
-| Aspect | Current (Daemon-Driven) | Proposed (Journal-Based Self-Compaction) |
-|--------|------------------------|------------------------------------------|
-| Token counting | External (`accumulated_tokens`) | Native (actual API usage per message) |
-| Trigger mechanism | Daemon poll interval | Agent pre-turn check |
-| Compaction scope | Whole graph state | Single coordinator conversation |
-| Lifecycle management | `.compact-*` tasks | No special tasks needed |
-| Coupling | Daemon ↔ Coordinator | Coordinator is self-contained |
-| Debugging | Scattered across daemon/coordinator | All compaction evidence in journal |
-
-### Interaction with Existing Systems
-
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                    Coordinator Self-Compaction                       │
-├─────────────────────────────────────────────────────────────────────┤
-│                                                                      │
-│  Coordinator Agent (Native Executor)                                 │
-│  ┌──────────────────────────────────────────────────────────────┐   │
-│  │  Pre-turn check:                                            │   │
-│  │    1. Read journal entries                                  │   │
-│  │    2. Sum actual token counts (from Usage in Message entries)│   │
-│  │    3. If tokens > threshold → call emergency_compact()      │   │
-│  │    4. Write Compaction journal entry                        │   │
-│  └──────────────────────────────────────────────────────────┘   │
-│                              │                                     │
-│                              ▼                                     │
-│  ┌──────────────────────────────────────────────────────────────┐   │
-│  │  Conversation Journal (conversation.jsonl)                    │   │
-│  │    - Init / Message / ToolExecution / Compaction / End        │   │
-│  │    - seq is monotonically increasing                         │   │
-│  │    - Compaction entries track compacted_through_seq          │   │
-│  └──────────────────────────────────────────────────────────────┘   │
-│                              │                                     │
-│                              ▼                                     │
-│  ┌──────────────────────────────────────────────────────────────┐   │
-│  │  Daemon Compaction (existing system, optional)               │   │
-│  │    - Summarizes graph state → context.md                    │   │
-│  │    - Can read journal for additional context                 │   │
-│  └──────────────────────────────────────────────────────────────┘   │
-│                                                                      │
-└─────────────────────────────────────────────────────────────────────┘
+// CORRECT - cache_creation accumulates new content in cache
+let tokens = response.usage.cache_creation;
 ```
 
-**Key insight:** The two compaction systems operate at different levels:
-- **Agent-level** (proposed): Compacts the coordinator's conversation context
-- **Graph-level** (existing): Summarizes the full workgraph state into `context.md`
+### Trigger Condition
 
-They are complementary and can coexist.
+```rust
+fn should_compact(cache_creation_tokens: u32, context_limit: u32, threshold: f32) -> bool {
+    let limit = (context_limit as f32 * threshold) as u32;
+    cache_creation_tokens >= limit
+}
+```
+
+### Self-Compaction Process (No Task Spawning)
+
+1. Check `cache_creation_tokens` after each coordinator turn
+2. If threshold exceeded, coordinator calls LLM to summarize recent history
+3. Coordinator writes Compaction marker to `journal.md`
+4. Coordinator truncates messages, retaining only recent N (default: 50)
+5. Coordinator continues WITHOUT spawning `.compact-*` task
+
+### Configuration
+
+```yaml
+coordinator:
+  compaction:
+    enabled: true
+    threshold: 0.8
+    recent_count: 50
+    journal_path: ".workgraph/coordinator/journal.md"
+    use_self_compaction: true
+```
 
 ---
 
-## Implementation Plan
+## 3. Resume Logic
 
-### Phase 1: Journal-Enabled Token Counting
+### On Restart/Resume
 
-Enhance the journal to capture actual API token counts, not just estimate them.
+1. Read `.workgraph/coordinator/journal.md`
+2. Find LATEST Compaction marker (last occurrence in file)
+3. Parse JSON summary from marker body
+4. Reconstruct context: `[system prompt]` + `[summary]` + `[recent N messages]`
+5. Continue execution
 
-**Changes to `JournalEntryKind::Message`:**
-```rust
-Message {
-    role: Role,
-    content: Vec<ContentBlock>,
-    usage: Option<Usage>,           // Already present
-    response_id: Option<String>,
-    stop_reason: Option<StopReason>,
-    // ADD: Tokens consumed by this turn (input + output)
-    turn_token_count: Option<u32>,  // NEW FIELD
-}
+### Context Injection Format
+
 ```
+[System Prompt]
 
-**Changes to `Journal::append` for compaction:**
-```rust
-Compaction {
-    compacted_through_seq: u64,
-    summary: String,
-    original_message_count: u32,
-    original_token_count: u32,  // NOW POPULATED from sum of turn_token_count
-}
+=== RESUMED FROM COMPACTION 2026-04-09T21:00:00Z ===
+[Summarized conversation covering 200 messages across 50 tasks...]
+
+Recent events:
+- Task design-journal-based-2 assigned and in-progress
+- 3 research subtasks created for parallel investigation
+
+[Recent 50 messages from journal]
+===
+
+[Continue from here...]
 ```
-
-### Phase 2: Self-Compaction in Coordinator Agent
-
-Add a pre-turn pressure check in the coordinator agent loop that:
-
-1. **Reads the journal** to count tokens since last compaction
-2. **Sums `turn_token_count`** from Message entries after the last `Compaction` entry
-3. **If sum > threshold:** calls `emergency_compact()` with a summary prompt
-4. **Writes a `Compaction` journal entry** with accurate token counts
-
-**Trigger site:** Similar to `agent.rs:1000–1070` but in the coordinator agent.
-
-**Compaction algorithm:** Same `ContextBudget::emergency_compact()` used by native executor.
-
-### Phase 3: Daemon Compaction (Optional Enhancement)
-
-The daemon's `run_graph_compaction()` can optionally read the coordinator's journal to:
-- Get accurate token usage statistics
-- Include per-coordinator conversation summaries in `context.md`
-- Remove the need for external `accumulated_tokens` tracking
 
 ---
 
-## Detailed Design
+## 4. Migration Path
 
-### Token Counting
+### Phase 1: Implement Self-Compaction (Parallel)
 
-Current: `ContextBudget::estimate_tokens()` uses char-count proxy (÷4.0).
+- Implement journal-based self-compaction in coordinator
+- Add `coordinator.compaction.use_self_compaction: false` config (default false)
+- Run both systems in parallel, compare behavior
 
-Proposed: Use actual API-reported token counts from journal entries.
+### Phase 2: Enable by Default
+
+- Flip `use_self_compaction: true` as default
+- Remove code that spawns `.compact-*` tasks from coordinator
+
+### Phase 3: Cleanup
+
+- Remove compactor/context.md dependency from coordinator
+- Archive or remove compactor daemon logic
+
+### Code Changes Required
 
 ```rust
-fn journal_token_count(path: &Path, since_seq: u64) -> Result<u64> {
-    let entries = Journal::read_all(path)?;
-    let mut total = 0u64;
-    for entry in entries {
-        match &entry.kind {
-            JournalEntryKind::Message { usage, .. } => {
-                if entry.seq > since_seq {
-                    if let Some(u) = usage {
-                        total += u.input_tokens as u64;
-                        total += u.output_tokens as u64;
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-    Ok(total)
+// REMOVE:
+if self.accumulated_tokens > threshold {
+    self.spawn_compact_task()?;  // NO LONGER USED
 }
-```
 
-### Compaction Trigger
-
-```rust
-fn check_coordinator_pressure(messages: &[Message], journal_path: &Path) -> ContextPressureAction {
-    let last_compaction_seq = find_last_compaction_seq(journal_path);
-    let tokens_since_compaction = journal_token_count(journal_path, last_compaction_seq)
-        .unwrap_or(0);
-
-    let threshold = Config::load_or_default(std::path::Path::new("."))
-        .effective_compaction_threshold();
-
-    let ratio = tokens_since_compaction as f64 / threshold as f64;
-    match ratio {
-        r if r < 0.80 => ContextPressureAction::Ok,
-        r if r < 0.90 => ContextPressureAction::Warning,
-        r if r < 0.95 => ContextPressureAction::EmergencyCompaction,
-        _ => ContextPressureAction::CleanExit,
-    }
-}
-```
-
-### Self-Compaction Execution
-
-```rust
-fn self_compact(messages: &mut Vec<Message>, journal: &mut Journal, keep_recent: usize) -> Result<()> {
-    let pre_compact_count = messages.len();
-    let pre_compact_tokens = estimate_tokens(messages); // or read from journal
-
-    // Compact messages (same algorithm as native executor)
-    let summary = summarize_messages(&messages[..messages.len() - keep_recent]);
-    *messages = ContextBudget::emergency_compact(messages, keep_recent);
-
-    // Write compaction journal entry
-    journal.append(JournalEntryKind::Compaction {
-        compacted_through_seq: journal.seq(),
-        summary: format!(
-            "Compacted {} messages (est. {} tokens). Summary: {}",
-            pre_compact_count, pre_compact_tokens, summary
-        ),
-        original_message_count: pre_compact_count as u32,
-        original_token_count: pre_compact_tokens as u32,
-    })?;
-
-    Ok(())
+// REPLACE with:
+if should_compact(cache_creation, context_limit, threshold) {
+    self.perform_self_compaction()?;  // NEW: writes to journal
 }
 ```
 
 ---
 
-## File Changes
+## 5. Verification Criteria
 
-| File | Lines | Change |
-|------|-------|--------|
-| `src/executor/native/journal.rs` | 50–94 | Add `turn_token_count` to `Message`; populate `original_token_count` in `Compaction` |
-| `src/executor/native/resume.rs` | 698–845 | `ContextBudget` is already usable; no changes needed |
-| `src/executor/native/agent.rs` | 1000–1070 | Add self-compaction trigger in coordinator agent loop |
-| `src/service/compactor.rs` | 127–176 | Optionally read journal for accurate token stats |
+### Functional Requirements
+
+- [ ] Coordinator writes journal.md on each self-compaction
+- [ ] Compaction marker contains valid JSON with all required fields
+- [ ] Latest Compaction marker is found on resume
+- [ ] Context reconstructed as: summary + recent N messages
+- [ ] Token counting uses cache_creation, not input_tokens
+- [ ] No `.compact-*` tasks spawned when self-compaction enabled
+
+### Verification Commands
+
+```bash
+cargo test compaction
+cargo test journal
+```
+
+### API Implementation Notes
+
+```rust
+struct Usage {
+    input_tokens: u32,      // Near-zero with prompt caching
+    cache_creation: u32,    // Where new content accumulates
+}
+let accumulated = response.usage.cache_creation;
+```
 
 ---
 
-## Verification
+## Appendix: Comparison with Native Executor
 
-1. `cargo test` passes
-2. Compaction journal entries are written with accurate `original_token_count`
-3. Coordinator agent continues running after self-compaction
-4. Daemon compaction (if enabled) reads journal for context
-
----
-
-## Related Documents
-
-- `design/coordinator-compaction.md` — Existing coordinator compaction lifecycle analysis
-- `research-findings.md` — Comparison of native executor vs coordinator compaction systems
-- `src/executor/native/journal.rs` — Journal implementation
-- `src/service/compactor.rs` — Graph-level compaction
-- `src/commands/service/mod.rs:1643` — Daemon compaction trigger
+| Aspect | Native Executor | Coordinator (New) |
+|--------|-----------------|------------------|
+| Journal Location | `.workgraph/executor/journal.md` | `.workgraph/coordinator/journal.md` |
+| Compaction Target | Task execution messages | Coordinator conversation |
+| Trigger | Message count threshold | cache_creation token threshold |
+| Task Spawning | None (self-contained) | None (NEW: no .compact-* spawning) |
 
 ---
 
-## Open Questions
+## Appendix: Configuration Schema
 
-1. **Interaction with daemon compaction:** Should self-compaction disable or supplement daemon compaction?
-2. **Threshold coordination:** Should self-compaction and daemon compaction share the same threshold?
-3. **Summary quality:** The current `emergency_compact()` uses placeholder summaries. Should we call an LLM for better summaries?
+```yaml
+coordinator:
+  compaction:
+    use_self_compaction: true
+    threshold: 0.8
+    recent_count: 50
+    journal_path: ".workgraph/coordinator/journal.md"
+
+compactor:
+  enabled: false  # DEPRECATED
+```
+
+---
+
+## Relationship to Native Executor Pattern
+
+The native executor uses a journal-based compaction pattern in `src/executor/native/resume.rs:698–845`. The coordinator's self-compaction mirrors this pattern:
+
+| Component | Native Executor | Coordinator Self-Compaction |
+|-----------|-----------------|---------------------------|
+| Journal file | Per-task JSONL | Single coordinator journal |
+| Compaction trigger | Per-turn pressure check | Post-turn token check |
+| Summary method | LLM call | LLM call |
+| Marker format | JSONL entry | Markdown with JSON block |
+| Resume reconstruction | Parse last marker, inject summary + recent | Parse last marker, inject summary + recent |
+
+The coordinator's implementation should reuse the same `ContextBudget` compaction algorithm from the native executor.
