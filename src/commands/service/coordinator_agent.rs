@@ -937,21 +937,35 @@ fn inject_crash_recovery_context(
 }
 
 /// Build the crash recovery summary string from chat history and graph state.
+///
+/// Uses bounded context: only messages since last compaction + context-summary.md.
+/// This avoids the unbounded inbox/outbox history problem.
 fn build_crash_recovery_summary(dir: &Path, coordinator_id: u32) -> Result<String> {
+    use workgraph::service::chat_compactor::{ChatCompactorState, context_summary_path};
+
     let mut parts = Vec::new();
 
-    parts.push("You were restarted after a crash. Previous conversation summary:".to_string());
+    parts.push("You were restarted after a crash. Context since last compaction:".to_string());
     parts.push(String::new());
 
-    // Load recent conversation history from chat inbox/outbox
-    let history = chat::read_history_for(dir, coordinator_id).unwrap_or_default();
+    // Load compaction state to get the last compacted message IDs
+    let state = ChatCompactorState::load(dir, coordinator_id);
 
-    if history.is_empty() {
-        parts.push("(No previous conversation history.)".to_string());
+    // Read only messages since last compaction (bounded context)
+    let new_inbox = chat::read_inbox_since_for(dir, coordinator_id, state.last_inbox_id)?;
+    let new_outbox = chat::read_outbox_since_for(dir, coordinator_id, state.last_outbox_id)?;
+
+    // Interleave by timestamp
+    let mut recent_messages = new_inbox;
+    recent_messages.extend(new_outbox);
+    recent_messages.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
+
+    if recent_messages.is_empty() {
+        parts.push("(No messages since last compaction.)".to_string());
     } else {
         // Take last N messages
-        let start = history.len().saturating_sub(RECOVERY_HISTORY_COUNT);
-        let recent = &history[start..];
+        let start = recent_messages.len().saturating_sub(RECOVERY_HISTORY_COUNT);
+        let recent = &recent_messages[start..];
 
         for msg in recent {
             let role_label = if msg.role == "user" {
@@ -969,6 +983,20 @@ fn build_crash_recovery_summary(dir: &Path, coordinator_id: u32) -> Result<Strin
 
             parts.push(format!("{}: {}", role_label, content));
             parts.push(String::new());
+        }
+    }
+
+    // Include the context-summary.md from the compactor
+    let summary_path = context_summary_path(dir, coordinator_id);
+    if summary_path.exists()
+        && let Ok(summary_content) = std::fs::read_to_string(&summary_path)
+    {
+        let trimmed = summary_content.trim();
+        if !trimmed.is_empty() {
+            parts.push("---".to_string());
+            parts.push(String::new());
+            parts.push("Conversation Context Summary:".to_string());
+            parts.push(trimmed.to_string());
         }
     }
 
@@ -1665,6 +1693,7 @@ fn native_coordinator_loop(
     let mut conversation: Vec<Message> = Vec::new();
     let mut last_interaction = chrono::Utc::now().to_rfc3339();
     let mut turn_count: u32 = 0;
+    let mut last_known_compaction_count: u64 = 0;
 
     // Max API turns per user message (to prevent runaway tool loops)
     let max_turns_per_message: usize = 50;
@@ -1687,6 +1716,22 @@ fn native_coordinator_loop(
             "Native coordinator: processing request_id={}",
             request.request_id
         ));
+
+        // Check if chat compaction has run since last message.
+        // After compaction, the conversation history is summarized into context-summary.md
+        // and we should reset our in-memory conversation to avoid sending duplicate context.
+        {
+            use workgraph::service::chat_compactor::ChatCompactorState;
+            let state = ChatCompactorState::load(dir, coordinator_id);
+            if state.compaction_count > last_known_compaction_count {
+                logger.info(&format!(
+                    "Native coordinator: detected compaction (count {} -> {}), resetting conversation",
+                    last_known_compaction_count, state.compaction_count
+                ));
+                conversation.clear();
+                last_known_compaction_count = state.compaction_count;
+            }
+        }
 
         // Build context injection with event log
         let context = match build_coordinator_context(
@@ -2817,7 +2862,8 @@ mod tests {
 
         let summary = build_crash_recovery_summary(dir, 0).unwrap();
         assert!(summary.contains("restarted after a crash"));
-        assert!(summary.contains("No previous conversation history"));
+        // With bounded context, we say "no messages since last compaction"
+        assert!(summary.contains("No messages since last compaction"));
     }
 
     #[test]
