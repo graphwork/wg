@@ -806,6 +806,99 @@ fn resurrect_done_tasks(graph: &mut workgraph::graph::WorkGraph, dir: &Path) -> 
     modified
 }
 
+// ---------------------------------------------------------------------------
+// Unblock stuck tasks
+// ---------------------------------------------------------------------------
+
+/// Scan blocked tasks and unblock those whose dependencies are satisfied
+/// (terminal) or missing (archived/deleted).
+///
+/// The coordinator runs unblock logic only when a task transitions to done.
+/// This misses cases where:
+/// 1. A dependency is archived/deleted → dangling reference never confirms
+/// 2. Coordinator misses a completion event (restart, crash, timing)
+/// 3. Tasks blocked on completed tasks never get unblocked
+///
+/// This function:
+/// 1. Scans all blocked tasks
+/// 2. Checks if all after dependencies are terminal OR don't exist
+/// 3. If so, transitions Blocked → Open
+/// 4. Logs diagnostic info for stale blocked states
+///
+/// Returns `true` if the graph was modified.
+fn unblock_stuck_tasks(graph: &mut workgraph::graph::WorkGraph, _dir: &Path) -> bool {
+    let mut modified = false;
+    
+    // Collect blocked task IDs first
+    let blocked_task_ids: Vec<String> = graph.tasks()
+        .filter(|t| t.status == Status::Blocked)
+        .map(|t| t.id.clone())
+        .collect();
+    
+    for task_id in blocked_task_ids {
+        // Check if all dependencies are satisfied
+        let task = graph.tasks().find(|t| t.id == task_id);
+        let all_deps_satisfied = match task {
+            Some(task) => task.after.iter().all(|dep_id| {
+                // Check if dependency exists
+                match graph.tasks().find(|t| t.id == *dep_id) {
+                    Some(dep_task) => dep_task.status.is_terminal(),
+                    None => true, // Missing dependency = satisfied for stuck tasks
+                }
+            }),
+            None => false,
+        };
+        
+        if all_deps_satisfied {
+            // Get mutable reference to update the task
+            if let Some(task) = graph.get_task_mut(&task_id) {
+                if !task.after.is_empty() {
+                    task.status = Status::Open;
+                    task.log.push(LogEntry {
+                        timestamp: Utc::now().to_rfc3339(),
+                        actor: Some("coordinator".to_string()),
+                        user: Some(workgraph::current_user()),
+                        message: format!(
+                            "Unblocked by coordinator scan — all dependencies satisfied or archived/deleted. Dependencies: {}",
+                            task.after.join(", ")
+                        ),
+                    });
+                    eprintln!(
+                        "[coordinator] Unblocked stuck task '{}' (blocked on: {})",
+                        task.id,
+                        task.after.join(", ")
+                    );
+                    modified = true;
+                }
+            }
+        } else {
+            // Log diagnostic for stale blocked state
+            if let Some(task) = graph.tasks().find(|t| t.id == task_id) {
+                if !task.after.is_empty() {
+                    let waiting_on: Vec<String> = task.after.iter().filter_map(|dep_id| {
+                        graph.tasks().find(|t| t.id == *dep_id).map(|t| {
+                            if !t.status.is_terminal() {
+                                format!("{}:{:?}", dep_id, t.status)
+                            } else {
+                                String::new()
+                            }
+                        })
+                    }).filter(|s| !s.is_empty()).collect();
+                    if !waiting_on.is_empty() {
+                        eprintln!(
+                            "[coordinator] Task '{}' still blocked on: {}",
+                            task_id,
+                            waiting_on.join(", ")
+                        );
+                    }
+                }
+            }
+        }
+    }
+    
+    modified
+}
+
 /// Auto-assign: scaffold `.assign-*` tasks and run lightweight LLM assignment.
 ///
 /// Phase 1 — Scaffold: For ready unassigned non-system tasks without an
@@ -3527,8 +3620,7 @@ pub fn coordinator_tick(
 
         // Phase 2.9: Unblock stuck tasks — check for tasks blocked on archived/deleted
         // dependencies or missed completion events.
-        // TODO: Reimplement unblock_stuck_tasks function
-        // modified |= unblock_stuck_tasks(graph, dir);
+        modified |= unblock_stuck_tasks(graph, dir);
 
         // Phase 2.10: (极maps Removed) Placement is now merged into the assignment step.
         // No separate .place-* tasks are created or handled.
