@@ -1218,6 +1218,16 @@ fn handle_create_coordinator(dir: &Path, name: Option<&str>) -> IpcResponse {
         {
             coord.after.push(compact_id);
         }
+
+        // Validate the cycle structure — check for unsafe patterns
+        let coordinator_id = format!(".coordinator-{}", next_id);
+        let warnings = workgraph::service::coordinator_cycle::validate_coordinator_cycle(&graph, &coordinator_id);
+        for warning in &warnings {
+            eprintln!("[coordinator-cycle] {}", warning);
+        }
+        if workgraph::service::coordinator_cycle::has_critical_warnings(&warnings) {
+            return IpcResponse::error("Coordinator cycle validation failed: circular coordinator↔archive dependency detected. Archive tasks must be independent.");
+        }
     }
 
     // Create companion .archive-N task (NO back-edge to coordinator).
