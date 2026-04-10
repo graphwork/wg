@@ -4116,10 +4116,42 @@ fn draw_log_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
             .fg(Color::Indexed(75))
             .add_modifier(Modifier::BOLD);
         let tool_content_style = Style::default().fg(Color::Indexed(252));
+        // Bash command style: green "$ " prefix, bright command text
+        let bash_prefix_style = Style::default()
+            .fg(Color::Green)
+            .add_modifier(Modifier::BOLD);
+        let bash_cmd_style = Style::default()
+            .fg(Color::Indexed(226))
+            .add_modifier(Modifier::BOLD);
 
         for line in agent_lines {
             let lt: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-            if lt.starts_with("┌─") {
+            if lt.starts_with("$ ") {
+                // Bash command line: "$ command" with distinctive green/yellow styling
+                let cmd = lt.get(2..).unwrap_or("");
+                let wrap_w = render_width.saturating_sub(2); // "$ " = 2 cols
+                if wrap_w == 0 || cmd.width() <= render_width.saturating_sub(2) {
+                    composed_lines.push(Line::from(vec![
+                        Span::styled("$ ", bash_prefix_style),
+                        Span::styled(cmd.to_string(), bash_cmd_style),
+                    ]));
+                } else {
+                    let wrapped = word_wrap(cmd, wrap_w);
+                    for (i, w) in wrapped.iter().enumerate() {
+                        if i == 0 {
+                            composed_lines.push(Line::from(vec![
+                                Span::styled("$ ", bash_prefix_style),
+                                Span::styled(w.to_string(), bash_cmd_style),
+                            ]));
+                        } else {
+                            composed_lines.push(Line::from(vec![
+                                Span::styled("  ", bash_prefix_style),
+                                Span::styled(w.to_string(), bash_cmd_style),
+                            ]));
+                        }
+                    }
+                }
+            } else if lt.starts_with("┌─") {
                 // Tool header: border in DarkGray, tool name highlighted.
                 let after_prefix = lt.get(7..).unwrap_or("");
                 let name_end = after_prefix.find(['─', ' ']).unwrap_or(after_prefix.len());

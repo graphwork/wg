@@ -6285,7 +6285,7 @@ impl VizApp {
             if snapshot.compaction_count > 0 {
                 lines.push(format!("  Compactions: {}", snapshot.compaction_count));
             } else if snapshot.journal_present {
-                lines.push("  Compactions: never observed".to_string());
+                lines.push("  Compactions: none (no 90%+ context pressure)".to_string());
             }
             if let Some(ref ts) = snapshot.last_compaction {
                 lines.push(format!("  Last compaction: {}", format_timestamp(ts)));
@@ -13236,9 +13236,19 @@ fn extract_enriched_text_from_log(content: &str) -> String {
                                 .map(|p| p.to_string()),
                             _ => None,
                         };
-                        let summary = match detail {
-                            Some(d) => format!("┌─ {} ────\n│ {}\n└─", name, d),
-                            None => format!("┌─ {} ────\n└─", name),
+                        let is_bash = name.eq_ignore_ascii_case("Bash");
+                        let summary = if is_bash {
+                            // Bash commands get a distinct "$ " prefix so they're easily visible
+                            // in the log view (matching the convention users expect from terminals).
+                            match detail {
+                                Some(d) => format!("$ {}\n{}", d, d),
+                                None => format!("$ (command)\n$ (command)"),
+                            }
+                        } else {
+                            match detail {
+                                Some(d) => format!("┌─ {} ────\n│ {}\n└─", name, d),
+                                None => format!("┌─ {} ────\n└─", name),
+                            }
                         };
                         parts.push(summary);
                     }
@@ -13301,9 +13311,19 @@ fn extract_enriched_text_from_log(content: &str) -> String {
                     .map(|p| p.to_string()),
                 _ => None,
             };
-            let header = match detail {
-                Some(d) => format!("┌─ {} ────\n│ {}", name, d),
-                None => format!("┌─ {} ────", name),
+            let is_bash = name.eq_ignore_ascii_case("Bash") || name.eq_ignore_ascii_case("bash");
+            let header = if is_bash {
+                // Bash commands get a distinct "$ " prefix so they're easily visible
+                // in the log view (matching the convention users expect from terminals).
+                match detail {
+                    Some(d) => d.clone(),
+                    None => "(command)".to_string(),
+                }
+            } else {
+                match detail {
+                    Some(d) => format!("┌─ {} ────\n│ {}", name, d),
+                    None => format!("┌─ {} ────", name),
+                }
             };
 
             // Show tool output summary
@@ -13323,9 +13343,17 @@ fn extract_enriched_text_from_log(content: &str) -> String {
                 } else {
                     format!("{} {}", prefix, short)
                 };
-                parts.push(format!("{}\n{}\n└─", header, result_line));
+                if is_bash {
+                    parts.push(format!("$ {}\n{}", header, result_line));
+                } else {
+                    parts.push(format!("{}\n{}\n└─", header, result_line));
+                }
             } else {
-                parts.push(format!("{}\n└─", header));
+                if is_bash {
+                    parts.push(format!("$ {}", header));
+                } else {
+                    parts.push(format!("{}\n└─", header));
+                }
             }
         } else if msg_type == "result" {
             // Tool result — show a compact one-line summary.
@@ -14877,9 +14905,9 @@ mod extract_assistant_text_tests {
     fn extracts_tool_use_summaries() {
         let log = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"cargo test"}}]}}"#;
         let result = extract_enriched_text_from_log(log);
-        assert!(result.contains("┌─ Bash"));
+        // Bash commands now use "$ " prefix for visibility
+        assert!(result.contains("$ "));
         assert!(result.contains("cargo test"));
-        assert!(result.contains("└─"));
     }
 
     #[test]
@@ -14919,7 +14947,8 @@ mod extract_assistant_text_tests {
         let log = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Let me check."},{"type":"tool_use","name":"Bash","input":{"command":"ls -la"}}]}}"#;
         let result = extract_enriched_text_from_log(log);
         assert!(result.contains("Let me check."));
-        assert!(result.contains("┌─ Bash"));
+        // Bash commands now use "$ " prefix for visibility
+        assert!(result.contains("$ "));
         assert!(result.contains("ls -la"));
     }
 
@@ -14948,7 +14977,8 @@ mod extract_assistant_text_tests {
             long_cmd
         );
         let result = extract_enriched_text_from_log(&log);
-        assert!(result.contains("┌─ Bash"));
+        // Bash commands now use "$ " prefix for visibility
+        assert!(result.contains("$ "));
         // Should be truncated with …
         assert!(result.contains('…'));
     }
