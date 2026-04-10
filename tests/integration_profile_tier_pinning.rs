@@ -85,10 +85,7 @@ fn test_tier_pins_override_profile_defaults_in_effective() {
     let config = load_local_config(dir.path());
     let effective = config.effective_tiers_public();
     // Pin overrides anthropic's default fast=claude:haiku
-    assert_eq!(
-        effective.fast.as_deref(),
-        Some("openrouter:custom/fast")
-    );
+    assert_eq!(effective.fast.as_deref(), Some("openrouter:custom/fast"));
     // Others fall through to anthropic profile defaults
     assert_eq!(effective.standard.as_deref(), Some("claude:sonnet"));
     assert_eq!(effective.premium.as_deref(), Some("claude:opus"));

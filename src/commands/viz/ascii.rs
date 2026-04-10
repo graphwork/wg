@@ -1093,8 +1093,7 @@ fn draw_back_edge_arcs(
             // Otherwise, append ⟳ as a distinct self-loop indicator.
             if !lines[line_idx].contains('↺') {
                 if use_color {
-                    lines[line_idx]
-                        .push_str(&format!(" {}⟳{}", arc_color_code, "\x1b[0m"));
+                    lines[line_idx].push_str(&format!(" {}⟳{}", arc_color_code, "\x1b[0m"));
                 } else {
                     lines[line_idx].push_str(" ⟳");
                 }

@@ -25,10 +25,7 @@ fn resolve_model_input(model: &str, workgraph_dir: &Path) -> Result<String> {
         let candidate = format!("openrouter:{}", model);
         // Validate that this parses correctly
         if workgraph::config::parse_model_spec_strict(&candidate).is_ok() {
-            eprintln!(
-                "Resolved model '{}' → '{}'",
-                model, candidate
-            );
+            eprintln!("Resolved model '{}' → '{}'", model, candidate);
             return Ok(candidate);
         }
     }
@@ -39,10 +36,7 @@ fn resolve_model_input(model: &str, workgraph_dir: &Path) -> Result<String> {
 
     if let Some(resolved_id) = resolution.resolved {
         let full_spec = format!("openrouter:{}", resolved_id);
-        eprintln!(
-            "Resolved model '{}' → '{}'",
-            model, full_spec
-        );
+        eprintln!("Resolved model '{}' → '{}'", model, full_spec);
         return Ok(full_spec);
     }
 
@@ -1413,10 +1407,7 @@ mod tests {
         );
         assert!(result.is_err());
         assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("does not exist"),
+            result.unwrap_err().to_string().contains("does not exist"),
             "Expected 'does not exist' error for phantom dependency"
         );
     }
@@ -1634,7 +1625,11 @@ mod tests {
         let result = resolve_model_input("minimax-m2.7", dir.path());
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
-        assert!(err_msg.contains("wg models fetch"), "Error should suggest fetching: {}", err_msg);
+        assert!(
+            err_msg.contains("wg models fetch"),
+            "Error should suggest fetching: {}",
+            err_msg
+        );
     }
 
     #[test]
@@ -1668,20 +1663,20 @@ mod tests {
             None,
             None,
             None,
-            None, // verify
-            None, // max_iterations
-            None, // cycle_guard
-            None, // cycle_delay
+            None,  // verify
+            None,  // max_iterations
+            None,  // cycle_guard
+            None,  // cycle_delay
             false, // no_converge
             false, // no_restart_on_failure
-            None, // max_failure_restarts
+            None,  // max_failure_restarts
             "internal",
-            None,                          // context_scope
-            Some("echo hello world"),      // exec
-            None,                          // timeout
-            None,                          // exec_mode (should auto-set to shell)
-            false,                         // paused
-            true,                          // no_place
+            None,                     // context_scope
+            Some("echo hello world"), // exec
+            None,                     // timeout
+            None,                     // exec_mode (should auto-set to shell)
+            false,                    // paused
+            true,                     // no_place
             &[],
             &[],
             None,
@@ -1733,9 +1728,9 @@ mod tests {
             None,
             "internal",
             None,
-            Some("echo hi"),   // exec
-            None,              // timeout
-            Some("bare"),      // explicit exec_mode overrides auto-shell
+            Some("echo hi"), // exec
+            None,            // timeout
+            Some("bare"),    // explicit exec_mode overrides auto-shell
             false,
             true,
             &[],

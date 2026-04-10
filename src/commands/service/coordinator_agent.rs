@@ -34,12 +34,12 @@ use std::thread::{self, JoinHandle};
 use chrono::{DateTime, Utc};
 
 use workgraph::chat;
+use workgraph::executor::native::journal::JournalEntryKind;
 use workgraph::graph::Status;
 use workgraph::parser::load_graph;
 use workgraph::service::compactor::{CompactorState, context_md_path};
 use workgraph::service::executor::ExecutorRegistry;
 use workgraph::service::registry::AgentRegistry;
-use workgraph::executor::native::journal::JournalEntryKind;
 
 use crate::commands::{graph_path, is_process_alive};
 
@@ -1620,8 +1620,8 @@ fn native_coordinator_loop(
         } else {
             // No explicit model — use the config's role-based resolution cascade
             // (role config → tier defaults → registry lookup → agent.model fallback)
-            let resolved = merged_config
-                .resolve_model_for_role(workgraph::config::DispatchRole::Default);
+            let resolved =
+                merged_config.resolve_model_for_role(workgraph::config::DispatchRole::Default);
             let prov = provider.map(String::from).or(resolved.provider);
             let endpoint = resolved
                 .endpoint

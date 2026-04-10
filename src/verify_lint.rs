@@ -69,28 +69,21 @@ const DESCRIPTIVE_PATTERNS: &[&str] = &[
 
 /// Commands/tokens commonly seen in valid verify commands.
 const KNOWN_VALID_FIRST_TOKENS: &[&str] = &[
-    "cargo", "npm", "npx", "yarn", "pnpm", "make", "cmake", "go", "python", "python3",
-    "pytest", "ruby", "rake", "bundle", "mvn", "gradle", "ant", "dotnet", "zig",
-    "rustc", "gcc", "g++", "clang", "clang++", "javac", "java",
-    "test", "[", "true", "false", "exit", "echo", "printf", "cat", "grep", "find",
-    "ls", "diff", "cmp", "wc", "head", "tail", "sort", "uniq", "cut", "tr",
-    "sed", "awk", "jq", "yq", "curl", "wget", "ssh", "rsync",
-    "docker", "podman", "kubectl", "helm",
-    "git", "gh", "wg",
-    "sh", "bash", "zsh",
-    "typst", "pandoc", "latexmk", "pdflatex", "xelatex",
-    "node", "deno", "bun", "tsc",
-    "env", "timeout", "nice", "sudo",
+    "cargo", "npm", "npx", "yarn", "pnpm", "make", "cmake", "go", "python", "python3", "pytest",
+    "ruby", "rake", "bundle", "mvn", "gradle", "ant", "dotnet", "zig", "rustc", "gcc", "g++",
+    "clang", "clang++", "javac", "java", "test", "[", "true", "false", "exit", "echo", "printf",
+    "cat", "grep", "find", "ls", "diff", "cmp", "wc", "head", "tail", "sort", "uniq", "cut", "tr",
+    "sed", "awk", "jq", "yq", "curl", "wget", "ssh", "rsync", "docker", "podman", "kubectl",
+    "helm", "git", "gh", "wg", "sh", "bash", "zsh", "typst", "pandoc", "latexmk", "pdflatex",
+    "xelatex", "node", "deno", "bun", "tsc", "env", "timeout", "nice", "sudo",
 ];
 
 /// Shell builtins that are valid as first tokens.
 const SHELL_BUILTINS: &[&str] = &[
-    "test", "[", "true", "false", "echo", "printf", "exit", "return",
-    "cd", "pwd", "export", "unset", "set", "source", ".", "eval",
-    "exec", "command", "builtin", "type", "hash", "which",
-    "if", "then", "else", "fi", "for", "do", "done", "while", "until",
-    "case", "esac", "select", "function", "time", "coproc",
-    "read", "wait", "kill", "trap", "local", "declare", "typeset",
+    "test", "[", "true", "false", "echo", "printf", "exit", "return", "cd", "pwd", "export",
+    "unset", "set", "source", ".", "eval", "exec", "command", "builtin", "type", "hash", "which",
+    "if", "then", "else", "fi", "for", "do", "done", "while", "until", "case", "esac", "select",
+    "function", "time", "coproc", "read", "wait", "kill", "trap", "local", "declare", "typeset",
     "readonly", "let", "shift", "getopts", "break", "continue",
 ];
 
@@ -141,19 +134,13 @@ fn check_descriptive_patterns(cmd: &str, warnings: &mut Vec<LintWarning>) {
 
 /// Check bash syntax using `bash -n`.
 fn check_bash_syntax(cmd: &str, warnings: &mut Vec<LintWarning>) {
-    match Command::new("bash")
-        .args(["-n", "-c", cmd])
-        .output()
-    {
+    match Command::new("bash").args(["-n", "-c", cmd]).output() {
         Ok(output) => {
             if !output.status.success() {
                 let stderr = String::from_utf8_lossy(&output.stderr);
                 warnings.push(LintWarning {
                     kind: LintKind::BashSyntaxError,
-                    message: format!(
-                        "verify command has bash syntax errors: {}",
-                        stderr.trim()
-                    ),
+                    message: format!("verify command has bash syntax errors: {}", stderr.trim()),
                     suggestion: None,
                 });
             }
@@ -219,8 +206,13 @@ fn extract_first_token(cmd: &str) -> String {
             let before_eq = &rest[..eq_pos];
             // Must be a valid env var name (alphanumeric + underscore, starts with letter/underscore)
             if !before_eq.is_empty()
-                && before_eq.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-                && before_eq.chars().next().map_or(false, |c| c.is_ascii_alphabetic() || c == '_')
+                && before_eq
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_')
+                && before_eq
+                    .chars()
+                    .next()
+                    .map_or(false, |c| c.is_ascii_alphabetic() || c == '_')
             {
                 // Find end of value (could be quoted)
                 let after_eq = &rest[eq_pos + 1..];
@@ -234,10 +226,7 @@ fn extract_first_token(cmd: &str) -> String {
     }
 
     // Get first whitespace-delimited token
-    rest.split_whitespace()
-        .next()
-        .unwrap_or("")
-        .to_string()
+    rest.split_whitespace().next().unwrap_or("").to_string()
 }
 
 /// Find the end of an env var value, handling quotes.
@@ -454,7 +443,13 @@ mod tests {
     fn test_suggests_cargo_test() {
         let r = lint_verify("tests pass for all modules");
         assert!(r.warnings[0].suggestion.is_some());
-        assert!(r.warnings[0].suggestion.as_ref().unwrap().contains("cargo test"));
+        assert!(
+            r.warnings[0]
+                .suggestion
+                .as_ref()
+                .unwrap()
+                .contains("cargo test")
+        );
     }
 
     #[test]
@@ -478,6 +473,9 @@ mod tests {
 
     #[test]
     fn test_extract_path() {
-        assert_eq!(extract_first_token("/usr/bin/env cargo test"), "/usr/bin/env");
+        assert_eq!(
+            extract_first_token("/usr/bin/env cargo test"),
+            "/usr/bin/env"
+        );
     }
 }

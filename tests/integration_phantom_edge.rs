@@ -109,7 +109,10 @@ fn add_with_valid_after_succeeds() {
     let tmp = TempDir::new().unwrap();
     let wg_dir = setup_workgraph(&tmp, vec![make_task("dep-task", "Dependency")]);
 
-    let out = wg_ok(&wg_dir, &["add", "New Task", "--after", "dep-task", "--no-place"]);
+    let out = wg_ok(
+        &wg_dir,
+        &["add", "New Task", "--after", "dep-task", "--no-place"],
+    );
     assert!(out.contains("Added task"));
 
     let graph = load_graph(graph_path(&wg_dir)).unwrap();
@@ -129,7 +132,16 @@ fn add_with_nonexistent_after_fails() {
     let tmp = TempDir::new().unwrap();
     let wg_dir = setup_workgraph(&tmp, vec![make_task("existing", "Existing")]);
 
-    let (stdout, stderr) = wg_fail(&wg_dir, &["add", "New Task", "--after", "nonexistent-task-id", "--no-place"]);
+    let (stdout, stderr) = wg_fail(
+        &wg_dir,
+        &[
+            "add",
+            "New Task",
+            "--after",
+            "nonexistent-task-id",
+            "--no-place",
+        ],
+    );
     let combined = format!("{}{}", stdout, stderr);
     assert!(
         combined.contains("does not exist"),
@@ -147,7 +159,10 @@ fn add_with_typo_suggests_correction() {
     let tmp = TempDir::new().unwrap();
     let wg_dir = setup_workgraph(&tmp, vec![make_task("build-artifacts", "Build")]);
 
-    let (stdout, stderr) = wg_fail(&wg_dir, &["add", "Deploy", "--after", "bild-artifacts", "--no-place"]);
+    let (stdout, stderr) = wg_fail(
+        &wg_dir,
+        &["add", "Deploy", "--after", "bild-artifacts", "--no-place"],
+    );
     let combined = format!("{}{}", stdout, stderr);
     assert!(
         combined.contains("build-artifacts"),
@@ -166,7 +181,10 @@ fn add_paused_with_nonexistent_after_succeeds() {
     let wg_dir = setup_workgraph(&tmp, vec![]);
 
     // Adding with --paused should succeed even with phantom deps
-    let out = wg_ok(&wg_dir, &["add", "Deferred Task", "--after", "future-task", "--paused"]);
+    let out = wg_ok(
+        &wg_dir,
+        &["add", "Deferred Task", "--after", "future-task", "--paused"],
+    );
     assert!(out.contains("Added task"));
 
     let graph = load_graph(graph_path(&wg_dir)).unwrap();
@@ -189,7 +207,14 @@ fn add_allow_phantom_with_nonexistent_after_succeeds() {
 
     let out = wg_ok(
         &wg_dir,
-        &["add", "Phantom Task", "--after", "ghost-dep", "--allow-phantom", "--no-place"],
+        &[
+            "add",
+            "Phantom Task",
+            "--after",
+            "ghost-dep",
+            "--allow-phantom",
+            "--no-place",
+        ],
     );
     assert!(out.contains("Added task"));
 
@@ -210,10 +235,7 @@ fn edit_add_after_valid_dep_succeeds() {
     let tmp = TempDir::new().unwrap();
     let wg_dir = setup_workgraph(
         &tmp,
-        vec![
-            make_task("task-a", "Task A"),
-            make_task("task-b", "Task B"),
-        ],
+        vec![make_task("task-a", "Task A"), make_task("task-b", "Task B")],
     );
 
     wg_ok(&wg_dir, &["edit", "task-a", "--add-after", "task-b"]);
@@ -250,7 +272,10 @@ fn edit_add_after_allow_phantom_succeeds() {
     let tmp = TempDir::new().unwrap();
     let wg_dir = setup_workgraph(&tmp, vec![make_task("task-a", "Task A")]);
 
-    wg_ok(&wg_dir, &["edit", "task-a", "--add-after", "ghost", "--allow-phantom"]);
+    wg_ok(
+        &wg_dir,
+        &["edit", "task-a", "--add-after", "ghost", "--allow-phantom"],
+    );
 
     let graph = load_graph(graph_path(&wg_dir)).unwrap();
     let a = graph.get_task("task-a").unwrap();
@@ -267,7 +292,12 @@ fn publish_batch_with_cross_refs_works() {
     let wg_dir = setup_workgraph(&tmp, vec![]);
 
     // Create two paused tasks that reference each other
-    wg_ok(&wg_dir, &["add", "Task A", "--id", "batch-a", "--paused", "--after", "batch-b"]);
+    wg_ok(
+        &wg_dir,
+        &[
+            "add", "Task A", "--id", "batch-a", "--paused", "--after", "batch-b",
+        ],
+    );
     wg_ok(&wg_dir, &["add", "Task B", "--id", "batch-b", "--paused"]);
 
     // Publish should succeed because both tasks exist at publish time
@@ -288,7 +318,18 @@ fn publish_with_dangling_ref_fails() {
     let wg_dir = setup_workgraph(&tmp, vec![]);
 
     // Create a paused task with a phantom dependency that is never created
-    wg_ok(&wg_dir, &["add", "Dangling Task", "--id", "dangling", "--paused", "--after", "never-created"]);
+    wg_ok(
+        &wg_dir,
+        &[
+            "add",
+            "Dangling Task",
+            "--id",
+            "dangling",
+            "--paused",
+            "--after",
+            "never-created",
+        ],
+    );
 
     // Publish should fail because "never-created" doesn't exist
     let (stdout, stderr) = wg_fail(&wg_dir, &["publish", "dangling"]);
@@ -310,7 +351,19 @@ fn retroactive_backlink_repair_on_task_creation() {
     let wg_dir = setup_workgraph(&tmp, vec![]);
 
     // Create task A with phantom dep on B (using --allow-phantom)
-    wg_ok(&wg_dir, &["add", "Task A", "--id", "task-a", "--after", "task-b", "--allow-phantom", "--no-place"]);
+    wg_ok(
+        &wg_dir,
+        &[
+            "add",
+            "Task A",
+            "--id",
+            "task-a",
+            "--after",
+            "task-b",
+            "--allow-phantom",
+            "--no-place",
+        ],
+    );
 
     // Now create task B — the system should retroactively add 'task-a' to B's before list
     wg_ok(&wg_dir, &["add", "Task B", "--id", "task-b", "--no-place"]);
@@ -338,10 +391,7 @@ fn phantom_blockers_query_detects_phantoms() {
     graph.add_node(Node::Task(task));
     graph.add_node(Node::Task(real));
 
-    let phantoms = workgraph::query::phantom_blockers(
-        graph.get_task("blocked").unwrap(),
-        &graph,
-    );
+    let phantoms = workgraph::query::phantom_blockers(graph.get_task("blocked").unwrap(), &graph);
     assert_eq!(phantoms, vec!["phantom-dep".to_string()]);
 }
 
@@ -355,10 +405,7 @@ fn phantom_blockers_query_empty_when_all_deps_exist() {
     graph.add_node(Node::Task(task));
     graph.add_node(Node::Task(parent));
 
-    let phantoms = workgraph::query::phantom_blockers(
-        graph.get_task("child").unwrap(),
-        &graph,
-    );
+    let phantoms = workgraph::query::phantom_blockers(graph.get_task("child").unwrap(), &graph);
     assert!(phantoms.is_empty());
 }
 

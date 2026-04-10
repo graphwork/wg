@@ -83,10 +83,14 @@ fn resolve_service_coordinator_settings(
             (spec.model_id, provider, endpoint)
         } else {
             let resolved = config.resolve_model_for_role(workgraph::config::DispatchRole::Default);
-            let provider = resolved.provider.or_else(|| config.coordinator.provider.clone());
-            let endpoint = resolved
-                .endpoint
-                .or_else(|| resolved.registry_entry.and_then(|entry| entry.endpoint.clone()));
+            let provider = resolved
+                .provider
+                .or_else(|| config.coordinator.provider.clone());
+            let endpoint = resolved.endpoint.or_else(|| {
+                resolved
+                    .registry_entry
+                    .and_then(|entry| entry.endpoint.clone())
+            });
             (resolved.model, provider, endpoint)
         };
 
@@ -1492,10 +1496,10 @@ fn cleanup_legacy_daemon_tasks(dir: &Path, logger: &DaemonLogger) {
     match workgraph::parser::modify_graph(&gp, |graph| {
         let mut changed = false;
         for task_id in &stale_ids {
-            if let Some(task) = graph.get_task_mut(task_id)
-            {
+            if let Some(task) = graph.get_task_mut(task_id) {
                 task.status = workgraph::graph::Status::Abandoned;
-                task.completed_at.get_or_insert_with(|| Utc::now().to_rfc3339());
+                task.completed_at
+                    .get_or_insert_with(|| Utc::now().to_rfc3339());
                 task.cycle_config = None;
                 task.log.push(workgraph::graph::LogEntry {
                     timestamp: Utc::now().to_rfc3339(),
@@ -1565,7 +1569,6 @@ fn run_automatic_archival(dir: &Path, archival_error_count: &mut u64, logger: &D
                 "Archival complete: {} tasks archived (retention: {}d)",
                 count, retention_days
             ));
-
         }
         Err(e) => {
             *archival_error_count += 1;
@@ -1575,7 +1578,6 @@ fn run_automatic_archival(dir: &Path, archival_error_count: &mut u64, logger: &D
                     *archival_error_count, e
                 ));
             }
-
         }
     }
 }
@@ -1616,7 +1618,6 @@ fn run_registry_refresh(dir: &Path, refresh_error_count: &mut u64, logger: &Daem
             }
             *refresh_error_count = 0;
             logger.info(&format!("Registry refresh complete: {}", summary));
-
         }
         Err(e) => {
             *refresh_error_count += 1;
@@ -1626,7 +1627,6 @@ fn run_registry_refresh(dir: &Path, refresh_error_count: &mut u64, logger: &Daem
                     *refresh_error_count, e
                 ));
             }
-
         }
     }
 }

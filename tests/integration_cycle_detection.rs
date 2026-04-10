@@ -6348,14 +6348,8 @@ fn test_shell_checker_cycle_converged_stops() {
     );
 
     // Both should stay Done
-    assert_eq!(
-        graph.get_task("run-batch").unwrap().status,
-        Status::Done
-    );
-    assert_eq!(
-        graph.get_task("check-batch").unwrap().status,
-        Status::Done
-    );
+    assert_eq!(graph.get_task("run-batch").unwrap().status, Status::Done);
+    assert_eq!(graph.get_task("check-batch").unwrap().status, Status::Done);
 }
 
 #[test]
@@ -6432,10 +6426,7 @@ fn test_shell_checker_cycle_logs_preserved() {
         "Shell task logs should be preserved across reset"
     );
     assert!(
-        shell
-            .log
-            .iter()
-            .any(|e| e.message.contains("Attempt 1")),
+        shell.log.iter().any(|e| e.message.contains("Attempt 1")),
         "Original log entry should still exist"
     );
 
@@ -6445,10 +6436,7 @@ fn test_shell_checker_cycle_logs_preserved() {
         "Checker logs should be preserved across reset"
     );
     assert!(
-        check
-            .log
-            .iter()
-            .any(|e| e.message.contains("3 errors")),
+        check.log.iter().any(|e| e.message.contains("3 errors")),
         "Original checker log entry should still exist"
     );
 }

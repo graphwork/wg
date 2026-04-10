@@ -1237,7 +1237,6 @@ pub enum Commands {
         #[arg(long)]
         auto_assign: Option<bool>,
 
-
         /// Set assigner agent (content-hash)
         #[arg(long)]
         assigner_agent: Option<String>,
@@ -1254,7 +1253,6 @@ pub enum Commands {
         #[arg(long)]
         creator_agent: Option<String>,
 
-
         /// Set retention heuristics (prose policy for evolver)
         #[arg(long)]
         retention_heuristics: Option<String>,
@@ -1270,7 +1268,6 @@ pub enum Commands {
         /// Enable/disable automatic creator agent invocation
         #[arg(long)]
         auto_create: Option<bool>,
-
 
         /// Set timeout in seconds for triage calls (default: 30)
         #[arg(long)]
@@ -1306,7 +1303,6 @@ pub enum Commands {
         #[arg(long, name = "flip-enabled")]
         flip_enabled: Option<bool>,
 
-
         /// Set FLIP inference model (Phase 1: prompt reconstruction). Shorthand for --set-model flip_inference <model>
         #[arg(long, name = "flip-inference-model")]
         flip_inference_model: Option<String>,
@@ -1322,7 +1318,6 @@ pub enum Commands {
         /// FLIP score threshold for triggering Opus verification (default: 0.7)
         #[arg(long, name = "flip-verification-threshold")]
         flip_verification_threshold: Option<f64>,
-
 
         /// Enable/disable chat history persistence across TUI restarts
         #[arg(long, name = "chat-history")]

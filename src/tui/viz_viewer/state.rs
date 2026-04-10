@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{BufRead, BufReader};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -3100,6 +3100,79 @@ pub struct HudDetail {
     pub output_mtime: Option<SystemTime>,
 }
 
+#[derive(Debug, Clone, Default)]
+struct TaskCompactionSnapshot {
+    journal_present: bool,
+    journal_entries: usize,
+    compaction_count: u64,
+    last_compaction: Option<String>,
+    session_summary_present: bool,
+    session_summary_words: Option<usize>,
+}
+
+fn load_task_runtime_snapshot(
+    workgraph_dir: &Path,
+    task: &workgraph::graph::Task,
+) -> (
+    Option<workgraph::service::AgentEntry>,
+    Option<TaskCompactionSnapshot>,
+) {
+    let registry_entry = task.assigned.as_ref().and_then(|aid| {
+        AgentRegistry::load(workgraph_dir)
+            .ok()
+            .and_then(|reg| reg.agents.get(aid).cloned())
+    });
+
+    let session_summary = task.assigned.as_ref().and_then(|aid| {
+        let path = workgraph_dir
+            .join("agents")
+            .join(aid)
+            .join("session-summary.md");
+        std::fs::read_to_string(path).ok()
+    });
+
+    let journal_path = workgraph::executor::native::journal::journal_path(workgraph_dir, &task.id);
+    let journal_present = journal_path.exists();
+    let mut journal_entries = 0usize;
+    let mut compaction_count = 0u64;
+    let mut last_compaction = None;
+
+    if journal_present
+        && let Ok(entries) = workgraph::executor::native::journal::Journal::read_all(&journal_path)
+    {
+        journal_entries = entries.len();
+        for entry in entries {
+            if matches!(
+                entry.kind,
+                workgraph::executor::native::journal::JournalEntryKind::Compaction { .. }
+            ) {
+                compaction_count += 1;
+                last_compaction = Some(entry.timestamp);
+            }
+        }
+    }
+
+    let snapshot = if registry_entry.as_ref().map(|e| e.executor.as_str()) == Some("native")
+        || journal_present
+        || session_summary.is_some()
+    {
+        Some(TaskCompactionSnapshot {
+            journal_present,
+            journal_entries,
+            compaction_count,
+            last_compaction,
+            session_summary_present: session_summary.is_some(),
+            session_summary_words: session_summary
+                .as_ref()
+                .map(|s| s.split_whitespace().count()),
+        })
+    } else {
+        None
+    };
+
+    (registry_entry, snapshot)
+}
+
 /// Extract section name from a detail header line like "── Description ──" → "Description".
 /// Also handles lines with trailing annotations: "── Output ── [R: raw JSON]" → "Output".
 /// Returns None for non-header lines or the task-id header (first line).
@@ -6119,35 +6192,8 @@ impl VizApp {
             lines.push(format!("Agent: {}", agent));
         }
 
-        // ── Executor & Model ──
-        // Look up the agent registry entry for actual executor/model used.
-        let registry_entry = task.assigned.as_ref().and_then(|aid| {
-            AgentRegistry::load(&self.workgraph_dir)
-                .ok()
-                .and_then(|reg| reg.agents.get(aid).cloned())
-        });
-        {
-            let actual_executor = registry_entry.as_ref().map(|e| e.executor.as_str());
-            let actual_model = registry_entry.as_ref().and_then(|e| e.model.as_deref());
-            let configured_model = task.model.as_deref();
-
-            if let Some(exec) = actual_executor {
-                lines.push(format!("Executor: {}", exec));
-            }
-
-            match (configured_model, actual_model) {
-                (Some(cfg), Some(actual)) if cfg != actual => {
-                    lines.push(format!("Model: {} (configured: {})", actual, cfg));
-                }
-                (_, Some(actual)) => {
-                    lines.push(format!("Model: {}", actual));
-                }
-                (Some(cfg), None) => {
-                    lines.push(format!("Model: {} (configured)", cfg));
-                }
-                (None, None) => {}
-            }
-        }
+        let (registry_entry, compaction_snapshot) =
+            load_task_runtime_snapshot(&self.workgraph_dir, &task);
 
         // ── Agency identity ──
         // Show agent entity (role + tradeoff) if task has an agency agent assigned.
@@ -6157,10 +6203,7 @@ impl VizApp {
             let agent_file = agents_cache.join(format!("{}.yaml", agent_hash));
             if let Ok(agent_entity) = workgraph::agency::load_agent(&agent_file) {
                 let short_hash = &agent_hash[..agent_hash.len().min(8)];
-                lines.push(format!(
-                    "Identity: {} ({})",
-                    agent_entity.name, short_hash
-                ));
+                lines.push(format!("Identity: {} ({})", agent_entity.name, short_hash));
                 // Look up role name
                 let roles_dir = agency_dir.join("cache").join("roles");
                 let role_file = roles_dir.join(format!("{}.yaml", agent_entity.role_id));
@@ -6183,18 +6226,77 @@ impl VizApp {
                     && let Ok(tc) = serde_yaml::from_str::<serde_json::Value>(&content)
                     && let Some(name) = tc.get("name").and_then(|v| v.as_str())
                 {
-                    let short =
-                        &agent_entity.tradeoff_id[..agent_entity.tradeoff_id.len().min(8)];
+                    let short = &agent_entity.tradeoff_id[..agent_entity.tradeoff_id.len().min(8)];
                     format!("{} ({})", name, short)
                 } else {
-                    let short =
-                        &agent_entity.tradeoff_id[..agent_entity.tradeoff_id.len().min(8)];
+                    let short = &agent_entity.tradeoff_id[..agent_entity.tradeoff_id.len().min(8)];
                     short.to_string()
                 };
                 lines.push(format!("Tradeoff: {}", tradeoff_label));
             }
         }
         lines.push(String::new());
+
+        // ── Runtime ──
+        if registry_entry.is_some() || task.model.is_some() || task.session_id.is_some() {
+            lines.push("── Runtime ──".to_string());
+            if let Some(ref entry) = registry_entry {
+                lines.push(format!("  Executor: {}", entry.executor));
+            }
+            match (
+                task.model.as_deref(),
+                registry_entry.as_ref().and_then(|e| e.model.as_deref()),
+            ) {
+                (Some(cfg), Some(actual)) if cfg != actual => {
+                    lines.push(format!("  Model: {} (configured: {})", actual, cfg));
+                }
+                (_, Some(actual)) => {
+                    lines.push(format!("  Model: {}", actual));
+                }
+                (Some(cfg), None) => {
+                    lines.push(format!("  Model: {} (configured)", cfg));
+                }
+                (None, None) => {}
+            }
+            if let Some(ref session_id) = task.session_id {
+                lines.push(format!("  Session: {}", session_id));
+            }
+            lines.push(String::new());
+        }
+
+        // ── Compaction ──
+        if let Some(snapshot) = compaction_snapshot {
+            lines.push("── Compaction ──".to_string());
+            lines.push(format!(
+                "  Native journal: {}",
+                if snapshot.journal_present {
+                    "present"
+                } else {
+                    "absent"
+                }
+            ));
+            if snapshot.journal_present {
+                lines.push(format!("  Journal entries: {}", snapshot.journal_entries));
+            }
+            if snapshot.compaction_count > 0 {
+                lines.push(format!("  Compactions: {}", snapshot.compaction_count));
+            } else if snapshot.journal_present {
+                lines.push("  Compactions: never observed".to_string());
+            }
+            if let Some(ref ts) = snapshot.last_compaction {
+                lines.push(format!("  Last compaction: {}", format_timestamp(ts)));
+            }
+            if snapshot.session_summary_present {
+                if let Some(words) = snapshot.session_summary_words {
+                    lines.push(format!("  Session summary: present ({} words)", words));
+                } else {
+                    lines.push("  Session summary: present".to_string());
+                }
+            } else {
+                lines.push("  Session summary: absent".to_string());
+            }
+            lines.push(String::new());
+        }
 
         // ── Description ──
         if let Some(ref desc) = task.description {
@@ -6208,7 +6310,8 @@ impl VizApp {
         // ── Agent prompt (full) ──
         // When viewing a past iteration, load from the archived directory instead.
         let prompt_path = if let Some(iter_idx) = self.viewing_iteration {
-            self.iteration_archives.get(iter_idx)
+            self.iteration_archives
+                .get(iter_idx)
                 .and_then(|(_, dir)| find_archive_file(dir, "prompt.txt"))
         } else {
             task.assigned
@@ -6241,7 +6344,8 @@ impl VizApp {
         // ── Agent output (full) ──
         // When viewing a past iteration, load from the archived directory instead.
         let output_path = if let Some(iter_idx) = self.viewing_iteration {
-            self.iteration_archives.get(iter_idx)
+            self.iteration_archives
+                .get(iter_idx)
                 .and_then(|(_, dir)| find_archive_file(dir, "output.txt"))
         } else {
             task.assigned
@@ -6271,9 +6375,15 @@ impl VizApp {
                 .filter(|p| p.exists())
         };
         if let Some(output_path) = output_path {
-            let iter_suffix = self.viewing_iteration.map(|idx| format!(" (iteration {})", idx + 1)).unwrap_or_default();
+            let iter_suffix = self
+                .viewing_iteration
+                .map(|idx| format!(" (iteration {})", idx + 1))
+                .unwrap_or_default();
             if self.detail_raw_json {
-                lines.push(format!("── Output{} (raw) ── [R: human-readable]", iter_suffix));
+                lines.push(format!(
+                    "── Output{} (raw) ── [R: human-readable]",
+                    iter_suffix
+                ));
                 // Raw mode: pretty-printed JSON
                 if let Ok(content) = std::fs::read_to_string(&output_path) {
                     for line in content.lines() {
@@ -6643,16 +6753,19 @@ impl VizApp {
         // Show iteration history for tasks with archives (cycle iterations or retries)
         {
             let archives = &self.iteration_archives;
-            let has_iterations = !archives.is_empty()
-                || task.loop_iteration > 0
-                || task.retry_count > 0;
+            let has_iterations =
+                !archives.is_empty() || task.loop_iteration > 0 || task.retry_count > 0;
             if has_iterations {
                 let is_cycle = task.cycle_config.is_some() || task.loop_iteration > 0;
                 let kind = if is_cycle { "Iteration" } else { "Attempt" };
                 lines.push(format!("── {}s ── [use [ ] to browse]", kind));
 
                 // Show "current" entry
-                let current_marker = if self.viewing_iteration.is_none() { "▶ " } else { "  " };
+                let current_marker = if self.viewing_iteration.is_none() {
+                    "▶ "
+                } else {
+                    "  "
+                };
                 let status_str = format!("{:?}", task.status);
                 lines.push(format!(
                     "  {}{} {} (current)   {}",
@@ -6665,7 +6778,11 @@ impl VizApp {
                 // Show archived iterations (most recent first for display)
                 let now = chrono::Utc::now();
                 for (display_idx, (ts_name, _dir)) in archives.iter().enumerate().rev() {
-                    let marker = if self.viewing_iteration == Some(display_idx) { "▶ " } else { "  " };
+                    let marker = if self.viewing_iteration == Some(display_idx) {
+                        "▶ "
+                    } else {
+                        "  "
+                    };
                     let age = ts_name
                         .parse::<chrono::DateTime<chrono::Utc>>()
                         .ok()
@@ -6783,10 +6900,7 @@ impl VizApp {
             let agent_file = agents_cache.join(format!("{}.yaml", agent_hash));
             if let Ok(agent_entity) = workgraph::agency::load_agent(&agent_file) {
                 let short_hash = &agent_hash[..agent_hash.len().min(8)];
-                lines.push(format!(
-                    "Identity: {} ({})",
-                    agent_entity.name, short_hash
-                ));
+                lines.push(format!("Identity: {} ({})", agent_entity.name, short_hash));
                 let roles_dir = agency_dir.join("cache").join("roles");
                 let role_file = roles_dir.join(format!("{}.yaml", agent_entity.role_id));
                 let role_label = if let Ok(content) = std::fs::read_to_string(&role_file)
@@ -6807,12 +6921,10 @@ impl VizApp {
                     && let Ok(tc) = serde_yaml::from_str::<serde_json::Value>(&content)
                     && let Some(name) = tc.get("name").and_then(|v| v.as_str())
                 {
-                    let short =
-                        &agent_entity.tradeoff_id[..agent_entity.tradeoff_id.len().min(8)];
+                    let short = &agent_entity.tradeoff_id[..agent_entity.tradeoff_id.len().min(8)];
                     format!("{} ({})", name, short)
                 } else {
-                    let short =
-                        &agent_entity.tradeoff_id[..agent_entity.tradeoff_id.len().min(8)];
+                    let short = &agent_entity.tradeoff_id[..agent_entity.tradeoff_id.len().min(8)];
                     short.to_string()
                 };
                 lines.push(format!("Tradeoff: {}", tradeoff_label));
@@ -8534,8 +8646,8 @@ impl VizApp {
         // ── Coordinator cards (one per coordinator) ──
         // Use fresh registry active_count for agents_alive instead of stale
         // CoordinatorState.agents_alive (which is only updated at tick boundaries).
-        let fresh_alive = workgraph::AgentRegistry::load_or_warn(&self.workgraph_dir)
-            .active_count();
+        let fresh_alive =
+            workgraph::AgentRegistry::load_or_warn(&self.workgraph_dir).active_count();
         let all_states = CoordinatorState::load_all(&self.workgraph_dir);
         self.dashboard.coordinator_cards = if all_states.is_empty() {
             vec![DashboardCoordinatorCard {
@@ -10764,7 +10876,13 @@ impl VizApp {
                 .filter_map(|t| {
                     t.id.strip_prefix(".coordinator-")
                         .and_then(|s| s.parse::<u32>().ok())
-                        .or_else(|| if t.id == ".coordinator" { Some(0) } else { None })
+                        .or_else(|| {
+                            if t.id == ".coordinator" {
+                                Some(0)
+                            } else {
+                                None
+                            }
+                        })
                 })
                 .next()
         });
@@ -10772,12 +10890,11 @@ impl VizApp {
         if existing_coord.is_none() {
             // No coordinator for this user — check if ANY coordinators exist
             let any_exist = graph.as_ref().map_or(false, |g| {
-                g.tasks()
-                    .any(|t| {
-                        t.tags.iter().any(|tag| tag == "coordinator-loop")
-                            && !matches!(t.status, workgraph::graph::Status::Abandoned)
-                            && !t.tags.iter().any(|tag| tag == "archived")
-                    })
+                g.tasks().any(|t| {
+                    t.tags.iter().any(|tag| tag == "coordinator-loop")
+                        && !matches!(t.status, workgraph::graph::Status::Abandoned)
+                        && !t.tags.iter().any(|tag| tag == "archived")
+                })
             });
             if !any_exist {
                 // No coordinators at all — create one for first-use experience
@@ -11782,7 +11899,10 @@ impl VizApp {
             entries.push(ConfigEntry {
                 key: "tiers.fast".into(),
                 label: "Fast".into(),
-                value: effective.fast.clone().unwrap_or_else(|| workgraph::config::Tier::Fast.default_alias().into()),
+                value: effective
+                    .fast
+                    .clone()
+                    .unwrap_or_else(|| workgraph::config::Tier::Fast.default_alias().into()),
                 edit_kind: ConfigEditKind::TextInput,
                 section: ConfigSection::ModelTiers,
             });
@@ -11799,7 +11919,10 @@ impl VizApp {
             entries.push(ConfigEntry {
                 key: "tiers.premium".into(),
                 label: "Premium".into(),
-                value: effective.premium.clone().unwrap_or_else(|| workgraph::config::Tier::Premium.default_alias().into()),
+                value: effective
+                    .premium
+                    .clone()
+                    .unwrap_or_else(|| workgraph::config::Tier::Premium.default_alias().into()),
                 edit_kind: ConfigEditKind::TextInput,
                 section: ConfigSection::ModelTiers,
             });
@@ -13572,6 +13695,104 @@ mod hud_tests {
     }
 
     #[test]
+    fn hud_shows_runtime_and_compaction_metadata() {
+        let (viz, _, _tmp) = build_chain_plus_isolated();
+
+        let mut registry = AgentRegistry::new();
+        registry.agents.insert(
+            "agent-001".to_string(),
+            workgraph::service::AgentEntry {
+                id: "agent-001".to_string(),
+                pid: 123,
+                task_id: "a".to_string(),
+                executor: "native".to_string(),
+                started_at: "2026-01-20T16:00:00Z".to_string(),
+                last_heartbeat: "2026-01-20T16:05:00Z".to_string(),
+                status: workgraph::service::AgentStatus::Working,
+                output_file: "output.log".to_string(),
+                model: Some("openrouter/minimax".to_string()),
+                completed_at: None,
+            },
+        );
+        registry.save(_tmp.path()).unwrap();
+
+        let journal_path = workgraph::executor::native::journal::journal_path(_tmp.path(), "a");
+        let mut journal =
+            workgraph::executor::native::journal::Journal::open(&journal_path).unwrap();
+        journal
+            .append(
+                workgraph::executor::native::journal::JournalEntryKind::Init {
+                    model: "openrouter/minimax".to_string(),
+                    provider: "openrouter".to_string(),
+                    system_prompt: "test".to_string(),
+                    tools: vec![],
+                    task_id: Some("a".to_string()),
+                },
+            )
+            .unwrap();
+        journal
+            .append(
+                workgraph::executor::native::journal::JournalEntryKind::Compaction {
+                    compacted_through_seq: 1,
+                    summary: "summary".to_string(),
+                    original_message_count: 4,
+                    original_token_count: 400,
+                },
+            )
+            .unwrap();
+
+        let summary_path = _tmp
+            .path()
+            .join("agents")
+            .join("agent-001")
+            .join("session-summary.md");
+        std::fs::create_dir_all(summary_path.parent().unwrap()).unwrap();
+        std::fs::write(summary_path, "short session summary").unwrap();
+
+        let mut app = build_app(&viz, "a", _tmp.path());
+        app.load_hud_detail();
+
+        let detail = app.hud_detail.as_ref().unwrap();
+        assert!(
+            detail
+                .rendered_lines
+                .iter()
+                .any(|l| l.contains("── Runtime ──")),
+            "runtime section should be present"
+        );
+        assert!(
+            detail
+                .rendered_lines
+                .iter()
+                .any(|l| l.contains("Executor: native"))
+        );
+        assert!(
+            detail
+                .rendered_lines
+                .iter()
+                .any(|l| l.contains("Model: openrouter/minimax"))
+        );
+        assert!(
+            detail
+                .rendered_lines
+                .iter()
+                .any(|l| l.contains("── Compaction ──"))
+        );
+        assert!(
+            detail
+                .rendered_lines
+                .iter()
+                .any(|l| l.contains("Compactions: 1"))
+        );
+        assert!(
+            detail
+                .rendered_lines
+                .iter()
+                .any(|l| l.contains("Session summary: present"))
+        );
+    }
+
+    #[test]
     fn hud_shows_description_excerpt() {
         let (viz, _, _tmp) = build_chain_plus_isolated();
         let mut app = build_app(&viz, "a", _tmp.path());
@@ -14220,7 +14441,10 @@ mod hud_tests {
             .rendered_lines
             .iter()
             .any(|l| l.contains("Iterations") || l.contains("Attempts"));
-        assert!(!has_iterations, "Non-cycling task should not show iteration section");
+        assert!(
+            !has_iterations,
+            "Non-cycling task should not show iteration section"
+        );
         assert!(app.iteration_archives.is_empty());
         assert!(app.viewing_iteration.is_none());
     }
@@ -14309,7 +14533,9 @@ mod hud_tests {
         assert!(
             has_iter_header,
             "Output section header should indicate iteration number. Lines: {:?}",
-            detail.rendered_lines.iter()
+            detail
+                .rendered_lines
+                .iter()
                 .filter(|l| l.contains("Output") || l.contains("Prompt"))
                 .collect::<Vec<_>>()
         );
@@ -14384,7 +14610,10 @@ mod hud_tests {
             .rendered_lines
             .iter()
             .any(|l| l.contains("── Attempts ──"));
-        assert!(has_attempts, "Retry task should show Attempts section, not Iterations");
+        assert!(
+            has_attempts,
+            "Retry task should show Attempts section, not Iterations"
+        );
         assert_eq!(app.iteration_archives.len(), 2);
     }
 
@@ -14422,12 +14651,18 @@ mod hud_tests {
 
         // Should have 3 archived iterations
         assert_eq!(app.iteration_archives.len(), 3);
-        assert!(app.viewing_iteration.is_none(), "Should start at current view");
+        assert!(
+            app.viewing_iteration.is_none(),
+            "Should start at current view"
+        );
 
         // Detail should show Iterations section
         let detail = app.hud_detail.as_ref().unwrap();
         assert!(
-            detail.rendered_lines.iter().any(|l| l.contains("── Iterations ──")),
+            detail
+                .rendered_lines
+                .iter()
+                .any(|l| l.contains("── Iterations ──")),
             "TUI detail should show Iterations section for cyclic task"
         );
 
@@ -14488,7 +14723,10 @@ mod hud_tests {
             .rendered_lines
             .iter()
             .any(|l| l.contains("Iterations") || l.contains("Attempts"));
-        assert!(!has_iterations, "Non-cycling task should not show iteration section");
+        assert!(
+            !has_iterations,
+            "Non-cycling task should not show iteration section"
+        );
         assert!(app.iteration_archives.is_empty());
 
         // Browsing should be no-op
@@ -14600,7 +14838,12 @@ mod hud_tests {
 
         // Detail should load without panic
         let detail = app.hud_detail.as_ref().unwrap();
-        assert!(detail.rendered_lines.iter().any(|l| l.contains("zero-iter")));
+        assert!(
+            detail
+                .rendered_lines
+                .iter()
+                .any(|l| l.contains("zero-iter"))
+        );
     }
 }
 
@@ -19006,11 +19249,12 @@ mod chat_delivery_tests {
 
         // R1 arrives — system must still track rid2.
         simulate_response_arrival(&mut chat, "R1");
-        assert_eq!(chat.pending_request_ids.len(), 1, "rid2 must still be tracked");
-        assert!(
-            chat.awaiting_response(),
-            "system must keep polling for R2"
+        assert_eq!(
+            chat.pending_request_ids.len(),
+            1,
+            "rid2 must still be tracked"
         );
+        assert!(chat.awaiting_response(), "system must keep polling for R2");
 
         // R2 arrives — all requests now satisfied.
         simulate_response_arrival(&mut chat, "R2");
@@ -19177,7 +19421,8 @@ mod chat_delivery_tests {
 
         simulate_user_send(&mut chat, "explain code", "rid1");
 
-        let md_content = "## Analysis\n\n- **Bold** point\n- `code snippet`\n\n```rust\nfn main() {}\n```";
+        let md_content =
+            "## Analysis\n\n- **Bold** point\n- `code snippet`\n\n```rust\nfn main() {}\n```";
         simulate_response_arrival(&mut chat, md_content);
 
         // Find the coordinator message.

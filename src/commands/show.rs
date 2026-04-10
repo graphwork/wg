@@ -3,9 +3,11 @@ use chrono::{DateTime, Utc};
 use serde::Serialize;
 use std::path::Path;
 use workgraph::graph::{
-    CycleConfig, LogEntry, LoopGuard, Status, TokenUsage, format_tokens, parse_token_usage_live,
+    CycleConfig, LogEntry, LoopGuard, Status, Task, TokenUsage, format_tokens,
+    parse_token_usage_live,
 };
 use workgraph::query::build_reverse_index;
+use workgraph::service::AgentRegistry;
 
 /// Blocker info with status
 #[derive(Debug, Serialize)]
@@ -65,6 +67,12 @@ struct TaskDetails {
     #[serde(skip_serializing_if = "Option::is_none")]
     model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    actual_executor: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    actual_model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    native_compaction: Option<NativeCompactionInfo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     verify: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     agent: Option<String>,
@@ -106,12 +114,100 @@ struct TaskDetails {
     supersedes: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct NativeCompactionInfo {
+    journal_present: bool,
+    journal_entries: usize,
+    #[serde(skip_serializing_if = "is_zero_u64")]
+    compaction_count: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_compaction: Option<String>,
+    session_summary_present: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    session_summary_words: Option<usize>,
+}
+
 fn is_default_visibility(val: &str) -> bool {
     val == "internal"
 }
 
 fn is_not_paused(val: &bool) -> bool {
     !*val
+}
+
+fn is_zero_u64(val: &u64) -> bool {
+    *val == 0
+}
+
+fn gather_task_runtime_info(
+    dir: &Path,
+    task: &Task,
+) -> (Option<String>, Option<String>, Option<NativeCompactionInfo>) {
+    let registry_entry = task.assigned.as_ref().and_then(|aid| {
+        AgentRegistry::load(dir)
+            .ok()
+            .and_then(|reg| reg.agents.get(aid).cloned())
+    });
+
+    let actual_executor = registry_entry.as_ref().map(|e| e.executor.clone());
+    let actual_model = registry_entry.as_ref().and_then(|e| e.model.clone());
+
+    let session_summary_path = task
+        .assigned
+        .as_ref()
+        .map(|aid| dir.join("agents").join(aid).join("session-summary.md"));
+    let session_summary = session_summary_path
+        .as_ref()
+        .filter(|p| p.exists())
+        .and_then(|p| std::fs::read_to_string(p).ok());
+
+    let session_summary_present = session_summary.is_some();
+    let session_summary_words = session_summary
+        .as_ref()
+        .map(|s| s.split_whitespace().count());
+
+    let journal_path = workgraph::executor::native::journal::journal_path(dir, &task.id);
+    let journal_present = journal_path.exists();
+
+    let (journal_entries, compaction_count, last_compaction) = if journal_present {
+        match workgraph::executor::native::journal::Journal::read_all(&journal_path) {
+            Ok(entries) => {
+                let mut count = 0u64;
+                let mut last = None;
+                for entry in &entries {
+                    if matches!(
+                        entry.kind,
+                        workgraph::executor::native::journal::JournalEntryKind::Compaction { .. }
+                    ) {
+                        count += 1;
+                        last = Some(entry.timestamp.clone());
+                    }
+                }
+                (entries.len(), count, last)
+            }
+            Err(_) => (0, 0, None),
+        }
+    } else {
+        (0, 0, None)
+    };
+
+    let native_compaction = if actual_executor.as_deref() == Some("native")
+        || journal_present
+        || session_summary_present
+    {
+        Some(NativeCompactionInfo {
+            journal_present,
+            journal_entries,
+            compaction_count,
+            last_compaction,
+            session_summary_present,
+            session_summary_words,
+        })
+    } else {
+        None
+    };
+
+    (actual_executor, actual_model, native_compaction)
 }
 
 pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
@@ -206,6 +302,8 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
         None
     });
 
+    let (actual_executor, actual_model, native_compaction) = gather_task_runtime_info(dir, task);
+
     let details = TaskDetails {
         id: task.id.clone(),
         title: task.title.clone(),
@@ -231,6 +329,9 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
         max_retries: task.max_retries,
         failure_reason: task.failure_reason.clone(),
         model: task.model.clone(),
+        actual_executor,
+        actual_model,
+        native_compaction,
         verify: task.verify.clone(),
         agent: task.agent.clone(),
         loop_iteration: task.loop_iteration,
@@ -288,6 +389,63 @@ fn print_human_readable(details: &TaskDetails) {
     }
     if let Some(ref agent) = details.agent {
         println!("Agent: {}", agent);
+    }
+    if details.actual_executor.is_some()
+        || details.model.is_some()
+        || details.actual_model.is_some()
+    {
+        println!();
+        println!("Runtime:");
+        if let Some(ref executor) = details.actual_executor {
+            println!("  Executor: {}", executor);
+        }
+        match (&details.model, &details.actual_model) {
+            (Some(configured), Some(actual)) if configured != actual => {
+                println!("  Model: {} (configured: {})", actual, configured);
+            }
+            (_, Some(actual)) => {
+                println!("  Model: {}", actual);
+            }
+            (Some(configured), None) => {
+                println!("  Model: {} (configured)", configured);
+            }
+            (None, None) => {}
+        }
+        if let Some(ref session_id) = details.session_id {
+            println!("  Session: {}", session_id);
+        }
+    }
+    if let Some(ref compact) = details.native_compaction {
+        println!();
+        println!("Compaction:");
+        println!(
+            "  Native journal: {}",
+            if compact.journal_present {
+                "present"
+            } else {
+                "absent"
+            }
+        );
+        if compact.journal_present {
+            println!("  Journal entries: {}", compact.journal_entries);
+        }
+        if compact.compaction_count > 0 {
+            println!("  Compactions: {}", compact.compaction_count);
+        } else if compact.journal_present {
+            println!("  Compactions: never observed");
+        }
+        if let Some(ref ts) = compact.last_compaction {
+            println!("  Last compaction: {}", ts);
+        }
+        if compact.session_summary_present {
+            if let Some(words) = compact.session_summary_words {
+                println!("  Session summary: present ({} words)", words);
+            } else {
+                println!("  Session summary: present");
+            }
+        } else if compact.journal_present || details.actual_executor.as_deref() == Some("native") {
+            println!("  Session summary: absent");
+        }
     }
 
     // Verify status
@@ -650,6 +808,16 @@ mod tests {
             max_retries: None,
             failure_reason: None,
             model: None,
+            actual_executor: Some("native".to_string()),
+            actual_model: Some("openrouter/minimax".to_string()),
+            native_compaction: Some(NativeCompactionInfo {
+                journal_present: true,
+                journal_entries: 12,
+                compaction_count: 1,
+                last_compaction: Some("2026-01-20T16:45:00+00:00".to_string()),
+                session_summary_present: true,
+                session_summary_words: Some(42),
+            }),
             verify: None,
             agent: None,
             loop_iteration: 0,
@@ -735,6 +903,74 @@ mod tests {
 
         let result = run(temp_dir.path(), "t1", true);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_gather_task_runtime_info_detects_native_compaction() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let mut task = make_task("native-task", "Native task");
+        task.assigned = Some("agent-1".to_string());
+
+        let mut registry = AgentRegistry::new();
+        registry.agents.insert(
+            "agent-1".to_string(),
+            workgraph::service::AgentEntry {
+                id: "agent-1".to_string(),
+                pid: 123,
+                task_id: "native-task".to_string(),
+                executor: "native".to_string(),
+                started_at: "2026-01-20T16:00:00Z".to_string(),
+                last_heartbeat: "2026-01-20T16:05:00Z".to_string(),
+                status: workgraph::service::AgentStatus::Working,
+                output_file: "output.log".to_string(),
+                model: Some("openrouter/minimax".to_string()),
+                completed_at: None,
+            },
+        );
+        registry.save(temp_dir.path()).unwrap();
+
+        let journal_path =
+            workgraph::executor::native::journal::journal_path(temp_dir.path(), "native-task");
+        let mut journal =
+            workgraph::executor::native::journal::Journal::open(&journal_path).unwrap();
+        journal
+            .append(
+                workgraph::executor::native::journal::JournalEntryKind::Init {
+                    model: "openrouter/minimax".to_string(),
+                    provider: "openrouter".to_string(),
+                    system_prompt: "test".to_string(),
+                    tools: vec![],
+                    task_id: Some("native-task".to_string()),
+                },
+            )
+            .unwrap();
+        journal
+            .append(
+                workgraph::executor::native::journal::JournalEntryKind::Compaction {
+                    compacted_through_seq: 1,
+                    summary: "summary".to_string(),
+                    original_message_count: 4,
+                    original_token_count: 400,
+                },
+            )
+            .unwrap();
+
+        let summary_path = temp_dir
+            .path()
+            .join("agents")
+            .join("agent-1")
+            .join("session-summary.md");
+        std::fs::create_dir_all(summary_path.parent().unwrap()).unwrap();
+        std::fs::write(&summary_path, "short session summary").unwrap();
+
+        let (executor, model, compaction) = gather_task_runtime_info(temp_dir.path(), &task);
+        assert_eq!(executor.as_deref(), Some("native"));
+        assert_eq!(model.as_deref(), Some("openrouter/minimax"));
+        let compaction = compaction.expect("expected compaction info");
+        assert!(compaction.journal_present);
+        assert_eq!(compaction.compaction_count, 1);
+        assert!(compaction.session_summary_present);
+        assert_eq!(compaction.session_summary_words, Some(3));
     }
 
     #[test]

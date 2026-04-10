@@ -153,8 +153,8 @@ impl BenchmarkRegistry {
     /// Save the benchmark registry to `.workgraph/model_benchmarks.json`.
     pub fn save(&self, workgraph_dir: &Path) -> Result<()> {
         let path = workgraph_dir.join(BENCHMARKS_FILE);
-        let content = serde_json::to_string_pretty(self)
-            .context("Failed to serialize benchmark registry")?;
+        let content =
+            serde_json::to_string_pretty(self).context("Failed to serialize benchmark registry")?;
         std::fs::write(&path, content)
             .with_context(|| format!("Failed to write {}", path.display()))?;
         Ok(())
@@ -183,11 +183,8 @@ impl BenchmarkRegistry {
 
     /// Models filtered by tier, sorted by fitness.
     pub fn ranked_by_tier(&self, tier: &str) -> Vec<&ModelBenchmark> {
-        let mut models: Vec<&ModelBenchmark> = self
-            .models
-            .values()
-            .filter(|m| m.tier == tier)
-            .collect();
+        let mut models: Vec<&ModelBenchmark> =
+            self.models.values().filter(|m| m.tier == tier).collect();
         models.sort_by(|a, b| {
             let sa = a.fitness.score.unwrap_or(f64::NEG_INFINITY);
             let sb = b.fitness.score.unwrap_or(f64::NEG_INFINITY);
@@ -225,8 +222,7 @@ pub fn compute_fitness_scores(registry: &mut BenchmarkRegistry) {
         let quality = quality_scores.get(id).copied().flatten();
 
         // Value: quality / cost_factor, normalized to 0–100.
-        let raw_cost =
-            model.pricing.input_per_mtok * 0.3 + model.pricing.output_per_mtok * 0.7;
+        let raw_cost = model.pricing.input_per_mtok * 0.3 + model.pricing.output_per_mtok * 0.7;
         let cost_factor = if median_cost > 0.0 && raw_cost > 0.0 {
             raw_cost / median_cost
         } else {
@@ -270,12 +266,12 @@ pub fn compute_fitness_scores(registry: &mut BenchmarkRegistry) {
 ///
 /// quality = coding_index * 0.50 + intelligence_index * 0.30 + agentic * 0.20
 fn compute_quality(benchmarks: &Benchmarks) -> Option<f64> {
-    let coding = benchmarks.coding_index.or_else(|| {
-        benchmarks.intelligence_index.map(|ii| ii * 0.9)
-    });
-    let intelligence = benchmarks.intelligence_index.or_else(|| {
-        benchmarks.coding_index.map(|ci| (ci * 1.1).min(100.0))
-    });
+    let coding = benchmarks
+        .coding_index
+        .or_else(|| benchmarks.intelligence_index.map(|ii| ii * 0.9));
+    let intelligence = benchmarks
+        .intelligence_index
+        .or_else(|| benchmarks.coding_index.map(|ci| (ci * 1.1).min(100.0)));
 
     match (coding, intelligence, benchmarks.agentic) {
         (Some(c), Some(i), Some(a)) => Some(c * 0.50 + i * 0.30 + a * 0.20),
@@ -1418,10 +1414,7 @@ fn apply_proxy_scores(registry: &mut BenchmarkRegistry) -> usize {
         .filter_map(|m| m.context_window.map(|c| c as f64))
         .filter(|c| *c > 0.0)
         .collect();
-    let max_context = context_lengths
-        .iter()
-        .copied()
-        .fold(1.0_f64, f64::max);
+    let max_context = context_lengths.iter().copied().fold(1.0_f64, f64::max);
 
     let mut applied = 0;
 
@@ -1432,8 +1425,7 @@ fn apply_proxy_scores(registry: &mut BenchmarkRegistry) -> usize {
         let model = registry.models.get(id).unwrap();
 
         // Skip models that already have curated benchmark data.
-        if model.benchmarks.coding_index.is_some()
-            || model.benchmarks.intelligence_index.is_some()
+        if model.benchmarks.coding_index.is_some() || model.benchmarks.intelligence_index.is_some()
         {
             continue;
         }
@@ -1571,7 +1563,7 @@ fn parse_or_pricing(model: &OpenRouterModel) -> BenchmarkPricing {
                 output_per_mtok: 0.0,
                 cache_read_per_mtok: None,
                 cache_write_per_mtok: None,
-            }
+            };
         }
     };
 
@@ -1603,13 +1595,26 @@ fn parse_or_pricing(model: &OpenRouterModel) -> BenchmarkPricing {
 #[derive(Debug, Clone)]
 pub enum RegistryChange {
     /// A model entered the top-N by fitness score.
-    EnteredTopN { model_id: String, rank: usize, score: f64 },
+    EnteredTopN {
+        model_id: String,
+        rank: usize,
+        score: f64,
+    },
     /// A model exited the top-N by fitness score.
     ExitedTopN { model_id: String, old_rank: usize },
     /// A model's fitness score changed significantly.
-    ScoreDelta { model_id: String, old_score: f64, new_score: f64, delta: f64 },
+    ScoreDelta {
+        model_id: String,
+        old_score: f64,
+        new_score: f64,
+        delta: f64,
+    },
     /// A model's tier changed.
-    TierChanged { model_id: String, old_tier: String, new_tier: String },
+    TierChanged {
+        model_id: String,
+        old_tier: String,
+        new_tier: String,
+    },
     /// A new model appeared in the registry.
     ModelAdded { model_id: String, tier: String },
     /// A model was removed from the registry.
@@ -1619,17 +1624,42 @@ pub enum RegistryChange {
 impl std::fmt::Display for RegistryChange {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            RegistryChange::EnteredTopN { model_id, rank, score } => {
-                write!(f, "  + {} entered top-N (rank {}, score {:.1})", model_id, rank, score)
+            RegistryChange::EnteredTopN {
+                model_id,
+                rank,
+                score,
+            } => {
+                write!(
+                    f,
+                    "  + {} entered top-N (rank {}, score {:.1})",
+                    model_id, rank, score
+                )
             }
             RegistryChange::ExitedTopN { model_id, old_rank } => {
                 write!(f, "  - {} exited top-N (was rank {})", model_id, old_rank)
             }
-            RegistryChange::ScoreDelta { model_id, old_score, new_score, delta } => {
+            RegistryChange::ScoreDelta {
+                model_id,
+                old_score,
+                new_score,
+                delta,
+            } => {
                 let arrow = if *delta > 0.0 { "↑" } else { "↓" };
-                write!(f, "  ~ {} score {:.1} → {:.1} ({}{:.1})", model_id, old_score, new_score, arrow, delta.abs())
+                write!(
+                    f,
+                    "  ~ {} score {:.1} → {:.1} ({}{:.1})",
+                    model_id,
+                    old_score,
+                    new_score,
+                    arrow,
+                    delta.abs()
+                )
             }
-            RegistryChange::TierChanged { model_id, old_tier, new_tier } => {
+            RegistryChange::TierChanged {
+                model_id,
+                old_tier,
+                new_tier,
+            } => {
                 write!(f, "  * {} tier {} → {}", model_id, old_tier, new_tier)
             }
             RegistryChange::ModelAdded { model_id, tier } => {
@@ -1658,8 +1688,16 @@ pub fn diff_registries(
     let old_ranked = old.ranked();
     let new_ranked = new.ranked();
 
-    let old_top: Vec<&str> = old_ranked.iter().take(top_n).map(|m| m.id.as_str()).collect();
-    let new_top: Vec<&str> = new_ranked.iter().take(top_n).map(|m| m.id.as_str()).collect();
+    let old_top: Vec<&str> = old_ranked
+        .iter()
+        .take(top_n)
+        .map(|m| m.id.as_str())
+        .collect();
+    let new_top: Vec<&str> = new_ranked
+        .iter()
+        .take(top_n)
+        .map(|m| m.id.as_str())
+        .collect();
 
     // Models that entered the top-N.
     for (rank, &model_id) in new_top.iter().enumerate() {
@@ -1864,9 +1902,7 @@ fn profile_tier_for_model(model: &ModelBenchmark) -> &'static str {
 
     // Premium: expensive AND high quality. Both must be true — an expensive
     // model with low quality is a bad premium candidate.
-    if output_price >= TIER_BOUNDARY_PREMIUM_MIN
-        && (model.tier == "frontier" || quality >= 50.0)
-    {
+    if output_price >= TIER_BOUNDARY_PREMIUM_MIN && (model.tier == "frontier" || quality >= 50.0) {
         return "premium";
     }
 
@@ -1906,8 +1942,7 @@ pub fn rank_models_for_profile(registry: &BenchmarkRegistry) -> RankedTiers {
         }
 
         let tier = profile_tier_for_model(model);
-        let popularity_score =
-            compute_popularity_score(&model.popularity, max_request_count);
+        let popularity_score = compute_popularity_score(&model.popularity, max_request_count);
         let benchmark_score = model.fitness.components.quality.unwrap_or(0.0);
         let pricing_efficiency = model.fitness.components.value.unwrap_or(0.0);
         let composite_score =
@@ -2162,26 +2197,28 @@ mod tests {
 
     #[test]
     fn test_diff_no_changes() {
-        let reg = make_test_registry(vec![
-            make_test_model("a/model-1", "frontier", Some(80.0)),
-        ]);
+        let reg = make_test_registry(vec![make_test_model("a/model-1", "frontier", Some(80.0))]);
         let changes = diff_registries(&reg, &reg, 20, 2.0);
         // Same registry → no score deltas, no tier changes, no adds/removes
         // (top-N enter/exit won't fire either since sets are identical)
-        assert!(changes.is_empty(), "Expected no changes, got: {:?}", changes);
+        assert!(
+            changes.is_empty(),
+            "Expected no changes, got: {:?}",
+            changes
+        );
     }
 
     #[test]
     fn test_diff_model_added() {
-        let old = make_test_registry(vec![
-            make_test_model("a/model-1", "frontier", Some(80.0)),
-        ]);
+        let old = make_test_registry(vec![make_test_model("a/model-1", "frontier", Some(80.0))]);
         let new = make_test_registry(vec![
             make_test_model("a/model-1", "frontier", Some(80.0)),
             make_test_model("b/model-2", "mid", Some(50.0)),
         ]);
         let changes = diff_registries(&old, &new, 20, 2.0);
-        assert!(changes.iter().any(|c| matches!(c, RegistryChange::ModelAdded { model_id, .. } if model_id == "b/model-2")));
+        assert!(changes.iter().any(
+            |c| matches!(c, RegistryChange::ModelAdded { model_id, .. } if model_id == "b/model-2")
+        ));
     }
 
     #[test]
@@ -2190,48 +2227,42 @@ mod tests {
             make_test_model("a/model-1", "frontier", Some(80.0)),
             make_test_model("b/model-2", "mid", Some(50.0)),
         ]);
-        let new = make_test_registry(vec![
-            make_test_model("a/model-1", "frontier", Some(80.0)),
-        ]);
+        let new = make_test_registry(vec![make_test_model("a/model-1", "frontier", Some(80.0))]);
         let changes = diff_registries(&old, &new, 20, 2.0);
         assert!(changes.iter().any(|c| matches!(c, RegistryChange::ModelRemoved { model_id, .. } if model_id == "b/model-2")));
     }
 
     #[test]
     fn test_diff_tier_changed() {
-        let old = make_test_registry(vec![
-            make_test_model("a/model-1", "mid", Some(50.0)),
-        ]);
-        let new = make_test_registry(vec![
-            make_test_model("a/model-1", "frontier", Some(50.0)),
-        ]);
+        let old = make_test_registry(vec![make_test_model("a/model-1", "mid", Some(50.0))]);
+        let new = make_test_registry(vec![make_test_model("a/model-1", "frontier", Some(50.0))]);
         let changes = diff_registries(&old, &new, 20, 2.0);
-        assert!(changes.iter().any(|c| matches!(c, RegistryChange::TierChanged { model_id, old_tier, new_tier, .. }
-            if model_id == "a/model-1" && old_tier == "mid" && new_tier == "frontier")));
+        assert!(changes.iter().any(
+            |c| matches!(c, RegistryChange::TierChanged { model_id, old_tier, new_tier, .. }
+            if model_id == "a/model-1" && old_tier == "mid" && new_tier == "frontier")
+        ));
     }
 
     #[test]
     fn test_diff_score_delta() {
-        let old = make_test_registry(vec![
-            make_test_model("a/model-1", "frontier", Some(70.0)),
-        ]);
-        let new = make_test_registry(vec![
-            make_test_model("a/model-1", "frontier", Some(75.0)),
-        ]);
+        let old = make_test_registry(vec![make_test_model("a/model-1", "frontier", Some(70.0))]);
+        let new = make_test_registry(vec![make_test_model("a/model-1", "frontier", Some(75.0))]);
         let changes = diff_registries(&old, &new, 20, 2.0);
-        assert!(changes.iter().any(|c| matches!(c, RegistryChange::ScoreDelta { delta, .. } if (*delta - 5.0).abs() < 0.01)));
+        assert!(changes.iter().any(
+            |c| matches!(c, RegistryChange::ScoreDelta { delta, .. } if (*delta - 5.0).abs() < 0.01)
+        ));
     }
 
     #[test]
     fn test_diff_score_below_threshold() {
-        let old = make_test_registry(vec![
-            make_test_model("a/model-1", "frontier", Some(70.0)),
-        ]);
-        let new = make_test_registry(vec![
-            make_test_model("a/model-1", "frontier", Some(71.0)),
-        ]);
+        let old = make_test_registry(vec![make_test_model("a/model-1", "frontier", Some(70.0))]);
+        let new = make_test_registry(vec![make_test_model("a/model-1", "frontier", Some(71.0))]);
         let changes = diff_registries(&old, &new, 20, 2.0);
-        assert!(!changes.iter().any(|c| matches!(c, RegistryChange::ScoreDelta { .. })));
+        assert!(
+            !changes
+                .iter()
+                .any(|c| matches!(c, RegistryChange::ScoreDelta { .. }))
+        );
     }
 
     #[test]
@@ -2241,9 +2272,10 @@ mod tests {
 
     #[test]
     fn test_format_changes_non_empty() {
-        let changes = vec![
-            RegistryChange::ModelAdded { model_id: "test/m".to_string(), tier: "mid".to_string() },
-        ];
+        let changes = vec![RegistryChange::ModelAdded {
+            model_id: "test/m".to_string(),
+            tier: "mid".to_string(),
+        }];
         let text = format_changes(&changes);
         assert!(text.contains("1 change(s) detected"));
         assert!(text.contains("test/m added"));
@@ -2339,7 +2371,11 @@ mod tests {
                 "With Tools",
                 1.0,
                 true,
-                Popularity { provider_count: Some(5), request_count: Some(1000), weekly_rank: Some(1) },
+                Popularity {
+                    provider_count: Some(5),
+                    request_count: Some(1000),
+                    weekly_rank: Some(1),
+                },
                 Some(50.0),
             ),
             make_ranked_model(
@@ -2347,14 +2383,20 @@ mod tests {
                 "No Tools",
                 1.0,
                 false,
-                Popularity { provider_count: Some(10), request_count: Some(10000), weekly_rank: Some(1) },
+                Popularity {
+                    provider_count: Some(10),
+                    request_count: Some(10000),
+                    weekly_rank: Some(1),
+                },
                 Some(90.0),
             ),
         ]);
 
         let ranked = rank_models_for_profile(&registry);
         // b/no-tools should be excluded
-        let all_ids: Vec<&str> = ranked.fast.iter()
+        let all_ids: Vec<&str> = ranked
+            .fast
+            .iter()
             .chain(ranked.standard.iter())
             .chain(ranked.premium.iter())
             .map(|r| r.id.as_str())
@@ -2369,21 +2411,57 @@ mod tests {
         // - fast: cheap (output < $3/MTok)
         // - standard: mid-priced ($3–$18/MTok)
         // - premium: expensive (>= $18/MTok) AND high quality
-        let mut cheap = make_ranked_model("a/cheap", "Cheap", 1.0, true, Popularity::default(), Some(40.0));
+        let mut cheap = make_ranked_model(
+            "a/cheap",
+            "Cheap",
+            1.0,
+            true,
+            Popularity::default(),
+            Some(40.0),
+        );
         cheap.tier = "budget".to_string();
-        let mut mid = make_ranked_model("b/mid", "Mid", 10.0, true, Popularity::default(), Some(50.0));
+        let mut mid = make_ranked_model(
+            "b/mid",
+            "Mid",
+            10.0,
+            true,
+            Popularity::default(),
+            Some(50.0),
+        );
         mid.tier = "mid".to_string();
-        let mut expensive = make_ranked_model("c/premium", "Premium", 25.0, true, Popularity::default(), Some(70.0));
+        let mut expensive = make_ranked_model(
+            "c/premium",
+            "Premium",
+            25.0,
+            true,
+            Popularity::default(),
+            Some(70.0),
+        );
         expensive.tier = "frontier".to_string();
 
         let registry = make_test_registry(vec![cheap, mid, expensive]);
 
         let ranked = rank_models_for_profile(&registry);
-        assert_eq!(ranked.fast.len(), 1, "Expected 1 fast model: {:?}", ranked.fast.iter().map(|r| &r.id).collect::<Vec<_>>());
+        assert_eq!(
+            ranked.fast.len(),
+            1,
+            "Expected 1 fast model: {:?}",
+            ranked.fast.iter().map(|r| &r.id).collect::<Vec<_>>()
+        );
         assert_eq!(ranked.fast[0].id, "a/cheap");
-        assert_eq!(ranked.standard.len(), 1, "Expected 1 standard model: {:?}", ranked.standard.iter().map(|r| &r.id).collect::<Vec<_>>());
+        assert_eq!(
+            ranked.standard.len(),
+            1,
+            "Expected 1 standard model: {:?}",
+            ranked.standard.iter().map(|r| &r.id).collect::<Vec<_>>()
+        );
         assert_eq!(ranked.standard[0].id, "b/mid");
-        assert_eq!(ranked.premium.len(), 1, "Expected 1 premium model: {:?}", ranked.premium.iter().map(|r| &r.id).collect::<Vec<_>>());
+        assert_eq!(
+            ranked.premium.len(),
+            1,
+            "Expected 1 premium model: {:?}",
+            ranked.premium.iter().map(|r| &r.id).collect::<Vec<_>>()
+        );
         assert_eq!(ranked.premium[0].id, "c/premium");
     }
 
@@ -2398,7 +2476,11 @@ mod tests {
                 "Popular",
                 1.0,
                 true,
-                Popularity { provider_count: Some(8), request_count: Some(500_000), weekly_rank: Some(2) },
+                Popularity {
+                    provider_count: Some(8),
+                    request_count: Some(500_000),
+                    weekly_rank: Some(2),
+                },
                 Some(30.0),
             ),
             make_ranked_model(
@@ -2406,14 +2488,21 @@ mod tests {
                 "Benchmark King",
                 1.0,
                 true,
-                Popularity { provider_count: Some(1), request_count: Some(100), weekly_rank: Some(150) },
+                Popularity {
+                    provider_count: Some(1),
+                    request_count: Some(100),
+                    weekly_rank: Some(150),
+                },
                 Some(90.0),
             ),
         ]);
 
         let ranked = rank_models_for_profile(&registry);
         assert!(ranked.fast.len() >= 2);
-        assert_eq!(ranked.fast[0].id, "b/benchmark-king", "High-benchmark model should rank first");
+        assert_eq!(
+            ranked.fast[0].id, "b/benchmark-king",
+            "High-benchmark model should rank first"
+        );
     }
 
     #[test]
@@ -2424,7 +2513,10 @@ mod tests {
                 "Low",
                 1.0,
                 true,
-                Popularity { provider_count: Some(1), ..Default::default() },
+                Popularity {
+                    provider_count: Some(1),
+                    ..Default::default()
+                },
                 None,
             ),
             make_ranked_model(
@@ -2432,7 +2524,10 @@ mod tests {
                 "High",
                 1.0,
                 true,
-                Popularity { provider_count: Some(10), ..Default::default() },
+                Popularity {
+                    provider_count: Some(10),
+                    ..Default::default()
+                },
                 None,
             ),
             make_ranked_model(
@@ -2440,7 +2535,10 @@ mod tests {
                 "Mid",
                 1.0,
                 true,
-                Popularity { provider_count: Some(5), ..Default::default() },
+                Popularity {
+                    provider_count: Some(5),
+                    ..Default::default()
+                },
                 None,
             ),
         ]);
@@ -2452,7 +2550,9 @@ mod tests {
             assert!(
                 ranked.fast[i].composite_score >= ranked.fast[i + 1].composite_score,
                 "Expected descending order at index {}: {} >= {}",
-                i, ranked.fast[i].composite_score, ranked.fast[i + 1].composite_score,
+                i,
+                ranked.fast[i].composite_score,
+                ranked.fast[i + 1].composite_score,
             );
         }
     }
@@ -2462,14 +2562,20 @@ mod tests {
     #[test]
     fn test_curated_benchmarks_not_empty() {
         let curated = curated_benchmarks();
-        assert!(curated.len() >= 20, "Expected at least 20 curated models, got {}", curated.len());
+        assert!(
+            curated.len() >= 20,
+            "Expected at least 20 curated models, got {}",
+            curated.len()
+        );
     }
 
     #[test]
     fn test_apply_curated_benchmarks_exact_match() {
-        let mut registry = make_test_registry(vec![
-            make_test_model("anthropic/claude-sonnet-4-6", "budget", None),
-        ]);
+        let mut registry = make_test_registry(vec![make_test_model(
+            "anthropic/claude-sonnet-4-6",
+            "budget",
+            None,
+        )]);
         let applied = apply_curated_benchmarks(&mut registry);
         assert_eq!(applied, 1);
 
@@ -2485,9 +2591,7 @@ mod tests {
     fn test_apply_curated_benchmarks_prefix_match() {
         // "anthropic/claude-opus-4" prefix should match the full opus model ID
         let opus_key = format!("anthropic/{CLAUDE_OPUS_MODEL_ID}");
-        let mut registry = make_test_registry(vec![
-            make_test_model(&opus_key, "budget", None),
-        ]);
+        let mut registry = make_test_registry(vec![make_test_model(&opus_key, "budget", None)]);
         let applied = apply_curated_benchmarks(&mut registry);
         assert_eq!(applied, 1);
 
@@ -2497,9 +2601,11 @@ mod tests {
 
     #[test]
     fn test_apply_curated_benchmarks_no_match() {
-        let mut registry = make_test_registry(vec![
-            make_test_model("unknown/some-random-model", "budget", None),
-        ]);
+        let mut registry = make_test_registry(vec![make_test_model(
+            "unknown/some-random-model",
+            "budget",
+            None,
+        )]);
         let applied = apply_curated_benchmarks(&mut registry);
         assert_eq!(applied, 0);
 
@@ -2568,51 +2674,64 @@ mod tests {
 
         // Claude Sonnet should have curated benchmarks.
         let sonnet = registry.models.get("anthropic/claude-sonnet-4-6").unwrap();
-        assert!(sonnet.benchmarks.coding_index.is_some(),
-            "Known model should have curated benchmark data");
-        assert!(sonnet.popularity.weekly_rank.is_some(),
-            "Known model should have curated popularity data");
+        assert!(
+            sonnet.benchmarks.coding_index.is_some(),
+            "Known model should have curated benchmark data"
+        );
+        assert!(
+            sonnet.popularity.weekly_rank.is_some(),
+            "Known model should have curated popularity data"
+        );
 
         // Unknown model should have proxy benchmark scores (not None, but capped below curated).
         let random = registry.models.get("unknown/random-model").unwrap();
-        assert!(random.benchmarks.coding_index.is_some(),
-            "Unknown model should have proxy benchmark data");
-        assert!(random.is_proxy,
-            "Unknown model should be marked as proxy");
+        assert!(
+            random.benchmarks.coding_index.is_some(),
+            "Unknown model should have proxy benchmark data"
+        );
+        assert!(random.is_proxy, "Unknown model should be marked as proxy");
         // Proxy scores are capped at 45.0 to stay below curated scores.
-        assert!(random.benchmarks.coding_index.unwrap() <= 45.0,
-            "Proxy coding_index should be capped at 45.0");
+        assert!(
+            random.benchmarks.coding_index.unwrap() <= 45.0,
+            "Proxy coding_index should be capped at 45.0"
+        );
         // Curated model should NOT be marked as proxy.
-        assert!(!sonnet.is_proxy,
-            "Curated model should not be marked as proxy");
+        assert!(
+            !sonnet.is_proxy,
+            "Curated model should not be marked as proxy"
+        );
     }
 
     #[test]
     fn test_curated_models_get_fitness_scores() {
         use crate::executor::native::openai_client::{OpenRouterModel, OpenRouterPricing};
 
-        let models = vec![
-            OpenRouterModel {
-                id: "anthropic/claude-sonnet-4-6".into(),
-                name: "Claude Sonnet 4.6".into(),
-                description: "".into(),
-                context_length: Some(200_000),
-                pricing: Some(OpenRouterPricing {
-                    prompt: Some("0.000003".into()),
-                    completion: Some("0.000015".into()),
-                }),
-                supported_parameters: vec!["tools".into()],
-                architecture: None,
-                top_provider: None,
-            },
-        ];
+        let models = vec![OpenRouterModel {
+            id: "anthropic/claude-sonnet-4-6".into(),
+            name: "Claude Sonnet 4.6".into(),
+            description: "".into(),
+            context_length: Some(200_000),
+            pricing: Some(OpenRouterPricing {
+                prompt: Some("0.000003".into()),
+                completion: Some("0.000015".into()),
+            }),
+            supported_parameters: vec!["tools".into()],
+            architecture: None,
+            top_provider: None,
+        }];
 
         let mut registry = build_from_openrouter(&models);
         compute_fitness_scores(&mut registry);
 
         let sonnet = registry.models.get("anthropic/claude-sonnet-4-6").unwrap();
-        assert!(sonnet.fitness.score.is_some(), "Curated model should get a fitness score");
-        assert!(sonnet.fitness.score.unwrap() > 0.0, "Fitness score should be positive");
+        assert!(
+            sonnet.fitness.score.is_some(),
+            "Curated model should get a fitness score"
+        );
+        assert!(
+            sonnet.fitness.score.unwrap() > 0.0,
+            "Fitness score should be positive"
+        );
         assert!(sonnet.fitness.components.quality.is_some());
     }
 
@@ -2657,9 +2776,14 @@ mod tests {
         // GPT-4o Mini should rank above the unknown model.
         assert!(ranked.fast.len() >= 2, "Expected at least 2 fast models");
         assert_eq!(
-            ranked.fast[0].id, "openai/gpt-4o-mini",
+            ranked.fast[0].id,
+            "openai/gpt-4o-mini",
             "Known model (GPT-4o Mini) should rank above unknown (tongyi): {:?}",
-            ranked.fast.iter().map(|r| (&r.id, r.composite_score)).collect::<Vec<_>>()
+            ranked
+                .fast
+                .iter()
+                .map(|r| (&r.id, r.composite_score))
+                .collect::<Vec<_>>()
         );
     }
 

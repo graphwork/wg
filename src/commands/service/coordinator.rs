@@ -828,13 +828,14 @@ fn resurrect_done_tasks(graph: &mut workgraph::graph::WorkGraph, dir: &Path) -> 
 /// Returns `true` if the graph was modified.
 fn unblock_stuck_tasks(graph: &mut workgraph::graph::WorkGraph, _dir: &Path) -> bool {
     let mut modified = false;
-    
+
     // Collect blocked task IDs first
-    let blocked_task_ids: Vec<String> = graph.tasks()
+    let blocked_task_ids: Vec<String> = graph
+        .tasks()
         .filter(|t| t.status == Status::Blocked)
         .map(|t| t.id.clone())
         .collect();
-    
+
     for task_id in blocked_task_ids {
         // Check if all dependencies are satisfied
         let task = graph.tasks().find(|t| t.id == task_id);
@@ -848,7 +849,7 @@ fn unblock_stuck_tasks(graph: &mut workgraph::graph::WorkGraph, _dir: &Path) -> 
             }),
             None => false,
         };
-        
+
         if all_deps_satisfied {
             // Get mutable reference to update the task
             if let Some(task) = graph.get_task_mut(&task_id) {
@@ -875,15 +876,20 @@ fn unblock_stuck_tasks(graph: &mut workgraph::graph::WorkGraph, _dir: &Path) -> 
             // Log diagnostic for stale blocked state
             if let Some(task) = graph.tasks().find(|t| t.id == task_id) {
                 if !task.after.is_empty() {
-                    let waiting_on: Vec<String> = task.after.iter().filter_map(|dep_id| {
-                        graph.tasks().find(|t| t.id == *dep_id).map(|t| {
-                            if !t.status.is_terminal() {
-                                format!("{}:{:?}", dep_id, t.status)
-                            } else {
-                                String::new()
-                            }
+                    let waiting_on: Vec<String> = task
+                        .after
+                        .iter()
+                        .filter_map(|dep_id| {
+                            graph.tasks().find(|t| t.id == *dep_id).map(|t| {
+                                if !t.status.is_terminal() {
+                                    format!("{}:{:?}", dep_id, t.status)
+                                } else {
+                                    String::new()
+                                }
+                            })
                         })
-                    }).filter(|s| !s.is_empty()).collect();
+                        .filter(|s| !s.is_empty())
+                        .collect();
                     if !waiting_on.is_empty() {
                         eprintln!(
                             "[coordinator] Task '{}' still blocked on: {}",
@@ -895,7 +901,7 @@ fn unblock_stuck_tasks(graph: &mut workgraph::graph::WorkGraph, _dir: &Path) -> 
             }
         }
     }
-    
+
     modified
 }
 
@@ -2046,10 +2052,7 @@ fn build_separate_verify_tasks(
             before: vec![],
             after: vec![source_task_id.clone()],
             requires: vec![],
-            tags: vec![
-                "verification".to_string(),
-                "separate-verify".to_string(),
-            ],
+            tags: vec!["verification".to_string(), "separate-verify".to_string()],
             skills: vec![],
             inputs: vec![],
             deliverables: vec![],
@@ -5479,8 +5482,7 @@ mod tests {
         // Check that .flip-.verify-my-task was created (full pipeline)
         let flip = graph.get_task(".flip-.verify-my-task").unwrap();
         assert!(
-            flip.after
-                .contains(&".verify-my-task".to_string()),
+            flip.after.contains(&".verify-my-task".to_string()),
             "flip task should depend on verify task"
         );
         assert!(
@@ -5678,8 +5680,10 @@ mod tests {
             "Expected spawn failure log entry"
         );
         assert!(
-            t.log.iter().any(|e| e.actor == Some("spawn-circuit-breaker".to_string())
-                && e.message.contains("Circuit breaker tripped")),
+            t.log
+                .iter()
+                .any(|e| e.actor == Some("spawn-circuit-breaker".to_string())
+                    && e.message.contains("Circuit breaker tripped")),
             "Expected circuit breaker log entry"
         );
     }
@@ -5706,35 +5710,38 @@ mod tests {
         crate::commands::edit::run(
             &wg_dir,
             "reset-task",
-            None, // title
-            None, // description
-            &[],  // add_after
-            &[],  // remove_after
-            &[],  // add_tag
-            &[],  // remove_tag
-            None, // model
-            None, // provider
-            &[],  // add_skill
-            &[],  // remove_skill
-            None, // max_iterations
-            None, // cycle_guard
-            None, // cycle_delay
-            false, // no_converge
-            false, // no_restart_on_failure
-            None,  // max_failure_restarts
-            None,  // visibility
-            None,  // context_scope
+            None,         // title
+            None,         // description
+            &[],          // add_after
+            &[],          // remove_after
+            &[],          // add_tag
+            &[],          // remove_tag
+            None,         // model
+            None,         // provider
+            &[],          // add_skill
+            &[],          // remove_skill
+            None,         // max_iterations
+            None,         // cycle_guard
+            None,         // cycle_delay
+            false,        // no_converge
+            false,        // no_restart_on_failure
+            None,         // max_failure_restarts
+            None,         // visibility
+            None,         // context_scope
             Some("full"), // exec_mode — the fix
-            None,  // delay
-            None,  // not_before
-            None,  // verify
-            false, // allow_phantom
+            None,         // delay
+            None,         // not_before
+            None,         // verify
+            false,        // allow_phantom
         )
         .unwrap();
 
         let g = load_graph(&gp).unwrap();
         let t = g.get_task("reset-task").unwrap();
-        assert_eq!(t.spawn_failures, 0, "spawn_failures should be reset after edit");
+        assert_eq!(
+            t.spawn_failures, 0,
+            "spawn_failures should be reset after edit"
+        );
         assert_eq!(
             t.exec_mode.as_deref(),
             Some("full"),
@@ -5776,9 +5783,7 @@ mod tests {
         let verify_task = graph.get_task(".sep-verify-my-task").unwrap();
         assert_eq!(verify_task.status, Status::Open);
         assert!(
-            verify_task
-                .tags
-                .contains(&"separate-verify".to_string()),
+            verify_task.tags.contains(&"separate-verify".to_string()),
             "should be tagged as separate-verify"
         );
         assert!(

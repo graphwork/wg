@@ -2180,8 +2180,7 @@ fn draw_right_panel(frame: &mut Frame, app: &mut VizApp, area: Rect) {
         // Hit area: 3 rows centered on the top border for easier grabbing.
         let div_y = area.y.saturating_sub(1);
         let div_h = 3.min(area.y.saturating_sub(app.last_graph_area.y) + 1);
-        app.last_horizontal_divider_area =
-            Rect::new(area.x, div_y, area.width, div_h);
+        app.last_horizontal_divider_area = Rect::new(area.x, div_y, area.width, div_h);
         app.last_divider_area = Rect::default();
     } else {
         app.last_divider_area = Rect::default();
@@ -4169,6 +4168,17 @@ fn draw_log_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
 
 /// Draw the Coordinator Log tab (panel 7) — activity feed from operations.jsonl.
 fn draw_coord_log_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
+    let header_lines = build_coordinator_runtime_lines(app);
+    let area = if !header_lines.is_empty() && area.height > 4 {
+        let header_height = (header_lines.len() as u16).min(area.height.saturating_sub(1));
+        let [header_area, body_area] =
+            Layout::vertical([Constraint::Length(header_height), Constraint::Min(0)]).areas(area);
+        frame.render_widget(Paragraph::new(header_lines), header_area);
+        body_area
+    } else {
+        area
+    };
+
     // If we have activity feed events, render the semantic view.
     // Otherwise fall back to the raw daemon.log display.
     if !app.activity_feed.events.is_empty() {
@@ -4276,6 +4286,67 @@ fn draw_coord_log_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
             scroll,
         );
     }
+}
+
+fn build_coordinator_runtime_lines(app: &VizApp) -> Vec<Line<'static>> {
+    let config = workgraph::config::Config::load_or_default(&app.workgraph_dir);
+    let executor = config.coordinator.effective_executor();
+    let model = config.coordinator.model.clone().unwrap_or_else(|| {
+        config
+            .resolve_model_for_role(workgraph::config::DispatchRole::Default)
+            .model
+    });
+    let cid = app.active_coordinator_id;
+    let state =
+        workgraph::service::chat_compactor::ChatCompactorState::load(&app.workgraph_dir, cid);
+    let threshold = config.chat.compact_threshold;
+    let pending =
+        workgraph::chat::read_inbox_since_for(&app.workgraph_dir, cid, state.last_inbox_id)
+            .map(|m| m.len())
+            .unwrap_or(0)
+            + workgraph::chat::read_outbox_since_for(&app.workgraph_dir, cid, state.last_outbox_id)
+                .map(|m| m.len())
+                .unwrap_or(0);
+    let summary_present =
+        workgraph::service::chat_compactor::context_summary_path(&app.workgraph_dir, cid).exists();
+    let last = state
+        .last_compaction
+        .clone()
+        .unwrap_or_else(|| "never".to_string());
+
+    vec![
+        Line::from(vec![
+            Span::styled(
+                format!("Coordinator {} ", cid),
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("· "),
+            Span::styled(executor, Style::default().fg(Color::White)),
+            Span::raw(" · "),
+            Span::styled(model, Style::default().fg(Color::White)),
+        ]),
+        Line::from(vec![
+            Span::styled("Chat compaction ", Style::default().fg(Color::Green)),
+            Span::raw("· "),
+            Span::raw(format!("{}x", state.compaction_count)),
+            Span::raw(" · "),
+            Span::raw(format!("last {}", last)),
+            Span::raw(" · "),
+            Span::raw(format!("pending {}/{}", pending, threshold)),
+            Span::raw(" · "),
+            Span::raw(if summary_present {
+                "summary present"
+            } else {
+                "summary absent"
+            }),
+        ]),
+        Line::from(Span::styled(
+            "─".repeat(24),
+            Style::default().fg(Color::DarkGray),
+        )),
+    ]
 }
 
 /// Render the semantic activity feed from parsed operations.jsonl events.

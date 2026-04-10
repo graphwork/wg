@@ -67,7 +67,10 @@ fn is_compact_task(task_id: &str) -> bool {
 ///   .coordinator → .archive → .coordinator (deadlock)
 ///
 /// Archive must run independently, NOT gated by coordinator.
-fn check_circular_archive_dependency(graph: &WorkGraph, coordinator_id: &str) -> Option<CoordinatorCycleWarning> {
+fn check_circular_archive_dependency(
+    graph: &WorkGraph,
+    coordinator_id: &str,
+) -> Option<CoordinatorCycleWarning> {
     let coordinator = graph.get_task(coordinator_id)?;
 
     // Check if coordinator has any archive task in its after list
@@ -126,16 +129,19 @@ fn check_circular_archive_dependency(graph: &WorkGraph, coordinator_id: &str) ->
 ///
 /// An autonomous coordinator with heartbeat_interval=0 and no trigger mechanism
 /// will stall if no events fire. Warn users who might expect autonomous behavior.
-fn check_heartbeat_configuration(graph: &WorkGraph, coordinator_id: &str) -> Option<CoordinatorCycleWarning> {
+fn check_heartbeat_configuration(
+    graph: &WorkGraph,
+    coordinator_id: &str,
+) -> Option<CoordinatorCycleWarning> {
     let _coordinator = graph.get_task(coordinator_id)?;
     let config = Config::load_or_default(std::path::Path::new("."));
 
     // If heartbeat_interval is explicitly set to 0, check for trigger mechanisms
     if config.coordinator.heartbeat_interval == 0 {
         // Check if there's a user board or other trigger mechanism
-        let has_user_board = graph.tasks().any(|t| {
-            t.tags.iter().any(|tag| tag == "user-board")
-        });
+        let has_user_board = graph
+            .tasks()
+            .any(|t| t.tags.iter().any(|tag| tag == "user-board"));
 
         if !has_user_board {
             return Some(CoordinatorCycleWarning {
@@ -272,7 +278,9 @@ pub fn validate_all_coordinator_cycles(graph: &WorkGraph) -> Vec<CoordinatorCycl
 
 /// Check if any warnings have Error severity.
 pub fn has_critical_warnings(warnings: &[CoordinatorCycleWarning]) -> bool {
-    warnings.iter().any(|w| w.severity == WarningSeverity::Error)
+    warnings
+        .iter()
+        .any(|w| w.severity == WarningSeverity::Error)
 }
 
 impl std::fmt::Display for CoordinatorCycleWarning {
@@ -351,13 +359,11 @@ mod tests {
             warnings
         );
 
-        let error_msg = warnings.iter()
+        let error_msg = warnings
+            .iter()
             .find(|w| w.severity == WarningSeverity::Error)
             .map(|w| w.message.clone());
-        assert!(
-            error_msg.is_some(),
-            "Should have error message"
-        );
+        assert!(error_msg.is_some(), "Should have error message");
         assert!(
             error_msg.unwrap().contains("deadlock"),
             "Error should mention deadlock"
@@ -414,10 +420,9 @@ mod tests {
         let graph = build_graph(vec![coordinator]);
         let warnings = validate_coordinator_cycle(&graph, ".coordinator-0");
 
-        let has_warning = warnings.iter().any(|w| {
-            w.severity == WarningSeverity::Warning
-                && w.message.contains("compact")
-        });
+        let has_warning = warnings
+            .iter()
+            .any(|w| w.severity == WarningSeverity::Warning && w.message.contains("compact"));
         assert!(
             has_warning,
             "Should warn about missing compact dependency: {:?}",

@@ -1192,13 +1192,8 @@ mod tests {
         existing_assign.tags = vec!["assignment".to_string(), "agency".to_string()];
         graph.add_node(Node::Task(existing_assign));
 
-        let modified = scaffold_full_pipeline(
-            dir.path(),
-            &mut graph,
-            ".verify-t1",
-            "Verify: t1",
-            &config,
-        );
+        let modified =
+            scaffold_full_pipeline(dir.path(), &mut graph, ".verify-t1", "Verify: t1", &config);
         // Should still create .evaluate-* even if .assign-* exists
         assert!(modified);
 
@@ -1299,8 +1294,13 @@ mod tests {
         assert!(!modified_shell);
 
         // Checker task should get full pipeline
-        let modified_checker =
-            scaffold_full_pipeline(dir.path(), &mut graph, "check-batch", "Check Batch", &config);
+        let modified_checker = scaffold_full_pipeline(
+            dir.path(),
+            &mut graph,
+            "check-batch",
+            "Check Batch",
+            &config,
+        );
         assert!(modified_checker);
         assert!(graph.get_task(".assign-check-batch").is_some());
         assert!(graph.get_task(".flip-check-batch").is_some());

@@ -640,8 +640,7 @@ trade_off_config,Test Tradeoff,Tradeoff description,70,0,,inst-4,,task
 
         run(&wg_dir).unwrap();
 
-        let config_content =
-            std::fs::read_to_string(wg_dir.join("config.toml")).unwrap();
+        let config_content = std::fs::read_to_string(wg_dir.join("config.toml")).unwrap();
         assert!(
             !config_content.contains("endpoints = []"),
             "wg init should not write 'endpoints = []' — it shadows global config.\nGot:\n{}",

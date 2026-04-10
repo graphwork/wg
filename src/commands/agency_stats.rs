@@ -120,25 +120,17 @@ fn classify_task_type(title: &str) -> Option<&'static str> {
     {
         return Some("implementation");
     }
-    if lower.starts_with("fix:")
-        || lower.starts_with("hotfix:")
-        || lower.starts_with("bugfix:")
-    {
+    if lower.starts_with("fix:") || lower.starts_with("hotfix:") || lower.starts_with("bugfix:") {
         return Some("fix");
     }
-    if lower.starts_with("design:")
-        || lower.starts_with("architect:")
-        || lower.starts_with("plan:")
+    if lower.starts_with("design:") || lower.starts_with("architect:") || lower.starts_with("plan:")
     {
         return Some("design");
     }
     if lower.starts_with("test:") || lower.starts_with("validate:") {
         return Some("test");
     }
-    if lower.starts_with("docs:")
-        || lower.starts_with("document:")
-        || lower.starts_with("doc:")
-    {
+    if lower.starts_with("docs:") || lower.starts_with("document:") || lower.starts_with("doc:") {
         return Some("docs");
     }
     if lower.starts_with("refactor:")
@@ -153,7 +145,13 @@ fn classify_task_type(title: &str) -> Option<&'static str> {
 }
 
 /// Run `wg agency stats [--json] [--min-evals N] [--by-model] [--by-task-type]`.
-pub fn run(dir: &Path, json: bool, min_evals: u32, by_model: bool, by_task_type: bool) -> Result<()> {
+pub fn run(
+    dir: &Path,
+    json: bool,
+    min_evals: u32,
+    by_model: bool,
+    by_task_type: bool,
+) -> Result<()> {
     let agency_dir = dir.join("agency");
     let roles_dir = agency_dir.join("cache/roles");
     let tradeoffs_dir = agency_dir.join("primitives/tradeoffs");
@@ -689,10 +687,7 @@ fn output_text(
                 }
                 println!(
                     "  {:<16} {:<40} {:>8.2} {:>6}",
-                    cell.task_type,
-                    cell.entity_id,
-                    cell.avg_score,
-                    cell.count,
+                    cell.task_type, cell.entity_id, cell.avg_score, cell.count,
                 );
             }
         }
@@ -1094,17 +1089,35 @@ mod tests {
 
     #[test]
     fn test_classify_task_type_prefixes() {
-        assert_eq!(classify_task_type("Research: JWT libraries"), Some("research"));
-        assert_eq!(classify_task_type("Investigate: auth bug"), Some("research"));
-        assert_eq!(classify_task_type("Implement: JWT auth"), Some("implementation"));
-        assert_eq!(classify_task_type("Add: new endpoint"), Some("implementation"));
-        assert_eq!(classify_task_type("Wire: evaluation feedback"), Some("implementation"));
+        assert_eq!(
+            classify_task_type("Research: JWT libraries"),
+            Some("research")
+        );
+        assert_eq!(
+            classify_task_type("Investigate: auth bug"),
+            Some("research")
+        );
+        assert_eq!(
+            classify_task_type("Implement: JWT auth"),
+            Some("implementation")
+        );
+        assert_eq!(
+            classify_task_type("Add: new endpoint"),
+            Some("implementation")
+        );
+        assert_eq!(
+            classify_task_type("Wire: evaluation feedback"),
+            Some("implementation")
+        );
         assert_eq!(classify_task_type("Fix: crash on startup"), Some("fix"));
         assert_eq!(classify_task_type("Hotfix: null pointer"), Some("fix"));
         assert_eq!(classify_task_type("Design: API schema"), Some("design"));
         assert_eq!(classify_task_type("Test: auth middleware"), Some("test"));
         assert_eq!(classify_task_type("Docs: update README"), Some("docs"));
-        assert_eq!(classify_task_type("Refactor: extract helper"), Some("refactor"));
+        assert_eq!(
+            classify_task_type("Refactor: extract helper"),
+            Some("refactor")
+        );
     }
 
     #[test]

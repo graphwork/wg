@@ -2379,8 +2379,8 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
 
     // Track hover state for the dividers (visual indicator).
     app.divider_hover = in_divider || app.scrollbar_drag == Some(ScrollbarDragTarget::Divider);
-    app.horizontal_divider_hover = in_horizontal_divider
-        || app.scrollbar_drag == Some(ScrollbarDragTarget::HorizontalDivider);
+    app.horizontal_divider_hover =
+        in_horizontal_divider || app.scrollbar_drag == Some(ScrollbarDragTarget::HorizontalDivider);
     // Track hover state for tri-state strips.
     app.minimized_strip_hover = in_minimized_strip;
     app.fullscreen_restore_hover = in_fullscreen_restore;
@@ -2599,12 +2599,11 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
                     app.last_right_panel_area.height + top_h + bottom_h
                 }
                 .max(1);
-                let border_row =
-                    app.last_fullscreen_top_border_area.y + app.last_fullscreen_top_border_area.height;
+                let border_row = app.last_fullscreen_top_border_area.y
+                    + app.last_fullscreen_top_border_area.height;
                 let panel_height = (app.last_fullscreen_top_border_area.y + total_height)
                     .saturating_sub(border_row);
-                let pct =
-                    ((panel_height as u32 * 100) / total_height as u32).clamp(1, 99) as u16;
+                let pct = ((panel_height as u32 * 100) / total_height as u32).clamp(1, 99) as u16;
                 app.right_panel_percent = pct;
                 app.layout_mode = super::state::VizApp::layout_mode_for_percent(pct);
                 if pct > 0 && pct < 100 {
@@ -2616,8 +2615,7 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
                 let graph_h = total_height.saturating_sub(panel_h);
                 app.last_graph_area.y = app.last_fullscreen_top_border_area.y;
                 app.last_graph_area.height = graph_h;
-                app.last_right_panel_area.y =
-                    app.last_fullscreen_top_border_area.y + graph_h;
+                app.last_right_panel_area.y = app.last_fullscreen_top_border_area.y + graph_h;
                 app.last_right_panel_area.height = panel_h;
                 app.inspector_is_beside = false;
                 app.divider_drag_start_pct = pct;
@@ -5657,8 +5655,7 @@ mod scrollbar_tests {
             10,
         );
         assert_eq!(
-            app.right_panel_percent,
-            MIN_DRAG_PERCENT as u16,
+            app.right_panel_percent, MIN_DRAG_PERCENT as u16,
             "percent should clamp at MIN_DRAG_PERCENT when dragged far down"
         );
 
@@ -5806,8 +5803,14 @@ mod scrollbar_tests {
             10,
         );
         assert_eq!(app.scrollbar_drag, None, "scrollbar_drag should be cleared");
-        assert_eq!(app.divider_drag_start_row, 0, "drag_start_row should be reset");
-        assert_eq!(app.divider_drag_start_pct, 0, "drag_start_pct should be reset");
+        assert_eq!(
+            app.divider_drag_start_row, 0,
+            "drag_start_row should be reset"
+        );
+        assert_eq!(
+            app.divider_drag_start_pct, 0,
+            "drag_start_pct should be reset"
+        );
     }
 
     // ── Inspector tab bar mouse click regression tests ──
@@ -5899,12 +5902,20 @@ mod scrollbar_tests {
         // Click on "0:Chat" (col 4, row 16)
         app.right_panel_tab = RightPanelTab::Log; // start on a different tab
         handle_mouse(&mut app, MouseEventKind::Down(MouseButton::Left), 16, 4);
-        assert_eq!(app.right_panel_tab, RightPanelTab::Chat, "Click on Chat tab");
+        assert_eq!(
+            app.right_panel_tab,
+            RightPanelTab::Chat,
+            "Click on Chat tab"
+        );
 
         // Click on "1:Detail" (col 14, row 16)
         app.right_panel_tab = RightPanelTab::Chat;
         handle_mouse(&mut app, MouseEventKind::Down(MouseButton::Left), 16, 14);
-        assert_eq!(app.right_panel_tab, RightPanelTab::Detail, "Click on Detail tab");
+        assert_eq!(
+            app.right_panel_tab,
+            RightPanelTab::Detail,
+            "Click on Detail tab"
+        );
 
         // Click on "2:Log" (col 24, row 16)
         app.right_panel_tab = RightPanelTab::Chat;
@@ -6065,5 +6076,4 @@ mod drilldown_tests {
         app.right_panel_tab = RightPanelTab::Chat;
         assert!(app.nav_stack.is_empty());
     }
-
 }

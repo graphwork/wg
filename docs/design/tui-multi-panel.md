@@ -121,6 +121,23 @@ The existing viz viewer — unchanged. Renders `wg viz` output with ANSI colors,
 
 **State**: Existing `VizApp` scroll/search/trace state. No changes needed.
 
+#### Note: Default Task Visibility Should Favor Human Work
+
+As the graph gets large, showing dot-prefixed system tasks by default makes it materially harder for both humans and agents to understand what is going on. The default graph view should bias toward the currently relevant human-facing work:
+
+- active and recently-created non-system tasks
+- open tasks with meaningful user titles
+- in-progress work and its nearby dependencies
+
+Dot-prefixed system tasks should remain available, but as an explicit reveal rather than the default baseline. The TUI should make that discoverable without making the graph noisy. A good default shape would be:
+
+- hide system tasks by default
+- show a small reminder or badge that system tasks are hidden
+- provide a clear reveal action such as "show system tasks"
+- optionally bias the initial view toward recent/open/active tasks when the graph is very large
+
+The product reason is not just visual cleanliness. Large amounts of system-task noise degrade graph legibility and make it harder to validate coordinator behavior, compaction behavior, and the actual state of active work.
+
 ### 2. Task Detail Panel (Right Tab: "Detail")
 
 Evolution of the existing HUD. Shows full task information for the selected task.
