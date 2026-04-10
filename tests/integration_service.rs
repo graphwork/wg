@@ -711,3 +711,95 @@ auto_evaluate = false
         "New agent should have a different PID"
     );
 }
+
+#[test]
+#[serial]
+fn test_service_start_on_bare_graph_does_not_create_daemon_tasks() {
+    let tmp = tempfile::tempdir().unwrap();
+    let wg_dir = setup_workgraph(tmp.path());
+    let socket = socket_path_for(tmp.path());
+
+    let mut child = Command::new(wg_binary())
+        .arg("--dir")
+        .arg(&wg_dir)
+        .args([
+            "service",
+            "start",
+            "--socket",
+            &socket,
+            "--executor",
+            "shell",
+            "--no-coordinator-agent",
+        ])
+        .env("HOME", fake_home_for(&wg_dir))
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to start daemon");
+
+    assert!(
+        wait_for_service_ready(&wg_dir, Duration::from_secs(10)),
+        "service did not become ready"
+    );
+
+    std::thread::sleep(Duration::from_millis(500));
+
+    let open = wg_ok(&wg_dir, &["list", "--status", "open"]);
+    assert!(
+        open.contains("No tasks found"),
+        "bare service start should not create daemon-managed graph tasks.\nopen tasks:\n{}",
+        open
+    );
+
+    let status = wg_ok(&wg_dir, &["service", "status"]);
+    assert!(
+        status.contains("Coordinator:"),
+        "service status should still report coordinator state:\n{}",
+        status
+    );
+
+    let _ = wg_cmd(&wg_dir, &["service", "stop", "--force"]);
+    let _ = child.wait();
+}
+
+#[test]
+#[serial]
+fn test_service_start_fails_on_invalid_config_instead_of_using_defaults() {
+    let tmp = tempfile::tempdir().unwrap();
+    let wg_dir = setup_workgraph(tmp.path());
+
+    fs::write(
+        wg_dir.join("config.toml"),
+        "[coordinator]\nmodel = \"openrouter:minimax/minimax-m2.7\"\n[chat]\ncompact_threshold = 2\ncompact_threshold = 50\n",
+    )
+    .unwrap();
+
+    let output = wg_cmd(&wg_dir, &["service", "start", "--no-coordinator-agent"]);
+    assert!(
+        !output.status.success(),
+        "service start should fail on invalid config"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Failed to parse config"),
+        "stderr should mention config parse failure, got:\n{}",
+        stderr
+    );
+}
+
+#[test]
+#[serial]
+fn test_service_start_succeeds_with_implicit_coordinator_config() {
+    let tmp = tempfile::tempdir().unwrap();
+    let wg_dir = setup_workgraph(tmp.path());
+
+    // With lenient preflight, service start should succeed even without
+    // explicit coordinator config (daemon will use native executor defaults)
+    let output = wg_cmd(&wg_dir, &["service", "start"]);
+    assert!(
+        output.status.success(),
+        "service start should succeed with implicit coordinator config, got stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}

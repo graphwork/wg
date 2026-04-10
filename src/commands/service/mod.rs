@@ -67,21 +67,7 @@ fn resolve_service_coordinator_settings(
         return Ok((effective_executor, explicit_model));
     }
 
-    let has_explicit_coordinator_config = cli_executor.is_some()
-        || cli_model.is_some()
-        || config.coordinator.executor.is_some()
-        || config.coordinator.model.is_some();
-
-    if !has_explicit_coordinator_config {
-        anyhow::bail!(
-            "Coordinator agent startup requires explicit coordinator configuration. \
-             Refusing implicit fallback to default Claude settings.\n\
-             Configure it with e.g. `wg config --local --coordinator-executor native \
-             --coordinator-model openrouter:minimax/minimax-m2.7`, or use \
-             `wg service start --no-coordinator-agent`."
-        );
-    }
-
+    // Preflight native provider for coordinator agent when using native executor
     if effective_executor == "native" {
         let resolved = if let Some(raw_model) = explicit_model.clone() {
             let spec = workgraph::config::parse_model_spec(&raw_model);
@@ -816,13 +802,6 @@ pub fn run_start(
     no_coordinator_agent: bool,
 ) -> Result<()> {
     let config = Config::load_merged(dir)?;
-    let (preflight_executor, preflight_model) = resolve_service_coordinator_settings(
-        dir,
-        &config,
-        executor,
-        model,
-        no_coordinator_agent,
-    )?;
 
     // Check if service is already running
     if let Some(state) = ServiceState::load(dir)? {
@@ -1070,8 +1049,12 @@ pub fn run_start(
     // Resolve effective config for display (CLI flags override config.toml)
     let eff_max_agents = max_agents.unwrap_or(config.coordinator.max_agents);
     let eff_poll_interval = interval.unwrap_or(config.coordinator.poll_interval);
-    let eff_executor = preflight_executor;
-    let eff_model: Option<String> = preflight_model;
+    let eff_executor = executor
+        .map(std::string::ToString::to_string)
+        .unwrap_or_else(|| config.coordinator.effective_executor());
+    let eff_model = model
+        .map(std::string::ToString::to_string)
+        .or_else(|| config.coordinator.model.clone());
 
     let log_path_str = log_path.to_string_lossy().to_string();
 
