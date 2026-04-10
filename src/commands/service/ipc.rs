@@ -1135,25 +1135,25 @@ fn append_chat_inbox(
 /// Returns true if:
 /// - The slot is empty (no task exists)
 /// - The existing task is not an active coordinator (no "coordinator-loop" tag)
-/// - The existing coordinator is abandoned or archived
 ///
-/// Returns false only if an active coordinator occupies the slot.
+/// Archived and abandoned coordinators are NOT considered available — they exist
+/// with their old state and must NOT be resurrected by re-using their ID.
 fn is_coordinator_slot_available(graph: &workgraph::graph::WorkGraph, task_id: &str) -> bool {
     match graph.get_task(task_id) {
         None => true, // Slot is empty — available
         Some(task) => {
             // If task has coordinator-loop tag, check if it's still active
             if task.tags.iter().any(|t| t == "coordinator-loop") {
-                // Skip abandoned or archived coordinators — slot is available
-                if matches!(task.status, workgraph::graph::Status::Abandoned) {
-                    return true;
+                // Only return false for truly active coordinators.
+                // Archived and abandoned coordinators exist with their old state
+                // and must NOT be resurrected by re-using their ID.
+                if task.status == workgraph::graph::Status::InProgress {
+                    return false; // Active coordinator — not available
                 }
-                if task.tags.iter().any(|t| t == "archived") {
-                    return true;
-                }
-                return false; // Active coordinator — not available
+                // Archived or abandoned — skip this slot, treat as occupied
+                return false;
             }
-            // No coordinator-loop tag — not a coordinator, slot is available
+            // No coordinator-loop tag — not a coordinator slot, available
             true
         }
     }
