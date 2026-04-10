@@ -432,7 +432,7 @@ fn print_human_readable(details: &TaskDetails) {
         if compact.compaction_count > 0 {
             println!("  Compactions: {}", compact.compaction_count);
         } else if compact.journal_present {
-            println!("  Compactions: never observed");
+            println!("  Compactions: none (no 90%+ context pressure)");
         }
         if let Some(ref ts) = compact.last_compaction {
             println!("  Last compaction: {}", ts);
