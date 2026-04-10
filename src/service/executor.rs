@@ -1405,6 +1405,11 @@ mod tests {
             unplaced: false,
             place_before: vec![],
             place_near: vec![],
+            independent: false,
+            iteration_round: 0,
+            iteration_anchor: None,
+            iteration_parent: None,
+            iteration_config: None,
         }
     }
 
