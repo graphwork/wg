@@ -500,7 +500,7 @@ fn call_openai_native(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{Config, DispatchRole, ModelRegistryEntry, Tier, CLAUDE_HAIKU_MODEL_ID};
+    use crate::config::{CLAUDE_HAIKU_MODEL_ID, Config, DispatchRole, ModelRegistryEntry, Tier};
 
     #[test]
     fn test_lightweight_llm_dispatch_resolves_model() {

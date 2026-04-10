@@ -1084,6 +1084,10 @@ mod tests {
 
         // Idle agents count as alive too
         registry.set_status("agent-6", AgentStatus::Idle);
-        assert_eq!(registry.active_count(), 3, "idle agents are counted as alive");
+        assert_eq!(
+            registry.active_count(),
+            3,
+            "idle agents are counted as alive"
+        );
     }
 }

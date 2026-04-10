@@ -48,8 +48,7 @@ fn make_task(id: &str, title: &str, status: Status) -> Task {
 #[test]
 #[ignore = "requires OPENROUTER_API_KEY"]
 fn smoke_wg_tools_live() {
-    let api_key = std::env::var("OPENROUTER_API_KEY")
-        .expect("OPENROUTER_API_KEY must be set");
+    let api_key = std::env::var("OPENROUTER_API_KEY").expect("OPENROUTER_API_KEY must be set");
 
     let tmp = TempDir::new().unwrap();
     let wg_dir = tmp.path();
@@ -98,8 +97,15 @@ fn smoke_wg_tools_live() {
     eprintln!("[smoke_wg_tools] Agent completed: {} turns", result.turns);
 
     let graph = load_graph(&graph_path).unwrap();
-    let parent_task = graph.get_task("smoke-parent").expect("smoke-parent should exist");
-    assert_eq!(parent_task.status, Status::Done, "Task should be Done. Output: {}", result.final_text);
+    let parent_task = graph
+        .get_task("smoke-parent")
+        .expect("smoke-parent should exist");
+    assert_eq!(
+        parent_task.status,
+        Status::Done,
+        "Task should be Done. Output: {}",
+        result.final_text
+    );
     eprintln!("[smoke_wg_tools] All assertions passed!");
 }
 
@@ -115,7 +121,11 @@ fn smoke_wg_list_works() {
 
     let mut graph = WorkGraph::new();
     graph.add_node(Node::Task(make_task("task-a", "Task A", Status::Open)));
-    graph.add_node(Node::Task(make_task("task-b", "Task B", Status::InProgress)));
+    graph.add_node(Node::Task(make_task(
+        "task-b",
+        "Task B",
+        Status::InProgress,
+    )));
     save_graph(&graph, &graph_path).unwrap();
 
     let registry = ToolRegistry::default_all(wg_dir, wg_dir);
@@ -134,7 +144,9 @@ fn smoke_wg_list_works() {
     );
 
     let rt = tokio::runtime::Runtime::new().unwrap();
-    let result = rt.block_on(agent.run("Call wg_list.")).expect("Agent loop should complete");
+    let result = rt
+        .block_on(agent.run("Call wg_list."))
+        .expect("Agent loop should complete");
 
     eprintln!("[smoke_wg_list] Agent completed: {} turns", result.turns);
     assert!(result.final_text.contains("task-a") || result.final_text.contains("Task A"));
@@ -151,7 +163,11 @@ fn smoke_wg_add_creates_task() {
     let graph_path = setup_workgraph(wg_dir);
 
     let mut graph = WorkGraph::new();
-    graph.add_node(Node::Task(make_task("existing", "Existing Task", Status::Open)));
+    graph.add_node(Node::Task(make_task(
+        "existing",
+        "Existing Task",
+        Status::Open,
+    )));
     save_graph(&graph, &graph_path).unwrap();
 
     let registry = ToolRegistry::default_all(wg_dir, wg_dir);
@@ -170,7 +186,8 @@ fn smoke_wg_add_creates_task() {
     );
 
     let rt = tokio::runtime::Runtime::new().unwrap();
-    rt.block_on(agent.run("Create a new task titled exactly \"New task from smoke test\".")).expect("Agent loop should complete");
+    rt.block_on(agent.run("Create a new task titled exactly \"New task from smoke test\"."))
+        .expect("Agent loop should complete");
 
     let graph = load_graph(&graph_path).unwrap();
     // Check for any new task beyond "existing" — the LLM may paraphrase the title
@@ -190,7 +207,11 @@ fn smoke_wg_done_simple() {
     let graph_path = setup_workgraph(wg_dir);
 
     let mut graph = WorkGraph::new();
-    graph.add_node(Node::Task(make_task("done-test", "Done Test", Status::InProgress)));
+    graph.add_node(Node::Task(make_task(
+        "done-test",
+        "Done Test",
+        Status::InProgress,
+    )));
     save_graph(&graph, &graph_path).unwrap();
 
     let registry = ToolRegistry::default_all(wg_dir, wg_dir);
@@ -209,7 +230,8 @@ fn smoke_wg_done_simple() {
     );
 
     let rt = tokio::runtime::Runtime::new().unwrap();
-    rt.block_on(agent.run("Mark task as done.")).expect("Agent loop should complete");
+    rt.block_on(agent.run("Mark task as done."))
+        .expect("Agent loop should complete");
 
     let graph = load_graph(&graph_path).unwrap();
     let task = graph.get_task("done-test").expect("done-test should exist");
@@ -219,5 +241,7 @@ fn smoke_wg_done_simple() {
 /// Skipped test documentation.
 #[test]
 fn smoke_wg_tools_skip_without_api_key() {
-    eprintln!("[smoke_wg_tools] Live tests require: OPENROUTER_API_KEY cargo test smoke_wg_tools -- --ignored");
+    eprintln!(
+        "[smoke_wg_tools] Live tests require: OPENROUTER_API_KEY cargo test smoke_wg_tools -- --ignored"
+    );
 }

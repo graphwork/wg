@@ -569,6 +569,28 @@ impl MessageAdapter for ClaudeMessageAdapter {
     }
 }
 
+/// Codex executor message adapter.
+///
+/// Codex runs non-interactively via `codex exec`, so message delivery matches
+/// the Claude adapter in v1: queue the message, write a notification file, and
+/// let the next spawned turn consume it.
+pub struct CodexMessageAdapter;
+
+impl MessageAdapter for CodexMessageAdapter {
+    fn deliver(&self, workgraph_dir: &Path, agent: &AgentEntry, message: &Message) -> Result<bool> {
+        write_notification(workgraph_dir, &agent.id, message)?;
+        Ok(false)
+    }
+
+    fn supports_realtime(&self) -> bool {
+        false
+    }
+
+    fn executor_type(&self) -> &str {
+        "codex"
+    }
+}
+
 /// Amplifier executor message adapter.
 ///
 /// Amplifier runs in `--mode single` with text output. Like the Claude adapter,
@@ -725,6 +747,7 @@ pub fn coordinator_message_status(
 pub fn adapter_for_executor(executor_type: &str) -> Box<dyn MessageAdapter> {
     match executor_type {
         "claude" => Box::new(ClaudeMessageAdapter),
+        "codex" => Box::new(CodexMessageAdapter),
         "amplifier" => Box::new(AmplifierMessageAdapter),
         "shell" => Box::new(ShellMessageAdapter),
         // Default to claude-like behavior for unknown executors
@@ -1124,6 +1147,13 @@ mod tests {
     fn test_adapter_for_executor_amplifier() {
         let adapter = adapter_for_executor("amplifier");
         assert_eq!(adapter.executor_type(), "amplifier");
+        assert!(!adapter.supports_realtime());
+    }
+
+    #[test]
+    fn test_adapter_for_executor_codex() {
+        let adapter = adapter_for_executor("codex");
+        assert_eq!(adapter.executor_type(), "codex");
         assert!(!adapter.supports_realtime());
     }
 

@@ -373,10 +373,7 @@ fn test_context_pressure_at_89_9_percent() {
             text: "x".repeat(3596),
         }],
     }];
-    assert_eq!(
-        budget.check_pressure(&msgs),
-        ContextPressureAction::Warning
-    );
+    assert_eq!(budget.check_pressure(&msgs), ContextPressureAction::Warning);
 }
 
 #[test]
@@ -450,10 +447,7 @@ fn test_context_budget_small_window_32k() {
             text: "x".repeat(102_400),
         }],
     }];
-    assert_eq!(
-        budget.check_pressure(&msgs),
-        ContextPressureAction::Warning
-    );
+    assert_eq!(budget.check_pressure(&msgs), ContextPressureAction::Warning);
 }
 
 #[test]
@@ -633,7 +627,11 @@ fn test_estimate_tokens_multi_content() {
 
     let tokens = budget.estimate_tokens(&msgs);
     // Total chars ≈ 400 + 400 + (4 + ~30) + 400 ≈ 1234 → ~308 tokens
-    assert!(tokens > 250 && tokens < 400, "Expected ~300 tokens, got {}", tokens);
+    assert!(
+        tokens > 250 && tokens < 400,
+        "Expected ~300 tokens, got {}",
+        tokens
+    );
 }
 
 // ── Agent loop integration tests ────────────────────────────────────────
@@ -833,7 +831,8 @@ async fn test_agent_loop_injects_warning_at_80_percent() {
             .flat_map(|m| m.content.iter().filter_map(|b| match b {
                 ContentBlock::Text { text } => Some(format!("Text({}b)", text.len())),
                 ContentBlock::ToolUse { name, .. } => Some(format!("ToolUse({})", name)),
-                ContentBlock::ToolResult { content, .. } => Some(format!("ToolResult({}b)", content.len())),
+                ContentBlock::ToolResult { content, .. } =>
+                    Some(format!("ToolResult({}b)", content.len())),
                 ContentBlock::Thinking { .. } => Some("Thinking".to_string()),
             }))
             .collect::<Vec<_>>()
@@ -877,7 +876,11 @@ async fn test_agent_loop_compacts_at_90_percent() {
 
     // Start with content that will push past 90% after tool result
     let result = agent.run(&"x".repeat(500)).await;
-    assert!(result.is_ok(), "Agent should handle compaction: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "Agent should handle compaction: {:?}",
+        result
+    );
 
     // After compaction, messages sent to the provider should be shorter
     let seen = seen_messages.lock().unwrap();
@@ -1021,10 +1024,7 @@ fn test_pressure_with_multiple_small_messages() {
             }],
         })
         .collect();
-    assert_eq!(
-        budget.check_pressure(&msgs),
-        ContextPressureAction::Warning
-    );
+    assert_eq!(budget.check_pressure(&msgs), ContextPressureAction::Warning);
 }
 
 #[test]
@@ -1048,8 +1048,5 @@ fn test_no_hardcoded_context_budget() {
     );
 
     // 30000/200000 = 15% → Ok on large window
-    assert_eq!(
-        large.check_pressure(&msgs),
-        ContextPressureAction::Ok
-    );
+    assert_eq!(large.check_pressure(&msgs), ContextPressureAction::Ok);
 }

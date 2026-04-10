@@ -570,7 +570,10 @@ pub fn extract_session_summary(messages: &[Message]) -> String {
                                 if cmd.contains("git add") || cmd.contains("git commit") {
                                     // Extract file paths from git commands
                                     for part in cmd.split_whitespace() {
-                                        if part.contains('.') && !part.starts_with('-') && part.len() > 2 {
+                                        if part.contains('.')
+                                            && !part.starts_with('-')
+                                            && part.len() > 2
+                                        {
                                             files_modified.insert(part.to_string());
                                         }
                                     }

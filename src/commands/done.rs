@@ -26,7 +26,10 @@ struct VerifyOutput {
 /// Run a verify command in a shell.
 /// Returns Ok(VerifyOutput) with captured output on success,
 /// or Err(VerifyOutput) with captured output on failure.
-fn run_verify_command(verify_cmd: &str, project_root: &Path) -> std::result::Result<VerifyOutput, VerifyOutput> {
+fn run_verify_command(
+    verify_cmd: &str,
+    project_root: &Path,
+) -> std::result::Result<VerifyOutput, VerifyOutput> {
     use std::process::Command;
     use std::time::{Duration, Instant};
 
@@ -80,11 +83,19 @@ fn run_verify_command(verify_cmd: &str, project_root: &Path) -> std::result::Res
                 if start.elapsed() >= timeout {
                     let _ = child.kill();
                     let _ = child.wait();
-                    let stdout = stdout_handle.map(|h| h.join().unwrap_or_default()).unwrap_or_default();
-                    let stderr = stderr_handle.map(|h| h.join().unwrap_or_default()).unwrap_or_default();
+                    let stdout = stdout_handle
+                        .map(|h| h.join().unwrap_or_default())
+                        .unwrap_or_default();
+                    let stderr = stderr_handle
+                        .map(|h| h.join().unwrap_or_default())
+                        .unwrap_or_default();
                     return Err(VerifyOutput {
                         stdout,
-                        stderr: format!("Verify command timed out after {}s\n{}", timeout.as_secs(), stderr),
+                        stderr: format!(
+                            "Verify command timed out after {}s\n{}",
+                            timeout.as_secs(),
+                            stderr
+                        ),
                         exit_code: "timeout".to_string(),
                     });
                 }
@@ -1756,7 +1767,10 @@ mod tests {
         assert_eq!(task.status, Status::InProgress);
         // Check that verify failure was logged
         assert!(
-            task.log.iter().any(|e| e.message.contains("Verify FAILED") && e.actor == Some("verify".to_string())),
+            task.log
+                .iter()
+                .any(|e| e.message.contains("Verify FAILED")
+                    && e.actor == Some("verify".to_string())),
             "Expected verify failure log entry, got: {:?}",
             task.log
         );
@@ -1814,8 +1828,10 @@ mod tests {
 
         // Check circuit breaker log entry
         assert!(
-            task.log.iter().any(|e| e.actor == Some("verify-circuit-breaker".to_string())
-                && e.message.contains("Circuit breaker tripped")),
+            task.log
+                .iter()
+                .any(|e| e.actor == Some("verify-circuit-breaker".to_string())
+                    && e.message.contains("Circuit breaker tripped")),
             "Expected circuit breaker log entry, got: {:?}",
             task.log
         );
@@ -1839,7 +1855,10 @@ mod tests {
         let graph = load_graph(&path).unwrap();
         let task = graph.get_task("t1").unwrap();
         assert_eq!(task.status, Status::Done);
-        assert_eq!(task.verify_failures, 0, "verify_failures should be reset on success");
+        assert_eq!(
+            task.verify_failures, 0,
+            "verify_failures should be reset on success"
+        );
     }
 
     #[test]
@@ -1894,7 +1913,11 @@ mod tests {
         let task = graph.get_task("t1").unwrap();
 
         // All verify-related logs should use "verify" actor
-        let verify_logs: Vec<_> = task.log.iter().filter(|e| e.message.contains("Verify")).collect();
+        let verify_logs: Vec<_> = task
+            .log
+            .iter()
+            .filter(|e| e.message.contains("Verify"))
+            .collect();
         assert!(!verify_logs.is_empty());
         for log in &verify_logs {
             assert_eq!(
@@ -1918,11 +1941,7 @@ mod tests {
 
         // Write config with lower threshold (dir_path is the .workgraph dir in tests)
         let config_path = dir_path.join("config.toml");
-        std::fs::write(
-            &config_path,
-            "[coordinator]\nmax_verify_failures = 2\n",
-        )
-        .unwrap();
+        std::fs::write(&config_path, "[coordinator]\nmax_verify_failures = 2\n").unwrap();
 
         // First failure
         let result = run(dir_path, "t1", false, false);
@@ -1992,6 +2011,10 @@ mod tests {
         let path = graph_path(dir_path);
         let graph = load_graph(&path).unwrap();
         let task = graph.get_task("t1").unwrap();
-        assert_eq!(task.status, Status::Done, "inline verify should complete to Done");
+        assert_eq!(
+            task.status,
+            Status::Done,
+            "inline verify should complete to Done"
+        );
     }
 }

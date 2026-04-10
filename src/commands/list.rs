@@ -91,7 +91,14 @@ pub fn run(
             };
             println!(
                 "{} {} - {}{}{}{}{}{}",
-                status, task.id, task.title, pause_str, verify_str, not_before_str, delay_str, tag_str
+                status,
+                task.id,
+                task.title,
+                pause_str,
+                verify_str,
+                not_before_str,
+                delay_str,
+                tag_str
             );
         }
     }

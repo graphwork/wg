@@ -55,10 +55,7 @@ impl Provider for MockProvider {
         1024
     }
 
-    async fn send(
-        &self,
-        _request: &MessagesRequest,
-    ) -> anyhow::Result<MessagesResponse> {
+    async fn send(&self, _request: &MessagesRequest) -> anyhow::Result<MessagesResponse> {
         let count = self
             .call_count
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -211,10 +208,7 @@ fn test_session_summary_extraction() {
         "Missing config.rs in files"
     );
     assert!(summary.contains("src/lib.rs"), "Missing lib.rs in files");
-    assert!(
-        summary.contains("Tool Usage"),
-        "Missing tool usage section"
-    );
+    assert!(summary.contains("Tool Usage"), "Missing tool usage section");
     assert!(summary.contains("write_file"), "Missing write_file tool");
     assert!(summary.contains("bash"), "Missing bash tool");
 
@@ -254,7 +248,11 @@ fn test_session_summary_extraction_word_limit() {
     let mut messages = Vec::new();
     for i in 0..100 {
         messages.push(Message {
-            role: if i % 2 == 0 { Role::User } else { Role::Assistant },
+            role: if i % 2 == 0 {
+                Role::User
+            } else {
+                Role::Assistant
+            },
             content: vec![ContentBlock::Text {
                 text: format!(
                     "Found important finding number {}. This is a long message with many words \
@@ -335,8 +333,7 @@ async fn test_session_summary_resume() {
     let summary_path = temp_dir.path().join("session-summary.md");
 
     // Pre-write a session summary
-    let prior_summary =
-        "# Session Summary\n\n## Key Findings\n- Config parser works\n\n## Files Modified\n- `src/config.rs`\n";
+    let prior_summary = "# Session Summary\n\n## Key Findings\n- Config parser works\n\n## Files Modified\n- `src/config.rs`\n";
     store_session_summary(&summary_path, prior_summary).unwrap();
 
     // Create an agent that has the summary path configured
@@ -384,7 +381,10 @@ async fn test_session_summary_default_disabled() {
     let temp_dir = TempDir::new().unwrap();
     let agent = make_test_agent(&temp_dir, None);
 
-    assert_eq!(agent.summary_interval_turns(), DEFAULT_SUMMARY_INTERVAL_TURNS);
+    assert_eq!(
+        agent.summary_interval_turns(),
+        DEFAULT_SUMMARY_INTERVAL_TURNS
+    );
     assert!(agent.session_summary_path().is_none());
 }
 

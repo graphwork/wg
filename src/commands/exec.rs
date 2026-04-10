@@ -6,7 +6,7 @@ use std::process::Command;
 use workgraph::config::Config;
 use workgraph::graph::{LogEntry, Status};
 use workgraph::parser::{load_graph, modify_graph};
-use workgraph::service::executor::{build_prompt, TemplateVars};
+use workgraph::service::executor::{TemplateVars, build_prompt};
 
 use super::spawn::context::{
     build_scope_context, build_task_context, discover_test_files, format_test_discovery_context,
@@ -315,12 +315,8 @@ pub fn run_interactive(
         let root = project_root
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("Cannot determine project root for worktree"))?;
-        let wt =
-            worktree::create_worktree(root, dir, &format!("exec-{}", agent_label), task_id)?;
-        eprintln!(
-            "Created worktree at {:?} (branch: {})",
-            wt.path, wt.branch
-        );
+        let wt = worktree::create_worktree(root, dir, &format!("exec-{}", agent_label), task_id)?;
+        eprintln!("Created worktree at {:?} (branch: {})", wt.path, wt.branch);
         env_vars.push(("WG_WORKTREE_PATH".into(), wt.path.to_string_lossy().into()));
         env_vars.push(("WG_BRANCH".into(), wt.branch.clone()));
         env_vars.push((
@@ -334,8 +330,7 @@ pub fn run_interactive(
 
     // --- Write prompt to temp file ---
     let prompt_dir = dir.join("agents").join(format!("exec-{}", agent_label));
-    std::fs::create_dir_all(&prompt_dir)
-        .context("Failed to create exec agent output directory")?;
+    std::fs::create_dir_all(&prompt_dir).context("Failed to create exec agent output directory")?;
     let prompt_file = prompt_dir.join("prompt.txt");
     std::fs::write(&prompt_file, &prompt).context("Failed to write prompt file")?;
 
@@ -358,7 +353,10 @@ pub fn run_interactive(
     });
 
     // --- Launch executor interactively ---
-    eprintln!("Launching interactive claude session for task '{}'...", task_id);
+    eprintln!(
+        "Launching interactive claude session for task '{}'...",
+        task_id
+    );
     eprintln!("(Prompt written to {})", prompt_file.display());
 
     let mut cmd = Command::new("claude");
@@ -497,11 +495,7 @@ pub fn run_interactive(
     // --- Worktree cleanup ---
     if let Some(ref wt) = worktree_info {
         eprintln!("Cleaning up worktree...");
-        if let Err(e) = worktree::remove_worktree(
-            &wt.project_root,
-            &wt.path,
-            &wt.branch,
-        ) {
+        if let Err(e) = worktree::remove_worktree(&wt.project_root, &wt.path, &wt.branch) {
             eprintln!("Warning: failed to clean up worktree: {}", e);
         }
     }

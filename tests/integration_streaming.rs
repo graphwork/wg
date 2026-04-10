@@ -563,8 +563,7 @@ fn from_endpoint_sets_streaming_for_openrouter() {
     };
 
     let sonnet_model = format!("anthropic/{CLAUDE_SONNET_MODEL_ID}");
-    let client =
-        OpenAiClient::from_endpoint(&ep, &sonnet_model, None).unwrap();
+    let client = OpenAiClient::from_endpoint(&ep, &sonnet_model, None).unwrap();
     // OpenRouter provider should auto-enable streaming
     assert_eq!(client.name(), "openrouter");
     assert_eq!(client.model, sonnet_model);

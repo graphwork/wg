@@ -1089,7 +1089,13 @@ fn main() -> Result<()> {
                 min_evals,
                 by_model,
                 by_task_type,
-            } => commands::agency_stats::run(&workgraph_dir, cli.json, min_evals, by_model, by_task_type),
+            } => commands::agency_stats::run(
+                &workgraph_dir,
+                cli.json,
+                min_evals,
+                by_model,
+                by_task_type,
+            ),
             AgencyCommands::Scan { root, max_depth } => {
                 let root_path = std::path::PathBuf::from(&root);
                 commands::agency_scan::run(&root_path, cli.json, max_depth)
@@ -1553,18 +1559,23 @@ fn main() -> Result<()> {
             },
         },
         Commands::Profile { command } => match command {
-            ProfileCommands::Set { name, fast, standard, premium } => {
-                commands::profile_cmd::set(&workgraph_dir, &name, fast.as_deref(), standard.as_deref(), premium.as_deref())
-            }
+            ProfileCommands::Set {
+                name,
+                fast,
+                standard,
+                premium,
+            } => commands::profile_cmd::set(
+                &workgraph_dir,
+                &name,
+                fast.as_deref(),
+                standard.as_deref(),
+                premium.as_deref(),
+            ),
             ProfileCommands::Show { verbose } => {
                 commands::profile_cmd::show(&workgraph_dir, cli.json, verbose)
             }
-            ProfileCommands::List => {
-                commands::profile_cmd::list(&workgraph_dir, cli.json)
-            }
-            ProfileCommands::Refresh => {
-                commands::profile_cmd::refresh(&workgraph_dir)
-            }
+            ProfileCommands::List => commands::profile_cmd::list(&workgraph_dir, cli.json),
+            ProfileCommands::Refresh => commands::profile_cmd::refresh(&workgraph_dir),
         },
         Commands::Config {
             show,

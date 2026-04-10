@@ -349,7 +349,11 @@ mod tests {
     fn test_state_injection_graph_changes() {
         let tmp = tempfile::tempdir().unwrap();
         let wg_dir = tmp.path();
-        setup_workgraph(wg_dir, "my-task", &[("dep-a", "in-progress"), ("dep-b", "open")]);
+        setup_workgraph(
+            wg_dir,
+            "my-task",
+            &[("dep-a", "in-progress"), ("dep-b", "open")],
+        );
 
         let mut injector =
             StateInjector::new(wg_dir.to_path_buf(), "my-task".into(), "agent-1".into());
@@ -470,10 +474,22 @@ mod tests {
         };
 
         let changes = old.diff(&new);
-        assert!(changes.iter().any(|c| c.contains("'a'") && c.contains("done")));
+        assert!(
+            changes
+                .iter()
+                .any(|c| c.contains("'a'") && c.contains("done"))
+        );
         assert!(!changes.iter().any(|c| c.contains("'b'")), "b unchanged");
-        assert!(changes.iter().any(|c| c.contains("'c'") && c.contains("removed")));
-        assert!(changes.iter().any(|c| c.contains("'d'") && c.contains("appeared")));
+        assert!(
+            changes
+                .iter()
+                .any(|c| c.contains("'c'") && c.contains("removed"))
+        );
+        assert!(
+            changes
+                .iter()
+                .any(|c| c.contains("'d'") && c.contains("appeared"))
+        );
     }
 
     #[test]
@@ -524,13 +540,13 @@ mod tests {
     #[test]
     fn test_dependency_snapshot_diff_identical() {
         let snap = DependencySnapshot {
-            deps: vec![
-                ("a".into(), Status::InProgress),
-                ("b".into(), Status::Open),
-            ],
+            deps: vec![("a".into(), Status::InProgress), ("b".into(), Status::Open)],
         };
         let changes = snap.diff(&snap);
-        assert!(changes.is_empty(), "Identical snapshots should produce no changes");
+        assert!(
+            changes.is_empty(),
+            "Identical snapshots should produce no changes"
+        );
     }
 
     #[test]
@@ -538,7 +554,10 @@ mod tests {
         let old = DependencySnapshot { deps: vec![] };
         let new = DependencySnapshot { deps: vec![] };
         let changes = old.diff(&new);
-        assert!(changes.is_empty(), "Two empty snapshots should produce no changes");
+        assert!(
+            changes.is_empty(),
+            "Two empty snapshots should produce no changes"
+        );
     }
 
     #[test]
@@ -552,7 +571,10 @@ mod tests {
 
         // Should handle missing graph gracefully (no crash, returns None)
         let result = injector.collect_injections(None);
-        assert!(result.is_none(), "Missing graph should produce no injection");
+        assert!(
+            result.is_none(),
+            "Missing graph should produce no injection"
+        );
     }
 
     #[test]
@@ -562,7 +584,11 @@ mod tests {
         setup_workgraph(
             wg_dir,
             "my-task",
-            &[("dep-a", "open"), ("dep-b", "open"), ("dep-c", "in-progress")],
+            &[
+                ("dep-a", "open"),
+                ("dep-b", "open"),
+                ("dep-c", "in-progress"),
+            ],
         );
 
         let mut injector =
@@ -575,7 +601,11 @@ mod tests {
         setup_workgraph(
             wg_dir,
             "my-task",
-            &[("dep-a", "done"), ("dep-b", "in-progress"), ("dep-c", "done")],
+            &[
+                ("dep-a", "done"),
+                ("dep-b", "in-progress"),
+                ("dep-c", "done"),
+            ],
         );
 
         let result = injector.collect_injections(None).unwrap();
@@ -604,7 +634,10 @@ mod tests {
 
         // Graph unchanged — call again
         let r2 = injector.collect_injections(None);
-        assert!(r2.is_none(), "Same state should not produce a second report");
+        assert!(
+            r2.is_none(),
+            "Same state should not produce a second report"
+        );
 
         // Call a third time for good measure
         let r3 = injector.collect_injections(None);

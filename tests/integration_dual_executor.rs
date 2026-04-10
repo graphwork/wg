@@ -19,7 +19,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use tempfile::TempDir;
 
-use workgraph::config::{CLAUDE_SONNET_MODEL_ID};
+use workgraph::config::CLAUDE_SONNET_MODEL_ID;
 use workgraph::executor::native::agent::AgentLoop;
 use workgraph::executor::native::client::{
     ContentBlock, MessagesRequest, MessagesResponse, Role, StopReason, Usage,
@@ -388,10 +388,7 @@ async fn scenario_1_openrouter_end_to_end() {
             provider, model, ..
         } => {
             assert_eq!(provider, "openai", "Init should record openai provider");
-            assert_eq!(
-                model, &expected_or_model,
-                "Init should record the model"
-            );
+            assert_eq!(model, &expected_or_model, "Init should record the model");
         }
         _ => panic!("First entry should be Init"),
     }

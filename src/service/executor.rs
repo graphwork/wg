@@ -305,10 +305,7 @@ const MULTI_STEP_SIGNALS: &[&str] = &[
 /// guidance is lower than the cost of missing decomposition structure.
 pub fn classify_task_complexity(description: &str) -> TaskComplexity {
     let lower = description.to_lowercase();
-    let atomic_score: usize = ATOMIC_SIGNALS
-        .iter()
-        .filter(|s| lower.contains(*s))
-        .count();
+    let atomic_score: usize = ATOMIC_SIGNALS.iter().filter(|s| lower.contains(*s)).count();
     let multi_score: usize = MULTI_STEP_SIGNALS
         .iter()
         .filter(|s| lower.contains(*s))
@@ -1221,6 +1218,24 @@ impl ExecutorRegistry {
                     model: None,
                 },
             }),
+            "codex" => Ok(ExecutorConfig {
+                executor: ExecutorSettings {
+                    executor_type: "codex".to_string(),
+                    command: "codex".to_string(),
+                    args: vec![
+                        "exec".to_string(),
+                        "--json".to_string(),
+                        "--skip-git-repo-check".to_string(),
+                        "--dangerously-bypass-approvals-and-sandbox".to_string(),
+                    ],
+                    env: HashMap::new(),
+                    // No default template — uses scope-based build_prompt() assembly.
+                    prompt_template: None,
+                    working_dir: Some("{{working_dir}}".to_string()),
+                    timeout: None,
+                    model: None,
+                },
+            }),
             "shell" => Ok(ExecutorConfig {
                 executor: ExecutorSettings {
                     executor_type: "shell".to_string(),
@@ -1291,7 +1306,7 @@ impl ExecutorRegistry {
                 },
             }),
             _ => Err(anyhow!(
-                "Unknown executor '{}'. Available: claude, amplifier, native, shell, default",
+                "Unknown executor '{}'. Available: claude, codex, amplifier, native, shell, default",
                 name,
             )),
         }
@@ -1310,7 +1325,7 @@ impl ExecutorRegistry {
         }
 
         // Create default executor configs if they don't exist
-        for name in ["claude", "shell"] {
+        for name in ["claude", "codex", "shell"] {
             let config_path = self.config_dir.join(format!("{}.toml", name));
             if !config_path.exists() {
                 let config = self.default_config(name)?;
@@ -1488,6 +1503,10 @@ template = "Work on {{task_id}}"
         assert_eq!(claude_config.executor.executor_type, "claude");
         assert_eq!(claude_config.executor.command, "claude");
 
+        let codex_config = registry.load_config("codex").unwrap();
+        assert_eq!(codex_config.executor.executor_type, "codex");
+        assert_eq!(codex_config.executor.command, "codex");
+
         let shell_config = registry.load_config("shell").unwrap();
         assert_eq!(shell_config.executor.executor_type, "shell");
         assert_eq!(shell_config.executor.command, "bash");
@@ -1504,6 +1523,7 @@ template = "Work on {{task_id}}"
 
         // Should create executor configs
         assert!(workgraph_dir.join("executors/claude.toml").exists());
+        assert!(workgraph_dir.join("executors/codex.toml").exists());
         assert!(workgraph_dir.join("executors/shell.toml").exists());
     }
 
@@ -1884,6 +1904,30 @@ args = ["--custom-flag"]
             config.executor.prompt_template.is_none(),
             "Built-in claude config should have no prompt_template (uses build_prompt)"
         );
+    }
+
+    #[test]
+    fn test_registry_default_config_codex_shape() {
+        let temp_dir = TempDir::new().unwrap();
+        let registry = ExecutorRegistry::new(temp_dir.path());
+        let config = registry.load_config("codex").unwrap();
+
+        assert_eq!(config.executor.executor_type, "codex");
+        assert_eq!(config.executor.command, "codex");
+        assert_eq!(
+            config.executor.args,
+            vec![
+                "exec".to_string(),
+                "--json".to_string(),
+                "--skip-git-repo-check".to_string(),
+                "--dangerously-bypass-approvals-and-sandbox".to_string(),
+            ]
+        );
+        assert_eq!(
+            config.executor.working_dir,
+            Some("{{working_dir}}".to_string())
+        );
+        assert!(config.executor.prompt_template.is_none());
     }
 
     #[test]
@@ -2603,7 +2647,9 @@ args = ["--custom-flag"]
     #[test]
     fn test_classify_multi_step_sequential_signals() {
         assert_eq!(
-            classify_task_complexity("First, parse the input. Then, validate it. Finally, write the output."),
+            classify_task_complexity(
+                "First, parse the input. Then, validate it. Finally, write the output."
+            ),
             TaskComplexity::MultiStep
         );
     }
@@ -2615,10 +2661,7 @@ args = ["--custom-flag"]
                      - Add the controller\n\
                      - Add the view\n\
                      - Write tests";
-        assert_eq!(
-            classify_task_complexity(desc),
-            TaskComplexity::MultiStep
-        );
+        assert_eq!(classify_task_complexity(desc), TaskComplexity::MultiStep);
     }
 
     #[test]
@@ -2648,12 +2691,7 @@ args = ["--custom-flag"]
 
     #[test]
     fn test_adaptive_guidance_atomic_task() {
-        let guidance = build_decomposition_guidance(
-            "Fix typo in the README",
-            "fix-typo",
-            10,
-            8,
-        );
+        let guidance = build_decomposition_guidance("Fix typo in the README", "fix-typo", 10, 8);
         assert!(
             guidance.contains("single-step task"),
             "Atomic task should get single-step guidance"
@@ -2704,12 +2742,7 @@ args = ["--custom-flag"]
 
     #[test]
     fn test_adaptive_guidance_includes_task_id() {
-        let guidance = build_decomposition_guidance(
-            "Fix typo in README",
-            "my-task-42",
-            10,
-            8,
-        );
+        let guidance = build_decomposition_guidance("Fix typo in README", "my-task-42", 10, 8);
         assert!(
             guidance.contains("my-task-42"),
             "Guidance should reference the task ID"
@@ -2718,12 +2751,7 @@ args = ["--custom-flag"]
 
     #[test]
     fn test_adaptive_guidance_includes_guardrails() {
-        let guidance = build_decomposition_guidance(
-            "Build a system",
-            "sys-task",
-            15,
-            12,
-        );
+        let guidance = build_decomposition_guidance("Build a system", "sys-task", 15, 12);
         assert!(
             guidance.contains("**15**"),
             "Guardrails should show max_child_tasks"

@@ -21,7 +21,7 @@ use std::time::Duration;
 use tempfile::TempDir;
 use workgraph::executor::native::client::{ContentBlock, Role};
 use workgraph::executor::native::journal::{Journal, JournalEntryKind};
-use workgraph::executor::native::resume::{load_resume_data, ResumeConfig};
+use workgraph::executor::native::resume::{ResumeConfig, load_resume_data};
 use workgraph::executor::native::tools::truncate_output;
 
 // ---------------------------------------------------------------------------
@@ -404,9 +404,12 @@ fn no_crash_on_empty_journal() {
 #[test]
 fn no_crash_on_nonexistent_journal() {
     let config = ResumeConfig::default();
-    let result =
-        load_resume_data(Path::new("/tmp/nonexistent_journal.jsonl"), Path::new("/tmp"), &config)
-            .unwrap();
+    let result = load_resume_data(
+        Path::new("/tmp/nonexistent_journal.jsonl"),
+        Path::new("/tmp"),
+        &config,
+    )
+    .unwrap();
     assert!(result.is_none(), "Nonexistent journal should return None");
 }
 
@@ -634,10 +637,7 @@ fn smoke_context_management_openrouter() {
                     .filter_map(|l| serde_json::from_str(l).ok())
                     .collect();
 
-                assert!(
-                    !entries.is_empty(),
-                    "Journal should have entries"
-                );
+                assert!(!entries.is_empty(), "Journal should have entries");
 
                 // Verify no entry has excessively large content (truncation working)
                 for entry in &entries {

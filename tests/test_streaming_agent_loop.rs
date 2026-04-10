@@ -4,8 +4,8 @@
 //! writes text chunks to `stream.jsonl`, and updates the `.streaming` file
 //! for TUI live display.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use async_trait::async_trait;
 use tempfile::TempDir;
@@ -16,7 +16,7 @@ use workgraph::executor::native::client::{
 };
 use workgraph::executor::native::provider::Provider;
 use workgraph::executor::native::tools::ToolRegistry;
-use workgraph::stream_event::{read_stream_events, StreamEvent};
+use workgraph::stream_event::{StreamEvent, read_stream_events};
 
 // ── Mock provider ───────────────────────────────────────────────────────
 

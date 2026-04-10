@@ -10,8 +10,8 @@ use std::process::{Command, Stdio};
 use tempfile::TempDir;
 
 use workgraph::config::{
-    Config, DispatchRole, ModelRegistryEntry, RoleModelConfig, Tier, TierConfig,
-    CLAUDE_HAIKU_MODEL_ID, CLAUDE_OPUS_MODEL_ID, CLAUDE_SONNET_MODEL_ID,
+    CLAUDE_HAIKU_MODEL_ID, CLAUDE_OPUS_MODEL_ID, CLAUDE_SONNET_MODEL_ID, Config, DispatchRole,
+    ModelRegistryEntry, RoleModelConfig, Tier, TierConfig,
 };
 use workgraph::graph::{Node, Status, Task, WorkGraph, is_system_task};
 use workgraph::parser::save_graph;
@@ -109,7 +109,11 @@ fn make_task(id: &str, title: &str) -> Task {
 fn registry_no_config_returns_6_builtins() {
     let config = Config::default();
     let registry = config.effective_registry();
-    assert_eq!(registry.len(), 6, "Expected 6 built-in entries (3 legacy + 3 claude:* format)");
+    assert_eq!(
+        registry.len(),
+        6,
+        "Expected 6 built-in entries (3 legacy + 3 claude:* format)"
+    );
     let ids: Vec<&str> = registry.iter().map(|e| e.id.as_str()).collect();
     assert!(ids.contains(&"haiku"));
     assert!(ids.contains(&"sonnet"));

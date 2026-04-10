@@ -8,8 +8,8 @@
 //! 5. Concurrency cap is enforced
 //! 6. Results maintain original call order regardless of execution order
 
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
@@ -18,7 +18,7 @@ use tokio::sync::Barrier;
 
 use workgraph::executor::native::client::ToolDefinition;
 use workgraph::executor::native::tools::{
-    Tool, ToolCall, ToolOutput, ToolRegistry, DEFAULT_MAX_CONCURRENT_TOOLS,
+    DEFAULT_MAX_CONCURRENT_TOOLS, Tool, ToolCall, ToolOutput, ToolRegistry,
 };
 
 // ── Test tools ─────────────────────────────────────────────────────────
@@ -173,24 +173,57 @@ async fn test_tool_parallel_read_only_classification() {
     let registry = ToolRegistry::default_all(tmp.path(), tmp.path());
 
     // Read-only tools
-    assert!(registry.is_read_only("read_file"), "read_file should be read-only");
+    assert!(
+        registry.is_read_only("read_file"),
+        "read_file should be read-only"
+    );
     assert!(registry.is_read_only("glob"), "glob should be read-only");
     assert!(registry.is_read_only("grep"), "grep should be read-only");
-    assert!(registry.is_read_only("wg_show"), "wg_show should be read-only");
-    assert!(registry.is_read_only("wg_list"), "wg_list should be read-only");
+    assert!(
+        registry.is_read_only("wg_show"),
+        "wg_show should be read-only"
+    );
+    assert!(
+        registry.is_read_only("wg_list"),
+        "wg_list should be read-only"
+    );
 
     // Mutating tools
-    assert!(!registry.is_read_only("write_file"), "write_file should be mutating");
-    assert!(!registry.is_read_only("edit_file"), "edit_file should be mutating");
+    assert!(
+        !registry.is_read_only("write_file"),
+        "write_file should be mutating"
+    );
+    assert!(
+        !registry.is_read_only("edit_file"),
+        "edit_file should be mutating"
+    );
     assert!(!registry.is_read_only("bash"), "bash should be mutating");
-    assert!(!registry.is_read_only("wg_add"), "wg_add should be mutating");
-    assert!(!registry.is_read_only("wg_done"), "wg_done should be mutating");
-    assert!(!registry.is_read_only("wg_fail"), "wg_fail should be mutating");
-    assert!(!registry.is_read_only("wg_log"), "wg_log should be mutating");
-    assert!(!registry.is_read_only("wg_artifact"), "wg_artifact should be mutating");
+    assert!(
+        !registry.is_read_only("wg_add"),
+        "wg_add should be mutating"
+    );
+    assert!(
+        !registry.is_read_only("wg_done"),
+        "wg_done should be mutating"
+    );
+    assert!(
+        !registry.is_read_only("wg_fail"),
+        "wg_fail should be mutating"
+    );
+    assert!(
+        !registry.is_read_only("wg_log"),
+        "wg_log should be mutating"
+    );
+    assert!(
+        !registry.is_read_only("wg_artifact"),
+        "wg_artifact should be mutating"
+    );
 
     // Unknown tools default to mutating (conservative)
-    assert!(!registry.is_read_only("nonexistent_tool"), "unknown tools should be mutating");
+    assert!(
+        !registry.is_read_only("nonexistent_tool"),
+        "unknown tools should be mutating"
+    );
 }
 
 #[tokio::test]
@@ -226,7 +259,11 @@ async fn test_tool_parallel_reads_execute_concurrently() {
     // All 3 should complete
     assert_eq!(results.len(), 3);
     for r in &results {
-        assert!(!r.output.is_error, "tool {} failed: {}", r.name, r.output.content);
+        assert!(
+            !r.output.is_error,
+            "tool {} failed: {}",
+            r.name, r.output.content
+        );
     }
 
     // Should have run concurrently: elapsed < 100ms (not 150ms serial)
@@ -266,12 +303,9 @@ async fn test_tool_parallel_barrier_proves_concurrency() {
         .collect();
 
     // This will deadlock (and timeout) if execution is serial.
-    let results = tokio::time::timeout(
-        Duration::from_secs(5),
-        registry.execute_batch(&calls, 10),
-    )
-    .await
-    .expect("Barrier test timed out — tools are not executing concurrently");
+    let results = tokio::time::timeout(Duration::from_secs(5), registry.execute_batch(&calls, 10))
+        .await
+        .expect("Barrier test timed out — tools are not executing concurrently");
 
     assert_eq!(results.len(), 3);
     for r in &results {
@@ -334,10 +368,22 @@ async fn test_tool_parallel_mixed_batch() {
 
     // Interleave read and write calls
     let calls = vec![
-        ToolCall { name: "write_0".to_string(), input: json!({}) },
-        ToolCall { name: "read_0".to_string(), input: json!({}) },
-        ToolCall { name: "write_1".to_string(), input: json!({}) },
-        ToolCall { name: "read_1".to_string(), input: json!({}) },
+        ToolCall {
+            name: "write_0".to_string(),
+            input: json!({}),
+        },
+        ToolCall {
+            name: "read_0".to_string(),
+            input: json!({}),
+        },
+        ToolCall {
+            name: "write_1".to_string(),
+            input: json!({}),
+        },
+        ToolCall {
+            name: "read_1".to_string(),
+            input: json!({}),
+        },
     ];
 
     let results = registry.execute_batch(&calls, 10).await;
@@ -356,7 +402,8 @@ async fn test_tool_parallel_mixed_batch() {
         .iter()
         .filter(|r| r.name.starts_with("read"))
         .map(|r| {
-            r.output.content
+            r.output
+                .content
                 .rsplit("order-")
                 .next()
                 .unwrap()
@@ -368,7 +415,8 @@ async fn test_tool_parallel_mixed_batch() {
         .iter()
         .filter(|r| r.name.starts_with("write"))
         .map(|r| {
-            r.output.content
+            r.output
+                .content
                 .rsplit("order-")
                 .next()
                 .unwrap()
@@ -435,16 +483,37 @@ async fn test_tool_parallel_result_order_preserved() {
 
     let mut registry = ToolRegistry::new();
     // Tool 0: slowest (completes last)
-    registry.register(Box::new(SlowReadTool::new("slow", Duration::from_millis(80), counter.clone())));
+    registry.register(Box::new(SlowReadTool::new(
+        "slow",
+        Duration::from_millis(80),
+        counter.clone(),
+    )));
     // Tool 1: fastest (completes first)
-    registry.register(Box::new(SlowReadTool::new("fast", Duration::from_millis(10), counter.clone())));
+    registry.register(Box::new(SlowReadTool::new(
+        "fast",
+        Duration::from_millis(10),
+        counter.clone(),
+    )));
     // Tool 2: medium
-    registry.register(Box::new(SlowReadTool::new("medium", Duration::from_millis(40), counter.clone())));
+    registry.register(Box::new(SlowReadTool::new(
+        "medium",
+        Duration::from_millis(40),
+        counter.clone(),
+    )));
 
     let calls = vec![
-        ToolCall { name: "slow".to_string(), input: json!({}) },
-        ToolCall { name: "fast".to_string(), input: json!({}) },
-        ToolCall { name: "medium".to_string(), input: json!({}) },
+        ToolCall {
+            name: "slow".to_string(),
+            input: json!({}),
+        },
+        ToolCall {
+            name: "fast".to_string(),
+            input: json!({}),
+        },
+        ToolCall {
+            name: "medium".to_string(),
+            input: json!({}),
+        },
     ];
 
     let results = registry.execute_batch(&calls, 10).await;
@@ -460,9 +529,16 @@ async fn test_tool_parallel_single_call_no_overhead() {
     // A single tool call should work identically to direct execute.
     let counter = Arc::new(AtomicUsize::new(0));
     let mut registry = ToolRegistry::new();
-    registry.register(Box::new(SlowReadTool::new("solo", Duration::from_millis(5), counter)));
+    registry.register(Box::new(SlowReadTool::new(
+        "solo",
+        Duration::from_millis(5),
+        counter,
+    )));
 
-    let calls = vec![ToolCall { name: "solo".to_string(), input: json!({}) }];
+    let calls = vec![ToolCall {
+        name: "solo".to_string(),
+        input: json!({}),
+    }];
     let results = registry.execute_batch(&calls, 10).await;
 
     assert_eq!(results.len(), 1);
@@ -512,7 +588,10 @@ async fn test_tool_parallel_all_reads_no_writes() {
     }
 
     let calls: Vec<ToolCall> = (0..4)
-        .map(|i| ToolCall { name: format!("r{}", i), input: json!({}) })
+        .map(|i| ToolCall {
+            name: format!("r{}", i),
+            input: json!({}),
+        })
         .collect();
 
     let start = Instant::now();
@@ -544,7 +623,10 @@ async fn test_tool_parallel_all_writes_no_reads() {
     }
 
     let calls: Vec<ToolCall> = (0..3)
-        .map(|i| ToolCall { name: format!("w{}", i), input: json!({}) })
+        .map(|i| ToolCall {
+            name: format!("w{}", i),
+            input: json!({}),
+        })
         .collect();
 
     let results = registry.execute_batch(&calls, 10).await;
@@ -560,9 +642,16 @@ async fn test_tool_parallel_all_writes_no_reads() {
 async fn test_tool_parallel_duration_tracking() {
     let counter = Arc::new(AtomicUsize::new(0));
     let mut registry = ToolRegistry::new();
-    registry.register(Box::new(SlowReadTool::new("timed", Duration::from_millis(50), counter)));
+    registry.register(Box::new(SlowReadTool::new(
+        "timed",
+        Duration::from_millis(50),
+        counter,
+    )));
 
-    let calls = vec![ToolCall { name: "timed".to_string(), input: json!({}) }];
+    let calls = vec![ToolCall {
+        name: "timed".to_string(),
+        input: json!({}),
+    }];
     let results = registry.execute_batch(&calls, 10).await;
 
     assert_eq!(results.len(), 1);
@@ -594,7 +683,10 @@ async fn test_tool_parallel_speedup_benchmark() {
     }
 
     let calls: Vec<ToolCall> = (0..5)
-        .map(|i| ToolCall { name: format!("bench_{}", i), input: json!({}) })
+        .map(|i| ToolCall {
+            name: format!("bench_{}", i),
+            input: json!({}),
+        })
         .collect();
 
     // Parallel execution

@@ -487,11 +487,9 @@ is_default = true
 
     // "claude:<model>" should route to Anthropic, stripping prefix
     let prefixed_model = format!("claude:{CLAUDE_SONNET_MODEL_ID}");
-    let provider = workgraph::executor::native::provider::create_provider(
-        tmp.path(),
-        &prefixed_model,
-    )
-    .unwrap();
+    let provider =
+        workgraph::executor::native::provider::create_provider(tmp.path(), &prefixed_model)
+            .unwrap();
     assert_eq!(provider.name(), "anthropic");
     // Model should have prefix stripped
     assert_eq!(provider.model(), CLAUDE_SONNET_MODEL_ID);

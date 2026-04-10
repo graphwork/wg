@@ -159,5 +159,8 @@ fn test_atomic_write_cleanup_on_failure() {
 
     // No temp file should be left
     let tmp_path = roles_dir.join(format!(".{}.yaml.tmp", role2.id));
-    assert!(!tmp_path.exists(), "Temp file should be cleaned up on failure");
+    assert!(
+        !tmp_path.exists(),
+        "Temp file should be cleaned up on failure"
+    );
 }

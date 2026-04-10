@@ -9,8 +9,8 @@
 //! - JSON parse errors in tool arguments are handled without crashing
 
 use std::path::Path;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use tempfile::TempDir;
 
@@ -170,7 +170,11 @@ async fn test_server_error_500_recovered_gracefully() {
     );
 
     let result = agent.run("Do the thing.").await;
-    assert!(result.is_ok(), "Agent should recover from 500: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Agent should recover from 500: {:?}",
+        result.err()
+    );
 
     // Verify the model's second request contains the friendly recovery message,
     // NOT the raw "Internal Server Error" text.
@@ -231,7 +235,11 @@ async fn test_rate_limit_429_recovered_gracefully() {
     );
 
     let result = agent.run("Do the thing.").await;
-    assert!(result.is_ok(), "Agent should recover from 429: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Agent should recover from 429: {:?}",
+        result.err()
+    );
 
     // Verify no raw error in model messages
     let messages = captured.lock().unwrap();
@@ -306,10 +314,34 @@ async fn test_consecutive_server_errors_eventually_fail() {
 
     // 4 consecutive 500 errors — should exceed the limit of 3
     let provider = ErrorInjectingProvider::new(vec![
-        MockAction::Error(Box::new(|| ApiError { status: 500, message: "err".to_string() }.into())),
-        MockAction::Error(Box::new(|| ApiError { status: 500, message: "err".to_string() }.into())),
-        MockAction::Error(Box::new(|| ApiError { status: 500, message: "err".to_string() }.into())),
-        MockAction::Error(Box::new(|| ApiError { status: 500, message: "err".to_string() }.into())),
+        MockAction::Error(Box::new(|| {
+            ApiError {
+                status: 500,
+                message: "err".to_string(),
+            }
+            .into()
+        })),
+        MockAction::Error(Box::new(|| {
+            ApiError {
+                status: 500,
+                message: "err".to_string(),
+            }
+            .into()
+        })),
+        MockAction::Error(Box::new(|| {
+            ApiError {
+                status: 500,
+                message: "err".to_string(),
+            }
+            .into()
+        })),
+        MockAction::Error(Box::new(|| {
+            ApiError {
+                status: 500,
+                message: "err".to_string(),
+            }
+            .into()
+        })),
     ]);
 
     let registry = ToolRegistry::default_all(&wg_dir, wg_dir.parent().unwrap());
@@ -324,7 +356,10 @@ async fn test_consecutive_server_errors_eventually_fail() {
     );
 
     let result = agent.run("Do the thing.").await;
-    assert!(result.is_err(), "Should fail after consecutive server errors");
+    assert!(
+        result.is_err(),
+        "Should fail after consecutive server errors"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -339,13 +374,25 @@ async fn test_server_error_counter_resets_on_success() {
 
     // Pattern: error → success → error → success → done
     let provider = ErrorInjectingProvider::new(vec![
-        MockAction::Error(Box::new(|| ApiError { status: 500, message: "err1".to_string() }.into())),
+        MockAction::Error(Box::new(|| {
+            ApiError {
+                status: 500,
+                message: "err1".to_string(),
+            }
+            .into()
+        })),
         MockAction::Respond(make_tool_response(
             "bash",
             serde_json::json!({"command": "echo hello"}),
         )),
         // After tool execution, model responds with final text
-        MockAction::Error(Box::new(|| ApiError { status: 502, message: "err2".to_string() }.into())),
+        MockAction::Error(Box::new(|| {
+            ApiError {
+                status: 502,
+                message: "err2".to_string(),
+            }
+            .into()
+        })),
         MockAction::Respond(make_text_response("All done.")),
     ]);
 
@@ -431,8 +478,20 @@ async fn test_model_conversation_never_contains_raw_errors() {
 
     // Mix of errors and successes
     let provider = ErrorInjectingProvider::new(vec![
-        MockAction::Error(Box::new(|| ApiError { status: 500, message: "Internal Server Error\nstack trace: ...".to_string() }.into())),
-        MockAction::Error(Box::new(|| ApiError { status: 429, message: "Rate limit exceeded. Please retry after 2s".to_string() }.into())),
+        MockAction::Error(Box::new(|| {
+            ApiError {
+                status: 500,
+                message: "Internal Server Error\nstack trace: ...".to_string(),
+            }
+            .into()
+        })),
+        MockAction::Error(Box::new(|| {
+            ApiError {
+                status: 429,
+                message: "Rate limit exceeded. Please retry after 2s".to_string(),
+            }
+            .into()
+        })),
         MockAction::Respond(make_text_response("Task completed.")),
     ]);
 
@@ -471,7 +530,9 @@ async fn test_model_conversation_never_contains_raw_errors() {
                         assert!(
                             !text.contains(pattern),
                             "Call {}: model message contains forbidden pattern '{}': {}",
-                            call_idx, pattern, text
+                            call_idx,
+                            pattern,
+                            text
                         );
                     }
                 }
@@ -511,7 +572,9 @@ async fn test_json_parse_error_in_tool_args_no_crash() {
 
     let provider = ErrorInjectingProvider::new(vec![
         MockAction::Respond(malformed_tool),
-        MockAction::Respond(make_text_response("I see the parse error. Let me fix my tool call.")),
+        MockAction::Respond(make_text_response(
+            "I see the parse error. Let me fix my tool call.",
+        )),
     ]);
 
     let registry = ToolRegistry::default_all(&wg_dir, wg_dir.parent().unwrap());

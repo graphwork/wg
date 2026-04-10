@@ -847,7 +847,8 @@ model = "claude:sonnet"
 
     for (task_id, task_title) in &tasks_needing_eval {
         let eval_task_id = format!("evaluate-{}", task_id);
-        let resolved_model = config.resolve_model_for_role(workgraph::config::DispatchRole::Evaluator);
+        let resolved_model =
+            config.resolve_model_for_role(workgraph::config::DispatchRole::Evaluator);
         let eval_task = Task {
             id: eval_task_id.clone(),
             title: format!("Evaluate: {}", task_title),

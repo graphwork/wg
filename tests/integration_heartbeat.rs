@@ -17,7 +17,7 @@ use workgraph::executor::native::client::{
 use workgraph::executor::native::provider::Provider;
 use workgraph::executor::native::tools::ToolRegistry;
 use workgraph::executor::native::tools::bash::register_bash_tool;
-use workgraph::stream_event::{read_stream_events, StreamEvent};
+use workgraph::stream_event::{StreamEvent, read_stream_events};
 
 // ── Mock provider that triggers a bash tool call ────────────────────────
 
@@ -130,7 +130,10 @@ async fn test_heartbeat_during_long_bash() {
         heartbeats.len() >= 2,
         "Expected at least 2 heartbeats during 3s sleep with 1s interval, got {}. Events: {:?}",
         heartbeats.len(),
-        events.iter().map(|e| format!("{:?}", e)).collect::<Vec<_>>()
+        events
+            .iter()
+            .map(|e| format!("{:?}", e))
+            .collect::<Vec<_>>()
     );
 
     // Verify heartbeats have valid timestamps
@@ -168,7 +171,7 @@ async fn test_heartbeat_during_long_bash() {
 /// heartbeat events for liveness detection.
 #[test]
 fn test_coordinator_reads_heartbeat_for_liveness() {
-    use workgraph::stream_event::{now_ms, AgentStreamState};
+    use workgraph::stream_event::{AgentStreamState, now_ms};
 
     let mut state = AgentStreamState::default();
 
@@ -209,9 +212,15 @@ async fn test_no_heartbeat_for_fast_tools() {
 
     #[async_trait]
     impl Provider for FastToolProvider {
-        fn name(&self) -> &str { "fast-test" }
-        fn model(&self) -> &str { "test-model" }
-        fn max_tokens(&self) -> u32 { 1024 }
+        fn name(&self) -> &str {
+            "fast-test"
+        }
+        fn model(&self) -> &str {
+            "test-model"
+        }
+        fn max_tokens(&self) -> u32 {
+            1024
+        }
 
         async fn send(&self, _: &MessagesRequest) -> anyhow::Result<MessagesResponse> {
             panic!("send() should not be called");
@@ -235,14 +244,24 @@ async fn test_no_heartbeat_for_fast_tools() {
                         }),
                     }],
                     stop_reason: Some(StopReason::ToolUse),
-                    usage: Usage { input_tokens: 10, output_tokens: 5, ..Default::default() },
+                    usage: Usage {
+                        input_tokens: 10,
+                        output_tokens: 5,
+                        ..Default::default()
+                    },
                 })
             } else {
                 Ok(MessagesResponse {
                     id: "msg_done".to_string(),
-                    content: vec![ContentBlock::Text { text: "Done".to_string() }],
+                    content: vec![ContentBlock::Text {
+                        text: "Done".to_string(),
+                    }],
                     stop_reason: Some(StopReason::EndTurn),
-                    usage: Usage { input_tokens: 10, output_tokens: 5, ..Default::default() },
+                    usage: Usage {
+                        input_tokens: 10,
+                        output_tokens: 5,
+                        ..Default::default()
+                    },
                 })
             }
         }

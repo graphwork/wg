@@ -39,6 +39,7 @@ use workgraph::parser::load_graph;
 use workgraph::service::compactor::{CompactorState, context_md_path};
 use workgraph::service::executor::ExecutorRegistry;
 use workgraph::service::registry::AgentRegistry;
+use workgraph::executor::native::journal::JournalEntryKind;
 
 use crate::commands::{graph_path, is_process_alive};
 

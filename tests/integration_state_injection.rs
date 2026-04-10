@@ -37,7 +37,6 @@ impl CapturingProvider {
             captured: Arc::new(Mutex::new(Vec::new())),
         }
     }
-
 }
 
 #[async_trait::async_trait]
@@ -60,10 +59,7 @@ impl Provider for CapturingProvider {
 
     async fn send(&self, request: &MessagesRequest) -> anyhow::Result<MessagesResponse> {
         // Capture the messages for later inspection
-        self.captured
-            .lock()
-            .unwrap()
-            .push(request.messages.clone());
+        self.captured.lock().unwrap().push(request.messages.clone());
 
         let idx = self.call_count.fetch_add(1, Ordering::SeqCst);
         if idx < self.responses.len() {
@@ -141,7 +137,13 @@ async fn test_message_injection_appears_in_api_request() {
     let agent_id = "test-agent-1";
 
     // Write a message BEFORE starting the agent
-    write_message(&wg_dir, task_id, 1, "coordinator", "Important update: deploy at 3pm");
+    write_message(
+        &wg_dir,
+        task_id,
+        1,
+        "coordinator",
+        "Important update: deploy at 3pm",
+    );
 
     // Provider: tool call on turn 1, then end
     let provider = CapturingProvider::new(vec![
@@ -281,13 +283,7 @@ async fn test_injections_are_ephemeral_not_in_journal() {
     let agent_id = "test-agent-3";
 
     // Write a message that will be injected
-    write_message(
-        &wg_dir,
-        task_id,
-        1,
-        "user",
-        "EPHEMERAL_MARKER_STRING_12345",
-    );
+    write_message(&wg_dir, task_id, 1, "user", "EPHEMERAL_MARKER_STRING_12345");
 
     let provider = CapturingProvider::new(vec![MessagesResponse {
         id: "msg-1".to_string(),
@@ -442,7 +438,13 @@ async fn test_context_pressure_injection_in_api_request() {
                 input: serde_json::json!({"command": "echo hello"}),
             }],
             stop_reason: Some(StopReason::ToolUse),
-            usage: Usage { input_tokens: 150_000, output_tokens: 1000, cache_read_input_tokens: None, cache_creation_input_tokens: None, reasoning_tokens: None },
+            usage: Usage {
+                input_tokens: 150_000,
+                output_tokens: 1000,
+                cache_read_input_tokens: None,
+                cache_creation_input_tokens: None,
+                reasoning_tokens: None,
+            },
         },
         // Turn 2: end
         MessagesResponse {
@@ -451,7 +453,13 @@ async fn test_context_pressure_injection_in_api_request() {
                 text: "Done.".to_string(),
             }],
             stop_reason: Some(StopReason::EndTurn),
-            usage: Usage { input_tokens: 160_000, output_tokens: 500, cache_read_input_tokens: None, cache_creation_input_tokens: None, reasoning_tokens: None },
+            usage: Usage {
+                input_tokens: 160_000,
+                output_tokens: 500,
+                cache_read_input_tokens: None,
+                cache_creation_input_tokens: None,
+                reasoning_tokens: None,
+            },
         },
     ]);
 
@@ -480,7 +488,10 @@ async fn test_context_pressure_injection_in_api_request() {
 
     // Verify no crash and basic agent loop execution with state injection enabled
     // even when there's nothing to inject
-    assert!(calls.len() >= 2, "Multi-turn conversation should produce at least 2 calls");
+    assert!(
+        calls.len() >= 2,
+        "Multi-turn conversation should produce at least 2 calls"
+    );
 }
 
 // ── Test: graph changes don't re-report at integration level ────────────
@@ -549,7 +560,11 @@ async fn test_graph_change_not_re_reported_integration() {
     agent.run("Do the task.").await.unwrap();
 
     let calls = captured.lock().unwrap();
-    assert!(calls.len() >= 3, "Expected at least 3 API calls, got {}", calls.len());
+    assert!(
+        calls.len() >= 3,
+        "Expected at least 3 API calls, got {}",
+        calls.len()
+    );
 
     // First call should contain the graph change
     assert!(
@@ -585,16 +600,14 @@ async fn test_combined_injection_in_api_request() {
     // Write a message
     write_message(&wg_dir, task_id, 1, "user", "COMBINED_MSG_MARKER");
 
-    let provider = CapturingProvider::new(vec![
-        MessagesResponse {
-            id: "msg-1".to_string(),
-            content: vec![ContentBlock::Text {
-                text: "Done.".to_string(),
-            }],
-            stop_reason: Some(StopReason::EndTurn),
-            usage: Usage::default(),
-        },
-    ]);
+    let provider = CapturingProvider::new(vec![MessagesResponse {
+        id: "msg-1".to_string(),
+        content: vec![ContentBlock::Text {
+            text: "Done.".to_string(),
+        }],
+        stop_reason: Some(StopReason::EndTurn),
+        usage: Usage::default(),
+    }]);
 
     let captured = provider.captured.clone();
 
@@ -721,7 +734,11 @@ async fn test_ephemeral_across_multiple_turns_with_journal() {
     agent.run("Do the task.").await.unwrap();
 
     let calls = captured.lock().unwrap();
-    assert!(calls.len() >= 3, "Expected 3 API calls, got {}", calls.len());
+    assert!(
+        calls.len() >= 3,
+        "Expected 3 API calls, got {}",
+        calls.len()
+    );
 
     // Turn 1: should have both message + graph change
     assert!(

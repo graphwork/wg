@@ -546,8 +546,7 @@ async fn native_coordinator_agent_loop_simple_text() {
     let graph = workgraph::graph::WorkGraph::new();
     workgraph::parser::save_graph(&graph, &graph_path).unwrap();
 
-    let provider =
-        MockNativeProvider::simple_text("deepseek/deepseek-chat", "Hello from native!");
+    let provider = MockNativeProvider::simple_text("deepseek/deepseek-chat", "Hello from native!");
 
     let registry = ToolRegistry::default_all(&wg_dir, tmp.path());
     let output_log = wg_dir.join("native-simple.ndjson");

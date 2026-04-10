@@ -1773,16 +1773,12 @@ fn run_graph_compaction(dir: &Path, compaction_error_count: &mut u64, logger: &D
             logger.info(&format!("Compaction complete → {}", path.display()));
 
             // Reset accumulated token counter after successful compaction
-            {
-                let mut cs = CoordinatorState::load_or_default(dir);
-                let prev = cs.accumulated_tokens;
-                cs.accumulated_tokens = 0;
-                cs.save(dir);
-                logger.info(&format!(
-                    "Compaction: reset accumulated_tokens from {} to 0",
-                    prev
-                ));
-            }
+            let prev_total = CoordinatorState::total_accumulated_tokens(dir);
+            CoordinatorState::reset_all_accumulated_tokens(dir);
+            logger.info(&format!(
+                "Compaction: reset accumulated_tokens across all coordinators from {} to 0",
+                prev_total
+            ));
 
             // Mark .compact-0 as Done and increment iteration
             let path_display = path.display().to_string();
@@ -1852,6 +1848,31 @@ fn run_graph_compaction(dir: &Path, compaction_error_count: &mut u64, logger: &D
                     false
                 }
             });
+        }
+    }
+}
+
+/// Run per-coordinator chat compaction when the message threshold is exceeded.
+fn run_pending_chat_compactions(dir: &Path, logger: &DaemonLogger) {
+    for coordinator_id in workgraph::chat::list_coordinator_ids(dir) {
+        if !workgraph::service::chat_compactor::should_compact(dir, coordinator_id) {
+            continue;
+        }
+
+        match workgraph::service::chat_compactor::run_chat_compaction(dir, coordinator_id) {
+            Ok(path) => {
+                logger.info(&format!(
+                    "Chat compaction complete for coordinator {} → {}",
+                    coordinator_id,
+                    path.display()
+                ));
+            }
+            Err(e) => {
+                logger.warn(&format!(
+                    "Chat compaction failed for coordinator {}: {:#}",
+                    coordinator_id, e
+                ));
+            }
         }
     }
 }
@@ -1993,11 +2014,7 @@ fn run_graph_archival(dir: &Path, archival_error_count: &mut u64, logger: &Daemo
 /// Time-gated: only fires when at least `registry_refresh_interval` seconds
 /// have elapsed since the last successful refresh (stored in
 /// `model_benchmarks.json`'s `fetched_at` field). Set interval to 0 to disable.
-fn run_registry_refresh(
-    dir: &Path,
-    refresh_error_count: &mut u64,
-    logger: &DaemonLogger,
-) {
+fn run_registry_refresh(dir: &Path, refresh_error_count: &mut u64, logger: &DaemonLogger) {
     let config = workgraph::config::Config::load_or_default(dir);
     let interval = config.coordinator.registry_refresh_interval;
     if interval == 0 {
@@ -2025,12 +2042,8 @@ fn run_registry_refresh(
 
     // Time gate: check if enough time has elapsed since the last fetch.
     {
-        if let Ok(Some(existing)) =
-            workgraph::model_benchmarks::BenchmarkRegistry::load(dir)
-        {
-            if let Ok(fetched) =
-                chrono::DateTime::parse_from_rfc3339(&existing.fetched_at)
-            {
+        if let Ok(Some(existing)) = workgraph::model_benchmarks::BenchmarkRegistry::load(dir) {
+            if let Ok(fetched) = chrono::DateTime::parse_from_rfc3339(&existing.fetched_at) {
                 let age = chrono::Utc::now().signed_duration_since(fetched);
                 if age.num_seconds() < interval as i64 {
                     return; // Not yet time
@@ -2102,10 +2115,7 @@ fn run_registry_refresh(
                     false
                 }
             }) {
-                eprintln!(
-                    "[daemon] Failed to mark .registry-refresh-0 Done: {}",
-                    e
-                );
+                eprintln!("[daemon] Failed to mark .registry-refresh-0 Done: {}", e);
             }
         }
         Err(e) => {
@@ -2148,9 +2158,7 @@ fn do_registry_refresh(dir: &Path) -> Result<String> {
     use workgraph::executor::native::openai_client::{
         fetch_openrouter_models_blocking, resolve_openai_api_key_from_dir,
     };
-    use workgraph::model_benchmarks::{
-        self, BenchmarkRegistry, diff_registries, format_changes,
-    };
+    use workgraph::model_benchmarks::{self, BenchmarkRegistry, diff_registries, format_changes};
 
     // Load existing registry (if any) for diffing.
     let old_registry = BenchmarkRegistry::load(dir)?;
@@ -2625,6 +2633,10 @@ pub fn run_daemon(
                 logger.error(&format!("Accept error: {}", e));
             }
         }
+
+        // Keep coordinator chat history compacted so native coordinator sessions
+        // can reset their in-memory conversation between exchanges.
+        run_pending_chat_compactions(&dir, &logger);
 
         // Determine whether to run a coordinator tick.
         // Three triggers: (1) urgent wake (UserChat), (2) settling deadline expired,

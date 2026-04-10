@@ -516,7 +516,9 @@ fn print_human_readable(details: &TaskDetails) {
     // Token usage
     if let Some(ref usage) = details.token_usage {
         println!();
-        let novel_in = usage.input_tokens.saturating_sub(usage.cache_read_input_tokens);
+        let novel_in = usage
+            .input_tokens
+            .saturating_sub(usage.cache_read_input_tokens);
         if usage.cache_read_input_tokens > 0 {
             println!(
                 "Tokens: {}/{} (in/out) +{} cached",
@@ -786,7 +788,9 @@ mod tests {
             timestamp: "2026-01-01T00:00:00+00:00".to_string(),
             actor: Some("verify".to_string()),
             user: None,
-            message: "Verify FAILED (exit code 1, attempt 2/3). Command: cargo test\nstderr: test failed".to_string(),
+            message:
+                "Verify FAILED (exit code 1, attempt 2/3). Command: cargo test\nstderr: test failed"
+                    .to_string(),
         });
         graph.add_node(Node::Task(task));
         workgraph::parser::save_graph(&graph, &path).unwrap();

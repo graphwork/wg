@@ -251,9 +251,9 @@ pub(crate) fn build_auto_verify_command(test_files: &[String]) -> Option<String>
     let has_rust = test_files.iter().any(|f| f.ends_with(".rs"));
     let has_python = test_files.iter().any(|f| f.ends_with(".py"));
     let has_go = test_files.iter().any(|f| f.ends_with(".go"));
-    let has_js = test_files
-        .iter()
-        .any(|f| f.ends_with(".js") || f.ends_with(".ts") || f.ends_with(".tsx") || f.ends_with(".mjs"));
+    let has_js = test_files.iter().any(|f| {
+        f.ends_with(".js") || f.ends_with(".ts") || f.ends_with(".tsx") || f.ends_with(".mjs")
+    });
 
     // For mixed projects or Rust projects, use cargo test
     if has_rust {
@@ -286,7 +286,8 @@ pub(crate) fn format_test_discovery_context(test_files: &[String]) -> String {
 
     let mut lines = vec![
         "## Discovered Test Files\n".to_string(),
-        "The following test files exist in this project and will be used to verify your work:".to_string(),
+        "The following test files exist in this project and will be used to verify your work:"
+            .to_string(),
     ];
     for f in test_files {
         lines.push(format!("- `{}`", f));

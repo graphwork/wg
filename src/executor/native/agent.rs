@@ -266,7 +266,10 @@ impl AgentLoop {
                     }
                     Ok(None) => None,
                     Err(e) => {
-                        eprintln!("[native-agent] Warning: failed to load session summary: {}", e);
+                        eprintln!(
+                            "[native-agent] Warning: failed to load session summary: {}",
+                            e
+                        );
                         None
                     }
                 }
@@ -450,13 +453,12 @@ impl AgentLoop {
             // and then vanish.
             let request_messages = if let Some(ref mut injector) = self.state_injector {
                 // Get context pressure warning (if at warning threshold)
-                let pressure_warning =
-                    match self.context_budget.check_pressure(&messages) {
-                        ContextPressureAction::Warning => {
-                            Some(self.context_budget.warning_message(&messages))
-                        }
-                        _ => None,
-                    };
+                let pressure_warning = match self.context_budget.check_pressure(&messages) {
+                    ContextPressureAction::Warning => {
+                        Some(self.context_budget.warning_message(&messages))
+                    }
+                    _ => None,
+                };
 
                 if let Some(injection_text) = injector.collect_injections(pressure_warning) {
                     eprintln!(
@@ -548,14 +550,17 @@ impl AgentLoop {
                                 sw.write_text_chunk(&text);
                             }
                             if let Some(ref path) = retry_streaming_file {
-                                let mut acc =
-                                    std::fs::read_to_string(path).unwrap_or_default();
+                                let mut acc = std::fs::read_to_string(path).unwrap_or_default();
                                 acc.push_str(&text);
                                 let _ = std::fs::write(path, &acc);
                             }
                         };
 
-                        match self.client.send_streaming(&retry_request, &retry_on_text).await {
+                        match self
+                            .client
+                            .send_streaming(&retry_request, &retry_on_text)
+                            .await
+                        {
                             Ok(resp) => resp,
                             Err(retry_err) => {
                                 eprintln!(
@@ -575,7 +580,8 @@ impl AgentLoop {
                                 );
                             }
                         }
-                    } else if let Some(api_err) = e.downcast_ref::<super::openai_client::ApiError>() {
+                    } else if let Some(api_err) = e.downcast_ref::<super::openai_client::ApiError>()
+                    {
                         match api_err.status {
                             401 | 403 => {
                                 eprintln!("[native-agent] Fatal auth error: {}", api_err);
@@ -596,7 +602,9 @@ impl AgentLoop {
                                 // Gracefully surface to model — it never sees the raw error
                                 eprintln!(
                                     "[native-agent] API error {} after retries — surfacing gracefully to model (attempt {}/{})",
-                                    status, consecutive_server_errors, MAX_CONSECUTIVE_SERVER_ERRORS
+                                    status,
+                                    consecutive_server_errors,
+                                    MAX_CONSECUTIVE_SERVER_ERRORS
                                 );
                                 let recovery_msg = Message {
                                     role: Role::User,
@@ -627,7 +635,8 @@ impl AgentLoop {
                                 "[native-agent] Request timeout — {} consecutive failures, giving up",
                                 consecutive_server_errors
                             );
-                            return Err(e).context("Request timeout — consecutive failures exceeded limit");
+                            return Err(e)
+                                .context("Request timeout — consecutive failures exceeded limit");
                         }
                         eprintln!(
                             "[native-agent] Request timed out — surfacing gracefully to model (attempt {}/{})",
@@ -678,7 +687,10 @@ impl AgentLoop {
                 let summary = resume::extract_session_summary(&messages);
                 if let Some(ref path) = self.session_summary_path {
                     if let Err(e) = resume::store_session_summary(path, &summary) {
-                        eprintln!("[native-agent] Warning: failed to store session summary: {}", e);
+                        eprintln!(
+                            "[native-agent] Warning: failed to store session summary: {}",
+                            e
+                        );
                     } else {
                         eprintln!(
                             "[native-agent] Session summary extracted at turn {} ({} words)",
@@ -724,10 +736,7 @@ impl AgentLoop {
                             .usage
                             .cache_creation_input_tokens
                             .map(u64::from),
-                        reasoning_tokens: response
-                            .usage
-                            .reasoning_tokens
-                            .map(u64::from),
+                        reasoning_tokens: response.usage.reasoning_tokens.map(u64::from),
                     }),
                 );
             }
@@ -786,7 +795,13 @@ impl AgentLoop {
                         .collect();
 
                     // Separate parse-error calls from real calls
-                    let mut parse_error_results: Vec<(usize, String, String, serde_json::Value, super::tools::ToolOutput)> = Vec::new();
+                    let mut parse_error_results: Vec<(
+                        usize,
+                        String,
+                        String,
+                        serde_json::Value,
+                        super::tools::ToolOutput,
+                    )> = Vec::new();
                     let mut batch_calls: Vec<(usize, String, super::tools::ToolCall)> = Vec::new();
 
                     for (i, (id, name, input)) in tool_use_blocks.iter().enumerate() {
@@ -848,13 +863,11 @@ impl AgentLoop {
                     };
 
                     // Execute batch (read-only in parallel, mutating serially)
-                    let calls_only: Vec<_> = batch_calls.iter().map(|(_, _, c)| c.clone()).collect();
+                    let calls_only: Vec<_> =
+                        batch_calls.iter().map(|(_, _, c)| c.clone()).collect();
                     let batch_results = self
                         .tools
-                        .execute_batch(
-                            &calls_only,
-                            super::tools::DEFAULT_MAX_CONCURRENT_TOOLS,
-                        )
+                        .execute_batch(&calls_only, super::tools::DEFAULT_MAX_CONCURRENT_TOOLS)
                         .await;
 
                     // Stop heartbeat ticker
@@ -863,8 +876,14 @@ impl AgentLoop {
                     }
 
                     // Merge parse-error results and batch results into original order
-                    let mut all_results: Vec<(usize, String, String, serde_json::Value, super::tools::ToolOutput, u64)> =
-                        Vec::with_capacity(tool_use_blocks.len());
+                    let mut all_results: Vec<(
+                        usize,
+                        String,
+                        String,
+                        serde_json::Value,
+                        super::tools::ToolOutput,
+                        u64,
+                    )> = Vec::with_capacity(tool_use_blocks.len());
 
                     for (orig_idx, id, name, input, output) in parse_error_results {
                         all_results.push((orig_idx, id, name, input, output, 0));
@@ -1042,9 +1061,7 @@ impl AgentLoop {
                 }
                 ContextPressureAction::CleanExit => {
                     // 95%+ capacity: clean exit — log progress and stop gracefully
-                    eprintln!(
-                        "[native-agent] Context at 95%+ capacity — performing clean exit"
-                    );
+                    eprintln!("[native-agent] Context at 95%+ capacity — performing clean exit");
                     self.store_final_summary(&messages);
 
                     let final_text = "[context limit reached — clean exit]".to_string();

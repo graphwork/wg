@@ -19,8 +19,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
 use workgraph::graph::{
-    CycleConfig, Node, Status, Task, WorkGraph, evaluate_cycle_iteration,
-    evaluate_cycle_on_failure,
+    CycleConfig, Node, Status, Task, WorkGraph, evaluate_cycle_iteration, evaluate_cycle_on_failure,
 };
 use workgraph::parser::{load_graph, save_graph};
 
@@ -239,7 +238,11 @@ fi
     // Verify task is Failed
     let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
     let task = graph.get_task("run-job").unwrap();
-    assert_eq!(task.status, Status::Failed, "run-job should be Failed after attempt 1");
+    assert_eq!(
+        task.status,
+        Status::Failed,
+        "run-job should be Failed after attempt 1"
+    );
     assert!(
         task.log.iter().any(|e| e.message.contains("failed")),
         "Should have failure log entry"
@@ -320,7 +323,11 @@ fi
     // Verify logs from BOTH attempts survived
     let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
     let run_job = graph.get_task("run-job").unwrap();
-    assert_eq!(run_job.status, Status::Open, "run-job should be Open after 2nd restart");
+    assert_eq!(
+        run_job.status,
+        Status::Open,
+        "run-job should be Open after 2nd restart"
+    );
     // Should have: attempt 1 start + attempt 1 fail + restart 1 + attempt 2 start + attempt 2 fail + restart 2
     assert!(
         run_job.log.len() >= 4,
@@ -412,8 +419,16 @@ fi
     // Both tasks should remain Done
     let run_job = graph.get_task("run-job").unwrap();
     let check_job = graph.get_task("check-job").unwrap();
-    assert_eq!(run_job.status, Status::Done, "run-job should be Done at end");
-    assert_eq!(check_job.status, Status::Done, "check-job should be Done at end");
+    assert_eq!(
+        run_job.status,
+        Status::Done,
+        "run-job should be Done at end"
+    );
+    assert_eq!(
+        check_job.status,
+        Status::Done,
+        "check-job should be Done at end"
+    );
 
     // check-job should have converged tag
     assert!(
@@ -428,27 +443,29 @@ fi
         run_job.log.len() >= 6,
         "run-job should have logs from all 3 attempts preserved. Got {} entries: {:?}",
         run_job.log.len(),
-        run_job
-            .log
-            .iter()
-            .map(|e| &e.message)
-            .collect::<Vec<_>>()
+        run_job.log.iter().map(|e| &e.message).collect::<Vec<_>>()
     );
 
     // Verify log messages reference the execution
     let all_messages: Vec<&str> = run_job.log.iter().map(|e| e.message.as_str()).collect();
     assert!(
-        all_messages.iter().any(|m| m.contains("failed") || m.contains("Failed")),
+        all_messages
+            .iter()
+            .any(|m| m.contains("failed") || m.contains("Failed")),
         "Should have failure log entries. Messages: {:?}",
         all_messages
     );
     assert!(
-        all_messages.iter().any(|m| m.contains("success") || m.contains("Successfully") || m.contains("completed")),
+        all_messages.iter().any(|m| m.contains("success")
+            || m.contains("Successfully")
+            || m.contains("completed")),
         "Should have success log entry. Messages: {:?}",
         all_messages
     );
     assert!(
-        all_messages.iter().any(|m| m.contains("failure restart") || m.contains("Cycle failure restart")),
+        all_messages
+            .iter()
+            .any(|m| m.contains("failure restart") || m.contains("Cycle failure restart")),
         "Should have cycle restart log entries. Messages: {:?}",
         all_messages
     );

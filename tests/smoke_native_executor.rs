@@ -12,8 +12,8 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use tempfile::TempDir;
@@ -68,7 +68,6 @@ fn wg_ok(wg_dir: &Path, args: &[&str]) -> String {
     );
     stdout
 }
-
 
 /// Run an async block in a new runtime and return the result.
 fn block_on<T>(fut: impl std::future::Future<Output = T>) -> T {
@@ -137,9 +136,8 @@ fn smoke_streaming_token_reporting() {
 
     // ── 4. Execute streaming request ───────────────────────────────────
     eprintln!("[smoke_streaming] Sending streaming request to minimax-m2.7...");
-    let response = block_on(
-        client.send_streaming(&request, &on_text)
-    ).expect("Streaming request should succeed");
+    let response = block_on(client.send_streaming(&request, &on_text))
+        .expect("Streaming request should succeed");
 
     // Debug: show all chunks received
     let all_chunks = debug_chunks.lock().unwrap();
@@ -334,7 +332,9 @@ fn smoke_native_streaming_agent() {
                         // Check if it failed due to streaming or other issues
                         eprintln!(
                             "[smoke_streaming] Task failed: {}",
-                            val.get("failure_reason").map(|s| s.as_str().unwrap_or("unknown")).unwrap_or("unknown")
+                            val.get("failure_reason")
+                                .map(|s| s.as_str().unwrap_or("unknown"))
+                                .unwrap_or("unknown")
                         );
                         // We still consider this a pass for the smoke test
                         // since streaming was likely initiated
@@ -349,11 +349,7 @@ fn smoke_native_streaming_agent() {
         std::thread::sleep(Duration::from_secs(5));
     }
 
-    assert!(
-        completed,
-        "Agent did not complete within {}s",
-        max_wait
-    );
+    assert!(completed, "Agent did not complete within {}s", max_wait);
 
     eprintln!(
         "[smoke_streaming] Agent {} (stream initiation verified)",

@@ -526,8 +526,14 @@ mod tests {
             ..Default::default()
         };
         let active_ctx = "- other-task (Other Task)\n- third-task (Third Task)\n";
-        let prompt =
-            build_assignment_prompt(&task, "", "- Agent1 (hash: abc)\n", None, active_ctx, "claude");
+        let prompt = build_assignment_prompt(
+            &task,
+            "",
+            "- Agent1 (hash: abc)\n",
+            None,
+            active_ctx,
+            "claude",
+        );
         assert!(prompt.contains("Active Tasks"));
         assert!(prompt.contains("other-task"));
         assert!(prompt.contains("Placement Instructions"));
@@ -542,7 +548,8 @@ mod tests {
             status: Status::Open,
             ..Default::default()
         };
-        let prompt = build_assignment_prompt(&task, "", "- Agent1 (hash: abc)\n", None, "", "claude");
+        let prompt =
+            build_assignment_prompt(&task, "", "- Agent1 (hash: abc)\n", None, "", "claude");
         assert!(!prompt.contains("Active Tasks"));
         assert!(!prompt.contains("Placement Instructions"));
     }

@@ -16,8 +16,8 @@ use workgraph::service::registry::AgentRegistry;
 
 use super::context::{
     build_auto_verify_command, build_previous_attempt_context, build_scope_context,
-    build_task_context, discover_test_files, format_test_discovery_context,
-    resolve_task_exec_mode, resolve_task_scope,
+    build_task_context, discover_test_files, format_test_discovery_context, resolve_task_exec_mode,
+    resolve_task_scope,
 };
 use super::worktree;
 use super::{
@@ -336,8 +336,7 @@ pub(crate) fn spawn_agent_inner(
     // The registry may contribute a provider if the model matched a registry entry;
     // use it only when the tier cascade didn't already produce one.
     let task_endpoint = graph.get_task(task_id).and_then(|t| t.endpoint.clone());
-    let effective_provider: Option<String> =
-        resolved.provider.or(registry_provider.clone());
+    let effective_provider: Option<String> = resolved.provider.or(registry_provider.clone());
 
     // Endpoint resolution cascade:
     //   1. task.endpoint — explicit endpoint name on the task
@@ -905,6 +904,29 @@ fn build_inner_command(
                 claude_cmd
             }
         }
+        "codex" => {
+            // Codex runs non-interactively via `codex exec`, reading the prompt from stdin.
+            // We keep this aligned with the Claude single-shot flow: write the assembled
+            // prompt to disk, pipe it in, and let the wrapper capture JSONL output.
+            let mut cmd_parts = vec![shell_escape(&settings.command)];
+            for arg in &settings.args {
+                cmd_parts.push(shell_escape(arg));
+            }
+            if let Some(m) = effective_model {
+                cmd_parts.push("--model".to_string());
+                cmd_parts.push(shell_escape(m));
+            }
+            let codex_cmd = cmd_parts.join(" ");
+
+            if let Some(ref prompt_template) = settings.prompt_template {
+                let prompt_file = output_dir.join("prompt.txt");
+                fs::write(&prompt_file, &prompt_template.template)
+                    .with_context(|| format!("Failed to write prompt file: {:?}", prompt_file))?;
+                prompt_file_command(&prompt_file.to_string_lossy(), &codex_cmd)
+            } else {
+                codex_cmd
+            }
+        }
         "amplifier" => {
             // Write prompt to file and pipe to amplifier - same pattern as claude
             let mut cmd_parts = vec![shell_escape(&settings.command)];
@@ -1030,10 +1052,10 @@ fn write_wrapper_script(
     // For native: the agent loop writes stream.jsonl directly; wrapper just adds bookends.
     // For amplifier/shell/other: wrapper emits Init+Result bookend events.
     let (run_command, stream_init, stream_result) = match executor_type {
-        "claude" => {
+        "claude" | "codex" => {
             let raw_stream_file = output_dir.join("raw_stream.jsonl");
             let raw_str = raw_stream_file.to_string_lossy().to_string();
-            // Capture Claude's JSONL stdout to raw_stream.jsonl and also copy to output.log.
+            // Capture JSONL stdout to raw_stream.jsonl and also copy to output.log.
             // stderr goes to output.log only.
             let cmd = format!(
                 "{timed_command} > >(tee -a {raw} >> \"$OUTPUT_FILE\") 2>> \"$OUTPUT_FILE\"",
@@ -1227,9 +1249,7 @@ impl ResolutionTier {
             if let Some(ref p) = spec.provider {
                 return Self {
                     model,
-                    provider: Some(
-                        workgraph::config::provider_to_native_provider(p).to_string(),
-                    ),
+                    provider: Some(workgraph::config::provider_to_native_provider(p).to_string()),
                 };
             }
         }
@@ -1329,11 +1349,13 @@ fn resolve_model_via_registry(
                     .find(|e| e.model == spec.model_id)
             })
             .and_then(|e| e.endpoint.clone());
-        // For the claude executor, pass just the model_id (no prefix) since the
-        // Claude CLI doesn't understand provider:model format.
-        // For native/other executors, preserve the full spec so create_provider_ext
-        // can re-parse the provider prefix.
-        let effective = if workgraph::config::provider_to_executor(provider_prefix) == "claude" {
+        // CLI-backed executors do not understand provider:model format; pass only
+        // the bare model ID. Native/API-backed executors preserve the full spec
+        // so downstream provider resolution can re-parse the prefix.
+        let effective = if matches!(
+            workgraph::config::provider_to_executor(provider_prefix),
+            "claude" | "codex"
+        ) {
             spec.model_id.clone()
         } else {
             model_str.clone()
@@ -1378,10 +1400,9 @@ fn resolve_model_via_registry(
             Ok((effective_model, None, None))
         } else {
             // Short alias that's not registered — try resolving against model cache.
-            let resolution =
-                workgraph::executor::native::openai_client::resolve_short_model_name(
-                    &model_str, dir,
-                );
+            let resolution = workgraph::executor::native::openai_client::resolve_short_model_name(
+                &model_str, dir,
+            );
             if let Some(resolved_id) = resolution.resolved {
                 eprintln!(
                     "[spawn] Resolved short model name '{}' → 'openrouter:{}'",
@@ -1477,11 +1498,15 @@ mod tests {
     #[test]
     fn test_unified_model_task_overrides_agent() {
         let r = resolve(
-            Some("task-model"), None,
-            Some("agent-model"), None,
+            Some("task-model"),
+            None,
+            Some("agent-model"),
+            None,
             Some("executor-model"),
-            None, None,
-            Some("coordinator-model"), None,
+            None,
+            None,
+            Some("coordinator-model"),
+            None,
         );
         assert_eq!(r.model, Some("task-model".to_string()));
     }
@@ -1489,11 +1514,15 @@ mod tests {
     #[test]
     fn test_unified_model_agent_when_no_task() {
         let r = resolve(
-            None, None,
-            Some("agent-model"), None,
+            None,
+            None,
+            Some("agent-model"),
+            None,
             Some("executor-model"),
-            None, None,
-            Some("coordinator-model"), None,
+            None,
+            None,
+            Some("coordinator-model"),
+            None,
         );
         assert_eq!(r.model, Some("agent-model".to_string()));
     }
@@ -1501,11 +1530,15 @@ mod tests {
     #[test]
     fn test_unified_model_executor_when_no_agent() {
         let r = resolve(
-            None, None,
-            None, None,
+            None,
+            None,
+            None,
+            None,
             Some("executor-model"),
-            None, None,
-            Some("coordinator-model"), None,
+            None,
+            None,
+            Some("coordinator-model"),
+            None,
         );
         assert_eq!(r.model, Some("executor-model".to_string()));
     }
@@ -1513,11 +1546,15 @@ mod tests {
     #[test]
     fn test_unified_model_role_when_no_executor() {
         let r = resolve(
-            None, None,
-            None, None,
             None,
-            Some("role-model"), None,
-            Some("coordinator-model"), None,
+            None,
+            None,
+            None,
+            None,
+            Some("role-model"),
+            None,
+            Some("coordinator-model"),
+            None,
         );
         assert_eq!(r.model, Some("role-model".to_string()));
     }
@@ -1525,8 +1562,15 @@ mod tests {
     #[test]
     fn test_unified_model_coordinator_fallback() {
         let r = resolve(
-            None, None, None, None, None, None, None,
-            Some("coordinator-model"), None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some("coordinator-model"),
+            None,
         );
         assert_eq!(r.model, Some("coordinator-model".to_string()));
     }
@@ -1541,11 +1585,15 @@ mod tests {
     #[test]
     fn test_unified_provider_task_overrides_agent() {
         let r = resolve(
-            None, Some("task-provider"),
-            None, Some("agent-provider"),
             None,
-            None, Some("config-provider"),
-            None, None,
+            Some("task-provider"),
+            None,
+            Some("agent-provider"),
+            None,
+            None,
+            Some("config-provider"),
+            None,
+            None,
         );
         assert_eq!(r.provider, Some("task-provider".to_string()));
     }
@@ -1553,11 +1601,15 @@ mod tests {
     #[test]
     fn test_unified_provider_agent_when_no_task() {
         let r = resolve(
-            None, None,
-            None, Some("agent-provider"),
             None,
-            None, Some("config-provider"),
-            None, None,
+            None,
+            None,
+            Some("agent-provider"),
+            None,
+            None,
+            Some("config-provider"),
+            None,
+            None,
         );
         assert_eq!(r.provider, Some("agent-provider".to_string()));
     }
@@ -1565,9 +1617,15 @@ mod tests {
     #[test]
     fn test_unified_provider_config_fallback() {
         let r = resolve(
-            None, None, None, None, None,
-            None, Some("config-provider"),
-            None, None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some("config-provider"),
+            None,
+            None,
         );
         assert_eq!(r.provider, Some("config-provider".to_string()));
     }
@@ -1582,8 +1640,15 @@ mod tests {
     fn test_unified_provider_from_model_spec() {
         // provider:model in task.model extracts provider automatically
         let r = resolve(
-            Some("openrouter:deepseek/deepseek-v3"), None,
-            None, None, None, None, None, None, None,
+            Some("openrouter:deepseek/deepseek-v3"),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
         );
         assert_eq!(r.model, Some("openrouter:deepseek/deepseek-v3".to_string()));
         assert_eq!(r.provider, Some("openrouter".to_string()));
@@ -1593,8 +1658,15 @@ mod tests {
     fn test_unified_explicit_provider_beats_model_spec() {
         // An explicit task_provider takes precedence over provider in model spec
         let r = resolve(
-            Some("openrouter:deepseek/deepseek-v3"), Some("anthropic"),
-            None, None, None, None, None, None, None,
+            Some("openrouter:deepseek/deepseek-v3"),
+            Some("anthropic"),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
         );
         assert_eq!(r.provider, Some("anthropic".to_string()));
     }
@@ -1603,9 +1675,15 @@ mod tests {
     fn test_unified_model_spec_at_agent_tier() {
         // provider:model at agent tier extracts provider when no task-level provider
         let r = resolve(
-            None, None,
-            Some("openai:gpt-5"), None,
-            None, None, None, None, None,
+            None,
+            None,
+            Some("openai:gpt-5"),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
         );
         assert_eq!(r.model, Some("openai:gpt-5".to_string()));
         assert_eq!(r.provider, Some("openai".to_string()));
@@ -1615,8 +1693,15 @@ mod tests {
     fn test_unified_model_spec_at_coordinator_tier() {
         // provider:model at coordinator tier as last resort
         let r = resolve(
-            None, None, None, None, None, None, None,
-            Some("claude:opus"), None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some("claude:opus"),
+            None,
         );
         assert_eq!(r.model, Some("claude:opus".to_string()));
         assert_eq!(r.provider, Some("anthropic".to_string()));
@@ -1625,11 +1710,15 @@ mod tests {
     #[test]
     fn test_unified_unassigned_task_uses_executor_model() {
         let r = resolve(
-            None, None,
-            None, None,
+            None,
+            None,
+            None,
+            None,
             Some("executor-default"),
-            None, None,
-            Some("coordinator-fallback"), None,
+            None,
+            None,
+            Some("coordinator-fallback"),
+            None,
         );
         assert_eq!(r.model, Some("executor-default".to_string()));
     }
@@ -1639,9 +1728,15 @@ mod tests {
         // Task has explicit provider, coordinator has provider:model
         // Task provider should win even though coordinator model has a spec
         let r = resolve(
-            None, Some("anthropic"),
-            None, None, None, None, None,
-            Some("openrouter:deepseek/deepseek-v3"), None,
+            None,
+            Some("anthropic"),
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some("openrouter:deepseek/deepseek-v3"),
+            None,
         );
         assert_eq!(r.provider, Some("anthropic".to_string()));
         assert_eq!(r.model, Some("openrouter:deepseek/deepseek-v3".to_string()));
@@ -2034,6 +2129,21 @@ mod tests {
     }
 
     #[test]
+    fn test_registry_strips_codex_prefix_for_codex_executor_models() {
+        let tmp = setup_registry_dir();
+        let dir = tmp.path();
+        let config = Config::load_or_default(dir);
+
+        let (model, provider, endpoint) =
+            resolve_model_via_registry(Some("codex:gpt-5-codex".to_string()), None, &config, dir)
+                .unwrap();
+
+        assert_eq!(model, Some("gpt-5-codex".to_string()));
+        assert_eq!(provider, Some("openai".to_string()));
+        assert_eq!(endpoint, None);
+    }
+
+    #[test]
     fn test_registry_full_model_id_passthrough_for_task() {
         // Full model IDs with "/" should pass through even when task-specified,
         // allowing OpenRouter-style "provider/model" to work without registration.
@@ -2106,6 +2216,90 @@ mod tests {
                 .to_string()
                 .contains("not found in config"),
             "Error should mention registration"
+        );
+    }
+
+    #[test]
+    fn test_build_inner_command_codex_uses_prompt_file_and_model() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let output_dir = temp_dir.path();
+        let settings = workgraph::service::executor::ExecutorSettings {
+            executor_type: "codex".to_string(),
+            command: "codex".to_string(),
+            args: vec![
+                "exec".to_string(),
+                "--json".to_string(),
+                "--skip-git-repo-check".to_string(),
+            ],
+            env: std::collections::HashMap::new(),
+            prompt_template: Some(PromptTemplate {
+                template: "Investigate task".to_string(),
+            }),
+            working_dir: Some("/tmp".to_string()),
+            timeout: None,
+            model: None,
+        };
+        let vars = TemplateVars {
+            task_id: "task-1".to_string(),
+            task_title: "Task".to_string(),
+            task_description: "Desc".to_string(),
+            task_context: "Context".to_string(),
+            task_identity: String::new(),
+            working_dir: "/tmp".to_string(),
+            skills_preamble: String::new(),
+            model: String::new(),
+            task_loop_info: String::new(),
+            task_verify: None,
+            max_child_tasks: 0,
+            max_task_depth: 0,
+            has_failed_deps: false,
+            failed_deps_info: String::new(),
+        };
+
+        let command = build_inner_command(
+            &settings,
+            "full",
+            output_dir,
+            &Some("gpt-5-codex".to_string()),
+            &None,
+            &None,
+            &None,
+            &None,
+            &vars,
+            &None,
+            None,
+        )
+        .unwrap();
+
+        assert!(
+            command.contains("cat "),
+            "Expected prompt to be piped from a file: {}",
+            command
+        );
+        assert!(
+            command.contains("'codex' 'exec'"),
+            "Expected codex exec invocation: {}",
+            command
+        );
+        assert!(
+            command.contains("'--json'"),
+            "Expected codex JSON mode: {}",
+            command
+        );
+        assert!(
+            command.contains("'--skip-git-repo-check'"),
+            "Expected codex git check bypass flag: {}",
+            command
+        );
+        assert!(
+            command.contains("--model 'gpt-5-codex'"),
+            "Expected codex model flag: {}",
+            command
+        );
+        let prompt_file = output_dir.join("prompt.txt");
+        assert_eq!(
+            std::fs::read_to_string(prompt_file).unwrap(),
+            "Investigate task"
         );
     }
 }

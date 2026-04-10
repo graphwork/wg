@@ -178,11 +178,14 @@ impl ToolRegistry {
                             None => ToolOutput::error(format!("Unknown tool: {}", call.name)),
                         };
                         let duration_ms = start.elapsed().as_millis() as u64;
-                        (*idx, ToolCallResult {
-                            name: call.name.clone(),
-                            output,
-                            duration_ms,
-                        })
+                        (
+                            *idx,
+                            ToolCallResult {
+                                name: call.name.clone(),
+                                output,
+                                duration_ms,
+                            },
+                        )
                     }
                 })
                 .collect();
@@ -196,11 +199,14 @@ impl ToolRegistry {
             let start = std::time::Instant::now();
             let output = self.execute(&call.name, &call.input).await;
             let duration_ms = start.elapsed().as_millis() as u64;
-            results.push((*idx, ToolCallResult {
-                name: call.name.clone(),
-                output,
-                duration_ms,
-            }));
+            results.push((
+                *idx,
+                ToolCallResult {
+                    name: call.name.clone(),
+                    output,
+                    duration_ms,
+                },
+            ));
         }
 
         // Sort by original index to maintain call order
@@ -353,12 +359,18 @@ mod truncation_tests {
     #[test]
     fn test_truncation_configs() {
         assert_eq!(ToolTruncationConfig::for_tool("bash").max_chars, 8_000);
-        assert_eq!(ToolTruncationConfig::for_tool("read_file").max_chars, 16_000);
+        assert_eq!(
+            ToolTruncationConfig::for_tool("read_file").max_chars,
+            16_000
+        );
         assert_eq!(ToolTruncationConfig::for_tool("grep").max_chars, 4_000);
         assert_eq!(ToolTruncationConfig::for_tool("glob").max_chars, 4_000);
         assert_eq!(ToolTruncationConfig::for_tool("wg_show").max_chars, 2_000);
         assert_eq!(ToolTruncationConfig::for_tool("wg_list").max_chars, 4_000);
-        assert_eq!(ToolTruncationConfig::for_tool("unknown").max_chars, MAX_TOOL_OUTPUT_SIZE);
+        assert_eq!(
+            ToolTruncationConfig::for_tool("unknown").max_chars,
+            MAX_TOOL_OUTPUT_SIZE
+        );
     }
 
     #[test]
@@ -442,9 +454,18 @@ mod parallelism_tests {
         }
 
         let calls = vec![
-            ToolCall { name: "c".to_string(), input: serde_json::json!({}) },
-            ToolCall { name: "a".to_string(), input: serde_json::json!({}) },
-            ToolCall { name: "b".to_string(), input: serde_json::json!({}) },
+            ToolCall {
+                name: "c".to_string(),
+                input: serde_json::json!({}),
+            },
+            ToolCall {
+                name: "a".to_string(),
+                input: serde_json::json!({}),
+            },
+            ToolCall {
+                name: "b".to_string(),
+                input: serde_json::json!({}),
+            },
         ];
 
         let results = registry.execute_batch(&calls, 10).await;

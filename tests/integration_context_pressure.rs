@@ -228,7 +228,11 @@ fn test_context_pressure_clean_exit() {
     let msgs: Vec<Message> = (0..19)
         .map(|i| {
             make_text_message(
-                if i % 2 == 0 { Role::User } else { Role::Assistant },
+                if i % 2 == 0 {
+                    Role::User
+                } else {
+                    Role::Assistant
+                },
                 2000, // 19 * 2000 = 38000 chars = 9500 tokens = 95%
             )
         })

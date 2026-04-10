@@ -566,7 +566,9 @@ fn gather_verify_failing(dir: &Path) -> Vec<VerifyFailingTask> {
 
     graph
         .tasks()
-        .filter(|t| t.verify_failures > 0 && t.status != Status::Failed && t.status != Status::Abandoned)
+        .filter(|t| {
+            t.verify_failures > 0 && t.status != Status::Failed && t.status != Status::Abandoned
+        })
         .map(|t| VerifyFailingTask {
             task_id: t.id.clone(),
             failures: t.verify_failures,
@@ -1085,7 +1087,10 @@ mod tests {
         save_graph(&graph, &path).unwrap();
 
         let failing = gather_verify_failing(temp_dir.path());
-        assert!(failing.is_empty(), "Failed tasks should not be listed as verify-failing");
+        assert!(
+            failing.is_empty(),
+            "Failed tasks should not be listed as verify-failing"
+        );
     }
 
     #[test]

@@ -614,7 +614,9 @@ mod tests {
 
     #[test]
     fn test_translate_claude_system_event() {
-        let line = format!(r#"{{"type":"system","session_id":"abc123","model":"{CLAUDE_SONNET_MODEL_ID}"}}"#);
+        let line = format!(
+            r#"{{"type":"system","session_id":"abc123","model":"{CLAUDE_SONNET_MODEL_ID}"}}"#
+        );
         let event = translate_claude_event(&line).unwrap();
         match event {
             StreamEvent::Init {

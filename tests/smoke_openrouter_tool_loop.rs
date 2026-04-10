@@ -7,7 +7,9 @@ use tempfile::TempDir;
 fn wg_binary() -> PathBuf {
     let mut p = std::env::current_exe().expect("could not get current exe");
     p.pop();
-    if p.ends_with("deps") { p.pop(); }
+    if p.ends_with("deps") {
+        p.pop();
+    }
     p.push("wg");
     assert!(p.exists(), "wg not found at {:?}", p);
     p
@@ -17,36 +19,70 @@ fn wg_cmd(wg_dir: &Path, args: &[&str]) -> std::process::Output {
     let fake_home = wg_dir.parent().unwrap_or(wg_dir).join("fakehome");
     let _ = fs::create_dir_all(&fake_home);
     let mut c = Command::new(wg_binary());
-    c.arg("--dir").arg(wg_dir).args(args).env("HOME", &fake_home);
+    c.arg("--dir")
+        .arg(wg_dir)
+        .args(args)
+        .env("HOME", &fake_home);
     for (k, v) in std::env::vars() {
         if k.ends_with("API_KEY") || k == "WG_LLM_PROVIDER" {
             c.env(&k, v);
         }
     }
-    c.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped())
-        .output().unwrap_or_else(|_| panic!("wg {:?} failed", args))
+    c.stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .unwrap_or_else(|_| panic!("wg {:?} failed", args))
 }
 
 fn wg_ok(wg_dir: &Path, args: &[&str]) {
     let o = wg_cmd(wg_dir, args);
     let s = String::from_utf8_lossy(&o.stdout);
     let e = String::from_utf8_lossy(&o.stderr);
-    assert!(o.status.success(), "wg {:?} failed\nstdout:{}\nstderr:{}", args, s, e);
+    assert!(
+        o.status.success(),
+        "wg {:?} failed\nstdout:{}\nstderr:{}",
+        args,
+        s,
+        e
+    );
 }
 
-fn run_native_exec(wg_dir: &Path, prompt: &str, task_id: &str, model: &str, api_key: &str) -> std::process::Output {
+fn run_native_exec(
+    wg_dir: &Path,
+    prompt: &str,
+    task_id: &str,
+    model: &str,
+    api_key: &str,
+) -> std::process::Output {
     let fake_home = wg_dir.parent().unwrap().join("fakehome");
     let _ = fs::create_dir_all(&fake_home);
     let pf = wg_dir.parent().unwrap().join("prompt.txt");
     fs::write(&pf, prompt).unwrap();
     let mut c = Command::new(wg_binary());
-    c.arg("--dir").arg(wg_dir)
-     .args(["native-exec", "--prompt-file", &pf.to_string_lossy(), "--exec-mode", "full",
-            "--task-id", task_id, "--model", model, "--provider", "openai",
-            "--endpoint-url", "https://openrouter.ai/api/v1"])
-     .env("HOME", &fake_home).env("OPENROUTER_API_KEY", api_key)
-     .env("WG_LLM_PROVIDER", "openai")
-     .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    c.arg("--dir")
+        .arg(wg_dir)
+        .args([
+            "native-exec",
+            "--prompt-file",
+            &pf.to_string_lossy(),
+            "--exec-mode",
+            "full",
+            "--task-id",
+            task_id,
+            "--model",
+            model,
+            "--provider",
+            "openai",
+            "--endpoint-url",
+            "https://openrouter.ai/api/v1",
+        ])
+        .env("HOME", &fake_home)
+        .env("OPENROUTER_API_KEY", api_key)
+        .env("WG_LLM_PROVIDER", "openai")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     c.output().unwrap()
 }
 
@@ -58,27 +94,66 @@ fn smoke_native_tool_loop_openrouter() {
     let wg_dir = tmp.path().join(".workgraph");
     wg_ok(&wg_dir, &["init"]);
     wg_ok(&wg_dir, &["agency", "init"]);
-    wg_ok(&wg_dir, &["endpoint", "add", "test-or", "--provider", "openrouter",
-                      "--url", "https://openrouter.ai/api/v1", "--key-env", "OPENROUTER_API_KEY"]);
+    wg_ok(
+        &wg_dir,
+        &[
+            "endpoint",
+            "add",
+            "test-or",
+            "--provider",
+            "openrouter",
+            "--url",
+            "https://openrouter.ai/api/v1",
+            "--key-env",
+            "OPENROUTER_API_KEY",
+        ],
+    );
     wg_ok(&wg_dir, &["endpoint", "set-default", "test-or"]);
-    wg_ok(&wg_dir, &["add", "Tool test", "--id", "tool-loop-test", "--context-scope", "task"]);
+    wg_ok(
+        &wg_dir,
+        &[
+            "add",
+            "Tool test",
+            "--id",
+            "tool-loop-test",
+            "--context-scope",
+            "task",
+        ],
+    );
 
     let prompt = r#"Create /tmp/smoke_test_input.txt with "hello smoke test", read it back, run cat via bash, then wg_done with task_id 'tool-loop-test'."#;
-    let out = run_native_exec(&wg_dir, prompt, "tool-loop-test", "minimax/minimax-m2.7", &api_key);
+    let out = run_native_exec(
+        &wg_dir,
+        prompt,
+        "tool-loop-test",
+        "minimax/minimax-m2.7",
+        &api_key,
+    );
     let stderr = String::from_utf8_lossy(&out.stderr);
     let stdout = String::from_utf8_lossy(&out.stdout);
 
     // Verify correct model was used
-    assert!(stderr.contains("minimax-m2.7") || stderr.contains("OpenRouter"),
-        "Should use minimax via OpenRouter. stderr: {}", stderr);
+    assert!(
+        stderr.contains("minimax-m2.7") || stderr.contains("OpenRouter"),
+        "Should use minimax via OpenRouter. stderr: {}",
+        stderr
+    );
 
     // Parse NDJSON output
     let lines: Vec<&str> = stdout.lines().collect();
     let tool_call_count = lines.iter().filter(|l| l.contains("tool_call")).count();
     let turn_count = lines.iter().filter(|l| l.contains("turn")).count();
 
-    assert!(tool_call_count >= 2, "Should have >= 2 tool calls, got {}", tool_call_count);
-    assert!(turn_count >= 2, "Should have >= 2 turns, got {}", turn_count);
+    assert!(
+        tool_call_count >= 2,
+        "Should have >= 2 tool calls, got {}",
+        tool_call_count
+    );
+    assert!(
+        turn_count >= 2,
+        "Should have >= 2 turns, got {}",
+        turn_count
+    );
 
     // Check journal entries
     let agents_dir = wg_dir.join("agents");
@@ -94,17 +169,26 @@ fn smoke_native_tool_loop_openrouter() {
                         .filter(|l| !l.trim().is_empty())
                         .filter_map(|l| serde_json::from_str(l).ok())
                         .collect();
-                    let tool_execs = entries.iter()
-                        .filter(|e| e.get("entry_type").and_then(|v| v.as_str()) == Some("tool_execution"))
+                    let tool_execs = entries
+                        .iter()
+                        .filter(|e| {
+                            e.get("entry_type").and_then(|v| v.as_str()) == Some("tool_execution")
+                        })
                         .count();
-                    eprintln!("[smoke] Journal: {} entries, {} tool_execution entries",
-                             entries.len(), tool_execs);
+                    eprintln!(
+                        "[smoke] Journal: {} entries, {} tool_execution entries",
+                        entries.len(),
+                        tool_execs
+                    );
                 }
             }
         }
     }
 
-    eprintln!("[smoke] PASS: {} turns, {} tool_calls", turn_count, tool_call_count);
+    eprintln!(
+        "[smoke] PASS: {} turns, {} tool_calls",
+        turn_count, tool_call_count
+    );
 }
 
 #[test]
@@ -117,11 +201,21 @@ fn smoke_native_tool_loop_terminates_reasonably() {
 
     let prompt = r#"Run `ls /tmp` via bash tool, then wg_done with task_id 'termination-test'."#;
     let start = std::time::Instant::now();
-    let _out = run_native_exec(&wg_dir, prompt, "termination-test", "minimax/minimax-m2.7", &api_key);
+    let _out = run_native_exec(
+        &wg_dir,
+        prompt,
+        "termination-test",
+        "minimax/minimax-m2.7",
+        &api_key,
+    );
     let elapsed = start.elapsed().as_secs();
 
     // 600s is generous — the task itself is trivial, but OpenRouter API latency
     // can spike under load, and the minimax model sometimes takes extra turns.
-    assert!(elapsed < 600, "Agent took {}s — too long for simple task", elapsed);
+    assert!(
+        elapsed < 600,
+        "Agent took {}s — too long for simple task",
+        elapsed
+    );
     eprintln!("[smoke] Termination test passed in {}s", elapsed);
 }

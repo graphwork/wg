@@ -11,8 +11,8 @@ use workgraph::config::Config;
 use workgraph::graph::{
     LogEntry, Status, Task, evaluate_cycle_iteration, parse_token_usage, parse_wg_tokens,
 };
-use workgraph::profile;
 use workgraph::parser::{load_graph, modify_graph};
+use workgraph::profile;
 use workgraph::service::registry::{AgentEntry, AgentRegistry, AgentStatus};
 use workgraph::stream_event::{self, StreamEvent};
 
@@ -1384,21 +1384,19 @@ mod tests {
                     is_curated: true,
                 },
             ],
-            premium: vec![
-                RankedModel {
-                    id: "vendor/prem-a".to_string(),
-                    name: "Prem A".to_string(),
-                    popularity_score: 95.0,
-                    benchmark_score: 90.0,
-                    composite_score: 92.0,
-                    tier: "premium".to_string(),
-                    input_per_mtok: None,
-                    output_per_mtok: None,
-                    context_window: None,
-                    supports_tools: true,
-                    is_curated: true,
-                },
-            ],
+            premium: vec![RankedModel {
+                id: "vendor/prem-a".to_string(),
+                name: "Prem A".to_string(),
+                popularity_score: 95.0,
+                benchmark_score: 90.0,
+                composite_score: 92.0,
+                tier: "premium".to_string(),
+                input_per_mtok: None,
+                output_per_mtok: None,
+                context_window: None,
+                supports_tools: true,
+                is_curated: true,
+            }],
         };
         let path = dir.join("profile_ranked_tiers.json");
         let json = serde_json::to_string(&ranked).unwrap();
@@ -1436,11 +1434,16 @@ mod tests {
         // Model should have been escalated from std-a to std-b
         assert_eq!(task.model.as_deref(), Some("openrouter:vendor/std-b"));
         // std-a should be in tried_models
-        assert!(task.tried_models.contains(&"openrouter:vendor/std-a".to_string()));
+        assert!(
+            task.tried_models
+                .contains(&"openrouter:vendor/std-a".to_string())
+        );
         // Log should mention escalation
         assert!(
-            task.log.iter().any(|l| l.message.contains("Retrying with model")
-                && l.message.contains("vendor/std-b")),
+            task.log
+                .iter()
+                .any(|l| l.message.contains("Retrying with model")
+                    && l.message.contains("vendor/std-b")),
             "Log should contain escalation message"
         );
     }
@@ -1539,7 +1542,9 @@ mod tests {
         // All standard models exhausted → should escalate to premium
         assert_eq!(task.model.as_deref(), Some("openrouter:vendor/prem-a"));
         assert!(
-            task.log.iter().any(|l| l.message.contains("escalated to premium-class")),
+            task.log
+                .iter()
+                .any(|l| l.message.contains("escalated to premium-class")),
             "Log should mention tier escalation"
         );
     }

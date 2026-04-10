@@ -84,7 +84,8 @@ pub fn create_provider_ext(
     let config = crate::config::Config::load_or_default(workgraph_dir);
 
     // Load merged TOML value (global + local) for legacy [native_executor] access
-    let config_val: Option<toml::Value> = crate::config::Config::load_merged_toml_value(workgraph_dir).ok();
+    let config_val: Option<toml::Value> =
+        crate::config::Config::load_merged_toml_value(workgraph_dir).ok();
 
     let native_cfg = config_val.as_ref().and_then(|v| v.get("native_executor"));
 
@@ -100,9 +101,19 @@ pub fn create_provider_ext(
         .map(crate::config::provider_to_native_provider)
         .map(String::from);
 
-    // Resolve provider name: spec prefix > override > config > env var > model heuristic
+    // Resolve provider name: spec prefix > override > model heuristic > config > env var
     let provider_name = spec_provider
         .or_else(|| provider_override.map(String::from))
+        .or_else(|| {
+            // Legacy heuristic takes precedence over env var for explicit model prefixes
+            if spec.model_id.starts_with("anthropic/") {
+                Some("anthropic".to_string())
+            } else if spec.model_id.contains('/') {
+                Some("openai".to_string())
+            } else {
+                None
+            }
+        })
         .or_else(|| {
             native_cfg
                 .and_then(|c| c.get("provider"))
@@ -111,14 +122,8 @@ pub fn create_provider_ext(
         })
         .or_else(|| std::env::var("WG_LLM_PROVIDER").ok())
         .unwrap_or_else(|| {
-            // Legacy heuristic fallback for bare model names
-            if spec.model_id.starts_with("anthropic/") {
-                "anthropic".to_string()
-            } else if spec.model_id.contains('/') {
-                "openai".to_string()
-            } else {
-                "anthropic".to_string()
-            }
+            // Fallback for bare model names
+            "anthropic".to_string()
         });
 
     // Use the parsed model ID (provider prefix stripped) for API calls.
@@ -146,7 +151,13 @@ pub fn create_provider_ext(
         .effective_registry()
         .into_iter()
         .find(|e| e.model == spec.model_id || e.id == spec.model_id)
-        .and_then(|e| if e.context_window > 0 { Some(e.context_window) } else { None });
+        .and_then(|e| {
+            if e.context_window > 0 {
+                Some(e.context_window)
+            } else {
+                None
+            }
+        });
     let resolved_context_window = endpoint_context_window.or(registry_context_window);
 
     let api_base: Option<String> = endpoint_url
@@ -230,9 +241,10 @@ pub fn create_provider_ext(
                     anyhow::bail!(
                         "Model '{}' not found in OpenRouter model list. {}",
                         client.model,
-                        validation.warning.as_deref().unwrap_or(
-                            "Run `wg models search <name>` to find valid alternatives."
-                        )
+                        validation
+                            .warning
+                            .as_deref()
+                            .unwrap_or("Run `wg models search <name>` to find valid alternatives.")
                     );
                 }
             }

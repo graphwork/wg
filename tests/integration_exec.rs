@@ -220,10 +220,7 @@ fn exec_shell_failed_command_marks_task_failed() {
         "failed shell exec should mark task failed"
     );
     assert!(
-        t.failure_reason
-            .as_ref()
-            .unwrap()
-            .contains("42"),
+        t.failure_reason.as_ref().unwrap().contains("42"),
         "failure reason should contain exit code"
     );
 }
@@ -284,10 +281,7 @@ fn exec_already_done_task_errors() {
 
     // Interactive mode: should bail on done tasks
     let output = wg_cmd(&wg_dir, &["exec", "done-t", "--dry-run"]);
-    assert!(
-        !output.status.success(),
-        "exec on done task should fail"
-    );
+    assert!(!output.status.success(), "exec on done task should fail");
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     assert!(
         stderr.contains("already done"),
@@ -325,10 +319,7 @@ fn exec_failed_task_errors() {
     );
 
     let output = wg_cmd(&wg_dir, &["exec", "fail-t2", "--dry-run"]);
-    assert!(
-        !output.status.success(),
-        "exec on failed task should fail"
-    );
+    assert!(!output.status.success(), "exec on failed task should fail");
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     assert!(
         stderr.contains("failed") || stderr.contains("retry"),
