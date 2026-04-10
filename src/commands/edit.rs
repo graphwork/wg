@@ -610,6 +610,8 @@ mod tests {
             false,
             false,
             None,
+            false,
+            None,
         )?;
 
         crate::commands::add::run(
@@ -647,6 +649,10 @@ mod tests {
             None,
             None,
             false,
+            false,
+            None,
+            false,
+            None,
             false,
             None,
         )?;
