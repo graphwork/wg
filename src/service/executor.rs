@@ -188,11 +188,25 @@ pub const AUTOPOIETIC_GUIDANCE: &str = "\
 You are encouraged to create new tasks as you discover work. \
 The coordinator will dispatch them automatically.
 
+### When you cannot complete directly
+
+If you face a task you **cannot complete immediately** (missing prerequisites, too large, 
+requires work in multiple files/phases), do NOT try to do everything yourself. Instead:
+
+1. **Decompose** the task into sub-tasks that would produce the same output
+2. **Create** those sub-tasks using `wg add` with `--after {{task_id}}` dependencies
+3. **Let** those sub-tasks run and complete (the coordinator dispatches them)
+4. **Complete** your parent task based on the sub-task results
+
+This is the core autonomy pattern: agents should self-organize by creating dependent work \
+rather than getting stuck trying to do everything themselves.
+
 ### When to decompose
 - Your task has 3+ independent parts that could run in parallel
 - You discover a bug, missing doc, or needed refactor outside your scope
 - A prerequisite doesn't exist yet and needs to be created first
 - Your task is too large for a single agent session
+- **You cannot complete the task directly** — decompose instead of getting stuck
 
 ### How to decompose
 - **Fan out parallel work**: \
@@ -415,6 +429,17 @@ pub fn build_decomposition_guidance(
         TaskComplexity::MultiStep => {
             parts.push(
                 "This appears to be a **multi-step task**. Consider decomposing with dependencies.\n\
+                 \n\
+                 ### When you cannot complete directly\n\
+                 If you face a task you **cannot complete immediately**, do NOT try to do everything \
+                 yourself. Instead:\n\
+                 1. **Decompose** the task into sub-tasks that would produce the same output\n\
+                 2. **Create** those sub-tasks using `wg add` with `--after {task_id}` dependencies\n\
+                 3. **Let** those sub-tasks run and complete (the coordinator dispatches them)\n\
+                 4. **Complete** your parent task based on the sub-task results\n\
+                 \n\
+                 This is the core autonomy pattern: agents should self-organize by creating \
+                 dependent work rather than getting stuck trying to do everything themselves.\n\
                  \n\
                  When creating subtasks, ALWAYS use `--after` to express dependencies. \
                  Flat task lists without dependency edges are an anti-pattern — they run \
