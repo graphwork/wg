@@ -2104,11 +2104,6 @@ pub struct AgentConfig {
     #[serde(default = "default_interval")]
     pub interval: u64,
 
-    /// Command template for AI-based execution
-    /// Placeholders: {model}, {prompt}, {task_id}, {workdir}
-    #[serde(default = "default_command_template")]
-    pub command_template: String,
-
     /// Maximum tasks per agent run (None = unlimited)
     #[serde(default)]
     pub max_tasks: Option<u32>,
@@ -2468,17 +2463,12 @@ fn default_reaper_grace_seconds() -> u64 {
     30
 }
 
-fn default_command_template() -> String {
-    "claude --model {model} --print \"{prompt}\"".to_string()
-}
-
 impl Default for AgentConfig {
     fn default() -> Self {
         Self {
             executor: default_executor(),
             model: default_model(),
             interval: default_interval(),
-            command_template: default_command_template(),
             max_tasks: None,
             heartbeat_timeout: default_heartbeat_timeout(),
             reaper_grace_seconds: default_reaper_grace_seconds(),
@@ -3304,17 +3294,6 @@ impl Config {
 
         result
     }
-
-    /// Build the executor command from template
-    #[cfg(test)]
-    pub fn build_command(&self, prompt: &str, task_id: &str, workdir: &str) -> String {
-        self.agent
-            .command_template
-            .replace("{model}", &self.agent.model)
-            .replace("{prompt}", prompt)
-            .replace("{task_id}", task_id)
-            .replace("{workdir}", workdir)
-    }
 }
 
 #[cfg(test)]
@@ -3366,21 +3345,12 @@ mod tests {
     }
 
     #[test]
-    fn test_build_command() {
-        let config = Config::default();
-        let cmd = config.build_command("do something", "task-1", "/home/user/project");
-        assert!(cmd.contains("opus"));
-        assert!(cmd.contains("do something"));
-    }
-
-    #[test]
     fn test_parse_custom_config() {
         let toml_str = r#"
 [agent]
 executor = "opencode"
 model = "gpt-4"
 interval = 60
-command_template = "opencode run --model {model} '{prompt}'"
 
 [project]
 name = "My Project"

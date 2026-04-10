@@ -35,7 +35,6 @@ pub fn show(dir: &Path, scope: Option<ConfigScope>, json: bool) -> Result<()> {
         if let Some(max) = config.agent.max_tasks {
             println!("  max_tasks = {}", max);
         }
-        println!("  command_template = \"{}\"", config.agent.command_template);
         println!();
         println!("[coordinator]");
         println!("  max_agents = {}", config.coordinator.max_agents);

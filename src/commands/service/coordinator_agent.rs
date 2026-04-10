@@ -2074,7 +2074,7 @@ fn native_coordinator_loop(
 /// Spawn the Claude CLI process with stream-json pipes.
 ///
 /// Resolves the command binary from the executor registry (same path task agents
-/// use), so custom executor configs and `command_template` overrides apply.
+/// use), so custom executor configs apply.
 /// Falls back to the built-in `"claude"` default when no custom config exists.
 ///
 /// Returns the child process, its stdin handle, and stdout handle.
