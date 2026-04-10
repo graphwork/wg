@@ -1366,6 +1366,7 @@ mod tests {
             None,
             None,
             false,
+            false,
         );
         assert!(result.is_err());
         assert!(
@@ -1422,6 +1423,7 @@ mod tests {
             None,
             None,
             false,
+            false,
         );
         assert!(result.is_err());
         assert!(
@@ -1474,7 +1476,8 @@ mod tests {
             &[],
             None,
             None,
-            true, // allow_phantom
+            false,
+            false,
         );
         assert!(result.is_ok());
     }
