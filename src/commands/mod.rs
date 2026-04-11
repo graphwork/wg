@@ -879,7 +879,6 @@ mod provenance_coverage_tests {
             false,
             false,
             None,
-            None,
         )
         .unwrap();
         // edit
