@@ -5,7 +5,6 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
 
 use async_trait::async_trait;
 use serde_json::json;
@@ -78,7 +77,8 @@ impl Tool for BackgroundTool {
             name: "bg".to_string(),
             description: "Manage background tasks that run detached from the turn loop. \
                 Use this to run long-running commands (cargo build, cargo test, servers) \
-                without blocking the agent. Jobs persist across agent restarts.".to_string(),
+                without blocking the agent. Jobs persist across agent restarts."
+                .to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -123,7 +123,8 @@ impl Tool for BackgroundTool {
         }
 
         // Get exclusive access to job store for the action
-        let mut store_guard: tokio::sync::MutexGuard<'_, Option<JobStore>> = self.job_store.lock().await;
+        let mut store_guard: tokio::sync::MutexGuard<'_, Option<JobStore>> =
+            self.job_store.lock().await;
         let store = match store_guard.as_mut() {
             Some(s) => s,
             None => return ToolOutput::error("Job store not initialized".to_string()),
@@ -211,11 +212,8 @@ impl BackgroundTool {
 
     /// Handle the 'list' action.
     fn list_action(&self, store: &JobStore) -> ToolOutput {
-        let jobs: Vec<serde_json::Value> = store
-            .list()
-            .iter()
-            .map(|j| self.format_job(j))
-            .collect();
+        let jobs: Vec<serde_json::Value> =
+            store.list().iter().map(|j| self.format_job(j)).collect();
 
         let output = json!({ "jobs": jobs });
         ToolOutput::success(output.to_string())
@@ -234,7 +232,7 @@ impl BackgroundTool {
             Ok(()) => {
                 let job = store.get(job_id).unwrap();
                 let output = json!({
-                    "jobs": [self.format_job(&job)]
+                    "jobs": [self.format_job(job)]
                 });
                 ToolOutput::success(output.to_string())
             }
@@ -275,9 +273,12 @@ impl BackgroundTool {
         };
 
         match store.delete(job_id).await {
-            Ok(()) => ToolOutput::success(json!({
-                "deleted": job_id
-            }).to_string()),
+            Ok(()) => ToolOutput::success(
+                json!({
+                    "deleted": job_id
+                })
+                .to_string(),
+            ),
             Err(e) => ToolOutput::error(format!("Failed to delete job: {}", e)),
         }
     }
@@ -407,7 +408,11 @@ mod tests {
         let result = tool.execute(&input).await;
 
         assert!(result.is_error);
-        assert!(result.content.contains("Missing required parameter: action"));
+        assert!(
+            result
+                .content
+                .contains("Missing required parameter: action")
+        );
     }
 
     #[tokio::test]
