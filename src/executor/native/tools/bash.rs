@@ -31,8 +31,10 @@ impl Tool for BashTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "bash".to_string(),
-            description: "Execute a shell command and return its output (stdout + stderr)."
-                .to_string(),
+            description:
+                "Execute a shell command and return its output (stdout + stderr). For long-running \
+                 commands (cargo build, cargo test, etc.), specify a higher timeout."
+                    .to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -42,7 +44,7 @@ impl Tool for BashTool {
                     },
                     "timeout": {
                         "type": "integer",
-                        "description": "Timeout in milliseconds (default: 300000, max: 900000)"
+                        "description": "Timeout in milliseconds (default: 300000, max: 900000). Examples: no timeout needed for quick commands (default applies), cargo build/test: 300000-600000, very long operations: 600000+."
                     }
                 },
                 "required": ["command"]
