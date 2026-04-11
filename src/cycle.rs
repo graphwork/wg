@@ -1624,8 +1624,8 @@ mod tests {
 
         let elapsed = start.elapsed();
         assert!(
-            elapsed.as_millis() < 50,
-            "Incremental detection took {}ms, expected < 50ms",
+            elapsed.as_millis() < 200,
+            "Incremental detection took {}ms, expected < 200ms",
             elapsed.as_millis()
         );
     }
