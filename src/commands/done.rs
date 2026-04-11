@@ -430,8 +430,8 @@ fn run_inner(
 
                     // Reload graph to check if circuit breaker tripped
                     let (new_graph, _) = super::load_workgraph_mut(dir)?;
-                    if let Some(task) = new_graph.get_task(id) {
-                        if task.status == Status::Failed {
+                    if let Some(task) = new_graph.get_task(id)
+                        && task.status == Status::Failed {
                             eprintln!(
                                 "Verify circuit breaker tripped for '{}': {} consecutive failures. Task auto-failed.",
                                 id, task.verify_failures,
@@ -440,7 +440,6 @@ fn run_inner(
                             // Return Ok — the task is now Failed, not an error in the command
                             return Ok(());
                         }
-                    }
 
                     // Not yet at threshold — propagate error so agent retries
                     let mut error_msg = format!(
@@ -768,9 +767,9 @@ fn run_inner(
     println!("Marked '{}' as done", id);
 
     // User board auto-increment: if a user board is archived (done), create the successor.
-    if let Some(task) = graph.get_task(id) {
-        if task.tags.iter().any(|t| t == "user-board") {
-            if let Some(handle) = user_board_handle(id) {
+    if let Some(task) = graph.get_task(id)
+        && task.tags.iter().any(|t| t == "user-board")
+            && let Some(handle) = user_board_handle(id) {
                 let current_seq = user_board_seq(id).unwrap_or(0);
                 let next_seq = current_seq + 1;
                 let successor = create_user_board_task(handle, next_seq);
@@ -778,11 +777,10 @@ fn run_inner(
                 let graph_path = super::graph_path(dir);
                 if let Err(e) = modify_graph(&graph_path, |graph| {
                     // Also add 'archived' tag to the current board
-                    if let Some(t) = graph.get_task_mut(id) {
-                        if !t.tags.contains(&"archived".to_string()) {
+                    if let Some(t) = graph.get_task_mut(id)
+                        && !t.tags.contains(&"archived".to_string()) {
                             t.tags.push("archived".to_string());
                         }
-                    }
                     graph.add_node(Node::Task(successor));
                     true
                 }) {
@@ -792,8 +790,6 @@ fn run_inner(
                     super::notify_graph_changed(dir);
                 }
             }
-        }
-    }
 
     for task_id in &cycle_reactivated {
         println!("  Cycle: re-activated '{}'", task_id);

@@ -420,7 +420,7 @@ pub fn resolve_user_board_alias(graph: &WorkGraph, id: &str) -> String {
     if suffix
         .rsplit('-')
         .next()
-        .map_or(false, |s| s.parse::<u32>().is_ok())
+        .is_some_and(|s| s.parse::<u32>().is_ok())
     {
         return id.to_string();
     }
@@ -1516,10 +1516,10 @@ fn reactivate_cycle(
     // If the cycle header (config owner) is archived, suppress the entire cycle.
     // An archived header means the cycle was intentionally retired — no further
     // iterations should occur, even if non-archived members complete afterward.
-    if let Some(owner) = graph.get_task(config_owner_id) {
-        if owner.tags.contains(&"archived".to_string()) {
-            return vec![];
-        }
+    if let Some(owner) = graph.get_task(config_owner_id)
+        && owner.tags.contains(&"archived".to_string())
+    {
+        return vec![];
     }
 
     // Check if ALL members are terminal (Done or Abandoned).

@@ -73,7 +73,7 @@ pub fn run(dir: &Path, today_only: bool, json: bool) -> Result<()> {
         let summary = if today_only {
             daily_spend
                 .into_iter()
-                .last()
+                .next_back()
                 .map(|(date, d)| {
                     serde_json::json!({
                         "date": date,
@@ -102,7 +102,7 @@ pub fn run(dir: &Path, today_only: bool, json: bool) -> Result<()> {
         println!("{}", serde_json::to_string_pretty(&summary)?);
     } else if today_only {
         // Show just today's spend
-        if let Some((_date, spend)) = daily_spend.into_iter().last() {
+        if let Some((_date, spend)) = daily_spend.into_iter().next_back() {
             println!("Today's spend:");
             println!("  Total cost: ${:.4}", spend.total_cost);
             println!(

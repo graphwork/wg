@@ -874,10 +874,10 @@ fn needs_rotation(path: &Path, config: &Config) -> bool {
         return false;
     }
     // Check file size
-    if let Ok(meta) = fs::metadata(path) {
-        if meta.len() >= config.chat.max_file_size {
-            return true;
-        }
+    if let Ok(meta) = fs::metadata(path)
+        && meta.len() >= config.chat.max_file_size
+    {
+        return true;
     }
     // Check message count
     if let Ok(file) = fs::File::open(path) {
@@ -906,10 +906,10 @@ fn rotate_to_archive(path: &Path, archive_dir: &Path) -> Result<()> {
     if !path.exists() {
         return Ok(());
     }
-    if let Ok(meta) = fs::metadata(path) {
-        if meta.len() == 0 {
-            return Ok(());
-        }
+    if let Ok(meta) = fs::metadata(path)
+        && meta.len() == 0
+    {
+        return Ok(());
     }
 
     fs::create_dir_all(archive_dir)
@@ -1081,10 +1081,8 @@ pub fn cleanup_archives_for(workgraph_dir: &Path, coordinator_id: u32) -> Result
         // The timestamp is the last 15 chars of the stem (YYYYMMDD-HHMMSS)
         if stem.len() >= 15 {
             let ts_part = &stem[stem.len() - 15..];
-            if ts_part < cutoff_str.as_str() {
-                if fs::remove_file(archive_path).is_ok() {
-                    removed += 1;
-                }
+            if ts_part < cutoff_str.as_str() && fs::remove_file(archive_path).is_ok() {
+                removed += 1;
             }
         }
     }
@@ -1102,12 +1100,11 @@ pub fn cleanup_all_archives(workgraph_dir: &Path) -> Result<usize> {
     let mut total = 0;
     for entry in fs::read_dir(&chat_dir)? {
         let entry = entry?;
-        if entry.file_type()?.is_dir() {
-            if let Some(name) = entry.file_name().to_str() {
-                if let Ok(cid) = name.parse::<u32>() {
-                    total += cleanup_archives_for(workgraph_dir, cid)?;
-                }
-            }
+        if entry.file_type()?.is_dir()
+            && let Some(name) = entry.file_name().to_str()
+            && let Ok(cid) = name.parse::<u32>()
+        {
+            total += cleanup_archives_for(workgraph_dir, cid)?;
         }
     }
     Ok(total)
@@ -1212,18 +1209,18 @@ pub fn load_history_segments(
 
     // 1. Context summary (from compaction)
     let summary_path = chat_dir_for(workgraph_dir, coordinator_id).join("context-summary.md");
-    if summary_path.exists() {
-        if let Ok(content) = fs::read_to_string(&summary_path) {
-            let content = content.trim().to_string();
-            if !content.is_empty() {
-                let preview = truncate_preview(&content, 200);
-                segments.push(HistorySegment {
-                    label: "Context Summary (compacted)".to_string(),
-                    source: HistorySource::ContextSummary,
-                    preview,
-                    content,
-                });
-            }
+    if summary_path.exists()
+        && let Ok(content) = fs::read_to_string(&summary_path)
+    {
+        let content = content.trim().to_string();
+        if !content.is_empty() {
+            let preview = truncate_preview(&content, 200);
+            segments.push(HistorySegment {
+                label: "Context Summary (compacted)".to_string(),
+                source: HistorySource::ContextSummary,
+                preview,
+                content,
+            });
         }
     }
 
@@ -1279,10 +1276,10 @@ pub fn list_coordinator_ids(workgraph_dir: &Path) -> Vec<u32> {
     let mut ids = Vec::new();
     if let Ok(entries) = fs::read_dir(&chat_dir) {
         for entry in entries.flatten() {
-            if let Some(name) = entry.file_name().to_str() {
-                if let Ok(id) = name.parse::<u32>() {
-                    ids.push(id);
-                }
+            if let Some(name) = entry.file_name().to_str()
+                && let Ok(id) = name.parse::<u32>()
+            {
+                ids.push(id);
             }
         }
     }

@@ -1246,12 +1246,13 @@ impl std::error::Error for ModelSpecError {}
 /// resolution paths where the model string may already be partially resolved.
 pub fn parse_model_spec(spec: &str) -> ModelSpec {
     if let Some((prefix, rest)) = spec.split_once(':')
-        && KNOWN_PROVIDERS.contains(&prefix) {
-            return ModelSpec {
-                provider: Some(prefix.to_string()),
-                model_id: rest.to_string(),
-            };
-        }
+        && KNOWN_PROVIDERS.contains(&prefix)
+    {
+        return ModelSpec {
+            provider: Some(prefix.to_string()),
+            model_id: rest.to_string(),
+        };
+    }
     ModelSpec {
         provider: None,
         model_id: spec.to_string(),
@@ -1971,7 +1972,10 @@ pub struct AgencyConfig {
     /// below this threshold will reject (fail) the original task, blocking
     /// its dependents. Only applies to tasks tagged with "eval-gate" unless
     /// `eval_gate_all` is true. Range: 0.0–1.0. Default: 0.7 (enabled).
-    #[serde(default = "default_eval_gate_threshold", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default = "default_eval_gate_threshold",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub eval_gate_threshold: Option<f64>,
 
     /// When true, apply the eval gate threshold to ALL evaluated tasks,
@@ -2649,9 +2653,10 @@ fn strip_global_only_model_roles(
             }
         }
         if merged_models.is_empty()
-            && let Some(root) = merged.as_table_mut() {
-                root.remove("models");
-            }
+            && let Some(root) = merged.as_table_mut()
+        {
+            root.remove("models");
+        }
     }
 }
 
@@ -2785,17 +2790,19 @@ impl Config {
     ) -> anyhow::Result<String> {
         // 1. Check llm_endpoints for a matching provider
         if let Some(ep) = self.llm_endpoints.find_for_provider(provider)
-            && let Ok(Some(key)) = ep.resolve_api_key(Some(workgraph_dir)) {
-                return Ok(key);
-            }
+            && let Ok(Some(key)) = ep.resolve_api_key(Some(workgraph_dir))
+        {
+            return Ok(key);
+        }
         // Also check the default endpoint if provider didn't match
         if let Some(ep) = self.llm_endpoints.find_default()
-            && ep.provider != provider {
-                // Already tried provider-specific above; try default endpoint
-                if let Ok(Some(key)) = ep.resolve_api_key(Some(workgraph_dir)) {
-                    return Ok(key);
-                }
+            && ep.provider != provider
+        {
+            // Already tried provider-specific above; try default endpoint
+            if let Ok(Some(key)) = ep.resolve_api_key(Some(workgraph_dir)) {
+                return Ok(key);
             }
+        }
 
         // 2. Environment variables based on provider
         for var_name in EndpointConfig::env_var_names_for_provider(provider) {
@@ -3034,9 +3041,10 @@ impl Config {
 
         // coordinator.model
         if let Some(ref m) = self.coordinator.model
-            && let Some(err) = check_model("coordinator.model", m) {
-                errors.push(err);
-            }
+            && let Some(err) = check_model("coordinator.model", m)
+        {
+            errors.push(err);
+        }
 
         // coordinator.provider (deprecated — should not be present)
         if self.coordinator.provider.is_some() {
@@ -3063,9 +3071,10 @@ impl Config {
 
         for (name, cfg) in &role_configs {
             if let Some(ref m) = cfg.model
-                && let Some(err) = check_model(&format!("{}.model", name), m) {
-                    errors.push(err);
-                }
+                && let Some(err) = check_model(&format!("{}.model", name), m)
+            {
+                errors.push(err);
+            }
             if cfg.provider.is_some() {
                 errors.push(format!(
                     "  {}.provider is deprecated. \
@@ -3077,17 +3086,20 @@ impl Config {
 
         // tier values
         if let Some(ref t) = self.tiers.fast
-            && let Some(err) = check_model("tiers.fast", t) {
-                errors.push(err);
-            }
+            && let Some(err) = check_model("tiers.fast", t)
+        {
+            errors.push(err);
+        }
         if let Some(ref t) = self.tiers.standard
-            && let Some(err) = check_model("tiers.standard", t) {
-                errors.push(err);
-            }
+            && let Some(err) = check_model("tiers.standard", t)
+        {
+            errors.push(err);
+        }
         if let Some(ref t) = self.tiers.premium
-            && let Some(err) = check_model("tiers.premium", t) {
-                errors.push(err);
-            }
+            && let Some(err) = check_model("tiers.premium", t)
+        {
+            errors.push(err);
+        }
 
         if errors.is_empty() {
             Ok(())
@@ -3154,7 +3166,8 @@ impl Config {
                 rule: "executor-model-auto-route".into(),
                 message: diagnostic_message,
                 fix: "Set executor = 'native' to make this explicit, \
-                     or use claude:MODEL format for Anthropic models.".to_string(),
+                     or use claude:MODEL format for Anthropic models."
+                    .to_string(),
             });
         }
 

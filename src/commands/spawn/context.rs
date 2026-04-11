@@ -560,13 +560,11 @@ fn read_claude_md(workgraph_dir: &Path) -> String {
 /// embedded in the binary.
 pub(crate) fn read_wg_guide(workgraph_dir: &Path) -> String {
     let custom_path = workgraph_dir.join("wg-guide.md");
-    if custom_path.exists() {
-        if let Ok(content) = std::fs::read_to_string(&custom_path) {
-            if !content.trim().is_empty() {
+    if custom_path.exists()
+        && let Ok(content) = std::fs::read_to_string(&custom_path)
+            && !content.trim().is_empty() {
                 return content;
             }
-        }
-    }
     workgraph::service::executor::DEFAULT_WG_GUIDE.to_string()
 }
 

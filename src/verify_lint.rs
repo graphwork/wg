@@ -212,7 +212,7 @@ fn extract_first_token(cmd: &str) -> String {
                 && before_eq
                     .chars()
                     .next()
-                    .map_or(false, |c| c.is_ascii_alphabetic() || c == '_')
+                    .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
             {
                 // Find end of value (could be quoted)
                 let after_eq = &rest[eq_pos + 1..];

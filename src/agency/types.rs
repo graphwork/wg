@@ -484,19 +484,15 @@ fn default_eval_source() -> String {
 /// Used in IterationConfig.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum PropagationPolicy {
     /// Conservative: only dependents with changed interface re-run
+    #[default]
     Conservative,
     /// Aggressive: all dependents re-run
     Aggressive,
     /// Conditional: re-run if score delta exceeds threshold
     Conditional(f32),
-}
-
-impl Default for PropagationPolicy {
-    fn default() -> Self {
-        PropagationPolicy::Conservative
-    }
 }
 
 /// Retry strategy recommended by the evaluator.

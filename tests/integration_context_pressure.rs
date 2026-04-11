@@ -246,7 +246,7 @@ fn test_context_pressure_clean_exit() {
     // Default ContextBudget should have correct thresholds
     let default_budget = ContextBudget::default();
     assert_eq!(default_budget.window_size, 200_000);
-    assert!((default_budget.warning_threshold - 0.80).abs() < f64::EPSILON);
-    assert!((default_budget.compact_threshold - 0.90).abs() < f64::EPSILON);
+    assert!((default_budget.warning_threshold - 0.70).abs() < f64::EPSILON);
+    assert!((default_budget.compact_threshold - 0.75).abs() < f64::EPSILON);
     assert!((default_budget.hard_limit - 0.95).abs() < f64::EPSILON);
 }

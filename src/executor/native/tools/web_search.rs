@@ -62,7 +62,8 @@ impl Tool for WebSearchTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "web_search".to_string(),
-            description: "Search the web using DuckDuckGo and return structured results.".to_string(),
+            description: "Search the web using DuckDuckGo and return structured results."
+                .to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -195,10 +196,13 @@ impl WebSearchTool {
             let title = if !topic.Text.is_empty() {
                 topic.Text.chars().take(100).collect()
             } else if !url.is_empty() {
-                url.split('/').last().unwrap_or(&url)
-                    .chars().take(60).collect::<String>()
-                    .replace('-', " ")
-                    .replace('_', " ")
+                url.split('/')
+                    .next_back()
+                    .unwrap_or(&url)
+                    .chars()
+                    .take(60)
+                    .collect::<String>()
+                    .replace(['-', '_'], " ")
             } else {
                 continue;
             };

@@ -450,6 +450,11 @@ mod tests {
             unplaced: false,
             place_near: vec![],
             place_before: vec![],
+            independent: false,
+            iteration_anchor: None,
+            iteration_config: None,
+            iteration_round: 0,
+            iteration_parent: None,
         }
     }
 

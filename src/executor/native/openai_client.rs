@@ -1238,7 +1238,7 @@ impl OpenAiClient {
                     if is_retryable(status_code) && retry_count < allowed_retries {
                         retry_count += 1;
                         let wait = parse_retry_after_oai(&body)
-                            .map(|w| jittered_backoff(w))
+                            .map(jittered_backoff)
                             .unwrap_or_else(|| jittered_backoff(backoff_ms));
                         eprintln!(
                             "[openai-client] Retryable error {} (attempt {}/{}), waiting {}ms",
@@ -1754,10 +1754,10 @@ fn try_recover_json(raw: &str) -> Result<serde_json::Value, String> {
     let trimmed = raw.trim();
 
     // Strategy 1: Strip markdown code fences
-    if let Some(inner) = strip_markdown_json(trimmed) {
-        if let Ok(v) = serde_json::from_str::<serde_json::Value>(inner.trim()) {
-            return Ok(v);
-        }
+    if let Some(inner) = strip_markdown_json(trimmed)
+        && let Ok(v) = serde_json::from_str::<serde_json::Value>(inner.trim())
+    {
+        return Ok(v);
     }
 
     // Strategy 2: Extract first JSON object from surrounding text
@@ -1768,18 +1768,18 @@ fn try_recover_json(raw: &str) -> Result<serde_json::Value, String> {
             return Ok(v);
         }
         // Try finding a balanced substring
-        if let Some(balanced) = find_balanced_json(candidate) {
-            if let Ok(v) = serde_json::from_str::<serde_json::Value>(balanced) {
-                return Ok(v);
-            }
+        if let Some(balanced) = find_balanced_json(candidate)
+            && let Ok(v) = serde_json::from_str::<serde_json::Value>(balanced)
+        {
+            return Ok(v);
         }
     }
 
     // Strategy 3: Complete truncated JSON
-    if let Some(completed) = complete_truncated_json(trimmed) {
-        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&completed) {
-            return Ok(v);
-        }
+    if let Some(completed) = complete_truncated_json(trimmed)
+        && let Ok(v) = serde_json::from_str::<serde_json::Value>(&completed)
+    {
+        return Ok(v);
     }
 
     Err(format!(
@@ -2252,7 +2252,7 @@ pub fn resolve_short_model_name(
         .iter()
         .filter(|id| {
             id.split('/')
-                .last()
+                .next_back()
                 .map(|name| name.to_lowercase() == bare_lower)
                 .unwrap_or(false)
         })
@@ -2277,7 +2277,7 @@ pub fn resolve_short_model_name(
         .iter()
         .filter(|id| {
             id.split('/')
-                .last()
+                .next_back()
                 .map(|name| name.to_lowercase().contains(&bare_lower))
                 .unwrap_or(false)
         })
@@ -2410,16 +2410,15 @@ fn assemble_oai_stream_response(
         let (clean_text, inline_thinking) = extract_inline_thinking(&text_content);
 
         let has_inline_thinking = inline_thinking.is_some();
-        if let Some(thinking) = inline_thinking {
-            if !content_blocks
+        if let Some(thinking) = inline_thinking
+            && !content_blocks
                 .iter()
                 .any(|b| matches!(b, ContentBlock::Thinking { .. }))
-            {
-                content_blocks.push(ContentBlock::Thinking {
-                    thinking,
-                    reasoning_details: None,
-                });
-            }
+        {
+            content_blocks.push(ContentBlock::Thinking {
+                thinking,
+                reasoning_details: None,
+            });
         }
 
         let text_to_process = if has_inline_thinking {

@@ -1053,6 +1053,7 @@ impl ChatState {
 
 /// State for in-chat search (/ key when chat tab is focused).
 #[derive(Clone, Debug)]
+#[derive(Default)]
 pub struct ChatSearchState {
     /// The current search query.
     pub query: String,
@@ -1075,15 +1076,6 @@ pub struct ChatSearchMatch {
     pub match_len: usize,
 }
 
-impl Default for ChatSearchState {
-    fn default() -> Self {
-        Self {
-            query: String::new(),
-            matches: Vec::new(),
-            current_match: None,
-        }
-    }
-}
 
 impl Default for ChatState {
     fn default() -> Self {
@@ -1280,8 +1272,8 @@ fn save_chat_history_with_skip(
     let mut buf = String::new();
 
     // If there are unloaded older messages in the file, preserve them.
-    if skipped_count > 0 {
-        if let Ok(data) = std::fs::read_to_string(&path) {
+    if skipped_count > 0
+        && let Ok(data) = std::fs::read_to_string(&path) {
             let lines: Vec<&str> = data.lines().filter(|l| !l.trim().is_empty()).collect();
             // Take the first `skipped_count` lines (the unloaded portion).
             let preserve_count = skipped_count.min(lines.len());
@@ -1290,7 +1282,6 @@ fn save_chat_history_with_skip(
                 buf.push('\n');
             }
         }
-    }
 
     // Append current in-memory messages (skip SentMessage entries — they were
     // interleaved from task message queues and don't belong in the coordinator chat).
@@ -2268,6 +2259,7 @@ impl ArchiveBrowserState {
 /// State for the Ctrl+H history browser overlay.
 /// Allows users to browse past conversation segments and inject them into
 /// the coordinator's active context.
+#[derive(Default)]
 pub struct HistoryBrowserState {
     /// Whether the history browser is currently open.
     pub active: bool,
@@ -2283,18 +2275,6 @@ pub struct HistoryBrowserState {
     pub preview_scroll: usize,
 }
 
-impl Default for HistoryBrowserState {
-    fn default() -> Self {
-        Self {
-            active: false,
-            segments: Vec::new(),
-            selected: 0,
-            scroll: 0,
-            preview_expanded: false,
-            preview_scroll: 0,
-        }
-    }
-}
 
 impl HistoryBrowserState {
     /// Load segments from disk for the given coordinator.
@@ -10281,8 +10261,8 @@ impl VizApp {
             .join("chat")
             .join(self.active_coordinator_id.to_string())
             .join("archive");
-        if archive_dir.exists() {
-            if let Ok(entries) = std::fs::read_dir(&archive_dir) {
+        if archive_dir.exists()
+            && let Ok(entries) = std::fs::read_dir(&archive_dir) {
                 let mut tui_archives: Vec<std::path::PathBuf> = entries
                     .filter_map(|e| e.ok())
                     .map(|e| e.path())
@@ -10299,7 +10279,6 @@ impl VizApp {
                     archive_messages.extend(result.messages);
                 }
             }
-        }
 
         // Sort archive messages by timestamp, then prepend to current messages.
         archive_messages.sort_by(|a, b| {
@@ -10395,11 +10374,10 @@ impl VizApp {
         // The TUI request_id ("tui-...") differs from wg chat's ("chat-..."),
         // so we retire by count rather than matching by ID. Coordinator processes
         // requests in FIFO order, so one response batch retires one request.
-        if !self.chat.pending_request_ids.is_empty() {
-            if let Some(first) = self.chat.pending_request_ids.iter().next().cloned() {
+        if !self.chat.pending_request_ids.is_empty()
+            && let Some(first) = self.chat.pending_request_ids.iter().next().cloned() {
                 self.chat.pending_request_ids.remove(&first);
             }
-        }
         // If all requests are now answered, clear streaming state.
         if self.chat.pending_request_ids.is_empty() {
             self.chat.awaiting_since = None;
@@ -10879,13 +10857,12 @@ impl VizApp {
         // Initialize outbox cursor for newly created chat states so we don't
         // re-display old messages or miss new ones (each coordinator has independent
         // ID sequences — a cursor from coordinator-0 is meaningless for coordinator-6).
-        if self.chat.outbox_cursor == 0 {
-            if let Ok(msgs) =
+        if self.chat.outbox_cursor == 0
+            && let Ok(msgs) =
                 workgraph::chat::read_outbox_since_for(&self.workgraph_dir, target_id, 0)
             {
                 self.chat.outbox_cursor = msgs.last().map(|m| m.id).unwrap_or(0);
             }
-        }
 
         // Always reset to Normal when switching coordinators so arrow-key
         // navigation doesn't get stuck in input mode. The user must explicitly
@@ -10984,7 +10961,7 @@ impl VizApp {
 
         if existing_coord.is_none() {
             // No coordinator for this user — check if ANY coordinators exist
-            let any_exist = graph.as_ref().map_or(false, |g| {
+            let any_exist = graph.as_ref().is_some_and(|g| {
                 g.tasks().any(|t| {
                     t.tags.iter().any(|tag| tag == "coordinator-loop")
                         && !matches!(t.status, workgraph::graph::Status::Abandoned)
@@ -11001,11 +10978,10 @@ impl VizApp {
 
         // Only switch to the user's coordinator if no valid focus was restored
         // from tui-state.json (i.e., still on the default coordinator 0).
-        if self.active_coordinator_id == 0 {
-            if let Some(cid) = existing_coord {
+        if self.active_coordinator_id == 0
+            && let Some(cid) = existing_coord {
                 self.active_coordinator_id = cid;
             }
-        }
     }
 
     /// Create a new coordinator session via IPC and switch to it.
@@ -13332,7 +13308,7 @@ fn extract_enriched_text_from_log(content: &str) -> String {
                             // in the log view (matching the convention users expect from terminals).
                             match detail {
                                 Some(d) => format!("$ {}\n{}", d, d),
-                                None => format!("$ (command)\n$ (command)"),
+                                None => "$ (command)\n$ (command)".to_string(),
                             }
                         } else {
                             match detail {
@@ -13438,12 +13414,10 @@ fn extract_enriched_text_from_log(content: &str) -> String {
                 } else {
                     parts.push(format!("{}\n{}\n└─", header, result_line));
                 }
+            } else if is_bash {
+                parts.push(format!("$ {}", header));
             } else {
-                if is_bash {
-                    parts.push(format!("$ {}", header));
-                } else {
-                    parts.push(format!("{}\n└─", header));
-                }
+                parts.push(format!("{}\n└─", header));
             }
         } else if msg_type == "result" {
             // Tool result — show a compact one-line summary.

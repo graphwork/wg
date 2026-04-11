@@ -60,11 +60,10 @@ pub fn run(
     }
 
     // Validate model uses provider:model format
-    if let Some(m) = model {
-        if let Err(e) = workgraph::config::parse_model_spec_strict(m) {
+    if let Some(m) = model
+        && let Err(e) = workgraph::config::parse_model_spec_strict(m) {
             anyhow::bail!("Invalid --model format: {}", e);
         }
-    }
 
     let mut changed = false;
     let mut field_changes: Vec<serde_json::Value> = Vec::new();
@@ -561,9 +560,9 @@ mod tests {
             &[],
             None,
             None,
-            true,                   // allow_phantom: test graph uses phantom deps
-            false,                  // independent
-            None,                   // iteration_config
+            true,  // allow_phantom: test graph uses phantom deps
+            false, // independent
+            None,  // iteration_config
         )?;
 
         Ok(())
@@ -611,7 +610,7 @@ mod tests {
             None,
             false,
             false,
-            None,  // iteration_config
+            None, // iteration_config
         )?;
 
         crate::commands::add::run(

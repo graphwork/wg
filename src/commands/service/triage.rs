@@ -646,11 +646,10 @@ fn try_escalate_model(task: &mut Task, dir: &Path, config: &Config) {
     // Build a temporary tried list that includes the current model for lookup,
     // but only persist it if escalation actually succeeds.
     let mut tried_with_current = task.tried_models.clone();
-    if let Some(ref current) = task.model {
-        if !tried_with_current.contains(current) {
+    if let Some(ref current) = task.model
+        && !tried_with_current.contains(current) {
             tried_with_current.push(current.clone());
         }
-    }
 
     if let Some(result) = profile::escalate_model(
         dir,

@@ -134,15 +134,14 @@ pub(crate) fn spawn_agent_inner(
     // Detect failed dependencies for triage mode
     let mut failed_deps_lines = Vec::new();
     for dep_id in &task.after {
-        if let Some(dep_task) = graph.get_task(dep_id) {
-            if dep_task.status == Status::Failed {
+        if let Some(dep_task) = graph.get_task(dep_id)
+            && dep_task.status == Status::Failed {
                 let reason = dep_task.failure_reason.as_deref().unwrap_or("unknown");
                 failed_deps_lines.push(format!(
                     "- {}: \"{}\" — Reason: {}",
                     dep_id, dep_task.title, reason
                 ));
             }
-        }
     }
     if !failed_deps_lines.is_empty() {
         vars.has_failed_deps = true;
@@ -595,8 +594,8 @@ pub(crate) fn spawn_agent_inner(
         }
 
         // Persist auto-discovered verify gate to the graph so `wg done` enforces it
-        if let Some(ref verify_cmd) = auto_verify_clone {
-            if task.verify.is_none() {
+        if let Some(ref verify_cmd) = auto_verify_clone
+            && task.verify.is_none() {
                 task.verify = Some(verify_cmd.clone());
                 task.log.push(LogEntry {
                     timestamp: Utc::now().to_rfc3339(),
@@ -605,7 +604,6 @@ pub(crate) fn spawn_agent_inner(
                     message: format!("Auto-verify: set --verify gate from test discovery: {}", verify_cmd),
                 });
             }
-        }
 
         // Create .assign-* audit trail if missing (defense-in-depth).
         let assign_task_id = format!(".assign-{}", task_id_str);

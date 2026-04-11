@@ -852,8 +852,8 @@ fn unblock_stuck_tasks(graph: &mut workgraph::graph::WorkGraph, _dir: &Path) -> 
 
         if all_deps_satisfied {
             // Get mutable reference to update the task
-            if let Some(task) = graph.get_task_mut(&task_id) {
-                if !task.after.is_empty() {
+            if let Some(task) = graph.get_task_mut(&task_id)
+                && !task.after.is_empty() {
                     task.status = Status::Open;
                     task.log.push(LogEntry {
                         timestamp: Utc::now().to_rfc3339(),
@@ -871,11 +871,10 @@ fn unblock_stuck_tasks(graph: &mut workgraph::graph::WorkGraph, _dir: &Path) -> 
                     );
                     modified = true;
                 }
-            }
         } else {
             // Log diagnostic for stale blocked state
-            if let Some(task) = graph.tasks().find(|t| t.id == task_id) {
-                if !task.after.is_empty() {
+            if let Some(task) = graph.tasks().find(|t| t.id == task_id)
+                && !task.after.is_empty() {
                     let waiting_on: Vec<String> = task
                         .after
                         .iter()
@@ -898,7 +897,6 @@ fn unblock_stuck_tasks(graph: &mut workgraph::graph::WorkGraph, _dir: &Path) -> 
                         );
                     }
                 }
-            }
         }
     }
 
@@ -1696,8 +1694,8 @@ fn build_flip_verification_tasks(
 
         // Skip tasks that would be handled by eval gate - let eval gate take precedence
         if let Some(eval_threshold) = config.agency.eval_gate_threshold {
-            let is_eval_gated = config.agency.eval_gate_all
-                || source_task.tags.iter().any(|t| t == "eval-gate");
+            let is_eval_gated =
+                config.agency.eval_gate_all || source_task.tags.iter().any(|t| t == "eval-gate");
             if is_eval_gated {
                 // Check if there's a regular evaluation for this task that scored below eval threshold
                 // But exclude system evaluations (infrastructure failures) from this check

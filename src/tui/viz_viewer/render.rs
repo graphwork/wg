@@ -2770,7 +2770,7 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
         // Leading space
         spans.push(Span::raw(" "));
 
-        for (_i, (cid, label)) in coordinator_entries.iter().enumerate() {
+        for (cid, label) in coordinator_entries.iter() {
             let cid = *cid;
             let is_active = cid == app.active_coordinator_id;
             let color = dot_color(cid);
@@ -3075,13 +3075,13 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     for (msg_idx, msg) in app.chat.messages.iter().enumerate() {
         // Session boundary divider: if there's a significant time gap between
         // this message and the previous one, insert a visual separator.
-        if let Some(threshold) = &session_gap_threshold {
-            if msg_idx > 0 {
-                if let (Some(prev_ts), Some(cur_ts)) = (
+        if let Some(threshold) = &session_gap_threshold
+            && msg_idx > 0
+                && let (Some(prev_ts), Some(cur_ts)) = (
                     app.chat.messages[msg_idx - 1].msg_timestamp.as_deref(),
                     msg.msg_timestamp.as_deref(),
-                ) {
-                    if let (Ok(prev_dt), Ok(cur_dt)) = (
+                )
+                    && let (Ok(prev_dt), Ok(cur_dt)) = (
                         chrono::DateTime::parse_from_rfc3339(prev_ts),
                         chrono::DateTime::parse_from_rfc3339(cur_ts),
                     ) {
@@ -3105,9 +3105,6 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
                             line_to_message.push(None);
                         }
                     }
-                }
-            }
-        }
 
         let is_coordinator = msg.role == super::state::ChatRole::Coordinator;
         let is_user = msg.role == super::state::ChatRole::User;
@@ -3257,8 +3254,8 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
                     ));
                 }
                 // Append read-at annotation for sent messages.
-                if is_sent_message {
-                    if let Some(read_at) = &msg.read_at {
+                if is_sent_message
+                    && let Some(read_at) = &msg.read_at {
                         let now = chrono::Utc::now();
                         let rel = format_relative_time(read_at, &now);
                         spans.push(Span::styled(
@@ -3266,7 +3263,6 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
                             Style::default().fg(Color::DarkGray),
                         ));
                     }
-                }
                 // Append timestamp for all messages.
                 if let Some(ts) = &msg.msg_timestamp {
                     let now = chrono::Utc::now();

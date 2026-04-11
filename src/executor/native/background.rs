@@ -147,7 +147,7 @@ impl JobStore {
 
     /// Check if a named job exists (prevents duplicate launches).
     pub fn exists(&self, name: &str) -> bool {
-        self.jobs.values().any(|j| &j.name == name)
+        self.jobs.values().any(|j| j.name == name)
     }
 
     /// Get the current count of running jobs.
@@ -161,13 +161,13 @@ impl JobStore {
     /// Refresh job states from disk (check PIDs, exit codes).
     pub fn refresh(&mut self) -> Result<()> {
         for job in self.jobs.values_mut() {
-            if job.status == JobStatus::Running {
-                if let Some(pid) = job.pid {
-                    // Use kill(pid, 0) to check if process exists
-                    if !process_exists(pid) {
-                        job.status = JobStatus::Orphaned;
-                        job.updated_at = Utc::now();
-                    }
+            if job.status == JobStatus::Running
+                && let Some(pid) = job.pid
+            {
+                // Use kill(pid, 0) to check if process exists
+                if !process_exists(pid) {
+                    job.status = JobStatus::Orphaned;
+                    job.updated_at = Utc::now();
                 }
             }
         }
@@ -189,9 +189,8 @@ impl JobStore {
                 continue;
             }
 
-            let content = fs::read_to_string(&path).with_context(|| {
-                format!("Failed to read job file: {:?}", path)
-            })?;
+            let content = fs::read_to_string(&path)
+                .with_context(|| format!("Failed to read job file: {:?}", path))?;
 
             let job: Job = serde_json::from_str(&content)
                 .with_context(|| format!("Failed to parse job file: {:?}", path))?;
@@ -207,16 +206,19 @@ impl JobStore {
 
     /// Save a job to disk.
     fn save_job(&self, job: &Job) -> Result<()> {
-        let path = self.jobs_dir.join(format!("{}{}.json", JOB_FILE_PREFIX, job.id));
-        let content = serde_json::to_string_pretty(job)
-            .context("Failed to serialize job")?;
+        let path = self
+            .jobs_dir
+            .join(format!("{}{}.json", JOB_FILE_PREFIX, job.id));
+        let content = serde_json::to_string_pretty(job).context("Failed to serialize job")?;
         fs::write(&path, content).context("Failed to write job file")?;
         Ok(())
     }
 
     /// Create a new lock file for a job.
     fn create_lock(&self, job_id: &str, pid: u32) -> Result<PathBuf> {
-        let lock_path = self.jobs_dir.join(format!("{}{}{}", job_id, ".lock", PID_EXT.replace('.', "")));
+        let _lock_path =
+            self.jobs_dir
+                .join(format!("{}{}{}", job_id, ".lock", PID_EXT.replace('.', "")));
         // Actually the lock file should be like: job-{id}.lock
         let lock_path = self.jobs_dir.join(format!("{}{}", job_id, LOCK_EXT));
         let content = format!("{}\n", pid);
@@ -227,8 +229,7 @@ impl JobStore {
     /// Create a PID file for a job.
     fn create_pid_file(&self, job_id: &str, pid: u32) -> Result<PathBuf> {
         let pid_path = self.jobs_dir.join(format!("{}{}", job_id, PID_EXT));
-        fs::write(&pid_path, format!("{}\n", pid))
-            .context("Failed to write PID file")?;
+        fs::write(&pid_path, format!("{}\n", pid)).context("Failed to write PID file")?;
         Ok(pid_path)
     }
 
@@ -368,7 +369,9 @@ impl JobStore {
         }
 
         // Remove files
-        let json_path = self.jobs_dir.join(format!("{}{}.json", JOB_FILE_PREFIX, job_id));
+        let json_path = self
+            .jobs_dir
+            .join(format!("{}{}.json", JOB_FILE_PREFIX, job_id));
         let lock_path = self.jobs_dir.join(format!("{}{}", job_id, LOCK_EXT));
         let pid_path = self.jobs_dir.join(format!("{}{}", job_id, PID_EXT));
         let log_path = self.log_path(&job_id);
@@ -477,7 +480,9 @@ fn rand_simple() -> u32 {
         .as_nanos()
         .hash(&mut hasher);
     std::thread::current().id().hash(&mut hasher);
-    (hasher.finish() as u32).wrapping_mul(1103515245).wrapping_add(12345)
+    (hasher.finish() as u32)
+        .wrapping_mul(1103515245)
+        .wrapping_add(12345)
 }
 
 /// Check if a process with the given PID exists.
@@ -498,11 +503,7 @@ fn process_exists(pid: u32) -> bool {
 fn kill_process(pid: u32, force: bool) -> io::Result<()> {
     #[cfg(unix)]
     {
-        let sig = if force {
-            libc::SIGKILL
-        } else {
-            libc::SIGTERM
-        };
+        let sig = if force { libc::SIGKILL } else { libc::SIGTERM };
         let result = unsafe { libc::kill(pid as libc::pid_t, sig) };
         if result == 0 {
             Ok(())
@@ -528,12 +529,9 @@ fn get_exit_code(pid: u32) -> Option<i32> {
     #[cfg(unix)]
     {
         // Use waitpid with WNOHANG on a non-blocking call
-        use std::mem::MaybeUninit;
 
         let mut status: libc::c_int = 0;
-        let result = unsafe {
-            libc::waitpid(pid as libc::pid_t, &mut status, libc::WNOHANG)
-        };
+        let result = unsafe { libc::waitpid(pid as libc::pid_t, &mut status, libc::WNOHANG) };
 
         if result == 0 {
             // Process still running
@@ -560,7 +558,11 @@ fn spawn_detached(command: &str, working_dir: &Path, log_path: &Path) -> Result<
         // The setsid command handles the detachment - the spawned process becomes session leader
         let child = TokioCommand::new("bash")
             .arg("-c")
-            .arg(format!("setsid {} > {} 2>&1 < /dev/null", command, log_path.display()))
+            .arg(format!(
+                "setsid {} > {} 2>&1 < /dev/null",
+                command,
+                log_path.display()
+            ))
             .current_dir(working_dir)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -632,10 +634,7 @@ mod tests {
 
         assert!(!store.exists("my-job"));
 
-        store
-            .run("my-job", "sleep 1", tmp.path())
-            .await
-            .unwrap();
+        store.run("my-job", "sleep 1", tmp.path()).await.unwrap();
 
         assert!(store.exists("my-job"));
         assert!(!store.exists("other-job"));
@@ -667,10 +666,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let mut store = JobStore::new(tmp.path().to_path_buf()).unwrap();
 
-        store
-            .run("dup", "sleep 1", tmp.path())
-            .await
-            .unwrap();
+        store.run("dup", "sleep 1", tmp.path()).await.unwrap();
 
         let result = store.run("dup", "sleep 2", tmp.path()).await;
         assert!(result.is_err());

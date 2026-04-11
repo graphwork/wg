@@ -31,11 +31,7 @@ impl DependencySnapshot {
         let deps: Vec<(String, Status)> = task
             .after
             .iter()
-            .filter_map(|dep_id| {
-                graph
-                    .get_task(dep_id)
-                    .map(|t| (dep_id.clone(), t.status.clone()))
-            })
+            .filter_map(|dep_id| graph.get_task(dep_id).map(|t| (dep_id.clone(), t.status)))
             .collect();
         Some(DependencySnapshot { deps })
     }

@@ -528,16 +528,15 @@ pub fn extract_session_summary(messages: &[Message]) -> String {
                         // Extract decisions (lines that look like decisions/conclusions)
                         for line in trimmed.lines() {
                             let l = line.trim();
-                            if l.starts_with("- [x]")
+                            if (l.starts_with("- [x]")
                                 || l.starts_with("Decision:")
                                 || l.starts_with("Decided")
                                 || l.contains("will ")
                                 || l.contains("chose ")
-                                || l.contains("decided ")
+                                || l.contains("decided "))
+                                && l.len() > 10
                             {
-                                if l.len() > 10 {
-                                    decisions.push(truncate_str(l, 150));
-                                }
+                                decisions.push(truncate_str(l, 150));
                             }
                         }
                     } else {

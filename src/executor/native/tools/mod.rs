@@ -7,8 +7,8 @@ pub mod bash;
 pub mod bg;
 pub mod file;
 pub mod file_cache;
-pub mod wg;
 pub mod web_search;
+pub mod wg;
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -44,8 +44,7 @@ impl ToolOutput {
 }
 
 /// Callback type for streaming tool output chunks.
-pub type ToolStreamCallback =
-    Box<dyn Fn(String) + Send + Sync>;
+pub type ToolStreamCallback = Box<dyn Fn(String) + Send + Sync>;
 
 /// Trait that all tools must implement.
 #[async_trait]
@@ -168,7 +167,7 @@ impl ToolRegistry {
 
     /// Check whether a tool is read-only by name.
     pub fn is_read_only(&self, name: &str) -> bool {
-        self.tools.get(name).map_or(false, |t| t.is_read_only())
+        self.tools.get(name).is_some_and(|t| t.is_read_only())
     }
 
     /// Execute a batch of tool calls with parallelism for read-only tools.
@@ -293,11 +292,14 @@ impl ToolRegistry {
                             None => ToolOutput::error(format!("Unknown tool: {}", call.name)),
                         };
                         let duration_ms = start.elapsed().as_millis() as u64;
-                        (*idx, ToolCallResult {
-                            name: call.name.clone(),
-                            output,
-                            duration_ms,
-                        })
+                        (
+                            *idx,
+                            ToolCallResult {
+                                name: call.name.clone(),
+                                output,
+                                duration_ms,
+                            },
+                        )
                     }
                 })
                 .collect();

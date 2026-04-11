@@ -310,7 +310,7 @@ fn median(values: &[f64]) -> Option<f64> {
     let mut sorted = values.to_vec();
     sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let mid = sorted.len() / 2;
-    if sorted.len() % 2 == 0 {
+    if sorted.len().is_multiple_of(2) {
         Some((sorted[mid - 1] + sorted[mid]) / 2.0)
     } else {
         Some(sorted[mid])
@@ -1701,14 +1701,14 @@ pub fn diff_registries(
 
     // Models that entered the top-N.
     for (rank, &model_id) in new_top.iter().enumerate() {
-        if !old_top.contains(&model_id) {
-            if let Some(m) = new.models.get(model_id) {
-                changes.push(RegistryChange::EnteredTopN {
-                    model_id: model_id.to_string(),
-                    rank: rank + 1,
-                    score: m.fitness.score.unwrap_or(0.0),
-                });
-            }
+        if !old_top.contains(&model_id)
+            && let Some(m) = new.models.get(model_id)
+        {
+            changes.push(RegistryChange::EnteredTopN {
+                model_id: model_id.to_string(),
+                rank: rank + 1,
+                score: m.fitness.score.unwrap_or(0.0),
+            });
         }
     }
 

@@ -165,6 +165,15 @@ The coordinator dispatches anything you add. You don't need permission.
 
 This appears to be a **multi-step task**. Consider decomposing with dependencies.
 
+### When you cannot complete directly
+If you face a task you **cannot complete immediately**, do NOT try to do everything yourself. Instead:
+1. **Decompose** the task into sub-tasks that would produce the same output
+2. **Create** those sub-tasks using `wg add` with `--after {task_id}` dependencies
+3. **Let** those sub-tasks run and complete (the coordinator dispatches them)
+4. **Complete** your parent task based on the sub-task results
+
+This is the core autonomy pattern: agents should self-organize by creating dependent work rather than getting stuck trying to do everything themselves.
+
 When creating subtasks, ALWAYS use `--after` to express dependencies. Flat task lists without dependency edges are an anti-pattern — they run in arbitrary order and produce race conditions.
 
 ### Decomposition Templates

@@ -6,9 +6,9 @@ use std::time::Duration;
 use async_trait::async_trait;
 use futures_util::StreamExt;
 use serde_json::json;
+use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
-use std::process::Stdio;
 
 use super::{Tool, ToolOutput, ToolStreamCallback, truncate_for_tool};
 use crate::executor::native::client::ToolDefinition;
@@ -119,7 +119,11 @@ impl Tool for BashTool {
         }
     }
 
-    async fn execute_streaming(&self, input: &serde_json::Value, on_chunk: ToolStreamCallback) -> ToolOutput {
+    async fn execute_streaming(
+        &self,
+        input: &serde_json::Value,
+        on_chunk: ToolStreamCallback,
+    ) -> ToolOutput {
         let command = match input.get("command").and_then(|v| v.as_str()) {
             Some(c) => c,
             None => return ToolOutput::error("Missing required parameter: command".to_string()),
@@ -146,7 +150,9 @@ impl Tool for BashTool {
         {
             Ok(Ok(child)) => child,
             Ok(Err(e)) => return ToolOutput::error(format!("Failed to spawn command: {}", e)),
-            Err(_) => return ToolOutput::error(format!("Command timed out after {}ms", timeout_ms)),
+            Err(_) => {
+                return ToolOutput::error(format!("Command timed out after {}ms", timeout_ms));
+            }
         };
 
         let stdout = child.stdout.take().expect("stdout pipe");

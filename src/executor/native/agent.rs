@@ -503,12 +503,12 @@ impl AgentLoop {
                     );
                     // Clone messages and append injection to the last user message
                     let mut injected = messages.clone();
-                    if let Some(last) = injected.last_mut() {
-                        if last.role == Role::User {
-                            last.content.push(ContentBlock::Text {
-                                text: injection_text,
-                            });
-                        }
+                    if let Some(last) = injected.last_mut()
+                        && last.role == Role::User
+                    {
+                        last.content.push(ContentBlock::Text {
+                            text: injection_text,
+                        });
                     }
                     injected
                 } else {
@@ -1093,10 +1093,10 @@ impl AgentLoop {
                         // Legacy path: append to messages (non-ephemeral fallback).
                         let warning = self.context_budget.warning_message(&messages);
                         eprintln!("[native-agent] {}", warning);
-                        if let Some(last) = messages.last_mut() {
-                            if last.role == Role::User {
-                                last.content.push(ContentBlock::Text { text: warning });
-                            }
+                        if let Some(last) = messages.last_mut()
+                            && last.role == Role::User
+                        {
+                            last.content.push(ContentBlock::Text { text: warning });
                         }
                     }
                 }
@@ -1274,10 +1274,10 @@ impl AgentLoop {
 /// Detects both reqwest timeouts and generic timeout messages from the error chain.
 fn is_timeout_error(err: &anyhow::Error) -> bool {
     // Check reqwest-specific timeout
-    if let Some(req_err) = err.downcast_ref::<reqwest::Error>() {
-        if req_err.is_timeout() {
-            return true;
-        }
+    if let Some(req_err) = err.downcast_ref::<reqwest::Error>()
+        && req_err.is_timeout()
+    {
+        return true;
     }
     // Check error message chain for timeout indicators
     let msg = format!("{:#}", err).to_lowercase();

@@ -160,11 +160,9 @@ pub fn has_active_children(pid: u32) -> bool {
     // Fast path: try /proc/<pid>/task/<pid>/children (available with CONFIG_PROC_CHILDREN)
     let children_path = format!("/proc/{}/task/{}/children", pid, pid);
     if let Ok(content) = std::fs::read_to_string(&children_path) {
-        let has_children = content.split_whitespace().any(|tok| {
-            tok.parse::<u32>()
-                .map(|child_pid| is_process_alive(child_pid))
-                .unwrap_or(false)
-        });
+        let has_children = content
+            .split_whitespace()
+            .any(|tok| tok.parse::<u32>().map(is_process_alive).unwrap_or(false));
         if has_children {
             return true;
         }
@@ -183,14 +181,12 @@ pub fn has_active_children(pid: u32) -> bool {
                 continue;
             }
             let thread_children = format!("/proc/{}/task/{}/children", pid, tid_str);
-            if let Ok(content) = std::fs::read_to_string(&thread_children) {
-                if content.split_whitespace().any(|tok| {
-                    tok.parse::<u32>()
-                        .map(|child_pid| is_process_alive(child_pid))
-                        .unwrap_or(false)
-                }) {
-                    return true;
-                }
+            if let Ok(content) = std::fs::read_to_string(&thread_children)
+                && content
+                    .split_whitespace()
+                    .any(|tok| tok.parse::<u32>().map(is_process_alive).unwrap_or(false))
+            {
+                return true;
             }
         }
     }

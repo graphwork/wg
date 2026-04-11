@@ -1623,14 +1623,13 @@ fn run_registry_refresh(dir: &Path, refresh_error_count: &mut u64, logger: &Daem
 
     // Time gate: check if enough time has elapsed since the last fetch.
     {
-        if let Ok(Some(existing)) = workgraph::model_benchmarks::BenchmarkRegistry::load(dir) {
-            if let Ok(fetched) = chrono::DateTime::parse_from_rfc3339(&existing.fetched_at) {
+        if let Ok(Some(existing)) = workgraph::model_benchmarks::BenchmarkRegistry::load(dir)
+            && let Ok(fetched) = chrono::DateTime::parse_from_rfc3339(&existing.fetched_at) {
                 let age = chrono::Utc::now().signed_duration_since(fetched);
                 if age.num_seconds() < interval as i64 {
                     return; // Not yet time
                 }
             }
-        }
         // If no existing registry or unparseable date, proceed (initial population).
     }
 

@@ -156,11 +156,10 @@ pub fn run_from_bytes(
         };
 
         let mut parent_ids = vec![];
-        if let Some(ref pch) = parent_content_hash {
-            if !pch.is_empty() {
+        if let Some(ref pch) = parent_content_hash
+            && !pch.is_empty() {
                 parent_ids.push(pch.clone());
             }
-        }
 
         let lineage = Lineage {
             parent_ids,
@@ -365,8 +364,8 @@ pub fn run_import(workgraph_dir: &Path, opts: ImportOptions) -> Result<ImportCou
     };
 
     // Change detection: compare hash of fetched CSV against manifest
-    if !opts.force || opts.check {
-        if let Some(existing_manifest) = read_manifest(workgraph_dir)? {
+    if (!opts.force || opts.check)
+        && let Some(existing_manifest) = read_manifest(workgraph_dir)? {
             // Fetch and check
             let csv_bytes = match fetch_csv(&url) {
                 Ok(bytes) => bytes,
@@ -408,7 +407,6 @@ pub fn run_import(workgraph_dir: &Path, opts: ImportOptions) -> Result<ImportCou
                 opts.tag.as_deref(),
             );
         }
-    }
 
     // No existing manifest or --force: fetch and import
     let csv_bytes = match fetch_csv(&url) {
@@ -545,11 +543,10 @@ fn parse_agency_columns(
     if !origin_instance_id.is_empty() {
         metadata.insert("origin_instance_id".to_string(), origin_instance_id);
     }
-    if let Some(ref pch) = parent_content_hash {
-        if !pch.is_empty() {
+    if let Some(ref pch) = parent_content_hash
+        && !pch.is_empty() {
             metadata.insert("parent_content_hash".to_string(), pch.clone());
         }
-    }
 
     (quality_score, domain_tags, metadata, parent_content_hash)
 }
