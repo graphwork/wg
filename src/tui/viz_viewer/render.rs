@@ -4964,33 +4964,68 @@ fn draw_output_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
         draw_panel_scrollbar(frame, app, content_area, max_scroll, scroll);
     }
 
-    // New content indicator when auto_follow is off.
-    let auto_follow = app
-        .output_pane
-        .agent_scrolls
-        .get(&active_agent_id)
-        .map(|s| s.auto_follow)
-        .unwrap_or(true);
-    if app.output_pane.has_new_content && !auto_follow {
-        let indicator = "▼ new output";
-        let indicator_len = indicator.len() as u16;
-        if content_area.width > indicator_len + 2 {
-            let ind_area = Rect {
-                x: content_area.x + content_area.width - indicator_len - 1,
-                y: content_area.y + content_area.height.saturating_sub(1),
-                width: indicator_len + 1,
-                height: 1,
+    // ── Status bar: scroll position + log path hint ──
+    let status_bar_h = 1u16;
+    if content_area.height > viewport_h as u16 + status_bar_h {
+        let status_area = Rect {
+            x: content_area.x,
+            y: content_area.y + content_area.height - status_bar_h,
+            width: content_area.width,
+            height: status_bar_h,
+        };
+
+        // Build status text: scroll position (if not at bottom) + log path hint.
+        let scroll_hint = if total_lines > 0 {
+            let start_line = scroll + 1;
+            let end_line = (scroll + viewport_h).min(total_lines);
+            if start_line > 1 || end_line < total_lines {
+                format!("  {}-{} / {}", start_line, end_line, total_lines)
+            } else {
+                String::new()
+            }
+        } else {
+            String::new()
+        };
+
+        // Show full log path hint for agent awareness.
+        let agents_dir = &app.workgraph_dir.join("agents");
+        let log_path = agents_dir.join(&active_agent_id).join("output.log");
+        let log_hint = if log_path.exists() || content_area.width > 60 {
+            let path_str = log_path.display().to_string();
+            let display = if path_str.len() > 50 {
+                format!("...{}", &path_str[path_str.len() - 47..])
+            } else {
+                path_str
             };
-            frame.render_widget(
-                Paragraph::new(Line::from(Span::styled(
-                    indicator,
-                    Style::default()
-                        .fg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD),
-                ))),
-                ind_area,
-            );
-        }
+            format!(" [full log: {}]", display)
+        } else {
+            String::new()
+        };
+
+        let auto_follow = app
+            .output_pane
+            .agent_scrolls
+            .get(&active_agent_id)
+            .map(|s| s.auto_follow)
+            .unwrap_or(true);
+
+        let (pos_style, log_style) = if auto_follow {
+            (
+                Style::default().fg(Color::DarkGray),
+                Style::default().fg(Color::DarkGray),
+            )
+        } else {
+            (
+                Style::default().fg(Color::Cyan),
+                Style::default().fg(Color::DarkGray),
+            )
+        };
+
+        let line = Line::from(vec![
+            Span::styled(scroll_hint.as_str(), pos_style),
+            Span::styled(log_hint.as_str(), log_style),
+        ]);
+        frame.render_widget(Paragraph::new(vec![line]), status_area);
     }
 }
 
