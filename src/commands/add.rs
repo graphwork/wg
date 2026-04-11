@@ -1540,7 +1540,7 @@ mod tests {
             None,
             false, // allow_phantom=false, but paused=true defers validation
             false,
-            None,
+            None, // iteration_config
         );
         assert!(result.is_ok());
     }
