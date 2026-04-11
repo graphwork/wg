@@ -2320,4 +2320,70 @@ mod tests {
             "inline verify should complete to Done"
         );
     }
+
+    #[test]
+    fn test_is_core_file() {
+        assert!(is_core_file("src/lib.rs"));
+        assert!(is_core_file("src/main.rs"));
+        assert!(is_core_file("Cargo.toml"));
+        assert!(is_core_file("Cargo.lock"));
+        assert!(is_core_file("build.rs"));
+        assert!(is_core_file("src/commands/mod.rs"));
+
+        assert!(!is_core_file("src/commands/add.rs"));
+        assert!(!is_core_file("src/graph.rs"));
+        assert!(!is_core_file("tests/test_integration.rs"));
+    }
+
+    #[test]
+    fn test_map_file_to_test_command() {
+        // Test source file mapping
+        assert_eq!(
+            map_file_to_test_command("src/commands/add.rs"),
+            Some("cargo test add".to_string())
+        );
+        assert_eq!(
+            map_file_to_test_command("src/graph.rs"),
+            Some("cargo test graph".to_string())
+        );
+
+        // Test direct test file mapping
+        assert_eq!(
+            map_file_to_test_command("tests/integration_multi_user.rs"),
+            Some("cargo test --test integration_multi_user".to_string())
+        );
+
+        // Test non-mappable files
+        assert_eq!(map_file_to_test_command("README.md"), None);
+        assert_eq!(map_file_to_test_command("docs/guide.md"), None);
+    }
+
+    #[test]
+    fn test_map_files_to_tests() {
+        // Regular source files should map to scoped tests
+        let files = vec!["src/commands/add.rs".to_string()];
+        let result = map_files_to_tests(&files);
+        assert_eq!(result, Some(vec!["cargo test add".to_string()]));
+
+        // Core files should return None (fall back to full suite)
+        let files = vec!["src/lib.rs".to_string()];
+        let result = map_files_to_tests(&files);
+        assert_eq!(result, None);
+
+        // Multiple files should combine commands
+        let files = vec![
+            "src/commands/add.rs".to_string(),
+            "src/graph.rs".to_string(),
+        ];
+        let result = map_files_to_tests(&files);
+        assert_eq!(
+            result,
+            Some(vec!["cargo test add".to_string(), "cargo test graph".to_string()])
+        );
+
+        // Empty files list should return None
+        let files: Vec<String> = vec![];
+        let result = map_files_to_tests(&files);
+        assert_eq!(result, None);
+    }
 }

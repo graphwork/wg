@@ -552,7 +552,7 @@ mod provenance_coverage_tests {
             None,
             false,
             false,
-            None,
+            None, // iteration_config
         )
         .unwrap();
 
@@ -602,7 +602,7 @@ mod provenance_coverage_tests {
             None,
             false,
             false,
-            None,
+            None, // iteration_config
         )
         .unwrap();
 
@@ -655,7 +655,7 @@ mod provenance_coverage_tests {
             None,
             false,
             false,
-            None,
+            None, // iteration_config
         )
         .unwrap();
 
@@ -710,7 +710,7 @@ mod provenance_coverage_tests {
             None,
             false,
             false,
-            None,
+            None, // iteration_config
         )
         .unwrap();
 
