@@ -2473,6 +2473,7 @@ fn evaluate_coordinator_turn(
         timestamp: chrono::Utc::now().to_rfc3339(),
         model: None,
         source: "coordinator-inline".to_string(),
+        decision: None,
     };
 
     let agency_dir = dir.join("agency");

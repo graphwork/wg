@@ -546,6 +546,7 @@ pub fn run(
                 timestamp: chrono::Utc::now().to_rfc3339(),
                 model: None,
                 source: "llm".to_string(),
+                decision: None,
             };
 
             if let Err(e) = agency::record_evaluation(&eval_of_evolver, &agency_dir) {
