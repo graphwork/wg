@@ -91,6 +91,8 @@ pub enum IpcRequest {
         model: Option<String>,
         #[serde(default)]
         verify: Option<String>,
+        #[serde(default)]
+        verify_timeout: Option<String>,
         /// Who requested this (for provenance)
         #[serde(default)]
         origin: Option<String>,
@@ -375,6 +377,7 @@ fn handle_request(
             deliverables,
             model,
             verify,
+            verify_timeout,
             origin,
         } => {
             logger.info(&format!(
@@ -392,6 +395,7 @@ fn handle_request(
                 &deliverables,
                 model.as_deref(),
                 verify.as_deref(),
+                verify_timeout.as_deref(),
                 origin.as_deref(),
             );
             if resp.ok {
@@ -898,6 +902,7 @@ fn handle_add_task(
     deliverables: &[String],
     model: Option<&str>,
     verify: Option<&str>,
+    verify_timeout: Option<&str>,
     origin: Option<&str>,
 ) -> IpcResponse {
     let graph_path = graph_path(dir);
@@ -984,6 +989,7 @@ fn handle_add_task(
         provider: None,
         endpoint: None,
         verify: verify.map(String::from),
+        verify_timeout: verify_timeout.map(String::from),
         agent: None,
         loop_iteration: 0,
         last_iteration_completed_at: None,
@@ -2033,8 +2039,9 @@ poll_interval = 120
             &[],
             &[],
             None,
-            None,
-            None,
+            None, // verify
+            None, // verify_timeout
+            None, // origin
         );
         assert!(resp.ok, "Adding internal task should succeed");
         assert!(
@@ -2053,8 +2060,9 @@ poll_interval = 120
             &[],
             &[],
             None,
-            None,
-            None,
+            None, // verify
+            None, // verify_timeout
+            None, // origin
         );
         assert!(resp.ok, "Adding regular task should succeed");
         assert!(

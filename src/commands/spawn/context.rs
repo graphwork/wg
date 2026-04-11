@@ -10,6 +10,14 @@ use workgraph::config::Config;
 use workgraph::context_scope::ContextScope;
 use workgraph::graph::{LogEntry, Status};
 
+/// Knowledge tiers for model-specific context injection
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum KnowledgeTier {
+    Essential, // 8KB for Minimax M2.7, 32K context models
+    Core,      // 16KB for DeepSeek V3, 64K context models
+    Full,      // 40KB for Llama 3.1+, 128K context models
+}
+
 /// Build context string from dependency artifacts and logs.
 ///
 /// When scope >= Task, includes upstream task titles alongside artifacts (R5).
@@ -566,6 +574,383 @@ pub(crate) fn read_wg_guide(workgraph_dir: &Path) -> String {
                 return content;
             }
     workgraph::service::executor::DEFAULT_WG_GUIDE.to_string()
+}
+
+/// Classify model into knowledge tier based on context window and capabilities
+pub(crate) fn classify_model_tier(model: &str) -> KnowledgeTier {
+    let model_lower = model.to_lowercase();
+
+    // Tier 1: Essential (8KB) - 32K context window models
+    if model_lower.contains("minimax")
+        || model_lower.contains("qwen-2.5")
+        || model_lower.contains("qwen2.5") {
+        KnowledgeTier::Essential
+    }
+    // Tier 2: Core (16KB) - 64K context window models
+    else if model_lower.contains("deepseek")
+        || model_lower.contains("claude-haiku") {
+        KnowledgeTier::Core
+    }
+    // Tier 3: Full (40KB) - 128K+ context window models
+    else if model_lower.contains("llama-3.1")
+        || model_lower.contains("llama3.1")
+        || model_lower.contains("claude-sonnet")
+        || model_lower.contains("claude-opus") {
+        KnowledgeTier::Full
+    }
+    // Conservative default for unknown models
+    else {
+        KnowledgeTier::Essential
+    }
+}
+
+/// Build tiered workgraph knowledge guide based on model capabilities
+pub(crate) fn build_tiered_guide(workgraph_dir: &Path, tier: KnowledgeTier, _model: &str) -> String {
+    // Check for custom override first
+    let custom_path = workgraph_dir.join("wg-guide.md");
+    if custom_path.exists() {
+        if let Ok(content) = std::fs::read_to_string(&custom_path) {
+            if !content.trim().is_empty() {
+                return content;
+            }
+        }
+    }
+
+    match tier {
+        KnowledgeTier::Essential => build_essential_guide(workgraph_dir),
+        KnowledgeTier::Core => build_core_guide(workgraph_dir),
+        KnowledgeTier::Full => build_full_guide(workgraph_dir),
+    }
+}
+
+/// Build essential guide (8KB) for Tier 1 models like Minimax M2.7
+fn build_essential_guide(workgraph_dir: &Path) -> String {
+    let claude_md = read_claude_md_content(workgraph_dir);
+    let memory_md = read_memory_md(workgraph_dir);
+
+    format!(r#"# Workgraph Agent Guide (Essential)
+
+**You are an AI agent working on one task in a workgraph project.** Other agents work on other tasks concurrently.
+
+## CRITICAL: Autopoietic Decomposition
+
+**Core Principle:** If you cannot complete a task in 30 seconds of thinking, decompose it.
+
+**The Graph is Alive.** You are one node in a living system. Your job is not just to complete your task, but to grow the graph where it needs growing:
+
+- **Task too large?** → Fan out independent parts as parallel subtasks
+- **Prerequisite missing?** → `wg add "Prereq: ..." && wg add "$WG_TASK_ID" --after prereq-id`
+- **Follow-up needed?** → `wg add "Verify: ..." --after $WG_TASK_ID`
+- **Found a bug/missing doc?** → `wg add "Fix: ..." --after $WG_TASK_ID`
+
+**Time budget:** From task assignment to `wg add` should be under 30 seconds. Uncertainty is a signal to delegate, not to explore.
+
+## Decision Framework: When to Decompose vs Implement
+
+### Implement Directly If:
+- Task is small and well-scoped (≤30 seconds thinking)
+- Touches ≤2-3 files
+- Single logical unit of work
+- No external dependencies or unknowns
+
+### Decompose (create subtasks) If:
+- Task has 3+ independent parts
+- Involves multiple modules/components
+- Requires research or understanding unfamiliar code
+- Would take multiple distinct phases
+- Discovers bugs or missing prereqs outside scope
+
+## Decomposition Pattern Templates
+
+### Pipeline (Sequential Steps)
+When work must proceed in order:
+```bash
+wg add 'Step 1: Parse input' --after $WG_TASK_ID --verify 'cargo test test_parse'
+wg add 'Step 2: Transform data' --after step-1-parse-input
+wg add 'Step 3: Write output' --after step-2-transform-data
+```
+
+### Fan-Out-Merge (Parallel + Integration)
+When work has independent parts that converge:
+```bash
+wg add 'Part A: Module X' --after $WG_TASK_ID
+wg add 'Part B: Module Y' --after $WG_TASK_ID
+wg add 'Part C: Module Z' --after $WG_TASK_ID
+wg add 'Integrate modules' --after part-a-module-x,part-b-module-y,part-c-module-z
+```
+
+**CRITICAL:** Always include an integrator task at join points. Never leave parallel work unmerged.
+
+### Iterate-Until-Pass (Refinement Loop)
+When work requires multiple passes:
+```bash
+wg add 'Refine implementation' --after $WG_TASK_ID --max-iterations 3 \
+  --verify 'cargo test && performance_benchmark'
+```
+Use `wg done --converged` when work has stabilized.
+
+## Task Description Requirements
+
+Every **code task** description MUST include:
+
+```markdown
+## Validation
+- [ ] Failing test written first: test_feature_x_<scenario>
+- [ ] Implementation makes test pass
+- [ ] cargo build + cargo test pass with no regressions
+- [ ] <any additional acceptance criteria>
+```
+
+Use `--verify "command"` for machine-checkable criteria.
+
+## Core Commands
+
+| Command | Purpose |
+|---------|---------|
+| `wg add "title" -d "desc"` | Create a new task |
+| `wg add "title" --after task-id` | Create task with dependency |
+| `wg show <id>` | View task details, status, deps, logs |
+| `wg log <id> "msg"` | Log progress (recoverable breadcrumbs) |
+| `wg done <id>` | Mark your task complete |
+| `wg fail <id> --reason "..."` | Mark your task failed |
+| `wg list` | List all tasks |
+| `wg ready` | List tasks ready to be worked on |
+
+## Dependencies with `--after`
+
+Use `--after` to express that one task depends on another. This is CRITICAL for correct execution order.
+
+```bash
+# Task B depends on Task A completing first
+wg add "Task B" --after task-a
+
+# Task C depends on multiple predecessors
+wg add "Task C" --after task-a,task-b
+
+# Subtask that depends on current task
+wg add "Subtask" --after $WG_TASK_ID
+```
+
+**Always use `--after` when creating subtasks.** Without it, tasks form a flat unordered list.
+
+## Environment Variables
+- `$WG_TASK_ID` — the task you are working on
+- `$WG_AGENT_ID` — your unique agent identifier
+- `$WG_EXECUTOR_TYPE` — executor type (native, claude, etc.)
+- `$WG_MODEL` — the model you are running as
+
+{}
+
+{}"#,
+    extract_project_instructions(&claude_md),
+    extract_project_context(&memory_md)
+    )
+}
+
+/// Build core guide (16KB) for Tier 2 models like DeepSeek V3
+fn build_core_guide(workgraph_dir: &Path) -> String {
+    // For now, build on essential guide with additional content
+    let essential = build_essential_guide(workgraph_dir);
+
+    format!("{}\n\n{}\n\n{}",
+        essential,
+        build_agent_communication_section(),
+        build_graph_patterns_section()
+    )
+}
+
+/// Build full guide (40KB) for Tier 3 models like Llama 3.1+
+fn build_full_guide(workgraph_dir: &Path) -> String {
+    // For now, build on core guide with additional content
+    let core = build_core_guide(workgraph_dir);
+
+    format!("{}\n\n{}\n\n{}",
+        core,
+        build_agency_system_section(),
+        build_advanced_patterns_section()
+    )
+}
+
+/// Read CLAUDE.md content from the project root
+fn read_claude_md_content(workgraph_dir: &Path) -> String {
+    let project_root = workgraph_dir.parent().unwrap_or(workgraph_dir);
+    let claude_md_path = project_root.join("CLAUDE.md");
+    std::fs::read_to_string(&claude_md_path).unwrap_or_default()
+}
+
+/// Read memory context from user's memory directory
+fn read_memory_md(workgraph_dir: &Path) -> String {
+    // Try to find the memory directory - it could be in ~/.claude/ or similar
+    let project_root = workgraph_dir.parent().unwrap_or(workgraph_dir);
+    if let Some(home_dir) = dirs::home_dir() {
+        let memory_path = home_dir
+            .join(".claude")
+            .join("projects")
+            .join("-home-erik-workgraph")
+            .join("memory")
+            .join("MEMORY.md");
+
+        if let Ok(content) = std::fs::read_to_string(&memory_path) {
+            return content;
+        }
+    }
+
+    // Fallback - try relative to workgraph dir
+    let memory_path = project_root.join(".claude").join("memory").join("MEMORY.md");
+    std::fs::read_to_string(&memory_path).unwrap_or_default()
+}
+
+/// Extract critical project instructions from CLAUDE.md
+fn extract_project_instructions(claude_md: &str) -> String {
+    if claude_md.trim().is_empty() {
+        return String::new();
+    }
+
+    // Look for orchestrator role and critical patterns
+    let mut instructions = String::new();
+
+    if claude_md.contains("orchestrating agent") || claude_md.contains("Orchestrating agent") {
+        instructions.push_str("\n## Project Role (from CLAUDE.md)\n");
+        instructions.push_str("**You are a distributed agent** in a workgraph system. Other agents handle other tasks.\n");
+        instructions.push_str("**CRITICAL:** Use `wg add` for task creation. Do NOT attempt monolithic implementations.\n");
+    }
+
+    if claude_md.contains("CRITICAL") {
+        instructions.push_str("\n**Project-specific critical constraints apply** - see task description for details.\n");
+    }
+
+    instructions
+}
+
+/// Extract project context from memory
+fn extract_project_context(memory_md: &str) -> String {
+    if memory_md.trim().is_empty() {
+        return String::new();
+    }
+
+    let mut context = String::new();
+    context.push_str("\n## Project Context\n");
+
+    // Extract key project facts - limit to essential info for Tier 1
+    if memory_md.contains("Workgraph") {
+        context.push_str("**Project:** Workgraph - task coordination graph for humans and AI agents\n");
+    }
+
+    if memory_md.contains("Rust") {
+        context.push_str("**Language:** Rust (use `cargo build` and `cargo test` for validation)\n");
+    }
+
+    if memory_md.contains("graph.jsonl") {
+        context.push_str("**Core files:** `.workgraph/graph.jsonl` (task storage), `src/` (implementation)\n");
+    }
+
+    context
+}
+
+/// Build agent communication section for Tier 2+
+fn build_agent_communication_section() -> String {
+    r#"## Agent Communication
+
+### Messages
+Check for messages from other agents:
+```bash
+wg msg read $WG_TASK_ID --agent $WG_AGENT_ID
+wg msg send $WG_TASK_ID "Acknowledged - implementing your suggestion"
+```
+
+### Coordination Patterns
+- **Sequential handoff:** Use `--after` to pass work from one agent to another
+- **Parallel collaboration:** Multiple agents work on parts, integrator combines results
+- **Iterative refinement:** Use cycles with `--max-iterations` for review/improve loops"#.to_string()
+}
+
+/// Build graph patterns section for Tier 2+
+fn build_graph_patterns_section() -> String {
+    r#"## Advanced Graph Patterns
+
+### Cycles and Loops
+Workgraph supports cycles for recurring work:
+```bash
+wg add 'Review code' --after implement-feature --max-iterations 3
+wg add 'Fix issues' --after review-code
+wg add 'Final check' --after fix-issues
+# Creates a review→fix→check cycle that can repeat
+```
+
+### Conditional Dependencies
+Use status-based dependencies:
+```bash
+wg add 'Deploy to staging' --after tests-pass
+wg add 'Deploy to prod' --after deploy-to-staging --verify 'health_check_passes'
+```
+
+### Complex Fan-Out
+For multi-dimensional work:
+```bash
+# By component
+wg add 'Frontend tests' --after $WG_TASK_ID
+wg add 'Backend tests' --after $WG_TASK_ID
+wg add 'Integration tests' --after $WG_TASK_ID
+
+# By environment
+wg add 'Test on Linux' --after $WG_TASK_ID
+wg add 'Test on MacOS' --after $WG_TASK_ID
+wg add 'Test on Windows' --after $WG_TASK_ID
+
+# Integration
+wg add 'Merge results' --after frontend-tests,backend-tests,integration-tests,test-on-linux,test-on-macos,test-on-windows
+```"#.to_string()
+}
+
+/// Build agency system section for Tier 3+
+fn build_agency_system_section() -> String {
+    r#"## Agency System (Advanced)
+
+### Roles and Specialization
+Tasks can be assigned to specialized agents:
+```bash
+wg agent create security-expert --role programmer --tradeoff careful
+wg assign security-audit security-expert
+```
+
+### Evaluation and Feedback
+Use FLIP scoring for quality assessment:
+```bash
+wg evaluate run $WG_TASK_ID --criteria "correctness,completeness,efficiency"
+```
+
+### Agent Evolution
+The system learns from performance:
+```bash
+wg evolve run  # Analyzes task outcomes and improves agent assignments
+```"#.to_string()
+}
+
+/// Build advanced patterns section for Tier 3+
+fn build_advanced_patterns_section() -> String {
+    r#"## Advanced Coordination Patterns
+
+### Federation and Sharing
+Share successful patterns across projects:
+```bash
+wg func save "testing-pipeline" --pattern "test→review→merge"
+wg func apply "testing-pipeline" --input target=new-feature
+```
+
+### Complex Lifecycle Management
+Handle long-running processes:
+```bash
+wg add 'Monitor deployment' --after deploy --max-iterations 24 \
+  --verify 'uptime > 99%' --cycle-delay 3600  # Check hourly
+```
+
+### Error Recovery Patterns
+Build resilient workflows:
+```bash
+wg add 'Backup strategy' --after main-task
+wg add 'Fallback implementation' --after main-task
+wg add 'Choose best result' --after backup-strategy,fallback-implementation
+```"#.to_string()
 }
 
 /// Resolve the effective exec_mode for a task using the priority hierarchy:

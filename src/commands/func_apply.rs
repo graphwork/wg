@@ -267,6 +267,7 @@ pub fn run(
                 provider: None,
                 endpoint: None,
                 verify: rendered.verify.clone(),
+                verify_timeout: None,
                 agent: None,
                 loop_iteration: 0,
                 last_iteration_completed_at: None,
