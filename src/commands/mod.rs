@@ -264,7 +264,6 @@ mod provenance_coverage_tests {
             None,
             None,
             false,
-            None,
         )
         .unwrap();
 
