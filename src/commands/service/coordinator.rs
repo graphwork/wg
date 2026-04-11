@@ -1694,6 +1694,26 @@ fn build_flip_verification_tasks(
             continue;
         }
 
+        // Skip tasks that would be handled by eval gate - let eval gate take precedence
+        if let Some(eval_threshold) = config.agency.eval_gate_threshold {
+            let is_eval_gated = config.agency.eval_gate_all
+                || source_task.tags.iter().any(|t| t == "eval-gate");
+            if is_eval_gated {
+                // Check if there's a regular evaluation for this task that scored below eval threshold
+                // But exclude system evaluations (infrastructure failures) from this check
+                let has_low_eval = all_evals.iter().any(|e| {
+                    e.task_id == *source_task_id
+                        && e.source != workgraph::agency::eval_source::FLIP
+                        && e.source != "system"  // Skip infrastructure failures
+                        && e.score < eval_threshold
+                });
+                if has_low_eval {
+                    // Eval gate should handle this task's failure, skip FLIP verification
+                    continue;
+                }
+            }
+        }
+
         // Build verification task description
         let source_verify_cmd = source_task.verify.clone();
         let source_title = source_task.title.clone();

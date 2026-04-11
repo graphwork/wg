@@ -1245,14 +1245,13 @@ impl std::error::Error for ModelSpecError {}
 /// to enforce the `provider:model` format. This lenient version is for internal
 /// resolution paths where the model string may already be partially resolved.
 pub fn parse_model_spec(spec: &str) -> ModelSpec {
-    if let Some((prefix, rest)) = spec.split_once(':') {
-        if KNOWN_PROVIDERS.contains(&prefix) {
+    if let Some((prefix, rest)) = spec.split_once(':')
+        && KNOWN_PROVIDERS.contains(&prefix) {
             return ModelSpec {
                 provider: Some(prefix.to_string()),
                 model_id: rest.to_string(),
             };
         }
-    }
     ModelSpec {
         provider: None,
         model_id: spec.to_string(),
@@ -1848,6 +1847,9 @@ fn default_novelty_bonus_multiplier() -> f64 {
 fn default_bizarre_ideation_interval() -> u32 {
     10
 }
+fn default_eval_gate_threshold() -> Option<f64> {
+    Some(0.7)
+}
 fn default_flip_verification_threshold() -> Option<f64> {
     Some(0.7)
 }
@@ -1968,8 +1970,8 @@ pub struct AgencyConfig {
     /// Global evaluation gate threshold. When set, evaluations that score
     /// below this threshold will reject (fail) the original task, blocking
     /// its dependents. Only applies to tasks tagged with "eval-gate" unless
-    /// `eval_gate_all` is true. Range: 0.0–1.0. Default: None (disabled).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// `eval_gate_all` is true. Range: 0.0–1.0. Default: 0.7 (enabled).
+    #[serde(default = "default_eval_gate_threshold", skip_serializing_if = "Option::is_none")]
     pub eval_gate_threshold: Option<f64>,
 
     /// When true, apply the eval gate threshold to ALL evaluated tasks,
@@ -2069,7 +2071,7 @@ impl Default for AgencyConfig {
             novelty_bonus_multiplier: default_novelty_bonus_multiplier(),
             bizarre_ideation_interval: default_bizarre_ideation_interval(),
             auto_assign_grace_seconds: default_auto_assign_grace_seconds(),
-            eval_gate_threshold: None,
+            eval_gate_threshold: default_eval_gate_threshold(),
             eval_gate_all: false,
             flip_enabled: true,
             flip_inference_model: None,
@@ -2646,11 +2648,10 @@ fn strip_global_only_model_roles(
                 }
             }
         }
-        if merged_models.is_empty() {
-            if let Some(root) = merged.as_table_mut() {
+        if merged_models.is_empty()
+            && let Some(root) = merged.as_table_mut() {
                 root.remove("models");
             }
-        }
     }
 }
 
@@ -2783,20 +2784,18 @@ impl Config {
         workgraph_dir: &Path,
     ) -> anyhow::Result<String> {
         // 1. Check llm_endpoints for a matching provider
-        if let Some(ep) = self.llm_endpoints.find_for_provider(provider) {
-            if let Ok(Some(key)) = ep.resolve_api_key(Some(workgraph_dir)) {
+        if let Some(ep) = self.llm_endpoints.find_for_provider(provider)
+            && let Ok(Some(key)) = ep.resolve_api_key(Some(workgraph_dir)) {
                 return Ok(key);
             }
-        }
         // Also check the default endpoint if provider didn't match
-        if let Some(ep) = self.llm_endpoints.find_default() {
-            if ep.provider != provider {
+        if let Some(ep) = self.llm_endpoints.find_default()
+            && ep.provider != provider {
                 // Already tried provider-specific above; try default endpoint
                 if let Ok(Some(key)) = ep.resolve_api_key(Some(workgraph_dir)) {
                     return Ok(key);
                 }
             }
-        }
 
         // 2. Environment variables based on provider
         for var_name in EndpointConfig::env_var_names_for_provider(provider) {
@@ -3034,11 +3033,10 @@ impl Config {
         }
 
         // coordinator.model
-        if let Some(ref m) = self.coordinator.model {
-            if let Some(err) = check_model("coordinator.model", m) {
+        if let Some(ref m) = self.coordinator.model
+            && let Some(err) = check_model("coordinator.model", m) {
                 errors.push(err);
             }
-        }
 
         // coordinator.provider (deprecated — should not be present)
         if self.coordinator.provider.is_some() {
@@ -3064,11 +3062,10 @@ impl Config {
         };
 
         for (name, cfg) in &role_configs {
-            if let Some(ref m) = cfg.model {
-                if let Some(err) = check_model(&format!("{}.model", name), m) {
+            if let Some(ref m) = cfg.model
+                && let Some(err) = check_model(&format!("{}.model", name), m) {
                     errors.push(err);
                 }
-            }
             if cfg.provider.is_some() {
                 errors.push(format!(
                     "  {}.provider is deprecated. \
@@ -3079,21 +3076,18 @@ impl Config {
         }
 
         // tier values
-        if let Some(ref t) = self.tiers.fast {
-            if let Some(err) = check_model("tiers.fast", t) {
+        if let Some(ref t) = self.tiers.fast
+            && let Some(err) = check_model("tiers.fast", t) {
                 errors.push(err);
             }
-        }
-        if let Some(ref t) = self.tiers.standard {
-            if let Some(err) = check_model("tiers.standard", t) {
+        if let Some(ref t) = self.tiers.standard
+            && let Some(err) = check_model("tiers.standard", t) {
                 errors.push(err);
             }
-        }
-        if let Some(ref t) = self.tiers.premium {
-            if let Some(err) = check_model("tiers.premium", t) {
+        if let Some(ref t) = self.tiers.premium
+            && let Some(err) = check_model("tiers.premium", t) {
                 errors.push(err);
             }
-        }
 
         if errors.is_empty() {
             Ok(())
@@ -3159,10 +3153,8 @@ impl Config {
             result.warnings.push(ConfigDiagnostic {
                 rule: "executor-model-auto-route".into(),
                 message: diagnostic_message,
-                fix: format!(
-                    "Set executor = 'native' to make this explicit, \
-                     or use claude:MODEL format for Anthropic models.",
-                ),
+                fix: "Set executor = 'native' to make this explicit, \
+                     or use claude:MODEL format for Anthropic models.".to_string(),
             });
         }
 

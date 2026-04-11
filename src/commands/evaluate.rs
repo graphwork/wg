@@ -1372,6 +1372,11 @@ fn check_eval_gate(
         return Ok(false);
     }
 
+    // Skip system evaluations (infrastructure failures) - these should not trigger task failure
+    if evaluation.source == "system" {
+        return Ok(false);
+    }
+
     // Check if score is below threshold
     if evaluation.score >= threshold {
         return Ok(false); // Score is acceptable
