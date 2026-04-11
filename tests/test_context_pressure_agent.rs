@@ -330,7 +330,10 @@ fn test_context_pressure_exactly_at_80_percent() {
             text: "x".repeat(3200), // exactly 800 tokens = 80%
         }],
     }];
-    assert_eq!(budget.check_pressure(&msgs), ContextPressureAction::EmergencyCompaction);
+    assert_eq!(
+        budget.check_pressure(&msgs),
+        ContextPressureAction::EmergencyCompaction
+    );
 }
 
 #[test]
@@ -344,7 +347,10 @@ fn test_context_pressure_at_79_9_percent() {
             text: "x".repeat(3196),
         }],
     }];
-    assert_eq!(budget.check_pressure(&msgs), ContextPressureAction::EmergencyCompaction);
+    assert_eq!(
+        budget.check_pressure(&msgs),
+        ContextPressureAction::EmergencyCompaction
+    );
 }
 
 #[test]
@@ -374,7 +380,10 @@ fn test_context_pressure_at_89_9_percent() {
             text: "x".repeat(3596),
         }],
     }];
-    assert_eq!(budget.check_pressure(&msgs), ContextPressureAction::EmergencyCompaction);
+    assert_eq!(
+        budget.check_pressure(&msgs),
+        ContextPressureAction::EmergencyCompaction
+    );
 }
 
 #[test]
@@ -448,7 +457,10 @@ fn test_context_budget_small_window_32k() {
             text: "x".repeat(102_400),
         }],
     }];
-    assert_eq!(budget.check_pressure(&msgs), ContextPressureAction::EmergencyCompaction);
+    assert_eq!(
+        budget.check_pressure(&msgs),
+        ContextPressureAction::EmergencyCompaction
+    );
 }
 
 #[test]
@@ -1026,7 +1038,10 @@ fn test_pressure_with_multiple_small_messages() {
             }],
         })
         .collect();
-    assert_eq!(budget.check_pressure(&msgs), ContextPressureAction::EmergencyCompaction);
+    assert_eq!(
+        budget.check_pressure(&msgs),
+        ContextPressureAction::EmergencyCompaction
+    );
 }
 
 #[test]

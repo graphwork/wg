@@ -94,12 +94,12 @@ pub mod setup;
 pub mod show;
 pub mod skills;
 pub mod spawn;
+pub mod spend;
 pub mod stats;
 pub mod status;
 pub mod structure;
 pub mod sweep;
 pub mod telegram;
-pub mod spend;
 pub mod tokens;
 pub mod trace;
 pub mod trace_animate;
@@ -257,13 +257,13 @@ mod provenance_coverage_tests {
             None,
             false,
             false,
-            None,
-            false,
             &[],
             &[],
             None,
             None,
             false,
+            false,
+            None,
         )
         .unwrap();
 
@@ -306,12 +306,11 @@ mod provenance_coverage_tests {
             None,
             false,
             false,
+            &[],
+            &[],
+            None,
             None,
             false,
-            &[],
-            &[],
-            None,
-            None,
             false,
             None,
         )

@@ -2462,13 +2462,11 @@ fn parse_iteration_config(
         }
     });
 
-    let strat = retry_strategy.map(|s| {
-        match s.trim().to_lowercase().as_str() {
-            "same-model" => RetryStrategy::SameModel,
-            "upgrade-model" => RetryStrategy::UpgradeModel,
-            "escalate-to-human" => RetryStrategy::EscalateToHuman,
-            _ => RetryStrategy::SameModel,
-        }
+    let strat = retry_strategy.map(|s| match s.trim().to_lowercase().as_str() {
+        "same-model" => RetryStrategy::SameModel,
+        "upgrade-model" => RetryStrategy::UpgradeModel,
+        "escalate-to-human" => RetryStrategy::EscalateToHuman,
+        _ => RetryStrategy::SameModel,
     });
 
     if prop.is_none() && strat.is_none() {

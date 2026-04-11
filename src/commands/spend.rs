@@ -17,7 +17,8 @@ pub struct DailySpend {
 pub fn run(dir: &Path, today_only: bool, json: bool) -> Result<()> {
     let (graph, _path) = super::load_workgraph(dir)?;
 
-    let mut daily_spend: std::collections::BTreeMap<String, DailySpend> = std::collections::BTreeMap::new();
+    let mut daily_spend: std::collections::BTreeMap<String, DailySpend> =
+        std::collections::BTreeMap::new();
     let mut total_cost = 0.0;
     let mut total_input_tokens = 0u64;
     let mut total_output_tokens = 0u64;
@@ -104,8 +105,14 @@ pub fn run(dir: &Path, today_only: bool, json: bool) -> Result<()> {
         if let Some((_date, spend)) = daily_spend.into_iter().last() {
             println!("Today's spend:");
             println!("  Total cost: ${:.4}", spend.total_cost);
-            println!("  Input tokens: {}", format_number(spend.total_input_tokens));
-            println!("  Output tokens: {}", format_number(spend.total_output_tokens));
+            println!(
+                "  Input tokens: {}",
+                format_number(spend.total_input_tokens)
+            );
+            println!(
+                "  Output tokens: {}",
+                format_number(spend.total_output_tokens)
+            );
             println!("  Tasks: {}", spend.task_count);
         } else {
             println!("No token usage recorded yet today.");

@@ -4554,9 +4554,7 @@ fn activity_event_style(kind: &ActivityEventKind) -> (Color, Style) {
             (Color::DarkGray, Style::default().fg(Color::DarkGray))
         }
         ActivityEventKind::VerificationResult => (Color::Cyan, Style::default().fg(Color::Cyan)),
-        ActivityEventKind::Compact => {
-            (Color::Magenta, Style::default().fg(Color::Magenta))
-        }
+        ActivityEventKind::Compact => (Color::Magenta, Style::default().fg(Color::Magenta)),
         ActivityEventKind::UserAction => (Color::White, Style::default().fg(Color::White)),
     }
 }
@@ -12592,7 +12590,10 @@ mod tests {
         );
 
         // Verify the styling would be pink/rose (ANSI 219) — matching agency phase annotations.
-        let styled_line = Line::from(Span::styled(message, Style::default().fg(Color::Indexed(219))));
+        let styled_line = Line::from(Span::styled(
+            message,
+            Style::default().fg(Color::Indexed(219)),
+        ));
         assert_eq!(
             styled_line.spans[0].style.fg,
             Some(Color::Indexed(219)),

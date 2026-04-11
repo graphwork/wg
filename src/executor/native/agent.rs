@@ -32,10 +32,8 @@ fn estimate_usage_cost(
     cache_read_input_tokens: u64,
     cache_creation_input_tokens: u64,
 ) -> f64 {
-    let input_cost =
-        (input_tokens as f64 / 1_000_000.0) * entry.cost_per_input_mtok;
-    let output_cost =
-        (output_tokens as f64 / 1_000_000.0) * entry.cost_per_output_mtok;
+    let input_cost = (input_tokens as f64 / 1_000_000.0) * entry.cost_per_input_mtok;
+    let output_cost = (output_tokens as f64 / 1_000_000.0) * entry.cost_per_output_mtok;
     let cache_read_cost = if entry.prompt_caching && entry.cache_read_discount > 0.0 {
         (cache_read_input_tokens as f64 / 1_000_000.0)
             * entry.cost_per_input_mtok

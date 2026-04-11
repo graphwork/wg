@@ -1541,8 +1541,10 @@ fn run_pending_chat_compactions(dir: &Path, logger: &DaemonLogger) {
         match workgraph::service::chat_compactor::run_chat_compaction(dir, coordinator_id) {
             Ok(path) => {
                 // Record compaction event to operations.jsonl so the TUI can show it
-                let state_after =
-                    workgraph::service::chat_compactor::ChatCompactorState::load(dir, coordinator_id);
+                let state_after = workgraph::service::chat_compactor::ChatCompactorState::load(
+                    dir,
+                    coordinator_id,
+                );
                 let detail = serde_json::json!({
                     "coordinator_id": coordinator_id,
                     "output_path": path.display().to_string(),
