@@ -5,6 +5,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use serde_json::json;
@@ -311,6 +312,7 @@ pub fn register_bg_tool(registry: &mut super::ToolRegistry, workgraph_dir: PathB
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
     use tempfile::TempDir;
 
     #[tokio::test]
