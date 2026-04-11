@@ -339,7 +339,7 @@ fn run_verify_command(
 
     let timeout = resolve_verify_timeout(task, coordinator_config);
     let start = Instant::now();
-    let mut monitor = ProgressMonitor::new();
+    let monitor = ProgressMonitor::new();
 
     // Poll with short sleeps to implement timeout without external crate
     let status = loop {
