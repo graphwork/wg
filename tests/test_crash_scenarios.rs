@@ -531,7 +531,7 @@ fn test_agent_timeout_cleanup() {
     // Override config for fast timeout testing
     let config_content = "[agent]
 reaper_grace_seconds = 1
-heartbeat_timeout = 2
+heartbeat_timeout = 1
 
 [coordinator]
 max_agents = 5
@@ -606,8 +606,8 @@ auto_evaluate = false
     });
     assert!(found_agent, "Agent for timeout-task not found");
 
-    // Wait for heartbeat timeout (2 seconds) plus grace period + detection time
-    std::thread::sleep(Duration::from_secs(5));
+    // Wait for heartbeat timeout (1 minute = 60s) plus grace period (1s) + detection time
+    std::thread::sleep(Duration::from_secs(62));
 
     // Trigger multiple coordinator ticks
     for _ in 0..10 {
