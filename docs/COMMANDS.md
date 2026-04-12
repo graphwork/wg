@@ -17,6 +17,7 @@ Complete reference for all `wg` commands. Most query commands support `--json` f
 - [Monitoring Commands](#monitoring-commands)
 - [Communication Commands](#communication-commands)
 - [Model and Endpoint Management](#model-and-endpoint-management)
+- [Cost and Usage](#cost-and-usage)
 - [Utility Commands](#utility-commands)
 
 ---
@@ -56,7 +57,15 @@ wg add <TITLE> [OPTIONS]
 | `--cycle-guard <EXPR>` | Guard condition for cycle iteration: `task:<id>=<status>` or `always` |
 | `--cycle-delay <DUR>` | Delay between cycle iterations (e.g., `30s`, `5m`, `1h`) |
 | `--exec-mode <MODE>` | Execution weight: `full` (default), `light` (read-only tools), `bare` (wg CLI only), `shell` (no LLM) |
-| `--provider <PROVIDER>` | Provider for this task: `anthropic`, `openai`, `openrouter`, `local` |
+| `--exec <CMD>` | Shell command to execute for this task (auto-sets exec_mode=shell) |
+| `--timeout <DUR>` | Per-task timeout (e.g., `30s`, `5m`, `1h`, `4h`, `1d`) |
+| `--provider <PROVIDER>` | **[DEPRECATED]** Provider — use `provider:model` format in `--model` instead |
+| `--verify-timeout <DUR>` | Verification timeout (e.g., `15m`, `900s`). Overrides global `WG_VERIFY_TIMEOUT` |
+| `--allow-phantom` | Allow phantom (forward-reference) dependencies without error |
+| `--independent` | Suppress implicit `--after` dependency on the creating task (alias: `--no-after`) |
+| `--propagation <POLICY>` | Retry propagation policy: `conservative`, `aggressive`, or `conditional:<float>` |
+| `--retry-strategy <STRATEGY>` | Retry strategy: `same-model`, `upgrade-model`, or `escalate-to-human` |
+| `--cron <EXPR>` | Cron schedule expression (6-field format: `"sec min hour day month dow"`) |
 | `--paused` | Create the task in paused state (default for interactive use) |
 | `--no-place` | Skip automatic placement — make task immediately available for dispatch |
 | `--place-near <IDS>` | Placement hint: place near these tasks (comma-separated IDs) |
@@ -141,13 +150,15 @@ wg edit <ID> [OPTIONS]
 | `--visibility <LEVEL>` | Set task visibility zone: `internal`, `peer`, `public` |
 | `--context-scope <SCOPE>` | Set context scope for prompt assembly: `clean`, `task`, `graph`, `full` |
 | `--exec-mode <MODE>` | Set execution weight: `full` (default), `light` (read-only tools), `bare` (wg CLI only), `shell` (no LLM) |
-| `--provider <PROVIDER>` | Update provider for this task (`anthropic`, `openai`, `openrouter`, `local`) |
+| `--provider <PROVIDER>` | **[DEPRECATED]** Update provider — use `provider:model` format in `--model` instead |
 | `--verify <CRITERIA>` | Set or update verification criteria (shell command that must pass before done) |
 | `--delay <DUR>` | Delay before task becomes ready (e.g., `30s`, `5m`, `1h`, `1d`) |
 | `--not-before <TIMESTAMP>` | Absolute timestamp before which task won't be dispatched (ISO 8601) |
 | `--no-converge` | Force all cycle iterations to run (agents cannot signal convergence) |
 | `--no-restart-on-failure` | Disable automatic cycle restart on failure |
 | `--max-failure-restarts <N>` | Maximum failure-triggered cycle restarts (default: 3) |
+| `--allow-phantom` | Allow phantom (forward-reference) dependencies without error |
+| `--allow-cycle` | Allow cycle creation without CycleConfig (overrides cycle detection guard) |
 
 Triggers a `graph_changed` IPC notification to the service daemon, so the coordinator picks up changes immediately.
 
@@ -278,6 +289,30 @@ Increments the retry counter and sets status back to `open`.
 ```bash
 wg retry deploy-prod
 # Resets deploy-prod to open status with incremented retry count
+```
+
+---
+
+### `wg requeue`
+
+Requeue an in-progress task for failed-dependency triage (resets to open).
+
+```bash
+wg requeue <TASK> --reason <REASON>
+```
+
+**Arguments:**
+- `TASK` - Task ID to requeue (required)
+
+**Options:**
+| Option | Description |
+|--------|-------------|
+| `--reason <REASON>` | Reason for requeue — what fix tasks were created (required) |
+
+**Example:**
+```bash
+wg requeue implement-api --reason "Created fix-dep task to resolve failing dependency"
+# Resets implement-api to open status for re-dispatch after fix
 ```
 
 ---
@@ -2873,6 +2908,12 @@ wg chat [OPTIONS] [MESSAGE]
 | `--timeout <TIMEOUT>` | Timeout in seconds waiting for response (default: 120) |
 | `--attachment <ATTACHMENT>` | Attach a file (copied to `.workgraph/attachments/`) |
 | `--coordinator <ID>` | Target coordinator ID (default: 0) — for multi-coordinator setups |
+| `--history-depth <N>` | Show only the last N messages (with `--history`) or load only the last N messages in interactive mode |
+| `--no-history` | Start with no history loaded. History is still persisted — this only affects the initial display |
+| `--rotate` | Rotate chat files to archive (force-rotate regardless of thresholds) |
+| `--cleanup` | Clean up archived files older than the retention period |
+| `--compact` | Compact chat history into a context summary |
+| `--share-from <FROM_ID>` | Share context from another coordinator into this one. Copies the source coordinator's compacted summary as imported context. Use with `--coordinator` to specify the target (default: 0) |
 
 **Examples:**
 ```bash
@@ -3174,6 +3215,144 @@ wg endpoints add openrouter --provider openrouter --global
 
 ---
 
+### `wg profile`
+
+Manage provider profiles (model tier presets).
+
+```bash
+wg profile <COMMAND>
+```
+
+**Subcommands:**
+| Subcommand | Description |
+|------------|-------------|
+| `set <NAME>` | Set the active provider profile |
+| `show` | Show current profile and resolved model mappings |
+| `list` | List available profiles |
+| `refresh` | Refresh model data from OpenRouter and recompute rankings |
+
+#### `wg profile set`
+
+```bash
+wg profile set <NAME> [OPTIONS]
+```
+
+**Arguments:**
+- `NAME` — Profile name (e.g., `anthropic`, `openrouter`, `openai`)
+
+**Options:**
+| Option | Description |
+|--------|-------------|
+| `--fast <MODEL>` | Pin the fast tier to a specific model (e.g., `openrouter:qwen/qwen3-coder`) |
+| `--standard <MODEL>` | Pin the standard tier to a specific model (e.g., `openrouter:deepseek/deepseek-r1`) |
+| `--premium <MODEL>` | Pin the premium tier to a specific model (e.g., `openrouter:qwen/qwen3-max`) |
+
+#### `wg profile show`
+
+```bash
+wg profile show [--verbose]
+```
+
+**Options:**
+| Option | Description |
+|--------|-------------|
+| `-v, --verbose` | Show raw metrics (pricing, context length, benchmark scores) per model |
+
+**Examples:**
+```bash
+# Set active profile to OpenRouter
+wg profile set openrouter
+
+# Pin specific models per tier
+wg profile set openrouter --fast openrouter:qwen/qwen3-coder --premium openrouter:qwen/qwen3-max
+
+# Show current profile with resolved model mappings
+wg profile show
+
+# Show detailed model metrics
+wg profile show --verbose
+
+# List available profiles
+wg profile list
+
+# Refresh model data from OpenRouter
+wg profile refresh
+```
+
+---
+
+## Cost and Usage
+
+### `wg spend`
+
+Show token usage and estimated cost summaries.
+
+```bash
+wg spend [OPTIONS]
+```
+
+**Options:**
+| Option | Description |
+|--------|-------------|
+| `-t, --today` | Show only today's spend |
+| `-j, --json` | Output as JSON |
+
+**Examples:**
+```bash
+wg spend
+# Show cumulative token usage and cost
+
+wg spend --today
+# Show only today's spend
+
+wg spend --json
+# Output spend data as JSON
+```
+
+---
+
+### `wg openrouter`
+
+OpenRouter cost monitoring and management.
+
+```bash
+wg openrouter <COMMAND>
+```
+
+**Subcommands:**
+| Subcommand | Description |
+|------------|-------------|
+| `status` | Show OpenRouter API key status and usage |
+| `session` | Show session cost summary |
+| `set-limit` | Set cost cap limits |
+
+#### `wg openrouter set-limit`
+
+```bash
+wg openrouter set-limit [OPTIONS]
+```
+
+**Options:**
+| Option | Description |
+|--------|-------------|
+| `--global <USD>` | Global cost cap in USD |
+| `--session <USD>` | Session cost cap in USD |
+| `--task <USD>` | Task cost cap in USD |
+
+**Examples:**
+```bash
+wg openrouter status
+# Show API key status and usage
+
+wg openrouter session
+# Show current session cost summary
+
+wg openrouter set-limit --global 100 --session 10 --task 2
+# Set cost caps at global, session, and task levels
+```
+
+---
+
 ## Utility Commands
 
 ### `wg init`
@@ -3439,25 +3618,24 @@ With no options (or `--show`), displays current configuration.
 | `--poll-interval <SECS>` | Set service daemon background poll interval |
 | `--coordinator-executor <NAME>` | Set coordinator executor |
 | `--coordinator-model <MODEL>` | Set coordinator model (e.g., opus, sonnet, haiku) |
-| `--coordinator-provider <PROVIDER>` | Set coordinator provider (e.g., openrouter, anthropic) |
+| `--coordinator-provider <PROVIDER>` | **[DEPRECATED]** Set coordinator provider — use `provider:model` format in `--coordinator-model` instead |
+| `--heartbeat-interval <SECS>` | Set autonomous heartbeat interval in seconds (0 to disable). When enabled, the coordinator agent receives periodic synthetic prompts to review graph state and take action without human input |
 | `--max-coordinators <N>` | Set max concurrent coordinator agents (LLM sessions). Default: 4 |
 | `--auto-evaluate <BOOL>` | Enable/disable automatic evaluation |
 | `--auto-assign <BOOL>` | Enable/disable automatic identity assignment |
 | `--auto-place <BOOL>` | Enable/disable automatic placement analysis on new tasks |
 | `--auto-create <BOOL>` | Enable/disable automatic creator agent invocation |
-| `--assigner-model <MODEL>` | Set model for assigner agents |
-| `--evaluator-model <MODEL>` | Set model for evaluator agents |
-| `--evolver-model <MODEL>` | Set model for evolver agents |
+| `--flip-model <MODEL>` | Set both FLIP inference and comparison models to the same value |
 | `--assigner-agent <HASH>` | Set assigner agent (content-hash) |
 | `--evaluator-agent <HASH>` | Set evaluator agent (content-hash) |
 | `--evolver-agent <HASH>` | Set evolver agent (content-hash) |
 | `--creator-agent <HASH>` | Set creator agent (content-hash) |
-| `--creator-model <MODEL>` | Set model for creator agents |
+| `--creator-model <MODEL>` | **[DEPRECATED]** Use `--set-model creator <MODEL>` instead |
 | `--retention-heuristics <TEXT>` | Set retention heuristics (prose policy for evolver) |
 | `--max-child-tasks <N>` | Max tasks a single agent can create per execution (default: 10) |
 | `--max-task-depth <N>` | Max depth of task dependency chains from root (default: 8) |
 | `--auto-triage <BOOL>` | Enable/disable automatic triage of dead agents |
-| `--triage-model <MODEL>` | Set model for triage (default: haiku) |
+| `--triage-model <MODEL>` | **[DEPRECATED]** Use `--set-model triage <MODEL>` instead |
 | `--triage-timeout <SECS>` | Set timeout for triage calls (default: 30) |
 | `--triage-max-log-bytes <N>` | Set max bytes for triage log reading (default: 50000) |
 | `--eval-gate-threshold <N>` | Set evaluation gate threshold (0.0–1.0). Evaluations below this score reject the original task. Only applies to tasks tagged `eval-gate` unless `--eval-gate-all` is set |
@@ -3466,7 +3644,7 @@ With no options (or `--show`), displays current configuration.
 | `--flip-inference-model <MODEL>` | Model for FLIP inference phase (reconstructing prompt from output) |
 | `--flip-comparison-model <MODEL>` | Model for FLIP comparison phase (scoring similarity) |
 | `--flip-verification-threshold <N>` | FLIP score threshold for triggering verification (default: 0.7) |
-| `--flip-verification-model <MODEL>` | Model for FLIP-triggered verification agents (default: opus) |
+| `--flip-verification-model <MODEL>` | **[DEPRECATED]** Use `--set-model verification <MODEL>` instead |
 | `--chat-history <BOOL>` | Enable/disable chat history persistence across TUI restarts |
 | `--chat-history-max <N>` | Maximum number of chat messages to persist (default: 1000) |
 | `--tui-counters <LIST>` | TUI time counters (comma-separated: `uptime`, `cumulative`, `active`, `session`) |
@@ -3481,10 +3659,10 @@ With no options (or `--show`), displays current configuration.
 | `--room <ROOM>` | Set Matrix default room |
 | `--models` | Show all model routing assignments (per-role model+provider) |
 | `--set-model <ROLE> <MODEL>` | Set model for a dispatch role |
-| `--set-provider <ROLE> <PROVIDER>` | Set provider for a dispatch role |
+| `--set-provider <ROLE> <PROVIDER>` | **[DEPRECATED]** Set provider for a dispatch role — use `provider:model` format in `--set-model` instead |
 | `--set-endpoint <ROLE> <ENDPOINT>` | Bind a named endpoint to a dispatch role |
 | `--role-model <ROLE=MODEL>` | Set model for a role (key=value syntax) |
-| `--role-provider <ROLE=PROVIDER>` | Set provider for a role (key=value syntax) |
+| `--role-provider <ROLE=PROVIDER>` | **[DEPRECATED]** Set provider for a role — use `provider:model` format in `--role-model` instead |
 | `--registry` | Show all model registry entries (built-in + user-defined) |
 | `--registry-add` | Add a model to the registry (use with `--id`, `--provider`, `--reg-model`, `--reg-tier`, `--endpoint`, `--context-window`, `--cost-input`, `--cost-output`) |
 | `--registry-remove <ID>` | Remove a model from the registry |
@@ -3512,7 +3690,9 @@ wg config --global --model sonnet
 wg config --auto-evaluate true --auto-assign true
 
 # Set per-role model overrides
-wg config --assigner-model haiku --evaluator-model opus --evolver-model opus
+wg config --set-model assigner haiku
+wg config --set-model evaluator opus
+wg config --set-model evolver opus
 
 # Model routing: show and set per-role model assignments
 wg config --models
@@ -3958,6 +4138,38 @@ wg server connect [--user <USER>]
 ```bash
 wg server connect --user alice
 # Create or attach to Alice's tmux session
+```
+
+---
+
+### `wg user`
+
+Manage per-user conversation boards (`.user-NAME` tasks).
+
+```bash
+wg user <COMMAND>
+```
+
+**Subcommands:**
+| Subcommand | Description |
+|------------|-------------|
+| `init [NAME]` | Create a user board (defaults to `$WG_USER` or `$USER`) |
+| `list` | List all user boards (active + archived) |
+| `archive [NAME]` | Archive the active board and create a successor |
+
+**Examples:**
+```bash
+wg user init
+# Create a user board for the current user
+
+wg user init alice
+# Create a user board for alice
+
+wg user list
+# List all user boards (active and archived)
+
+wg user archive
+# Archive the current user's board and create a successor
 ```
 
 ---
