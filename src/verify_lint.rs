@@ -308,6 +308,171 @@ pub fn print_warnings(cmd: &str) -> bool {
     true
 }
 
+/// Auto-correct malformed verify commands by extracting the valid command prefix.
+/// Returns Some(corrected_command) if the command was malformed and could be fixed,
+/// or None if the command is already valid or cannot be auto-corrected.
+pub fn auto_correct_verify_command(cmd: &str) -> Option<String> {
+    let cmd = cmd.trim();
+    if cmd.is_empty() {
+        return None;
+    }
+
+    // First check for descriptive text patterns that indicate malformation
+    let lint_result = lint_verify(cmd);
+    for warning in &lint_result.warnings {
+        if warning.kind == LintKind::DescriptiveText {
+            // Found descriptive text, try to extract valid command prefix
+            return extract_valid_command_prefix(cmd);
+        }
+    }
+
+    // Check for specific trailing descriptive words that the existing patterns might miss
+    if has_trailing_descriptive_words(cmd) {
+        return extract_valid_command_prefix(cmd);
+    }
+
+    // Also check for bash syntax errors (though many "malformed" commands are syntactically valid)
+    let has_bash_error = match Command::new("bash").args(["-n", "-c", cmd]).output() {
+        Ok(output) => !output.status.success(),
+        Err(_) => false, // Can't run bash, assume it's ok
+    };
+
+    if has_bash_error {
+        // Try to extract valid command prefix by removing common descriptive patterns
+        return extract_valid_command_prefix(cmd);
+    }
+
+    None // Command appears to be valid
+}
+
+/// Extract a valid command prefix from a malformed verify command by removing
+/// common descriptive text patterns.
+fn extract_valid_command_prefix(cmd: &str) -> Option<String> {
+    let cmd = cmd.trim();
+
+    // Common patterns to strip from the end of commands
+    let strip_patterns = &[
+        "passes",
+        "succeeds",
+        "passes without errors",
+        "succeeds without errors",
+        "passes without warnings",
+        "succeeds without warnings",
+        "with no errors",
+        "with no warnings",
+        "with no regressions",
+        "without errors",
+        "without warnings",
+        "without regressions",
+        "compiles without warnings",
+        "compiles without errors",
+        "runs without errors",
+        "works correctly",
+        "runs successfully",
+        "completes successfully",
+    ];
+
+    // Try to find and strip each pattern from the end
+    for pattern in strip_patterns {
+        if let Some(corrected) = strip_trailing_pattern(cmd, pattern) {
+            // Check if the corrected command has valid bash syntax
+            if is_valid_bash_syntax(&corrected) {
+                return Some(corrected);
+            }
+        }
+    }
+
+    // Try a more aggressive approach: find the longest prefix that's valid bash
+    find_longest_valid_prefix(cmd)
+}
+
+/// Strip a specific pattern from the end of a command string.
+fn strip_trailing_pattern(cmd: &str, pattern: &str) -> Option<String> {
+    let lower_cmd = cmd.to_lowercase();
+    let lower_pattern = pattern.to_lowercase();
+
+    if let Some(pos) = lower_cmd.rfind(&lower_pattern) {
+        // Make sure this is at the end (allowing for whitespace)
+        let after_pattern = &lower_cmd[pos + lower_pattern.len()..];
+        if after_pattern.trim().is_empty() {
+            let before_pattern = cmd[..pos].trim();
+            if !before_pattern.is_empty() {
+                return Some(before_pattern.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Check if a command has valid bash syntax.
+fn is_valid_bash_syntax(cmd: &str) -> bool {
+    match Command::new("bash").args(["-n", "-c", cmd]).output() {
+        Ok(output) => output.status.success(),
+        Err(_) => false,
+    }
+}
+
+/// Find the longest valid bash prefix of a command.
+fn find_longest_valid_prefix(cmd: &str) -> Option<String> {
+    let words: Vec<&str> = cmd.split_whitespace().collect();
+    if words.is_empty() {
+        return None;
+    }
+
+    // Try progressively shorter prefixes
+    for i in (1..=words.len()).rev() {
+        let prefix = words[..i].join(" ");
+        if is_valid_bash_syntax(&prefix) && is_likely_executable_command(&prefix) {
+            return Some(prefix);
+        }
+    }
+
+    None
+}
+
+/// Check if a command has trailing descriptive words that suggest it's not a pure command.
+fn has_trailing_descriptive_words(cmd: &str) -> bool {
+    let cmd = cmd.trim().to_lowercase();
+
+    // Common trailing words that indicate descriptive text
+    let trailing_descriptive_words = &[
+        "passes",
+        "succeeds",
+        "works",
+        "runs",
+        "compiles",
+    ];
+
+    for word in trailing_descriptive_words {
+        if cmd.ends_with(word) {
+            // Check that it's a separate word, not part of another word
+            if let Some(pos) = cmd.rfind(word) {
+                let before = &cmd[..pos];
+                if before.ends_with(' ') || before.ends_with('\t') {
+                    return true;
+                }
+            }
+        }
+    }
+
+    false
+}
+
+/// Check if a command looks like an executable command (not just valid bash syntax).
+fn is_likely_executable_command(cmd: &str) -> bool {
+    let cmd = cmd.trim();
+    if cmd.is_empty() {
+        return false;
+    }
+
+    let first_token = extract_first_token(cmd);
+
+    // Must start with a known command or executable
+    KNOWN_VALID_FIRST_TOKENS.contains(&first_token.as_str())
+        || SHELL_BUILTINS.contains(&first_token.as_str())
+        || first_token.contains('/') // Path to executable
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -477,5 +642,75 @@ mod tests {
             extract_first_token("/usr/bin/env cargo test"),
             "/usr/bin/env"
         );
+    }
+
+    // --- Auto-correction tests ---
+
+    #[test]
+    fn test_auto_correct_cargo_test_passes() {
+        let corrected = auto_correct_verify_command("cargo test passes");
+        assert_eq!(corrected, Some("cargo test".to_string()));
+    }
+
+    #[test]
+    fn test_auto_correct_cargo_build_succeeds() {
+        let corrected = auto_correct_verify_command("cargo build succeeds without errors");
+        assert_eq!(corrected, Some("cargo build".to_string()));
+    }
+
+    #[test]
+    fn test_auto_correct_npm_test_passes() {
+        let corrected = auto_correct_verify_command("npm test passes without warnings");
+        assert_eq!(corrected, Some("npm test".to_string()));
+    }
+
+    #[test]
+    fn test_auto_correct_valid_command_unchanged() {
+        let corrected = auto_correct_verify_command("cargo test");
+        assert_eq!(corrected, None); // Already valid, no correction needed
+    }
+
+    #[test]
+    fn test_auto_correct_complex_valid_command() {
+        let corrected = auto_correct_verify_command("cargo test specific_test");
+        assert_eq!(corrected, None); // Valid command, no correction needed
+    }
+
+    #[test]
+    fn test_strip_trailing_pattern_basic() {
+        let stripped = strip_trailing_pattern("cargo test passes", "passes");
+        assert_eq!(stripped, Some("cargo test".to_string()));
+    }
+
+    #[test]
+    fn test_strip_trailing_pattern_with_whitespace() {
+        let stripped = strip_trailing_pattern("cargo build succeeds  ", "succeeds");
+        assert_eq!(stripped, Some("cargo build".to_string()));
+    }
+
+    #[test]
+    fn test_strip_trailing_pattern_not_at_end() {
+        let stripped = strip_trailing_pattern("cargo passes test", "passes");
+        assert_eq!(stripped, None); // Pattern not at end
+    }
+
+    #[test]
+    fn test_auto_correct_no_regressions() {
+        let corrected = auto_correct_verify_command("cargo test with no regressions");
+        assert_eq!(corrected, Some("cargo test".to_string()));
+    }
+
+    #[test]
+    fn test_has_trailing_descriptive_words() {
+        assert!(has_trailing_descriptive_words("cargo test passes"));
+        assert!(has_trailing_descriptive_words("npm test succeeds"));
+        assert!(has_trailing_descriptive_words("make build works"));
+        assert!(has_trailing_descriptive_words("python test.py runs"));
+        assert!(has_trailing_descriptive_words("gcc main.c compiles"));
+
+        // These should NOT be flagged
+        assert!(!has_trailing_descriptive_words("cargo test"));
+        assert!(!has_trailing_descriptive_words("true"));
+        assert!(!has_trailing_descriptive_words("test -f passes.txt")); // "passes" as filename
     }
 }

@@ -724,7 +724,78 @@ fn run_inner(
                     eprintln!("Verify command passed");
                 }
                 Err(output) => {
-                    // Verify failed — increment counter and log output
+                    // Check if this is a malformed verify command that can be auto-corrected
+                    if let Some(corrected_cmd) = workgraph::verify_lint::auto_correct_verify_command(&verify_cmd) {
+                        eprintln!(
+                            "Verify command appears malformed, auto-correcting: {} → {}",
+                            verify_cmd, corrected_cmd
+                        );
+
+                        // Update the task's verify command in the graph and reset failure count
+                        let id_for_update = id.to_string();
+                        let corrected_cmd_clone = corrected_cmd.clone();
+                        modify_graph(&path, |g| {
+                            if let Some(t) = g.get_task_mut(&id_for_update) {
+                                t.verify = Some(corrected_cmd_clone.clone());
+                                t.verify_failures = 0; // Reset failure count for auto-corrected command
+                                t.log.push(LogEntry {
+                                    timestamp: Utc::now().to_rfc3339(),
+                                    actor: Some("verify-autocorrect".to_string()),
+                                    user: None,
+                                    message: format!("Auto-corrected malformed verify command: '{}' → '{}'", verify_cmd, corrected_cmd_clone),
+                                });
+                                true
+                            } else {
+                                false
+                            }
+                        }).context("Failed to save auto-corrected verify command")?;
+
+                        // Retry with the corrected command
+                        eprintln!("Retrying with corrected command: {}", corrected_cmd);
+
+                        // Reload graph to get updated task
+                        let (new_graph, _) = super::load_workgraph_mut(dir)?;
+                        let updated_task = new_graph.get_task(id).ok_or_else(|| anyhow::anyhow!("Task {} not found after update", id))?;
+
+                        match run_verify_command_with_retry(&corrected_cmd, project_root, updated_task, &config.coordinator) {
+                            Ok(output) => {
+                                // Auto-correction worked! Log success
+                                let id_for_log = id.to_string();
+                                let stdout_preview: String = output.stdout.chars().take(200).collect();
+                                let stderr_preview: String = output.stderr.chars().take(200).collect();
+                                let mut log_msg = "Verify passed (after auto-correction).".to_string();
+                                if !stdout_preview.is_empty() {
+                                    log_msg.push_str(&format!(" stdout: {}", stdout_preview));
+                                }
+                                if !stderr_preview.is_empty() {
+                                    log_msg.push_str(&format!(" stderr: {}", stderr_preview));
+                                }
+                                let _ = modify_graph(&path, |g| {
+                                    if let Some(t) = g.get_task_mut(&id_for_log) {
+                                        t.log.push(LogEntry {
+                                            timestamp: Utc::now().to_rfc3339(),
+                                            actor: Some("verify".to_string()),
+                                            user: None,
+                                            message: log_msg,
+                                        });
+                                        true
+                                    } else {
+                                        false
+                                    }
+                                });
+                                eprintln!("Auto-corrected verify command passed");
+                                return Ok(()); // Success after auto-correction
+                            }
+                            Err(_) => {
+                                // Auto-corrected command also failed, proceed with normal failure handling
+                                eprintln!("Auto-corrected verify command also failed, treating as normal verify failure");
+                                // Fall through to normal failure handling with the original command
+                            }
+                        }
+                    }
+
+                    // Normal verify failure handling (original command failed and either
+                    // no auto-correction was possible, or auto-correction also failed)
                     let id_for_circuit = id.to_string();
                     let verify_cmd_clone = verify_cmd.clone();
                     let stdout_preview: String = output.stdout.chars().take(500).collect();
