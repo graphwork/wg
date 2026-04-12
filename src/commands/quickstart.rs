@@ -115,6 +115,12 @@ SERVICE MODE (recommended for parallel work)
   wg chat --history               # Show chat history
   wg chat --clear                 # Clear chat history
 
+  Advanced service tools:
+
+  wg screencast                       # Render TUI event traces into screencasts
+  wg tui-dump                         # Dump TUI screen contents (requires running wg tui)
+  wg server                           # Multi-user server setup automation
+
 MANUAL MODE (no service running)
 ─────────────────────────────────────────
   wg ready                    # See tasks available to work on
@@ -131,9 +137,22 @@ DISCOVERING & ADDING WORK
   wg add "X" --after Y        # Add task blocked by another
   wg edit <task-id>           # Edit title, description, deps, model, tags, etc.
 
-  Provider selection (anthropic, openai, openrouter, local):
+  Provider-specific models (use provider:model format):
 
-  wg add "X" --provider openrouter --model google/gemini-2.5-flash
+  wg add "X" --model openrouter:google/gemini-2.5-flash
+
+  Per-task timeout and scheduling:
+
+  wg add "X" --timeout 30m             # Task agent killed after 30 minutes
+  wg add "X" --cron "0 0 9 * * *"      # Recurring task (6-field cron: sec min hour day month dow)
+
+  Skills, inputs, and deliverables:
+
+  wg add "X" --skill rust --input src/lib.rs --deliverable report.md
+
+  Suppress implicit dependency on the creating task:
+
+  wg add "X" --independent              # No --after on the creating task
 
   Execution modes control the agent's capabilities:
 
@@ -171,6 +190,8 @@ TASK STATE COMMANDS
   wg pause <task-id>          # Pause task (coordinator skips it until resumed)
   wg wait <task-id> --until "condition"  # Park task until condition is met
   wg resume <task-id>         # Resume a paused/waiting task
+  wg unclaim <task-id>        # Release a claimed task (back to open)
+  wg requeue <task-id> --reason "..."  # Requeue in-progress task for triage
 
   Wait conditions:
     --until "task:dep-a=done"   # Wait for another task to reach a status
@@ -181,6 +202,10 @@ TASK STATE COMMANDS
 
   wg reschedule <task-id> --after 24   # Ready after 24 hours from now
   wg reschedule <task-id> --at <ISO>   # Ready at a specific timestamp
+
+  Dependency edge management:
+    wg add-dep <task> <dependency>     # Add a dependency: task waits for dependency
+    wg rm-dep <task> <dependency>      # Remove a dependency edge
 
 VALIDATION (--verify gate)
 ─────────────────────────────────────────
@@ -306,6 +331,10 @@ HOUSEKEEPING
   wg gc --dry-run               # Preview what would be removed
   wg gc --include-done          # Also remove done tasks (default: only failed+abandoned)
   wg gc --older 7d              # Only gc tasks older than 7 days
+  wg cleanup orphaned           # Clean up orphaned worktrees
+  wg cleanup recovery-branches  # Clean up old recovery branches
+  wg cleanup nightly            # Comprehensive nightly cleanup
+  wg metrics                    # Display cleanup and monitoring metrics
 
 DISCOVERY & PUBLISHING
 ─────────────────────────────────────────
@@ -362,13 +391,16 @@ EXECUTORS & MODELS
 
   Set a default model for all agents:
 
-  wg service start --model anthropic/claude-sonnet-4-6   # CLI override
-  # Or in .workgraph/config.toml under [coordinator]: model = "anthropic/claude-sonnet-4-6"
+  wg service start --model anthropic:claude-sonnet-4-6   # CLI override
+  # Or in .workgraph/config.toml under [coordinator]: model = "anthropic:claude-sonnet-4-6"
 
   Per-task model selection (overrides the default):
 
-  wg add "Fast task" --model google/gemini-2.5-flash
+  wg add "Fast task" --model openrouter:google/gemini-2.5-flash
   wg add "Heavy task" --model opus
+
+  Model format: use provider:model (e.g., openrouter:deepseek/deepseek-v3.2).
+  Short names (opus, sonnet, haiku) are also accepted.
 
   Model hierarchy: task --model > executor model > coordinator model > 'default'
 
@@ -460,6 +492,13 @@ ANALYSIS
   wg bottlenecks                      # Tasks blocking the most downstream work
   wg critical-path                    # Longest dependency chain
   wg forecast                         # Completion date estimate from velocity
+  wg velocity                         # Task completion rate per week
+  wg aging                            # Task age distribution (stale work detection)
+  wg workload                         # Agent workload balance
+  wg coordinate                       # Coordination status: ready, in-progress, parallel opportunities
+  wg impact <task-id>                 # What tasks depend on this one (downstream impact)
+  wg plan --hours 8                   # Plan work that fits within a time budget
+  wg cost <task-id>                   # Calculate cost including dependencies
 
 DEAD AGENT DETECTION
 ─────────────────────────────────────────
@@ -484,6 +523,45 @@ EVALUATION & MONITORING
   wg evaluate show                    # View evaluation history
   wg watch                            # Stream workgraph events as JSON lines
   wg watch --task <id>                # Stream events for a specific task
+
+NOTIFICATION & COMMUNICATION
+─────────────────────────────────────────
+  Telegram (human escalation):
+
+  wg telegram send "message"          # Send a message to the configured chat
+  wg telegram ask "question"          # Send and wait for reply
+  wg telegram poll                    # Poll for replies
+  wg telegram status                  # Show Telegram configuration status
+
+  Matrix (team notifications):
+
+  wg matrix                           # Matrix integration commands
+  wg notify                           # Send task notification to Matrix room
+
+RESOURCE MANAGEMENT
+─────────────────────────────────────────
+  wg resource add                     # Add a new resource
+  wg resource list                    # List all resources
+  wg resources                        # Show resource utilization (committed vs available)
+
+PROVIDER PROFILES
+─────────────────────────────────────────
+  wg profile list                     # List available provider profiles
+  wg profile show                     # Show current profile and model mappings
+  wg profile set <name>               # Set the active provider profile
+  wg profile refresh                  # Refresh model data from OpenRouter
+
+USER BOARDS
+─────────────────────────────────────────
+  wg user init                        # Create a user conversation board
+  wg user list                        # List all user boards
+  wg user archive                     # Archive active board and create successor
+
+COST & SPENDING
+─────────────────────────────────────────
+  wg spend                            # Show token usage and cost summaries
+  wg spend --today                    # Show only today's spend
+  wg openrouter                       # OpenRouter cost monitoring
 "#;
 
 fn json_output() -> serde_json::Value {
@@ -564,7 +642,7 @@ fn json_output() -> serde_json::Value {
             "discovery": {
                 "list": "List all tasks",
                 "show": "View task details and context",
-                "add": "Add a new task (supports --context-scope, --exec-mode, --provider, --delay, --not-before, --no-place, --place-near, --place-before)",
+                "add": "Add a new task (supports --context-scope, --exec-mode, --model provider:model, --delay, --not-before, --no-place, --place-near, --place-before, --cron, --timeout, --skill, --independent)",
                 "edit": "Edit an existing task (title, description, deps, model, tags, etc.)",
                 "ready": "See tasks available to work on (manual mode)",
                 "status": "Quick one-screen status overview"
@@ -584,7 +662,13 @@ fn json_output() -> serde_json::Value {
                 "pause": "Pause task (coordinator skips it until resumed)",
                 "wait": "Park task until condition met (wg wait <id> --until \"condition\")",
                 "resume": "Resume a paused/waiting task",
-                "reschedule": "Set not_before timestamp (wg reschedule <id> --after 24)"
+                "reschedule": "Set not_before timestamp (wg reschedule <id> --after 24)",
+                "unclaim": "Release a claimed task back to open",
+                "requeue": "Requeue in-progress task for triage (wg requeue <id> --reason \"...\")"
+            },
+            "dependencies": {
+                "add_dep": "Add a dependency edge (wg add-dep <task> <dependency>)",
+                "rm_dep": "Remove a dependency edge (wg rm-dep <task> <dependency>)"
             }
         },
         "validation": {
@@ -631,6 +715,9 @@ fn json_output() -> serde_json::Value {
         "scheduling": {
             "delay": "wg add \"task\" --delay 1h",
             "not_before": "wg add \"task\" --not-before 2026-04-01T09:00:00Z",
+            "cron": "wg add \"task\" --cron \"0 0 9 * * *\" (6-field: sec min hour day month dow)",
+            "timeout": "wg add \"task\" --timeout 30m (per-task timeout)",
+            "independent": "wg add \"task\" --independent (suppress implicit --after)",
             "placement": {
                 "no_place": "wg add \"task\" --no-place (skip auto-placement)",
                 "place_near": "wg add \"task\" --place-near task-a",
@@ -668,10 +755,10 @@ fn json_output() -> serde_json::Value {
         ],
         "executors_and_models": {
             "switch_executor": "wg config --coordinator-executor amplifier",
-            "set_model_cli": "wg service start --model anthropic/claude-sonnet-4-6",
-            "set_model_config": "[coordinator] model = \"anthropic/claude-sonnet-4-6\"",
-            "per_task_model": "wg add \"task\" --model google/gemini-2.5-flash",
-            "per_task_provider": "wg add \"task\" --provider openrouter",
+            "set_model_cli": "wg service start --model anthropic:claude-sonnet-4-6",
+            "set_model_config": "[coordinator] model = \"anthropic:claude-sonnet-4-6\"",
+            "per_task_model": "wg add \"task\" --model openrouter:google/gemini-2.5-flash",
+            "model_format": "provider:model (e.g., openrouter:deepseek/deepseek-v3.2). Short names (opus, sonnet, haiku) also accepted.",
             "hierarchy": "task --model > executor model > coordinator model > 'default'"
         },
         "model_registry": {
@@ -739,7 +826,11 @@ fn json_output() -> serde_json::Value {
             "gc": "wg gc",
             "gc_dry_run": "wg gc --dry-run",
             "gc_include_done": "wg gc --include-done",
-            "gc_older": "wg gc --older 7d"
+            "gc_older": "wg gc --older 7d",
+            "cleanup_orphaned": "wg cleanup orphaned",
+            "cleanup_branches": "wg cleanup recovery-branches",
+            "cleanup_nightly": "wg cleanup nightly",
+            "metrics": "wg metrics"
         },
         "functions": {
             "description": "Reusable workflow patterns extracted from completed tasks.",
@@ -803,7 +894,14 @@ fn json_output() -> serde_json::Value {
             "structure": "wg structure (entry points, dead ends, fan-out)",
             "bottlenecks": "wg bottlenecks (tasks blocking the most downstream work)",
             "critical_path": "wg critical-path (longest dependency chain)",
-            "forecast": "wg forecast (completion date from velocity)"
+            "forecast": "wg forecast (completion date from velocity)",
+            "velocity": "wg velocity (task completion rate per week)",
+            "aging": "wg aging (task age distribution)",
+            "workload": "wg workload (agent workload balance)",
+            "coordinate": "wg coordinate (coordination status: ready, in-progress, parallel opportunities)",
+            "impact": "wg impact <task-id> (downstream impact analysis)",
+            "plan": "wg plan --hours 8 (plan work within a budget)",
+            "cost": "wg cost <task-id> (calculate cost including dependencies)"
         },
         "dead_agents": {
             "detect": "wg dead-agents",
@@ -823,6 +921,42 @@ fn json_output() -> serde_json::Value {
             "evaluate_show": "wg evaluate show",
             "watch": "wg watch",
             "watch_task": "wg watch --task <id>"
+        },
+        "notification": {
+            "telegram": {
+                "send": "wg telegram send \"message\"",
+                "ask": "wg telegram ask \"question\"",
+                "poll": "wg telegram poll",
+                "status": "wg telegram status"
+            },
+            "matrix": "wg matrix",
+            "notify": "wg notify"
+        },
+        "resources": {
+            "add": "wg resource add",
+            "list": "wg resource list",
+            "utilization": "wg resources"
+        },
+        "profiles": {
+            "list": "wg profile list",
+            "show": "wg profile show",
+            "set": "wg profile set <name>",
+            "refresh": "wg profile refresh"
+        },
+        "user_boards": {
+            "init": "wg user init",
+            "list": "wg user list",
+            "archive": "wg user archive"
+        },
+        "cost_spending": {
+            "spend": "wg spend",
+            "spend_today": "wg spend --today",
+            "openrouter": "wg openrouter"
+        },
+        "advanced_service": {
+            "screencast": "wg screencast",
+            "tui_dump": "wg tui-dump",
+            "server": "wg server"
         }
     })
 }
@@ -1162,6 +1296,11 @@ mod tests {
             "DEAD AGENT DETECTION",
             "PEER WORKGRAPHS",
             "EVALUATION & MONITORING",
+            "NOTIFICATION & COMMUNICATION",
+            "RESOURCE MANAGEMENT",
+            "PROVIDER PROFILES",
+            "USER BOARDS",
+            "COST & SPENDING",
         ];
         for section in &required_sections {
             assert!(text.contains(section), "Missing section: {}", section);
@@ -1207,5 +1346,126 @@ mod tests {
         assert!(output.get("messaging").is_some());
         assert!(output.get("wait_conditions").is_some());
         assert!(output.get("discovery_publishing").is_some());
+    }
+
+    #[test]
+    fn test_quickstart_text_contains_notification() {
+        assert!(QUICKSTART_TEXT.contains("NOTIFICATION & COMMUNICATION"));
+        assert!(QUICKSTART_TEXT.contains("wg telegram send"));
+        assert!(QUICKSTART_TEXT.contains("wg telegram ask"));
+    }
+
+    #[test]
+    fn test_quickstart_text_contains_resources() {
+        assert!(QUICKSTART_TEXT.contains("RESOURCE MANAGEMENT"));
+        assert!(QUICKSTART_TEXT.contains("wg resource add"));
+        assert!(QUICKSTART_TEXT.contains("wg resources"));
+    }
+
+    #[test]
+    fn test_quickstart_text_contains_profiles() {
+        assert!(QUICKSTART_TEXT.contains("PROVIDER PROFILES"));
+        assert!(QUICKSTART_TEXT.contains("wg profile list"));
+        assert!(QUICKSTART_TEXT.contains("wg profile set"));
+    }
+
+    #[test]
+    fn test_quickstart_text_contains_user_boards() {
+        assert!(QUICKSTART_TEXT.contains("USER BOARDS"));
+        assert!(QUICKSTART_TEXT.contains("wg user init"));
+    }
+
+    #[test]
+    fn test_quickstart_text_contains_cost_spending() {
+        assert!(QUICKSTART_TEXT.contains("COST & SPENDING"));
+        assert!(QUICKSTART_TEXT.contains("wg spend"));
+    }
+
+    #[test]
+    fn test_quickstart_text_contains_unclaim_requeue() {
+        assert!(QUICKSTART_TEXT.contains("wg unclaim"));
+        assert!(QUICKSTART_TEXT.contains("wg requeue"));
+    }
+
+    #[test]
+    fn test_quickstart_text_contains_dep_management() {
+        assert!(QUICKSTART_TEXT.contains("wg add-dep"));
+        assert!(QUICKSTART_TEXT.contains("wg rm-dep"));
+    }
+
+    #[test]
+    fn test_quickstart_text_contains_cleanup() {
+        assert!(QUICKSTART_TEXT.contains("wg cleanup orphaned"));
+        assert!(QUICKSTART_TEXT.contains("wg cleanup nightly"));
+        assert!(QUICKSTART_TEXT.contains("wg metrics"));
+    }
+
+    #[test]
+    fn test_quickstart_text_contains_extended_analysis() {
+        assert!(QUICKSTART_TEXT.contains("wg velocity"));
+        assert!(QUICKSTART_TEXT.contains("wg aging"));
+        assert!(QUICKSTART_TEXT.contains("wg workload"));
+        assert!(QUICKSTART_TEXT.contains("wg coordinate"));
+        assert!(QUICKSTART_TEXT.contains("wg impact"));
+        assert!(QUICKSTART_TEXT.contains("wg plan"));
+        assert!(QUICKSTART_TEXT.contains("wg cost"));
+    }
+
+    #[test]
+    fn test_quickstart_text_contains_advanced_service() {
+        assert!(QUICKSTART_TEXT.contains("wg screencast"));
+        assert!(QUICKSTART_TEXT.contains("wg tui-dump"));
+        assert!(QUICKSTART_TEXT.contains("wg server"));
+    }
+
+    #[test]
+    fn test_quickstart_text_provider_model_format() {
+        assert!(QUICKSTART_TEXT.contains("provider:model"));
+        assert!(QUICKSTART_TEXT.contains("openrouter:google/gemini-2.5-flash"));
+        // Deprecated --provider flag should NOT appear
+        assert!(!QUICKSTART_TEXT.contains("--provider openrouter"));
+    }
+
+    #[test]
+    fn test_quickstart_text_contains_cron_timeout() {
+        assert!(QUICKSTART_TEXT.contains("--cron"));
+        assert!(QUICKSTART_TEXT.contains("--timeout"));
+        assert!(QUICKSTART_TEXT.contains("--independent"));
+    }
+
+    #[test]
+    fn test_json_output_has_new_sections_apr12() {
+        let output = json_output();
+        assert!(output.get("notification").is_some());
+        assert!(output.get("resources").is_some());
+        assert!(output.get("profiles").is_some());
+        assert!(output.get("user_boards").is_some());
+        assert!(output.get("cost_spending").is_some());
+        assert!(output.get("advanced_service").is_some());
+
+        // Check analysis has new fields
+        let analysis = output.get("analysis").unwrap();
+        assert!(analysis.get("velocity").is_some());
+        assert!(analysis.get("aging").is_some());
+        assert!(analysis.get("workload").is_some());
+        assert!(analysis.get("coordinate").is_some());
+        assert!(analysis.get("impact").is_some());
+        assert!(analysis.get("plan").is_some());
+        assert!(analysis.get("cost").is_some());
+
+        // Check housekeeping has cleanup
+        let hk = output.get("housekeeping").unwrap();
+        assert!(hk.get("cleanup_orphaned").is_some());
+        assert!(hk.get("metrics").is_some());
+
+        // Check executors has model_format
+        let em = output.get("executors_and_models").unwrap();
+        assert!(em.get("model_format").is_some());
+        // No deprecated provider field
+        assert!(em.get("per_task_provider").is_none());
+
+        // Check commands has dependencies section
+        let commands = output.get("commands").unwrap();
+        assert!(commands.get("dependencies").is_some());
     }
 }
