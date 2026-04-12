@@ -270,6 +270,7 @@ mod provenance_coverage_tests {
             false,
             None, // iteration_config
             None, // priority
+            None, // cron
         )
         .unwrap();
 
@@ -321,6 +322,7 @@ mod provenance_coverage_tests {
             false,
             None, // iteration_config
             None, // priority
+            None, // cron
         )
         .unwrap();
 
@@ -404,6 +406,7 @@ mod provenance_coverage_tests {
             false,
             None, // iteration_config
             None, // priority
+            None, // cron
         )
         .unwrap();
 
@@ -462,6 +465,7 @@ mod provenance_coverage_tests {
             false,
             None,
             None, // priority
+            None, // cron
         )
         .unwrap();
 
@@ -514,6 +518,7 @@ mod provenance_coverage_tests {
             false,
             None,
             None, // priority
+            None, // cron
         )
         .unwrap();
 
@@ -566,6 +571,7 @@ mod provenance_coverage_tests {
             false,
             None, // iteration_config
             None, // priority
+            None, // cron
         )
         .unwrap();
 
@@ -618,6 +624,7 @@ mod provenance_coverage_tests {
             false,
             None, // iteration_config
             None, // priority
+            None, // cron
         )
         .unwrap();
 
@@ -673,6 +680,7 @@ mod provenance_coverage_tests {
             false,
             None, // iteration_config
             None, // priority
+            None, // cron
         )
         .unwrap();
 
@@ -730,6 +738,7 @@ mod provenance_coverage_tests {
             false,
             None, // iteration_config
             None, // priority
+            None, // cron
         )
         .unwrap();
 
@@ -787,6 +796,7 @@ mod provenance_coverage_tests {
             false,
             None,
             None, // priority
+            None, // cron
         )
         .unwrap();
         super::done::run(dir, "prov-archive", false, false).unwrap();
@@ -841,6 +851,7 @@ mod provenance_coverage_tests {
             false,
             None,
             None, // priority
+            None, // cron
         )
         .unwrap();
         super::fail::run(dir, "prov-gc", Some("oops")).unwrap();
@@ -898,6 +909,7 @@ mod provenance_coverage_tests {
             false,
             None,
             None, // priority
+            None, // cron
         )
         .unwrap();
         // edit

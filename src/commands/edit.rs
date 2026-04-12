@@ -565,6 +565,7 @@ mod tests {
             false, // independent
             None,  // iteration_config
             None,  // priority
+            None,  // cron
         )?;
 
         Ok(())
@@ -615,6 +616,7 @@ mod tests {
             false,
             None, // iteration_config
             None, // priority
+            None, // cron
         )?;
 
         crate::commands::add::run(
@@ -656,6 +658,7 @@ mod tests {
             false,
             None,
             None, // priority
+            None, // cron
         )?;
 
         Ok(())

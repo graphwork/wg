@@ -228,6 +228,7 @@ mod tests {
             false,
             None,
             None, // priority
+            None, // cron
         )
         .unwrap();
 
@@ -270,6 +271,7 @@ mod tests {
             false,
             None,
             None, // priority
+            None, // cron
         )
         .unwrap();
 
@@ -312,6 +314,7 @@ mod tests {
             false,
             None,
             None, // priority
+            None, // cron
         )
         .unwrap();
     }
