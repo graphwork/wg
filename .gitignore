@@ -12,5 +12,8 @@ agency_session_id.txt
 .claude/worktrees/
 .wg-worktrees/
 
+# Notification configuration with secrets
+notify.toml
+
 # Terminal Bench trial results (large, per-run artifacts)
 terminal-bench/results/
