@@ -17,6 +17,7 @@ use super::{load_workgraph};
 use crate::commands::service::worktree::{WORKTREES_DIR, remove_worktree, verify_worktree_cleanup};
 
 /// Parse an ISO 8601 timestamp string to SystemTime
+#[allow(dead_code)]
 fn parse_timestamp_to_systemtime(timestamp_opt: &Option<String>) -> Option<SystemTime> {
     let timestamp_str = timestamp_opt.as_ref()?;
     let dt = timestamp_str.parse::<DateTime<Utc>>().ok()?;
