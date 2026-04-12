@@ -773,6 +773,114 @@ fn run_inner(
         check_agent_git_hygiene(dir, id);
     }
 
+    // Auto-defer verify when the task has been decomposed into subtasks.
+    // When an agent decomposes a parent task into children (via `wg add --after parent`),
+    // the parent's --verify command creates a deadlock: verify fails because children
+    // haven't run, but children are blocked on the parent completing. We resolve this
+    // by detecting children and deferring verify to a synthetic aggregate task that
+    // runs after all children complete.
+    if let Some(task) = graph.get_task(id)
+        && task.verify.is_some()
+    {
+        // Find non-system children: tasks that list this task in their `after` field
+        // and were created by the agent (not system scaffolding like .assign-*, .flip-*, etc.)
+        let children: Vec<String> = task
+            .before
+            .iter()
+            .filter(|child_id| {
+                !workgraph::graph::is_system_task(child_id)
+                    && graph
+                        .get_task(child_id)
+                        .is_some_and(|ct| !ct.status.is_terminal())
+            })
+            .cloned()
+            .collect();
+
+        if !children.is_empty() {
+            let verify_cmd = task.verify.clone().unwrap();
+            let verify_timeout = task.verify_timeout.clone();
+            let deferred_id = format!(".verify-deferred-{}", id);
+
+            // Only create the deferred task if it doesn't already exist
+            if graph.get_task(&deferred_id).is_none() {
+                let id_for_defer = id.to_string();
+                let children_clone = children.clone();
+                let deferred_id_clone = deferred_id.clone();
+                let verify_cmd_clone = verify_cmd.clone();
+                let verify_timeout_clone = verify_timeout.clone();
+
+                modify_graph(&path, |g| {
+                    // Clear verify from the parent so it can complete
+                    if let Some(parent) = g.get_task_mut(&id_for_defer) {
+                        parent.verify = None;
+                        parent.log.push(LogEntry {
+                            timestamp: Utc::now().to_rfc3339(),
+                            actor: Some("verify-defer".to_string()),
+                            user: None,
+                            message: format!(
+                                "Verify deferred to {} — {} subtask(s) detected: {}",
+                                deferred_id_clone,
+                                children_clone.len(),
+                                children_clone.join(", "),
+                            ),
+                        });
+                    }
+
+                    // Create the deferred verification task that depends on all children
+                    let deferred_task = Task {
+                        id: deferred_id_clone.clone(),
+                        title: format!("Deferred verify: {}", id_for_defer),
+                        description: Some(format!(
+                            "## Deferred Verification\n\n\
+                             The parent task `{}` was decomposed into subtasks. \
+                             This task runs the parent's verify command after all subtasks complete.\n\n\
+                             **Verify command:** `{}`\n\n\
+                             **Subtasks:**\n{}\n",
+                            id_for_defer,
+                            verify_cmd_clone,
+                            children_clone
+                                .iter()
+                                .map(|c| format!("- `{}`", c))
+                                .collect::<Vec<_>>()
+                                .join("\n"),
+                        )),
+                        status: Status::Open,
+                        after: children_clone.clone(),
+                        verify: Some(verify_cmd_clone),
+                        verify_timeout: verify_timeout_clone,
+                        created_at: Some(Utc::now().to_rfc3339()),
+                        tags: vec!["verify-deferred".to_string()],
+                        ..Default::default()
+                    };
+
+                    g.add_node(Node::Task(deferred_task));
+
+                    // Maintain bidirectional edges: each child's `before` should point to the deferred task
+                    for child_id in &children_clone {
+                        if let Some(child) = g.get_task_mut(child_id)
+                            && !child.before.contains(&deferred_id_clone)
+                        {
+                            child.before.push(deferred_id_clone.clone());
+                        }
+                    }
+
+                    true
+                })
+                .context("Failed to create deferred verify task")?;
+
+                eprintln!(
+                    "Verify deferred to '{}' — {} subtask(s) must complete first",
+                    deferred_id,
+                    children.len(),
+                );
+
+                // Reload graph after mutation
+                let (new_graph, _) = super::load_workgraph_mut(dir)?;
+                graph = new_graph;
+            }
+        }
+    }
+
     // Run verify command gate (if task has a verify field)
     if let Some(verify_cmd) = graph.get_task(id).and_then(|t| t.verify.clone()) {
         if skip_verify {
@@ -2847,5 +2955,160 @@ mod tests {
         let graph = load_graph(&path).unwrap();
         let task = graph.get_task("t1").unwrap();
         assert_eq!(task.status, Status::Done);
+    }
+
+    #[test]
+    fn test_done_defers_verify_when_task_has_children() {
+        let dir = tempdir().unwrap();
+        let dir_path = dir.path();
+
+        // Parent task with a verify command that would fail (children haven't done work yet)
+        let mut parent = make_task("parent", "Parent task", Status::InProgress);
+        parent.verify = Some("exit 1".to_string()); // would fail normally
+        parent.before = vec!["child-a".to_string(), "child-b".to_string()];
+
+        // Children depend on parent
+        let mut child_a = make_task("child-a", "Child A", Status::Open);
+        child_a.after = vec!["parent".to_string()];
+
+        let mut child_b = make_task("child-b", "Child B", Status::Open);
+        child_b.after = vec!["parent".to_string()];
+
+        setup_workgraph(dir_path, vec![parent, child_a, child_b]);
+
+        // Parent's `wg done` should succeed because verify is deferred
+        let result = run(dir_path, "parent", false, false);
+        assert!(
+            result.is_ok(),
+            "Parent with children should defer verify, got: {:?}",
+            result,
+        );
+
+        let path = graph_path(dir_path);
+        let graph = load_graph(&path).unwrap();
+
+        // Parent should be Done with verify cleared
+        let parent = graph.get_task("parent").unwrap();
+        assert_eq!(parent.status, Status::Done);
+        assert!(
+            parent.verify.is_none(),
+            "Parent verify should be cleared after deferral"
+        );
+
+        // Deferred verify task should exist
+        let deferred = graph.get_task(".verify-deferred-parent").unwrap();
+        assert_eq!(deferred.status, Status::Open);
+        assert_eq!(
+            deferred.verify,
+            Some("exit 1".to_string()),
+            "Deferred task should inherit parent's verify command"
+        );
+        assert!(
+            deferred.after.contains(&"child-a".to_string()),
+            "Deferred task should depend on child-a"
+        );
+        assert!(
+            deferred.after.contains(&"child-b".to_string()),
+            "Deferred task should depend on child-b"
+        );
+
+        // Parent log should mention deferral
+        let has_defer_log = parent
+            .log
+            .iter()
+            .any(|e| e.message.contains("Verify deferred"));
+        assert!(
+            has_defer_log,
+            "Parent log should mention verify deferral, got: {:?}",
+            parent.log.iter().map(|e| &e.message).collect::<Vec<_>>()
+        );
+
+        // Children should have .verify-deferred-parent in their before list
+        let child_a = graph.get_task("child-a").unwrap();
+        assert!(
+            child_a
+                .before
+                .contains(&".verify-deferred-parent".to_string()),
+            "child-a.before should include deferred task"
+        );
+    }
+
+    #[test]
+    fn test_done_does_not_defer_verify_when_no_children() {
+        // Verify still runs inline when there are no children
+        let dir = tempdir().unwrap();
+        let dir_path = dir.path();
+
+        let mut task = make_task("t1", "Solo task", Status::InProgress);
+        task.verify = Some("exit 0".to_string());
+        setup_workgraph(dir_path, vec![task]);
+
+        let result = run(dir_path, "t1", false, false);
+        assert!(result.is_ok());
+
+        let path = graph_path(dir_path);
+        let graph = load_graph(&path).unwrap();
+        let task = graph.get_task("t1").unwrap();
+        assert_eq!(task.status, Status::Done);
+        // No deferred task should exist
+        assert!(graph.get_task(".verify-deferred-t1").is_none());
+    }
+
+    #[test]
+    fn test_done_does_not_defer_verify_for_system_children_only() {
+        // System tasks (dot-prefixed) like .flip-*, .evaluate-* should not trigger deferral
+        let dir = tempdir().unwrap();
+        let dir_path = dir.path();
+
+        let mut parent = make_task("parent", "Parent", Status::InProgress);
+        parent.verify = Some("exit 0".to_string());
+        parent.before = vec![".flip-parent".to_string(), ".evaluate-parent".to_string()];
+
+        let mut flip = make_task(".flip-parent", "FLIP", Status::Open);
+        flip.after = vec!["parent".to_string()];
+
+        let mut eval = make_task(".evaluate-parent", "Evaluate", Status::Open);
+        eval.after = vec!["parent".to_string()];
+
+        setup_workgraph(dir_path, vec![parent, flip, eval]);
+
+        // Should run verify inline since only system children exist
+        let result = run(dir_path, "parent", false, false);
+        assert!(result.is_ok());
+
+        let path = graph_path(dir_path);
+        let graph = load_graph(&path).unwrap();
+        assert!(
+            graph.get_task(".verify-deferred-parent").is_none(),
+            "No deferred task for system-only children"
+        );
+    }
+
+    #[test]
+    fn test_done_deferred_verify_preserves_timeout() {
+        let dir = tempdir().unwrap();
+        let dir_path = dir.path();
+
+        let mut parent = make_task("parent", "Parent", Status::InProgress);
+        parent.verify = Some("exit 1".to_string());
+        parent.verify_timeout = Some("30m".to_string());
+        parent.before = vec!["child".to_string()];
+
+        let mut child = make_task("child", "Child", Status::Open);
+        child.after = vec!["parent".to_string()];
+
+        setup_workgraph(dir_path, vec![parent, child]);
+
+        let result = run(dir_path, "parent", false, false);
+        assert!(result.is_ok());
+
+        let path = graph_path(dir_path);
+        let graph = load_graph(&path).unwrap();
+        let deferred = graph.get_task(".verify-deferred-parent").unwrap();
+        assert_eq!(
+            deferred.verify_timeout,
+            Some("30m".to_string()),
+            "Deferred task should inherit verify timeout"
+        );
     }
 }
