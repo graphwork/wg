@@ -1907,6 +1907,12 @@ pub struct ServiceHealthState {
     pub agents_total: usize,
     /// Whether coordinator is paused.
     pub paused: bool,
+    /// Reason for being paused (if paused).
+    pub pause_reason: Option<String>,
+    /// Whether the pause is due to provider errors.
+    pub provider_auto_pause: bool,
+    /// Previous provider auto-pause state (for detecting changes).
+    pub prev_provider_auto_pause: bool,
     /// Stuck tasks (in-progress with dead agent PID).
     pub stuck_tasks: Vec<StuckTask>,
     /// Recent errors from daemon log (last 5 lines containing ERROR/WARN).
@@ -1937,6 +1943,9 @@ impl Default for ServiceHealthState {
             agents_max: 0,
             agents_total: 0,
             paused: false,
+            pause_reason: None,
+            provider_auto_pause: false,
+            prev_provider_auto_pause: false,
             stuck_tasks: Vec::new(),
             recent_errors: Vec::new(),
             last_poll: Instant::now(),
@@ -9624,6 +9633,38 @@ impl VizApp {
         self.service_health.paused = coord.paused;
         self.service_health.agents_max = coord.max_agents;
 
+        // Load provider health to determine pause reason
+        use workgraph::service::provider_health::ProviderHealth;
+        let provider_health = ProviderHealth::load(dir).unwrap_or_default();
+
+        // Detect auto-pause state change for notifications
+        let new_provider_auto_pause = coord.paused && provider_health.service_paused;
+
+        if coord.paused {
+            if provider_health.service_paused {
+                self.service_health.provider_auto_pause = true;
+                self.service_health.pause_reason = provider_health.pause_reason.clone();
+            } else {
+                self.service_health.provider_auto_pause = false;
+                self.service_health.pause_reason = Some("Manual pause".to_string());
+            }
+        } else {
+            self.service_health.provider_auto_pause = false;
+            self.service_health.pause_reason = None;
+        }
+
+        // Show notification if provider auto-pause just triggered
+        if new_provider_auto_pause && !self.service_health.prev_provider_auto_pause {
+            let reason = self.service_health.pause_reason
+                .as_deref()
+                .unwrap_or("Provider health issue");
+            let msg = format!("⚠ Service auto-paused: {} - Press Ctrl+R to resume", reason);
+            self.push_toast(msg, ToastSeverity::Warning);
+        }
+
+        // Update previous state for next comparison
+        self.service_health.prev_provider_auto_pause = new_provider_auto_pause;
+
         // Load agent registry for alive count and stuck task detection.
         // Use status-based count (active_count) to match `wg service status` / `wg status`.
         // The daemon's cleanup routines (triage, dead-agent reaping) keep registry
@@ -9772,7 +9813,10 @@ impl VizApp {
         // Determine health level
         let stuck_count = self.service_health.stuck_tasks.len();
         let count_label = format!("{}/{}", alive, coord.max_agents);
-        if coord.paused
+        if self.service_health.provider_auto_pause {
+            // Provider errors are serious - show as red
+            self.service_health.level = ServiceHealthLevel::Red;
+        } else if coord.paused
             || uptime_secs.is_some_and(|s| s < 30)
             || stuck_count > 0
             || !self.service_health.recent_errors.is_empty()
@@ -9782,7 +9826,11 @@ impl VizApp {
             self.service_health.level = ServiceHealthLevel::Green;
         }
         self.service_health.label = if coord.paused {
-            "PAUSED".to_string()
+            if self.service_health.provider_auto_pause {
+                "PAUSED: provider error".to_string()
+            } else {
+                "PAUSED".to_string()
+            }
         } else {
             count_label
         };

@@ -1091,6 +1091,20 @@ fn handle_graph_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
             app.open_history_browser();
         }
 
+        // Ctrl+R: quick resume when paused due to provider errors
+        KeyCode::Char('r') if modifiers.contains(KeyModifiers::CONTROL) => {
+            if app.service_health.paused && app.service_health.provider_auto_pause {
+                app.exec_command(
+                    vec!["service".into(), "resume".into()],
+                    CommandEffect::RefreshAndNotify("Service resumed".into()),
+                );
+                app.push_toast(
+                    "Service resumed from provider error".into(),
+                    super::state::ToastSeverity::Info,
+                );
+            }
+        }
+
         // Search
         KeyCode::Char('/') => {
             app.search_active = true;

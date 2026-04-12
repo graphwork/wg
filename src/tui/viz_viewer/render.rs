@@ -7987,16 +7987,46 @@ fn draw_service_health_detail(frame: &mut Frame, app: &VizApp) {
 
     // Paused
     if health.paused {
+        let pause_color = if health.provider_auto_pause {
+            Color::Red
+        } else {
+            Color::Yellow
+        };
         lines.push(Line::from(vec![
             Span::styled("  Status: ", label_style),
             Span::styled(
                 "PAUSED",
                 Style::default()
-                    .fg(Color::Yellow)
+                    .fg(pause_color)
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(" (agent spawning disabled)", dim_style),
         ]));
+
+        // Show pause reason if available
+        if let Some(ref reason) = health.pause_reason {
+            let reason_display = if reason.len() > 40 {
+                format!(
+                    "{}...",
+                    &reason[..reason.floor_char_boundary(37)]
+                )
+            } else {
+                reason.clone()
+            };
+            lines.push(Line::from(vec![
+                Span::styled("  Reason: ", label_style),
+                Span::styled(reason_display, Style::default().fg(pause_color)),
+            ]));
+        }
+
+        // Show resume hint for provider auto-pause
+        if health.provider_auto_pause {
+            lines.push(Line::from(vec![
+                Span::styled("  ", dim_style),
+                Span::styled("Resume with: ", dim_style),
+                Span::styled("wg service resume", Style::default().fg(Color::Cyan)),
+            ]));
+        }
     }
 
     lines.push(Line::from(""));
