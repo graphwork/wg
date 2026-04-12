@@ -1635,6 +1635,13 @@ pub enum Commands {
     /// Show time counters and agent statistics
     Stats,
 
+    /// Display cleanup and monitoring metrics
+    Metrics {
+        /// Output as JSON instead of formatted text
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Send task notification to Matrix room
     #[cfg(any(feature = "matrix", feature = "matrix-lite"))]
     Notify {
@@ -3618,6 +3625,7 @@ pub fn command_name(cmd: &Commands) -> &'static str {
         Commands::Quickstart => "quickstart",
         Commands::Status => "status",
         Commands::Stats => "stats",
+        Commands::Metrics { .. } => "metrics",
         #[cfg(any(feature = "matrix", feature = "matrix-lite"))]
         Commands::Notify { .. } => "notify",
         #[cfg(any(feature = "matrix", feature = "matrix-lite"))]
@@ -3700,6 +3708,7 @@ pub fn supports_json(cmd: &Commands) -> bool {
             | Commands::Quickstart
             | Commands::Status
             | Commands::Stats
+            | Commands::Metrics { .. }
             | Commands::Chat { .. }
             | Commands::Telegram { .. }
             | Commands::Endpoints { .. }

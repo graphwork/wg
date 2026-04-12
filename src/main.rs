@@ -2191,6 +2191,7 @@ fn main() -> Result<()> {
         Commands::Quickstart => commands::quickstart::run(cli.json),
         Commands::Status => commands::status::run(&workgraph_dir, cli.json),
         Commands::Stats => commands::stats::run(&workgraph_dir, cli.json),
+        Commands::Metrics { json } => commands::metrics::run(&workgraph_dir, json),
         #[cfg(any(feature = "matrix", feature = "matrix-lite"))]
         Commands::Notify {
             task,
