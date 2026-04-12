@@ -57,6 +57,13 @@ pub fn run(
     history_depth: Option<usize>,
     no_history: bool,
 ) -> Result<()> {
+    // Check if stdout is a terminal before any terminal operations to avoid "open terminal failed" errors
+    if !crossterm::tty::IsTty::is_tty(&io::stdout()) {
+        return Err(anyhow::anyhow!(
+            "Cannot create TUI: stdout is not a terminal (this is normal in test/CI environments)"
+        ));
+    }
+
     let recording = recording || detect_asciinema();
 
     let original_hook = std::panic::take_hook();
@@ -85,13 +92,6 @@ pub fn run(
             io::stdout(),
             PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
         );
-    }
-
-    // Check if stdout is a terminal to avoid "open terminal failed" errors in test/CI environments
-    if !crossterm::tty::IsTty::is_tty(&io::stdout()) {
-        return Err(anyhow::anyhow!(
-            "Cannot create TUI: stdout is not a terminal (this is normal in test/CI environments)"
-        ));
     }
 
     let backend = CrosstermBackend::new(io::stdout());

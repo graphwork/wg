@@ -35,6 +35,13 @@ pub fn run(dir: &Path, root_id: &str, speed: f64) -> Result<()> {
     let last_ts = snapshots.last().unwrap().timestamp;
     let total_secs = (last_ts - first_ts).num_seconds().max(1);
 
+    // Check if stdout is a terminal before entering raw mode
+    if !crossterm::tty::IsTty::is_tty(&io::stdout()) {
+        return Err(anyhow::anyhow!(
+            "Cannot run trace animation: stdout is not a terminal (this is normal in test/CI environments)"
+        ));
+    }
+
     // Enter raw mode
     terminal::enable_raw_mode()?;
     let mut stdout = io::stdout();
