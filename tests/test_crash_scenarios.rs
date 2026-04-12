@@ -846,8 +846,8 @@ working_dir = "/nonexistent/directory"
 
     // If service started, test spawn failure handling
     if wait_for_service_ready(&wg_dir, Duration::from_secs(5)) {
-        // Add a task
-        add_shell_task(&wg_dir, "spawn-fail-task", "Spawn Failure Test", "echo test");
+        // Add a task WITHOUT exec command so it uses the default executor (invalid)
+        wg_ok(&wg_dir, &["add", "Spawn Failure Test", "--id", "spawn-fail-task", "--immediate"]);
         notify_graph_changed(&wg_dir);
 
         // Wait and verify the task doesn't get stuck in "in-progress" with a dead agent
