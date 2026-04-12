@@ -116,10 +116,10 @@ pub(crate) fn spawn_agent_inner(
     let config = Config::load_or_default(dir);
 
     // Check OpenRouter cost caps before proceeding with expensive operations
-    if let Some(provider) = model.and_then(|m| workgraph::config::parse_model_spec(m).provider) {
-        if provider == "openrouter" {
-            check_openrouter_cost_caps(&config, dir, task_id, model)?;
-        }
+    if let Some(provider) = model.and_then(|m| workgraph::config::parse_model_spec(m).provider)
+        && provider == "openrouter"
+    {
+        check_openrouter_cost_caps(&config, dir, task_id, model)?;
     }
 
     let scope = resolve_task_scope(task, &config, dir);
@@ -336,15 +336,15 @@ pub(crate) fn spawn_agent_inner(
         let prompt = build_prompt(&vars, scope, &scope_ctx);
 
         // Debug logging: capture spawn metadata if WG_DEBUG_PROMPTS is set
-        if std::env::var("WG_DEBUG_PROMPTS").is_ok() {
-            if let Ok(mut file) = std::fs::OpenOptions::new()
+        if std::env::var("WG_DEBUG_PROMPTS").is_ok()
+            && let Ok(mut file) = std::fs::OpenOptions::new()
                 .create(true)
                 .append(true)
                 .open("/tmp/wg_debug_prompts.log")
-            {
-                use std::io::Write;
-                let debug_info = format!(
-                    "=== WG DEBUG: Spawning Agent ===\n\
+        {
+            use std::io::Write;
+            let debug_info = format!(
+                "=== WG DEBUG: Spawning Agent ===\n\
                     Task ID: {}\n\
                     Executor: {}\n\
                     Model: {}\n\
@@ -352,17 +352,16 @@ pub(crate) fn spawn_agent_inner(
                     Execution Mode: {}\n\
                     Agent Identity: {}\n\
                     === End of Spawn Metadata ===\n\n",
-                    task_id,
-                    executor_name,
-                    vars.model,
-                    scope,
-                    resolved_exec_mode.as_str(),
-                    task.agent
-                        .as_deref()
-                        .unwrap_or("Default (no specific agent assigned)")
-                );
-                let _ = file.write_all(debug_info.as_bytes());
-            }
+                task_id,
+                executor_name,
+                vars.model,
+                scope,
+                resolved_exec_mode.as_str(),
+                task.agent
+                    .as_deref()
+                    .unwrap_or("Default (no specific agent assigned)")
+            );
+            let _ = file.write_all(debug_info.as_bytes());
         }
 
         settings.prompt_template = Some(PromptTemplate { template: prompt });
@@ -1326,6 +1325,7 @@ impl ResolutionTier {
 ///
 /// The returned model string retains any `provider:` prefix so that downstream
 /// `resolve_model_via_registry()` can handle prefix stripping per executor type.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn resolve_model_and_provider(
     task_model: Option<String>,
     task_provider: Option<String>,
@@ -1559,7 +1559,7 @@ fn check_openrouter_cost_caps(
                     .cost_tracking
                     .update_key_status(key_status);
                 // Save updated state
-                let _ = coordinator_state.save_for(&service_dir, 0);
+                coordinator_state.save_for(&service_dir, 0);
             }
             Err(e) => {
                 // Log warning but don't block operation
@@ -1569,50 +1569,49 @@ fn check_openrouter_cost_caps(
     }
 
     // Check session cost cap
-    if let Some(session_cap) = openrouter_config.cost_cap_session_usd {
-        if coordinator_state.cost_tracking.session_cost_usd >= session_cap {
-            return handle_cost_cap_violation(
-                &openrouter_config.cap_behavior,
-                &format!(
-                    "Session cost cap of ${:.2} exceeded (current: ${:.2})",
-                    session_cap, coordinator_state.cost_tracking.session_cost_usd
-                ),
-                openrouter_config.fallback_model.as_deref(),
-                task_id,
-                model,
-            );
-        }
+    if let Some(session_cap) = openrouter_config.cost_cap_session_usd
+        && coordinator_state.cost_tracking.session_cost_usd >= session_cap
+    {
+        return handle_cost_cap_violation(
+            &openrouter_config.cap_behavior,
+            &format!(
+                "Session cost cap of ${:.2} exceeded (current: ${:.2})",
+                session_cap, coordinator_state.cost_tracking.session_cost_usd
+            ),
+            openrouter_config.fallback_model.as_deref(),
+            task_id,
+            model,
+        );
     }
 
     // Check global cost cap using key status if available
     if let (Some(global_cap), Some(key_status)) = (
         openrouter_config.cost_cap_global_usd,
         &coordinator_state.cost_tracking.key_status,
-    ) {
-        if key_status.usage >= global_cap {
-            return handle_cost_cap_violation(
-                &openrouter_config.cap_behavior,
-                &format!(
-                    "Global cost cap of ${:.2} exceeded (current: ${:.2})",
-                    global_cap, key_status.usage
-                ),
-                openrouter_config.fallback_model.as_deref(),
-                task_id,
-                model,
-            );
-        }
+    ) && key_status.usage >= global_cap
+    {
+        return handle_cost_cap_violation(
+            &openrouter_config.cap_behavior,
+            &format!(
+                "Global cost cap of ${:.2} exceeded (current: ${:.2})",
+                global_cap, key_status.usage
+            ),
+            openrouter_config.fallback_model.as_deref(),
+            task_id,
+            model,
+        );
     }
 
     // Check warning thresholds
-    if let Some(key_status) = &coordinator_state.cost_tracking.key_status {
-        if key_status.is_above_threshold(openrouter_config.warn_at_usage_percent as f64) {
-            eprintln!(
-                "Warning: OpenRouter usage at {:.1}% of limit (${:.2}/${:.2})",
-                key_status.usage_percentage(),
-                key_status.usage,
-                key_status.limit
-            );
-        }
+    if let Some(key_status) = &coordinator_state.cost_tracking.key_status
+        && key_status.is_above_threshold(openrouter_config.warn_at_usage_percent as f64)
+    {
+        eprintln!(
+            "Warning: OpenRouter usage at {:.1}% of limit (${:.2}/${:.2})",
+            key_status.usage_percentage(),
+            key_status.usage,
+            key_status.limit
+        );
     }
 
     Ok(())
