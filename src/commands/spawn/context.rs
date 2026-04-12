@@ -566,6 +566,7 @@ fn read_claude_md(workgraph_dir: &Path) -> String {
 /// Checks for a user-customizable guide at `.workgraph/wg-guide.md`. If that file
 /// exists, its content is used. Otherwise falls back to the built-in default guide
 /// embedded in the binary.
+#[allow(dead_code)]
 pub(crate) fn read_wg_guide(workgraph_dir: &Path) -> String {
     let custom_path = workgraph_dir.join("wg-guide.md");
     if custom_path.exists()

@@ -315,6 +315,7 @@ mod tests {
         }
     }
 
+    #[allow(dead_code)]
     fn setup_graph_and_registry(
         dir: &Path,
         tasks: Vec<Task>,

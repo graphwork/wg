@@ -18379,7 +18379,7 @@ mod tui_chat_tests {
         let (viz, wg_dir) = setup_workgraph_with_coordinators(&tmp, &[0]);
 
         // Save empty chat — should not create file or error
-        let mut app = build_test_app(&viz, &wg_dir);
+        let app = build_test_app(&viz, &wg_dir);
         app.save_all_chat_state();
 
         // Reload — should work fine with no messages
