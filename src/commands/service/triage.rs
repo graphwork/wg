@@ -18,6 +18,7 @@ use workgraph::service::{ProviderHealth, ProviderErrorKind, classify_error, extr
 use workgraph::stream_event::{self, StreamEvent};
 
 use crate::commands::is_process_alive;
+use workgraph::metrics::{log_metrics_summary, get_metrics_snapshot};
 
 /// Extract session_id from an agent's stream files (stream.jsonl or raw_stream.jsonl).
 fn extract_session_id(agent: &AgentEntry) -> Option<String> {
@@ -494,6 +495,10 @@ pub(crate) fn cleanup_dead_agents(dir: &Path, graph_path: &Path) -> Result<Vec<S
         if let Err(e) = track_provider_health(dir, &dead, &locked_registry, &config) {
             eprintln!("[coordinator] Warning: provider health tracking failed: {}", e);
         }
+
+        // Log metrics summary when dead agents are cleaned
+        eprintln!("[triage] Dead agent cleanup completed for {} agents", dead.len());
+        log_metrics_summary();
     }
 
     Ok(dead.into_iter().map(|(id, _, _, _, _)| id).collect())
