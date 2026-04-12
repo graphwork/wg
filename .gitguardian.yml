@@ -16,6 +16,9 @@ secret:
     # Example for test patterns
     - name: "Test API Keys"
       match: "test_api_key_[a-zA-Z0-9]+"
+    # Test email addresses in test files
+    - name: "Test Email Addresses"
+      match: "test@example\\.com"
 
   # Show secrets context in output (false for security)
   show-secrets: false
