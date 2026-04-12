@@ -437,7 +437,7 @@ wg evolve run --single-shot                       # force legacy single-shot mod
 | Command | Description |
 |---------|-------------|
 | `wg agency init` | Seed agency with starter roles and tradeoffs |
-| `wg agency stats [--min-evals <N>] [--by-model]` | Show agency performance analytics |
+| `wg agency stats [--min-evals <N>] [--by-model] [--by-task-type]` | Show agency performance analytics |
 | `wg agency create [--model <MODEL>] [--dry-run]` | Invoke the creator agent to discover and add new primitives |
 | `wg agency import [CSV_PATH] [--url <URL>] [--upstream] [--dry-run] [--tag <TAG>] [--force] [--check]` | Import Agency starter.csv primitives into WorkGraph |
 | `wg agency migrate [--dry-run]` | Migrate old-format agency store to primitive+cache format |
@@ -454,6 +454,7 @@ wg evolve run --single-shot                       # force legacy single-shot mod
 
 ```bash
 wg assign <task-id> <agent-hash>    # assign agent to task
+wg assign <task-id> --auto          # automatically select an agent using LLM
 wg assign <task-id> --clear         # remove assignment
 ```
 
@@ -477,6 +478,7 @@ wg evaluate show [--task <id>] [--agent <id>] [--source <glob>] [--limit <N>]
 wg evolve run [--strategy <name>] [--budget <N>] [--model <model>] [--dry-run]
               [--autopoietic] [--max-iterations <N>] [--cycle-delay <secs>]
               [--force-fanout] [--single-shot]
+wg evolve apply <synthesis-file> [-o <output>]   # apply a synthesis-result.json from a fan-out run
 ```
 
 ## Skill System
@@ -865,6 +867,19 @@ wg agency merge <source1> <source2> --dry-run        # preview
 ```
 
 For the full federation design (conflict resolution, global store, trust propagation), see `docs/design/agency-federation.md`.
+
+## Provider Profiles
+
+Provider profiles (`wg profile`) define model tier presets that affect how agency meta-agents resolve their models. When a profile is active, tier names like `opus`, `sonnet`, and `haiku` in the agency configuration map to provider-specific model IDs.
+
+```bash
+wg profile list                   # list available profiles
+wg profile show                   # show current profile and resolved model mappings
+wg profile set <name>             # activate a profile
+wg profile refresh                # refresh model data and recompute rankings
+```
+
+For example, with an OpenRouter profile active, `evaluator_model = "haiku"` resolves to the best-available haiku-tier model on OpenRouter rather than the default Anthropic endpoint.
 
 ## Configuration Reference
 
