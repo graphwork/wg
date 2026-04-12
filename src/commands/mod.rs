@@ -77,6 +77,7 @@ pub mod profile_cmd;
 pub mod quickstart;
 pub mod ready;
 pub mod reclaim;
+pub mod reprioritize;
 pub mod reject;
 pub mod replay;
 pub mod requeue;
@@ -266,6 +267,7 @@ mod provenance_coverage_tests {
             false,
             false,
             None, // iteration_config
+            None, // priority
         )
         .unwrap();
 
@@ -316,6 +318,7 @@ mod provenance_coverage_tests {
             false,
             false,
             None, // iteration_config
+            None, // priority
         )
         .unwrap();
 
@@ -398,6 +401,7 @@ mod provenance_coverage_tests {
             false,
             false,
             None, // iteration_config
+            None, // priority
         )
         .unwrap();
 
@@ -455,6 +459,7 @@ mod provenance_coverage_tests {
             false,
             false,
             None,
+            None, // priority
         )
         .unwrap();
 
@@ -506,6 +511,7 @@ mod provenance_coverage_tests {
             false,
             false,
             None,
+            None, // priority
         )
         .unwrap();
 
@@ -557,6 +563,7 @@ mod provenance_coverage_tests {
             false,
             false,
             None, // iteration_config
+            None, // priority
         )
         .unwrap();
 
@@ -608,6 +615,7 @@ mod provenance_coverage_tests {
             false,
             false,
             None, // iteration_config
+            None, // priority
         )
         .unwrap();
 
@@ -662,6 +670,7 @@ mod provenance_coverage_tests {
             false,
             false,
             None, // iteration_config
+            None, // priority
         )
         .unwrap();
 
@@ -718,6 +727,7 @@ mod provenance_coverage_tests {
             false,
             false,
             None, // iteration_config
+            None, // priority
         )
         .unwrap();
 
@@ -774,6 +784,7 @@ mod provenance_coverage_tests {
             false,
             false,
             None,
+            None, // priority
         )
         .unwrap();
         super::done::run(dir, "prov-archive", false, false).unwrap();
@@ -827,6 +838,7 @@ mod provenance_coverage_tests {
             false,
             false,
             None,
+            None, // priority
         )
         .unwrap();
         super::fail::run(dir, "prov-gc", Some("oops")).unwrap();
@@ -883,6 +895,7 @@ mod provenance_coverage_tests {
             false,
             false,
             None,
+            None, // priority
         )
         .unwrap();
         // edit

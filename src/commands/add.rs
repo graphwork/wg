@@ -69,6 +69,53 @@ fn resolve_model_input(model: &str, workgraph_dir: &Path) -> Result<String> {
     Ok(model.to_string())
 }
 
+/// Parse a priority string into a Priority enum value.
+/// Accepts named levels (critical, high, normal, low, idle) or defaults to Normal if invalid.
+pub fn parse_priority(priority_str: Option<&str>) -> Priority {
+    match priority_str {
+        Some(s) => match s.to_lowercase().as_str() {
+            "critical" => Priority::Critical,
+            "high" => Priority::High,
+            "normal" => Priority::Normal,
+            "low" => Priority::Low,
+            "idle" => Priority::Idle,
+            _ => {
+                eprintln!("Warning: Invalid priority '{}', using Normal", s);
+                Priority::Normal
+            }
+        }
+        None => Priority::Normal,
+    }
+}
+
+/// Calculate the final priority for a task, applying automatic boost for urgent/triage tags.
+///
+/// If the task has "urgent" or "triage" tags, boost the priority by one level:
+/// - Normal -> High
+/// - High -> Critical
+/// - Low -> Normal
+/// - Idle -> Low
+/// - Critical stays Critical (can't go higher)
+pub fn calculate_final_priority(base_priority: Priority, tags: &[String]) -> Priority {
+    // Check if the task has urgent or triage tags
+    let has_urgent_tag = tags.iter().any(|tag| {
+        let tag_lower = tag.to_lowercase();
+        tag_lower == "urgent" || tag_lower == "triage"
+    });
+
+    if has_urgent_tag {
+        match base_priority {
+            Priority::Idle => Priority::Low,
+            Priority::Low => Priority::Normal,
+            Priority::Normal => Priority::High,
+            Priority::High => Priority::Critical,
+            Priority::Critical => Priority::Critical, // Can't boost higher than Critical
+        }
+    } else {
+        base_priority
+    }
+}
+
 /// Parse a guard expression string into a LoopGuard.
 /// Formats: 'task:<id>=<status>' or 'always'
 pub fn parse_guard_expr(expr: &str) -> Result<workgraph::graph::LoopGuard> {
@@ -143,6 +190,7 @@ pub fn run(
     allow_phantom: bool,
     independent: bool,
     iteration_config: Option<workgraph::agency::IterationConfig>,
+    priority: Option<&str>,
 ) -> Result<()> {
     if title.trim().is_empty() {
         anyhow::bail!("Task title cannot be empty");
@@ -397,7 +445,7 @@ pub fn run(
         title: title.to_string(),
         description: description.map(String::from),
         status: Status::Open,
-        priority: Priority::default(),
+        priority: calculate_final_priority(parse_priority(priority), tags),
         assigned: assign.map(String::from),
         estimate: estimate.clone(),
         before: vec![],
@@ -736,7 +784,7 @@ fn add_task_directly(
             title: title.to_string(),
             description: description.map(String::from),
             status: Status::Open,
-            priority: Priority::default(),
+            priority: calculate_final_priority(Priority::Normal, tags),
             assigned: None,
             estimate: None,
             before: vec![],
@@ -1273,6 +1321,7 @@ mod tests {
             false,
             false,
             None,
+            None, // priority
         );
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("cannot be empty"));
@@ -1325,6 +1374,7 @@ mod tests {
             false,
             false,
             None,
+            None, // priority
         );
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("cannot be empty"));
@@ -1377,6 +1427,7 @@ mod tests {
             false,
             false,
             None, // iteration_config
+            None, // priority
         );
         assert!(result.is_err());
         assert!(
@@ -1436,6 +1487,7 @@ mod tests {
             false,
             false,
             None, // iteration_config
+            None, // priority
         );
         assert!(result.is_err());
         assert!(
@@ -1492,6 +1544,7 @@ mod tests {
             true,
             false,
             None,
+            None, // priority
         );
         assert!(result.is_ok());
     }
@@ -1544,6 +1597,7 @@ mod tests {
             false, // allow_phantom=false, but paused=true defers validation
             false,
             None, // iteration_config
+            None, // priority
         );
         assert!(result.is_ok());
     }
@@ -1600,6 +1654,7 @@ mod tests {
             false,
             false,
             None,
+            None, // priority
         );
         assert!(result.is_ok());
 
@@ -1726,6 +1781,7 @@ mod tests {
             false, // allow_phantom
             false, // independent
             None,  // iteration_config
+            None,  // priority
         );
         assert!(result.is_ok(), "wg add --exec should succeed: {:?}", result);
 
@@ -1785,6 +1841,7 @@ mod tests {
             false,
             false,
             None,
+            None, // priority
         );
         assert!(result.is_ok());
 
@@ -1844,6 +1901,7 @@ mod tests {
             false,
             false,
             None,
+            None, // priority
         );
         assert!(result.is_ok());
 

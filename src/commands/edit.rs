@@ -564,6 +564,7 @@ mod tests {
             true,  // allow_phantom: test graph uses phantom deps
             false, // independent
             None,  // iteration_config
+            None,  // priority
         )?;
 
         Ok(())
@@ -613,6 +614,7 @@ mod tests {
             false,
             false,
             None, // iteration_config
+            None, // priority
         )?;
 
         crate::commands::add::run(
@@ -653,6 +655,7 @@ mod tests {
             false,
             false,
             None,
+            None, // priority
         )?;
 
         Ok(())
