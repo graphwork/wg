@@ -442,6 +442,7 @@ fn main() -> Result<()> {
             not_before,
             verify,
             allow_phantom,
+            allow_cycle,
         } => commands::edit::run(
             &workgraph_dir,
             &id,
@@ -468,6 +469,7 @@ fn main() -> Result<()> {
             not_before.as_deref(),
             verify.as_deref(),
             allow_phantom,
+            allow_cycle,
         ),
         // Commands::Reprioritize { id, priority } => {
         //     commands::reprioritize::run(&workgraph_dir, &id, &priority)

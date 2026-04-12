@@ -4,6 +4,7 @@ use anyhow::{Context, Result};
 use std::path::Path;
 use workgraph::graph::{CycleConfig, parse_delay};
 use workgraph::parser::modify_graph;
+use workgraph::cycle::{check_edge_addition, EdgeAddResult};
 
 use super::graph_path;
 
@@ -35,6 +36,7 @@ pub fn run(
     not_before: Option<&str>,
     verify: Option<&str>,
     allow_phantom: bool,
+    allow_cycle: bool,
 ) -> Result<()> {
     let path = graph_path(dir);
 
@@ -96,6 +98,76 @@ pub fn run(
                 );
                 error = Some(anyhow::anyhow!("{}", msg));
                 return false;
+            }
+        }
+    }
+
+    // Check for cycles before adding dependencies (unless allow_cycle is set)
+    if !allow_cycle && !add_after.is_empty() {
+        // Build adjacency list for cycle detection
+        let task_ids: Vec<String> = graph.tasks().map(|t| t.id.clone()).collect();
+        let mut task_id_to_index = std::collections::HashMap::new();
+        for (i, id) in task_ids.iter().enumerate() {
+            task_id_to_index.insert(id, i);
+        }
+
+        let mut adjacency_list = vec![Vec::new(); task_ids.len()];
+        for task in graph.tasks() {
+            if let Some(&task_idx) = task_id_to_index.get(&task.id) {
+                for dep_id in &task.after {
+                    if let Some(&dep_idx) = task_id_to_index.get(dep_id) {
+                        adjacency_list[dep_idx].push(task_idx);
+                    }
+                }
+            }
+        }
+
+        // Get the current task's dependencies to check what would actually be added
+        let current_after = graph.get_task(task_id)
+            .map(|t| &t.after)
+            .unwrap_or(&vec![])
+            .clone();
+
+        // Check each new dependency for cycle creation
+        let task_id_string = task_id.to_string();
+        if let Some(&task_idx) = task_id_to_index.get(&task_id_string) {
+            for dep in add_after {
+                if !current_after.contains(dep) {
+                    if let Some(&dep_idx) = task_id_to_index.get(dep) {
+                        match check_edge_addition(task_ids.len(), &adjacency_list, dep_idx, task_idx) {
+                            EdgeAddResult::CreatesCycle { cycle_members } => {
+                                // Check if the cycle would have CycleConfig
+                                let has_cycle_config = cycle_members.iter()
+                                    .filter_map(|&idx| task_ids.get(idx))
+                                    .any(|cycle_task_id| {
+                                        // Check if max_iterations will be set on this task
+                                        if cycle_task_id == task_id && max_iterations.is_some() {
+                                            return true;
+                                        }
+                                        graph.get_task(cycle_task_id)
+                                            .map(|t| t.cycle_config.is_some())
+                                            .unwrap_or(false)
+                                    });
+
+                                if !has_cycle_config && !allow_cycle {
+                                    let cycle_task_names: Vec<String> = cycle_members.iter()
+                                        .filter_map(|&idx| task_ids.get(idx))
+                                        .cloned()
+                                        .collect();
+                                    error = Some(anyhow::anyhow!(
+                                        "Adding dependency '{}' → '{}' would create a cycle without CycleConfig: [{}]. \
+                                         Use --allow-cycle to override, or add --max-iterations to one of the cycle members.",
+                                        dep, task_id, cycle_task_names.join(" → ")
+                                    ));
+                                    return false;
+                                }
+                            }
+                            EdgeAddResult::NoCycle => {
+                                // Safe to add - no action needed
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -695,6 +767,7 @@ mod tests {
             None,
             None,
             false,
+            false,
         );
         assert!(result.is_ok());
 
@@ -734,6 +807,7 @@ mod tests {
             None,
             None,
             None,
+            false,
             false,
         );
         assert!(result.is_ok());
@@ -775,6 +849,7 @@ mod tests {
             None,
             None,
             true, // allow_phantom: dep2 doesn't exist in test graph
+            false, // allow_cycle: tests should not allow cycles by default
         );
         assert!(result.is_ok());
 
@@ -816,6 +891,7 @@ mod tests {
             None,
             None,
             false,
+            false,
         );
         assert!(result.is_ok());
 
@@ -855,6 +931,7 @@ mod tests {
             None,
             None,
             None,
+            false,
             false,
         );
         assert!(result.is_ok());
@@ -897,6 +974,7 @@ mod tests {
             None,
             None,
             false,
+            false,
         );
         assert!(result.is_ok());
 
@@ -937,6 +1015,7 @@ mod tests {
             None,
             None,
             false,
+            false,
         );
         assert!(result.is_ok());
 
@@ -976,6 +1055,7 @@ mod tests {
             None,
             None,
             None,
+            false,
             false,
         );
         assert!(result.is_ok());
@@ -1018,6 +1098,7 @@ mod tests {
             None,
             None,
             false,
+            false,
         );
         assert!(result.is_ok());
 
@@ -1058,6 +1139,7 @@ mod tests {
             None,
             None,
             false,
+            false,
         );
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("not found"));
@@ -1094,6 +1176,7 @@ mod tests {
             None,
             None,
             false,
+            false,
         );
         assert!(result.is_ok());
     }
@@ -1128,6 +1211,7 @@ mod tests {
             None,
             None,
             None,
+            false,
             false,
         );
         assert!(result.is_err());
@@ -1170,6 +1254,7 @@ mod tests {
             None,
             None,
             None,
+            false,
             false,
         );
         assert!(result.is_ok());
@@ -1217,6 +1302,7 @@ mod tests {
             None,
             None,
             false,
+            false,
         )
         .unwrap();
 
@@ -1246,6 +1332,7 @@ mod tests {
             None,
             None,
             None,
+            false,
             false,
         );
         assert!(result.is_ok());
@@ -1301,6 +1388,7 @@ mod tests {
             None,
             None,
             None,
+            false,
             false,
         )
         .unwrap();
@@ -1365,6 +1453,7 @@ mod tests {
             None,
             None,
             false,
+            false,
         )
         .unwrap();
 
@@ -1409,6 +1498,7 @@ mod tests {
             None,
             None,
             false,
+            false,
         )
         .unwrap();
 
@@ -1448,6 +1538,7 @@ mod tests {
             None,
             None,
             false,
+            false,
         )
         .unwrap();
 
@@ -1458,5 +1549,137 @@ mod tests {
             task.agent.is_some(),
             "agent should NOT be cleared when no new deps are actually added"
         );
+    }
+
+    #[test]
+    fn test_cycle_detection_blocks_unconfigured_cycle() {
+        use tempfile::TempDir;
+        use workgraph::graph::{Task, Node, WorkGraph, Status};
+        use crate::commands::graph_path;
+        use workgraph::parser::save_graph;
+
+        let temp_dir = TempDir::new().unwrap();
+        let path = graph_path(temp_dir.path());
+
+        // Create a simple graph with: task-a → task-b
+        let mut graph = WorkGraph::new();
+
+        let mut task_a = Task::default();
+        task_a.id = "task-a".to_string();
+        task_a.title = "Task A".to_string();
+        task_a.status = Status::Open;
+
+        let mut task_b = Task::default();
+        task_b.id = "task-b".to_string();
+        task_b.title = "Task B".to_string();
+        task_b.status = Status::Open;
+        task_b.after.push("task-a".to_string()); // task-b depends on task-a
+
+        graph.add_node(Node::Task(task_a));
+        graph.add_node(Node::Task(task_b));
+        save_graph(&graph, &path).unwrap();
+
+        // Try to add task-a -> task-b (would create cycle task-a -> task-b -> task-a)
+        let result = run(
+            temp_dir.path(),
+            "task-a",
+            None,
+            None,
+            &["task-b".to_string()],
+            &[],
+            &[],
+            &[],
+            None,
+            None,
+            &[],
+            &[],
+            None,
+            None,
+            None,
+            false,
+            false,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            false,
+            false, // allow_cycle = false
+        );
+
+        // Should fail with cycle detection message
+        assert!(result.is_err());
+        let error_msg = result.unwrap_err().to_string();
+        assert!(error_msg.contains("would create a cycle without CycleConfig"));
+        assert!(error_msg.contains("--allow-cycle"));
+    }
+
+    #[test]
+    fn test_cycle_detection_allows_with_flag() {
+        use tempfile::TempDir;
+        use workgraph::graph::{Task, Node, WorkGraph, Status};
+        use crate::commands::{load_graph, graph_path};
+        use workgraph::parser::save_graph;
+
+        let temp_dir = TempDir::new().unwrap();
+        let path = graph_path(temp_dir.path());
+
+        // Create a simple graph with: task-a → task-b
+        let mut graph = WorkGraph::new();
+
+        let mut task_a = Task::default();
+        task_a.id = "task-a".to_string();
+        task_a.title = "Task A".to_string();
+        task_a.status = Status::Open;
+
+        let mut task_b = Task::default();
+        task_b.id = "task-b".to_string();
+        task_b.title = "Task B".to_string();
+        task_b.status = Status::Open;
+        task_b.after.push("task-a".to_string());
+
+        graph.add_node(Node::Task(task_a));
+        graph.add_node(Node::Task(task_b));
+        save_graph(&graph, &path).unwrap();
+
+        // Try to add task-a -> task-b with --allow-cycle
+        let result = run(
+            temp_dir.path(),
+            "task-a",
+            None,
+            None,
+            &["task-b".to_string()],
+            &[],
+            &[],
+            &[],
+            None,
+            None,
+            &[],
+            &[],
+            None,
+            None,
+            None,
+            false,
+            false,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            false,
+            true, // allow_cycle = true
+        );
+
+        // Should succeed when allow_cycle is true
+        assert!(result.is_ok());
+
+        // Verify the cycle was actually created
+        let graph = load_graph(&path).unwrap();
+        let task_a = graph.get_task("task-a").unwrap();
+        assert!(task_a.after.contains(&"task-b".to_string()));
     }
 }

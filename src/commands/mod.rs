@@ -352,6 +352,7 @@ mod provenance_coverage_tests {
             None,
             None,  // verify
             false, // allow_phantom
+            false, // allow_cycle
         )
         .unwrap();
 
@@ -939,6 +940,7 @@ mod provenance_coverage_tests {
             None,
             None,  // verify
             false, // allow_phantom
+            false, // allow_cycle
         )
         .unwrap();
         // pause

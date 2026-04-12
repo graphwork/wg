@@ -301,6 +301,10 @@ pub enum Commands {
         /// Allow phantom (forward-reference) dependencies without error
         #[arg(long = "allow-phantom")]
         allow_phantom: bool,
+
+        /// Allow cycle creation without CycleConfig (overrides cycle detection guard)
+        #[arg(long = "allow-cycle")]
+        allow_cycle: bool,
     },
 
     /// Mark a task as done
