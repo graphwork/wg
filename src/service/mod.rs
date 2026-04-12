@@ -11,10 +11,14 @@ pub mod compactor;
 pub mod coordinator_cycle;
 pub mod executor;
 pub mod llm;
+pub mod provider_health;
 pub mod registry;
 
 pub use executor::{
     ExecutorConfig, ExecutorRegistry, ExecutorSettings, PromptTemplate, TemplateVars,
+};
+pub use provider_health::{
+    ProviderErrorKind, ProviderHealth, ProviderHealthStatus, classify_error, extract_provider_id,
 };
 pub use registry::{AgentEntry, AgentRegistry, AgentStatus, LockedRegistry};
 

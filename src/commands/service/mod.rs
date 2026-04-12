@@ -401,19 +401,7 @@ impl Default for SessionCostTracking {
 }
 
 impl SessionCostTracking {
-    /// Add cost to the session total
-    pub fn add_cost(&mut self, cost_usd: f64) {
-        self.session_cost_usd += cost_usd;
-    }
 
-    /// Check if session cost exceeds the given cap
-    pub fn exceeds_cap(&self, cap_usd: Option<f64>) -> bool {
-        if let Some(cap) = cap_usd {
-            self.session_cost_usd >= cap
-        } else {
-            false
-        }
-    }
 
     /// Check if key status should be refreshed based on interval
     pub fn should_check_key_status(&self, interval_minutes: u32) -> bool {
@@ -3053,9 +3041,39 @@ pub fn run_pause(_dir: &Path, _json: bool) -> Result<()> {
     anyhow::bail!("Service daemon is only supported on Unix systems")
 }
 
-/// Resume the coordinator (triggers immediate tick)
+/// Resume the coordinator (triggers immediate tick) and clear provider health pauses
 #[cfg(unix)]
 pub fn run_resume(dir: &Path, json: bool) -> Result<()> {
+    // Clear provider health pause state before resuming coordinator
+    match workgraph::service::ProviderHealth::load(dir) {
+        Ok(mut provider_health) => {
+            let was_paused = provider_health.service_paused;
+            let paused_providers: Vec<_> = provider_health
+                .providers
+                .values()
+                .filter(|p| p.is_paused)
+                .map(|p| p.provider_id.clone())
+                .collect();
+
+            provider_health.resume_service();
+            if let Err(e) = provider_health.save(dir) {
+                eprintln!("[resume] Warning: failed to save provider health state: {}", e);
+            }
+
+            if !json && (was_paused || !paused_providers.is_empty()) {
+                if was_paused {
+                    println!("Cleared service pause due to provider failures");
+                }
+                if !paused_providers.is_empty() {
+                    println!("Resumed providers: {}", paused_providers.join(", "));
+                }
+            }
+        }
+        Err(e) => {
+            eprintln!("[resume] Warning: failed to load provider health state: {}", e);
+        }
+    }
+
     let response = send_request(dir, &IpcRequest::Resume)?;
 
     if !response.ok {

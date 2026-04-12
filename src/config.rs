@@ -2420,6 +2420,26 @@ pub struct CoordinatorConfig {
     /// Default: true.
     #[serde(default = "default_scoped_verify_enabled")]
     pub scoped_verify_enabled: bool,
+
+    /// Provider failure handling behavior.
+    /// - "pause" (default): pause the service when providers fail consecutively
+    /// - "fallback": switch to fallback provider if configured
+    /// - "continue": keep going despite provider failures (legacy behavior)
+    #[serde(default = "default_on_provider_failure")]
+    pub on_provider_failure: String,
+
+    /// Number of consecutive fatal-provider errors before triggering auto-pause.
+    /// Fatal-provider errors include auth failures, quota exhaustion, CLI missing.
+    /// Transient errors (rate limits, network) and task errors don't count.
+    /// Default: 3.
+    #[serde(default = "default_provider_failure_threshold")]
+    pub provider_failure_threshold: u32,
+
+    /// Cooldown period before auto-resuming from provider failure pause.
+    /// Format: "5m", "1h", "30s", etc. Empty string disables auto-resume.
+    /// Default: empty (manual resume only).
+    #[serde(default)]
+    pub provider_failure_cooldown: String,
 }
 
 fn default_auto_test_discovery() -> bool {
@@ -2428,6 +2448,14 @@ fn default_auto_test_discovery() -> bool {
 
 fn default_scoped_verify_enabled() -> bool {
     true
+}
+
+fn default_on_provider_failure() -> String {
+    "pause".to_string()
+}
+
+fn default_provider_failure_threshold() -> u32 {
+    3
 }
 
 fn default_max_agents() -> usize {
@@ -2569,6 +2597,9 @@ impl Default for CoordinatorConfig {
             compactor_interval: default_compactor_interval(),
             compactor_ops_threshold: default_compactor_ops_threshold(),
             compaction_token_threshold: default_compaction_token_threshold(),
+            on_provider_failure: default_on_provider_failure(),
+            provider_failure_threshold: default_provider_failure_threshold(),
+            provider_failure_cooldown: String::new(),
             compaction_threshold_ratio: default_compaction_threshold_ratio(),
             eval_frequency: default_eval_frequency(),
             trial_budget_secs: None,

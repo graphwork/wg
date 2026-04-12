@@ -14,6 +14,7 @@ use workgraph::graph::{
 use workgraph::parser::{load_graph, modify_graph};
 use workgraph::profile;
 use workgraph::service::registry::{AgentEntry, AgentRegistry, AgentStatus};
+use workgraph::service::{ProviderHealth, ProviderErrorKind, classify_error, extract_provider_id};
 use workgraph::stream_event::{self, StreamEvent};
 
 use crate::commands::is_process_alive;
@@ -467,7 +468,146 @@ pub(crate) fn cleanup_dead_agents(dir: &Path, graph_path: &Path) -> Result<Vec<S
         }
     }
 
+    // Provider health tracking: analyze dead agents for provider failure patterns
+    if !dead.is_empty() {
+        if let Err(e) = track_provider_health(dir, &dead, &locked_registry, &config) {
+            eprintln!("[coordinator] Warning: provider health tracking failed: {}", e);
+        }
+    }
+
     Ok(dead.into_iter().map(|(id, _, _, _, _)| id).collect())
+}
+
+/// Track provider health based on dead agent failures
+fn track_provider_health(
+    dir: &Path,
+    dead: &[(String, String, u32, String, DeadReason)],
+    locked_registry: &workgraph::service::LockedRegistry,
+    config: &Config,
+) -> Result<()> {
+    // Load current provider health state
+    let mut provider_health = ProviderHealth::load(dir)?;
+
+    // Load graph to get task failure information
+    let graph = load_graph(&super::super::graph_path(dir))?;
+
+    // Track failures for each dead agent
+    for (agent_id, task_id, _pid, output_file, _reason) in dead {
+        // Get agent information from registry
+        let agent = match locked_registry.get_agent(agent_id) {
+            Some(a) => a,
+            None => {
+                eprintln!("[provider-health] Warning: agent {} not found in registry", agent_id);
+                continue;
+            }
+        };
+
+        // Extract provider ID from agent executor and model
+        let provider_id = extract_provider_id(&agent.executor, agent.model.as_deref());
+
+        // Get task to check for failure information
+        let task = match graph.get_task(task_id) {
+            Some(t) => t,
+            None => {
+                eprintln!("[provider-health] Warning: task {} not found", task_id);
+                continue;
+            }
+        };
+
+        // Extract error information
+        let (exit_code, stderr) = extract_error_info(&task.failure_reason, output_file);
+
+        // Classify the error
+        let error_kind = classify_error(exit_code, &stderr);
+
+        match error_kind {
+            ProviderErrorKind::FatalProvider => {
+                // This is a provider-level failure - track it
+                eprintln!(
+                    "[provider-health] Fatal provider error for '{}': {} (exit: {:?}, stderr: {})",
+                    provider_id,
+                    task.failure_reason.as_deref().unwrap_or("unknown"),
+                    exit_code,
+                    stderr.chars().take(100).collect::<String>()
+                );
+
+                provider_health.record_failure(
+                    &provider_id,
+                    error_kind,
+                    task.failure_reason.as_deref().unwrap_or("unknown error").to_string(),
+                );
+            }
+            ProviderErrorKind::Transient | ProviderErrorKind::FatalTask => {
+                // For successful completion or non-provider errors, record success to reset counters
+                // But only if the task actually completed successfully
+                if task.status == workgraph::graph::Status::Done {
+                    provider_health.record_success(&provider_id);
+                }
+                // For transient/task errors, don't count against provider health
+            }
+        }
+    }
+
+    // Check if any providers should be paused and apply pause logic
+    let paused_providers = provider_health.check_and_apply_pauses(
+        config.coordinator.provider_failure_threshold,
+        &config.coordinator.on_provider_failure,
+    );
+
+    // Log any providers that were paused
+    for provider_id in &paused_providers {
+        eprintln!(
+            "[provider-health] Provider '{}' paused due to consecutive failures",
+            provider_id
+        );
+    }
+
+    // If service was paused, log the reason
+    if provider_health.service_paused {
+        eprintln!(
+            "[provider-health] Service paused: {}",
+            provider_health.pause_reason.as_deref().unwrap_or("unknown reason")
+        );
+    }
+
+    // Save updated provider health state
+    provider_health.save(dir)?;
+
+    Ok(())
+}
+
+/// Extract error information from task failure reason and output file
+fn extract_error_info(failure_reason: &Option<String>, output_file: &str) -> (Option<i32>, String) {
+    let mut exit_code = None;
+    let mut stderr = String::new();
+
+    // Try to parse exit code from failure reason
+    if let Some(reason) = failure_reason {
+        // Pattern: "Agent exited with code 124"
+        if let Some(code_str) = reason.strip_prefix("Agent exited with code ") {
+            if let Ok(code) = code_str.trim().parse::<i32>() {
+                exit_code = Some(code);
+            }
+        }
+        stderr = reason.clone();
+    }
+
+    // Try to read more detailed error information from output file
+    if let Ok(content) = std::fs::read_to_string(output_file) {
+        // Look for error patterns in the output file
+        let lines = content.lines().collect::<Vec<_>>();
+
+        // Take the last few lines which often contain the error
+        let error_lines: Vec<&str> = lines.iter().rev().take(10).cloned().collect();
+        let combined_stderr = error_lines.join("\n");
+
+        // If we found more detailed error info, use it
+        if !combined_stderr.trim().is_empty() && combined_stderr.len() > stderr.len() {
+            stderr = combined_stderr;
+        }
+    }
+
+    (exit_code, stderr)
 }
 
 // ---------------------------------------------------------------------------

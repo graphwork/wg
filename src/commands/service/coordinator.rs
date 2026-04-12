@@ -3735,6 +3735,26 @@ pub fn coordinator_tick(
         });
     }
 
+    // Phase 5.6: Check if spawning is paused due to provider health failures.
+    match workgraph::service::ProviderHealth::load(dir) {
+        Ok(provider_health) if provider_health.should_pause_spawning() => {
+            eprintln!("[coordinator] Spawning paused: {}", provider_health.get_status_summary());
+            let cycle_analysis = graph.compute_cycle_analysis();
+            let final_ready = ready_tasks_with_peers_cycle_aware(&graph, dir, &cycle_analysis);
+            // Exclude daemon-managed loop tasks from ready count.
+            let ready_count = final_ready.iter().filter(|t| !is_daemon_managed(t)).count();
+            return Ok(TickResult {
+                agents_alive: alive_count,
+                tasks_ready: ready_count,
+                agents_spawned: 0,
+            });
+        }
+        Err(e) => {
+            eprintln!("[coordinator] Warning: failed to load provider health: {}", e);
+        }
+        _ => {} // Provider health is healthy, continue
+    }
+
     // Phase 6: Spawn agents on ready tasks
     let cycle_analysis = graph.compute_cycle_analysis();
     let final_ready = ready_tasks_with_peers_cycle_aware(&graph, dir, &cycle_analysis);
