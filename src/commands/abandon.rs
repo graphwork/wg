@@ -67,6 +67,7 @@ pub fn run(dir: &Path, id: &str, reason: Option<&str>, superseded_by: &[String])
         let eval_id = format!(".evaluate-{}", id);
         let flip_id = format!(".flip-{}", id);
         let verify_id = format!(".verify-{}", id);
+        let verify_deferred_id = format!(".verify-deferred-{}", id);
         cascade_targets = graph
             .tasks()
             .filter(|t| {
@@ -74,7 +75,10 @@ pub fn run(dir: &Path, id: &str, reason: Option<&str>, superseded_by: &[String])
                     return false;
                 }
                 let is_system_dep = t.id.starts_with('.') && t.after.contains(&id.to_string());
-                let is_eval_scaffold = t.id == eval_id || t.id == flip_id || t.id == verify_id;
+                let is_eval_scaffold = t.id == eval_id
+                    || t.id == flip_id
+                    || t.id == verify_id
+                    || t.id == verify_deferred_id;
                 is_system_dep || is_eval_scaffold
             })
             .map(|t| t.id.clone())
