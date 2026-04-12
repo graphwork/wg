@@ -731,6 +731,7 @@ pub fn prune_stale_worktrees(dir: &Path, max_age_secs: u64) -> Result<usize> {
 
 /// Get all recovery branches sorted by age (oldest first).
 /// Returns a list of (branch_name, last_commit_timestamp) tuples.
+#[allow(dead_code)]
 fn get_recovery_branches(project_root: &Path) -> Result<Vec<(String, u64)>> {
     let output = Command::new("git")
         .args(["branch", "-r", "--format=%(refname:short) %(committerdate:unix)"])
@@ -797,6 +798,7 @@ fn get_recovery_branches(project_root: &Path) -> Result<Vec<(String, u64)>> {
 
 /// Prune recovery branches based on age and count limits.
 /// Returns the number of branches pruned.
+#[allow(dead_code)]
 fn prune_recovery_branches(
     project_root: &Path,
     config: &ResourceManagementConfig,
