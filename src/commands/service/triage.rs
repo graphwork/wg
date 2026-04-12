@@ -207,11 +207,12 @@ pub(crate) fn cleanup_dead_agents(dir: &Path, graph_path: &Path) -> Result<Vec<S
         })
         .collect();
 
-    // Auto-bump heartbeat for agents whose process is still alive.
-    // Also check stream file activity for more precise liveness tracking.
+    // Check stream file activity for more precise liveness tracking.
+    // NOTE: Heartbeats are only updated when agents actively check in,
+    // not auto-bumped just for having a live process.
     for agent in locked_registry.agents.values_mut() {
         if agent.is_alive() && is_process_alive(agent.pid) {
-            agent.last_heartbeat = Utc::now().to_rfc3339();
+            // Do not auto-bump heartbeat - only agents should update their own heartbeat
 
             // Check stream for staleness warning (PID alive but no stream activity)
             if let Some(last_event_ms) = check_stream_liveness(agent) {
