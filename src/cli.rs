@@ -513,6 +513,12 @@ pub enum Commands {
     /// Check the graph for issues (cycles, orphan references)
     Check,
 
+    /// Manual cleanup commands for edge case recovery
+    Cleanup {
+        #[command(subcommand)]
+        subcmd: crate::commands::cleanup::CleanupSubcommand,
+    },
+
     /// Analyze structural cycles in after edges (Tarjan's SCC)
     Cycles,
 
@@ -3546,6 +3552,7 @@ pub fn command_name(cmd: &Commands) -> &'static str {
         Commands::Blocked { .. } => "blocked",
         Commands::WhyBlocked { .. } => "why-blocked",
         Commands::Check => "check",
+        Commands::Cleanup { .. } => "cleanup",
         Commands::Cycles => "cycles",
         Commands::List { .. } => "list",
         Commands::Viz { .. } => "viz",
@@ -3688,6 +3695,7 @@ pub fn supports_json(cmd: &Commands) -> bool {
             | Commands::Screencast { .. }
             | Commands::Cost { .. }
             | Commands::Check
+            | Commands::Cleanup { .. }
             | Commands::Cycles
             | Commands::Quickstart
             | Commands::Status

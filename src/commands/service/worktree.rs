@@ -8,12 +8,16 @@
 use anyhow::{anyhow, Context, Result};
 use std::collections::VecDeque;
 use std::fs;
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex, Condvar};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use workgraph::config::ResourceManagementConfig;
+
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 
 /// The directory under the project root where agent worktrees live.
 pub const WORKTREES_DIR: &str = ".wg-worktrees";
@@ -64,16 +68,38 @@ pub fn remove_worktree(project_root: &Path, worktree_path: &Path, branch: &str) 
     // Remove .workgraph symlink first (git worktree remove won't remove it)
     let symlink_path = worktree_path.join(".workgraph");
     if symlink_path.exists() {
-        if let Err(e) = fs::remove_file(&symlink_path) {
-            cleanup_errors.push(format!("Failed to remove .workgraph symlink {:?}: {}", symlink_path, e));
+        match fs::remove_file(&symlink_path) {
+            Err(e) if e.kind() == ErrorKind::PermissionDenied => {
+                eprintln!("[worktree] Permission denied removing .workgraph symlink, attempting permission fix");
+                if let Err(fallback_err) = fix_permissions_and_remove_file(&symlink_path) {
+                    cleanup_errors.push(format!("Failed to remove .workgraph symlink {:?} even after permission fix: {}", symlink_path, fallback_err));
+                } else {
+                    eprintln!("[worktree] Successfully removed .workgraph symlink after permission fix");
+                }
+            }
+            Err(e) => {
+                cleanup_errors.push(format!("Failed to remove .workgraph symlink {:?}: {}", symlink_path, e));
+            }
+            Ok(()) => {}
         }
     }
 
     // Remove isolated cargo target directory
     let target_dir = worktree_path.join("target");
     if target_dir.exists() {
-        if let Err(e) = fs::remove_dir_all(&target_dir) {
-            cleanup_errors.push(format!("Failed to remove target directory {:?}: {}", target_dir, e));
+        match fs::remove_dir_all(&target_dir) {
+            Err(e) if e.kind() == ErrorKind::PermissionDenied => {
+                eprintln!("[worktree] Permission denied removing target directory, attempting permission fix");
+                if let Err(fallback_err) = fix_permissions_and_remove_dir(&target_dir) {
+                    cleanup_errors.push(format!("Failed to remove target directory {:?} even after permission fix: {}", target_dir, fallback_err));
+                } else {
+                    eprintln!("[worktree] Successfully removed target directory after permission fix");
+                }
+            }
+            Err(e) => {
+                cleanup_errors.push(format!("Failed to remove target directory {:?}: {}", target_dir, e));
+            }
+            Ok(()) => {}
         }
     }
 
@@ -238,21 +264,40 @@ fn attempt_force_cleanup(worktree_path: &Path) -> Result<()> {
 
     // If the directory still exists, try to remove it with maximum force
     if worktree_path.exists() {
-        // First, try to make everything writable
+        // First, try to fix permissions and make everything writable
         if let Ok(entries) = fs::read_dir(worktree_path) {
             for entry in entries.flatten() {
                 let path = entry.path();
                 if path.is_file() {
-                    let _ = fs::remove_file(&path);
+                    match fs::remove_file(&path) {
+                        Err(e) if e.kind() == ErrorKind::PermissionDenied => {
+                            let _ = fix_permissions_and_remove_file(&path);
+                        }
+                        _ => {}
+                    }
                 } else if path.is_dir() {
-                    let _ = fs::remove_dir_all(&path);
+                    match fs::remove_dir_all(&path) {
+                        Err(e) if e.kind() == ErrorKind::PermissionDenied => {
+                            let _ = fix_permissions_and_remove_dir(&path);
+                        }
+                        _ => {}
+                    }
                 }
             }
         }
 
-        // Finally, remove the directory itself
-        fs::remove_dir_all(worktree_path)
-            .with_context(|| format!("Failed to force-remove worktree directory {:?}", worktree_path))?;
+        // Finally, remove the directory itself with permission handling
+        match fs::remove_dir_all(worktree_path) {
+            Err(e) if e.kind() == ErrorKind::PermissionDenied => {
+                eprintln!("[worktree] Permission denied during force cleanup, attempting permission fix");
+                fix_permissions_and_remove_dir(worktree_path)
+                    .with_context(|| format!("Failed to force-remove worktree directory {:?} even after permission fix", worktree_path))?;
+            }
+            Err(e) => {
+                return Err(e).with_context(|| format!("Failed to force-remove worktree directory {:?}", worktree_path));
+            }
+            Ok(()) => {}
+        }
     }
 
     Ok(())
@@ -1548,4 +1593,82 @@ mod tests {
         let pruned = prune_recovery_branches(&project, &config).unwrap();
         assert_eq!(pruned, 0);
     }
+}
+
+/// Fix permissions on a file and attempt removal
+/// This provides a fallback strategy for permission-denied errors
+#[cfg(unix)]
+fn fix_permissions_and_remove_file(file_path: &Path) -> Result<()> {
+    // Try to make the file writable
+    if let Ok(metadata) = fs::metadata(file_path) {
+        let mut perms = metadata.permissions();
+        perms.set_mode(0o644); // Read/write for owner, read for others
+
+        fs::set_permissions(file_path, perms)
+            .with_context(|| format!("Failed to fix file permissions for {:?}", file_path))?;
+
+        // Retry removal after permission fix
+        fs::remove_file(file_path)
+            .with_context(|| format!("Failed to remove file {:?} after permission fix", file_path))?;
+    }
+
+    Ok(())
+}
+
+/// Fix permissions on a directory and its contents, then attempt removal
+/// This provides a fallback strategy for permission-denied errors
+#[cfg(unix)]
+fn fix_permissions_and_remove_dir(dir_path: &Path) -> Result<()> {
+    if !dir_path.exists() {
+        return Ok(());
+    }
+
+    // Recursively fix permissions
+    fn fix_permissions_recursive(path: &Path) -> Result<()> {
+        if path.is_dir() {
+            // Make directory executable/readable
+            if let Ok(metadata) = fs::metadata(path) {
+                let mut perms = metadata.permissions();
+                perms.set_mode(0o755); // rwxr-xr-x
+                let _ = fs::set_permissions(path, perms);
+            }
+
+            // Fix permissions for all entries
+            if let Ok(entries) = fs::read_dir(path) {
+                for entry in entries.flatten() {
+                    fix_permissions_recursive(&entry.path())?;
+                }
+            }
+        } else {
+            // Make file writable
+            if let Ok(metadata) = fs::metadata(path) {
+                let mut perms = metadata.permissions();
+                perms.set_mode(0o644); // rw-r--r--
+                let _ = fs::set_permissions(path, perms);
+            }
+        }
+        Ok(())
+    }
+
+    fix_permissions_recursive(dir_path)
+        .with_context(|| format!("Failed to fix directory permissions for {:?}", dir_path))?;
+
+    // Retry removal after permission fix
+    fs::remove_dir_all(dir_path)
+        .with_context(|| format!("Failed to remove directory {:?} after permission fix", dir_path))?;
+
+    Ok(())
+}
+
+/// Fallback implementations for non-Unix systems
+#[cfg(not(unix))]
+fn fix_permissions_and_remove_file(file_path: &Path) -> Result<()> {
+    fs::remove_file(file_path)
+        .with_context(|| format!("Failed to remove file {:?} (permission fix not available on this platform)", file_path))
+}
+
+#[cfg(not(unix))]
+fn fix_permissions_and_remove_dir(dir_path: &Path) -> Result<()> {
+    fs::remove_dir_all(dir_path)
+        .with_context(|| format!("Failed to remove directory {:?} (permission fix not available on this platform)", dir_path))
 }

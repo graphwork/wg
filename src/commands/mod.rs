@@ -25,6 +25,7 @@ pub mod chat;
 pub mod check;
 pub mod checkpoint;
 pub mod claim;
+pub mod cleanup;
 pub mod compact;
 pub mod config_cmd;
 pub mod context;

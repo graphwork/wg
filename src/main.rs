@@ -523,6 +523,10 @@ fn main() -> Result<()> {
         Commands::Blocked { id } => commands::blocked::run(&workgraph_dir, &id, cli.json),
         Commands::WhyBlocked { id } => commands::why_blocked::run(&workgraph_dir, &id, cli.json),
         Commands::Check => commands::check::run(&workgraph_dir, cli.json),
+        Commands::Cleanup { subcmd } => {
+            let args = commands::cleanup::CleanupArgs { subcmd };
+            commands::cleanup::run(args)
+        },
         Commands::Cycles => commands::cycles::run(&workgraph_dir, cli.json),
         Commands::List {
             status,
