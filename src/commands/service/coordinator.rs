@@ -2944,6 +2944,105 @@ exit $EXIT_CODE"#,
     Ok((agent_id, pid))
 }
 
+/// Priority-aware task sorting with starvation prevention and priority inheritance.
+///
+/// Features:
+/// 1. Sort tasks by priority (Critical > High > Normal > Low > Idle)
+/// 2. Starvation prevention: tasks waiting longer than threshold get priority bump
+/// 3. Priority inheritance: high-priority tasks blocked by low-priority deps boost the blockers
+fn sort_tasks_by_priority_with_features<'a>(
+    graph: &workgraph::graph::WorkGraph,
+    tasks: Vec<&'a workgraph::graph::Task>,
+    _config: &Config,
+) -> Vec<&'a workgraph::graph::Task> {
+    use chrono::Utc;
+
+    // Starvation prevention threshold: tasks older than this get priority boost
+    let starvation_threshold_hours = 24; // Can be made configurable later
+    let now = Utc::now();
+
+    let mut task_priorities: Vec<_> = tasks
+        .into_iter()
+        .map(|task| {
+            let mut effective_priority = task.priority;
+
+            // Starvation prevention: bump priority for old tasks
+            if let Some(ref created_at_str) = task.created_at {
+                if let Ok(created_at) = chrono::DateTime::parse_from_rfc3339(created_at_str) {
+                let age = now.signed_duration_since(created_at.with_timezone(&Utc));
+                let age_hours = age.num_hours();
+
+                if age_hours > starvation_threshold_hours {
+                    // Bump priority by one level for every 24 hours of waiting
+                    let bumps = (age_hours / starvation_threshold_hours) as usize;
+                    for _ in 0..bumps {
+                        effective_priority = match effective_priority {
+                            Priority::Idle => Priority::Low,
+                            Priority::Low => Priority::Normal,
+                            Priority::Normal => Priority::High,
+                            Priority::High => Priority::Critical,
+                            Priority::Critical => Priority::Critical, // Can't go higher
+                        };
+                    }
+                    eprintln!("[coordinator] Priority bump: {} (age: {}h) -> {}",
+                             task.id, age_hours, effective_priority);
+                }
+                }
+            }
+
+            // Priority inheritance: check if this task blocks any high-priority tasks
+            let inherited_priority = compute_priority_inheritance(task, graph);
+            if inherited_priority < effective_priority {
+                eprintln!("[coordinator] Priority inheritance: {} ({} -> {})",
+                         task.id, effective_priority, inherited_priority);
+                effective_priority = inherited_priority;
+            }
+
+            (task, effective_priority)
+        })
+        .collect();
+
+    // Sort by effective priority (Critical first, then High, etc.)
+    task_priorities.sort_by_key(|(_, priority)| *priority);
+
+    let sorted_tasks: Vec<_> = task_priorities.into_iter().map(|(task, _)| task).collect();
+
+    // Log priority decisions if we have tasks
+    if !sorted_tasks.is_empty() {
+        let priority_summary: Vec<String> = sorted_tasks
+            .iter()
+            .take(5) // Log first 5 for brevity
+            .map(|task| format!("{}:{}", task.id, task.priority))
+            .collect();
+        eprintln!("[coordinator] Priority dispatch order: [{}{}]",
+                 priority_summary.join(", "),
+                 if sorted_tasks.len() > 5 { ", ..." } else { "" });
+    }
+
+    sorted_tasks
+}
+
+/// Compute priority inheritance for a task based on downstream dependencies.
+/// If this task blocks higher-priority tasks, inherit their priority.
+fn compute_priority_inheritance(
+    task: &workgraph::graph::Task,
+    graph: &workgraph::graph::WorkGraph,
+) -> Priority {
+    let mut highest_inherited = task.priority;
+
+    // Find all tasks that depend on this task (directly or indirectly)
+    for dependent_task in graph.tasks() {
+        if dependent_task.after.contains(&task.id) {
+            // This task directly blocks the dependent
+            if dependent_task.priority < highest_inherited {
+                highest_inherited = dependent_task.priority;
+            }
+        }
+    }
+
+    highest_inherited
+}
+
 /// Spawn agents on ready tasks, up to `slots_available`. Returns the number of
 /// agents successfully spawned.
 /// Maximum number of rapid respawns allowed before the task is failed.
@@ -3182,10 +3281,13 @@ fn spawn_agents_for_ready_tasks(
     auto_assign: bool,
 ) -> usize {
     let cycle_analysis = graph.compute_cycle_analysis();
-    let final_ready = ready_tasks_with_peers_cycle_aware(graph, dir, &cycle_analysis);
+    let ready_tasks_raw = ready_tasks_with_peers_cycle_aware(graph, dir, &cycle_analysis);
     let agents_dir = dir.join("agency").join("cache/agents");
     let gp = graph_path(dir);
     let mut spawned = 0;
+
+    // Sort ready tasks by priority with starvation prevention and priority inheritance
+    let final_ready = sort_tasks_by_priority_with_features(graph, ready_tasks_raw, config);
 
     for task in final_ready.iter() {
         if spawned >= slots_available {
