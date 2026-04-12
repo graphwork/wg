@@ -69,6 +69,10 @@ The following terms have precise meanings throughout this manual. They are defin
 | *dispatch role* | A named system function with its own model and provider assignment. Roles include _default_, _task_agent_, _evaluator_, _assigner_, _evolver_, _triage_, _verification_, _compactor_, _placer_, and others. Managed via `wg model routing` and `wg model set`. Enables cost-optimized model allocation: cheap models for routine roles, capable models for complex work. |
 | *peer* | A registered reference to another workgraph project for cross-repo communication. Managed via `wg peer add/remove/list/status`. Tasks can be created in a peer's graph via `wg add --repo <peer-name>`. Distinct from federation (which shares agency identities)—peer communication shares _work_. |
 | *agency import* | Importing agency primitives (roles, motivations) from external sources via `wg agency import`. Supports local CSV files, remote URLs (`--url`), and configured upstream bureaus (`--upstream`). Change detection via manifest hashing prevents redundant imports. |
+| *user board* | A per-user conversation surface (`.user-NAME` task) for persistent human-in-the-loop communication. Created via `wg user init`, listed with `wg user list`, and archived with `wg user archive`. Each board is a task with a message queue—the coordinator reopens it when new messages arrive, enabling asynchronous dialogue between the human and the system. |
+| *provider profile* | A named preset that maps model tiers (haiku, sonnet, opus) to specific provider/model combinations. Managed via `wg profile set`, `wg profile show`, and `wg profile list`. Profiles simplify model configuration: instead of setting each dispatch role's model individually, activate a profile and all roles resolve through its tier mappings. `wg profile refresh` updates rankings from OpenRouter. |
+| *spend* | Token usage and estimated cost tracking. `wg spend` summarizes cumulative input/output tokens, cached tokens, and estimated USD cost across all agents. `--today` filters to the current day. The data is derived from agent output logs that capture API usage metadata. |
+| *requeue* | Returning an in-progress task to open status for re-dispatch. `wg requeue --reason "..."` resets the task and records the reason—typically used when a task's dependency has failed and fix tasks have been created, allowing the requeued task to be dispatched after the fixes land. Distinct from `wg retry` (which handles failed tasks) and dead-agent triage (which is automatic). |
 
 
 ---
@@ -174,6 +178,26 @@ Each step in this cycle can be manual or automated. A project might start with m
 The task graph and the agency are complementary systems with a clean separation. The graph defines *what* needs to happen and *in what order*. The agency defines *who* does it and *how they approach it*. Neither depends on the other for basic operation: you can run workgraph without the agency (every agent is generic), and you can define agency entities without a graph (though they have nothing to do). The power is in the combination.
 
 The coordinator sits at the intersection. It reads the graph to find ready work, reads the agency to resolve agent identities, dispatches the work, and—when evaluation is enabled—closes the feedback loop by scoring results and feeding data back into the agency. A single service daemon can host multiple coordinator sessions, enabling parallel workstreams within the same project. The graph is the skeleton; the agency is the musculature; the coordinator is the nervous system.
+
+Several additional mechanisms extend this core architecture:
+
+- **Waiting and checkpointing.** An agent can park a task in *waiting* status (`wg wait`) until a condition is met—another task reaching a state, a timer expiring, a message arriving, or a human signal. The coordinator evaluates waiting conditions each tick and resumes satisfied tasks automatically. Separately, `wg checkpoint` lets a running agent save a progress snapshot so that a replacement agent can resume from that point if the original is interrupted.
+
+- **FLIP (Fidelity via Latent Intent Probing).** After a task completes and is evaluated, an independent FLIP assessment reconstructs what the task's prompt *must have been* from the agent's output alone, then scores how well the output matched the actual task description. Low FLIP scores automatically trigger verification tasks dispatched to a stronger model. The full agency pipeline is: evaluate → FLIP → verify → evolve.
+
+- **Eval gate.** A configurable threshold (`eval_gate_threshold`) that automatically rejects (fails) a completed task if its evaluation score falls below the minimum. This creates a quality floor: work that does not meet the bar is sent back rather than accepted.
+
+- **Multi-coordinator sessions.** A single daemon can host multiple coordinator sessions, each managing an independent scheduling context—for example, one coordinator for feature work and another for maintenance.
+
+- **Compaction and sweep.** Long-running projects accumulate state. `wg compact` distills the current graph into a condensed `context.md` summary for future agent prompts. `wg sweep` detects orphaned in-progress tasks whose agents have died without cleanup.
+
+- **Auto-triage.** When a spawned agent dies, the coordinator can automatically triage the outcome using a fast LLM, classifying the result as *done* (work was complete), *continue* (inject recovery context and re-dispatch), or *restart* (begin fresh).
+
+- **Exec-mode.** Each task can specify an execution weight—`full` (all tools), `light` (read-only), `bare` (CLI only), or `shell` (no LLM)—controlling how much autonomy the agent has within its executor.
+
+- **User boards.** Each human participant can have a persistent conversation board (`wg user init`), enabling asynchronous dialogue with the coordinator and agents. User boards are tasks with message queues—the coordinator reopens them when messages arrive, creating a natural human-in-the-loop channel.
+
+- **Provider profiles and cost tracking.** `wg profile` manages named presets that map model tiers to specific provider/model combinations, simplifying configuration across dispatch roles. `wg spend` tracks token usage and estimated costs across all agents, and `wg openrouter` provides OpenRouter-specific cost monitoring.
 
 Workgraph is not a closed system. External tools—CI pipelines, portfolio trackers, peer organizations—can observe the graph through a real-time event stream and inject information back through several channels: recording evaluations with external source tags, importing trace data from peers, adding tasks, or updating state directly. Each task carries a *visibility* field (`internal`, `public`, or `peer`) that controls what information crosses organizational boundaries when traces are exported. This boundary discipline makes collaboration possible without exposing internal deliberation.
 
@@ -1131,9 +1155,39 @@ Three maintenance commands support long-running projects:
 
 **Checkpoint.** `wg checkpoint` lets a running agent save a progress snapshot during a long-running task. If the agent is interrupted—OOM-killed, timed out, or manually stopped—a replacement agent can resume from the checkpoint rather than starting from scratch. Checkpoints are stored alongside the task's artifacts and injected into the recovery context.
 
-## Service Restart
+## Service Restart and Coordinator Persistence
 
 `wg service restart` performs a graceful stop-then-start cycle. Running agents continue undisturbed (they are detached processes), but the coordinator re-reads configuration and starts fresh. This is the standard way to pick up configuration changes that `wg service reload` cannot apply.
+
+Coordinator tasks are preserved across restarts. When the daemon starts, it discovers existing coordinator tasks (those tagged `"coordinator-loop"`) and resumes them rather than creating new ones. This means the TUI, which depends on coordinator tasks for discovery, does not lose track of active coordinator sessions after a restart. Only truly legacy meta-tasks (archive, registry-refresh, and user tasks) are cleaned up during startup.
+
+## User Boards
+
+Humans need a persistent channel for asynchronous communication with the coordinator and agents. *User boards* provide this. `wg user init` creates a per-user conversation board—a `.user-NAME` task with a message queue. The coordinator treats user boards specially: when a new message arrives on a board, the coordinator reopens it so the next agent can address the message.
+
+User boards enable the human-in-the-loop pattern without requiring the human to be present at dispatch time. A human can send a message to a board, go offline, and the coordinator will process it on the next tick. Messages can include task creation requests, status inquiries, or design feedback that the coordinator translates into graph operations.
+
+`wg user list` shows all boards (active and archived). `wg user archive` archives the current board and creates a fresh successor, preserving the conversation history while starting a clean thread. Boards are lightweight—they are regular tasks with a messaging convention, not a separate subsystem.
+
+## Provider Profiles and Cost Tracking
+
+Managing model and provider assignments across many dispatch roles can be tedious. *Provider profiles* simplify this with named presets.
+
+`wg profile set <name>` activates a profile that maps model tiers (`haiku`, `sonnet`, `opus`) to specific provider/model combinations. For example, an `openrouter-budget` profile might map `haiku` to a cheap OpenRouter model, `sonnet` to a mid-range one, and `opus` to a capable reasoning model. `wg profile show` displays the active profile and its resolved model mappings. `wg profile list` shows all available profiles. `wg profile refresh` updates model rankings from OpenRouter's leaderboard API.
+
+Profiles interact with the dispatch role routing system: when a profile is active, roles that request a tier (e.g., `haiku` for triage, `opus` for evolution) resolve through the profile's mappings. Per-task and per-role overrides still take precedence—profiles are defaults, not mandates.
+
+Two commands provide visibility into cost:
+
+- `wg spend` summarizes token usage and estimated costs across all agents. It reads API usage metadata from agent output logs and computes cumulative input, output, and cached token counts with USD estimates. The `--today` flag filters to the current day. The `--json` flag produces machine-readable output for integration with budgeting tools.
+
+- `wg openrouter` provides OpenRouter-specific cost monitoring when using OpenRouter as a provider. `wg openrouter status` shows API key status and usage. `wg openrouter session` shows session-level cost summaries. `wg openrouter set-limit` configures cost caps to prevent runaway spending.
+
+## Requeue
+
+Sometimes a task is in-progress but its environment has changed—a dependency was re-evaluated, a fix task was created for a problem the agent will encounter, or the task needs to wait for new prerequisites. `wg requeue <task-id> --reason "..."` returns the task from in-progress to open status, recording the reason for the change. The task becomes eligible for re-dispatch on the next coordinator tick.
+
+Requeue is distinct from `wg retry` (which resets a *failed* task) and from the coordinator's automatic dead-agent triage (which handles agents that crash). Requeue is an intentional, human- or agent-initiated action to pause and reschedule in-progress work—typically because the task should wait for other work to land first.
 
 ## Observing the System
 

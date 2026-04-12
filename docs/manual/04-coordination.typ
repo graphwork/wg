@@ -277,9 +277,39 @@ Three maintenance commands support long-running projects:
 
 *Checkpoint.* `wg checkpoint` lets a running agent save a progress snapshot during a long-running task. If the agent is interrupted—OOM-killed, timed out, or manually stopped—a replacement agent can resume from the checkpoint rather than starting from scratch. Checkpoints are stored alongside the task's artifacts and injected into the recovery context.
 
-== Service Restart <service-restart>
+== Service Restart and Coordinator Persistence <service-restart>
 
 `wg service restart` performs a graceful stop-then-start cycle. Running agents continue undisturbed (they are detached processes), but the coordinator re-reads configuration and starts fresh. This is the standard way to pick up configuration changes that `wg service reload` cannot apply.
+
+Coordinator tasks are preserved across restarts. When the daemon starts, it discovers existing coordinator tasks (those tagged `"coordinator-loop"`) and resumes them rather than creating new ones. This means the TUI, which depends on coordinator tasks for discovery, does not lose track of active coordinator sessions after a restart. Only truly legacy meta-tasks (archive, registry-refresh, and user tasks) are cleaned up during startup.
+
+== User Boards <user-boards>
+
+Humans need a persistent channel for asynchronous communication with the coordinator and agents. _User boards_ provide this. `wg user init` creates a per-user conversation board---a `.user-NAME` task with a message queue. The coordinator treats user boards specially: when a new message arrives on a board, the coordinator reopens it so the next agent can address the message.
+
+User boards enable the human-in-the-loop pattern without requiring the human to be present at dispatch time. A human can send a message to a board, go offline, and the coordinator will process it on the next tick. Messages can include task creation requests, status inquiries, or design feedback that the coordinator translates into graph operations.
+
+`wg user list` shows all boards (active and archived). `wg user archive` archives the current board and creates a fresh successor, preserving the conversation history while starting a clean thread. Boards are lightweight---they are regular tasks with a messaging convention, not a separate subsystem.
+
+== Provider Profiles and Cost Tracking <profiles-cost>
+
+Managing model and provider assignments across many dispatch roles can be tedious. _Provider profiles_ simplify this with named presets.
+
+`wg profile set <name>` activates a profile that maps model tiers (`haiku`, `sonnet`, `opus`) to specific provider/model combinations. For example, an `openrouter-budget` profile might map `haiku` to a cheap OpenRouter model, `sonnet` to a mid-range one, and `opus` to a capable reasoning model. `wg profile show` displays the active profile and its resolved model mappings. `wg profile list` shows all available profiles. `wg profile refresh` updates model rankings from OpenRouter's leaderboard API.
+
+Profiles interact with the dispatch role routing system: when a profile is active, roles that request a tier (e.g., `haiku` for triage, `opus` for evolution) resolve through the profile's mappings. Per-task and per-role overrides still take precedence---profiles are defaults, not mandates.
+
+Two commands provide visibility into cost:
+
+- `wg spend` summarizes token usage and estimated costs across all agents. It reads API usage metadata from agent output logs and computes cumulative input, output, and cached token counts with USD estimates. The `--today` flag filters to the current day. The `--json` flag produces machine-readable output for integration with budgeting tools.
+
+- `wg openrouter` provides OpenRouter-specific cost monitoring when using OpenRouter as a provider. `wg openrouter status` shows API key status and usage. `wg openrouter session` shows session-level cost summaries. `wg openrouter set-limit` configures cost caps to prevent runaway spending.
+
+== Requeue <requeue>
+
+Sometimes a task is in-progress but its environment has changed---a dependency was re-evaluated, a fix task was created for a problem the agent will encounter, or the task needs to wait for new prerequisites. `wg requeue <task-id> --reason "..."` returns the task from in-progress to open status, recording the reason for the change. The task becomes eligible for re-dispatch on the next coordinator tick.
+
+Requeue is distinct from `wg retry` (which resets a _failed_ task) and from the coordinator's automatic dead-agent triage (which handles agents that crash). Requeue is an intentional, human- or agent-initiated action to pause and reschedule in-progress work---typically because the task should wait for other work to land first.
 
 == Observing the System <observing>
 
