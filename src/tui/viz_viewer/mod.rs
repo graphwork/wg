@@ -87,6 +87,13 @@ pub fn run(
         );
     }
 
+    // Check if stdout is a terminal to avoid "open terminal failed" errors in test/CI environments
+    if !crossterm::tty::IsTty::is_tty(&io::stdout()) {
+        return Err(anyhow::anyhow!(
+            "Cannot create TUI: stdout is not a terminal (this is normal in test/CI environments)"
+        ));
+    }
+
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend).context("failed to create terminal for TUI")?;
 
