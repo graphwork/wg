@@ -40,6 +40,7 @@ Model routing end-to-end:
 
 import asyncio
 import base64
+import datetime
 import json
 import logging
 import os
@@ -653,8 +654,20 @@ async def _run_native_executor(
 
     # For Condition G, prepend the autopoietic meta-prompt to the instruction
     # so the agent knows to build a self-correcting workgraph.
+    # Also inject the verify command into the meta-prompt so the architect
+    # can include it in subtask descriptions (the verify gate on the seed
+    # task is auto-deferred by wg done when children are detected, but the
+    # architect still needs to know what tests to tell subtasks to run).
     if cfg.get("autopoietic"):
         meta = CONDITION_G_META_PROMPT.replace("{seed_task_id}", task_id)
+        if verify_cmd:
+            meta += (
+                f"\n## Test command\n"
+                f"The test command that determines pass/fail is:\n"
+                f"```\n{verify_cmd}\n```\n"
+                f"Include this command in your verify task's description "
+                f"so it knows exactly what to run.\n\n"
+            )
         full_instruction = meta + task_instruction
     else:
         full_instruction = task_instruction
@@ -739,12 +752,14 @@ async def _run_native_executor(
             break
 
         if is_autopoietic:
-            # Check if any non-internal tasks are still open or in-progress.
+            # Check if any non-internal tasks are still active (non-terminal).
             # Internal daemon tasks (.coordinator-0, .compact-0, etc.) are
             # perpetually open and must be excluded from the quiescence check.
             # wg list --status only accepts a single value, so query each.
+            # Must check ALL non-terminal statuses to avoid premature
+            # completion when tasks are blocked, pending-validation, or waiting.
             has_active = False
-            for check_status in ("open", "in-progress"):
+            for check_status in ("open", "in-progress", "blocked", "pending-validation", "waiting"):
                 list_result = await environment.exec(
                     command=f"cd {trial_workdir} && wg list --status {check_status}"
                 )
@@ -1314,6 +1329,17 @@ class WorkgraphAgent(BaseAgent):
 
         # 1. Upload wg binary into the container
         wg_bin = self._wg_binary_host_path
+        # Log binary metadata for diagnosing stale-binary issues (see smoke-test
+        # iteration 2: container had Apr 7 binary missing unblock_stuck_tasks).
+        try:
+            stat = os.stat(wg_bin)
+            mtime = datetime.datetime.fromtimestamp(stat.st_mtime, tz=datetime.timezone.utc)
+            logger.info(
+                f"[binary] Uploading wg binary: {wg_bin} "
+                f"(size={stat.st_size}, mtime={mtime.isoformat()})"
+            )
+        except OSError as e:
+            logger.warning(f"[binary] Could not stat wg binary {wg_bin}: {e}")
         await environment.upload_file(wg_bin, "/usr/local/bin/wg")
         await environment.exec(command="chmod +x /usr/local/bin/wg")
 
