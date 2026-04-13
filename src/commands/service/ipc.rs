@@ -132,6 +132,12 @@ pub enum IpcRequest {
         /// Optional human-readable name for the coordinator.
         #[serde(default)]
         name: Option<String>,
+        /// Per-coordinator model override (e.g., "openai:qwen3-coder-30b").
+        #[serde(default)]
+        model: Option<String>,
+        /// Per-coordinator executor override (e.g., "native").
+        #[serde(default)]
+        executor: Option<String>,
     },
     /// Delete a coordinator instance.
     DeleteCoordinator { coordinator_id: u32 },
@@ -454,9 +460,16 @@ fn handle_request(
                 Err(e) => IpcResponse::error(&format!("Failed to store chat message: {}", e)),
             }
         }
-        IpcRequest::CreateCoordinator { name } => {
-            logger.info(&format!("IPC CreateCoordinator: name={:?}", name));
-            handle_create_coordinator(dir, name.as_deref())
+        IpcRequest::CreateCoordinator {
+            name,
+            model,
+            executor,
+        } => {
+            logger.info(&format!(
+                "IPC CreateCoordinator: name={:?}, model={:?}, executor={:?}",
+                name, model, executor
+            ));
+            handle_create_coordinator(dir, name.as_deref(), model.as_deref(), executor.as_deref())
         }
         IpcRequest::DeleteCoordinator { coordinator_id } => {
             logger.info(&format!(
@@ -1210,7 +1223,12 @@ fn find_next_fresh_coordinator_id(graph: &workgraph::graph::WorkGraph, dir: &Pat
 }
 
 /// Handle CreateCoordinator IPC request.
-fn handle_create_coordinator(dir: &Path, name: Option<&str>) -> IpcResponse {
+fn handle_create_coordinator(
+    dir: &Path,
+    name: Option<&str>,
+    model: Option<&str>,
+    executor: Option<&str>,
+) -> IpcResponse {
     let graph_path = crate::commands::graph_path(dir);
     let mut graph = match workgraph::parser::load_graph(&graph_path) {
         Ok(g) => g,
@@ -1301,6 +1319,14 @@ fn handle_create_coordinator(dir: &Path, name: Option<&str>) -> IpcResponse {
     }) {
         Ok(_) => {}
         Err(e) => return IpcResponse::error(&format!("Failed to save graph: {}", e)),
+    }
+
+    // Write per-coordinator state file with model/executor overrides if specified.
+    if model.is_some() || executor.is_some() {
+        let mut state = super::CoordinatorState::load_or_default_for(dir, next_id);
+        state.model_override = model.map(String::from);
+        state.executor_override = executor.map(String::from);
+        state.save_for(dir, next_id);
     }
 
     IpcResponse::success(serde_json::json!({
@@ -1789,14 +1815,43 @@ poll_interval = 120
     fn test_ipc_create_coordinator_serialization() {
         let req = IpcRequest::CreateCoordinator {
             name: Some("Feature Work".to_string()),
+            model: None,
+            executor: None,
         };
         let json = serde_json::to_string(&req).unwrap();
         assert!(json.contains("\"cmd\":\"create_coordinator\""));
 
         let parsed: IpcRequest = serde_json::from_str(&json).unwrap();
         match parsed {
-            IpcRequest::CreateCoordinator { name } => {
+            IpcRequest::CreateCoordinator {
+                name,
+                model,
+                executor,
+            } => {
                 assert_eq!(name, Some("Feature Work".to_string()));
+                assert_eq!(model, None);
+                assert_eq!(executor, None);
+            }
+            _ => panic!("Wrong request type"),
+        }
+
+        // Test with model and executor overrides
+        let req2 = IpcRequest::CreateCoordinator {
+            name: Some("Local Model".to_string()),
+            model: Some("openai:qwen3-coder-30b".to_string()),
+            executor: Some("native".to_string()),
+        };
+        let json2 = serde_json::to_string(&req2).unwrap();
+        let parsed2: IpcRequest = serde_json::from_str(&json2).unwrap();
+        match parsed2 {
+            IpcRequest::CreateCoordinator {
+                name,
+                model,
+                executor,
+            } => {
+                assert_eq!(name, Some("Local Model".to_string()));
+                assert_eq!(model, Some("openai:qwen3-coder-30b".to_string()));
+                assert_eq!(executor, Some("native".to_string()));
             }
             _ => panic!("Wrong request type"),
         }
@@ -2234,7 +2289,7 @@ poll_interval = 120
         workgraph::parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
 
         // Create coordinator labeled "alice"
-        let resp = handle_create_coordinator(dir, Some("alice"));
+        let resp = handle_create_coordinator(dir, Some("alice"), None, None);
         assert!(resp.ok, "create_coordinator should succeed");
 
         // Verify the coordinator task was created with correct label
@@ -2246,7 +2301,7 @@ poll_interval = 120
         assert!(coord.tags.contains(&"coordinator-loop".to_string()));
 
         // Create coordinator labeled "bob"
-        let resp = handle_create_coordinator(dir, Some("bob"));
+        let resp = handle_create_coordinator(dir, Some("bob"), None, None);
         assert!(resp.ok, "create_coordinator for bob should succeed");
 
         let graph = workgraph::parser::load_graph(&dir.join("graph.jsonl")).unwrap();
@@ -2270,8 +2325,8 @@ poll_interval = 120
         let graph = workgraph::graph::WorkGraph::new();
         workgraph::parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
 
-        handle_create_coordinator(dir, Some("alice"));
-        handle_create_coordinator(dir, Some("bob"));
+        handle_create_coordinator(dir, Some("alice"), None, None);
+        handle_create_coordinator(dir, Some("bob"), None, None);
 
         // Write per-coordinator state files
         let alice_state = CoordinatorState {

@@ -3384,6 +3384,12 @@ pub enum ServiceCommands {
         /// Optional name for the coordinator
         #[arg(long)]
         name: Option<String>,
+        /// Model for this coordinator (e.g., "openai:qwen3-coder-30b")
+        #[arg(long)]
+        model: Option<String>,
+        /// Executor for this coordinator (e.g., "native", "claude")
+        #[arg(long)]
+        executor: Option<String>,
     },
 
     /// Delete a coordinator session

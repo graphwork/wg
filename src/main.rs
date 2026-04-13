@@ -2048,9 +2048,17 @@ fn main() -> Result<()> {
                 executor.as_deref(),
                 model.as_deref(),
             ),
-            ServiceCommands::CreateCoordinator { name } => {
-                commands::service::run_create_coordinator(&workgraph_dir, name.as_deref(), cli.json)
-            }
+            ServiceCommands::CreateCoordinator {
+                name,
+                model,
+                executor,
+            } => commands::service::run_create_coordinator(
+                &workgraph_dir,
+                name.as_deref(),
+                model.as_deref(),
+                executor.as_deref(),
+                cli.json,
+            ),
             ServiceCommands::DeleteCoordinator { id } => {
                 commands::service::run_delete_coordinator(&workgraph_dir, id, cli.json)
             }

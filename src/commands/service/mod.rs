@@ -461,6 +461,14 @@ pub struct CoordinatorState {
     /// Session cost tracking for OpenRouter cost caps
     #[serde(default)]
     pub cost_tracking: SessionCostTracking,
+    /// Per-coordinator model override. When set, the coordinator agent uses this
+    /// model instead of the daemon-wide default. Persists across daemon restarts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_override: Option<String>,
+    /// Per-coordinator executor override. When set, the coordinator agent uses this
+    /// executor instead of the daemon-wide default. Persists across daemon restarts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub executor_override: Option<String>,
 }
 
 impl CoordinatorState {
@@ -1950,6 +1958,8 @@ pub fn run_daemon(
             .map(|cs| cs.accumulated_tokens)
             .unwrap_or(0),
         cost_tracking: SessionCostTracking::default(),
+        model_override: None,
+        executor_override: None,
     };
     coord_state.save(&dir);
 
@@ -2215,15 +2225,27 @@ pub fn run_daemon(
                             ));
                             continue;
                         }
+                        // Check for per-coordinator model/executor overrides
+                        let coord_state = CoordinatorState::load_for(&dir, cid);
+                        let spawn_model = coord_state
+                            .as_ref()
+                            .and_then(|s| s.model_override.clone())
+                            .or_else(|| daemon_cfg.model.clone());
+                        let spawn_executor = coord_state
+                            .as_ref()
+                            .and_then(|s| s.executor_override.clone())
+                            .unwrap_or_else(|| daemon_cfg.executor.clone());
                         logger.info(&format!(
-                            "Lazy-spawning coordinator agent {} (first message received)",
-                            cid
+                            "Lazy-spawning coordinator agent {} (first message received, model={}, executor={})",
+                            cid,
+                            spawn_model.as_deref().unwrap_or("default"),
+                            &spawn_executor
                         ));
                         match coordinator_agent::CoordinatorAgent::spawn(
                             &dir,
                             cid,
-                            daemon_cfg.model.as_deref(),
-                            Some(&daemon_cfg.executor),
+                            spawn_model.as_deref(),
+                            Some(&spawn_executor),
                             daemon_cfg.provider.as_deref(),
                             &logger,
                             event_log.clone(),
@@ -3230,11 +3252,19 @@ pub fn run_thaw(_dir: &Path, _json: bool) -> Result<()> {
 
 /// Create a new coordinator session via IPC
 #[cfg(unix)]
-pub fn run_create_coordinator(dir: &Path, name: Option<&str>, json: bool) -> Result<()> {
+pub fn run_create_coordinator(
+    dir: &Path,
+    name: Option<&str>,
+    model: Option<&str>,
+    executor: Option<&str>,
+    json: bool,
+) -> Result<()> {
     let response = send_request(
         dir,
         &IpcRequest::CreateCoordinator {
             name: name.map(|s| s.to_string()),
+            model: model.map(|s| s.to_string()),
+            executor: executor.map(|s| s.to_string()),
         },
     )?;
 
@@ -3259,7 +3289,13 @@ pub fn run_create_coordinator(dir: &Path, name: Option<&str>, json: bool) -> Res
 }
 
 #[cfg(not(unix))]
-pub fn run_create_coordinator(_dir: &Path, _name: Option<&str>, _json: bool) -> Result<()> {
+pub fn run_create_coordinator(
+    _dir: &Path,
+    _name: Option<&str>,
+    _model: Option<&str>,
+    _executor: Option<&str>,
+    _json: bool,
+) -> Result<()> {
     anyhow::bail!("Service daemon is only supported on Unix systems")
 }
 
