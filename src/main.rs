@@ -1984,8 +1984,28 @@ fn main() -> Result<()> {
             };
             commands::agents::run(&workgraph_dir, filter, cli.json)
         }
-        Commands::Kill { agent, force, all } => {
-            if all {
+        Commands::Kill {
+            agent,
+            force,
+            all,
+            tree,
+            dry_run,
+            no_abandon,
+        } => {
+            if tree {
+                if let Some(task_id) = agent {
+                    commands::kill::run_tree(
+                        &workgraph_dir,
+                        &task_id,
+                        force,
+                        dry_run,
+                        no_abandon,
+                        cli.json,
+                    )
+                } else {
+                    anyhow::bail!("Must specify a task ID with --tree")
+                }
+            } else if all {
                 commands::kill::run_all(&workgraph_dir, force, cli.json)
             } else if let Some(agent_id) = agent {
                 commands::kill::run(&workgraph_dir, &agent_id, force, cli.json)
@@ -1993,6 +2013,10 @@ fn main() -> Result<()> {
                 anyhow::bail!("Must specify an agent ID or use --all")
             }
         }
+        Commands::Reap {
+            dry_run,
+            older_than,
+        } => commands::reap::run(&workgraph_dir, dry_run, older_than.as_deref(), cli.json),
         Commands::Service { command } => match command {
             ServiceCommands::Start {
                 port,

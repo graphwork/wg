@@ -1545,7 +1545,7 @@ pub enum Commands {
 
     /// Kill running agent(s)
     Kill {
-        /// Agent ID to kill (e.g., agent-1)
+        /// Agent ID to kill, or task ID when using --tree
         agent: Option<String>,
 
         /// Force kill (SIGKILL immediately instead of graceful SIGTERM)
@@ -1555,6 +1555,29 @@ pub enum Commands {
         /// Kill all running agents
         #[arg(long)]
         all: bool,
+
+        /// Kill agent for task + all downstream tasks (cascade kill)
+        #[arg(long)]
+        tree: bool,
+
+        /// Show what would be killed/abandoned without doing it
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Kill agents but don't abandon tasks (allows respawn)
+        #[arg(long)]
+        no_abandon: bool,
+    },
+
+    /// Reap dead/done/failed agents from the registry
+    Reap {
+        /// Show what would be reaped without removing
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Only reap agents dead/done/failed for longer than this duration (e.g., 1h, 30m, 7d)
+        #[arg(long)]
+        older_than: Option<String>,
     },
 
     /// Manage the agent service daemon
@@ -3630,6 +3653,7 @@ pub fn command_name(cmd: &Commands) -> &'static str {
         Commands::Sweep { .. } => "sweep",
         Commands::Agents { .. } => "agents",
         Commands::Kill { .. } => "kill",
+        Commands::Reap { .. } => "reap",
         Commands::Server { .. } => "server",
         Commands::Service { .. } => "service",
         Commands::Screencast { .. } => "screencast",
@@ -3713,6 +3737,7 @@ pub fn supports_json(cmd: &Commands) -> bool {
             | Commands::Sweep { .. }
             | Commands::Agents { .. }
             | Commands::Kill { .. }
+            | Commands::Reap { .. }
             | Commands::Service { .. }
             | Commands::Screencast { .. }
             | Commands::Cost { .. }

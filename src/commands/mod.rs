@@ -78,6 +78,7 @@ pub mod plan;
 pub mod profile_cmd;
 pub mod quickstart;
 pub mod ready;
+pub mod reap;
 pub mod reclaim;
 // pub mod reprioritize;  // TODO: Module file missing
 pub mod reject;
