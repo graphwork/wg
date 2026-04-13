@@ -72,6 +72,14 @@ DEFAULT_POLL_INTERVAL = 2.0
 # Default timeout for a single trial (seconds)
 DEFAULT_TRIAL_TIMEOUT = 1800  # 30 minutes
 
+# Isolated trial working directory prefix inside the Docker container.
+# Some container images share the host's /home/erik filesystem, so wg
+# commands run in the default CWD would find the HOST .workgraph/ and
+# corrupt it.  A unique directory (prefix + UUID) is created fresh in
+# setup() and all wg commands are prefixed with `cd <dir> && ` to
+# guarantee isolation.
+_TRIAL_WORKDIR_PREFIX = "/var/tmp/tb-trial-"
+
 
 # ---------------------------------------------------------------------------
 # Condition → native wg config mapping
@@ -131,10 +139,10 @@ CONDITION_CONFIG = {
         "agency": None,
         "exclude_wg_tools": False,
         "max_agents": 8,
-        "autopoietic": False,            # Phase 3: coordinator orchestrates, not seed agent
+        "autopoietic": True,             # Inject architect meta-prompt so seed agent decomposes
         "coordinator_agent": True,        # Phase 3: persistent coordinator agent
         "heartbeat_interval": 30,         # Phase 3: 30s autonomous heartbeat
-        "coordinator_model": "sonnet",    # Phase 3: capable model for coordinator reasoning
+        # Note: coordinator_model removed — was dead config (not wired into config.toml)
     },
 }
 
@@ -254,25 +262,28 @@ async def _write_trial_bundle(
     """Write a custom bundle TOML for conditions that need tool filtering.
 
     For Condition A, creates a bundle that excludes wg tools entirely.
+    For Condition G, creates an architect bundle (read-only + wg tools).
     """
     cfg = CONDITION_CONFIG[condition]
-    if not cfg.get("exclude_wg_tools"):
-        return
 
     bundles_dir = os.path.join(wg_dir, "bundles")
-    os.makedirs(bundles_dir, exist_ok=True)
-
-    # Override the implementer bundle (used by exec_mode=full) to exclude wg tools
     bundle_path = os.path.join(bundles_dir, "implementer.toml")
-    content = (
-        'name = "implementer"\n'
-        'description = "Full implementation agent without wg tools (Condition A baseline)."\n'
-        'tools = ["bash", "read_file", "write_file", "edit_file", "glob", "grep"]\n'
-        'context_scope = "clean"\n'
-        'system_prompt_suffix = ""\n'
-    )
-    with open(bundle_path, "w") as f:
-        f.write(content)
+
+    if cfg.get("exclude_wg_tools"):
+        os.makedirs(bundles_dir, exist_ok=True)
+        content = (
+            'name = "implementer"\n'
+            'description = "Full implementation agent without wg tools (Condition A baseline)."\n'
+            'tools = ["bash", "read_file", "write_file", "edit_file", "glob", "grep"]\n'
+            'context_scope = "clean"\n'
+            'system_prompt_suffix = ""\n'
+        )
+        with open(bundle_path, "w") as f:
+            f.write(content)
+    elif cfg.get("autopoietic"):
+        os.makedirs(bundles_dir, exist_ok=True)
+        with open(bundle_path, "w") as f:
+            f.write(ARCHITECT_BUNDLE_TOML)
 
 
 # ---------------------------------------------------------------------------
@@ -439,6 +450,7 @@ async def _collect_agent_metrics(wg_dir: str) -> dict[str, Any]:
 async def _download_wg_artifacts(
     environment: BaseEnvironment,
     target_dir: Path | str,
+    trial_workdir: str = "",
 ) -> Path:
     """Download the entire .workgraph/ directory from the container.
 
@@ -452,9 +464,10 @@ async def _download_wg_artifacts(
     artifacts_dir.mkdir(parents=True, exist_ok=True)
 
     try:
-        # Tar up .workgraph/ inside the container
+        # Tar up .workgraph/ inside the container from the isolated trial dir
+        wdir = trial_workdir or "."
         tar_result = await environment.exec(
-            command="tar czf /tmp/wg-artifacts.tar.gz .workgraph/ 2>/dev/null || true",
+            command=f"cd {wdir} && tar czf /tmp/wg-artifacts.tar.gz .workgraph/ 2>/dev/null || true",
             timeout_sec=60,
         )
 
@@ -548,6 +561,7 @@ system_prompt_suffix = ""
 async def _collect_agent_metrics_from_container(
     environment: BaseEnvironment,
     artifacts_dir: Path | str | None = None,
+    trial_workdir: str = "",
 ) -> dict[str, Any]:
     """Collect metrics from stream.jsonl files.
 
@@ -560,16 +574,18 @@ async def _collect_agent_metrics_from_container(
         if os.path.isdir(os.path.join(wg_dir, "agents")):
             return await _collect_agent_metrics(wg_dir)
 
-    # Fallback: download just the agents dir
+    # Fallback: download just the agents dir from the isolated trial dir
     local_tmp = tempfile.mkdtemp(prefix="tb-metrics-")
     try:
         local_agents = os.path.join(local_tmp, "agents")
-        await environment.download_dir(".workgraph/agents/", local_agents)
+        wdir = trial_workdir or "."
+        await environment.download_dir(f"{wdir}/.workgraph/agents/", local_agents)
         return await _collect_agent_metrics(local_tmp)
     except Exception as e:
         logger.warning(f"download_dir failed, falling back to exec cat: {e}")
+        wdir = trial_workdir or "."
         result = await environment.exec(
-            command="cat .workgraph/agents/*/stream.jsonl 2>/dev/null || true"
+            command=f"cat {wdir}/.workgraph/agents/*/stream.jsonl 2>/dev/null || true"
         )
         return _parse_stream_jsonl_text(result.stdout or "")
     finally:
@@ -618,6 +634,7 @@ async def _run_native_executor(
     task_instruction: str,
     model: str,
     condition: str,
+    trial_workdir: str,
     timeout_secs: float = DEFAULT_TRIAL_TIMEOUT,
     poll_interval: float = DEFAULT_POLL_INTERVAL,
     verify_cmd: str | None = None,
@@ -667,6 +684,7 @@ async def _run_native_executor(
         )
         verify_flag = ' --verify "$(cat /tmp/tb-verify-cmd.txt)"'
     add_cmd = (
+        f'cd {trial_workdir} && '
         f'wg add "TB task" --id {task_id} --no-place{exec_mode_flag}{verify_flag} '
         f'-d "$(cat /tmp/tb-instruction.txt)"'
     )
@@ -692,6 +710,7 @@ async def _run_native_executor(
     no_coord = "" if needs_coordinator else " --no-coordinator-agent"
     start_cmd = (
         f'{env_exports} && '
+        f'cd {trial_workdir} && '
         f'wg service start --model "{model}"{no_coord}'
     )
     start_result = await environment.exec(command=start_cmd, timeout_sec=30)
@@ -716,27 +735,58 @@ async def _run_native_executor(
         elapsed = time.monotonic() - start_time
         if elapsed > timeout_secs:
             # Kill the service to avoid burning API credits
-            await environment.exec(command="wg service stop")
+            await environment.exec(command=f"cd {trial_workdir} && wg service stop")
             break
 
         if is_autopoietic:
-            # Check if any tasks are still open or in-progress
-            list_result = await environment.exec(command="wg list --status open,in-progress 2>/dev/null")
-            if list_result.return_code == 0:
-                # Count non-header lines (actual tasks)
-                lines = [l for l in (list_result.stdout or "").strip().splitlines()
-                         if l.strip() and not l.strip().startswith("─")
-                         and not l.strip().startswith("ID")]
-                if len(lines) == 0:
-                    # All tasks terminal — check if any succeeded
-                    done_result = await environment.exec(command="wg list --status done 2>/dev/null")
-                    if done_result.return_code == 0 and done_result.stdout and done_result.stdout.strip():
-                        status = "done"
-                    else:
-                        status = "failed"
+            # Check if any non-internal tasks are still open or in-progress.
+            # Internal daemon tasks (.coordinator-0, .compact-0, etc.) are
+            # perpetually open and must be excluded from the quiescence check.
+            # wg list --status only accepts a single value, so query each.
+            has_active = False
+            for check_status in ("open", "in-progress"):
+                list_result = await environment.exec(
+                    command=f"cd {trial_workdir} && wg list --status {check_status}"
+                )
+                if list_result.return_code == 0 and list_result.stdout:
+                    for line in list_result.stdout.strip().splitlines():
+                        stripped = line.strip()
+                        if not stripped:
+                            continue
+                        # Output format: "[ ] task-id - title [tags]"
+                        # or table format: "task-id  status  title"
+                        # Extract task ID: after checkbox "[ ] " or "[x] "
+                        # or as first token if no checkbox prefix.
+                        parts = stripped.split()
+                        if len(parts) >= 3 and parts[0] in ("[", "[x]"):
+                            # Checkbox format: [ ] task-id ...
+                            task_id_col = parts[2] if parts[0] == "[" else parts[1]
+                        elif parts:
+                            task_id_col = parts[0]
+                        else:
+                            continue
+                        # Skip header/border lines
+                        if task_id_col.startswith("─") or task_id_col == "ID":
+                            continue
+                        # Skip internal daemon tasks (IDs starting with '.')
+                        if task_id_col.startswith("."):
+                            continue
+                        has_active = True
+                        break
+                if has_active:
                     break
+            if not has_active:
+                # All user tasks are terminal — check if any succeeded
+                done_result = await environment.exec(
+                    command=f"cd {trial_workdir} && wg list --status done"
+                )
+                if done_result.return_code == 0 and done_result.stdout and done_result.stdout.strip():
+                    status = "done"
+                else:
+                    status = "failed"
+                break
         else:
-            show_result = await environment.exec(command=f"wg show {task_id}")
+            show_result = await environment.exec(command=f"cd {trial_workdir} && wg show {task_id}")
             if show_result.return_code == 0 and show_result.stdout:
                 for line in show_result.stdout.splitlines():
                     stripped = line.strip()
@@ -753,11 +803,13 @@ async def _run_native_executor(
     final_elapsed = time.monotonic() - start_time
 
     # Stop the service cleanly
-    await environment.exec(command="wg service stop")
+    await environment.exec(command=f"cd {trial_workdir} && wg service stop")
 
     # Collect metrics from stream.jsonl inside the container.
     # Caller may provide artifacts_dir if they already downloaded artifacts.
-    metrics = await _collect_agent_metrics_from_container(environment)
+    metrics = await _collect_agent_metrics_from_container(
+        environment, trial_workdir=trial_workdir,
+    )
     metrics["status"] = status
     metrics["task_id"] = task_id
     metrics["elapsed_s"] = final_elapsed
@@ -1278,13 +1330,20 @@ class WorkgraphAgent(BaseAgent):
         if git_check.return_code != 0:
             logger.warning("git may not be available in container")
 
-        # 2. Initialize workgraph inside the container
-        init_result = await environment.exec(command="wg init")
+        # 2. Create isolated trial directory and initialize workgraph there.
+        #    Some containers share the host filesystem (/home/erik), so the
+        #    default CWD may already contain a .workgraph/ from the host.
+        #    Using a fresh unique directory guarantees isolation.
+        self._trial_workdir = f"{_TRIAL_WORKDIR_PREFIX}{uuid.uuid4().hex[:12]}"
+        await environment.exec(command=f"mkdir -p {self._trial_workdir}")
+        init_result = await environment.exec(
+            command=f"cd {self._trial_workdir} && wg init"
+        )
         if init_result.return_code != 0:
             raise RuntimeError(
                 f"wg init failed inside container: {init_result.stderr}"
             )
-        logger.info("Initialized trial workgraph inside container")
+        logger.info(f"Initialized trial workgraph at {self._trial_workdir}")
 
         # 3. Write config.toml inside the container via base64 encoding.
         #    Heredocs fail because Harbor's exec() pipes commands to bash
@@ -1292,34 +1351,55 @@ class WorkgraphAgent(BaseAgent):
         config_content = _build_config_toml_content(self.condition, self._model)
         b64_config = base64.b64encode(config_content.encode()).decode()
         cfg_write = await environment.exec(
-            command=f"echo '{b64_config}' | base64 -d > .workgraph/config.toml"
+            command=f"echo '{b64_config}' | base64 -d > {self._trial_workdir}/.workgraph/config.toml"
         )
         if cfg_write.return_code != 0:
             raise RuntimeError(
                 f"Failed to write config.toml: {cfg_write.stderr}"
             )
 
-        # 4. Write custom bundle if needed (Condition A: no wg tools)
+        # 4. Write custom bundle if needed
         cfg = CONDITION_CONFIG[self.condition]
         if cfg.get("exclude_wg_tools"):
+            # Condition A: bundle without wg tools
             bundle_content = _build_bundle_toml_content()
             b64_bundle = base64.b64encode(bundle_content.encode()).decode()
-            await environment.exec(command="mkdir -p .workgraph/bundles")
+            await environment.exec(
+                command=f"mkdir -p {self._trial_workdir}/.workgraph/bundles"
+            )
             bun_write = await environment.exec(
-                command=f"echo '{b64_bundle}' | base64 -d > .workgraph/bundles/implementer.toml"
+                command=f"echo '{b64_bundle}' | base64 -d > {self._trial_workdir}/.workgraph/bundles/implementer.toml"
             )
             if bun_write.return_code != 0:
                 raise RuntimeError(
                     f"Failed to write bundle: {bun_write.stderr}"
                 )
+        elif cfg.get("autopoietic"):
+            # Condition G: architect bundle restricts seed agent to read-only
+            # + wg tools (no write_file/edit_file), forcing decomposition
+            bundle_content = ARCHITECT_BUNDLE_TOML
+            b64_bundle = base64.b64encode(bundle_content.encode()).decode()
+            await environment.exec(
+                command=f"mkdir -p {self._trial_workdir}/.workgraph/bundles"
+            )
+            bun_write = await environment.exec(
+                command=f"echo '{b64_bundle}' | base64 -d > {self._trial_workdir}/.workgraph/bundles/implementer.toml"
+            )
+            if bun_write.return_code != 0:
+                raise RuntimeError(
+                    f"Failed to write architect bundle: {bun_write.stderr}"
+                )
+            logger.info("Condition G: architect bundle written (tools restricted)")
 
         # 5. Bootstrap agency for conditions D/E (inside the container)
         if cfg["agency"]:
-            await environment.exec(command="wg agency init")
+            await environment.exec(
+                command=f"cd {self._trial_workdir} && wg agency init"
+            )
             role, tradeoff = cfg["agency"]
             agent_name = "solver" if self.condition == "D" else "orchestrator"
             await environment.exec(
-                command=f'wg agent create {agent_name} --role {role} --tradeoff {tradeoff}'
+                command=f'cd {self._trial_workdir} && wg agent create {agent_name} --role {role} --tradeoff {tradeoff}'
             )
             self._agent_identity = {
                 "name": agent_name,
@@ -1358,11 +1438,13 @@ class WorkgraphAgent(BaseAgent):
             logger.warning("No verify gate found for this instruction — task will complete without test gate")
 
         # Run the native executor inside the container
+        trial_workdir = getattr(self, '_trial_workdir', '')
         metrics = await _run_native_executor(
             environment=environment,
             task_instruction=instruction,
             model=self._model,
             condition=self.condition,
+            trial_workdir=trial_workdir,
             timeout_secs=self.timeout,
             poll_interval=self.poll_interval,
             verify_cmd=verify_cmd,
@@ -1370,13 +1452,16 @@ class WorkgraphAgent(BaseAgent):
 
         # Download the entire .workgraph/ directory from the container
         # for paper analysis (graph structure, agent logs, service logs, etc.)
-        artifacts_dir = await _download_wg_artifacts(environment, self.logs_dir)
+        artifacts_dir = await _download_wg_artifacts(
+            environment, self.logs_dir, trial_workdir=trial_workdir,
+        )
 
         # If _run_native_executor returned empty metrics (e.g. download_dir
         # failed inside it), try again using the downloaded artifacts.
         if metrics.get("total_turns", 0) == 0 and artifacts_dir is not None:
             artifact_metrics = await _collect_agent_metrics_from_container(
                 environment, artifacts_dir=artifacts_dir,
+                trial_workdir=trial_workdir,
             )
             # Merge artifact metrics into the main metrics dict (don't
             # overwrite status/task_id/elapsed_s)
