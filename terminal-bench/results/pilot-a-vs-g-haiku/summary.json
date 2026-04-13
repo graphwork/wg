@@ -1,0 +1,233 @@
+{
+  "run_id": "pilot-a-vs-g-haiku",
+  "timestamp": "2026-04-13T02:10:07.423659+00:00",
+  "model": "claude:haiku",
+  "tasks": [
+    "text-processing",
+    "debugging",
+    "data-processing",
+    "algorithm",
+    "ml"
+  ],
+  "total_wall_clock_s": 107.08,
+  "condition_stats": {
+    "A": {
+      "total": 5,
+      "passed": 5,
+      "pass_rate": 1.0,
+      "mean_time_s": 38.97,
+      "total_tokens": 0,
+      "total_cost_usd": 0.0
+    },
+    "G": {
+      "total": 5,
+      "passed": 5,
+      "pass_rate": 1.0,
+      "mean_time_s": 33.03,
+      "total_tokens": 20569,
+      "total_cost_usd": 0.246
+    }
+  },
+  "trials": [
+    {
+      "trial_id": "condA-text-processing",
+      "task_id": "text-processing",
+      "condition": "A",
+      "difficulty": "easy",
+      "category": "text-processing",
+      "model": "claude:haiku",
+      "status": "done",
+      "elapsed_s": 27.09,
+      "reward": 1.0,
+      "failure_mode": null,
+      "metrics": {
+        "total_input_tokens": 0,
+        "total_output_tokens": 0,
+        "total_cost_usd": 0.0,
+        "total_turns": 0,
+        "num_agents_spawned": 1
+      },
+      "error": null
+    },
+    {
+      "trial_id": "condA-debugging",
+      "task_id": "debugging",
+      "condition": "A",
+      "difficulty": "medium",
+      "category": "debugging",
+      "model": "claude:haiku",
+      "status": "done",
+      "elapsed_s": 42.17,
+      "reward": 1.0,
+      "failure_mode": null,
+      "metrics": {
+        "total_input_tokens": 0,
+        "total_output_tokens": 0,
+        "total_cost_usd": 0.0,
+        "total_turns": 0,
+        "num_agents_spawned": 1
+      },
+      "error": null
+    },
+    {
+      "trial_id": "condA-data-processing",
+      "task_id": "data-processing",
+      "condition": "A",
+      "difficulty": "medium",
+      "category": "data-processing",
+      "model": "claude:haiku",
+      "status": "done",
+      "elapsed_s": 42.11,
+      "reward": 1.0,
+      "failure_mode": null,
+      "metrics": {
+        "total_input_tokens": 0,
+        "total_output_tokens": 0,
+        "total_cost_usd": 0.0,
+        "total_turns": 0,
+        "num_agents_spawned": 1
+      },
+      "error": null
+    },
+    {
+      "trial_id": "condA-algorithm",
+      "task_id": "algorithm",
+      "condition": "A",
+      "difficulty": "hard",
+      "category": "algorithm",
+      "model": "claude:haiku",
+      "status": "done",
+      "elapsed_s": 47.12,
+      "reward": 1.0,
+      "failure_mode": null,
+      "metrics": {
+        "total_input_tokens": 0,
+        "total_output_tokens": 0,
+        "total_cost_usd": 0.0,
+        "total_turns": 0,
+        "num_agents_spawned": 1
+      },
+      "error": null
+    },
+    {
+      "trial_id": "condA-ml",
+      "task_id": "ml",
+      "condition": "A",
+      "difficulty": "hard",
+      "category": "ml-inference",
+      "model": "claude:haiku",
+      "status": "done",
+      "elapsed_s": 36.35,
+      "reward": 1.0,
+      "failure_mode": null,
+      "metrics": {
+        "total_input_tokens": 0,
+        "total_output_tokens": 0,
+        "total_cost_usd": 0.0,
+        "total_turns": 0,
+        "num_agents_spawned": 1
+      },
+      "error": null
+    },
+    {
+      "trial_id": "condG-text-processing",
+      "task_id": "text-processing",
+      "condition": "G",
+      "difficulty": "easy",
+      "category": "text-processing",
+      "model": "claude:haiku",
+      "status": "done",
+      "elapsed_s": 31.43,
+      "reward": 1.0,
+      "failure_mode": null,
+      "metrics": {
+        "total_input_tokens": 26,
+        "total_output_tokens": 3385,
+        "total_cost_usd": 0.037874950000000004,
+        "total_turns": 3,
+        "num_agents_spawned": 0
+      },
+      "error": null
+    },
+    {
+      "trial_id": "condG-debugging",
+      "task_id": "debugging",
+      "condition": "G",
+      "difficulty": "medium",
+      "category": "debugging",
+      "model": "claude:haiku",
+      "status": "done",
+      "elapsed_s": 23.66,
+      "reward": 1.0,
+      "failure_mode": null,
+      "metrics": {
+        "total_input_tokens": 58,
+        "total_output_tokens": 2127,
+        "total_cost_usd": 0.043144150000000006,
+        "total_turns": 7,
+        "num_agents_spawned": 0
+      },
+      "error": null
+    },
+    {
+      "trial_id": "condG-data-processing",
+      "task_id": "data-processing",
+      "condition": "G",
+      "difficulty": "medium",
+      "category": "data-processing",
+      "model": "claude:haiku",
+      "status": "done",
+      "elapsed_s": 27.45,
+      "reward": 1.0,
+      "failure_mode": null,
+      "metrics": {
+        "total_input_tokens": 42,
+        "total_output_tokens": 3498,
+        "total_cost_usd": 0.0448393,
+        "total_turns": 5,
+        "num_agents_spawned": 0
+      },
+      "error": null
+    },
+    {
+      "trial_id": "condG-algorithm",
+      "task_id": "algorithm",
+      "condition": "G",
+      "difficulty": "hard",
+      "category": "algorithm",
+      "model": "claude:haiku",
+      "status": "done",
+      "elapsed_s": 43.49,
+      "reward": 1.0,
+      "failure_mode": null,
+      "metrics": {
+        "total_input_tokens": 34,
+        "total_output_tokens": 6048,
+        "total_cost_usd": 0.05834605,
+        "total_turns": 4,
+        "num_agents_spawned": 0
+      },
+      "error": null
+    },
+    {
+      "trial_id": "condG-ml",
+      "task_id": "ml",
+      "condition": "G",
+      "difficulty": "hard",
+      "category": "ml-inference",
+      "model": "claude:haiku",
+      "status": "done",
+      "elapsed_s": 39.11,
+      "reward": 1.0,
+      "failure_mode": null,
+      "metrics": {
+        "total_input_tokens": 42,
+        "total_output_tokens": 5309,
+        "total_cost_usd": 0.06177725,
+        "total_turns": 5,
+        "num_agents_spawned": 0
+      },
+      "error": null
+    }
+  ]
+}
