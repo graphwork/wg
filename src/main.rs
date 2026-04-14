@@ -475,9 +475,9 @@ fn main() -> Result<()> {
             allow_phantom,
             allow_cycle,
         ),
-        // Commands::Reprioritize { id, priority } => {
-        //     commands::reprioritize::run(&workgraph_dir, &id, &priority)
-        // }
+        Commands::Reprioritize { id, priority } => {
+            commands::reprioritize::run(&workgraph_dir, &id, &priority)
+        }
         Commands::Done {
             id,
             converged,
@@ -2518,9 +2518,7 @@ fn main() -> Result<()> {
         },
         cli::Commands::Openrouter { command } => {
             commands::openrouter::run(&workgraph_dir, &command, cli.json)
-        } // cli::Commands::Reprioritize { id, priority } => {
-          //     commands::reprioritize::run(&workgraph_dir, &id, &priority)
-          // },
+        }
     }
 }
 

@@ -683,6 +683,17 @@ pub enum Commands {
         at: Option<String>,
     },
 
+    /// Change a task's priority level (critical, high, normal, low, idle)
+    Reprioritize {
+        /// Task ID
+        #[arg(value_name = "TASK")]
+        id: String,
+
+        /// New priority level: critical, high, normal, low, idle
+        #[arg(value_name = "PRIORITY")]
+        priority: String,
+    },
+
     /// Show impact analysis - what tasks depend on this one
     Impact {
         /// Task ID
@@ -3617,6 +3628,7 @@ pub fn command_name(cmd: &Commands) -> &'static str {
         Commands::Coordinate { .. } => "coordinate",
         Commands::Plan { .. } => "plan",
         Commands::Reschedule { .. } => "reschedule",
+        Commands::Reprioritize { .. } => "reprioritize",
         Commands::Impact { .. } => "impact",
         Commands::Structure => "structure",
         Commands::Bottlenecks => "bottlenecks",

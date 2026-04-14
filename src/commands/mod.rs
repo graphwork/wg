@@ -80,7 +80,7 @@ pub mod quickstart;
 pub mod ready;
 pub mod reap;
 pub mod reclaim;
-// pub mod reprioritize;  // TODO: Module file missing
+pub mod reprioritize;
 pub mod reject;
 pub mod replay;
 pub mod requeue;
