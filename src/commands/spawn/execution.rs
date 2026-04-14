@@ -1261,6 +1261,7 @@ Squash-merged from worktree branch $WG_BRANCH" 2>> "$OUTPUT_FILE"
     fi
 
     # Always clean up the worktree, regardless of task outcome
+    rm -f "$WG_WORKTREE_PATH/.wg-lock" 2>/dev/null
     rm -f "$WG_WORKTREE_PATH/.workgraph" 2>/dev/null
     git -C "$WG_PROJECT_ROOT" worktree remove --force "$WG_WORKTREE_PATH" 2>/dev/null
     git -C "$WG_PROJECT_ROOT" branch -D "$WG_BRANCH" 2>/dev/null

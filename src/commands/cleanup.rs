@@ -835,25 +835,41 @@ fn cleanup_git(
         }
     }
 
-    // Prune worktree references
+    // Prune worktree references — skip if any agent worktrees have live lockfiles,
+    // because `git worktree prune` is global and can damage concurrent agents.
     if args.execute {
-        let output = Command::new("git")
-            .args(["worktree", "prune"])
-            .current_dir(project_root)
-            .output()
-            .context("Failed to execute git worktree prune")?;
+        let worktrees_dir = project_root.join(WORKTREES_DIR);
+        let has_live_worktrees = worktrees_dir.exists()
+            && fs::read_dir(&worktrees_dir)
+                .map(|entries| {
+                    entries.filter_map(|e| e.ok()).any(|e| {
+                        e.file_name().to_string_lossy().starts_with("agent-")
+                            && crate::commands::spawn::worktree::is_worktree_locked(&e.path())
+                    })
+                })
+                .unwrap_or(false);
 
-        if output.status.success() {
-            println!("✓ Git worktree pruning completed");
-            summary.git_operations += 1;
+        if has_live_worktrees {
+            println!("⚠ Skipping git worktree prune — live agent worktrees detected");
         } else {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            let error_msg = format!("Git worktree prune failed: {}", stderr.trim());
-            if args.force {
-                eprintln!("⚠ {}", error_msg);
-                summary.errors.push(error_msg);
+            let output = Command::new("git")
+                .args(["worktree", "prune"])
+                .current_dir(project_root)
+                .output()
+                .context("Failed to execute git worktree prune")?;
+
+            if output.status.success() {
+                println!("✓ Git worktree pruning completed");
+                summary.git_operations += 1;
             } else {
-                return Err(anyhow!(error_msg));
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                let error_msg = format!("Git worktree prune failed: {}", stderr.trim());
+                if args.force {
+                    eprintln!("⚠ {}", error_msg);
+                    summary.errors.push(error_msg);
+                } else {
+                    return Err(anyhow!(error_msg));
+                }
             }
         }
     }

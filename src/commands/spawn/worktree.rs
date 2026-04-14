@@ -8,6 +8,9 @@ use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// Lockfile name placed in worktree directories to protect them from cleanup.
+pub const LOCKFILE_NAME: &str = ".wg-lock";
+
 /// Worktree paths and metadata for an isolated agent workspace.
 pub struct WorktreeInfo {
     /// Absolute path to the worktree directory
@@ -23,7 +26,8 @@ pub struct WorktreeInfo {
 /// 1. Clean up any existing worktree/branch with the same name (for test isolation)
 /// 2. `git worktree add .wg-worktrees/<agent-id> -b wg/<agent-id>/<task-id> HEAD`
 /// 3. Symlink `.workgraph` into the worktree
-/// 4. Run `worktree-setup.sh` if it exists (best-effort)
+/// 4. Write `.wg-lock` with PID to protect from concurrent cleanup
+/// 5. Run `worktree-setup.sh` if it exists (best-effort)
 pub fn create_worktree(
     project_root: &Path,
     workgraph_dir: &Path,
@@ -59,6 +63,12 @@ pub fn create_worktree(
     std::os::unix::fs::symlink(&symlink_target, &symlink_path)
         .context("Failed to symlink .workgraph into worktree")?;
 
+    // Write lockfile with PID to protect from concurrent cleanup
+    let lockfile = worktree_dir.join(LOCKFILE_NAME);
+    let pid = std::process::id();
+    std::fs::write(&lockfile, format!("{}\n{}\n", pid, agent_id))
+        .context("Failed to write worktree lockfile")?;
+
     // Run worktree-setup.sh if it exists
     let setup_script = workgraph_dir.join("worktree-setup.sh");
     if setup_script.exists() {
@@ -77,9 +87,35 @@ pub fn create_worktree(
     })
 }
 
+/// Check if a worktree is locked by a live process.
+/// Returns true if a `.wg-lock` file exists and the PID inside it is still alive.
+pub fn is_worktree_locked(worktree_path: &Path) -> bool {
+    let lockfile = worktree_path.join(LOCKFILE_NAME);
+    if let Ok(contents) = std::fs::read_to_string(&lockfile) {
+        if let Some(pid_str) = contents.lines().next() {
+            if let Ok(pid) = pid_str.trim().parse::<u32>() {
+                #[cfg(unix)]
+                {
+                    return unsafe { libc::kill(pid as i32, 0) == 0 };
+                }
+                #[cfg(not(unix))]
+                {
+                    let _ = pid;
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
 /// Remove a worktree and its branch. Force-removes to discard uncommitted changes.
 pub fn remove_worktree(project_root: &Path, worktree_path: &Path, branch: &str) -> Result<()> {
-    // Remove the symlink first (git worktree remove won't remove it)
+    // Remove lockfile
+    let lockfile = worktree_path.join(LOCKFILE_NAME);
+    let _ = std::fs::remove_file(&lockfile);
+
+    // Remove the symlink (git worktree remove won't remove it)
     let symlink_path = worktree_path.join(".workgraph");
     if symlink_path.exists() {
         let _ = std::fs::remove_file(&symlink_path);
@@ -168,36 +204,23 @@ mod tests {
 
     #[test]
     fn test_create_worktree_behavior_without_local_git_repo() {
-        // Note: In the test environment, Git can find parent repositories even in temp directories.
-        // This test verifies the function behavior when there's no local .git directory
-        // but Git might still find a parent repository (which is acceptable behavior).
-
         let temp = TempDir::new().unwrap();
 
-        // Verify temp directory itself doesn't have .git
         assert!(
             !temp.path().join(".git").exists(),
             "Temp directory should not have .git"
         );
 
-        // Test worktree creation - this may succeed or fail depending on whether
-        // Git finds a parent repository in the test environment
         let result = create_worktree(temp.path(), temp.path(), "agent-1", "task-foo");
 
-        // The exact behavior depends on test environment, but the function should not crash
         match result {
             Ok(_info) => {
-                // If it succeeds, Git found a parent repo - this is valid Git behavior
                 println!("Worktree creation succeeded - Git found parent repository");
             }
             Err(_e) => {
-                // If it fails, no accessible Git repo was found - also valid
                 println!("Worktree creation failed - no accessible Git repository");
             }
         }
-
-        // The key test is that the function handles both cases gracefully without panicking
-        // This test primarily ensures the function's error handling works correctly
     }
 
     #[test]
@@ -225,18 +248,111 @@ mod tests {
 
         let wg_dir = project.join(".workgraph");
         std::fs::create_dir_all(&wg_dir).unwrap();
-        // Write a marker file so we can verify the symlink target
         std::fs::write(wg_dir.join("marker"), "test").unwrap();
 
         let info = create_worktree(&project, &wg_dir, "agent-2", "task-bar").unwrap();
         let symlink = info.path.join(".workgraph");
         assert!(symlink.is_symlink());
-        // The marker file should be readable through the symlink
         assert_eq!(
             std::fs::read_to_string(symlink.join("marker")).unwrap(),
             "test"
         );
 
         remove_worktree(&project, &info.path, &info.branch).unwrap();
+    }
+
+    #[test]
+    fn test_lockfile_created_on_worktree_creation() {
+        let temp = TempDir::new().unwrap();
+        let project = temp.path().join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        init_git_repo(&project);
+
+        let wg_dir = project.join(".workgraph");
+        std::fs::create_dir_all(&wg_dir).unwrap();
+
+        let info = create_worktree(&project, &wg_dir, "agent-1", "task-foo").unwrap();
+
+        let lockfile = info.path.join(LOCKFILE_NAME);
+        assert!(lockfile.exists(), "Lockfile should be created");
+        let contents = std::fs::read_to_string(&lockfile).unwrap();
+        let pid: u32 = contents.lines().next().unwrap().trim().parse().unwrap();
+        assert_eq!(pid, std::process::id());
+
+        remove_worktree(&project, &info.path, &info.branch).unwrap();
+    }
+
+    #[test]
+    fn test_live_worktree_is_locked() {
+        let temp = TempDir::new().unwrap();
+        let project = temp.path().join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        init_git_repo(&project);
+
+        let wg_dir = project.join(".workgraph");
+        std::fs::create_dir_all(&wg_dir).unwrap();
+
+        let info = create_worktree(&project, &wg_dir, "agent-1", "task-foo").unwrap();
+
+        assert!(
+            is_worktree_locked(&info.path),
+            "Worktree with current PID should be considered locked"
+        );
+
+        remove_worktree(&project, &info.path, &info.branch).unwrap();
+    }
+
+    #[test]
+    fn test_dead_worktree_is_not_locked() {
+        let temp = TempDir::new().unwrap();
+        let project = temp.path().join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        init_git_repo(&project);
+
+        let wg_dir = project.join(".workgraph");
+        std::fs::create_dir_all(&wg_dir).unwrap();
+
+        let info = create_worktree(&project, &wg_dir, "agent-1", "task-foo").unwrap();
+
+        // Overwrite lockfile with a PID that doesn't exist
+        let lockfile = info.path.join(LOCKFILE_NAME);
+        std::fs::write(&lockfile, "999999999\nagent-1\n").unwrap();
+
+        assert!(
+            !is_worktree_locked(&info.path),
+            "Worktree with dead PID should not be considered locked"
+        );
+
+        remove_worktree(&project, &info.path, &info.branch).unwrap();
+    }
+
+    #[test]
+    fn test_missing_lockfile_is_not_locked() {
+        let temp = TempDir::new().unwrap();
+        let wt_path = temp.path().join("fake-worktree");
+        std::fs::create_dir_all(&wt_path).unwrap();
+
+        assert!(
+            !is_worktree_locked(&wt_path),
+            "Worktree without lockfile should not be considered locked"
+        );
+    }
+
+    #[test]
+    fn test_lockfile_removed_on_worktree_removal() {
+        let temp = TempDir::new().unwrap();
+        let project = temp.path().join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        init_git_repo(&project);
+
+        let wg_dir = project.join(".workgraph");
+        std::fs::create_dir_all(&wg_dir).unwrap();
+
+        let info = create_worktree(&project, &wg_dir, "agent-1", "task-foo").unwrap();
+        let lockfile = info.path.join(LOCKFILE_NAME);
+        assert!(lockfile.exists());
+
+        remove_worktree(&project, &info.path, &info.branch).unwrap();
+        assert!(!info.path.exists());
     }
 }

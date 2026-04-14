@@ -492,6 +492,13 @@ pub(crate) fn cleanup_dead_agents(dir: &Path, graph_path: &Path) -> Result<Vec<S
             Ok(Some((wt_path_str, wt_branch))) => {
                 let wt_path = Path::new(&wt_path_str);
                 if wt_path.exists() {
+                    if super::worktree::is_worktree_locked(wt_path) {
+                        eprintln!(
+                            "[triage] Skipping worktree cleanup for {} — lockfile PID still alive",
+                            agent_id
+                        );
+                        continue;
+                    }
                     eprintln!(
                         "[triage] Cleaning up worktree for dead agent {}: {:?}",
                         agent_id, wt_path

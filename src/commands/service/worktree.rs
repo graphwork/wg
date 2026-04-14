@@ -585,80 +585,86 @@ pub fn cleanup_orphaned_worktrees(dir: &Path) -> Result<usize> {
             continue;
         }
 
-        // Check if this agent is alive
+        // Check if this agent is alive via registry
         let is_alive = registry
             .agents
             .get(&name)
             .map(|a| a.is_alive() && crate::commands::is_process_alive(a.pid))
             .unwrap_or(false);
 
-        if !is_alive {
-            let wt_path = entry.path();
-            eprintln!("[worktree] Cleaning orphaned worktree: {}", name);
+        if is_alive {
+            continue;
+        }
 
-            // Try to find the branch from git porcelain output
-            let branch = find_branch_for_worktree(project_root, &wt_path);
+        // Defense-in-depth: also check lockfile PID even if registry says dead.
+        // The lockfile is authoritative — if its PID is alive, the worktree is in use.
+        let wt_path = entry.path();
+        if crate::commands::spawn::worktree::is_worktree_locked(&wt_path) {
+            eprintln!(
+                "[worktree] Skipping orphan cleanup of {} — lockfile PID still alive",
+                name
+            );
+            continue;
+        }
 
-            if let Some(ref branch) = branch {
-                // Use the enhanced cleanup function with retry logic
-                cleanup_dead_agent_worktree(project_root, &wt_path, branch, &name);
-            } else {
-                eprintln!(
-                    "[worktree] No git branch found for orphaned worktree {}, attempting manual cleanup",
-                    name
-                );
+        eprintln!("[worktree] Cleaning orphaned worktree: {}", name);
 
-                // No branch found — use fallback cleanup with error reporting
-                let mut cleanup_errors = Vec::new();
+        let branch = find_branch_for_worktree(project_root, &wt_path);
 
-                // Remove .workgraph symlink
-                let symlink_path = wt_path.join(".workgraph");
-                if symlink_path.exists()
-                    && let Err(e) = fs::remove_file(&symlink_path)
-                {
-                    cleanup_errors.push(format!("Failed to remove .workgraph symlink: {}", e));
-                }
+        if let Some(ref branch) = branch {
+            cleanup_dead_agent_worktree(project_root, &wt_path, branch, &name);
+        } else {
+            eprintln!(
+                "[worktree] No git branch found for orphaned worktree {}, attempting manual cleanup",
+                name
+            );
 
-                // Remove isolated cargo target directory
-                let target_dir = wt_path.join("target");
-                if target_dir.exists()
-                    && let Err(e) = fs::remove_dir_all(&target_dir)
-                {
-                    cleanup_errors.push(format!("Failed to remove target directory: {}", e));
-                }
+            let mut cleanup_errors = Vec::new();
 
-                // Try git worktree remove
-                let output = Command::new("git")
-                    .args(["worktree", "remove", "--force"])
-                    .arg(&wt_path)
-                    .current_dir(project_root)
-                    .output();
-
-                match output {
-                    Ok(output) if !output.status.success() => {
-                        let stderr = String::from_utf8_lossy(&output.stderr);
-                        cleanup_errors
-                            .push(format!("Git worktree remove failed: {}", stderr.trim()));
-                    }
-                    Err(e) => {
-                        cleanup_errors
-                            .push(format!("Failed to execute git worktree remove: {}", e));
-                    }
-                    _ => {} // Success case
-                }
-
-                if !cleanup_errors.is_empty() {
-                    eprintln!(
-                        "[worktree] Warnings during manual cleanup of {}: {}",
-                        name,
-                        cleanup_errors.join("; ")
-                    );
-                }
+            let symlink_path = wt_path.join(".workgraph");
+            if symlink_path.exists()
+                && let Err(e) = fs::remove_file(&symlink_path)
+            {
+                cleanup_errors.push(format!("Failed to remove .workgraph symlink: {}", e));
             }
 
-            cleaned += 1;
-            record_orphaned_cleanup();
+            let target_dir = wt_path.join("target");
+            if target_dir.exists()
+                && let Err(e) = fs::remove_dir_all(&target_dir)
+            {
+                cleanup_errors.push(format!("Failed to remove target directory: {}", e));
+            }
+
+            let output = Command::new("git")
+                .args(["worktree", "remove", "--force"])
+                .arg(&wt_path)
+                .current_dir(project_root)
+                .output();
+
+            match output {
+                Ok(output) if !output.status.success() => {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    cleanup_errors
+                        .push(format!("Git worktree remove failed: {}", stderr.trim()));
+                }
+                Err(e) => {
+                    cleanup_errors
+                        .push(format!("Failed to execute git worktree remove: {}", e));
+                }
+                _ => {}
+            }
+
+            if !cleanup_errors.is_empty() {
+                eprintln!(
+                    "[worktree] Warnings during manual cleanup of {}: {}",
+                    name,
+                    cleanup_errors.join("; ")
+                );
+            }
         }
+
+        cleaned += 1;
+        record_orphaned_cleanup();
     }
 
     // NOTE: We intentionally do NOT run `git worktree prune` here.
@@ -707,6 +713,11 @@ pub fn prune_stale_worktrees(dir: &Path, max_age_secs: u64) -> Result<usize> {
             .unwrap_or(false);
 
         if is_alive {
+            continue;
+        }
+
+        // Defense-in-depth: check lockfile PID
+        if crate::commands::spawn::worktree::is_worktree_locked(&entry.path()) {
             continue;
         }
 
@@ -795,6 +806,11 @@ pub fn prune_stale_worktrees(dir: &Path, max_age_secs: u64) -> Result<usize> {
     // NOTE: No global `git worktree prune` — concurrent agents may be running.
 
     Ok(pruned)
+}
+
+/// Check if a worktree has an active lockfile with a live PID.
+pub fn is_worktree_locked(worktree_path: &Path) -> bool {
+    crate::commands::spawn::worktree::is_worktree_locked(worktree_path)
 }
 
 /// Get all recovery branches sorted by age (oldest first).
