@@ -2336,7 +2336,8 @@ pub struct CoordinatorConfig {
 
     /// Enable git worktree isolation for spawned agents.
     /// When true, each agent gets its own worktree at .wg-worktrees/<agent-id>/.
-    #[serde(default)]
+    /// Defaults to true to prevent cargo lock contention between concurrent agents.
+    #[serde(default = "default_worktree_isolation")]
     pub worktree_isolation: bool,
 
     /// Maximum number of concurrent coordinator agents (LLM sessions).
@@ -2539,6 +2540,10 @@ fn default_compaction_threshold_ratio() -> f64 {
 
 fn default_eval_frequency() -> String {
     "every_5".to_string()
+}
+
+fn default_worktree_isolation() -> bool {
+    true
 }
 
 fn default_max_coordinators() -> usize {

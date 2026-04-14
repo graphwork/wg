@@ -295,6 +295,8 @@ pub(crate) fn spawn_agent_inner(
     let output_file_str = output_file.to_string_lossy().to_string();
 
     // --- Worktree isolation ---
+    // When enabled, each agent gets its own git worktree for file-level isolation.
+    // Falls back gracefully if worktree creation fails (e.g., not a git repo).
     let worktree_info = if config.coordinator.worktree_isolation {
         let project_root = dir
             .parent()
@@ -308,7 +310,11 @@ pub(crate) fn spawn_agent_inner(
                 Some(info)
             }
             Err(e) => {
-                anyhow::bail!("Worktree creation failed for {}: {}", temp_agent_id, e);
+                eprintln!(
+                    "[spawn] Worktree creation failed for {}, falling back to shared working directory: {}",
+                    temp_agent_id, e
+                );
+                None
             }
         }
     } else {
