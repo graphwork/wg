@@ -528,6 +528,21 @@ You share a working tree with other agents. Follow these rules strictly:
 - **Don't touch others' changes.** If `git status` shows files you didn't modify, do not stage, commit, stash, or reset them.
 - **Handle locks gracefully.** `.git/index.lock` or cargo target locks mean another agent is working. Wait 2-3 seconds and retry. Don't delete lock files.\n";
 
+/// Worktree isolation warning for agents running in wg-managed worktrees.
+/// Prevents agents from calling EnterWorktree/ExitWorktree which escapes the wg worktree.
+pub const WORKTREE_ISOLATION_SECTION: &str = "\
+## CRITICAL: Worktree Isolation
+
+You are running inside a **workgraph-managed worktree**. Your working directory is already isolated.
+
+**NEVER use the `EnterWorktree` or `ExitWorktree` tools.** Using them will:
+1. Create a SECOND worktree in `.claude/worktrees/`, abandoning this one
+2. Switch your session CWD away from the workgraph branch
+3. Cause ALL your commits to go to the wrong branch
+4. Result in your work being LOST — the merge-back will find no commits
+
+If you see these tools available, **ignore them completely**. Workgraph already provides full git isolation.\n";
+
 /// Message polling instructions for agents.
 /// Contains {{task_id}} placeholder for variable substitution.
 pub const MESSAGE_POLLING_SECTION: &str = "\
@@ -871,6 +886,9 @@ pub fn build_prompt(vars: &TemplateVars, scope: ContextScope, ctx: &ScopeContext
     if scope >= ContextScope::Task {
         parts.push(vars.apply(REQUIRED_WORKFLOW_SECTION));
         parts.push(GIT_HYGIENE_SECTION.to_string());
+        if vars.in_worktree {
+            parts.push(WORKTREE_ISOLATION_SECTION.to_string());
+        }
         parts.push(vars.apply(MESSAGE_POLLING_SECTION));
 
         // Task+ scope: Telegram escalation (when configured)
@@ -970,6 +988,8 @@ pub struct TemplateVars {
     pub has_failed_deps: bool,
     /// Info about failed dependencies for triage prompt injection
     pub failed_deps_info: String,
+    /// True when the agent is running in a wg-managed worktree
+    pub in_worktree: bool,
 }
 
 impl TemplateVars {
@@ -1043,6 +1063,7 @@ impl TemplateVars {
             max_task_depth: guardrails.max_task_depth,
             has_failed_deps: false,
             failed_deps_info: String::new(),
+            in_worktree: false,
         }
     }
 

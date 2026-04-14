@@ -491,6 +491,7 @@ fn test_pattern_glossary_included_when_keywords_present() {
         max_task_depth: 8,
         has_failed_deps: false,
         failed_deps_info: String::new(),
+        in_worktree: false,
     };
     let ctx = ScopeContext::default();
     let prompt = build_prompt(&vars, ContextScope::Clean, &ctx);
@@ -542,6 +543,7 @@ fn test_pattern_glossary_excluded_when_no_keywords() {
         max_task_depth: 8,
         has_failed_deps: false,
         failed_deps_info: String::new(),
+        in_worktree: false,
     };
     let ctx = ScopeContext::default();
     let prompt = build_prompt(&vars, ContextScope::Clean, &ctx);
@@ -549,5 +551,65 @@ fn test_pattern_glossary_excluded_when_no_keywords() {
     assert!(
         !prompt.contains("## Pattern Keywords"),
         "Prompt should NOT include pattern glossary when description has no keywords"
+    );
+}
+
+#[test]
+fn test_worktree_isolation_section_included_when_in_worktree() {
+    let vars = TemplateVars {
+        task_id: "wt-task".into(),
+        task_title: "Worktree task".into(),
+        task_description: "A task running in a worktree".into(),
+        task_context: "No dependencies".into(),
+        task_identity: String::new(),
+        working_dir: String::new(),
+        skills_preamble: String::new(),
+        model: String::new(),
+        task_loop_info: String::new(),
+        task_verify: None,
+        max_child_tasks: 10,
+        max_task_depth: 8,
+        has_failed_deps: false,
+        failed_deps_info: String::new(),
+        in_worktree: true,
+    };
+    let ctx = ScopeContext::default();
+    let prompt = build_prompt(&vars, ContextScope::Task, &ctx);
+
+    assert!(
+        prompt.contains("CRITICAL: Worktree Isolation"),
+        "Prompt should include worktree isolation warning when in_worktree is true"
+    );
+    assert!(
+        prompt.contains("NEVER use the `EnterWorktree` or `ExitWorktree` tools"),
+        "Prompt should warn against EnterWorktree"
+    );
+}
+
+#[test]
+fn test_worktree_isolation_section_excluded_when_not_in_worktree() {
+    let vars = TemplateVars {
+        task_id: "no-wt-task".into(),
+        task_title: "Normal task".into(),
+        task_description: "A task not in a worktree".into(),
+        task_context: "No dependencies".into(),
+        task_identity: String::new(),
+        working_dir: String::new(),
+        skills_preamble: String::new(),
+        model: String::new(),
+        task_loop_info: String::new(),
+        task_verify: None,
+        max_child_tasks: 10,
+        max_task_depth: 8,
+        has_failed_deps: false,
+        failed_deps_info: String::new(),
+        in_worktree: false,
+    };
+    let ctx = ScopeContext::default();
+    let prompt = build_prompt(&vars, ContextScope::Task, &ctx);
+
+    assert!(
+        !prompt.contains("CRITICAL: Worktree Isolation"),
+        "Prompt should NOT include worktree isolation warning when not in worktree"
     );
 }

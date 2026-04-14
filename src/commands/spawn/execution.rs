@@ -321,6 +321,8 @@ pub(crate) fn spawn_agent_inner(
         None
     };
 
+    vars.in_worktree = worktree_info.is_some();
+
     // Apply templates to executor settings (with effective model in vars)
     let mut settings = executor_config.apply_templates(&vars);
 
@@ -565,6 +567,9 @@ pub(crate) fn spawn_agent_inner(
         cmd.env("WG_WORKTREE_PATH", &wt.path);
         cmd.env("WG_BRANCH", &wt.branch);
         cmd.env("WG_PROJECT_ROOT", &wt.project_root);
+        // Signal to Claude Code (and other tools) that this session is already
+        // inside a managed worktree — do not create a competing one.
+        cmd.env("WG_WORKTREE_ACTIVE", "1");
         // Isolate cargo target directory to prevent file lock contention between agents
         cmd.env("CARGO_TARGET_DIR", wt.path.join("target"));
     } else if let Some(ref wd) = settings.working_dir {
@@ -1213,6 +1218,13 @@ fi
 # branch and clean up the worktree. Env vars are set by spawn when worktree
 # isolation is enabled; this section is a no-op otherwise.
 if [ -n "$WG_WORKTREE_PATH" ] && [ -n "$WG_BRANCH" ] && [ -n "$WG_PROJECT_ROOT" ]; then
+    # Worktree integrity check: verify the .git pointer still exists.
+    # If the agent escaped to a Claude Code worktree, the wg worktree's .git
+    # may have been severed by a competing git worktree add with the same basename.
+    if [ ! -e "$WG_WORKTREE_PATH/.git" ]; then
+        echo "[wrapper] WARNING: Worktree .git pointer missing at $WG_WORKTREE_PATH — possible worktree escape detected" >> "$OUTPUT_FILE"
+    fi
+
     TASK_STATUS_FINAL=$(wg show "$TASK_ID" --json 2>/dev/null | grep -o '"status": *"[^"]*"' | head -1 | sed 's/.*"status": *"//;s/"//' || echo "unknown")
 
     if [ "$TASK_STATUS_FINAL" = "done" ] || [ "$TASK_STATUS_FINAL" = "pending-validation" ]; then
@@ -2462,6 +2474,7 @@ mod tests {
             max_task_depth: 0,
             has_failed_deps: false,
             failed_deps_info: String::new(),
+            in_worktree: false,
         };
 
         let command = build_inner_command(

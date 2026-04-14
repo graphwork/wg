@@ -104,11 +104,9 @@ pub fn remove_worktree(project_root: &Path, worktree_path: &Path, branch: &str) 
         .current_dir(project_root)
         .output();
 
-    // Prune stale worktree entries
-    let _ = Command::new("git")
-        .args(["worktree", "prune"])
-        .current_dir(project_root)
-        .output();
+    // NOTE: We intentionally do NOT run `git worktree prune` here.
+    // Global prune can remove metadata for other agents' worktrees that are
+    // temporarily missing during concurrent cleanup, causing data loss.
 
     Ok(())
 }
