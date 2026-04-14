@@ -68,6 +68,9 @@ teloxide = { version = "0.13", features = ["macros"], optional = true }
 # Optional Email integration (SMTP via lettre)
 lettre = { version = "0.11", features = ["tokio1-native-tls", "builder", "hostname"], optional = true }
 
+readability = { version = "0.3", default-features = false }
+html2md = "0.2"
+url = "2.4"
 notify = { version = "7", default-features = false, features = ["macos_fsevent"] }
 notify-debouncer-mini = "0.5"
 pulldown-cmark = "0.13.1"

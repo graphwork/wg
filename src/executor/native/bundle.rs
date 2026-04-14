@@ -91,6 +91,8 @@ impl Bundle {
                 "glob".to_string(),
                 "grep".to_string(),
                 "bash".to_string(),
+                "web_search".to_string(),
+                "web_fetch".to_string(),
                 "wg_show".to_string(),
                 "wg_list".to_string(),
                 "wg_add".to_string(),

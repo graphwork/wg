@@ -7,6 +7,7 @@ pub mod bash;
 pub mod bg;
 pub mod file;
 pub mod file_cache;
+pub mod web_fetch;
 pub mod web_search;
 pub mod wg;
 
@@ -345,6 +346,9 @@ impl ToolRegistry {
         // Web search tool
         web_search::register_web_search_tool(&mut registry);
 
+        // Web fetch tool
+        web_fetch::register_web_fetch_tool(&mut registry);
+
         // Background job tool
         bg::register_bg_tool(&mut registry, workgraph_dir.to_path_buf());
 
@@ -387,6 +391,7 @@ impl ToolTruncationConfig {
             "wg_show" => 2_000,
             "wg_list" => 4_000,
             "web_search" => 16_000,
+            "web_fetch" => 16_000,
             _ => MAX_TOOL_OUTPUT_SIZE,
         };
         Self { max_chars }
