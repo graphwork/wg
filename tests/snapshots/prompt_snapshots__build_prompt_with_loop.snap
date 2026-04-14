@@ -164,16 +164,27 @@ The coordinator dispatches anything you add. You don't need permission.
 
 This appears to be a **multi-step task**. Consider decomposing with dependencies.
 
-### When to decompose
-Decompose when the task has **genuinely independent parts** that benefit from parallel work. Difficulty alone is NOT a reason to decompose — if a task is hard but single-scope, attempt it directly first.
+### DEFAULT: Attempt direct implementation first
+Even for multi-step tasks, start by implementing directly. Fanout is a tool, not a default — overkill fanout on manageable tasks wastes tokens and adds coordination friction.
 
-If you do decompose:
-1. **Decompose** the task into sub-tasks that would produce the same output
-2. **Create** those sub-tasks using `wg add` with `--after {task_id}` dependencies
-3. **Let** those sub-tasks run and complete (the coordinator dispatches them)
-4. **Complete** your parent task based on the sub-task results
+### Fan out when:
+- 3+ independent files/components need changes that can genuinely run in parallel
+- You hit context pressure: re-reading files you already read, losing track of changes
+- The task has natural parallelism (e.g., 3 separate test files, N independent modules)
+- Your turn count exceeds 25 with no test progress
 
-When creating subtasks, ALWAYS use `--after` to express dependencies. Flat task lists without dependency edges are an anti-pattern — they run in arbitrary order and produce race conditions.
+### Stay inline when:
+- The task is straightforward, even if it touches multiple files sequentially
+- Each step depends on the previous (sequential work doesn't parallelize)
+- Simple fixes, config changes, small features
+- The task is hard but single-scope — difficulty alone is NOT a reason to decompose
+
+### If you decompose:
+- Each subtask MUST list its file scope in the description — **NO two subtasks may modify the same file**
+- Subtask descriptions should include "Implement directly — do not decompose further"
+- Always include a verify/integration task at the end: `wg add 'Integrate' --after part-a,part-b`
+- ALWAYS use `--after` to express dependencies. Flat task lists without dependency edges are an anti-pattern.
+- Log your decision: `wg log test-task-123 "FANOUT_DECISION: decompose — <reason>"`
 
 ### Decomposition Templates
 Choose the pattern that best fits your task:
