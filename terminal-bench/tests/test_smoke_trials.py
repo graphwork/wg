@@ -24,6 +24,7 @@ from pathlib import Path
 
 import pytest
 
+from wg.daemon_cleanup import daemon_registry
 from wg.adapter import (
     BENCHMARK_MODEL,
     CONDITION_CONFIG,
@@ -192,6 +193,7 @@ async def run_smoke_trial(
             "--force",
         ]
         service_out = await _exec_wg_cmd_host(wg_dir, WG_BIN, service_cmd)
+        daemon_registry.register(wg_dir, WG_BIN)
         result.started_wg_service = True
 
         # Step 8: Immediately mark the task done (smoke — no real execution)
@@ -206,10 +208,8 @@ async def run_smoke_trial(
         )
         assert status == "done", f"Expected 'done', got '{status}'"
 
-        # Step 10: Stop the service
-        stop_out = await _exec_wg_cmd_host(wg_dir, WG_BIN, [
-            "service", "stop", "--kill-agents",
-        ])
+        # Step 10: Stop the service (daemon_registry.stop_one in finally is the safety net)
+        daemon_registry.stop_one(wg_dir)
 
         # Step 11: Federation push (for agency conditions)
         if condition in FEDERATION_CONDITIONS and hub_path:
@@ -226,6 +226,8 @@ async def run_smoke_trial(
         result.status = "failed"
         result.error = str(e)
     finally:
+        # Always stop the daemon before cleanup (handles both normal and error paths)
+        daemon_registry.stop_one(wg_dir)
         result.elapsed_s = time.monotonic() - start
         # Cleanup
         shutil.rmtree(tmpdir, ignore_errors=True)

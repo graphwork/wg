@@ -18,6 +18,8 @@ import subprocess
 import tempfile
 import time
 
+from wg.daemon_cleanup import daemon_registry
+
 WG_BIN = shutil.which("wg") or os.path.expanduser("~/.cargo/bin/wg")
 
 VERIFIED_TASK = "text-processing"
@@ -130,6 +132,7 @@ auto_evaluate = false
         "--no-coordinator-agent",
         "--force",
     ])
+    daemon_registry.register(wg_dir, WG_BIN)
     print(f"[4] wg service start: rc={rc}")
     if rc != 0:
         print(f"    ERROR: {err}")
@@ -175,7 +178,7 @@ auto_evaluate = false
             print(f"    {line.strip()}")
 
     # Cleanup
-    await exec_wg(wg_dir, ["service", "stop", "--kill-agents"])
+    daemon_registry.stop_one(wg_dir)
     shutil.rmtree(tmpdir, ignore_errors=True)
 
     print(f"\n{'=' * 70}")

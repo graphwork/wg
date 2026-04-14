@@ -41,6 +41,8 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 
+from wg.daemon_cleanup import daemon_registry
+
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -789,14 +791,15 @@ async def run_trial_condition_a(
             "--no-coordinator-agent",
             "--force",
         ])
+        daemon_registry.register(wg_dir, WG_BIN)
 
         # 5. Poll for completion
         status, elapsed = await poll_completion(wg_dir, root_task_id, timeout)
         result["status"] = status
         result["elapsed_s"] = round(elapsed, 2)
 
-        # 6. Stop service
-        await exec_wg(wg_dir, ["service", "stop", "--kill-agents"])
+        # 6. Stop service (daemon_registry.stop_one in finally is the safety net)
+        daemon_registry.stop_one(wg_dir)
 
         # 7. Collect metrics
         result["metrics"] = await collect_metrics(wg_dir)
@@ -810,11 +813,9 @@ async def run_trial_condition_a(
     except Exception as e:
         result["status"] = "error"
         result["error"] = str(e)
-        try:
-            await exec_wg(wg_dir, ["service", "stop", "--kill-agents"])
-        except Exception:
-            pass
     finally:
+        # Always stop the daemon before cleanup (handles both normal and error paths)
+        daemon_registry.stop_one(wg_dir)
         result["elapsed_s"] = round(time.monotonic() - start, 2)
         # Preserve graph state
         state_dst = os.path.join(results_dir, trial_id, "workgraph_state")
@@ -922,14 +923,15 @@ async def run_trial_condition_f(
             "--no-coordinator-agent",
             "--force",
         ])
+        daemon_registry.register(wg_dir, WG_BIN)
 
         # 5. Poll for completion
         status, elapsed = await poll_completion(wg_dir, work_task_id, timeout)
         result["status"] = status
         result["elapsed_s"] = round(elapsed, 2)
 
-        # 6. Stop service
-        await exec_wg(wg_dir, ["service", "stop", "--kill-agents"])
+        # 6. Stop service (daemon_registry.stop_one in finally is the safety net)
+        daemon_registry.stop_one(wg_dir)
 
         # 7. Collect metrics
         result["metrics"] = await collect_metrics(wg_dir)
@@ -943,11 +945,9 @@ async def run_trial_condition_f(
     except Exception as e:
         result["status"] = "error"
         result["error"] = str(e)
-        try:
-            await exec_wg(wg_dir, ["service", "stop", "--kill-agents"])
-        except Exception:
-            pass
     finally:
+        # Always stop the daemon before cleanup (handles both normal and error paths)
+        daemon_registry.stop_one(wg_dir)
         result["elapsed_s"] = round(time.monotonic() - start, 2)
         # Preserve graph state
         state_dst = os.path.join(results_dir, trial_id, "workgraph_state")

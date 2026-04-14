@@ -24,6 +24,8 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+from wg.daemon_cleanup import daemon_registry
+
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -333,6 +335,7 @@ async def run_condition_a(
             "--no-coordinator-agent",
             "--force",
         ])
+        daemon_registry.register(wg_dir, WG_BIN)
         print(f"  [{trial_id}] Service started, polling...", flush=True)
 
         # Poll for completion
@@ -351,8 +354,8 @@ async def run_condition_a(
 
         print(f"  [{trial_id}] {status.upper()} in {elapsed:.1f}s (reward={result['reward']})", flush=True)
 
-        # Stop service
-        await exec_wg(wg_dir, ["service", "stop", "--kill-agents"])
+        # Stop service (daemon_registry.stop_one in finally is the safety net)
+        daemon_registry.stop_one(wg_dir)
 
         # Collect metrics
         result["metrics"] = await collect_metrics(wg_dir)
@@ -362,11 +365,9 @@ async def run_condition_a(
         result["error"] = str(e)
         result["failure_mode"] = "crash"
         print(f"  [{trial_id}] Error: {e}", flush=True)
-        try:
-            await exec_wg(wg_dir, ["service", "stop", "--kill-agents"])
-        except Exception:
-            pass
     finally:
+        # Always stop the daemon before cleanup (handles both normal and error paths)
+        daemon_registry.stop_one(wg_dir)
         result["elapsed_s"] = round(time.monotonic() - start, 2)
         # Save wg state for analysis
         state_dst = os.path.join(RESULTS_DIR, trial_id, "workgraph_state")

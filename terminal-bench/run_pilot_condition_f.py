@@ -33,6 +33,7 @@ from pathlib import Path
 import sys
 sys.path.insert(0, os.path.dirname(__file__))
 
+from wg.daemon_cleanup import daemon_registry
 from wg.adapter import (
     CONDITION_CONFIG,
     FEDERATION_CONDITIONS,
@@ -170,6 +171,7 @@ async def run_trial(task_type: str, replica: int) -> TrialResult:
             "--force",
         ]
         service_out = await _exec_wg_cmd_host(wg_dir, WG_BIN, service_cmd)
+        daemon_registry.register(wg_dir, WG_BIN)
         result.started_wg_service = True
 
         # 8. Mark task done (pilot mode — verifying lifecycle, not LLM execution)
@@ -183,10 +185,8 @@ async def run_trial(task_type: str, replica: int) -> TrialResult:
         if status != "done":
             raise RuntimeError(f"Expected 'done', got '{status}'")
 
-        # 10. Stop service
-        stop_out = await _exec_wg_cmd_host(wg_dir, WG_BIN, [
-            "service", "stop", "--kill-agents",
-        ])
+        # 10. Stop service (daemon_registry.stop_one in finally is the safety net)
+        daemon_registry.stop_one(wg_dir)
 
         # 11. Federation push to hub
         push_out = await _federation_push(wg_dir, WG_BIN, HUB_PATH)
@@ -203,6 +203,8 @@ async def run_trial(task_type: str, replica: int) -> TrialResult:
         result.status = "failed"
         result.error = str(e)
     finally:
+        # Always stop the daemon before cleanup (handles both normal and error paths)
+        daemon_registry.stop_one(wg_dir)
         result.elapsed_s = time.monotonic() - start
         shutil.rmtree(tmpdir, ignore_errors=True)
 
