@@ -996,6 +996,11 @@ pub enum Commands {
         /// Use with --coordinator to specify the target (default: 0).
         #[arg(long, value_name = "FROM_ID")]
         share_from: Option<u32>,
+
+        /// Talk directly to a named endpoint (bypasses the coordinator).
+        /// The name must match a configured endpoint from `wg endpoints list`.
+        #[arg(long, value_name = "NAME")]
+        endpoint: Option<String>,
     },
 
     /// Manage resources

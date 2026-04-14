@@ -1,12 +1,15 @@
 //! `wg chat` command: send messages to the coordinator and receive responses.
 //!
-//! Supports single-message mode and interactive REPL mode.
+//! Supports single-message mode, interactive REPL mode, and direct endpoint mode.
 
 use anyhow::{Context, Result};
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use workgraph::chat::{self, Attachment};
+use workgraph::config::Config;
+use workgraph::executor::native::client::{ContentBlock, Message, MessagesRequest, Role};
+use workgraph::executor::native::provider::Provider;
 
 use super::service;
 
@@ -403,6 +406,322 @@ fn coordinator_label_from_graph(graph: &workgraph::graph::WorkGraph, cid: u32) -
     graph.get_task(&task_id).map(|t| t.title.clone())
 }
 
+/// Maximum output tokens for direct endpoint chat calls.
+const ENDPOINT_CHAT_MAX_TOKENS: u32 = 8192;
+
+/// Default timeout for direct endpoint calls.
+const DEFAULT_ENDPOINT_TIMEOUT_SECS: u64 = 120;
+
+/// Resolve a named endpoint from config and return (provider, model, url, api_key).
+fn resolve_endpoint(
+    dir: &Path,
+    endpoint_name: &str,
+) -> Result<(String, String, Option<String>, Option<String>)> {
+    let config = Config::load_merged(dir)?;
+    let endpoint = config
+        .llm_endpoints
+        .find_by_name(endpoint_name)
+        .ok_or_else(|| {
+            let available: Vec<String> = config
+                .llm_endpoints
+                .endpoints
+                .iter()
+                .map(|ep| format!("  - {}", ep.name))
+                .collect();
+            if available.is_empty() {
+                anyhow::anyhow!(
+                    "Endpoint '{}' not found. No endpoints configured.\n\
+                     Add one with: wg endpoints add <name> --provider <provider>",
+                    endpoint_name
+                )
+            } else {
+                anyhow::anyhow!(
+                    "Endpoint '{}' not found. Available endpoints:\n{}",
+                    endpoint_name,
+                    available.join("\n")
+                )
+            }
+        })?;
+
+    let model = endpoint.model.clone().ok_or_else(|| {
+        anyhow::anyhow!(
+            "Endpoint '{}' has no model configured. Set one with:\n  \
+             wg endpoints update {} --model <model>",
+            endpoint_name,
+            endpoint_name
+        )
+    })?;
+
+    let api_key = endpoint.resolve_api_key(Some(dir)).ok().flatten();
+    let url = endpoint.url.clone();
+    let provider = endpoint.provider.clone();
+
+    Ok((provider, model, url, api_key))
+}
+
+/// Send messages to a resolved endpoint and return the response text.
+fn call_endpoint(
+    provider: &str,
+    model: &str,
+    url: Option<&str>,
+    api_key: Option<&str>,
+    messages: Vec<Message>,
+    timeout_secs: u64,
+) -> Result<String> {
+    let request = MessagesRequest {
+        model: model.to_string(),
+        max_tokens: ENDPOINT_CHAT_MAX_TOKENS,
+        system: None,
+        messages,
+        tools: vec![],
+        stream: false,
+    };
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("Failed to create tokio runtime")?;
+
+    match provider {
+        "anthropic" => {
+            use workgraph::executor::native::client::AnthropicClient;
+
+            let mut client = if let Some(key) = api_key {
+                AnthropicClient::new(key.to_string(), model)
+            } else {
+                AnthropicClient::from_env(model)
+            }
+            .context("Failed to create Anthropic client")?;
+            if let Some(u) = url {
+                client = client.with_base_url(u);
+            }
+
+            let response = rt.block_on(async {
+                tokio::time::timeout(
+                    Duration::from_secs(timeout_secs),
+                    client.send(&request),
+                )
+                .await
+                .context("Request timed out")?
+            })?;
+
+            let text: String = response
+                .content
+                .iter()
+                .filter_map(|block| match block {
+                    ContentBlock::Text { text } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("");
+            Ok(text.trim().to_string())
+        }
+        _ => {
+            use workgraph::executor::native::openai_client::OpenAiClient;
+
+            let mut client = if let Some(key) = api_key {
+                OpenAiClient::new(key.to_string(), model, None)
+                    .context("Failed to create OpenAI client")?
+            } else if matches!(provider, "local" | "ollama" | "llamacpp" | "vllm") {
+                OpenAiClient::new("local".to_string(), model, None)
+                    .expect("infallible with static args")
+            } else {
+                OpenAiClient::from_env(model)
+                    .context("Failed to create OpenAI client")?
+            };
+            if let Some(u) = url {
+                client = client.with_base_url(u);
+            }
+            client = client.with_provider_hint(provider);
+
+            let response = rt.block_on(async {
+                tokio::time::timeout(
+                    Duration::from_secs(timeout_secs),
+                    client.send(&request),
+                )
+                .await
+                .context("Request timed out")?
+            })?;
+
+            let text: String = response
+                .content
+                .iter()
+                .filter_map(|block| match block {
+                    ContentBlock::Text { text } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("");
+            Ok(text.trim().to_string())
+        }
+    }
+}
+
+/// Send a single message directly to a named endpoint (bypassing coordinator).
+pub fn run_send_endpoint(
+    dir: &Path,
+    message: &str,
+    timeout_secs: Option<u64>,
+    endpoint_name: &str,
+    attachment_paths: &[String],
+) -> Result<()> {
+    if message.len() > MAX_MESSAGE_SIZE {
+        eprintln!(
+            "Warning: Message truncated to {}KB (was {}KB)",
+            MAX_MESSAGE_SIZE / 1024,
+            message.len() / 1024
+        );
+    }
+    let msg = if message.len() > MAX_MESSAGE_SIZE {
+        &message[..message.floor_char_boundary(MAX_MESSAGE_SIZE)]
+    } else {
+        message
+    };
+
+    if msg.trim().is_empty() && attachment_paths.is_empty() {
+        anyhow::bail!("Message cannot be empty");
+    }
+
+    let attachments = process_attachments(dir, attachment_paths)?;
+
+    let full_message = if attachments.is_empty() {
+        msg.to_string()
+    } else {
+        let att_lines: Vec<String> = attachments
+            .iter()
+            .map(|a| {
+                let filename = std::path::Path::new(&a.path)
+                    .file_name()
+                    .and_then(|f| f.to_str())
+                    .unwrap_or(&a.path);
+                format!("[Attached: {}]", filename)
+            })
+            .collect();
+        if msg.trim().is_empty() {
+            att_lines.join("\n")
+        } else {
+            format!("{}\n{}", msg, att_lines.join("\n"))
+        }
+    };
+
+    let timeout = timeout_secs.unwrap_or(DEFAULT_ENDPOINT_TIMEOUT_SECS);
+    let (provider, model, url, api_key) = resolve_endpoint(dir, endpoint_name)?;
+
+    let messages = vec![Message {
+        role: Role::User,
+        content: vec![ContentBlock::Text {
+            text: full_message,
+        }],
+    }];
+
+    let response = call_endpoint(
+        &provider,
+        &model,
+        url.as_deref(),
+        api_key.as_deref(),
+        messages,
+        timeout,
+    )?;
+
+    if response.is_empty() {
+        anyhow::bail!("Empty response from endpoint '{}'", endpoint_name);
+    }
+
+    println!("{}", response);
+    Ok(())
+}
+
+/// Interactive REPL directly with a named endpoint (bypassing coordinator).
+pub fn run_interactive_endpoint(
+    dir: &Path,
+    timeout_secs: Option<u64>,
+    endpoint_name: &str,
+) -> Result<()> {
+    let timeout = timeout_secs.unwrap_or(DEFAULT_ENDPOINT_TIMEOUT_SECS);
+    let (provider, model, url, api_key) = resolve_endpoint(dir, endpoint_name)?;
+
+    eprintln!(
+        "Direct chat with endpoint '{}' [{}] (Ctrl-C to exit)",
+        endpoint_name, model
+    );
+    eprintln!();
+
+    let stdin = std::io::stdin();
+    let mut input = String::new();
+    let mut history: Vec<Message> = Vec::new();
+
+    loop {
+        eprint!("you> ");
+        use std::io::Write;
+        std::io::stderr().flush().ok();
+
+        input.clear();
+        match stdin.read_line(&mut input) {
+            Ok(0) => {
+                eprintln!();
+                break;
+            }
+            Ok(_) => {}
+            Err(e) => {
+                eprintln!("Input error: {}", e);
+                break;
+            }
+        }
+
+        let trimmed = input.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        let msg = if trimmed.len() > MAX_MESSAGE_SIZE {
+            eprintln!(
+                "Warning: Message truncated to {}KB",
+                MAX_MESSAGE_SIZE / 1024
+            );
+            &trimmed[..trimmed.floor_char_boundary(MAX_MESSAGE_SIZE)]
+        } else {
+            trimmed
+        };
+
+        history.push(Message {
+            role: Role::User,
+            content: vec![ContentBlock::Text {
+                text: msg.to_string(),
+            }],
+        });
+
+        match call_endpoint(
+            &provider,
+            &model,
+            url.as_deref(),
+            api_key.as_deref(),
+            history.clone(),
+            timeout,
+        ) {
+            Ok(response) => {
+                if response.is_empty() {
+                    eprintln!("(empty response)");
+                } else {
+                    eprintln!();
+                    println!("{}> {}", endpoint_name, response);
+                    eprintln!();
+                    history.push(Message {
+                        role: Role::Assistant,
+                        content: vec![ContentBlock::Text { text: response }],
+                    });
+                }
+            }
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                history.pop();
+                eprintln!();
+            }
+        }
+    }
+
+    Ok(())
+}
+
 pub fn run_compact(dir: &Path, coordinator_id: u32, json: bool) -> Result<()> {
     use workgraph::service::chat_compactor;
 
@@ -503,6 +822,118 @@ mod tests {
     fn test_send_empty_message_fails() {
         let (_tmp, dir) = setup();
         let result = run_send(&dir, "  ", None, &[], 0);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("empty"));
+    }
+
+    #[test]
+    fn test_resolve_endpoint_not_found() {
+        let (_tmp, dir) = setup();
+        let config = Config::default();
+        config.save(&dir).unwrap();
+
+        let result = resolve_endpoint(&dir, "nonexistent");
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("not found"),
+            "Error should mention 'not found': {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_resolve_endpoint_not_found_with_suggestions() {
+        let (_tmp, dir) = setup();
+        let mut config = Config::default();
+        config
+            .llm_endpoints
+            .endpoints
+            .push(workgraph::config::EndpointConfig {
+                name: "my-endpoint".to_string(),
+                provider: "local".to_string(),
+                url: Some("http://localhost:8080".to_string()),
+                model: Some("test-model".to_string()),
+                api_key: None,
+                api_key_file: None,
+                api_key_env: None,
+                is_default: false,
+                context_window: None,
+            });
+        config.save(&dir).unwrap();
+
+        let result = resolve_endpoint(&dir, "nonexistent");
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("not found"), "should mention not found: {}", err);
+        assert!(
+            err.contains("my-endpoint"),
+            "should list available endpoints: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_resolve_endpoint_no_model() {
+        let (_tmp, dir) = setup();
+        let mut config = Config::default();
+        config
+            .llm_endpoints
+            .endpoints
+            .push(workgraph::config::EndpointConfig {
+                name: "no-model".to_string(),
+                provider: "local".to_string(),
+                url: Some("http://localhost:8080".to_string()),
+                model: None,
+                api_key: None,
+                api_key_file: None,
+                api_key_env: None,
+                is_default: false,
+                context_window: None,
+            });
+        config.save(&dir).unwrap();
+
+        let result = resolve_endpoint(&dir, "no-model");
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("no model configured"),
+            "should mention no model: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_resolve_endpoint_success() {
+        let (_tmp, dir) = setup();
+        let mut config = Config::default();
+        config
+            .llm_endpoints
+            .endpoints
+            .push(workgraph::config::EndpointConfig {
+                name: "test-ep".to_string(),
+                provider: "local".to_string(),
+                url: Some("http://localhost:8080".to_string()),
+                model: Some("test-model".to_string()),
+                api_key: Some("sk-test".to_string()),
+                api_key_file: None,
+                api_key_env: None,
+                is_default: false,
+                context_window: None,
+            });
+        config.save(&dir).unwrap();
+
+        let (provider, model, url, api_key) = resolve_endpoint(&dir, "test-ep").unwrap();
+        assert_eq!(provider, "local");
+        assert_eq!(model, "test-model");
+        assert_eq!(url, Some("http://localhost:8080".to_string()));
+        assert_eq!(api_key, Some("sk-test".to_string()));
+    }
+
+    #[test]
+    fn test_send_endpoint_empty_message_fails() {
+        let (_tmp, dir) = setup();
+        let result = run_send_endpoint(&dir, "  ", None, "any-endpoint", &[]);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("empty"));
     }

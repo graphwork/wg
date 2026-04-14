@@ -1066,8 +1066,23 @@ fn main() -> Result<()> {
             cleanup,
             compact,
             share_from,
+            endpoint,
         } => {
-            if let Some(from_id) = share_from {
+            if let Some(ref ep) = endpoint {
+                if interactive {
+                    commands::chat::run_interactive_endpoint(&workgraph_dir, timeout, ep)
+                } else if let Some(msg) = message {
+                    commands::chat::run_send_endpoint(
+                        &workgraph_dir,
+                        &msg,
+                        timeout,
+                        ep,
+                        &attachment,
+                    )
+                } else {
+                    commands::chat::run_interactive_endpoint(&workgraph_dir, timeout, ep)
+                }
+            } else if let Some(from_id) = share_from {
                 commands::chat::run_share(&workgraph_dir, from_id, coordinator)
             } else if compact {
                 commands::chat::run_compact(&workgraph_dir, coordinator, cli.json)
