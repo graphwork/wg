@@ -1,0 +1,431 @@
+{
+  "run_id": "retest-g-smart",
+  "condition": "g-smart",
+  "label": "G-smart (try-first fanout)",
+  "model": "local:qwen3-coder-30b",
+  "context_window": 32768,
+  "max_agents": 4,
+  "smart_fanout": true,
+  "timestamp": "2026-04-14T06:38:36.449717+00:00",
+  "total_trials": 10,
+  "passed": 6,
+  "pass_rate": 0.6,
+  "median_time_s": 67.98,
+  "total_wall_clock_s": 586.31,
+  "decomposed_trials": 0,
+  "decomposition_rate": 0.0,
+  "total_subtasks_created": 10,
+  "avg_subtasks_per_trial": 1.0,
+  "trials": [
+    {
+      "trial_id": "retest-g-smart-cobol-modernization",
+      "task": "cobol-modernization",
+      "difficulty": "hard",
+      "condition": "g-smart",
+      "condition_label": "G-smart (try-first fanout)",
+      "smart_fanout": true,
+      "model": "local:qwen3-coder-30b",
+      "max_agents": 4,
+      "timeout_s": 2400,
+      "status": "failed",
+      "elapsed_s": 67.98,
+      "reward": 0.0,
+      "failure_mode": "wrong_answer",
+      "metrics": {
+        "total_input_tokens": 249578,
+        "total_output_tokens": 4883,
+        "total_turns": 18,
+        "num_agents_spawned": 1,
+        "max_input_tokens_single_turn": 16380,
+        "context_truncation_events": 0
+      },
+      "subtask_counts": {
+        "total_tasks": 2,
+        "user_tasks": 1,
+        "internal_tasks": 1,
+        "done_tasks": 0,
+        "failed_tasks": 1,
+        "task_ids": [
+          "tb-cobol-modernization"
+        ]
+      },
+      "fanout_decisions": {
+        "initial_decision": null,
+        "switched": false,
+        "switch_reason": null,
+        "all_entries": []
+      },
+      "error": null
+    },
+    {
+      "trial_id": "retest-g-smart-constraints-scheduling",
+      "task": "constraints-scheduling",
+      "difficulty": "hard",
+      "condition": "g-smart",
+      "condition_label": "G-smart (try-first fanout)",
+      "smart_fanout": true,
+      "model": "local:qwen3-coder-30b",
+      "max_agents": 4,
+      "timeout_s": 2400,
+      "status": "failed",
+      "elapsed_s": 73.89,
+      "reward": 0.0,
+      "failure_mode": "wrong_answer",
+      "metrics": {
+        "total_input_tokens": 142472,
+        "total_output_tokens": 6549,
+        "total_turns": 12,
+        "num_agents_spawned": 1,
+        "max_input_tokens_single_turn": 15633,
+        "context_truncation_events": 0
+      },
+      "subtask_counts": {
+        "total_tasks": 2,
+        "user_tasks": 1,
+        "internal_tasks": 1,
+        "done_tasks": 0,
+        "failed_tasks": 1,
+        "task_ids": [
+          "tb-constraints-scheduling"
+        ]
+      },
+      "fanout_decisions": {
+        "initial_decision": "FANOUT_DECISION: direct \u2014 The task is a single logical unit of work involving parsing ICS files, finding time slots, and generating meetings. It touches 3-4 files total and has clear requirements.",
+        "switched": false,
+        "switch_reason": null,
+        "all_entries": [
+          "FANOUT_DECISION: direct \u2014 The task is a single logical unit of work involving parsing ICS files, finding time slots, and generating meetings. It touches 3-4 files total and has clear requirements."
+        ]
+      },
+      "error": null
+    },
+    {
+      "trial_id": "retest-g-smart-multi-source-data-merger",
+      "task": "multi-source-data-merger",
+      "difficulty": "hard",
+      "condition": "g-smart",
+      "condition_label": "G-smart (try-first fanout)",
+      "smart_fanout": true,
+      "model": "local:qwen3-coder-30b",
+      "max_agents": 4,
+      "timeout_s": 2400,
+      "status": "done",
+      "elapsed_s": 63.48,
+      "reward": 1.0,
+      "failure_mode": null,
+      "metrics": {
+        "total_input_tokens": 176150,
+        "total_output_tokens": 5201,
+        "total_turns": 15,
+        "num_agents_spawned": 1,
+        "max_input_tokens_single_turn": 14600,
+        "context_truncation_events": 0
+      },
+      "subtask_counts": {
+        "total_tasks": 2,
+        "user_tasks": 1,
+        "internal_tasks": 1,
+        "done_tasks": 0,
+        "failed_tasks": 1,
+        "task_ids": [
+          "tb-multi-source-data-merger"
+        ]
+      },
+      "fanout_decisions": {
+        "initial_decision": null,
+        "switched": false,
+        "switch_reason": null,
+        "all_entries": []
+      },
+      "error": null
+    },
+    {
+      "trial_id": "retest-g-smart-algorithm",
+      "task": "algorithm",
+      "difficulty": "hard",
+      "condition": "g-smart",
+      "condition_label": "G-smart (try-first fanout)",
+      "smart_fanout": true,
+      "model": "local:qwen3-coder-30b",
+      "max_agents": 4,
+      "timeout_s": 2400,
+      "status": "done",
+      "elapsed_s": 33.0,
+      "reward": 1.0,
+      "failure_mode": null,
+      "metrics": {
+        "total_input_tokens": 150167,
+        "total_output_tokens": 1797,
+        "total_turns": 11,
+        "num_agents_spawned": 1,
+        "max_input_tokens_single_turn": 14860,
+        "context_truncation_events": 0
+      },
+      "subtask_counts": {
+        "total_tasks": 2,
+        "user_tasks": 1,
+        "internal_tasks": 1,
+        "done_tasks": 1,
+        "failed_tasks": 0,
+        "task_ids": [
+          "tb-algorithm"
+        ]
+      },
+      "fanout_decisions": {
+        "initial_decision": null,
+        "switched": false,
+        "switch_reason": null,
+        "all_entries": []
+      },
+      "error": null
+    },
+    {
+      "trial_id": "retest-g-smart-ml",
+      "task": "ml",
+      "difficulty": "hard",
+      "condition": "g-smart",
+      "condition_label": "G-smart (try-first fanout)",
+      "smart_fanout": true,
+      "model": "local:qwen3-coder-30b",
+      "max_agents": 4,
+      "timeout_s": 2400,
+      "status": "done",
+      "elapsed_s": 73.48,
+      "reward": 1.0,
+      "failure_mode": null,
+      "metrics": {
+        "total_input_tokens": 279354,
+        "total_output_tokens": 5985,
+        "total_turns": 22,
+        "num_agents_spawned": 1,
+        "max_input_tokens_single_turn": 16085,
+        "context_truncation_events": 0
+      },
+      "subtask_counts": {
+        "total_tasks": 2,
+        "user_tasks": 1,
+        "internal_tasks": 1,
+        "done_tasks": 1,
+        "failed_tasks": 0,
+        "task_ids": [
+          "tb-ml"
+        ]
+      },
+      "fanout_decisions": {
+        "initial_decision": "FANOUT_DECISION: direct \u2014 Task is well-scoped, single logical unit with clear requirements. Only need to implement one Python file with specific functionality.",
+        "switched": false,
+        "switch_reason": null,
+        "all_entries": [
+          "FANOUT_DECISION: direct \u2014 Task is well-scoped, single logical unit with clear requirements. Only need to implement one Python file with specific functionality."
+        ]
+      },
+      "error": null
+    },
+    {
+      "trial_id": "retest-g-smart-fix-code-vulnerability",
+      "task": "fix-code-vulnerability",
+      "difficulty": "hard",
+      "condition": "g-smart",
+      "condition_label": "G-smart (try-first fanout)",
+      "smart_fanout": true,
+      "model": "local:qwen3-coder-30b",
+      "max_agents": 4,
+      "timeout_s": 2400,
+      "status": "done",
+      "elapsed_s": 72.82,
+      "reward": 1.0,
+      "failure_mode": null,
+      "metrics": {
+        "total_input_tokens": 133674,
+        "total_output_tokens": 6110,
+        "total_turns": 11,
+        "num_agents_spawned": 1,
+        "max_input_tokens_single_turn": 15447,
+        "context_truncation_events": 0
+      },
+      "subtask_counts": {
+        "total_tasks": 2,
+        "user_tasks": 1,
+        "internal_tasks": 1,
+        "done_tasks": 0,
+        "failed_tasks": 1,
+        "task_ids": [
+          "tb-fix-code-vulnerability"
+        ]
+      },
+      "fanout_decisions": {
+        "initial_decision": null,
+        "switched": false,
+        "switch_reason": null,
+        "all_entries": []
+      },
+      "error": null
+    },
+    {
+      "trial_id": "retest-g-smart-configure-git-webserver",
+      "task": "configure-git-webserver",
+      "difficulty": "hard",
+      "condition": "g-smart",
+      "condition_label": "G-smart (try-first fanout)",
+      "smart_fanout": true,
+      "model": "local:qwen3-coder-30b",
+      "max_agents": 4,
+      "timeout_s": 2400,
+      "status": "failed",
+      "elapsed_s": 98.4,
+      "reward": 0.0,
+      "failure_mode": "wrong_answer",
+      "metrics": {
+        "total_input_tokens": 1183226,
+        "total_output_tokens": 5984,
+        "total_turns": 81,
+        "num_agents_spawned": 2,
+        "max_input_tokens_single_turn": 16362,
+        "context_truncation_events": 0
+      },
+      "subtask_counts": {
+        "total_tasks": 2,
+        "user_tasks": 1,
+        "internal_tasks": 1,
+        "done_tasks": 0,
+        "failed_tasks": 1,
+        "task_ids": [
+          "tb-configure-git-webserver"
+        ]
+      },
+      "fanout_decisions": {
+        "initial_decision": "FANOUT_DECISION: direct \u2014 Task is a single logical unit of work that requires modifying 3-4 files (git repo setup, post-receive hook, web server, test workflow)",
+        "switched": false,
+        "switch_reason": null,
+        "all_entries": [
+          "FANOUT_DECISION: direct \u2014 Task is a single logical unit of work that requires modifying 3-4 files (git repo setup, post-receive hook, web server, test workflow)",
+          "FANOUT_DECISION: direct \u2014 Task is a single logical unit of work that requires modifying 3-4 files (git repo setup, post-receive hook, web server, test workflow)",
+          "FANOUT_DECISION: direct \u2014 Task is a single logical unit of work that requires modifying 3-4 files (git repo setup, post-receive hook, web server, test workflow)"
+        ]
+      },
+      "error": null
+    },
+    {
+      "trial_id": "retest-g-smart-debugging",
+      "task": "debugging",
+      "difficulty": "medium",
+      "condition": "g-smart",
+      "condition_label": "G-smart (try-first fanout)",
+      "smart_fanout": true,
+      "model": "local:qwen3-coder-30b",
+      "max_agents": 4,
+      "timeout_s": 1200,
+      "status": "done",
+      "elapsed_s": 27.2,
+      "reward": 1.0,
+      "failure_mode": null,
+      "metrics": {
+        "total_input_tokens": 109270,
+        "total_output_tokens": 1548,
+        "total_turns": 11,
+        "num_agents_spawned": 1,
+        "max_input_tokens_single_turn": 11246,
+        "context_truncation_events": 0
+      },
+      "subtask_counts": {
+        "total_tasks": 2,
+        "user_tasks": 1,
+        "internal_tasks": 1,
+        "done_tasks": 1,
+        "failed_tasks": 0,
+        "task_ids": [
+          "tb-debugging"
+        ]
+      },
+      "fanout_decisions": {
+        "initial_decision": null,
+        "switched": false,
+        "switch_reason": null,
+        "all_entries": []
+      },
+      "error": null
+    },
+    {
+      "trial_id": "retest-g-smart-data-processing",
+      "task": "data-processing",
+      "difficulty": "medium",
+      "condition": "g-smart",
+      "condition_label": "G-smart (try-first fanout)",
+      "smart_fanout": true,
+      "model": "local:qwen3-coder-30b",
+      "max_agents": 4,
+      "timeout_s": 1200,
+      "status": "done",
+      "elapsed_s": 43.2,
+      "reward": 1.0,
+      "failure_mode": null,
+      "metrics": {
+        "total_input_tokens": 172601,
+        "total_output_tokens": 2038,
+        "total_turns": 12,
+        "num_agents_spawned": 1,
+        "max_input_tokens_single_turn": 15736,
+        "context_truncation_events": 0
+      },
+      "subtask_counts": {
+        "total_tasks": 2,
+        "user_tasks": 1,
+        "internal_tasks": 1,
+        "done_tasks": 1,
+        "failed_tasks": 0,
+        "task_ids": [
+          "tb-data-processing"
+        ]
+      },
+      "fanout_decisions": {
+        "initial_decision": null,
+        "switched": false,
+        "switch_reason": null,
+        "all_entries": []
+      },
+      "error": null
+    },
+    {
+      "trial_id": "retest-g-smart-file-ops",
+      "task": "file-ops",
+      "difficulty": "easy",
+      "condition": "g-smart",
+      "condition_label": "G-smart (try-first fanout)",
+      "smart_fanout": true,
+      "model": "local:qwen3-coder-30b",
+      "max_agents": 4,
+      "timeout_s": 600,
+      "status": "done",
+      "elapsed_s": 31.0,
+      "reward": 0.0,
+      "failure_mode": "status_done",
+      "metrics": {
+        "total_input_tokens": 199897,
+        "total_output_tokens": 1185,
+        "total_turns": 21,
+        "num_agents_spawned": 1,
+        "max_input_tokens_single_turn": 10405,
+        "context_truncation_events": 0
+      },
+      "subtask_counts": {
+        "total_tasks": 2,
+        "user_tasks": 1,
+        "internal_tasks": 1,
+        "done_tasks": 1,
+        "failed_tasks": 0,
+        "task_ids": [
+          "tb-file-ops"
+        ]
+      },
+      "fanout_decisions": {
+        "initial_decision": "FANOUT_DECISION: direct \u2014 Task is straightforward file creation with clear structure and validation criteria",
+        "switched": false,
+        "switch_reason": null,
+        "all_entries": [
+          "FANOUT_DECISION: direct \u2014 Task is straightforward file creation with clear structure and validation criteria"
+        ]
+      },
+      "error": null
+    }
+  ]
+}
