@@ -5,6 +5,7 @@
 
 pub mod bash;
 pub mod bg;
+pub mod delegate;
 pub mod file;
 pub mod file_cache;
 pub mod web_fetch;
@@ -352,6 +353,13 @@ impl ToolRegistry {
         // Background job tool
         bg::register_bg_tool(&mut registry, workgraph_dir.to_path_buf());
 
+        // Delegate tool (in-process subtask delegation)
+        delegate::register_delegate_tool(
+            &mut registry,
+            workgraph_dir.to_path_buf(),
+            working_dir.to_path_buf(),
+        );
+
         registry
     }
 }
@@ -392,6 +400,7 @@ impl ToolTruncationConfig {
             "wg_list" => 4_000,
             "web_search" => 16_000,
             "web_fetch" => 16_000,
+            "delegate" => 8_000,
             _ => MAX_TOOL_OUTPUT_SIZE,
         };
         Self { max_chars }
