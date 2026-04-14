@@ -2732,6 +2732,14 @@ impl Default for ActivityFeedState {
     }
 }
 
+/// Kind of firehose message — drives icon/styling in the rendered view.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum FirehoseMsgKind {
+    Text,
+    ToolUse,
+    System,
+}
+
 /// A single line in the firehose view — one output line from one agent.
 #[derive(Clone)]
 pub struct FirehoseLine {
@@ -2739,10 +2747,14 @@ pub struct FirehoseLine {
     pub agent_id: String,
     /// Task ID the agent is working on.
     pub task_id: String,
-    /// The output text (single line).
+    /// Human-readable message text (parsed from JSON, or raw fallback).
     pub text: String,
     /// Color index for this agent (cycles through a palette).
     pub color_idx: usize,
+    /// HH:MM:SS timestamp when this line was received.
+    pub timestamp: String,
+    /// Message kind for styling.
+    pub kind: FirehoseMsgKind,
 }
 
 /// Maximum number of lines kept in the firehose buffer.
@@ -2766,6 +2778,8 @@ pub struct FirehoseState {
     pub viewport_height: usize,
     /// Total rendered lines (set each frame by renderer, for scrollbar).
     pub total_rendered_lines: usize,
+    /// Selected logical entry index (for Enter-to-jump navigation).
+    pub selected: usize,
 }
 
 impl Default for FirehoseState {
@@ -2779,6 +2793,7 @@ impl Default for FirehoseState {
             next_color: 0,
             viewport_height: 0,
             total_rendered_lines: 0,
+            selected: 0,
         }
     }
 }
@@ -9366,12 +9381,13 @@ impl VizApp {
     }
 
     /// Update the firehose view by reading new lines from all active agents' output.log files.
-    /// Each non-empty line is appended to the firehose buffer. The buffer is capped at
-    /// FIREHOSE_MAX_LINES to prevent memory growth.
+    /// Parses JSONL events into human-readable messages. Falls back to raw text for non-JSON lines.
+    /// The buffer is capped at FIREHOSE_MAX_LINES to prevent memory growth.
     pub fn update_firehose(&mut self) {
         use std::io::{Read, Seek, SeekFrom};
 
         let agents_dir = self.workgraph_dir.join("agents");
+        let now = chrono::Local::now().format("%H:%M:%S").to_string();
 
         // Collect active agent IDs and their task IDs from the monitor.
         let active_agents: Vec<(String, String)> = self
@@ -9433,12 +9449,17 @@ impl VizApp {
                 if line.is_empty() {
                     continue;
                 }
-                new_lines.push(FirehoseLine {
-                    agent_id: agent_id.clone(),
-                    task_id: task_id.clone(),
-                    text: line.to_string(),
-                    color_idx,
-                });
+                let parsed = parse_firehose_line(line);
+                for (text, kind) in parsed {
+                    new_lines.push(FirehoseLine {
+                        agent_id: agent_id.clone(),
+                        task_id: task_id.clone(),
+                        text,
+                        color_idx,
+                        timestamp: now.clone(),
+                        kind,
+                    });
+                }
             }
         }
 
@@ -13347,6 +13368,139 @@ fn find_all_archives(
     entries
 }
 
+/// Parse a single JSONL line from output.log into human-readable firehose entries.
+fn parse_firehose_line(raw: &str) -> Vec<(String, FirehoseMsgKind)> {
+    if !raw.starts_with('{') {
+        return vec![(raw.to_string(), FirehoseMsgKind::Text)];
+    }
+    let val: serde_json::Value = match serde_json::from_str(raw) {
+        Ok(v) => v,
+        Err(_) => return vec![(raw.to_string(), FirehoseMsgKind::Text)],
+    };
+    let msg_type = val.get("type").and_then(|v| v.as_str()).unwrap_or("");
+    let mut results = Vec::new();
+    match msg_type {
+        "assistant" => {
+            if let Some(content) = val
+                .get("message")
+                .and_then(|m| m.get("content"))
+                .and_then(|c| c.as_array())
+            {
+                parse_firehose_content_blocks(content, &mut results);
+            }
+        }
+        "turn" => {
+            if let Some(content) = val.get("content").and_then(|c| c.as_array()) {
+                parse_firehose_content_blocks(content, &mut results);
+            }
+        }
+        "tool_call" => {
+            let name = val.get("name").and_then(|v| v.as_str()).unwrap_or("tool");
+            let detail = firehose_tool_detail(name, &val);
+            let is_error = val.get("is_error").and_then(|v| v.as_bool()).unwrap_or(false);
+            let prefix = if is_error { "⚙ ✗" } else { "⚙" };
+            let summary = match detail {
+                Some(d) => format!("{prefix} {name}: {d}"),
+                None => format!("{prefix} {name}"),
+            };
+            results.push((summary, FirehoseMsgKind::ToolUse));
+        }
+        "result" => {
+            let cost = val
+                .get("cost_usd")
+                .or_else(|| val.get("costUsd"))
+                .and_then(|v| v.as_f64());
+            let duration = val
+                .get("duration_secs")
+                .or_else(|| val.get("durationMs"))
+                .and_then(|v| v.as_f64());
+            let mut parts = vec!["✓ session complete".to_string()];
+            if let Some(c) = cost {
+                parts.push(format!("${c:.4}"));
+            }
+            if let Some(d) = duration {
+                if d > 1000.0 {
+                    parts.push(format!("{:.0}s", d / 1000.0));
+                } else {
+                    parts.push(format!("{d:.1}s"));
+                }
+            }
+            results.push((parts.join(" "), FirehoseMsgKind::System));
+        }
+        "system" => {
+            if let Some(msg) = val
+                .get("message")
+                .and_then(|v| v.as_str())
+                .or_else(|| val.get("subtype").and_then(|v| v.as_str()))
+            {
+                results.push((format!("⌁ {msg}"), FirehoseMsgKind::System));
+            }
+        }
+        _ => {}
+    }
+    results
+}
+
+fn parse_firehose_content_blocks(
+    content: &[serde_json::Value],
+    results: &mut Vec<(String, FirehoseMsgKind)>,
+) {
+    for block in content {
+        let block_type = block.get("type").and_then(|v| v.as_str()).unwrap_or("");
+        match block_type {
+            "text" => {
+                if let Some(text) = block.get("text").and_then(|v| v.as_str()) {
+                    let trimmed = text.trim();
+                    if !trimmed.is_empty() {
+                        let snippet = if trimmed.len() > 200 {
+                            format!("{}…", &trimmed[..trimmed.floor_char_boundary(200)])
+                        } else {
+                            trimmed.to_string()
+                        };
+                        results.push((snippet, FirehoseMsgKind::Text));
+                    }
+                }
+            }
+            "tool_use" => {
+                let name = block.get("name").and_then(|v| v.as_str()).unwrap_or("tool");
+                let detail = firehose_tool_detail(name, block);
+                let summary = match detail {
+                    Some(d) => format!("⚙ {name}: {d}"),
+                    None => format!("⚙ {name}"),
+                };
+                results.push((summary, FirehoseMsgKind::ToolUse));
+            }
+            _ => {}
+        }
+    }
+}
+
+fn firehose_tool_detail(name: &str, block: &serde_json::Value) -> Option<String> {
+    let input = block.get("input");
+    match name {
+        "Bash" | "bash" => input
+            .and_then(|i| i.get("command"))
+            .and_then(|v| v.as_str())
+            .map(|c| {
+                let c = c.trim();
+                if c.len() > 80 {
+                    format!("{}…", &c[..c.floor_char_boundary(80)])
+                } else {
+                    c.to_string()
+                }
+            }),
+        "Read" | "Write" | "Edit" => input
+            .and_then(|i| i.get("file_path"))
+            .and_then(|v| v.as_str())
+            .map(|p| p.to_string()),
+        "Grep" | "Glob" => input
+            .and_then(|i| i.get("pattern"))
+            .and_then(|v| v.as_str())
+            .map(|p| p.to_string()),
+        _ => None,
+    }
+}
+
 /// Returns the file at `filename` within the given archive directory, if it exists.
 /// Falls back to common alternative names (e.g. output.log → output.txt).
 fn find_archive_file(archive_dir: &std::path::Path, filename: &str) -> Option<std::path::PathBuf> {
@@ -15602,6 +15756,8 @@ mod firehose_tests {
                 task_id: "t".to_string(),
                 text: format!("line {i}"),
                 color_idx: 0,
+                timestamp: "00:00:00".to_string(),
+                kind: FirehoseMsgKind::Text,
             });
         }
         if app.firehose.lines.len() > FIREHOSE_MAX_LINES {

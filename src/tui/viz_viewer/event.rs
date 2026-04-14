@@ -1900,6 +1900,17 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
                     app.output_pane.active_agent_id = Some(agent_id);
                     app.right_panel_tab = RightPanelTab::Output;
                 }
+            } else if app.right_panel_tab == RightPanelTab::Firehose {
+                if let Some(fl) = app.firehose.lines.get(app.firehose.selected) {
+                    let task_id = fl.task_id.clone();
+                    if !task_id.is_empty() {
+                        if let Some(idx) = app.task_order.iter().position(|id| *id == task_id) {
+                            app.selected_task_idx = Some(idx);
+                        }
+                        app.load_hud_detail_for_task(&task_id);
+                        app.right_panel_tab = RightPanelTab::Detail;
+                    }
+                }
             } else if app.right_panel_tab == RightPanelTab::Output && !app.nav_stack.is_empty() {
                 // Drill-down from Output: push AgentDetail, go to task Detail
                 if let Some(ref agent_id) = app.output_pane.active_agent_id.clone() {
@@ -2247,6 +2258,7 @@ fn right_panel_scroll_up(app: &mut VizApp, amount: usize) {
         }
         RightPanelTab::Firehose => {
             app.firehose.auto_tail = false;
+            app.firehose.selected = app.firehose.selected.saturating_sub(amount);
             app.firehose.scroll = app.firehose.scroll.saturating_sub(amount);
         }
         RightPanelTab::Output => {
@@ -2309,6 +2321,8 @@ fn right_panel_scroll_down(app: &mut VizApp, amount: usize) {
             }
         }
         RightPanelTab::Firehose => {
+            let max_sel = app.firehose.lines.len().saturating_sub(1);
+            app.firehose.selected = (app.firehose.selected + amount).min(max_sel);
             app.firehose.scroll += amount;
             let max = app
                 .firehose
@@ -2387,6 +2401,7 @@ fn right_panel_scroll_to_top(app: &mut VizApp) {
         RightPanelTab::Firehose => {
             app.firehose.auto_tail = false;
             app.firehose.scroll = 0;
+            app.firehose.selected = 0;
         }
         RightPanelTab::Output => {
             if let Some(ref agent_id) = app.output_pane.active_agent_id.clone() {
@@ -2441,6 +2456,7 @@ fn right_panel_scroll_to_bottom(app: &mut VizApp) {
         RightPanelTab::Firehose => {
             app.firehose.auto_tail = true;
             app.firehose.scroll = usize::MAX;
+            app.firehose.selected = app.firehose.lines.len().saturating_sub(1);
         }
         RightPanelTab::Output => {
             if let Some(ref agent_id) = app.output_pane.active_agent_id.clone() {

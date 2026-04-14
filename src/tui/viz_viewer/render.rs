@@ -8,8 +8,8 @@ use unicode_width::UnicodeWidthStr;
 
 use super::state::{
     ActivityEventKind, ChoiceDialogState, ConfigEditKind, ConfigSection, ConfirmAction,
-    ControlPanelFocus, CoordinatorPlusHit, CoordinatorTabHit, EndpointTestStatus, FocusedPanel,
-    InputMode, LayoutMode, ResponsiveBreakpoint, RightPanelTab, ServiceHealthLevel,
+    ControlPanelFocus, CoordinatorPlusHit, CoordinatorTabHit, EndpointTestStatus, FirehoseMsgKind,
+    FocusedPanel, InputMode, LayoutMode, ResponsiveBreakpoint, RightPanelTab, ServiceHealthLevel,
     SinglePanelView, SortMode, TabBarEntryKind, TaskFormField, TaskFormState, TextPromptAction,
     ToastSeverity, VitalsStaleness, VizApp, WAVE_BOLT, WAVE_NUM_BOLTS, extract_section_name,
     format_duration_compact, format_relative_time, spinner_wave_pos, vitals_staleness_color,
@@ -4744,6 +4744,7 @@ const FIREHOSE_COLORS: [Color; 8] = [
 ];
 
 /// Draw the Firehose tab content (panel 8) — merged stream of all agent output.
+/// Shows human-readable messages with timestamps, task IDs, and word-wrapping.
 fn draw_firehose_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     if app.firehose.lines.is_empty() {
         let active_count = app
@@ -4768,18 +4769,27 @@ fn draw_firehose_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
                 },
                 Style::default().fg(Color::DarkGray),
             )),
+            Line::from(""),
+            Line::from(Span::styled(
+                "↑/↓ navigate  Enter jump to task  G bottom",
+                Style::default().fg(Color::DarkGray),
+            )),
         ]);
         frame.render_widget(msg, area);
         return;
     }
 
-    let viewport_h = area.height.saturating_sub(1) as usize; // 1 line for header
+    let viewport_h = area.height.saturating_sub(1) as usize;
     let width = area.width as usize;
     if viewport_h == 0 || width < 4 {
         return;
     }
 
-    // Header line: active agent count + total lines.
+    let num_entries = app.firehose.lines.len();
+    if app.firehose.selected >= num_entries {
+        app.firehose.selected = num_entries.saturating_sub(1);
+    }
+
     let active_count = app
         .agent_monitor
         .agents
@@ -4794,10 +4804,11 @@ fn draw_firehose_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
-            format!(
-                "  {active_count} active  {} lines",
-                app.firehose.lines.len()
-            ),
+            format!("  {active_count} active  {num_entries} entries"),
+            Style::default().fg(Color::DarkGray),
+        ),
+        Span::styled(
+            "  ↑↓ select  Enter→task",
             Style::default().fg(Color::DarkGray),
         ),
     ]);
@@ -4811,58 +4822,122 @@ fn draw_firehose_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
 
     frame.render_widget(Paragraph::new(vec![header]), header_area);
 
-    // Build rendered lines with color-coded prefix.
-    let mut rendered: Vec<Line> = Vec::with_capacity(app.firehose.lines.len());
-    for fl in &app.firehose.lines {
+    let mut rendered: Vec<(usize, Line)> = Vec::new();
+
+    for (entry_idx, fl) in app.firehose.lines.iter().enumerate() {
         let color = FIREHOSE_COLORS[fl.color_idx % FIREHOSE_COLORS.len()];
-        let short_agent = if fl.agent_id.len() > 10 {
-            &fl.agent_id[fl.agent_id.len().saturating_sub(8)..]
-        } else {
-            &fl.agent_id
-        };
+        let is_selected = entry_idx == app.firehose.selected;
+
         let short_task = if fl.task_id.len() > 20 {
-            &fl.task_id[..fl.task_id.floor_char_boundary(20)]
+            format!("{}…", &fl.task_id[..fl.task_id.floor_char_boundary(19)])
         } else {
-            &fl.task_id
+            fl.task_id.clone()
         };
-        let prefix = format!("[{short_agent} {short_task}] ");
-        let text_budget = width.saturating_sub(prefix.len());
-        let display_text = if fl.text.len() > text_budget && text_budget > 3 {
-            format!(
-                "{}…",
-                &fl.text[..fl.text.floor_char_boundary(text_budget.saturating_sub(1))]
-            )
+
+        let prefix = format!("[{}] {}: ", fl.timestamp, short_task);
+        let prefix_len = prefix.len();
+
+        let msg_color = match fl.kind {
+            FirehoseMsgKind::Text => Color::White,
+            FirehoseMsgKind::ToolUse => Color::Yellow,
+            FirehoseMsgKind::System => Color::DarkGray,
+        };
+
+        let text_budget = width.saturating_sub(prefix_len);
+        if text_budget < 4 {
+            let display = if fl.text.len() > text_budget && text_budget > 1 {
+                format!(
+                    "{}…",
+                    &fl.text[..fl.text.floor_char_boundary(text_budget.saturating_sub(1))]
+                )
+            } else {
+                fl.text.clone()
+            };
+            let mut line = Line::from(vec![
+                Span::styled(
+                    prefix,
+                    Style::default().fg(color).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(display, Style::default().fg(msg_color)),
+            ]);
+            if is_selected {
+                line = line.style(Style::default().bg(Color::DarkGray));
+            }
+            rendered.push((entry_idx, line));
         } else {
-            fl.text.clone()
-        };
-        rendered.push(Line::from(vec![
-            Span::styled(
-                prefix,
-                Style::default().fg(color).add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(display_text),
-        ]));
+            let wrap_lines = firehose_word_wrap(&fl.text, text_budget);
+            for (wrap_idx, wrap_line) in wrap_lines.iter().enumerate() {
+                let line = if wrap_idx == 0 {
+                    Line::from(vec![
+                        Span::styled(
+                            prefix.clone(),
+                            Style::default().fg(color).add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(wrap_line.clone(), Style::default().fg(msg_color)),
+                    ])
+                } else {
+                    let indent = " ".repeat(prefix_len);
+                    Line::from(vec![
+                        Span::raw(indent),
+                        Span::styled(wrap_line.clone(), Style::default().fg(msg_color)),
+                    ])
+                };
+                let line = if is_selected {
+                    line.style(Style::default().bg(Color::DarkGray))
+                } else {
+                    line
+                };
+                rendered.push((entry_idx, line));
+            }
+        }
     }
 
     let total_lines = rendered.len();
     app.firehose.total_rendered_lines = total_lines;
     app.firehose.viewport_height = viewport_h;
 
-    // Clamp scroll.
     let max_scroll = total_lines.saturating_sub(viewport_h);
     let scroll = app.firehose.scroll.min(max_scroll);
     app.firehose.scroll = scroll;
 
     let end = (scroll + viewport_h).min(total_lines);
-    let visible: Vec<Line> = rendered[scroll..end].to_vec();
+    let visible: Vec<Line> = rendered[scroll..end]
+        .iter()
+        .map(|(_, l)| l.clone())
+        .collect();
 
     let paragraph = Paragraph::new(visible);
     frame.render_widget(paragraph, content_area);
 
-    // Scrollbar.
     if total_lines > viewport_h && app.panel_scrollbar_visible() {
         draw_panel_scrollbar(frame, app, content_area, max_scroll, scroll);
     }
+}
+
+fn firehose_word_wrap(text: &str, max_width: usize) -> Vec<String> {
+    if max_width == 0 || text.len() <= max_width {
+        return vec![text.to_string()];
+    }
+    let mut lines = Vec::new();
+    let mut remaining = text;
+    while !remaining.is_empty() {
+        if remaining.len() <= max_width {
+            lines.push(remaining.to_string());
+            break;
+        }
+        let boundary = remaining.floor_char_boundary(max_width);
+        let break_at = remaining[..boundary]
+            .rfind(' ')
+            .map(|pos| pos + 1)
+            .unwrap_or(boundary);
+        let break_at = if break_at == 0 { boundary } else { break_at };
+        lines.push(remaining[..break_at].trim_end().to_string());
+        remaining = remaining[break_at..].trim_start();
+    }
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+    lines
 }
 
 /// Draw the Messages tab content (panel 3) — message queue for selected task.
