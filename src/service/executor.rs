@@ -197,31 +197,32 @@ Use `wg add` to create what comes next.\n";
 pub const AUTOPOIETIC_GUIDANCE: &str = "\
 ## Task Decomposition
 
-You are encouraged to create new tasks as you discover work. \
-The coordinator will dispatch them automatically.
+Fanout is a tool, not a default. Always attempt direct implementation first. \
+The coordinator will dispatch any subtasks you create automatically.
 
-### When to decompose vs implement directly
+### DEFAULT: Implement directly
+Start by doing the work yourself. Only switch to decomposition after assessing complexity.
 
-**Difficulty is not the same as decomposability.** If a task is hard but single-scope, \
-attempt it directly — do not decompose just because it seems challenging.
-
-Decompose when the task has **genuinely independent parts** that benefit from parallel work:
-
-1. **Decompose** the task into sub-tasks that would produce the same output
-2. **Create** those sub-tasks using `wg add` with `--after {{task_id}}` dependencies
-3. **Let** those sub-tasks run and complete (the coordinator dispatches them)
-4. **Complete** your parent task based on the sub-task results
-
-### Good reasons to decompose
-- Your task has 3+ independent parts that could run in parallel
+### Fan out when:
+- 3+ independent files/components need changes that can genuinely run in parallel
+- You hit context pressure: re-reading files you already read, losing track of changes
+- The task has natural parallelism (e.g., 3 separate test files, N independent modules)
 - You discover a bug, missing doc, or needed refactor outside your scope
-- A prerequisite doesn't exist yet and needs to be created first
-- Your task is too large for a single agent session
 
-### Bad reasons to decompose (implement directly instead)
-- The task seems hard or unfamiliar — attempt it first
-- You're unsure if you can satisfy verification — try and let verification judge
-- The constraints seem conflicting — try your best interpretation
+### Stay inline when:
+- The task is straightforward, even if it touches multiple files sequentially
+- Each step depends on the previous (sequential work doesn't parallelize)
+- Simple fixes, config changes, small features
+- The task is hard but single-scope — difficulty alone is NOT a reason to decompose
+- Decomposition overhead would exceed the work itself
+
+### If you decompose:
+- Each subtask MUST list its file scope — **NO two subtasks may modify the same file**
+- Subtask descriptions should include \"Implement directly — do not decompose further\"
+- ALWAYS include an integrator at join points: \
+`wg add 'Integrate' --after part-a,part-b`
+- ALWAYS use `--after {{task_id}}` for dependencies
+- Log your decision: `wg log {{task_id}} \"FANOUT_DECISION: decompose — <reason>\"`
 
 ### How to decompose
 - **Fan out parallel work**: \
@@ -442,28 +443,37 @@ pub fn build_decomposition_guidance(
             ));
         }
         TaskComplexity::MultiStep => {
-            parts.push(
+            parts.push(format!(
                 "This appears to be a **multi-step task**. Consider decomposing with dependencies.\n\
                  \n\
-                 ### When to decompose\n\
-                 Decompose when the task has **genuinely independent parts** that benefit from \
-                 parallel work. Difficulty alone is NOT a reason to decompose — if a task is \
-                 hard but single-scope, attempt it directly first.\n\
+                 ### DEFAULT: Attempt direct implementation first\n\
+                 Even for multi-step tasks, start by implementing directly. Fanout is a tool, not a \
+                 default — overkill fanout on manageable tasks wastes tokens and adds coordination friction.\n\
                  \n\
-                 If you do decompose:\n\
-                 1. **Decompose** the task into sub-tasks that would produce the same output\n\
-                 2. **Create** those sub-tasks using `wg add` with `--after {task_id}` dependencies\n\
-                 3. **Let** those sub-tasks run and complete (the coordinator dispatches them)\n\
-                 4. **Complete** your parent task based on the sub-task results\n\
+                 ### Fan out when:\n\
+                 - 3+ independent files/components need changes that can genuinely run in parallel\n\
+                 - You hit context pressure: re-reading files you already read, losing track of changes\n\
+                 - The task has natural parallelism (e.g., 3 separate test files, N independent modules)\n\
+                 - Your turn count exceeds 25 with no test progress\n\
                  \n\
-                 When creating subtasks, ALWAYS use `--after` to express dependencies. \
-                 Flat task lists without dependency edges are an anti-pattern — they run \
-                 in arbitrary order and produce race conditions.\n\
+                 ### Stay inline when:\n\
+                 - The task is straightforward, even if it touches multiple files sequentially\n\
+                 - Each step depends on the previous (sequential work doesn't parallelize)\n\
+                 - Simple fixes, config changes, small features\n\
+                 - The task is hard but single-scope — difficulty alone is NOT a reason to decompose\n\
+                 \n\
+                 ### If you decompose:\n\
+                 - Each subtask MUST list its file scope in the description — **NO two subtasks may modify the same file**\n\
+                 - Subtask descriptions should include \"Implement directly — do not decompose further\"\n\
+                 - Always include a verify/integration task at the end: \
+                 `wg add 'Integrate' --after part-a,part-b`\n\
+                 - ALWAYS use `--after` to express dependencies. \
+                 Flat task lists without dependency edges are an anti-pattern.\n\
+                 - Log your decision: `wg log {task_id} \"FANOUT_DECISION: decompose — <reason>\"`\n\
                  \n\
                  ### Decomposition Templates\n\
                  Choose the pattern that best fits your task:"
-                    .to_string(),
-            );
+            ));
             parts.push(DECOMP_TEMPLATE_PIPELINE.replace("{{task_id}}", task_id));
             parts.push(DECOMP_TEMPLATE_FAN_OUT.replace("{{task_id}}", task_id));
             parts.push(DECOMP_TEMPLATE_ITERATE.replace("{{task_id}}", task_id));
@@ -2920,8 +2930,8 @@ args = ["--custom-flag"]
             "Static guidance should NOT contain adaptive classification"
         );
         assert!(
-            prompt.contains("You are encouraged to create new tasks"),
-            "Static guidance should contain original AUTOPOIETIC_GUIDANCE text"
+            prompt.contains("Fanout is a tool, not a default"),
+            "Static guidance should contain AUTOPOIETIC_GUIDANCE text"
         );
     }
 

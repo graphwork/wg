@@ -688,18 +688,24 @@ fn build_essential_guide(workgraph_dir: &Path) -> String {
 
 ## Decision Framework: When to Decompose vs Implement
 
-### Implement Directly If:
-- Task is small and well-scoped
-- Touches ≤2-3 files
-- Single logical unit of work
-- No external dependencies or unknowns
+Fanout is a tool, not a default. Assess complexity first, then decide.
+
+### Stay inline (default) when:
+- Task is straightforward, even if it touches multiple files sequentially
+- Each step depends on the previous (sequential work doesn't parallelize)
+- Simple fixes, config changes, small features
 - Task seems hard but is single-scope — difficulty alone is NOT a reason to decompose
 
-### Decompose (create subtasks) If:
-- Task has 3+ genuinely independent parts that benefit from parallel work
-- Involves multiple modules/components
-- Would take multiple distinct phases
-- Discovers bugs or missing prereqs outside scope
+### Fan out when:
+- 3+ independent files/components need changes that can genuinely run in parallel
+- You hit context pressure (re-reading files, losing track of changes)
+- Natural parallelism exists (e.g., 3 separate test files, N independent modules)
+- Discovered bugs or missing prereqs outside your scope
+
+### If you decompose:
+- Each subtask must list its file scope — NO two subtasks may modify the same file
+- Include "Implement directly — do not decompose further" in subtask descriptions
+- Always include an integrator task at join points
 
 ## Decomposition Pattern Templates
 
