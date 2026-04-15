@@ -47,7 +47,20 @@ pub fn run(
     );
     let system = system_prompt.unwrap_or(&default_system);
 
-    let output_log = workgraph_dir.join("nex-session.ndjson");
+    // Per-session timestamped log path — every invocation of `wg nex`
+    // leaves its own file under `.workgraph/nex-sessions/` so history
+    // is preserved and sessions don't clobber each other. Path format:
+    // `.workgraph/nex-sessions/<rfc3339-utc>.ndjson`
+    let output_log = {
+        let sessions_dir = workgraph_dir.join("nex-sessions");
+        let _ = std::fs::create_dir_all(&sessions_dir);
+        let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
+        sessions_dir.join(format!("{}.ndjson", stamp))
+    };
+    eprintln!(
+        "\x1b[2m[wg nex] session log → {}\x1b[0m",
+        output_log.display()
+    );
 
     let client = create_provider_ext(workgraph_dir, &effective_model, None, endpoint, None)?;
 

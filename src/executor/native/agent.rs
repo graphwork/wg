@@ -1414,12 +1414,7 @@ impl AgentLoop {
 
     /// Log the end of a REPL session with cumulative stats and the
     /// exit reason.
-    fn log_session_end(
-        &self,
-        turns: usize,
-        reason: &'static str,
-        total_usage: &Usage,
-    ) {
+    fn log_session_end(&self, turns: usize, reason: &'static str, total_usage: &Usage) {
         let event = LogEvent::SessionEnd {
             timestamp: chrono::Utc::now().to_rfc3339(),
             turns,
@@ -1527,6 +1522,16 @@ impl AgentLoop {
         // Drives the three-tier ladder: L1 soft → L2 hard → L3 summarize.
         let mut nex_noop_streak: u32 = 0;
         let mut nex_l3_fired: bool = false;
+        // Why the REPL is exiting — recorded in the SessionEnd log event.
+        // The initial value is a defensive fallback; in practice every
+        // `break` from the main loop overwrites it before the
+        // `log_session_end` call at the end.
+        #[allow(unused_assignments)]
+        let mut session_exit_reason: &'static str = "eof";
+
+        // Emit the session-start event as the first line of the log
+        // file so the trace has a clear beginning marker.
+        self.log_session_start(None);
 
         // Rustyline editor for line editing + history.
         let mut editor = DefaultEditor::new().context("failed to initialize rustyline editor")?;
@@ -1570,6 +1575,7 @@ impl AgentLoop {
                     let trimmed = line.trim().to_string();
                     if trimmed.is_empty() {
                         let _ = editor.save_history(&history_path);
+                        self.log_session_end(0, "empty_first_input", &total_usage);
                         return Ok(AgentResult {
                             final_text: String::new(),
                             turns: 0,
@@ -1578,10 +1584,12 @@ impl AgentLoop {
                         });
                     }
                     let _ = editor.add_history_entry(&trimmed);
+                    self.log_user_input(&trimmed);
                     trimmed
                 }
                 None => {
                     let _ = editor.save_history(&history_path);
+                    self.log_session_end(0, "eof", &total_usage);
                     return Ok(AgentResult {
                         final_text: String::new(),
                         turns: 0,
@@ -1632,6 +1640,7 @@ impl AgentLoop {
                     "\n\x1b[33m[nex] Max turns ({}) reached.\x1b[0m",
                     self.max_turns
                 );
+                session_exit_reason = "max_turns";
                 break;
             }
 
@@ -1650,12 +1659,16 @@ impl AgentLoop {
                             continue;
                         }
                         let _ = editor.add_history_entry(&trimmed);
+                        self.log_user_input(&trimmed);
                         if trimmed.starts_with('/') {
                             match self
                                 .handle_nex_slash_command(&trimmed, &mut messages, &total_usage)
                                 .await
                             {
-                                NexSlashResult::Quit => break,
+                                NexSlashResult::Quit => {
+                                    session_exit_reason = "user_quit";
+                                    break;
+                                }
                                 NexSlashResult::Continue => continue,
                                 NexSlashResult::NotASlashCommand => {
                                     messages.push(Message {
@@ -1671,7 +1684,10 @@ impl AgentLoop {
                             });
                         }
                     }
-                    None => break,
+                    None => {
+                        session_exit_reason = "eof";
+                        break;
+                    }
                 }
             }
 
@@ -1800,12 +1816,16 @@ impl AgentLoop {
                                 continue;
                             }
                             let _ = editor.add_history_entry(&trimmed);
+                            self.log_user_input(&trimmed);
                             if trimmed.starts_with('/') {
                                 match self
                                     .handle_nex_slash_command(&trimmed, &mut messages, &total_usage)
                                     .await
                                 {
-                                    NexSlashResult::Quit => break,
+                                    NexSlashResult::Quit => {
+                                        session_exit_reason = "user_quit";
+                                        break;
+                                    }
                                     NexSlashResult::Continue => continue,
                                     NexSlashResult::NotASlashCommand => {
                                         messages.push(Message {
@@ -1821,7 +1841,10 @@ impl AgentLoop {
                                 });
                             }
                         }
-                        None => break,
+                        None => {
+                            session_exit_reason = "eof";
+                            break;
+                        }
                     }
                 }
                 Some(StopReason::ToolUse) => {
@@ -1946,6 +1969,14 @@ impl AgentLoop {
                             is_error: output.is_error,
                         });
 
+                        // Persist the tool call to the session NDJSON
+                        // log. The FULL raw output is written before
+                        // channeling, so the on-disk session log has
+                        // complete receipts for every tool call even
+                        // when the in-memory message vec only sees the
+                        // channeled handle.
+                        self.log_tool_call(name, input, &output.content, output.is_error);
+
                         // Channel oversized outputs to disk before they
                         // enter the message vec (L1). Without this, a
                         // single 16 KB file read can saturate a 32k
@@ -2040,6 +2071,7 @@ impl AgentLoop {
                     eprintln!(
                         "\x1b[33m[nex] Context limit reached. Please start a new session.\x1b[0m"
                     );
+                    session_exit_reason = "context_limit";
                     break;
                 }
             }
@@ -2063,6 +2095,17 @@ impl AgentLoop {
                     .join("")
             })
             .unwrap_or_default();
+
+        // Emit the session-end marker and the final result into the
+        // session log so the on-disk trace has a clear terminator.
+        self.log_session_end(turns, session_exit_reason, &total_usage);
+        let result_preview = AgentResult {
+            final_text: final_text.clone(),
+            turns,
+            total_usage: total_usage.clone(),
+            tool_calls: tool_calls.clone(),
+        };
+        self.log_result(&result_preview);
 
         Ok(AgentResult {
             final_text,
