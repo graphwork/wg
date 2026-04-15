@@ -1894,25 +1894,31 @@ impl AgentLoop {
                         })
                         .collect();
 
-                    if self.nex_verbose {
-                        for (_, name, input) in &tool_use_blocks {
-                            let input_summary = if let Some(cmd) =
-                                input.get("command").and_then(|v| v.as_str())
-                            {
-                                format!("command={}", truncate_for_display(cmd, 80))
-                            } else if let Some(path) =
-                                input.get("file_path").and_then(|v| v.as_str())
-                            {
-                                format!("path={}", path)
-                            } else if let Some(pat) = input.get("pattern").and_then(|v| v.as_str())
-                            {
-                                format!("pattern={}", truncate_for_display(pat, 60))
-                            } else {
-                                let s = input.to_string();
-                                truncate_for_display(&s, 80).to_string()
-                            };
-                            eprintln!("\x1b[2m  > {}({})\x1b[0m", name, input_summary);
-                        }
+                    // Tool-call previews are always shown (even in the
+                    // default non-verbose mode) so the human can follow
+                    // what the agent is doing — which command was run,
+                    // which file was read, etc. Verbose mode adds
+                    // compaction/token diagnostics on top of this, but
+                    // the per-call action trace is the minimum "I can
+                    // see what's happening" UX.
+                    for (_, name, input) in &tool_use_blocks {
+                        let input_summary = if let Some(cmd) =
+                            input.get("command").and_then(|v| v.as_str())
+                        {
+                            format!("command={}", truncate_for_display(cmd, 120))
+                        } else if let Some(path) = input.get("file_path").and_then(|v| v.as_str()) {
+                            format!("path={}", path)
+                        } else if let Some(pat) = input.get("pattern").and_then(|v| v.as_str()) {
+                            format!("pattern={}", truncate_for_display(pat, 80))
+                        } else if let Some(q) = input.get("query").and_then(|v| v.as_str()) {
+                            format!("query={}", truncate_for_display(q, 80))
+                        } else if let Some(url) = input.get("url").and_then(|v| v.as_str()) {
+                            format!("url={}", url)
+                        } else {
+                            let s = input.to_string();
+                            truncate_for_display(&s, 120).to_string()
+                        };
+                        eprintln!("\x1b[2;36m> {}({})\x1b[0m", name, input_summary);
                     }
 
                     let mut parse_error_results = Vec::new();
@@ -2027,21 +2033,17 @@ impl AgentLoop {
 
                     let mut results = Vec::new();
                     for (_, id, name, input, output, _) in &all_results {
-                        // Always surface tool errors — they are
-                        // actionable signal even in quiet mode. Success
-                        // lines are verbose-only.
+                        // Always surface actual tool output content so
+                        // the human can follow what the agent received
+                        // and verify artifacts line up with
+                        // expectations. Errors use a distinct marker;
+                        // successes are rendered as indented output
+                        // with a sensible line/char cap.
                         if output.is_error {
-                            eprintln!(
-                                "\x1b[2m  x {} error: {}\x1b[0m",
-                                name,
-                                truncate_for_display(&output.content, 100)
-                            );
-                        } else if self.nex_verbose {
-                            eprintln!(
-                                "\x1b[2m  + {} ({} chars)\x1b[0m",
-                                name,
-                                output.content.len()
-                            );
+                            eprintln!("\x1b[31m× {} error\x1b[0m", name);
+                            print_indented_output(&output.content, "\x1b[31m  ", "\x1b[0m");
+                        } else {
+                            print_indented_output(&output.content, "\x1b[2m  ", "\x1b[0m");
                         }
 
                         tool_calls.push(ToolCallRecord {
@@ -2201,7 +2203,53 @@ impl AgentLoop {
 }
 
 fn truncate_for_display(s: &str, max: usize) -> &str {
-    if s.len() <= max { s } else { &s[..max] }
+    if s.len() <= max {
+        s
+    } else {
+        // Walk back to the nearest char boundary so we don't slice a
+        // multi-byte UTF-8 sequence. `floor_char_boundary` is nightly,
+        // so do it by hand.
+        let mut end = max;
+        while end > 0 && !s.is_char_boundary(end) {
+            end -= 1;
+        }
+        &s[..end]
+    }
+}
+
+/// Render a tool output to stderr under the per-call trace line with
+/// uniform indent and sensible bounds — caps at both a byte limit and
+/// a line-count limit so a multi-megabyte file read doesn't saturate
+/// the terminal. `prefix` is printed before every output line (use for
+/// indent + ANSI color), `suffix` after (use to close the color span).
+fn print_indented_output(content: &str, prefix: &str, suffix: &str) {
+    const MAX_LINES: usize = 20;
+    const MAX_BYTES: usize = 1600;
+
+    let truncated = truncate_for_display(content, MAX_BYTES);
+    let mut line_count = 0usize;
+    for line in truncated.lines() {
+        if line_count >= MAX_LINES {
+            break;
+        }
+        eprintln!("{}{}{}", prefix, line, suffix);
+        line_count += 1;
+    }
+
+    let total_lines = content.lines().count();
+    let total_bytes = content.len();
+    let shown_lines = line_count;
+    let shown_bytes = truncated.len();
+    let line_overflow = total_lines > shown_lines;
+    let byte_overflow = total_bytes > shown_bytes;
+    if line_overflow || byte_overflow {
+        let extra_lines = total_lines.saturating_sub(shown_lines);
+        let extra_bytes = total_bytes.saturating_sub(shown_bytes);
+        eprintln!(
+            "{}… (+{} lines, +{} bytes truncated){}",
+            prefix, extra_lines, extra_bytes, suffix
+        );
+    }
 }
 
 /// Result of processing a nex REPL slash command.
