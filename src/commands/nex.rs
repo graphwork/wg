@@ -21,6 +21,7 @@ pub fn run(
     system_prompt: Option<&str>,
     message: Option<&str>,
     max_turns: usize,
+    chatty: bool,
     verbose: bool,
 ) -> Result<()> {
     let config = Config::load_or_default(workgraph_dir);
@@ -79,6 +80,7 @@ pub fn run(
         supports_tools,
     )
     .with_nex_verbose(verbose)
+    .with_nex_chatty(chatty || verbose)
     .with_nex_repl_mode(true);
 
     if let Some(entry) = config.registry_lookup(&effective_model) {

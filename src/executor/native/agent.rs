@@ -107,13 +107,17 @@ pub struct AgentLoop {
     /// be exploded by a single large tool call. The agent retrieves full
     /// content via `bash` (cat/head/tail/sed/grep) on the handle path.
     tool_output_channeler: Option<super::channel::ToolOutputChanneler>,
-    /// REPL verbose mode. When false (default), `run_interactive` suppresses
-    /// tool-call previews, tool-result size lines, compaction chatter, and
-    /// other infrastructure telemetry — leaving only assistant text, the
-    /// prompt, errors, and the exit summary. Machine-testing flows set this
-    /// to true via the `--verbose` CLI flag to recover full console output.
-    /// The on-disk NDJSON session log is unaffected and always complete.
+    /// REPL verbose mode. When true, emits compaction diagnostics, token
+    /// accounting, session-log-path banner, and other infrastructure
+    /// telemetry on top of the tool-call action trace. Implies chatty
+    /// mode. Defaults to false. Toggled by `-v` / `--verbose` on `wg nex`.
     nex_verbose: bool,
+    /// REPL chatty mode. When true, the full tool output content is
+    /// echoed under each tool-call line (as the model sees it, capped
+    /// at 20 lines / 1600 bytes). When false (default), only a one-line
+    /// summary per call is shown. Implied by `nex_verbose`. Toggled by
+    /// `-c` / `--chatty` on `wg nex`.
+    nex_chatty: bool,
     /// REPL mode marker. When true, the agent is running inside an
     /// interactive nex REPL where stdout is the human's terminal and
     /// must stay sacred for assistant text. When false (the default,
@@ -281,14 +285,27 @@ impl AgentLoop {
             registry_entry: None,
             tool_output_channeler,
             nex_verbose: false,
+            nex_chatty: false,
             nex_repl_mode: false,
         }
     }
 
     /// Enable verbose REPL output in `run_interactive`.
     /// Defaults to quiet. Use `--verbose` / `-v` on `wg nex` to turn on.
+    /// Implies chatty mode.
     pub fn with_nex_verbose(mut self, verbose: bool) -> Self {
         self.nex_verbose = verbose;
+        if verbose {
+            self.nex_chatty = true;
+        }
+        self
+    }
+
+    /// Enable chatty REPL output — echo the full tool output content
+    /// under each tool-call line, as the model sees it. Defaults to
+    /// false. Use `--chatty` / `-c` on `wg nex` to turn on.
+    pub fn with_nex_chatty(mut self, chatty: bool) -> Self {
+        self.nex_chatty = chatty;
         self
     }
 
@@ -2033,17 +2050,36 @@ impl AgentLoop {
 
                     let mut results = Vec::new();
                     for (_, id, name, input, output, _) in &all_results {
-                        // Always surface actual tool output content so
-                        // the human can follow what the agent received
-                        // and verify artifacts line up with
-                        // expectations. Errors use a distinct marker;
-                        // successes are rendered as indented output
-                        // with a sensible line/char cap.
+                        // Default (non-chatty) mode shows a one-line
+                        // summary per tool call — enough to follow what
+                        // happened, not enough to flood the terminal.
+                        // Chatty mode (and verbose, which implies
+                        // chatty) dumps the full tool output exactly as
+                        // it enters the model's context, capped at
+                        // MAX_LINES / MAX_BYTES in print_indented_output.
+                        // Errors always get a visible distinguishing
+                        // marker and a compact excerpt even in default
+                        // mode — they're actionable signal.
                         if output.is_error {
-                            eprintln!("\x1b[31m× {} error\x1b[0m", name);
-                            print_indented_output(&output.content, "\x1b[31m  ", "\x1b[0m");
-                        } else {
+                            eprintln!(
+                                "\x1b[31m× {} error: {}\x1b[0m",
+                                name,
+                                summarize_tool_output(&output.content)
+                            );
+                            if self.nex_chatty {
+                                print_indented_output(&output.content, "\x1b[31m  ", "\x1b[0m");
+                            }
+                        } else if self.nex_chatty {
+                            eprintln!(
+                                "\x1b[2m  → {}\x1b[0m",
+                                summarize_tool_output(&output.content)
+                            );
                             print_indented_output(&output.content, "\x1b[2m  ", "\x1b[0m");
+                        } else {
+                            eprintln!(
+                                "\x1b[2m  → {}\x1b[0m",
+                                summarize_tool_output(&output.content)
+                            );
                         }
 
                         tool_calls.push(ToolCallRecord {
@@ -2214,6 +2250,56 @@ fn truncate_for_display(s: &str, max: usize) -> &str {
             end -= 1;
         }
         &s[..end]
+    }
+}
+
+/// Build a one-line summary of a tool output for the default
+/// (non-chatty) display mode. Goals:
+/// - short enough to fit on one terminal line
+/// - informative enough that the human doesn't need to go look at the
+///   session log for most routine calls
+/// - degrades gracefully for empty / single-line / multi-line outputs
+///
+/// For single-line outputs ≤ 120 bytes, echoes the whole thing. For
+/// multi-line or longer outputs, shows the first non-empty line
+/// (truncated) plus a `(N lines, M bytes)` suffix.
+fn summarize_tool_output(content: &str) -> String {
+    let total_bytes = content.len();
+    if total_bytes == 0 {
+        return "ok (empty)".to_string();
+    }
+    let first_line = content
+        .lines()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or("")
+        .trim();
+    let total_lines = content.lines().count();
+
+    const LINE_CAP: usize = 120;
+    let truncated_first = if first_line.len() > LINE_CAP {
+        let end = {
+            let mut e = LINE_CAP;
+            while e > 0 && !first_line.is_char_boundary(e) {
+                e -= 1;
+            }
+            e
+        };
+        format!("{}…", &first_line[..end])
+    } else {
+        first_line.to_string()
+    };
+
+    if total_lines <= 1 && total_bytes <= LINE_CAP {
+        if truncated_first.is_empty() {
+            format!("ok ({} bytes)", total_bytes)
+        } else {
+            truncated_first
+        }
+    } else {
+        format!(
+            "{} ({} lines, {} bytes)",
+            truncated_first, total_lines, total_bytes
+        )
     }
 }
 

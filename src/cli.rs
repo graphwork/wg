@@ -1797,10 +1797,19 @@ pub enum Commands {
         #[arg(long, default_value = "200")]
         max_turns: usize,
 
-        /// Verbose console output: show tool-call previews, result sizes,
-        /// compaction diagnostics, and the exit summary. Default is quiet
-        /// (only the prompt, assistant text, and errors). The on-disk
-        /// NDJSON session log is always complete regardless of this flag.
+        /// Chatty mode: echo the full tool output content under each
+        /// tool-call line, exactly as the model sees it (capped at
+        /// 20 lines / 1600 bytes per call). Default shows only a
+        /// one-line summary per call. Useful when actively following
+        /// an agent's actions.
+        #[arg(long, short = 'c')]
+        chatty: bool,
+
+        /// Verbose console output: implies `--chatty` and also emits
+        /// compaction diagnostics, token accounting, and the
+        /// session-log path banner. Useful for debugging the REPL
+        /// itself. The on-disk NDJSON session log is always complete
+        /// regardless of this flag.
         #[arg(long, short = 'v')]
         verbose: bool,
     },
