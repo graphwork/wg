@@ -103,6 +103,10 @@ enum Backend {
     Wikipedia,
     HackerNews,
     DdgHtml,
+    GitHub,
+    StackExchange,
+    CratesIo,
+    Arxiv,
 }
 
 impl Backend {
@@ -112,6 +116,10 @@ impl Backend {
             Backend::Wikipedia => "wikipedia_opensearch",
             Backend::HackerNews => "hn_algolia",
             Backend::DdgHtml => "duckduckgo_html",
+            Backend::GitHub => "github_search",
+            Backend::StackExchange => "stack_exchange",
+            Backend::CratesIo => "crates_io",
+            Backend::Arxiv => "arxiv",
         }
     }
 
@@ -119,17 +127,24 @@ impl Backend {
     /// the politeness floor. Chosen per backend based on stated limits
     /// and observed tolerance:
     ///
-    /// - Wikipedia: "be reasonable" — 500ms is very reasonable
-    /// - Google News RSS: unstated but historically generous
-    /// - HN Algolia: unstated, Algolia infra tolerates bursts
-    /// - DDG HTML: scraping, strictest — 2s between hits, still much
-    ///   faster than a human would click through
+    /// - Wikipedia / Google News RSS / HN Algolia: 500ms, generous
+    /// - DDG HTML: scraping, 2s
+    /// - GitHub search: 1s (60/hour unauth, circuit breaker catches
+    ///   sustained abuse; 1s is fine for interactive bursts)
+    /// - Stack Exchange: 500ms (300/day no-key is plenty for humans)
+    /// - crates.io: 1s (documented limits, requires UA)
+    /// - arxiv: 3.5s — their FAQ explicitly says "one request every
+    ///   3 seconds" and we respect it
     fn min_interval(self) -> Duration {
         match self {
             Backend::Wikipedia => Duration::from_millis(500),
             Backend::News => Duration::from_millis(500),
             Backend::HackerNews => Duration::from_millis(500),
             Backend::DdgHtml => Duration::from_millis(2000),
+            Backend::GitHub => Duration::from_millis(1000),
+            Backend::StackExchange => Duration::from_millis(500),
+            Backend::CratesIo => Duration::from_millis(1000),
+            Backend::Arxiv => Duration::from_millis(3500),
         }
     }
 
@@ -141,6 +156,10 @@ impl Backend {
             Backend::Wikipedia,
             Backend::News,
             Backend::HackerNews,
+            Backend::GitHub,
+            Backend::StackExchange,
+            Backend::CratesIo,
+            Backend::Arxiv,
             Backend::DdgHtml,
         ]
     }
@@ -506,6 +525,10 @@ async fn dispatch(
         Backend::Wikipedia => search_wikipedia(client, query).await,
         Backend::HackerNews => search_hacker_news(client, query).await,
         Backend::DdgHtml => search_ddg_html(client, query).await,
+        Backend::GitHub => search_github(client, query).await,
+        Backend::StackExchange => search_stack_exchange(client, query).await,
+        Backend::CratesIo => search_crates_io(client, query).await,
+        Backend::Arxiv => search_arxiv(client, query).await,
     }
 }
 
@@ -736,6 +759,322 @@ async fn search_hacker_news(
     }
 
     Ok(results)
+}
+
+// ─── Backend: GitHub search ─────────────────────────────────────────────
+
+async fn search_github(client: &reqwest::Client, query: &str) -> Result<Vec<SearchResult>, String> {
+    // GitHub search API: public endpoint, no auth needed, 60/hour
+    // unauthenticated per IP. Caps at per_page=100 but we take
+    // MAX_RESULTS. Stars-descending sort so we favor maintained
+    // repos. GitHub REQUIRES a descriptive User-Agent and will reject
+    // the request otherwise — http_get_text sends WG_USER_AGENT by
+    // default.
+    let url = format!(
+        "https://api.github.com/search/repositories?q={}&per_page={}&sort=stars&order=desc",
+        urlencoding::encode(query),
+        MAX_RESULTS
+    );
+    let body = http_get_text(client, &url, None).await?;
+
+    let v: serde_json::Value = serde_json::from_str(&body)
+        .map_err(|e| format!("GitHub response JSON parse failed: {}", e))?;
+    let items = v
+        .get("items")
+        .and_then(|h| h.as_array())
+        .ok_or_else(|| "GitHub response missing items array".to_string())?;
+
+    let mut results = Vec::new();
+    for item in items {
+        let full_name = item
+            .get("full_name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let url = item
+            .get("html_url")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        if full_name.is_empty() || url.is_empty() {
+            continue;
+        }
+        let description = item
+            .get("description")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let stars = item
+            .get("stargazers_count")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
+        let language = item.get("language").and_then(|v| v.as_str()).unwrap_or("");
+        let snippet = if language.is_empty() {
+            format!("★{} — {}", stars, description)
+        } else {
+            format!("★{} · {} — {}", stars, language, description)
+        };
+        results.push(SearchResult {
+            title: full_name,
+            snippet: truncate_snippet(&snippet),
+            url,
+            sources: Vec::new(),
+        });
+        if results.len() >= MAX_RESULTS {
+            break;
+        }
+    }
+
+    Ok(results)
+}
+
+// ─── Backend: Stack Exchange search (Stack Overflow) ───────────────────
+
+async fn search_stack_exchange(
+    client: &reqwest::Client,
+    query: &str,
+) -> Result<Vec<SearchResult>, String> {
+    // Stack Exchange API: 300 requests/day no-key per IP, more than
+    // enough for a single user. Scoped to stackoverflow.com (the
+    // most useful for dev queries). Sort by relevance.
+    let url = format!(
+        "https://api.stackexchange.com/2.3/search/advanced?q={}&site=stackoverflow&pagesize={}&order=desc&sort=relevance",
+        urlencoding::encode(query),
+        MAX_RESULTS
+    );
+    let body = http_get_text(client, &url, None).await?;
+
+    let v: serde_json::Value = serde_json::from_str(&body)
+        .map_err(|e| format!("Stack Exchange response JSON parse failed: {}", e))?;
+    let items = v
+        .get("items")
+        .and_then(|h| h.as_array())
+        .ok_or_else(|| "Stack Exchange response missing items array".to_string())?;
+
+    let mut results = Vec::new();
+    for item in items {
+        // Titles are HTML-escaped in the API response.
+        let title = item
+            .get("title")
+            .and_then(|v| v.as_str())
+            .map(|t| html_escape::decode_html_entities(t).to_string())
+            .unwrap_or_default();
+        let url = item
+            .get("link")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        if title.is_empty() || url.is_empty() {
+            continue;
+        }
+        let score = item.get("score").and_then(|v| v.as_i64()).unwrap_or(0);
+        let answer_count = item
+            .get("answer_count")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
+        let is_answered = item
+            .get("is_answered")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let tags: Vec<String> = item
+            .get("tags")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|t| t.as_str())
+                    .take(5)
+                    .map(String::from)
+                    .collect()
+            })
+            .unwrap_or_default();
+        let snippet = format!(
+            "score {}, {} answer{}{} [{}]",
+            score,
+            answer_count,
+            if answer_count == 1 { "" } else { "s" },
+            if is_answered { ", answered" } else { "" },
+            tags.join(", ")
+        );
+        results.push(SearchResult {
+            title,
+            snippet: truncate_snippet(&snippet),
+            url,
+            sources: Vec::new(),
+        });
+        if results.len() >= MAX_RESULTS {
+            break;
+        }
+    }
+
+    Ok(results)
+}
+
+// ─── Backend: crates.io ────────────────────────────────────────────────
+
+async fn search_crates_io(
+    client: &reqwest::Client,
+    query: &str,
+) -> Result<Vec<SearchResult>, String> {
+    // crates.io search: documented rate limits (we're nowhere close),
+    // requires User-Agent with contact info. Returns top crates by
+    // relevance to the query.
+    let url = format!(
+        "https://crates.io/api/v1/crates?q={}&per_page={}",
+        urlencoding::encode(query),
+        MAX_RESULTS
+    );
+    let body = http_get_text(client, &url, None).await?;
+
+    let v: serde_json::Value = serde_json::from_str(&body)
+        .map_err(|e| format!("crates.io response JSON parse failed: {}", e))?;
+    let crates = v
+        .get("crates")
+        .and_then(|h| h.as_array())
+        .ok_or_else(|| "crates.io response missing crates array".to_string())?;
+
+    let mut results = Vec::new();
+    for c in crates {
+        let name = c
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        if name.is_empty() {
+            continue;
+        }
+        let description = c
+            .get("description")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let downloads = c.get("downloads").and_then(|v| v.as_i64()).unwrap_or(0);
+        let max_version = c.get("max_version").and_then(|v| v.as_str()).unwrap_or("");
+        let snippet = if max_version.is_empty() {
+            format!("{} downloads — {}", downloads, description)
+        } else {
+            format!(
+                "v{} · {} downloads — {}",
+                max_version, downloads, description
+            )
+        };
+        let url = format!("https://crates.io/crates/{}", name);
+        results.push(SearchResult {
+            title: name,
+            snippet: truncate_snippet(&snippet),
+            url,
+            sources: Vec::new(),
+        });
+        if results.len() >= MAX_RESULTS {
+            break;
+        }
+    }
+
+    Ok(results)
+}
+
+// ─── Backend: arxiv ────────────────────────────────────────────────────
+
+async fn search_arxiv(client: &reqwest::Client, query: &str) -> Result<Vec<SearchResult>, String> {
+    // arxiv API: 1 request per 3 seconds per their FAQ. We rate-limit
+    // to 3.5s in Backend::min_interval so we're safely over their
+    // floor. Returns Atom XML with <entry> blocks.
+    // Use https directly — the http endpoint 301-redirects to https,
+    // which wastes a round trip and doesn't buy us anything.
+    let url = format!(
+        "https://export.arxiv.org/api/query?search_query=all:{}&max_results={}",
+        urlencoding::encode(query),
+        MAX_RESULTS
+    );
+    let body = http_get_text(client, &url, None).await?;
+    Ok(parse_arxiv_atom(&body))
+}
+
+fn parse_arxiv_atom(body: &str) -> Vec<SearchResult> {
+    // arxiv Atom entry shape:
+    //   <entry>
+    //     <id>http://arxiv.org/abs/NNNN.NNNNN</id>
+    //     <title>...</title>
+    //     <summary>...</summary>
+    //     <author><name>...</name></author>
+    //     <published>2024-03-15T00:00:00Z</published>
+    //   </entry>
+    let entry_re = match regex::Regex::new(r"(?s)<entry>(.*?)</entry>") {
+        Ok(r) => r,
+        Err(_) => return Vec::new(),
+    };
+    let tag = |name: &str| -> Option<regex::Regex> {
+        regex::Regex::new(&format!("(?s)<{}>(.*?)</{}>", name, name)).ok()
+    };
+    let (Some(title_re), Some(id_re), Some(summary_re), Some(published_re)) =
+        (tag("title"), tag("id"), tag("summary"), tag("published"))
+    else {
+        return Vec::new();
+    };
+
+    // Author is nested: <author><name>...</name></author>
+    let author_re = match regex::Regex::new(r"(?s)<author>\s*<name>(.*?)</name>") {
+        Ok(r) => r,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut results = Vec::new();
+    for cap in entry_re.captures_iter(body) {
+        let entry = cap.get(1).map(|m| m.as_str()).unwrap_or("");
+        let title = title_re
+            .captures(entry)
+            .and_then(|c| c.get(1))
+            .map(|m| m.as_str())
+            .unwrap_or("");
+        let id = id_re
+            .captures(entry)
+            .and_then(|c| c.get(1))
+            .map(|m| m.as_str())
+            .unwrap_or("");
+        let summary = summary_re
+            .captures(entry)
+            .and_then(|c| c.get(1))
+            .map(|m| m.as_str())
+            .unwrap_or("");
+        let published = published_re
+            .captures(entry)
+            .and_then(|c| c.get(1))
+            .map(|m| m.as_str())
+            .unwrap_or("");
+        let first_author = author_re
+            .captures(entry)
+            .and_then(|c| c.get(1))
+            .map(|m| m.as_str())
+            .unwrap_or("");
+
+        if title.is_empty() || id.is_empty() {
+            continue;
+        }
+
+        let clean_title = clean_text(title);
+        let clean_summary = clean_text(summary);
+        let snippet = if !first_author.is_empty() {
+            format!(
+                "{} ({}) — {}",
+                clean_text(first_author),
+                published.split('T').next().unwrap_or(""),
+                clean_summary
+            )
+        } else {
+            clean_summary
+        };
+
+        results.push(SearchResult {
+            title: clean_title,
+            snippet: truncate_snippet(&snippet),
+            url: id.trim().to_string(),
+            sources: Vec::new(),
+        });
+        if results.len() >= MAX_RESULTS {
+            break;
+        }
+    }
+
+    results
 }
 
 // ─── Backend: DuckDuckGo HTML ───────────────────────────────────────────
