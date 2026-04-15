@@ -30,13 +30,15 @@
 
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
-use std::sync::{Mutex as StdMutex, OnceLock};
+use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
+use futures_util::StreamExt;
 use futures_util::future::join_all;
 use lru::LruCache;
 use serde_json::json;
+use tokio::sync::Mutex as TokioMutex;
 
 use super::{Tool, ToolOutput, truncate_for_tool};
 use crate::executor::native::client::ToolDefinition;
@@ -56,11 +58,16 @@ const HTTP_TIMEOUT_SECS: u64 = 10;
 /// similar strict-policy APIs explicitly require an identifying UA.
 const WG_USER_AGENT: &str = "workgraph/0.1.0 (+https://github.com/graphwork/workgraph)";
 
-/// Realistic browser User-Agent for HTML-scrape backends like DDG.
-/// Needs to match a current-ish Firefox build or DDG serves a
-/// bot-challenge page. We present as desktop Linux Firefox.
+/// Realistic browser User-Agent for HTML-scrape backends like DDG
+/// when hit via reqwest. Presents as desktop Linux Firefox. Required
+/// to avoid challenge pages when we're NOT using a real browser.
 const BROWSER_USER_AGENT: &str =
     "Mozilla/5.0 (X11; Linux x86_64; rv:121.0) Gecko/20100101 Firefox/121.0";
+
+/// Chrome User-Agent used when we drive a real headless Chrome via
+/// chromiumoxide. Matches a current stable desktop Chrome on Linux
+/// so we present as a regular browser — no "HeadlessChrome" giveaway.
+const CHROME_UA: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 
 /// Query cache time-to-live. Same query within this window returns the
 /// cached response without hitting any backend.
@@ -107,6 +114,12 @@ enum Backend {
     StackExchange,
     CratesIo,
     Arxiv,
+    /// Headless Chrome driving DuckDuckGo HTML via chromiumoxide.
+    /// Presents as a real browser (genuine TLS fingerprint, real UA,
+    /// navigator.webdriver hidden) so DDG's anti-bot heuristics can't
+    /// distinguish us from a human browsing. Heavier than the reqwest
+    /// backends (requires a chrome process) but more reliable.
+    Browser,
 }
 
 impl Backend {
@@ -120,6 +133,7 @@ impl Backend {
             Backend::StackExchange => "stack_exchange",
             Backend::CratesIo => "crates_io",
             Backend::Arxiv => "arxiv",
+            Backend::Browser => "headless_chrome_ddg",
         }
     }
 
@@ -145,12 +159,18 @@ impl Backend {
             Backend::StackExchange => Duration::from_millis(500),
             Backend::CratesIo => Duration::from_millis(1000),
             Backend::Arxiv => Duration::from_millis(3500),
+            // Headless Chrome drives a real browser hitting DDG. We
+            // present as a human at ~1 query every 2 seconds, which
+            // is slower than most real users but a reasonable floor
+            // for a tool making many calls per session.
+            Backend::Browser => Duration::from_millis(2000),
         }
     }
 
     /// All known backends. Iteration order is the display/fallback
     /// order in error messages; the actual dispatch happens in
-    /// parallel regardless.
+    /// parallel regardless. The `Browser` backend is only included
+    /// when chromium is reachable — see `enabled_backends`.
     fn all() -> &'static [Backend] {
         &[
             Backend::Wikipedia,
@@ -160,6 +180,7 @@ impl Backend {
             Backend::StackExchange,
             Backend::CratesIo,
             Backend::Arxiv,
+            Backend::Browser,
             Backend::DdgHtml,
         ]
     }
@@ -305,11 +326,17 @@ impl Tool for WebSearchTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "web_search".to_string(),
-            description: "Search the web. Routes news-flavored queries to Google News RSS, \
-                          factoid queries to Wikipedia, dev/tech queries to Hacker News, and \
-                          everything else to DuckDuckGo HTML. Returns an error (not an empty \
-                          result list) when the backend fails — on error, try `web_fetch` \
-                          against a specific URL or `bash` with `curl` as a fallback."
+            description: "Search the web via parallel fan-out across multiple free backends: \
+                          Wikipedia, Google News RSS, Hacker News, GitHub, Stack Exchange, \
+                          crates.io, arxiv, headless Chrome driving DuckDuckGo, and reqwest \
+                          DuckDuckGo HTML. Every query hits all available backends in \
+                          parallel, results are merged by URL and ranked by multi-source \
+                          agreement. Each result lists the backends that returned it under \
+                          `sources`. Response includes `backends_consulted` and \
+                          `backends_responded`. Results are cached for 10 minutes. Returns \
+                          an error (not an empty list) when every backend failed — on error, \
+                          try `web_fetch` against a specific URL or `bash` with `curl` \
+                          as a fallback."
                 .to_string(),
             input_schema: json!({
                 "type": "object",
@@ -477,11 +504,26 @@ impl Tool for WebSearchTool {
                 _ => None,
             })
             .collect();
+        // Per-backend failure info. Surfaces diagnostic info to both
+        // the human (via chatty mode) and the model (which can
+        // choose to escalate via bash curl if a backend it trusted
+        // for this query type is down).
+        let failed: Vec<serde_json::Value> = attempts
+            .iter()
+            .filter_map(|(b, r)| match r {
+                Err(e) => Some(json!({"backend": b.source_name(), "error": e})),
+                Ok(rs) if rs.is_empty() => {
+                    Some(json!({"backend": b.source_name(), "error": "zero results"}))
+                }
+                _ => None,
+            })
+            .collect();
 
         let output = json!({
             "query": query,
             "backends_consulted": consulted,
             "backends_responded": responded,
+            "backends_failed": failed,
             "results": merged,
         });
         let serialized = serde_json::to_string_pretty(&output).unwrap_or_default();
@@ -529,6 +571,7 @@ async fn dispatch(
         Backend::StackExchange => search_stack_exchange(client, query).await,
         Backend::CratesIo => search_crates_io(client, query).await,
         Backend::Arxiv => search_arxiv(client, query).await,
+        Backend::Browser => search_browser_chrome(query).await,
     }
 }
 
@@ -1077,7 +1120,172 @@ fn parse_arxiv_atom(body: &str) -> Vec<SearchResult> {
     results
 }
 
-// ─── Backend: DuckDuckGo HTML ───────────────────────────────────────────
+// ─── Backend: headless Chrome driving DuckDuckGo HTML ──────────────────
+
+/// Shared handle to a single long-lived headless Chrome process. We
+/// launch lazily on first use and keep the browser alive for the rest
+/// of the process lifetime — spawning Chrome per query would add ~2-3s
+/// latency to every call, which defeats the point.
+struct BrowserHandle {
+    browser: chromiumoxide::Browser,
+    /// Chromiumoxide requires us to drive the event loop via a task
+    /// that consumes messages from the handler stream. This handle
+    /// keeps that task alive for the lifetime of BrowserHandle.
+    _task: tokio::task::JoinHandle<()>,
+}
+
+static BROWSER_CELL: OnceLock<Arc<TokioMutex<Option<BrowserHandle>>>> = OnceLock::new();
+
+/// Get (or lazily initialize) the shared browser handle. On first call
+/// this spawns a Chrome process with stealth flags; subsequent calls
+/// return the same handle. Propagates the launch error if Chrome isn't
+/// installed or the process fails to start.
+async fn get_or_launch_browser() -> Result<Arc<TokioMutex<Option<BrowserHandle>>>, String> {
+    let cell = BROWSER_CELL
+        .get_or_init(|| Arc::new(TokioMutex::new(None)))
+        .clone();
+    let mut guard = cell.lock().await;
+    if guard.is_none() {
+        *guard = Some(launch_browser().await?);
+    }
+    drop(guard);
+    Ok(cell)
+}
+
+async fn launch_browser() -> Result<BrowserHandle, String> {
+    use chromiumoxide::browser::{Browser, BrowserConfig, HeadlessMode};
+
+    // Chrome binary path: env override > /usr/bin/google-chrome >
+    // /usr/bin/chromium. Users with Chrome at a non-standard path
+    // can set CHROME_BIN.
+    let chrome_path = std::env::var("CHROME_BIN")
+        .ok()
+        .or_else(|| {
+            ["/usr/bin/google-chrome", "/usr/bin/chromium"]
+                .iter()
+                .find(|p| std::path::Path::new(p).exists())
+                .map(|s| s.to_string())
+        })
+        .ok_or_else(|| {
+            "No Chrome/Chromium binary found. Set CHROME_BIN or install google-chrome.".to_string()
+        })?;
+
+    // Dedicated per-process user-data-dir so we don't collide with
+    // an interactive Chrome session the user might already have
+    // running in `~/.config/google-chrome`. Chrome refuses to start
+    // when two instances fight for the same profile directory
+    // (ProcessSingleton lock).
+    let user_data_dir = std::env::temp_dir().join(format!("wg-chrome-{}", std::process::id()));
+
+    let config = BrowserConfig::builder()
+        .chrome_executable(&chrome_path)
+        .headless_mode(HeadlessMode::New)
+        .no_sandbox()
+        .user_data_dir(&user_data_dir)
+        // Present as a human:
+        // - disable the flag that would set navigator.webdriver=true
+        // - no first-run or default-browser check dialogs
+        // - no shared-memory blowup on small /dev/shm (common in
+        //   containers, harmless elsewhere)
+        // - disable GPU because we're never rendering anything and
+        //   GPU init fails on headless Linux without a display,
+        //   which on some Chrome builds kills the process before
+        //   chromiumoxide can parse the DevTools WebSocket URL
+        // - real desktop viewport
+        .arg("--disable-blink-features=AutomationControlled")
+        .arg("--no-first-run")
+        .arg("--no-default-browser-check")
+        .arg("--disable-dev-shm-usage")
+        .arg("--disable-gpu")
+        .arg("--window-size=1920,1080")
+        .arg(format!("--user-agent={}", CHROME_UA))
+        .build()
+        .map_err(|e| format!("browser config: {}", e))?;
+
+    let (browser, mut handler) = Browser::launch(config)
+        .await
+        .map_err(|e| format!("browser launch: {}", e))?;
+
+    // Event-loop pump: chromiumoxide requires us to consume the
+    // handler stream or the browser stalls. Drain the stream until
+    // it actually ends (None). Do NOT break on error events — the
+    // handler surfaces routine CDP protocol errors alongside real
+    // browser-death errors, and breaking on the former kills the
+    // browser prematurely.
+    let task = tokio::spawn(async move {
+        while handler.next().await.is_some() {
+            // Keep pumping.
+        }
+    });
+
+    Ok(BrowserHandle {
+        browser,
+        _task: task,
+    })
+}
+
+async fn search_browser_chrome(query: &str) -> Result<Vec<SearchResult>, String> {
+    let cell = get_or_launch_browser().await?;
+
+    // We hit html.duckduckgo.com/html/ — the JS-free "old-school"
+    // results page — because it's simple to parse and stable. The
+    // important bit is that we're hitting it with a REAL Chrome
+    // fingerprint (not reqwest), so DDG's anti-bot doesn't serve
+    // us challenge pages.
+    let url = format!(
+        "https://html.duckduckgo.com/html/?q={}",
+        urlencoding::encode(query)
+    );
+
+    let page = {
+        let guard = cell.lock().await;
+        let handle = guard
+            .as_ref()
+            .ok_or_else(|| "browser not initialized".to_string())?;
+        handle
+            .browser
+            .new_page(&url)
+            .await
+            .map_err(|e| format!("new_page: {}", e))?
+    };
+
+    // Additional stealth: hide navigator.webdriver at the page level
+    // in case the browser-wide flag didn't propagate. Harmless to set
+    // multiple times. We do this BEFORE waiting for content so the
+    // page scripts (which DDG doesn't have much of, but just in case)
+    // see a human.
+    let _ = page
+        .evaluate("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+        .await;
+
+    // chromiumoxide's new_page waits for the initial load, but DDG
+    // returns quickly and may still be rendering when we read
+    // content. A 300ms settle window catches most late DOM updates.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let html = match page.content().await {
+        Ok(h) => h,
+        Err(e) => {
+            let _ = page.close().await;
+            return Err(format!("content read: {}", e));
+        }
+    };
+    let _ = page.close().await;
+
+    // Reuse the existing DDG HTML parser — same page shape.
+    let results = parse_ddg_html(&html);
+    if results.is_empty() {
+        let snippet: String = html.chars().take(200).collect();
+        return Err(format!(
+            "no result anchors in browser-rendered DDG (body {} bytes, prefix: {:?})",
+            html.len(),
+            snippet
+        ));
+    }
+    Ok(results)
+}
+
+// ─── Backend: DuckDuckGo HTML (reqwest-based, deprecated) ───────────────
 
 async fn search_ddg_html(
     client: &reqwest::Client,
