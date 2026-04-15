@@ -16,7 +16,9 @@ use super::client::{
 };
 use super::journal::{EndReason, Journal, JournalEntryKind};
 use super::provider::Provider;
-use super::resume::{self, ContextBudget, ContextPressureAction, ResumeConfig};
+use super::resume::{
+    self, ContextBudget, ContextPressureAction, ResumeConfig, estimate_agent_overhead,
+};
 use super::state_injection::StateInjector;
 use super::tools::ToolRegistry;
 use crate::stream_event::{self, StreamWriter, TotalUsage, TurnUsage};
@@ -189,8 +191,20 @@ impl AgentLoop {
         // Derive .streaming path from output_log directory
         let streaming_file_path = output_log.parent().map(|p| p.join(".streaming"));
 
-        // Build context budget from the provider's context window
-        let context_budget = ContextBudget::with_window_size(client.context_window());
+        // Build context budget from the provider's context window, with overhead
+        // from system prompt + tool definitions + completion reservation. This
+        // makes pressure thresholds reflect actual API budget usage rather than
+        // just message-content length.
+        let context_budget = {
+            let tool_defs = tools.definitions();
+            let overhead = estimate_agent_overhead(
+                &system_prompt,
+                &tool_defs,
+                client.max_tokens(),
+                4.0,
+            );
+            ContextBudget::with_window_size(client.context_window()).with_overhead(overhead)
+        };
 
         Self {
             client,
@@ -558,20 +572,35 @@ impl AgentLoop {
                     // compaction and retry once before giving up.
                     if super::openai_client::is_context_too_long(&e) {
                         eprintln!(
-                            "[native-agent] Context too long error — attempting emergency compaction and retry"
+                            "[native-agent] Context too long error — attempting hard emergency compaction and retry"
                         );
-                        let pre_compact_len = messages.len();
-                        messages = ContextBudget::emergency_compact(messages, 5);
+                        let pre_tokens = self.context_budget.effective_tokens(&messages);
+                        // On a hard context-too-long error, use the aggressive
+                        // compact: drop ALL tool results in older turns, strip
+                        // thinking, truncate long text, keep only 2 recent
+                        // messages verbatim.
+                        messages = ContextBudget::hard_emergency_compact(messages, 2);
+                        let post_tokens = self.context_budget.effective_tokens(&messages);
                         eprintln!(
-                            "[native-agent] Emergency compacted: {} → {} messages",
-                            pre_compact_len,
-                            messages.len()
+                            "[native-agent] Hard emergency compacted: ~{} → ~{} tokens ({} → {} messages, overhead {} kept)",
+                            pre_tokens,
+                            post_tokens,
+                            pre_tokens.saturating_sub(self.context_budget.overhead_tokens),
+                            post_tokens.saturating_sub(self.context_budget.overhead_tokens),
+                            self.context_budget.overhead_tokens
                         );
+
+                        // Reduce completion reservation on retry to free budget for
+                        // input. On a 32k-window model where we're already over
+                        // capacity, reserving 8k for output is hostile — halve it
+                        // with a 1024-token floor so the model can still respond.
+                        let retry_max_tokens =
+                            std::cmp::max(self.client.max_tokens() / 2, 1024);
 
                         // Rebuild request with compacted messages and retry once
                         let retry_request = MessagesRequest {
                             model: self.client.model().to_string(),
-                            max_tokens: self.client.max_tokens(),
+                            max_tokens: retry_max_tokens,
                             system: Some(self.system_prompt.clone()),
                             messages: messages.clone(),
                             tools: if self.supports_tools {
@@ -1104,13 +1133,18 @@ impl AgentLoop {
                     }
                 }
                 ContextPressureAction::EmergencyCompaction => {
-                    // 90%+ capacity: emergency compaction — strip old tool results
-                    let pre_compact = messages.len();
+                    // Proactive compaction at the compact threshold — strip
+                    // old tool results before the hard limit is reached.
+                    let pre_tokens = self.context_budget.effective_tokens(&messages);
+                    let pre_count = messages.len();
                     messages = ContextBudget::emergency_compact(messages, 5);
+                    let post_tokens = self.context_budget.effective_tokens(&messages);
                     eprintln!(
-                        "[native-agent] Emergency compaction at 90%: {} → {} messages",
-                        pre_compact,
-                        messages.len()
+                        "[native-agent] Proactive compaction: ~{} → ~{} tokens ({} messages, overhead {} kept)",
+                        pre_tokens,
+                        post_tokens,
+                        pre_count,
+                        self.context_budget.overhead_tokens
                     );
 
                     // Journal the compaction event
@@ -1118,11 +1152,11 @@ impl AgentLoop {
                         let _ = j.append(JournalEntryKind::Compaction {
                             compacted_through_seq: 0,
                             summary: format!(
-                                "Emergency compaction triggered at ~90% context capacity. {} messages compacted.",
-                                pre_compact
+                                "Proactive compaction at compact threshold. Tokens: ~{} → ~{}, messages: {}.",
+                                pre_tokens, post_tokens, pre_count
                             ),
-                            original_message_count: pre_compact as u32,
-                            original_token_count: 0,
+                            original_message_count: pre_count as u32,
+                            original_token_count: pre_tokens as u32,
                         });
                     }
                 }
