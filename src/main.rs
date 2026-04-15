@@ -268,6 +268,11 @@ fn main() -> Result<()> {
     // Handle subcommand-level help before clap parses (since we disable_help_flag globally)
     maybe_print_subcommand_help();
 
+    // Initialize logging
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
+        .format_timestamp(None)
+        .init();
+
     let cli = Cli::parse();
 
     let workgraph_dir = cli.dir.unwrap_or_else(|| PathBuf::from(".workgraph"));

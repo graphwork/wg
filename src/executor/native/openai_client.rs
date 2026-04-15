@@ -10,6 +10,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
 use futures_util::StreamExt;
+use log;
 use reqwest::header::{HeaderMap, HeaderValue};
 use serde::{Deserialize, Serialize};
 
@@ -980,7 +981,9 @@ impl OpenAiClient {
         } else {
             String::new()
         };
-        eprintln!(
+        
+        // Use standard logging instead of eprintln to avoid console clutter
+        log::info!(
             "[openai-client] Stream complete: {} chunks, {} text chars, {} tool calls{}",
             chunk_count,
             text_content.len(),
@@ -1140,7 +1143,9 @@ impl OpenAiClient {
         } else {
             String::new()
         };
-        eprintln!(
+        
+        // Use standard logging instead of eprintln to avoid console clutter
+        log::info!(
             "[openai-client] Stream complete: {} chunks, {} text chars, {} tool calls{}",
             chunk_count,
             text_content.len(),

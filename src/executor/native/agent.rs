@@ -130,6 +130,38 @@ enum LogEvent {
         turns: usize,
         total_usage: Usage,
     },
+    /// `wg nex` REPL session started — first event in a nex-session log.
+    SessionStart {
+        /// Wall-clock start time (RFC 3339).
+        timestamp: String,
+        /// Model identifier the session was opened with.
+        model: String,
+        /// Endpoint name if one was set, else None.
+        endpoint: Option<String>,
+        /// Working directory when the session started.
+        working_dir: String,
+    },
+    /// User typed a line in the REPL and submitted it (Enter). Logged
+    /// BEFORE the agent turn begins, so slash commands are captured
+    /// even if they don't produce an LLM round-trip.
+    UserInput {
+        /// Raw input line (including leading `/` for slash commands).
+        text: String,
+    },
+    /// REPL session ended cleanly. Logged once at the end of
+    /// `run_interactive` regardless of exit reason (user quit, max_turns,
+    /// context limit, stream error).
+    SessionEnd {
+        /// Wall-clock end time (RFC 3339).
+        timestamp: String,
+        /// How many assistant turns ran in this session.
+        turns: usize,
+        /// Why the session ended: "user_quit", "eof", "max_turns",
+        /// "context_limit", "error".
+        reason: &'static str,
+        /// Cumulative token usage for the whole session.
+        total_usage: Usage,
+    },
 }
 
 /// Simplified content block for logging (avoids duplicating the full enum).
@@ -1349,6 +1381,50 @@ impl AgentLoop {
             final_text: result.final_text.clone(),
             turns: result.turns,
             total_usage: result.total_usage.clone(),
+        };
+        self.write_log_event(&event);
+    }
+
+    /// Log the start of a `wg nex` REPL session. Called once as the
+    /// first write to a session log file.
+    fn log_session_start(&self, endpoint: Option<&str>) {
+        let working_dir = self
+            .working_dir
+            .as_ref()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| "<unset>".to_string());
+        let event = LogEvent::SessionStart {
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            model: self.client.model().to_string(),
+            endpoint: endpoint.map(String::from),
+            working_dir,
+        };
+        self.write_log_event(&event);
+    }
+
+    /// Log a user input line submitted at the REPL prompt. Captures
+    /// both regular prompts and slash commands so the full trace is
+    /// on disk.
+    fn log_user_input(&self, text: &str) {
+        let event = LogEvent::UserInput {
+            text: text.to_string(),
+        };
+        self.write_log_event(&event);
+    }
+
+    /// Log the end of a REPL session with cumulative stats and the
+    /// exit reason.
+    fn log_session_end(
+        &self,
+        turns: usize,
+        reason: &'static str,
+        total_usage: &Usage,
+    ) {
+        let event = LogEvent::SessionEnd {
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            turns,
+            reason,
+            total_usage: total_usage.clone(),
         };
         self.write_log_event(&event);
     }
