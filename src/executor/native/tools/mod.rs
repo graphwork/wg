@@ -8,6 +8,7 @@ pub mod bg;
 pub mod delegate;
 pub mod file;
 pub mod file_cache;
+pub mod summarize;
 pub mod web_fetch;
 pub mod web_search;
 pub mod wg;
@@ -377,6 +378,15 @@ impl ToolRegistry {
             working_dir.to_path_buf(),
             config.delegate.delegate_max_turns,
             &config.delegate.delegate_model,
+        );
+
+        // Summarize tool (recursive map-reduce summarization). Uses the
+        // delegate model override if set, falling back to WG_MODEL env var
+        // at execute time.
+        summarize::register_summarize_tool(
+            &mut registry,
+            workgraph_dir.to_path_buf(),
+            config.delegate.delegate_model.clone(),
         );
 
         registry

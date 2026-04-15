@@ -91,6 +91,35 @@ impl AgentEntry {
         )
     }
 
+    /// Strict liveness check — the agent is considered *live* if and
+    /// only if ALL of the following hold:
+    ///
+    /// 1. The status is alive (`Starting | Working | Idle`), AND
+    /// 2. The underlying process exists (PID is valid and running), AND
+    /// 3. The last heartbeat is fresh (within `heartbeat_timeout_secs`).
+    ///
+    /// This is the invariant used by worktree cleanup paths: a worktree
+    /// is safe to remove only when its owning agent is **not** live by
+    /// this definition. The status-only `is_alive()` check is too loose
+    /// because an agent can crash with the registry still reporting
+    /// `Working` — leaving its worktree incorrectly protected forever.
+    /// Conversely, just-process-alive is also too loose because a
+    /// zombie/orphan process can exist with stale heartbeat long after
+    /// real work stopped.
+    pub fn is_live(&self, heartbeat_timeout_secs: u64) -> bool {
+        if !self.is_alive() {
+            return false;
+        }
+        if !super::is_process_alive(self.pid) {
+            return false;
+        }
+        match self.seconds_since_heartbeat() {
+            Some(secs) if secs >= 0 && (secs as u64) <= heartbeat_timeout_secs => true,
+            // Invalid timestamp, future-dated heartbeat, or stale: not live.
+            _ => false,
+        }
+    }
+
     /// Calculate uptime in seconds from started_at to now
     pub fn uptime_secs(&self) -> Option<i64> {
         let started = DateTime::parse_from_rfc3339(&self.started_at).ok()?;
@@ -538,6 +567,107 @@ mod tests {
         let registry = AgentRegistry::new();
         assert!(registry.agents.is_empty());
         assert_eq!(registry.next_agent_id, 1);
+    }
+
+    #[test]
+    fn test_is_live_requires_all_three_invariants() {
+        // Unix: use a PID that cannot exist (the reaper's PID-0 trick:
+        // on Linux pid 0 is invalid for `kill(pid, 0)`, returning ESRCH.
+        // We use a more portable approach — pick a PID very unlikely to
+        // be alive, then verify the check fails.
+
+        // Case 1: status Done + fresh heartbeat + any PID → NOT live
+        // (is_alive() fails first)
+        let entry = AgentEntry {
+            id: "agent-test".to_string(),
+            pid: std::process::id(), // our own PID — definitely alive
+            task_id: "t".to_string(),
+            executor: "claude".to_string(),
+            started_at: Utc::now().to_rfc3339(),
+            last_heartbeat: Utc::now().to_rfc3339(),
+            status: AgentStatus::Done,
+            output_file: "/tmp/out".to_string(),
+            model: None,
+            completed_at: None,
+        };
+        assert!(!entry.is_live(300), "Done status should not be live");
+
+        // Case 2: status Working + fresh heartbeat + own PID → LIVE
+        let entry = AgentEntry {
+            id: "agent-test".to_string(),
+            pid: std::process::id(),
+            task_id: "t".to_string(),
+            executor: "claude".to_string(),
+            started_at: Utc::now().to_rfc3339(),
+            last_heartbeat: Utc::now().to_rfc3339(),
+            status: AgentStatus::Working,
+            output_file: "/tmp/out".to_string(),
+            model: None,
+            completed_at: None,
+        };
+        assert!(
+            entry.is_live(300),
+            "Working status + own PID + fresh heartbeat should be live"
+        );
+
+        // Case 3: status Working + own PID + STALE heartbeat → NOT live
+        // (3600 seconds ago, timeout 300)
+        let stale_heartbeat = (Utc::now() - chrono::Duration::seconds(3600)).to_rfc3339();
+        let entry = AgentEntry {
+            id: "agent-test".to_string(),
+            pid: std::process::id(),
+            task_id: "t".to_string(),
+            executor: "claude".to_string(),
+            started_at: Utc::now().to_rfc3339(),
+            last_heartbeat: stale_heartbeat,
+            status: AgentStatus::Working,
+            output_file: "/tmp/out".to_string(),
+            model: None,
+            completed_at: None,
+        };
+        assert!(
+            !entry.is_live(300),
+            "stale heartbeat should fail liveness even if status+process ok"
+        );
+
+        // Case 4: status Working + fresh heartbeat + DEFINITELY DEAD PID → NOT live
+        // PID 0x7FFF_FFFE is extremely unlikely to be in use (near PID_MAX)
+        let entry = AgentEntry {
+            id: "agent-test".to_string(),
+            pid: 0x7FFF_FFFE,
+            task_id: "t".to_string(),
+            executor: "claude".to_string(),
+            started_at: Utc::now().to_rfc3339(),
+            last_heartbeat: Utc::now().to_rfc3339(),
+            status: AgentStatus::Working,
+            output_file: "/tmp/out".to_string(),
+            model: None,
+            completed_at: None,
+        };
+        assert!(
+            !entry.is_live(300),
+            "dead PID should fail liveness even if status+heartbeat ok"
+        );
+
+        // Case 5: timeout of 0 → even a just-written heartbeat may fail.
+        // Use a heartbeat 1 second ago with timeout 0 → not live.
+        let past = (Utc::now() - chrono::Duration::seconds(1)).to_rfc3339();
+        let entry = AgentEntry {
+            id: "agent-test".to_string(),
+            pid: std::process::id(),
+            task_id: "t".to_string(),
+            executor: "claude".to_string(),
+            started_at: Utc::now().to_rfc3339(),
+            last_heartbeat: past,
+            status: AgentStatus::Working,
+            output_file: "/tmp/out".to_string(),
+            model: None,
+            completed_at: None,
+        };
+        assert!(
+            !entry.is_live(0),
+            "timeout=0 should reject even 1-second-old heartbeat"
+        );
     }
 
     #[test]

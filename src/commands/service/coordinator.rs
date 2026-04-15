@@ -422,22 +422,17 @@ fn build_resume_delta(graph: &workgraph::graph::WorkGraph, task: &Task, dir: &Pa
                     }
                 }
                 // Include recent log entries from completed subtasks for result context
-                let recent_logs: Vec<_> = dep
-                    .log
-                    .iter()
-                    .rev()
-                    .take(3)
-                    .collect();
+                let recent_logs: Vec<_> = dep.log.iter().rev().take(3).collect();
                 if !recent_logs.is_empty() {
                     for log in recent_logs.iter().rev() {
                         delta.push_str(&format!("  log: {}\n", log.message));
                     }
                 }
                 // Include failure reason if the subtask failed
-                if dep.status == Status::Failed {
-                    if let Some(ref reason) = dep.failure_reason {
-                        delta.push_str(&format!("  failure_reason: {}\n", reason));
-                    }
+                if dep.status == Status::Failed
+                    && let Some(ref reason) = dep.failure_reason
+                {
+                    delta.push_str(&format!("  failure_reason: {}\n", reason));
                 }
             }
         }
@@ -3842,15 +3837,15 @@ pub fn coordinator_tick(
                 .map(|t| t.id.clone())
                 .collect();
             for task_id in &cron_task_ids {
-                if let Some(task) = graph.get_task_mut(task_id) {
-                    if workgraph::cron::reset_cron_task(task) {
-                        eprintln!(
-                            "[coordinator] Cron reset: '{}' → Open (next fire: {})",
-                            task_id,
-                            task.next_cron_fire.as_deref().unwrap_or("unknown")
-                        );
-                        modified = true;
-                    }
+                if let Some(task) = graph.get_task_mut(task_id)
+                    && workgraph::cron::reset_cron_task(task)
+                {
+                    eprintln!(
+                        "[coordinator] Cron reset: '{}' → Open (next fire: {})",
+                        task_id,
+                        task.next_cron_fire.as_deref().unwrap_or("unknown")
+                    );
+                    modified = true;
                 }
             }
         }

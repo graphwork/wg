@@ -9,14 +9,30 @@ use super::graph_path;
 
 /// Resolve a model input string to a fully-qualified `provider:model` format.
 ///
-/// Handles three forms:
+/// Handles four forms (in priority order):
 /// 1. Already valid `provider:model` → pass through
-/// 2. `provider/model` format (e.g., `minimax/minimax-m2.7`) → `openrouter:provider/model`
-/// 3. Bare short name (e.g., `minimax-m2.7`) → resolve against model cache → `openrouter:resolved_id`
+/// 2. Matches a `[[model_registry]]` entry by ID → use registry provider + model
+/// 3. `provider/model` format (e.g., `minimax/minimax-m2.7`) → `openrouter:provider/model`
+/// 4. Bare short name (e.g., `minimax-m2.7`) → resolve against model cache → `openrouter:resolved_id`
 fn resolve_model_input(model: &str, workgraph_dir: &Path) -> Result<String> {
     // If it already passes strict validation, it's fine
     if workgraph::config::parse_model_spec_strict(model).is_ok() {
         return Ok(model.to_string());
+    }
+
+    // Check config model_registry before falling back to OpenRouter catalog.
+    if let Ok(config) = workgraph::config::Config::load_merged(workgraph_dir)
+        && let Some(entry) = config.registry_lookup(model)
+    {
+        let prefix = workgraph::config::native_provider_to_prefix(&entry.provider);
+        let full_spec = format!("{}:{}", prefix, entry.model);
+        if workgraph::config::parse_model_spec_strict(&full_spec).is_ok() {
+            eprintln!(
+                "Resolved model '{}' → '{}' (from model_registry)",
+                model, full_spec
+            );
+            return Ok(full_spec);
+        }
     }
 
     // Check if it has a `/` but no recognized provider prefix → assume OpenRouter format
@@ -201,11 +217,12 @@ pub fn run(
 
     // Validate --subtask: requires WG_TASK_ID (must be called from within an agent context)
     let subtask_parent_id = if subtask {
-        let parent_id = std::env::var("WG_TASK_ID")
-            .map_err(|_| anyhow::anyhow!(
+        let parent_id = std::env::var("WG_TASK_ID").map_err(|_| {
+            anyhow::anyhow!(
                 "--subtask requires an active task context (WG_TASK_ID must be set). \
                  This flag is designed for agents to delegate blocking child tasks."
-            ))?;
+            )
+        })?;
         Some(parent_id)
     } else {
         None
@@ -690,9 +707,7 @@ pub fn run(
         }
 
         // Update agent status to Parked if there's an assigned agent
-        if let Ok(mut registry) =
-            workgraph::service::registry::AgentRegistry::load_locked(dir)
-        {
+        if let Ok(mut registry) = workgraph::service::registry::AgentRegistry::load_locked(dir) {
             for agent in registry.registry.agents.values_mut() {
                 if agent.task_id == parent_id && agent.is_alive() {
                     agent.status = workgraph::service::registry::AgentStatus::Parked;
@@ -707,8 +722,13 @@ pub fn run(
         super::notify_graph_changed(dir);
 
         println!("Added subtask: {} ({})", title, task_id);
-        println!("  Parent '{}' is now waiting for subtask to complete.", parent_id);
-        println!("  You should now exit cleanly. The coordinator will re-spawn you when the subtask finishes.");
+        println!(
+            "  Parent '{}' is now waiting for subtask to complete.",
+            parent_id
+        );
+        println!(
+            "  You should now exit cleanly. The coordinator will re-spawn you when the subtask finishes."
+        );
     } else if paused {
         println!("Added task (draft): {} ({})", title, task_id);
         println!(
@@ -1471,8 +1491,8 @@ mod tests {
             false,
             false,
             None,
-            None, // priority
-            None, // cron
+            None,  // priority
+            None,  // cron
             false, // subtask
         );
         assert!(result.is_err());
@@ -1526,8 +1546,8 @@ mod tests {
             false,
             false,
             None,
-            None, // priority
-            None, // cron
+            None,  // priority
+            None,  // cron
             false, // subtask
         );
         assert!(result.is_err());
@@ -1580,9 +1600,9 @@ mod tests {
             None,
             false,
             false,
-            None, // iteration_config
-            None, // priority
-            None, // cron
+            None,  // iteration_config
+            None,  // priority
+            None,  // cron
             false, // subtask
         );
         assert!(result.is_err());
@@ -1642,9 +1662,9 @@ mod tests {
             None,
             false,
             false,
-            None, // iteration_config
-            None, // priority
-            None, // cron
+            None,  // iteration_config
+            None,  // priority
+            None,  // cron
             false, // subtask
         );
         assert!(result.is_err());
@@ -1702,8 +1722,8 @@ mod tests {
             true,
             false,
             None,
-            None, // priority
-            None, // cron
+            None,  // priority
+            None,  // cron
             false, // subtask
         );
         assert!(result.is_ok());
@@ -1756,9 +1776,9 @@ mod tests {
             None,
             false, // allow_phantom=false, but paused=true defers validation
             false,
-            None, // iteration_config
-            None, // priority
-            None, // cron
+            None,  // iteration_config
+            None,  // priority
+            None,  // cron
             false, // subtask
         );
         assert!(result.is_ok());
@@ -1816,8 +1836,8 @@ mod tests {
             false,
             false,
             None,
-            None, // priority
-            None, // cron
+            None,  // priority
+            None,  // cron
             false, // subtask
         );
         assert!(result.is_ok());
@@ -1897,6 +1917,56 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let result = resolve_model_input("claude:opus", dir.path()).unwrap();
         assert_eq!(result, "claude:opus");
+    }
+
+    #[test]
+    fn resolve_model_input_prefers_model_registry() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let config_content = r#"
+[[model_registry]]
+id = "qwen3-coder-30b"
+provider = "openai"
+model = "qwen3-coder-30b"
+tier = "standard"
+endpoint = "lambda01-local"
+context_window = 32768
+"#;
+        std::fs::write(dir.path().join("config.toml"), config_content).unwrap();
+
+        let cache = serde_json::json!({
+            "fetched_at": "2026-04-01T00:00:00Z",
+            "models": [
+                {"id": "qwen/qwen3-coder-30b-a3b-instruct", "name": "Qwen3 Coder 30B"},
+            ]
+        });
+        std::fs::write(dir.path().join("model_cache.json"), cache.to_string()).unwrap();
+
+        let result = resolve_model_input("qwen3-coder-30b", dir.path()).unwrap();
+        assert_eq!(result, "openai:qwen3-coder-30b");
+    }
+
+    #[test]
+    fn resolve_model_input_falls_back_to_openrouter_when_not_in_registry() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let config_content = r#"
+[[model_registry]]
+id = "some-other-model"
+provider = "openai"
+model = "some-other-model"
+tier = "standard"
+"#;
+        std::fs::write(dir.path().join("config.toml"), config_content).unwrap();
+
+        let cache = serde_json::json!({
+            "fetched_at": "2026-04-01T00:00:00Z",
+            "models": [
+                {"id": "minimax/minimax-m2.7", "name": "Minimax M2.7"},
+            ]
+        });
+        std::fs::write(dir.path().join("model_cache.json"), cache.to_string()).unwrap();
+
+        let result = resolve_model_input("minimax-m2.7", dir.path()).unwrap();
+        assert_eq!(result, "openrouter:minimax/minimax-m2.7");
     }
 
     #[test]
@@ -2007,8 +2077,8 @@ mod tests {
             false,
             false,
             None,
-            None, // priority
-            None, // cron
+            None,  // priority
+            None,  // cron
             false, // subtask
         );
         assert!(result.is_ok());
@@ -2069,8 +2139,8 @@ mod tests {
             false,
             false,
             None,
-            None, // priority
-            None, // cron
+            None,  // priority
+            None,  // cron
             false, // subtask
         );
         assert!(result.is_ok());
@@ -2244,7 +2314,11 @@ mod tests {
 
         unsafe { std::env::remove_var("WG_TASK_ID") };
 
-        assert!(result.is_ok(), "subtask creation should succeed: {:?}", result);
+        assert!(
+            result.is_ok(),
+            "subtask creation should succeed: {:?}",
+            result
+        );
 
         let graph = load_graph(&path).unwrap();
 

@@ -14,8 +14,30 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 
-use super::client::{ContentBlock, Message, Role};
+use super::client::{ContentBlock, Message, Role, ToolDefinition};
 use super::journal::{JournalEntry, JournalEntryKind};
+
+/// Estimate the fixed overhead tokens the agent carries independent of
+/// message history: system prompt + serialized tool definitions + the
+/// completion reservation (`max_tokens`).
+///
+/// Used by [`ContextBudget::with_overhead`] to get accurate pressure
+/// thresholds, especially on small-context models where the overhead is
+/// a large fraction of the window.
+pub fn estimate_agent_overhead(
+    system_prompt: &str,
+    tool_defs: &[ToolDefinition],
+    max_tokens: u32,
+    chars_per_token: f64,
+) -> usize {
+    let system_chars = system_prompt.len();
+    let tool_chars: usize = tool_defs
+        .iter()
+        .map(|t| t.name.len() + t.description.len() + t.input_schema.to_string().len())
+        .sum();
+    let static_tokens = ((system_chars + tool_chars) as f64 / chars_per_token) as usize;
+    static_tokens + max_tokens as usize
+}
 
 /// Default budget: if the journal's estimated tokens exceed this percentage of
 /// the context window, compact older turns.
@@ -126,13 +148,59 @@ pub fn load_resume_data(
 
 /// Reconstruct `Vec<Message>` from journal entries.
 ///
-/// Extracts Message entries (user/assistant), skipping Init, ToolExecution,
-/// Compaction, and End entries. ToolExecution is metadata — the actual tool
-/// results appear in the subsequent User message as ToolResult content blocks.
+/// Reconstruct the message list from journal entries with
+/// compaction-aware semantics.
+///
+/// **L4: resume-from-partial-compaction.** If the journal contains one or
+/// more `Compaction` entries, this function uses the LATEST compaction's
+/// `compacted_through_seq` to drop all superseded entries and replaces
+/// them with a single synthetic `PRIOR CONVERSATION SUMMARY` user message.
+/// This makes `wg service restart` / agent resume correctly preserve the
+/// context-pressure savings from prior compactions — otherwise on resume
+/// we'd re-hydrate the full pre-compaction history and defeat the point.
+///
+/// Entries kept: all `Message` entries with `seq > latest_compaction.seq`.
+/// Entries dropped: `Init`, `ToolExecution`, `End`, any `Message` with
+/// `seq ≤ latest_compaction.compacted_through_seq`, and older `Compaction`
+/// entries (only the latest summary is emitted).
 fn reconstruct_messages(entries: &[JournalEntry]) -> Vec<Message> {
+    // Find the latest Compaction entry (by seq). Its compacted_through_seq
+    // marks the cutoff — everything up to and including that seq has
+    // already been summarized and should NOT be re-hydrated.
+    let latest_compaction = entries.iter().rev().find_map(|e| match &e.kind {
+        JournalEntryKind::Compaction {
+            compacted_through_seq,
+            summary,
+            ..
+        } => Some((*compacted_through_seq, summary.clone())),
+        _ => None,
+    });
+
+    let cutoff_seq = latest_compaction.as_ref().map(|(seq, _)| *seq);
+
     let mut messages = Vec::new();
 
+    // If we had a compaction, emit its summary as the first synthetic
+    // user message — this replaces all the compacted entries.
+    if let Some((_, summary)) = &latest_compaction {
+        messages.push(Message {
+            role: Role::User,
+            content: vec![ContentBlock::Text {
+                text: format!(
+                    "[Resume: Prior conversation was compacted. Summary of earlier work:]\n{}",
+                    summary
+                ),
+            }],
+        });
+    }
+
     for entry in entries {
+        // Drop entries superseded by the latest compaction.
+        if let Some(cutoff) = cutoff_seq
+            && entry.seq <= cutoff
+        {
+            continue;
+        }
         match &entry.kind {
             JournalEntryKind::Message { role, content, .. } => {
                 messages.push(Message {
@@ -140,18 +208,9 @@ fn reconstruct_messages(entries: &[JournalEntry]) -> Vec<Message> {
                     content: content.clone(),
                 });
             }
-            JournalEntryKind::Compaction { summary, .. } => {
-                // A prior compaction: inject the summary as a user message
-                messages.push(Message {
-                    role: Role::User,
-                    content: vec![ContentBlock::Text {
-                        text: format!(
-                            "[Resume: Prior conversation was compacted. Summary of earlier work:]\n{}",
-                            summary
-                        ),
-                    }],
-                });
-            }
+            // Later Compaction entries (beyond the latest one we already
+            // emitted above) shouldn't exist in practice; skip defensively.
+            JournalEntryKind::Compaction { .. } => {}
             // Init, ToolExecution, End — skip
             _ => {}
         }
@@ -712,6 +771,15 @@ pub enum ContextPressureAction {
 ///
 /// The agent loop checks this after each turn to decide whether to warn,
 /// compact, or exit gracefully before hitting the API's hard limit.
+///
+/// # Overhead accounting
+///
+/// The API budget is `system + tools + messages + max_tokens_reservation ≤ window_size`.
+/// [`ContextBudget::estimate_tokens`] only counts message content, so
+/// [`ContextBudget::check_pressure`] would underreport actual usage if used
+/// alone. The `overhead_tokens` field captures the fixed cost of system prompt,
+/// tool definitions, and completion budget — computed once at agent init via
+/// [`estimate_agent_overhead`], so pressure checks reflect real API usage.
 #[derive(Debug, Clone)]
 pub struct ContextBudget {
     /// Total context window size in tokens (from provider config).
@@ -724,6 +792,10 @@ pub struct ContextBudget {
     pub compact_threshold: f64,
     /// Fraction at which to trigger a clean exit (default 0.95).
     pub hard_limit: f64,
+    /// Fixed overhead tokens that count against the window but are NOT in
+    /// the `messages` vec: system prompt + tool definitions + completion
+    /// reservation (`max_tokens`). Typically set once at agent init.
+    pub overhead_tokens: usize,
 }
 
 impl Default for ContextBudget {
@@ -734,6 +806,7 @@ impl Default for ContextBudget {
             warning_threshold: 0.70,
             compact_threshold: 0.75,
             hard_limit: 0.95,
+            overhead_tokens: 0,
         }
     }
 }
@@ -760,7 +833,18 @@ impl ContextBudget {
             warning_threshold: warning,
             compact_threshold: compact,
             hard_limit: hard,
+            overhead_tokens: 0,
         }
+    }
+
+    /// Set the fixed overhead tokens (system prompt + tool defs + completion reservation).
+    ///
+    /// Compaction/pressure decisions use `message_tokens + overhead_tokens` against
+    /// `window_size`, so this must be set at agent init for accurate thresholds on
+    /// small-context models where the overhead is a large fraction of the window.
+    pub fn with_overhead(mut self, overhead_tokens: usize) -> Self {
+        self.overhead_tokens = overhead_tokens;
+        self
     }
 
     /// Estimate the current token count from a list of messages.
@@ -784,9 +868,18 @@ impl ContextBudget {
         (total_chars as f64 / self.chars_per_token) as usize
     }
 
+    /// Estimated tokens for messages PLUS the fixed overhead (system + tools + completion).
+    /// This is the value compared against `window_size` for pressure decisions.
+    pub fn effective_tokens(&self, messages: &[Message]) -> usize {
+        self.estimate_tokens(messages) + self.overhead_tokens
+    }
+
     /// Check context pressure and return the appropriate action.
+    ///
+    /// Uses [`Self::effective_tokens`] (messages + overhead) vs. `window_size`
+    /// so the ratio reflects actual API budget usage, not just message content.
     pub fn check_pressure(&self, messages: &[Message]) -> ContextPressureAction {
-        let tokens = self.estimate_tokens(messages);
+        let tokens = self.effective_tokens(messages);
         let ratio = tokens as f64 / self.window_size as f64;
 
         if ratio >= self.hard_limit {
@@ -800,54 +893,96 @@ impl ContextBudget {
         }
     }
 
-    /// Build the warning message injected at 80% threshold.
+    /// Build the warning message injected at the warning threshold.
     pub fn warning_message(&self, messages: &[Message]) -> String {
-        let tokens = self.estimate_tokens(messages);
-        let pct = (tokens as f64 / self.window_size as f64) * 100.0;
+        let msg_tokens = self.estimate_tokens(messages);
+        let effective = msg_tokens + self.overhead_tokens;
+        let pct = (effective as f64 / self.window_size as f64) * 100.0;
         format!(
-            "⚠️ CONTEXT PRESSURE WARNING: You're at {:.0}% context capacity ({} / {} estimated tokens). \
+            "⚠️ CONTEXT PRESSURE WARNING: You're at {:.0}% context capacity \
+             ({} messages + {} overhead = {} / {} estimated tokens). \
              Consider logging progress via `wg log` and completing the current subtask.",
-            pct, tokens, self.window_size
+            pct, msg_tokens, self.overhead_tokens, effective, self.window_size
         )
     }
 
-    /// Perform emergency compaction: drop tool results from turns older than
-    /// the last `keep_recent` messages, replacing them with summaries.
-    pub fn emergency_compact(messages: Vec<Message>, keep_recent: usize) -> Vec<Message> {
-        if messages.len() <= keep_recent {
+    /// Collect (msg_idx, block_idx) for every `ToolResult` block whose content
+    /// exceeds `size_threshold` bytes, walking messages in order.
+    fn locate_large_tool_results(
+        messages: &[Message],
+        size_threshold: usize,
+    ) -> Vec<(usize, usize)> {
+        let mut locations = Vec::new();
+        for (mi, msg) in messages.iter().enumerate() {
+            for (bi, block) in msg.content.iter().enumerate() {
+                if let ContentBlock::ToolResult { content, .. } = block
+                    && content.len() > size_threshold
+                {
+                    locations.push((mi, bi));
+                }
+            }
+        }
+        locations
+    }
+
+    /// Select which tool-result locations to **keep verbatim**: the last
+    /// `keep_recent_tool_results` entries from a list in chronological order.
+    fn keep_set(
+        locations: &[(usize, usize)],
+        keep_recent_tool_results: usize,
+    ) -> std::collections::HashSet<(usize, usize)> {
+        let keep_count = keep_recent_tool_results.min(locations.len());
+        let start = locations.len() - keep_count;
+        locations[start..].iter().copied().collect()
+    }
+
+    /// Perform emergency compaction: walk ALL messages and shrink any
+    /// `ToolResult` block larger than 200 bytes, EXCEPT the last
+    /// `keep_recent_tool_results` of them, which are preserved verbatim as
+    /// the model's working memory.
+    ///
+    /// This is **position-independent by design** — the big content in a
+    /// chatty file-reading workload lives in recent positions (one tool call
+    /// per file), so a position-based "keep last N messages" rule would
+    /// protect the very content we need to shrink. By counting tool-result
+    /// occurrences instead of messages, we always compact the earliest tool
+    /// results first regardless of where they sit in the message vec.
+    ///
+    /// Message count is unchanged so tool_use/tool_result pairing stays
+    /// intact. Token reduction comes from shrinking `ToolResult::content`.
+    pub fn emergency_compact(
+        messages: Vec<Message>,
+        keep_recent_tool_results: usize,
+    ) -> Vec<Message> {
+        let locations = Self::locate_large_tool_results(&messages, 200);
+        if locations.is_empty() {
             return messages;
         }
-        let split = messages.len().saturating_sub(keep_recent);
+        let keep = Self::keep_set(&locations, keep_recent_tool_results);
 
-        let mut compacted = Vec::new();
-
-        // Compact older messages: strip large tool results
-        for msg in &messages[..split] {
-            let mut new_content = Vec::new();
-            for block in &msg.content {
+        let mut compacted = Vec::with_capacity(messages.len());
+        for (mi, msg) in messages.into_iter().enumerate() {
+            let mut new_content = Vec::with_capacity(msg.content.len());
+            for (bi, block) in msg.content.into_iter().enumerate() {
                 match block {
                     ContentBlock::ToolResult {
                         tool_use_id,
                         content,
                         is_error,
-                    } => {
-                        // Replace large tool results with a short summary
-                        let summary = if content.len() > 200 {
-                            format!(
-                                "[Tool result removed. Size: {} bytes. Preview: {}...]",
-                                content.len(),
-                                &content[..content.floor_char_boundary(100)]
-                            )
-                        } else {
-                            content.clone()
-                        };
+                    } if !keep.contains(&(mi, bi)) && content.len() > 200 => {
+                        let boundary = content.floor_char_boundary(100);
+                        let summary = format!(
+                            "[Tool result removed. Size: {} bytes. Preview: {}...]",
+                            content.len(),
+                            &content[..boundary]
+                        );
                         new_content.push(ContentBlock::ToolResult {
-                            tool_use_id: tool_use_id.clone(),
+                            tool_use_id,
                             content: summary,
-                            is_error: *is_error,
+                            is_error,
                         });
                     }
-                    other => new_content.push(other.clone()),
+                    other => new_content.push(other),
                 }
             }
             compacted.push(Message {
@@ -855,9 +990,85 @@ impl ContextBudget {
                 content: new_content,
             });
         }
+        compacted
+    }
 
-        // Keep recent messages verbatim
-        compacted.extend_from_slice(&messages[split..]);
+    /// Aggressive variant of [`Self::emergency_compact`] used after a
+    /// context-too-long API error has already fired. Differences:
+    ///
+    /// - ALL `ToolResult` blocks not in the keep set are replaced with a
+    ///   short stub (no 200-byte size threshold).
+    /// - `Thinking` blocks are stripped entirely from non-keep messages.
+    /// - `Text` blocks longer than 400 chars are truncated in non-keep
+    ///   messages.
+    ///
+    /// Like `emergency_compact`, this is position-independent: `keep_recent`
+    /// counts tool-result occurrences, not messages. The "non-keep messages"
+    /// are messages whose tool results would be shrunk — text/thinking in
+    /// those messages also gets pruned.
+    pub fn hard_emergency_compact(
+        messages: Vec<Message>,
+        keep_recent_tool_results: usize,
+    ) -> Vec<Message> {
+        let locations = Self::locate_large_tool_results(&messages, 0);
+        let keep = Self::keep_set(&locations, keep_recent_tool_results);
+
+        // Messages whose tool results will be kept verbatim — preserve their
+        // text/thinking too as part of the working memory.
+        let keep_msg_indices: std::collections::HashSet<usize> =
+            keep.iter().map(|(mi, _)| *mi).collect();
+
+        let mut compacted = Vec::with_capacity(messages.len());
+        for (mi, msg) in messages.into_iter().enumerate() {
+            let preserve_verbatim = keep_msg_indices.contains(&mi);
+            let mut new_content = Vec::with_capacity(msg.content.len());
+            for (bi, block) in msg.content.into_iter().enumerate() {
+                match block {
+                    ContentBlock::ToolResult {
+                        tool_use_id,
+                        is_error,
+                        content,
+                    } => {
+                        if keep.contains(&(mi, bi)) {
+                            new_content.push(ContentBlock::ToolResult {
+                                tool_use_id,
+                                content,
+                                is_error,
+                            });
+                        } else {
+                            new_content.push(ContentBlock::ToolResult {
+                                tool_use_id,
+                                content: "[tool result elided for context pressure]".to_string(),
+                                is_error,
+                            });
+                        }
+                    }
+                    ContentBlock::Thinking {
+                        thinking,
+                        reasoning_details,
+                    } => {
+                        // Keep thinking only in preserved-verbatim messages.
+                        if preserve_verbatim {
+                            new_content.push(ContentBlock::Thinking {
+                                thinking,
+                                reasoning_details,
+                            });
+                        }
+                    }
+                    ContentBlock::Text { text } if !preserve_verbatim && text.len() > 400 => {
+                        let boundary = text.floor_char_boundary(400);
+                        new_content.push(ContentBlock::Text {
+                            text: format!("{}… [truncated]", &text[..boundary]),
+                        });
+                    }
+                    other => new_content.push(other),
+                }
+            }
+            compacted.push(Message {
+                role: msg.role,
+                content: new_content,
+            });
+        }
         compacted
     }
 }
@@ -968,6 +1179,244 @@ mod tests {
         assert_eq!(messages[1].role, Role::Assistant);
         assert_eq!(messages[2].role, Role::User);
         assert_eq!(messages[3].role, Role::Assistant);
+    }
+
+    #[test]
+    fn test_reconstruct_messages_respects_compaction_cutoff() {
+        // L4: journal has 4 messages, then a Compaction entry superseding
+        // messages up to seq 4 (seq 1 = Init, seq 2,3,4 = first 3 messages),
+        // then 2 more messages after the compaction.
+        //
+        // Expected reconstruct output:
+        // [synthetic "PRIOR CONVERSATION SUMMARY" user message,
+        //  message 5, message 6]
+        // Total = 3 messages. The first 3 original messages are DROPPED
+        // because the compaction superseded them.
+
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("conversation.jsonl");
+        let mut journal = Journal::open(&path).unwrap();
+
+        // seq 1
+        journal
+            .append(JournalEntryKind::Init {
+                model: "m".to_string(),
+                provider: "p".to_string(),
+                system_prompt: "s".to_string(),
+                tools: vec![],
+                task_id: None,
+            })
+            .unwrap();
+        // seq 2..=4
+        for text in ["first user msg", "first asst msg", "second user msg"] {
+            let role = if text.contains("user") {
+                Role::User
+            } else {
+                Role::Assistant
+            };
+            journal
+                .append(JournalEntryKind::Message {
+                    role,
+                    content: vec![ContentBlock::Text {
+                        text: text.to_string(),
+                    }],
+                    usage: None,
+                    response_id: None,
+                    stop_reason: None,
+                })
+                .unwrap();
+        }
+        // seq 5: compaction superseding everything ≤ seq 4
+        journal
+            .append(JournalEntryKind::Compaction {
+                compacted_through_seq: 4,
+                summary: "User asked question, assistant answered.".to_string(),
+                original_message_count: 3,
+                original_token_count: 42,
+            })
+            .unwrap();
+        // seq 6, 7: post-compaction messages
+        journal
+            .append(JournalEntryKind::Message {
+                role: Role::User,
+                content: vec![ContentBlock::Text {
+                    text: "post-compact user".to_string(),
+                }],
+                usage: None,
+                response_id: None,
+                stop_reason: None,
+            })
+            .unwrap();
+        journal
+            .append(JournalEntryKind::Message {
+                role: Role::Assistant,
+                content: vec![ContentBlock::Text {
+                    text: "post-compact asst".to_string(),
+                }],
+                usage: None,
+                response_id: None,
+                stop_reason: None,
+            })
+            .unwrap();
+
+        let entries = Journal::read_all(&path).unwrap();
+        let messages = reconstruct_messages(&entries);
+
+        // Expect: [synthetic summary, post-compact user, post-compact asst]
+        assert_eq!(
+            messages.len(),
+            3,
+            "expected synthetic summary + 2 post-compact messages, got {}",
+            messages.len()
+        );
+        // First message = synthetic summary
+        assert_eq!(messages[0].role, Role::User);
+        let first_text = messages[0]
+            .content
+            .iter()
+            .find_map(|b| match b {
+                ContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .unwrap();
+        assert!(first_text.contains("Prior conversation was compacted"));
+        assert!(first_text.contains("User asked question, assistant answered."));
+        // Second + third = post-compaction messages, verbatim
+        assert_eq!(messages[1].role, Role::User);
+        let msg1_text = messages[1]
+            .content
+            .iter()
+            .find_map(|b| match b {
+                ContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(msg1_text, "post-compact user");
+        assert_eq!(messages[2].role, Role::Assistant);
+
+        // Critically: the pre-compaction messages should NOT appear anywhere.
+        for msg in &messages {
+            for block in &msg.content {
+                if let ContentBlock::Text { text } = block {
+                    assert!(
+                        !text.contains("first user msg"),
+                        "pre-compaction message should have been dropped, but found '{}'",
+                        text
+                    );
+                    assert!(
+                        !text.contains("first asst msg"),
+                        "pre-compaction message should have been dropped, but found '{}'",
+                        text
+                    );
+                    assert!(
+                        !text.contains("second user msg"),
+                        "pre-compaction message should have been dropped, but found '{}'",
+                        text
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_reconstruct_messages_respects_latest_compaction_when_multiple() {
+        // L4: journal has two Compaction entries. Only the LATEST one's
+        // cutoff should apply — and only its summary should be emitted.
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("conversation.jsonl");
+        let mut journal = Journal::open(&path).unwrap();
+
+        journal
+            .append(JournalEntryKind::Init {
+                model: "m".to_string(),
+                provider: "p".to_string(),
+                system_prompt: "s".to_string(),
+                tools: vec![],
+                task_id: None,
+            })
+            .unwrap();
+        // seq 2: message
+        journal
+            .append(JournalEntryKind::Message {
+                role: Role::User,
+                content: vec![ContentBlock::Text {
+                    text: "very early message".to_string(),
+                }],
+                usage: None,
+                response_id: None,
+                stop_reason: None,
+            })
+            .unwrap();
+        // seq 3: first compaction
+        journal
+            .append(JournalEntryKind::Compaction {
+                compacted_through_seq: 2,
+                summary: "FIRST SUMMARY".to_string(),
+                original_message_count: 1,
+                original_token_count: 10,
+            })
+            .unwrap();
+        // seq 4: message
+        journal
+            .append(JournalEntryKind::Message {
+                role: Role::User,
+                content: vec![ContentBlock::Text {
+                    text: "middle message".to_string(),
+                }],
+                usage: None,
+                response_id: None,
+                stop_reason: None,
+            })
+            .unwrap();
+        // seq 5: second compaction
+        journal
+            .append(JournalEntryKind::Compaction {
+                compacted_through_seq: 4,
+                summary: "SECOND SUMMARY".to_string(),
+                original_message_count: 2,
+                original_token_count: 20,
+            })
+            .unwrap();
+        // seq 6: final message
+        journal
+            .append(JournalEntryKind::Message {
+                role: Role::Assistant,
+                content: vec![ContentBlock::Text {
+                    text: "latest message".to_string(),
+                }],
+                usage: None,
+                response_id: None,
+                stop_reason: None,
+            })
+            .unwrap();
+
+        let entries = Journal::read_all(&path).unwrap();
+        let messages = reconstruct_messages(&entries);
+
+        // Expect: [SECOND SUMMARY, "latest message"]
+        assert_eq!(messages.len(), 2);
+        let summary_text = messages[0]
+            .content
+            .iter()
+            .find_map(|b| match b {
+                ContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .unwrap();
+        assert!(summary_text.contains("SECOND SUMMARY"));
+        assert!(
+            !summary_text.contains("FIRST SUMMARY"),
+            "older compaction summary should have been superseded"
+        );
+        let last_text = messages[1]
+            .content
+            .iter()
+            .find_map(|b| match b {
+                ContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(last_text, "latest message");
     }
 
     #[test]
@@ -1307,5 +1756,282 @@ mod tests {
         // Just below 128k should be medium tier
         let budget_med = ContextBudget::with_window_size(127_999);
         assert!((budget_med.warning_threshold - 0.60).abs() < 1e-10);
+    }
+
+    /// Helper: build N user messages, each with a text block of `chars_per_msg` chars.
+    fn user_messages(n: usize, chars_per_msg: usize) -> Vec<Message> {
+        (0..n)
+            .map(|_| Message {
+                role: Role::User,
+                content: vec![ContentBlock::Text {
+                    text: "x".repeat(chars_per_msg),
+                }],
+            })
+            .collect()
+    }
+
+    /// Helper: build a message with one ToolResult block of `chars` chars.
+    fn tool_result_message(chars: usize, id: &str) -> Message {
+        Message {
+            role: Role::User,
+            content: vec![ContentBlock::ToolResult {
+                tool_use_id: id.to_string(),
+                content: "y".repeat(chars),
+                is_error: false,
+            }],
+        }
+    }
+
+    #[test]
+    fn test_check_pressure_accounts_for_overhead() {
+        // 32k window, small-tier thresholds: compact at 0.65 → 20_800 tokens
+        // With 10k overhead, compaction should trigger at ~10_800 message tokens,
+        // not ~20_800 as it would without overhead accounting.
+        let budget = ContextBudget::with_window_size(32_000).with_overhead(10_000);
+
+        // 40_000 chars / 4 = 10_000 message tokens; + 10_000 overhead = 20_000 effective
+        // 20_000 / 32_000 = 0.625 → below compact_threshold (0.65), still Warning range.
+        let msgs = user_messages(1, 40_000);
+        match budget.check_pressure(&msgs) {
+            ContextPressureAction::Warning => {}
+            other => panic!("expected Warning at 62.5%, got {:?}", other),
+        }
+
+        // 48_000 chars / 4 = 12_000 msg tokens; + 10_000 overhead = 22_000 effective
+        // 22_000 / 32_000 = 0.6875 → above compact_threshold (0.65) → EmergencyCompaction
+        let msgs = user_messages(1, 48_000);
+        match budget.check_pressure(&msgs) {
+            ContextPressureAction::EmergencyCompaction => {}
+            other => panic!("expected EmergencyCompaction at 68.75%, got {:?}", other),
+        }
+
+        // Sanity: the same message volume with NO overhead is at 37.5% — well
+        // below the 55% warning threshold — so the old logic would have called
+        // this Ok and done nothing, letting the agent blow past real capacity.
+        let budget_no_overhead = ContextBudget::with_window_size(32_000);
+        match budget_no_overhead.check_pressure(&msgs) {
+            ContextPressureAction::Ok => {}
+            other => panic!(
+                "without overhead, 12k msg tokens / 32k = 37.5% should be Ok, got {:?}",
+                other
+            ),
+        }
+    }
+
+    #[test]
+    fn test_effective_tokens_sums_messages_and_overhead() {
+        let budget = ContextBudget::with_window_size(100_000).with_overhead(5_000);
+        // 400 chars / 4 = 100 message tokens
+        let msgs = user_messages(1, 400);
+        assert_eq!(budget.estimate_tokens(&msgs), 100);
+        assert_eq!(budget.effective_tokens(&msgs), 5_100);
+    }
+
+    #[test]
+    fn test_emergency_compact_shrinks_recent_position_tool_results() {
+        // Regression for the smoke-stress-compaction bug: a chatty
+        // file-reading workload puts big tool results in RECENT positions.
+        // The old message-position-based "keep last N messages" rule would
+        // protect them and compaction would reduce zero tokens. The new
+        // occurrence-based rule (keep last N TOOL RESULTS) should shrink
+        // earlier-occurrence tool results regardless of where they sit.
+        //
+        // Build a realistic 9-message layout:
+        //   0: user task
+        //   1: assistant (text + tool_use for read_file A)
+        //   2: user (tool_result with 10KB content)  ← old
+        //   3: assistant (text + tool_use for read_file B)
+        //   4: user (tool_result with 10KB content)  ← older-but-"recent" position
+        //   5: assistant (text + tool_use for read_file C)
+        //   6: user (tool_result with 10KB content)  ← most-recent position
+        //   7: assistant (text)
+        //   8: user (text)
+        let mut messages = Vec::new();
+        messages.push(Message {
+            role: Role::User,
+            content: vec![ContentBlock::Text {
+                text: "Summarize all docs".to_string(),
+            }],
+        });
+        for i in 0..3 {
+            messages.push(Message {
+                role: Role::Assistant,
+                content: vec![
+                    ContentBlock::Text {
+                        text: format!("Reading file {}", i),
+                    },
+                    ContentBlock::ToolUse {
+                        id: format!("tu-{}", i),
+                        name: "read_file".to_string(),
+                        input: serde_json::json!({"path": format!("docs/{}.md", i)}),
+                    },
+                ],
+            });
+            messages.push(Message {
+                role: Role::User,
+                content: vec![ContentBlock::ToolResult {
+                    tool_use_id: format!("tu-{}", i),
+                    content: "x".repeat(10_000),
+                    is_error: false,
+                }],
+            });
+        }
+        messages.push(Message {
+            role: Role::Assistant,
+            content: vec![ContentBlock::Text {
+                text: "Now I'll write the summary".to_string(),
+            }],
+        });
+
+        let budget = ContextBudget::with_window_size(32_000);
+        let before = budget.estimate_tokens(&messages);
+
+        // keep_recent_tool_results=2 — should shrink the FIRST of 3 tool
+        // results (~10KB) while preserving the last 2 verbatim.
+        let after = ContextBudget::emergency_compact(messages.clone(), 2);
+        let after_tokens = budget.estimate_tokens(&after);
+        let delta = before.saturating_sub(after_tokens);
+
+        assert_eq!(after.len(), messages.len(), "message count preserved");
+        assert!(
+            delta >= 2000,
+            "compaction should shrink at least one 10KB tool result \
+             (~2500 tokens reduction expected), got delta={} (before={}, after={})",
+            delta,
+            before,
+            after_tokens,
+        );
+
+        // keep_recent_tool_results=1 — should shrink 2 of 3 tool results.
+        let aggressive = ContextBudget::emergency_compact(messages.clone(), 1);
+        let aggressive_tokens = budget.estimate_tokens(&aggressive);
+        assert!(
+            aggressive_tokens < after_tokens,
+            "keep_recent=1 should reduce more than keep_recent=2: {} vs {}",
+            aggressive_tokens,
+            after_tokens,
+        );
+
+        // keep_recent_tool_results=0 — should shrink ALL tool results.
+        let maximum = ContextBudget::emergency_compact(messages.clone(), 0);
+        let maximum_tokens = budget.estimate_tokens(&maximum);
+        assert!(
+            maximum_tokens < aggressive_tokens,
+            "keep_recent=0 should reduce more than keep_recent=1: {} vs {}",
+            maximum_tokens,
+            aggressive_tokens,
+        );
+    }
+
+    #[test]
+    fn test_hard_emergency_compact_reduces_more_than_soft() {
+        // 8 older messages, each with a 1000-char tool result, plus 3 recent messages.
+        let mut messages: Vec<Message> = (0..8)
+            .map(|i| tool_result_message(1000, &format!("tu-{}", i)))
+            .collect();
+        messages.extend(user_messages(3, 100));
+
+        let budget = ContextBudget::with_window_size(32_000);
+        let before_tokens = budget.estimate_tokens(&messages);
+
+        // Soft variant: keeps last 5, so only 6 older messages get their
+        // tool results shrunk (to ~150 chars each).
+        let soft = ContextBudget::emergency_compact(messages.clone(), 5);
+        let soft_tokens = budget.estimate_tokens(&soft);
+        assert_eq!(soft.len(), messages.len(), "message count preserved");
+        assert!(
+            soft_tokens < before_tokens,
+            "soft compact should reduce tokens: {} → {}",
+            before_tokens,
+            soft_tokens
+        );
+
+        // Hard variant with keep_recent=2: more messages get compacted AND
+        // the replacement stub is smaller ("[tool result elided...]").
+        let hard = ContextBudget::hard_emergency_compact(messages.clone(), 2);
+        let hard_tokens = budget.estimate_tokens(&hard);
+        assert_eq!(hard.len(), messages.len(), "message count preserved");
+        assert!(
+            hard_tokens < soft_tokens,
+            "hard compact should reduce more than soft: soft={}, hard={}",
+            soft_tokens,
+            hard_tokens
+        );
+    }
+
+    #[test]
+    fn test_hard_emergency_compact_strips_thinking_and_truncates_text() {
+        let mut messages = vec![
+            // Older message with thinking + long text
+            Message {
+                role: Role::Assistant,
+                content: vec![
+                    ContentBlock::Thinking {
+                        thinking: "a".repeat(2000),
+                        reasoning_details: None,
+                    },
+                    ContentBlock::Text {
+                        text: "b".repeat(2000),
+                    },
+                ],
+            },
+        ];
+        // Keep 1 recent message verbatim so the older message actually gets compacted.
+        messages.push(Message {
+            role: Role::User,
+            content: vec![ContentBlock::Text {
+                text: "recent".to_string(),
+            }],
+        });
+
+        let hard = ContextBudget::hard_emergency_compact(messages, 1);
+
+        // Older message: thinking dropped, text truncated
+        let older = &hard[0];
+        let has_thinking = older
+            .content
+            .iter()
+            .any(|b| matches!(b, ContentBlock::Thinking { .. }));
+        assert!(!has_thinking, "hard compact should strip thinking blocks");
+
+        let text_block = older
+            .content
+            .iter()
+            .find_map(|b| match b {
+                ContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .expect("text block should still be present");
+        assert!(
+            text_block.len() < 2000,
+            "long text should be truncated, got {} chars",
+            text_block.len()
+        );
+        assert!(text_block.contains("[truncated]"));
+
+        // Recent message untouched
+        assert_eq!(hard[1].content.len(), 1);
+    }
+
+    #[test]
+    fn test_estimate_agent_overhead_accounts_for_all_sources() {
+        let system_prompt = "s".repeat(4000); // 4000 chars / 4 = 1000 tokens
+        let tool_defs = vec![ToolDefinition {
+            name: "bash".to_string(),
+            description: "d".repeat(200),
+            input_schema: serde_json::json!({"type": "object", "properties": {}}),
+        }];
+        let max_tokens = 2048_u32;
+
+        let overhead = estimate_agent_overhead(&system_prompt, &tool_defs, max_tokens, 4.0);
+
+        // system: 4000 chars, tool name: 4, tool desc: 200, schema: ~40
+        // static_tokens ≈ (4000 + 4 + 200 + 40) / 4 ≈ 1061
+        // total ≈ 1061 + 2048 = 3109
+        assert!(
+            overhead >= 2048 + 1000 && overhead <= 2048 + 1100,
+            "overhead should roughly sum system + tools + max_tokens, got {}",
+            overhead
+        );
     }
 }

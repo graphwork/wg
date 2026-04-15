@@ -321,6 +321,8 @@ pub(crate) fn spawn_agent_inner(
         None
     };
 
+    vars.in_worktree = worktree_info.is_some();
+
     // Apply templates to executor settings (with effective model in vars)
     let mut settings = executor_config.apply_templates(&vars);
 
@@ -330,6 +332,12 @@ pub(crate) fn spawn_agent_inner(
     let model_str = settings.model.as_deref().unwrap_or("");
     let model_tier = super::context::classify_model_tier(model_str);
     scope_ctx.wg_guide_content = super::context::build_tiered_guide(dir, model_tier, model_str);
+
+    // Native executor exposes its own in-process file tools
+    // (`read_file`/`write_file`/`edit_file`/`grep`/`glob`). When spawning
+    // via native, inject the guidance section that teaches the model about
+    // those tools and warns against bash-based file manipulation.
+    scope_ctx.native_file_tools = settings.executor_type == "native";
 
     // Scope-based prompt assembly for built-in executors.
     // When no custom prompt_template is defined (built-in defaults),
@@ -565,6 +573,9 @@ pub(crate) fn spawn_agent_inner(
         cmd.env("WG_WORKTREE_PATH", &wt.path);
         cmd.env("WG_BRANCH", &wt.branch);
         cmd.env("WG_PROJECT_ROOT", &wt.project_root);
+        // Signal to Claude Code (and other tools) that this session is already
+        // inside a managed worktree — do not create a competing one.
+        cmd.env("WG_WORKTREE_ACTIVE", "1");
         // Isolate cargo target directory to prevent file lock contention between agents
         cmd.env("CARGO_TARGET_DIR", wt.path.join("target"));
     } else if let Some(ref wd) = settings.working_dir {
@@ -828,7 +839,7 @@ fn build_inner_command(
             cmd_parts.push("stream-json".to_string());
             cmd_parts.push("--dangerously-skip-permissions".to_string());
             cmd_parts.push("--disallowedTools".to_string());
-            cmd_parts.push(shell_escape("Agent"));
+            cmd_parts.push(shell_escape("Agent,EnterWorktree,ExitWorktree"));
             cmd_parts.push("--disable-slash-commands".to_string());
             if let Some(m) = effective_model {
                 cmd_parts.push("--model".to_string());
@@ -900,7 +911,9 @@ fn build_inner_command(
             cmd_parts.push("--allowedTools".to_string());
             cmd_parts.push(shell_escape("Bash(wg:*),Read,Glob,Grep,WebFetch,WebSearch"));
             cmd_parts.push("--disallowedTools".to_string());
-            cmd_parts.push(shell_escape("Edit,Write,NotebookEdit,Agent"));
+            cmd_parts.push(shell_escape(
+                "Edit,Write,NotebookEdit,Agent,EnterWorktree,ExitWorktree",
+            ));
 
             cmd_parts.push("--disable-slash-commands".to_string());
             // Add model flag if specified
@@ -929,7 +942,7 @@ fn build_inner_command(
             }
             // Prevent agents from spawning sub-agents outside workgraph
             cmd_parts.push("--disallowedTools".to_string());
-            cmd_parts.push(shell_escape("Agent"));
+            cmd_parts.push(shell_escape("Agent,EnterWorktree,ExitWorktree"));
 
             cmd_parts.push("--disable-slash-commands".to_string());
             // Add model flag if specified
@@ -1213,6 +1226,13 @@ fi
 # branch and clean up the worktree. Env vars are set by spawn when worktree
 # isolation is enabled; this section is a no-op otherwise.
 if [ -n "$WG_WORKTREE_PATH" ] && [ -n "$WG_BRANCH" ] && [ -n "$WG_PROJECT_ROOT" ]; then
+    # Worktree integrity check: verify the .git pointer still exists.
+    # If the agent escaped to a Claude Code worktree, the wg worktree's .git
+    # may have been severed by a competing git worktree add with the same basename.
+    if [ ! -e "$WG_WORKTREE_PATH/.git" ]; then
+        echo "[wrapper] WARNING: Worktree .git pointer missing at $WG_WORKTREE_PATH — possible worktree escape detected" >> "$OUTPUT_FILE"
+    fi
+
     TASK_STATUS_FINAL=$(wg show "$TASK_ID" --json 2>/dev/null | grep -o '"status": *"[^"]*"' | head -1 | sed 's/.*"status": *"//;s/"//' || echo "unknown")
 
     if [ "$TASK_STATUS_FINAL" = "done" ] || [ "$TASK_STATUS_FINAL" = "pending-validation" ]; then
@@ -1248,11 +1268,15 @@ Squash-merged from worktree branch $WG_BRANCH" 2>> "$OUTPUT_FILE"
         fi
     fi
 
-    # Always clean up the worktree, regardless of task outcome
-    rm -f "$WG_WORKTREE_PATH/.workgraph" 2>/dev/null
-    git -C "$WG_PROJECT_ROOT" worktree remove --force "$WG_WORKTREE_PATH" 2>/dev/null
-    git -C "$WG_PROJECT_ROOT" branch -D "$WG_BRANCH" 2>/dev/null
-    echo "[wrapper] Cleaned up worktree at $WG_WORKTREE_PATH" >> "$OUTPUT_FILE"
+    # Only clean up the worktree on success; preserve on failure for debugging/retry
+    if [ "$TASK_STATUS_FINAL" = "done" ] || [ "$TASK_STATUS_FINAL" = "pending-validation" ]; then
+        rm -f "$WG_WORKTREE_PATH/.workgraph" 2>/dev/null
+        git -C "$WG_PROJECT_ROOT" worktree remove --force "$WG_WORKTREE_PATH" 2>/dev/null
+        git -C "$WG_PROJECT_ROOT" branch -D "$WG_BRANCH" 2>/dev/null
+        echo "[wrapper] Cleaned up worktree at $WG_WORKTREE_PATH" >> "$OUTPUT_FILE"
+    else
+        echo "[wrapper] TASK_STATUS_FINAL is '$TASK_STATUS_FINAL' (failed or non-success) — skip cleanup, preserving worktree at $WG_WORKTREE_PATH for debugging" >> "$OUTPUT_FILE"
+    fi
 fi
 
 exit $EXIT_CODE
@@ -2462,6 +2486,7 @@ mod tests {
             max_task_depth: 0,
             has_failed_deps: false,
             failed_deps_info: String::new(),
+            in_worktree: false,
         };
 
         let command = build_inner_command(

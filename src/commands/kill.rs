@@ -204,7 +204,7 @@ pub fn run_tree(
 
     // The full set: root task + all downstream
     let mut all_task_ids: Vec<String> = vec![task_id.to_string()];
-    all_task_ids.extend(downstream.into_iter());
+    all_task_ids.extend(downstream);
     all_task_ids.sort();
 
     // Find agents working on any of these tasks
@@ -294,9 +294,7 @@ pub fn run_tree(
 
             match kill_result {
                 Ok(()) => {
-                    if let Err(e) =
-                        locked_registry.update_status(agent_id, AgentStatus::Stopping)
-                    {
+                    if let Err(e) = locked_registry.update_status(agent_id, AgentStatus::Stopping) {
                         eprintln!(
                             "Warning: failed to update status for agent {}: {}",
                             agent_id, e
@@ -325,24 +323,23 @@ pub fn run_tree(
         modify_graph(&path, |graph| {
             let mut changed = false;
             for tid in &tasks_to_abandon {
-                if let Some(task) = graph.get_task_mut(tid) {
-                    if !task.status.is_terminal() {
-                        task.status = Status::Abandoned;
-                        task.assigned = None;
-                        task.failure_reason =
-                            Some(format!("Tree-killed from root task '{}'", task_id));
-                        task.log.push(LogEntry {
-                            timestamp: Utc::now().to_rfc3339(),
-                            actor: None,
-                            user: Some(workgraph::current_user()),
-                            message: format!(
-                                "Tree-killed: abandoned as part of cascade from '{}'",
-                                task_id
-                            ),
-                        });
-                        abandoned_tasks.push(tid.clone());
-                        changed = true;
-                    }
+                if let Some(task) = graph.get_task_mut(tid)
+                    && !task.status.is_terminal()
+                {
+                    task.status = Status::Abandoned;
+                    task.assigned = None;
+                    task.failure_reason = Some(format!("Tree-killed from root task '{}'", task_id));
+                    task.log.push(LogEntry {
+                        timestamp: Utc::now().to_rfc3339(),
+                        actor: None,
+                        user: Some(workgraph::current_user()),
+                        message: format!(
+                            "Tree-killed: abandoned as part of cascade from '{}'",
+                            task_id
+                        ),
+                    });
+                    abandoned_tasks.push(tid.clone());
+                    changed = true;
                 }
             }
             changed
@@ -582,7 +579,10 @@ mod tests {
         // Verify nothing was changed (dry run)
         let graph = load_graph(graph_path(temp_dir.path())).unwrap();
         assert_eq!(graph.get_task("root").unwrap().status, Status::InProgress);
-        assert_eq!(graph.get_task("child-a").unwrap().status, Status::InProgress);
+        assert_eq!(
+            graph.get_task("child-a").unwrap().status,
+            Status::InProgress
+        );
         assert_eq!(graph.get_task("child-b").unwrap().status, Status::Open);
         assert_eq!(graph.get_task("grandchild").unwrap().status, Status::Open);
     }
@@ -606,13 +606,15 @@ mod tests {
         );
 
         // Check failure reason
-        assert!(graph
-            .get_task("child-a")
-            .unwrap()
-            .failure_reason
-            .as_ref()
-            .unwrap()
-            .contains("root"));
+        assert!(
+            graph
+                .get_task("child-a")
+                .unwrap()
+                .failure_reason
+                .as_ref()
+                .unwrap()
+                .contains("root")
+        );
     }
 
     #[test]
@@ -626,7 +628,10 @@ mod tests {
         // Tasks should NOT be abandoned with --no-abandon
         let graph = load_graph(graph_path(temp_dir.path())).unwrap();
         assert_eq!(graph.get_task("root").unwrap().status, Status::InProgress);
-        assert_eq!(graph.get_task("child-a").unwrap().status, Status::InProgress);
+        assert_eq!(
+            graph.get_task("child-a").unwrap().status,
+            Status::InProgress
+        );
         assert_eq!(graph.get_task("child-b").unwrap().status, Status::Open);
         assert_eq!(graph.get_task("grandchild").unwrap().status, Status::Open);
     }
@@ -638,7 +643,11 @@ mod tests {
 
         // Single task, no dependents
         let mut graph = WorkGraph::new();
-        graph.add_node(Node::Task(make_task("solo", "Solo Task", Status::InProgress)));
+        graph.add_node(Node::Task(make_task(
+            "solo",
+            "Solo Task",
+            Status::InProgress,
+        )));
         save_graph(&graph, &path).unwrap();
 
         let result = run_tree(temp_dir.path(), "solo", false, false, false, false);

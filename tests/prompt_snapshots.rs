@@ -87,6 +87,7 @@ fn test_template_vars() -> TemplateVars {
         max_task_depth: 8,
         has_failed_deps: false,
         failed_deps_info: String::new(),
+        in_worktree: false,
     }
 }
 

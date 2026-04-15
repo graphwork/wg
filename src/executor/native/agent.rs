@@ -16,7 +16,9 @@ use super::client::{
 };
 use super::journal::{EndReason, Journal, JournalEntryKind};
 use super::provider::Provider;
-use super::resume::{self, ContextBudget, ContextPressureAction, ResumeConfig};
+use super::resume::{
+    self, ContextBudget, ContextPressureAction, ResumeConfig, estimate_agent_overhead,
+};
 use super::state_injection::StateInjector;
 use super::tools::ToolRegistry;
 use crate::stream_event::{self, StreamWriter, TotalUsage, TurnUsage};
@@ -101,6 +103,10 @@ pub struct AgentLoop {
     state_injector: Option<StateInjector>,
     /// Registry entry for cost estimation (populated from spawn path).
     registry_entry: Option<crate::config::ModelRegistryEntry>,
+    /// Channels oversized tool outputs to disk so the message vec can never
+    /// be exploded by a single large tool call. The agent retrieves full
+    /// content via `bash` (cat/head/tail/sed/grep) on the handle path.
+    tool_output_channeler: Option<super::channel::ToolOutputChanneler>,
 }
 
 /// NDJSON log entry types for the output file.
@@ -189,8 +195,24 @@ impl AgentLoop {
         // Derive .streaming path from output_log directory
         let streaming_file_path = output_log.parent().map(|p| p.join(".streaming"));
 
-        // Build context budget from the provider's context window
-        let context_budget = ContextBudget::with_window_size(client.context_window());
+        // Build context budget from the provider's context window, with overhead
+        // from system prompt + tool definitions + completion reservation. This
+        // makes pressure thresholds reflect actual API budget usage rather than
+        // just message-content length.
+        let context_budget = {
+            let tool_defs = tools.definitions();
+            let overhead =
+                estimate_agent_overhead(&system_prompt, &tool_defs, client.max_tokens(), 4.0);
+            ContextBudget::with_window_size(client.context_window()).with_overhead(overhead)
+        };
+
+        // Tool output channeler: writes oversized tool outputs to
+        // `<agent_dir>/tool-outputs/` and returns a handle. The agent dir is
+        // derived from the output_log's parent. If output_log has no parent
+        // (unusual), channeling is disabled and outputs pass through.
+        let tool_output_channeler = output_log.parent().map(|agent_dir| {
+            super::channel::ToolOutputChanneler::new(agent_dir.join("tool-outputs"))
+        });
 
         Self {
             client,
@@ -211,6 +233,7 @@ impl AgentLoop {
             context_budget,
             state_injector: None,
             registry_entry: None,
+            tool_output_channeler,
         }
     }
 
@@ -471,6 +494,27 @@ impl AgentLoop {
         let mut tool_calls = Vec::new();
         let mut turns = 0;
         let mut consecutive_server_errors: u32 = 0;
+        // Consecutive compactions that reduced zero tokens. Drives the
+        // three-tier escalation ladder:
+        //   Level 1 (soft):    emergency_compact(messages, 2)      — L0
+        //   Level 2 (hard):    hard_emergency_compact(messages, 1) — L0.5
+        //   Level 3 (summary): summarize_history_for_compaction   — L3
+        //
+        // At each level, `NOOP_COMPACTION_ESCALATION_THRESHOLD` consecutive
+        // no-op fires escalate to the next level. Counter resets to 0 after
+        // any non-zero delta OR after an escalation fires (which is treated
+        // as a fresh attempt). This prevents the plateau-then-hard-limit
+        // failure mode where the model's own Text/Thinking content keeps
+        // accumulating past the compact threshold even though the lower
+        // tiers have saturated.
+        let mut consecutive_noop_compactions: u32 = 0;
+        const NOOP_COMPACTION_ESCALATION_THRESHOLD: u32 = 2;
+        // Whether we've already escalated to L3 (history summarization)
+        // at least once this session. Ratchet to avoid spamming L3 every
+        // few turns — once we've compacted the history, the message vec
+        // is dominated by the post-summary state, and the lower tiers
+        // should be able to keep up from there.
+        let mut l3_compaction_fired = false;
         const MAX_CONSECUTIVE_SERVER_ERRORS: u32 = 3;
 
         loop {
@@ -558,20 +602,34 @@ impl AgentLoop {
                     // compaction and retry once before giving up.
                     if super::openai_client::is_context_too_long(&e) {
                         eprintln!(
-                            "[native-agent] Context too long error — attempting emergency compaction and retry"
+                            "[native-agent] Context too long error — attempting hard emergency compaction and retry"
                         );
-                        let pre_compact_len = messages.len();
-                        messages = ContextBudget::emergency_compact(messages, 5);
+                        let pre_tokens = self.context_budget.effective_tokens(&messages);
+                        // On a hard context-too-long error, use the aggressive
+                        // compact: drop ALL tool results except the single
+                        // most recent one (keep_recent_tool_results=1), strip
+                        // thinking in elided messages, truncate long text.
+                        // keep_recent counts tool-result occurrences, not
+                        // messages — so recent-position big tool results
+                        // actually get shrunk.
+                        messages = ContextBudget::hard_emergency_compact(messages, 1);
+                        let post_tokens = self.context_budget.effective_tokens(&messages);
+                        let delta = pre_tokens.saturating_sub(post_tokens);
                         eprintln!(
-                            "[native-agent] Emergency compacted: {} → {} messages",
-                            pre_compact_len,
-                            messages.len()
+                            "[native-agent] Hard emergency compacted: ~{} → ~{} tokens (Δ -{}, overhead {} kept, keep_recent_tool_results=1)",
+                            pre_tokens, post_tokens, delta, self.context_budget.overhead_tokens,
                         );
+
+                        // Reduce completion reservation on retry to free budget for
+                        // input. On a 32k-window model where we're already over
+                        // capacity, reserving 8k for output is hostile — halve it
+                        // with a 1024-token floor so the model can still respond.
+                        let retry_max_tokens = std::cmp::max(self.client.max_tokens() / 2, 1024);
 
                         // Rebuild request with compacted messages and retry once
                         let retry_request = MessagesRequest {
                             model: self.client.model().to_string(),
-                            max_tokens: self.client.max_tokens(),
+                            max_tokens: retry_max_tokens,
                             system: Some(self.system_prompt.clone()),
                             messages: messages.clone(),
                             tools: if self.supports_tools {
@@ -977,10 +1035,12 @@ impl AgentLoop {
                             sw.write_tool_end(name, output.is_error, *duration_ms);
                         }
 
-                        // Log the tool call
+                        // Log the tool call (full output goes to the NDJSON
+                        // log regardless of channeling — the log is on disk).
                         self.log_tool_call(name, input, &output.content, output.is_error);
 
-                        // Journal the tool execution
+                        // Journal the tool execution (full output goes to
+                        // the journal, same reason — on-disk history).
                         if let Some(ref mut j) = journal {
                             let _ = j.append(JournalEntryKind::ToolExecution {
                                 tool_use_id: id.clone(),
@@ -999,9 +1059,21 @@ impl AgentLoop {
                             is_error: output.is_error,
                         });
 
+                        // Channel oversized outputs to disk before they
+                        // enter the message vec. This is the hard invariant
+                        // enforcement from Layer 1 of the reliability plan:
+                        // no single tool call can exceed the channel
+                        // threshold (default 2KiB) in the conversation.
+                        // Agents retrieve full content via bash
+                        // (cat/head/tail/sed/grep) on the path in the handle.
+                        let channeled_content = match &self.tool_output_channeler {
+                            Some(c) => c.maybe_channel(name, &output.content),
+                            None => output.content.clone(),
+                        };
+
                         results.push(ContentBlock::ToolResult {
                             tool_use_id: id.clone(),
-                            content: output.content.clone(),
+                            content: channeled_content,
                             is_error: output.is_error,
                         });
                     }
@@ -1104,25 +1176,82 @@ impl AgentLoop {
                     }
                 }
                 ContextPressureAction::EmergencyCompaction => {
-                    // 90%+ capacity: emergency compaction — strip old tool results
-                    let pre_compact = messages.len();
-                    messages = ContextBudget::emergency_compact(messages, 5);
+                    // Three-tier escalation ladder. keep_recent_tool_results
+                    // counts tool-result occurrences, not messages, so
+                    // recent-position big tool results actually get shrunk.
+                    let pre_tokens = self.context_budget.effective_tokens(&messages);
+                    let pre_count = messages.len();
+
+                    // Tier selection:
+                    //   streak ≥ 2×threshold AND !l3_fired → Level 3 (summarize)
+                    //   streak ≥ threshold                  → Level 2 (hard)
+                    //   otherwise                           → Level 1 (soft)
+                    let streak = consecutive_noop_compactions;
+                    let use_l3 =
+                        streak >= NOOP_COMPACTION_ESCALATION_THRESHOLD * 2 && !l3_compaction_fired;
+                    let use_hard = !use_l3 && streak >= NOOP_COMPACTION_ESCALATION_THRESHOLD;
+
+                    let tier_name = if use_l3 {
+                        "L3 summarize-history"
+                    } else if use_hard {
+                        "L2 hard"
+                    } else {
+                        "L1 soft"
+                    };
+
+                    messages = if use_l3 {
+                        l3_compaction_fired = true;
+                        super::tools::summarize::summarize_history_for_compaction(
+                            self.client.as_ref(),
+                            messages,
+                        )
+                        .await
+                    } else if use_hard {
+                        ContextBudget::hard_emergency_compact(messages, 1)
+                    } else {
+                        ContextBudget::emergency_compact(messages, 2)
+                    };
+
+                    let post_tokens = self.context_budget.effective_tokens(&messages);
+                    let post_count = messages.len();
+                    let delta = pre_tokens.saturating_sub(post_tokens);
+
+                    // Reset counter on non-zero delta OR after any
+                    // escalation (fresh attempt). L3 always resets.
+                    if delta > 0 || use_hard || use_l3 {
+                        consecutive_noop_compactions = 0;
+                    } else {
+                        consecutive_noop_compactions =
+                            consecutive_noop_compactions.saturating_add(1);
+                    }
+
                     eprintln!(
-                        "[native-agent] Emergency compaction at 90%: {} → {} messages",
-                        pre_compact,
-                        messages.len()
+                        "[native-agent] {} compaction: ~{} → ~{} tokens (Δ -{}, {} → {} messages, overhead {} kept, noop_streak={})",
+                        tier_name,
+                        pre_tokens,
+                        post_tokens,
+                        delta,
+                        pre_count,
+                        post_count,
+                        self.context_budget.overhead_tokens,
+                        consecutive_noop_compactions,
                     );
 
-                    // Journal the compaction event
+                    // Journal the compaction event. `compacted_through_seq`
+                    // records the seq of the last journal entry this
+                    // compaction supersedes — on resume, reconstruct_messages
+                    // drops entries with seq ≤ this value and substitutes
+                    // `summary` in their place.
                     if let Some(ref mut j) = journal {
+                        let compacted_through_seq = j.seq();
                         let _ = j.append(JournalEntryKind::Compaction {
-                            compacted_through_seq: 0,
+                            compacted_through_seq,
                             summary: format!(
-                                "Emergency compaction triggered at ~90% context capacity. {} messages compacted.",
-                                pre_compact
+                                "{} compaction. Tokens: ~{} → ~{}, messages: {} → {}.",
+                                tier_name, pre_tokens, post_tokens, pre_count, post_count
                             ),
-                            original_message_count: pre_compact as u32,
-                            original_token_count: 0,
+                            original_message_count: pre_count as u32,
+                            original_token_count: pre_tokens as u32,
                         });
                     }
                 }

@@ -197,31 +197,32 @@ Use `wg add` to create what comes next.\n";
 pub const AUTOPOIETIC_GUIDANCE: &str = "\
 ## Task Decomposition
 
-You are encouraged to create new tasks as you discover work. \
-The coordinator will dispatch them automatically.
+Fanout is a tool, not a default. Always attempt direct implementation first. \
+The coordinator will dispatch any subtasks you create automatically.
 
-### When to decompose vs implement directly
+### DEFAULT: Implement directly
+Start by doing the work yourself. Only switch to decomposition after assessing complexity.
 
-**Difficulty is not the same as decomposability.** If a task is hard but single-scope, \
-attempt it directly — do not decompose just because it seems challenging.
-
-Decompose when the task has **genuinely independent parts** that benefit from parallel work:
-
-1. **Decompose** the task into sub-tasks that would produce the same output
-2. **Create** those sub-tasks using `wg add` with `--after {{task_id}}` dependencies
-3. **Let** those sub-tasks run and complete (the coordinator dispatches them)
-4. **Complete** your parent task based on the sub-task results
-
-### Good reasons to decompose
-- Your task has 3+ independent parts that could run in parallel
+### Fan out when:
+- 3+ independent files/components need changes that can genuinely run in parallel
+- You hit context pressure: re-reading files you already read, losing track of changes
+- The task has natural parallelism (e.g., 3 separate test files, N independent modules)
 - You discover a bug, missing doc, or needed refactor outside your scope
-- A prerequisite doesn't exist yet and needs to be created first
-- Your task is too large for a single agent session
 
-### Bad reasons to decompose (implement directly instead)
-- The task seems hard or unfamiliar — attempt it first
-- You're unsure if you can satisfy verification — try and let verification judge
-- The constraints seem conflicting — try your best interpretation
+### Stay inline when:
+- The task is straightforward, even if it touches multiple files sequentially
+- Each step depends on the previous (sequential work doesn't parallelize)
+- Simple fixes, config changes, small features
+- The task is hard but single-scope — difficulty alone is NOT a reason to decompose
+- Decomposition overhead would exceed the work itself
+
+### If you decompose:
+- Each subtask MUST list its file scope — **NO two subtasks may modify the same file**
+- Subtask descriptions should include \"Implement directly — do not decompose further\"
+- ALWAYS include an integrator at join points: \
+`wg add 'Integrate' --after part-a,part-b`
+- ALWAYS use `--after {{task_id}}` for dependencies
+- Log your decision: `wg log {{task_id}} \"FANOUT_DECISION: decompose — <reason>\"`
 
 ### How to decompose
 - **Fan out parallel work**: \
@@ -442,28 +443,37 @@ pub fn build_decomposition_guidance(
             ));
         }
         TaskComplexity::MultiStep => {
-            parts.push(
+            parts.push(format!(
                 "This appears to be a **multi-step task**. Consider decomposing with dependencies.\n\
                  \n\
-                 ### When to decompose\n\
-                 Decompose when the task has **genuinely independent parts** that benefit from \
-                 parallel work. Difficulty alone is NOT a reason to decompose — if a task is \
-                 hard but single-scope, attempt it directly first.\n\
+                 ### DEFAULT: Attempt direct implementation first\n\
+                 Even for multi-step tasks, start by implementing directly. Fanout is a tool, not a \
+                 default — overkill fanout on manageable tasks wastes tokens and adds coordination friction.\n\
                  \n\
-                 If you do decompose:\n\
-                 1. **Decompose** the task into sub-tasks that would produce the same output\n\
-                 2. **Create** those sub-tasks using `wg add` with `--after {task_id}` dependencies\n\
-                 3. **Let** those sub-tasks run and complete (the coordinator dispatches them)\n\
-                 4. **Complete** your parent task based on the sub-task results\n\
+                 ### Fan out when:\n\
+                 - 3+ independent files/components need changes that can genuinely run in parallel\n\
+                 - You hit context pressure: re-reading files you already read, losing track of changes\n\
+                 - The task has natural parallelism (e.g., 3 separate test files, N independent modules)\n\
+                 - Your turn count exceeds 25 with no test progress\n\
                  \n\
-                 When creating subtasks, ALWAYS use `--after` to express dependencies. \
-                 Flat task lists without dependency edges are an anti-pattern — they run \
-                 in arbitrary order and produce race conditions.\n\
+                 ### Stay inline when:\n\
+                 - The task is straightforward, even if it touches multiple files sequentially\n\
+                 - Each step depends on the previous (sequential work doesn't parallelize)\n\
+                 - Simple fixes, config changes, small features\n\
+                 - The task is hard but single-scope — difficulty alone is NOT a reason to decompose\n\
+                 \n\
+                 ### If you decompose:\n\
+                 - Each subtask MUST list its file scope in the description — **NO two subtasks may modify the same file**\n\
+                 - Subtask descriptions should include \"Implement directly — do not decompose further\"\n\
+                 - Always include a verify/integration task at the end: \
+                 `wg add 'Integrate' --after part-a,part-b`\n\
+                 - ALWAYS use `--after` to express dependencies. \
+                 Flat task lists without dependency edges are an anti-pattern.\n\
+                 - Log your decision: `wg log {task_id} \"FANOUT_DECISION: decompose — <reason>\"`\n\
                  \n\
                  ### Decomposition Templates\n\
                  Choose the pattern that best fits your task:"
-                    .to_string(),
-            );
+            ));
             parts.push(DECOMP_TEMPLATE_PIPELINE.replace("{{task_id}}", task_id));
             parts.push(DECOMP_TEMPLATE_FAN_OUT.replace("{{task_id}}", task_id));
             parts.push(DECOMP_TEMPLATE_ITERATE.replace("{{task_id}}", task_id));
@@ -517,6 +527,21 @@ You share a working tree with other agents. Follow these rules strictly:
 - **NEVER force push.** No `git push --force`.
 - **Don't touch others' changes.** If `git status` shows files you didn't modify, do not stage, commit, stash, or reset them.
 - **Handle locks gracefully.** `.git/index.lock` or cargo target locks mean another agent is working. Wait 2-3 seconds and retry. Don't delete lock files.\n";
+
+/// Worktree isolation warning for agents running in wg-managed worktrees.
+/// Prevents agents from calling EnterWorktree/ExitWorktree which escapes the wg worktree.
+pub const WORKTREE_ISOLATION_SECTION: &str = "\
+## CRITICAL: Worktree Isolation
+
+You are running inside a **workgraph-managed worktree**. Your working directory is already isolated.
+
+**NEVER use the `EnterWorktree` or `ExitWorktree` tools.** Using them will:
+1. Create a SECOND worktree in `.claude/worktrees/`, abandoning this one
+2. Switch your session CWD away from the workgraph branch
+3. Cause ALL your commits to go to the wrong branch
+4. Result in your work being LOST — the merge-back will find no commits
+
+If you see these tools available, **ignore them completely**. Workgraph already provides full git isolation.\n";
 
 /// Message polling instructions for agents.
 /// Contains {{task_id}} placeholder for variable substitution.
@@ -577,6 +602,112 @@ const WG_CONTEXT_HINT: &str = "\
 - Use `wg show <task-id>` to inspect any task's details, status, artifacts, and logs
 - Use `wg context` to view the current task's full context
 - Use `wg list` to see all tasks and their statuses\n";
+
+/// Native executor tool guidance. Injected into the prompt only when the
+/// executor is `native`, since these tool names are specific to the native
+/// executor's in-process tool registry — claude/amplifier/etc. have
+/// different names provided by their own runtimes.
+///
+/// The goal is to make the full native toolset visible in the system
+/// prompt narrative, not just as API tool definitions. Models — especially
+/// smaller ones with strong bash training priors — otherwise default to
+/// shell-based workarounds for problems that have better first-class tools
+/// (echo/heredoc for file creation, sed for editing, curl for web access,
+/// polling loops for async work, etc.).
+pub const NATIVE_FILE_TOOLS_SECTION: &str = "\
+## Native Executor Tools
+
+You have a rich in-process toolset. **Prefer the dedicated tool over a bash \
+equivalent whenever one exists.** Bash is for things without a dedicated tool.
+
+### File operations (no shell escaping, structured results)
+
+- `read_file(path, offset?, limit?)` — read a file or a slice. Replaces `cat`/`head`/`tail`.
+- `write_file(path, content)` — create or overwrite a file. Replaces `echo >` and \
+heredocs. **Shell escaping of multi-line content is fragile — this is the #1 cause \
+of failed file creation.** Never use bash for new-file creation.
+- `edit_file(path, old_string, new_string)` — surgical in-place replacement. \
+Replaces `sed -i`. `old_string` must appear exactly once; include surrounding \
+context when needed to make it unique.
+- `grep(pattern, path?, ...)` — search file contents. Replaces `grep -r`.
+- `glob(pattern)` — find files by name pattern. Replaces `find` and shell globbing.
+
+### Running programs
+
+- `bash(command)` — **synchronous** shell execution. Use for tests, builds, \
+system inspection, and quick one-shots. Outputs >2KB are channeled to disk \
+automatically (see below).
+- `bg(action, ...)` — **background/detached** execution for long-running commands \
+(cargo build, test suites, servers) that would otherwise block your turn loop. \
+Actions: `run`, `list`, `status`, `output`, `kill`, `delete`. Completion \
+notifications inject into your next turn automatically. **Use `bg` — never \
+`bash: nohup X &` or `while sleep; do check; done` — for anything longer than a \
+few seconds.**
+
+### Web access (structured content, no HTML parsing)
+
+- `web_search(query, max_results?)` — search the web, get ranked title/URL/snippet \
+results. Use instead of shelling out to curl+scraping.
+- `web_fetch(url)` — fetch a page and get clean markdown (navigation/ads/scripts \
+stripped, code blocks and tables preserved). Use instead of `bash: curl $URL` which \
+gives you raw HTML.
+
+### Delegation and summarization (push work out of your context)
+
+- `delegate(prompt, exec_mode?, max_turns?)` — spawn a focused in-process sub-agent \
+with its own conversation context. **The sub-agent's token usage does NOT count \
+against your context** — only its final result text does. Use this for focused \
+queries that would otherwise bloat your own context window: \"read src/X.rs and list \
+its public functions\", \"find all callers of Y\", \"summarize the tests in tests/Z/\". \
+`exec_mode=light` (default) gives read-only tools; `exec_mode=full` gives the full \
+set minus `delegate` itself. `max_turns` caps the sub-agent at 5 (default) to 20 turns.
+
+- `summarize(source, instruction?, max_input_bytes?)` — recursively summarize a \
+**large text source** via map-reduce. Takes a file path OR inline text, chunks it \
+to fit the model's context, summarizes each chunk independently with your \
+instruction, then merges — recursing on the merged summaries if they're still \
+too large. Use this when a source is too big to read directly: long log files, \
+big text dumps, transcripts, large documents. Unlike `delegate`, `summarize` \
+issues direct text-in/text-out LLM calls with no tool loop — cheap, predictable, \
+and able to handle sources that would otherwise require many turns of manual \
+chunking. Hard ceiling 1 MB by default (raisable via `max_input_bytes`).
+
+### Workgraph task management (in-process, no CLI spawn)
+
+- `wg_show(task_id)`, `wg_list()`, `wg_log(task_id, message)` — inspect and \
+annotate tasks.
+- `wg_add(title, description?, after?, tags?, skills?)` — create follow-up tasks \
+(e.g., \"Verify: ...\" after your current task for fan-out).
+- `wg_done(task_id)`, `wg_fail(task_id, reason)`, `wg_artifact(task_id, path)` — \
+lifecycle operations.
+
+Prefer these over `bash: wg show ...` — they take structured input and return \
+structured results. For advanced flags not in the tool schemas \
+(`--subtask` for blocking subtask, `--cron \"expr\"` for scheduled tasks), fall \
+back to `bash: wg add --subtask ...` or `bash: wg add --cron ...`.
+
+### Channeled tool outputs
+
+When any tool returns more than ~2KB, the full output is saved to \
+`.workgraph/agents/<agent-id>/tool-outputs/NNNNN.log` and replaced in your \
+conversation with a compact handle plus a short preview. The raw bytes are always \
+on disk — do NOT re-fetch from the original source. To read more from a channeled \
+output, use either `read_file` with `offset`/`limit` on the handle path, or `bash` \
+for text slicing (`sed -n 'A,Bp'`, `grep -n`, `wc -l`, `head`, `tail`).
+
+### Anti-patterns — DO NOT do these
+
+- `echo \"...\" > file` → use `write_file`
+- `cat <<EOF > file ... EOF` → use `write_file`
+- `sed -i 's/a/b/' file` → use `edit_file`
+- `find . -name '*.rs'` → use `glob` with `**/*.rs`
+- `grep -r foo src/` → use `grep`
+- `curl $URL | lynx -dump` → use `web_fetch`
+- `nohup long_command &` / `tmux new-session` → use `bg run`
+- `while ! ls output; do sleep 5; done` → use `bg` with status checks
+- Reading a whole huge file into context when you only need a slice → use \
+`read_file(offset, limit)` or `delegate` to a sub-agent
+";
 
 /// Default workgraph usage guide for non-Claude models.
 ///
@@ -750,6 +881,11 @@ pub struct ScopeContext {
     pub decomp_guidance: bool,
     /// Whether Telegram escalation is configured and available (task+ scope)
     pub telegram_available: bool,
+    /// Whether to inject the native-executor file-tool guidance section.
+    /// Set when the spawning executor is `native` so the model learns it
+    /// has `read_file`/`write_file`/`edit_file`/`grep`/`glob` available
+    /// and should prefer them over bash equivalents.
+    pub native_file_tools: bool,
 }
 
 /// Build a scope-aware prompt for built-in executors.
@@ -857,10 +993,21 @@ pub fn build_prompt(vars: &TemplateVars, scope: ContextScope, ctx: &ScopeContext
         ));
     }
 
+    // Task+ scope: native-executor file-tool guidance. Teaches the model
+    // that it has dedicated read_file/write_file/edit_file/grep/glob tools
+    // and should prefer them over bash equivalents (echo/cat/heredoc/sed).
+    // This is foundational — place it near the top of the guidance stack.
+    if scope >= ContextScope::Task && ctx.native_file_tools {
+        parts.push(NATIVE_FILE_TOOLS_SECTION.to_string());
+    }
+
     // Task+ scope: workflow sections (with {{task_id}} substitution)
     if scope >= ContextScope::Task {
         parts.push(vars.apply(REQUIRED_WORKFLOW_SECTION));
         parts.push(GIT_HYGIENE_SECTION.to_string());
+        if vars.in_worktree {
+            parts.push(WORKTREE_ISOLATION_SECTION.to_string());
+        }
         parts.push(vars.apply(MESSAGE_POLLING_SECTION));
 
         // Task+ scope: Telegram escalation (when configured)
@@ -960,6 +1107,8 @@ pub struct TemplateVars {
     pub has_failed_deps: bool,
     /// Info about failed dependencies for triage prompt injection
     pub failed_deps_info: String,
+    /// True when the agent is running in a wg-managed worktree
+    pub in_worktree: bool,
 }
 
 impl TemplateVars {
@@ -1033,6 +1182,7 @@ impl TemplateVars {
             max_task_depth: guardrails.max_task_depth,
             has_failed_deps: false,
             failed_deps_info: String::new(),
+            in_worktree: false,
         }
     }
 
@@ -2920,8 +3070,8 @@ args = ["--custom-flag"]
             "Static guidance should NOT contain adaptive classification"
         );
         assert!(
-            prompt.contains("You are encouraged to create new tasks"),
-            "Static guidance should contain original AUTOPOIETIC_GUIDANCE text"
+            prompt.contains("Fanout is a tool, not a default"),
+            "Static guidance should contain AUTOPOIETIC_GUIDANCE text"
         );
     }
 

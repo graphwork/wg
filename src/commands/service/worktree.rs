@@ -25,6 +25,15 @@ use std::os::unix::fs::PermissionsExt;
 /// The directory under the project root where agent worktrees live.
 pub const WORKTREES_DIR: &str = ".wg-worktrees";
 
+/// Heartbeat freshness timeout (seconds) for the worktree-cleanup
+/// liveness check. A worktree is considered owned by a live agent only
+/// if the agent's last heartbeat is within this window AND its process
+/// is alive AND its status is alive. Set generously (5 minutes) to
+/// accommodate agents that briefly stall during long tool calls.
+///
+/// See `AgentEntry::is_live` for the full invariant.
+const HEARTBEAT_LIVENESS_TIMEOUT_SECS: u64 = 300;
+
 /// Maximum number of retry attempts for transient failures.
 const MAX_RETRIES: usize = 3;
 
@@ -205,17 +214,9 @@ pub fn remove_worktree(project_root: &Path, worktree_path: &Path, branch: &str) 
         resources.branches_pruned += 1;
     }
 
-    // Prune stale worktree entries
-    let output = Command::new("git")
-        .args(["worktree", "prune"])
-        .current_dir(project_root)
-        .output()
-        .context("Failed to execute git worktree prune command")?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        cleanup_errors.push(format!("Git worktree prune failed: {}", stderr.trim()));
-    }
+    // NOTE: We intentionally do NOT run `git worktree prune` here.
+    // Global prune can remove metadata for other agents' worktrees that are
+    // temporarily missing during concurrent cleanup, causing data loss.
 
     let success = cleanup_errors.is_empty();
     timer.complete(success, resources);
@@ -597,7 +598,7 @@ pub fn cleanup_orphaned_worktrees(dir: &Path) -> Result<usize> {
         let is_alive = registry
             .agents
             .get(&name)
-            .map(|a| a.is_alive() && crate::commands::is_process_alive(a.pid))
+            .map(|a| a.is_live(HEARTBEAT_LIVENESS_TIMEOUT_SECS))
             .unwrap_or(false);
 
         if !is_alive {
@@ -669,13 +670,9 @@ pub fn cleanup_orphaned_worktrees(dir: &Path) -> Result<usize> {
         }
     }
 
-    // Final prune to clean up any stale git worktree metadata
-    if cleaned > 0 {
-        let _ = Command::new("git")
-            .args(["worktree", "prune"])
-            .current_dir(project_root)
-            .output();
-    }
+    // NOTE: We intentionally do NOT run `git worktree prune` here.
+    // Other agents may be running concurrently; global prune can damage their
+    // worktree metadata if their directory is temporarily absent.
 
     let resources = workgraph::metrics::ResourceRecoveryStats {
         worktrees_removed: cleaned as u64,
@@ -715,7 +712,7 @@ pub fn prune_stale_worktrees(dir: &Path, max_age_secs: u64) -> Result<usize> {
         let is_alive = registry
             .agents
             .get(&name)
-            .map(|a| a.is_alive() && crate::commands::is_process_alive(a.pid))
+            .map(|a| a.is_live(HEARTBEAT_LIVENESS_TIMEOUT_SECS))
             .unwrap_or(false);
 
         if is_alive {
@@ -804,12 +801,7 @@ pub fn prune_stale_worktrees(dir: &Path, max_age_secs: u64) -> Result<usize> {
         }
     }
 
-    if pruned > 0 {
-        let _ = Command::new("git")
-            .args(["worktree", "prune"])
-            .current_dir(project_root)
-            .output();
-    }
+    // NOTE: No global `git worktree prune` — concurrent agents may be running.
 
     Ok(pruned)
 }
@@ -1816,6 +1808,73 @@ mod tests {
 
         let pruned = prune_recovery_branches(&project, &config).unwrap();
         assert_eq!(pruned, 0);
+    }
+
+    #[test]
+    fn test_cleanup_orphaned_worktrees_skips_live_agents() {
+        use workgraph::service::registry::{AgentEntry, AgentRegistry, AgentStatus};
+
+        let temp = TempDir::new().unwrap();
+        let project = temp.path().join("project");
+        fs::create_dir_all(&project).unwrap();
+        init_git_repo(&project);
+
+        let wg_dir = project.join(".workgraph");
+        fs::create_dir_all(wg_dir.join("service")).unwrap();
+
+        // Create worktrees for two agents: one live, one dead
+        let (live_wt, _live_branch) = create_test_worktree(&project, "agent-100", "task-live");
+        let (dead_wt, _dead_branch) = create_test_worktree(&project, "agent-200", "task-dead");
+
+        assert!(live_wt.exists());
+        assert!(dead_wt.exists());
+
+        // Build a registry where agent-100 is alive (use our own PID) and
+        // agent-200 is dead (use a non-existent PID).
+        let our_pid = std::process::id();
+        let now = chrono::Utc::now().to_rfc3339();
+        let mut registry = AgentRegistry::default();
+        registry.agents.insert(
+            "agent-100".to_string(),
+            AgentEntry {
+                id: "agent-100".to_string(),
+                pid: our_pid,
+                task_id: "task-live".to_string(),
+                executor: "test".to_string(),
+                started_at: now.clone(),
+                last_heartbeat: now.clone(),
+                status: AgentStatus::Working,
+                output_file: String::new(),
+                model: None,
+                completed_at: None,
+            },
+        );
+        registry.agents.insert(
+            "agent-200".to_string(),
+            AgentEntry {
+                id: "agent-200".to_string(),
+                pid: 999_999_999, // non-existent PID
+                task_id: "task-dead".to_string(),
+                executor: "test".to_string(),
+                started_at: now.clone(),
+                last_heartbeat: now.clone(),
+                status: AgentStatus::Dead,
+                output_file: String::new(),
+                model: None,
+                completed_at: None,
+            },
+        );
+        registry.save(&wg_dir).unwrap();
+
+        // Run orphan cleanup
+        let cleaned = cleanup_orphaned_worktrees(&wg_dir).unwrap();
+
+        // Dead agent's worktree should be cleaned
+        assert_eq!(cleaned, 1, "should clean exactly 1 orphaned worktree");
+        assert!(!dead_wt.exists(), "dead agent worktree should be removed");
+
+        // Live agent's worktree MUST survive
+        assert!(live_wt.exists(), "live agent worktree must NOT be removed");
     }
 }
 

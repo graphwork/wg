@@ -11,6 +11,7 @@
 pub mod agent;
 pub mod background;
 pub mod bundle;
+pub mod channel;
 pub mod client;
 pub mod journal;
 pub mod openai_client;

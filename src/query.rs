@@ -28,10 +28,8 @@ pub fn is_time_ready(task: &Task) -> bool {
     // Invalid timestamp = treat as ready (don't block)
 
     // Cron gate: if cron-enabled, only ready when due
-    if task.cron_enabled {
-        if !crate::cron::is_cron_due(task, now) {
-            return false;
-        }
+    if task.cron_enabled && !crate::cron::is_cron_due(task, now) {
+        return false;
     }
 
     true
