@@ -114,6 +114,13 @@ pub struct AgentLoop {
     /// to true via the `--verbose` CLI flag to recover full console output.
     /// The on-disk NDJSON session log is unaffected and always complete.
     nex_verbose: bool,
+    /// REPL mode marker. When true, the agent is running inside an
+    /// interactive nex REPL where stdout is the human's terminal and
+    /// must stay sacred for assistant text. When false (the default,
+    /// used by background native-exec agents), the log events are
+    /// *also* mirrored to stdout so the wrapper script can capture
+    /// them into `output.log` for TUI display.
+    nex_repl_mode: bool,
 }
 
 /// NDJSON log entry types for the output file.
@@ -274,6 +281,7 @@ impl AgentLoop {
             registry_entry: None,
             tool_output_channeler,
             nex_verbose: false,
+            nex_repl_mode: false,
         }
     }
 
@@ -281,6 +289,15 @@ impl AgentLoop {
     /// Defaults to quiet. Use `--verbose` / `-v` on `wg nex` to turn on.
     pub fn with_nex_verbose(mut self, verbose: bool) -> Self {
         self.nex_verbose = verbose;
+        self
+    }
+
+    /// Mark this agent as running inside a nex REPL. Suppresses the
+    /// stdout mirror of NDJSON log events so the human's terminal
+    /// stays clean (assistant text only). The disk-side session log
+    /// is unaffected.
+    pub fn with_nex_repl_mode(mut self, repl: bool) -> Self {
+        self.nex_repl_mode = repl;
         self
     }
 
@@ -1480,9 +1497,13 @@ impl AgentLoop {
             {
                 let _ = writeln!(file, "{}", json);
             }
-            // Also write to stdout so the wrapper script captures it to output.log,
-            // making events visible to the TUI.
-            println!("{}", json);
+            // Also mirror to stdout so the background-agent wrapper
+            // script captures it into output.log for TUI display.
+            // Skip this in nex REPL mode — stdout is the human's
+            // terminal, the file is the only sink they care about.
+            if !self.nex_repl_mode {
+                println!("{}", json);
+            }
         }
     }
 

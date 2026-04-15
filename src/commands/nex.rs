@@ -78,7 +78,8 @@ pub fn run(
         output_log,
         supports_tools,
     )
-    .with_nex_verbose(verbose);
+    .with_nex_verbose(verbose)
+    .with_nex_repl_mode(true);
 
     if let Some(entry) = config.registry_lookup(&effective_model) {
         agent = agent.with_registry_entry(entry);

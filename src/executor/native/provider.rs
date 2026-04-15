@@ -337,7 +337,7 @@ pub fn create_provider_ext(
                     );
                 }
             }
-            eprintln!(
+            log::debug!(
                 "[native-exec] Using OpenAI-compatible provider ({})",
                 client.model
             );
@@ -365,7 +365,7 @@ pub fn create_provider_ext(
             if let Some(mt) = max_tokens {
                 client = client.with_max_tokens(mt);
             }
-            eprintln!("[native-exec] Using Anthropic provider ({})", client.model);
+            log::debug!("[native-exec] Using Anthropic provider ({})", client.model);
             Ok(Box::new(client))
         }
     }
