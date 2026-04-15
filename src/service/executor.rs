@@ -652,7 +652,7 @@ results. Use instead of shelling out to curl+scraping.
 stripped, code blocks and tables preserved). Use instead of `bash: curl $URL` which \
 gives you raw HTML.
 
-### Delegation (focused sub-agent with its own context)
+### Delegation and summarization (push work out of your context)
 
 - `delegate(prompt, exec_mode?, max_turns?)` — spawn a focused in-process sub-agent \
 with its own conversation context. **The sub-agent's token usage does NOT count \
@@ -661,6 +661,16 @@ queries that would otherwise bloat your own context window: \"read src/X.rs and 
 its public functions\", \"find all callers of Y\", \"summarize the tests in tests/Z/\". \
 `exec_mode=light` (default) gives read-only tools; `exec_mode=full` gives the full \
 set minus `delegate` itself. `max_turns` caps the sub-agent at 5 (default) to 20 turns.
+
+- `summarize(source, instruction?, max_input_bytes?)` — recursively summarize a \
+**large text source** via map-reduce. Takes a file path OR inline text, chunks it \
+to fit the model's context, summarizes each chunk independently with your \
+instruction, then merges — recursing on the merged summaries if they're still \
+too large. Use this when a source is too big to read directly: long log files, \
+big text dumps, transcripts, large documents. Unlike `delegate`, `summarize` \
+issues direct text-in/text-out LLM calls with no tool loop — cheap, predictable, \
+and able to handle sources that would otherwise require many turns of manual \
+chunking. Hard ceiling 1 MB by default (raisable via `max_input_bytes`).
 
 ### Workgraph task management (in-process, no CLI spawn)
 
