@@ -429,10 +429,10 @@ fn build_resume_delta(graph: &workgraph::graph::WorkGraph, task: &Task, dir: &Pa
                     }
                 }
                 // Include failure reason if the subtask failed
-                if dep.status == Status::Failed {
-                    if let Some(ref reason) = dep.failure_reason {
-                        delta.push_str(&format!("  failure_reason: {}\n", reason));
-                    }
+                if dep.status == Status::Failed
+                    && let Some(ref reason) = dep.failure_reason
+                {
+                    delta.push_str(&format!("  failure_reason: {}\n", reason));
                 }
             }
         }
@@ -3837,15 +3837,15 @@ pub fn coordinator_tick(
                 .map(|t| t.id.clone())
                 .collect();
             for task_id in &cron_task_ids {
-                if let Some(task) = graph.get_task_mut(task_id) {
-                    if workgraph::cron::reset_cron_task(task) {
-                        eprintln!(
-                            "[coordinator] Cron reset: '{}' → Open (next fire: {})",
-                            task_id,
-                            task.next_cron_fire.as_deref().unwrap_or("unknown")
-                        );
-                        modified = true;
-                    }
+                if let Some(task) = graph.get_task_mut(task_id)
+                    && workgraph::cron::reset_cron_task(task)
+                {
+                    eprintln!(
+                        "[coordinator] Cron reset: '{}' → Open (next fire: {})",
+                        task_id,
+                        task.next_cron_fire.as_deref().unwrap_or("unknown")
+                    );
+                    modified = true;
                 }
             }
         }

@@ -224,12 +224,12 @@ pub fn is_cron_due(task: &Task, now: DateTime<Utc>) -> bool {
     };
 
     // If we have a pre-computed next_cron_fire (includes jitter), use that
-    if let Some(ref next_fire_str) = task.next_cron_fire {
-        if let Ok(next_fire) = DateTime::parse_from_rfc3339(next_fire_str) {
-            return next_fire.with_timezone(&Utc) <= now;
-        }
-        // Invalid timestamp, fall through to schedule-based check
+    if let Some(ref next_fire_str) = task.next_cron_fire
+        && let Ok(next_fire) = DateTime::parse_from_rfc3339(next_fire_str)
+    {
+        return next_fire.with_timezone(&Utc) <= now;
     }
+    // Invalid timestamp, fall through to schedule-based check
 
     // If no last fire time, check if we should fire now based on schedule
     let last_fire = match &task.last_cron_fire {

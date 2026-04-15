@@ -246,7 +246,11 @@ fn chunk_text(text: &str, chunk_chars: usize) -> Vec<String> {
 ///
 /// `depth` is the recursion level; bail at `MAX_RECURSION_DEPTH` to
 /// prevent runaway trees when summaries aren't shrinking fast enough.
-fn recursive_summarize<'a>(
+///
+/// This is exposed as `pub(crate)` because L3 compaction (in `agent.rs`)
+/// calls it directly on a serialized representation of the agent's own
+/// message history when the escalation ladder saturates.
+pub(crate) fn recursive_summarize<'a>(
     provider: &'a dyn Provider,
     text: &'a str,
     instruction: &'a str,
@@ -378,6 +382,153 @@ pub fn register_summarize_tool(
     model: String,
 ) {
     registry.register(Box::new(SummarizeTool::new(workgraph_dir, model)));
+}
+
+// ───────────────────────────────────────────────────────────────────────
+// L3: Summarize-based compaction of an agent's own message history.
+// Used by `agent.rs` when the standard emergency_compact /
+// hard_emergency_compact ladder has saturated (repeated no-op fires at
+// the compact threshold).
+// ───────────────────────────────────────────────────────────────────────
+
+/// Number of recent messages to preserve verbatim when summarizing an
+/// agent's history. The summary captures older turns; these stay intact
+/// so the model keeps immediate working memory.
+const L3_KEEP_RECENT_MESSAGES: usize = 2;
+
+/// Instruction for the L3 history-summarization call. Designed to
+/// preserve decisions, facts discovered, and open threads — not
+/// verbatim text.
+const L3_HISTORY_SUMMARY_INSTRUCTION: &str = "\
+Summarize this agent conversation transcript. Preserve: \
+(1) the original task, \
+(2) key facts discovered (file contents, search results, command outputs), \
+(3) decisions made, \
+(4) any open questions or subtasks created, \
+(5) errors encountered and their resolution. \
+Omit: conversational filler, restated plans, tool-call echoing, \
+redundant observations. Use a structured format with sections.";
+
+/// Serialize a `Message` to a compact text representation suitable for
+/// inclusion in a summarization prompt.
+fn serialize_message_for_summary(msg: &Message) -> String {
+    let role = match msg.role {
+        Role::User => "USER",
+        Role::Assistant => "ASSISTANT",
+    };
+    let mut parts = Vec::new();
+    for block in &msg.content {
+        match block {
+            ContentBlock::Text { text } => {
+                parts.push(text.clone());
+            }
+            ContentBlock::Thinking { thinking, .. } => {
+                parts.push(format!("[thinking] {}", thinking));
+            }
+            ContentBlock::ToolUse { name, input, .. } => {
+                parts.push(format!("[tool_use {}] {}", name, input));
+            }
+            ContentBlock::ToolResult {
+                content, is_error, ..
+            } => {
+                let prefix = if *is_error {
+                    "[tool_result ERROR]"
+                } else {
+                    "[tool_result]"
+                };
+                parts.push(format!("{} {}", prefix, content));
+            }
+        }
+    }
+    format!("{}: {}", role, parts.join("\n"))
+}
+
+/// Compact an agent's message history via recursive summarization.
+///
+/// This is the L3 tier of the compaction escalation ladder. When
+/// `emergency_compact` and `hard_emergency_compact` can no longer reduce
+/// message tokens (the accumulation is in Text/Thinking/ToolUse content
+/// the model itself produced), this function:
+///
+/// 1. Splits `messages` into `older` (everything except the last
+///    `L3_KEEP_RECENT_MESSAGES`) and `recent` (the tail, kept verbatim).
+/// 2. Serializes `older` to a text transcript.
+/// 3. Invokes `recursive_summarize` to reduce the transcript to a
+///    bounded-size summary (recursing as needed for very long histories).
+/// 4. Returns a new message vec:
+///    `[User("PRIOR CONVERSATION SUMMARY: <summary>"), recent...]`
+///
+/// Like the other compaction functions this preserves tool_use/tool_result
+/// pairing in `recent`, and message count is replaced (not preserved) —
+/// this is a more aggressive intervention that explicitly drops the
+/// older-turn structure in exchange for a bounded-size replacement.
+///
+/// On failure (provider errors, empty summary) the original messages are
+/// returned unchanged — compaction is best-effort, never a blocker.
+pub async fn summarize_history_for_compaction(
+    provider: &dyn Provider,
+    messages: Vec<Message>,
+) -> Vec<Message> {
+    if messages.len() <= L3_KEEP_RECENT_MESSAGES + 1 {
+        // Not enough history to bother summarizing — the standard
+        // compact already handles small vecs.
+        return messages;
+    }
+
+    let split = messages.len() - L3_KEEP_RECENT_MESSAGES;
+    let older = &messages[..split];
+    let recent = &messages[split..];
+
+    let transcript: String = older
+        .iter()
+        .map(serialize_message_for_summary)
+        .collect::<Vec<_>>()
+        .join("\n\n---\n\n");
+
+    eprintln!(
+        "[summarize-l3] compacting {} older messages ({} bytes transcript), keeping {} recent",
+        older.len(),
+        transcript.len(),
+        recent.len()
+    );
+
+    let summary =
+        match recursive_summarize(provider, &transcript, L3_HISTORY_SUMMARY_INSTRUCTION, 0).await {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!(
+                    "[summarize-l3] recursive_summarize failed: {} — returning messages unchanged",
+                    e
+                );
+                return messages;
+            }
+        };
+
+    if summary.trim().is_empty() {
+        eprintln!("[summarize-l3] empty summary — returning messages unchanged");
+        return messages;
+    }
+
+    eprintln!(
+        "[summarize-l3] summary produced: {} bytes (from {} bytes transcript)",
+        summary.len(),
+        transcript.len()
+    );
+
+    // Build the new message vec: summary as a user-role context message,
+    // followed by the preserved recent messages verbatim.
+    let mut compacted = Vec::with_capacity(recent.len() + 1);
+    compacted.push(Message {
+        role: Role::User,
+        content: vec![ContentBlock::Text {
+            text: format!(
+                "PRIOR CONVERSATION SUMMARY (older turns compacted to reduce context pressure):\n\n{}",
+                summary
+            ),
+        }],
+    });
+    compacted.extend_from_slice(recent);
+    compacted
 }
 
 #[cfg(test)]

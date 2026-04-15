@@ -64,7 +64,7 @@ impl DelegateTool {
         Self {
             workgraph_dir,
             working_dir,
-            config_max_turns: max_turns.min(MAX_ALLOWED_TURNS).max(1),
+            config_max_turns: max_turns.clamp(1, MAX_ALLOWED_TURNS),
             config_model: model.to_string(),
         }
     }
@@ -133,7 +133,7 @@ impl Tool for DelegateTool {
         let max_turns = input
             .get("max_turns")
             .and_then(|v| v.as_u64())
-            .map(|n| (n as usize).min(MAX_ALLOWED_TURNS).max(1))
+            .map(|n| (n as usize).clamp(1, MAX_ALLOWED_TURNS))
             .unwrap_or(self.config_max_turns);
 
         // Resolve model: config delegate_model > WG_MODEL env var > default

@@ -494,15 +494,27 @@ impl AgentLoop {
         let mut tool_calls = Vec::new();
         let mut turns = 0;
         let mut consecutive_server_errors: u32 = 0;
-        // Consecutive proactive compactions that reduced zero tokens. When
-        // this hits ESCALATION_THRESHOLD, we escalate from soft emergency
-        // compact (tool-results only) to hard emergency compact (also strips
-        // Text/Thinking in elided messages) to prevent the plateau-then-
-        // hard-limit failure mode where the model's own Text/Thinking content
-        // keeps growing past the threshold even though tool-result compaction
-        // is already saturated.
+        // Consecutive compactions that reduced zero tokens. Drives the
+        // three-tier escalation ladder:
+        //   Level 1 (soft):    emergency_compact(messages, 2)      — L0
+        //   Level 2 (hard):    hard_emergency_compact(messages, 1) — L0.5
+        //   Level 3 (summary): summarize_history_for_compaction   — L3
+        //
+        // At each level, `NOOP_COMPACTION_ESCALATION_THRESHOLD` consecutive
+        // no-op fires escalate to the next level. Counter resets to 0 after
+        // any non-zero delta OR after an escalation fires (which is treated
+        // as a fresh attempt). This prevents the plateau-then-hard-limit
+        // failure mode where the model's own Text/Thinking content keeps
+        // accumulating past the compact threshold even though the lower
+        // tiers have saturated.
         let mut consecutive_noop_compactions: u32 = 0;
         const NOOP_COMPACTION_ESCALATION_THRESHOLD: u32 = 2;
+        // Whether we've already escalated to L3 (history summarization)
+        // at least once this session. Ratchet to avoid spamming L3 every
+        // few turns — once we've compacted the history, the message vec
+        // is dominated by the post-summary state, and the lower tiers
+        // should be able to keep up from there.
+        let mut l3_compaction_fired = false;
         const MAX_CONSECUTIVE_SERVER_ERRORS: u32 = 3;
 
         loop {
@@ -1164,36 +1176,49 @@ impl AgentLoop {
                     }
                 }
                 ContextPressureAction::EmergencyCompaction => {
-                    // Proactive compaction at the compact threshold — shrink
-                    // all tool results except the most recent 2 before the
-                    // hard limit is reached. keep_recent counts tool-result
-                    // occurrences, not messages, so recent-position big tool
-                    // results actually get shrunk (the main reason this fires
-                    // for chatty file-reading workloads).
+                    // Three-tier escalation ladder. keep_recent_tool_results
+                    // counts tool-result occurrences, not messages, so
+                    // recent-position big tool results actually get shrunk.
                     let pre_tokens = self.context_budget.effective_tokens(&messages);
                     let pre_count = messages.len();
 
-                    // Decide whether to escalate from soft to hard. After
-                    // NOOP_COMPACTION_ESCALATION_THRESHOLD consecutive no-op
-                    // fires (soft compact has nothing left to shrink in tool
-                    // results), we need to also prune Text/Thinking in older
-                    // messages — that's what `hard_emergency_compact` does.
-                    let should_escalate =
-                        consecutive_noop_compactions >= NOOP_COMPACTION_ESCALATION_THRESHOLD;
+                    // Tier selection:
+                    //   streak ≥ 2×threshold AND !l3_fired → Level 3 (summarize)
+                    //   streak ≥ threshold                  → Level 2 (hard)
+                    //   otherwise                           → Level 1 (soft)
+                    let streak = consecutive_noop_compactions;
+                    let use_l3 =
+                        streak >= NOOP_COMPACTION_ESCALATION_THRESHOLD * 2 && !l3_compaction_fired;
+                    let use_hard = !use_l3 && streak >= NOOP_COMPACTION_ESCALATION_THRESHOLD;
 
-                    messages = if should_escalate {
+                    let tier_name = if use_l3 {
+                        "L3 summarize-history"
+                    } else if use_hard {
+                        "L2 hard"
+                    } else {
+                        "L1 soft"
+                    };
+
+                    messages = if use_l3 {
+                        l3_compaction_fired = true;
+                        super::tools::summarize::summarize_history_for_compaction(
+                            self.client.as_ref(),
+                            messages,
+                        )
+                        .await
+                    } else if use_hard {
                         ContextBudget::hard_emergency_compact(messages, 1)
                     } else {
                         ContextBudget::emergency_compact(messages, 2)
                     };
 
                     let post_tokens = self.context_budget.effective_tokens(&messages);
+                    let post_count = messages.len();
                     let delta = pre_tokens.saturating_sub(post_tokens);
 
-                    // Update consecutive-noop counter. Reset on any non-zero
-                    // reduction OR when we just escalated (the escalation
-                    // counted as a "fresh start" attempt, regardless of delta).
-                    if delta > 0 || should_escalate {
+                    // Reset counter on non-zero delta OR after any
+                    // escalation (fresh attempt). L3 always resets.
+                    if delta > 0 || use_hard || use_l3 {
                         consecutive_noop_compactions = 0;
                     } else {
                         consecutive_noop_compactions =
@@ -1201,16 +1226,13 @@ impl AgentLoop {
                     }
 
                     eprintln!(
-                        "[native-agent] {} compaction: ~{} → ~{} tokens (Δ -{}, {} messages, overhead {} kept, noop_streak={})",
-                        if should_escalate {
-                            "Escalated hard"
-                        } else {
-                            "Proactive"
-                        },
+                        "[native-agent] {} compaction: ~{} → ~{} tokens (Δ -{}, {} → {} messages, overhead {} kept, noop_streak={})",
+                        tier_name,
                         pre_tokens,
                         post_tokens,
                         delta,
                         pre_count,
+                        post_count,
                         self.context_budget.overhead_tokens,
                         consecutive_noop_compactions,
                     );
@@ -1220,8 +1242,8 @@ impl AgentLoop {
                         let _ = j.append(JournalEntryKind::Compaction {
                             compacted_through_seq: 0,
                             summary: format!(
-                                "Proactive compaction at compact threshold. Tokens: ~{} → ~{}, messages: {}.",
-                                pre_tokens, post_tokens, pre_count
+                                "{} compaction. Tokens: ~{} → ~{}, messages: {} → {}.",
+                                tier_name, pre_tokens, post_tokens, pre_count, post_count
                             ),
                             original_message_count: pre_count as u32,
                             original_token_count: pre_tokens as u32,

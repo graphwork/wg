@@ -204,7 +204,7 @@ pub fn run_tree(
 
     // The full set: root task + all downstream
     let mut all_task_ids: Vec<String> = vec![task_id.to_string()];
-    all_task_ids.extend(downstream.into_iter());
+    all_task_ids.extend(downstream);
     all_task_ids.sort();
 
     // Find agents working on any of these tasks
@@ -323,24 +323,23 @@ pub fn run_tree(
         modify_graph(&path, |graph| {
             let mut changed = false;
             for tid in &tasks_to_abandon {
-                if let Some(task) = graph.get_task_mut(tid) {
-                    if !task.status.is_terminal() {
-                        task.status = Status::Abandoned;
-                        task.assigned = None;
-                        task.failure_reason =
-                            Some(format!("Tree-killed from root task '{}'", task_id));
-                        task.log.push(LogEntry {
-                            timestamp: Utc::now().to_rfc3339(),
-                            actor: None,
-                            user: Some(workgraph::current_user()),
-                            message: format!(
-                                "Tree-killed: abandoned as part of cascade from '{}'",
-                                task_id
-                            ),
-                        });
-                        abandoned_tasks.push(tid.clone());
-                        changed = true;
-                    }
+                if let Some(task) = graph.get_task_mut(tid)
+                    && !task.status.is_terminal()
+                {
+                    task.status = Status::Abandoned;
+                    task.assigned = None;
+                    task.failure_reason = Some(format!("Tree-killed from root task '{}'", task_id));
+                    task.log.push(LogEntry {
+                        timestamp: Utc::now().to_rfc3339(),
+                        actor: None,
+                        user: Some(workgraph::current_user()),
+                        message: format!(
+                            "Tree-killed: abandoned as part of cascade from '{}'",
+                            task_id
+                        ),
+                    });
+                    abandoned_tasks.push(tid.clone());
+                    changed = true;
                 }
             }
             changed

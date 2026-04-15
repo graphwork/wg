@@ -740,8 +740,8 @@ pub enum ContextPressureAction {
 /// The API budget is `system + tools + messages + max_tokens_reservation ≤ window_size`.
 /// [`ContextBudget::estimate_tokens`] only counts message content, so
 /// [`ContextBudget::check_pressure`] would underreport actual usage if used
-/// alone. The `overhead_tokens` field captures the fixed cost of system prompt
-/// + tool definitions + completion budget, computed once at agent init via
+/// alone. The `overhead_tokens` field captures the fixed cost of system prompt,
+/// tool definitions, and completion budget — computed once at agent init via
 /// [`estimate_agent_overhead`], so pressure checks reflect real API usage.
 #[derive(Debug, Clone)]
 pub struct ContextBudget {

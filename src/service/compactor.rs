@@ -124,17 +124,16 @@ fn count_ops(workgraph_dir: &Path) -> usize {
 /// Resolution order: model registry entry → endpoint config → 200k default.
 fn resolve_compactor_context_window(config: &Config) -> u64 {
     let resolved = config.resolve_model_for_role(DispatchRole::Compactor);
-    if let Some(ref entry) = resolved.registry_entry {
-        if entry.context_window > 0 {
-            return entry.context_window;
-        }
+    if let Some(ref entry) = resolved.registry_entry
+        && entry.context_window > 0
+    {
+        return entry.context_window;
     }
-    if let Some(ref ep_name) = resolved.endpoint {
-        if let Some(ep) = config.llm_endpoints.find_by_name(ep_name) {
-            if let Some(cw) = ep.context_window {
-                return cw;
-            }
-        }
+    if let Some(ref ep_name) = resolved.endpoint
+        && let Some(ep) = config.llm_endpoints.find_by_name(ep_name)
+        && let Some(cw) = ep.context_window
+    {
+        return cw;
     }
     200_000
 }

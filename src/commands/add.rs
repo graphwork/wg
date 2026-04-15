@@ -21,17 +21,17 @@ fn resolve_model_input(model: &str, workgraph_dir: &Path) -> Result<String> {
     }
 
     // Check config model_registry before falling back to OpenRouter catalog.
-    if let Ok(config) = workgraph::config::Config::load_merged(workgraph_dir) {
-        if let Some(entry) = config.registry_lookup(model) {
-            let prefix = workgraph::config::native_provider_to_prefix(&entry.provider);
-            let full_spec = format!("{}:{}", prefix, entry.model);
-            if workgraph::config::parse_model_spec_strict(&full_spec).is_ok() {
-                eprintln!(
-                    "Resolved model '{}' → '{}' (from model_registry)",
-                    model, full_spec
-                );
-                return Ok(full_spec);
-            }
+    if let Ok(config) = workgraph::config::Config::load_merged(workgraph_dir)
+        && let Some(entry) = config.registry_lookup(model)
+    {
+        let prefix = workgraph::config::native_provider_to_prefix(&entry.provider);
+        let full_spec = format!("{}:{}", prefix, entry.model);
+        if workgraph::config::parse_model_spec_strict(&full_spec).is_ok() {
+            eprintln!(
+                "Resolved model '{}' → '{}' (from model_registry)",
+                model, full_spec
+            );
+            return Ok(full_spec);
         }
     }
 
