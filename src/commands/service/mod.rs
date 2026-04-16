@@ -2309,6 +2309,16 @@ pub fn run_daemon(
                 should_tick = true;
             }
         }
+        // Short-circuit the tick phase if Shutdown was just processed.
+        // Without this, an IPC Shutdown that arrives while should_tick is
+        // already set (settling deadline elapsed, poll interval reached,
+        // etc.) will spawn one final coordinator tick AFTER `running` was
+        // set to false — creating a "ghost agent" that appears after
+        // `wg service stop` has returned. Root cause of the 16844
+        // incident on 2026-04-16.
+        if !running {
+            should_tick = false;
+        }
         if should_tick {
             last_coordinator_tick = Instant::now();
 
