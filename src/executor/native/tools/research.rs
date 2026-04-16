@@ -17,8 +17,12 @@ use serde_json::json;
 use super::{Tool, ToolOutput};
 use crate::executor::native::client::ToolDefinition;
 
-/// How many top search results to fetch and summarize.
-const MAX_PAGES_TO_FETCH: usize = 4;
+/// How many URLs to attempt fetching (we try more than we need to
+/// account for CAPTCHA pages and empty/failed fetches).
+const MAX_URLS_TO_TRY: usize = 8;
+
+/// How many successfully-fetched pages to summarize.
+const MAX_PAGES_TO_SUMMARIZE: usize = 4;
 
 /// Maximum chars of fetched page content to feed into summarize.
 /// Pages longer than this are truncated before summarization.
@@ -138,20 +142,33 @@ impl Tool for ResearchTool {
             ));
         }
 
-        let urls_to_fetch: Vec<_> = urls.into_iter().take(MAX_PAGES_TO_FETCH).collect();
+        let urls_to_try: Vec<_> = urls.into_iter().take(MAX_URLS_TO_TRY).collect();
 
         eprintln!(
-            "\x1b[2m[research] fetching {} pages via Chrome\x1b[0m",
-            urls_to_fetch.len()
+            "\x1b[2m[research] fetching up to {} of {} candidate URLs via Chrome\x1b[0m",
+            MAX_PAGES_TO_SUMMARIZE,
+            urls_to_try.len()
         );
 
         // Step 2: Fetch pages via headless Chrome (primary, not rquest)
         // Chrome handles JS-rendered sites (PubMed, Scholar, Nature) natively.
+        // Try up to MAX_URLS_TO_TRY, stop once we have MAX_PAGES_TO_SUMMARIZE
+        // real pages (skip CAPTCHA/empty/failed).
         let mut page_contents: Vec<(String, String)> = Vec::new(); // (url, content)
 
-        for url in &urls_to_fetch {
+        for url in &urls_to_try {
+            if page_contents.len() >= MAX_PAGES_TO_SUMMARIZE {
+                break;
+            }
             let content = match fetch_page_content(url).await {
-                Ok(c) if !c.trim().is_empty() && c.len() > 50 => c,
+                Ok(c) if !c.trim().is_empty() && c.len() > 50 && !looks_like_captcha_page(&c) => c,
+                Ok(c) if looks_like_captcha_page(&c) => {
+                    eprintln!(
+                        "\x1b[2m[research] CAPTCHA detected, skipping: {}\x1b[0m",
+                        truncate(url, 60)
+                    );
+                    continue;
+                }
                 _ => continue, // Skip failed/empty fetches
             };
 
@@ -381,6 +398,26 @@ async fn fetch_page_content(url: &str) -> Result<String, String> {
     };
 
     Ok(markdown)
+}
+
+/// Heuristic check for CAPTCHA / bot-challenge pages. These are
+/// typically small HTML pages with telltale markers. A real article
+/// mentioning "captcha" in passing wouldn't also be tiny (<5000 chars).
+fn looks_like_captcha_page(html: &str) -> bool {
+    let lower = html.to_lowercase();
+    let markers = [
+        "captcha",
+        "challenge-platform",
+        "verify you are human",
+        "unusual traffic",
+        "datadome",
+        "cf-challenge",
+        "just a moment",
+    ];
+    let has_markers = markers.iter().any(|m| lower.contains(m));
+    let is_small = html.len() < 5000;
+    // A real page with "captcha" in an article wouldn't also be tiny
+    has_markers && is_small
 }
 
 fn truncate(s: &str, max: usize) -> &str {
