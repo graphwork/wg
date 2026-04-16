@@ -407,1002 +407,13 @@ impl AgentLoop {
         self.session_summary_path.as_ref()
     }
 
-    /// Run the agent loop to completion.
+    /// Run the agent loop to completion (autonomous / background mode).
+    ///
+    /// This is a thin wrapper that sets `autonomous = true` and delegates
+    /// to `run_interactive`. All the real loop logic lives in one place.
     pub async fn run(&mut self, initial_message: &str) -> Result<AgentResult> {
-        // Try to load a session summary for faster resume (replaces raw history)
-        let session_summary = if self.resume_enabled {
-            if let Some(ref path) = self.session_summary_path {
-                match resume::load_session_summary(path) {
-                    Ok(Some(summary)) => {
-                        eprintln!(
-                            "[native-agent] Loaded session summary ({} words) from {}",
-                            summary.split_whitespace().count(),
-                            path.display()
-                        );
-                        Some(summary)
-                    }
-                    Ok(None) => None,
-                    Err(e) => {
-                        eprintln!(
-                            "[native-agent] Warning: failed to load session summary: {}",
-                            e
-                        );
-                        None
-                    }
-                }
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-
-        // Attempt resume from existing journal (only if no session summary available)
-        let resume_data = if self.resume_enabled && session_summary.is_none() {
-            if let Some(ref path) = self.journal_path {
-                let working_dir = self
-                    .working_dir
-                    .as_deref()
-                    .unwrap_or_else(|| Path::new("."));
-                let resume_config = ResumeConfig {
-                    context_window_tokens: self.client.context_window(),
-                    ..ResumeConfig::default()
-                };
-                match resume::load_resume_data(path, working_dir, &resume_config) {
-                    Ok(Some(data)) => {
-                        eprintln!(
-                            "[native-agent] Resuming from journal: {} messages, {} stale annotations{}",
-                            data.messages.len(),
-                            data.stale_annotations.len(),
-                            if data.was_compacted {
-                                " (compacted)"
-                            } else {
-                                ""
-                            }
-                        );
-                        Some(data)
-                    }
-                    Ok(None) => None,
-                    Err(e) => {
-                        eprintln!("[native-agent] Warning: failed to load resume data: {}", e);
-                        None
-                    }
-                }
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-
-        // Open journal if configured (append mode — continues from existing entries)
-        let mut journal = if let Some(ref path) = self.journal_path {
-            match Journal::open(path) {
-                Ok(j) => Some(j),
-                Err(e) => {
-                    eprintln!("[native-agent] Warning: failed to open journal: {}", e);
-                    None
-                }
-            }
-        } else {
-            None
-        };
-
-        // Write Init journal entry for this session
-        if let Some(ref mut j) = journal {
-            let tool_defs = if self.supports_tools {
-                self.tools.definitions()
-            } else {
-                vec![]
-            };
-            let _ = j.append(JournalEntryKind::Init {
-                model: self.client.model().to_string(),
-                provider: self.client.name().to_string(),
-                system_prompt: self.system_prompt.clone(),
-                tools: tool_defs,
-                task_id: self.task_id.clone(),
-            });
-        }
-
-        // Write Init stream event
-        if let Some(ref sw) = self.stream_writer {
-            sw.write_init("native", Some(self.client.model()), None);
-        }
-
-        // Build initial messages — from session summary, journal resume, or fresh start
-        let mut messages: Vec<Message> = if let Some(ref summary) = session_summary {
-            // Resume from session summary (compact representation of prior work)
-            let resume_text = format!(
-                "IMPORTANT: This task is being RESUMED from a prior agent session. \
-                 Below is a summary of what was accomplished:\n\n{}\n\n---\n\n{}\n\n\
-                 [Continue from where the previous agent left off. The summary above \
-                 replaces the full conversation history for efficiency.]",
-                summary, initial_message
-            );
-
-            let content = vec![ContentBlock::Text { text: resume_text }];
-
-            // Journal the summary-based resume message
-            if let Some(ref mut j) = journal {
-                let _ = j.append(JournalEntryKind::Message {
-                    role: Role::User,
-                    content: content.clone(),
-                    usage: None,
-                    response_id: None,
-                    stop_reason: None,
-                });
-            }
-
-            vec![Message {
-                role: Role::User,
-                content,
-            }]
-        } else if let Some(ref data) = resume_data {
-            // Start with the resumed conversation history
-            let mut msgs = data.messages.clone();
-
-            // Build and inject the resume annotation + fresh initial message
-            let annotation = resume::build_resume_annotation(data);
-            let resume_text = format!(
-                "{}\n\n---\n\n{}\n\n[Continuing from prior session. Review the conversation above and pick up where you left off.]",
-                annotation, initial_message
-            );
-
-            msgs.push(Message {
-                role: Role::User,
-                content: vec![ContentBlock::Text { text: resume_text }],
-            });
-
-            // Journal the resume user message
-            if let Some(ref mut j) = journal {
-                let _ = j.append(JournalEntryKind::Message {
-                    role: Role::User,
-                    content: msgs.last().unwrap().content.clone(),
-                    usage: None,
-                    response_id: None,
-                    stop_reason: None,
-                });
-            }
-
-            msgs
-        } else {
-            // Fresh start — no resume
-            let initial_content = vec![ContentBlock::Text {
-                text: initial_message.to_string(),
-            }];
-
-            // Journal the initial user message
-            if let Some(ref mut j) = journal {
-                let _ = j.append(JournalEntryKind::Message {
-                    role: Role::User,
-                    content: initial_content.clone(),
-                    usage: None,
-                    response_id: None,
-                    stop_reason: None,
-                });
-            }
-
-            vec![Message {
-                role: Role::User,
-                content: initial_content,
-            }]
-        };
-
-        let mut total_usage = Usage::default();
-        let mut tool_calls = Vec::new();
-        let mut turns = 0;
-        let mut consecutive_server_errors: u32 = 0;
-        // Consecutive compactions that reduced zero tokens. Drives the
-        // three-tier escalation ladder:
-        //   Level 1 (soft):    emergency_compact(messages, 2)      — L0
-        //   Level 2 (hard):    hard_emergency_compact(messages, 1) — L0.5
-        //   Level 3 (summary): summarize_history_for_compaction   — L3
-        //
-        // At each level, `NOOP_COMPACTION_ESCALATION_THRESHOLD` consecutive
-        // no-op fires escalate to the next level. Counter resets to 0 after
-        // any non-zero delta OR after an escalation fires (which is treated
-        // as a fresh attempt). This prevents the plateau-then-hard-limit
-        // failure mode where the model's own Text/Thinking content keeps
-        // accumulating past the compact threshold even though the lower
-        // tiers have saturated.
-        let mut consecutive_noop_compactions: u32 = 0;
-        const NOOP_COMPACTION_ESCALATION_THRESHOLD: u32 = 2;
-        // Whether we've already escalated to L3 (history summarization)
-        // at least once this session. Ratchet to avoid spamming L3 every
-        // few turns — once we've compacted the history, the message vec
-        // is dominated by the post-summary state, and the lower tiers
-        // should be able to keep up from there.
-        let mut l3_compaction_fired = false;
-        const MAX_CONSECUTIVE_SERVER_ERRORS: u32 = 3;
-
-        loop {
-            if turns >= self.max_turns {
-                eprintln!(
-                    "[native-agent] Max turns ({}) reached, stopping",
-                    self.max_turns
-                );
-                break;
-            }
-
-            // ── Mid-turn state injection (ephemeral) ──────────────────────
-            // Collect dynamic state changes and build request_messages with
-            // any injections appended. These are NOT persisted to the journal
-            // or to the `messages` vec — they appear once in the API request
-            // and then vanish.
-            let request_messages = if let Some(ref mut injector) = self.state_injector {
-                // Get context pressure warning (if at warning threshold)
-                let pressure_warning = match self.context_budget.check_pressure(&messages) {
-                    ContextPressureAction::Warning => {
-                        Some(self.context_budget.warning_message(&messages))
-                    }
-                    _ => None,
-                };
-
-                if let Some(injection_text) = injector.collect_injections(pressure_warning) {
-                    eprintln!(
-                        "[native-agent] Injecting ephemeral state update ({} chars)",
-                        injection_text.len()
-                    );
-                    // Clone messages and append injection to the last user message
-                    let mut injected = messages.clone();
-                    if let Some(last) = injected.last_mut()
-                        && last.role == Role::User
-                    {
-                        last.content.push(ContentBlock::Text {
-                            text: injection_text,
-                        });
-                    }
-                    injected
-                } else {
-                    messages.clone()
-                }
-            } else {
-                messages.clone()
-            };
-
-            // Inject context warnings for OpenRouter models before API call
-            let request_messages = self.inject_context_warnings(request_messages);
-
-            let request = MessagesRequest {
-                model: self.client.model().to_string(),
-                max_tokens: self.client.max_tokens(),
-                system: Some(self.system_prompt.clone()),
-                messages: request_messages,
-                tools: if self.supports_tools {
-                    self.tools.definitions()
-                } else {
-                    vec![]
-                },
-                stream: false,
-            };
-
-            // Build streaming callback that writes text chunks to stream.jsonl
-            // and updates the .streaming file for TUI live display.
-            let streaming_file = self.streaming_file_path.clone();
-            let stream_writer_clone = self.stream_writer.clone();
-            let on_text = move |text: String| {
-                // Write TextChunk to stream.jsonl
-                if let Some(ref sw) = stream_writer_clone {
-                    sw.write_text_chunk(&text);
-                }
-                // Update .streaming file with accumulated text
-                if let Some(ref path) = streaming_file {
-                    let mut accumulated = std::fs::read_to_string(path).unwrap_or_default();
-                    accumulated.push_str(&text);
-                    let _ = std::fs::write(path, &accumulated);
-                }
-            };
-
-            let response = match self.client.send_streaming(&request, &on_text).await {
-                Ok(resp) => resp,
-                Err(e) => {
-                    // Check for context-too-long errors (400/413) — attempt emergency
-                    // compaction and retry once before giving up.
-                    if super::openai_client::is_context_too_long(&e) {
-                        eprintln!(
-                            "[native-agent] Context too long error — attempting hard emergency compaction and retry"
-                        );
-                        let pre_tokens = self.context_budget.effective_tokens(&messages);
-                        // On a hard context-too-long error, use the aggressive
-                        // compact: drop ALL tool results except the single
-                        // most recent one (keep_recent_tool_results=1), strip
-                        // thinking in elided messages, truncate long text.
-                        // keep_recent counts tool-result occurrences, not
-                        // messages — so recent-position big tool results
-                        // actually get shrunk.
-                        messages = ContextBudget::hard_emergency_compact(messages, 1);
-                        let post_tokens = self.context_budget.effective_tokens(&messages);
-                        let delta = pre_tokens.saturating_sub(post_tokens);
-                        eprintln!(
-                            "[native-agent] Hard emergency compacted: ~{} → ~{} tokens (Δ -{}, overhead {} kept, keep_recent_tool_results=1)",
-                            pre_tokens, post_tokens, delta, self.context_budget.overhead_tokens,
-                        );
-
-                        // Reduce completion reservation on retry to free budget for
-                        // input. On a 32k-window model where we're already over
-                        // capacity, reserving 8k for output is hostile — halve it
-                        // with a 1024-token floor so the model can still respond.
-                        let retry_max_tokens = std::cmp::max(self.client.max_tokens() / 2, 1024);
-
-                        // Rebuild request with compacted messages and retry once
-                        let retry_request = MessagesRequest {
-                            model: self.client.model().to_string(),
-                            max_tokens: retry_max_tokens,
-                            system: Some(self.system_prompt.clone()),
-                            messages: messages.clone(),
-                            tools: if self.supports_tools {
-                                self.tools.definitions()
-                            } else {
-                                vec![]
-                            },
-                            stream: false,
-                        };
-
-                        let retry_streaming_file = self.streaming_file_path.clone();
-                        let retry_sw = self.stream_writer.clone();
-                        let retry_on_text = move |text: String| {
-                            if let Some(ref sw) = retry_sw {
-                                sw.write_text_chunk(&text);
-                            }
-                            if let Some(ref path) = retry_streaming_file {
-                                let mut acc = std::fs::read_to_string(path).unwrap_or_default();
-                                acc.push_str(&text);
-                                let _ = std::fs::write(path, &acc);
-                            }
-                        };
-
-                        match self
-                            .client
-                            .send_streaming(&retry_request, &retry_on_text)
-                            .await
-                        {
-                            Ok(resp) => resp,
-                            Err(retry_err) => {
-                                eprintln!(
-                                    "[native-agent] Retry after compaction also failed — clean exit"
-                                );
-                                // Log progress and return gracefully
-                                self.store_final_summary(&messages);
-                                if let Some(ref mut j) = journal {
-                                    let _ = j.append(JournalEntryKind::End {
-                                        reason: EndReason::MaxTurns,
-                                        total_usage: total_usage.clone(),
-                                        turns: turns as u32,
-                                    });
-                                }
-                                return Err(retry_err).context(
-                                    "Context too long — emergency compaction + retry failed",
-                                );
-                            }
-                        }
-                    } else if let Some(api_err) = e.downcast_ref::<super::openai_client::ApiError>()
-                    {
-                        match api_err.status {
-                            401 | 403 => {
-                                eprintln!("[native-agent] Fatal auth error: {}", api_err);
-                                return Err(e);
-                            }
-                            status if super::openai_client::is_retryable_status(status) => {
-                                consecutive_server_errors += 1;
-                                if consecutive_server_errors > MAX_CONSECUTIVE_SERVER_ERRORS {
-                                    eprintln!(
-                                        "[native-agent] API error {} — {} consecutive failures, giving up",
-                                        status, consecutive_server_errors
-                                    );
-                                    return Err(e).context(format!(
-                                        "API error {} — {} consecutive server errors exceeded limit",
-                                        status, consecutive_server_errors
-                                    ));
-                                }
-                                // Gracefully surface to model — it never sees the raw error
-                                eprintln!(
-                                    "[native-agent] API error {} after retries — surfacing gracefully to model (attempt {}/{})",
-                                    status,
-                                    consecutive_server_errors,
-                                    MAX_CONSECUTIVE_SERVER_ERRORS
-                                );
-                                let recovery_msg = Message {
-                                    role: Role::User,
-                                    content: vec![ContentBlock::Text {
-                                        text: "There was a temporary issue processing your last request. Please continue with your current task.".to_string(),
-                                    }],
-                                };
-                                if let Some(ref mut j) = journal {
-                                    let _ = j.append(JournalEntryKind::Message {
-                                        role: Role::User,
-                                        content: recovery_msg.content.clone(),
-                                        usage: None,
-                                        response_id: None,
-                                        stop_reason: None,
-                                    });
-                                }
-                                messages.push(recovery_msg);
-                                continue;
-                            }
-                            _ => {
-                                return Err(e).context("API request failed");
-                            }
-                        }
-                    } else if is_timeout_error(&e) {
-                        consecutive_server_errors += 1;
-                        if consecutive_server_errors > MAX_CONSECUTIVE_SERVER_ERRORS {
-                            eprintln!(
-                                "[native-agent] Request timeout — {} consecutive failures, giving up",
-                                consecutive_server_errors
-                            );
-                            return Err(e)
-                                .context("Request timeout — consecutive failures exceeded limit");
-                        }
-                        eprintln!(
-                            "[native-agent] Request timed out — surfacing gracefully to model (attempt {}/{})",
-                            consecutive_server_errors, MAX_CONSECUTIVE_SERVER_ERRORS
-                        );
-                        let recovery_msg = Message {
-                            role: Role::User,
-                            content: vec![ContentBlock::Text {
-                                text: "There was a temporary issue processing your last request. Please continue with your current task.".to_string(),
-                            }],
-                        };
-                        if let Some(ref mut j) = journal {
-                            let _ = j.append(JournalEntryKind::Message {
-                                role: Role::User,
-                                content: recovery_msg.content.clone(),
-                                usage: None,
-                                response_id: None,
-                                stop_reason: None,
-                            });
-                        }
-                        messages.push(recovery_msg);
-                        continue;
-                    } else {
-                        return Err(e).context("API request failed");
-                    }
-                }
-            };
-
-            // Successful response — reset consecutive error counter
-            consecutive_server_errors = 0;
-
-            // Clean up .streaming file after each turn
-            if let Some(ref path) = self.streaming_file_path {
-                let _ = std::fs::remove_file(path);
-            }
-
-            total_usage.add(&response.usage);
-            turns += 1;
-
-            // Log the assistant turn
-            self.log_turn(turns, &response);
-
-            // Session summary extraction: after every N turns, extract and store
-            if self.summary_interval_turns > 0
-                && turns % self.summary_interval_turns == 0
-                && self.session_summary_path.is_some()
-            {
-                let summary = resume::extract_session_summary(&messages);
-                if let Some(ref path) = self.session_summary_path {
-                    if let Err(e) = resume::store_session_summary(path, &summary) {
-                        eprintln!(
-                            "[native-agent] Warning: failed to store session summary: {}",
-                            e
-                        );
-                    } else {
-                        eprintln!(
-                            "[native-agent] Session summary extracted at turn {} ({} words)",
-                            turns,
-                            summary.split_whitespace().count()
-                        );
-                    }
-                }
-            }
-
-            // Journal the assistant message
-            if let Some(ref mut j) = journal {
-                let _ = j.append(JournalEntryKind::Message {
-                    role: Role::Assistant,
-                    content: response.content.clone(),
-                    usage: Some(response.usage.clone()),
-                    response_id: Some(response.id.clone()),
-                    stop_reason: response.stop_reason,
-                });
-            }
-
-            // Write Turn stream event
-            if let Some(ref sw) = self.stream_writer {
-                let tool_names: Vec<String> = response
-                    .content
-                    .iter()
-                    .filter_map(|b| match b {
-                        ContentBlock::ToolUse { name, .. } => Some(name.clone()),
-                        _ => None,
-                    })
-                    .collect();
-                sw.write_turn(
-                    turns as u32,
-                    tool_names,
-                    Some(TurnUsage {
-                        input_tokens: u64::from(response.usage.input_tokens),
-                        output_tokens: u64::from(response.usage.output_tokens),
-                        cache_read_input_tokens: response
-                            .usage
-                            .cache_read_input_tokens
-                            .map(u64::from),
-                        cache_creation_input_tokens: response
-                            .usage
-                            .cache_creation_input_tokens
-                            .map(u64::from),
-                        reasoning_tokens: response.usage.reasoning_tokens.map(u64::from),
-                    }),
-                );
-            }
-
-            // Add assistant response to conversation
-            messages.push(Message {
-                role: Role::Assistant,
-                content: response.content.clone(),
-            });
-
-            match response.stop_reason {
-                Some(StopReason::EndTurn) | Some(StopReason::StopSequence) => {
-                    // Agent is done — extract final text
-                    let final_text = response
-                        .content
-                        .iter()
-                        .filter_map(|b| match b {
-                            ContentBlock::Text { text } => Some(text.as_str()),
-                            _ => None,
-                        })
-                        .collect::<Vec<_>>()
-                        .join("\n");
-
-                    let result = AgentResult {
-                        final_text,
-                        turns,
-                        total_usage: total_usage.clone(),
-                        tool_calls,
-                    };
-                    self.log_result(&result);
-                    self.write_stream_result(true, &result);
-                    self.store_final_summary(&messages);
-
-                    // Journal End entry
-                    if let Some(ref mut j) = journal {
-                        let _ = j.append(JournalEntryKind::End {
-                            reason: EndReason::Complete,
-                            total_usage,
-                            turns: result.turns as u32,
-                        });
-                    }
-
-                    return Ok(result);
-                }
-                Some(StopReason::ToolUse) => {
-                    // Collect tool_use blocks from the response
-                    let tool_use_blocks: Vec<_> = response
-                        .content
-                        .iter()
-                        .filter_map(|b| match b {
-                            ContentBlock::ToolUse { id, name, input } => {
-                                Some((id.clone(), name.clone(), input.clone()))
-                            }
-                            _ => None,
-                        })
-                        .collect();
-
-                    // Separate parse-error calls from real calls
-                    let mut parse_error_results: Vec<(
-                        usize,
-                        String,
-                        String,
-                        serde_json::Value,
-                        super::tools::ToolOutput,
-                    )> = Vec::new();
-                    let mut batch_calls: Vec<(usize, String, super::tools::ToolCall)> = Vec::new();
-
-                    for (i, (id, name, input)) in tool_use_blocks.iter().enumerate() {
-                        if input.get("__parse_error").is_some() {
-                            let error_msg = input
-                                .get("__parse_error")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("unknown parse error");
-                            let raw_args = input
-                                .get("__raw_arguments")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("");
-                            parse_error_results.push((
-                                i,
-                                id.clone(),
-                                name.clone(),
-                                input.clone(),
-                                super::tools::ToolOutput {
-                                    content: format!(
-                                        "ERROR: Tool arguments JSON parse failed: {}. Raw arguments: {}",
-                                        error_msg, raw_args
-                                    ),
-                                    is_error: true,
-                                },
-                            ));
-                        } else {
-                            batch_calls.push((
-                                i,
-                                id.clone(),
-                                super::tools::ToolCall {
-                                    name: name.clone(),
-                                    input: input.clone(),
-                                },
-                            ));
-                        }
-                    }
-
-                    // Stream: emit tool_start for all tools
-                    if let Some(ref sw) = self.stream_writer {
-                        for (_, name, _) in &tool_use_blocks {
-                            sw.write_tool_start(name);
-                        }
-                    }
-
-                    // Spawn heartbeat ticker during batch execution
-                    let heartbeat_handle = if let Some(ref sw) = self.stream_writer {
-                        let sw = sw.clone();
-                        let interval = self.heartbeat_interval;
-                        Some(tokio::spawn(async move {
-                            let mut ticker = tokio::time::interval(interval);
-                            ticker.tick().await;
-                            loop {
-                                ticker.tick().await;
-                                sw.write_heartbeat();
-                            }
-                        }))
-                    } else {
-                        None
-                    };
-
-                    // Execute batch (read-only in parallel, mutating serially)
-                    // For bash tool, use streaming execution to stream output to TUI.
-                    let calls_only: Vec<_> =
-                        batch_calls.iter().map(|(_, _, c)| c.clone()).collect();
-
-                    // Create streaming callback factory for bash tool output
-                    let streaming_file = self.streaming_file_path.clone();
-                    let stream_writer_clone = self.stream_writer.clone();
-
-                    let make_callback = move |_idx: usize| {
-                        let sw = stream_writer_clone.clone();
-                        let sf = streaming_file.clone();
-                        Box::new(move |text: String| {
-                            // Write ToolOutputChunk to stream.jsonl
-                            if let Some(ref writer) = sw {
-                                writer.write_tool_output_chunk("bash", &text);
-                            }
-                            // Append to .streaming file for TUI live display
-                            if let Some(ref path) = sf {
-                                let mut acc = std::fs::read_to_string(path).unwrap_or_default();
-                                acc.push_str(&text);
-                                acc.push('\n');
-                                let _ = std::fs::write(path, &acc);
-                            }
-                        }) as super::tools::ToolStreamCallback
-                    };
-
-                    let batch_results = self
-                        .tools
-                        .execute_batch_streaming(
-                            &calls_only,
-                            super::tools::DEFAULT_MAX_CONCURRENT_TOOLS,
-                            make_callback,
-                        )
-                        .await;
-
-                    // Stop heartbeat ticker
-                    if let Some(h) = heartbeat_handle {
-                        h.abort();
-                    }
-
-                    // Merge parse-error results and batch results into original order
-                    let mut all_results: Vec<(
-                        usize,
-                        String,
-                        String,
-                        serde_json::Value,
-                        super::tools::ToolOutput,
-                        u64,
-                    )> = Vec::with_capacity(tool_use_blocks.len());
-
-                    for (orig_idx, id, name, input, output) in parse_error_results {
-                        all_results.push((orig_idx, id, name, input, output, 0));
-                    }
-                    for (batch_idx, batch_result) in batch_results.into_iter().enumerate() {
-                        let (orig_idx, id, _) = &batch_calls[batch_idx];
-                        let input = tool_use_blocks[*orig_idx].2.clone();
-                        all_results.push((
-                            *orig_idx,
-                            id.clone(),
-                            batch_result.name,
-                            input,
-                            batch_result.output,
-                            batch_result.duration_ms,
-                        ));
-                    }
-                    all_results.sort_by_key(|(idx, _, _, _, _, _)| *idx);
-
-                    // Process results: streaming, logging, journaling
-                    let mut results = Vec::new();
-                    for (_, id, name, input, output, duration_ms) in &all_results {
-                        // Stream: tool end
-                        if let Some(ref sw) = self.stream_writer {
-                            sw.write_tool_end(name, output.is_error, *duration_ms);
-                        }
-
-                        // Log the tool call (full output goes to the NDJSON
-                        // log regardless of channeling — the log is on disk).
-                        self.log_tool_call(name, input, &output.content, output.is_error);
-
-                        // Journal the tool execution (full output goes to
-                        // the journal, same reason — on-disk history).
-                        if let Some(ref mut j) = journal {
-                            let _ = j.append(JournalEntryKind::ToolExecution {
-                                tool_use_id: id.clone(),
-                                name: name.clone(),
-                                input: input.clone(),
-                                output: output.content.clone(),
-                                is_error: output.is_error,
-                                duration_ms: *duration_ms,
-                            });
-                        }
-
-                        tool_calls.push(ToolCallRecord {
-                            name: name.clone(),
-                            input: input.clone(),
-                            output: output.content.clone(),
-                            is_error: output.is_error,
-                        });
-
-                        // Channel oversized outputs to disk before they
-                        // enter the message vec. This is the hard invariant
-                        // enforcement from Layer 1 of the reliability plan:
-                        // no single tool call can exceed the channel
-                        // threshold (default 2KiB) in the conversation.
-                        // Agents retrieve full content via bash
-                        // (cat/head/tail/sed/grep) on the path in the handle.
-                        let channeled_content = match &self.tool_output_channeler {
-                            Some(c) => c.maybe_channel(name, &output.content),
-                            None => output.content.clone(),
-                        };
-
-                        results.push(ContentBlock::ToolResult {
-                            tool_use_id: id.clone(),
-                            content: channeled_content,
-                            is_error: output.is_error,
-                        });
-                    }
-
-                    // Journal the tool results user message
-                    if let Some(ref mut j) = journal {
-                        let _ = j.append(JournalEntryKind::Message {
-                            role: Role::User,
-                            content: results.clone(),
-                            usage: None,
-                            response_id: None,
-                            stop_reason: None,
-                        });
-                    }
-
-                    messages.push(Message {
-                        role: Role::User,
-                        content: results,
-                    });
-                }
-                Some(StopReason::MaxTokens) => {
-                    // Response truncated — prompt for continuation
-                    let continuation = vec![ContentBlock::Text {
-                        text: "Your response was truncated. Please continue.".to_string(),
-                    }];
-
-                    // Journal the continuation message
-                    if let Some(ref mut j) = journal {
-                        let _ = j.append(JournalEntryKind::Message {
-                            role: Role::User,
-                            content: continuation.clone(),
-                            usage: None,
-                            response_id: None,
-                            stop_reason: None,
-                        });
-                    }
-
-                    messages.push(Message {
-                        role: Role::User,
-                        content: continuation,
-                    });
-                }
-                None => {
-                    // No stop reason — treat as end
-                    let final_text = response
-                        .content
-                        .iter()
-                        .filter_map(|b| match b {
-                            ContentBlock::Text { text } => Some(text.as_str()),
-                            _ => None,
-                        })
-                        .collect::<Vec<_>>()
-                        .join("\n");
-
-                    let result = AgentResult {
-                        final_text,
-                        turns,
-                        total_usage: total_usage.clone(),
-                        tool_calls,
-                    };
-                    self.log_result(&result);
-                    self.write_stream_result(true, &result);
-                    self.store_final_summary(&messages);
-
-                    // Journal End entry
-                    if let Some(ref mut j) = journal {
-                        let _ = j.append(JournalEntryKind::End {
-                            reason: EndReason::Complete,
-                            total_usage,
-                            turns: result.turns as u32,
-                        });
-                    }
-
-                    return Ok(result);
-                }
-            }
-
-            // ── Context pressure check ──────────────────────────────────
-            // After processing the turn, check if we're approaching context limits.
-            // When state injection is active, warnings are handled ephemerally in the
-            // pre-turn injection (not permanently appended to messages).
-            match self.context_budget.check_pressure(&messages) {
-                ContextPressureAction::Ok => {}
-                ContextPressureAction::Warning => {
-                    if self.state_injector.is_some() {
-                        // With state injection: warning is handled ephemerally pre-turn.
-                        // Just log it here — the actual injection happens above.
-                        eprintln!(
-                            "[native-agent] Context pressure at warning level — will inject ephemerally next turn"
-                        );
-                    } else {
-                        // Legacy path: append to messages (non-ephemeral fallback).
-                        let warning = self.context_budget.warning_message(&messages);
-                        eprintln!("[native-agent] {}", warning);
-                        if let Some(last) = messages.last_mut()
-                            && last.role == Role::User
-                        {
-                            last.content.push(ContentBlock::Text { text: warning });
-                        }
-                    }
-                }
-                ContextPressureAction::EmergencyCompaction => {
-                    // Three-tier escalation ladder. keep_recent_tool_results
-                    // counts tool-result occurrences, not messages, so
-                    // recent-position big tool results actually get shrunk.
-                    let pre_tokens = self.context_budget.effective_tokens(&messages);
-                    let pre_count = messages.len();
-
-                    // Tier selection:
-                    //   streak ≥ 2×threshold AND !l3_fired → Level 3 (summarize)
-                    //   streak ≥ threshold                  → Level 2 (hard)
-                    //   otherwise                           → Level 1 (soft)
-                    let streak = consecutive_noop_compactions;
-                    let use_l3 =
-                        streak >= NOOP_COMPACTION_ESCALATION_THRESHOLD * 2 && !l3_compaction_fired;
-                    let use_hard = !use_l3 && streak >= NOOP_COMPACTION_ESCALATION_THRESHOLD;
-
-                    let tier_name = if use_l3 {
-                        "L3 summarize-history"
-                    } else if use_hard {
-                        "L2 hard"
-                    } else {
-                        "L1 soft"
-                    };
-
-                    messages = if use_l3 {
-                        l3_compaction_fired = true;
-                        super::tools::summarize::summarize_history_for_compaction(
-                            self.client.as_ref(),
-                            messages,
-                        )
-                        .await
-                    } else if use_hard {
-                        ContextBudget::hard_emergency_compact(messages, 1)
-                    } else {
-                        ContextBudget::emergency_compact(messages, 2)
-                    };
-
-                    let post_tokens = self.context_budget.effective_tokens(&messages);
-                    let post_count = messages.len();
-                    let delta = pre_tokens.saturating_sub(post_tokens);
-
-                    // Reset counter on non-zero delta OR after any
-                    // escalation (fresh attempt). L3 always resets.
-                    if delta > 0 || use_hard || use_l3 {
-                        consecutive_noop_compactions = 0;
-                    } else {
-                        consecutive_noop_compactions =
-                            consecutive_noop_compactions.saturating_add(1);
-                    }
-
-                    eprintln!(
-                        "[native-agent] {} compaction: ~{} → ~{} tokens (Δ -{}, {} → {} messages, overhead {} kept, noop_streak={})",
-                        tier_name,
-                        pre_tokens,
-                        post_tokens,
-                        delta,
-                        pre_count,
-                        post_count,
-                        self.context_budget.overhead_tokens,
-                        consecutive_noop_compactions,
-                    );
-
-                    // Journal the compaction event. `compacted_through_seq`
-                    // records the seq of the last journal entry this
-                    // compaction supersedes — on resume, reconstruct_messages
-                    // drops entries with seq ≤ this value and substitutes
-                    // `summary` in their place.
-                    if let Some(ref mut j) = journal {
-                        let compacted_through_seq = j.seq();
-                        let _ = j.append(JournalEntryKind::Compaction {
-                            compacted_through_seq,
-                            summary: format!(
-                                "{} compaction. Tokens: ~{} → ~{}, messages: {} → {}.",
-                                tier_name, pre_tokens, post_tokens, pre_count, post_count
-                            ),
-                            original_message_count: pre_count as u32,
-                            original_token_count: pre_tokens as u32,
-                        });
-                    }
-                }
-                ContextPressureAction::CleanExit => {
-                    // 95%+ capacity: clean exit — log progress and stop gracefully
-                    eprintln!("[native-agent] Context at 95%+ capacity — performing clean exit");
-                    self.store_final_summary(&messages);
-
-                    let final_text = "[context limit reached — clean exit]".to_string();
-                    let result = AgentResult {
-                        final_text,
-                        turns,
-                        total_usage: total_usage.clone(),
-                        tool_calls,
-                    };
-                    self.log_result(&result);
-                    self.write_stream_result(false, &result);
-
-                    if let Some(ref mut j) = journal {
-                        let _ = j.append(JournalEntryKind::End {
-                            reason: EndReason::MaxTurns,
-                            total_usage,
-                            turns: result.turns as u32,
-                        });
-                    }
-
-                    return Ok(result);
-                }
-            }
-        }
-
-        // Max turns reached — store final summary before returning
-        self.store_final_summary(&messages);
-
-        let result = AgentResult {
-            final_text: "[max turns reached]".to_string(),
-            turns,
-            total_usage: total_usage.clone(),
-            tool_calls,
-        };
-        self.log_result(&result);
-        self.write_stream_result(false, &result);
-
-        // Journal End entry for max turns
-        if let Some(ref mut j) = journal {
-            let _ = j.append(JournalEntryKind::End {
-                reason: EndReason::MaxTurns,
-                total_usage,
-                turns: result.turns as u32,
-            });
-        }
-
-        Ok(result)
+        self.autonomous = true;
+        self.run_interactive(Some(initial_message)).await
     }
 
     // ── Session summary helper ───────────────────────────────────────────
@@ -1637,7 +648,136 @@ impl AgentLoop {
             });
         }
 
+        // Write Init stream event (for TUI display in autonomous mode)
+        if let Some(ref sw) = self.stream_writer {
+            sw.write_init("native", Some(self.client.model()), None);
+        }
+
+        // ── Resume from prior session (autonomous mode) ─────────────
+        // When resume is enabled and a journal/session-summary path is
+        // configured, attempt to restore conversation state from a prior
+        // agent session. This is the same logic as the old `run()` —
+        // session summary takes priority over raw journal replay.
+        let session_summary = if self.resume_enabled && self.autonomous {
+            if let Some(ref path) = self.session_summary_path {
+                match resume::load_session_summary(path) {
+                    Ok(Some(summary)) => {
+                        eprintln!(
+                            "[native-agent] Loaded session summary ({} words) from {}",
+                            summary.split_whitespace().count(),
+                            path.display()
+                        );
+                        Some(summary)
+                    }
+                    Ok(None) => None,
+                    Err(e) => {
+                        eprintln!(
+                            "[native-agent] Warning: failed to load session summary: {}",
+                            e
+                        );
+                        None
+                    }
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        let resume_data = if self.resume_enabled && self.autonomous && session_summary.is_none() {
+            if let Some(ref path) = self.journal_path {
+                let working_dir = self
+                    .working_dir
+                    .as_deref()
+                    .unwrap_or_else(|| Path::new("."));
+                let resume_config = ResumeConfig {
+                    context_window_tokens: self.client.context_window(),
+                    ..ResumeConfig::default()
+                };
+                match resume::load_resume_data(path, working_dir, &resume_config) {
+                    Ok(Some(data)) => {
+                        eprintln!(
+                            "[native-agent] Resuming from journal: {} messages, {} stale annotations{}",
+                            data.messages.len(),
+                            data.stale_annotations.len(),
+                            if data.was_compacted {
+                                " (compacted)"
+                            } else {
+                                ""
+                            }
+                        );
+                        Some(data)
+                    }
+                    Ok(None) => None,
+                    Err(e) => {
+                        eprintln!("[native-agent] Warning: failed to load resume data: {}", e);
+                        None
+                    }
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        // Pre-populate messages from resume data if available
+        if let Some(ref summary) = session_summary {
+            if let Some(initial_msg) = initial_message {
+                let resume_text = format!(
+                    "IMPORTANT: This task is being RESUMED from a prior agent session. \
+                     Below is a summary of what was accomplished:\n\n{}\n\n---\n\n{}\n\n\
+                     [Continue from where the previous agent left off. The summary above \
+                     replaces the full conversation history for efficiency.]",
+                    summary, initial_msg
+                );
+                let content = vec![ContentBlock::Text { text: resume_text }];
+                if let Some(ref mut j) = journal {
+                    let _ = j.append(JournalEntryKind::Message {
+                        role: Role::User,
+                        content: content.clone(),
+                        usage: None,
+                        response_id: None,
+                        stop_reason: None,
+                    });
+                }
+                messages.push(Message {
+                    role: Role::User,
+                    content,
+                });
+            }
+        } else if let Some(ref data) = resume_data {
+            // Start with the resumed conversation history
+            messages = data.messages.clone();
+
+            if let Some(initial_msg) = initial_message {
+                let annotation = resume::build_resume_annotation(data);
+                let resume_text = format!(
+                    "{}\n\n---\n\n{}\n\n[Continuing from prior session. Review the conversation above and pick up where you left off.]",
+                    annotation, initial_msg
+                );
+                messages.push(Message {
+                    role: Role::User,
+                    content: vec![ContentBlock::Text { text: resume_text }],
+                });
+
+                if let Some(ref mut j) = journal {
+                    let _ = j.append(JournalEntryKind::Message {
+                        role: Role::User,
+                        content: messages.last().unwrap().content.clone(),
+                        usage: None,
+                        response_id: None,
+                        stop_reason: None,
+                    });
+                }
+            }
+        }
+
         // Rustyline editor for line editing + history.
+        // In autonomous mode we never prompt, but we still create the
+        // editor so the rest of the code doesn't need Option<Editor>
+        // everywhere.
         let mut editor = DefaultEditor::new().context("failed to initialize rustyline editor")?;
         // Persistent history file — survives sessions.
         let history_path = if let Some(home) = std::env::var_os("HOME") {
@@ -1645,7 +785,9 @@ impl AgentLoop {
         } else {
             std::path::PathBuf::from(".workgraph-nex-history")
         };
-        let _ = editor.load_history(&history_path);
+        if !self.autonomous {
+            let _ = editor.load_history(&history_path);
+        }
 
         // Helper: read a user line with rustyline. Returns:
         // - `Some(line)` on normal input (empty line allowed — caller filters)
@@ -1671,15 +813,35 @@ impl AgentLoop {
             }
         };
 
-        let first_input = if let Some(msg) = initial_message {
-            msg.to_string()
-        } else {
-            match read_user_input(&mut editor) {
-                Some(line) => {
-                    let trimmed = line.trim().to_string();
-                    if trimmed.is_empty() {
+        // If resume already populated messages (session summary or journal
+        // replay), skip the first-input readline — we go straight to the
+        // main loop.
+        let resumed = session_summary.is_some() || resume_data.is_some();
+        if !resumed {
+            // Fresh start — get the first user message
+            let first_input = if let Some(msg) = initial_message {
+                msg.to_string()
+            } else {
+                match read_user_input(&mut editor) {
+                    Some(line) => {
+                        let trimmed = line.trim().to_string();
+                        if trimmed.is_empty() {
+                            let _ = editor.save_history(&history_path);
+                            self.log_session_end(0, "empty_first_input", &total_usage);
+                            return Ok(AgentResult {
+                                final_text: String::new(),
+                                turns: 0,
+                                total_usage,
+                                tool_calls,
+                            });
+                        }
+                        let _ = editor.add_history_entry(&trimmed);
+                        self.log_user_input(&trimmed);
+                        trimmed
+                    }
+                    None => {
                         let _ = editor.save_history(&history_path);
-                        self.log_session_end(0, "empty_first_input", &total_usage);
+                        self.log_session_end(0, "eof", &total_usage);
                         return Ok(AgentResult {
                             final_text: String::new(),
                             turns: 0,
@@ -1687,55 +849,68 @@ impl AgentLoop {
                             tool_calls,
                         });
                     }
-                    let _ = editor.add_history_entry(&trimmed);
-                    self.log_user_input(&trimmed);
-                    trimmed
                 }
-                None => {
-                    let _ = editor.save_history(&history_path);
-                    self.log_session_end(0, "eof", &total_usage);
-                    return Ok(AgentResult {
-                        final_text: String::new(),
-                        turns: 0,
-                        total_usage,
-                        tool_calls,
-                    });
-                }
-            }
-        };
+            };
 
-        // Handle slash commands on the first input too, so users can
-        // start with `/help` or `/load session.json` from a cold prompt.
-        if first_input.starts_with('/') {
-            match self
-                .handle_nex_slash_command(&first_input, &mut messages, &total_usage)
-                .await
-            {
-                NexSlashResult::Quit => {
-                    let _ = editor.save_history(&history_path);
-                    return Ok(AgentResult {
-                        final_text: String::new(),
-                        turns: 0,
-                        total_usage,
-                        tool_calls,
-                    });
+            // Handle slash commands on the first input too, so users can
+            // start with `/help` or `/load session.json` from a cold prompt.
+            if first_input.starts_with('/') {
+                match self
+                    .handle_nex_slash_command(&first_input, &mut messages, &total_usage)
+                    .await
+                {
+                    NexSlashResult::Quit => {
+                        let _ = editor.save_history(&history_path);
+                        return Ok(AgentResult {
+                            final_text: String::new(),
+                            turns: 0,
+                            total_usage,
+                            tool_calls,
+                        });
+                    }
+                    NexSlashResult::Continue => {
+                        // Handled; fall through to the main loop which will
+                        // prompt for the next input.
+                    }
+                    NexSlashResult::NotASlashCommand => {
+                        // Journal the initial user message
+                        let content = vec![ContentBlock::Text {
+                            text: first_input.clone(),
+                        }];
+                        if let Some(ref mut j) = journal {
+                            let _ = j.append(JournalEntryKind::Message {
+                                role: Role::User,
+                                content: content.clone(),
+                                usage: None,
+                                response_id: None,
+                                stop_reason: None,
+                            });
+                        }
+                        messages.push(Message {
+                            role: Role::User,
+                            content,
+                        });
+                    }
                 }
-                NexSlashResult::Continue => {
-                    // Handled; fall through to the main loop which will
-                    // prompt for the next input.
-                }
-                NexSlashResult::NotASlashCommand => {
-                    messages.push(Message {
+            } else {
+                // Journal the initial user message
+                let content = vec![ContentBlock::Text {
+                    text: first_input.clone(),
+                }];
+                if let Some(ref mut j) = journal {
+                    let _ = j.append(JournalEntryKind::Message {
                         role: Role::User,
-                        content: vec![ContentBlock::Text { text: first_input }],
+                        content: content.clone(),
+                        usage: None,
+                        response_id: None,
+                        stop_reason: None,
                     });
                 }
+                messages.push(Message {
+                    role: Role::User,
+                    content,
+                });
             }
-        } else {
-            messages.push(Message {
-                role: Role::User,
-                content: vec![ContentBlock::Text { text: first_input }],
-            });
         }
 
         loop {
@@ -1797,8 +972,10 @@ impl AgentLoop {
 
             // Journal the last message (user input or tool results)
             // before the API call so the journal captures the full
-            // input that drove each model turn.
-            if let Some(ref mut j) = journal
+            // input that drove each model turn. In autonomous mode with
+            // resume, the initial message was already journaled above.
+            if !self.autonomous
+                && let Some(ref mut j) = journal
                 && let Some(last) = messages.last()
             {
                 let _ = j.append(JournalEntryKind::Message {
@@ -1810,11 +987,49 @@ impl AgentLoop {
                 });
             }
 
+            // ── Mid-turn state injection (ephemeral) ────────────────
+            // When a state injector is configured (autonomous task
+            // agents), collect dynamic state changes and build
+            // request_messages with any injections appended. These are
+            // NOT persisted to the journal or to the `messages` vec —
+            // they appear once in the API request and then vanish.
+            let request_messages = if let Some(ref mut injector) = self.state_injector {
+                let pressure_warning = match self.context_budget.check_pressure(&messages) {
+                    ContextPressureAction::Warning => {
+                        Some(self.context_budget.warning_message(&messages))
+                    }
+                    _ => None,
+                };
+
+                if let Some(injection_text) = injector.collect_injections(pressure_warning) {
+                    eprintln!(
+                        "[native-agent] Injecting ephemeral state update ({} chars)",
+                        injection_text.len()
+                    );
+                    let mut injected = messages.clone();
+                    if let Some(last) = injected.last_mut()
+                        && last.role == Role::User
+                    {
+                        last.content.push(ContentBlock::Text {
+                            text: injection_text,
+                        });
+                    }
+                    injected
+                } else {
+                    messages.clone()
+                }
+            } else {
+                messages.clone()
+            };
+
+            // Inject context warnings for OpenRouter models before API call
+            let request_messages = self.inject_context_warnings(request_messages);
+
             let request = MessagesRequest {
                 model: self.client.model().to_string(),
                 max_tokens: self.client.max_tokens(),
                 system: Some(self.system_prompt.clone()),
-                messages: messages.clone(),
+                messages: request_messages,
                 tools: if self.supports_tools {
                     self.tools.definitions()
                 } else {
@@ -1823,90 +1038,315 @@ impl AgentLoop {
                 stream: false,
             };
 
-            let on_text = |text: String| {
-                eprint!("{}", text);
-                let _ = std::io::stderr().flush();
+            // Build the streaming text callback. In interactive mode,
+            // tokens stream to stderr for the human. In autonomous mode,
+            // they go to stream.jsonl + .streaming for TUI display.
+            let streaming_file = self.streaming_file_path.clone();
+            let stream_writer_clone = self.stream_writer.clone();
+            let is_autonomous = self.autonomous;
+            let on_text = move |text: String| {
+                if is_autonomous {
+                    if let Some(ref sw) = stream_writer_clone {
+                        sw.write_text_chunk(&text);
+                    }
+                    if let Some(ref path) = streaming_file {
+                        let mut accumulated = std::fs::read_to_string(path).unwrap_or_default();
+                        accumulated.push_str(&text);
+                        let _ = std::fs::write(path, &accumulated);
+                    }
+                } else {
+                    eprint!("{}", text);
+                    let _ = std::io::stderr().flush();
+                }
             };
 
-            // Wrap the streaming call in a Ctrl-C-aware select. On Ctrl-C
-            // the in-flight provider call is cancelled, the partial
-            // response is dropped, and we return to the prompt without
-            // pushing a (possibly malformed) assistant message.
-            let streaming_future = self.client.send_streaming(&request, &on_text);
-            let ctrl_c_future = tokio::signal::ctrl_c();
-            let response = tokio::select! {
-                biased;
-                _ = ctrl_c_future => {
-                    eprintln!(
-                        "\n\x1b[33m[nex] Interrupted — dropping in-flight response.\x1b[0m"
-                    );
-                    // The partial streaming output was already written to
-                    // stderr. Don't add a partial/malformed assistant
-                    // message to the history.
-                    continue;
-                }
-                res = streaming_future => match res {
-                Ok(resp) => {
-                    consecutive_server_errors = 0;
-                    resp
-                }
-                Err(e) => {
-                    if super::openai_client::is_context_too_long(&e) {
-                        // Hit the 32k wall despite the proactive
-                        // escalation ladder. Run hard_emergency_compact
-                        // with keep_recent_tool_results=1 to force a
-                        // real reduction, and let the next turn use the
-                        // reduced messages. Same pattern as the
-                        // `AgentLoop::run` streaming-400 path.
-                        let pre_tokens = self.context_budget.effective_tokens(&messages);
-                        messages = ContextBudget::hard_emergency_compact(messages, 1);
-                        let post_tokens = self.context_budget.effective_tokens(&messages);
-                        if self.nex_verbose {
+            // In interactive mode, wrap the streaming call in a
+            // Ctrl-C-aware select. In autonomous mode, just await
+            // directly (no human to press Ctrl-C).
+            let response = if self.autonomous {
+                // Autonomous mode: no Ctrl-C handling, but full error
+                // recovery with retries and graceful surfacing to model.
+                match self.client.send_streaming(&request, &on_text).await {
+                    Ok(resp) => resp,
+                    Err(e) => {
+                        if super::openai_client::is_context_too_long(&e) {
                             eprintln!(
-                                "\n\x1b[33m[nex] Context too long — hard compaction: ~{} → ~{} tokens (Δ -{})\x1b[0m",
-                                pre_tokens,
-                                post_tokens,
-                                pre_tokens.saturating_sub(post_tokens),
+                                "[native-agent] Context too long error — attempting hard emergency compaction and retry"
                             );
-                        }
-                        // Reset the streak — we just did the most
-                        // aggressive compaction available.
-                        nex_noop_streak = 0;
-                        continue;
-                    }
-                    if let Some(api_err) = e.downcast_ref::<super::openai_client::ApiError>() {
-                        if api_err.status == 401 || api_err.status == 403 {
-                            return Err(e);
-                        }
-                        if super::openai_client::is_retryable_status(api_err.status) {
+                            let pre_tokens = self.context_budget.effective_tokens(&messages);
+                            messages = ContextBudget::hard_emergency_compact(messages, 1);
+                            let post_tokens = self.context_budget.effective_tokens(&messages);
+                            let delta = pre_tokens.saturating_sub(post_tokens);
+                            eprintln!(
+                                "[native-agent] Hard emergency compacted: ~{} → ~{} tokens (Δ -{}, overhead {} kept, keep_recent_tool_results=1)",
+                                pre_tokens, post_tokens, delta, self.context_budget.overhead_tokens,
+                            );
+                            nex_noop_streak = 0;
+
+                            let retry_max_tokens =
+                                std::cmp::max(self.client.max_tokens() / 2, 1024);
+
+                            let retry_streaming_file = self.streaming_file_path.clone();
+                            let retry_sw = self.stream_writer.clone();
+                            let retry_on_text = move |text: String| {
+                                if let Some(ref sw) = retry_sw {
+                                    sw.write_text_chunk(&text);
+                                }
+                                if let Some(ref path) = retry_streaming_file {
+                                    let mut acc = std::fs::read_to_string(path).unwrap_or_default();
+                                    acc.push_str(&text);
+                                    let _ = std::fs::write(path, &acc);
+                                }
+                            };
+
+                            let retry_request = MessagesRequest {
+                                model: self.client.model().to_string(),
+                                max_tokens: retry_max_tokens,
+                                system: Some(self.system_prompt.clone()),
+                                messages: messages.clone(),
+                                tools: if self.supports_tools {
+                                    self.tools.definitions()
+                                } else {
+                                    vec![]
+                                },
+                                stream: false,
+                            };
+
+                            match self
+                                .client
+                                .send_streaming(&retry_request, &retry_on_text)
+                                .await
+                            {
+                                Ok(resp) => resp,
+                                Err(retry_err) => {
+                                    eprintln!(
+                                        "[native-agent] Retry after compaction also failed — clean exit"
+                                    );
+                                    self.store_final_summary(&messages);
+                                    if let Some(ref mut j) = journal {
+                                        let _ = j.append(JournalEntryKind::End {
+                                            reason: EndReason::MaxTurns,
+                                            total_usage: total_usage.clone(),
+                                            turns: turns as u32,
+                                        });
+                                    }
+                                    return Err(retry_err).context(
+                                        "Context too long — emergency compaction + retry failed",
+                                    );
+                                }
+                            }
+                        } else if let Some(api_err) =
+                            e.downcast_ref::<super::openai_client::ApiError>()
+                        {
+                            match api_err.status {
+                                401 | 403 => {
+                                    eprintln!("[native-agent] Fatal auth error: {}", api_err);
+                                    return Err(e);
+                                }
+                                status if super::openai_client::is_retryable_status(status) => {
+                                    consecutive_server_errors += 1;
+                                    if consecutive_server_errors > MAX_CONSECUTIVE_SERVER_ERRORS {
+                                        eprintln!(
+                                            "[native-agent] API error {} — {} consecutive failures, giving up",
+                                            status, consecutive_server_errors
+                                        );
+                                        return Err(e).context(format!(
+                                            "API error {} — {} consecutive server errors exceeded limit",
+                                            status, consecutive_server_errors
+                                        ));
+                                    }
+                                    eprintln!(
+                                        "[native-agent] API error {} after retries — surfacing gracefully to model (attempt {}/{})",
+                                        status,
+                                        consecutive_server_errors,
+                                        MAX_CONSECUTIVE_SERVER_ERRORS
+                                    );
+                                    let recovery_msg = Message {
+                                        role: Role::User,
+                                        content: vec![ContentBlock::Text {
+                                            text: "There was a temporary issue processing your last request. Please continue with your current task.".to_string(),
+                                        }],
+                                    };
+                                    if let Some(ref mut j) = journal {
+                                        let _ = j.append(JournalEntryKind::Message {
+                                            role: Role::User,
+                                            content: recovery_msg.content.clone(),
+                                            usage: None,
+                                            response_id: None,
+                                            stop_reason: None,
+                                        });
+                                    }
+                                    messages.push(recovery_msg);
+                                    continue;
+                                }
+                                _ => {
+                                    return Err(e).context("API request failed");
+                                }
+                            }
+                        } else if is_timeout_error(&e) {
                             consecutive_server_errors += 1;
                             if consecutive_server_errors > MAX_CONSECUTIVE_SERVER_ERRORS {
-                                return Err(e);
+                                eprintln!(
+                                    "[native-agent] Request timeout — {} consecutive failures, giving up",
+                                    consecutive_server_errors
+                                );
+                                return Err(e).context(
+                                    "Request timeout — consecutive failures exceeded limit",
+                                );
                             }
                             eprintln!(
-                                "\n\x1b[33m[nex] API error {} — retrying ({}/{})\x1b[0m",
-                                api_err.status,
-                                consecutive_server_errors,
-                                MAX_CONSECUTIVE_SERVER_ERRORS
+                                "[native-agent] Request timed out — surfacing gracefully to model (attempt {}/{})",
+                                consecutive_server_errors, MAX_CONSECUTIVE_SERVER_ERRORS
                             );
+                            let recovery_msg = Message {
+                                role: Role::User,
+                                content: vec![ContentBlock::Text {
+                                    text: "There was a temporary issue processing your last request. Please continue with your current task.".to_string(),
+                                }],
+                            };
+                            if let Some(ref mut j) = journal {
+                                let _ = j.append(JournalEntryKind::Message {
+                                    role: Role::User,
+                                    content: recovery_msg.content.clone(),
+                                    usage: None,
+                                    response_id: None,
+                                    stop_reason: None,
+                                });
+                            }
+                            messages.push(recovery_msg);
                             continue;
+                        } else {
+                            return Err(e).context("API request failed");
                         }
                     }
-                    if is_timeout_error(&e) {
-                        consecutive_server_errors += 1;
-                        if consecutive_server_errors > MAX_CONSECUTIVE_SERVER_ERRORS {
-                            return Err(e);
-                        }
-                        eprintln!("\n\x1b[33m[nex] Request timed out — retrying\x1b[0m");
+                }
+            } else {
+                // Interactive mode: Ctrl-C cancels the in-flight call
+                let streaming_future = self.client.send_streaming(&request, &on_text);
+                let ctrl_c_future = tokio::signal::ctrl_c();
+                tokio::select! {
+                    biased;
+                    _ = ctrl_c_future => {
+                        eprintln!(
+                            "\n\x1b[33m[nex] Interrupted — dropping in-flight response.\x1b[0m"
+                        );
                         continue;
                     }
-                    return Err(e).context("API request failed");
-                }
+                    res = streaming_future => match res {
+                        Ok(resp) => resp,
+                        Err(e) => {
+                            if super::openai_client::is_context_too_long(&e) {
+                                let pre_tokens = self.context_budget.effective_tokens(&messages);
+                                messages = ContextBudget::hard_emergency_compact(messages, 1);
+                                let post_tokens = self.context_budget.effective_tokens(&messages);
+                                if self.nex_verbose {
+                                    eprintln!(
+                                        "\n\x1b[33m[nex] Context too long — hard compaction: ~{} → ~{} tokens (Δ -{})\x1b[0m",
+                                        pre_tokens,
+                                        post_tokens,
+                                        pre_tokens.saturating_sub(post_tokens),
+                                    );
+                                }
+                                nex_noop_streak = 0;
+                                continue;
+                            }
+                            if let Some(api_err) = e.downcast_ref::<super::openai_client::ApiError>() {
+                                if api_err.status == 401 || api_err.status == 403 {
+                                    return Err(e);
+                                }
+                                if super::openai_client::is_retryable_status(api_err.status) {
+                                    consecutive_server_errors += 1;
+                                    if consecutive_server_errors > MAX_CONSECUTIVE_SERVER_ERRORS {
+                                        return Err(e);
+                                    }
+                                    eprintln!(
+                                        "\n\x1b[33m[nex] API error {} — retrying ({}/{})\x1b[0m",
+                                        api_err.status,
+                                        consecutive_server_errors,
+                                        MAX_CONSECUTIVE_SERVER_ERRORS
+                                    );
+                                    continue;
+                                }
+                            }
+                            if is_timeout_error(&e) {
+                                consecutive_server_errors += 1;
+                                if consecutive_server_errors > MAX_CONSECUTIVE_SERVER_ERRORS {
+                                    return Err(e);
+                                }
+                                eprintln!("\n\x1b[33m[nex] Request timed out — retrying\x1b[0m");
+                                continue;
+                            }
+                            return Err(e).context("API request failed");
+                        }
+                    }
                 }
             };
+
+            // Successful response — reset consecutive error counter
+            consecutive_server_errors = 0;
+
+            // Clean up .streaming file after each turn
+            if let Some(ref path) = self.streaming_file_path {
+                let _ = std::fs::remove_file(path);
+            }
 
             total_usage.add(&response.usage);
             turns += 1;
+
+            // Log the assistant turn (NDJSON session log)
+            self.log_turn(turns, &response);
+
+            // Session summary extraction: after every N turns, extract
+            // and store (autonomous mode with summary path configured).
+            if self.summary_interval_turns > 0
+                && turns.is_multiple_of(self.summary_interval_turns)
+                && self.session_summary_path.is_some()
+            {
+                let summary = resume::extract_session_summary(&messages);
+                if let Some(ref path) = self.session_summary_path {
+                    if let Err(e) = resume::store_session_summary(path, &summary) {
+                        eprintln!(
+                            "[native-agent] Warning: failed to store session summary: {}",
+                            e
+                        );
+                    } else {
+                        eprintln!(
+                            "[native-agent] Session summary extracted at turn {} ({} words)",
+                            turns,
+                            summary.split_whitespace().count()
+                        );
+                    }
+                }
+            }
+
+            // Write Turn stream event (for TUI display)
+            if let Some(ref sw) = self.stream_writer {
+                let tool_names: Vec<String> = response
+                    .content
+                    .iter()
+                    .filter_map(|b| match b {
+                        ContentBlock::ToolUse { name, .. } => Some(name.clone()),
+                        _ => None,
+                    })
+                    .collect();
+                sw.write_turn(
+                    turns as u32,
+                    tool_names,
+                    Some(TurnUsage {
+                        input_tokens: u64::from(response.usage.input_tokens),
+                        output_tokens: u64::from(response.usage.output_tokens),
+                        cache_read_input_tokens: response
+                            .usage
+                            .cache_read_input_tokens
+                            .map(u64::from),
+                        cache_creation_input_tokens: response
+                            .usage
+                            .cache_creation_input_tokens
+                            .map(u64::from),
+                        reasoning_tokens: response.usage.reasoning_tokens.map(u64::from),
+                    }),
+                );
+            }
 
             messages.push(Message {
                 role: Role::Assistant,
@@ -1920,19 +1360,21 @@ impl AgentLoop {
                     role: Role::Assistant,
                     content: response.content.clone(),
                     usage: Some(response.usage.clone()),
-                    response_id: None,
+                    response_id: Some(response.id.clone()),
                     stop_reason: response.stop_reason,
                 });
             }
 
             match response.stop_reason {
                 Some(StopReason::EndTurn) | Some(StopReason::StopSequence) | None => {
-                    let has_text = response
-                        .content
-                        .iter()
-                        .any(|b| matches!(b, ContentBlock::Text { text } if !text.is_empty()));
-                    if has_text {
-                        eprintln!();
+                    if !self.autonomous {
+                        let has_text = response
+                            .content
+                            .iter()
+                            .any(|b| matches!(b, ContentBlock::Text { text } if !text.is_empty()));
+                        if has_text {
+                            eprintln!();
+                        }
                     }
 
                     // In autonomous mode (task agents), EndTurn means
@@ -2000,34 +1442,42 @@ impl AgentLoop {
                         })
                         .collect();
 
-                    // Tool-call previews are always shown (even in the
-                    // default non-verbose mode) so the human can follow
-                    // what the agent is doing — which command was run,
-                    // which file was read, etc. Verbose mode adds
-                    // compaction/token diagnostics on top of this, but
-                    // the per-call action trace is the minimum "I can
-                    // see what's happening" UX.
-                    for (_, name, input) in &tool_use_blocks {
-                        let input_summary = if let Some(cmd) =
-                            input.get("command").and_then(|v| v.as_str())
-                        {
-                            format!("command={}", truncate_for_display(cmd, 120))
-                        } else if let Some(path) = input.get("file_path").and_then(|v| v.as_str()) {
-                            format!("path={}", path)
-                        } else if let Some(pat) = input.get("pattern").and_then(|v| v.as_str()) {
-                            format!("pattern={}", truncate_for_display(pat, 80))
-                        } else if let Some(q) = input.get("query").and_then(|v| v.as_str()) {
-                            format!("query={}", truncate_for_display(q, 80))
-                        } else if let Some(url) = input.get("url").and_then(|v| v.as_str()) {
-                            format!("url={}", url)
-                        } else {
-                            let s = input.to_string();
-                            truncate_for_display(&s, 120).to_string()
-                        };
-                        eprintln!("\x1b[2;36m> {}({})\x1b[0m", name, input_summary);
+                    // Tool-call previews (interactive mode only — the
+                    // human's terminal). In autonomous mode, tool info
+                    // goes to stream events and the NDJSON log.
+                    if !self.autonomous {
+                        for (_, name, input) in &tool_use_blocks {
+                            let input_summary = if let Some(cmd) =
+                                input.get("command").and_then(|v| v.as_str())
+                            {
+                                format!("command={}", truncate_for_display(cmd, 120))
+                            } else if let Some(path) =
+                                input.get("file_path").and_then(|v| v.as_str())
+                            {
+                                format!("path={}", path)
+                            } else if let Some(pat) = input.get("pattern").and_then(|v| v.as_str())
+                            {
+                                format!("pattern={}", truncate_for_display(pat, 80))
+                            } else if let Some(q) = input.get("query").and_then(|v| v.as_str()) {
+                                format!("query={}", truncate_for_display(q, 80))
+                            } else if let Some(url) = input.get("url").and_then(|v| v.as_str()) {
+                                format!("url={}", url)
+                            } else {
+                                let s = input.to_string();
+                                truncate_for_display(&s, 120).to_string()
+                            };
+                            eprintln!("\x1b[2;36m> {}({})\x1b[0m", name, input_summary);
+                        }
                     }
 
-                    let mut parse_error_results = Vec::new();
+                    // Separate parse-error calls from real calls
+                    let mut parse_error_results: Vec<(
+                        usize,
+                        String,
+                        String,
+                        serde_json::Value,
+                        super::tools::ToolOutput,
+                    )> = Vec::new();
                     let mut batch_calls: Vec<(usize, String, super::tools::ToolCall)> = Vec::new();
 
                     for (i, (id, name, input)) in tool_use_blocks.iter().enumerate() {
@@ -2047,7 +1497,7 @@ impl AgentLoop {
                                 input.clone(),
                                 super::tools::ToolOutput {
                                     content: format!(
-                                        "ERROR: Tool arguments JSON parse failed: {}. Raw: {}",
+                                        "ERROR: Tool arguments JSON parse failed: {}. Raw arguments: {}",
                                         error_msg, raw_args
                                     ),
                                     is_error: true,
@@ -2065,21 +1515,72 @@ impl AgentLoop {
                         }
                     }
 
+                    // Stream: emit tool_start for all tools
+                    if let Some(ref sw) = self.stream_writer {
+                        for (_, name, _) in &tool_use_blocks {
+                            sw.write_tool_start(name);
+                        }
+                    }
+
                     let calls_only: Vec<_> =
                         batch_calls.iter().map(|(_, _, c)| c.clone()).collect();
 
-                    // Wrap tool execution in a Ctrl-C-aware select so the
-                    // human can regain the prompt even if a tool is
-                    // running a long subprocess. On interrupt we produce
-                    // synthetic "[interrupted by user]" tool results for
-                    // every pending tool_use in the assistant message
-                    // (the OpenAI wire format requires a tool_result for
-                    // every tool_use), push them, and `continue` back to
-                    // the prompt. Note: this does NOT kill the child
-                    // process launched by `bash` — that needs proper
-                    // cancellation plumbing through ToolRegistry. But it
-                    // does return control to the human immediately.
-                    let batch_results = {
+                    let batch_results = if self.autonomous {
+                        // Autonomous mode: heartbeat + streaming tool
+                        // output (for TUI live display), no Ctrl-C.
+
+                        // Spawn heartbeat ticker during batch execution
+                        let heartbeat_handle = if let Some(ref sw) = self.stream_writer {
+                            let sw = sw.clone();
+                            let interval = self.heartbeat_interval;
+                            Some(tokio::spawn(async move {
+                                let mut ticker = tokio::time::interval(interval);
+                                ticker.tick().await;
+                                loop {
+                                    ticker.tick().await;
+                                    sw.write_heartbeat();
+                                }
+                            }))
+                        } else {
+                            None
+                        };
+
+                        // Streaming callback factory for bash tool output
+                        let streaming_file = self.streaming_file_path.clone();
+                        let stream_writer_clone = self.stream_writer.clone();
+                        let make_callback = move |_idx: usize| {
+                            let sw = stream_writer_clone.clone();
+                            let sf = streaming_file.clone();
+                            Box::new(move |text: String| {
+                                if let Some(ref writer) = sw {
+                                    writer.write_tool_output_chunk("bash", &text);
+                                }
+                                if let Some(ref path) = sf {
+                                    let mut acc = std::fs::read_to_string(path).unwrap_or_default();
+                                    acc.push_str(&text);
+                                    acc.push('\n');
+                                    let _ = std::fs::write(path, &acc);
+                                }
+                            }) as super::tools::ToolStreamCallback
+                        };
+
+                        let results = self
+                            .tools
+                            .execute_batch_streaming(
+                                &calls_only,
+                                super::tools::DEFAULT_MAX_CONCURRENT_TOOLS,
+                                make_callback,
+                            )
+                            .await;
+
+                        // Stop heartbeat ticker
+                        if let Some(h) = heartbeat_handle {
+                            h.abort();
+                        }
+
+                        results
+                    } else {
+                        // Interactive mode: Ctrl-C aware tool execution.
                         let batch_future = self
                             .tools
                             .execute_batch(&calls_only, super::tools::DEFAULT_MAX_CONCURRENT_TOOLS);
@@ -2090,9 +1591,6 @@ impl AgentLoop {
                                 eprintln!(
                                     "\n\x1b[33m[nex] Interrupted during tool execution — returning to prompt.\x1b[0m"
                                 );
-                                // Synthesize interrupted results for every
-                                // tool_use in the assistant message so the
-                                // message history stays well-formed.
                                 let mut interrupted_results = Vec::new();
                                 for (id, _name, _input) in &tool_use_blocks {
                                     interrupted_results.push(ContentBlock::ToolResult {
@@ -2111,6 +1609,8 @@ impl AgentLoop {
                         }
                     };
 
+                    // Merge parse-error results and batch results into
+                    // original order
                     let mut all_results: Vec<(
                         usize,
                         String,
@@ -2137,38 +1637,52 @@ impl AgentLoop {
                     }
                     all_results.sort_by_key(|(idx, _, _, _, _, _)| *idx);
 
+                    // Process results: streaming, logging, journaling
                     let mut results = Vec::new();
-                    for (_, id, name, input, output, _) in &all_results {
-                        // Default (non-chatty) mode shows a one-line
-                        // summary per tool call — enough to follow what
-                        // happened, not enough to flood the terminal.
-                        // Chatty mode (and verbose, which implies
-                        // chatty) dumps the full tool output exactly as
-                        // it enters the model's context, capped at
-                        // MAX_LINES / MAX_BYTES in print_indented_output.
-                        // Errors always get a visible distinguishing
-                        // marker and a compact excerpt even in default
-                        // mode — they're actionable signal.
-                        if output.is_error {
-                            eprintln!(
-                                "\x1b[31m× {} error: {}\x1b[0m",
-                                name,
-                                summarize_tool_output(&output.content)
-                            );
-                            if self.nex_chatty {
-                                print_indented_output(&output.content, "\x1b[31m  ", "\x1b[0m");
+                    for (_, id, name, input, output, duration_ms) in &all_results {
+                        // Stream: tool end
+                        if let Some(ref sw) = self.stream_writer {
+                            sw.write_tool_end(name, output.is_error, *duration_ms);
+                        }
+
+                        // Log the tool call (NDJSON session log)
+                        self.log_tool_call(name, input, &output.content, output.is_error);
+
+                        // Journal the tool execution
+                        if let Some(ref mut j) = journal {
+                            let _ = j.append(JournalEntryKind::ToolExecution {
+                                tool_use_id: id.clone(),
+                                name: name.clone(),
+                                input: input.clone(),
+                                output: output.content.clone(),
+                                is_error: output.is_error,
+                                duration_ms: *duration_ms,
+                            });
+                        }
+
+                        // Interactive-mode display
+                        if !self.autonomous {
+                            if output.is_error {
+                                eprintln!(
+                                    "\x1b[31m× {} error: {}\x1b[0m",
+                                    name,
+                                    summarize_tool_output(&output.content)
+                                );
+                                if self.nex_chatty {
+                                    print_indented_output(&output.content, "\x1b[31m  ", "\x1b[0m");
+                                }
+                            } else if self.nex_chatty {
+                                eprintln!(
+                                    "\x1b[2m  → {}\x1b[0m",
+                                    summarize_tool_output(&output.content)
+                                );
+                                print_indented_output(&output.content, "\x1b[2m  ", "\x1b[0m");
+                            } else {
+                                eprintln!(
+                                    "\x1b[2m  → {}\x1b[0m",
+                                    summarize_tool_output(&output.content)
+                                );
                             }
-                        } else if self.nex_chatty {
-                            eprintln!(
-                                "\x1b[2m  → {}\x1b[0m",
-                                summarize_tool_output(&output.content)
-                            );
-                            print_indented_output(&output.content, "\x1b[2m  ", "\x1b[0m");
-                        } else {
-                            eprintln!(
-                                "\x1b[2m  → {}\x1b[0m",
-                                summarize_tool_output(&output.content)
-                            );
                         }
 
                         tool_calls.push(ToolCallRecord {
@@ -2178,19 +1692,8 @@ impl AgentLoop {
                             is_error: output.is_error,
                         });
 
-                        // Persist the tool call to the session NDJSON
-                        // log. The FULL raw output is written before
-                        // channeling, so the on-disk session log has
-                        // complete receipts for every tool call even
-                        // when the in-memory message vec only sees the
-                        // channeled handle.
-                        self.log_tool_call(name, input, &output.content, output.is_error);
-
                         // Channel oversized outputs to disk before they
-                        // enter the message vec (L1). Without this, a
-                        // single 16 KB file read can saturate a 32k
-                        // context in a handful of turns and push the
-                        // REPL into compaction-no-op hell.
+                        // enter the message vec (L1).
                         let channeled_content = match &self.tool_output_channeler {
                             Some(c) => c.maybe_channel(name, &output.content),
                             None => output.content.clone(),
@@ -2200,6 +1703,17 @@ impl AgentLoop {
                             tool_use_id: id.clone(),
                             content: channeled_content,
                             is_error: output.is_error,
+                        });
+                    }
+
+                    // Journal the tool results user message
+                    if let Some(ref mut j) = journal {
+                        let _ = j.append(JournalEntryKind::Message {
+                            role: Role::User,
+                            content: results.clone(),
+                            usage: None,
+                            response_id: None,
+                            stop_reason: None,
                         });
                     }
 
@@ -2218,21 +1732,40 @@ impl AgentLoop {
                 }
             }
 
+            // ── Context pressure check ──────────────────────────────
             match self.context_budget.check_pressure(&messages) {
-                ContextPressureAction::Ok | ContextPressureAction::Warning => {}
+                ContextPressureAction::Ok => {}
+                ContextPressureAction::Warning => {
+                    if self.state_injector.is_some() {
+                        // With state injection: warning is handled
+                        // ephemerally pre-turn. Just log here.
+                        eprintln!(
+                            "[native-agent] Context pressure at warning level — will inject ephemerally next turn"
+                        );
+                    } else if self.autonomous {
+                        // Autonomous without state injection: append
+                        // warning to messages (non-ephemeral fallback).
+                        let warning = self.context_budget.warning_message(&messages);
+                        eprintln!("[native-agent] {}", warning);
+                        if let Some(last) = messages.last_mut()
+                            && last.role == Role::User
+                        {
+                            last.content.push(ContentBlock::Text { text: warning });
+                        }
+                    }
+                    // Interactive mode: no action on warning (user
+                    // controls the conversation)
+                }
                 ContextPressureAction::EmergencyCompaction => {
-                    // Same three-tier escalation ladder as
-                    // `AgentLoop::run`: L1 soft → L2 hard → L3
-                    // summarize-history. keep_recent counts tool-result
-                    // occurrences (not messages), so recent-position big
-                    // tool results actually get shrunk.
+                    // Three-tier escalation ladder: L1 soft → L2 hard
+                    // → L3 summarize-history.
                     let pre_tokens = self.context_budget.effective_tokens(&messages);
                     let pre_count = messages.len();
 
                     let streak = nex_noop_streak;
-                    const NEX_ESCALATION_THRESHOLD: u32 = 2;
-                    let use_l3 = streak >= NEX_ESCALATION_THRESHOLD * 2 && !nex_l3_fired;
-                    let use_hard = !use_l3 && streak >= NEX_ESCALATION_THRESHOLD;
+                    const ESCALATION_THRESHOLD: u32 = 2;
+                    let use_l3 = streak >= ESCALATION_THRESHOLD * 2 && !nex_l3_fired;
+                    let use_hard = !use_l3 && streak >= ESCALATION_THRESHOLD;
 
                     let tier_name = if use_l3 {
                         "L3 summarize-history"
@@ -2265,7 +1798,19 @@ impl AgentLoop {
                         nex_noop_streak = nex_noop_streak.saturating_add(1);
                     }
 
-                    if self.nex_verbose {
+                    if self.autonomous {
+                        eprintln!(
+                            "[native-agent] {} compaction: ~{} → ~{} tokens (Δ -{}, {} → {} messages, overhead {} kept, noop_streak={})",
+                            tier_name,
+                            pre_tokens,
+                            post_tokens,
+                            delta,
+                            pre_count,
+                            post_count,
+                            self.context_budget.overhead_tokens,
+                            nex_noop_streak,
+                        );
+                    } else if self.nex_verbose {
                         eprintln!(
                             "\x1b[33m[nex] {} compaction: ~{} → ~{} tokens (Δ -{}, {} → {} msgs, noop_streak={})\x1b[0m",
                             tier_name,
@@ -2277,19 +1822,47 @@ impl AgentLoop {
                             nex_noop_streak,
                         );
                     }
+
+                    // Journal the compaction event
+                    if let Some(ref mut j) = journal {
+                        let compacted_through_seq = j.seq();
+                        let _ = j.append(JournalEntryKind::Compaction {
+                            compacted_through_seq,
+                            summary: format!(
+                                "{} compaction. Tokens: ~{} → ~{}, messages: {} → {}.",
+                                tier_name, pre_tokens, post_tokens, pre_count, post_count
+                            ),
+                            original_message_count: pre_count as u32,
+                            original_token_count: pre_tokens as u32,
+                        });
+                    }
                 }
                 ContextPressureAction::CleanExit => {
-                    eprintln!(
-                        "\x1b[33m[nex] Context limit reached. Please start a new session.\x1b[0m"
-                    );
+                    if self.autonomous {
+                        eprintln!(
+                            "[native-agent] Context at 95%+ capacity — performing clean exit"
+                        );
+                    } else {
+                        eprintln!(
+                            "\x1b[33m[nex] Context limit reached. Please start a new session.\x1b[0m"
+                        );
+                    }
+                    self.store_final_summary(&messages);
                     session_exit_reason = "context_limit";
                     break;
                 }
             }
         }
 
-        // Persist history to disk on exit (best-effort).
-        let _ = editor.save_history(&history_path);
+        // ── Post-loop cleanup ───────────────────────────────────────
+
+        // Store final session summary
+        self.store_final_summary(&messages);
+
+        // Persist readline history to disk on exit (best-effort).
+        if !self.autonomous {
+            let _ = editor.save_history(&history_path);
+        }
 
         let final_text = messages
             .iter()
@@ -2307,15 +1880,29 @@ impl AgentLoop {
             })
             .unwrap_or_default();
 
-        // Emit the session-end marker and the final result into the
-        // session log so the on-disk trace has a clear terminator.
+        let result = AgentResult {
+            final_text,
+            turns,
+            total_usage: total_usage.clone(),
+            tool_calls,
+        };
+
+        // Log result and emit stream result event
+        self.log_result(&result);
+        self.write_stream_result(
+            session_exit_reason == "end_turn"
+                || session_exit_reason == "user_quit"
+                || session_exit_reason == "eof",
+            &result,
+        );
+
+        // Emit the session-end marker into the session log
         self.log_session_end(turns, session_exit_reason, &total_usage);
 
         // Close the journal with an End entry.
         if let Some(ref mut j) = journal {
-            use crate::executor::native::journal::EndReason;
             let reason = match session_exit_reason {
-                "user_quit" | "eof" => EndReason::Complete,
+                "user_quit" | "eof" | "end_turn" => EndReason::Complete,
                 "max_turns" => EndReason::MaxTurns,
                 "context_limit" => EndReason::Error {
                     message: "context limit".to_string(),
@@ -2326,24 +1913,12 @@ impl AgentLoop {
             };
             let _ = j.append(JournalEntryKind::End {
                 reason,
-                total_usage: total_usage.clone(),
-                turns: turns as u32,
+                total_usage,
+                turns: result.turns as u32,
             });
         }
-        let result_preview = AgentResult {
-            final_text: final_text.clone(),
-            turns,
-            total_usage: total_usage.clone(),
-            tool_calls: tool_calls.clone(),
-        };
-        self.log_result(&result_preview);
 
-        Ok(AgentResult {
-            final_text,
-            turns,
-            total_usage,
-            tool_calls,
-        })
+        Ok(result)
     }
 }
 
