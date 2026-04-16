@@ -603,6 +603,9 @@ impl AgentLoop {
         // Drives the three-tier ladder: L1 soft → L2 hard → L3 summarize.
         let mut nex_noop_streak: u32 = 0;
         let mut nex_l3_fired: bool = false;
+        // Compaction tracking for /status display.
+        let mut compaction_count: u32 = 0;
+        let mut total_tokens_compacted: usize = 0;
         // Why the REPL is exiting — recorded in the SessionEnd log event.
         // The initial value is a defensive fallback; in practice every
         // `break` from the main loop overwrites it before the
@@ -856,7 +859,14 @@ impl AgentLoop {
             // start with `/help` or `/load session.json` from a cold prompt.
             if first_input.starts_with('/') {
                 match self
-                    .handle_nex_slash_command(&first_input, &mut messages, &total_usage)
+                    .handle_nex_slash_command(
+                        &first_input,
+                        &mut messages,
+                        &total_usage,
+                        turns,
+                        compaction_count,
+                        total_tokens_compacted,
+                    )
                     .await
                 {
                     NexSlashResult::Quit => {
@@ -941,7 +951,14 @@ impl AgentLoop {
                         self.log_user_input(&trimmed);
                         if trimmed.starts_with('/') {
                             match self
-                                .handle_nex_slash_command(&trimmed, &mut messages, &total_usage)
+                                .handle_nex_slash_command(
+                                    &trimmed,
+                                    &mut messages,
+                                    &total_usage,
+                                    turns,
+                                    compaction_count,
+                                    total_tokens_compacted,
+                                )
                                 .await
                             {
                                 NexSlashResult::Quit => {
@@ -1402,7 +1419,14 @@ impl AgentLoop {
                             self.log_user_input(&trimmed);
                             if trimmed.starts_with('/') {
                                 match self
-                                    .handle_nex_slash_command(&trimmed, &mut messages, &total_usage)
+                                    .handle_nex_slash_command(
+                                        &trimmed,
+                                        &mut messages,
+                                        &total_usage,
+                                        turns,
+                                        compaction_count,
+                                        total_tokens_compacted,
+                                    )
                                     .await
                                 {
                                     NexSlashResult::Quit => {
@@ -1798,6 +1822,9 @@ impl AgentLoop {
                         nex_noop_streak = nex_noop_streak.saturating_add(1);
                     }
 
+                    compaction_count += 1;
+                    total_tokens_compacted += delta;
+
                     if self.autonomous {
                         eprintln!(
                             "[native-agent] {} compaction: ~{} → ~{} tokens (Δ -{}, {} → {} messages, overhead {} kept, noop_streak={})",
@@ -2082,6 +2109,9 @@ impl AgentLoop {
         input: &str,
         messages: &mut Vec<Message>,
         total_usage: &Usage,
+        turns: usize,
+        compaction_count: u32,
+        total_tokens_compacted: usize,
     ) -> NexSlashResult {
         let trimmed = input.trim();
         if !trimmed.starts_with('/') {
@@ -2306,30 +2336,59 @@ impl AgentLoop {
                 let token_est = self.context_budget.effective_tokens(messages);
                 let ctx_window = self.client.context_window();
                 let max_tok = self.client.max_tokens();
+                let overhead = self.context_budget.overhead_tokens;
                 let pct = if ctx_window > 0 {
                     (token_est as f64 / ctx_window as f64 * 100.0) as u32
                 } else {
                     0
                 };
+                let user_msgs = messages.iter().filter(|m| m.role == Role::User).count();
+                let asst_msgs = messages
+                    .iter()
+                    .filter(|m| m.role == Role::Assistant)
+                    .count();
+                let tool_results = messages
+                    .iter()
+                    .flat_map(|m| &m.content)
+                    .filter(|b| matches!(b, ContentBlock::ToolResult { .. }))
+                    .count();
+                let available = ctx_window
+                    .saturating_sub(overhead)
+                    .saturating_sub(token_est);
+
                 eprintln!("\x1b[1m── Agent Status ──\x1b[0m");
                 eprintln!("  Model:         {}", self.client.model());
                 eprintln!(
-                    "  Context:       ~{} / {} tokens ({}%), max_tokens={}",
-                    token_est, ctx_window, pct, max_tok
+                    "  Context:       ~{} / {} tokens ({}%)",
+                    token_est, ctx_window, pct
                 );
-                eprintln!("  Messages:      {} in history", messages.len());
                 eprintln!(
-                    "  Tokens used:   {} input + {} output",
-                    total_usage.input_tokens, total_usage.output_tokens
+                    "  Overhead:      ~{} tokens (system + tools + max_tokens={})",
+                    overhead, max_tok
+                );
+                eprintln!("  Available:     ~{} tokens remaining", available);
+                eprintln!(
+                    "  Messages:      {} total ({} user, {} assistant, {} tool results)",
+                    messages.len(),
+                    user_msgs,
+                    asst_msgs,
+                    tool_results
+                );
+                eprintln!("  Turns:         {}", turns);
+                eprintln!(
+                    "  Tokens used:   {} input + {} output = {} total",
+                    total_usage.input_tokens,
+                    total_usage.output_tokens,
+                    total_usage.input_tokens + total_usage.output_tokens
+                );
+                eprintln!(
+                    "  Compactions:   {} fired, ~{} tokens freed total",
+                    compaction_count, total_tokens_compacted
                 );
                 eprintln!("  Session log:   {}", self.output_log.display());
                 if let Some(ref jp) = self.journal_path {
                     eprintln!("  Journal:       {}", jp.display());
                 }
-                if let Some(ref sp) = self.session_summary_path {
-                    eprintln!("  Summary:       {}", sp.display());
-                }
-                eprintln!("  Autonomous:    {}", self.autonomous);
                 eprintln!(
                     "  Tools:         {} registered",
                     self.tools.definitions().len()
