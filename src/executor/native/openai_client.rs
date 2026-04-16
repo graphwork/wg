@@ -1343,7 +1343,7 @@ impl OpenAiClient {
 #[async_trait::async_trait]
 impl super::provider::Provider for OpenAiClient {
     fn name(&self) -> &str {
-        self.provider_hint.as_deref().unwrap_or("openai")
+        self.provider_hint.as_deref().unwrap_or("oai-compat")
     }
 
     fn model(&self) -> &str {
@@ -2849,7 +2849,7 @@ mod tests {
         use super::super::provider::Provider;
 
         let client = OpenAiClient::new("test-key".into(), "gpt-4o", None).unwrap();
-        assert_eq!(client.name(), "openai");
+        assert_eq!(client.name(), "oai-compat");
     }
 
     #[test]

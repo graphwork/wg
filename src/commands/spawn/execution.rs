@@ -2001,7 +2001,7 @@ mod tests {
             None,
         );
         assert_eq!(r.model, Some("openai:gpt-5".to_string()));
-        assert_eq!(r.provider, Some("openai".to_string()));
+        assert_eq!(r.provider, Some("oai-compat".to_string()));
     }
 
     #[test]
@@ -2454,7 +2454,7 @@ mod tests {
                 .unwrap();
 
         assert_eq!(model, Some("gpt-5-codex".to_string()));
-        assert_eq!(provider, Some("openai".to_string()));
+        assert_eq!(provider, Some("oai-compat".to_string()));
         assert_eq!(endpoint, None);
     }
 

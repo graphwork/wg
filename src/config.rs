@@ -1590,17 +1590,16 @@ pub fn provider_to_executor(provider: &str) -> &'static str {
 pub fn provider_to_native_provider(provider: &str) -> &'static str {
     match provider {
         "claude" => "anthropic",
-        "codex" => "openai",
+        "codex" => "oai-compat",
         "openrouter" => "openrouter",
         // "oai-compat" is the canonical name for the OpenAI-compatible
-        // protocol; "openai" is kept as an alias for backwards compat.
-        // Both map to the internal "openai" tag (which is itself the
-        // legacy name for this protocol — renaming that is deferred
-        // until we're ready to migrate ~60 test assertions).
-        "oai-compat" | "openai" => "openai",
-        "gemini" => "openai", // Gemini uses OpenAI-compatible endpoint
+        // HTTP protocol. "openai" remains accepted as a legacy alias
+        // (both user-input configs and older serialized state), but the
+        // canonical form returned here is "oai-compat".
+        "oai-compat" | "openai" => "oai-compat",
+        "gemini" => "oai-compat", // Gemini uses OpenAI-compatible endpoint
         "ollama" | "llamacpp" | "vllm" | "local" => "local",
-        "native" => "openai", // auto-detect, use openai-compat
+        "native" => "oai-compat", // auto-detect, use openai-compat
         _ => "anthropic",
     }
 }
@@ -1612,10 +1611,9 @@ pub fn native_provider_to_prefix(provider: &str) -> &str {
     match provider {
         "anthropic" => "claude",
         "openrouter" => "openrouter",
-        // Internal tag "openai" → user-facing prefix "oai-compat".
-        // Configs written by workgraph will use "oai-compat:"; configs
-        // with the legacy "openai:" prefix still deserialize correctly.
-        "openai" => "oai-compat",
+        // Both the canonical "oai-compat" and the legacy "openai" internal
+        // tag map to the user-facing "oai-compat:" prefix.
+        "oai-compat" | "openai" => "oai-compat",
         "local" => "local",
         other => other,
     }
@@ -5855,10 +5853,11 @@ provider = "openrouter"
     #[test]
     fn test_provider_to_native_provider_mapping() {
         assert_eq!(provider_to_native_provider("openrouter"), "openrouter");
-        assert_eq!(provider_to_native_provider("openai"), "openai");
+        assert_eq!(provider_to_native_provider("openai"), "oai-compat");
+        assert_eq!(provider_to_native_provider("oai-compat"), "oai-compat");
         assert_eq!(provider_to_native_provider("claude"), "anthropic");
-        assert_eq!(provider_to_native_provider("codex"), "openai");
-        assert_eq!(provider_to_native_provider("gemini"), "openai");
+        assert_eq!(provider_to_native_provider("codex"), "oai-compat");
+        assert_eq!(provider_to_native_provider("gemini"), "oai-compat");
         assert_eq!(provider_to_native_provider("ollama"), "local");
         assert_eq!(provider_to_native_provider("local"), "local");
     }
@@ -5979,8 +5978,8 @@ provider = "openrouter"
         });
         let resolved = config.resolve_model_for_role(DispatchRole::Evaluator);
         assert_eq!(resolved.model, "gemini-2.0-flash-001");
-        // Gemini maps to "openai" native provider (OpenAI-compatible endpoint)
-        assert_eq!(resolved.provider, Some("openai".to_string()));
+        // Gemini maps to "oai-compat" native provider (OpenAI-compatible endpoint)
+        assert_eq!(resolved.provider, Some("oai-compat".to_string()));
     }
 
     // -----------------------------------------------------------------------

@@ -22,7 +22,7 @@ use super::openai_client::OpenAiClient;
 /// agent loop can work with any backend without knowing wire format details.
 #[async_trait::async_trait]
 pub trait Provider: Send + Sync {
-    /// Provider name for logging (e.g., "anthropic", "openai").
+    /// Provider name for logging (e.g., "anthropic", "oai-compat").
     fn name(&self) -> &str;
 
     /// The model this provider is configured with.
@@ -193,7 +193,7 @@ pub fn create_provider_ext(
             if spec.model_id.starts_with("anthropic/") {
                 Some("anthropic".to_string())
             } else if spec.model_id.contains('/') {
-                Some("openai".to_string())
+                Some("oai-compat".to_string())
             } else if looks_like_claude_model(&spec.model_id) {
                 Some("anthropic".to_string())
             } else {
@@ -210,9 +210,9 @@ pub fn create_provider_ext(
         .or_else(|| std::env::var("WG_LLM_PROVIDER").ok())
         .unwrap_or_else(|| {
             // Fallback for bare unrecognized model names — defaults to
-            // openai-compatible because that covers local model servers
+            // oai-compat because that covers local model servers
             // (Ollama, vLLM, llama.cpp, lambda, etc.).
-            "openai".to_string()
+            "oai-compat".to_string()
         });
 
     // Use the parsed model ID (provider prefix stripped) for API calls.
