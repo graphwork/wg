@@ -115,7 +115,20 @@ impl Tool for ResearchTool {
         }
 
         // Parse URLs from the search results (plain text format).
-        let urls = extract_urls_from_search_results(&search_result.content);
+        let (mut urls, google_news_urls) = extract_urls_from_search_results(&search_result.content);
+
+        // Resolve Google News RSS redirects to actual article URLs.
+        if !google_news_urls.is_empty() {
+            eprintln!(
+                "\x1b[2m[research] resolving {} Google News redirect(s)\x1b[0m",
+                google_news_urls.len()
+            );
+            for gnurl in &google_news_urls {
+                if let Some(resolved) = resolve_google_news_redirect(gnurl).await {
+                    urls.push(resolved);
+                }
+            }
+        }
 
         if urls.is_empty() {
             return ToolOutput::error(format!(
@@ -270,22 +283,37 @@ impl Tool for ResearchTool {
 
 /// Extract URLs from the plain-text web_search output format.
 /// Looks for lines matching `    URL: https://...`
-fn extract_urls_from_search_results(text: &str) -> Vec<String> {
-    text.lines()
-        .filter_map(|line| {
-            let trimmed = line.trim();
-            if trimmed.starts_with("URL: ") {
-                let url = trimmed.strip_prefix("URL: ")?.trim();
-                // Skip Google News redirect URLs (they're opaque)
-                if url.contains("news.google.com/rss/articles/") {
-                    return None;
-                }
-                Some(url.to_string())
+/// Google News RSS URLs are collected separately for redirect resolution.
+fn extract_urls_from_search_results(text: &str) -> (Vec<String>, Vec<String>) {
+    let mut direct = Vec::new();
+    let mut google_news = Vec::new();
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if let Some(url) = trimmed.strip_prefix("URL: ").map(|u| u.trim().to_string()) {
+            if url.contains("news.google.com/rss/articles/") {
+                google_news.push(url);
             } else {
-                None
+                direct.push(url);
             }
-        })
-        .collect()
+        }
+    }
+    (direct, google_news)
+}
+
+/// Resolve a Google News RSS redirect URL to the actual article URL.
+/// Uses rquest with redirect disabled to capture the Location header.
+async fn resolve_google_news_redirect(url: &str) -> Option<String> {
+    let client = rquest::Client::builder()
+        .emulation(rquest_util::Emulation::Chrome136)
+        .redirect(rquest::redirect::Policy::none())
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .ok()?;
+    let resp = client.get(url).send().await.ok()?;
+    resp.headers()
+        .get("location")
+        .and_then(|v| v.to_str().ok())
+        .map(String::from)
 }
 
 /// Fetch a page via headless Chrome (primary) with rquest fallback.
