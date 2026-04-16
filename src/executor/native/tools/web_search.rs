@@ -554,9 +554,26 @@ fn render_results_as_text(
 ) -> String {
     let mut out = String::with_capacity(8 * 1024);
 
-    // Grounding rule up front. Landing right before the data means
-    // the attention pattern for the next turn sees it in-context
-    // with the results it's supposed to cite.
+    // Compact header FIRST. The nex default display mode shows the
+    // first non-empty line of a tool output as the summary — this
+    // line is what the human sees in the REPL in non-chatty mode.
+    // The grounding rule + full RESULTS follow below and are visible
+    // in chatty mode and always visible to the model.
+    let responded_short = if responded.is_empty() {
+        "none".to_string()
+    } else {
+        responded.join(", ")
+    };
+    out.push_str(&format!(
+        "web_search: {:?} → {} results from {}\n\n",
+        query,
+        merged.len(),
+        responded_short
+    ));
+
+    // Grounding rule — landing right before the RESULTS so the
+    // attention pattern for the next turn sees it in-context with
+    // the results it's supposed to cite.
     out.push_str(
         "⚠ GROUNDING RULE: When you report findings from this search, every \
          name, URL, and detail you cite MUST appear verbatim in the RESULTS \

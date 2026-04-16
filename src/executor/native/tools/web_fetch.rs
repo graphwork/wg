@@ -220,12 +220,49 @@ impl Tool for WebFetchTool {
             preview.push_str(&format!("{:>4}: {}\n", i + 1, line));
         }
 
+        // Large-page guidance: if the page is bigger than a threshold,
+        // surface the `summarize` tool as the preferred path for
+        // extracting specific info without reading the whole thing.
+        // The agent can still `cat`/`grep` the file for small slices,
+        // but summarize is the right primitive for "give me X from
+        // this long article" queries.
+        const SUMMARIZE_SUGGEST_LINES: usize = 80;
+        const SUMMARIZE_SUGGEST_BYTES: usize = 6_000;
+        let suggest_summarize =
+            total_lines > SUMMARIZE_SUGGEST_LINES || total_bytes > SUMMARIZE_SUGGEST_BYTES;
+        let summarize_hint = if suggest_summarize {
+            format!(
+                "\nThis page is large ({lines} lines, {bytes} bytes). For focused \
+                 extraction of specific info, prefer the `summarize` tool over reading \
+                 the whole file:\n\
+                 \n\
+                 summarize(source='{path}', instruction='<what you want to extract>')\n\
+                 \n\
+                 Examples:\n\
+                 • instruction='list the three best pizzerias mentioned with their addresses'\n\
+                 • instruction='extract all dates and what happened on each'\n\
+                 • instruction='summarize the author's main argument in 3 bullet points'\n\
+                 \n\
+                 The summarize tool recursively map-reduces the text so you never have \
+                 to load more than one chunk at a time — use it whenever you only need \
+                 a subset of what's on the page.\n",
+                lines = total_lines,
+                bytes = total_bytes,
+                path = artifact_path.display(),
+            )
+        } else {
+            String::new()
+        };
+
+        // Compact one-line header FIRST so the nex default display
+        // mode picks a useful summary line, same treatment as
+        // web_search. The grounding details + full preview follow
+        // below and are visible in chatty mode.
         let response = format!(
-            "Fetched: {url}\n\
+            "web_fetch: {url} → {lines} lines, {bytes} bytes via {path_used} ({ms} ms) \
+             → {path}\n\
+             \n\
              Title:   {title}\n\
-             Path:    {path}\n\
-             Size:    {bytes} bytes, {lines} lines\n\
-             Via:     {path_used} ({ms} ms)\n\
              \n\
              Preview (first {preview_lines} lines):\n\
              ────────────────────────────────────────────────────\n\
@@ -237,7 +274,8 @@ impl Tool for WebFetchTool {
              • First N lines: head -n 100 '{path}'\n\
              • Last N lines:  tail -n 100 '{path}'\n\
              • Search:        grep -in 'pattern' '{path}'\n\
-             • Line range:    sed -n '50,120p' '{path}'\n",
+             • Line range:    sed -n '50,120p' '{path}'\n\
+             {summarize_hint}",
             url = url_str,
             title = if title.is_empty() {
                 "(untitled)"
@@ -251,6 +289,7 @@ impl Tool for WebFetchTool {
             ms = duration_ms,
             preview_lines = PREVIEW_LINES,
             preview = preview,
+            summarize_hint = summarize_hint,
         );
 
         ToolOutput::success(response)
