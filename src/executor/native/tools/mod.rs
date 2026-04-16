@@ -11,6 +11,7 @@ pub mod file;
 pub mod file_cache;
 pub mod research;
 pub mod summarize;
+pub mod survey;
 pub mod web_fetch;
 pub mod web_search;
 pub mod wg;
@@ -421,6 +422,9 @@ impl ToolRegistry {
 
         // Deep research (decompose → fan out via research → synthesize)
         deep_research::register_deep_research_tool(&mut registry, workgraph_dir.to_path_buf());
+
+        // Survey (stream-read a file to answer a focused question)
+        survey::register_survey_tool(&mut registry, workgraph_dir.to_path_buf());
 
         registry
     }
