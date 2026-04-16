@@ -118,6 +118,14 @@ pub struct AgentLoop {
     /// summary per call is shown. Implied by `nex_verbose`. Toggled by
     /// `-c` / `--chatty` on `wg nex`.
     nex_chatty: bool,
+    /// Autonomous mode. When true, the agent loop does NOT prompt for
+    /// user input — it auto-continues on ToolUse (the model called a
+    /// tool, we execute it and send results back) and auto-exits on
+    /// EndTurn (the model is done talking). This is how background
+    /// task agents behave: they get one initial message and run to
+    /// completion. When false (default), the loop prompts via
+    /// rustyline after each EndTurn.
+    autonomous: bool,
     /// REPL mode marker. When true, the agent is running inside an
     /// interactive nex REPL where stdout is the human's terminal and
     /// must stay sacred for assistant text. When false (the default,
@@ -286,6 +294,7 @@ impl AgentLoop {
             tool_output_channeler,
             nex_verbose: false,
             nex_chatty: false,
+            autonomous: false,
             nex_repl_mode: false,
         }
     }
@@ -306,6 +315,14 @@ impl AgentLoop {
     /// false. Use `--chatty` / `-c` on `wg nex` to turn on.
     pub fn with_nex_chatty(mut self, chatty: bool) -> Self {
         self.nex_chatty = chatty;
+        self
+    }
+
+    /// Enable autonomous mode (background task agents). The loop
+    /// auto-continues on ToolUse and auto-exits on EndTurn instead
+    /// of prompting for user input. Set by `run()`, not by `nex.rs`.
+    pub fn with_autonomous(mut self, autonomous: bool) -> Self {
+        self.autonomous = autonomous;
         self
     }
 
@@ -1916,6 +1933,17 @@ impl AgentLoop {
                         .any(|b| matches!(b, ContentBlock::Text { text } if !text.is_empty()));
                     if has_text {
                         eprintln!();
+                    }
+
+                    // In autonomous mode (task agents), EndTurn means
+                    // the model is done — exit the loop. There's no
+                    // human to prompt for the next message. This is the
+                    // key behavioral difference between interactive and
+                    // task-agent use: same loop, different exit
+                    // condition on EndTurn.
+                    if self.autonomous {
+                        session_exit_reason = "end_turn";
+                        break;
                     }
 
                     // Add a blank line between the assistant's response
