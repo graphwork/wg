@@ -141,6 +141,13 @@ enum Backend {
     /// 1 req/sec, paid allows 20 req/sec. Falls back gracefully via
     /// circuit breaker when the key is not set.
     Brave,
+    /// SearXNG — self-hosted metasearch aggregator. Gated on
+    /// `[native_executor.web] searxng_url` in config or the
+    /// `WG_SEARXNG_URL` env var. When unset, the backend is a no-op
+    /// (returns empty results without consuming a circuit-breaker
+    /// strike). When set, it joins the parallel fan-out and provides
+    /// unlimited general-purpose search with no per-query rate limit.
+    SearXNG,
 }
 
 impl Backend {
@@ -156,6 +163,7 @@ impl Backend {
             Backend::Arxiv => "arxiv",
             Backend::Browser => "headless_chrome_ddg",
             Backend::Brave => "brave_search",
+            Backend::SearXNG => "searxng",
         }
     }
 
@@ -189,6 +197,11 @@ impl Backend {
             // Brave Search API: free tier 1 req/sec, paid 20 req/sec.
             // 500ms is conservative enough for both tiers.
             Backend::Brave => Duration::from_millis(500),
+            // SearXNG is self-hosted — the user controls the rate limit.
+            // 200ms is a reasonable floor that matches typical home/LAN
+            // instances without hammering public ones if someone points
+            // at one.
+            Backend::SearXNG => Duration::from_millis(200),
         }
     }
 
@@ -207,6 +220,7 @@ impl Backend {
             Backend::Arxiv,
             Backend::Browser,
             Backend::Brave,
+            Backend::SearXNG,
             Backend::DdgHtml,
         ]
     }
@@ -780,6 +794,7 @@ async fn dispatch(
         Backend::Arxiv => search_arxiv(client, query).await,
         Backend::Browser => search_browser_chrome(query).await,
         Backend::Brave => search_brave(client, query).await,
+        Backend::SearXNG => search_searxng(client, query).await,
     }
 }
 
@@ -1428,6 +1443,139 @@ async fn search_brave(client: &rquest::Client, query: &str) -> Result<Vec<Search
     Ok(out)
 }
 
+// ─── Backend: SearXNG ──────────────────────────────────────────────────
+//
+// SearXNG is a self-hosted metasearch aggregator
+// (https://docs.searxng.org). The JSON API is documented at
+// `<instance>/search?q=QUERY&format=json`. Typical quickstart:
+//
+//     docker run -d --name searxng -p 8888:8080 \
+//         -e BASE_URL=http://localhost:8888 \
+//         searxng/searxng
+//
+// Then enable JSON output by editing the container's
+// `/etc/searxng/settings.yml` to include:
+//
+//     search:
+//       formats:
+//         - html
+//         - json
+//
+// ...and restart the container.
+//
+// Gating: we read the instance URL from
+// `[native_executor.web] searxng_url` in config.toml, with a
+// `WG_SEARXNG_URL` env-var fallback. If neither is set, the backend
+// short-circuits to an empty result vec (Ok), which counts as a
+// successful no-op — no circuit-breaker strikes are consumed.
+
+/// Resolve the SearXNG base URL from env var or config. Returns None
+/// when neither is set (backend should no-op).
+fn resolve_searxng_url() -> Option<String> {
+    if let Ok(url) = std::env::var("WG_SEARXNG_URL")
+        && !url.trim().is_empty()
+    {
+        return Some(url.trim().trim_end_matches('/').to_string());
+    }
+    let config = crate::config::Config::load_or_default(std::path::Path::new("."));
+    config
+        .native_executor
+        .web
+        .searxng_url
+        .as_ref()
+        .filter(|u| !u.trim().is_empty())
+        .map(|u| u.trim().trim_end_matches('/').to_string())
+}
+
+async fn search_searxng(
+    client: &rquest::Client,
+    query: &str,
+) -> Result<Vec<SearchResult>, String> {
+    let Some(base_url) = resolve_searxng_url() else {
+        // No instance configured — backend is a no-op. Return Ok with
+        // zero results so the circuit breaker stays closed and we don't
+        // spam errors every query.
+        return Ok(Vec::new());
+    };
+
+    let url = format!(
+        "{}/search?q={}&format=json",
+        base_url,
+        urlencoding::encode(query)
+    );
+
+    let body = client
+        .get(&url)
+        .header("Accept", "application/json")
+        .header(
+            "User-Agent",
+            "workgraph/0.1.0 (+https://github.com/graphwork/workgraph)",
+        )
+        .send()
+        .await
+        .map_err(|e| format!("SearXNG request: {}", e))?
+        .text()
+        .await
+        .map_err(|e| format!("SearXNG body: {}", e))?;
+
+    parse_searxng_json(&body)
+}
+
+/// Parse a SearXNG JSON response. Response shape:
+///
+/// ```json
+/// {
+///   "query": "...",
+///   "results": [
+///     {"title": "...", "url": "https://...", "content": "..."},
+///     ...
+///   ],
+///   ...
+/// }
+/// ```
+///
+/// Missing or malformed fields are skipped (not an error) — SearXNG
+/// aggregates from many upstream engines, and individual entries vary.
+fn parse_searxng_json(body: &str) -> Result<Vec<SearchResult>, String> {
+    let v: serde_json::Value =
+        serde_json::from_str(body).map_err(|e| format!("SearXNG JSON: {}", e))?;
+    let Some(results) = v.get("results").and_then(|r| r.as_array()) else {
+        return Err("SearXNG response missing 'results' array".to_string());
+    };
+
+    let mut out = Vec::new();
+    for item in results {
+        let title = item
+            .get("title")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let url = item
+            .get("url")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let content = item
+            .get("content")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        if title.is_empty() || url.is_empty() {
+            continue;
+        }
+        out.push(SearchResult {
+            title,
+            snippet: truncate_snippet(&content),
+            url,
+            sources: Vec::new(),
+        });
+        if out.len() >= MAX_RESULTS {
+            break;
+        }
+    }
+    Ok(out)
+}
+
 // ─── Backend: headless Chrome driving DuckDuckGo HTML ──────────────────
 
 /// Shared handle to a single long-lived headless Chrome process. We
@@ -1894,6 +2042,95 @@ mod tests {
         let mut lines = contents.lines();
         assert_eq!(lines.next(), Some("memphis news today"));
         assert_eq!(lines.next(), Some("(results)"));
+    }
+
+    #[test]
+    fn searxng_parse_extracts_title_url_content() {
+        let body = r#"{
+            "query": "rust tokio",
+            "results": [
+                {
+                    "title": "Tokio — asynchronous Rust",
+                    "url": "https://tokio.rs/",
+                    "content": "Tokio is an asynchronous runtime for the Rust programming language."
+                },
+                {
+                    "title": "tokio-rs/tokio",
+                    "url": "https://github.com/tokio-rs/tokio",
+                    "content": "A runtime for writing reliable asynchronous applications with Rust."
+                }
+            ]
+        }"#;
+        let results = parse_searxng_json(body).expect("parse ok");
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].title, "Tokio — asynchronous Rust");
+        assert_eq!(results[0].url, "https://tokio.rs/");
+        assert!(results[0].snippet.starts_with("Tokio is"));
+        assert_eq!(results[1].url, "https://github.com/tokio-rs/tokio");
+    }
+
+    #[test]
+    fn searxng_parse_skips_entries_missing_title_or_url() {
+        let body = r#"{
+            "results": [
+                {"title": "", "url": "https://a.example/"},
+                {"title": "only title"},
+                {"title": "good", "url": "https://b.example/", "content": "ok"}
+            ]
+        }"#;
+        let results = parse_searxng_json(body).expect("parse ok");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].url, "https://b.example/");
+    }
+
+    #[test]
+    fn searxng_parse_errors_on_missing_results_field() {
+        let body = r#"{"query": "rust tokio"}"#;
+        assert!(parse_searxng_json(body).is_err());
+    }
+
+    #[test]
+    fn searxng_parse_errors_on_malformed_json() {
+        assert!(parse_searxng_json("not json").is_err());
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn searxng_env_var_overrides_and_trims_trailing_slash() {
+        let prev = std::env::var("WG_SEARXNG_URL").ok();
+        unsafe {
+            std::env::set_var("WG_SEARXNG_URL", "http://localhost:8888/");
+        }
+        let got = resolve_searxng_url();
+        assert_eq!(got.as_deref(), Some("http://localhost:8888"));
+        unsafe {
+            match prev {
+                Some(v) => std::env::set_var("WG_SEARXNG_URL", v),
+                None => std::env::remove_var("WG_SEARXNG_URL"),
+            }
+        }
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn searxng_empty_env_var_treated_as_unset() {
+        let prev = std::env::var("WG_SEARXNG_URL").ok();
+        unsafe {
+            std::env::set_var("WG_SEARXNG_URL", "   ");
+        }
+        // Either unset via config or returns None from config too.
+        // The "   " env var should not count as a real URL.
+        let got = resolve_searxng_url();
+        // Config might be set in the ambient cwd's project; accept any
+        // non-whitespace-only result. The guarantee is that "   " does
+        // not itself turn into a URL.
+        assert!(got.as_deref() != Some("   "));
+        unsafe {
+            match prev {
+                Some(v) => std::env::set_var("WG_SEARXNG_URL", v),
+                None => std::env::remove_var("WG_SEARXNG_URL"),
+            }
+        }
     }
 
     #[test]

@@ -172,6 +172,14 @@ pub struct NativeWebConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub search_api_key: Option<String>,
 
+    /// SearXNG instance URL for the SearXNG search backend (e.g.
+    /// "http://localhost:8888"). When set — or when the `WG_SEARXNG_URL`
+    /// env var is set — SearXNG joins the parallel backend fan-out.
+    /// When unset, the SearXNG backend is a no-op (returns empty
+    /// results without consuming a circuit-breaker strike).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub searxng_url: Option<String>,
+
     /// Maximum content chars for web_fetch before truncation.
     #[serde(default = "default_fetch_max_chars")]
     pub fetch_max_chars: usize,
@@ -196,6 +204,7 @@ impl Default for NativeWebConfig {
         Self {
             search_backend: default_search_backend(),
             search_api_key: None,
+            searxng_url: None,
             fetch_max_chars: default_fetch_max_chars(),
             fetch_timeout_secs: default_fetch_timeout_secs(),
         }
