@@ -397,17 +397,79 @@ pub fn register_summarize_tool(
 const L3_KEEP_RECENT_MESSAGES: usize = 2;
 
 /// Instruction for the L3 history-summarization call. Designed to
-/// preserve decisions, facts discovered, and open threads — not
-/// verbatim text.
-const L3_HISTORY_SUMMARY_INSTRUCTION: &str = "\
-Summarize this agent conversation transcript. Preserve: \
-(1) the original task, \
-(2) key facts discovered (file contents, search results, command outputs), \
-(3) decisions made, \
-(4) any open questions or subtasks created, \
-(5) errors encountered and their resolution. \
-Omit: conversational filler, restated plans, tool-call echoing, \
-redundant observations. Use a structured format with sections.";
+/// Nine-section structured summary prompt. Ported from Claude Code
+/// (`services/compact/prompt.ts` in the TypeScript reverse-engineering
+/// at ~/executors/claude-code-ts). Each section forces the summarizer
+/// to preserve load-bearing content that a generic "summarize this"
+/// prompt routinely drops:
+///
+/// 1. Primary Request and Intent — what the user actually wants.
+/// 2. Key Technical Concepts — vocabulary established in the session.
+/// 3. Files and Code Sections — which files were touched and why.
+/// 4. Errors and Fixes — so the agent doesn't repeat its own mistakes.
+/// 5. Problem Solving — the paths tried and discarded.
+/// 6. All user messages (verbatim) — anchors the session to human intent.
+/// 7. Pending Tasks — what's still open.
+/// 8. Current Work — where we were when compaction fired.
+/// 9. Optional Next Step — what to do right after resuming.
+///
+/// Ground-truth evidence this prompt works: this very Claude Code
+/// session was compacted with this exact structure and retained enough
+/// to keep the design conversation fully coherent through the
+/// compaction boundary.
+const HISTORY_SUMMARY_INSTRUCTION: &str = "\
+Your task is to create a detailed summary of the conversation so far, paying \
+close attention to the user's explicit requests and your previous actions. \
+This summary should be thorough in capturing technical details, code patterns, \
+and architectural decisions that would be essential for continuing development \
+work without losing context.\n\
+\n\
+Your summary should include the following sections:\n\
+\n\
+1. Primary Request and Intent: Capture all of the user's explicit requests and \
+intents in detail.\n\
+2. Key Technical Concepts: List all important technical concepts, technologies, \
+and frameworks discussed.\n\
+3. Files and Code Sections: Enumerate specific files and code sections examined, \
+modified, or created. Pay special attention to the most recent messages and \
+include full code snippets where applicable, and a summary of why this file \
+read or edit is important.\n\
+4. Errors and Fixes: List all errors that you ran into, and how you fixed them. \
+Pay special attention to specific user feedback that you received.\n\
+5. Problem Solving: Document problems solved and any ongoing troubleshooting \
+efforts.\n\
+6. All user messages: List ALL user messages that are not tool results. These are \
+critical for understanding the users' feedback and changing intent.\n\
+7. Pending Tasks: Outline any pending tasks that you have explicitly been asked \
+to work on.\n\
+8. Current Work: Describe in detail precisely what was being worked on \
+immediately before this summary request. Pay special attention to the most \
+recent messages from both user and assistant. Include file names and code \
+snippets where applicable.\n\
+9. Optional Next Step: List the next step that you will take that is related to \
+the most recent work you were doing. IMPORTANT: ensure that this step is DIRECTLY \
+in line with the user's explicit requests, and the task you were working on \
+immediately before this summary request. If your last task was concluded, then \
+only list next steps if they are explicitly in line with the users request. Do \
+not start on tangential requests without confirming with the user first.\n\
+\n\
+Output the summary in clear, skimmable prose with explicit section headers. \
+Preserve exact file paths, function names, error messages, and user-quoted \
+phrases verbatim — paraphrasing these is worse than omitting them.";
+
+/// Per-block microcompact instruction. Much narrower than the
+/// history-wide one because it operates on a single tool output /
+/// assistant turn rather than the whole conversation. The agent
+/// typically doesn't need the verbatim content of an old tool result
+/// — it needs enough signal to know whether to re-query or move on.
+const BLOCK_SUMMARY_INSTRUCTION: &str = "\
+Summarize this block of content so a future version of the agent \
+reading it knows: what was found, what decisions it supports, which \
+specific filenames / URLs / identifiers were mentioned, and which \
+questions it settled. Preserve exact names verbatim. Drop verbatim \
+body text, pleasantries, progress narration, and redundant framing. \
+Target a summary under 200 words unless the content genuinely \
+requires more.";
 
 /// Serialize a `Message` to a compact text representation suitable for
 /// inclusion in a summarization prompt.
@@ -493,7 +555,7 @@ pub async fn summarize_history_for_compaction(
     );
 
     let summary =
-        match recursive_summarize(provider, &transcript, L3_HISTORY_SUMMARY_INSTRUCTION, 0).await {
+        match recursive_summarize(provider, &transcript, HISTORY_SUMMARY_INSTRUCTION, 0).await {
             Ok(s) => s,
             Err(e) => {
                 eprintln!(
@@ -529,6 +591,138 @@ pub async fn summarize_history_for_compaction(
     });
     compacted.extend_from_slice(recent);
     compacted
+}
+
+/// Minimum block size (in bytes of content) considered for
+/// microcompaction. Blocks smaller than this are left alone; the
+/// overhead of an LLM call isn't worth it. 2KB matches one short
+/// web_fetch preview or read_file output — the typical chatty-agent
+/// tool result.
+pub const MICROCOMPACT_MIN_BLOCK_BYTES: usize = 2_048;
+
+/// Number of messages at the tail to keep verbatim during
+/// microcompaction. Protects the agent's active working memory.
+pub const MICROCOMPACT_KEEP_RECENT_MESSAGES: usize = 4;
+
+/// Microcompact a single message vec by finding the oldest large
+/// content block outside the recent-keep tail and replacing it with
+/// a short LLM-generated summary.
+///
+/// Design: unlike the post-turn emergency compaction ladder, this is
+/// intended to run at **every** turn boundary whenever context pressure
+/// exceeds a configurable soft threshold — so pressure never builds
+/// up to the emergency point. One cheap LLM call per turn at most;
+/// on turns where no block exceeds the threshold, it's a no-op.
+///
+/// Unlike `emergency_compact` (which only replaces ToolResult blocks
+/// with preview stubs) this works on ANY block type — ToolResult,
+/// Text, Thinking — because the narrative accumulation *is* the
+/// pressure in chatty sessions, not just tool output. That's the bug
+/// the attached trace in `docs/design/native-executor-run-loop.md`
+/// demonstrates: L1 ran 8 times with zero delta because all the old
+/// tool_results were under its 200B threshold, while the real pressure
+/// sat in accumulated text/thinking.
+///
+/// On provider failure or empty summary, returns the input unchanged —
+/// microcompaction is best-effort, never a blocker.
+///
+/// Returns `(messages, bytes_freed)`.
+pub async fn microcompact_oldest_block(
+    provider: &dyn Provider,
+    messages: Vec<Message>,
+    keep_recent_messages: usize,
+    min_block_bytes: usize,
+) -> (Vec<Message>, usize) {
+    if messages.len() <= keep_recent_messages {
+        return (messages, 0);
+    }
+    let last_compactable_idx = messages.len() - keep_recent_messages;
+
+    // Walk oldest-first looking for the first block above threshold.
+    let mut target: Option<(usize, usize, String, bool)> = None; // (msg_idx, block_idx, original, is_text_like)
+    'outer: for (mi, msg) in messages.iter().enumerate() {
+        if mi >= last_compactable_idx {
+            break;
+        }
+        for (bi, block) in msg.content.iter().enumerate() {
+            match block {
+                ContentBlock::ToolResult { content, .. } if content.len() >= min_block_bytes => {
+                    target = Some((mi, bi, content.clone(), false));
+                    break 'outer;
+                }
+                ContentBlock::Text { text } if text.len() >= min_block_bytes => {
+                    target = Some((mi, bi, text.clone(), true));
+                    break 'outer;
+                }
+                ContentBlock::Thinking { thinking, .. }
+                    if thinking.len() >= min_block_bytes =>
+                {
+                    target = Some((mi, bi, thinking.clone(), true));
+                    break 'outer;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let (mi, bi, original, _is_text_like) = match target {
+        Some(t) => t,
+        None => return (messages, 0),
+    };
+
+    let orig_len = original.len();
+
+    // Run the summary. On error, leave the messages unchanged.
+    let summary = match summarize_chunk(provider, &original, BLOCK_SUMMARY_INSTRUCTION).await {
+        Ok(s) if !s.trim().is_empty() => s,
+        Ok(_) => return (messages, 0),
+        Err(e) => {
+            eprintln!(
+                "[microcompact] provider error summarizing block ({} bytes): {} — leaving unchanged",
+                orig_len, e
+            );
+            return (messages, 0);
+        }
+    };
+
+    if summary.len() >= orig_len {
+        // Summary didn't shrink — skip the swap to avoid growing context.
+        return (messages, 0);
+    }
+
+    let replacement_text = format!(
+        "[summarized by microcompact: {} B → {} B]\n\n{}",
+        orig_len,
+        summary.len(),
+        summary
+    );
+    let bytes_freed = orig_len.saturating_sub(replacement_text.len());
+
+    let mut out = messages;
+    let msg = &mut out[mi];
+    msg.content[bi] = match &msg.content[bi] {
+        ContentBlock::ToolResult {
+            tool_use_id,
+            is_error,
+            ..
+        } => ContentBlock::ToolResult {
+            tool_use_id: tool_use_id.clone(),
+            content: replacement_text,
+            is_error: *is_error,
+        },
+        ContentBlock::Text { .. } => ContentBlock::Text {
+            text: replacement_text,
+        },
+        ContentBlock::Thinking {
+            reasoning_details, ..
+        } => ContentBlock::Thinking {
+            thinking: replacement_text,
+            reasoning_details: reasoning_details.clone(),
+        },
+        other => other.clone(),
+    };
+
+    (out, bytes_freed)
 }
 
 #[cfg(test)]
@@ -599,5 +793,215 @@ mod tests {
         let schema = def.input_schema.as_object().unwrap();
         let required = schema.get("required").unwrap().as_array().unwrap();
         assert!(required.iter().any(|v| v.as_str() == Some("source")));
+    }
+
+    // ── microcompact tests ──────────────────────────────────────────
+
+    use crate::executor::native::client::{MessagesResponse, StopReason, Usage};
+    use async_trait::async_trait;
+
+    /// Provider that returns a fixed summary string on every `send()`.
+    /// Used to exercise microcompact deterministically without hitting
+    /// a real LLM.
+    struct StubSummarizer {
+        summary: String,
+    }
+
+    #[async_trait]
+    impl Provider for StubSummarizer {
+        fn name(&self) -> &str {
+            "stub"
+        }
+        fn model(&self) -> &str {
+            "stub"
+        }
+        fn max_tokens(&self) -> u32 {
+            256
+        }
+        fn context_window(&self) -> usize {
+            32_000
+        }
+        async fn send(&self, _req: &MessagesRequest) -> anyhow::Result<MessagesResponse> {
+            Ok(MessagesResponse {
+                id: "stub".to_string(),
+                content: vec![ContentBlock::Text {
+                    text: self.summary.clone(),
+                }],
+                stop_reason: Some(StopReason::EndTurn),
+                usage: Usage::default(),
+            })
+        }
+        async fn send_streaming(
+            &self,
+            _req: &MessagesRequest,
+            _on_text: &(dyn Fn(String) + Send + Sync),
+        ) -> anyhow::Result<MessagesResponse> {
+            unreachable!("microcompact uses send(), not send_streaming()")
+        }
+    }
+
+    #[tokio::test]
+    async fn microcompact_replaces_oldest_large_tool_result() {
+        let big = "x".repeat(5_000);
+        let messages = vec![
+            Message {
+                role: Role::User,
+                content: vec![ContentBlock::Text { text: "start".into() }],
+            },
+            Message {
+                role: Role::Assistant,
+                content: vec![ContentBlock::ToolUse {
+                    id: "t1".into(),
+                    name: "read".into(),
+                    input: serde_json::json!({}),
+                }],
+            },
+            Message {
+                role: Role::User,
+                content: vec![ContentBlock::ToolResult {
+                    tool_use_id: "t1".into(),
+                    content: big.clone(),
+                    is_error: false,
+                }],
+            },
+            // Recent tail (keep verbatim)
+            Message {
+                role: Role::Assistant,
+                content: vec![ContentBlock::Text { text: "ok".into() }],
+            },
+            Message {
+                role: Role::User,
+                content: vec![ContentBlock::Text {
+                    text: "next".into(),
+                }],
+            },
+            Message {
+                role: Role::Assistant,
+                content: vec![ContentBlock::Text { text: "sure".into() }],
+            },
+            Message {
+                role: Role::User,
+                content: vec![ContentBlock::Text { text: "go".into() }],
+            },
+        ];
+
+        let provider = StubSummarizer {
+            summary: "[summary: the tool returned x's]".to_string(),
+        };
+        let (out, freed) = microcompact_oldest_block(&provider, messages, 4, 2_048).await;
+        assert!(freed > 0, "expected bytes freed");
+        // The tool_result at index 2 should be the one that got replaced.
+        match &out[2].content[0] {
+            ContentBlock::ToolResult { content, .. } => {
+                assert!(content.contains("summarized by microcompact"));
+                assert!(content.contains("the tool returned"));
+                assert!(content.len() < 5_000, "replacement must be smaller");
+            }
+            other => panic!("expected ToolResult at [2][0], got {:?}", other),
+        }
+        // Tail must be untouched.
+        match &out[4].content[0] {
+            ContentBlock::Text { text } => assert_eq!(text, "next"),
+            _ => panic!("tail corrupted"),
+        }
+    }
+
+    #[tokio::test]
+    async fn microcompact_noop_when_no_block_above_threshold() {
+        let messages = vec![
+            Message {
+                role: Role::User,
+                content: vec![ContentBlock::Text { text: "tiny".into() }],
+            },
+            Message {
+                role: Role::Assistant,
+                content: vec![ContentBlock::Text { text: "short".into() }],
+            },
+            Message {
+                role: Role::User,
+                content: vec![ContentBlock::Text { text: "next".into() }],
+            },
+            Message {
+                role: Role::Assistant,
+                content: vec![ContentBlock::Text { text: "ok".into() }],
+            },
+            Message {
+                role: Role::User,
+                content: vec![ContentBlock::Text { text: "go".into() }],
+            },
+        ];
+        let provider = StubSummarizer {
+            summary: "unused".to_string(),
+        };
+        let (_out, freed) = microcompact_oldest_block(&provider, messages, 4, 2_048).await;
+        assert_eq!(freed, 0, "no block above threshold → no compaction");
+    }
+
+    #[tokio::test]
+    async fn microcompact_protects_recent_tail() {
+        let big = "z".repeat(5_000);
+        // Only big block is in the recent-keep tail — should be left alone.
+        let messages = vec![
+            Message {
+                role: Role::User,
+                content: vec![ContentBlock::Text { text: "a".into() }],
+            },
+            Message {
+                role: Role::Assistant,
+                content: vec![ContentBlock::Text { text: "b".into() }],
+            },
+            Message {
+                role: Role::User,
+                content: vec![ContentBlock::Text { text: "c".into() }],
+            },
+            Message {
+                role: Role::Assistant,
+                content: vec![ContentBlock::Text {
+                    text: big.clone(),
+                }],
+            },
+        ];
+        let provider = StubSummarizer {
+            summary: "unused".to_string(),
+        };
+        let (out, freed) = microcompact_oldest_block(&provider, messages, 4, 2_048).await;
+        assert_eq!(freed, 0, "tail-only big block → no compaction");
+        // Block still there verbatim.
+        match &out[3].content[0] {
+            ContentBlock::Text { text } => assert_eq!(text.len(), 5_000),
+            _ => panic!("unexpected"),
+        }
+    }
+
+    #[tokio::test]
+    async fn microcompact_skips_when_summary_bigger_than_original() {
+        let small = "y".repeat(2_100); // just above threshold
+        let messages = vec![
+            Message {
+                role: Role::User,
+                content: vec![ContentBlock::Text { text: small }],
+            },
+            Message {
+                role: Role::Assistant,
+                content: vec![ContentBlock::Text { text: "a".into() }],
+            },
+            Message {
+                role: Role::User,
+                content: vec![ContentBlock::Text { text: "b".into() }],
+            },
+            Message {
+                role: Role::Assistant,
+                content: vec![ContentBlock::Text { text: "c".into() }],
+            },
+            Message {
+                role: Role::User,
+                content: vec![ContentBlock::Text { text: "d".into() }],
+            },
+        ];
+        let provider = StubSummarizer {
+            summary: "x".repeat(10_000), // bigger than the original
+        };
+        let (_out, freed) = microcompact_oldest_block(&provider, messages, 4, 2_048).await;
+        assert_eq!(freed, 0, "summary bigger than original → skip");
     }
 }

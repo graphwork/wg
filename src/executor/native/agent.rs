@@ -599,10 +599,6 @@ impl AgentLoop {
         let mut turns: usize = 0;
         let mut consecutive_server_errors: u32 = 0;
         const MAX_CONSECUTIVE_SERVER_ERRORS: u32 = 3;
-        // Compaction escalation state — same pattern as `AgentLoop::run`.
-        // Drives the three-tier ladder: L1 soft → L2 hard → L3 summarize.
-        let mut nex_noop_streak: u32 = 0;
-        let mut nex_l3_fired: bool = false;
         // Compaction tracking for /status display.
         let mut compaction_count: u32 = 0;
         let mut total_tokens_compacted: usize = 0;
@@ -1023,6 +1019,56 @@ impl AgentLoop {
                     content,
                 });
             }
+
+            // 4. Microcompact if above the soft threshold. This is the
+            //    always-on variant — runs before context pressure
+            //    escalates rather than as an emergency response. On
+            //    turns below threshold it's a zero-cost no-op; above
+            //    threshold it issues one cheap LLM summary over the
+            //    oldest large block (typically a stale tool_result or
+            //    long assistant narrative) and replaces it in place.
+            //    See docs/design/native-executor-run-loop.md §Stage C.
+            let pre_micro = self.context_budget.effective_tokens(&messages);
+            let pre_micro_count = messages.len();
+            if matches!(
+                self.context_budget.check_pressure(&messages),
+                ContextPressureAction::Warning
+                    | ContextPressureAction::EmergencyCompaction
+            ) {
+                let (new_messages, bytes_freed) =
+                    super::tools::summarize::microcompact_oldest_block(
+                        self.client.as_ref(),
+                        messages,
+                        super::tools::summarize::MICROCOMPACT_KEEP_RECENT_MESSAGES,
+                        super::tools::summarize::MICROCOMPACT_MIN_BLOCK_BYTES,
+                    )
+                    .await;
+                messages = new_messages;
+                if bytes_freed > 0 {
+                    let post_micro = self.context_budget.effective_tokens(&messages);
+                    let delta = pre_micro.saturating_sub(post_micro);
+                    compaction_count += 1;
+                    total_tokens_compacted += delta;
+                    if !self.autonomous {
+                        eprintln!(
+                            "\x1b[2m[microcompact: -{} B (~{} tokens) · {} → {} msgs]\x1b[0m",
+                            bytes_freed, delta, pre_micro_count, messages.len()
+                        );
+                    }
+                    if let Some(ref mut j) = journal {
+                        let compacted_through_seq = j.seq();
+                        let _ = j.append(JournalEntryKind::Compaction {
+                            compacted_through_seq,
+                            summary: format!(
+                                "microcompact: -{} bytes (~{} tokens)",
+                                bytes_freed, delta
+                            ),
+                            original_message_count: pre_micro_count as u32,
+                            original_token_count: pre_micro as u32,
+                        });
+                    }
+                }
+            }
             // ── end turn boundary ──────────────────────────────────
 
             if turns >= self.max_turns {
@@ -1199,7 +1245,6 @@ impl AgentLoop {
                                 "[native-agent] Hard emergency compacted: ~{} → ~{} tokens (Δ -{}, overhead {} kept, keep_recent_tool_results=1)",
                                 pre_tokens, post_tokens, delta, self.context_budget.overhead_tokens,
                             );
-                            nex_noop_streak = 0;
 
                             let retry_max_tokens =
                                 std::cmp::max(self.client.max_tokens() / 2, 1024);
@@ -1369,7 +1414,6 @@ impl AgentLoop {
                                         pre_tokens.saturating_sub(post_tokens),
                                     );
                                 }
-                                nex_noop_streak = 0;
                                 continue;
                             }
                             if let Some(api_err) = e.downcast_ref::<super::openai_client::ApiError>() {
@@ -1890,98 +1934,51 @@ impl AgentLoop {
                     // controls the conversation)
                 }
                 ContextPressureAction::EmergencyCompaction => {
-                    // Three-tier escalation ladder: L1 soft → L2 hard
-                    // → L3 summarize-history.
+                    // Proactive microcompact at the turn boundary
+                    // handles most pressure. Reaching this branch means
+                    // the in-flight turn pushed us over the threshold
+                    // in a single step (e.g. one huge tool result) and
+                    // microcompact hasn't had a chance to fire yet. We
+                    // fall back to a full-history summary using the
+                    // 9-section prompt.
+                    //
+                    // The replacement is self-describing — the summary
+                    // message itself is the signal to the model that
+                    // compaction happened. No more "[System note:
+                    // compacted]" tax (which grew the context every
+                    // time it fired, exactly opposite of its intent).
                     let pre_tokens = self.context_budget.effective_tokens(&messages);
                     let pre_count = messages.len();
 
-                    let streak = nex_noop_streak;
-                    const ESCALATION_THRESHOLD: u32 = 2;
-                    let use_l3 = streak >= ESCALATION_THRESHOLD * 2 && !nex_l3_fired;
-                    let use_hard = !use_l3 && streak >= ESCALATION_THRESHOLD;
-
-                    let tier_name = if use_l3 {
-                        "L3 summarize-history"
-                    } else if use_hard {
-                        "L2 hard"
-                    } else {
-                        "L1 soft"
-                    };
-
-                    messages = if use_l3 {
-                        nex_l3_fired = true;
-                        super::tools::summarize::summarize_history_for_compaction(
-                            self.client.as_ref(),
-                            messages,
-                        )
-                        .await
-                    } else if use_hard {
-                        ContextBudget::hard_emergency_compact(messages, 1)
-                    } else {
-                        ContextBudget::emergency_compact(messages, 2)
-                    };
+                    messages = super::tools::summarize::summarize_history_for_compaction(
+                        self.client.as_ref(),
+                        messages,
+                    )
+                    .await;
 
                     let post_tokens = self.context_budget.effective_tokens(&messages);
                     let post_count = messages.len();
                     let delta = pre_tokens.saturating_sub(post_tokens);
-
-                    if delta > 0 || use_hard || use_l3 {
-                        nex_noop_streak = 0;
-                    } else {
-                        nex_noop_streak = nex_noop_streak.saturating_add(1);
-                    }
 
                     compaction_count += 1;
                     total_tokens_compacted += delta;
 
                     if self.autonomous {
                         eprintln!(
-                            "[native-agent] {} compaction: ~{} → ~{} tokens (Δ -{}, {} → {} messages, overhead {} kept, noop_streak={})",
-                            tier_name,
+                            "[native-agent] history-summary compaction: ~{} → ~{} tokens (Δ -{}, {} → {} messages, overhead {} kept)",
                             pre_tokens,
                             post_tokens,
                             delta,
                             pre_count,
                             post_count,
                             self.context_budget.overhead_tokens,
-                            nex_noop_streak,
                         );
-                    } else if self.nex_verbose {
+                    } else {
                         eprintln!(
-                            "\x1b[33m[nex] {} compaction: ~{} → ~{} tokens (Δ -{}, {} → {} msgs, noop_streak={})\x1b[0m",
-                            tier_name,
-                            pre_tokens,
-                            post_tokens,
-                            delta,
-                            pre_count,
-                            post_count,
-                            nex_noop_streak,
+                            "\x1b[2m[history-summary compacted: ~{} → ~{} tokens (Δ -{}), {} → {} msgs]\x1b[0m",
+                            pre_tokens, post_tokens, delta, pre_count, post_count
                         );
                     }
-
-                    // Inject a context note so the model knows
-                    // compaction happened and can adjust. Without
-                    // this, the model has no signal that earlier
-                    // context was compressed and may try to reference
-                    // details that are no longer in its window.
-                    if !self.autonomous {
-                        eprintln!(
-                            "\x1b[2m[context compacted: ~{} → ~{} tokens via {}]\x1b[0m",
-                            pre_tokens, post_tokens, tier_name
-                        );
-                    }
-                    messages.push(Message {
-                        role: Role::User,
-                        content: vec![ContentBlock::Text {
-                            text: format!(
-                                "[System note: context was compacted ({}) — earlier turns \
-                                 were summarized. ~{} → ~{} tokens, {} → {} messages. \
-                                 If you need details from earlier, check the session \
-                                 log or ask the user to re-state.]",
-                                tier_name, pre_tokens, post_tokens, pre_count, post_count
-                            ),
-                        }],
-                    });
 
                     // Journal the compaction event
                     if let Some(ref mut j) = journal {
@@ -1989,8 +1986,8 @@ impl AgentLoop {
                         let _ = j.append(JournalEntryKind::Compaction {
                             compacted_through_seq,
                             summary: format!(
-                                "{} compaction. Tokens: ~{} → ~{}, messages: {} → {}.",
-                                tier_name, pre_tokens, post_tokens, pre_count, post_count
+                                "history-summary compaction. Tokens: ~{} → ~{}, messages: {} → {}.",
+                                pre_tokens, post_tokens, pre_count, post_count
                             ),
                             original_message_count: pre_count as u32,
                             original_token_count: pre_tokens as u32,
