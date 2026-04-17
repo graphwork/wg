@@ -2091,6 +2091,10 @@ fn default_bizarre_ideation_interval() -> u32 {
 fn default_eval_gate_threshold() -> Option<f64> {
     Some(0.7)
 }
+fn default_auto_rescue_on_eval_fail() -> bool {
+    true
+}
+
 fn default_flip_verification_threshold() -> Option<f64> {
     // Deprecated as of 2026-04-17. FLIP-driven autospawn of .verify-* tasks
     // generated runaway meta-task cascades (observed on ulivo: every real
@@ -2233,6 +2237,18 @@ pub struct AgencyConfig {
     #[serde(default)]
     pub eval_gate_all: bool,
 
+    /// When the eval gate rejects a task (score below threshold), also
+    /// invoke `wg rescue` automatically — creating a first-class
+    /// replacement task at the failed task's graph slot, using the
+    /// evaluator's notes as the rescue brief. The replacement inherits
+    /// the failed task's predecessors + successors; successors are
+    /// rerouted to unblock from the rescue only. This is the
+    /// "evaluation drives remediation" loop the rescue-proxy design
+    /// is built for (see docs/design/nex-as-coordinator.md and the
+    /// rescue / insert command docs). Default: true (enabled).
+    #[serde(default = "default_auto_rescue_on_eval_fail")]
+    pub auto_rescue_on_eval_fail: bool,
+
     /// Enable FLIP (Fidelity via Latent Intent Probing) evaluation.
     /// When enabled, completed tasks can be evaluated using roundtrip
     /// intent fidelity: infer the prompt from output, then compare to actual.
@@ -2327,6 +2343,7 @@ impl Default for AgencyConfig {
             auto_assign_grace_seconds: default_auto_assign_grace_seconds(),
             eval_gate_threshold: default_eval_gate_threshold(),
             eval_gate_all: false,
+            auto_rescue_on_eval_fail: default_auto_rescue_on_eval_fail(),
             flip_enabled: true,
             flip_inference_model: None,
             flip_comparison_model: None,

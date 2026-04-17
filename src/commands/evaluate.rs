@@ -1433,6 +1433,57 @@ fn check_eval_gate(
     // Reject the original task
     super::fail::run_eval_reject(dir, task_id, Some(&reason))?;
 
+    // Auto-rescue: evaluation-drives-remediation. The evaluator's notes
+    // become the rescue task's brief, so the rescue worker knows what
+    // went wrong and what the fix should be. The rescue task is
+    // first-class (no dot-prefix), visible in wg list / wg show, and
+    // inherits the failed task's graph slot — successors unblock from
+    // it instead of the failed target. See docs/design/
+    // nex-as-coordinator.md on the broader "real work in the regular
+    // graph" principle.
+    if config.agency.auto_rescue_on_eval_fail {
+        let eval_task_id = format!(".evaluate-{}", task_id);
+        let rescue_desc = format!(
+            "Evaluation of the prior attempt scored {:.2}/1.0 (below the {:.2} \
+             threshold).\n\n**Evaluator's notes:**\n\n{}\n\n**Your job:** \
+             address the issues above and complete the task correctly. The \
+             full source task context is available via `wg show {}`. Evaluation \
+             artifacts are in `.workgraph/agency/evaluations/`.",
+            evaluation.score, threshold, evaluation.notes, task_id
+        );
+
+        match super::rescue::run(
+            dir,
+            task_id,
+            &rescue_desc,
+            None,
+            None,
+            Some(&eval_task_id),
+            Some("eval-gate"),
+        ) {
+            Ok(new_id) => {
+                let msg = format!(
+                    "  [auto-rescue] created '{}' from eval notes — successors now \
+                     unblock from the rescue instead of the failed target",
+                    new_id
+                );
+                if json {
+                    eprintln!("{}", msg);
+                } else {
+                    println!("{}", msg);
+                }
+            }
+            Err(e) => {
+                // Non-fatal: the fail-reject already landed. Rescue is
+                // bonus. Log and move on so the eval still records.
+                eprintln!(
+                    "\x1b[33mwarning:\x1b[0m auto-rescue failed for '{}': {}",
+                    task_id, e
+                );
+            }
+        }
+    }
+
     Ok(true)
 }
 
