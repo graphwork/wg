@@ -182,6 +182,7 @@ pub fn run(
     .with_nex_repl_mode(true)
     .with_journal(journal_path, format!("nex-{}", stamp))
     .with_working_dir(working_dir.clone())
+    .with_workgraph_dir(workgraph_dir.to_path_buf())
     .with_resume(resume_enabled);
 
     if let Some(entry) = config.registry_lookup(&effective_model) {

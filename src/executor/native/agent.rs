@@ -428,6 +428,26 @@ impl AgentLoop {
         self
     }
 
+    /// Set the workgraph root directory. Used by file-producing sub-
+    /// systems (L0 defense pending buffers, touched-files re-injection
+    /// artifact stash, etc.) that need a stable location to write
+    /// artifacts that survive the session.
+    pub fn with_workgraph_dir(mut self, workgraph_dir: PathBuf) -> Self {
+        self.workgraph_dir = Some(workgraph_dir);
+        self
+    }
+
+    /// Resolve a directory for writing agent-produced buffer artifacts
+    /// (L0 defense rescue buffers, etc.). Prefer the configured
+    /// workgraph_dir; fall back to `<tempdir>/wg-nex-buffers` so a
+    /// session without a workgraph root still doesn't crash when
+    /// trying to stash an oversized tool_use.
+    fn workgraph_dir_for_buffers(&self) -> PathBuf {
+        self.workgraph_dir.clone().unwrap_or_else(|| {
+            std::env::temp_dir().join("wg-nex-buffers")
+        })
+    }
+
     /// Set the session summary extraction interval (in turns).
     /// Default is 10 turns. Set to 0 to disable.
     pub fn with_summary_interval(mut self, turns: usize) -> Self {
@@ -1597,13 +1617,12 @@ impl AgentLoop {
                 );
             }
 
-            messages.push(Message {
-                role: Role::Assistant,
-                content: response.content.clone(),
-            });
-
-            // Journal the assistant message so the full conversation
-            // is replayable from the journal file.
+            // Journal the assistant message VERBATIM so the full
+            // conversation (including any oversized tool_use args the
+            // model emitted) is replayable from the journal. L0 defense
+            // below may rewrite the in-context copy of this message
+            // with a compact placeholder, but the journal holds the
+            // true history.
             if let Some(ref mut j) = journal {
                 let _ = j.append(JournalEntryKind::Message {
                     role: Role::Assistant,
@@ -1613,6 +1632,29 @@ impl AgentLoop {
                     stop_reason: response.stop_reason,
                 });
             }
+
+            messages.push(Message {
+                role: Role::Assistant,
+                content: response.content.clone(),
+            });
+
+            // L0 current-turn defense: scan the just-pushed assistant
+            // message for tool_use blocks whose serialized input exceeds
+            // the per-call cap. Save oversized inputs to pending
+            // buffer files, rewrite the in-context tool_use blocks
+            // with compact placeholders, and collect rejections so
+            // we can synthesize matching tool_result errors below.
+            // Historical compaction (microcompact, summarize-history)
+            // protects old turns; L0 protects *this* turn before it
+            // enters the context budget.
+            let l0_rejections: Vec<super::l0_defense::Rejection> = {
+                let last_idx = messages.len() - 1;
+                super::l0_defense::compact_oversized_tool_uses(
+                    &mut messages[last_idx],
+                    &self.workgraph_dir_for_buffers(),
+                    super::l0_defense::DEFAULT_MAX_TOOL_USE_INPUT_BYTES,
+                )
+            };
 
             match response.stop_reason {
                 Some(StopReason::EndTurn) | Some(StopReason::StopSequence) | None => {
@@ -1736,8 +1778,33 @@ impl AgentLoop {
                     )> = Vec::new();
                     let mut batch_calls: Vec<(usize, String, super::tools::ToolCall)> = Vec::new();
 
+                    // Map L0 rejections by tool_use_id for O(1) lookup below.
+                    let l0_rejected: std::collections::HashMap<
+                        &str,
+                        &super::l0_defense::Rejection,
+                    > = l0_rejections
+                        .iter()
+                        .map(|r| (r.tool_use_id.as_str(), r))
+                        .collect();
+
                     for (i, (id, name, input)) in tool_use_blocks.iter().enumerate() {
-                        if input.get("__parse_error").is_some() {
+                        if let Some(rej) = l0_rejected.get(id.as_str()) {
+                            // L0 defense rejected this tool_use pre-execution —
+                            // its args were too big. Don't actually run the tool;
+                            // synthesize the explanation as a tool_result error.
+                            // The model's next turn sees the rejection + buffer
+                            // pointer and can retry with smaller chunks.
+                            parse_error_results.push((
+                                i,
+                                id.clone(),
+                                name.clone(),
+                                input.clone(),
+                                super::tools::ToolOutput {
+                                    content: rej.explain(),
+                                    is_error: true,
+                                },
+                            ));
+                        } else if input.get("__parse_error").is_some() {
                             let error_msg = input
                                 .get("__parse_error")
                                 .and_then(|v| v.as_str())
