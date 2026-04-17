@@ -10,6 +10,7 @@ pub mod delegate;
 pub mod file;
 pub mod file_cache;
 pub mod file_query;
+pub mod map;
 pub mod reader;
 pub mod research;
 pub mod summarize;
@@ -426,6 +427,9 @@ impl ToolRegistry {
 
         // Reader (sub-executor with working dir for large-file survey)
         reader::register_reader_tool(&mut registry, workgraph_dir.to_path_buf());
+
+        // Map (sub-executor per item over a list of inputs)
+        map::register_map_tool(&mut registry, workgraph_dir.to_path_buf());
 
         // Note: what was `survey_file` is now split across two entry points:
         // - `read_file(path, query=...)` — single-shot LLM query, fails loudly
