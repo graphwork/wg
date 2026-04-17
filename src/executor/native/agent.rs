@@ -628,6 +628,11 @@ impl AgentLoop {
         let mut inbox: Box<dyn super::inbox::AgentInbox> =
             Box::new(super::inbox::InMemoryInbox::new());
 
+        // Track files the agent has touched. Consulted on history-summary
+        // compaction to re-inject a fresh view of the most-recent files
+        // (see Stage D in docs/design/native-executor-run-loop.md).
+        let mut touched_files = super::touched_files::TouchedFiles::new();
+
         // Emit the session-start event as the first line of the log
         // file so the trace has a clear beginning marker.
         self.log_session_start(None);
@@ -1822,6 +1827,13 @@ impl AgentLoop {
                             sw.write_tool_end(name, output.is_error, *duration_ms);
                         }
 
+                        // Observe touched files for post-compaction
+                        // re-injection (Stage D). Silently ignores tools
+                        // not in the file-touching allow-list.
+                        if !output.is_error {
+                            touched_files.observe(name, input);
+                        }
+
                         // Log the tool call (NDJSON session log)
                         self.log_tool_call(name, input, &output.content, output.is_error);
 
@@ -1955,6 +1967,21 @@ impl AgentLoop {
                         messages,
                     )
                     .await;
+
+                    // Post-compaction file re-injection (Stage D). The
+                    // summary preserves narrative; the re-read files
+                    // preserve state. The model wakes up with both:
+                    // "what happened" + "what does my environment
+                    // currently look like". Fresh reads from disk, so
+                    // any concurrent modifications show up too.
+                    if let Some(markdown) =
+                        super::touched_files::reinject_files_markdown(&touched_files)
+                    {
+                        messages.push(Message {
+                            role: Role::User,
+                            content: vec![ContentBlock::Text { text: markdown }],
+                        });
+                    }
 
                     let post_tokens = self.context_budget.effective_tokens(&messages);
                     let post_count = messages.len();
