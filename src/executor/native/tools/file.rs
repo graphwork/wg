@@ -86,12 +86,9 @@ fn resolve_inside_cwd(input: &str) -> Result<PathBuf, String> {
 }
 
 /// Register all file tools into the registry.
-pub fn register_file_tools(registry: &mut ToolRegistry, workgraph_dir: PathBuf) {
+pub fn register_file_tools(registry: &mut ToolRegistry) {
     let cache = Arc::new(Mutex::new(FileCache::new()));
-    registry.register(Box::new(ReadFileTool {
-        cache,
-        workgraph_dir,
-    }));
+    registry.register(Box::new(ReadFileTool { cache }));
     registry.register(Box::new(WriteFileTool));
     registry.register(Box::new(EditFileTool));
     registry.register(Box::new(GlobTool));
@@ -102,8 +99,6 @@ pub fn register_file_tools(registry: &mut ToolRegistry, workgraph_dir: PathBuf) 
 
 struct ReadFileTool {
     cache: Arc<Mutex<FileCache>>,
-    /// Needed to resolve a provider for `query` mode (LLM sub-call).
-    workgraph_dir: PathBuf,
 }
 
 #[async_trait]
@@ -119,22 +114,10 @@ impl Tool for ReadFileTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "read_file".to_string(),
-            description: "Read a file.\n\
-                          \n\
-                          PREFERRED: read_file(path, query='...') — returns an LLM-generated \
-                          answer to your question about the file, in one call. Use this \
-                          for 'what is the X in this file', 'find Y', 'extract Z'. Much \
-                          cheaper than reading the whole file into your context. If the \
-                          file exceeds the single-shot budget, you get a clear error \
-                          pointing at `reader` for deep traversal with a workspace.\n\
-                          \n\
-                          BROWSING: read_file(path) — without `query`, returns numbered \
-                          lines as bytes. Use only when you actually need to see the raw \
-                          text. Truncates long files with a footer naming `reader` and \
-                          `offset`/`limit` as escape hatches.\n\
-                          \n\
-                          `offset` and `limit` work in both modes — in query mode they \
-                          restrict the LLM's view to that line range."
+            description: "Read a file. Returns numbered lines. Use `offset`/`limit` to \
+                          slice. For LLM-answered queries over the content use `summarize` \
+                          (map-reduce, good for 'find X' / 'list all Y') or `reader` \
+                          (deep traversal with a working directory)."
                 .to_string(),
             input_schema: json!({
                 "type": "object",
@@ -145,21 +128,11 @@ impl Tool for ReadFileTool {
                     },
                     "offset": {
                         "type": "integer",
-                        "description": "Line number to start reading from (1-based). \
-                                        In query mode, restricts the query to lines \
-                                        offset..offset+limit."
+                        "description": "Line number to start reading from (1-based)"
                     },
                     "limit": {
                         "type": "integer",
-                        "description": "Maximum number of lines to read (default: 2000). \
-                                        In query mode, bounds the slice the query sees."
-                    },
-                    "query": {
-                        "type": "string",
-                        "description": "Optional. When set, the tool returns an LLM-generated \
-                                        answer to this question, computed over the file \
-                                        contents (or the offset/limit slice). Without this \
-                                        parameter the tool returns raw lines."
+                        "description": "Maximum number of lines to read (default: 2000)"
                     }
                 },
                 "required": ["path"]
@@ -175,31 +148,6 @@ impl Tool for ReadFileTool {
 
         let offset = input.get("offset").and_then(|v| v.as_u64()).unwrap_or(1) as usize;
         let limit = input.get("limit").and_then(|v| v.as_u64()).unwrap_or(2000) as usize;
-
-        // Query mode: delegate to the file_query backend. This runs an
-        // LLM sub-call (single shot for small files, cursor-traversal
-        // with compaction for large ones) and returns the answer text.
-        let query = input
-            .get("query")
-            .and_then(|v| v.as_str())
-            .map(|s| s.trim())
-            .filter(|s| !s.is_empty());
-        if let Some(query) = query {
-            let offset_opt = input.get("offset").and_then(|v| v.as_u64()).map(|n| n as usize);
-            let limit_opt = input.get("limit").and_then(|v| v.as_u64()).map(|n| n as usize);
-            return match super::file_query::run_query_on_file(
-                &self.workgraph_dir,
-                path_str,
-                query,
-                offset_opt,
-                limit_opt,
-            )
-            .await
-            {
-                Ok(answer) => ToolOutput::success(super::truncate_for_tool(&answer, "read_file")),
-                Err(e) => ToolOutput::error(format!("read_file query failed: {}", e)),
-            };
-        }
 
         // Get mtime for cache validation; error on stat failure.
         let mtime = match fs::metadata(path_str).and_then(|m| m.modified()) {
@@ -261,21 +209,13 @@ impl Tool for ReadFileTool {
             output.push_str("\n[cached read, file unchanged]\n");
         }
 
-        // Loud truncation notice: when the file has more lines than we
-        // just returned, the model needs to know. Point at the escape
-        // hatches (explicit offset+limit, query mode, reader tool) so
-        // the model can escalate rather than silently thinking it saw
-        // everything.
         let total_lines = lines.len();
         if end < total_lines {
             output.push_str(&format!(
-                "\n[TRUNCATED at line {}. File has {} lines total ({} more below). \
-                 To see more: call read_file again with a higher `offset`, pass a `query` \
-                 for an LLM-answered summary of the whole file, or use `reader` for a \
-                 multi-turn survey with a working directory.]\n",
+                "\n[truncated: showed lines {}..{} of {}]\n",
+                start + 1,
                 end,
                 total_lines,
-                total_lines - end
             ));
         }
 
@@ -906,10 +846,7 @@ mod tests {
         use tokio::sync::Mutex;
 
         let cache = Arc::new(Mutex::new(FileCache::new()));
-        let tool = ReadFileTool {
-            cache,
-            workgraph_dir: std::env::temp_dir().join("wg-test-readfile"),
-        };
+        let tool = ReadFileTool { cache };
 
         // Create a temp file with exactly 3 lines
         let temp_file = tempfile::NamedTempFile::new().unwrap();

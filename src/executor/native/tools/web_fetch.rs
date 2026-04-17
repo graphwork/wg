@@ -107,42 +107,22 @@ impl Tool for WebFetchTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "web_fetch".to_string(),
-            description: "Fetch a web page.\n\
-                          \n\
-                          PREFERRED: web_fetch(url, query='...') — returns an LLM-generated \
-                          answer to your question about the page, in one call. Use this \
-                          for 'what is X', 'what does this say about Y', 'extract the \
-                          forecast/price/date'. Much faster and more reliable than fetching \
-                          then grepping.\n\
-                          \n\
-                          BROWSING: web_fetch(url) — without `query`, saves the page as a \
-                          markdown artifact and returns metadata + preview. Use only when \
-                          you actually need to browse/grep the raw content with `bash`.\n\
-                          \n\
-                          When query mode exceeds the context window for very large pages, \
-                          you get a clear error pointing at `reader` for deeper traversal.\n\
+            description: "Fetch a web page, extract main content to markdown, save as a \
+                          local file artifact, return metadata + a 20-line preview. Use \
+                          `bash` on the returned path to read the full page, or pass the \
+                          path to `summarize` / `reader` for LLM-answered queries over the \
+                          content.\n\
                           \n\
                           Presents as a real Chrome browser (TLS + HTTP/2 fingerprint via \
                           rquest). Falls back to headless Chrome if TLS emulation isn't \
-                          enough.\n\
-                          \n\
-                          NOTE: URLs must be real — prefer ones returned by `web_search` \
-                          over guessed URLs, which will 404."
+                          enough. URLs must be real — prefer ones returned by `web_search`."
                 .to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "url": {
                         "type": "string",
-                        "description": "URL to fetch. Must be a real URL, typically one \
-                                        returned by a prior `web_search` call."
-                    },
-                    "query": {
-                        "type": "string",
-                        "description": "Optional. When set, returns an LLM-generated answer \
-                                        to this question over the fetched page contents. \
-                                        Without this parameter the tool returns a file \
-                                        artifact + metadata + preview."
+                        "description": "URL to fetch. Typically from a prior web_search."
                     }
                 },
                 "required": ["url"]
@@ -156,16 +136,6 @@ impl Tool for WebFetchTool {
             Some(_) => return ToolOutput::error("URL must not be empty".to_string()),
             None => return ToolOutput::error("Missing required parameter: url".to_string()),
         };
-        // Optional `query` — when set, we'll run an LLM sub-call over the
-        // fetched content via the same `file_query` backend as
-        // `read_file(path, query)`. Single-shot or error; no silent
-        // cursor-loop fallback.
-        let query = input
-            .get("query")
-            .and_then(|v| v.as_str())
-            .map(|s| s.trim())
-            .filter(|s| !s.is_empty())
-            .map(|s| s.to_string());
 
         let parsed_url = match Url::parse(&url_str) {
             Ok(u) => u,
@@ -282,116 +252,21 @@ impl Tool for WebFetchTool {
         let total_lines = capped_markdown.lines().count();
         let duration_ms = overall_started.elapsed().as_millis() as u64;
 
-        // Query mode: run an LLM sub-call over the saved artifact and
-        // return the answer. Goes through the same `file_query` backend
-        // as `read_file(path, query)` for consistent semantics —
-        // single-shot or loud error pointing at `reader`. The artifact
-        // file is still on disk if the caller wants to browse it later.
-        if let Some(query) = query {
-            let answer_result = super::file_query::run_query_on_file(
-                &self.workgraph_dir,
-                &artifact_path.to_string_lossy(),
-                &query,
-                None,
-                None,
-            )
-            .await;
-            match answer_result {
-                Ok(answer) => {
-                    return ToolOutput::success(format!(
-                        "web_fetch(query): {url} → {lines} lines via {path_used} ({ms} ms)\n\
-                         Artifact saved at: {path}\n\
-                         \n\
-                         Answer:\n{answer}",
-                        url = url_str,
-                        lines = total_lines,
-                        path_used = path_used,
-                        ms = duration_ms,
-                        path = artifact_path.display(),
-                        answer = answer,
-                    ));
-                }
-                Err(e) => {
-                    return ToolOutput::error(format!(
-                        "web_fetch fetched {} successfully via {} ({} lines saved to {}) \
-                         but the query sub-call failed: {}\n\
-                         \n\
-                         The artifact is on disk — use `reader` on that path for large \
-                         pages, or inspect it with `bash cat/head/grep` directly.",
-                        url_str,
-                        path_used,
-                        total_lines,
-                        artifact_path.display(),
-                        e
-                    ));
-                }
-            }
-        }
-
         let mut preview = String::new();
         for (i, line) in capped_markdown.lines().take(PREVIEW_LINES).enumerate() {
             preview.push_str(&format!("{:>4}: {}\n", i + 1, line));
         }
 
-        // Large-page guidance as a directive, not a tip. Observed
-        // repeatedly in smoke tests: qwen3-coder ignores trailing
-        // hints and reflexively chains `bash grep`/`head`/`cat` on
-        // the artifact file, burning many turns for questions that
-        // `web_fetch(url, query=...)` answers in one call. This
-        // block prepends an imperative ATTENTION banner to the
-        // response so it's the first thing the model reads. Below
-        // the banner, the preview + bash hints still appear for
-        // cases where the caller wants to actually browse the file.
-        const LARGE_PAGE_LINES: usize = 80;
-        const LARGE_PAGE_BYTES: usize = 6_000;
-        let suggest_query =
-            total_lines > LARGE_PAGE_LINES || total_bytes > LARGE_PAGE_BYTES;
-        let query_banner = if suggest_query {
-            format!(
-                "★★★ ATTENTION — this page is large ({lines} lines, {bytes} bytes). ★★★\n\
-                 If you want an answer ABOUT the page, your NEXT call should be:\n\
-                 \n\
-                 • web_fetch(url='{url}', query='<your question>')  ← best for one-shot answers\n\
-                 • reader(path='{path}', task='<task>')              ← best for multi-step exploration\n\
-                 \n\
-                 DO NOT chain `bash grep`/`head`/`cat` on the artifact path to answer \
-                 factual questions — it wastes turns and usually misses. Query mode runs \
-                 an LLM over the page content and returns the answer directly.\n\
-                 ──────────────────────────────────────────────────────\n\
-                 \n",
-                lines = total_lines,
-                bytes = total_bytes,
-                url = url_str,
-                path = artifact_path.display(),
-            )
-        } else {
-            String::new()
-        };
-
-        // Compact one-line header FIRST so the nex default display
-        // mode picks a useful summary line, same treatment as
-        // web_search. Then the query banner (if applicable), then
-        // the full preview + bash hints (for cases where the caller
-        // actually wants to browse the file, and for small pages
-        // where query mode would be overkill).
         let response = format!(
             "web_fetch: {url} → {lines} lines, {bytes} bytes via {path_used} ({ms} ms) \
              → {path}\n\
              \n\
-             {query_banner}\
              Title:   {title}\n\
              \n\
              Preview (first {preview_lines} lines):\n\
              ────────────────────────────────────────────────────\n\
              {preview}\
-             ────────────────────────────────────────────────────\n\
-             \n\
-             To read the full page, use `bash` on the path above:\n\
-             • Whole file:    cat '{path}'\n\
-             • First N lines: head -n 100 '{path}'\n\
-             • Last N lines:  tail -n 100 '{path}'\n\
-             • Search:        grep -in 'pattern' '{path}'\n\
-             • Line range:    sed -n '50,120p' '{path}'\n",
+             ────────────────────────────────────────────────────\n",
             url = url_str,
             title = if title.is_empty() {
                 "(untitled)"
@@ -405,7 +280,6 @@ impl Tool for WebFetchTool {
             ms = duration_ms,
             preview_lines = PREVIEW_LINES,
             preview = preview,
-            query_banner = query_banner,
         );
 
         ToolOutput::success(response)

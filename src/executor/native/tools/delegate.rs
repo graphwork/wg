@@ -194,7 +194,7 @@ pub fn build_child_registry(
     let mut registry = ToolRegistry::new();
 
     // Register all standard tools except delegate (prevents recursion)
-    file::register_file_tools(&mut registry, workgraph_dir.to_path_buf());
+    file::register_file_tools(&mut registry);
     bash::register_bash_tool(&mut registry, working_dir.to_path_buf());
     wg::register_wg_tools(&mut registry, workgraph_dir.to_path_buf());
     web_search::register_web_search_tool(&mut registry);

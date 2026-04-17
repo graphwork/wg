@@ -9,7 +9,6 @@ pub mod deep_research;
 pub mod delegate;
 pub mod file;
 pub mod file_cache;
-pub mod file_query;
 pub mod map;
 pub mod reader;
 pub mod research;
@@ -379,7 +378,7 @@ impl ToolRegistry {
         let mut registry = Self::new();
 
         // File tools
-        file::register_file_tools(&mut registry, workgraph_dir.to_path_buf());
+        file::register_file_tools(&mut registry);
 
         // Bash tool
         bash::register_bash_tool(&mut registry, working_dir.to_path_buf());
