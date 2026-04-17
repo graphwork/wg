@@ -308,19 +308,15 @@ async fn run_reader(
     }];
 
     for turn in 0..max_turns {
-        let (cursor, note_count) = {
+        // Snapshot state BEFORE the turn so we can diff and report
+        // exactly what changed. Reporting "cursor=3703/3703" six turns
+        // in a row (as happened in the weather smoke test) tells the
+        // operator nothing about what the agent actually did — these
+        // action-based lines show the trajectory.
+        let (cursor_before, notes_before) = {
             let s = state.lock().unwrap();
-            let notes = count_notes(&s.working_dir);
-            (s.cursor, notes)
+            (s.cursor, count_notes(&s.working_dir))
         };
-        eprintln!(
-            "[reader] turn {}/{} (cursor={}/{}, notes={})",
-            turn + 1,
-            max_turns,
-            cursor,
-            total_chars,
-            note_count
-        );
 
         let request = MessagesRequest {
             model: provider.model().to_string(),
@@ -339,13 +335,39 @@ async fn run_reader(
             content: response.content.clone(),
         });
 
+        // Extract what tools the model asked for on this turn (if any).
+        let tool_names: Vec<String> = response
+            .content
+            .iter()
+            .filter_map(|b| match b {
+                ContentBlock::ToolUse { name, .. } => Some(name.clone()),
+                _ => None,
+            })
+            .collect();
+
         match response.stop_reason {
             Some(StopReason::EndTurn) | Some(StopReason::StopSequence) | None => {
                 let s = state.lock().unwrap();
                 if let Some(ref result) = s.final_result {
+                    eprintln!(
+                        "[reader] turn {}/{}: finish() (cursor {}/{}, notes {})",
+                        turn + 1,
+                        max_turns,
+                        s.cursor,
+                        total_chars,
+                        count_notes(&s.working_dir),
+                    );
                     return Ok(format_exit(&s.working_dir, result, turn + 1, false));
                 }
                 drop(s);
+                eprintln!(
+                    "[reader] turn {}/{}: (no tool call — plain text) cursor {}/{}, notes {}",
+                    turn + 1,
+                    max_turns,
+                    cursor_before,
+                    total_chars,
+                    notes_before,
+                );
                 messages.push(Message {
                     role: Role::User,
                     content: vec![ContentBlock::Text {
@@ -396,10 +418,56 @@ async fn run_reader(
 
                 // Check for finish() signal.
                 let s = state.lock().unwrap();
-                if let Some(ref result) = s.final_result {
-                    return Ok(format_exit(&s.working_dir, result, turn + 1, false));
-                }
+                let finished = s.final_result.is_some();
+                let cursor_after = s.cursor;
+                let notes_after = count_notes(&s.working_dir);
+                let final_result_opt = s.final_result.clone();
                 drop(s);
+
+                // Action-based telemetry: name the tool(s) called and
+                // show what actually changed this turn. "cursor 0→3703
+                // (EOF), notes 0→1" tells you what the agent did.
+                // "cursor=3703/3703 notes=1" printed six turns in a
+                // row (the weather smoke-test failure mode) tells you
+                // nothing about the trajectory.
+                let action = tool_names.join(",");
+                let cursor_delta = if cursor_after != cursor_before {
+                    let pct = if total_chars == 0 {
+                        100
+                    } else {
+                        (cursor_after * 100 / total_chars).min(100)
+                    };
+                    let eof_marker = if cursor_after >= total_chars {
+                        " EOF"
+                    } else {
+                        ""
+                    };
+                    format!(" cursor {}→{} ({}%{})", cursor_before, cursor_after, pct, eof_marker)
+                } else {
+                    String::new()
+                };
+                let notes_delta = if notes_after != notes_before {
+                    format!(" notes {}→{}", notes_before, notes_after)
+                } else {
+                    String::new()
+                };
+                eprintln!(
+                    "[reader] turn {}/{}: {}{}{}",
+                    turn + 1,
+                    max_turns,
+                    action,
+                    cursor_delta,
+                    notes_delta,
+                );
+
+                if finished {
+                    return Ok(format_exit(
+                        &state.lock().unwrap().working_dir,
+                        &final_result_opt.unwrap_or_default(),
+                        turn + 1,
+                        false,
+                    ));
+                }
 
                 // Bound context: replace all but the most recent
                 // next_chunk tool_result with a stub. Without this, a

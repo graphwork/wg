@@ -107,25 +107,27 @@ impl Tool for WebFetchTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "web_fetch".to_string(),
-            description: "Fetch a web page. Two modes:\n\
+            description: "Fetch a web page.\n\
                           \n\
-                          - Without `query`: extracts the page to markdown, saves a local \
-                          file artifact, and returns metadata (path, size, title) plus a \
-                          20-line preview. To read the full page use `bash` with \
-                          `cat`/`head`/`tail`/`grep` on the returned path.\n\
-                          - With `query`: extracts the page, saves the artifact, and runs \
-                          an LLM sub-call over the content to return a text answer to your \
-                          query. Prefer this when you want an answer ABOUT the page rather \
-                          than the raw content. If the page is too large for a single LLM \
-                          call, this errors out — use `reader` on the returned artifact path.\n\
+                          PREFERRED: web_fetch(url, query='...') — returns an LLM-generated \
+                          answer to your question about the page, in one call. Use this \
+                          for 'what is X', 'what does this say about Y', 'extract the \
+                          forecast/price/date'. Much faster and more reliable than fetching \
+                          then grepping.\n\
                           \n\
-                          Presents as a real Chrome browser (TLS + HTTP/2 + client-hints \
-                          fingerprint via rquest). Falls back to a headless Chrome process if \
-                          TLS emulation isn't enough.\n\
+                          BROWSING: web_fetch(url) — without `query`, saves the page as a \
+                          markdown artifact and returns metadata + preview. Use only when \
+                          you actually need to browse/grep the raw content with `bash`.\n\
                           \n\
-                          IMPORTANT: Prefer URLs returned by `web_search` over guessing. \
-                          Hallucinated URLs will return 404 — `web_fetch` cannot conjure \
-                          pages that don't exist."
+                          When query mode exceeds the context window for very large pages, \
+                          you get a clear error pointing at `reader` for deeper traversal.\n\
+                          \n\
+                          Presents as a real Chrome browser (TLS + HTTP/2 fingerprint via \
+                          rquest). Falls back to headless Chrome if TLS emulation isn't \
+                          enough.\n\
+                          \n\
+                          NOTE: URLs must be real — prefer ones returned by `web_search` \
+                          over guessed URLs, which will 404."
                 .to_string(),
             input_schema: json!({
                 "type": "object",
@@ -331,27 +333,32 @@ impl Tool for WebFetchTool {
             preview.push_str(&format!("{:>4}: {}\n", i + 1, line));
         }
 
-        // Large-page guidance: the replacement tools for the old
-        // `summarize` path. When the page is long, prefer
-        // read_file(query) for a one-shot answer or reader for a
-        // workspace-based survey over reading with bash.
+        // Large-page guidance as a directive, not a tip. Observed
+        // repeatedly in smoke tests: qwen3-coder ignores trailing
+        // hints and reflexively chains `bash grep`/`head`/`cat` on
+        // the artifact file, burning many turns for questions that
+        // `web_fetch(url, query=...)` answers in one call. This
+        // block prepends an imperative ATTENTION banner to the
+        // response so it's the first thing the model reads. Below
+        // the banner, the preview + bash hints still appear for
+        // cases where the caller wants to actually browse the file.
         const LARGE_PAGE_LINES: usize = 80;
         const LARGE_PAGE_BYTES: usize = 6_000;
         let suggest_query =
             total_lines > LARGE_PAGE_LINES || total_bytes > LARGE_PAGE_BYTES;
-        let query_hint = if suggest_query {
+        let query_banner = if suggest_query {
             format!(
-                "\nThis page is large ({lines} lines, {bytes} bytes). For focused \
-                 extraction, prefer one of:\n\
+                "★★★ ATTENTION — this page is large ({lines} lines, {bytes} bytes). ★★★\n\
+                 If you want an answer ABOUT the page, your NEXT call should be:\n\
                  \n\
-                 • web_fetch(url='{url}', query='<what you want to know>')\n\
-                 • read_file(path='{path}', query='<question>')\n\
-                 • reader(path='{path}', task='<task with multiple deliverables>')\n\
+                 • web_fetch(url='{url}', query='<your question>')  ← best for one-shot answers\n\
+                 • reader(path='{path}', task='<task>')              ← best for multi-step exploration\n\
                  \n\
-                 web_fetch(query) is simplest when you just want an answer about the \
-                 page you're already fetching. read_file(query) is the same shape for \
-                 an already-saved artifact. reader is for large pages that need notes \
-                 and cross-references in a workspace.\n",
+                 DO NOT chain `bash grep`/`head`/`cat` on the artifact path to answer \
+                 factual questions — it wastes turns and usually misses. Query mode runs \
+                 an LLM over the page content and returns the answer directly.\n\
+                 ──────────────────────────────────────────────────────\n\
+                 \n",
                 lines = total_lines,
                 bytes = total_bytes,
                 url = url_str,
@@ -363,12 +370,15 @@ impl Tool for WebFetchTool {
 
         // Compact one-line header FIRST so the nex default display
         // mode picks a useful summary line, same treatment as
-        // web_search. The grounding details + full preview follow
-        // below and are visible in chatty mode.
+        // web_search. Then the query banner (if applicable), then
+        // the full preview + bash hints (for cases where the caller
+        // actually wants to browse the file, and for small pages
+        // where query mode would be overkill).
         let response = format!(
             "web_fetch: {url} → {lines} lines, {bytes} bytes via {path_used} ({ms} ms) \
              → {path}\n\
              \n\
+             {query_banner}\
              Title:   {title}\n\
              \n\
              Preview (first {preview_lines} lines):\n\
@@ -381,8 +391,7 @@ impl Tool for WebFetchTool {
              • First N lines: head -n 100 '{path}'\n\
              • Last N lines:  tail -n 100 '{path}'\n\
              • Search:        grep -in 'pattern' '{path}'\n\
-             • Line range:    sed -n '50,120p' '{path}'\n\
-             {query_hint}",
+             • Line range:    sed -n '50,120p' '{path}'\n",
             url = url_str,
             title = if title.is_empty() {
                 "(untitled)"
@@ -396,7 +405,7 @@ impl Tool for WebFetchTool {
             ms = duration_ms,
             preview_lines = PREVIEW_LINES,
             preview = preview,
-            query_hint = query_hint,
+            query_banner = query_banner,
         );
 
         ToolOutput::success(response)

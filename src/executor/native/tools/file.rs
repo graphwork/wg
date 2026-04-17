@@ -119,15 +119,22 @@ impl Tool for ReadFileTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "read_file".to_string(),
-            description: "Read a file. Two modes:\n\
+            description: "Read a file.\n\
                           \n\
-                          - Without `query`: returns numbered lines (bytes).\n\
-                          - With `query`: runs an LLM sub-call that reads the file \
-                          and returns a text answer to your query. For large files \
-                          an internal cursor-based traversal with compaction is used. \
-                          Prefer query-mode whenever you want an answer ABOUT a file \
-                          rather than the raw contents — much cheaper than reading \
-                          the whole file into context yourself."
+                          PREFERRED: read_file(path, query='...') — returns an LLM-generated \
+                          answer to your question about the file, in one call. Use this \
+                          for 'what is the X in this file', 'find Y', 'extract Z'. Much \
+                          cheaper than reading the whole file into your context. If the \
+                          file exceeds the single-shot budget, you get a clear error \
+                          pointing at `reader` for deep traversal with a workspace.\n\
+                          \n\
+                          BROWSING: read_file(path) — without `query`, returns numbered \
+                          lines as bytes. Use only when you actually need to see the raw \
+                          text. Truncates long files with a footer naming `reader` and \
+                          `offset`/`limit` as escape hatches.\n\
+                          \n\
+                          `offset` and `limit` work in both modes — in query mode they \
+                          restrict the LLM's view to that line range."
                 .to_string(),
             input_schema: json!({
                 "type": "object",
