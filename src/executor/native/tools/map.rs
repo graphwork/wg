@@ -870,13 +870,20 @@ impl Tool for BashTool {
         ToolDefinition {
             name: "bash".to_string(),
             description: format!(
-                "Run a shell command with cwd = your working dir. Timeout {}s, output \
+                "Run a shell command with cwd = your working dir. Default timeout \
+                 {}s (override per-call with `timeout_secs`, max 600s). Output \
                  capped at {} chars.",
                 BASH_TIMEOUT_SECS, MAX_READ_OUTPUT_CHARS
             ),
             input_schema: json!({
                 "type": "object",
-                "properties": {"command": {"type": "string"}},
+                "properties": {
+                    "command": {"type": "string"},
+                    "timeout_secs": {
+                        "type": "integer",
+                        "description": "Wall-clock timeout in seconds (default 30, max 600). Raise for long-running commands like builds or test suites."
+                    }
+                },
                 "required": ["command"]
             }),
         }
@@ -886,11 +893,19 @@ impl Tool for BashTool {
             Some(c) if !c.trim().is_empty() => c.to_string(),
             _ => return ToolOutput::error("Missing or empty command".to_string()),
         };
+        // Per-call timeout override, clamped to [1s, 600s]. Matches the
+        // claude-code-ts pattern: default 30s stays conservative, but
+        // agents running `cargo build` or `cargo test` can request more.
+        let timeout_secs = input
+            .get("timeout_secs")
+            .and_then(|v| v.as_u64())
+            .map(|n| n.clamp(1, 600))
+            .unwrap_or(BASH_TIMEOUT_SECS);
         let s = self.state.lock().unwrap();
         let cwd = s.working_dir.clone();
         drop(s);
         let output = Command::new("timeout")
-            .arg(format!("{}s", BASH_TIMEOUT_SECS))
+            .arg(format!("{}s", timeout_secs))
             .arg("bash")
             .arg("-c")
             .arg(&command)

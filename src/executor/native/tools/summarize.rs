@@ -389,6 +389,14 @@ fn throughput_label(out_bytes: usize, elapsed: std::time::Duration) -> String {
 }
 
 /// Issue a single summarization LLM call. Text-in/text-out, no tools.
+/// Wall-clock timeout for a single summarize LLM call. Bounds the
+/// worst-case time even if the provider hangs. Claude-code-ts uses
+/// 120s for its non-streaming fallback; we go slightly higher (180s)
+/// because summarize can legitimately process large chunks and the
+/// cost of a premature abort (lost summary, repeat work) is higher
+/// than a slow success. Override via env WG_SUMMARIZE_TIMEOUT_SECS.
+const SUMMARIZE_CALL_TIMEOUT_SECS: u64 = 180;
+
 async fn summarize_chunk(
     provider: &dyn Provider,
     text: &str,
@@ -407,10 +415,25 @@ async fn summarize_chunk(
         stream: false,
     };
 
-    let response = provider
-        .send(&request)
-        .await
-        .map_err(|e| format!("API error in summarize call: {}", e))?;
+    let timeout_secs = std::env::var("WG_SUMMARIZE_TIMEOUT_SECS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(SUMMARIZE_CALL_TIMEOUT_SECS);
+    let response = match tokio::time::timeout(
+        std::time::Duration::from_secs(timeout_secs),
+        provider.send(&request),
+    )
+    .await
+    {
+        Ok(Ok(r)) => r,
+        Ok(Err(e)) => return Err(format!("API error in summarize call: {}", e)),
+        Err(_) => {
+            return Err(format!(
+                "summarize LLM call timed out after {}s (set WG_SUMMARIZE_TIMEOUT_SECS to raise)",
+                timeout_secs
+            ));
+        }
+    };
 
     let text: String = response
         .content
