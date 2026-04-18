@@ -639,6 +639,115 @@ mod tests {
     }
 
     #[test]
+    fn test_wgnex_chat_transcript_format_renders() {
+        // Exact format the wg-nex agent loop now writes to
+        // `chat/<ref>/.streaming` on a multi-step tool turn. This is
+        // the production output captured from a live qwen3-coder-30b
+        // run against `Run bash: echo first && echo second. Report
+        // what you see.`
+        //
+        // Regressed in commit 94e74333 (which mirrored stderr-style
+        // `> name(args)` markers that markdown parsed as blockquotes).
+        // Fixed in 432b8da9 (switched to the box-drawing format).
+        // This test locks that in.
+        let md = "\n┌─ bash ────────────────────────────────\n\
+                  │ $ echo first && echo second\n\
+                  │ first\n\
+                  │ second\n\
+                  └─\n\
+                  I ran the bash command `echo first && echo second` and here are the results:\n\n\
+                  first\nsecond\n\n\
+                  The command executed successfully.";
+        let lines = markdown_to_lines(md, 80);
+        let texts: Vec<String> = lines.iter().map(|l| line_text(l)).collect();
+        let all_text = texts.join("\n");
+
+        // Box drawing glyphs survive and land on their own lines —
+        // the TUI's tool-box renderer looks for `starts_with("┌─")`
+        // at line start, so this is load-bearing.
+        assert!(
+            texts.iter().any(|t| t.trim_start().starts_with("┌─ bash")),
+            "expected `┌─ bash` header as an independent line, got {:?}",
+            texts
+        );
+        assert!(
+            texts
+                .iter()
+                .any(|t| t.trim_start().starts_with("│ $ echo first")),
+            "expected `│ $ echo first` command line, got {:?}",
+            texts
+        );
+        assert!(
+            texts.iter().any(|t| t.trim_start().starts_with("│ first")),
+            "expected `│ first` output line, got {:?}",
+            texts
+        );
+        assert!(
+            texts.iter().any(|t| t.trim_start().starts_with("└─")),
+            "expected `└─` closing line, got {:?}",
+            texts
+        );
+
+        // Model prose after `└─` renders as normal markdown — not as
+        // blockquote, not as code fence, not as part of the box.
+        assert!(
+            all_text.contains("I ran the bash command"),
+            "model prose after the box should be preserved, got {}",
+            all_text
+        );
+
+        // Critical negative assertion: the old regressed format used
+        // `> name(args)` which markdown parses as a blockquote. None
+        // of our output should begin with a naked `>` at col 0 after
+        // trim — if it does, we're back in the bad state.
+        for t in &texts {
+            let trimmed = t.trim_start();
+            assert!(
+                !trimmed.starts_with("> bash("),
+                "found stderr-style marker in rendered output (would render as blockquote): {}",
+                t
+            );
+        }
+    }
+
+    #[test]
+    fn test_wgnex_chat_transcript_error_format_renders() {
+        // Error case: tool output prefixed with `×` inside the box,
+        // closed with `└─`. Verifies the error path also renders
+        // as a proper tool box rather than a blockquote or bad glyphs.
+        let md = "\n┌─ bash ────────────────────────────────\n\
+                  │ $ exit 1\n\
+                  │ × bash: exit 1 returned non-zero\n\
+                  │ ... (3 more lines)\n\
+                  └─\n\
+                  The command failed.";
+        let lines = markdown_to_lines(md, 80);
+        let texts: Vec<String> = lines.iter().map(|l| line_text(l)).collect();
+
+        assert!(texts.iter().any(|t| t.trim_start().starts_with("┌─ bash")));
+        assert!(
+            texts
+                .iter()
+                .any(|t| t.trim_start().starts_with("│ × bash")),
+            "error content inside box, got {:?}",
+            texts
+        );
+        assert!(
+            texts
+                .iter()
+                .any(|t| t.contains("... (3 more lines)")),
+            "truncation line inside box, got {:?}",
+            texts
+        );
+        assert!(texts.iter().any(|t| t.trim_start().starts_with("└─")));
+        assert!(
+            texts.iter().any(|t| t.contains("The command failed.")),
+            "model prose after box, got {:?}",
+            texts
+        );
+    }
+
+    #[test]
     fn test_ordered_list_compact() {
         // Numbered list items must not have blank lines between number and content.
         let md = "1. First\n2. Second\n3. Third";
