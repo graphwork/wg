@@ -61,9 +61,20 @@ pub struct ChatMessage {
     pub user: Option<String>,
 }
 
-/// Directory for chat files for a specific coordinator.
+/// Directory for chat files for a session identified by any
+/// reference: UUID, alias, or legacy numeric id. Relies on the
+/// `chat/<alias>` → `chat/<uuid>` symlinks installed by
+/// `crate::chat_sessions` — the kernel does the resolution at every
+/// file op, so this function doesn't need to consult the JSON
+/// registry itself.
+pub fn chat_dir_for_ref(workgraph_dir: &Path, reference: &str) -> PathBuf {
+    workgraph_dir.join("chat").join(reference)
+}
+
+/// Directory for chat files for a specific coordinator (numeric id).
+/// Thin wrapper over `chat_dir_for_ref` for legacy call sites.
 fn chat_dir_for(workgraph_dir: &Path, coordinator_id: u32) -> PathBuf {
-    workgraph_dir.join("chat").join(coordinator_id.to_string())
+    chat_dir_for_ref(workgraph_dir, &coordinator_id.to_string())
 }
 
 /// Path to the plaintext chat log for a specific coordinator.
@@ -359,6 +370,80 @@ fn write_cursor_file(path: &Path, cursor: u64) -> Result<()> {
         .with_context(|| format!("Failed to rename cursor file: {}", path.display()))?;
 
     Ok(())
+}
+
+// --- Public API: reference-based versions (str) ---
+
+/// Append a user message to a session identified by UUID/alias/numeric.
+pub fn append_inbox_ref(
+    workgraph_dir: &Path,
+    session_ref: &str,
+    content: &str,
+    request_id: &str,
+) -> Result<u64> {
+    let path = chat_dir_for_ref(workgraph_dir, session_ref).join("inbox.jsonl");
+    append_message(&path, "user", content, request_id, vec![], None)
+}
+
+/// Append an assistant/coordinator response to a session's outbox.
+pub fn append_outbox_ref(
+    workgraph_dir: &Path,
+    session_ref: &str,
+    content: &str,
+    request_id: &str,
+) -> Result<u64> {
+    let path = chat_dir_for_ref(workgraph_dir, session_ref).join("outbox.jsonl");
+    append_message(&path, "coordinator", content, request_id, vec![], None)
+}
+
+/// Read inbox messages with id > cursor for a session.
+pub fn read_inbox_since_ref(
+    workgraph_dir: &Path,
+    session_ref: &str,
+    cursor: u64,
+) -> Result<Vec<ChatMessage>> {
+    let all = read_messages(&chat_dir_for_ref(workgraph_dir, session_ref).join("inbox.jsonl"))?;
+    Ok(all.into_iter().filter(|m| m.id > cursor).collect())
+}
+
+/// Read ALL inbox messages for a session.
+pub fn read_inbox_ref(workgraph_dir: &Path, session_ref: &str) -> Result<Vec<ChatMessage>> {
+    read_messages(&chat_dir_for_ref(workgraph_dir, session_ref).join("inbox.jsonl"))
+}
+
+/// Read outbox messages with id > cursor for a session.
+pub fn read_outbox_since_ref(
+    workgraph_dir: &Path,
+    session_ref: &str,
+    cursor: u64,
+) -> Result<Vec<ChatMessage>> {
+    let all = read_messages(&chat_dir_for_ref(workgraph_dir, session_ref).join("outbox.jsonl"))?;
+    Ok(all.into_iter().filter(|m| m.id > cursor).collect())
+}
+
+/// Overwrite the `.streaming` dotfile with the full accumulated text.
+pub fn write_streaming_ref(workgraph_dir: &Path, session_ref: &str, text: &str) -> Result<()> {
+    let path = chat_dir_for_ref(workgraph_dir, session_ref).join(".streaming");
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(&path, text).context("Failed to write streaming file")
+}
+
+/// Clear the `.streaming` dotfile (called between turns).
+pub fn clear_streaming_ref(workgraph_dir: &Path, session_ref: &str) {
+    let path = chat_dir_for_ref(workgraph_dir, session_ref).join(".streaming");
+    let _ = fs::remove_file(path);
+}
+
+/// Path to the `.streaming` file (for inotify watchers etc.).
+pub fn streaming_path_ref(workgraph_dir: &Path, session_ref: &str) -> PathBuf {
+    chat_dir_for_ref(workgraph_dir, session_ref).join(".streaming")
+}
+
+/// Path to the `inbox.jsonl` file (for inotify watchers etc.).
+pub fn inbox_path_ref(workgraph_dir: &Path, session_ref: &str) -> PathBuf {
+    chat_dir_for_ref(workgraph_dir, session_ref).join("inbox.jsonl")
 }
 
 // --- Public API: coordinator_id-aware versions ---

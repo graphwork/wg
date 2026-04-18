@@ -28,6 +28,8 @@ pub fn run(
     resume: bool,
     role: Option<&str>,
     chat_id: Option<u32>,
+    chat_ref: Option<&str>,
+    autonomous: bool,
 ) -> Result<()> {
     let config = Config::load_or_default(workgraph_dir);
 
@@ -114,68 +116,74 @@ pub fn run(
     };
     let system = system_prompt.unwrap_or(&system_with_role);
 
-    // Per-session timestamped paths. Every `wg nex` invocation gets:
+    // Every nex session — CLI, coordinator, task-agent — lives under
+    // `<workgraph>/chat/<ref>/`. Pick the reference:
+    //   1. Explicit `--chat <ref>` wins.
+    //   2. Else legacy `--chat-id N` (resolves through the numeric
+    //      alias symlink, for back-compat with daemons/tests that
+    //      still pass the old flag).
+    //   3. Else a tty-derived default so running `wg nex` in the
+    //      same terminal auto-resumes without needing a flag.
     //
-    // - `.ndjson` — compact event log (tool calls, user inputs) for
-    //   the session-trace display and post-hoc analysis.
-    //
-    // - `.journal.jsonl` — full replayable conversation journal
-    //   (Init, every Message with role/content, ToolExecution,
-    //   Compaction, End). This is what enables resume, fork, replay,
-    //   and forensic analysis. Same format the background task agents
-    //   use, so tools that work on agent journals work on nex
-    //   journals too.
-    let sessions_dir = workgraph_dir.join("nex-sessions");
-    let _ = std::fs::create_dir_all(&sessions_dir);
+    // Whatever we pick, if the session isn't in the registry yet,
+    // we register it here with `ensure_session` so future `wg chat
+    // list` sees it and the alias symlink is wired up.
     let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
-    let output_log = sessions_dir.join(format!("{}.ndjson", &stamp));
-
-    // If --resume, find the most recent journal and continue from it.
-    // Otherwise, create a fresh journal for this session.
-    //
-    // With `--chat-id N`, the journal lives at a deterministic path
-    // under `chat/N/conversation.jsonl` (not in `nex-sessions/`). Prefer
-    // that when it exists so a coordinator subprocess restart restores
-    // conversation history instead of starting fresh and losing
-    // everything since the last spawn.
-    let chat_journal = chat_id.map(|cid| {
-        workgraph_dir
-            .join("chat")
-            .join(cid.to_string())
-            .join("conversation.jsonl")
-    });
-    let (journal_path, resume_enabled) = if resume {
-        if let Some(p) = chat_journal.as_ref()
-            && p.exists()
-        {
-            eprintln!(
-                "\x1b[1;33m[wg nex] resuming from {} (chat-id {})\x1b[0m",
-                p.display(),
-                chat_id.unwrap()
-            );
-            (p.clone(), true)
-        } else {
-            match find_most_recent_journal(&sessions_dir) {
-                Some(path) => {
-                    eprintln!("\x1b[1;33m[wg nex] resuming from {}\x1b[0m", path.display());
-                    (path, true)
-                }
-                None => {
-                    eprintln!(
-                        "\x1b[33m[wg nex] --resume: no previous journal found, starting fresh\x1b[0m"
-                    );
-                    (
-                        sessions_dir.join(format!("{}.journal.jsonl", &stamp)),
-                        false,
-                    )
-                }
-            }
-        }
+    let session_ref: String = if let Some(r) = chat_ref {
+        r.to_string()
+    } else if let Some(n) = chat_id {
+        // Legacy numeric id — migrate old `chat/N/` real dir to a
+        // UUID-named dir under the `coordinator-N` alias if needed.
+        let _ = workgraph::chat_sessions::migrate_numeric_coord_dir(workgraph_dir, n);
+        let _ = workgraph::chat_sessions::ensure_session(
+            workgraph_dir,
+            &format!("coordinator-{}", n),
+            workgraph::chat_sessions::SessionKind::Coordinator,
+            Some(format!("coordinator {}", n)),
+        );
+        n.to_string()
     } else {
-        (
-            sessions_dir.join(format!("{}.journal.jsonl", &stamp)),
-            false,
-        )
+        // Interactive CLI. Sticky alias per tty so `wg nex` + Ctrl-C
+        // + `wg nex` reattaches to the same session.
+        let alias = default_interactive_alias(&stamp);
+        let _ = workgraph::chat_sessions::ensure_session(
+            workgraph_dir,
+            &alias,
+            workgraph::chat_sessions::SessionKind::Interactive,
+            Some(format!("interactive {}", alias)),
+        );
+        alias
+    };
+
+    let chat_dir = workgraph_dir.join("chat").join(&session_ref);
+    let _ = std::fs::create_dir_all(&chat_dir);
+    let journal_path = chat_dir.join("conversation.jsonl");
+    let output_log = chat_dir.join("trace.ndjson");
+
+    // Resume semantics: auto-resume if the journal already exists.
+    // Explicit `--resume` means "require that resume succeed" — if
+    // the journal is missing, warn (but still proceed fresh so the
+    // caller isn't wedged).
+    let journal_exists = journal_path.exists();
+    let resume_enabled = if resume {
+        if !journal_exists {
+            eprintln!(
+                "\x1b[33m[wg nex] --resume: no journal at {} — starting fresh\x1b[0m",
+                journal_path.display()
+            );
+        }
+        journal_exists
+    } else {
+        // Default: auto-resume when possible — the low-friction
+        // model the user asked for. No journal = first run of this
+        // session_ref, start fresh.
+        if journal_exists {
+            eprintln!(
+                "\x1b[1;33m[wg nex] auto-resuming session {} (journal exists)\x1b[0m",
+                session_ref
+            );
+        }
+        journal_exists
     };
 
     if verbose {
@@ -210,12 +218,26 @@ pub fn run(
     .with_workgraph_dir(workgraph_dir.to_path_buf())
     .with_resume(resume_enabled);
 
-    // Chat-file I/O surface: `wg nex --chat-id N` bypasses stdin/stderr
-    // and reads/writes the chat files under `<workgraph>/chat/<id>/`
-    // instead. This is how nex serves as the coordinator (and as any
-    // other chat-tethered agent).
-    if let Some(cid) = chat_id {
-        agent = agent.with_chat_id(workgraph_dir.to_path_buf(), cid, resume_enabled);
+    // Chat-file I/O surface. Enabled whenever the caller said "I'm
+    // tethered to a chat dir" (via `--chat` or `--chat-id`) OR when
+    // running autonomous (task-agent mode) — autonomous runs always
+    // want their inbox/outbox on disk so someone can attach to them
+    // later via `wg chat attach <ref>`.
+    //
+    // Plain interactive `wg nex` (no flags) does NOT mount the chat
+    // surface — it uses stdin/stderr for the human's low-latency
+    // typing path, with the journal still written to
+    // `chat/<ref>/conversation.jsonl` for persistence + auto-resume.
+    let mount_chat_surface = chat_ref.is_some() || chat_id.is_some() || autonomous;
+    if mount_chat_surface {
+        agent = agent.with_chat_ref(
+            workgraph_dir.to_path_buf(),
+            session_ref.clone(),
+            resume_enabled,
+        );
+    }
+    if autonomous {
+        agent = agent.with_autonomous(true);
     }
 
     if let Some(entry) = config.registry_lookup(&effective_model) {
@@ -282,6 +304,37 @@ pub fn run(
     Ok(())
 }
 
+/// Derive a stable per-terminal alias for interactive `wg nex`
+/// sessions with no explicit chat-ref. The goal is sticky auto-resume:
+/// running `wg nex` in the same terminal twice reattaches to the
+/// same journal instead of creating a fresh session each time.
+///
+/// We key on `$TTY` (or the current controlling terminal via
+/// `libc::ttyname`) — one slot per pts. Terminals that don't have a
+/// tty (detached invocations, piped stdin) fall back to a timestamp
+/// alias, which is effectively a fresh session every time.
+fn default_interactive_alias(stamp: &str) -> String {
+    #[cfg(unix)]
+    {
+        use std::ffi::CStr;
+        unsafe {
+            // STDIN fd = 0
+            let name = libc::ttyname(0);
+            if !name.is_null() {
+                let s = CStr::from_ptr(name).to_string_lossy();
+                let slug = s
+                    .trim_start_matches("/dev/")
+                    .replace('/', "-")
+                    .replace(|c: char| !c.is_ascii_alphanumeric() && c != '-', "-");
+                if !slug.is_empty() {
+                    return format!("tty-{}", slug);
+                }
+            }
+        }
+    }
+    format!("session-{}", stamp)
+}
+
 /// Load an agency role/skill component by name. Scans all YAML files
 /// in `.workgraph/agency/primitives/components/` for one whose `name`
 /// field matches (case-insensitive substring match). Returns the
@@ -316,24 +369,4 @@ fn load_agency_role(workgraph_dir: &Path, role_name: &str) -> Option<String> {
         }
     }
     None
-}
-
-/// Find the most recent `.journal.jsonl` file in the sessions
-/// directory. Used by `--resume` to pick up where the last session
-/// left off. Returns None if no journal files exist.
-fn find_most_recent_journal(sessions_dir: &Path) -> Option<std::path::PathBuf> {
-    let mut journals: Vec<_> = std::fs::read_dir(sessions_dir)
-        .ok()?
-        .filter_map(|entry| entry.ok())
-        .filter(|entry| {
-            entry
-                .file_name()
-                .to_str()
-                .is_some_and(|n| n.ends_with(".journal.jsonl"))
-        })
-        .collect();
-
-    // Sort by modification time (most recent last), take the last.
-    journals.sort_by_key(|e| e.metadata().and_then(|m| m.modified()).ok());
-    journals.last().map(|e| e.path())
 }

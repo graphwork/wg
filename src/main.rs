@@ -1689,6 +1689,7 @@ fn main() -> Result<()> {
             }
         }
         Commands::Compact => commands::compact::run(&workgraph_dir, cli.json),
+        Commands::Session { command } => commands::chat_session::run(&workgraph_dir, command),
         Commands::Artifact { task, path, remove } => {
             if let Some(artifact_path) = path {
                 if remove {
@@ -2795,6 +2796,8 @@ fn main() -> Result<()> {
             resume,
             role,
             chat_id,
+            chat_ref,
+            autonomous,
         } => commands::nex::run(
             &workgraph_dir,
             model.as_deref(),
@@ -2808,6 +2811,8 @@ fn main() -> Result<()> {
             resume,
             role.as_deref(),
             chat_id,
+            chat_ref.as_deref(),
+            autonomous,
         ),
         Commands::TuiNex { model, endpoint } => {
             commands::tui_nex::run(&workgraph_dir, model.as_deref(), endpoint.as_deref())

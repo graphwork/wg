@@ -137,6 +137,39 @@ pub fn run(
             .join("session-summary.md")
     });
 
+    // Register this task-agent session in the chat-sessions registry
+    // so it's discoverable via `wg chat list`, `wg chat attach
+    // task-<id>`, etc. The journal + inbox/outbox live in the
+    // existing `output/<task_id>/` dir (keeps legacy tests + readers
+    // happy); we expose it under `chat/task-<id>/` via a symlink so
+    // the chat surface addresses it uniformly with coordinators and
+    // interactive sessions.
+    let session_alias = format!("task-{}", task_id);
+    let output_dir = workgraph_dir.join("output").join(task_id);
+    let _ = std::fs::create_dir_all(&output_dir);
+    let chat_link = workgraph_dir.join("chat").join(&session_alias);
+    let _ = std::fs::create_dir_all(workgraph_dir.join("chat"));
+    if !chat_link.exists() && !chat_link.is_symlink() {
+        #[cfg(unix)]
+        {
+            let target = format!("../output/{}", task_id);
+            let _ = std::os::unix::fs::symlink(&target, &chat_link);
+        }
+    }
+    // Register by task-id — task-ids are already unique within a
+    // workgraph, so we use them as the session key directly instead
+    // of a fresh UUID.
+    let mut reg = workgraph::chat_sessions::load(workgraph_dir).unwrap_or_default();
+    reg.sessions.entry(task_id.to_string()).or_insert_with(|| {
+        workgraph::chat_sessions::SessionMeta {
+            kind: workgraph::chat_sessions::SessionKind::TaskAgent,
+            created: chrono::Utc::now().to_rfc3339(),
+            aliases: vec![session_alias.clone()],
+            label: Some(format!("task {}", task_id)),
+        }
+    });
+    let _ = workgraph::chat_sessions::save(workgraph_dir, &reg);
+
     let mut agent = AgentLoop::with_tool_support(
         client,
         registry,
@@ -147,7 +180,15 @@ pub fn run(
     )
     .with_journal(journal_path, task_id.to_string())
     .with_resume(!no_resume)
-    .with_working_dir(working_dir.clone());
+    .with_working_dir(working_dir.clone())
+    // Mount the chat surface so `wg chat attach task-<id>` works: a
+    // watcher sees tokens land in `.streaming` and final turns in
+    // `outbox.jsonl`. `resume_existing=true` here because for an
+    // autonomous task agent, any pre-existing inbox messages (from
+    // the user interjecting while the task was in flight) SHOULD be
+    // consumed, not skipped.
+    .with_chat_ref(workgraph_dir.to_path_buf(), session_alias, true)
+    .with_workgraph_dir(workgraph_dir.to_path_buf());
 
     // Add registry entry for cost tracking if available
     let config = Config::load_or_default(workgraph_dir);

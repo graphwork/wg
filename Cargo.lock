@@ -7302,6 +7302,7 @@ dependencies = [
  "unicode-width 0.2.0",
  "url",
  "urlencoding",
+ "uuid",
  "walkdir",
  "workgraph",
  "zstd",

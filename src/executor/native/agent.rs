@@ -173,12 +173,13 @@ pub struct AgentLoop {
 struct ChatSurfaceState {
     reader: super::chat_surface::ChatInboxReader,
     /// Workgraph root dir (`.workgraph/...`), needed for
-    /// `chat::append_outbox_for` which expects the root, not the
+    /// `chat::append_outbox_ref` which expects the root, not the
     /// per-chat dir.
     workgraph_dir: PathBuf,
-    /// Numeric coordinator id — same thing `crate::chat::*` APIs
-    /// expect, kept alongside the paths for convenience.
-    chat_id: u32,
+    /// Session reference — UUID, alias, or numeric coord id.
+    /// Whatever the caller passed to `with_chat_ref`. All chat-dir
+    /// path construction resolves via this + filesystem symlinks.
+    session_ref: String,
     /// Buffer accumulating the current turn's streamed text. Flushed
     /// to outbox on turn-end, and the streaming file mirrors it live.
     streaming_buf: String,
@@ -466,11 +467,15 @@ impl AgentLoop {
 
     /// Configure the chat-file I/O surface for this agent. When set,
     /// the loop bypasses stdin/stderr and reads/writes the chat
-    /// files under `<workgraph>/chat/<id>/` instead — this is what
-    /// makes `wg nex --chat-id N` serve as a coordinator.
+    /// files under `<workgraph>/chat/<session_ref>/` instead.
+    ///
+    /// `session_ref` can be a UUID, alias (e.g. `coordinator-0`,
+    /// `task-foo`), or legacy numeric id — anything that resolves
+    /// to a chat dir via the filesystem symlinks installed by
+    /// `crate::chat_sessions`.
     ///
     /// Also sets `workgraph_dir`, `journal_path`, and
-    /// `session_summary_path` to the chat-id-derived locations so
+    /// `session_summary_path` to the session-derived locations so
     /// `--resume` picks up the right journal automatically.
     ///
     /// If `resume_existing` is false, any pre-existing inbox messages
@@ -478,13 +483,13 @@ impl AgentLoop {
     /// If true, the cursor from the last run is preserved — typically
     /// pair with `with_resume(true)` so conversation history also
     /// restores.
-    pub fn with_chat_id(
+    pub fn with_chat_ref(
         mut self,
         workgraph_dir: PathBuf,
-        chat_id: u32,
+        session_ref: String,
         resume_existing: bool,
     ) -> Self {
-        let paths = super::chat_surface::ChatPaths::for_chat_id(&workgraph_dir, chat_id);
+        let paths = super::chat_surface::ChatPaths::for_ref(&workgraph_dir, &session_ref);
         if let Err(e) = paths.ensure_dir() {
             eprintln!(
                 "[agent-loop] warning: failed to create chat dir {:?}: {}",
@@ -492,26 +497,26 @@ impl AgentLoop {
             );
         }
         // The cursor file is the source of truth for "what has this
-        // chat-id already processed." If it exists, trust it — any
+        // session already processed." If it exists, trust it — any
         // restart (crash or clean) resumes from there. If it doesn't,
-        // this is a fresh chat-id and pre-existing inbox messages
+        // this is a fresh session and pre-existing inbox messages
         // were meant for something else, so skip them.
         //
         // The caller's `resume_existing` flag only matters when the
         // cursor file doesn't exist: it lets an explicit `--resume`
-        // override the seek-to-end on fresh chat-ids (useful for
+        // override the seek-to-end on fresh sessions (useful for
         // tests + manual recovery).
         let cursor_exists = paths.cursor.exists();
         if !cursor_exists && !resume_existing {
-            let _ = super::chat_surface::seek_inbox_to_end(&workgraph_dir, chat_id, &paths);
+            let _ = super::chat_surface::seek_inbox_to_end(&workgraph_dir, &session_ref, &paths);
         }
         match super::chat_surface::ChatInboxReader::new(
             workgraph_dir.clone(),
-            chat_id,
+            session_ref.clone(),
             paths.clone(),
         ) {
             Ok(reader) => {
-                // Chat-id mode owns the journal + summary locations —
+                // Chat mode owns the journal + summary locations —
                 // override unconditionally so `--resume` finds them
                 // at the deterministic chat-dir path regardless of
                 // what `with_journal(...)` set earlier in the builder.
@@ -523,7 +528,7 @@ impl AgentLoop {
                 self.chat_surface = Some(ChatSurfaceState {
                     reader,
                     workgraph_dir,
-                    chat_id,
+                    session_ref,
                     streaming_buf: String::new(),
                     current_request_id: None,
                 });
@@ -536,6 +541,12 @@ impl AgentLoop {
             }
         }
         self
+    }
+
+    /// Legacy numeric-id entry point. Equivalent to
+    /// `with_chat_ref(dir, chat_id.to_string(), resume_existing)`.
+    pub fn with_chat_id(self, workgraph_dir: PathBuf, chat_id: u32, resume_existing: bool) -> Self {
+        self.with_chat_ref(workgraph_dir, chat_id.to_string(), resume_existing)
     }
 
     /// Resolve a directory for writing agent-produced buffer artifacts
@@ -1399,7 +1410,7 @@ impl AgentLoop {
             let is_autonomous = self.autonomous;
             let chat_target = chat_surface
                 .as_ref()
-                .map(|c| (c.workgraph_dir.clone(), c.chat_id));
+                .map(|c| (c.workgraph_dir.clone(), c.session_ref.clone()));
             // Shared accumulator for the chat `.streaming` dotfile so
             // we don't re-read-and-append on every chunk (that
             // re-read-then-write pattern is O(N²) for long outputs).
@@ -1419,10 +1430,10 @@ impl AgentLoop {
                     eprint!("{}", text);
                     let _ = std::io::stderr().flush();
                 }
-                if let Some((ref wg_dir, cid)) = chat_target {
+                if let Some((ref wg_dir, ref sref)) = chat_target {
                     let mut acc = chat_accum_cb.lock().unwrap();
                     acc.push_str(&text);
-                    let _ = super::chat_surface::write_streaming(wg_dir, cid, &acc);
+                    let _ = super::chat_surface::write_streaming(wg_dir, sref, &acc);
                 }
             };
 
@@ -1826,7 +1837,7 @@ impl AgentLoop {
                             && let Some(rid) = chat.current_request_id.clone()
                             && let Err(e) = super::chat_surface::append_outbox(
                                 &chat.workgraph_dir,
-                                chat.chat_id,
+                                &chat.session_ref,
                                 &final_text,
                                 &rid,
                             )
@@ -1834,7 +1845,10 @@ impl AgentLoop {
                             eprintln!("[agent-loop] chat outbox append failed: {} — continuing", e);
                         }
                         // Clear streaming dotfile + accumulator for next turn.
-                        super::chat_surface::clear_streaming(&chat.workgraph_dir, chat.chat_id);
+                        super::chat_surface::clear_streaming(
+                            &chat.workgraph_dir,
+                            &chat.session_ref,
+                        );
                         chat_accum.lock().unwrap().clear();
                         chat.current_request_id = None;
                         chat.streaming_buf.clear();

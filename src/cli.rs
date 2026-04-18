@@ -1129,6 +1129,17 @@ pub enum Commands {
         command: ResourceCommands,
     },
 
+    /// Manage nex chat sessions (list, attach, alias).
+    ///
+    /// Every `wg nex` session — interactive, coordinator,
+    /// task-agent — lives under `chat/<uuid>/` and is addressable by
+    /// UUID, UUID prefix, or alias. These subcommands are the UX for
+    /// inspecting and attaching to them.
+    Session {
+        #[command(subcommand)]
+        command: SessionCommands,
+    },
+
     /// Manage skills (Claude Code skill installation, task skill queries)
     Skill {
         #[command(subcommand)]
@@ -1958,6 +1969,21 @@ pub enum Commands {
         /// for the wg_* mutation tools.
         #[arg(long = "chat-id")]
         chat_id: Option<u32>,
+
+        /// Bind this nex session to a chat dir by reference. Accepts
+        /// a UUID, a UUID prefix (≥4 chars), or an alias like
+        /// `coordinator-0` / `task-<id>` / a user-chosen handle.
+        /// If the reference doesn't yet resolve to a session, a new
+        /// session is created under that alias. Same effect as
+        /// `--chat-id` except not limited to numeric ids.
+        #[arg(long = "chat")]
+        chat_ref: Option<String>,
+
+        /// Run in autonomous mode — EndTurn exits the loop instead
+        /// of prompting for next input. Used when a task-agent
+        /// spawns `wg nex` as a one-shot executor.
+        #[arg(long = "autonomous")]
+        autonomous: bool,
     },
 
     /// Interactive agentic TUI — ratatui-based nex (two-pane with streaming + Ctrl-C cancel)
@@ -3233,6 +3259,64 @@ pub enum RemoteCommands {
 }
 
 #[derive(Subcommand)]
+pub enum SessionCommands {
+    /// List every nex session in this workgraph.
+    List {
+        /// Print UUIDs + aliases as JSON instead of a table.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Open a live view of an existing session. Tails `.streaming`
+    /// and `outbox.jsonl` — new tokens appear as they're emitted by
+    /// whichever process owns the session.
+    Attach {
+        /// Session reference: UUID, prefix, or alias.
+        session: String,
+    },
+
+    /// Register a new, empty session with a chosen alias. Useful
+    /// for pre-allocating a handle so something else (e.g. a
+    /// spawned `wg nex --chat <alias>`) can pick it up.
+    New {
+        /// Alias (human handle) for the new session.
+        alias: String,
+
+        /// Optional longer descriptive label.
+        #[arg(long)]
+        label: Option<String>,
+    },
+
+    /// Manage aliases on an existing session.
+    Alias {
+        #[command(subcommand)]
+        command: SessionAliasCommands,
+    },
+
+    /// Delete a session (registry entry + chat dir + all aliases).
+    Rm {
+        /// Session reference: UUID, prefix, or alias.
+        session: String,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum SessionAliasCommands {
+    /// Add an alias to an existing session.
+    Add {
+        /// Session reference: UUID, prefix, or existing alias.
+        session: String,
+        /// New alias to install.
+        alias: String,
+    },
+    /// Remove an alias from a session. The session itself stays.
+    Rm {
+        /// Alias to remove.
+        alias: String,
+    },
+}
+
+#[derive(Subcommand)]
 pub enum PeerCommands {
     /// Register a peer workgraph instance
     Add {
@@ -3949,6 +4033,7 @@ pub fn command_name(cmd: &Commands) -> &'static str {
         Commands::Spend { .. } => "spend",
         Commands::Openrouter { .. } => "openrouter",
         Commands::ApplyPlacement { .. } => "apply-placement",
+        Commands::Session { .. } => "session",
     }
 }
 

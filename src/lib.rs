@@ -1,5 +1,6 @@
 pub mod agency;
 pub mod chat;
+pub mod chat_sessions;
 pub mod check;
 pub mod config;
 pub mod context_scope;

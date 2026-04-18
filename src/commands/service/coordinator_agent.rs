@@ -1014,15 +1014,36 @@ fn nex_subprocess_coordinator_loop(
             }
         }
 
+        // Ensure the coordinator session is registered under its
+        // canonical alias. Idempotent — first call creates the UUID
+        // dir + `coordinator-N` alias symlink, later calls are no-ops.
+        // Any pre-existing real `chat/N/` dir gets migrated to the
+        // new UUID-based layout here.
+        let _ = workgraph::chat_sessions::migrate_numeric_coord_dir(dir, coordinator_id);
+        let chat_alias = format!("coordinator-{}", coordinator_id);
+        if let Err(e) = workgraph::chat_sessions::ensure_session(
+            dir,
+            &chat_alias,
+            workgraph::chat_sessions::SessionKind::Coordinator,
+            Some(format!("coordinator {}", coordinator_id)),
+        ) {
+            logger.error(&format!(
+                "Coordinator-{}: failed to register session alias {}: {}",
+                coordinator_id, chat_alias, e
+            ));
+        }
+
         // Build the argv. Always pass `--resume` — on first spawn there's
         // no journal so nex falls back to a fresh session; on subsequent
-        // spawns the deterministic `chat/N/conversation.jsonl` restores
-        // conversation state.
+        // spawns the deterministic `chat/<uuid>/conversation.jsonl`
+        // restores conversation state. We address the session by alias
+        // (`coordinator-N`) so the `chat-N` symlink + the alias entry
+        // in `sessions.json` both point at the right UUID.
         let wg_bin = std::env::current_exe().unwrap_or_else(|_| "wg".into());
         let mut cmd = Command::new(&wg_bin);
         cmd.arg("nex")
-            .arg("--chat-id")
-            .arg(coordinator_id.to_string())
+            .arg("--chat")
+            .arg(&chat_alias)
             .arg("--role")
             .arg("coordinator")
             .arg("--resume");
