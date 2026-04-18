@@ -1,4 +1,33 @@
-# `wg nex` as coordinator — unification design
+# Unified run loop: `nex = task = evaluate = coordinate`
+
+## The principle (2026-04-18 refinement)
+
+There are currently four LLM-driven runtimes in workgraph. They should
+be one codepath with pluggable input/output surfaces:
+
+| Role | Input source | Output sink | System prompt | Tool filter |
+|---|---|---|---|---|
+| `nex` (interactive REPL) | rustyline on stdin | stderr streaming | generic+tools | full (minus wg_* in non-coord mode) |
+| task agent (autonomous) | task description, injected state | streaming file, journal | role+tradeoff prompt | full |
+| `evaluate` | eval prompt (one-shot) | JSON record | evaluator prompt | none (no tools) |
+| coordinator | `mpsc::Receiver<ChatRequest>` | chat/&lt;id&gt;/streaming | coordinator prompt | wg_* tools only |
+
+**The conversation loop itself — turn boundary, microcompact, cancel
+token, L0 defense, streaming idle watchdog, file re-injection, inbox
+drain — is IDENTICAL across all four.** Only the surfaces differ.
+
+Today only `nex` and `task` share the `AgentLoop` path. `evaluate`
+uses one-shot `run_lightweight_llm_call` (fine for its cost profile
+but conceptually the same loop with `max_turns=1` and no tools).
+`coordinator` has its own ~1400-line hand-rolled loop in
+`coordinator_agent::native_coordinator_loop` — which is the one the
+user is seeing through the TUI chat.
+
+The cost of keeping them separate: every improvement to the nex loop
+has to be manually ported. Stages A–F, L0 defense, microcompact,
+streaming idle watchdog, Stage G cancel threading — all apply to
+nex/task but NOT to the coordinator, which is why the TUI coordinator
+chat "feels different."
 
 ## Why
 

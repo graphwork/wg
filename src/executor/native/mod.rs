@@ -21,5 +21,6 @@ pub mod openai_client;
 pub mod provider;
 pub mod resume;
 pub mod state_injection;
+pub mod surface;
 pub mod tools;
 pub mod touched_files;
