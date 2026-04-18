@@ -11860,6 +11860,107 @@ mod tests {
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
     }
 
+    /// End-to-end render smoke test for the chat pane's rendering
+    /// of the wg-nex box-drawing transcript format.
+    ///
+    /// Drives the actual `draw_chat_tab` call path against a
+    /// TestBackend and inspects the rendered cell grid. Catches the
+    /// regression class where stderr-style `> name(args)` markers
+    /// were being parsed as markdown blockquotes — the chat pane
+    /// would have rendered them with `▎` blockquote bars instead of
+    /// showing the tool box.
+    #[test]
+    fn chat_renders_box_drawing_transcript_format() {
+        use crate::tui::viz_viewer::state::{ChatState, VizApp};
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        // Build a VizApp with a chat pane active and a streaming
+        // transcript matching what the agent loop writes today.
+        let (viz, _) = build_hud_test_graph();
+        let mut app = VizApp::from_viz_output_for_test(&viz);
+
+        // Populate the chat streaming buffer with the exact format
+        // the wg-nex agent now writes during a multi-step tool turn.
+        let transcript = "\n┌─ bash ────────────────────────────────\n\
+                          │ $ echo first && echo second\n\
+                          │ first\n\
+                          │ second\n\
+                          └─\n\
+                          I ran the bash command and observed the results.";
+        app.chat = ChatState {
+            streaming_text: transcript.to_string(),
+            pending_request_ids: {
+                let mut s = std::collections::HashSet::new();
+                s.insert("r1".to_string());
+                s
+            },
+            awaiting_since: Some(std::time::Instant::now()),
+            ..ChatState::default()
+        };
+        // Render just the chat tab directly into a known area. This
+        // sidesteps the overall viz layout (which would otherwise
+        // collapse the chat panel in our test fixture) and targets
+        // the rendering we actually care about: the chat pane
+        // drawing the streaming transcript text.
+        let backend = TestBackend::new(120, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                draw_chat_tab(frame, &mut app, area);
+            })
+            .unwrap();
+
+        // Extract all rendered text from the cell grid.
+        let buffer = terminal.backend().buffer().clone();
+        let mut rendered = String::new();
+        for y in 0..buffer.area.height {
+            for x in 0..buffer.area.width {
+                rendered.push_str(buffer[(x, y)].symbol());
+            }
+            rendered.push('\n');
+        }
+
+        // Positive assertions: all three box-drawing glyphs made it
+        // through the rendering pipeline to the terminal grid.
+        assert!(
+            rendered.contains("┌─ bash"),
+            "missing `┌─ bash` header in rendered TUI; transcript format isn't reaching the screen.\nBuffer:\n{}",
+            rendered
+        );
+        assert!(
+            rendered.contains("│ $ echo first"),
+            "missing `│ $ echo first` command line.\nBuffer:\n{}",
+            rendered
+        );
+        assert!(
+            rendered.contains("│ first") && rendered.contains("│ second"),
+            "missing `│ first` / `│ second` output lines.\nBuffer:\n{}",
+            rendered
+        );
+        assert!(
+            rendered.contains("└─"),
+            "missing `└─` closing line.\nBuffer:\n{}",
+            rendered
+        );
+        assert!(
+            rendered.contains("I ran the bash command"),
+            "model prose after the tool box didn't render.\nBuffer:\n{}",
+            rendered
+        );
+
+        // Negative assertion: no markdown-blockquote bar (`▎`) should
+        // appear — its presence would signal we went back to the
+        // broken state where `> name(args)` rendered as a blockquote.
+        // The tool box itself uses `│` (U+2502) which is distinct.
+        assert!(
+            !rendered.contains('▎'),
+            "blockquote bar `▎` present — transcript format regressed to stderr-style markers that markdown treats as blockquotes.\nBuffer:\n{}",
+            rendered
+        );
+    }
+
     #[test]
     fn draw_hud_very_small_terminal_does_not_panic() {
         use ratatui::Terminal;
