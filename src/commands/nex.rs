@@ -30,6 +30,7 @@ pub fn run(
     chat_id: Option<u32>,
     chat_ref: Option<&str>,
     autonomous: bool,
+    no_mcp: bool,
 ) -> Result<()> {
     let config = Config::load_or_default(workgraph_dir);
 
@@ -42,7 +43,12 @@ pub fn run(
 
     let is_coordinator = role.is_some_and(|r| r.eq_ignore_ascii_case("coordinator"));
 
-    let registry = {
+    // The tokio runtime is created here rather than later so MCP
+    // server spawn/handshake can run inside it before we hand the
+    // registry to `AgentLoop`.
+    let rt = tokio::runtime::Runtime::new().context("Failed to create tokio runtime")?;
+
+    let mut registry = {
         let mut reg = ToolRegistry::default_all_with_config(
             workgraph_dir,
             &working_dir,
@@ -61,6 +67,54 @@ pub fn run(
         } else {
             reg
         }
+    };
+
+    // MCP: spawn configured servers, discover their tools, register
+    // each one into the registry. The returned `_mcp_manager` keeps
+    // all server subprocesses alive for the lifetime of this nex
+    // session (servers are killed when the manager is dropped).
+    let _mcp_manager = if no_mcp || config.mcp.servers.is_empty() {
+        None
+    } else {
+        let server_configs: Vec<workgraph::executor::native::mcp::McpServerConfig> = config
+            .mcp
+            .servers
+            .iter()
+            .map(|s| workgraph::executor::native::mcp::McpServerConfig {
+                name: s.name.clone(),
+                command: s.command.clone(),
+                args: s.args.clone(),
+                env: s.env.clone(),
+                enabled: s.enabled,
+            })
+            .collect();
+        rt.block_on(async {
+            match workgraph::executor::native::mcp::manager::start_and_discover(server_configs)
+                .await
+            {
+                Ok((manager, tools)) => {
+                    let count = tools.len();
+                    for t in tools {
+                        registry.register(Box::new(t));
+                    }
+                    if verbose || count > 0 {
+                        eprintln!(
+                            "\x1b[2m[wg nex] MCP: {} tools from {} server(s)\x1b[0m",
+                            count,
+                            manager.server_count()
+                        );
+                    }
+                    Some(manager)
+                }
+                Err(e) => {
+                    eprintln!(
+                        "\x1b[33m[wg nex] MCP startup failed: {} — continuing without MCP\x1b[0m",
+                        e
+                    );
+                    None
+                }
+            }
+        })
     };
 
     // Load role/skill content from the agency primitives directory.
@@ -269,8 +323,6 @@ pub fn run(
     } else {
         eprintln!();
     }
-
-    let rt = tokio::runtime::Runtime::new().context("Failed to create tokio runtime")?;
 
     let result = rt.block_on(agent.run_interactive(message))?;
 

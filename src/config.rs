@@ -98,10 +98,50 @@ pub struct Config {
     #[serde(default)]
     pub native_executor: NativeExecutorConfig,
 
+    /// MCP (Model Context Protocol) server configuration. Each entry
+    /// declares one server that will be spawned when a WGNEX session
+    /// starts; its tools are auto-discovered and merged into the
+    /// session's tool registry.
+    #[serde(default)]
+    pub mcp: McpConfig,
+
     /// True when `agent.model` was explicitly set in local config.
     /// Used by `resolve_model_for_role` to skip tier defaults in favor of agent.model.
     #[serde(skip)]
     pub agent_model_is_local: bool,
+}
+
+/// MCP server configuration. Populated from:
+///
+/// ```toml
+/// [[mcp.servers]]
+/// name = "filesystem"
+/// command = "npx"
+/// args = ["-y", "@modelcontextprotocol/server-filesystem", "/workspace"]
+/// enabled = true
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct McpConfig {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub servers: Vec<McpServerEntry>,
+}
+
+/// One server declaration. Mirrors the wire shape expected by
+/// `executor::native::mcp::McpServerConfig`; conversion is trivial.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpServerEntry {
+    pub name: String,
+    pub command: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub env: std::collections::HashMap<String, String>,
+    #[serde(default = "default_mcp_enabled")]
+    pub enabled: bool,
+}
+
+fn default_mcp_enabled() -> bool {
+    true
 }
 
 /// Chat archive rotation configuration.

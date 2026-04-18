@@ -2798,6 +2798,7 @@ fn main() -> Result<()> {
             chat_id,
             chat_ref,
             autonomous,
+            no_mcp,
         } => commands::nex::run(
             &workgraph_dir,
             model.as_deref(),
@@ -2813,6 +2814,7 @@ fn main() -> Result<()> {
             chat_id,
             chat_ref.as_deref(),
             autonomous,
+            no_mcp,
         ),
         Commands::TuiNex { model, endpoint } => {
             commands::tui_nex::run(&workgraph_dir, model.as_deref(), endpoint.as_deref())

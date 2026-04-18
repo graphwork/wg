@@ -1984,6 +1984,12 @@ pub enum Commands {
         /// spawns `wg nex` as a one-shot executor.
         #[arg(long = "autonomous")]
         autonomous: bool,
+
+        /// Skip the MCP server spawn/discover step at startup. Use
+        /// this when MCP tooling is misconfigured or when you want a
+        /// deterministic, minimal tool surface for debugging.
+        #[arg(long = "no-mcp")]
+        no_mcp: bool,
     },
 
     /// Interactive agentic TUI — ratatui-based nex (two-pane with streaming + Ctrl-C cancel)

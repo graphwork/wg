@@ -18,6 +18,7 @@ pub mod client;
 pub mod inbox;
 pub mod journal;
 pub mod l0_defense;
+pub mod mcp;
 pub mod openai_client;
 pub mod provider;
 pub mod resume;
