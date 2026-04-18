@@ -1236,8 +1236,16 @@ fn route_chat_to_agent(
     }
 
     let count = new_messages.len();
+    let use_subprocess = agent.uses_subprocess();
     for msg in &new_messages {
-        if let Err(e) = agent.send_message(msg.request_id.clone(), msg.content.clone()) {
+        // Subprocess-backed coordinators read the inbox directly — the
+        // message is already there (the TUI or whoever appended it did
+        // so before we got here). Re-sending via send_message would
+        // double-append. Skip that path; still do the user-board
+        // forwarding below.
+        if !use_subprocess
+            && let Err(e) = agent.send_message(msg.request_id.clone(), msg.content.clone())
+        {
             logger.error(&format!(
                 "Failed to send chat message to coordinator agent {}: {}",
                 coordinator_id, e

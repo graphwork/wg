@@ -277,6 +277,13 @@ pub struct CoordinatorAgent {
     /// Shared event log for recording events from the daemon.
     #[allow(dead_code)]
     event_log: SharedEventLog,
+    /// True when this agent is backed by a `wg nex --chat-id N`
+    /// subprocess (reads user turns from the inbox directly, doesn't
+    /// need messages pushed via the channel). Callers that would
+    /// otherwise forward inbox messages through `send_message` should
+    /// skip that step in subprocess mode to avoid re-appending
+    /// the same message to the inbox.
+    uses_subprocess: bool,
 }
 
 impl CoordinatorAgent {
@@ -313,7 +320,23 @@ impl CoordinatorAgent {
         event_log: SharedEventLog,
     ) -> Result<Self> {
         let executor = executor.unwrap_or("claude");
-        if executor == "claude" && !Self::is_claude_available() {
+        // Decide the coordinator implementation up front so send_message
+        // can skip the redundant-append path for subprocess mode. Mirror
+        // `agent_thread_main`'s dispatcher logic.
+        let model_requires_native = model
+            .map(|m| {
+                let config = workgraph::config::Config::load_or_default(dir);
+                super::coordinator::requires_native_executor(m, &config)
+            })
+            .unwrap_or(false);
+        let uses_subprocess = executor == "native"
+            || matches!(
+                provider,
+                Some("openrouter") | Some("oai-compat") | Some("openai") | Some("local")
+            )
+            || model_requires_native;
+
+        if !uses_subprocess && executor == "claude" && !Self::is_claude_available() {
             anyhow::bail!(
                 "Claude CLI not found. Install it to enable the persistent coordinator agent."
             );
@@ -355,7 +378,16 @@ impl CoordinatorAgent {
             alive,
             pid,
             event_log,
+            uses_subprocess,
         })
+    }
+
+    /// True when this agent is backed by the `wg nex --chat-id N`
+    /// subprocess path. Callers forwarding inbox messages should skip
+    /// `send_message` for these agents — the subprocess reads the
+    /// inbox directly.
+    pub fn uses_subprocess(&self) -> bool {
+        self.uses_subprocess
     }
 
     /// Get a reference to the shared event log.
@@ -526,7 +558,14 @@ fn agent_thread_main(
         )
         || model_requires_native;
     if use_native {
-        native_coordinator_loop(
+        // Use the unified `wg nex --chat-id N` subprocess path. Same
+        // AgentLoop as interactive `wg nex` and task-agent runs —
+        // the coordinator is just a nex session with an inbox and
+        // a role. `rx` is drained into the inbox here so synthetic
+        // messages (heartbeats, CoordinatorAgent::send_message)
+        // reach the subprocess; direct inbox writes from the TUI
+        // bypass the channel entirely.
+        nex_subprocess_coordinator_loop(
             dir,
             coordinator_id,
             model,
@@ -535,7 +574,6 @@ fn agent_thread_main(
             alive,
             pid,
             logger,
-            event_log,
         );
         return;
     }
@@ -883,6 +921,205 @@ fn agent_thread_main(
             restart_timestamps.len()
         ));
         std::thread::sleep(std::time::Duration::from_secs(2));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// nex-subprocess coordinator: the unified path (nex = task = coordinator)
+// ---------------------------------------------------------------------------
+
+/// Coordinator implementation backed by a `wg nex --chat-id N --role coordinator`
+/// subprocess.
+///
+/// Replaces the in-process `native_coordinator_loop`. The subprocess reads
+/// user turns from `chat/N/inbox.jsonl` directly via its `.nex-cursor`,
+/// streams tokens to `chat/N/.streaming`, and appends finalized replies
+/// to `chat/N/outbox.jsonl` — the same file formats the TUI reads. Crash
+/// restart rate-limiting mirrors the Claude-CLI path so a wedged model
+/// doesn't respawn in a tight loop.
+///
+/// `rx` is drained into the inbox so `CoordinatorAgent::send_message`
+/// (used for heartbeats and daemon-internal synthetic prompts) reaches
+/// the subprocess. User messages written to the inbox directly by the
+/// TUI are seen by the subprocess without going through this drain.
+#[allow(clippy::too_many_arguments)]
+fn nex_subprocess_coordinator_loop(
+    dir: &Path,
+    coordinator_id: u32,
+    model: Option<&str>,
+    provider: Option<&str>,
+    rx: mpsc::Receiver<ChatRequest>,
+    alive: Arc<Mutex<bool>>,
+    pid: Arc<Mutex<u32>>,
+    logger: &DaemonLogger,
+) {
+    // Start a small forwarder thread that drains `rx` → inbox. We can't
+    // own `rx` on the supervisor thread and also block on `child.wait()`,
+    // so a dedicated forwarder keeps send_message non-blocking across
+    // subprocess restarts.
+    let dir_buf = dir.to_path_buf();
+    let forwarder = std::thread::Builder::new()
+        .name(format!("coordinator-nex-fwd-{}", coordinator_id))
+        .spawn(move || {
+            while let Ok(req) = rx.recv() {
+                if let Err(e) =
+                    chat::append_inbox_for(&dir_buf, coordinator_id, &req.message, &req.request_id)
+                {
+                    eprintln!(
+                        "[coordinator-{}] forwarder: append_inbox_for failed: {}",
+                        coordinator_id, e
+                    );
+                }
+            }
+        });
+    let _forwarder = match forwarder {
+        Ok(h) => Some(h),
+        Err(e) => {
+            logger.error(&format!(
+                "Coordinator-{}: failed to spawn inbox forwarder thread: {}",
+                coordinator_id, e
+            ));
+            None
+        }
+    };
+
+    let mut restart_timestamps: VecDeque<std::time::Instant> = VecDeque::new();
+
+    loop {
+        // Rate-limit restarts in a sliding window, same policy as the
+        // Claude CLI path above. Prevents a wedged model or a repeated
+        // startup-time crash from burning the daemon.
+        let now = std::time::Instant::now();
+        let window = std::time::Duration::from_secs(RESTART_WINDOW_SECS);
+        while let Some(front) = restart_timestamps.front() {
+            if now.duration_since(*front) > window {
+                restart_timestamps.pop_front();
+            } else {
+                break;
+            }
+        }
+        if restart_timestamps.len() >= MAX_RESTARTS_PER_WINDOW {
+            let oldest = restart_timestamps.front().copied();
+            if let Some(oldest_time) = oldest {
+                let wait_time = window.saturating_sub(now.duration_since(oldest_time));
+                logger.error(&format!(
+                    "Coordinator-{}: {} restarts in last {} minutes, pausing for {}s",
+                    coordinator_id,
+                    MAX_RESTARTS_PER_WINDOW,
+                    RESTART_WINDOW_SECS / 60,
+                    wait_time.as_secs()
+                ));
+                std::thread::sleep(wait_time);
+                restart_timestamps.clear();
+            }
+        }
+
+        // Build the argv. Always pass `--resume` — on first spawn there's
+        // no journal so nex falls back to a fresh session; on subsequent
+        // spawns the deterministic `chat/N/conversation.jsonl` restores
+        // conversation state.
+        let wg_bin = std::env::current_exe().unwrap_or_else(|_| "wg".into());
+        let mut cmd = Command::new(&wg_bin);
+        cmd.arg("nex")
+            .arg("--chat-id")
+            .arg(coordinator_id.to_string())
+            .arg("--role")
+            .arg("coordinator")
+            .arg("--resume");
+        if let Some(m) = model {
+            cmd.arg("--model").arg(m);
+        }
+        cmd.current_dir(dir.parent().unwrap_or(dir));
+        cmd.env("WG_EXECUTOR_TYPE", "native");
+        if let Some(p) = provider {
+            cmd.env("WG_PROVIDER", p);
+        }
+        cmd.stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+
+        logger.info(&format!(
+            "Coordinator-{}: spawning `wg nex --chat-id {}` subprocess",
+            coordinator_id, coordinator_id
+        ));
+        let mut child: Child = match cmd.spawn() {
+            Ok(c) => c,
+            Err(e) => {
+                logger.error(&format!(
+                    "Coordinator-{}: failed to spawn nex subprocess: {}",
+                    coordinator_id, e
+                ));
+                restart_timestamps.push_back(std::time::Instant::now());
+                std::thread::sleep(std::time::Duration::from_secs(5));
+                continue;
+            }
+        };
+
+        let child_pid = child.id();
+        *pid.lock().unwrap_or_else(|e| e.into_inner()) = child_pid;
+        *alive.lock().unwrap_or_else(|e| e.into_inner()) = true;
+        restart_timestamps.push_back(std::time::Instant::now());
+        logger.info(&format!(
+            "Coordinator-{}: nex subprocess running (pid {})",
+            coordinator_id, child_pid
+        ));
+
+        // Drain stdout/stderr to the daemon log in background threads —
+        // without this, the child's pipes fill and it blocks.
+        let cid = coordinator_id;
+        let logger_out = logger.clone();
+        let stdout = child.stdout.take();
+        std::thread::Builder::new()
+            .name(format!("coordinator-nex-stdout-{}", cid))
+            .spawn(move || {
+                if let Some(out) = stdout {
+                    for line in BufReader::new(out).lines().map_while(|l| l.ok()) {
+                        logger_out.info(&format!("[coordinator-{} stdout] {}", cid, line));
+                    }
+                }
+            })
+            .ok();
+        let logger_err = logger.clone();
+        let stderr = child.stderr.take();
+        std::thread::Builder::new()
+            .name(format!("coordinator-nex-stderr-{}", cid))
+            .spawn(move || {
+                if let Some(err) = stderr {
+                    for line in BufReader::new(err).lines().map_while(|l| l.ok()) {
+                        logger_err.info(&format!("[coordinator-{} stderr] {}", cid, line));
+                    }
+                }
+            })
+            .ok();
+
+        let exit_status = child.wait();
+        *alive.lock().unwrap_or_else(|e| e.into_inner()) = false;
+        *pid.lock().unwrap_or_else(|e| e.into_inner()) = 0;
+
+        match exit_status {
+            Ok(status) if status.success() => {
+                logger.info(&format!(
+                    "Coordinator-{}: nex subprocess exited cleanly ({})",
+                    coordinator_id, status
+                ));
+                // Clean exit (user ran /quit, or max-turns hit) — don't
+                // respawn in a tight loop. Sleep a moment to avoid eating
+                // the whole restart budget on clean exits.
+                std::thread::sleep(std::time::Duration::from_secs(2));
+            }
+            Ok(status) => {
+                logger.error(&format!(
+                    "Coordinator-{}: nex subprocess exited {} — will restart",
+                    coordinator_id, status
+                ));
+            }
+            Err(e) => {
+                logger.error(&format!(
+                    "Coordinator-{}: wait() failed on nex subprocess: {} — will restart",
+                    coordinator_id, e
+                ));
+            }
+        }
     }
 }
 
@@ -1539,18 +1776,18 @@ fn format_tool_input(out: &mut String, input: &str) {
 // Native executor coordinator loop
 // ---------------------------------------------------------------------------
 
-/// Run the coordinator agent using the native executor (direct API calls).
+/// Legacy in-process coordinator loop. Superseded by
+/// `nex_subprocess_coordinator_loop`, which spawns a `wg nex --chat-id N`
+/// subprocess so the coordinator shares the same AgentLoop codepath
+/// as interactive `wg nex` and task-agent runs.
 ///
-/// This is the alternative to the Claude CLI path. Instead of spawning a child
-/// process, it creates an LLM provider and makes API calls directly, executing
-/// tool calls in-process.
-///
-/// The loop structure mirrors `agent_thread_main`'s Claude CLI path:
-/// - Crash recovery with time-windowed restart rate limiting
-/// - Context injection per user message
-/// - Token tracking, turn recording, and evaluation
-/// - Streaming updates to the TUI
+/// Kept behind `#[allow(dead_code)]` for one release as a safety net:
+/// if the subprocess path turns out to have a regression, flipping
+/// the dispatcher in `agent_thread_main` back to this function is a
+/// one-line revert. Delete once the subprocess path has soaked in
+/// production for a release cycle.
 #[allow(clippy::too_many_arguments)]
+#[allow(dead_code)]
 fn native_coordinator_loop(
     dir: &Path,
     coordinator_id: u32,

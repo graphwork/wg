@@ -491,7 +491,18 @@ impl AgentLoop {
                 paths.dir, e
             );
         }
-        if !resume_existing {
+        // The cursor file is the source of truth for "what has this
+        // chat-id already processed." If it exists, trust it — any
+        // restart (crash or clean) resumes from there. If it doesn't,
+        // this is a fresh chat-id and pre-existing inbox messages
+        // were meant for something else, so skip them.
+        //
+        // The caller's `resume_existing` flag only matters when the
+        // cursor file doesn't exist: it lets an explicit `--resume`
+        // override the seek-to-end on fresh chat-ids (useful for
+        // tests + manual recovery).
+        let cursor_exists = paths.cursor.exists();
+        if !cursor_exists && !resume_existing {
             let _ = super::chat_surface::seek_inbox_to_end(&workgraph_dir, chat_id, &paths);
         }
         match super::chat_surface::ChatInboxReader::new(

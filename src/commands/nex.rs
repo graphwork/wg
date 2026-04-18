@@ -132,20 +132,43 @@ pub fn run(
 
     // If --resume, find the most recent journal and continue from it.
     // Otherwise, create a fresh journal for this session.
+    //
+    // With `--chat-id N`, the journal lives at a deterministic path
+    // under `chat/N/conversation.jsonl` (not in `nex-sessions/`). Prefer
+    // that when it exists so a coordinator subprocess restart restores
+    // conversation history instead of starting fresh and losing
+    // everything since the last spawn.
+    let chat_journal = chat_id.map(|cid| {
+        workgraph_dir
+            .join("chat")
+            .join(cid.to_string())
+            .join("conversation.jsonl")
+    });
     let (journal_path, resume_enabled) = if resume {
-        match find_most_recent_journal(&sessions_dir) {
-            Some(path) => {
-                eprintln!("\x1b[1;33m[wg nex] resuming from {}\x1b[0m", path.display());
-                (path, true)
-            }
-            None => {
-                eprintln!(
-                    "\x1b[33m[wg nex] --resume: no previous journal found, starting fresh\x1b[0m"
-                );
-                (
-                    sessions_dir.join(format!("{}.journal.jsonl", &stamp)),
-                    false,
-                )
+        if let Some(p) = chat_journal.as_ref()
+            && p.exists()
+        {
+            eprintln!(
+                "\x1b[1;33m[wg nex] resuming from {} (chat-id {})\x1b[0m",
+                p.display(),
+                chat_id.unwrap()
+            );
+            (p.clone(), true)
+        } else {
+            match find_most_recent_journal(&sessions_dir) {
+                Some(path) => {
+                    eprintln!("\x1b[1;33m[wg nex] resuming from {}\x1b[0m", path.display());
+                    (path, true)
+                }
+                None => {
+                    eprintln!(
+                        "\x1b[33m[wg nex] --resume: no previous journal found, starting fresh\x1b[0m"
+                    );
+                    (
+                        sessions_dir.join(format!("{}.journal.jsonl", &stamp)),
+                        false,
+                    )
+                }
             }
         }
     } else {
