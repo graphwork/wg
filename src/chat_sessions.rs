@@ -179,6 +179,53 @@ pub fn create_session(
     Ok(uuid)
 }
 
+/// Register a coordinator session the way the daemon needs it.
+///
+/// Installs BOTH aliases for the coordinator's UUID:
+///   * `coordinator-<N>` — the handle the subprocess is spawned
+///     with (`wg nex --chat coordinator-<N>`) and that `wg session
+///     list` surfaces.
+///   * `<N>` (bare numeric) — the path that the legacy
+///     `chat::append_inbox_for(dir, N, …)` API writes to. This
+///     API is still used by the IPC `UserChat` handler (the TUI's
+///     `wg chat` → daemon path). Without this alias, the IPC's
+///     writes land in a disconnected `chat/<N>/` real directory
+///     and the subprocess (inotify-watching `chat/coordinator-<N>/…`)
+///     never sees them — which manifests as "TUI chat never replies."
+///
+/// Also migrates any pre-existing `chat/<N>/` real directory from
+/// a previous non-aliased daemon version. Idempotent across
+/// restart cycles; returns the session's UUID.
+///
+/// All coordinator startup paths should go through this function.
+/// The unit test
+/// `daemon_style_coordinator_registration_creates_both_paths`
+/// locks in the invariant.
+pub fn register_coordinator_session(workgraph_dir: &Path, n: u32) -> Result<String> {
+    let _ = migrate_numeric_coord_dir(workgraph_dir, n);
+    let canonical = format!("coordinator-{}", n);
+    let uuid = ensure_session(
+        workgraph_dir,
+        &canonical,
+        SessionKind::Coordinator,
+        Some(format!("coordinator {}", n)),
+    )?;
+    // Install the bare numeric alias. add_alias errors "already
+    // points to …" on restart, which is the steady-state case
+    // after the first call — swallow that specific error, surface
+    // anything else.
+    match add_alias(workgraph_dir, &canonical, &n.to_string()) {
+        Ok(()) => {}
+        Err(e) => {
+            let msg = format!("{}", e);
+            if !msg.contains("already") {
+                return Err(e);
+            }
+        }
+    }
+    Ok(uuid)
+}
+
 /// Ensure a session with the given alias exists, creating it if not.
 /// Idempotent — a second call with the same alias returns the existing
 /// UUID without creating a new session. Intended for callers like the
@@ -518,6 +565,76 @@ mod tests {
         assert!(resolve_ref(wg, "secondary").is_err());
         // Primary still works.
         assert_eq!(resolve_ref(wg, "primary").unwrap(), uuid);
+    }
+
+    #[test]
+    fn daemon_style_coordinator_registration_creates_both_paths() {
+        // Regression test for the "TUI chat never replies" bug.
+        //
+        // When the daemon starts a coordinator, it registers TWO
+        // aliases — `coordinator-N` (subprocess arg) AND bare `N`
+        // (legacy numeric path used by `chat::append_inbox_for` via
+        // the IPC `UserChat` handler). Both must resolve to the
+        // same underlying UUID dir, otherwise:
+        //   * the TUI's `wg chat` → IPC → `append_inbox_for(dir, 0, …)`
+        //     writes to `chat/0/inbox.jsonl`, and
+        //   * the subprocess watches `chat/coordinator-0/inbox.jsonl`
+        //     — a different path — and never sees the write.
+        //
+        // This test mirrors the daemon's startup sequence in
+        // `coordinator_agent.rs` (`migrate_numeric_coord_dir` then
+        // `ensure_session("coordinator-0")` then
+        // `add_alias("coordinator-0", "0")`) and verifies that a
+        // file written through one alias path is readable through
+        // the other.
+        let dir = tempdir().unwrap();
+        let wg = dir.path();
+
+        // Daemon startup sequence — single entry point, so this
+        // test covers the exact code the daemon runs.
+        let uuid = register_coordinator_session(wg, 0).unwrap();
+
+        // Idempotency: calling it again on a running coordinator
+        // (simulating subprocess restart) must NOT fail and must
+        // return the same UUID.
+        let uuid_again = register_coordinator_session(wg, 0).unwrap();
+        assert_eq!(uuid, uuid_again, "register must be idempotent");
+
+        // Both aliases resolve to the same UUID.
+        assert_eq!(resolve_ref(wg, "coordinator-0").unwrap(), uuid);
+        assert_eq!(resolve_ref(wg, "0").unwrap(), uuid);
+
+        // Filesystem: both aliases are symlinks into the same UUID dir.
+        let link_named = wg.join("chat").join("coordinator-0");
+        let link_numeric = wg.join("chat").join("0");
+        assert!(link_named.is_symlink(), "coordinator-0 missing symlink");
+        assert!(
+            link_numeric.is_symlink(),
+            "bare `0` missing symlink (the exact regression this test locks in)"
+        );
+
+        let target_named = fs::canonicalize(&link_named).unwrap();
+        let target_numeric = fs::canonicalize(&link_numeric).unwrap();
+        assert_eq!(
+            target_named, target_numeric,
+            "coordinator-0 and 0 must resolve to the same directory"
+        );
+
+        // Round-trip through the legacy numeric path: what the IPC
+        // `UserChat` handler writes via
+        // `chat::append_inbox_for(dir, 0, …)` — which internally
+        // joins `chat/0/inbox.jsonl` — must be readable via the
+        // subprocess-facing `coordinator-0` alias.
+        let write_path = wg.join("chat").join("0").join("inbox.jsonl");
+        std::fs::create_dir_all(write_path.parent().unwrap()).unwrap();
+        std::fs::write(&write_path, "sentinel-message").unwrap();
+
+        let read_path = wg.join("chat").join("coordinator-0").join("inbox.jsonl");
+        let read_content = std::fs::read_to_string(&read_path).unwrap();
+        assert_eq!(
+            read_content, "sentinel-message",
+            "write via `chat/0/` must be readable via `chat/coordinator-0/` — otherwise the IPC path and the subprocess path are disconnected and TUI chat hangs forever"
+        );
     }
 
     #[test]
