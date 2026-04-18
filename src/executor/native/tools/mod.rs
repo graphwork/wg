@@ -515,9 +515,12 @@ pub fn truncate_tool_output(output: &str, max_chars: usize) -> String {
     let omitted_lines = total_lines.saturating_sub(head_lines + tail_lines);
 
     format!(
-        "{}\n\n[... {} chars omitted ({} lines). \
-         Showing first/last ~{} chars. \
-         Use read_file or grep for specific content. ...]\n\n{}",
+        "{}\n\n[... {} chars omitted ({} lines). Showing first/last ~{} chars only. \
+         To continue reading from the gap: call `read_file` again with `offset` set to \
+         just past the head (the line numbers above tell you where). \
+         For LLM-summarized content over the whole file: pass the path to `summarize` \
+         (map-reduce summary) or `reader` (multi-turn traversal with a working dir). \
+         For keyword lookup without reading: use `grep`. ...]\n\n{}",
         head, omitted_chars, omitted_lines, half, tail
     )
 }
@@ -559,7 +562,10 @@ mod truncation_tests {
         assert!(result.ends_with("TAIL_END\n"));
         assert!(result.contains("chars omitted"));
         assert!(result.contains("lines)"));
-        assert!(result.contains("Use read_file or grep"));
+        // Footer nudges the agent toward continuation paths.
+        assert!(result.contains("offset"));
+        assert!(result.contains("summarize"));
+        assert!(result.contains("reader"));
         assert!(result.len() < full.len());
     }
 
