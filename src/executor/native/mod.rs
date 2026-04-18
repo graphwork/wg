@@ -13,6 +13,7 @@ pub mod background;
 pub mod bundle;
 pub mod cancel;
 pub mod channel;
+pub mod chat_surface;
 pub mod client;
 pub mod inbox;
 pub mod journal;

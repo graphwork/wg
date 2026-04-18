@@ -27,6 +27,7 @@ pub fn run(
     read_only: bool,
     resume: bool,
     role: Option<&str>,
+    chat_id: Option<u32>,
 ) -> Result<()> {
     let config = Config::load_or_default(workgraph_dir);
 
@@ -185,6 +186,14 @@ pub fn run(
     .with_working_dir(working_dir.clone())
     .with_workgraph_dir(workgraph_dir.to_path_buf())
     .with_resume(resume_enabled);
+
+    // Chat-file I/O surface: `wg nex --chat-id N` bypasses stdin/stderr
+    // and reads/writes the chat files under `<workgraph>/chat/<id>/`
+    // instead. This is how nex serves as the coordinator (and as any
+    // other chat-tethered agent).
+    if let Some(cid) = chat_id {
+        agent = agent.with_chat_id(workgraph_dir.to_path_buf(), cid, resume_enabled);
+    }
 
     if let Some(entry) = config.registry_lookup(&effective_model) {
         agent = agent.with_registry_entry(entry);

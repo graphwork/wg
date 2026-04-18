@@ -2794,6 +2794,7 @@ fn main() -> Result<()> {
             read_only,
             resume,
             role,
+            chat_id,
         } => commands::nex::run(
             &workgraph_dir,
             model.as_deref(),
@@ -2806,6 +2807,7 @@ fn main() -> Result<()> {
             read_only,
             resume,
             role.as_deref(),
+            chat_id,
         ),
         Commands::TuiNex { model, endpoint } => {
             commands::tui_nex::run(&workgraph_dir, model.as_deref(), endpoint.as_deref())

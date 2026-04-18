@@ -1943,6 +1943,21 @@ pub enum Commands {
         /// interactive mode.
         #[arg(long)]
         role: Option<String>,
+
+        /// Run as a chat-tethered agent: read user turns from
+        /// `<workgraph>/chat/<id>/inbox.jsonl`, write streaming tokens
+        /// to `<workgraph>/chat/<id>/streaming`, append finalized
+        /// assistant turns to `<workgraph>/chat/<id>/outbox.jsonl`.
+        /// Bypasses stdin/stderr. When set, the journal is stored at
+        /// `<workgraph>/chat/<id>/conversation.jsonl` so `--resume`
+        /// picks up the right session automatically.
+        ///
+        /// Primary use case: this is how `wg nex` serves as the
+        /// coordinator (spawned by the service / a graph task with a
+        /// chat tether to the TUI). Pair with `--role coordinator`
+        /// for the wg_* mutation tools.
+        #[arg(long = "chat-id")]
+        chat_id: Option<u32>,
     },
 
     /// Interactive agentic TUI — ratatui-based nex (two-pane with streaming + Ctrl-C cancel)

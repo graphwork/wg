@@ -6,6 +6,7 @@
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -156,6 +157,34 @@ pub struct AgentLoop {
     /// *also* mirrored to stdout so the wrapper script can capture
     /// them into `output.log` for TUI display.
     nex_repl_mode: bool,
+    /// Chat-file I/O surface. When set, the loop reads user input
+    /// from `<workgraph>/chat/<id>/inbox.jsonl` instead of stdin,
+    /// mirrors streaming output to `chat/<id>/streaming`, and appends
+    /// each finalized assistant turn to `chat/<id>/outbox.jsonl`.
+    /// This is what makes `wg nex --chat-id N` serve as a coordinator
+    /// (and what will eventually replace the hand-rolled
+    /// `native_coordinator_loop`).
+    chat_surface: Option<ChatSurfaceState>,
+}
+
+/// Runtime state for the chat-file surface. Owns the inbox reader and
+/// tracks the in-flight request id so streaming + outbox writes can
+/// tag correctly.
+struct ChatSurfaceState {
+    reader: super::chat_surface::ChatInboxReader,
+    /// Workgraph root dir (`.workgraph/...`), needed for
+    /// `chat::append_outbox_for` which expects the root, not the
+    /// per-chat dir.
+    workgraph_dir: PathBuf,
+    /// Numeric coordinator id — same thing `crate::chat::*` APIs
+    /// expect, kept alongside the paths for convenience.
+    chat_id: u32,
+    /// Buffer accumulating the current turn's streamed text. Flushed
+    /// to outbox on turn-end, and the streaming file mirrors it live.
+    streaming_buf: String,
+    /// request_id of the inbox entry currently being responded to —
+    /// tagged into the outbox entry so the TUI correlates.
+    current_request_id: Option<String>,
 }
 
 /// NDJSON log entry types for the output file.
@@ -321,6 +350,7 @@ impl AgentLoop {
             nex_chatty: false,
             autonomous: false,
             nex_repl_mode: false,
+            chat_surface: None,
         }
     }
 
@@ -431,6 +461,69 @@ impl AgentLoop {
     /// artifacts that survive the session.
     pub fn with_workgraph_dir(mut self, workgraph_dir: PathBuf) -> Self {
         self.workgraph_dir = Some(workgraph_dir);
+        self
+    }
+
+    /// Configure the chat-file I/O surface for this agent. When set,
+    /// the loop bypasses stdin/stderr and reads/writes the chat
+    /// files under `<workgraph>/chat/<id>/` instead — this is what
+    /// makes `wg nex --chat-id N` serve as a coordinator.
+    ///
+    /// Also sets `workgraph_dir`, `journal_path`, and
+    /// `session_summary_path` to the chat-id-derived locations so
+    /// `--resume` picks up the right journal automatically.
+    ///
+    /// If `resume_existing` is false, any pre-existing inbox messages
+    /// are skipped (we don't process a previous session's queue).
+    /// If true, the cursor from the last run is preserved — typically
+    /// pair with `with_resume(true)` so conversation history also
+    /// restores.
+    pub fn with_chat_id(
+        mut self,
+        workgraph_dir: PathBuf,
+        chat_id: u32,
+        resume_existing: bool,
+    ) -> Self {
+        let paths = super::chat_surface::ChatPaths::for_chat_id(&workgraph_dir, chat_id);
+        if let Err(e) = paths.ensure_dir() {
+            eprintln!(
+                "[agent-loop] warning: failed to create chat dir {:?}: {}",
+                paths.dir, e
+            );
+        }
+        if !resume_existing {
+            let _ = super::chat_surface::seek_inbox_to_end(&workgraph_dir, chat_id, &paths);
+        }
+        match super::chat_surface::ChatInboxReader::new(
+            workgraph_dir.clone(),
+            chat_id,
+            paths.clone(),
+        ) {
+            Ok(reader) => {
+                // Chat-id mode owns the journal + summary locations —
+                // override unconditionally so `--resume` finds them
+                // at the deterministic chat-dir path regardless of
+                // what `with_journal(...)` set earlier in the builder.
+                self.journal_path = Some(paths.journal.clone());
+                self.session_summary_path = Some(paths.session_summary.clone());
+                if self.workgraph_dir.is_none() {
+                    self.workgraph_dir = Some(workgraph_dir.clone());
+                }
+                self.chat_surface = Some(ChatSurfaceState {
+                    reader,
+                    workgraph_dir,
+                    chat_id,
+                    streaming_buf: String::new(),
+                    current_request_id: None,
+                });
+            }
+            Err(e) => {
+                eprintln!(
+                    "[agent-loop] warning: chat inbox reader init failed: {} — falling back to stdin mode",
+                    e
+                );
+            }
+        }
         self
     }
 
@@ -653,7 +746,6 @@ impl AgentLoop {
     /// /quit or /exit.
     pub async fn run_interactive(&mut self, initial_message: Option<&str>) -> Result<AgentResult> {
         use rustyline::DefaultEditor;
-        use rustyline::error::ReadlineError;
 
         let mut messages: Vec<Message> = Vec::new();
         let mut total_usage = Usage::default();
@@ -895,29 +987,15 @@ impl AgentLoop {
             let _ = editor.load_history(&history_path);
         }
 
-        // Helper: read a user line with rustyline. Returns:
-        // - `Some(line)` on normal input (empty line allowed — caller filters)
-        // - `None` on Ctrl-D (EOF) or non-recoverable error → exit REPL
-        // - Loops on Ctrl-C at the prompt (does NOT exit — just re-prompts)
-        let read_user_input = |editor: &mut DefaultEditor| -> Option<String> {
-            loop {
-                match editor.readline("\x1b[1;36m>\x1b[0m ") {
-                    Ok(line) => return Some(line),
-                    Err(ReadlineError::Interrupted) => {
-                        // Ctrl-C at the prompt: re-display and re-read.
-                        eprintln!(
-                            "\x1b[2m(Ctrl-C — press again or /quit to exit, empty line to continue)\x1b[0m"
-                        );
-                        continue;
-                    }
-                    Err(ReadlineError::Eof) => return None,
-                    Err(e) => {
-                        eprintln!("\x1b[31m[nex] readline error: {}\x1b[0m", e);
-                        return None;
-                    }
-                }
-            }
-        };
+        // Take chat_surface out of self into a local so it can be
+        // mutated across awaits without fighting other &mut self
+        // borrows inside this long method. Put it back at the end
+        // so subsequent calls (if any) see it.
+        let mut chat_surface: Option<ChatSurfaceState> = self.chat_surface.take();
+
+        // (The rustyline read helper is now inlined into
+        // `read_next_user_turn` at module level so we can branch on
+        // chat_surface before deciding to block on terminal input.)
 
         // If resume already populated messages (session summary or journal
         // replay), skip the first-input readline — we go straight to the
@@ -928,7 +1006,7 @@ impl AgentLoop {
             let first_input = if let Some(msg) = initial_message {
                 msg.to_string()
             } else {
-                match read_user_input(&mut editor) {
+                match read_next_user_turn(&mut chat_surface, &mut editor).await {
                     Some(line) => {
                         let trimmed = line.trim().to_string();
                         if trimmed.is_empty() {
@@ -1185,7 +1263,7 @@ impl AgentLoop {
                     .unwrap_or(true);
             if needs_user_input {
                 force_fresh_input = false;
-                match read_user_input(&mut editor) {
+                match read_next_user_turn(&mut chat_surface, &mut editor).await {
                     Some(line) => {
                         let trimmed = line.trim().to_string();
                         if trimmed.is_empty() {
@@ -1302,9 +1380,20 @@ impl AgentLoop {
             // Build the streaming text callback. In interactive mode,
             // tokens stream to stderr for the human. In autonomous mode,
             // they go to stream.jsonl + .streaming for TUI display.
+            // When chat_surface is set (coordinator mode), ALSO mirror
+            // the accumulated text to `<chat-dir>/streaming` so the TUI
+            // can tail it for the live assistant view.
             let streaming_file = self.streaming_file_path.clone();
             let stream_writer_clone = self.stream_writer.clone();
             let is_autonomous = self.autonomous;
+            let chat_target = chat_surface
+                .as_ref()
+                .map(|c| (c.workgraph_dir.clone(), c.chat_id));
+            // Shared accumulator for the chat `.streaming` dotfile so
+            // we don't re-read-and-append on every chunk (that
+            // re-read-then-write pattern is O(N²) for long outputs).
+            let chat_accum: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
+            let chat_accum_cb = chat_accum.clone();
             let on_text = move |text: String| {
                 if is_autonomous {
                     if let Some(ref sw) = stream_writer_clone {
@@ -1318,6 +1407,11 @@ impl AgentLoop {
                 } else {
                     eprint!("{}", text);
                     let _ = std::io::stderr().flush();
+                }
+                if let Some((ref wg_dir, cid)) = chat_target {
+                    let mut acc = chat_accum_cb.lock().unwrap();
+                    acc.push_str(&text);
+                    let _ = super::chat_surface::write_streaming(wg_dir, cid, &acc);
                 }
             };
 
@@ -1708,6 +1802,33 @@ impl AgentLoop {
                         }
                     }
 
+                    // Chat-surface mode: the streaming file has been
+                    // accumulating tokens; append the finalized text to
+                    // the outbox tagged with the request_id, then clear
+                    // the streaming file so the TUI moves on.
+                    if let Some(ref mut chat) = chat_surface {
+                        let final_text = {
+                            let acc = chat_accum.lock().unwrap();
+                            acc.clone()
+                        };
+                        if !final_text.is_empty()
+                            && let Some(rid) = chat.current_request_id.clone()
+                            && let Err(e) = super::chat_surface::append_outbox(
+                                &chat.workgraph_dir,
+                                chat.chat_id,
+                                &final_text,
+                                &rid,
+                            )
+                        {
+                            eprintln!("[agent-loop] chat outbox append failed: {} — continuing", e);
+                        }
+                        // Clear streaming dotfile + accumulator for next turn.
+                        super::chat_surface::clear_streaming(&chat.workgraph_dir, chat.chat_id);
+                        chat_accum.lock().unwrap().clear();
+                        chat.current_request_id = None;
+                        chat.streaming_buf.clear();
+                    }
+
                     // In autonomous mode (task agents), EndTurn means
                     // the model is done — exit the loop. There's no
                     // human to prompt for the next message. This is the
@@ -1718,12 +1839,19 @@ impl AgentLoop {
                         session_exit_reason = "end_turn";
                         break;
                     }
+                    // In chat-surface mode, DON'T block on stdin next —
+                    // fall through to the boundary which will wake the
+                    // inbox reader. Skip the rustyline prompt below
+                    // when chat is active.
+                    if chat_surface.is_some() {
+                        continue;
+                    }
 
                     // Add a blank line between the assistant's response
                     // and our next prompt. The readline call handles
                     // rustyline's own display.
                     eprintln!();
-                    match read_user_input(&mut editor) {
+                    match read_next_user_turn(&mut chat_surface, &mut editor).await {
                         Some(line) => {
                             let trimmed = line.trim().to_string();
                             if trimmed.is_empty() {
@@ -2291,7 +2419,48 @@ impl AgentLoop {
             });
         }
 
+        // Put chat_surface back on self (we took it for borrow-checker
+        // reasons). Idempotent — if caller drops the agent, this is
+        // cleaned up normally.
+        self.chat_surface = chat_surface;
+
         Ok(result)
+    }
+}
+
+/// Read one user-turn: chat inbox if present (async, non-blocking
+/// poll), else rustyline (sync). Side effect: updates
+/// `current_request_id` on chat_surface so streaming + outbox writes
+/// correlate to the right inbox entry.
+async fn read_next_user_turn(
+    chat_surface: &mut Option<ChatSurfaceState>,
+    editor: &mut rustyline::DefaultEditor,
+) -> Option<String> {
+    use rustyline::error::ReadlineError;
+
+    if let Some(c) = chat_surface.as_mut() {
+        let entry = c
+            .reader
+            .next_entry(std::time::Duration::from_millis(250))
+            .await?;
+        c.current_request_id = Some(entry.request_id.clone());
+        return Some(entry.message);
+    }
+    loop {
+        match editor.readline("\x1b[1;36m>\x1b[0m ") {
+            Ok(line) => return Some(line),
+            Err(ReadlineError::Interrupted) => {
+                eprintln!(
+                    "\x1b[2m(Ctrl-C — press again or /quit to exit, empty line to continue)\x1b[0m"
+                );
+                continue;
+            }
+            Err(ReadlineError::Eof) => return None,
+            Err(e) => {
+                eprintln!("\x1b[31m[nex] readline error: {}\x1b[0m", e);
+                return None;
+            }
+        }
     }
 }
 
