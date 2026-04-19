@@ -450,17 +450,26 @@ pub enum InspectorSubFocus {
 /// Which tab is active in the right panel.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RightPanelTab {
-    Chat,      // 0
-    Detail,    // 1
-    Log,       // 2
-    Messages,  // 3
-    Agency,    // 4
-    Config,    // 5
-    Files,     // 6
-    CoordLog,  // 7
-    Firehose,  // 8
-    Output,    // 9
-    Dashboard, // 10
+    Chat,     // 0
+    Detail,   // 1
+    Agency,   // 2
+    Config,   // 3
+    Files,    // 4
+    CoordLog, // 5
+    Dashboard, // 6
+
+    // Phase 4 (soft removal): the tabs below were removed from the
+    // tab bar (`ALL` below) and from label/index/from_index. Their
+    // content is reachable via the PTY Chat tab (Ctrl+T). Variants
+    // are retained so existing match arms still compile; they're
+    // effectively dead code from the user's perspective since no
+    // keystroke navigates to them. A follow-up Phase 4-cleanup will
+    // delete the variants + associated draw/state code entirely once
+    // we've confirmed nothing relies on them in production.
+    Log,
+    Messages,
+    Firehose,
+    Output,
 }
 
 impl RightPanelTab {
@@ -468,15 +477,13 @@ impl RightPanelTab {
         match self {
             Self::Chat => "Chat",
             Self::Detail => "Detail",
-            Self::Log => "Log",
-            Self::Messages => "Msg",
             Self::Agency => "Agency",
             Self::Config => "Config",
             Self::Files => "Files",
             Self::CoordLog => "Coord",
-            Self::Firehose => "Fire",
-            Self::Output => "Live",
             Self::Dashboard => "Dash",
+            // Phase 4 soft-removed variants — not in the tab bar.
+            Self::Log | Self::Messages | Self::Firehose | Self::Output => "",
         }
     }
 
@@ -484,15 +491,19 @@ impl RightPanelTab {
         match self {
             Self::Chat => 0,
             Self::Detail => 1,
-            Self::Log => 2,
-            Self::Messages => 3,
-            Self::Agency => 4,
-            Self::Config => 5,
-            Self::Files => 6,
-            Self::CoordLog => 7,
-            Self::Firehose => 8,
-            Self::Output => 9,
-            Self::Dashboard => 10,
+            Self::Agency => 2,
+            Self::Config => 3,
+            Self::Files => 4,
+            Self::CoordLog => 5,
+            Self::Dashboard => 6,
+            // Phase 4 soft-removed variants — out-of-range so
+            // `from_index` never returns them. The value shouldn't
+            // matter to correct code paths (they're unreachable via
+            // tab navigation).
+            Self::Log => usize::MAX - 3,
+            Self::Messages => usize::MAX - 2,
+            Self::Firehose => usize::MAX - 1,
+            Self::Output => usize::MAX,
         }
     }
 
@@ -500,15 +511,11 @@ impl RightPanelTab {
         match i {
             0 => Some(Self::Chat),
             1 => Some(Self::Detail),
-            2 => Some(Self::Log),
-            3 => Some(Self::Messages),
-            4 => Some(Self::Agency),
-            5 => Some(Self::Config),
-            6 => Some(Self::Files),
-            7 => Some(Self::CoordLog),
-            8 => Some(Self::Firehose),
-            9 => Some(Self::Output),
-            10 => Some(Self::Dashboard),
+            2 => Some(Self::Agency),
+            3 => Some(Self::Config),
+            4 => Some(Self::Files),
+            5 => Some(Self::CoordLog),
+            6 => Some(Self::Dashboard),
             _ => None,
         }
     }
@@ -521,17 +528,13 @@ impl RightPanelTab {
         Self::from_index((self.index() + Self::ALL.len() - 1) % Self::ALL.len()).unwrap()
     }
 
-    pub const ALL: [RightPanelTab; 11] = [
+    pub const ALL: [RightPanelTab; 7] = [
         Self::Chat,
         Self::Detail,
-        Self::Log,
-        Self::Messages,
         Self::Agency,
         Self::Config,
         Self::Files,
         Self::CoordLog,
-        Self::Firehose,
-        Self::Output,
         Self::Dashboard,
     ];
 }
