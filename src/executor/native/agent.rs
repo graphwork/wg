@@ -165,7 +165,19 @@ pub struct AgentLoop {
     /// This is what makes `wg nex --chat-id N` serve as a coordinator
     /// (and what will eventually replace the hand-rolled
     /// `native_coordinator_loop`).
-    chat_surface: Option<ChatSurfaceState>,
+    /// Pluggable I/O surface. When `None`, the loop uses rustyline
+    /// on stdin + stderr for streaming (the legacy default; equivalent
+    /// to `TerminalSurface` but lazily constructed so existing tests
+    /// that never hit the terminal don't need rustyline init). When
+    /// `Some`, all user input and streaming output flow through the
+    /// surface — chat file I/O, PTY, test harness, etc.
+    surface: Option<Box<dyn super::surface::ConversationSurface>>,
+
+    /// Session reference of the bound chat session, if any. Stored
+    /// separately from the surface so slash commands (`/fork`) can
+    /// still reach it after `run_interactive` has taken the surface
+    /// into a local variable. `None` when no chat surface is installed.
+    chat_session_ref: Option<String>,
 }
 
 /// Runtime state for the chat-file surface. Owns the inbox reader and
@@ -512,7 +524,8 @@ impl AgentLoop {
             nex_chatty: false,
             autonomous: false,
             nex_repl_mode: false,
-            chat_surface: None,
+            surface: None,
+            chat_session_ref: None,
         }
     }
 
@@ -689,13 +702,14 @@ impl AgentLoop {
                 if self.workgraph_dir.is_none() {
                     self.workgraph_dir = Some(workgraph_dir.clone());
                 }
-                self.chat_surface = Some(ChatSurfaceState {
+                self.chat_session_ref = Some(session_ref.clone());
+                self.surface = Some(Box::new(ChatSurfaceState {
                     reader,
                     workgraph_dir,
                     session_ref,
                     transcript: Arc::new(Mutex::new(String::new())),
                     current_request_id: None,
-                });
+                }));
             }
             Err(e) => {
                 eprintln!(
@@ -711,6 +725,25 @@ impl AgentLoop {
     /// `with_chat_ref(dir, chat_id.to_string(), resume_existing)`.
     pub fn with_chat_id(self, workgraph_dir: PathBuf, chat_id: u32, resume_existing: bool) -> Self {
         self.with_chat_ref(workgraph_dir, chat_id.to_string(), resume_existing)
+    }
+
+    /// Install an arbitrary `ConversationSurface` implementation.
+    ///
+    /// This is the plug point for non-chat-file surfaces — a PTY
+    /// surface that reads stdin and writes to a master PTY fd, a
+    /// test-harness surface that captures turns into a Vec, a
+    /// stdio-pipe surface for a subprocess embedding, etc.
+    ///
+    /// For chat-file I/O, prefer `with_chat_ref` / `with_chat_id` —
+    /// they also set journal/summary paths and the chat_session_ref
+    /// needed by `/fork`. `with_surface` is for surfaces that don't
+    /// correspond to a `<workgraph>/chat/<ref>/` directory.
+    pub fn with_surface(
+        mut self,
+        surface: Box<dyn super::surface::ConversationSurface>,
+    ) -> Self {
+        self.surface = Some(surface);
+        self
     }
 
     /// Resolve a directory for writing agent-produced buffer artifacts
@@ -1173,15 +1206,16 @@ impl AgentLoop {
             let _ = editor.load_history(&history_path);
         }
 
-        // Take chat_surface out of self into a local so it can be
+        // Take the surface out of self into a local so it can be
         // mutated across awaits without fighting other &mut self
         // borrows inside this long method. Put it back at the end
         // so subsequent calls (if any) see it.
-        let mut chat_surface: Option<ChatSurfaceState> = self.chat_surface.take();
+        let mut surface: Option<Box<dyn super::surface::ConversationSurface>> =
+            self.surface.take();
 
         // (The rustyline read helper is now inlined into
         // `read_next_user_turn` at module level so we can branch on
-        // chat_surface before deciding to block on terminal input.)
+        // the surface presence before deciding to block on terminal input.)
 
         // If resume already populated messages (session summary or journal
         // replay), skip the first-input readline — we go straight to the
@@ -1192,7 +1226,7 @@ impl AgentLoop {
             let first_input = if let Some(msg) = initial_message {
                 msg.to_string()
             } else {
-                match read_next_user_turn(&mut chat_surface, &mut editor).await {
+                match read_next_user_turn(&mut surface, &mut editor).await {
                     Some(line) => {
                         let trimmed = line.trim().to_string();
                         if trimmed.is_empty() {
@@ -1453,7 +1487,7 @@ impl AgentLoop {
                     .unwrap_or(true);
             if needs_user_input {
                 force_fresh_input = false;
-                match read_next_user_turn(&mut chat_surface, &mut editor).await {
+                match read_next_user_turn(&mut surface, &mut editor).await {
                     Some(line) => {
                         let trimmed = line.trim().to_string();
                         if trimmed.is_empty() {
@@ -1570,7 +1604,7 @@ impl AgentLoop {
             // Build the streaming text callback. In interactive mode,
             // tokens stream to stderr for the human. In autonomous mode,
             // they go to stream.jsonl + .streaming for TUI display.
-            // When chat_surface is set (coordinator mode), ALSO mirror
+            // When a chat-surface is set (coordinator mode), ALSO mirror
             // the accumulated text to `<chat-dir>/streaming` so the TUI
             // can tail it for the live assistant view.
             let streaming_file = self.streaming_file_path.clone();
@@ -1581,10 +1615,7 @@ impl AgentLoop {
             // file paths internally; each chunk is appended and the
             // accumulated transcript written to the chat-streaming
             // dotfile the TUI tails.
-            let chat_text_sink = chat_surface.as_ref().map(|c| {
-                use super::surface::ConversationSurface;
-                c.stream_sink()
-            });
+            let chat_text_sink = surface.as_ref().map(|s| s.stream_sink());
             let on_text = move |text: String| {
                 if is_autonomous {
                     if let Some(ref sw) = stream_writer_clone {
@@ -1996,9 +2027,8 @@ impl AgentLoop {
                     // clear streaming + transcript + current id. See
                     // `ChatSurfaceState::on_turn_end` for the full
                     // sequence.
-                    if let Some(ref mut chat) = chat_surface {
-                        use super::surface::ConversationSurface;
-                        chat.on_turn_end();
+                    if let Some(ref mut s) = surface {
+                        s.on_turn_end();
                     }
 
                     // In autonomous mode (task agents), EndTurn means
@@ -2015,7 +2045,13 @@ impl AgentLoop {
                     // fall through to the boundary which will wake the
                     // inbox reader. Skip the rustyline prompt below
                     // when chat is active.
-                    if chat_surface.is_some() {
+                    // Chat-bound sessions wait for the next inbox turn
+                    // via the surface's async next_user_input rather
+                    // than blocking on stdin. We detect chat-mode via
+                    // chat_session_ref (set by with_chat_ref alongside
+                    // the surface). Terminal sessions fall through to
+                    // the rustyline prompt below.
+                    if self.chat_session_ref.is_some() {
                         continue;
                     }
 
@@ -2023,7 +2059,7 @@ impl AgentLoop {
                     // and our next prompt. The readline call handles
                     // rustyline's own display.
                     eprintln!();
-                    match read_next_user_turn(&mut chat_surface, &mut editor).await {
+                    match read_next_user_turn(&mut surface, &mut editor).await {
                         Some(line) => {
                             let trimmed = line.trim().to_string();
                             if trimmed.is_empty() {
@@ -2114,9 +2150,8 @@ impl AgentLoop {
                             // stderr-style `> name(args)` would
                             // render as a markdown blockquote which
                             // looks wrong and loses tool grouping.
-                            if let Some(ref mut chat) = chat_surface {
-                                use super::surface::ConversationSurface;
-                                chat.on_tool_start(name, &input_summary, input);
+                            if let Some(ref mut s) = surface {
+                                s.on_tool_start(name, &input_summary, input);
                             }
                         }
                     }
@@ -2237,10 +2272,7 @@ impl AgentLoop {
                         // file paths internally and prefixes each
                         // line with `│ ` so it lands inside the open
                         // tool box the TUI draws.
-                        let chat_progress_sink = chat_surface.as_ref().map(|c| {
-                            use super::surface::ConversationSurface;
-                            c.tool_progress_sink()
-                        });
+                        let chat_progress_sink = surface.as_ref().map(|s| s.tool_progress_sink());
                         let make_callback = move |_idx: usize| {
                             let sw = stream_writer_clone.clone();
                             let sf = streaming_file.clone();
@@ -2399,9 +2431,8 @@ impl AgentLoop {
                             // lines with a "... N more" tail so the
                             // TUI doesn't get flooded. Full content
                             // is in the journal for post-hoc review.
-                            if let Some(ref mut chat) = chat_surface {
-                                use super::surface::ConversationSurface;
-                                chat.on_tool_end(name, &output.content, output.is_error, *duration_ms);
+                            if let Some(ref mut s) = surface {
+                                s.on_tool_end(name, &output.content, output.is_error, *duration_ms);
                             }
                         }
 
@@ -2674,33 +2705,31 @@ impl AgentLoop {
             });
         }
 
-        // Put chat_surface back on self (we took it for borrow-checker
+        // Put surface back on self (we took it for borrow-checker
         // reasons). Idempotent — if caller drops the agent, this is
         // cleaned up normally.
-        self.chat_surface = chat_surface;
+        self.surface = surface;
 
         Ok(result)
     }
 }
 
-/// Read one user-turn: chat inbox if present (via the
-/// ConversationSurface trait impl), else rustyline (sync).
+/// Read one user-turn: through the installed ConversationSurface
+/// if any, else rustyline (sync stdin).
 ///
-/// When a chat surface is installed, calls its `next_user_input`
-/// and `on_turn_start(request_id)` to deliver the turn and reset
-/// per-turn state (transcript buffer + streaming file).
+/// When a surface is installed, calls its `next_user_input` +
+/// `on_turn_start(request_id)` to deliver the turn and reset
+/// per-turn state (transcript buffer + streaming file for
+/// ChatSurfaceState; no-op for TerminalSurface).
 async fn read_next_user_turn(
-    chat_surface: &mut Option<ChatSurfaceState>,
+    surface: &mut Option<Box<dyn super::surface::ConversationSurface>>,
     editor: &mut rustyline::DefaultEditor,
 ) -> Option<String> {
     use rustyline::error::ReadlineError;
 
-    if let Some(c) = chat_surface.as_mut() {
-        use super::surface::ConversationSurface;
-        let turn = c.next_user_input().await?;
-        // Fresh user turn — reset the transcript + streaming dotfile
-        // and record the request_id for outbox correlation.
-        c.on_turn_start(turn.request_id.as_deref());
+    if let Some(s) = surface.as_mut() {
+        let turn = s.next_user_input().await?;
+        s.on_turn_start(turn.request_id.as_deref());
         return Some(turn.text);
     }
     loop {
@@ -2884,15 +2913,19 @@ impl AgentLoop {
                 // Source session = the currently-bound chat surface.
                 // Interactive sessions without a chat surface can't
                 // be forked from inside /fork (they don't know their
-                // own session_ref here); users can still fork from
-                // another terminal via `wg session fork <source>`.
-                let Some(ref cs) = self.chat_surface else {
+                // own session_ref); users can still fork from another
+                // terminal via `wg session fork <source>`.
+                //
+                // We read `chat_session_ref` (stored at with_chat_ref
+                // time) rather than the surface itself — `run_interactive`
+                // takes the surface out of self into a local, so by the
+                // time a slash command runs, self.surface is None.
+                let Some(source_ref) = self.chat_session_ref.clone() else {
                     eprintln!(
                         "\x1b[33m[nex] /fork: this session has no chat-surface ref; fork from another terminal with `wg session fork <source>`\x1b[0m"
                     );
                     return NexSlashResult::Continue;
                 };
-                let source_ref = cs.session_ref.clone();
                 let new_alias = if arg.is_empty() {
                     None
                 } else {
