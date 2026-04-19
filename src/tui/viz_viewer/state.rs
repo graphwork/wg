@@ -3516,6 +3516,19 @@ pub struct VizApp {
     /// CLI flag: start with no history loaded, prevent scrollback for this session.
     pub no_history: bool,
 
+    /// PTY handlers keyed by task id. When PTY mode is active in the
+    /// Chat tab, the pane for the focused task's id is rendered in
+    /// place of the file-tailing chat history. Lazy-spawned on first
+    /// toggle-into-PTY-mode; dropped when the TUI exits. One entry
+    /// per coordinator/task the user has interacted with this session.
+    /// Phase 3 of docs/design/sessions-as-identity-rollout.md.
+    pub task_panes: std::collections::HashMap<String, crate::tui::pty_pane::PtyPane>,
+
+    /// When true, the Chat tab renders PTY output for the active
+    /// coordinator's task instead of the file-tailing ChatMessage
+    /// widgets. Toggle with Ctrl+T in the Chat tab.
+    pub chat_pty_mode: bool,
+
     // ── Agent monitor state ──
     pub agent_monitor: AgentMonitorState,
     /// Per-agent JSONL stream state for live activity feed.
@@ -3886,6 +3899,8 @@ impl VizApp {
             chat: ChatState::default(),
             history_depth_override,
             no_history,
+            task_panes: HashMap::new(),
+            chat_pty_mode: false,
             agent_monitor: AgentMonitorState::default(),
             agent_streams: HashMap::new(),
             service_health: ServiceHealthState::default(),
@@ -8083,6 +8098,8 @@ impl VizApp {
             chat: ChatState::default(),
             history_depth_override: None,
             no_history: false,
+            task_panes: HashMap::new(),
+            chat_pty_mode: false,
             agent_monitor: AgentMonitorState::default(),
             agent_streams: HashMap::new(),
             service_health: ServiceHealthState::default(),

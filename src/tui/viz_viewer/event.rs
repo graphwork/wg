@@ -1120,6 +1120,17 @@ fn handle_message_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers
 }
 
 fn handle_normal_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
+    // Global Ctrl+T: toggle PTY-backed rendering for the Chat tab,
+    // regardless of focused panel. Works from the graph pane or the
+    // right panel — users expect "enable live terminal view" to be
+    // always accessible. No-op when the active right tab isn't Chat.
+    if modifiers.contains(KeyModifiers::CONTROL)
+        && matches!(code, KeyCode::Char('t'))
+        && app.right_panel_tab == RightPanelTab::Chat
+    {
+        toggle_chat_pty_mode(app);
+        return;
+    }
     match app.focused_panel {
         FocusedPanel::Graph => handle_graph_key(app, code, modifiers),
         FocusedPanel::RightPanel => handle_right_panel_key(app, code, modifiers),
@@ -2023,6 +2034,31 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
         }
 
         // Chat tab: '[' / ']' cycle between coordinator tabs
+        // Chat tab: Ctrl+T toggles PTY-backed rendering for the active
+        // coordinator's task. Lazy-spawns `wg spawn-task <task-id>`
+        // on first toggle-on; tears down cleanly on toggle-off or
+        // when the embedded handler exits. Phase 3a of
+        // docs/design/sessions-as-identity-rollout.md.
+        KeyCode::Char('t')
+            if modifiers.contains(KeyModifiers::CONTROL)
+                && app.right_panel_tab == RightPanelTab::Chat =>
+        {
+            toggle_chat_pty_mode(app);
+        }
+        // Chat tab: when PTY mode is on and user is NOT in the chat
+        // input editor, forward keys to the embedded handler's stdin.
+        // Text input flows into rustyline/slash commands/etc. inside
+        // the PTY.
+        _ if app.chat_pty_mode
+            && app.right_panel_tab == RightPanelTab::Chat
+            && app.input_mode == InputMode::Normal =>
+        {
+            let task_id = format!(".coordinator-{}", app.active_coordinator_id);
+            if let Some(pane) = app.task_panes.get_mut(&task_id) {
+                let key = crossterm::event::KeyEvent::new(code, modifiers);
+                let _ = pane.send_key(key);
+            }
+        }
         KeyCode::Char('[') if app.right_panel_tab == RightPanelTab::Chat => {
             let ids = app.list_coordinator_ids();
             if ids.len() > 1 {
@@ -2203,6 +2239,58 @@ fn maybe_load_more_chat_history(app: &mut VizApp) {
             // Rough estimate: ~3 rendered lines per message (header + content + blank).
             let estimated_new_lines = added_msgs * 3;
             app.chat.scroll = app.chat.scroll.saturating_add(estimated_new_lines);
+        }
+    }
+}
+
+/// Toggle PTY-backed rendering for the active coordinator's chat.
+///
+/// On first toggle-on, spawn `wg spawn-task .coordinator-<id>` as a
+/// PTY child and cache the pane in `app.task_panes`. On toggle-off,
+/// the pane stays in the map so re-enabling is instant (no respawn,
+/// preserving scrollback and partial input).
+///
+/// Phase 3a: owner mode only — we assume nothing else currently owns
+/// the handler. Phase 3b will add the lock-held observer path;
+/// Phase 3c will wire takeover-on-send.
+fn toggle_chat_pty_mode(app: &mut VizApp) {
+    app.chat_pty_mode = !app.chat_pty_mode;
+    if !app.chat_pty_mode {
+        return;
+    }
+    let task_id = format!(".coordinator-{}", app.active_coordinator_id);
+    // Already have a live pane? Keep it.
+    if let Some(p) = app.task_panes.get_mut(&task_id) {
+        if p.is_alive() {
+            return;
+        }
+        // Dead — drop so we can respawn fresh.
+        app.task_panes.remove(&task_id);
+    }
+    // Spawn `wg spawn-task <task-id>` in a PTY. Sizes are a safe
+    // default; the first render/resize will correct to the actual
+    // pane area.
+    let self_exe = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.to_str().map(|s| s.to_string()))
+        .unwrap_or_else(|| "wg".to_string());
+    let env: Vec<(String, String)> = vec![(
+        "WG_DIR".to_string(),
+        app.workgraph_dir.display().to_string(),
+    )];
+    match crate::tui::pty_pane::PtyPane::spawn(
+        &self_exe,
+        &["spawn-task", &task_id],
+        &env,
+        24,
+        80,
+    ) {
+        Ok(pane) => {
+            app.task_panes.insert(task_id, pane);
+        }
+        Err(e) => {
+            eprintln!("[tui] failed to spawn PTY handler for {}: {}", task_id, e);
+            app.chat_pty_mode = false;
         }
     }
 }

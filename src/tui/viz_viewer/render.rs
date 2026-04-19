@@ -3119,6 +3119,47 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     // Store the message area for click-to-focus hit testing.
     app.last_chat_message_area = msg_area;
 
+    // PTY mode: render the embedded handler's terminal output in
+    // place of the file-tailing ChatMessage widgets. Phase 3a of
+    // docs/design/sessions-as-identity-rollout.md. The input editor
+    // below continues to render normally; keys route to the PTY via
+    // the Ctrl+T branch in event.rs.
+    if app.chat_pty_mode {
+        let task_id = format!(".coordinator-{}", app.active_coordinator_id);
+        // Dead-handler cleanup: if the embedded process exited, drop
+        // the pane so the next toggle-on respawns.
+        let alive = app
+            .task_panes
+            .get_mut(&task_id)
+            .map(|p| p.is_alive())
+            .unwrap_or(false);
+        if !alive {
+            app.task_panes.remove(&task_id);
+        }
+        if let Some(pane) = app.task_panes.get_mut(&task_id) {
+            let _ = pane.resize(msg_area.height, msg_area.width);
+            pane.render(frame, msg_area);
+        } else {
+            // Pane gone (exited or never spawned); fall through to
+            // the normal renderer so the user still sees chat content.
+        }
+        // Fall through to the input area rendering below — skip the
+        // message-widget code path entirely when the pane was drawn.
+        if app.task_panes.contains_key(&task_id) {
+            // Draw input area beneath as usual.
+            // Everything below `if app.chat.messages.is_empty()` is
+            // the messages-widget path which we're skipping.
+            // But the file also does input/search rendering at the end,
+            // so to skip cleanly we return early from here — the input
+            // area is drawn by a later call in the same function.
+            // Actually, the input rendering is *inline* after the
+            // messages — we need to keep going but skip just the
+            // messages code. Solution: handle input ourselves.
+            super::render::draw_chat_input(frame, app, input_area);
+            return;
+        }
+    }
+
     // Empty state.
     if app.chat.messages.is_empty() && !app.chat.awaiting_response() {
         let lines = if app.chat.coordinator_active {
