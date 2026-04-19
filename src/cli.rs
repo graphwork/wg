@@ -2003,6 +2003,23 @@ pub enum Commands {
         /// deterministic, minimal tool surface for debugging.
         #[arg(long = "no-mcp")]
         no_mcp: bool,
+
+        /// Benchmark/evaluation mode — run nex as a non-interactive
+        /// eval-harness target (SWE-bench, Terminal-Bench, etc.).
+        ///
+        /// Implies `--autonomous` and `--no-mcp`. Skips mounting the
+        /// chat-file surface (no inbox.jsonl/outbox.jsonl/.streaming
+        /// files dropped into the repo under eval). Suppresses the
+        /// decorative banner on stderr. On clean exit, emits a
+        /// single-line JSON summary to stdout so the harness can log
+        /// turns/tokens/final-status without parsing ANSI output:
+        ///   {"status":"ok","turns":N,"input_tokens":I,"output_tokens":O,"exit_reason":"..."}
+        ///
+        /// Process exit: 0 on EndTurn/clean completion, non-zero on
+        /// max-turns/context-limit/error — same abnormal-exit rules
+        /// the autonomous task-agent path already uses.
+        #[arg(long = "eval-mode")]
+        eval_mode: bool,
     },
 
     /// Interactive agentic TUI — ratatui-based nex (two-pane with streaming + Ctrl-C cancel)

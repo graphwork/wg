@@ -31,7 +31,21 @@ pub fn run(
     chat_ref: Option<&str>,
     autonomous: bool,
     no_mcp: bool,
+    eval_mode: bool,
 ) -> Result<()> {
+    // --eval-mode is a preset for benchmark-harness invocation:
+    //   * implies --autonomous  (one-shot, EndTurn exits the loop)
+    //   * implies --no-mcp      (deterministic tool surface)
+    //   * no chat-file surface  (no inbox/outbox/.streaming pollution
+    //                            in the repo being evaluated)
+    //   * silent banner         (clean stderr for harness logs)
+    //   * stdout JSON summary   (machine-readable harness output)
+    // The flags are forced here rather than at CLI-parse time so the
+    // CLI surface stays orthogonal — a caller could still pass
+    // `--autonomous --eval-mode` redundantly without confusion.
+    let autonomous = autonomous || eval_mode;
+    let no_mcp = no_mcp || eval_mode;
+
     let config = Config::load_or_default(workgraph_dir);
 
     let effective_model = model
@@ -273,7 +287,14 @@ pub fn run(
     // surface — it uses stdin/stderr for the human's low-latency
     // typing path, with the journal still written to
     // `chat/<ref>/conversation.jsonl` for persistence + auto-resume.
-    let mount_chat_surface = chat_ref.is_some() || chat_id.is_some() || autonomous;
+    // Eval mode skips the chat surface even though it's autonomous:
+    // the benchmarked repo shouldn't get inbox.jsonl/outbox.jsonl/
+    // .streaming files written into its `.workgraph/chat/<alias>/`
+    // directory (no attacher will ever read them, and some graders
+    // diff the working tree). Explicit chat bindings still win.
+    let mount_chat_surface = chat_ref.is_some()
+        || chat_id.is_some()
+        || (autonomous && !eval_mode);
     if mount_chat_surface {
         agent = agent.with_chat_ref(
             workgraph_dir.to_path_buf(),
@@ -291,28 +312,31 @@ pub fn run(
 
     // Always show the minimal banner — it names the model so the user
     // knows what they're talking to. Verbose-only details (warning
-    // text, exit hint) are gated.
-    if read_only {
-        eprintln!(
-            "\x1b[1;32mwg nex\x1b[0m \x1b[33m[read-only]\x1b[0m — interactive session with \x1b[1m{}\x1b[0m",
-            effective_model
-        );
-    } else {
-        eprintln!(
-            "\x1b[1;32mwg nex\x1b[0m — interactive session with \x1b[1m{}\x1b[0m",
-            effective_model
-        );
-    }
-    if !supports_tools {
-        eprintln!(
-            "\x1b[33mWarning: model '{}' may not support tool use\x1b[0m",
-            effective_model
-        );
-    }
-    if verbose {
-        eprintln!("Type /quit or Ctrl-D to exit.\n");
-    } else {
-        eprintln!();
+    // text, exit hint) are gated. Eval mode is the one exception:
+    // the harness captures stderr as logs, we keep it clean.
+    if !eval_mode {
+        if read_only {
+            eprintln!(
+                "\x1b[1;32mwg nex\x1b[0m \x1b[33m[read-only]\x1b[0m — interactive session with \x1b[1m{}\x1b[0m",
+                effective_model
+            );
+        } else {
+            eprintln!(
+                "\x1b[1;32mwg nex\x1b[0m — interactive session with \x1b[1m{}\x1b[0m",
+                effective_model
+            );
+        }
+        if !supports_tools {
+            eprintln!(
+                "\x1b[33mWarning: model '{}' may not support tool use\x1b[0m",
+                effective_model
+            );
+        }
+        if verbose {
+            eprintln!("Type /quit or Ctrl-D to exit.\n");
+        } else {
+            eprintln!();
+        }
     }
 
     let result = rt.block_on(agent.run_interactive(message))?;
@@ -321,6 +345,28 @@ pub fn run(
         eprintln!(
             "\n\x1b[2mSession: {} turns, {} input + {} output tokens\x1b[0m",
             result.turns, result.total_usage.input_tokens, result.total_usage.output_tokens,
+        );
+    }
+
+    // Eval mode: emit a single-line JSON summary on stdout so the
+    // benchmark harness has a parseable completion record. Stdout
+    // is reserved for this one line; everything else (banner,
+    // progress, errors) lives on stderr. Emitted BEFORE the abnormal-
+    // exit bail below so graders see the full outcome even on
+    // failures (status becomes "abnormal" + exit_reason names it).
+    if eval_mode {
+        let status = if result.terminated_cleanly() {
+            "ok"
+        } else {
+            "abnormal"
+        };
+        println!(
+            "{{\"status\":\"{}\",\"turns\":{},\"input_tokens\":{},\"output_tokens\":{},\"exit_reason\":{}}}",
+            status,
+            result.turns,
+            result.total_usage.input_tokens,
+            result.total_usage.output_tokens,
+            serde_json::to_string(&result.exit_reason).unwrap_or_else(|_| "\"\"".to_string()),
         );
     }
 
