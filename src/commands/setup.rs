@@ -230,8 +230,8 @@ pub fn has_workgraph_directives(path: &Path) -> bool {
 ///
 /// Returns a status string for display and whether changes were made.
 pub fn configure_claude_md() -> Result<(String, bool)> {
-    let home = std::env::var("HOME").context("HOME environment variable not set")?;
-    let claude_dir = PathBuf::from(&home).join(".claude");
+    let home = dirs::home_dir().context("could not determine home directory")?;
+    let claude_dir = home.join(".claude");
     let claude_md = claude_dir.join("CLAUDE.md");
 
     configure_claude_md_at(&claude_md)
@@ -1374,10 +1374,8 @@ fn default_openrouter_registry() -> Vec<ModelRegistryEntry> {
 
 /// Check if the wg Claude Code skill is installed.
 pub fn is_claude_skill_installed() -> bool {
-    if let Ok(home) = std::env::var("HOME") {
-        PathBuf::from(home)
-            .join(".claude/skills/wg/SKILL.md")
-            .exists()
+    if let Some(home) = dirs::home_dir() {
+        home.join(".claude/skills/wg/SKILL.md").exists()
     } else {
         false
     }
@@ -1385,8 +1383,8 @@ pub fn is_claude_skill_installed() -> bool {
 
 /// Check if the amplifier-bundle-workgraph setup script exists in common locations.
 fn find_amplifier_bundle_setup() -> Option<PathBuf> {
-    if let Ok(home) = std::env::var("HOME") {
-        let candidate = PathBuf::from(&home).join("amplifier-bundle-workgraph/setup.sh");
+    if let Some(home) = dirs::home_dir() {
+        let candidate = home.join("amplifier-bundle-workgraph/setup.sh");
         if candidate.exists() {
             return Some(candidate);
         }
@@ -1617,8 +1615,8 @@ pub fn format_detection_summary(det: &DetectionResult) -> String {
 /// Guide the user through configuring ~/.claude/CLAUDE.md.
 /// Returns a status string for the summary.
 fn guide_claude_md_install() -> Result<String> {
-    let home = std::env::var("HOME").context("HOME environment variable not set")?;
-    let claude_md = PathBuf::from(&home).join(".claude/CLAUDE.md");
+    let home = dirs::home_dir().context("could not determine home directory")?;
+    let claude_md = home.join(".claude/CLAUDE.md");
 
     if has_workgraph_directives(&claude_md) {
         return Ok("already configured ✓".to_string());
