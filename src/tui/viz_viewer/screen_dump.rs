@@ -1,22 +1,21 @@
 //! TUI screen dump server: provides an IPC mechanism for external agents to
 //! read the current TUI screen contents as structured plain text.
 //!
-//! The server listens on a Unix domain socket at `.workgraph/service/tui.sock`.
-//! After each frame render, the event loop updates a shared buffer.  Clients
-//! connect, send a JSON request, and receive a JSON response containing the
-//! current screen text plus metadata (dimensions, active tab, selected task,
-//! input mode).
+//! The server listens on a local socket — a Unix domain socket on Unix, and
+//! a named pipe on Windows — addressed by the path
+//! `.workgraph/service/tui.sock`.  After each frame render, the event loop
+//! updates a shared buffer.  Clients connect, send a JSON request, and
+//! receive a JSON response containing the current screen text plus metadata
+//! (dimensions, active tab, selected task, input mode).
 
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
+use interprocess::local_socket::{ListenerOptions, Stream, prelude::*};
 use ratatui::buffer::Buffer;
 use serde::{Deserialize, Serialize};
-
-#[cfg(unix)]
-use std::os::unix::net::UnixListener;
 
 // ── Shared screen state ─────────────────────────────────────────────────────
 
@@ -179,11 +178,44 @@ pub fn tui_socket_path(workgraph_dir: &Path) -> PathBuf {
     workgraph_dir.join("service").join("tui.sock")
 }
 
+/// Derive the local-socket name for the TUI dump server at the given path.
+///
+/// See the equivalent helper in `commands::service::mod` for the reasoning:
+/// Unix UDS uses the filesystem path directly, while Windows named pipes
+/// live in a flat namespace and need a stable hashed name derived from the
+/// path to keep multiple workgraph dirs separate.
+fn tui_socket_name(
+    path: &Path,
+) -> std::io::Result<interprocess::local_socket::Name<'static>> {
+    #[cfg(unix)]
+    {
+        use interprocess::local_socket::{GenericFilePath, ToFsName};
+        path.as_os_str()
+            .to_os_string()
+            .to_fs_name::<GenericFilePath>()
+    }
+    #[cfg(windows)]
+    {
+        use interprocess::local_socket::{GenericNamespaced, ToNsName};
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        // Normalise so client and server derive the same hash regardless of
+        // how their path was given to them (msys vs Windows form).
+        let abs = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+        let mut hasher = DefaultHasher::new();
+        abs.hash(&mut hasher);
+        let name = format!("workgraph-tui-{:016x}", hasher.finish());
+        name.to_ns_name::<GenericNamespaced>()
+    }
+}
+
 /// Start the screen dump server in a background thread.
 ///
 /// Returns `Ok(())` after spawning the listener.  The listener runs until
 /// `shutdown` is set to `true` (typically when the TUI exits).
-#[cfg(unix)]
+///
+/// Uses a Unix domain socket on Unix and a named pipe on Windows, both
+/// addressed by the filesystem path from `tui_socket_path`.
 pub fn start_server(
     workgraph_dir: &Path,
     shared: SharedScreen,
@@ -196,15 +228,18 @@ pub fn start_server(
         std::fs::create_dir_all(parent)?;
     }
 
-    // Remove stale socket file if present.
+    // Remove stale socket file if present (Unix only — Windows named pipes
+    // aren't filesystem objects).
+    #[cfg(unix)]
     if socket_path.exists() {
         let _ = std::fs::remove_file(&socket_path);
     }
 
-    let listener = UnixListener::bind(&socket_path)?;
+    let name = tui_socket_name(&socket_path)?;
+    let listener = ListenerOptions::new().name(name).create_sync()?;
 
     // Non-blocking so we can check the shutdown flag periodically.
-    listener.set_nonblocking(true)?;
+    listener.set_nonblocking(interprocess::local_socket::ListenerNonblockingMode::Both)?;
 
     let socket_path_clone = socket_path.clone();
     std::thread::Builder::new()
@@ -212,7 +247,7 @@ pub fn start_server(
         .spawn(move || {
             while !shutdown.load(std::sync::atomic::Ordering::Relaxed) {
                 match listener.accept() {
-                    Ok((stream, _)) => {
+                    Ok(stream) => {
                         // Handle connection inline (fast — just reading/writing a snapshot).
                         let _ = handle_dump_connection(stream, &shared);
                     }
@@ -226,50 +261,50 @@ pub fn start_server(
                     }
                 }
             }
-            // Clean up socket file.
+            // Clean up socket file on Unix.
+            #[cfg(unix)]
             let _ = std::fs::remove_file(&socket_path_clone);
+            #[cfg(not(unix))]
+            let _ = &socket_path_clone;
         })?;
 
     Ok(())
 }
 
-#[cfg(unix)]
-fn handle_dump_connection(
-    stream: std::os::unix::net::UnixStream,
-    shared: &SharedScreen,
-) -> Result<()> {
-    use std::time::Duration;
+fn handle_dump_connection(stream: Stream, shared: &SharedScreen) -> Result<()> {
+    // Switch this connection back to blocking mode — the listener is
+    // non-blocking but the accepted stream should block so we can do a
+    // straightforward request/response exchange.
+    stream.set_nonblocking(false)?;
 
-    stream.set_read_timeout(Some(Duration::from_secs(2)))?;
-    stream.set_write_timeout(Some(Duration::from_secs(2)))?;
-
-    let mut write_stream = stream.try_clone()?;
-    let reader = BufReader::new(stream);
-
-    for line in reader.lines() {
-        let line = match line {
-            Ok(l) => l,
-            Err(_) => break,
-        };
-
-        if line.is_empty() {
-            continue;
-        }
-
-        let response = match serde_json::from_str::<DumpRequest>(&line) {
-            Ok(DumpRequest::Dump) => {
-                let snap = shared.lock().map_err(|e| anyhow::anyhow!("{}", e))?;
-                DumpResponse::success(&snap)
-            }
-            Err(e) => DumpResponse::error(&format!("invalid request: {}", e)),
-        };
-
-        let mut json = serde_json::to_string(&response)?;
-        json.push('\n');
-        write_stream.write_all(json.as_bytes())?;
-        write_stream.flush()?;
-        break; // One request per connection.
+    // Read one JSON line from the client.
+    let mut reader = BufReader::new(&stream);
+    let mut line = String::new();
+    if reader.read_line(&mut line)? == 0 {
+        return Ok(());
     }
+    let line = line.trim();
+    if line.is_empty() {
+        return Ok(());
+    }
+
+    let response = match serde_json::from_str::<DumpRequest>(line) {
+        Ok(DumpRequest::Dump) => {
+            let snap = shared.lock().map_err(|e| anyhow::anyhow!("{}", e))?;
+            DumpResponse::success(&snap)
+        }
+        Err(e) => DumpResponse::error(&format!("invalid request: {}", e)),
+    };
+
+    // Write the JSON response. `Stream` implements `Write` via `&Stream`, so
+    // we drop the BufReader (which held an &stream borrow) and then borrow it
+    // again mutably via the &mut on write_all.
+    drop(reader);
+    let mut writer = &stream;
+    let mut json = serde_json::to_string(&response)?;
+    json.push('\n');
+    writer.write_all(json.as_bytes())?;
+    writer.flush()?;
 
     Ok(())
 }
@@ -277,12 +312,13 @@ fn handle_dump_connection(
 // ── Client (for `wg tui dump`) ──────────────────────────────────────────────
 
 /// Connect to a running TUI and retrieve the current screen dump.
-#[cfg(unix)]
 pub fn client_dump(workgraph_dir: &Path) -> Result<ScreenSnapshot> {
-    use std::os::unix::net::UnixStream;
-    use std::time::Duration;
-
     let socket_path = tui_socket_path(workgraph_dir);
+
+    // On Unix the socket is a real filesystem object, so we can pre-check.
+    // On Windows named pipes don't exist on the filesystem, so skip the check
+    // and let `Stream::connect` return a helpful error.
+    #[cfg(unix)]
     if !socket_path.exists() {
         anyhow::bail!(
             "TUI is not running (no socket at {}). Start it with `wg tui`.",
@@ -290,45 +326,48 @@ pub fn client_dump(workgraph_dir: &Path) -> Result<ScreenSnapshot> {
         );
     }
 
-    let mut stream = UnixStream::connect(&socket_path)?;
-    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
-    stream.set_write_timeout(Some(Duration::from_secs(5)))?;
+    let name = tui_socket_name(&socket_path)?;
+    let stream = Stream::connect(name).map_err(|e| {
+        anyhow::anyhow!(
+            "Failed to connect to TUI dump server at {}: {}. Is `wg tui` running?",
+            socket_path.display(),
+            e
+        )
+    })?;
 
     // Send dump request.
-    let request = r#"{"cmd":"dump"}"#;
-    stream.write_all(request.as_bytes())?;
-    stream.write_all(b"\n")?;
-    stream.flush()?;
+    let mut writer = &stream;
+    writer.write_all(br#"{"cmd":"dump"}"#)?;
+    writer.write_all(b"\n")?;
+    writer.flush()?;
 
     // Read response.
-    let reader = BufReader::new(stream);
-    for line in reader.lines() {
-        let line = line?;
-        if line.is_empty() {
-            continue;
-        }
-
-        let resp: DumpResponse = serde_json::from_str(&line)?;
-        if !resp.ok {
-            anyhow::bail!(
-                "TUI dump failed: {}",
-                resp.error.unwrap_or_else(|| "unknown error".into())
-            );
-        }
-
-        return Ok(ScreenSnapshot {
-            text: resp.text.unwrap_or_default(),
-            width: resp.width.unwrap_or(0),
-            height: resp.height.unwrap_or(0),
-            active_tab: resp.active_tab.unwrap_or_default(),
-            focused_panel: resp.focused_panel.unwrap_or_default(),
-            selected_task: resp.selected_task,
-            input_mode: resp.input_mode.unwrap_or_default(),
-            coordinator_id: resp.coordinator_id.unwrap_or(0),
-        });
+    let mut reader = BufReader::new(&stream);
+    let mut line = String::new();
+    reader.read_line(&mut line)?;
+    let line = line.trim();
+    if line.is_empty() {
+        anyhow::bail!("no response from TUI dump server");
     }
 
-    anyhow::bail!("no response from TUI dump server")
+    let resp: DumpResponse = serde_json::from_str(line)?;
+    if !resp.ok {
+        anyhow::bail!(
+            "TUI dump failed: {}",
+            resp.error.unwrap_or_else(|| "unknown error".into())
+        );
+    }
+
+    Ok(ScreenSnapshot {
+        text: resp.text.unwrap_or_default(),
+        width: resp.width.unwrap_or(0),
+        height: resp.height.unwrap_or(0),
+        active_tab: resp.active_tab.unwrap_or_default(),
+        focused_panel: resp.focused_panel.unwrap_or_default(),
+        selected_task: resp.selected_task,
+        input_mode: resp.input_mode.unwrap_or_default(),
+        coordinator_id: resp.coordinator_id.unwrap_or(0),
+    })
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────────
