@@ -84,6 +84,13 @@ pulldown-cmark = "0.13.1"
 hmac = "0.12.1"
 hex = "0.4.3"
 
+# PTY-embed: spawn `wg nex` (or any command) as a child of the
+# ratatui TUI with a pseudo-terminal, render its output as a
+# terminal-cell grid, forward key events to its stdin.
+portable-pty = "0.9"
+vt100 = "0.15"
+tui-term = "0.2"
+
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
@@ -92,3 +99,11 @@ tempfile = "3.10"
 serial_test = "3"
 insta = { version = "1", features = ["yaml"] }
 workgraph = { path = ".", features = ["test-support"] }
+
+# Local vt100 fork: patches out upstream 0.15.2 panics in
+# screen.rs::text() at column-wrap + wide-char boundaries that fire
+# when the embedded `wg nex` writes its banner / prompt glyphs.
+# Upstream 0.16.0+ has related fixes but conflicts with ratatui 0.29's
+# exact unicode-width=0.2.0 pin. Keep the patch until ratatui upgrades.
+[patch.crates-io]
+vt100 = { path = "vendor/vt100" }

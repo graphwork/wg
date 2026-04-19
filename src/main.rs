@@ -479,7 +479,7 @@ fn main() -> Result<()> {
     // `~/.config/gh` on first use without requiring `gh init`.
     let is_repl_style = matches!(
         cli.command,
-        Some(Commands::Nex { .. }) | Some(Commands::TuiNex { .. })
+        Some(Commands::Nex { .. }) | Some(Commands::TuiNex { .. }) | Some(Commands::TuiPty { .. })
     );
     if is_repl_style
         && !workgraph_dir.exists()
@@ -2821,6 +2821,18 @@ fn main() -> Result<()> {
         Commands::TuiNex { model, endpoint } => {
             commands::tui_nex::run(&workgraph_dir, model.as_deref(), endpoint.as_deref())
         }
+        Commands::TuiPty {
+            model,
+            endpoint,
+            chat_ref,
+            resume,
+        } => commands::tui_pty::run(
+            &workgraph_dir,
+            model.as_deref(),
+            endpoint.as_deref(),
+            chat_ref.as_deref(),
+            resume.as_deref(),
+        ),
         Commands::NativeExec {
             prompt_file,
             exec_mode,

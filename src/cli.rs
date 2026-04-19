@@ -2034,6 +2034,32 @@ pub enum Commands {
         endpoint: Option<String>,
     },
 
+    /// PTY-embedded nex TUI — spawns `wg nex` as a PTY child and
+    /// renders its terminal output in a ratatui pane. Inherits every
+    /// wg nex feature (streaming, tool boxes, rustyline editing,
+    /// Ctrl-C semantics, slash commands) verbatim because we're
+    /// literally running it in a terminal. Exit the embedded nex
+    /// normally (`/quit` or Ctrl-D) or press Ctrl-Q to kill it.
+    #[command(name = "tui-pty")]
+    TuiPty {
+        /// Pass-through `--model` for the embedded `wg nex`.
+        #[arg(long, short = 'm')]
+        model: Option<String>,
+
+        /// Pass-through `--endpoint` for the embedded `wg nex`.
+        #[arg(long, short = 'e')]
+        endpoint: Option<String>,
+
+        /// Pass-through `--chat <ref>` — bind the embedded nex to a
+        /// chat session. Normal stdin/stderr mode otherwise.
+        #[arg(long = "chat")]
+        chat_ref: Option<String>,
+
+        /// Pass-through `--resume [<pattern>]`.
+        #[arg(long, value_name = "PATTERN", num_args = 0..=1, default_missing_value = "")]
+        resume: Option<String>,
+    },
+
     /// Run the native executor agent loop (internal, called by spawn)
     #[command(name = "native-exec", hide = true)]
     NativeExec {
@@ -4078,6 +4104,7 @@ pub fn command_name(cmd: &Commands) -> &'static str {
         Commands::Key { .. } => "key",
         Commands::Nex { .. } => "nex",
         Commands::TuiNex { .. } => "tui-nex",
+        Commands::TuiPty { .. } => "tui-pty",
         Commands::NativeExec { .. } => "native-exec",
         Commands::Spend { .. } => "spend",
         Commands::Openrouter { .. } => "openrouter",

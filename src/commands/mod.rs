@@ -118,6 +118,7 @@ pub mod trace_import;
 pub mod tradeoff;
 pub mod trajectory;
 pub mod tui_nex;
+pub mod tui_pty;
 pub mod user;
 pub mod velocity;
 pub mod viz;
