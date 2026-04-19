@@ -71,40 +71,40 @@ pub fn create_editor_handler() -> EditorEventHandler {
     use edtui::actions::{
         MoveBackward, MoveDown, MoveForward, MoveToEndOfLine, MoveToStartOfLine, MoveUp,
     };
-    use edtui::events::{KeyEvent as EdKeyEvent, KeyEventRegister};
+    use edtui::events::{KeyEventRegister, KeyInput};
     let mut handler = EditorEventHandler::default();
     // Emacs keybindings for insert mode
     handler.key_handler.insert(
-        KeyEventRegister::i(vec![EdKeyEvent::Ctrl('a')]),
+        KeyEventRegister::i(vec![KeyInput::ctrl('a')]),
         MoveToStartOfLine(),
     );
     handler.key_handler.insert(
-        KeyEventRegister::i(vec![EdKeyEvent::Ctrl('e')]),
+        KeyEventRegister::i(vec![KeyInput::ctrl('e')]),
         MoveToEndOfLine(),
     );
     handler.key_handler.insert(
-        KeyEventRegister::i(vec![EdKeyEvent::Ctrl('f')]),
+        KeyEventRegister::i(vec![KeyInput::ctrl('f')]),
         MoveForward(1),
     );
     handler.key_handler.insert(
-        KeyEventRegister::i(vec![EdKeyEvent::Ctrl('b')]),
+        KeyEventRegister::i(vec![KeyInput::ctrl('b')]),
         MoveBackward(1),
     );
     handler.key_handler.insert(
-        KeyEventRegister::i(vec![EdKeyEvent::Ctrl('d')]),
+        KeyEventRegister::i(vec![KeyInput::ctrl('d')]),
         RemoveChar(1),
     );
     handler.key_handler.insert(
-        KeyEventRegister::i(vec![EdKeyEvent::Ctrl('k')]),
+        KeyEventRegister::i(vec![KeyInput::ctrl('k')]),
         DeleteToEndOfLine,
     );
     handler.key_handler.insert(
-        KeyEventRegister::i(vec![EdKeyEvent::Ctrl('n')]),
+        KeyEventRegister::i(vec![KeyInput::ctrl('n')]),
         MoveDown(1),
     );
     handler
         .key_handler
-        .insert(KeyEventRegister::i(vec![EdKeyEvent::Ctrl('p')]), MoveUp(1));
+        .insert(KeyEventRegister::i(vec![KeyInput::ctrl('p')]), MoveUp(1));
     // Ctrl-U (kill to beginning of line) is already mapped by edtui default
     handler
 }
