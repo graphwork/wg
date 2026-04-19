@@ -10,18 +10,24 @@
 //! |--------------|--------------------------------|--------------------------------|
 //! | `wg nex`     | rustyline on stdin             | stderr                         |
 //! | task agent   | task description + inbox poll  | stream.ndjson + stderr         |
-//! | coordinator  | `mpsc::Receiver<ChatRequest>`  | `chat/<id>/streaming`          |
+//! | coordinator  | `chat/<ref>/inbox.jsonl`       | `chat/<ref>/streaming`         |
 //! | `evaluate`   | eval prompt (one-shot)         | JSON record                    |
 //!
 //! The loop is identical. Stages A–G (cancel, inbox, microcompact,
 //! L0 defense, idle watchdog, ...) all fire regardless of surface.
 //! New features added to `AgentLoop` automatically benefit every role.
 //!
-//! Today's state: only two impls exist (`TerminalSurface` below, and
-//! the implicit autonomous path that goes through state injection).
-//! Coordinator migration to `ChatFileSurface` is the next step.
+//! Impl layout:
+//!   * `TerminalSurface` — rustyline input + stderr streaming. The
+//!     default for `wg nex` without `--chat`.
+//!   * `ChatSurfaceState` (defined in `agent.rs` alongside the loop
+//!     that uses it; it owns the inbox reader and the per-turn
+//!     transcript buffer) implements this trait — the coordinator
+//!     and task-agent path.
 //!
 //! See `docs/design/nex-as-coordinator.md` for the broader design.
+
+use std::sync::Arc;
 
 use async_trait::async_trait;
 
@@ -29,6 +35,17 @@ use async_trait::async_trait;
 ///
 /// Callers of `AgentLoop` pick a surface at startup; the loop then
 /// uses it for all user interaction.
+///
+/// Thread model:
+///   * Main-loop half (`next_user_input`, `on_turn_start`,
+///     `on_turn_end`) is called sequentially from the single-owner
+///     agent loop — `&mut self` is natural.
+///   * Streaming half (`stream_sink`) returns an `Arc<dyn Fn(&str)>`
+///     that the loop passes into the provider's streaming callback.
+///     The sink uses interior mutability to accumulate per-turn
+///     state (transcript buffer, streaming file) and is dropped at
+///     turn end. One sink per turn; `stream_sink` is called after
+///     `on_turn_start`.
 #[async_trait]
 pub trait ConversationSurface: Send {
     /// Block until the next user message is available. Returns `None`
@@ -40,15 +57,27 @@ pub trait ConversationSurface: Send {
     /// loop can handle them at the next turn boundary.
     async fn next_user_input(&mut self) -> Option<UserTurn>;
 
-    /// Called when the agent emits a streaming text chunk. Surface
-    /// decides where it goes — stderr for a terminal, a file for the
-    /// coordinator's chat UI, a network socket for a remote viewer.
-    fn write_stream_chunk(&mut self, text: &str);
+    /// Called immediately after the loop receives a fresh user turn
+    /// and before the first LLM call. The surface can reset its
+    /// per-turn buffer, clear the streaming dotfile, etc. Default
+    /// impl is a no-op for surfaces that keep no per-turn state.
+    fn on_turn_start(&mut self, _request_id: Option<&str>) {}
 
-    /// Called when the assistant finishes a turn. Surface can flush
-    /// the buffer, finalize the streaming file, send a "done" marker
-    /// to a remote viewer, etc.
+    /// Called when the assistant finishes a turn (EndTurn stop
+    /// reason, max-turns exit, cancel). Surface can flush its
+    /// accumulated transcript to an outbox, clear the streaming
+    /// dotfile, send a "done" marker to a remote viewer, etc.
     fn on_turn_end(&mut self);
+
+    /// Produce a streaming sink for the current turn. Called once
+    /// per LLM call within a turn; the sink is captured by the
+    /// provider's streaming callback and invoked per text chunk.
+    ///
+    /// The sink uses interior mutability so the streaming closure
+    /// (which is `Fn(String)`, not `FnMut`) can invoke it without
+    /// needing a mutex at the call site. Implementations use
+    /// `Arc<Mutex<...>>` internally for their transcript buffer.
+    fn stream_sink(&self) -> Arc<dyn Fn(&str) + Send + Sync>;
 
     /// Called when a tool starts / ends — the surface can render
     /// progress lines, write per-call artifacts, etc. Default impl
@@ -85,101 +114,87 @@ impl UserTurn {
     }
 }
 
-/// `ConversationSurface` impl that reads from a chat-request channel
-/// and writes streaming output to the per-coordinator chat files.
-/// This is what makes the native coordinator "just nex with a
-/// different surface" — everything else in the conversation loop is
-/// shared with `wg nex`.
+/// Default `ConversationSurface` for `wg nex` at a terminal.
 ///
-/// Skeleton only: the channel drain is threaded so `next_user_input`
-/// is actually async, but the full hook into `AgentLoop` (replacing
-/// rustyline in `run_interactive`) is a separate step. Committed
-/// alongside the trait so the next change has a concrete target.
-pub struct ChatFileSurface {
-    pub workgraph_dir: std::path::PathBuf,
-    pub coordinator_id: u32,
-    pub rx: tokio::sync::Mutex<tokio::sync::mpsc::Receiver<ChatTurn>>,
-    /// Accumulated streaming buffer for the current turn — on each
-    /// chunk we append and rewrite the streaming file so the TUI can
-    /// tail it without seeing partial UTF-8.
-    streaming_buf: std::sync::Mutex<String>,
-    /// The request_id of the in-flight turn, used to tag the outbox
-    /// message when `on_turn_end` fires.
-    current_request_id: std::sync::Mutex<Option<String>>,
+/// * `next_user_input` prompts via rustyline (cyan `>` prefix, history
+///   loaded from `$HOME/.workgraph-nex-history`). Ctrl-C produces a
+///   "press again or /quit" notice and retries the prompt — the hard
+///   exit paths (double Ctrl-C, /quit) live in the agent loop above,
+///   which owns the `CancelToken`.
+/// * `stream_sink` returns a closure that writes each chunk to
+///   stderr and flushes — the interactive-mode default that predates
+///   this trait.
+/// * `on_turn_end` is a no-op: stderr has no "finalize" concept.
+pub struct TerminalSurface {
+    editor: rustyline::DefaultEditor,
+    history_path: std::path::PathBuf,
 }
 
-/// Data-only shape mirroring `service::coordinator_agent::ChatRequest`
-/// but defined here so the trait module doesn't depend on the service
-/// layer. Callers adapt.
-#[derive(Debug, Clone)]
-pub struct ChatTurn {
-    pub request_id: String,
-    pub message: String,
-}
+impl TerminalSurface {
+    pub fn new() -> anyhow::Result<Self> {
+        use anyhow::Context;
+        let mut editor = rustyline::DefaultEditor::new()
+            .context("failed to initialize rustyline editor")?;
+        let history_path = if let Some(home) = std::env::var_os("HOME") {
+            std::path::PathBuf::from(home).join(".workgraph-nex-history")
+        } else {
+            std::path::PathBuf::from(".workgraph-nex-history")
+        };
+        let _ = editor.load_history(&history_path);
+        Ok(Self {
+            editor,
+            history_path,
+        })
+    }
 
-impl ChatFileSurface {
-    pub fn new(
-        workgraph_dir: std::path::PathBuf,
-        coordinator_id: u32,
-        rx: tokio::sync::mpsc::Receiver<ChatTurn>,
-    ) -> Self {
-        Self {
-            workgraph_dir,
-            coordinator_id,
-            rx: tokio::sync::Mutex::new(rx),
-            streaming_buf: std::sync::Mutex::new(String::new()),
-            current_request_id: std::sync::Mutex::new(None),
-        }
+    /// Expose the rustyline history-save path so the agent loop can
+    /// persist history on clean exit (the loop already does this
+    /// today; we preserve the behavior).
+    pub fn history_path(&self) -> &std::path::Path {
+        &self.history_path
+    }
+
+    /// Mutable access to the underlying editor — the agent loop uses
+    /// it to `add_history_entry` after a successful turn so history
+    /// grows across turns, not just across sessions.
+    pub fn editor_mut(&mut self) -> &mut rustyline::DefaultEditor {
+        &mut self.editor
     }
 }
 
 #[async_trait]
-impl ConversationSurface for ChatFileSurface {
+impl ConversationSurface for TerminalSurface {
     async fn next_user_input(&mut self) -> Option<UserTurn> {
-        let mut rx = self.rx.lock().await;
-        let turn = rx.recv().await?;
-        if let Ok(mut cur) = self.current_request_id.lock() {
-            *cur = Some(turn.request_id.clone());
-        }
-        Some(UserTurn::with_request_id(turn.message, turn.request_id))
-    }
-
-    fn write_stream_chunk(&mut self, text: &str) {
-        if let Ok(mut buf) = self.streaming_buf.lock() {
-            buf.push_str(text);
-            let _ = crate::chat::write_streaming(&self.workgraph_dir, self.coordinator_id, &buf);
+        use rustyline::error::ReadlineError;
+        loop {
+            match self.editor.readline("\x1b[1;36m>\x1b[0m ") {
+                Ok(line) => return Some(UserTurn::plain(line)),
+                Err(ReadlineError::Interrupted) => {
+                    eprintln!(
+                        "\x1b[2m(Ctrl-C — press again or /quit to exit, empty line to continue)\x1b[0m"
+                    );
+                    continue;
+                }
+                Err(ReadlineError::Eof) => return None,
+                Err(e) => {
+                    eprintln!("\x1b[31m[nex] readline error: {}\x1b[0m", e);
+                    return None;
+                }
+            }
         }
     }
 
     fn on_turn_end(&mut self) {
-        // Flush the accumulated streaming buffer into the outbox as
-        // the final assistant message for this request, then clear
-        // the streaming file so the TUI moves on.
-        let (buf, request_id) = {
-            let b = self
-                .streaming_buf
-                .lock()
-                .map(|s| s.clone())
-                .unwrap_or_default();
-            let r = self.current_request_id.lock().ok().and_then(|r| r.clone());
-            (b, r)
-        };
-        if let Some(rid) = request_id
-            && !buf.is_empty()
-        {
-            let _ = crate::chat::append_outbox_for(
-                &self.workgraph_dir,
-                self.coordinator_id,
-                &buf,
-                &rid,
-            );
-        }
-        if let Ok(mut s) = self.streaming_buf.lock() {
-            s.clear();
-        }
-        if let Ok(mut r) = self.current_request_id.lock() {
-            *r = None;
-        }
-        crate::chat::clear_streaming(&self.workgraph_dir, self.coordinator_id);
+        // Stderr has no finalize step. History saving happens at
+        // session end (outside this trait's lifetime) via
+        // `history_path()`.
+    }
+
+    fn stream_sink(&self) -> Arc<dyn Fn(&str) + Send + Sync> {
+        Arc::new(|text: &str| {
+            use std::io::Write;
+            eprint!("{}", text);
+            let _ = std::io::stderr().flush();
+        })
     }
 }
