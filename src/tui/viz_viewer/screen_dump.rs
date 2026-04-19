@@ -13,9 +13,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
-use interprocess::local_socket::{
-    GenericFilePath, ListenerOptions, Stream, ToFsName, prelude::*,
-};
+use interprocess::local_socket::{ListenerOptions, Stream, prelude::*};
 use ratatui::buffer::Buffer;
 use serde::{Deserialize, Serialize};
 
@@ -180,6 +178,37 @@ pub fn tui_socket_path(workgraph_dir: &Path) -> PathBuf {
     workgraph_dir.join("service").join("tui.sock")
 }
 
+/// Derive the local-socket name for the TUI dump server at the given path.
+///
+/// See the equivalent helper in `commands::service::mod` for the reasoning:
+/// Unix UDS uses the filesystem path directly, while Windows named pipes
+/// live in a flat namespace and need a stable hashed name derived from the
+/// path to keep multiple workgraph dirs separate.
+fn tui_socket_name(
+    path: &Path,
+) -> std::io::Result<interprocess::local_socket::Name<'static>> {
+    #[cfg(unix)]
+    {
+        use interprocess::local_socket::{GenericFilePath, ToFsName};
+        path.as_os_str()
+            .to_os_string()
+            .to_fs_name::<GenericFilePath>()
+    }
+    #[cfg(windows)]
+    {
+        use interprocess::local_socket::{GenericNamespaced, ToNsName};
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        // Normalise so client and server derive the same hash regardless of
+        // how their path was given to them (msys vs Windows form).
+        let abs = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+        let mut hasher = DefaultHasher::new();
+        abs.hash(&mut hasher);
+        let name = format!("workgraph-tui-{:016x}", hasher.finish());
+        name.to_ns_name::<GenericNamespaced>()
+    }
+}
+
 /// Start the screen dump server in a background thread.
 ///
 /// Returns `Ok(())` after spawning the listener.  The listener runs until
@@ -206,9 +235,7 @@ pub fn start_server(
         let _ = std::fs::remove_file(&socket_path);
     }
 
-    let name = socket_path
-        .as_os_str()
-        .to_fs_name::<GenericFilePath>()?;
+    let name = tui_socket_name(&socket_path)?;
     let listener = ListenerOptions::new().name(name).create_sync()?;
 
     // Non-blocking so we can check the shutdown flag periodically.
@@ -299,7 +326,7 @@ pub fn client_dump(workgraph_dir: &Path) -> Result<ScreenSnapshot> {
         );
     }
 
-    let name = socket_path.as_os_str().to_fs_name::<GenericFilePath>()?;
+    let name = tui_socket_name(&socket_path)?;
     let stream = Stream::connect(name).map_err(|e| {
         anyhow::anyhow!(
             "Failed to connect to TUI dump server at {}: {}. Is `wg tui` running?",
