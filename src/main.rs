@@ -2862,6 +2862,18 @@ fn main() -> Result<()> {
             role.as_deref(),
             model.as_deref(),
         ),
+        Commands::CodexHandler {
+            chat,
+            resume,
+            role,
+            model,
+        } => commands::codex_handler::run(
+            &workgraph_dir,
+            &chat,
+            resume,
+            role.as_deref(),
+            model.as_deref(),
+        ),
         Commands::NativeExec {
             prompt_file,
             exec_mode,

@@ -4006,7 +4006,23 @@ fn process_chat_inbox(dir: &Path) {
 }
 
 /// Process pending chat inbox messages for a specific coordinator.
+///
+/// If a live handler holds the session lock (Phase 7: `wg nex`,
+/// `wg claude-handler`, `wg codex-handler`), skip entirely — the
+/// handler processes its own inbox and writes real replies. This
+/// tick-based stub writer is only the fallback for when no handler
+/// is alive.
 fn process_chat_inbox_for(dir: &Path, coordinator_id: u32) {
+    let chat_ref_dir = dir
+        .join("chat")
+        .join(format!("coordinator-{}", coordinator_id));
+    if let Ok(Some(info)) = workgraph::session_lock::read_holder(&chat_ref_dir)
+        && info.alive
+    {
+        // A live handler owns this chat session — it'll write the
+        // real reply. Don't race it with a stub.
+        return;
+    }
     let inbox_cursor = match chat::read_coordinator_cursor_for(dir, coordinator_id) {
         Ok(c) => c,
         Err(e) => {

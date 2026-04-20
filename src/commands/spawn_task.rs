@@ -40,6 +40,7 @@ pub enum HandlerSpec {
     },
     Codex {
         chat_ref: String,
+        model: Option<String>,
     },
     Gemini {
         chat_ref: String,
@@ -82,7 +83,13 @@ impl HandlerSpec {
                 }
                 s
             }
-            Self::Codex { chat_ref } => format!("codex [TODO: adapter for session={}]", chat_ref),
+            Self::Codex { chat_ref, model } => {
+                let mut s = format!("wg codex-handler --chat {}", chat_ref);
+                if let Some(m) = model {
+                    s.push_str(&format!(" -m {}", m));
+                }
+                s
+            }
             Self::Gemini { chat_ref } => format!("gemini [TODO: adapter for session={}]", chat_ref),
             Self::Amplifier { chat_ref } => {
                 format!("wg amplifier-run {} [TODO]", chat_ref)
@@ -187,7 +194,10 @@ pub fn resolve_handler(
             chat_ref,
             model: task.model.clone(),
         },
-        ExecutorKind::Codex => HandlerSpec::Codex { chat_ref },
+        ExecutorKind::Codex => HandlerSpec::Codex {
+            chat_ref,
+            model: task.model.clone(),
+        },
         ExecutorKind::Gemini => HandlerSpec::Gemini { chat_ref },
         ExecutorKind::Amplifier => HandlerSpec::Amplifier { chat_ref },
     })
@@ -256,9 +266,7 @@ fn dispatch(spec: &HandlerSpec, _workgraph_dir: &Path) -> Result<()> {
             endpoint.as_deref(),
         ),
         HandlerSpec::Claude { chat_ref, model } => dispatch_claude(chat_ref, model.as_deref()),
-        HandlerSpec::Codex { .. } => Err(anyhow!(
-            "codex adapter not yet implemented (Phase 7). Use --executor native for now."
-        )),
+        HandlerSpec::Codex { chat_ref, model } => dispatch_codex(chat_ref, model.as_deref()),
         HandlerSpec::Gemini { .. } => Err(anyhow!(
             "gemini adapter not yet implemented (Phase 7). Use --executor native for now."
         )),
@@ -266,6 +274,29 @@ fn dispatch(spec: &HandlerSpec, _workgraph_dir: &Path) -> Result<()> {
             "amplifier adapter via spawn-task not yet implemented (Phase 7). \
              Use the existing service-level amplifier dispatch for now."
         )),
+    }
+}
+
+fn dispatch_codex(chat_ref: &str, model: Option<&str>) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        let self_exe =
+            std::env::current_exe().context("resolve current exe for spawn-task dispatch")?;
+        let mut cmd = std::process::Command::new(&self_exe);
+        cmd.arg("codex-handler").arg("--chat").arg(chat_ref);
+        if let Some(m) = model {
+            cmd.arg("-m").arg(m);
+        }
+        let err = cmd.exec();
+        Err(anyhow!("exec wg codex-handler failed: {}", err))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (chat_ref, model);
+        Err(anyhow!(
+            "spawn-task dispatch not yet supported on this platform"
+        ))
     }
 }
 

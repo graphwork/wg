@@ -2118,6 +2118,27 @@ pub enum Commands {
         model: Option<String>,
     },
 
+    /// Bridge Codex CLI JSONL output ↔ chat/<ref>/*.jsonl.
+    ///
+    /// Peer of `wg nex --chat <ref>` and `wg claude-handler` for the
+    /// Codex executor. Codex is single-shot (`codex exec` runs a
+    /// turn and exits), so this handler re-runs codex per inbox
+    /// message with the full conversation history prepended.
+    #[command(name = "codex-handler")]
+    CodexHandler {
+        #[arg(long = "chat")]
+        chat: String,
+
+        #[arg(long)]
+        resume: bool,
+
+        #[arg(long)]
+        role: Option<String>,
+
+        #[arg(long, short = 'm')]
+        model: Option<String>,
+    },
+
     /// Run the native executor agent loop (internal, called by spawn)
     #[command(name = "native-exec", hide = true)]
     NativeExec {
@@ -4187,6 +4208,7 @@ pub fn command_name(cmd: &Commands) -> &'static str {
         Commands::TuiPty { .. } => "tui-pty",
         Commands::SpawnTask { .. } => "spawn-task",
         Commands::ClaudeHandler { .. } => "claude-handler",
+        Commands::CodexHandler { .. } => "codex-handler",
         Commands::NativeExec { .. } => "native-exec",
         Commands::Spend { .. } => "spend",
         Commands::Openrouter { .. } => "openrouter",
