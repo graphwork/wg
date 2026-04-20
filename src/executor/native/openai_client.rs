@@ -345,6 +345,12 @@ impl OpenAiClient {
         self
     }
 
+    /// Resolved base URL (post-`with_base_url` and defaults). Handy
+    /// for logging + tests of the URL resolution path.
+    pub fn base_url(&self) -> &str {
+        &self.base_url
+    }
+
     /// Override max tokens per response.
     pub fn with_max_tokens(mut self, max_tokens: u32) -> Self {
         self.max_tokens = max_tokens;

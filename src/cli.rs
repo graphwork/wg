@@ -1899,7 +1899,10 @@ pub enum Commands {
         #[arg(long, short = 'm')]
         model: Option<String>,
 
-        /// Named endpoint from config (e.g., openrouter, local)
+        /// Named endpoint from config (e.g., `openrouter`, `local`)
+        /// OR a bare URL like `http://localhost:11434` for zero-config
+        /// local servers (Ollama, vLLM, llama.cpp). URLs use
+        /// oai-compat + no auth by default; pass `-k` to override.
         #[arg(long, short = 'e')]
         endpoint: Option<String>,
 

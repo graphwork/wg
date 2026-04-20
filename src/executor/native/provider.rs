@@ -57,6 +57,34 @@ pub trait Provider: Send + Sync {
     }
 }
 
+/// Build an oai-compat client pointed directly at `url`, with an
+/// optional key override. Used by the `-e <url>` shortcut so local
+/// servers (Ollama, vLLM, llama.cpp) work without any config.
+fn build_inline_url_client(
+    model: &str,
+    url: &str,
+    api_key_override: Option<&str>,
+) -> Result<OpenAiClient> {
+    // Strip a trailing `/v1` if present — OpenAiClient appends the
+    // path segments itself, and some local servers advertise their
+    // URL as `http://localhost:1234/v1` while others use just the
+    // host. Normalizing here avoids a double `/v1/v1` in requests.
+    let base = url
+        .trim_end_matches('/')
+        .trim_end_matches("/v1")
+        .to_string();
+    let key = api_key_override
+        .map(String::from)
+        .or_else(|| std::env::var("OPENAI_API_KEY").ok())
+        .or_else(|| std::env::var("WG_API_KEY").ok())
+        .unwrap_or_else(|| "local".to_string());
+    let client = OpenAiClient::new(key, model, None)
+        .context("initialize oai-compat client for inline URL")?
+        .with_provider_hint("oai-compat")
+        .with_base_url(&base);
+    Ok(client)
+}
+
 /// Backward-compatible wrapper: routes by model string only.
 pub fn create_provider(workgraph_dir: &Path, model: &str) -> Result<Box<dyn Provider>> {
     create_provider_ext(workgraph_dir, model, None, None, None)
@@ -138,6 +166,26 @@ pub fn create_provider_ext(
         && !path.is_empty()
     {
         return Ok(Box::new(FakeProvider::from_file(&path, model)?));
+    }
+
+    // Inline URL shortcut: `-e http://localhost:11434` (or https://)
+    // bypasses the named-endpoint config lookup. Builds an OpenAI-
+    // compatible client against that URL with no API key (the
+    // "local" provider signals no-auth). Lets users talk to an
+    // Ollama / llama.cpp / vLLM server with zero config:
+    //
+    //     wg nex -m qwen3-coder-30b -e http://localhost:11434
+    //
+    // Overrides still apply in the usual priority order; this just
+    // skips the hoop of declaring the endpoint in config.toml.
+    if let Some(url) = endpoint_name
+        && (url.starts_with("http://") || url.starts_with("https://"))
+    {
+        return Ok(Box::new(build_inline_url_client(
+            model,
+            url,
+            api_key_override,
+        )?));
     }
 
     let config = crate::config::Config::load_or_default(workgraph_dir);
@@ -699,6 +747,23 @@ mod fake_provider_tests {
         assert_eq!(text(&r2), "turn two");
         assert_eq!(text(&r3), "turn three");
         assert_eq!(text(&r4), "turn one", "should wrap back to first turn");
+    }
+
+    #[test]
+    fn inline_url_strips_trailing_v1_suffix() {
+        // llama.cpp and some LM Studio configs advertise their base
+        // URL as `http://localhost:1234/v1`. Our OpenAiClient appends
+        // `/v1/chat/completions` internally, so we need to strip the
+        // trailing `/v1` (if any) to avoid double-prefixing.
+        let c1 = build_inline_url_client("m", "http://localhost:11434", None).unwrap();
+        let c2 = build_inline_url_client("m", "http://localhost:11434/", None).unwrap();
+        let c3 = build_inline_url_client("m", "http://localhost:1234/v1", None).unwrap();
+        let c4 = build_inline_url_client("m", "http://localhost:1234/v1/", None).unwrap();
+        // All four should end up with the same bare host:port base.
+        assert_eq!(c1.base_url(), "http://localhost:11434");
+        assert_eq!(c2.base_url(), "http://localhost:11434");
+        assert_eq!(c3.base_url(), "http://localhost:1234");
+        assert_eq!(c4.base_url(), "http://localhost:1234");
     }
 
     #[tokio::test]
