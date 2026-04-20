@@ -193,7 +193,13 @@ impl ConversationSurface for TerminalSurface {
         use rustyline::error::ReadlineError;
         loop {
             match self.editor.readline("\x1b[1;36m>\x1b[0m ") {
-                Ok(line) => return Some(UserTurn::plain(line)),
+                Ok(line) => {
+                    // Blank line between the user's input and the
+                    // assistant's streamed reply. Cosmetic but makes
+                    // turn boundaries much easier to scan.
+                    eprintln!();
+                    return Some(UserTurn::plain(line));
+                }
                 Err(ReadlineError::Interrupted) => {
                     eprintln!(
                         "\x1b[2m(Ctrl-C — press again or /quit to exit, empty line to continue)\x1b[0m"
