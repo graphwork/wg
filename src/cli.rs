@@ -2090,6 +2090,34 @@ pub enum Commands {
         dry_run: bool,
     },
 
+    /// Bridge Claude CLI stream-json stdio ↔ chat/<ref>/*.jsonl.
+    ///
+    /// Peer of `wg nex --chat <ref>` for the Claude executor. Dispatched
+    /// by `wg spawn-task` when the session's executor is `claude`.
+    /// Not typically invoked directly — use `wg spawn-task <task-id>`
+    /// or `wg service create-coordinator --executor claude`.
+    #[command(name = "claude-handler")]
+    ClaudeHandler {
+        /// Chat session reference (alias, task id, or UUID).
+        #[arg(long = "chat")]
+        chat: String,
+
+        /// Resume mode (accepted for argv symmetry with `wg nex`).
+        #[arg(long)]
+        resume: bool,
+
+        /// Role hint (e.g., "coordinator"). Loads the coordinator
+        /// system prompt when set to "coordinator" or when the chat
+        /// ref starts with `coordinator-`.
+        #[arg(long)]
+        role: Option<String>,
+
+        /// Model override. Stripped of provider prefix before passing
+        /// to the Claude CLI.
+        #[arg(long, short = 'm')]
+        model: Option<String>,
+    },
+
     /// Run the native executor agent loop (internal, called by spawn)
     #[command(name = "native-exec", hide = true)]
     NativeExec {
@@ -4158,6 +4186,7 @@ pub fn command_name(cmd: &Commands) -> &'static str {
         Commands::TuiNex { .. } => "tui-nex",
         Commands::TuiPty { .. } => "tui-pty",
         Commands::SpawnTask { .. } => "spawn-task",
+        Commands::ClaudeHandler { .. } => "claude-handler",
         Commands::NativeExec { .. } => "native-exec",
         Commands::Spend { .. } => "spend",
         Commands::Openrouter { .. } => "openrouter",

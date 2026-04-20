@@ -2850,6 +2850,18 @@ fn main() -> Result<()> {
             role,
             dry_run,
         } => commands::spawn_task::run(&workgraph_dir, &task_id, role.as_deref(), dry_run),
+        Commands::ClaudeHandler {
+            chat,
+            resume,
+            role,
+            model,
+        } => commands::claude_handler::run(
+            &workgraph_dir,
+            &chat,
+            resume,
+            role.as_deref(),
+            model.as_deref(),
+        ),
         Commands::NativeExec {
             prompt_file,
             exec_mode,

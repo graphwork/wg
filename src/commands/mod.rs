@@ -26,6 +26,7 @@ pub mod chat_session;
 pub mod check;
 pub mod checkpoint;
 pub mod claim;
+pub mod claude_handler;
 pub mod cleanup;
 pub mod compact;
 pub mod config_cmd;

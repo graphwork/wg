@@ -208,10 +208,18 @@ enum ExecutorKind {
 }
 
 fn pick_executor(config: &workgraph::config::Config, task: &Task) -> ExecutorKind {
-    // Task-level `executor` field could slot in here in the future.
-    // For now, use the coordinator_executor as the default —
-    // same resolution the daemon uses when spawning today.
-    let label = config.coordinator.executor.as_deref().unwrap_or("native");
+    // Precedence:
+    //   1. `WG_EXECUTOR_TYPE` env var — daemon sets this per-coordinator
+    //      so a Claude coordinator in the same graph as a native one
+    //      routes correctly even if the global default is different.
+    //   2. Task-level `executor` field (reserved; unused today).
+    //   3. Coordinator config default (`config.coordinator.executor`).
+    //   4. "native".
+    let env_kind = std::env::var("WG_EXECUTOR_TYPE").ok();
+    let label = env_kind
+        .as_deref()
+        .or(config.coordinator.executor.as_deref())
+        .unwrap_or("native");
     match label.to_ascii_lowercase().as_str() {
         "native" | "nex" => ExecutorKind::Native,
         "claude" => ExecutorKind::Claude,
@@ -246,9 +254,7 @@ fn dispatch(spec: &HandlerSpec, _workgraph_dir: &Path) -> Result<()> {
             model.as_deref(),
             endpoint.as_deref(),
         ),
-        HandlerSpec::Claude { .. } => Err(anyhow!(
-            "claude adapter not yet implemented (Phase 7). Use --executor native for now."
-        )),
+        HandlerSpec::Claude { chat_ref, model } => dispatch_claude(chat_ref, model.as_deref()),
         HandlerSpec::Codex { .. } => Err(anyhow!(
             "codex adapter not yet implemented (Phase 7). Use --executor native for now."
         )),
@@ -259,6 +265,31 @@ fn dispatch(spec: &HandlerSpec, _workgraph_dir: &Path) -> Result<()> {
             "amplifier adapter via spawn-task not yet implemented (Phase 7). \
              Use the existing service-level amplifier dispatch for now."
         )),
+    }
+}
+
+fn dispatch_claude(chat_ref: &str, model: Option<&str>) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        let self_exe =
+            std::env::current_exe().context("resolve current exe for spawn-task dispatch")?;
+        let mut cmd = std::process::Command::new(&self_exe);
+        cmd.arg("claude-handler").arg("--chat").arg(chat_ref);
+        // Coordinator role is implicit for `coordinator-*` refs; pass
+        // explicit role if the caller set one via role_override.
+        if let Some(m) = model {
+            cmd.arg("-m").arg(m);
+        }
+        let err = cmd.exec();
+        Err(anyhow!("exec wg claude-handler failed: {}", err))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (chat_ref, model);
+        Err(anyhow!(
+            "spawn-task dispatch not yet supported on this platform"
+        ))
     }
 }
 

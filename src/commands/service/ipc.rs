@@ -1218,6 +1218,23 @@ fn find_next_fresh_coordinator_id(graph: &workgraph::graph::WorkGraph, dir: &Pat
         }
     }
 
+    // Scan chat/coordinator-<N>/ dirs. The daemon auto-spawns
+    // coordinator-0 at startup before any graph task exists — without
+    // this scan, a subsequent CreateCoordinator would pick id 0 again
+    // and collide with the live handler.
+    let chat_root = dir.join("chat");
+    if let Ok(entries) = std::fs::read_dir(&chat_root) {
+        for entry in entries.flatten() {
+            let file_name = entry.file_name();
+            let name_str = file_name.to_string_lossy();
+            if let Some(suffix) = name_str.strip_prefix("coordinator-")
+                && let Ok(id) = suffix.parse::<u32>()
+            {
+                max_id = Some(max_id.map_or(id, |current_max| current_max.max(id)));
+            }
+        }
+    }
+
     // Return max_id + 1, or 0 if no coordinators exist yet
     max_id.map_or(0, |id| id + 1)
 }
