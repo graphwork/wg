@@ -1621,6 +1621,19 @@ impl AgentLoop {
             // per-turn so buffers never leak across turns.
             let interactive_turn_buffer: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
             let turn_buf_for_sink = interactive_turn_buffer.clone();
+            // Lightning-bolt spinner: shows rainbow `↯` bolts while
+            // we wait for the first streamed token, clears when text
+            // starts arriving. Only runs in interactive TTY mode.
+            // Shared flag the on_text closure flips on the first
+            // chunk so the spinner thread stops itself and erases
+            // its bolt row.
+            let spinner_first_chunk = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let spinner_first_chunk_sink = spinner_first_chunk.clone();
+            let _spinner_handle = if !is_autonomous && stderr_is_tty() {
+                Some(start_spinner(spinner_first_chunk.clone()))
+            } else {
+                None
+            };
             // Chat-transcript mirror goes through the surface's
             // stream sink — captures transcript buffer + streaming
             // file paths internally; each chunk is appended and the
@@ -1638,6 +1651,18 @@ impl AgentLoop {
                         let _ = std::fs::write(path, &accumulated);
                     }
                 } else {
+                    // First-chunk handoff: the spinner thread sees
+                    // this atomic flip and clears its own row before
+                    // we print any text.
+                    if !spinner_first_chunk_sink.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                        // Give the spinner a moment to clear; it polls
+                        // the flag every 80ms. Skipping this briefly
+                        // causes the first chunk to overlay the last
+                        // bolt row, which gets erased anyway — harmless
+                        // but visually noisier. The sleep is negligible
+                        // relative to network latency to the LLM.
+                        std::thread::sleep(std::time::Duration::from_millis(90));
+                    }
                     if let Ok(mut b) = turn_buf_for_sink.lock() {
                         b.push_str(&text);
                     }
@@ -2023,6 +2048,13 @@ impl AgentLoop {
                     threshold,
                 )
             };
+
+            // Whatever the stop reason, the LLM has handed back
+            // control — no more need for the "waiting" spinner.
+            // Flip the stop flag so the spinner thread clears its
+            // row and exits. Idempotent (no-op if already stopped
+            // by first-chunk handoff, or if no spinner was started).
+            spinner_first_chunk.store(true, std::sync::atomic::Ordering::SeqCst);
 
             match response.stop_reason {
                 Some(StopReason::EndTurn) | Some(StopReason::StopSequence) | None => {
@@ -2762,10 +2794,25 @@ async fn read_next_user_turn(
     loop {
         match editor.readline("\x1b[1;36m>\x1b[0m ") {
             Ok(line) => {
-                // Blank line between the user's input and the
-                // assistant's streamed reply, so turn boundaries
-                // are easy to scan when reading back.
-                eprintln!();
+                // Re-paint the line the user just typed in light
+                // yellow (same tint the old TUI coordinator view
+                // used for user messages), then emit a blank line
+                // so turn boundaries are easy to scan. We scroll
+                // up to the prompt row, clear it, and re-emit.
+                if stderr_is_tty() {
+                    use std::io::Write;
+                    let mut err = std::io::stderr().lock();
+                    let _ = write!(
+                        err,
+                        "\x1b[1A\r\x1b[2K\x1b[1;36m>\x1b[0m \x1b[38;5;229m{}\x1b[0m\n\n",
+                        line
+                    );
+                    let _ = err.flush();
+                } else {
+                    // Non-TTY: blank line is still nice, skip the
+                    // cursor gymnastics.
+                    eprintln!();
+                }
                 return Some(line);
             }
             Err(ReadlineError::Interrupted) => {
@@ -3345,6 +3392,61 @@ impl AgentLoop {
 
 /// Check whether an error is a request timeout.
 ///
+/// Spawn a thread that animates rainbow lightning-bolt spinner
+/// rows on stderr until `stop` flips to true. On stop, the thread
+/// erases its own row and exits. Mirrors the TUI's wave animation
+/// (↯ bolts, Red/Orange/Green/Cyan/Violet palette, bright→dim
+/// traveling peak) so the CLI and TUI feel related.
+fn start_spinner(stop: Arc<std::sync::atomic::AtomicBool>) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        use std::io::Write;
+        // Same palette as `tui::viz_viewer::render::spinner_wave_line`.
+        const BRIGHT: [u8; 5] = [196, 214, 46, 33, 129];
+        const MID: [u8; 5] = [124, 172, 34, 25, 91];
+        const DIM: [u8; 5] = [52, 94, 22, 17, 53];
+        let n = 5usize;
+        let mut tick: usize = 0;
+        let mut printed_anything = false;
+        // Small startup delay — if the model responds instantly we
+        // don't want to flash a spinner for one frame.
+        std::thread::sleep(std::time::Duration::from_millis(120));
+        while !stop.load(std::sync::atomic::Ordering::SeqCst) {
+            let peak = tick % (n * 2);
+            let peak = if peak >= n { n * 2 - 1 - peak } else { peak };
+            let mut line = String::from("\r");
+            for i in 0..n {
+                let d = (i as isize - peak as isize).unsigned_abs();
+                let ansi = match d {
+                    0 => format!("\x1b[1;38;5;{}m", BRIGHT[i]),
+                    1 => format!("\x1b[38;5;{}m", BRIGHT[i]),
+                    2 => format!("\x1b[38;5;{}m", MID[i]),
+                    _ => format!("\x1b[38;5;{}m", DIM[i]),
+                };
+                line.push_str(&ansi);
+                line.push('↯');
+                line.push_str("\x1b[0m");
+            }
+            // Pad with spaces so residue from wider prior frames is
+            // overwritten (there shouldn't be any — we always emit
+            // the same width — but cheap insurance).
+            line.push_str("   ");
+            let mut err = std::io::stderr().lock();
+            let _ = write!(err, "{}", line);
+            let _ = err.flush();
+            drop(err);
+            printed_anything = true;
+            tick += 1;
+            std::thread::sleep(std::time::Duration::from_millis(80));
+        }
+        if printed_anything {
+            // Clear our row before exit.
+            let mut err = std::io::stderr().lock();
+            let _ = write!(err, "\r\x1b[2K");
+            let _ = err.flush();
+        }
+    })
+}
+
 /// True when stderr is attached to an interactive terminal. One
 /// syscall per call but only fires at turn boundaries, not per chunk.
 fn stderr_is_tty() -> bool {

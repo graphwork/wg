@@ -18,16 +18,22 @@
 //! New features added to `AgentLoop` automatically benefit every role.
 //!
 //! Impl layout:
-//!   * `TerminalSurface` — rustyline input + stderr streaming. The
-//!     default for `wg nex` without `--chat`.
 //!   * `ChatSurfaceState` (defined in `agent.rs` alongside the loop
 //!     that uses it; it owns the inbox reader and the per-turn
-//!     transcript buffer) implements this trait — the coordinator
-//!     and task-agent path.
+//!     transcript buffer) is the one real implementation of this
+//!     trait — used by the coordinator and task-agent paths.
+//!   * Standalone `wg nex` (no `--chat`) deliberately does NOT use
+//!     a surface. The agent loop reads from rustyline and streams
+//!     to stderr inline (see `read_next_user_turn` in `agent.rs` and
+//!     the on-stream / on-EndTurn handlers there). The trait was
+//!     previously intended to cover that path too via a
+//!     `TerminalSurface`, but it drifted into dead code — every
+//!     terminal-UX change had to be made twice to keep both paths
+//!     in sync. Now the inline path is canonical.
 //!
 //! See `docs/design/nex-as-coordinator.md` for the broader design.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 
@@ -139,147 +145,9 @@ impl UserTurn {
     }
 }
 
-/// Default `ConversationSurface` for `wg nex` at a terminal.
-///
-/// * `next_user_input` prompts via rustyline (cyan `>` prefix, history
-///   loaded from `$HOME/.workgraph-nex-history`). Ctrl-C produces a
-///   "press again or /quit" notice and retries the prompt — the hard
-///   exit paths (double Ctrl-C, /quit) live in the agent loop above,
-///   which owns the `CancelToken`.
-/// * `stream_sink` returns a closure that writes each chunk to
-///   stderr and flushes — the interactive-mode default that predates
-///   this trait.
-/// * `on_turn_end` is a no-op: stderr has no "finalize" concept.
-pub struct TerminalSurface {
-    editor: rustyline::DefaultEditor,
-    history_path: std::path::PathBuf,
-    /// Buffers the streamed assistant text for the current turn so
-    /// `on_turn_end` can rewrite it as rendered markdown. When
-    /// stderr isn't a TTY we skip the rewrite entirely — the plain
-    /// stream stays on screen / in the pipe.
-    stream_buffer: Arc<Mutex<String>>,
-    /// Is stderr a real terminal? Computed once at construction so
-    /// we don't hit syscall-per-chunk overhead during streaming.
-    is_tty: bool,
-}
-
-impl TerminalSurface {
-    pub fn new() -> anyhow::Result<Self> {
-        use anyhow::Context;
-        let mut editor =
-            rustyline::DefaultEditor::new().context("failed to initialize rustyline editor")?;
-        let history_path = if let Some(home) = std::env::var_os("HOME") {
-            std::path::PathBuf::from(home).join(".workgraph-nex-history")
-        } else {
-            std::path::PathBuf::from(".workgraph-nex-history")
-        };
-        let _ = editor.load_history(&history_path);
-        let is_tty = {
-            #[cfg(unix)]
-            {
-                unsafe { libc::isatty(libc::STDERR_FILENO) != 0 }
-            }
-            #[cfg(not(unix))]
-            {
-                false
-            }
-        };
-        Ok(Self {
-            editor,
-            history_path,
-            stream_buffer: Arc::new(Mutex::new(String::new())),
-            is_tty,
-        })
-    }
-
-    /// Expose the rustyline history-save path so the agent loop can
-    /// persist history on clean exit (the loop already does this
-    /// today; we preserve the behavior).
-    pub fn history_path(&self) -> &std::path::Path {
-        &self.history_path
-    }
-
-    /// Mutable access to the underlying editor — the agent loop uses
-    /// it to `add_history_entry` after a successful turn so history
-    /// grows across turns, not just across sessions.
-    pub fn editor_mut(&mut self) -> &mut rustyline::DefaultEditor {
-        &mut self.editor
-    }
-}
-
-#[async_trait]
-impl ConversationSurface for TerminalSurface {
-    async fn next_user_input(&mut self) -> Option<UserTurn> {
-        use rustyline::error::ReadlineError;
-        loop {
-            match self.editor.readline("\x1b[1;36m>\x1b[0m ") {
-                Ok(line) => {
-                    // Blank line between the user's input and the
-                    // assistant's streamed reply. Cosmetic but makes
-                    // turn boundaries much easier to scan.
-                    eprintln!();
-                    return Some(UserTurn::plain(line));
-                }
-                Err(ReadlineError::Interrupted) => {
-                    eprintln!(
-                        "\x1b[2m(Ctrl-C — press again or /quit to exit, empty line to continue)\x1b[0m"
-                    );
-                    continue;
-                }
-                Err(ReadlineError::Eof) => return None,
-                Err(e) => {
-                    eprintln!("\x1b[31m[nex] readline error: {}\x1b[0m", e);
-                    return None;
-                }
-            }
-        }
-    }
-
-    fn on_turn_end(&mut self) {
-        // Rewrite the turn's streamed plain text as rendered
-        // markdown, but only when we're attached to an interactive
-        // terminal. If stderr is piped, redirected, or the host
-        // isn't a TTY, leave the plain stream alone — it's exactly
-        // what a non-interactive consumer (tee, a log file, a pipe
-        // into jq) expects.
-        let buffer =
-            std::mem::take(&mut *self.stream_buffer.lock().unwrap_or_else(|e| e.into_inner()));
-        if !self.is_tty || buffer.trim().is_empty() {
-            return;
-        }
-        use std::io::Write;
-        let width = terminal_cols().max(20);
-        let rendered = crate::markdown::markdown_to_ansi(&buffer, width);
-        // Erase the streamed text: one ANSI "move-up + clear-line"
-        // per newline, plus the current (possibly partial) row.
-        let newlines = buffer.matches('\n').count();
-        let mut err = std::io::stderr().lock();
-        let _ = write!(err, "\r\x1b[2K"); // clear current row
-        for _ in 0..newlines {
-            let _ = write!(err, "\x1b[1A\x1b[2K"); // up one, clear
-        }
-        // Emit the rendered markdown. `markdown_to_ansi` always
-        // ends each line with "\n", so no extra separator needed.
-        let _ = write!(err, "{}", rendered);
-        let _ = err.flush();
-    }
-
-    fn stream_sink(&self) -> Arc<dyn Fn(&str) + Send + Sync> {
-        let buffer = self.stream_buffer.clone();
-        Arc::new(move |text: &str| {
-            use std::io::Write;
-            // Buffer for later markdown rewrite.
-            if let Ok(mut b) = buffer.lock() {
-                b.push_str(text);
-            }
-            eprint!("{}", text);
-            let _ = std::io::stderr().flush();
-        })
-    }
-}
-
 /// Best-effort terminal width. Falls back to 80 when we can't
 /// resolve it (non-Unix or no TTY).
+#[allow(dead_code)]
 fn terminal_cols() -> usize {
     #[cfg(unix)]
     {
