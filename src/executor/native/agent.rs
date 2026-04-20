@@ -1616,6 +1616,11 @@ impl AgentLoop {
             let streaming_file = self.streaming_file_path.clone();
             let stream_writer_clone = self.stream_writer.clone();
             let is_autonomous = self.autonomous;
+            // Interactive turn buffer — lets us rewrite the streamed
+            // plain text as rendered markdown on EndTurn. Created
+            // per-turn so buffers never leak across turns.
+            let interactive_turn_buffer: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
+            let turn_buf_for_sink = interactive_turn_buffer.clone();
             // Chat-transcript mirror goes through the surface's
             // stream sink — captures transcript buffer + streaming
             // file paths internally; each chunk is appended and the
@@ -1633,6 +1638,9 @@ impl AgentLoop {
                         let _ = std::fs::write(path, &accumulated);
                     }
                 } else {
+                    if let Ok(mut b) = turn_buf_for_sink.lock() {
+                        b.push_str(&text);
+                    }
                     eprint!("{}", text);
                     let _ = std::io::stderr().flush();
                 }
@@ -2025,6 +2033,19 @@ impl AgentLoop {
                             .any(|b| matches!(b, ContentBlock::Text { text } if !text.is_empty()));
                         if has_text {
                             eprintln!();
+                            // Rewrite the just-streamed plain text as
+                            // rendered markdown, only when stderr is a
+                            // live TTY. Pipes, redirected files, and
+                            // TUI-embedded runs keep the plain stream
+                            // (that's what their consumers expect).
+                            let buffer = std::mem::take(
+                                &mut *interactive_turn_buffer
+                                    .lock()
+                                    .unwrap_or_else(|e| e.into_inner()),
+                            );
+                            if !buffer.trim().is_empty() && stderr_is_tty() {
+                                rerender_markdown_on_stderr(&buffer);
+                            }
                         }
                     }
 
@@ -3318,6 +3339,57 @@ impl AgentLoop {
 
 /// Check whether an error is a request timeout.
 ///
+/// True when stderr is attached to an interactive terminal. One
+/// syscall per call but only fires at turn boundaries, not per chunk.
+fn stderr_is_tty() -> bool {
+    #[cfg(unix)]
+    {
+        unsafe { libc::isatty(libc::STDERR_FILENO) != 0 }
+    }
+    #[cfg(not(unix))]
+    {
+        false
+    }
+}
+
+/// Best-effort terminal width via `TIOCGWINSZ`. Falls back to 80.
+fn stderr_cols() -> usize {
+    #[cfg(unix)]
+    {
+        unsafe {
+            let mut ws: libc::winsize = std::mem::zeroed();
+            if libc::ioctl(libc::STDERR_FILENO, libc::TIOCGWINSZ, &mut ws) == 0 && ws.ws_col > 0 {
+                return ws.ws_col as usize;
+            }
+        }
+    }
+    80
+}
+
+/// Erase the just-streamed plain text on stderr and re-emit it as
+/// rendered markdown. Counts newlines as a proxy for rows consumed —
+/// if the stream had lines wider than the terminal those wrapped
+/// and we'll miss the wrapped rows; the residue looks like a stale
+/// fragment before the rendered version. Acceptable tradeoff for
+/// the common "coordinator reply is short markdown" case.
+fn rerender_markdown_on_stderr(buffer: &str) {
+    use std::io::Write;
+    let width = stderr_cols().max(20);
+    let rendered = crate::markdown::markdown_to_ansi(buffer, width);
+    let newlines = buffer.matches('\n').count();
+    let mut err = std::io::stderr().lock();
+    // The EndTurn path prints a trailing `eprintln!()` BEFORE us
+    // (see the EndTurn arm in AgentLoop::run), which consumes one
+    // row but doesn't appear in `buffer`. Move up that extra row
+    // too, then clear the streamed text rows.
+    let _ = write!(err, "\r\x1b[2K\x1b[1A\x1b[2K");
+    for _ in 0..newlines {
+        let _ = write!(err, "\x1b[1A\x1b[2K");
+    }
+    let _ = write!(err, "{}", rendered);
+    let _ = err.flush();
+}
+
 /// Detects both reqwest timeouts and generic timeout messages from the error chain.
 fn is_timeout_error(err: &anyhow::Error) -> bool {
     // Check reqwest-specific timeout

@@ -62,6 +62,136 @@ pub fn markdown_to_lines(md: &str, width: usize) -> Vec<Line<'static>> {
     renderer.finish()
 }
 
+/// Render markdown to ANSI-escaped plain text, suitable for writing
+/// directly to a VT100-compatible terminal (stdout/stderr). Reuses
+/// `markdown_to_lines` parsing + ratatui styling, then maps each
+/// `Span`'s style to ANSI escape codes.
+///
+/// `width` is the wrap column for text blocks and the length of
+/// horizontal rules. On resize, callers should re-invoke with the
+/// new width and redraw.
+pub fn markdown_to_ansi(md: &str, width: usize) -> String {
+    let lines = markdown_to_lines(md, width);
+    let mut out = String::new();
+    for line in &lines {
+        for span in &line.spans {
+            write_style(&mut out, span.style);
+            out.push_str(&span.content);
+            // Reset after each span so adjacent spans don't bleed.
+            out.push_str("\x1b[0m");
+        }
+        out.push('\n');
+    }
+    out
+}
+
+fn write_style(out: &mut String, style: Style) {
+    // Modifiers
+    let m = style.add_modifier;
+    if m.contains(Modifier::BOLD) {
+        out.push_str("\x1b[1m");
+    }
+    if m.contains(Modifier::DIM) {
+        out.push_str("\x1b[2m");
+    }
+    if m.contains(Modifier::ITALIC) {
+        out.push_str("\x1b[3m");
+    }
+    if m.contains(Modifier::UNDERLINED) {
+        out.push_str("\x1b[4m");
+    }
+    if m.contains(Modifier::CROSSED_OUT) {
+        out.push_str("\x1b[9m");
+    }
+    if let Some(color) = style.fg {
+        write_fg(out, color);
+    }
+    if let Some(color) = style.bg {
+        write_bg(out, color);
+    }
+}
+
+fn write_fg(out: &mut String, c: Color) {
+    match c {
+        Color::Black => out.push_str("\x1b[30m"),
+        Color::Red => out.push_str("\x1b[31m"),
+        Color::Green => out.push_str("\x1b[32m"),
+        Color::Yellow => out.push_str("\x1b[33m"),
+        Color::Blue => out.push_str("\x1b[34m"),
+        Color::Magenta => out.push_str("\x1b[35m"),
+        Color::Cyan => out.push_str("\x1b[36m"),
+        Color::Gray | Color::White => out.push_str("\x1b[37m"),
+        Color::DarkGray => out.push_str("\x1b[90m"),
+        Color::LightRed => out.push_str("\x1b[91m"),
+        Color::LightGreen => out.push_str("\x1b[92m"),
+        Color::LightYellow => out.push_str("\x1b[93m"),
+        Color::LightBlue => out.push_str("\x1b[94m"),
+        Color::LightMagenta => out.push_str("\x1b[95m"),
+        Color::LightCyan => out.push_str("\x1b[96m"),
+        Color::Indexed(n) => out.push_str(&format!("\x1b[38;5;{}m", n)),
+        Color::Rgb(r, g, b) => out.push_str(&format!("\x1b[38;2;{};{};{}m", r, g, b)),
+        Color::Reset => out.push_str("\x1b[39m"),
+    }
+}
+
+#[cfg(test)]
+mod ansi_tests {
+    use super::*;
+
+    #[test]
+    fn markdown_to_ansi_renders_heading_bold() {
+        let out = markdown_to_ansi("# Title\n", 40);
+        assert!(out.contains("\x1b["));
+        assert!(out.contains("Title"));
+    }
+
+    #[test]
+    fn markdown_to_ansi_renders_bullet_list() {
+        let out = markdown_to_ansi("- one\n- two\n", 40);
+        // The renderer uses the `•` bullet glyph.
+        assert!(out.contains('•'));
+        assert!(out.contains("one"));
+        assert!(out.contains("two"));
+    }
+
+    #[test]
+    fn markdown_to_ansi_inline_code_has_escape() {
+        let out = markdown_to_ansi("Use `wg list`.\n", 40);
+        assert!(out.contains("wg list"));
+        // Inline code gets fg+bg codes.
+        assert!(out.contains("\x1b[38;5;") || out.contains("\x1b[48;5;"));
+    }
+
+    #[test]
+    fn markdown_to_ansi_ends_each_line_with_newline() {
+        let out = markdown_to_ansi("hello\n\nworld\n", 40);
+        assert!(out.ends_with('\n'));
+    }
+}
+
+fn write_bg(out: &mut String, c: Color) {
+    match c {
+        Color::Black => out.push_str("\x1b[40m"),
+        Color::Red => out.push_str("\x1b[41m"),
+        Color::Green => out.push_str("\x1b[42m"),
+        Color::Yellow => out.push_str("\x1b[43m"),
+        Color::Blue => out.push_str("\x1b[44m"),
+        Color::Magenta => out.push_str("\x1b[45m"),
+        Color::Cyan => out.push_str("\x1b[46m"),
+        Color::Gray | Color::White => out.push_str("\x1b[47m"),
+        Color::DarkGray => out.push_str("\x1b[100m"),
+        Color::LightRed => out.push_str("\x1b[101m"),
+        Color::LightGreen => out.push_str("\x1b[102m"),
+        Color::LightYellow => out.push_str("\x1b[103m"),
+        Color::LightBlue => out.push_str("\x1b[104m"),
+        Color::LightMagenta => out.push_str("\x1b[105m"),
+        Color::LightCyan => out.push_str("\x1b[106m"),
+        Color::Indexed(n) => out.push_str(&format!("\x1b[48;5;{}m", n)),
+        Color::Rgb(r, g, b) => out.push_str(&format!("\x1b[48;2;{};{};{}m", r, g, b)),
+        Color::Reset => out.push_str("\x1b[49m"),
+    }
+}
+
 struct MdRenderer {
     lines: Vec<Line<'static>>,
     current_spans: Vec<Span<'static>>,
@@ -368,7 +498,7 @@ impl MdRenderer {
                         if trimmed.is_empty() && text.contains('\n') {
                             continue;
                         }
-                        let span = crate::tui::syntect_convert::into_span((style, trimmed));
+                        let span = crate::syntect_convert::into_span((style, trimmed));
                         let mut s = span.style;
                         s = s.bg(COLOR_CODE_BLOCK_BG);
                         spans.push(Span::styled(span.content.into_owned(), s));

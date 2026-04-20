@@ -25,6 +25,7 @@ pub mod function;
 pub mod function_memory;
 pub mod graph;
 pub mod json_extract;
+pub mod markdown;
 #[cfg(feature = "matrix")]
 pub mod matrix;
 pub mod matrix_commands;
@@ -44,6 +45,7 @@ pub mod runs;
 pub mod service;
 pub mod session_lock;
 pub mod stream_event;
+pub mod syntect_convert;
 pub mod telegram_commands;
 pub mod usage;
 pub mod verify_lint;

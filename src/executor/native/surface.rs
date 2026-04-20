@@ -27,7 +27,7 @@
 //!
 //! See `docs/design/nex-as-coordinator.md` for the broader design.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 
@@ -153,6 +153,14 @@ impl UserTurn {
 pub struct TerminalSurface {
     editor: rustyline::DefaultEditor,
     history_path: std::path::PathBuf,
+    /// Buffers the streamed assistant text for the current turn so
+    /// `on_turn_end` can rewrite it as rendered markdown. When
+    /// stderr isn't a TTY we skip the rewrite entirely — the plain
+    /// stream stays on screen / in the pipe.
+    stream_buffer: Arc<Mutex<String>>,
+    /// Is stderr a real terminal? Computed once at construction so
+    /// we don't hit syscall-per-chunk overhead during streaming.
+    is_tty: bool,
 }
 
 impl TerminalSurface {
@@ -166,9 +174,21 @@ impl TerminalSurface {
             std::path::PathBuf::from(".workgraph-nex-history")
         };
         let _ = editor.load_history(&history_path);
+        let is_tty = {
+            #[cfg(unix)]
+            {
+                unsafe { libc::isatty(libc::STDERR_FILENO) != 0 }
+            }
+            #[cfg(not(unix))]
+            {
+                false
+            }
+        };
         Ok(Self {
             editor,
             history_path,
+            stream_buffer: Arc::new(Mutex::new(String::new())),
+            is_tty,
         })
     }
 
@@ -216,16 +236,62 @@ impl ConversationSurface for TerminalSurface {
     }
 
     fn on_turn_end(&mut self) {
-        // Stderr has no finalize step. History saving happens at
-        // session end (outside this trait's lifetime) via
-        // `history_path()`.
+        // Rewrite the turn's streamed plain text as rendered
+        // markdown, but only when we're attached to an interactive
+        // terminal. If stderr is piped, redirected, or the host
+        // isn't a TTY, leave the plain stream alone — it's exactly
+        // what a non-interactive consumer (tee, a log file, a pipe
+        // into jq) expects.
+        let buffer =
+            std::mem::take(&mut *self.stream_buffer.lock().unwrap_or_else(|e| e.into_inner()));
+        if !self.is_tty || buffer.trim().is_empty() {
+            return;
+        }
+        use std::io::Write;
+        let width = terminal_cols().max(20);
+        let rendered = crate::markdown::markdown_to_ansi(&buffer, width);
+        // Erase the streamed text: one ANSI "move-up + clear-line"
+        // per newline, plus the current (possibly partial) row.
+        let newlines = buffer.matches('\n').count();
+        let mut err = std::io::stderr().lock();
+        let _ = write!(err, "\r\x1b[2K"); // clear current row
+        for _ in 0..newlines {
+            let _ = write!(err, "\x1b[1A\x1b[2K"); // up one, clear
+        }
+        // Emit the rendered markdown. `markdown_to_ansi` always
+        // ends each line with "\n", so no extra separator needed.
+        let _ = write!(err, "{}", rendered);
+        let _ = err.flush();
     }
 
     fn stream_sink(&self) -> Arc<dyn Fn(&str) + Send + Sync> {
-        Arc::new(|text: &str| {
+        let buffer = self.stream_buffer.clone();
+        Arc::new(move |text: &str| {
             use std::io::Write;
+            // Buffer for later markdown rewrite.
+            if let Ok(mut b) = buffer.lock() {
+                b.push_str(text);
+            }
             eprint!("{}", text);
             let _ = std::io::stderr().flush();
         })
     }
+}
+
+/// Best-effort terminal width. Falls back to 80 when we can't
+/// resolve it (non-Unix or no TTY).
+fn terminal_cols() -> usize {
+    #[cfg(unix)]
+    {
+        // SAFETY: writing to a zeroed winsize, passing its pointer
+        // to ioctl(TIOCGWINSZ). The kernel fills cols/rows; we
+        // only read the cols field.
+        unsafe {
+            let mut ws: libc::winsize = std::mem::zeroed();
+            if libc::ioctl(libc::STDERR_FILENO, libc::TIOCGWINSZ, &mut ws) == 0 && ws.ws_col > 0 {
+                return ws.ws_col as usize;
+            }
+        }
+    }
+    80
 }
