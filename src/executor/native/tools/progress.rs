@@ -119,9 +119,7 @@ pub use crate::tool_progress;
 /// the `ProgressCallback` shape `scope` expects. The stream
 /// callback takes `String` by value; wrap in `Arc<dyn Fn>` so the
 /// task_local can hold it cheaply.
-pub fn from_tool_stream_callback(
-    cb: super::ToolStreamCallback,
-) -> ProgressCallback {
+pub fn from_tool_stream_callback(cb: super::ToolStreamCallback) -> ProgressCallback {
     // Wrap the box in a Mutex-free adapter: `ToolStreamCallback` is
     // `Fn(String)`, and we want `Fn(String)`, so it's a plain
     // re-wrap. The Arc lets us clone cheaply for nested scopes.
@@ -168,7 +166,10 @@ mod tests {
         })
         .await;
         let got = received.lock().unwrap().clone();
-        assert_eq!(got, vec!["before yield".to_string(), "after yield".to_string()]);
+        assert_eq!(
+            got,
+            vec!["before yield".to_string(), "after yield".to_string()]
+        );
     }
 
     #[tokio::test]

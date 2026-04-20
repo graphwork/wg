@@ -88,13 +88,7 @@ pub trait ConversationSurface: Send {
     /// display (e.g. "pattern=foo" for grep, "$ ls" for bash). The
     /// full input JSON is also passed so surfaces that want it can
     /// render more detail.
-    fn on_tool_start(
-        &mut self,
-        _name: &str,
-        _input_summary: &str,
-        _input: &serde_json::Value,
-    ) {
-    }
+    fn on_tool_start(&mut self, _name: &str, _input_summary: &str, _input: &serde_json::Value) {}
 
     /// Called as streaming tool output arrives (chunk by chunk,
     /// typically from `execute_batch_streaming`'s per-call callback).
@@ -116,14 +110,7 @@ pub trait ConversationSurface: Send {
     /// content the model will see in the tool_result block; surfaces
     /// that render to a chat transcript use it to fill in the box.
     /// Default impl is a no-op.
-    fn on_tool_end(
-        &mut self,
-        _name: &str,
-        _output: &str,
-        _is_error: bool,
-        _duration_ms: u64,
-    ) {
-    }
+    fn on_tool_end(&mut self, _name: &str, _output: &str, _is_error: bool, _duration_ms: u64) {}
 }
 
 /// One user turn as delivered by a surface. Carries the text plus an
@@ -171,8 +158,8 @@ pub struct TerminalSurface {
 impl TerminalSurface {
     pub fn new() -> anyhow::Result<Self> {
         use anyhow::Context;
-        let mut editor = rustyline::DefaultEditor::new()
-            .context("failed to initialize rustyline editor")?;
+        let mut editor =
+            rustyline::DefaultEditor::new().context("failed to initialize rustyline editor")?;
         let history_path = if let Some(home) = std::env::var_os("HOME") {
             std::path::PathBuf::from(home).join(".workgraph-nex-history")
         } else {

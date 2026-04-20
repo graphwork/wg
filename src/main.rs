@@ -2837,12 +2837,7 @@ fn main() -> Result<()> {
             task_id,
             role,
             dry_run,
-        } => commands::spawn_task::run(
-            &workgraph_dir,
-            &task_id,
-            role.as_deref(),
-            dry_run,
-        ),
+        } => commands::spawn_task::run(&workgraph_dir, &task_id, role.as_deref(), dry_run),
         Commands::NativeExec {
             prompt_file,
             exec_mode,

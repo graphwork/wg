@@ -443,8 +443,8 @@ mod tests {
         // Integration-ish: spawn `/bin/echo hello`, read the screen
         // through the vt100 parser. Use a 5×40 grid — echo writes one
         // line then exits. We poll up to 2s for the line to appear.
-        let mut pane = PtyPane::spawn("/bin/echo", &["hello from pty"], &[], 5, 40)
-            .expect("spawn echo");
+        let mut pane =
+            PtyPane::spawn("/bin/echo", &["hello from pty"], &[], 5, 40).expect("spawn echo");
         for _ in 0..40 {
             std::thread::sleep(std::time::Duration::from_millis(50));
             let found = {

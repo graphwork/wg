@@ -833,7 +833,8 @@ pub async fn microcompact_oldest_block(
         Err(e) => {
             crate::tool_progress!(
                 "[microcompact] provider error summarizing block ({} bytes): {} — leaving unchanged",
-                orig_len, e
+                orig_len,
+                e
             );
             return (messages, 0);
         }

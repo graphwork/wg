@@ -2328,13 +2328,7 @@ fn poll_chat_pty_takeover(app: &mut VizApp) -> bool {
         "WG_DIR".to_string(),
         app.workgraph_dir.display().to_string(),
     )];
-    match crate::tui::pty_pane::PtyPane::spawn(
-        &self_exe,
-        &["spawn-task", &task_id],
-        &env,
-        24,
-        80,
-    ) {
+    match crate::tui::pty_pane::PtyPane::spawn(&self_exe, &["spawn-task", &task_id], &env, 24, 80) {
         Ok(pane) => {
             app.task_panes.insert(task_id, pane);
         }

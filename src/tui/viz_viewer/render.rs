@@ -4718,7 +4718,6 @@ fn draw_dashboard_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     app.dashboard.viewport_height = area.height as usize;
 }
 
-
 /// Highlight all occurrences of `query_lower` (already lowercased) in a Line
 /// by splitting spans and applying `bg` to matching regions.
 fn highlight_query_in_line<'a>(line: Line<'a>, query_lower: &str, bg: Color) -> Line<'a> {

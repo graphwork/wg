@@ -1513,7 +1513,10 @@ mod tests {
         )
         .await;
         assert!(
-            received.lock().unwrap().contains(&"probe-from-test".to_string()),
+            received
+                .lock()
+                .unwrap()
+                .contains(&"probe-from-test".to_string()),
             "progress scope mechanism itself must round-trip"
         );
 

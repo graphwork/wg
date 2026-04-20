@@ -184,11 +184,7 @@ fn pick_executor(config: &workgraph::config::Config, task: &Task) -> ExecutorKin
     // Task-level `executor` field could slot in here in the future.
     // For now, use the coordinator_executor as the default —
     // same resolution the daemon uses when spawning today.
-    let label = config
-        .coordinator
-        .executor
-        .as_deref()
-        .unwrap_or("native");
+    let label = config.coordinator.executor.as_deref().unwrap_or("native");
     match label.to_ascii_lowercase().as_str() {
         "native" | "nex" => ExecutorKind::Native,
         "claude" => ExecutorKind::Claude,
@@ -216,7 +212,13 @@ fn dispatch(spec: &HandlerSpec, _workgraph_dir: &Path) -> Result<()> {
             resume,
             model,
             endpoint,
-        } => dispatch_native(chat_ref, role.as_deref(), *resume, model.as_deref(), endpoint.as_deref()),
+        } => dispatch_native(
+            chat_ref,
+            role.as_deref(),
+            *resume,
+            model.as_deref(),
+            endpoint.as_deref(),
+        ),
         HandlerSpec::Claude { .. } => Err(anyhow!(
             "claude adapter not yet implemented (Phase 7). Use --executor native for now."
         )),
@@ -244,8 +246,8 @@ fn dispatch_native(
     {
         use std::os::unix::process::CommandExt;
 
-        let self_exe = std::env::current_exe()
-            .context("resolve current exe for spawn-task dispatch")?;
+        let self_exe =
+            std::env::current_exe().context("resolve current exe for spawn-task dispatch")?;
         let mut cmd = std::process::Command::new(&self_exe);
         cmd.arg("nex").arg("--chat").arg(chat_ref);
         if resume {
@@ -269,10 +271,11 @@ fn dispatch_native(
     {
         // Fallback on non-Unix: spawn + wait + propagate exit code.
         let _ = (chat_ref, role, resume, model, endpoint);
-        Err(anyhow!("spawn-task dispatch not yet supported on this platform"))
+        Err(anyhow!(
+            "spawn-task dispatch not yet supported on this platform"
+        ))
     }
 }
-
 
 #[cfg(test)]
 mod tests {

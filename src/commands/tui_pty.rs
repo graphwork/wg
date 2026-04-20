@@ -74,10 +74,8 @@ pub fn run(
     // child so it uses the same state we were invoked with. The
     // child resolves WG_DIR at startup just like a normal `wg nex`
     // invocation would.
-    let env: Vec<(String, String)> = vec![(
-        "WG_DIR".to_string(),
-        workgraph_dir.display().to_string(),
-    )];
+    let env: Vec<(String, String)> =
+        vec![("WG_DIR".to_string(), workgraph_dir.display().to_string())];
 
     // Set up the host ratatui terminal.
     let mut stdout = io::stdout();
@@ -126,8 +124,8 @@ fn run_loop<B: ratatui::backend::Backend>(
         .map_err(|e| anyhow::anyhow!("terminal.size() failed: {:?}", e))?;
     let init_rows = initial.height.max(24);
     let init_cols = initial.width.max(80);
-    let mut pane = PtyPane::spawn(wg_bin, args, env, init_rows, init_cols)
-        .context("PTY spawn failed")?;
+    let mut pane =
+        PtyPane::spawn(wg_bin, args, env, init_rows, init_cols).context("PTY spawn failed")?;
 
     loop {
         // Draw: full-screen PTY. Resize the PTY to match the drawing

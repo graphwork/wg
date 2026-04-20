@@ -1,7 +1,6 @@
 pub mod agency;
 pub mod chat;
 pub mod chat_sessions;
-pub mod session_lock;
 pub mod check;
 pub mod config;
 pub mod context_scope;
@@ -30,6 +29,7 @@ pub mod provenance;
 pub mod query;
 pub mod runs;
 pub mod service;
+pub mod session_lock;
 pub mod stream_event;
 pub mod telegram_commands;
 pub mod usage;

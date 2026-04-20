@@ -98,10 +98,9 @@ pub fn create_editor_handler() -> EditorEventHandler {
         KeyEventRegister::i(vec![KeyInput::ctrl('k')]),
         DeleteToEndOfLine,
     );
-    handler.key_handler.insert(
-        KeyEventRegister::i(vec![KeyInput::ctrl('n')]),
-        MoveDown(1),
-    );
+    handler
+        .key_handler
+        .insert(KeyEventRegister::i(vec![KeyInput::ctrl('n')]), MoveDown(1));
     handler
         .key_handler
         .insert(KeyEventRegister::i(vec![KeyInput::ctrl('p')]), MoveUp(1));

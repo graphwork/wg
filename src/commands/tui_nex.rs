@@ -489,59 +489,60 @@ fn draw<B: ratatui::backend::Backend>(
     terminal: &mut Terminal<B>,
     app: &App,
 ) -> std::io::Result<()> {
-    terminal.draw(|f| -> () {
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Min(5),
-                Constraint::Length(3),
-                Constraint::Length(1),
-            ])
-            .split(f.area());
+    terminal
+        .draw(|f| -> () {
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Min(5),
+                    Constraint::Length(3),
+                    Constraint::Length(1),
+                ])
+                .split(f.area());
 
-        let messages_block = Block::default()
-            .borders(Borders::ALL)
-            .title(format!(" messages — {} ", app.model_label));
+            let messages_block = Block::default()
+                .borders(Borders::ALL)
+                .title(format!(" messages — {} ", app.model_label));
 
-        let lines: Vec<Line> = app
-            .display
-            .iter()
-            .flat_map(|dl| render_display_line(dl))
-            .collect();
+            let lines: Vec<Line> = app
+                .display
+                .iter()
+                .flat_map(|dl| render_display_line(dl))
+                .collect();
 
-        let messages_p = Paragraph::new(lines)
-            .block(messages_block)
-            .wrap(Wrap { trim: false })
-            .scroll((app.scroll_offset, 0));
-        f.render_widget(messages_p, chunks[0]);
+            let messages_p = Paragraph::new(lines)
+                .block(messages_block)
+                .wrap(Wrap { trim: false })
+                .scroll((app.scroll_offset, 0));
+            f.render_widget(messages_p, chunks[0]);
 
-        let input_title = if app.awaiting_response {
-            " thinking... (Ctrl-C to cancel) ".to_string()
-        } else {
-            " input (Enter to send, Esc to quit) ".to_string()
-        };
-        let input_block = Block::default().borders(Borders::ALL).title(input_title);
-        let input_p = Paragraph::new(app.input.as_str()).block(input_block);
-        f.render_widget(input_p, chunks[1]);
+            let input_title = if app.awaiting_response {
+                " thinking... (Ctrl-C to cancel) ".to_string()
+            } else {
+                " input (Enter to send, Esc to quit) ".to_string()
+            };
+            let input_block = Block::default().borders(Borders::ALL).title(input_title);
+            let input_p = Paragraph::new(app.input.as_str()).block(input_block);
+            f.render_widget(input_p, chunks[1]);
 
-        // Set cursor position inside the input box.
-        if !app.awaiting_response {
-            let cursor_x = chunks[1].x + 1 + app.cursor_pos as u16;
-            let cursor_y = chunks[1].y + 1;
-            f.set_cursor_position((cursor_x, cursor_y));
-        }
+            // Set cursor position inside the input box.
+            if !app.awaiting_response {
+                let cursor_x = chunks[1].x + 1 + app.cursor_pos as u16;
+                let cursor_y = chunks[1].y + 1;
+                f.set_cursor_position((cursor_x, cursor_y));
+            }
 
-        let hint = Line::from(vec![
-            Span::styled("Ctrl-C", Style::default().fg(Color::Yellow)),
-            Span::raw(" cancel turn  "),
-            Span::styled("Esc/Ctrl-Q", Style::default().fg(Color::Yellow)),
-            Span::raw(" quit  "),
-            Span::styled("Enter", Style::default().fg(Color::Yellow)),
-            Span::raw(" send"),
-        ]);
-        f.render_widget(Paragraph::new(hint), chunks[2]);
-    })
-    .map_err(|e| std::io::Error::other(format!("draw failed: {:?}", e)))?;
+            let hint = Line::from(vec![
+                Span::styled("Ctrl-C", Style::default().fg(Color::Yellow)),
+                Span::raw(" cancel turn  "),
+                Span::styled("Esc/Ctrl-Q", Style::default().fg(Color::Yellow)),
+                Span::raw(" quit  "),
+                Span::styled("Enter", Style::default().fg(Color::Yellow)),
+                Span::raw(" send"),
+            ]);
+            f.render_widget(Paragraph::new(hint), chunks[2]);
+        })
+        .map_err(|e| std::io::Error::other(format!("draw failed: {:?}", e)))?;
     Ok(())
 }
 

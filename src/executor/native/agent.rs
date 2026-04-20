@@ -269,12 +269,7 @@ impl super::surface::ConversationSurface for ChatSurfaceState {
         })
     }
 
-    fn on_tool_start(
-        &mut self,
-        name: &str,
-        input_summary: &str,
-        input: &serde_json::Value,
-    ) {
+    fn on_tool_start(&mut self, name: &str, input_summary: &str, input: &serde_json::Value) {
         let mut t = self.transcript.lock().unwrap();
         // Close any previous open tool box.
         if t.ends_with("│ \n") || t.contains("┌─ ") && !t.trim_end().ends_with("└─") {
@@ -326,13 +321,7 @@ impl super::surface::ConversationSurface for ChatSurfaceState {
         })
     }
 
-    fn on_tool_end(
-        &mut self,
-        _name: &str,
-        output: &str,
-        is_error: bool,
-        _duration_ms: u64,
-    ) {
+    fn on_tool_end(&mut self, _name: &str, output: &str, is_error: bool, _duration_ms: u64) {
         let mut t = self.transcript.lock().unwrap();
         let body = if is_error {
             format!("× {}", output)
@@ -738,10 +727,7 @@ impl AgentLoop {
     /// they also set journal/summary paths and the chat_session_ref
     /// needed by `/fork`. `with_surface` is for surfaces that don't
     /// correspond to a `<workgraph>/chat/<ref>/` directory.
-    pub fn with_surface(
-        mut self,
-        surface: Box<dyn super::surface::ConversationSurface>,
-    ) -> Self {
+    pub fn with_surface(mut self, surface: Box<dyn super::surface::ConversationSurface>) -> Self {
         self.surface = Some(surface);
         self
     }
@@ -1210,8 +1196,7 @@ impl AgentLoop {
         // mutated across awaits without fighting other &mut self
         // borrows inside this long method. Put it back at the end
         // so subsequent calls (if any) see it.
-        let mut surface: Option<Box<dyn super::surface::ConversationSurface>> =
-            self.surface.take();
+        let mut surface: Option<Box<dyn super::surface::ConversationSurface>> = self.surface.take();
 
         // (The rustyline read helper is now inlined into
         // `read_next_user_turn` at module level so we can branch on
@@ -1340,9 +1325,7 @@ impl AgentLoop {
             //    the marker so a successor handler doesn't immediately
             //    re-exit, record the exit reason, break out.
             //    See docs/design/sessions-as-identity.md §Handoff policy.
-            if let (Some(wgd), Some(sref)) =
-                (&self.workgraph_dir, &self.chat_session_ref)
-            {
+            if let (Some(wgd), Some(sref)) = (&self.workgraph_dir, &self.chat_session_ref) {
                 let chat_dir = wgd.join("chat").join(sref);
                 if crate::session_lock::release_requested(&chat_dir) {
                     crate::session_lock::clear_release_marker(&chat_dir);

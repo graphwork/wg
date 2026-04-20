@@ -164,9 +164,8 @@ impl SessionLock {
                             holder.kind.map(|k| k.label()).unwrap_or("unknown"),
                             path
                         );
-                        std::fs::remove_file(&path).with_context(|| {
-                            format!("remove stale lock {:?}", path)
-                        })?;
+                        std::fs::remove_file(&path)
+                            .with_context(|| format!("remove stale lock {:?}", path))?;
                         // Recurse once; if someone raced us here,
                         // this will either succeed or hit the live
                         // branch above.
@@ -175,10 +174,7 @@ impl SessionLock {
                     None => {
                         // File existed but couldn't parse — treat as
                         // stale. Same recovery as above.
-                        eprintln!(
-                            "[session-lock] recovering unparseable lock at {:?}",
-                            path
-                        );
+                        eprintln!("[session-lock] recovering unparseable lock at {:?}", path);
                         std::fs::remove_file(&path)
                             .with_context(|| format!("remove corrupt lock {:?}", path))?;
                         Self::acquire(chat_dir, kind)
@@ -360,7 +356,11 @@ mod tests {
         let second = SessionLock::acquire(dir.path(), HandlerKind::InteractiveNex);
         assert!(second.is_err(), "second acquire must fail while first held");
         let err = second.err().unwrap().to_string();
-        assert!(err.contains("pid="), "error must name the holder pid: {}", err);
+        assert!(
+            err.contains("pid="),
+            "error must name the holder pid: {}",
+            err
+        );
     }
 
     #[test]

@@ -338,9 +338,7 @@ pub fn run(
     // .streaming files written into its `.workgraph/chat/<alias>/`
     // directory (no attacher will ever read them, and some graders
     // diff the working tree). Explicit chat bindings still win.
-    let mount_chat_surface = chat_ref.is_some()
-        || chat_id.is_some()
-        || (autonomous && !eval_mode);
+    let mount_chat_surface = chat_ref.is_some() || chat_id.is_some() || (autonomous && !eval_mode);
     if mount_chat_surface {
         agent = agent.with_chat_ref(
             workgraph_dir.to_path_buf(),
@@ -390,12 +388,10 @@ pub fn run(
     // installs one) still works; only the process-wide stderr
     // broadcast is silenced. Non-eval callers pass `false` and the
     // scope is a no-op — backward-compatible.
-    let result = rt.block_on(
-        workgraph::executor::native::tools::progress::stderr_scope(
-            eval_mode,
-            agent.run_interactive(message),
-        ),
-    )?;
+    let result = rt.block_on(workgraph::executor::native::tools::progress::stderr_scope(
+        eval_mode,
+        agent.run_interactive(message),
+    ))?;
 
     if verbose {
         eprintln!(

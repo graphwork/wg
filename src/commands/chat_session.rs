@@ -83,7 +83,8 @@ fn run_release(workgraph_dir: &Path, session: &str, wait_secs: u64) -> Result<()
                 session, info.pid
             );
             // Stale lock — just remove it.
-            let _ = std::fs::remove_file(workgraph::session_lock::SessionLock::lock_path(&chat_dir));
+            let _ =
+                std::fs::remove_file(workgraph::session_lock::SessionLock::lock_path(&chat_dir));
             return Ok(());
         }
         Some(info) => {
@@ -236,10 +237,7 @@ fn run_attach(workgraph_dir: &Path, session_ref: &str) -> Result<()> {
         .file_name()
         .and_then(|s| s.to_str())
         .unwrap_or(session_ref);
-    eprintln!(
-        "\x1b[1;32m[wg session attach]\x1b[0m {}",
-        display_ref
-    );
+    eprintln!("\x1b[1;32m[wg session attach]\x1b[0m {}", display_ref);
     let streaming = chat_dir.join(".streaming");
     let outbox = chat_dir.join("outbox.jsonl");
 
