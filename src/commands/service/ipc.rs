@@ -139,6 +139,19 @@ pub enum IpcRequest {
         #[serde(default)]
         executor: Option<String>,
     },
+    /// Hot-swap a coordinator's executor and/or model. Persists
+    /// the override in CoordinatorState, SIGTERMs the current
+    /// handler, and lets the supervisor respawn via spawn-task
+    /// with the new executor. Conversation continuity is preserved
+    /// because chat/<ref>/*.jsonl is shared across handlers — the
+    /// new handler replays prior turns on its first prompt.
+    SetCoordinatorExecutor {
+        coordinator_id: u32,
+        #[serde(default)]
+        executor: Option<String>,
+        #[serde(default)]
+        model: Option<String>,
+    },
     /// Delete a coordinator instance.
     DeleteCoordinator { coordinator_id: u32 },
     /// Archive a coordinator instance (mark as Done).
@@ -470,6 +483,22 @@ fn handle_request(
                 name, model, executor
             ));
             handle_create_coordinator(dir, name.as_deref(), model.as_deref(), executor.as_deref())
+        }
+        IpcRequest::SetCoordinatorExecutor {
+            coordinator_id,
+            executor,
+            model,
+        } => {
+            logger.info(&format!(
+                "IPC SetCoordinatorExecutor: coordinator_id={}, executor={:?}, model={:?}",
+                coordinator_id, executor, model
+            ));
+            handle_set_coordinator_executor(
+                dir,
+                coordinator_id,
+                executor.as_deref(),
+                model.as_deref(),
+            )
         }
         IpcRequest::DeleteCoordinator { coordinator_id } => {
             logger.info(&format!(
@@ -1436,6 +1465,59 @@ fn handle_archive_coordinator(dir: &Path, coordinator_id: u32) -> IpcResponse {
 
 /// Handle StopCoordinator IPC request.
 /// Kills any running agent for this coordinator and resets the task to Open.
+/// Hot-swap the executor / model for an existing coordinator.
+///
+/// Writes the override into `CoordinatorState` so future supervisor
+/// restarts use the new executor, then SIGTERMs the live handler.
+/// `subprocess_coordinator_loop`'s `child.wait()` returns as the
+/// handler exits, the loop's restart branch fires, and spawn-task
+/// reads `WG_EXECUTOR_TYPE=<new>` on the next cycle. Conversation
+/// history lives in `chat/coordinator-<N>/{inbox,outbox}.jsonl` —
+/// shared across handlers — so the new executor sees prior turns.
+fn handle_set_coordinator_executor(
+    dir: &Path,
+    coordinator_id: u32,
+    executor: Option<&str>,
+    model: Option<&str>,
+) -> IpcResponse {
+    if executor.is_none() && model.is_none() {
+        return IpcResponse::error("at least one of --executor or --model must be provided");
+    }
+
+    let mut state = super::CoordinatorState::load_or_default_for(dir, coordinator_id);
+    if let Some(e) = executor {
+        state.executor_override = Some(e.to_string());
+    }
+    if let Some(m) = model {
+        state.model_override = Some(m.to_string());
+    }
+    state.save_for(dir, coordinator_id);
+
+    // Signal the live handler to exit so the supervisor respawns
+    // with the new executor_override in effect.
+    let chat_dir = dir
+        .join("chat")
+        .join(format!("coordinator-{}", coordinator_id));
+    let mut handler_pid: Option<u32> = None;
+    if let Ok(Some(info)) = workgraph::session_lock::read_holder(&chat_dir)
+        && info.alive
+    {
+        handler_pid = Some(info.pid);
+        #[cfg(unix)]
+        unsafe {
+            libc::kill(info.pid as i32, libc::SIGTERM);
+        }
+    }
+
+    IpcResponse::success(serde_json::json!({
+        "coordinator_id": coordinator_id,
+        "executor": executor,
+        "model": model,
+        "signaled_pid": handler_pid,
+        "note": "supervisor will respawn the handler with the new settings",
+    }))
+}
+
 fn handle_stop_coordinator(dir: &Path, coordinator_id: u32) -> IpcResponse {
     let graph_path = crate::commands::graph_path(dir);
     let task_id = format!(".coordinator-{}", coordinator_id);

@@ -3333,6 +3333,67 @@ pub fn run_delete_coordinator(_dir: &Path, _coordinator_id: u32, _json: bool) ->
     anyhow::bail!("Service daemon is only supported on Unix systems")
 }
 
+/// Hot-swap a coordinator's executor / model via IPC.
+#[cfg(unix)]
+pub fn run_set_coordinator_executor(
+    dir: &Path,
+    coordinator_id: u32,
+    executor: Option<&str>,
+    model: Option<&str>,
+    json: bool,
+) -> Result<()> {
+    let response = send_request(
+        dir,
+        &IpcRequest::SetCoordinatorExecutor {
+            coordinator_id,
+            executor: executor.map(String::from),
+            model: model.map(String::from),
+        },
+    )?;
+    if !response.ok {
+        let msg = response
+            .error
+            .unwrap_or_else(|| "Unknown error".to_string());
+        if json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({"error": msg}))?
+            );
+        } else {
+            eprintln!("Error: {}", msg);
+        }
+        anyhow::bail!("{}", msg);
+    }
+    if let Some(data) = &response.data {
+        if json {
+            println!("{}", serde_json::to_string_pretty(data)?);
+        } else {
+            println!(
+                "Coordinator {} reconfigured. Supervisor will respawn the handler shortly.",
+                coordinator_id
+            );
+            if let Some(e) = data.get("executor").and_then(|v| v.as_str()) {
+                println!("  executor = {}", e);
+            }
+            if let Some(m) = data.get("model").and_then(|v| v.as_str()) {
+                println!("  model    = {}", m);
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+pub fn run_set_coordinator_executor(
+    _dir: &Path,
+    _coordinator_id: u32,
+    _executor: Option<&str>,
+    _model: Option<&str>,
+    _json: bool,
+) -> Result<()> {
+    anyhow::bail!("Service daemon is only supported on Unix systems")
+}
+
 /// Archive a coordinator session via IPC (mark as Done)
 #[cfg(unix)]
 pub fn run_archive_coordinator(dir: &Path, coordinator_id: u32, json: bool) -> Result<()> {

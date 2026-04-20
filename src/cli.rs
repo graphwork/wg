@@ -3957,6 +3957,25 @@ pub enum ServiceCommands {
         executor: Option<String>,
     },
 
+    /// Hot-swap a coordinator's executor and/or model.
+    /// SIGTERMs the live handler; the supervisor respawns it with
+    /// the new settings. Conversation history is preserved via
+    /// chat/<ref>/{inbox,outbox}.jsonl — the new handler sees
+    /// prior turns on startup.
+    #[command(name = "set-executor", alias = "switch")]
+    SetCoordinatorExecutor {
+        /// Coordinator ID (0, 1, ...)
+        id: u32,
+        /// New executor: `native`, `claude`, `codex`, ...
+        /// Omit to keep current executor (model-only change).
+        #[arg(long)]
+        executor: Option<String>,
+        /// New model spec (e.g., `codex:gpt-5-codex`). Omit to
+        /// keep current model (executor-only change).
+        #[arg(long, short = 'm')]
+        model: Option<String>,
+    },
+
     /// Delete a coordinator session
     DeleteCoordinator {
         /// Coordinator ID to delete

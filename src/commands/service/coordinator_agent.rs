@@ -704,15 +704,28 @@ fn subprocess_coordinator_loop(
         // preserve it via WG_MODEL env so it's applied as a
         // last-resort default by nex.
         let task_id = format!(".coordinator-{}", coordinator_id);
+        // Hot-swap support: re-read CoordinatorState each iteration
+        // so `wg service set-executor <cid> ...` takes effect on the
+        // next supervisor restart. Explicit overrides beat the
+        // static daemon_cfg values we got at spawn time.
+        let state = super::CoordinatorState::load_for(dir, coordinator_id);
+        let effective_exec = state
+            .as_ref()
+            .and_then(|s| s.executor_override.clone())
+            .unwrap_or_else(|| executor.to_string());
+        let effective_model_override = state
+            .as_ref()
+            .and_then(|s| s.model_override.clone())
+            .or_else(|| model.map(String::from));
         let wg_bin = std::env::current_exe().unwrap_or_else(|_| "wg".into());
         let mut cmd = Command::new(&wg_bin);
         cmd.arg("spawn-task").arg(&task_id);
         cmd.current_dir(dir.parent().unwrap_or(dir));
-        cmd.env("WG_EXECUTOR_TYPE", executor);
+        cmd.env("WG_EXECUTOR_TYPE", &effective_exec);
         if let Some(p) = provider {
             cmd.env("WG_PROVIDER", p);
         }
-        if let Some(m) = model {
+        if let Some(ref m) = effective_model_override {
             cmd.env("WG_MODEL", m);
         }
         cmd.stdin(Stdio::null())
@@ -720,8 +733,8 @@ fn subprocess_coordinator_loop(
             .stderr(Stdio::piped());
 
         logger.info(&format!(
-            "Coordinator-{}: spawning via `wg spawn-task {}`",
-            coordinator_id, task_id
+            "Coordinator-{}: spawning via `wg spawn-task {}` (executor={}, model={:?})",
+            coordinator_id, task_id, effective_exec, effective_model_override
         ));
         let _ = chat_alias; // silence unused — retained for register_coordinator_session above
         let mut child: Child = match cmd.spawn() {
