@@ -100,12 +100,26 @@ pub fn run(
     let graph_path = workgraph_dir.join("graph.jsonl");
     let graph = workgraph::parser::load_graph(&graph_path)
         .with_context(|| format!("load graph at {:?}", graph_path))?;
-    let task = graph
-        .tasks()
-        .find(|t| t.id == task_id)
-        .ok_or_else(|| anyhow!("no such task: {}", task_id))?;
+    let found = graph.tasks().find(|t| t.id == task_id).cloned();
+    let task = match found {
+        Some(t) => t,
+        None if is_coordinator_id(task_id) => {
+            // Coordinator sessions can exist without a graph task —
+            // the daemon auto-spawns coordinator-0 at startup before
+            // any `CreateCoordinator` IPC fires, and older flows
+            // drove `wg nex --chat coordinator-N` without a graph
+            // entry at all. Synthesize a minimal task so handler
+            // resolution still works.
+            Task {
+                id: task_id.to_string(),
+                title: task_id.to_string(),
+                ..Default::default()
+            }
+        }
+        None => return Err(anyhow!("no such task: {}", task_id)),
+    };
 
-    let spec = resolve_handler(workgraph_dir, task, role_override)?;
+    let spec = resolve_handler(workgraph_dir, &task, role_override)?;
 
     if dry_run {
         println!("{}", spec.command_preview());
@@ -125,11 +139,18 @@ pub fn resolve_handler(
     let config = workgraph::config::Config::load_or_default(workgraph_dir);
 
     // chat_ref convention: task id IS the chat alias, until Phase 5
-    // migration swaps to `.chat-<uuid>`. For now, ensure the session
-    // is registered so `--resume` finds the right journal. A raw
-    // `wg nex --chat <ref>` path also works without registration,
-    // but spawn-task does the polite thing.
-    let chat_ref = task.id.clone();
+    // migration swaps to `.chat-<uuid>`. Exception: `.coordinator-N`
+    // task ids map to the existing `coordinator-N` chat alias the
+    // daemon registers via `register_coordinator_session` — so IPC
+    // writers (`wg chat --coordinator N`) and the handler land on
+    // the SAME underlying chat dir. Without this, the handler would
+    // use a fresh `chat/.coordinator-N/` dir that no other code
+    // writes to, and the coordinator's inbox would appear empty.
+    let chat_ref = if let Some(n) = task.id.strip_prefix(".coordinator-") {
+        format!("coordinator-{}", n)
+    } else {
+        task.id.clone()
+    };
 
     // Role: coordinator tasks get `--role coordinator`. Caller
     // override wins. `.compact-*`, `.assign-*`, etc. inherit no
@@ -169,6 +190,12 @@ pub fn resolve_handler(
         ExecutorKind::Gemini => HandlerSpec::Gemini { chat_ref },
         ExecutorKind::Amplifier => HandlerSpec::Amplifier { chat_ref },
     })
+}
+
+fn is_coordinator_id(task_id: &str) -> bool {
+    task_id
+        .strip_prefix(".coordinator-")
+        .is_some_and(|s| !s.is_empty() && s.chars().all(|c| c.is_ascii_digit()))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

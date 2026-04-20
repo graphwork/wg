@@ -1030,36 +1030,42 @@ fn nex_subprocess_coordinator_loop(
             ));
         }
 
-        // Build the argv. Always pass `--resume` — on first spawn there's
-        // no journal so nex falls back to a fresh session; on subsequent
-        // spawns the deterministic `chat/<uuid>/conversation.jsonl`
-        // restores conversation state. We address the session by alias
-        // (`coordinator-N`) so the `chat-N` symlink + the alias entry
-        // in `sessions.json` both point at the right UUID.
+        // Phase 6a: spawn via `wg spawn-task .coordinator-<N>` instead
+        // of invoking `wg nex --chat <alias>` directly. This unifies
+        // the daemon's spawn path with the TUI's (which also uses
+        // `wg spawn-task`), so per-executor adapter dispatch,
+        // --resume auto-detection, and role resolution all live in
+        // ONE place (commands/spawn_task.rs). When Phase 7 adds
+        // claude/codex/gemini adapters, the daemon gets them for
+        // free — no duplicate executor-routing code to maintain.
+        //
+        // Task-level model/endpoint overrides on the coordinator
+        // task are picked up by spawn-task automatically. The
+        // `model` arg the daemon has comes from top-level config
+        // and is less specific than the task's own; for now we
+        // preserve it via WG_MODEL env so it's applied as a
+        // last-resort default by nex.
+        let task_id = format!(".coordinator-{}", coordinator_id);
         let wg_bin = std::env::current_exe().unwrap_or_else(|_| "wg".into());
         let mut cmd = Command::new(&wg_bin);
-        cmd.arg("nex")
-            .arg("--chat")
-            .arg(&chat_alias)
-            .arg("--role")
-            .arg("coordinator")
-            .arg("--resume");
-        if let Some(m) = model {
-            cmd.arg("--model").arg(m);
-        }
+        cmd.arg("spawn-task").arg(&task_id);
         cmd.current_dir(dir.parent().unwrap_or(dir));
         cmd.env("WG_EXECUTOR_TYPE", "native");
         if let Some(p) = provider {
             cmd.env("WG_PROVIDER", p);
+        }
+        if let Some(m) = model {
+            cmd.env("WG_MODEL", m);
         }
         cmd.stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
         logger.info(&format!(
-            "Coordinator-{}: spawning `wg nex --chat-id {}` subprocess",
-            coordinator_id, coordinator_id
+            "Coordinator-{}: spawning via `wg spawn-task {}`",
+            coordinator_id, task_id
         ));
+        let _ = chat_alias; // silence unused — retained for register_coordinator_session above
         let mut child: Child = match cmd.spawn() {
             Ok(c) => c,
             Err(e) => {
