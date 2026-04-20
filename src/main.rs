@@ -12,7 +12,7 @@
 #![allow(clippy::collapsible_if)]
 #![allow(clippy::collapsible_else_if)]
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{CommandFactory, Parser};
 use std::path::{Path, PathBuf};
 use workgraph::config::Config;
@@ -537,9 +537,61 @@ fn main() -> Result<()> {
     workgraph::usage::append_usage_log(&workgraph_dir, command_name(&command));
 
     match command {
+        Commands::Which {} => {
+            // Print resolved dir + which resolver step won, so users
+            // can debug "which graph am I talking to?" without having
+            // to read src/main.rs.
+            let cwd = std::env::current_dir().ok();
+            let home = dirs::home_dir();
+            let env_dir = std::env::var_os("WG_DIR").map(PathBuf::from);
+            let reason = if cli.dir.is_some() {
+                "--dir flag".to_string()
+            } else if let Some(ref p) = env_dir
+                && !p.as_os_str().is_empty()
+            {
+                format!("WG_DIR env var ({})", p.display())
+            } else if let Some(ref start) = cwd {
+                let mut cur: &Path = start;
+                let mut found_walk_up: Option<PathBuf> = None;
+                loop {
+                    let candidate = cur.join(".workgraph");
+                    if candidate.is_dir() {
+                        found_walk_up = Some(candidate);
+                        break;
+                    }
+                    match cur.parent() {
+                        Some(p) => cur = p,
+                        None => break,
+                    }
+                }
+                if let Some(p) = found_walk_up {
+                    format!("walked up from cwd and found {}", p.display())
+                } else if let Some(ref h) = home
+                    && h.join(".workgraph").is_dir()
+                {
+                    format!("global fallback {}", h.join(".workgraph").display())
+                } else {
+                    format!("default ./.workgraph (does not exist yet — run `wg init` to create)")
+                }
+            } else {
+                "default ./.workgraph (no cwd)".to_string()
+            };
+            println!("{}", workgraph_dir.display());
+            println!("  reason: {}", reason);
+            if !workgraph_dir.exists() {
+                println!("  note: this directory does not exist yet");
+            }
+            Ok(())
+        }
         Commands::Init { no_agency, global } => {
-            // When --global is set, override the resolver's decision
-            // and point init at `~/.workgraph` regardless of cwd.
+            // Init is special: it declares a NEW project at a specific
+            // place. Unlike every other command (which walks up from
+            // cwd to find an ancestor graph), `wg init` should always
+            // target `cwd/.workgraph` — or `~/.workgraph` when
+            // --global, or the explicit `--dir` if given. Walking up
+            // would make `wg init` inside `~/anything/` refuse
+            // because `~/.workgraph` already exists, even though the
+            // user wants a fresh graph here.
             let target_dir = if global {
                 match dirs::home_dir() {
                     Some(home) => home.join(".workgraph"),
@@ -549,8 +601,13 @@ fn main() -> Result<()> {
                         );
                     }
                 }
+            } else if let Some(ref explicit) = cli.dir {
+                explicit.clone()
             } else {
-                workgraph_dir.clone()
+                // cwd/.workgraph — do NOT walk up.
+                std::env::current_dir()
+                    .context("cannot resolve current directory for wg init")?
+                    .join(".workgraph")
             };
             commands::init::run(&target_dir, no_agency)
         }

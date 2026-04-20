@@ -2139,6 +2139,13 @@ pub enum Commands {
         model: Option<String>,
     },
 
+    /// Print the workgraph directory that `wg` would use from here,
+    /// and show which resolver step won (CLI flag / env / walk-up /
+    /// home / default). Useful when you're confused about which graph
+    /// `wg add` is talking to.
+    #[command(name = "which")]
+    Which {},
+
     /// Run the native executor agent loop (internal, called by spawn)
     #[command(name = "native-exec", hide = true)]
     NativeExec {
@@ -4210,6 +4217,7 @@ pub fn command_name(cmd: &Commands) -> &'static str {
         Commands::ClaudeHandler { .. } => "claude-handler",
         Commands::CodexHandler { .. } => "codex-handler",
         Commands::NativeExec { .. } => "native-exec",
+        Commands::Which { .. } => "which",
         Commands::Spend { .. } => "spend",
         Commands::Openrouter { .. } => "openrouter",
         Commands::ApplyPlacement { .. } => "apply-placement",
