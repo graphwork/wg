@@ -2418,8 +2418,16 @@ fn spawn_claude_process(
         .context("Failed to write coordinator system prompt file")?;
 
     let mut cmd = Command::new(command);
+    // Strip Claude-Code-specific env vars that leak through when the
+    // daemon was launched from inside a Claude Code session. See the
+    // matching comment in `service/llm.rs::call_claude_cli` for detail;
+    // without these removals the coordinator claude would prefer an
+    // inaccessible host bridge over the configured OAuth token and 401
+    // on every turn.
     cmd.env_remove("CLAUDECODE");
     cmd.env_remove("CLAUDE_CODE_ENTRYPOINT");
+    cmd.env_remove("CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST");
+    cmd.env_remove("CLAUDE_CODE_SDK_HAS_OAUTH_REFRESH");
     cmd.args([
         "--print",
         "--input-format",

@@ -120,11 +120,26 @@ fn call_claude_cli(model: &str, prompt: &str, timeout_secs: u64) -> Result<LlmCa
         .arg("--output-format")
         .arg("json")
         .arg("--dangerously-skip-permissions")
-        // Strip CLAUDECODE env var so the CLI doesn't refuse to run
-        // when invoked from within a Claude Code session (e.g. daemon
-        // spawned by a coordinator agent). This is a headless --print
-        // call, not an interactive nested session.
+        // Strip Claude-Code-specific env vars that leak through when the
+        // daemon itself was spawned from a Claude Code session (common on
+        // Windows where people launch the daemon from a cmd.exe spawned
+        // by Claude Code):
+        //   - CLAUDECODE / CLAUDE_CODE_ENTRYPOINT: make the CLI refuse
+        //     to run or behave as a nested session
+        //   - CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST: tells the CLI to
+        //     prefer the host bridge (Claude Code's auth IPC) over the
+        //     configured API key / OAuth token. In a detached daemon
+        //     there's no host bridge to resolve to, so the CLI 401s on
+        //     every call and surfaces its synthetic "Invalid API key"
+        //     placeholder.
+        //   - CLAUDE_CODE_SDK_HAS_OAUTH_REFRESH: hints the CLI that an
+        //     SDK-level refresh loop is running and it shouldn't refresh
+        //     its own token. True inside Claude Code, false in a headless
+        //     daemon; leaving it set disables the CLI's own refresh.
         .env_remove("CLAUDECODE")
+        .env_remove("CLAUDE_CODE_ENTRYPOINT")
+        .env_remove("CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST")
+        .env_remove("CLAUDE_CODE_SDK_HAS_OAUTH_REFRESH")
         .stdin(process::Stdio::piped())
         .stdout(process::Stdio::piped())
         .stderr(process::Stdio::piped())
