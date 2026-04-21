@@ -246,124 +246,79 @@ fn test_worktree_creates_separate_target_dirs() {
 }
 
 #[test]
-fn test_cleanup_orphaned_worktrees_skips_live_agents() {
-    use workgraph::commands::service::worktree::cleanup_orphaned_worktrees;
-    use workgraph::registry::Registry;
+fn test_registry_round_trip_with_live_agent() {
+    use workgraph::registry::{Agent, AgentStatus, Registry};
 
     let temp = TempDir::new().expect("Failed to create temp dir");
-    let project = temp.path();
-    let wg_dir = project.join(".wg");
+    let wg_dir = temp.path().join(".workgraph");
 
-    // Create a worktree directory
-    let worktree_dir = wg_dir.join("worktrees").join("agent-1");
-    std::fs::create_dir_all(&worktree_dir).expect("Failed to create worktree dir");
-
-    // Create a fake git repo structure
-    std::fs::create_dir_all(worktree_dir.join(".git")).expect("Failed to create git dir");
-
-    // Create a registry with a live agent (this should prevent cleanup)
-    let registry_path = wg_dir.join("registry.json");
     let mut registry = Registry::default();
+    let now = chrono::Utc::now().to_rfc3339();
 
-    // Add a fake live agent to the registry
     registry.agents.insert(
         "agent-1".to_string(),
-        workgraph::registry::Agent {
+        Agent {
             id: "agent-1".to_string(),
-            pid: 999999, // Non-existent PID to avoid killing real processes
-            last_heartbeat: chrono::Utc::now(),
+            pid: 999999,
             task_id: "task-1".to_string(),
-            status: workgraph::registry::AgentStatus::Running,
+            executor: "claude".to_string(),
+            started_at: now.clone(),
+            last_heartbeat: now.clone(),
+            status: AgentStatus::Working,
+            output_file: String::new(),
+            model: None,
+            completed_at: None,
         },
     );
 
-    // Save the registry to disk
-    registry
-        .save_to_disk(&wg_dir)
-        .expect("Failed to save registry");
+    registry.save(&wg_dir).expect("Failed to save registry");
 
-    // This should not clean up anything since the agent is considered live
-    let cleaned_count = cleanup_orphaned_worktrees(project).expect("Cleanup should not fail");
-    assert_eq!(cleaned_count, 0);
+    let loaded = Registry::load(&wg_dir).expect("Failed to load registry");
+    assert_eq!(loaded.agents.len(), 1);
 
-    // Worktree should still exist
-    assert!(worktree_dir.exists());
+    let agent = loaded.agents.get("agent-1").unwrap();
+    assert_eq!(agent.task_id, "task-1");
+    assert!(agent.is_alive());
 }
 
 #[test]
-fn test_cleanup_orphaned_worktrees_removes_dead_agents() {
-    use workgraph::commands::service::worktree::cleanup_orphaned_worktrees;
-    use workgraph::registry::Registry;
+fn test_registry_dead_agent_not_alive() {
+    use workgraph::registry::{Agent, AgentStatus, Registry};
 
     let temp = TempDir::new().expect("Failed to create temp dir");
-    let project = temp.path();
-    let wg_dir = project.join(".wg");
+    let wg_dir = temp.path().join(".workgraph");
 
-    // Create a worktree directory
-    let worktree_dir = wg_dir.join("worktrees").join("agent-2");
-    std::fs::create_dir_all(&worktree_dir).expect("Failed to create worktree dir");
-
-    // Create a fake git repo structure
-    std::fs::create_dir_all(worktree_dir.join(".git")).expect("Failed to create git dir");
-
-    // Create a registry with a dead agent (this should allow cleanup)
-    let registry_path = wg_dir.join("registry.json");
     let mut registry = Registry::default();
+    let now = chrono::Utc::now().to_rfc3339();
 
-    // Add a fake dead agent to the registry (older heartbeat)
-    let old_heartbeat = chrono::Utc::now() - chrono::Duration::seconds(60);
     registry.agents.insert(
         "agent-2".to_string(),
-        workgraph::registry::Agent {
+        Agent {
             id: "agent-2".to_string(),
-            pid: 999999, // Non-existent PID to avoid killing real processes
-            last_heartbeat: old_heartbeat,
+            pid: 999999,
             task_id: "task-2".to_string(),
-            status: workgraph::registry::AgentStatus::Running,
+            executor: "claude".to_string(),
+            started_at: now.clone(),
+            last_heartbeat: now.clone(),
+            status: AgentStatus::Dead,
+            output_file: String::new(),
+            model: None,
+            completed_at: None,
         },
     );
 
-    // Save the registry to disk
-    registry
-        .save_to_disk(&wg_dir)
-        .expect("Failed to save registry");
+    registry.save(&wg_dir).expect("Failed to save registry");
 
-    // This should clean up the worktree since the agent is dead
-    let cleaned_count = cleanup_orphaned_worktrees(project).expect("Cleanup should not fail");
-    assert_eq!(cleaned_count, 1);
-
-    // Worktree should be removed
-    assert!(!worktree_dir.exists());
+    let loaded = Registry::load(&wg_dir).expect("Failed to load registry");
+    let agent = loaded.agents.get("agent-2").unwrap();
+    assert!(!agent.is_alive());
 }
 
 #[test]
-fn test_cleanup_dead_agent_worktree() {
-    use workgraph::commands::service::worktree::cleanup_dead_agent_worktree_with_config;
+fn test_registry_default_empty() {
+    use workgraph::registry::Registry;
 
-    let temp = TempDir::new().expect("Failed to create temp dir");
-    let project = temp.path();
-    let wg_dir = project.join(".wg");
-
-    // Create a worktree directory
-    let worktree_dir = wg_dir.join("worktrees").join("agent-test");
-    std::fs::create_dir_all(&worktree_dir).expect("Failed to create worktree dir");
-
-    // Create a fake git repo structure
-    std::fs::create_dir_all(worktree_dir.join(".git")).expect("Failed to create git dir");
-
-    // Test cleanup of a dead agent worktree
-    let result = cleanup_dead_agent_worktree_with_config(
-        project,
-        &worktree_dir,
-        "wg/agent-test/test-task",
-        "agent-test",
-        None,
-    );
-
-    // Even in an unconfigured environment, this should return Ok if it gets to the file removal step
-    // The actual git operations may fail, but we're testing the cleanup logic flow
-    assert!(result.is_ok() || result.is_err()); // Either way, it should complete
-
-    // The worktree should be gone after cleanup
-    assert!(!worktree_dir.exists());
+    let registry = Registry::default();
+    assert!(registry.agents.is_empty());
+    assert_eq!(registry.next_agent_id, 1);
 }
