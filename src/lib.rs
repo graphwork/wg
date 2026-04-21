@@ -11,6 +11,11 @@
 #![allow(clippy::collapsible_if)]
 #![allow(clippy::collapsible_else_if)]
 
+// Self-alias so `use workgraph::` paths in #[path]-included command modules
+// resolve correctly when compiled as part of the library crate.
+#[cfg(feature = "test-support")]
+extern crate self as workgraph;
+
 pub mod agency;
 pub mod chat;
 pub mod chat_sessions;
@@ -78,6 +83,13 @@ pub use service::{AgentEntry, AgentRegistry, AgentStatus};
 
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_helpers;
+
+#[cfg(feature = "test-support")]
+pub mod commands {
+    pub mod service {
+        pub mod worktree;
+    }
+}
 
 /// Return the current user identity.
 ///
