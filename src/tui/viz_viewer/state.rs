@@ -9347,14 +9347,21 @@ impl VizApp {
                 }
                 text_entry.full_text.push_str(&new_text);
 
-                // Cap at OUTPUT_MAX_CHARS.
+                // Cap at OUTPUT_MAX_CHARS (bytes). Byte-scan for the next
+                // `\n` — always 1 byte, always at a char boundary — so
+                // multi-byte chars like `─` in tool-box borders don't
+                // cause a char-boundary panic.
                 if text_entry.full_text.len() > OUTPUT_MAX_CHARS {
-                    let trim_to = text_entry.full_text.len() - OUTPUT_MAX_CHARS;
-                    // Find a clean boundary (newline) to trim at.
-                    let boundary = text_entry.full_text[trim_to..]
-                        .find('\n')
-                        .map(|p| trim_to + p + 1)
-                        .unwrap_or(trim_to);
+                    let min_skip = text_entry.full_text.len() - OUTPUT_MAX_CHARS;
+                    let boundary = text_entry
+                        .full_text
+                        .as_bytes()
+                        .iter()
+                        .enumerate()
+                        .skip(min_skip)
+                        .find(|&(_, &b)| b == b'\n')
+                        .map(|(i, _)| i + 1)
+                        .unwrap_or_else(|| text_entry.full_text.len());
                     text_entry.full_text = text_entry.full_text[boundary..].to_string();
                 }
 
@@ -9447,13 +9454,22 @@ impl VizApp {
             }
             text_entry.full_text.push_str(&new_text);
 
-            // Cap at OUTPUT_MAX_CHARS.
+            // Cap at OUTPUT_MAX_CHARS (misnomer: it's bytes). Find the
+            // next `\n` at/after the cut point via byte scan — newlines
+            // are always 1 byte and always at char boundaries, so the
+            // resulting slice is safe even when `full_text` contains
+            // multi-byte chars (e.g. the `─` in tool-box borders).
             if text_entry.full_text.len() > OUTPUT_MAX_CHARS {
-                let trim_to = text_entry.full_text.len() - OUTPUT_MAX_CHARS;
-                let boundary = text_entry.full_text[trim_to..]
-                    .find('\n')
-                    .map(|p| trim_to + p + 1)
-                    .unwrap_or(trim_to);
+                let min_skip = text_entry.full_text.len() - OUTPUT_MAX_CHARS;
+                let boundary = text_entry
+                    .full_text
+                    .as_bytes()
+                    .iter()
+                    .enumerate()
+                    .skip(min_skip)
+                    .find(|&(_, &b)| b == b'\n')
+                    .map(|(i, _)| i + 1)
+                    .unwrap_or_else(|| text_entry.full_text.len());
                 text_entry.full_text = text_entry.full_text[boundary..].to_string();
             }
 
