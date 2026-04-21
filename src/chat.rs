@@ -415,6 +415,28 @@ pub fn append_outbox_ref(
     append_message(&path, "coordinator", content, request_id, vec![], None)
 }
 
+/// Append an assistant/coordinator response with an optional full
+/// response transcript (text blocks + tool-box formatted tool calls)
+/// to a session's outbox. `content` stays the short summary; the TUI
+/// renders `full_response` when present for the expanded chat view.
+pub fn append_outbox_full_ref(
+    workgraph_dir: &Path,
+    session_ref: &str,
+    content: &str,
+    full_response: Option<String>,
+    request_id: &str,
+) -> Result<u64> {
+    let path = chat_dir_for_ref(workgraph_dir, session_ref).join("outbox.jsonl");
+    append_message(
+        &path,
+        "coordinator",
+        content,
+        request_id,
+        vec![],
+        full_response,
+    )
+}
+
 /// Read inbox messages with id > cursor for a session.
 pub fn read_inbox_since_ref(
     workgraph_dir: &Path,

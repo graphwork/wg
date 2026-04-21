@@ -232,13 +232,27 @@ pub fn run(
             match collected {
                 Some(resp) if !resp.summary.is_empty() => {
                     logger.info(&format!(
-                        "claude-handler: response ready for {} ({} chars)",
+                        "claude-handler: response ready for {} ({} chars summary, {} chars transcript)",
                         request_id,
-                        resp.summary.len()
+                        resp.summary.len(),
+                        resp.full_response.len(),
                     ));
-                    if let Err(e) =
-                        chat::append_outbox_ref(workgraph_dir, chat_ref, &resp.summary, &request_id)
-                    {
+                    // Store the full interleaved transcript (text + tool boxes)
+                    // in `full_response` only when it actually contains more than
+                    // the summary — avoids duplicating the same text twice in
+                    // the outbox file when a turn had no tool calls.
+                    let full_response = if resp.full_response.trim() != resp.summary.trim() {
+                        Some(resp.full_response.clone())
+                    } else {
+                        None
+                    };
+                    if let Err(e) = chat::append_outbox_full_ref(
+                        workgraph_dir,
+                        chat_ref,
+                        &resp.summary,
+                        full_response,
+                        &request_id,
+                    ) {
                         logger.error(&format!("claude-handler: outbox write failed: {}", e));
                     }
                 }
@@ -426,7 +440,14 @@ enum ResponseEvent {
 }
 
 struct CollectedResponse {
+    /// The last text block — what goes into `content` (the one-line
+    /// summary in the TUI chat when no full transcript is available).
     summary: String,
+    /// The full interleaved transcript: every text block + a formatted
+    /// tool-box (`┌─ Name ────\n│ $ cmd\n│ output...\n└─`) for each
+    /// tool_use/tool_result pair. Matches the native executor's format
+    /// so the TUI chat renderer's tool-box styling kicks in.
+    full_response: String,
 }
 
 /// Read Claude stdout line-by-line, parse stream-json, forward to
@@ -546,6 +567,13 @@ fn collect_response(
 ) -> Option<CollectedResponse> {
     let deadline = Instant::now() + timeout;
     let mut text_parts: Vec<String> = Vec::new();
+    // Interleaved transcript: text blocks verbatim, each tool_use
+    // opens a `┌─ Name ────\n│ <input>\n` box that the next
+    // tool_result closes with `│ <output>\n└─\n`. Matches the native
+    // executor's format so the TUI chat renderer's tool-box styling
+    // fires automatically.
+    let mut transcript = String::new();
+    let mut open_tool: Option<String> = None;
     let mut streaming_text = String::new();
 
     loop {
@@ -554,7 +582,7 @@ fn collect_response(
             .unwrap_or(Duration::ZERO);
         if remaining.is_zero() {
             logger.warn("response collection timed out");
-            return build_collected(&text_parts);
+            return build_collected(&text_parts, &transcript);
         }
 
         match rx.recv_timeout(remaining) {
@@ -566,13 +594,51 @@ fn collect_response(
                     }
                     let _ = chat::write_streaming_ref(wg_dir, chat_ref, &streaming_text);
                 }
-                text_parts.push(t);
+                text_parts.push(t.clone());
+                // Append to the interleaved transcript.
+                transcript.push_str(&t);
+                if !t.ends_with('\n') {
+                    transcript.push('\n');
+                }
             }
-            Ok(ResponseEvent::ToolUse { .. }) | Ok(ResponseEvent::ToolResult(_)) => {
-                // Claude may emit tool_use / tool_result events for its
-                // own tool invocations. We don't surface them in the
-                // outbox summary — the final text block is the user-
-                // visible reply.
+            Ok(ResponseEvent::ToolUse { name, input }) => {
+                // If a previous tool box never saw a tool_result, close it
+                // defensively before opening a new one.
+                if open_tool.is_some() {
+                    transcript.push_str("└─\n");
+                    open_tool = None;
+                }
+                let header_rule = "─".repeat(40usize.saturating_sub(name.len() + 4));
+                transcript.push_str(&format!("\n┌─ {} {}\n", name, header_rule));
+                // For Bash-like tools, Claude's `input` is a JSON string with
+                // a `command` field; surface it as `$ cmd` rather than raw JSON.
+                let pretty_input = format_tool_input(&name, &input);
+                for line in pretty_input.lines() {
+                    transcript.push_str(&format!("│ {}\n", line));
+                }
+                open_tool = Some(name);
+            }
+            Ok(ResponseEvent::ToolResult(content)) => {
+                // Stream the tool output into whichever box is open.
+                const MAX_LINES: usize = 15;
+                let lines: Vec<&str> = content.lines().collect();
+                if lines.is_empty() {
+                    transcript.push_str("│ (no output)\n");
+                } else if lines.len() > MAX_LINES {
+                    for line in &lines[..MAX_LINES] {
+                        transcript.push_str(&format!("│ {}\n", line));
+                    }
+                    transcript.push_str(&format!(
+                        "│ ... ({} more lines)\n",
+                        lines.len() - MAX_LINES
+                    ));
+                } else {
+                    for line in &lines {
+                        transcript.push_str(&format!("│ {}\n", line));
+                    }
+                }
+                transcript.push_str("└─\n");
+                open_tool = None;
             }
             Ok(ResponseEvent::TurnComplete) => {
                 if text_parts.is_empty() {
@@ -580,25 +646,71 @@ fn collect_response(
                     // waiting for the next turn's text.
                     continue;
                 }
-                return build_collected(&text_parts);
+                // Defensive close for any dangling open box.
+                if open_tool.is_some() {
+                    transcript.push_str("└─\n");
+                }
+                return build_collected(&text_parts, &transcript);
             }
             Ok(ResponseEvent::StreamEnd) => {
                 logger.warn("stdout stream ended during response collection");
-                return build_collected(&text_parts);
+                if open_tool.is_some() {
+                    transcript.push_str("└─\n");
+                }
+                return build_collected(&text_parts, &transcript);
             }
             Err(mpsc::RecvTimeoutError::Timeout) | Err(mpsc::RecvTimeoutError::Disconnected) => {
-                return build_collected(&text_parts);
+                if open_tool.is_some() {
+                    transcript.push_str("└─\n");
+                }
+                return build_collected(&text_parts, &transcript);
             }
         }
     }
 }
 
-fn build_collected(parts: &[String]) -> Option<CollectedResponse> {
+fn build_collected(parts: &[String], transcript: &str) -> Option<CollectedResponse> {
     let summary = parts.last().cloned().unwrap_or_default();
     if summary.is_empty() {
         return None;
     }
-    Some(CollectedResponse { summary })
+    Some(CollectedResponse {
+        summary,
+        full_response: transcript.to_string(),
+    })
+}
+
+/// Render a tool_use input block into something human-readable.
+/// Bash commands become `$ <cmd>`; other tools fall back to a truncated
+/// pretty-printed JSON.
+fn format_tool_input(name: &str, raw: &str) -> String {
+    if raw.is_empty() {
+        return String::new();
+    }
+    if matches!(name, "Bash" | "bash") {
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(raw)
+            && let Some(cmd) = val.get("command").and_then(|v| v.as_str())
+        {
+            return format!("$ {}", cmd);
+        }
+    }
+    // Keep non-bash inputs concise; dump as pretty JSON capped at a
+    // few lines so a massive tool arg doesn't balloon the outbox entry.
+    match serde_json::from_str::<serde_json::Value>(raw) {
+        Ok(val) => {
+            let pretty = serde_json::to_string_pretty(&val).unwrap_or_else(|_| raw.to_string());
+            const MAX_LINES: usize = 8;
+            let lines: Vec<&str> = pretty.lines().collect();
+            if lines.len() > MAX_LINES {
+                let mut out = lines[..MAX_LINES].join("\n");
+                out.push_str(&format!("\n... ({} more lines)", lines.len() - MAX_LINES));
+                out
+            } else {
+                pretty
+            }
+        }
+        Err(_) => raw.to_string(),
+    }
 }
 
 // --- SIGINT forwarding -------------------------------------------------------
@@ -679,5 +791,49 @@ impl HandlerLogger {
     }
     fn error(&self, msg: &str) {
         self.log("ERROR", msg);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn format_tool_input_bash_becomes_shell_prompt() {
+        let out = format_tool_input("Bash", r#"{"command":"ls /tmp"}"#);
+        assert_eq!(out, "$ ls /tmp");
+    }
+
+    #[test]
+    fn format_tool_input_non_bash_stays_json() {
+        let out = format_tool_input("Read", r#"{"file_path":"/etc/hosts"}"#);
+        assert!(out.contains("\"file_path\""));
+        assert!(out.contains("/etc/hosts"));
+    }
+
+    #[test]
+    fn format_tool_input_truncates_huge_json() {
+        let big = (0..30)
+            .map(|i| format!("\"k{}\":\"v\"", i))
+            .collect::<Vec<_>>()
+            .join(",");
+        let raw = format!("{{{}}}", big);
+        let out = format_tool_input("Unknown", &raw);
+        assert!(out.contains("more lines"));
+    }
+
+    #[test]
+    fn build_collected_full_response_has_summary_when_no_tools() {
+        let parts = vec!["hello from claude".to_string()];
+        let transcript = "hello from claude\n";
+        let resp = build_collected(&parts, transcript).expect("non-empty");
+        assert_eq!(resp.summary, "hello from claude");
+        assert_eq!(resp.full_response, "hello from claude\n");
+    }
+
+    #[test]
+    fn build_collected_empty_returns_none() {
+        let parts: Vec<String> = Vec::new();
+        assert!(build_collected(&parts, "").is_none());
     }
 }
