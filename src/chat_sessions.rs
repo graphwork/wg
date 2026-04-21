@@ -393,52 +393,43 @@ pub fn find_by_alias<'a>(reg: &'a Registry, alias: &str) -> Option<(String, &'a 
     None
 }
 
-/// Create (or refresh) a symlink `chat/<alias>` → `<uuid>`.
-/// The target is relative so the whole workgraph dir stays movable.
+/// Ensure the alias is usable via the filesystem when callers still
+/// bypass the registry (some tests, ad-hoc scripts, historical code
+/// paths). The canonical storage is `chat/<uuid>/`; aliases live
+/// only in `sessions.json`. If there's already a regular directory
+/// sitting at `chat/<alias>` from a legacy install, merge its
+/// contents into the UUID dir and then remove the legacy location.
+/// We no longer install a symlink — `chat::chat_dir_for_ref`
+/// resolves aliases through the registry directly, eliminating
+/// the entire class of split-brain bugs where an alias path and
+/// the UUID path could point at different filesystem entities.
 fn create_alias_symlink(workgraph_dir: &Path, alias: &str, uuid: &str) -> Result<()> {
     let link = workgraph_dir.join("chat").join(alias);
     let target_dir = workgraph_dir.join("chat").join(uuid);
     let metadata = fs::symlink_metadata(&link).ok();
-    if let Some(md) = metadata {
-        if md.file_type().is_symlink() {
-            // Existing symlink — safe to blow away and recreate.
-            let _ = fs::remove_file(&link);
-        } else if md.file_type().is_dir() {
-            // Real directory sitting where our alias should be. Can
-            // happen when some code path called `append_inbox_for(_, N, …)`
-            // (or similar) before the session was ever registered —
-            // `chat::append_message` creates missing parent dirs, so
-            // the path becomes a regular chat dir. Leaving it there
-            // causes split-brain: the IPC path writes here, the
-            // handler reads the UUID dir via the other alias, and
-            // messages never meet. Merge-and-replace: move the
-            // legacy dir's contents into the UUID dir (which is the
-            // real storage), then replace the legacy dir with a
-            // symlink.
-            merge_legacy_chat_dir(&link, &target_dir).with_context(|| {
-                format!(
-                    "merging legacy chat dir {:?} into UUID dir {:?}",
-                    link, target_dir
-                )
-            })?;
-            fs::remove_dir_all(&link)
-                .with_context(|| format!("removing merged-away legacy chat dir {:?}", link))?;
-        } else {
-            // Regular file — remove and continue.
-            let _ = fs::remove_file(&link);
-        }
-    }
-    #[cfg(unix)]
-    {
-        std::os::unix::fs::symlink(uuid, &link)
-            .with_context(|| format!("symlink {:?} -> {}", link, uuid))?;
-    }
-    #[cfg(not(unix))]
-    {
-        // Windows: not supported in this pass. The JSON registry
-        // still works; only path-based back-compat is unavailable.
-        let _ = uuid;
-        bail!("alias symlinks are not supported on non-Unix targets");
+    let Some(md) = metadata else {
+        return Ok(());
+    };
+    if md.file_type().is_symlink() {
+        // Old-model symlink from a pre-full-UUID install. Remove;
+        // future reads resolve through the registry.
+        let _ = fs::remove_file(&link);
+    } else if md.file_type().is_dir() {
+        // Legacy regular directory at the alias path — merge its
+        // contents into the canonical UUID dir so no history is
+        // lost, then remove the legacy location.
+        merge_legacy_chat_dir(&link, &target_dir).with_context(|| {
+            format!(
+                "merging legacy chat dir {:?} into UUID dir {:?}",
+                link, target_dir
+            )
+        })?;
+        fs::remove_dir_all(&link)
+            .with_context(|| format!("removing merged-away legacy chat dir {:?}", link))?;
+    } else {
+        // Regular file (unexpected — someone wrote to `chat/0`
+        // directly as a file?). Remove it.
+        let _ = fs::remove_file(&link);
     }
     Ok(())
 }
@@ -663,7 +654,7 @@ mod tests {
     /// handler reads came from the other, and user messages were
     /// never seen. This test locks in the merge-and-replace fix.
     #[test]
-    fn register_merges_legacy_regular_chat_dir_into_uuid_dir() {
+    fn register_merges_legacy_regular_chat_dir_and_removes_it() {
         use std::fs;
         let dir = tempdir().unwrap();
         let wg = dir.path();
@@ -679,26 +670,28 @@ mod tests {
         )
         .unwrap();
 
-        // Now register the session — this is what the daemon does
-        // at startup. The `0` alias should end up as a symlink into
-        // the UUID dir, and the legacy row should be preserved in
-        // the UUID dir's inbox.
+        // Register the session. Full-UUID mode: the legacy dir is
+        // merged into the UUID dir and REMOVED from the filesystem.
+        // Aliases resolve through sessions.json, not symlinks.
         let uuid = register_coordinator_session(wg, 0).unwrap();
 
-        // `chat/0` is now a symlink, not a regular dir.
-        let link_meta = fs::symlink_metadata(wg.join("chat").join("0")).unwrap();
+        // `chat/0` no longer exists on disk (neither dir nor symlink).
         assert!(
-            link_meta.file_type().is_symlink(),
-            "chat/0 should be a symlink after register, not a dir"
+            fs::symlink_metadata(wg.join("chat").join("0")).is_err(),
+            "chat/0 should be gone after merge — single-source-of-truth at chat/<uuid>"
         );
 
-        // The legacy row survived the merge.
+        // The legacy row lives in the UUID dir's inbox.
         let uuid_inbox = wg.join("chat").join(&uuid).join("inbox.jsonl");
         let contents = fs::read_to_string(&uuid_inbox).unwrap();
         assert!(
             contents.contains("legacy-row"),
-            "merge_legacy_chat_dir should have concatenated the legacy inbox into the UUID dir"
+            "legacy row should be concatenated into the UUID inbox"
         );
+
+        // And the alias still resolves via the registry.
+        assert_eq!(resolve_ref(wg, "0").unwrap(), uuid);
+        assert_eq!(resolve_ref(wg, "coordinator-0").unwrap(), uuid);
     }
 
     #[test]
@@ -717,15 +710,23 @@ mod tests {
     }
 
     #[test]
-    fn alias_symlink_exists_after_create() {
+    fn alias_resolves_via_registry_after_create() {
+        // Full-UUID mode: aliases live only in sessions.json, not
+        // as filesystem symlinks. No `chat/<alias>` path is created;
+        // every read goes through `resolve_ref(wg, alias)`.
         let dir = tempdir().unwrap();
         let wg = dir.path();
         let uuid =
             create_session(wg, SessionKind::TaskAgent, &["task-foo".to_string()], None).unwrap();
-        let link = wg.join("chat").join("task-foo");
-        assert!(link.is_symlink(), "alias should be a symlink");
-        let target = fs::read_link(&link).unwrap();
-        assert_eq!(target.to_string_lossy(), uuid);
+        // No filesystem entity at chat/task-foo.
+        assert!(
+            fs::symlink_metadata(wg.join("chat").join("task-foo")).is_err(),
+            "alias must NOT create a filesystem entity — registry-only"
+        );
+        // But the registry resolves the alias to the UUID.
+        assert_eq!(resolve_ref(wg, "task-foo").unwrap(), uuid);
+        // And the UUID dir exists.
+        assert!(wg.join("chat").join(&uuid).is_dir());
     }
 
     #[test]
@@ -933,36 +934,23 @@ mod tests {
         assert_eq!(resolve_ref(wg, "coordinator-0").unwrap(), uuid);
         assert_eq!(resolve_ref(wg, "0").unwrap(), uuid);
 
-        // Filesystem: both aliases are symlinks into the same UUID dir.
-        let link_named = wg.join("chat").join("coordinator-0");
-        let link_numeric = wg.join("chat").join("0");
-        assert!(link_named.is_symlink(), "coordinator-0 missing symlink");
-        assert!(
-            link_numeric.is_symlink(),
-            "bare `0` missing symlink (the exact regression this test locks in)"
-        );
-
-        let target_named = fs::canonicalize(&link_named).unwrap();
-        let target_numeric = fs::canonicalize(&link_numeric).unwrap();
+        // Full-UUID mode: aliases resolve via the registry, no
+        // per-alias filesystem entities. Writes go through
+        // `chat::chat_dir_for_ref` which resolves to the UUID dir.
+        // Round-trip: a write through the numeric alias lands at
+        // the same file as a read through the named alias.
+        let write_dir = crate::chat::chat_dir_for_ref(wg, "0");
+        let read_dir = crate::chat::chat_dir_for_ref(wg, "coordinator-0");
         assert_eq!(
-            target_named, target_numeric,
-            "coordinator-0 and 0 must resolve to the same directory"
+            write_dir, read_dir,
+            "both aliases must resolve to the same storage directory"
         );
-
-        // Round-trip through the legacy numeric path: what the IPC
-        // `UserChat` handler writes via
-        // `chat::append_inbox_for(dir, 0, …)` — which internally
-        // joins `chat/0/inbox.jsonl` — must be readable via the
-        // subprocess-facing `coordinator-0` alias.
-        let write_path = wg.join("chat").join("0").join("inbox.jsonl");
-        std::fs::create_dir_all(write_path.parent().unwrap()).unwrap();
-        std::fs::write(&write_path, "sentinel-message").unwrap();
-
-        let read_path = wg.join("chat").join("coordinator-0").join("inbox.jsonl");
-        let read_content = std::fs::read_to_string(&read_path).unwrap();
+        std::fs::create_dir_all(&write_dir).unwrap();
+        std::fs::write(write_dir.join("inbox.jsonl"), "sentinel-message").unwrap();
+        let read_content = std::fs::read_to_string(read_dir.join("inbox.jsonl")).unwrap();
         assert_eq!(
             read_content, "sentinel-message",
-            "write via `chat/0/` must be readable via `chat/coordinator-0/` — otherwise the IPC path and the subprocess path are disconnected and TUI chat hangs forever"
+            "write via `0` alias must be readable via `coordinator-0` alias — registry is single source of truth"
         );
     }
 
@@ -1003,8 +991,11 @@ mod tests {
             fs::read_to_string(existing_dir.join("existing.txt")).unwrap(),
             "registered",
         );
-        // Legacy dir is gone, replaced by a symlink to the UUID.
-        assert!(legacy.is_symlink());
+        // Legacy dir is gone entirely — full-UUID mode, no symlink.
+        assert!(
+            fs::symlink_metadata(&legacy).is_err(),
+            "legacy chat/0 should be removed after merge"
+        );
     }
 
     #[test]
@@ -1020,10 +1011,16 @@ mod tests {
         assert!(new_marker.exists(), "legacy file should be under UUID dir");
         assert_eq!(fs::read_to_string(&new_marker).unwrap(), "legacy data");
 
-        // Old path is now a symlink that still works for readers.
-        assert!(old.is_symlink());
+        // Full-UUID mode: legacy path removed entirely. Reads go
+        // through `chat::chat_dir_for_ref` which resolves via the
+        // registry.
+        assert!(
+            fs::symlink_metadata(&old).is_err(),
+            "legacy chat/0 should be removed after migration"
+        );
+        let resolved = crate::chat::chat_dir_for_ref(wg, "0");
         assert_eq!(
-            fs::read_to_string(old.join("marker.txt")).unwrap(),
+            fs::read_to_string(resolved.join("marker.txt")).unwrap(),
             "legacy data"
         );
 

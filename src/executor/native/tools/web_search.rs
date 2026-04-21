@@ -1962,8 +1962,7 @@ async fn launch_browser() -> Result<BrowserHandle, String> {
     // "Failed to create SingletonLock / ProcessSingleton" error
     // seen on ulivo. Fix: when the chrome binary lives under
     // `/snap/`, put our profile INSIDE the snap-allowed tree.
-    let is_snap_chromium = chrome_path.starts_with("/snap/")
-        || chrome_path.contains("/snap/bin/");
+    let is_snap_chromium = chrome_path.starts_with("/snap/") || chrome_path.contains("/snap/bin/");
     let user_data_dir = if is_snap_chromium {
         dirs::home_dir()
             .unwrap_or_else(std::env::temp_dir)

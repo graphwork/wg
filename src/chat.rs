@@ -62,12 +62,31 @@ pub struct ChatMessage {
 }
 
 /// Directory for chat files for a session identified by any
-/// reference: UUID, alias, or legacy numeric id. Relies on the
-/// `chat/<alias>` → `chat/<uuid>` symlinks installed by
-/// `crate::chat_sessions` — the kernel does the resolution at every
-/// file op, so this function doesn't need to consult the JSON
-/// registry itself.
+/// reference: UUID, alias, or legacy numeric id.
+///
+/// Resolves `reference` through the `sessions.json` registry to the
+/// canonical UUID — the single filesystem location for the session's
+/// chat files. Previously we relied on per-alias symlinks
+/// (`chat/coordinator-0 -> chat/<uuid>`) so the kernel did resolution
+/// for us; that design produced split-brain whenever a regular dir
+/// got created at `chat/<alias>` before the symlink was installed,
+/// because the two paths ended up pointing at different dirs.
+///
+/// Full-UUID mode: the registry is the single source of truth, the
+/// filesystem has exactly ONE directory per session (named by UUID),
+/// and aliases exist only in sessions.json. No more duplicate
+/// writers disagreeing about where history lives.
+///
+/// Resolution:
+///   1. If the registry has a mapping for `reference` (UUID, alias,
+///      or UUID prefix), return `chat/<uuid>/`.
+///   2. Otherwise, fall back to a literal join — lets pre-registry
+///      code (tests, ad-hoc smoke scripts) still work with bare
+///      dir names.
 pub fn chat_dir_for_ref(workgraph_dir: &Path, reference: &str) -> PathBuf {
+    if let Ok(uuid) = crate::chat_sessions::resolve_ref(workgraph_dir, reference) {
+        return workgraph_dir.join("chat").join(uuid);
+    }
     workgraph_dir.join("chat").join(reference)
 }
 
