@@ -156,7 +156,12 @@ pub fn create_session(
     aliases: &[String],
     label: Option<String>,
 ) -> Result<String> {
-    let uuid = Uuid::new_v4().to_string();
+    // UUIDv7: first 48 bits are UTC-ms timestamp, rest is random.
+    // Lexicographic sort = chronological sort, so `ls chat/` and
+    // `wg session list` group newest last automatically. Still a
+    // UUID by any tool's pattern — existing code that validated
+    // "looks_like_uuid" via the 8-4-4-4-12 shape keeps working.
+    let uuid = Uuid::now_v7().to_string();
     let dir = chat_dir_for_uuid(workgraph_dir, &uuid);
     fs::create_dir_all(&dir).with_context(|| format!("create_dir_all {:?}", dir))?;
 
@@ -213,7 +218,7 @@ pub fn fork_session(
     }
 
     // Allocate the fork's UUID and set up its directory.
-    let fork_uuid = Uuid::new_v4().to_string();
+    let fork_uuid = Uuid::now_v7().to_string();
     let fork_dir = chat_dir_for_uuid(workgraph_dir, &fork_uuid);
     fs::create_dir_all(&fork_dir).with_context(|| format!("create_dir_all {:?}", fork_dir))?;
 
@@ -619,7 +624,7 @@ pub fn migrate_numeric_coord_dir(workgraph_dir: &Path, n: u32) -> Result<Option<
     // No existing alias — standard migration path. Create a fresh
     // UUID dir, move the legacy contents in, register with both
     // aliases.
-    let uuid = Uuid::new_v4().to_string();
+    let uuid = Uuid::now_v7().to_string();
     let new_dir = chat_dir_for_uuid(workgraph_dir, &uuid);
     fs::rename(&old, &new_dir).with_context(|| format!("migrate {:?} -> {:?}", old, new_dir))?;
 
