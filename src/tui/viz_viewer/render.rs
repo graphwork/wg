@@ -2291,8 +2291,12 @@ fn draw_right_panel(frame: &mut Frame, app: &mut VizApp, area: Rect) {
         RightPanelTab::Config => {
             draw_config_tab(frame, app, content_area);
         }
-        RightPanelTab::Files => {
-            super::file_browser_render::draw_files_tab(frame, app, content_area);
+        RightPanelTab::Log => {
+            // Keep data fresh while the tab is visible. Cheap when nothing
+            // has changed on disk.
+            app.load_log_pane();
+            app.update_log_output();
+            draw_log_tab(frame, app, content_area);
         }
         RightPanelTab::CoordLog => {
             draw_coord_log_tab(frame, app, content_area);
@@ -2300,10 +2304,9 @@ fn draw_right_panel(frame: &mut Frame, app: &mut VizApp, area: Rect) {
         RightPanelTab::Dashboard => {
             draw_dashboard_tab(frame, app, content_area);
         }
-        // Phase 4 removed tabs — kept as enum variants temporarily
-        // so legacy match arms compile, but not reachable from the
-        // tab bar. Any draw request here is a no-op.
-        RightPanelTab::Log
+        // Dead tabs — not reachable from the bar. No-op here so stray
+        // state still renders as empty rather than crashing.
+        RightPanelTab::Files
         | RightPanelTab::Messages
         | RightPanelTab::Firehose
         | RightPanelTab::Output => {}
@@ -4158,6 +4161,110 @@ fn render_editor_word_wrap(
             },
         );
     }
+}
+
+/// Draw the per-task Log tab — live agent output (default) or the
+/// structured task.log entries (when `log_pane.view_top` is true,
+/// toggled with `v`).
+///
+/// Data sources:
+/// - `app.log_pane.rendered_lines`: `[<rel-time>] <message>` entries
+///   populated by `load_log_pane()` from `task.log`.
+/// - `app.log_pane.agent_output.full_text`: live agent stdout,
+///   populated by `update_log_output()` from `agents/<id>/output.log`.
+fn draw_log_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
+    use ratatui::widgets::{Paragraph, Wrap};
+
+    if area.height == 0 || area.width == 0 {
+        return;
+    }
+
+    let header_line = {
+        let task_label = app
+            .log_pane
+            .task_id
+            .clone()
+            .unwrap_or_else(|| "(no task selected)".to_string());
+        let agent_label = app
+            .log_pane
+            .agent_id
+            .as_deref()
+            .map(|id| format!("agent={}", id))
+            .unwrap_or_else(|| "no agent".to_string());
+        let view_label = if app.log_pane.view_top {
+            "view=events"
+        } else {
+            "view=stream"
+        };
+        let tail_label = if app.log_pane.auto_tail {
+            "tail=on"
+        } else {
+            "tail=off"
+        };
+        Line::from(vec![
+            Span::styled(
+                format!(" {} ", task_label),
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!(" {}  {}  {}", agent_label, view_label, tail_label),
+                Style::default().fg(Color::DarkGray),
+            ),
+            Span::styled(
+                "    [v] toggle view  [J] json",
+                Style::default().fg(Color::Indexed(239)),
+            ),
+        ])
+    };
+
+    let [header_area, body_area] =
+        Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(area);
+    frame.render_widget(Paragraph::new(header_line), header_area);
+
+    app.log_pane.viewport_height = body_area.height as usize;
+
+    // Collect display lines for whichever view is active.
+    let lines: Vec<Line> = if app.log_pane.view_top {
+        if app.log_pane.rendered_lines.is_empty() {
+            vec![Line::from(Span::styled(
+                "(no log entries yet)",
+                Style::default().fg(Color::DarkGray),
+            ))]
+        } else {
+            app.log_pane
+                .rendered_lines
+                .iter()
+                .map(|s| Line::from(s.clone()))
+                .collect()
+        }
+    } else {
+        let text = &app.log_pane.agent_output.full_text;
+        if text.is_empty() {
+            vec![Line::from(Span::styled(
+                "(no agent output yet — is the task running?)",
+                Style::default().fg(Color::DarkGray),
+            ))]
+        } else {
+            text.split('\n')
+                .map(|l| Line::from(l.to_string()))
+                .collect()
+        }
+    };
+    app.log_pane.total_wrapped_lines = lines.len();
+
+    // Auto-tail: pin scroll to the bottom when enabled and there's overflow.
+    let viewport = body_area.height as usize;
+    if app.log_pane.auto_tail {
+        app.log_pane.scroll = lines.len().saturating_sub(viewport);
+    }
+
+    let scroll_y = app.log_pane.scroll.min(lines.len().saturating_sub(1)) as u16;
+    let para = Paragraph::new(lines)
+        .wrap(Wrap { trim: false })
+        .scroll((scroll_y, 0));
+    frame.render_widget(para, body_area);
 }
 
 /// Draw the Coordinator Log tab (panel 7) — activity feed from operations.jsonl.
@@ -6096,15 +6203,16 @@ fn action_hints_parts(app: &VizApp) -> (&str, &str, Color, Vec<(&str, &str)>) {
                 let tab_label: &str = match tab {
                     RightPanelTab::Chat => "0:Chat",
                     RightPanelTab::Detail => "1:Detail",
-                    RightPanelTab::Log => "2:Log",
-                    RightPanelTab::Messages => "3:Msg",
-                    RightPanelTab::Agency => "4:Agency",
-                    RightPanelTab::Config => "5:Config",
-                    RightPanelTab::Files => "6:Files",
-                    RightPanelTab::CoordLog => "7:Coord",
-                    RightPanelTab::Firehose => "8:Fire",
-                    RightPanelTab::Output => "9:Out",
-                    RightPanelTab::Dashboard => "10:Dash",
+                    RightPanelTab::Agency => "2:Agency",
+                    RightPanelTab::Config => "3:Config",
+                    RightPanelTab::Log => "4:Log",
+                    RightPanelTab::CoordLog => "5:Coord",
+                    RightPanelTab::Dashboard => "6:Dash",
+                    // Dead tabs, not reachable from the bar.
+                    RightPanelTab::Files => "Files",
+                    RightPanelTab::Messages => "Msg",
+                    RightPanelTab::Firehose => "Fire",
+                    RightPanelTab::Output => "Out",
                 };
                 let mut hints: Vec<(&str, &str)> = Vec::new();
                 match tab {

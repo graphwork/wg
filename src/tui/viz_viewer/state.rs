@@ -535,14 +535,15 @@ pub enum RightPanelTab {
     Detail,    // 1
     Agency,    // 2
     Config,    // 3
-    Files,     // 4
+    Log,       // 4  — per-task agent output + structured log entries
     CoordLog,  // 5
     Dashboard, // 6
-    // Temporary during Phase 4 cleanup — kept so dead match arms
-    // compile while we walk through and delete them. This enum
-    // block is the last thing to shrink; the final removal here
-    // happens at the end of the cleanup sweep.
-    Log,
+    // Dead tabs — kept so historical match arms compile, not reachable
+    // from the tab bar. Files was dropped because the Detail view
+    // already surfaces the working dir path; users can open a terminal
+    // for file inspection. Messages/Firehose/Output were Phase-4
+    // casualties.
+    Files,
     Messages,
     Firehose,
     Output,
@@ -555,10 +556,10 @@ impl RightPanelTab {
             Self::Detail => "Detail",
             Self::Agency => "Agency",
             Self::Config => "Config",
-            Self::Files => "Files",
+            Self::Log => "Log",
             Self::CoordLog => "Coord",
             Self::Dashboard => "Dash",
-            Self::Log | Self::Messages | Self::Firehose | Self::Output => "",
+            Self::Files | Self::Messages | Self::Firehose | Self::Output => "",
         }
     }
 
@@ -568,10 +569,10 @@ impl RightPanelTab {
             Self::Detail => 1,
             Self::Agency => 2,
             Self::Config => 3,
-            Self::Files => 4,
+            Self::Log => 4,
             Self::CoordLog => 5,
             Self::Dashboard => 6,
-            Self::Log => usize::MAX - 3,
+            Self::Files => usize::MAX - 3,
             Self::Messages => usize::MAX - 2,
             Self::Firehose => usize::MAX - 1,
             Self::Output => usize::MAX,
@@ -584,7 +585,7 @@ impl RightPanelTab {
             1 => Some(Self::Detail),
             2 => Some(Self::Agency),
             3 => Some(Self::Config),
-            4 => Some(Self::Files),
+            4 => Some(Self::Log),
             5 => Some(Self::CoordLog),
             6 => Some(Self::Dashboard),
             _ => None,
@@ -604,7 +605,7 @@ impl RightPanelTab {
         Self::Detail,
         Self::Agency,
         Self::Config,
-        Self::Files,
+        Self::Log,
         Self::CoordLog,
         Self::Dashboard,
     ];

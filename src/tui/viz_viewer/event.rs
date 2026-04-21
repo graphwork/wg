@@ -1498,8 +1498,8 @@ fn handle_graph_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
         KeyCode::Char(d @ '0'..='9') => {
             let idx = (d as u8 - b'0') as usize;
             if let Some(tab) = RightPanelTab::from_index(idx) {
-                // Special behavior for '2' key (Log tab): toggle view mode if already active
-                if d == '2' && app.right_panel_visible && app.right_panel_tab == RightPanelTab::Log
+                // Special behavior for '4' (Log tab): toggle view mode if already active
+                if d == '4' && app.right_panel_visible && app.right_panel_tab == RightPanelTab::Log
                 {
                     app.toggle_log_view();
                 } else {
@@ -1737,8 +1737,8 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
                 KeyCode::Char(d @ '0'..='9') => {
                     let idx = (d as u8 - b'0') as usize;
                     if let Some(tab) = RightPanelTab::from_index(idx) {
-                        // Special behavior for '2' key (Log tab): toggle view mode if already active
-                        if d == '2' && app.right_panel_tab == RightPanelTab::Log {
+                        // Special behavior for '4' (Log tab): toggle view mode if already active
+                        if d == '4' && app.right_panel_tab == RightPanelTab::Log {
                             app.toggle_log_view();
                         } else {
                             app.right_panel_tab = tab;
@@ -1813,7 +1813,7 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
             let idx = (d as u8 - b'0') as usize;
             if let Some(tab) = RightPanelTab::from_index(idx) {
                 // Special behavior for '2' key (Log tab): toggle view mode if already active
-                if d == '2' && app.right_panel_tab == RightPanelTab::Log {
+                if d == '4' && app.right_panel_tab == RightPanelTab::Log {
                     app.toggle_log_view();
                 } else {
                     app.right_panel_tab = tab;
