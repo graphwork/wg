@@ -319,16 +319,30 @@ impl CoordinatorAgent {
                 super::coordinator::requires_native_executor(m, &config)
             })
             .unwrap_or(false);
-        let uses_subprocess = executor == "native"
+        // Post-Phase-7, ALL supported executors are backed by a
+        // handler subprocess that reads the inbox directly:
+        //   native → wg nex --chat
+        //   claude → wg claude-handler --chat
+        //   codex  → wg codex-handler --chat
+        // Only `shell` or an unknown legacy executor would bypass
+        // the subprocess path; for those we still return false so
+        // `route_chat_to_agent` fires send_message. The historical
+        // claude-inline path (`false` for claude) is gone — leaving
+        // it caused a double-inbox-append bug: the IPC UserChat
+        // handler wrote once, then route_chat_to_agent saw the new
+        // message and forwarded via send_message, whose forwarder
+        // thread appended AGAIN. Coordinator then saw every user
+        // turn twice and complained about a "chat replay loop".
+        let uses_subprocess = matches!(executor, "native" | "claude" | "codex")
             || matches!(
                 provider,
                 Some("openrouter") | Some("oai-compat") | Some("openai") | Some("local")
             )
             || model_requires_native;
 
-        if !uses_subprocess && executor == "claude" && !Self::is_claude_available() {
+        if executor == "claude" && !Self::is_claude_available() {
             anyhow::bail!(
-                "Claude CLI not found. Install it to enable the persistent coordinator agent."
+                "Claude CLI not found. Install it to enable the claude-handler coordinator."
             );
         }
         let (tx, rx) = mpsc::channel::<ChatRequest>();
