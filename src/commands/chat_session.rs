@@ -18,7 +18,7 @@ use crate::cli::{SessionAliasCommands, SessionCommands};
 
 pub fn run(workgraph_dir: &Path, cmd: SessionCommands) -> Result<()> {
     match cmd {
-        SessionCommands::List { json } => run_list(workgraph_dir, json),
+        SessionCommands::List { json, short } => run_list(workgraph_dir, json, short),
         SessionCommands::Attach { session } => run_attach(workgraph_dir, &session),
         SessionCommands::New { alias, label } => run_new(workgraph_dir, &alias, label),
         SessionCommands::Fork { source, alias } => run_fork(workgraph_dir, &source, alias),
@@ -350,7 +350,7 @@ fn run_status(workgraph_dir: &Path, session: &str) -> Result<()> {
     Ok(())
 }
 
-fn run_list(workgraph_dir: &Path, json: bool) -> Result<()> {
+fn run_list(workgraph_dir: &Path, json: bool, short: bool) -> Result<()> {
     let sessions = workgraph::chat_sessions::list(workgraph_dir)?;
     if json {
         let value: Vec<_> = sessions
@@ -372,10 +372,23 @@ fn run_list(workgraph_dir: &Path, json: bool) -> Result<()> {
         eprintln!("\x1b[2m[wg session]\x1b[0m no sessions registered");
         return Ok(());
     }
-    // Plain table: UUID (short), kind, aliases, label.
-    println!("{:<12} {:<12} {:<40} LABEL", "UUID", "KIND", "ALIASES");
+    // Default: full 36-char UUID. `--short` truncates to 8-char
+    // prefixes (git-log-oneline style). The full form is the honest
+    // display; users asked for it after the previous version hid it.
+    let uuid_col_width = if short { 8 } else { 36 };
+    println!(
+        "{:<width$} {:<12} {:<40} LABEL",
+        "UUID",
+        "KIND",
+        "ALIASES",
+        width = uuid_col_width
+    );
     for (uuid, meta) in sessions {
-        let short = &uuid[..std::cmp::min(uuid.len(), 8)];
+        let shown: &str = if short {
+            &uuid[..std::cmp::min(uuid.len(), 8)]
+        } else {
+            &uuid
+        };
         let kind = format!("{:?}", meta.kind).to_lowercase();
         let aliases = if meta.aliases.is_empty() {
             "-".to_string()
@@ -383,7 +396,14 @@ fn run_list(workgraph_dir: &Path, json: bool) -> Result<()> {
             meta.aliases.join(",")
         };
         let label = meta.label.clone().unwrap_or_default();
-        println!("{:<12} {:<12} {:<40} {}", short, kind, aliases, label);
+        println!(
+            "{:<width$} {:<12} {:<40} {}",
+            shown,
+            kind,
+            aliases,
+            label,
+            width = uuid_col_width
+        );
     }
     Ok(())
 }

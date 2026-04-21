@@ -3427,6 +3427,11 @@ pub enum SessionCommands {
         /// Print UUIDs + aliases as JSON instead of a table.
         #[arg(long)]
         json: bool,
+
+        /// Show 8-char UUID prefixes (git-log-oneline style) instead
+        /// of the full 36-char UUIDs. Default is full.
+        #[arg(long)]
+        short: bool,
     },
 
     /// Open a live view of an existing session. Tails `.streaming`
