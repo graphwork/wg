@@ -30,7 +30,7 @@
         "override_storage_mb": null,
         "override_gpus": null,
         "suppress_override_warnings": false,
-        "mounts_json": "[\"target/bookworm-out/wg:/usr/local/bin/wg:ro\"]",
+        "mounts_json": null,
         "env": {},
         "kwargs": {}
     },
@@ -50,7 +50,6 @@
             "max_timeout_sec": null,
             "kwargs": {
                 "max_turns": 50,
-                "temperature": 0.0,
                 "endpoint": "lambda01"
             },
             "env": {}
@@ -66,7 +65,7 @@
             "registry_path": null,
             "overwrite": false,
             "download_dir": null,
-            "task_names": null,
+            "task_names": ["fix-git", "regex-log", "filter-js-from-html", "sqlite-db-truncate", "mailman"],
             "exclude_task_names": null,
             "n_tasks": null
         }
