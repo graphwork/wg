@@ -40,7 +40,7 @@ fn detect_asciinema() -> bool {
 /// Run the viz viewer TUI.
 ///
 /// `mouse_override`: `Some(false)` to force mouse off (--no-mouse),
-/// `None` for auto-detection (disabled in tmux splits).
+/// `None` for default (enabled).
 ///
 /// `recording`: when true (or auto-detected via `ASCIINEMA_REC`), disables
 /// mouse capture and keyboard enhancement queries that produce escape
