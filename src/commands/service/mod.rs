@@ -1094,8 +1094,10 @@ pub fn run_start(
         let mut stdout = std::io::stdout();
         let mut alive = false;
 
-        // Animate for at least 600ms so the wave is visible, up to 2s max
-        while start.elapsed() < Duration::from_millis(2000) {
+        // Animate for at least 600ms so the wave is visible, up to 5s max.
+        // 5s gives cold starts on Windows (antivirus scan, disk cache miss)
+        // enough headroom to bind the socket without tripping the timeout.
+        while start.elapsed() < Duration::from_millis(5000) {
             let elapsed_ms = start.elapsed().as_millis() as usize;
             let wave_pos = (elapsed_ms / FRAME_MS as usize) % NUM_BOLTS;
 
@@ -1140,10 +1142,12 @@ pub fn run_start(
         let _ = stdout.flush();
         alive
     } else {
-        // Non-TTY or JSON mode: wait for process alive + socket accepting
+        // Non-TTY or JSON mode: wait for process alive + socket accepting.
+        // 8s budget matches the TTY path's 5s plus extra headroom for
+        // batch/CI environments where cold-start latency can be higher.
         let start = Instant::now();
         let mut alive = false;
-        while start.elapsed() < Duration::from_millis(3000) {
+        while start.elapsed() < Duration::from_millis(8000) {
             std::thread::sleep(Duration::from_millis(100));
             if is_process_alive(pid) && socket_accepting(&socket) {
                 alive = true;
@@ -1153,10 +1157,25 @@ pub fn run_start(
         alive
     };
 
-    // Verify daemon started successfully
+    // Distinguish "process dead" from "process alive but socket not yet
+    // accepting". Only the former is a real failure. In the latter case
+    // the daemon is still binding — on Windows this happens under cold
+    // start (antivirus scan, disk cache miss) — and state.json must stay
+    // so subsequent `wg service status` / `wg service stop` can find the
+    // daemon. Previously both cases removed state.json, leaving a live
+    // but unreachable daemon that blocked the next `wg service start`.
     if !daemon_alive {
-        ServiceState::remove(dir)?;
-        anyhow::bail!("Daemon process exited immediately. Check logs.");
+        if !is_process_alive(pid) {
+            ServiceState::remove(dir)?;
+            anyhow::bail!("Daemon process exited immediately. Check logs.");
+        }
+        eprintln!(
+            "warning: daemon PID {} is alive but socket was not accepting \
+             connections within the startup budget. state.json has been kept; \
+             run `wg service status` shortly to confirm readiness, or \
+             `wg service stop` if the daemon is stuck.",
+            pid
+        );
     }
 
     // Resolve effective config for display (CLI flags override config.toml)
