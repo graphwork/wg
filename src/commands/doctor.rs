@@ -165,8 +165,8 @@ fn check_host_tools() -> Vec<Check> {
         None => {
             out.push(Check::err(
                 "claude CLI",
-                "not found on PATH".into(),
-                "Install Claude Code, or run `claude setup-token` for a headless token.".into(),
+                "not found on PATH",
+                "Install Claude Code, or run `claude setup-token` for a headless token.",
             ));
         }
     }
@@ -184,8 +184,7 @@ fn check_host_tools() -> Vec<Check> {
                     "bash",
                     format!("found but not Git-for-Windows: {}", first),
                     "Install Git for Windows — workgraph spawns wrapper scripts via its bash. \
-                     WSL's bash can't see Windows paths the same way."
-                        .into(),
+                     WSL's bash can't see Windows paths the same way.",
                 ));
             }
             #[cfg(not(windows))]
@@ -194,8 +193,8 @@ fn check_host_tools() -> Vec<Check> {
         _ => {
             out.push(Check::err(
                 "bash",
-                "not found on PATH".into(),
-                "Install Git for Windows (on Windows) — workgraph wrappers require bash.".into(),
+                "not found on PATH",
+                "Install Git for Windows (on Windows) — workgraph wrappers require bash.",
             ));
         }
     }
@@ -208,8 +207,8 @@ fn check_host_tools() -> Vec<Check> {
         )),
         _ => out.push(Check::err(
             "git",
-            "not found on PATH".into(),
-            "Install Git — workgraph uses `git worktree` for agent isolation.".into(),
+            "not found on PATH",
+            "Install Git — workgraph uses `git worktree` for agent isolation.",
         )),
     }
 
@@ -219,33 +218,30 @@ fn check_host_tools() -> Vec<Check> {
     // Workgraph's wrapper scripts rely on the GNU behavior.
     #[cfg(windows)]
     {
-        match run_capture("timeout", &["--help"]) {
-            Some((_, stdout, stderr)) => {
-                let combined = format!("{}{}", stdout, stderr);
-                if combined.contains("Usage: timeout") || combined.contains("--kill-after") {
-                    out.push(Check::ok("timeout(1)", "GNU coreutils `timeout` is first on PATH".into()));
-                } else if combined.contains("TIMEOUT") && combined.contains("Default option") {
-                    out.push(Check::err(
-                        "timeout(1)",
-                        "Windows TIMEOUT.EXE is first on PATH (not the GNU command wrapper)".into(),
-                        "Put Git for Windows' `usr\\bin` ahead of `C:\\Windows\\System32` on the \
-                         daemon's PATH, or wait for the upstream cross-platform timeout helper to land (#22)."
-                            .into(),
-                    ));
-                } else {
-                    out.push(Check::warn(
-                        "timeout(1)",
-                        format!("found but couldn't identify: {}",
-                            combined.lines().next().unwrap_or("").trim()),
-                        "Verify `timeout` is the GNU command wrapper from coreutils.".into(),
-                    ));
-                }
+        // Modern wg uses `platform_timeout::spawn_with_timeout` internally
+        // and does not depend on `timeout` being on PATH. Report what the
+        // user has as informational only — Windows TIMEOUT.EXE ahead of
+        // GNU coreutils is no longer a blocker.
+        match run_capture("timeout", &["--version"]) {
+            Some((true, stdout, _)) if stdout.contains("GNU coreutils") => {
+                out.push(Check::info(
+                    "timeout(1)",
+                    format!("GNU: {}", stdout.lines().next().unwrap_or("").trim()),
+                ));
+            }
+            Some(_) => {
+                out.push(Check::info(
+                    "timeout(1)",
+                    "Windows TIMEOUT.EXE is first on PATH. Not a problem for \
+                     modern wg (uses its own cross-platform timeout helper), \
+                     only matters if you shell out to `timeout` yourself.",
+                ));
             }
             None => {
-                out.push(Check::err(
+                out.push(Check::info(
                     "timeout(1)",
-                    "not found on PATH".into(),
-                    "Install Git for Windows (ships GNU coreutils including timeout).".into(),
+                    "not found on PATH (not required by wg; Git for Windows \
+                     provides it if needed)",
                 ));
             }
         }
@@ -253,7 +249,7 @@ fn check_host_tools() -> Vec<Check> {
     #[cfg(unix)]
     {
         if run_capture("timeout", &["--help"]).is_some() {
-            out.push(Check::ok("timeout(1)", "found".into()));
+            out.push(Check::ok("timeout(1)", "found"));
         }
     }
 
@@ -276,21 +272,20 @@ fn check_auth(dir: &Path) -> Vec<Check> {
         } else if v.starts_with("sk-ant-oat01-") {
             out.push(Check::err(
                 "ANTHROPIC_API_KEY",
-                "is set to an `sk-ant-oat01-…` OAuth token".into(),
+                "is set to an `sk-ant-oat01-…` OAuth token",
                 "OAuth tokens use Bearer auth; `ANTHROPIC_API_KEY` is sent as `x-api-key` and will \
-                 always 401. Move it to `CLAUDE_CODE_OAUTH_TOKEN` instead."
-                    .into(),
+                 always 401. Move it to `CLAUDE_CODE_OAUTH_TOKEN` instead.",
             ));
         } else if v.starts_with("sk-ant-api") {
             out.push(Check::ok(
                 "ANTHROPIC_API_KEY",
-                "set to a console API key".into(),
+                "set to a console API key",
             ));
         } else {
             out.push(Check::warn(
                 "ANTHROPIC_API_KEY",
                 format!("set but doesn't match known prefixes: starts with `{}…`", &v[..v.len().min(12)]),
-                "Double-check the token format.".into(),
+                "Double-check the token format.",
             ));
         }
     }
@@ -301,13 +296,13 @@ fn check_auth(dir: &Path) -> Vec<Check> {
         if v.starts_with("sk-ant-oat01-") {
             out.push(Check::ok(
                 "CLAUDE_CODE_OAUTH_TOKEN",
-                "set to an `sk-ant-oat01-…` OAuth token".into(),
+                "set to an `sk-ant-oat01-…` OAuth token",
             ));
         } else {
             out.push(Check::warn(
                 "CLAUDE_CODE_OAUTH_TOKEN",
-                "set but doesn't look like an `sk-ant-oat01-…` token".into(),
-                "Verify the token format; OAuth tokens use the `sk-ant-oat01-` prefix.".into(),
+                "set but doesn't look like an `sk-ant-oat01-…` token",
+                "Verify the token format; OAuth tokens use the `sk-ant-oat01-` prefix.",
             ));
         }
     }
@@ -318,13 +313,12 @@ fn check_auth(dir: &Path) -> Vec<Check> {
     if std::env::var("CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST").is_ok() {
         out.push(Check::warn(
             "CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST",
-            "is set in the current shell".into(),
+            "is set in the current shell",
             "This env var tells `claude` to prefer the host bridge (Claude Code's auth IPC) over \
              any token you configure. Fine if you're running interactively inside Claude Code, \
              bad if a detached daemon inherits it — the daemon will silently 401 on every call. \
              Start the daemon from a shell where this isn't set, or upgrade to a workgraph build \
-             that strips it from spawned children (#30)."
-                .into(),
+             that strips it from spawned children (#30).",
         ));
     }
 
@@ -340,10 +334,9 @@ fn check_auth(dir: &Path) -> Vec<Check> {
             // Only flag as warning if there's no other auth source
             out.push(Check::warn(
                 "claude login",
-                "no `credentials.json` and no `CLAUDE_CODE_OAUTH_TOKEN` in env".into(),
+                "no `credentials.json` and no `CLAUDE_CODE_OAUTH_TOKEN` in env",
                 "Run `claude login` for a refreshable credential, or set `CLAUDE_CODE_OAUTH_TOKEN`, \
-                 or configure `[auth]` in `.workgraph/config.toml`."
-                    .into(),
+                 or configure `[auth]` in `.workgraph/config.toml`.",
             ));
         }
     }
@@ -354,15 +347,14 @@ fn check_auth(dir: &Path) -> Vec<Check> {
         && let Ok(content) = std::fs::read_to_string(&cfg_path)
     {
         if content.contains("claude_code_oauth_token_file") {
-            out.push(Check::ok("[auth] config", "token-file reference in .workgraph/config.toml".into()));
+            out.push(Check::ok("[auth] config", "token-file reference in .workgraph/config.toml"));
         } else if content.contains("claude_code_oauth_token") {
             out.push(Check::warn(
                 "[auth] config",
-                "inline token in .workgraph/config.toml".into(),
+                "inline token in .workgraph/config.toml",
                 "Prefer `claude_code_oauth_token_file` so the token doesn't live in a file that \
                  might be committed. Make sure `.workgraph/config.toml` is gitignored if you keep \
-                 it inline."
-                    .into(),
+                 it inline.",
             ));
         }
     }
@@ -379,7 +371,7 @@ fn check_workgraph_dir(dir: &Path) -> Vec<Check> {
         out.push(Check::err(
             ".workgraph dir",
             format!("{} does not exist", dir.display()),
-            "Run `wg init` in your project root.".into(),
+            "Run `wg init` in your project root.",
         ));
         return out;
     }
@@ -398,7 +390,7 @@ fn check_workgraph_dir(dir: &Path) -> Vec<Check> {
         out.push(Check::warn(
             "graph.jsonl",
             format!("missing at {}", graph.display()),
-            "Run `wg init` to create an empty graph, or `wg add` to start.".into(),
+            "Run `wg init` to create an empty graph, or `wg add` to start.",
         ));
     }
 
@@ -412,7 +404,7 @@ fn check_daemon(dir: &Path) -> Vec<Check> {
 
     let state_path = dir.join("service").join("state.json");
     if !state_path.exists() {
-        out.push(Check::info("service daemon", "not running (no state.json)".into()));
+        out.push(Check::info("service daemon", "not running (no state.json)"));
         return out;
     }
 
@@ -424,23 +416,37 @@ fn check_daemon(dir: &Path) -> Vec<Check> {
             let pid = v.get("pid").and_then(|p| p.as_u64()).unwrap_or(0);
             let socket = v.get("socket_path").and_then(|s| s.as_str()).unwrap_or("?").to_string();
             if pid > 0 {
-                out.push(Check::ok(
-                    "service daemon",
-                    format!("PID {} (state.json)\nsocket: {}", pid, socket),
-                ));
+                // state.json lingers after a crash/kill. Confirm the PID
+                // is actually a live process before claiming "running".
+                if is_pid_alive(pid as u32) {
+                    out.push(Check::ok(
+                        "service daemon",
+                        format!("PID {} (alive)\nsocket: {}", pid, socket),
+                    ));
+                } else {
+                    out.push(Check::warn(
+                        "service daemon",
+                        format!(
+                            "state.json claims PID {} but that process is gone (stale state)",
+                            pid
+                        ),
+                        "Remove `.workgraph/service/state.json` and start fresh with \
+                         `wg service start`.",
+                    ));
+                }
             } else {
                 out.push(Check::warn(
                     "service daemon",
-                    "state.json present but no PID".into(),
-                    "Try `wg service stop --force` then `wg service start`.".into(),
+                    "state.json present but no PID",
+                    "Try `wg service stop --force` then `wg service start`.",
                 ));
             }
         }
         None => {
             out.push(Check::warn(
                 "service daemon",
-                "state.json unreadable or malformed".into(),
-                "Remove `.workgraph/service/state.json` and restart with `wg service start`.".into(),
+                "state.json unreadable or malformed",
+                "Remove `.workgraph/service/state.json` and restart with `wg service start`.",
             ));
         }
     }
@@ -489,6 +495,30 @@ fn run_capture(program: &str, args: &[&str]) -> Option<(bool, String, String)> {
         String::from_utf8_lossy(&output.stdout).into_owned(),
         String::from_utf8_lossy(&output.stderr).into_owned(),
     ))
+}
+
+/// Check whether a PID corresponds to a currently-running process.
+///
+/// Reuses the same pattern the daemon itself uses: Unix sends signal 0
+/// (checks existence without delivering), Windows opens the process and
+/// queries exit code.
+fn is_pid_alive(pid: u32) -> bool {
+    #[cfg(unix)]
+    {
+        // SAFETY: `kill(pid, 0)` is the standard existence probe — no signal
+        // is actually sent; we only care about the errno.
+        unsafe { libc::kill(pid as i32, 0) == 0 }
+    }
+    #[cfg(windows)]
+    {
+        // Fall back to listing processes via tasklist: cheap enough for a
+        // single check and avoids adding a winapi-surface dependency just
+        // for this file.
+        match run_capture("tasklist", &["/FI", &format!("PID eq {}", pid), "/FO", "CSV", "/NH"]) {
+            Some((true, stdout, _)) => !stdout.trim().is_empty() && stdout.contains(&pid.to_string()),
+            _ => false,
+        }
+    }
 }
 
 // Silence "unused import" on non-Windows where some helpers only apply to
