@@ -11373,6 +11373,12 @@ impl VizApp {
             Ok(pane) => {
                 self.task_panes.insert(task_id, pane);
                 self.chat_pty_mode = true;
+                // Shift focus into the right panel so keystrokes route
+                // to the PTY (matches `toggle_chat_pty_mode` on Ctrl+T).
+                // Without this, the graph panel owns keys and hotkeys
+                // like 'e' fire graph-side dialogs instead of reaching
+                // `wg nex` inside the pane.
+                self.focused_panel = FocusedPanel::RightPanel;
             }
             Err(e) => {
                 eprintln!(
