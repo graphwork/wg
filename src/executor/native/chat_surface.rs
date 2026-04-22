@@ -286,6 +286,17 @@ pub fn append_outbox(
     crate::chat::append_outbox_ref(workgraph_dir, session_ref, text, request_id)
 }
 
+/// Append a system-error message to the outbox.
+/// Thin pass-through to `chat::append_error_ref`.
+pub fn append_error(
+    workgraph_dir: &Path,
+    session_ref: &str,
+    text: &str,
+    request_id: &str,
+) -> Result<u64> {
+    crate::chat::append_error_ref(workgraph_dir, session_ref, text, request_id)
+}
+
 /// Clear the streaming dotfile (called between turns).
 pub fn clear_streaming(workgraph_dir: &Path, session_ref: &str) {
     crate::chat::clear_streaming_ref(workgraph_dir, session_ref);
