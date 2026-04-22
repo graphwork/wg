@@ -872,7 +872,10 @@ mod tests {
         let wrapper_path = agent_output_dir(&workgraph_dir, "agent-1").join("run.sh");
         let script = fs::read_to_string(&wrapper_path).unwrap();
 
-        // Worktrees are sacred — the wrapper must NOT auto-remove them.
+        // Sacred invariant: the wrapper must NOT force-remove worktrees inline.
+        // Atomic cleanup now happens via a marker + coordinator sweep, not
+        // inline `git worktree remove --force`. This keeps the wrapper crash-safe:
+        // a killed wrapper leaves the worktree intact for orphan recovery.
         assert!(
             !script.contains("worktree remove --force"),
             "Wrapper script must not auto-remove worktrees (sacred-worktree invariant)"
@@ -885,9 +888,32 @@ mod tests {
             !script.contains(r#"rm -f "$WG_WORKTREE_PATH/.workgraph""#),
             "Wrapper script must not remove the .workgraph symlink"
         );
+    }
+
+    #[test]
+    fn test_wrapper_writes_cleanup_pending_marker() {
+        // Two-phase atomic cleanup: the wrapper must drop a `.wg-cleanup-pending`
+        // marker inside the worktree so the coordinator's next tick can reap it.
+        let temp_dir = TempDir::new().unwrap();
+        let unique_id = get_unique_id();
+        let task_id = format!("t{}", unique_id);
+        let mut task = make_task(&task_id, "Test Task");
+        task.exec = Some("echo hello".to_string());
+        setup_graph(temp_dir.path(), vec![task]);
+
+        let workgraph_dir = temp_dir.path().join(".workgraph");
+        run(&workgraph_dir, &task_id, "shell", None, None, false).unwrap();
+
+        let wrapper_path = agent_output_dir(&workgraph_dir, "agent-1").join("run.sh");
+        let script = fs::read_to_string(&wrapper_path).unwrap();
+
         assert!(
-            script.contains("worktree preserved"),
-            "Wrapper should log preservation message"
+            script.contains(".wg-cleanup-pending"),
+            "Wrapper must write the cleanup-pending marker for coordinator sweep"
+        );
+        assert!(
+            script.contains("touch \"$WG_WORKTREE_PATH/.wg-cleanup-pending\""),
+            "Marker must be written inside the worktree, guarded by WG_WORKTREE_PATH"
         );
     }
 

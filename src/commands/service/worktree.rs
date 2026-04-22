@@ -25,6 +25,21 @@ use std::os::unix::fs::PermissionsExt;
 /// The directory under the project root where agent worktrees live.
 pub const WORKTREES_DIR: &str = ".wg-worktrees";
 
+/// Marker file written inside a worktree by the agent wrapper after
+/// merge-back completes, signaling the worktree is eligible for sweep.
+///
+/// Two-phase atomic cleanup:
+/// 1. Wrapper writes this marker at agent exit (can't do `git worktree remove --force`
+///    inline — see `test_wrapper_preserves_worktree` sacred invariant).
+/// 2. Coordinator tick sweeps marked worktrees whose agent is not live AND
+///    whose task is in a terminal status.
+///
+/// Idempotent + crash-safe: if a crash happens between marker write and sweep,
+/// the next tick retries. If the wrapper never writes the marker (e.g. kill -9),
+/// the existing dead-agent reaper still sees the agent as dead and can
+/// fall back to `cleanup_orphaned_worktrees()`.
+pub const CLEANUP_PENDING_MARKER: &str = ".wg-cleanup-pending";
+
 /// Heartbeat freshness timeout (seconds) for the worktree-cleanup
 /// liveness check. A worktree is considered owned by a live agent only
 /// if the agent's last heartbeat is within this window AND its process
@@ -681,6 +696,152 @@ pub fn cleanup_orphaned_worktrees(dir: &Path) -> Result<usize> {
     timer.complete(true, resources);
 
     Ok(cleaned)
+}
+
+/// Sweep worktrees marked `CLEANUP_PENDING_MARKER` by their agent wrappers.
+///
+/// The agent wrapper touches this marker after its merge-back section runs
+/// (regardless of task success/failure). This function is called from each
+/// coordinator tick to actually perform the removal atomically from the
+/// user's perspective (agent completes → next tick cleans up).
+///
+/// A worktree is removed iff ALL of:
+/// 1. It has the `CLEANUP_PENDING_MARKER` file.
+/// 2. Its owning agent is NOT live (per `AgentEntry::is_live`), OR
+///    the agent has no registry entry.
+/// 3. Its owning task is in a terminal status (Done/Failed/Abandoned)
+///    OR is missing from the graph.
+///
+/// Returns the number of worktrees successfully removed. Errors on individual
+/// worktrees are logged but do not abort the sweep (best-effort).
+pub fn sweep_cleanup_pending_worktrees(dir: &Path) -> Result<usize> {
+    let project_root = dir
+        .parent()
+        .ok_or_else(|| anyhow!("Cannot determine project root from {:?}", dir))?;
+    let worktrees_dir = project_root.join(WORKTREES_DIR);
+
+    if !worktrees_dir.exists() {
+        return Ok(0);
+    }
+
+    let registry = workgraph::service::registry::AgentRegistry::load(dir)?;
+
+    // Load graph to check task status. If this fails we skip the sweep rather
+    // than do potentially unsafe removals.
+    let graph_path = dir.join("graph.jsonl");
+    let graph = if graph_path.exists() {
+        Some(workgraph::parser::load_graph(&graph_path).context("Failed to load graph for sweep")?)
+    } else {
+        None
+    };
+
+    let mut removed = 0;
+    for entry in fs::read_dir(&worktrees_dir)? {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(e) => {
+                eprintln!("[worktree-sweep] read_dir entry error: {}", e);
+                continue;
+            }
+        };
+        let name = entry.file_name().to_string_lossy().to_string();
+        if !name.starts_with("agent-") {
+            continue;
+        }
+
+        let wt_path = entry.path();
+        let marker_path = wt_path.join(CLEANUP_PENDING_MARKER);
+        if !marker_path.exists() {
+            continue;
+        }
+
+        // Safety check 1: agent must not be live.
+        if let Some(agent) = registry.agents.get(&name)
+            && agent.is_live(HEARTBEAT_LIVENESS_TIMEOUT_SECS)
+        {
+            eprintln!(
+                "[worktree-sweep] Skipping {}: agent still live (status={:?}, pid={})",
+                name, agent.status, agent.pid
+            );
+            continue;
+        }
+
+        // Find the branch — required for clean removal AND for inferring task ID
+        // when the agent is missing from the registry (orphan).
+        let branch = find_branch_for_worktree(project_root, &wt_path);
+
+        // Safety check 2: task must be terminal (or missing from graph).
+        // Prefer registry's task_id; fall back to parsing the branch name
+        // (`wg/<agent-id>/<task-id>`) when the agent has no registry entry.
+        let task_id: Option<String> = registry
+            .agents
+            .get(&name)
+            .map(|a| a.task_id.clone())
+            .or_else(|| {
+                branch.as_deref().and_then(|b| {
+                    // `wg/<agent-id>/<task-id>` — task-id may contain slashes in theory
+                    // but our id format is kebab-case so this is safe.
+                    b.strip_prefix(&format!("wg/{}/", name)).map(str::to_string)
+                })
+            });
+
+        if let Some(task_id) = task_id.as_deref()
+            && let Some(graph) = &graph
+            && let Some(task) = graph.get_task(task_id)
+            && !task.status.is_terminal()
+        {
+            eprintln!(
+                "[worktree-sweep] Skipping {}: task '{}' is {:?} (not terminal)",
+                name, task_id, task.status
+            );
+            continue;
+        }
+        eprintln!(
+            "[worktree-sweep] Removing {} (marker present, agent not live, task terminal)",
+            name
+        );
+
+        match branch {
+            Some(branch) => match remove_worktree(project_root, &wt_path, &branch) {
+                Ok(()) => removed += 1,
+                Err(e) => {
+                    eprintln!("[worktree-sweep] remove_worktree failed for {}: {}", name, e);
+                    // Fall back to manual cleanup so the worktree doesn't leak.
+                    if wt_path.exists() {
+                        if let Err(e2) = fs::remove_dir_all(&wt_path) {
+                            eprintln!(
+                                "[worktree-sweep] Manual fallback remove_dir_all failed: {}",
+                                e2
+                            );
+                        } else {
+                            removed += 1;
+                        }
+                    }
+                }
+            },
+            None => {
+                // No branch found (already pruned or never registered).
+                // Fall back to filesystem + git-worktree-remove attempt.
+                let _ = Command::new("git")
+                    .args(["worktree", "remove", "--force"])
+                    .arg(&wt_path)
+                    .current_dir(project_root)
+                    .output();
+                if wt_path.exists() {
+                    if let Err(e) = fs::remove_dir_all(&wt_path) {
+                        eprintln!(
+                            "[worktree-sweep] Branchless cleanup failed for {}: {}",
+                            name, e
+                        );
+                        continue;
+                    }
+                }
+                removed += 1;
+            }
+        }
+    }
+
+    Ok(removed)
 }
 
 /// Prune worktrees that are older than `max_age_secs`.
@@ -1875,6 +2036,299 @@ mod tests {
 
         // Live agent's worktree MUST survive
         assert!(live_wt.exists(), "live agent worktree must NOT be removed");
+    }
+
+    // ---------- Two-phase atomic cleanup tests ----------
+
+    fn write_graph_with_task(wg_dir: &Path, task_id: &str, status: workgraph::graph::Status) {
+        use workgraph::graph::{Node, Task, WorkGraph};
+        let mut graph = WorkGraph::new();
+        let task = Task {
+            id: task_id.to_string(),
+            title: "test".to_string(),
+            status,
+            ..Task::default()
+        };
+        graph.add_node(Node::Task(task));
+        let graph_path = wg_dir.join("graph.jsonl");
+        workgraph::parser::save_graph(&graph, &graph_path).unwrap();
+    }
+
+    fn register_agent(
+        wg_dir: &Path,
+        agent_id: &str,
+        task_id: &str,
+        pid: u32,
+        status: workgraph::service::registry::AgentStatus,
+    ) {
+        use workgraph::service::registry::{AgentEntry, AgentRegistry};
+        let now = chrono::Utc::now().to_rfc3339();
+        let mut registry = AgentRegistry::load(wg_dir).unwrap_or_default();
+        registry.agents.insert(
+            agent_id.to_string(),
+            AgentEntry {
+                id: agent_id.to_string(),
+                pid,
+                task_id: task_id.to_string(),
+                executor: "test".to_string(),
+                started_at: now.clone(),
+                last_heartbeat: now.clone(),
+                status,
+                output_file: String::new(),
+                model: None,
+                completed_at: None,
+            },
+        );
+        registry.save(wg_dir).unwrap();
+    }
+
+    #[test]
+    fn atomic_worktree_cleanup_on_success() {
+        use workgraph::graph::Status;
+        use workgraph::service::registry::AgentStatus;
+
+        let temp = TempDir::new().unwrap();
+        let project = temp.path().join("project");
+        fs::create_dir_all(&project).unwrap();
+        init_git_repo(&project);
+
+        let wg_dir = project.join(".workgraph");
+        fs::create_dir_all(wg_dir.join("service")).unwrap();
+
+        // Agent completed successfully: task=Done, agent=Done, marker present.
+        let (wt_path, _branch) = create_test_worktree(&project, "agent-ok", "task-ok");
+        fs::write(wt_path.join(CLEANUP_PENDING_MARKER), "").unwrap();
+        write_graph_with_task(&wg_dir, "task-ok", Status::Done);
+        register_agent(&wg_dir, "agent-ok", "task-ok", 999_999_999, AgentStatus::Done);
+
+        assert!(wt_path.exists(), "precondition: worktree exists");
+
+        let removed = sweep_cleanup_pending_worktrees(&wg_dir).unwrap();
+        assert_eq!(removed, 1, "should remove exactly one worktree");
+        assert!(
+            !wt_path.exists(),
+            "worktree must be removed on successful completion"
+        );
+    }
+
+    #[test]
+    fn atomic_worktree_cleanup_on_failure() {
+        use workgraph::graph::Status;
+        use workgraph::service::registry::AgentStatus;
+
+        let temp = TempDir::new().unwrap();
+        let project = temp.path().join("project");
+        fs::create_dir_all(&project).unwrap();
+        init_git_repo(&project);
+
+        let wg_dir = project.join(".workgraph");
+        fs::create_dir_all(wg_dir.join("service")).unwrap();
+
+        // Agent failed: task=Failed, agent=Failed, marker present.
+        let (wt_path, _branch) = create_test_worktree(&project, "agent-fail", "task-fail");
+        fs::write(wt_path.join(CLEANUP_PENDING_MARKER), "").unwrap();
+        write_graph_with_task(&wg_dir, "task-fail", Status::Failed);
+        register_agent(
+            &wg_dir,
+            "agent-fail",
+            "task-fail",
+            999_999_998,
+            AgentStatus::Failed,
+        );
+
+        let removed = sweep_cleanup_pending_worktrees(&wg_dir).unwrap();
+        assert_eq!(removed, 1);
+        assert!(
+            !wt_path.exists(),
+            "worktree must be removed on failed completion"
+        );
+    }
+
+    #[test]
+    fn atomic_worktree_cleanup_skips_no_marker() {
+        use workgraph::graph::Status;
+        use workgraph::service::registry::AgentStatus;
+
+        let temp = TempDir::new().unwrap();
+        let project = temp.path().join("project");
+        fs::create_dir_all(&project).unwrap();
+        init_git_repo(&project);
+
+        let wg_dir = project.join(".workgraph");
+        fs::create_dir_all(wg_dir.join("service")).unwrap();
+
+        // Agent may have died before writing marker: don't touch it from sweep.
+        // (The dead-agent reaper path is responsible for that case.)
+        let (wt_path, _branch) = create_test_worktree(&project, "agent-nomark", "task-nomark");
+        write_graph_with_task(&wg_dir, "task-nomark", Status::Done);
+        register_agent(
+            &wg_dir,
+            "agent-nomark",
+            "task-nomark",
+            999_999_997,
+            AgentStatus::Dead,
+        );
+
+        let removed = sweep_cleanup_pending_worktrees(&wg_dir).unwrap();
+        assert_eq!(removed, 0);
+        assert!(
+            wt_path.exists(),
+            "worktree without marker must NOT be swept — sacred-worktree invariant"
+        );
+    }
+
+    #[test]
+    fn atomic_worktree_cleanup_skips_live_agent() {
+        use workgraph::graph::Status;
+        use workgraph::service::registry::AgentStatus;
+
+        let temp = TempDir::new().unwrap();
+        let project = temp.path().join("project");
+        fs::create_dir_all(&project).unwrap();
+        init_git_repo(&project);
+
+        let wg_dir = project.join(".workgraph");
+        fs::create_dir_all(wg_dir.join("service")).unwrap();
+
+        // Marker present but agent is still live (stuck wrapper + race):
+        // MUST refuse to remove.
+        let (wt_path, _branch) = create_test_worktree(&project, "agent-live", "task-live");
+        fs::write(wt_path.join(CLEANUP_PENDING_MARKER), "").unwrap();
+        write_graph_with_task(&wg_dir, "task-live", Status::InProgress);
+        register_agent(
+            &wg_dir,
+            "agent-live",
+            "task-live",
+            std::process::id(), // our own PID — definitely alive
+            AgentStatus::Working,
+        );
+
+        let removed = sweep_cleanup_pending_worktrees(&wg_dir).unwrap();
+        assert_eq!(removed, 0);
+        assert!(wt_path.exists(), "must not remove worktree of live agent");
+    }
+
+    #[test]
+    fn atomic_worktree_cleanup_skips_in_progress_task() {
+        use workgraph::graph::Status;
+        use workgraph::service::registry::AgentStatus;
+
+        let temp = TempDir::new().unwrap();
+        let project = temp.path().join("project");
+        fs::create_dir_all(&project).unwrap();
+        init_git_repo(&project);
+
+        let wg_dir = project.join(".workgraph");
+        fs::create_dir_all(wg_dir.join("service")).unwrap();
+
+        // Marker present, agent dead, but task still in-progress (triage will
+        // unclaim it). We must not yank the worktree before the task transitions.
+        let (wt_path, _branch) = create_test_worktree(&project, "agent-ip", "task-ip");
+        fs::write(wt_path.join(CLEANUP_PENDING_MARKER), "").unwrap();
+        write_graph_with_task(&wg_dir, "task-ip", Status::InProgress);
+        register_agent(
+            &wg_dir,
+            "agent-ip",
+            "task-ip",
+            999_999_996,
+            AgentStatus::Dead,
+        );
+
+        let removed = sweep_cleanup_pending_worktrees(&wg_dir).unwrap();
+        assert_eq!(removed, 0);
+        assert!(
+            wt_path.exists(),
+            "must not remove worktree when task is still in-progress"
+        );
+    }
+
+    #[test]
+    fn atomic_worktree_cleanup_orphan_agent_checks_task_via_branch() {
+        use workgraph::graph::Status;
+
+        let temp = TempDir::new().unwrap();
+        let project = temp.path().join("project");
+        fs::create_dir_all(&project).unwrap();
+        init_git_repo(&project);
+
+        let wg_dir = project.join(".workgraph");
+        fs::create_dir_all(wg_dir.join("service")).unwrap();
+
+        // Worktree exists with marker, but agent has NO registry entry
+        // (registry wiped, or manual drop). Task is still Open — non-terminal.
+        // The sweep must infer task_id from the branch name and refuse to remove.
+        let (wt_path, _branch) = create_test_worktree(&project, "agent-orphan", "task-orphan");
+        fs::write(wt_path.join(CLEANUP_PENDING_MARKER), "").unwrap();
+        write_graph_with_task(&wg_dir, "task-orphan", Status::Open);
+        // Ensure an empty registry file exists so load() doesn't fail.
+        workgraph::service::registry::AgentRegistry::default()
+            .save(&wg_dir)
+            .unwrap();
+
+        let removed = sweep_cleanup_pending_worktrees(&wg_dir).unwrap();
+        assert_eq!(
+            removed, 0,
+            "orphan agent (no registry entry) with Open task must NOT be swept"
+        );
+        assert!(wt_path.exists());
+    }
+
+    #[test]
+    fn atomic_worktree_cleanup_orphan_agent_terminal_task_is_swept() {
+        use workgraph::graph::Status;
+
+        let temp = TempDir::new().unwrap();
+        let project = temp.path().join("project");
+        fs::create_dir_all(&project).unwrap();
+        init_git_repo(&project);
+
+        let wg_dir = project.join(".workgraph");
+        fs::create_dir_all(wg_dir.join("service")).unwrap();
+
+        // Same as above but task is Done — now it's safe to remove.
+        let (wt_path, _branch) =
+            create_test_worktree(&project, "agent-orph2", "task-orph2");
+        fs::write(wt_path.join(CLEANUP_PENDING_MARKER), "").unwrap();
+        write_graph_with_task(&wg_dir, "task-orph2", Status::Done);
+        workgraph::service::registry::AgentRegistry::default()
+            .save(&wg_dir)
+            .unwrap();
+
+        let removed = sweep_cleanup_pending_worktrees(&wg_dir).unwrap();
+        assert_eq!(removed, 1);
+        assert!(!wt_path.exists());
+    }
+
+    #[test]
+    fn atomic_worktree_cleanup_idempotent() {
+        use workgraph::graph::Status;
+        use workgraph::service::registry::AgentStatus;
+
+        let temp = TempDir::new().unwrap();
+        let project = temp.path().join("project");
+        fs::create_dir_all(&project).unwrap();
+        init_git_repo(&project);
+
+        let wg_dir = project.join(".workgraph");
+        fs::create_dir_all(wg_dir.join("service")).unwrap();
+
+        let (wt_path, _branch) = create_test_worktree(&project, "agent-idem", "task-idem");
+        fs::write(wt_path.join(CLEANUP_PENDING_MARKER), "").unwrap();
+        write_graph_with_task(&wg_dir, "task-idem", Status::Done);
+        register_agent(
+            &wg_dir,
+            "agent-idem",
+            "task-idem",
+            999_999_995,
+            AgentStatus::Done,
+        );
+
+        // First sweep removes it
+        assert_eq!(sweep_cleanup_pending_worktrees(&wg_dir).unwrap(), 1);
+        assert!(!wt_path.exists());
+
+        // Second sweep is a no-op (worktree already gone) — must not error
+        assert_eq!(sweep_cleanup_pending_worktrees(&wg_dir).unwrap(), 0);
     }
 }
 
