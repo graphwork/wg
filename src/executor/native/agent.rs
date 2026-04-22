@@ -1847,14 +1847,20 @@ impl AgentLoop {
                 //
                 // Idle watchdog (from claude-code-ts pattern): track
                 // the timestamp of the last chunk; if the stream goes
-                // quiet for STREAM_IDLE_TIMEOUT_SECS (90s default),
+                // quiet for STREAM_IDLE_TIMEOUT_SECS (600s default),
                 // abort it. Prevents indefinite hangs on silently
                 // dropped connections. Override via env var
                 // WG_STREAM_IDLE_TIMEOUT_SECS.
+                //
+                // 600s because local llama.cpp / vLLM servers on modest
+                // hardware can spend several minutes on prompt-processing
+                // alone before emitting the first token. The previous 90s
+                // was too aggressive for local models with 4k+ prompts —
+                // the server was still churning when the client gave up.
                 let idle_timeout_secs = std::env::var("WG_STREAM_IDLE_TIMEOUT_SECS")
                     .ok()
                     .and_then(|s| s.parse::<u64>().ok())
-                    .unwrap_or(90);
+                    .unwrap_or(600);
                 let last_chunk =
                     std::sync::Arc::new(std::sync::Mutex::new(std::time::Instant::now()));
                 let last_chunk_for_callback = last_chunk.clone();
