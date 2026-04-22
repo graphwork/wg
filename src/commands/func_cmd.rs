@@ -517,9 +517,6 @@ fn print_template_detail(template: &TaskTemplate) {
     if !template.deliverables.is_empty() {
         println!("    Deliverables: {}", template.deliverables.join(", "));
     }
-    if let Some(ref verify) = template.verify {
-        println!("    Verify: {}", verify);
-    }
     if !template.tags.is_empty() {
         println!("    Tags: {}", template.tags.join(", "));
     }
@@ -597,7 +594,6 @@ mod tests {
                     loops_to: vec![],
                     role_hint: Some("analyst".to_string()),
                     deliverables: vec![],
-                    verify: None,
                     tags: vec![],
                 },
                 TaskTemplate {
@@ -609,7 +605,6 @@ mod tests {
                     loops_to: vec![],
                     role_hint: Some("programmer".to_string()),
                     deliverables: vec![],
-                    verify: None,
                     tags: vec![],
                 },
                 TaskTemplate {
@@ -621,7 +616,6 @@ mod tests {
                     loops_to: vec![],
                     role_hint: None,
                     deliverables: vec![],
-                    verify: None,
                     tags: vec![],
                 },
             ],
@@ -1004,7 +998,6 @@ mod tests {
                 loops_to: vec![],
                 role_hint: Some("architect".to_string()),
                 deliverables: vec![],
-                verify: None,
                 tags: vec![],
             },
             output_format: "workgraph-yaml".to_string(),

@@ -250,7 +250,7 @@ pub fn run(
         })
         .collect();
 
-    // Step 3.8: Load FLIP score and verify findings (if available)
+    // Step 3.8: Load FLIP score (if available)
     let flip_score = {
         let evals_dir = agency_dir.join("evaluations");
         let all_evals = load_all_evaluations_or_warn(&evals_dir);
@@ -259,29 +259,6 @@ pub fn run(
             .find(|e| e.task_id == task_id && e.source == eval_source::FLIP)
             .map(|e| e.score)
     };
-
-    let verify_task_id = format!(".verify-{}", task_id);
-    let verify_task_data = graph.get_task(&verify_task_id);
-    let verify_status_owned: Option<String> = verify_task_data.and_then(|vt| match vt.status {
-        Status::Done => Some("passed".to_string()),
-        Status::Failed => Some("failed".to_string()),
-        _ => None,
-    });
-    let verify_findings_owned: Option<String> = verify_task_data.and_then(|vt| {
-        if vt.log.is_empty() {
-            None
-        } else {
-            let entries: Vec<String> = vt
-                .log
-                .iter()
-                .map(|entry| {
-                    let actor = entry.actor.as_deref().unwrap_or("system");
-                    format!("[{}] ({}): {}", entry.timestamp, actor, entry.message)
-                })
-                .collect();
-            Some(entries.join("\n"))
-        }
-    });
 
     // Step 4: Build evaluator prompt
     let evaluated_outcome = role
@@ -292,7 +269,6 @@ pub fn run(
         task_title: &task.title,
         task_description: task.description.as_deref(),
         task_skills: &task.skills,
-        verify: task.verify.as_deref(),
         agent: resolved_agent.as_ref(),
         role: role.as_ref(),
         tradeoff: resolved_tradeoff.as_ref(),
@@ -304,8 +280,6 @@ pub fn run(
         evaluator_identity: evaluator_identity.as_deref(),
         downstream_tasks: &downstream_tasks,
         flip_score,
-        verify_status: verify_status_owned.as_deref(),
-        verify_findings: verify_findings_owned.as_deref(),
         resolved_outcome_name: evaluated_outcome_name,
         child_tasks: &child_tasks,
     };

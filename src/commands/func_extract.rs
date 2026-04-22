@@ -311,7 +311,6 @@ fn build_template(
         loops_to,
         role_hint,
         deliverables: task.deliverables.clone(),
-        verify: task.verify.clone(),
         tags: task.tags.clone(),
     }
 }
@@ -1002,7 +1001,6 @@ pub fn run_generative(
         loops_to: vec![],
         role_hint: Some("architect".to_string()),
         deliverables: vec![],
-        verify: None,
         tags: vec![],
     };
 

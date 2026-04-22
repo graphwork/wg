@@ -89,7 +89,6 @@ pub fn run(dir: &Path, force: bool) -> Result<()> {
                 loops_to: vec![],
                 role_hint: Some("analyst".to_string()),
                 deliverables: vec![],
-                verify: None,
                 tags: vec!["phase:analyze".to_string()],
             },
             TaskTemplate {
@@ -103,7 +102,6 @@ pub fn run(dir: &Path, force: bool) -> Result<()> {
                 loops_to: vec![],
                 role_hint: Some("implementer".to_string()),
                 deliverables: vec![],
-                verify: None,
                 tags: vec!["phase:draft".to_string()],
             },
             TaskTemplate {
@@ -118,7 +116,6 @@ pub fn run(dir: &Path, force: bool) -> Result<()> {
                 loops_to: vec![],
                 role_hint: None,
                 deliverables: vec![],
-                verify: None,
                 tags: vec!["phase:validate".to_string()],
             },
             TaskTemplate {
@@ -130,7 +127,6 @@ pub fn run(dir: &Path, force: bool) -> Result<()> {
                 loops_to: vec![],
                 role_hint: None,
                 deliverables: vec![],
-                verify: None,
                 tags: vec!["phase:export".to_string()],
             },
         ],
@@ -154,7 +150,6 @@ pub fn run(dir: &Path, force: bool) -> Result<()> {
                 loops_to: vec![],
                 role_hint: Some("architect".to_string()),
                 deliverables: vec![],
-                verify: None,
                 tags: vec![],
             },
             output_format: "workgraph-yaml".to_string(),

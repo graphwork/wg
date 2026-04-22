@@ -328,7 +328,6 @@ fn evaluator_prompt_no_hardcoded_text_when_agent_configured() {
         task_title: "test-task",
         task_description: Some("a test task"),
         task_skills: &[],
-        verify: None,
         agent: None,
         role: None,
         tradeoff: None,
@@ -340,8 +339,6 @@ fn evaluator_prompt_no_hardcoded_text_when_agent_configured() {
         evaluator_identity: Some(&identity),
         downstream_tasks: &[],
         flip_score: None,
-        verify_status: None,
-        verify_findings: None,
         resolved_outcome_name: None,
         child_tasks: &[],
     };
@@ -369,7 +366,6 @@ fn evaluator_prompt_falls_back_to_hardcoded_when_no_agent() {
         task_title: "test-task",
         task_description: Some("a test task"),
         task_skills: &[],
-        verify: None,
         agent: None,
         role: None,
         tradeoff: None,
@@ -381,8 +377,6 @@ fn evaluator_prompt_falls_back_to_hardcoded_when_no_agent() {
         evaluator_identity: None,
         downstream_tasks: &[],
         flip_score: None,
-        verify_status: None,
-        verify_findings: None,
         resolved_outcome_name: None,
         child_tasks: &[],
     };

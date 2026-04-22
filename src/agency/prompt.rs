@@ -307,8 +307,6 @@ pub struct EvaluatorInput<'a> {
     pub task_description: Option<&'a str>,
     /// Task skills required
     pub task_skills: &'a [String],
-    /// Verification criteria (if any)
-    pub verify: Option<&'a str>,
     /// Agent that worked on the task (if assigned)
     pub agent: Option<&'a Agent>,
     /// Role used by the agent (if identity was assigned)
@@ -334,10 +332,6 @@ pub struct EvaluatorInput<'a> {
     pub downstream_tasks: &'a [(String, String, Option<String>)],
     /// FLIP score for the source task (from source: "flip" evaluation), if available.
     pub flip_score: Option<f64>,
-    /// Verification status from .verify-<task>: "passed" or "failed", if available.
-    pub verify_status: Option<&'a str>,
-    /// Log entries from the .verify-<task> task, if available.
-    pub verify_findings: Option<&'a str>,
     /// Resolved outcome name for the evaluated agent's role (avoids showing raw hash).
     /// When `None`, falls back to `role.outcome_id` (which may be a content hash).
     pub resolved_outcome_name: Option<&'a str>,
@@ -384,10 +378,6 @@ pub fn render_evaluator_prompt(input: &EvaluatorInput) -> String {
         }
         out.push('\n');
     }
-    if let Some(verify) = input.verify {
-        let _ = writeln!(out, "**Verification Criteria:**\n{}\n", verify);
-    }
-
     // -- Agent identity --
     out.push_str("## Agent Identity\n\n");
     if let Some(agent) = input.agent {
@@ -520,57 +510,30 @@ pub fn render_evaluator_prompt(input: &EvaluatorInput) -> String {
         out.push('\n');
         out.push_str(
             "IMPORTANT: When a task decomposes into subtasks, evaluate the DECOMPOSITION QUALITY\n\
-             rather than direct verify criteria fulfillment. Consider:\n\
+             rather than direct criteria fulfillment. Consider:\n\
              - Was the decomposition appropriate for the task complexity?\n\
              - Do subtasks adequately cover the parent task's requirements?\n\
-             - Is there clear handoff and verify criteria inheritance?\n\
+             - Is there clear handoff and criteria inheritance?\n\
              - Does the decomposition structure enable effective parallel work?\n\n\
-             Do NOT penalize correctness/completeness dimensions for verification failures\n\
+             Do NOT penalize correctness/completeness dimensions for failures\n\
              when work was properly delegated to subtasks.\n\n",
         );
     }
 
-    // -- FLIP Verification Results (when available) --
-    if input.flip_score.is_some() || input.verify_status.is_some() {
-        out.push_str("## FLIP Verification Results\n\n");
-        if let Some(score) = input.flip_score {
-            let threshold = 0.70;
-            let relation = if score >= threshold {
-                "at or above"
-            } else {
-                "below"
-            };
-            let _ = writeln!(
-                out,
-                "FLIP Score: {:.2} ({} threshold {:.2})",
-                score, relation, threshold
-            );
-        }
-        if let Some(status) = input.verify_status {
-            let _ = writeln!(out, "Verification Status: {}", status.to_uppercase());
-        }
-        if let Some(findings) = input.verify_findings {
-            out.push_str("Verification Findings:\n");
-            out.push_str(findings);
-            out.push('\n');
-        }
-        out.push('\n');
-        let decomposed = !input.child_tasks.is_empty();
-        if decomposed {
-            out.push_str(
-                "NOTE: This task was decomposed into subtasks. If verification failed,\n\
-                 this likely indicates proper work delegation rather than task failure.\n\
-                 Score the decomposition quality instead of penalizing for verify criteria\n\
-                 not met directly. If verification passed despite low FLIP, the FLIP\n\
-                 may have been a false alarm.\n\n",
-            );
+    // -- FLIP Score (when available) --
+    if let Some(score) = input.flip_score {
+        out.push_str("## FLIP Score\n\n");
+        let threshold = 0.70;
+        let relation = if score >= threshold {
+            "at or above"
         } else {
-            out.push_str(
-                "NOTE: Verification is a strong signal. If verification failed, significantly\n\
-                 reduce the overall score. If verification passed despite low FLIP, the FLIP\n\
-                 may have been a false alarm.\n\n",
-            );
-        }
+            "below"
+        };
+        let _ = writeln!(
+            out,
+            "FLIP Score: {:.2} ({} threshold {:.2})\n",
+            score, relation, threshold
+        );
     }
 
     // -- Evaluation rubric & output format --
@@ -1261,7 +1224,6 @@ mod tests {
             task_title: "Implement feature X",
             task_description: Some("Build feature X with full test coverage."),
             task_skills: &["rust".to_string(), "testing".to_string()],
-            verify: Some("All tests pass and code compiles without warnings."),
             agent: None,
             role: Some(&role),
             tradeoff: Some(&tradeoff),
@@ -1273,8 +1235,6 @@ mod tests {
             evaluator_identity: None,
             downstream_tasks: &[],
             flip_score: None,
-            verify_status: None,
-            verify_findings: None,
             resolved_outcome_name: None,
             child_tasks: &[],
         };
@@ -1291,8 +1251,6 @@ mod tests {
         assert!(output.contains("Build feature X with full test coverage."));
         assert!(output.contains("- rust\n"));
         assert!(output.contains("- testing\n"));
-        assert!(output.contains("**Verification Criteria:**"));
-        assert!(output.contains("All tests pass and code compiles without warnings."));
 
         // Agent identity — IDs are content hashes
         assert!(output.contains("## Agent Identity"));
@@ -1357,7 +1315,6 @@ mod tests {
             task_title: "Simple task",
             task_description: None,
             task_skills: &[],
-            verify: None,
             agent: None,
             role: None,
             tradeoff: None,
@@ -1369,8 +1326,6 @@ mod tests {
             evaluator_identity: None,
             downstream_tasks: &[],
             flip_score: None,
-            verify_status: None,
-            verify_findings: None,
             resolved_outcome_name: None,
             child_tasks: &[],
         };
@@ -1401,7 +1356,6 @@ mod tests {
             task_title: "Test order",
             task_description: Some("desc"),
             task_skills: &["rust".to_string()],
-            verify: Some("verify"),
             agent: None,
             role: Some(&role),
             tradeoff: Some(&tradeoff),
@@ -1413,8 +1367,6 @@ mod tests {
             evaluator_identity: None,
             downstream_tasks: &[],
             flip_score: None,
-            verify_status: None,
-            verify_findings: None,
             resolved_outcome_name: None,
             child_tasks: &[],
         };
@@ -1458,7 +1410,6 @@ mod tests {
             task_title: "Build release package",
             task_description: Some("Create the release package."),
             task_skills: &[],
-            verify: None,
             agent: None,
             role: None,
             tradeoff: None,
@@ -1470,8 +1421,6 @@ mod tests {
             evaluator_identity: None,
             downstream_tasks: &downstream,
             flip_score: None,
-            verify_status: None,
-            verify_findings: None,
             resolved_outcome_name: None,
             child_tasks: &[],
         };
@@ -1499,12 +1448,11 @@ mod tests {
     }
 
     #[test]
-    fn test_render_evaluator_prompt_with_flip_verify() {
+    fn test_render_evaluator_prompt_with_flip() {
         let input = EvaluatorInput {
-            task_title: "Task with verify",
-            task_description: Some("A task that was verified."),
+            task_title: "Task with FLIP",
+            task_description: Some("A task that has a FLIP score."),
             task_skills: &[],
-            verify: None,
             agent: None,
             role: None,
             tradeoff: None,
@@ -1516,33 +1464,23 @@ mod tests {
             evaluator_identity: None,
             downstream_tasks: &[],
             flip_score: Some(0.45),
-            verify_status: Some("passed"),
-            verify_findings: Some(
-                "[2025-01-01] (agent-1): Tests pass\n[2025-01-01] (agent-1): Artifacts verified",
-            ),
             resolved_outcome_name: None,
             child_tasks: &[],
         };
 
         let output = render_evaluator_prompt(&input);
 
-        // FLIP Verification Results section should appear
-        assert!(output.contains("## FLIP Verification Results"));
+        // FLIP Score section should appear
+        assert!(output.contains("## FLIP Score"));
         assert!(output.contains("FLIP Score: 0.45 (below threshold 0.70)"));
-        assert!(output.contains("Verification Status: PASSED"));
-        assert!(output.contains("Verification Findings:"));
-        assert!(output.contains("Tests pass"));
-        assert!(output.contains("Artifacts verified"));
-        assert!(output.contains("NOTE: Verification is a strong signal"));
     }
 
     #[test]
-    fn test_render_evaluator_prompt_no_flip_verify() {
+    fn test_render_evaluator_prompt_no_flip() {
         let input = EvaluatorInput {
-            task_title: "Task without verify",
+            task_title: "Task without FLIP",
             task_description: None,
             task_skills: &[],
-            verify: None,
             agent: None,
             role: None,
             tradeoff: None,
@@ -1554,19 +1492,15 @@ mod tests {
             evaluator_identity: None,
             downstream_tasks: &[],
             flip_score: None,
-            verify_status: None,
-            verify_findings: None,
             resolved_outcome_name: None,
             child_tasks: &[],
         };
 
         let output = render_evaluator_prompt(&input);
 
-        // FLIP Verification Results section should NOT appear
-        assert!(!output.contains("## FLIP Verification Results"));
+        // FLIP Score section should NOT appear
+        assert!(!output.contains("## FLIP Score"));
         assert!(!output.contains("FLIP Score"));
-        assert!(!output.contains("Verification Status"));
-        assert!(!output.contains("NOTE: Verification is a strong signal"));
     }
 
     #[test]
@@ -1588,7 +1522,6 @@ mod tests {
             task_title: "Decomposed task",
             task_description: Some("A task that was decomposed into subtasks."),
             task_skills: &[],
-            verify: Some("cargo test passes"),
             agent: None,
             role: None,
             tradeoff: None,
@@ -1600,8 +1533,6 @@ mod tests {
             evaluator_identity: None,
             downstream_tasks: &[],
             flip_score: None,
-            verify_status: Some("failed"),
-            verify_findings: Some("Verification failed - verify criteria not met directly"),
             resolved_outcome_name: None,
             child_tasks: &child_tasks,
         };
@@ -1616,23 +1547,6 @@ mod tests {
         );
         assert!(output.contains("Subtask 1: Parse input"));
         assert!(output.contains("Subtask 2: Process data"));
-
-        // Should contain adjusted verification note for decomposition
-        assert!(output.contains("This task was decomposed into subtasks"));
-        assert!(
-            output
-                .contains("this likely indicates proper work delegation rather than task failure")
-        );
-        assert!(
-            output.contains(
-                "Score the decomposition quality instead of penalizing for verify criteria"
-            )
-        );
-
-        // Should NOT contain the standard verification note that penalizes failures
-        assert!(!output.contains(
-            "If verification failed, significantly\n             reduce the overall score"
-        ));
     }
 
     #[test]
@@ -1641,7 +1555,6 @@ mod tests {
             task_title: "High FLIP",
             task_description: None,
             task_skills: &[],
-            verify: None,
             agent: None,
             role: None,
             tradeoff: None,
@@ -1653,17 +1566,14 @@ mod tests {
             evaluator_identity: None,
             downstream_tasks: &[],
             flip_score: Some(0.85),
-            verify_status: None,
-            verify_findings: None,
             resolved_outcome_name: None,
             child_tasks: &[],
         };
 
         let output = render_evaluator_prompt(&input);
 
-        assert!(output.contains("## FLIP Verification Results"));
+        assert!(output.contains("## FLIP Score"));
         assert!(output.contains("FLIP Score: 0.85 (at or above threshold 0.70)"));
-        assert!(!output.contains("Verification Status"));
     }
 
     // -- Rich component resolution tests ------------------------------------

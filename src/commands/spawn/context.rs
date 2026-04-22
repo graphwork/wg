@@ -253,46 +253,6 @@ pub(crate) fn discover_test_files(project_root: &Path) -> Vec<String> {
     found
 }
 
-/// Build a verify command from discovered test files.
-///
-/// Selects the most appropriate test runner based on the file types found.
-/// Returns `None` if no test files were discovered.
-pub(crate) fn build_auto_verify_command(test_files: &[String]) -> Option<String> {
-    if test_files.is_empty() {
-        return None;
-    }
-
-    // Detect project type from test file extensions
-    let has_rust = test_files.iter().any(|f| f.ends_with(".rs"));
-    let has_python = test_files.iter().any(|f| f.ends_with(".py"));
-    let has_go = test_files.iter().any(|f| f.ends_with(".go"));
-    let has_js = test_files.iter().any(|f| {
-        f.ends_with(".js") || f.ends_with(".ts") || f.ends_with(".tsx") || f.ends_with(".mjs")
-    });
-
-    // For mixed projects or Rust projects, use cargo test
-    if has_rust {
-        return Some("cargo test".to_string());
-    }
-    if has_go {
-        return Some("go test ./...".to_string());
-    }
-    if has_python {
-        // Use the specific test files for targeted verification
-        let py_files: Vec<&str> = test_files
-            .iter()
-            .filter(|f| f.ends_with(".py"))
-            .map(|s| s.as_str())
-            .collect();
-        return Some(format!("python -m pytest {}", py_files.join(" ")));
-    }
-    if has_js {
-        return Some("npx jest".to_string());
-    }
-
-    None
-}
-
 /// Format discovered test files for injection into the agent prompt.
 pub(crate) fn format_test_discovery_context(test_files: &[String]) -> String {
     if test_files.is_empty() {
@@ -2127,51 +2087,6 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let found = discover_test_files(tmp.path());
         assert!(found.is_empty());
-    }
-
-    #[test]
-    fn test_build_auto_verify_command_rust() {
-        let files = vec!["tests/test_integration.rs".to_string()];
-        assert_eq!(
-            build_auto_verify_command(&files),
-            Some("cargo test".to_string())
-        );
-    }
-
-    #[test]
-    fn test_build_auto_verify_command_python() {
-        let files = vec![
-            "tests/test_outputs.py".to_string(),
-            "tests/test_parser.py".to_string(),
-        ];
-        assert_eq!(
-            build_auto_verify_command(&files),
-            Some("python -m pytest tests/test_outputs.py tests/test_parser.py".to_string())
-        );
-    }
-
-    #[test]
-    fn test_build_auto_verify_command_go() {
-        let files = vec!["widget_test.go".to_string()];
-        assert_eq!(
-            build_auto_verify_command(&files),
-            Some("go test ./...".to_string())
-        );
-    }
-
-    #[test]
-    fn test_build_auto_verify_command_js() {
-        let files = vec!["app.test.js".to_string()];
-        assert_eq!(
-            build_auto_verify_command(&files),
-            Some("npx jest".to_string())
-        );
-    }
-
-    #[test]
-    fn test_build_auto_verify_command_empty() {
-        let files: Vec<String> = vec![];
-        assert_eq!(build_auto_verify_command(&files), None);
     }
 
     #[test]

@@ -465,7 +465,6 @@ mod tests {
         let task_id = format!("t{}", unique_id);
         let mut task = make_task(&task_id, "Test Task");
         task.exec = Some("echo hello".to_string());
-        task.verify = None; // Not verified, should use wg done
         setup_graph(temp_dir.path(), vec![task]);
 
         // Pass the .workgraph subdirectory to run(), not the project root
@@ -490,35 +489,6 @@ mod tests {
         assert!(script.contains("[wrapper] Agent exited successfully, marking task done"));
         assert!(script.contains("wg show \"$TASK_ID\" --json"));
         assert!(script.contains("if [ \"$TASK_STATUS\" = \"in-progress\" ]"));
-    }
-
-    #[test]
-    fn test_wrapper_script_for_verified_task() {
-        let temp_dir = TempDir::new().unwrap();
-        // Use a unique task ID to avoid branch collisions with parallel tests
-        let unique_id = get_unique_id();
-        let task_id = format!("t{}", unique_id);
-        let mut task = make_task(&task_id, "Test Task");
-        task.exec = Some("echo hello".to_string());
-        task.verify = Some("manual".to_string());
-        setup_graph(temp_dir.path(), vec![task]);
-
-        // Pass the .workgraph subdirectory to run(), not the project root
-        let workgraph_dir = temp_dir.path().join(".workgraph");
-        run(&workgraph_dir, &task_id, "shell", None, None, false).unwrap();
-
-        // Check wrapper script was created in agents directory
-        let wrapper_path = agent_output_dir(&workgraph_dir, "agent-1").join("run.sh");
-        assert!(
-            wrapper_path.exists(),
-            "Wrapper script not found at {:?}",
-            wrapper_path
-        );
-
-        // Verified tasks now also use wg done (submit is deprecated)
-        let script = fs::read_to_string(&wrapper_path).unwrap();
-        assert!(script.contains("wg done \"$TASK_ID\""));
-        assert!(script.contains("[wrapper] Agent exited successfully, marking task done"));
     }
 
     #[test]

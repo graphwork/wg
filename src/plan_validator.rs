@@ -254,7 +254,6 @@ mod tests {
             loops_to: vec![],
             role_hint: None,
             deliverables: vec![],
-            verify: None,
             tags: vec![],
         }
     }

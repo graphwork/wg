@@ -18,7 +18,6 @@ fn make_task(
     description: Option<&str>,
     tags: Vec<&str>,
     skills: Vec<&str>,
-    verify: Option<&str>,
 ) -> Task {
     Task {
         id: id.to_string(),
@@ -26,7 +25,6 @@ fn make_task(
         description: description.map(|s| s.to_string()),
         tags: tags.into_iter().map(|s| s.to_string()).collect(),
         skills: skills.into_iter().map(|s| s.to_string()).collect(),
-        verify: verify.map(|s| s.to_string()),
         ..Task::default()
     }
 }
@@ -127,7 +125,6 @@ fn test_full_agency_lifecycle() {
         ),
         vec!["rust", "parser"],
         vec!["rust", "testing"],
-        Some("cargo test passes with no failures"),
     );
     let agent_id = agency::content_hash_agent(&role_id, &motivation_id);
     task.agent = Some(agent_id.clone());
@@ -518,7 +515,6 @@ fn test_full_agency_lifecycle_new_design() {
         Some("Build a framework for running integration tests with proper isolation"),
         vec!["rust", "testing"],
         vec!["rust", "testing"],
-        Some("cargo test --test integration passes"),
     );
     task.agent = Some(agent_id.clone());
     task.started_at = Some("2025-06-01T09:00:00Z".to_string());
@@ -559,7 +555,6 @@ fn test_full_agency_lifecycle_new_design() {
         task_title: &task.title,
         task_description: task.description.as_deref(),
         task_skills: &task.skills,
-        verify: task.verify.as_deref(),
         agent: Some(&agent),
         role: Some(&role),
         tradeoff: Some(&motivation),
@@ -571,8 +566,6 @@ fn test_full_agency_lifecycle_new_design() {
         evaluator_identity: None,
         downstream_tasks: &[],
         flip_score: None,
-        verify_status: None,
-        verify_findings: None,
         resolved_outcome_name: None,
         child_tasks: &[],
     });
@@ -993,7 +986,6 @@ fn test_output_capture_standalone() {
         Some("A task to test the capture mechanism"),
         vec![],
         vec![],
-        None,
     );
     task.status = Status::Done;
     task.started_at = Some("2025-07-01T08:00:00Z".to_string());

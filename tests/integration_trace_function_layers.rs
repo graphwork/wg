@@ -52,7 +52,6 @@ fn make_template(id: &str) -> TaskTemplate {
         loops_to: vec![],
         role_hint: None,
         deliverables: vec![],
-        verify: None,
         tags: vec![],
     }
 }
@@ -175,7 +174,6 @@ fn sample_v1_with_visibility(vis: FunctionVisibility) -> TraceFunction {
                 loops_to: vec![],
                 role_hint: Some("analyst".to_string()),
                 deliverables: vec![],
-                verify: None,
                 tags: vec![],
             },
             TaskTemplate {
@@ -187,7 +185,6 @@ fn sample_v1_with_visibility(vis: FunctionVisibility) -> TraceFunction {
                 loops_to: vec![],
                 role_hint: Some("programmer".to_string()),
                 deliverables: vec![],
-                verify: None,
                 tags: vec![],
             },
         ],
@@ -238,7 +235,6 @@ fn sample_v2_generative() -> TraceFunction {
                 loops_to: vec![],
                 role_hint: None,
                 deliverables: vec![],
-                verify: None,
                 tags: vec!["implement".to_string()],
             },
             TaskTemplate {
@@ -250,7 +246,6 @@ fn sample_v2_generative() -> TraceFunction {
                 loops_to: vec![],
                 role_hint: None,
                 deliverables: vec![],
-                verify: None,
                 tags: vec!["test".to_string()],
             },
         ],
@@ -265,7 +260,6 @@ fn sample_v2_generative() -> TraceFunction {
                 loops_to: vec![],
                 role_hint: Some("architect".to_string()),
                 deliverables: vec![],
-                verify: None,
                 tags: vec![],
             },
             output_format: "workgraph-yaml".to_string(),

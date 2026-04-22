@@ -123,8 +123,6 @@ pub struct TaskTemplate {
     pub role_hint: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub deliverables: Vec<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub verify: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
 }
@@ -631,7 +629,6 @@ pub fn substitute_task_template(
             .iter()
             .map(|d| substitute(d, inputs))
             .collect(),
-        verify: template.verify.as_ref().map(|v| substitute(v, inputs)),
         tags: template.tags.clone(),
     }
 }
@@ -888,7 +885,6 @@ mod tests {
                     loops_to: vec![],
                     role_hint: Some("analyst".to_string()),
                     deliverables: vec![],
-                    verify: None,
                     tags: vec![],
                 },
                 TaskTemplate {
@@ -900,7 +896,6 @@ mod tests {
                     loops_to: vec![],
                     role_hint: Some("programmer".to_string()),
                     deliverables: vec![],
-                    verify: None,
                     tags: vec![],
                 },
                 TaskTemplate {
@@ -912,7 +907,6 @@ mod tests {
                     loops_to: vec![],
                     role_hint: None,
                     deliverables: vec![],
-                    verify: None,
                     tags: vec![],
                 },
                 TaskTemplate {
@@ -929,7 +923,6 @@ mod tests {
                     }],
                     role_hint: None,
                     deliverables: vec![],
-                    verify: None,
                     tags: vec![],
                 },
             ],
@@ -1291,7 +1284,6 @@ mod tests {
             loops_to: vec![],
             role_hint: Some("analyst".to_string()),
             deliverables: vec!["docs/{{input.feature_name}}.md".to_string()],
-            verify: Some("{{input.test_command}}".to_string()),
             tags: vec![],
         };
 
@@ -1314,7 +1306,6 @@ mod tests {
         assert_eq!(result.description, "Plan auth using cargo test");
         assert_eq!(result.skills, vec!["analysis", "rust"]);
         assert_eq!(result.deliverables, vec!["docs/auth.md"]);
-        assert_eq!(result.verify.unwrap(), "cargo test");
     }
 
     // -- Function validation --
@@ -1638,7 +1629,6 @@ tasks:
                 loops_to: vec![],
                 role_hint: Some("architect".to_string()),
                 deliverables: vec![],
-                verify: None,
                 tags: vec![],
             },
             output_format: "workgraph-yaml".to_string(),

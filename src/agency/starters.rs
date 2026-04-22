@@ -806,7 +806,6 @@ pub fn creator_pipeline_function() -> crate::function::TraceFunction {
                 loops_to: vec![],
                 role_hint: Some("Agent Creator".to_string()),
                 deliverables: vec!["Primitive candidate specifications".to_string()],
-                verify: None,
                 tags: vec!["creator".to_string()],
             },
             TaskTemplate {
@@ -822,7 +821,6 @@ pub fn creator_pipeline_function() -> crate::function::TraceFunction {
                 loops_to: vec![],
                 role_hint: Some("Evolver".to_string()),
                 deliverables: vec!["Tested configurations".to_string()],
-                verify: None,
                 tags: vec!["evolver".to_string()],
             },
             TaskTemplate {
@@ -837,7 +835,6 @@ pub fn creator_pipeline_function() -> crate::function::TraceFunction {
                 loops_to: vec![],
                 role_hint: Some("Assigner".to_string()),
                 deliverables: vec!["Deployment report".to_string()],
-                verify: None,
                 tags: vec!["assigner".to_string()],
             },
         ],

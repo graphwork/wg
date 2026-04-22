@@ -134,7 +134,6 @@ fn sample_function() -> TraceFunction {
                 loops_to: vec![],
                 role_hint: Some("analyst".to_string()),
                 deliverables: vec![],
-                verify: None,
                 tags: vec![],
             },
             TaskTemplate {
@@ -146,7 +145,6 @@ fn sample_function() -> TraceFunction {
                 loops_to: vec![],
                 role_hint: Some("programmer".to_string()),
                 deliverables: vec![],
-                verify: None,
                 tags: vec![],
             },
             TaskTemplate {
@@ -158,7 +156,6 @@ fn sample_function() -> TraceFunction {
                 loops_to: vec![],
                 role_hint: None,
                 deliverables: vec![],
-                verify: None,
                 tags: vec![],
             },
             TaskTemplate {
@@ -175,7 +172,6 @@ fn sample_function() -> TraceFunction {
                 }],
                 role_hint: None,
                 deliverables: vec![],
-                verify: None,
                 tags: vec![],
             },
         ],
@@ -718,7 +714,6 @@ fn substitution_task_template_all_fields() {
         loops_to: vec![],
         role_hint: Some("analyst".to_string()),
         deliverables: vec!["docs/{{input.feature_name}}.md".to_string()],
-        verify: Some("{{input.test_command}}".to_string()),
         tags: vec!["impl".to_string()],
     };
 
@@ -743,7 +738,6 @@ fn substitution_task_template_all_fields() {
     assert_eq!(result.description, "Plan auth using cargo test");
     assert_eq!(result.skills, vec!["analysis", "rust"]);
     assert_eq!(result.deliverables, vec!["docs/auth.md"]);
-    assert_eq!(result.verify.as_deref(), Some("cargo test"));
 
     // Preserved fields (not substituted)
     assert_eq!(result.template_id, "plan");
@@ -945,7 +939,6 @@ fn apply_single_task_function_creates_task() {
             loops_to: vec![],
             role_hint: None,
             deliverables: vec![],
-            verify: None,
             tags: vec![],
         }],
         outputs: vec![],
