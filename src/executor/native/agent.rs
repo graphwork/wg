@@ -346,6 +346,24 @@ impl super::surface::ConversationSurface for ChatSurfaceState {
         t.push_str("└─\n");
         let _ = super::chat_surface::write_streaming(&self.workgraph_dir, &self.session_ref, &t);
     }
+
+    fn on_error(&mut self, error_text: &str) {
+        let rid = self
+            .current_request_id
+            .clone()
+            .unwrap_or_else(|| "system".to_string());
+        if let Err(e) = super::chat_surface::append_error(
+            &self.workgraph_dir,
+            &self.session_ref,
+            error_text,
+            &rid,
+        ) {
+            eprintln!(
+                "[agent-loop] chat error append failed: {} — continuing",
+                e
+            );
+        }
+    }
 }
 
 /// NDJSON log entry types for the output file.
@@ -1737,9 +1755,14 @@ impl AgentLoop {
                             {
                                 Ok(resp) => resp,
                                 Err(retry_err) => {
-                                    eprintln!(
-                                        "[native-agent] Retry after compaction also failed — clean exit"
+                                    let err_text = format!(
+                                        "Context too long — emergency compaction + retry failed: {:#}",
+                                        retry_err
                                     );
+                                    eprintln!("[native-agent] {}", err_text);
+                                    if let Some(ref mut s) = surface {
+                                        s.on_error(&err_text);
+                                    }
                                     self.store_final_summary(&messages);
                                     if let Some(ref mut j) = journal {
                                         let _ = j.append(JournalEntryKind::End {
@@ -1758,11 +1781,26 @@ impl AgentLoop {
                         {
                             match api_err.status {
                                 401 | 403 => {
-                                    eprintln!("[native-agent] Fatal auth error: {}", api_err);
+                                    let err_text =
+                                        format!("Fatal authentication error: {:#}", e);
+                                    eprintln!("[native-agent] {}", err_text);
+                                    if let Some(ref mut s) = surface {
+                                        s.on_error(&err_text);
+                                    }
                                     return Err(e);
                                 }
                                 status if super::openai_client::is_retryable_status(status) => {
                                     consecutive_server_errors += 1;
+                                    let err_text = format!(
+                                        "API error (HTTP {}) — attempt {}/{}: {:#}",
+                                        status,
+                                        consecutive_server_errors,
+                                        MAX_CONSECUTIVE_SERVER_ERRORS,
+                                        e
+                                    );
+                                    if let Some(ref mut s) = surface {
+                                        s.on_error(&err_text);
+                                    }
                                     if consecutive_server_errors > MAX_CONSECUTIVE_SERVER_ERRORS {
                                         eprintln!(
                                             "[native-agent] API error {} — {} consecutive failures, giving up",
@@ -1798,11 +1836,26 @@ impl AgentLoop {
                                     continue;
                                 }
                                 _ => {
+                                    let err_text =
+                                        format!("API request failed: {:#}", e);
+                                    eprintln!("[native-agent] {}", err_text);
+                                    if let Some(ref mut s) = surface {
+                                        s.on_error(&err_text);
+                                    }
                                     return Err(e).context("API request failed");
                                 }
                             }
                         } else if is_timeout_error(&e) {
                             consecutive_server_errors += 1;
+                            let err_text = format!(
+                                "Request timed out — attempt {}/{}: {:#}",
+                                consecutive_server_errors,
+                                MAX_CONSECUTIVE_SERVER_ERRORS,
+                                e
+                            );
+                            if let Some(ref mut s) = surface {
+                                s.on_error(&err_text);
+                            }
                             if consecutive_server_errors > MAX_CONSECUTIVE_SERVER_ERRORS {
                                 eprintln!(
                                     "[native-agent] Request timeout — {} consecutive failures, giving up",
@@ -1834,6 +1887,12 @@ impl AgentLoop {
                             messages.push(recovery_msg);
                             continue;
                         } else {
+                            let err_text =
+                                format!("LLM request failed: {:#}", e);
+                            eprintln!("[native-agent] {}", err_text);
+                            if let Some(ref mut s) = surface {
+                                s.on_error(&err_text);
+                            }
                             return Err(e).context("API request failed");
                         }
                     }
@@ -1896,11 +1955,14 @@ impl AgentLoop {
                         continue;
                     }
                     elapsed = idle_watchdog => {
-                        eprintln!(
-                            "\n\x1b[33m[nex] Streaming idle for {}s (no chunks) — aborting. \
-                             Likely a dropped upstream connection. Next prompt is yours.\x1b[0m",
+                        let err_text = format!(
+                            "Stream idle for {}s (no chunks received) — aborting. Likely a dropped upstream connection.",
                             elapsed.as_secs(),
                         );
+                        eprintln!("\n\x1b[33m[nex] {}\x1b[0m", err_text);
+                        if let Some(ref mut s) = surface {
+                            s.on_error(&err_text);
+                        }
                         force_fresh_input = true;
                         continue;
                     }
@@ -1911,22 +1973,43 @@ impl AgentLoop {
                                 let pre_tokens = self.context_budget.effective_tokens(&messages);
                                 messages = ContextBudget::hard_emergency_compact(messages, 1);
                                 let post_tokens = self.context_budget.effective_tokens(&messages);
+                                let err_text = format!(
+                                    "Context too long — hard compaction: ~{} → ~{} tokens (Δ -{})",
+                                    pre_tokens,
+                                    post_tokens,
+                                    pre_tokens.saturating_sub(post_tokens),
+                                );
                                 if self.nex_verbose {
-                                    eprintln!(
-                                        "\n\x1b[33m[nex] Context too long — hard compaction: ~{} → ~{} tokens (Δ -{})\x1b[0m",
-                                        pre_tokens,
-                                        post_tokens,
-                                        pre_tokens.saturating_sub(post_tokens),
-                                    );
+                                    eprintln!("\n\x1b[33m[nex] {}\x1b[0m", err_text);
+                                }
+                                if let Some(ref mut s) = surface {
+                                    s.on_error(&err_text);
                                 }
                                 continue;
                             }
                             if let Some(api_err) = e.downcast_ref::<super::openai_client::ApiError>() {
                                 if api_err.status == 401 || api_err.status == 403 {
+                                    let err_text = format!(
+                                        "Fatal authentication error: {:#}", e
+                                    );
+                                    eprintln!("[native-agent] {}", err_text);
+                                    if let Some(ref mut s) = surface {
+                                        s.on_error(&err_text);
+                                    }
                                     return Err(e);
                                 }
                                 if super::openai_client::is_retryable_status(api_err.status) {
                                     consecutive_server_errors += 1;
+                                    let err_text = format!(
+                                        "API error (HTTP {}) — attempt {}/{}: {:#}",
+                                        api_err.status,
+                                        consecutive_server_errors,
+                                        MAX_CONSECUTIVE_SERVER_ERRORS,
+                                        e
+                                    );
+                                    if let Some(ref mut s) = surface {
+                                        s.on_error(&err_text);
+                                    }
                                     if consecutive_server_errors > MAX_CONSECUTIVE_SERVER_ERRORS {
                                         return Err(e);
                                     }
@@ -1941,11 +2024,27 @@ impl AgentLoop {
                             }
                             if is_timeout_error(&e) {
                                 consecutive_server_errors += 1;
+                                let err_text = format!(
+                                    "Request timed out — attempt {}/{}: {:#}",
+                                    consecutive_server_errors,
+                                    MAX_CONSECUTIVE_SERVER_ERRORS,
+                                    e
+                                );
+                                if let Some(ref mut s) = surface {
+                                    s.on_error(&err_text);
+                                }
                                 if consecutive_server_errors > MAX_CONSECUTIVE_SERVER_ERRORS {
                                     return Err(e);
                                 }
                                 eprintln!("\n\x1b[33m[nex] Request timed out — retrying\x1b[0m");
                                 continue;
+                            }
+                            let err_text = format!(
+                                "LLM request failed: {:#}", e
+                            );
+                            eprintln!("[native-agent] {}", err_text);
+                            if let Some(ref mut s) = surface {
+                                s.on_error(&err_text);
                             }
                             return Err(e).context("API request failed");
                         }

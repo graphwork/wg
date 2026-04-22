@@ -437,6 +437,21 @@ pub fn append_outbox_full_ref(
     )
 }
 
+/// Append a system-error message to a session's outbox.
+///
+/// Uses the `"system-error"` role so the TUI renders it distinctly from
+/// normal coordinator messages. The content should include the full
+/// error chain for diagnosability.
+pub fn append_error_ref(
+    workgraph_dir: &Path,
+    session_ref: &str,
+    content: &str,
+    request_id: &str,
+) -> Result<u64> {
+    let path = chat_dir_for_ref(workgraph_dir, session_ref).join("outbox.jsonl");
+    append_message(&path, "system-error", content, request_id, vec![], None)
+}
+
 /// Read inbox messages with id > cursor for a session.
 pub fn read_inbox_since_ref(
     workgraph_dir: &Path,
@@ -545,6 +560,17 @@ pub fn append_outbox_full_for(
         vec![],
         full_response,
     )
+}
+
+/// Append a system-error message to a specific coordinator's outbox.
+pub fn append_error_for(
+    workgraph_dir: &Path,
+    coordinator_id: u32,
+    content: &str,
+    request_id: &str,
+) -> Result<u64> {
+    let path = outbox_path_for(workgraph_dir, coordinator_id);
+    append_message(&path, "system-error", content, request_id, vec![], None)
 }
 
 /// Read all inbox messages for a specific coordinator.
@@ -691,6 +717,11 @@ pub fn append_outbox_full(
     request_id: &str,
 ) -> Result<u64> {
     append_outbox_full_for(workgraph_dir, 0, content, full_response, request_id)
+}
+
+/// Append a system-error to the outbox (coordinator 0).
+pub fn append_error(workgraph_dir: &Path, content: &str, request_id: &str) -> Result<u64> {
+    append_error_for(workgraph_dir, 0, content, request_id)
 }
 
 /// Read all inbox messages (coordinator 0).

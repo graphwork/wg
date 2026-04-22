@@ -1225,6 +1225,8 @@ pub enum ChatRole {
     User,
     Coordinator,
     System,
+    /// An LLM or system-level error surfaced inline in the chat stream.
+    SystemError,
     /// A message sent to an agent's task via `wg msg send`, shown interleaved
     /// at the temporal position where the agent read it.
     SentMessage,
@@ -1278,6 +1280,7 @@ fn persisted_to_chat_message(p: PersistedChatMessage) -> ChatMessage {
             "user" => ChatRole::User,
             "coordinator" => ChatRole::Coordinator,
             "sent_message" => ChatRole::SentMessage,
+            "system-error" => ChatRole::SystemError,
             _ => ChatRole::System,
         },
         text: p.text,
@@ -1299,6 +1302,7 @@ fn chat_message_to_persisted(m: &ChatMessage) -> PersistedChatMessage {
             ChatRole::User => "user".to_string(),
             ChatRole::Coordinator => "coordinator".to_string(),
             ChatRole::System => "system".to_string(),
+            ChatRole::SystemError => "system-error".to_string(),
             ChatRole::SentMessage => "sent_message".to_string(),
         },
         text: m.text.clone(),
@@ -10327,6 +10331,7 @@ impl VizApp {
                 let role = match msg.role.as_str() {
                     "user" => ChatRole::User,
                     "coordinator" => ChatRole::Coordinator,
+                    "system-error" => ChatRole::SystemError,
                     _ => ChatRole::System,
                 };
                 let att_names: Vec<String> = msg
@@ -10485,6 +10490,7 @@ impl VizApp {
                     let role = match msg.role.as_str() {
                         "user" => ChatRole::User,
                         "coordinator" => ChatRole::Coordinator,
+                        "system-error" => ChatRole::SystemError,
                         _ => ChatRole::System,
                     };
                     archive_messages.push(ChatMessage {
@@ -10594,8 +10600,13 @@ impl VizApp {
                         .to_string()
                 })
                 .collect();
+            let role = match msg.role.as_str() {
+                "system-error" => ChatRole::SystemError,
+                "user" => ChatRole::User,
+                _ => ChatRole::Coordinator,
+            };
             self.chat.messages.push(ChatMessage {
-                role: ChatRole::Coordinator,
+                role,
                 text: msg.content.clone(),
                 full_text: msg.full_response.clone(),
                 attachments: att_names,

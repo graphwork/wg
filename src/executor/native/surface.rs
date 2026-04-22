@@ -117,6 +117,13 @@ pub trait ConversationSurface: Send {
     /// that render to a chat transcript use it to fill in the box.
     /// Default impl is a no-op.
     fn on_tool_end(&mut self, _name: &str, _output: &str, _is_error: bool, _duration_ms: u64) {}
+
+    /// Called when an LLM call or other system-level operation fails.
+    /// Surfaces that write to a chat outbox use this to append a
+    /// `system-error` role message so the error is visible in the
+    /// TUI and chat.log. Default impl is a no-op (interactive
+    /// sessions print to stderr instead).
+    fn on_error(&mut self, _error_text: &str) {}
 }
 
 /// One user turn as delivered by a surface. Carries the text plus an

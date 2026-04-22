@@ -3291,6 +3291,13 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
                 "! ".to_string(),
                 Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
             ),
+            super::state::ChatRole::SystemError => (
+                "⚠ ERROR: ".to_string(),
+                Style::default()
+                    .fg(Color::Red)
+                    .bg(Color::Indexed(52))
+                    .add_modifier(Modifier::BOLD),
+            ),
             super::state::ChatRole::SentMessage => {
                 let target = msg.target_task.as_deref().unwrap_or("task");
                 (
@@ -3448,8 +3455,10 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
                         .messages
                         .get(msg_idx + 1..)
                         .map(|rest| {
-                            rest.iter()
-                                .any(|m| m.role == super::state::ChatRole::Coordinator)
+                            rest.iter().any(|m| {
+                                m.role == super::state::ChatRole::Coordinator
+                                    || m.role == super::state::ChatRole::SystemError
+                            })
                         })
                         .unwrap_or(false);
                     let status_span = if has_response {
