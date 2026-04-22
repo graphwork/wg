@@ -101,6 +101,11 @@ fn should_run_flip(graph: &WorkGraph, task_id: &str, config: &Config) -> bool {
 pub fn scaffold_flip_task(graph: &mut WorkGraph, task_id: &str, config: &Config) -> bool {
     let flip_task_id = format!(".flip-{}", task_id);
 
+    // Skip system tasks (unless pipeline-eligible like .verify-*)
+    if workgraph::graph::is_system_task(task_id) && !is_pipeline_eligible_system_task(task_id) {
+        return false;
+    }
+
     // Idempotency: skip if flip task already exists
     if graph.get_task(&flip_task_id).is_some() {
         return false;
@@ -439,6 +444,11 @@ pub fn scaffold_eval_task(
     config: &Config,
 ) -> bool {
     let eval_task_id = format!(".evaluate-{}", task_id);
+
+    // Skip system tasks (unless pipeline-eligible like .verify-*)
+    if workgraph::graph::is_system_task(task_id) && !is_pipeline_eligible_system_task(task_id) {
+        return false;
+    }
 
     // Idempotency: skip if eval task already exists
     if graph.get_task(&eval_task_id).is_some() {
@@ -1262,6 +1272,179 @@ mod tests {
         assert!(!is_pipeline_eligible_system_task(".assign-my-task"));
         assert!(!is_pipeline_eligible_system_task(".flip-my-task"));
         assert!(!is_pipeline_eligible_system_task("regular-task"));
+    }
+
+    #[test]
+    fn test_scaffold_eval_skips_system_tasks() {
+        let dir = tempdir().unwrap();
+        let config = Config::default();
+        let mut graph = WorkGraph::new();
+
+        // .coordinator-* tasks should NOT get eval scaffolding
+        graph.add_node(Node::Task(make_task(".coordinator-test", "Coordinator Test")));
+        assert!(!scaffold_eval_task(
+            dir.path(),
+            &mut graph,
+            ".coordinator-test",
+            "Coordinator Test",
+            &config
+        ));
+        assert!(graph.get_task(".evaluate-.coordinator-test").is_none());
+        assert!(graph.get_task(".flip-.coordinator-test").is_none());
+
+        // .archive-* tasks should NOT get eval scaffolding
+        graph.add_node(Node::Task(make_task(".archive-test", "Archive Test")));
+        assert!(!scaffold_eval_task(
+            dir.path(),
+            &mut graph,
+            ".archive-test",
+            "Archive Test",
+            &config
+        ));
+        assert!(graph.get_task(".evaluate-.archive-test").is_none());
+
+        // .compact-* tasks should NOT get eval scaffolding
+        graph.add_node(Node::Task(make_task(".compact-0", "Compact")));
+        assert!(!scaffold_eval_task(
+            dir.path(),
+            &mut graph,
+            ".compact-0",
+            "Compact",
+            &config
+        ));
+        assert!(graph.get_task(".evaluate-.compact-0").is_none());
+
+        // Normal tasks should still get eval scaffolding
+        graph.add_node(Node::Task(make_task("normal-task", "Normal Task")));
+        assert!(scaffold_eval_task(
+            dir.path(),
+            &mut graph,
+            "normal-task",
+            "Normal Task",
+            &config
+        ));
+        assert!(graph.get_task(".evaluate-normal-task").is_some());
+    }
+
+    #[test]
+    fn test_scaffold_flip_skips_system_tasks() {
+        let mut config = Config::default();
+        config.agency.flip_enabled = true;
+        let mut graph = WorkGraph::new();
+
+        graph.add_node(Node::Task(make_task(".coordinator-test", "Coordinator Test")));
+        assert!(!scaffold_flip_task(&mut graph, ".coordinator-test", &config));
+        assert!(graph.get_task(".flip-.coordinator-test").is_none());
+
+        graph.add_node(Node::Task(make_task(".archive-test", "Archive Test")));
+        assert!(!scaffold_flip_task(&mut graph, ".archive-test", &config));
+        assert!(graph.get_task(".flip-.archive-test").is_none());
+
+        // Normal tasks should still get FLIP
+        graph.add_node(Node::Task(make_task("normal-task", "Normal Task")));
+        assert!(scaffold_flip_task(&mut graph, "normal-task", &config));
+        assert!(graph.get_task(".flip-normal-task").is_some());
+    }
+
+    #[test]
+    fn test_scaffold_eval_batch_skips_system_tasks() {
+        let dir = tempdir().unwrap();
+        let config = Config::default();
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(make_task("a", "Task A")));
+        graph.add_node(Node::Task(make_task(".coordinator-main", "Coordinator Main")));
+        graph.add_node(Node::Task(make_task(".archive-old", "Archive Old")));
+
+        let ids = vec![
+            ("a".to_string(), "Task A".to_string()),
+            (".coordinator-main".to_string(), "Coordinator Main".to_string()),
+            (".archive-old".to_string(), "Archive Old".to_string()),
+        ];
+        let count = scaffold_eval_tasks_batch(dir.path(), &mut graph, &ids, &config);
+        assert_eq!(count, 1); // Only "a" should get eval scaffolding
+        assert!(graph.get_task(".evaluate-a").is_some());
+        assert!(graph.get_task(".evaluate-.coordinator-main").is_none());
+        assert!(graph.get_task(".evaluate-.archive-old").is_none());
+    }
+
+    #[test]
+    fn test_verify_tasks_still_get_eval_scaffolding() {
+        // .verify-* tasks are pipeline-eligible and SHOULD get eval scaffolding
+        let dir = tempdir().unwrap();
+        let config = Config::default();
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(make_task(".verify-my-task", "Verify: my-task")));
+
+        assert!(scaffold_eval_task(
+            dir.path(),
+            &mut graph,
+            ".verify-my-task",
+            "Verify: my-task",
+            &config
+        ));
+        assert!(graph.get_task(".evaluate-.verify-my-task").is_some());
+    }
+
+    #[test]
+    fn agency_skips_system_tasks() {
+        // Integration-style: system tasks (.coordinator-*, .archive-*, .compact-*) get
+        // no FLIP, no evaluate, and no assign scaffolding via any entry point.
+        let dir = tempdir().unwrap();
+        let mut config = Config::default();
+        config.agency.auto_assign = true;
+        config.agency.auto_evaluate = true;
+        config.agency.flip_enabled = true;
+
+        let system_ids = [
+            (".coordinator-test", "Coordinator Test"),
+            (".archive-test", "Archive Test"),
+            (".compact-0", "Compact"),
+            (".assign-foo", "Assign Foo"),
+            (".flip-foo", "FLIP Foo"),
+            (".evaluate-foo", "Evaluate Foo"),
+            (".quality-pass-1", "Quality Pass"),
+        ];
+
+        let mut graph = WorkGraph::new();
+        for (id, title) in &system_ids {
+            graph.add_node(Node::Task(make_task(id, title)));
+        }
+        graph.add_node(Node::Task(make_task("normal-task", "Normal Task")));
+
+        for (id, title) in &system_ids {
+            assert!(
+                !scaffold_full_pipeline(dir.path(), &mut graph, id, title, &config),
+                "scaffold_full_pipeline should skip system task '{}'",
+                id
+            );
+            assert!(
+                !scaffold_eval_task(dir.path(), &mut graph, id, title, &config),
+                "scaffold_eval_task should skip system task '{}'",
+                id
+            );
+            assert!(
+                !scaffold_flip_task(&mut graph, id, &config),
+                "scaffold_flip_task should skip system task '{}'",
+                id
+            );
+            assert!(
+                !scaffold_assign_task(&mut graph, id, title),
+                "scaffold_assign_task should skip system task '{}'",
+                id
+            );
+        }
+
+        // Normal tasks SHOULD still get the full pipeline
+        assert!(scaffold_full_pipeline(
+            dir.path(),
+            &mut graph,
+            "normal-task",
+            "Normal Task",
+            &config
+        ));
+        assert!(graph.get_task(".assign-normal-task").is_some());
+        assert!(graph.get_task(".flip-normal-task").is_some());
+        assert!(graph.get_task(".evaluate-normal-task").is_some());
     }
 
     #[test]
