@@ -84,8 +84,14 @@ wg add "Quick lint fix" --exec-mode shell       # no LLM, just runs shell comman
 wg add "Research task" --exec-mode light         # read-only tools
 wg add "Full implementation" --exec-mode full    # default: all tools
 
-# Task requiring review before completion
-wg add "Security audit" --verify "All findings documented with severity ratings"
+# LLM verification (preferred) — evaluator auto-approves/rejects based on ## Validation block
+wg add "Implement auth" --validation llm -d "## Validation\n- [ ] Tests pass"
+
+# Shell verify — use only for a cheap, specific shell check
+wg add "Fix bug" --verify "cargo test test_specific_bug"
+
+# Human review required before completion
+wg add "Security audit" --validation external
 
 # Scheduling: delay or absolute time gate
 wg add "Follow-up check" --delay 1h             # becomes ready 1h after deps complete
@@ -113,7 +119,8 @@ wg edit my-task --add-after other-task
 wg edit my-task --remove-tag stale --add-tag urgent
 wg edit my-task --model opus
 wg edit my-task --exec-mode light
-wg edit my-task --verify "cargo test passes"
+wg edit my-task --validation llm           # prefer LLM gate for prose criteria
+wg edit my-task --verify "cargo test test_foo"  # or shell check for specific tests
 wg edit my-task --delay 30m --not-before 2026-03-20T09:00:00Z
 wg edit my-task --add-skill security --remove-skill docs
 ```
@@ -150,21 +157,55 @@ wg done set-up-ci-pipeline       # unblocks deploy-to-staging
 
 ### 7. Verification workflow
 
-Tasks created with `--verify` go through a validation gate before completion. When an agent calls `wg done`, the task transitions to `PendingValidation` instead of `Done`:
+Three validation modes add a gate before a task completes. When `wg done` is called, the task enters `PendingValidation` instead of `Done` immediately.
+
+**LLM verification (preferred for most tasks)**
+
+An independent LLM evaluator reads the task's `## Validation` checklist and the agent's work, then auto-approves or rejects:
 
 ```bash
-# Create a task that needs review
-wg add "Security audit" --verify "All findings documented with severity ratings"
+# Create a task with LLM verification
+wg add "Implement auth module" --validation llm \
+  -d "## Description
+Add JWT middleware.
 
-# Agent works on it, then marks it done — status becomes PendingValidation
-wg done security-audit
+## Validation
+- [ ] Failing test written first: test_auth_rejects_expired_token
+- [ ] Implementation makes the test pass
+- [ ] cargo build + cargo test pass with no regressions"
 
-# Reviewer approves or rejects
-wg approve security-audit                          # transitions to Done
-wg reject security-audit --reason "Missing CVE references"  # reopens for rework
+# Agent marks done — moves to pending-validation, coordinator runs evaluator
+wg done implement-auth-module
+
+# Evaluator auto-calls approve or reject. For uncertain verdicts, review manually:
+wg approve implement-auth-module                   # transitions to Done
+wg reject implement-auth-module --reason "..."     # reopens for rework
+```
+
+**Shell verify (for specific, reliable shell checks)**
+
+```bash
+# Use only when a single test command is the right gate
+wg add "Fix auth bug" --verify "cargo test test_auth_rejects_expired_token"
+```
+
+**Human review (`--validation external`)**
+
+```bash
+# Human must manually approve before task closes
+wg add "Security audit" --validation external \
+  -d "## Validation\n- [ ] All findings documented with severity ratings"
+wg approve security-audit                          # reviewer approves when ready
 ```
 
 Rejected tasks reopen for the agent to address feedback. After too many rejections (default: 3), the task is failed automatically. See [docs/COMMANDS.md](docs/COMMANDS.md) for full details.
+
+**Migration from `--verify`**
+
+Old `--verify "command"` tasks continue to work. Migrate prose criteria
+(e.g., `--verify "All findings documented"`) to `--validation llm` — an LLM can
+evaluate prose criteria; a shell command cannot. Keep `--verify` for fast,
+deterministic shell checks like `cargo test specific_test`.
 
 ## Using with AI Coding Assistants
 

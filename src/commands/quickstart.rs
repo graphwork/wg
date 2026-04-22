@@ -208,14 +208,22 @@ TASK STATE COMMANDS
     wg add-dep <task> <dependency>     # Add a dependency: task waits for dependency
     wg rm-dep <task> <dependency>      # Remove a dependency edge
 
-VALIDATION (--verify gate)
+VALIDATION (pending-validation gate)
 ─────────────────────────────────────────
-  Tasks created with --verify have an extra gate before completion:
+  Three validation modes add a gate before completion (all use pending-validation):
 
-  wg add "Task" --verify "cargo test passes"  # Set validation criteria
-  wg done <task-id>           # Moves to pending-validation (not done yet!)
-  wg approve <task-id>        # Approve → transitions to Done
-  wg reject <task-id> --reason "Tests failing"  # Reject → reopens task
+  --validation llm      (preferred) LLM evaluator auto-approves/rejects based on ## Validation
+  --verify "cmd"        Shell command gate — use only for cheap, reliable shell checks
+  --validation external Human must manually approve before task closes
+
+  LLM verification example (recommended for most tasks):
+  wg add "Task" --validation llm -d "..."  # include a '## Validation' checklist in description
+  wg done <task-id>           # Moves to pending-validation, coordinator runs evaluator
+  wg approve <task-id>        # Approve manually (if evaluator is uncertain)
+  wg reject <task-id> --reason "why"  # Reject → reopens for rework
+
+  Shell verify (use only when a specific test must pass):
+  wg add "Fix bug" --verify "cargo test test_foo"
 
   After max rejections, the task transitions to Failed instead of reopening.
 
@@ -674,8 +682,10 @@ fn json_output() -> serde_json::Value {
             }
         },
         "validation": {
-            "description": "Tasks with --verify have a pending-validation gate before completion.",
-            "create": "wg add \"task\" --verify \"cargo test passes\"",
+            "description": "Three modes add a pending-validation gate before completion: --validation llm (preferred, LLM auto-evaluates), --verify 'cmd' (shell check, use sparingly), --validation external (human review).",
+            "llm_example": "wg add \"task\" --validation llm -d \"## Validation\\n- [ ] criteria\"",
+            "shell_example": "wg add \"task\" --verify \"cargo test test_foo\"",
+            "human_example": "wg add \"task\" --validation external",
             "approve": "wg approve <task-id>",
             "reject": "wg reject <task-id> --reason \"reason\"",
             "note": "After max rejections, the task transitions to Failed instead of reopening."
@@ -1281,7 +1291,7 @@ mod tests {
             "MANUAL MODE",
             "DISCOVERING & ADDING WORK",
             "TASK STATE COMMANDS",
-            "VALIDATION (--verify gate)",
+            "VALIDATION (pending-validation gate)",
             "MESSAGING",
             "CONTEXT & ARTIFACTS",
             "CYCLES",

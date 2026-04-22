@@ -58,11 +58,11 @@ wg chat --history        # Review past coordinator conversations
 - **Don't `wg spawn`** — the service spawns agents automatically
 - **Don't work on tasks yourself** — spawned agents do the work
 
-Always use `wg done` to complete tasks. Tasks with `--verify` enter a `pending-validation` state and need `wg approve` or `wg reject` to finalize.
+Always use `wg done` to complete tasks. Tasks with `--validation llm`, `--verify`, or `--validation external` enter `pending-validation` state and need `wg approve` or `wg reject` to finalize.
 
 ### Reviewing completed work
 
-Tasks created with `--verify` land in `pending-validation` when agents mark them done. As coordinator, review and finalize:
+Tasks with `--validation llm`, `--verify`, or `--validation external` land in `pending-validation` when agents mark them done. For LLM-gated tasks, the evaluator auto-approves or rejects. Review and finalize:
 
 ```bash
 wg list --status pending-validation   # See tasks awaiting review
@@ -164,14 +164,19 @@ wg done <task-id>        # Mark complete
 
 ```
 open → [claim] → in-progress → [done] → done
-                              → [done --verify] → pending-validation → [approve] → done
-                                                                     → [reject] → open (retry)
+                              → [done, validation=llm]      → pending-validation → [auto-approve] → done
+                              → [done, --verify]            → pending-validation → [pass/fail]    → done
+                              → [done, validation=external] → pending-validation → [wg approve]   → done
+                                                                                 → [wg reject]    → open (retry)
                               → [fail] → failed → [retry] → open
                               → [abandon] → abandoned
                               → [wait] → waiting → [condition met] → in-progress
 ```
 
-**Note:** The `wg approve` and `wg reject` commands handle tasks in `pending-validation` state (tasks created with `--verify`).
+**Validation modes** (all use `pending-validation`):
+- `--validation llm` (preferred) — LLM evaluator auto-approves/rejects based on the `## Validation` block
+- `--verify "cargo test test_name"` — shell gate; use only for fast, reliable shell checks
+- `--validation external` — human review: `wg approve` / `wg reject` required
 
 ## Cycles (repeating workflows)
 
@@ -238,7 +243,9 @@ wg service resume           # Resume dispatching
 | `wg add "X" --model openai:gpt-4o` | Task with provider:model format |
 | `wg add "X" --context-scope clean` | Set prompt context scope (clean/task/graph/full) |
 | `wg add "X" --exec-mode light` | Set execution weight (full/light/bare/shell) |
-| `wg add "X" --verify "Tests pass"` | Task requiring review before completion |
+| `wg add "X" --validation llm` | LLM-gated task (preferred) |
+| `wg add "X" --verify "cargo test test_foo"` | Shell-check gate (for specific reliable checks) |
+| `wg add "X" --validation external` | Task requiring human review before completion |
 | `wg add "X" --tag important --hours 2` | Tags and estimates |
 | `wg add "X" --cost 50` | Estimated cost |
 | `wg add "X" --assign <agent-hash>` | Assign to an agent at creation |
@@ -261,7 +268,8 @@ wg service resume           # Resume dispatching
 | `wg edit <id> --model openai:gpt-4o` | Change model (use provider:model format) |
 | `wg edit <id> --context-scope graph` | Change context scope |
 | `wg edit <id> --exec-mode bare` | Change execution weight |
-| `wg edit <id> --verify "cargo test passes"` | Set or update verification criteria |
+| `wg edit <id> --validation llm` | Set LLM verification gate |
+| `wg edit <id> --verify "cargo test test_foo"` | Set shell-check gate (for specific tests) |
 | `wg edit <id> --visibility peer` | Set visibility zone (internal/public/peer) |
 | `wg edit <id> --cycle-guard "task:check=done"` | Set cycle guard condition |
 | `wg edit <id> --cycle-delay 5m` | Set delay between cycle iterations |

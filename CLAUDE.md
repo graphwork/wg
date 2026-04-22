@@ -52,12 +52,17 @@ Everything gets dispatched through `wg add` and `wg service start`.
 
 ### Task description requirements
 
-Every **code task** description MUST include a `## Validation` section with concrete test criteria. Use `--verify` to attach machine-checkable criteria that agents see as a hard gate.
+Every **code task** description MUST include a `## Validation` section with concrete test criteria.
 
-Template:
+#### Preferred: LLM verification (`--validation llm`)
+
+Use `--validation llm` for most tasks. When the agent calls `wg done`, the task moves to
+`pending-validation` and the coordinator dispatches an independent evaluator that reads the
+`## Validation` checklist and the agent's artifacts to issue a pass/fail/uncertain verdict.
+
 ```
 wg add "Implement feature X" --after <dep> \
-  --verify "cargo test test_feature_x passes" \
+  --validation llm \
   -d "## Description
 <what to implement>
 
@@ -68,4 +73,29 @@ wg add "Implement feature X" --after <dep> \
 - [ ] <any additional acceptance criteria>"
 ```
 
-Research/design tasks should specify what artifacts to produce and how to verify completeness instead of test criteria.
+#### Shell verify (`--verify`) — use only for cheap, reliable shell checks
+
+Reserve `--verify` for cases where a specific shell command provides a fast, deterministic
+pass/fail — e.g., a single named test that the task must make pass:
+
+```
+wg add "Fix auth bug" --after <dep> \
+  --verify "cargo test test_auth_rejects_expired_token" \
+  -d "..."
+```
+
+Do **not** use `--verify` for prose criteria (use `--validation llm` instead).
+
+#### Human review (`--validation external`)
+
+For tasks that require a human decision before completion:
+
+```
+wg add "Security audit" --validation external \
+  -d "## Validation\n- [ ] All findings documented with severity ratings"
+```
+
+#### Research/design tasks
+
+Specify what artifacts to produce and how to verify completeness instead of test criteria.
+No `--validation` flag needed unless you want the output reviewed before the task closes.

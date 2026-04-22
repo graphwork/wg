@@ -36,7 +36,7 @@ Every task moves through a state machine. Understanding the states and transitio
 | **Open** | Ready to be claimed/dispatched (all `--after` deps are done) |
 | **Blocked** | Waiting for upstream dependencies to complete |
 | **InProgress** | An agent has claimed the task and is working on it |
-| **PendingValidation** | Agent called `wg done`, but the task has a `--verify` criterion requiring external validation |
+| **PendingValidation** | Agent called `wg done`, but the task has `--validation llm`, `--verify`, or `--validation external` — gate runs before transitioning to Done |
 | **Done** | Completed successfully |
 | **Failed** | Agent called `wg fail` or validation failed |
 | **Abandoned** | Manually abandoned via `wg abandon` |
@@ -44,16 +44,26 @@ Every task moves through a state machine. Understanding the states and transitio
 
 ### Validation flow (PendingValidation)
 
-Tasks created with `--verify` go through an extra validation gate:
+Three validation modes add a gate before `Done`:
+
+| Mode | Flag | Who decides |
+|------|------|-------------|
+| LLM (preferred) | `--validation llm` | Coordinator dispatches evaluator; auto approve/reject |
+| Shell check | `--verify "cargo test test_name"` | Shell command pass/fail |
+| Human review | `--validation external` | Human `wg approve` / `wg reject` |
 
 ```
-InProgress → wg done → PendingValidation → wg approve → Done
-                                          → wg reject  → Open (re-dispatched)
+InProgress → wg done → PendingValidation → [evaluator/human] approve → Done
+                                          → [evaluator/human] reject  → Open (re-dispatched)
 ```
 
-- `wg approve <task-id>` — transitions PendingValidation → Done
+- `wg approve <task-id>` — transitions PendingValidation → Done (human or evaluator)
 - `wg reject <task-id> --reason "..."` — reopens the task for re-dispatch (clears assignment)
 - After `max_rejections` (default: 3), `wg reject` transitions the task to Failed instead of Open
+
+**When to use `--validation llm`**: most implementation tasks, research, docs — anywhere the criteria are prose or multi-dimensional.
+**When to use `--verify`**: a single named test that the task must make pass (e.g., `cargo test test_foo`).
+**When to use `--validation external`**: tasks requiring human judgment before closing.
 
 ### Retry workflow
 
