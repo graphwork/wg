@@ -14,8 +14,8 @@ use std::path::{Path, PathBuf};
 /// Default Anthropic API model IDs.
 /// Update these constants when new Claude model versions are released.
 pub const CLAUDE_HAIKU_MODEL_ID: &str = "claude-haiku-4-5-20251001";
-pub const CLAUDE_SONNET_MODEL_ID: &str = "claude-sonnet-4-20250514";
-pub const CLAUDE_OPUS_MODEL_ID: &str = "claude-opus-4-6";
+pub const CLAUDE_SONNET_MODEL_ID: &str = "claude-sonnet-4-6";
+pub const CLAUDE_OPUS_MODEL_ID: &str = "claude-opus-4-7";
 
 /// Main configuration structure
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
