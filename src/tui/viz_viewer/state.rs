@@ -3863,7 +3863,7 @@ impl VizApp {
     /// Create a new VizApp.
     ///
     /// `mouse_override`: `Some(false)` forces mouse off (--no-mouse),
-    /// `None` means auto-detect (disable in tmux split panes).
+    /// `None` means enabled by default.
     pub fn new(
         workgraph_dir: PathBuf,
         viz_options: VizOptions,
@@ -3871,10 +3871,7 @@ impl VizApp {
         history_depth_override: Option<usize>,
         no_history: bool,
     ) -> Self {
-        let mouse_enabled = match mouse_override {
-            Some(v) => v,
-            None => !detect_tmux_split(),
-        };
+        let mouse_enabled = mouse_override.unwrap_or(true);
         let graph_mtime = std::fs::metadata(workgraph_dir.join("graph.jsonl"))
             .and_then(|m| m.modified())
             .ok();
@@ -13236,47 +13233,6 @@ fn save_clipboard_image(
     Ok(Some(att))
 }
 
-/// Detect if we're running inside a tmux split pane.
-///
-/// Compares the terminal size (from crossterm) with the tmux window size.
-/// If the terminal is smaller than the tmux window, we're in a split pane
-/// and mouse capture should be disabled by default (tmux needs mouse events
-/// for pane selection/resize).
-fn detect_tmux_split() -> bool {
-    // Only applies if TMUX env var is set
-    if std::env::var("TMUX").is_err() {
-        return false;
-    }
-
-    // Get terminal size from crossterm
-    let (term_cols, term_rows) = match crossterm::terminal::size() {
-        Ok(size) => size,
-        Err(_) => return false,
-    };
-
-    // Get tmux window size via `tmux display-message -p '#{window_width} #{window_height}'`
-    let output = match std::process::Command::new("tmux")
-        .args(["display-message", "-p", "#{window_width} #{window_height}"])
-        .output()
-    {
-        Ok(o) if o.status.success() => o,
-        _ => return false,
-    };
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let parts: Vec<&str> = stdout.split_whitespace().collect();
-    if parts.len() != 2 {
-        return false;
-    }
-
-    let (tmux_cols, tmux_rows) = match (parts[0].parse::<u16>(), parts[1].parse::<u16>()) {
-        (Ok(c), Ok(r)) => (c, r),
-        _ => return false,
-    };
-
-    // If terminal is smaller than tmux window, we're in a split
-    term_cols < tmux_cols || term_rows < tmux_rows
-}
 
 // ── Tree-aware filtering ──
 
