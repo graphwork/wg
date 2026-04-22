@@ -3753,6 +3753,23 @@ pub fn coordinator_tick(
         Err(early_result) => return Ok(early_result),
     };
 
+    // Phase 1.2: Atomic worktree sweep.
+    //
+    // Agent wrappers drop `.wg-cleanup-pending` markers at exit (after the
+    // merge-back section runs). Here we reap every marked worktree whose
+    // owning agent is not live AND whose task is terminal. This is the
+    // coordinator-side half of the two-phase atomic-cleanup protocol; it
+    // makes the removal idempotent and crash-safe (a coordinator restart
+    // mid-removal just re-runs on the next tick).
+    match super::worktree::sweep_cleanup_pending_worktrees(dir) {
+        Ok(0) => {}
+        Ok(n) => eprintln!(
+            "[coordinator] Worktree sweep: removed {} cleanup-pending worktree(s)",
+            n
+        ),
+        Err(e) => eprintln!("[coordinator] Worktree sweep warning: {}", e),
+    }
+
     // Phase 1.3: Zero-output agent detection — kill agents that have been alive
     // for 5+ minutes with zero bytes in stream files (API call never returned).
     {

@@ -1322,9 +1322,14 @@ Squash-merged from worktree branch $WG_BRANCH" 2>> "$OUTPUT_FILE"
         fi
     fi
 
-    # Worktrees are sacred — never auto-removed. Use `wg worktree archive <agent-id> --remove`
-    # to remove an agent's worktree by explicit user action.
-    echo "[wrapper] Task finished with status '$TASK_STATUS_FINAL' — worktree preserved at $WG_WORKTREE_PATH (remove via: wg worktree archive $WG_AGENT_ID --remove)" >> "$OUTPUT_FILE"
+    # Worktrees are sacred — the wrapper must NOT force-remove them.
+    # Two-phase atomic cleanup: drop a marker file here so the coordinator's
+    # next tick can sweep this worktree once it verifies the task is terminal
+    # and the agent is not live. If the wrapper is killed before reaching this
+    # point, the marker won't exist and the orphaned-worktree path handles it
+    # (see cleanup_orphaned_worktrees + sweep_cleanup_pending_worktrees).
+    touch "$WG_WORKTREE_PATH/.wg-cleanup-pending" 2>/dev/null || true
+    echo "[wrapper] Task finished with status '$TASK_STATUS_FINAL' — marked worktree $WG_WORKTREE_PATH for sweep (coordinator will reap; override with: wg worktree archive $WG_AGENT_ID --remove)" >> "$OUTPUT_FILE"
 fi
 
 exit $EXIT_CODE
