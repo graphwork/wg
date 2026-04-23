@@ -118,11 +118,8 @@ pub fn run_find(dir: &Path, skill: &str, json: bool) -> Result<()> {
 
 /// Install the wg Claude Code skill to ~/.claude/skills/wg/
 pub fn run_install() -> Result<()> {
-    let home = std::env::var("HOME").context("HOME environment variable not set")?;
-    let skill_dir = std::path::PathBuf::from(&home)
-        .join(".claude")
-        .join("skills")
-        .join("wg");
+    let home = dirs::home_dir().context("could not determine home directory")?;
+    let skill_dir = home.join(".claude").join("skills").join("wg");
 
     std::fs::create_dir_all(&skill_dir)
         .with_context(|| format!("Failed to create directory: {}", skill_dir.display()))?;

@@ -448,8 +448,8 @@ fn save_last_update_id(update_id: i64) -> Result<()> {
 
 /// Get the path to the update_id state file.
 fn get_state_file_path() -> Result<std::path::PathBuf> {
-    let home = std::env::var("HOME").context("HOME environment variable not set")?;
-    Ok(std::path::Path::new(&home)
+    let home = dirs::home_dir().context("could not determine home directory")?;
+    Ok(home
         .join(".config")
         .join("workgraph")
         .join("telegram_update_id"))

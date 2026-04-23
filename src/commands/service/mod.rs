@@ -722,11 +722,8 @@ WantedBy=default.target
     );
 
     // Write to ~/.config/systemd/user/wg-{project_name}.service
-    let home = std::env::var("HOME").context("HOME not set")?;
-    let service_dir = std::path::PathBuf::from(&home)
-        .join(".config")
-        .join("systemd")
-        .join("user");
+    let home = dirs::home_dir().context("could not determine home directory")?;
+    let service_dir = home.join(".config").join("systemd").join("user");
 
     std::fs::create_dir_all(&service_dir)?;
 
