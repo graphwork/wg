@@ -126,22 +126,19 @@ if ! wait_for "wg nex — interactive session"; then
     exit 1
 fi
 
-# Key sequence per turn (right-panel focused after auto-PTY):
-#   1. Enter → activates `InputMode::ChatInput` on the Chat tab
-#      (see `KeyCode::Enter` branch in `handle_right_panel_key`).
-#   2. Type the message into the composer editor.
-#   3. Enter → submits → `send_chat_message` writes to inbox.jsonl
-#      → `wg nex --chat` picks it up → hits fake server → SSE
-#      response → written to outbox.jsonl → rendered inside PTY.
-# Direct key-forwarding to the PTY is a no-op: wg nex --chat reads
-# the session inbox, not stdin (see handle_right_panel_key comment).
+# Key sequence per turn (right-panel focused after auto-PTY,
+# chat_pty_forwards_stdin=true so keys go straight to the wg nex
+# interactive REPL — no TUI composer involvement):
+#   1. Type the message. Each char goes through vendor_pty_active
+#      branch in handle_right_panel_key → pane.send_key.
+#   2. Enter → submits to nex's rustyline input → nex hits fake
+#      server → response streams back through stdout → rendered
+#      inside the PTY pane via vt100.
 
 # ---- Turn 1: send "hi there", expect canned response 1 ----
-tmux send-keys -t "$SESSION" Enter    # activate chat input
-sleep 0.3
 tmux send-keys -t "$SESSION" "hi there"
 sleep 0.3
-tmux send-keys -t "$SESSION" Enter    # submit
+tmux send-keys -t "$SESSION" Enter
 
 if ! wait_for "Hello traveler"; then
     echo "FAIL: turn 1 response not rendered"
@@ -155,8 +152,6 @@ if ! wait_for "Hello traveler"; then
 fi
 
 # ---- Turn 2: follow-up, expect canned response 2 ----
-tmux send-keys -t "$SESSION" Enter
-sleep 0.3
 tmux send-keys -t "$SESSION" "tell me more"
 sleep 0.3
 tmux send-keys -t "$SESSION" Enter
@@ -169,7 +164,7 @@ if ! wait_for "Glad to help"; then
 fi
 
 # ---- Final sanity: live wg nex child still present ----
-if ! pgrep -f "wg nex --chat coordinator-1" >/dev/null; then
+if ! pgrep -f "wg nex -m " >/dev/null; then
     echo "FAIL: wg nex child missing after two turns"
     exit 1
 fi

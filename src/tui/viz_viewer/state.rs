@@ -11428,35 +11428,45 @@ impl VizApp {
         let (bin, args_owned, cwd_opt): (String, Vec<String>, Option<std::path::PathBuf>) =
             match executor.as_str() {
                 "native" => {
-                    // `wg nex --chat <ref>` via `wg spawn-task`. The
-                    // handler reads inbox, writes outbox; PTY is
-                    // effectively silent. The TUI's composer +
-                    // direct-inbox-write + outbox polling render the
-                    // visible conversation (file-tailing path). We
-                    // keep chat_pty_mode=true so the lock-takeover
-                    // logic fires (daemon's handler gets released),
-                    // but the rendering is file-tailing because the
-                    // PTY content is always essentially empty.
+                    // Interactive `wg nex -m X -e Y` REPL — same as
+                    // the CLI command that works for users. Renders
+                    // banner + prompt + responses in the PTY pane
+                    // because interactive mode writes to stdout
+                    // (chat mode writes to outbox, leaving the pane
+                    // silent except for the banner).
                     //
-                    // Rationale for this shape (not claude-style
-                    // interactive REPL): wg nex doesn't currently
-                    // render a REPL's responses to stdout in chat
-                    // mode — responses go to outbox. Making the PTY
-                    // show them would require either running
-                    // interactive-mode nex (loses inbox/outbox file
-                    // tracking) or teaching nex chat-mode to mirror
-                    // turn output to stdout. The latter is the clean
-                    // fix; cross-session follow-up.
-                    let args = if observer_mode {
-                        vec![
-                            "session".to_string(),
-                            "attach".to_string(),
-                            chat_ref.clone(),
-                        ]
-                    } else {
-                        vec!["spawn-task".to_string(), task_id.clone()]
-                    };
-                    (self_exe.clone(), args, None)
+                    // Arg resolution: explicit model+endpoint from
+                    // config. If the coordinator has an override in
+                    // `[coordinator]`, use it; else `[agent].model`;
+                    // else let nex resolve from config itself (empty
+                    // -m won't be appended). Endpoint comes from the
+                    // default `[[llm_endpoints.endpoints]]` entry.
+                    let mut args = vec!["nex".to_string()];
+                    let model = config
+                        .coordinator
+                        .model
+                        .clone()
+                        .unwrap_or_else(|| config.agent.model.clone());
+                    if !model.is_empty() {
+                        args.push("-m".to_string());
+                        args.push(model);
+                    }
+                    if let Some(ep) = config
+                        .llm_endpoints
+                        .endpoints
+                        .iter()
+                        .find(|e| e.is_default)
+                        .and_then(|e| e.url.clone())
+                    {
+                        args.push("-e".to_string());
+                        args.push(ep);
+                    }
+                    let project_root = self
+                        .workgraph_dir
+                        .parent()
+                        .unwrap_or(&self.workgraph_dir)
+                        .to_path_buf();
+                    (self_exe.clone(), args, Some(project_root))
                 }
                 "claude" => {
                     // CWD: project root (parent of workgraph_dir). The
@@ -11531,14 +11541,11 @@ impl VizApp {
             Ok(pane) => {
                 self.task_panes.insert(task_id, pane);
                 self.chat_pty_mode = true;
-                // Claude / codex run as interactive REPLs; their
-                // stdin IS the input channel — forward keys directly.
-                // Native runs `wg nex --chat <ref>` which reads inbox
-                // (not stdin) and writes outbox; the TUI composer +
-                // direct-inbox-write path is the correct input
-                // channel, so key-forwarding stays off for native.
+                // All three PTY modes run interactive REPLs that
+                // read from stdin: native wg nex (rustyline),
+                // claude, codex. Forward keystrokes directly.
                 self.chat_pty_forwards_stdin =
-                    matches!(executor.as_str(), "claude" | "codex");
+                    matches!(executor.as_str(), "native" | "claude" | "codex");
                 // Shift focus into the right panel so keystrokes route
                 // to the PTY (matches `toggle_chat_pty_mode` on Ctrl+T).
                 // Without this, the graph panel owns keys and hotkeys
