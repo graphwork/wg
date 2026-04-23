@@ -73,12 +73,17 @@ pub fn create_worktree(
     // Run worktree-setup.sh if it exists
     let setup_script = workgraph_dir.join("worktree-setup.sh");
     if setup_script.exists() {
-        let _ = Command::new("bash")
-            .arg(&setup_script)
-            .arg(&worktree_dir)
-            .arg(project_root)
-            .current_dir(&worktree_dir)
-            .output(); // Best-effort; don't fail spawn if setup hook fails
+        // No Config in scope here — bash_exe_path falls through to env +
+        // well-known Windows paths + PATH scan, which is what we want for
+        // a hook script.
+        if let Ok(bash_path) = workgraph::platform_bash::bash_exe_path(None) {
+            let _ = Command::new(&bash_path)
+                .arg(&setup_script)
+                .arg(&worktree_dir)
+                .arg(project_root)
+                .current_dir(&worktree_dir)
+                .output(); // Best-effort; don't fail spawn if setup hook fails
+        }
     }
 
     Ok(WorktreeInfo {

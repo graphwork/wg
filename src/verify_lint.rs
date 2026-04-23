@@ -4,7 +4,15 @@
 //! Agents and users frequently put descriptive prose like "tests pass for all modules"
 //! which causes spawn-die loops when the system tries to execute it.
 
+use crate::platform_bash::bash_exe_path;
 use std::process::Command;
+
+/// Resolve the bash path, or return `None` when resolution fails so the
+/// caller can silently skip the lint check (matches the pre-existing
+/// "can't run bash, skip silently" behavior).
+fn lint_bash() -> Option<std::path::PathBuf> {
+    bash_exe_path(None).ok()
+}
 
 /// Result of linting a verify command.
 #[derive(Debug, Clone)]
@@ -134,7 +142,11 @@ fn check_descriptive_patterns(cmd: &str, warnings: &mut Vec<LintWarning>) {
 
 /// Check bash syntax using `bash -n`.
 fn check_bash_syntax(cmd: &str, warnings: &mut Vec<LintWarning>) {
-    match Command::new("bash").args(["-n", "-c", cmd]).output() {
+    let bash = match lint_bash() {
+        Some(b) => b,
+        None => return, // Can't locate bash — skip silently
+    };
+    match Command::new(&bash).args(["-n", "-c", cmd]).output() {
         Ok(output) => {
             if !output.status.success() {
                 let stderr = String::from_utf8_lossy(&output.stderr);
@@ -174,11 +186,14 @@ fn check_first_token(cmd: &str, warnings: &mut Vec<LintWarning>) {
     }
 
     // Check if the command exists in PATH using `command -v`
-    let exists = Command::new("bash")
-        .args(["-c", &format!("command -v {} >/dev/null 2>&1", first_token)])
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
+    let exists = match lint_bash() {
+        Some(bash) => Command::new(&bash)
+            .args(["-c", &format!("command -v {} >/dev/null 2>&1", first_token)])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false),
+        None => false,
+    };
 
     if !exists {
         warnings.push(LintWarning {
@@ -332,9 +347,12 @@ pub fn auto_correct_verify_command(cmd: &str) -> Option<String> {
     }
 
     // Also check for bash syntax errors (though many "malformed" commands are syntactically valid)
-    let has_bash_error = match Command::new("bash").args(["-n", "-c", cmd]).output() {
-        Ok(output) => !output.status.success(),
-        Err(_) => false, // Can't run bash, assume it's ok
+    let has_bash_error = match lint_bash() {
+        Some(bash) => match Command::new(&bash).args(["-n", "-c", cmd]).output() {
+            Ok(output) => !output.status.success(),
+            Err(_) => false, // Can't run bash, assume it's ok
+        },
+        None => false,
     };
 
     if has_bash_error {
@@ -406,7 +424,11 @@ fn strip_trailing_pattern(cmd: &str, pattern: &str) -> Option<String> {
 
 /// Check if a command has valid bash syntax.
 fn is_valid_bash_syntax(cmd: &str) -> bool {
-    match Command::new("bash").args(["-n", "-c", cmd]).output() {
+    let bash = match lint_bash() {
+        Some(b) => b,
+        None => return false,
+    };
+    match Command::new(&bash).args(["-n", "-c", cmd]).output() {
         Ok(output) => output.status.success(),
         Err(_) => false,
     }

@@ -2765,7 +2765,9 @@ exit $EXIT_CODE"#,
     };
 
     // Fork the process
-    let mut cmd = Command::new("bash");
+    let bash_path = workgraph::platform_bash::bash_exe_path(config.bash.path.as_deref())
+        .context("Failed to resolve bash executable for inline eval")?;
+    let mut cmd = Command::new(&bash_path);
     cmd.arg("-c").arg(&script);
     cmd.stdin(Stdio::null());
     cmd.stdout(Stdio::null());
@@ -2933,7 +2935,11 @@ exit $EXIT_CODE"#,
     );
 
     // Fork the process
-    let mut cmd = Command::new("bash");
+    let assign_config = Config::load_or_default(dir);
+    let bash_path =
+        workgraph::platform_bash::bash_exe_path(assign_config.bash.path.as_deref())
+            .context("Failed to resolve bash executable for inline assign")?;
+    let mut cmd = Command::new(&bash_path);
     cmd.arg("-c").arg(&script);
     cmd.stdin(Stdio::null());
     cmd.stdout(Stdio::null());
