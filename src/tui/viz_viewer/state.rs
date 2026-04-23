@@ -11448,16 +11448,34 @@ impl VizApp {
                     (self_exe.clone(), args, None)
                 }
                 "claude" => {
-                    // `-c / --continue` resumes the most recent session
-                    // in CWD. By pinning CWD per coordinator (chat_dir),
-                    // each tab's Claude session is kept separate.
-                    // First-launch: nothing to continue — claude starts
-                    // fresh. Subsequent launches pick up right where
-                    // the previous `wg tui` session left off.
+                    // CWD: use the project root (parent of workgraph_dir)
+                    // — the user almost certainly has Claude Code
+                    // already trusted there from their regular use.
+                    // A per-coordinator chat_dir as CWD forces the
+                    // trust prompt every launch AND causes claude to
+                    // exit after trust-accept in the portable-pty +
+                    // ratatui hosting environment (exact cause TBD,
+                    // possibly terminal-capability related).
+                    //
+                    // Tradeoff: per-coord claude-session isolation
+                    // breaks — `--continue` picks the most recent in
+                    // CWD regardless of which tab the user's on.
+                    // Multi-coord users can switch via claude's own
+                    // `/resume` picker or by pressing the `-n` name
+                    // we set below.
+                    let project_root = self
+                        .workgraph_dir
+                        .parent()
+                        .unwrap_or(&self.workgraph_dir)
+                        .to_path_buf();
                     (
                         "claude".to_string(),
-                        vec!["--continue".to_string()],
-                        Some(chat_dir.clone()),
+                        vec![
+                            "--continue".to_string(),
+                            "-n".to_string(),
+                            format!("wg-{}", chat_ref),
+                        ],
+                        Some(project_root),
                     )
                 }
                 "codex" => {
@@ -11481,10 +11499,18 @@ impl VizApp {
         self.chat_pty_observer = observer_mode && executor == "native";
 
         let args_ref: Vec<&str> = args_owned.iter().map(String::as_str).collect();
-        let env: Vec<(String, String)> = vec![(
-            "WG_DIR".to_string(),
-            self.workgraph_dir.display().to_string(),
-        )];
+        let env: Vec<(String, String)> = vec![
+            (
+                "WG_DIR".to_string(),
+                self.workgraph_dir.display().to_string(),
+            ),
+            // Vendor CLIs (claude in particular) expect a real-looking
+            // TERM. portable-pty doesn't set one by default; inheriting
+            // the wg-tui parent's TERM works but passing an explicit
+            // xterm-256color avoids oddities when WG_TUI runs under a
+            // minimal terminal like linux console or dumb.
+            ("TERM".to_string(), "xterm-256color".to_string()),
+        ];
 
         let spawn_result = crate::tui::pty_pane::PtyPane::spawn_in(
             &bin,

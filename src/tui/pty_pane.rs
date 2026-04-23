@@ -355,7 +355,12 @@ fn key_event_to_bytes(key: &KeyEvent) -> Vec<u8> {
         // translation happens, and some readers accept only \r and
         // some only \n. Sending both is safe — nothing reads empty
         // lines from a \r\n pair.
-        KeyCode::Enter => out.extend_from_slice(b"\r\n"),
+        // Raw-mode TTY apps expect Enter as a single CR (`\r`).
+        // Sending `\r\n` is interpreted as "Enter + Ctrl-J" by most
+        // REPLs — claude in particular treats the stray Ctrl-J as a
+        // cancel/exit signal after accepting the trust prompt, making
+        // its REPL die immediately after the user confirms.
+        KeyCode::Enter => out.push(b'\r'),
         KeyCode::Tab => {
             if shift {
                 out.extend_from_slice(b"\x1b[Z"); // xterm back-tab
@@ -415,9 +420,13 @@ mod tests {
     }
 
     #[test]
-    fn enter_maps_to_crlf() {
+    fn enter_maps_to_cr_only() {
+        // Raw-mode PTY apps (claude REPL, less, vim, readline)
+        // expect bare CR for Enter; sending CR+LF gets interpreted as
+        // Enter followed by a stray Ctrl-J and breaks apps that
+        // treat Ctrl-J as cancel.
         let e = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
-        assert_eq!(key_event_to_bytes(&e), b"\r\n");
+        assert_eq!(key_event_to_bytes(&e), b"\r");
     }
 
     #[test]
