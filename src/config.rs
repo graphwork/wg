@@ -110,6 +110,13 @@ pub struct Config {
     #[serde(default)]
     pub chat: ChatConfig,
 
+    /// Bash executable resolution. Primarily for Windows users whose PATH
+    /// resolves `bash` to `C:\Windows\System32\bash.exe` (the WSL shim)
+    /// instead of Git for Windows' bash. Leave unset to let wg
+    /// auto-discover Git for Windows.
+    #[serde(default)]
+    pub bash: BashConfig,
+
     /// OpenRouter cost cap and monitoring configuration
     #[serde(default)]
     pub openrouter: OpenRouterConfig,
@@ -165,6 +172,24 @@ fn default_mcp_enabled() -> bool {
 }
 
 /// Chat archive rotation configuration.
+/// Bash executable resolution. On Windows this overrides wg's automatic
+/// Git-for-Windows discovery; on Unix this is essentially never needed
+/// since PATH lookup for `bash` Just Works.
+///
+/// ```toml
+/// [bash]
+/// path = "C:\\Program Files\\Git\\bin\\bash.exe"
+/// ```
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct BashConfig {
+    /// Absolute path to the bash executable wg should use for wrapper
+    /// scripts. Primarily for Windows users whose PATH resolves to
+    /// `C:\Windows\System32\bash.exe` (the WSL shim) instead of Git
+    /// for Windows' bash. Leave unset to let wg auto-discover.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<PathBuf>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatConfig {
     /// Maximum size in bytes before rotating the active chat file (default: 1MB).

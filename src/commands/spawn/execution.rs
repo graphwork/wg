@@ -535,7 +535,9 @@ pub(crate) fn spawn_agent_inner(
     )?;
 
     // Run the wrapper script
-    let mut cmd = Command::new("bash");
+    let bash_path = workgraph::platform_bash::bash_exe_path(config.bash.path.as_deref())
+        .context("Failed to resolve bash executable for spawn wrapper")?;
+    let mut cmd = Command::new(&bash_path);
     cmd.arg(&wrapper_path);
 
     // Set environment variables from executor config

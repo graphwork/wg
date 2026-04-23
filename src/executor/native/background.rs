@@ -623,7 +623,9 @@ fn spawn_detached(command: &str, working_dir: &Path, log_path: &Path) -> Result<
     {
         // On Unix, we use setsid to create a new session and detach from terminal
         // The setsid command handles the detachment - the spawned process becomes session leader
-        let child = TokioCommand::new("bash")
+        let bash_path = crate::platform_bash::bash_exe_path(None)
+            .map_err(|e| anyhow!("Failed to resolve bash: {}", e))?;
+        let child = TokioCommand::new(&bash_path)
             .arg("-c")
             .arg(format!(
                 "setsid {} > {} 2>&1 < /dev/null",

@@ -44,6 +44,7 @@ pub mod models;
 pub mod notify;
 pub mod parser;
 pub mod plan_validator;
+pub mod platform_bash;
 pub mod profile;
 pub mod provenance;
 pub mod query;

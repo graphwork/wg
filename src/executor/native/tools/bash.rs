@@ -68,8 +68,13 @@ impl Tool for BashTool {
 
         let timeout = Duration::from_millis(timeout_ms);
 
+        let bash_path = match crate::platform_bash::bash_exe_path(None) {
+            Ok(p) => p,
+            Err(e) => return ToolOutput::error(format!("Failed to resolve bash: {}", e)),
+        };
+
         let result = tokio::time::timeout(timeout, async {
-            Command::new("bash")
+            Command::new(&bash_path)
                 .arg("-c")
                 .arg(command)
                 .current_dir(&self.working_dir)
@@ -136,8 +141,13 @@ impl Tool for BashTool {
 
         let timeout = Duration::from_millis(timeout_ms);
 
+        let bash_path = match crate::platform_bash::bash_exe_path(None) {
+            Ok(p) => p,
+            Err(e) => return ToolOutput::error(format!("Failed to resolve bash: {}", e)),
+        };
+
         let mut child = match tokio::time::timeout(timeout, async {
-            Command::new("bash")
+            Command::new(&bash_path)
                 .arg("-c")
                 .arg(command)
                 .current_dir(&self.working_dir)
