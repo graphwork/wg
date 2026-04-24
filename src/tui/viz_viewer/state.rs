@@ -11508,7 +11508,24 @@ impl VizApp {
                         .and_then(|n| n.to_str())
                         .unwrap_or("project");
                     let session_name = format!("wg-{}-{}", project_tag, chat_ref);
-                    let mut args = vec!["-n".to_string(), session_name];
+                    // Coordinator priming + permission skip: mirror the
+                    // service-spawned claude handler's args (see
+                    // coordinator_agent::build_system_prompt and
+                    // claude_handler.rs:337,371). Without these the TUI
+                    // claude starts up with only CLAUDE.md for context
+                    // and prompts the user for every tool use — the
+                    // full coordinator prompt + bypassPermissions is
+                    // what makes it actually behave as a coordinator.
+                    let sys_prompt = crate::commands::service::coordinator_agent::build_system_prompt(
+                        &self.workgraph_dir,
+                    );
+                    let mut args = vec![
+                        "-n".to_string(),
+                        session_name,
+                        "--dangerously-skip-permissions".to_string(),
+                        "--system-prompt".to_string(),
+                        sys_prompt,
+                    ];
                     if claude_has_session_for(&project_root) {
                         args.insert(0, "--continue".to_string());
                     }
