@@ -486,6 +486,12 @@ fn key_event_to_bytes(key: &KeyEvent) -> Vec<u8> {
                 out.push(b'\t');
             }
         }
+        // Crossterm reports Shift+Tab as a dedicated BackTab keycode
+        // rather than Tab+SHIFT on most terminal emulators — both paths
+        // must emit the xterm back-tab sequence or claude's
+        // "shift-tab to cycle" binding (and readline's reverse-complete)
+        // silently drop.
+        KeyCode::BackTab => out.extend_from_slice(b"\x1b[Z"),
         KeyCode::Backspace => out.push(0x7f),
         KeyCode::Esc => out.push(0x1b),
         KeyCode::Left => out.extend_from_slice(b"\x1b[D"),
@@ -581,6 +587,21 @@ mod tests {
     fn f1_emits_ss3_prefix() {
         let e = KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE);
         assert_eq!(key_event_to_bytes(&e), b"\x1bOP");
+    }
+
+    #[test]
+    fn back_tab_emits_csi_z() {
+        let e = KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT);
+        assert_eq!(key_event_to_bytes(&e), b"\x1b[Z");
+        // Crossterm sometimes reports without SHIFT — still must work.
+        let bare = KeyEvent::new(KeyCode::BackTab, KeyModifiers::NONE);
+        assert_eq!(key_event_to_bytes(&bare), b"\x1b[Z");
+    }
+
+    #[test]
+    fn shift_tab_via_tab_keycode_still_emits_csi_z() {
+        let e = KeyEvent::new(KeyCode::Tab, KeyModifiers::SHIFT);
+        assert_eq!(key_event_to_bytes(&e), b"\x1b[Z");
     }
 
     #[test]
