@@ -243,6 +243,16 @@ impl PtyPane {
     /// Render the current terminal screen as a ratatui widget in
     /// `area`. Safe to call from the main TUI thread every frame.
     pub fn render(&self, frame: &mut Frame, area: Rect) {
+        self.render_with_focus(frame, area, true);
+    }
+
+    /// Like `render`, but when `focused` is false, paint a dim +
+    /// desaturated overlay so the user sees "this pane is there and
+    /// resumable but not receiving input right now." Without this,
+    /// there's no visual signal distinguishing focused-pty-active
+    /// from unfocused-pty-idle; the user presses keys and wonders
+    /// why nothing happens.
+    pub fn render_with_focus(&self, frame: &mut Frame, area: Rect, focused: bool) {
         let parser = match self.parser.lock() {
             Ok(g) => g,
             Err(poisoned) => poisoned.into_inner(),
@@ -250,6 +260,22 @@ impl PtyPane {
         let screen = parser.screen();
         let widget = tui_term::widget::PseudoTerminal::new(screen);
         frame.render_widget(widget, area);
+        if !focused {
+            // Post-render overlay: walk every cell the PTY just drew
+            // and apply DIM + grey foreground. Cheap (area is small)
+            // and works regardless of what styling tui_term chose.
+            let buf = frame.buffer_mut();
+            for y in area.y..area.y.saturating_add(area.height) {
+                for x in area.x..area.x.saturating_add(area.width) {
+                    let cell = &mut buf[(x, y)];
+                    cell.set_style(
+                        ratatui::style::Style::default()
+                            .fg(ratatui::style::Color::DarkGray)
+                            .add_modifier(ratatui::style::Modifier::DIM),
+                    );
+                }
+            }
+        }
     }
 
     /// Forward a crossterm key event to the embedded process. Returns

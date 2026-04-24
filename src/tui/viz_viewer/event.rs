@@ -1166,24 +1166,14 @@ fn handle_message_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers
 }
 
 fn handle_normal_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
-    // Global Ctrl+T: toggle PTY-backed rendering for the Chat tab,
-    // regardless of focused panel. Works from the graph pane or the
-    // right panel — users expect "enable live terminal view" to be
-    // always accessible. No-op when the active right tab isn't Chat.
-    //
-    // Also: when enabling PTY mode, auto-focus the right panel so
-    // subsequent keys reach the embedded handler's stdin. Without
-    // this, Ctrl+T from the graph pane would put the user in a
-    // confusing state where they'd see the PTY but their keys would
-    // still be driving graph navigation.
+    // Global Ctrl+T: shift focus between graph and PTY pane (or
+    // respawn a dead PTY). `toggle_chat_pty_mode` sets
+    // `focused_panel` itself — don't re-override here.
     if modifiers.contains(KeyModifiers::CONTROL)
         && matches!(code, KeyCode::Char('t'))
         && app.right_panel_tab == RightPanelTab::Chat
     {
         toggle_chat_pty_mode(app);
-        if app.chat_pty_mode {
-            app.focused_panel = super::state::FocusedPanel::RightPanel;
-        }
         return;
     }
     match app.focused_panel {
@@ -2396,17 +2386,27 @@ fn toggle_chat_pty_mode(app: &mut VizApp) {
         .map(|p| p.is_alive())
         .unwrap_or(false);
 
-    // If PTY mode is on and the pane DIED while it was on (handler
-    // crashed / was externally released), the user's Ctrl+T intent
-    // is clearly "give me the PTY back" — respawn instead of
-    // toggling off. Only actually toggle off when the pane is live
-    // and the user wants to see the normal chat view.
+    // Ctrl-T is the keyboard escape/re-enter. When the pane is
+    // live, shift `focused_panel` — that's the gate on key
+    // forwarding (vendor_pty_active). Unlike the old "flip
+    // chat_pty_mode off" behavior, the PTY stays rendered (just
+    // dimmed) — the file-tailing chat view shown when
+    // chat_pty_mode was false was stale/irrelevant for claude and
+    // codex (they don't write inbox/outbox), which made Ctrl-T
+    // feel broken.
     if app.chat_pty_mode && pane_live {
-        app.chat_pty_mode = false;
+        app.focused_panel = if app.focused_panel == FocusedPanel::RightPanel {
+            FocusedPanel::Graph
+        } else {
+            FocusedPanel::RightPanel
+        };
         return;
     }
-    // Turning on (or respawning after death).
+    // Pane dead or not spawned yet — turn chat_pty_mode back on
+    // so `maybe_auto_enable_chat_pty` respawns the child, and leave
+    // focus on the right panel so keys flow in immediately.
     app.chat_pty_mode = true;
+    app.focused_panel = FocusedPanel::RightPanel;
     if pane_live {
         return;
     }

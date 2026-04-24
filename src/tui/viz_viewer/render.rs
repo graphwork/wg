@@ -3112,7 +3112,8 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
         }
         if let Some(pane) = app.task_panes.get_mut(&task_id) {
             let _ = pane.resize(msg_area.height, msg_area.width);
-            pane.render(frame, msg_area);
+            let focused = app.focused_panel == super::state::FocusedPanel::RightPanel;
+            pane.render_with_focus(frame, msg_area, focused);
         } else {
             // Pane gone (exited or never spawned); fall through to
             // the normal renderer so the user still sees chat content.
