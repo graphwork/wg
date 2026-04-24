@@ -11489,7 +11489,17 @@ impl VizApp {
                         .parent()
                         .unwrap_or(&self.workgraph_dir)
                         .to_path_buf();
-                    let mut args = vec!["-n".to_string(), format!("wg-{}", chat_ref)];
+                    // Session display name: `wg-<project-dir>-<coord-ref>`.
+                    // Including the project dir basename makes Claude's
+                    // own `/resume` picker usable when the user has
+                    // multiple workgraph projects (otherwise every
+                    // project's coord-0 shows up as `wg-coordinator-0`).
+                    let project_tag = project_root
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("project");
+                    let session_name = format!("wg-{}-{}", project_tag, chat_ref);
+                    let mut args = vec!["-n".to_string(), session_name];
                     if claude_has_session_for(&project_root) {
                         args.insert(0, "--continue".to_string());
                     }
