@@ -48,88 +48,6 @@ pub fn editor_clear(state: &mut EditorState) {
     *state = new_emacs_editor();
 }
 
-/// Split the new-coordinator prompt's text into (name, cli-flags).
-///
-/// Users can type e.g. `"my-coord --executor codex --model claude:opus"`
-/// in the coordinator-name prompt. Anything before the first `--` is
-/// the name; everything from `--` onward becomes a flag vector that
-/// gets appended to the `wg service create-coordinator` call.
-///
-/// Whitespace outside quoted strings separates tokens; quotes keep
-/// spaces together. This is a minimal shell-style tokenizer — not
-/// POSIX-compliant, just enough for typical flag values.
-pub fn split_name_and_flags(input: &str) -> (String, Vec<String>) {
-    // Locate the first `--` *not* embedded inside a word. Anything
-    // before it is the name; everything from it onward is tokenized
-    // as flags.
-    let mut name_end = input.len();
-    let mut chars = input.char_indices().peekable();
-    while let Some((i, c)) = chars.next() {
-        if c == '-'
-            && matches!(chars.peek(), Some((_, '-')))
-            && (i == 0 || input[..i].ends_with(char::is_whitespace))
-        {
-            name_end = i;
-            break;
-        }
-    }
-    let name_part = input[..name_end].to_string();
-    let flag_part = tokenize_shell(&input[name_end..]);
-    (name_part, flag_part)
-}
-
-/// Minimal shell-style tokenizer. Handles single + double quotes
-/// and backslash-escaped characters outside quotes. Unterminated
-/// quotes are treated as extending to end of string.
-fn tokenize_shell(s: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut cur = String::new();
-    let mut in_single = false;
-    let mut in_double = false;
-    let mut chars = s.chars().peekable();
-    while let Some(c) = chars.next() {
-        if in_single {
-            if c == '\'' {
-                in_single = false;
-            } else {
-                cur.push(c);
-            }
-        } else if in_double {
-            if c == '"' {
-                in_double = false;
-            } else if c == '\\'
-                && let Some(&next) = chars.peek()
-            {
-                chars.next();
-                cur.push(next);
-            } else {
-                cur.push(c);
-            }
-        } else {
-            match c {
-                ' ' | '\t' | '\n' => {
-                    if !cur.is_empty() {
-                        out.push(std::mem::take(&mut cur));
-                    }
-                }
-                '\'' => in_single = true,
-                '"' => in_double = true,
-                '\\' => {
-                    if let Some(&next) = chars.peek() {
-                        chars.next();
-                        cur.push(next);
-                    }
-                }
-                _ => cur.push(c),
-            }
-        }
-    }
-    if !cur.is_empty() {
-        out.push(cur);
-    }
-    out
-}
-
 /// Insert-mode paste: inserts text at cursor and leaves cursor after the
 /// inserted text.  This replaces edtui's `on_paste_event` which uses Vim
 /// Normal-mode semantics (`append_str`) and leaves the cursor one position
@@ -888,6 +806,8 @@ pub enum InputMode {
     ConfigEdit,
     /// Chat search mode (/ key in chat tab). Keys go to chat search input.
     ChatSearch,
+    /// Full-pane coordinator launcher (replaces chat view area).
+    Launcher,
 }
 
 /// What action the confirmation dialog is for.
@@ -905,7 +825,116 @@ pub enum TextPromptAction {
     SendMessage(String), // task_id
     EditDescription(String), // task_id
     AttachFile,         // attach a file to the next chat message
-    CreateCoordinator,  // prompt for optional coordinator name
+}
+
+/// Which section of the launcher pane has keyboard focus.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LauncherSection {
+    Name,
+    Executor,
+    Model,
+    Endpoint,
+    Recent,
+}
+
+/// State for the full-pane coordinator launcher.
+#[derive(Clone, Debug)]
+pub struct LauncherState {
+    pub active_section: LauncherSection,
+    pub name: String,
+    pub executor_list: Vec<(String, String, bool)>, // (name, description, available)
+    pub executor_selected: usize,
+    pub model_list: Vec<(String, String)>, // (id, description)
+    pub model_selected: usize,
+    pub model_custom: String,
+    pub model_custom_active: bool,
+    pub endpoint_list: Vec<(String, String)>, // (name, url_or_desc)
+    pub endpoint_selected: usize,
+    pub endpoint_custom: String,
+    pub endpoint_custom_active: bool,
+    pub recent_list: Vec<workgraph::launcher_history::HistoryEntry>,
+    pub recent_selected: usize,
+}
+
+impl LauncherState {
+    pub fn selected_executor(&self) -> &str {
+        self.executor_list.get(self.executor_selected)
+            .map(|(name, _, _)| name.as_str())
+            .unwrap_or("claude")
+    }
+
+    pub fn show_endpoint(&self) -> bool {
+        self.selected_executor() == "native"
+    }
+
+    pub fn selected_model(&self) -> Option<String> {
+        if self.model_custom_active && !self.model_custom.is_empty() {
+            Some(self.model_custom.clone())
+        } else {
+            self.model_list.get(self.model_selected)
+                .map(|(id, _)| id.clone())
+        }
+    }
+
+    pub fn selected_endpoint(&self) -> Option<String> {
+        if !self.show_endpoint() {
+            return None;
+        }
+        if self.endpoint_custom_active && !self.endpoint_custom.is_empty() {
+            Some(self.endpoint_custom.clone())
+        } else {
+            self.endpoint_list.get(self.endpoint_selected)
+                .map(|(_, url)| url.clone())
+        }
+    }
+
+    pub fn next_section(&mut self) {
+        self.active_section = match self.active_section {
+            LauncherSection::Name => LauncherSection::Executor,
+            LauncherSection::Executor => LauncherSection::Model,
+            LauncherSection::Model => {
+                if self.show_endpoint() {
+                    LauncherSection::Endpoint
+                } else if !self.recent_list.is_empty() {
+                    LauncherSection::Recent
+                } else {
+                    LauncherSection::Name
+                }
+            }
+            LauncherSection::Endpoint => {
+                if !self.recent_list.is_empty() {
+                    LauncherSection::Recent
+                } else {
+                    LauncherSection::Name
+                }
+            }
+            LauncherSection::Recent => LauncherSection::Name,
+        };
+    }
+
+    pub fn prev_section(&mut self) {
+        self.active_section = match self.active_section {
+            LauncherSection::Name => {
+                if !self.recent_list.is_empty() {
+                    LauncherSection::Recent
+                } else if self.show_endpoint() {
+                    LauncherSection::Endpoint
+                } else {
+                    LauncherSection::Model
+                }
+            }
+            LauncherSection::Executor => LauncherSection::Name,
+            LauncherSection::Model => LauncherSection::Executor,
+            LauncherSection::Endpoint => LauncherSection::Model,
+            LauncherSection::Recent => {
+                if self.show_endpoint() {
+                    LauncherSection::Endpoint
+                } else {
+                    LauncherSection::Model
+                }
+            }
+        };
+    }
 }
 
 /// What action a choice dialog will perform when an option is selected.
@@ -3587,6 +3616,10 @@ pub struct VizApp {
     /// Task creation form state (populated when form is open).
     pub task_form: Option<TaskFormState>,
 
+    // ── Coordinator launcher ──
+    /// Full-pane launcher state (replaces chat view when Some).
+    pub launcher: Option<LauncherState>,
+
     // ── Text prompt ──
     /// Text prompt input buffer (for fail reason, message, etc.)
     pub text_prompt: TextPromptState,
@@ -3997,6 +4030,7 @@ impl VizApp {
             chat_input_dismissed: false,
             inspector_sub_focus: InspectorSubFocus::ChatHistory,
             task_form: None,
+            launcher: None,
             text_prompt: TextPromptState {
                 editor: new_emacs_editor(),
             },
@@ -8203,6 +8237,7 @@ impl VizApp {
             chat_input_dismissed: false,
             inspector_sub_focus: InspectorSubFocus::ChatHistory,
             task_form: None,
+            launcher: None,
             text_prompt: TextPromptState {
                 editor: new_emacs_editor(),
             },
@@ -11683,29 +11718,116 @@ impl VizApp {
         }
     }
 
-    /// Create a new coordinator session via IPC and switch to it.
-    ///
-    /// The text from the name prompt is parsed to support inline
-    /// executor/model flags — users can type e.g.
-    /// `"my-coord --executor codex"` or `"--model claude:opus"`
-    /// instead of dropping to the CLI to call
-    /// `wg service create-coordinator --executor codex`. Anything
-    /// before the first `--` is the name; everything after is
-    /// forwarded as CLI flags.
+    /// Open the full-pane coordinator launcher, populating it with
+    /// available executors, models, endpoints, and recent combos.
+    pub fn open_launcher(&mut self) {
+        use workgraph::executor_discovery;
+        use workgraph::launcher_history;
+
+        let all_executors = executor_discovery::discover();
+        let executor_list: Vec<(String, String, bool)> = all_executors
+            .iter()
+            .map(|e| (e.name.to_string(), e.description.to_string(), e.available))
+            .collect();
+
+        let model_list = workgraph::models::load_model_choices_with_descriptions(
+            &self.workgraph_dir,
+        );
+
+        let config = Config::load_or_default(&self.workgraph_dir);
+        let endpoint_list: Vec<(String, String)> = config
+            .llm_endpoints
+            .endpoints
+            .iter()
+            .map(|ep| {
+                let desc = ep.url.clone().unwrap_or_else(|| format!("{} (default)", ep.provider));
+                (ep.name.clone(), desc)
+            })
+            .collect();
+
+        let recent_list = launcher_history::recent_combos(10).unwrap_or_default();
+
+        let default_executor_idx = executor_list
+            .iter()
+            .position(|(name, _, avail)| *avail && name == "claude")
+            .or_else(|| executor_list.iter().position(|(_, _, avail)| *avail))
+            .unwrap_or(0);
+
+        self.launcher = Some(LauncherState {
+            active_section: LauncherSection::Executor,
+            name: String::new(),
+            executor_list,
+            executor_selected: default_executor_idx,
+            model_list,
+            model_selected: 0,
+            model_custom: String::new(),
+            model_custom_active: false,
+            endpoint_list,
+            endpoint_selected: 0,
+            endpoint_custom: String::new(),
+            endpoint_custom_active: false,
+            recent_list,
+            recent_selected: 0,
+        });
+        self.input_mode = InputMode::Launcher;
+    }
+
+    /// Launch a coordinator with the selections from the launcher pane.
+    pub fn launch_from_launcher(&mut self) {
+        let launcher = match self.launcher.take() {
+            Some(l) => l,
+            None => return,
+        };
+        self.input_mode = InputMode::Normal;
+
+        let mut args = vec!["service".to_string(), "create-coordinator".to_string()];
+
+        let name = launcher.name.trim().to_string();
+        if !name.is_empty() {
+            args.push("--name".to_string());
+            args.push(name);
+        }
+
+        let executor = launcher.selected_executor().to_string();
+        args.push("--executor".to_string());
+        args.push(executor.clone());
+
+        if let Some(model) = launcher.selected_model() {
+            args.push("--model".to_string());
+            args.push(model.clone());
+
+            // Record history entry
+            let endpoint = launcher.selected_endpoint();
+            if let Ok(()) = workgraph::launcher_history::record_use(
+                &workgraph::launcher_history::HistoryEntry::new(
+                    &executor,
+                    Some(&model),
+                    endpoint.as_deref(),
+                    "tui",
+                ),
+            ) {}
+        }
+
+        self.exec_command(args, CommandEffect::CreateCoordinator);
+    }
+
+    /// Create a coordinator by name (used for auto-creation on first-use).
     pub fn create_coordinator(&mut self, name: Option<String>) {
         let mut args = vec!["service".to_string(), "create-coordinator".to_string()];
         if let Some(n) = name {
-            let (name_part, flag_part) = split_name_and_flags(&n);
-            let name_trimmed = name_part.trim();
+            let name_trimmed = n.trim().to_string();
             if !name_trimmed.is_empty() {
                 args.push("--name".to_string());
-                args.push(name_trimmed.to_string());
-            }
-            for token in flag_part {
-                args.push(token);
+                args.push(name_trimmed);
             }
         }
         self.exec_command(args, CommandEffect::CreateCoordinator);
+    }
+
+    /// Close the launcher pane without creating a coordinator.
+    pub fn close_launcher(&mut self) {
+        self.launcher = None;
+        self.input_mode = InputMode::Normal;
     }
 
     /// Delete a coordinator session via IPC.
@@ -15625,55 +15747,6 @@ mod hud_tests {
                 .iter()
                 .any(|l| l.contains("zero-iter"))
         );
-    }
-}
-
-#[cfg(test)]
-mod split_name_and_flags_tests {
-    use super::*;
-
-    #[test]
-    fn name_only() {
-        let (name, flags) = split_name_and_flags("my-coord");
-        assert_eq!(name, "my-coord");
-        assert!(flags.is_empty());
-    }
-
-    #[test]
-    fn name_with_trailing_flags() {
-        let (name, flags) = split_name_and_flags("my-coord --executor codex");
-        assert_eq!(name.trim(), "my-coord");
-        assert_eq!(flags, vec!["--executor", "codex"]);
-    }
-
-    #[test]
-    fn flags_only_no_name() {
-        let (name, flags) = split_name_and_flags("--model codex:gpt-5-codex");
-        assert_eq!(name.trim(), "");
-        assert_eq!(flags, vec!["--model", "codex:gpt-5-codex"]);
-    }
-
-    #[test]
-    fn multiple_flags() {
-        let (name, flags) = split_name_and_flags("frontend --executor codex --model claude:opus");
-        assert_eq!(name.trim(), "frontend");
-        assert_eq!(flags, vec!["--executor", "codex", "--model", "claude:opus"]);
-    }
-
-    #[test]
-    fn quoted_value_kept_whole() {
-        let (name, flags) = split_name_and_flags("coord --name \"has spaces\"");
-        assert_eq!(name.trim(), "coord");
-        assert_eq!(flags, vec!["--name", "has spaces"]);
-    }
-
-    #[test]
-    fn double_dash_inside_name_not_split() {
-        // `my--coord` is one word (no whitespace before `--`) so the
-        // entire thing is the name.
-        let (name, flags) = split_name_and_flags("my--coord");
-        assert_eq!(name, "my--coord");
-        assert!(flags.is_empty());
     }
 }
 

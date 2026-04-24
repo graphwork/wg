@@ -3071,6 +3071,18 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
         frame.render_widget(Paragraph::new(vec![tab_line]), tab_area);
     }
 
+    // Full-pane launcher: takes over the entire area below the tab bar.
+    if app.launcher.is_some() {
+        let launcher_area = Rect {
+            x: area.x,
+            y: area.y + tab_bar_height,
+            width: area.width,
+            height: area.height.saturating_sub(tab_bar_height),
+        };
+        draw_launcher_pane(frame, app, launcher_area);
+        return;
+    }
+
     let msg_area = Rect {
         x: area.x,
         y: area.y + tab_bar_height,
@@ -5654,6 +5666,247 @@ fn draw_choice_dialog(frame: &mut Frame, state: &ChoiceDialogState) {
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
+fn draw_launcher_pane(frame: &mut Frame, app: &mut VizApp, area: Rect) {
+    use super::state::LauncherSection;
+
+    let launcher = match app.launcher.as_ref() {
+        Some(l) => l,
+        None => return,
+    };
+
+    let mut lines: Vec<Line> = Vec::new();
+    let w = area.width as usize;
+
+    // Title
+    lines.push(Line::from(Span::styled(
+        "  New Coordinator",
+        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+    )));
+    lines.push(Line::from(Span::styled(
+        format!("  {}", "\u{2500}".repeat(w.saturating_sub(4).min(40))),
+        Style::default().fg(Color::DarkGray),
+    )));
+
+    // Name field
+    let name_active = launcher.active_section == LauncherSection::Name;
+    let name_prefix = if name_active { "  \u{25b8} " } else { "    " };
+    let name_style = if name_active {
+        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::White)
+    };
+    let name_display = if launcher.name.is_empty() {
+        if name_active { "\u{2588}" } else { "(optional)" }
+    } else {
+        ""
+    };
+    if launcher.name.is_empty() {
+        lines.push(Line::from(vec![
+            Span::styled(format!("{}Name: ", name_prefix), name_style),
+            Span::styled(
+                name_display,
+                if name_active {
+                    Style::default().fg(Color::Yellow).add_modifier(Modifier::SLOW_BLINK)
+                } else {
+                    Style::default().fg(Color::DarkGray)
+                },
+            ),
+        ]));
+    } else {
+        lines.push(Line::from(vec![
+            Span::styled(format!("{}Name: ", name_prefix), name_style),
+            Span::raw(&launcher.name),
+            if name_active {
+                Span::styled("\u{2588}", Style::default().fg(Color::Yellow).add_modifier(Modifier::SLOW_BLINK))
+            } else {
+                Span::raw("")
+            },
+        ]));
+    }
+    lines.push(Line::from(""));
+
+    // Executor section
+    let exec_active = launcher.active_section == LauncherSection::Executor;
+    let section_style = |active: bool| {
+        if active {
+            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::White)
+        }
+    };
+    lines.push(Line::from(Span::styled(
+        if exec_active { "  \u{25b8} Executor" } else { "    Executor" },
+        section_style(exec_active),
+    )));
+
+    for (i, (name, desc, available)) in launcher.executor_list.iter().enumerate() {
+        let selected = exec_active && i == launcher.executor_selected;
+        let bullet = if selected { " \u{25cf} " } else { " \u{25cb} " };
+        let style = if !available {
+            Style::default().fg(Color::DarkGray)
+        } else if selected {
+            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::White)
+        };
+        let suffix = if !available { " (not found)" } else { "" };
+        let desc_short: String = desc.chars().take(w.saturating_sub(name.len() + 14)).collect();
+        lines.push(Line::from(vec![
+            Span::styled(format!("    {}{}", bullet, name), style),
+            Span::styled(format!("  {}{}", desc_short, suffix), Style::default().fg(Color::DarkGray)),
+        ]));
+    }
+    lines.push(Line::from(""));
+
+    // Model section
+    let model_active = launcher.active_section == LauncherSection::Model;
+    lines.push(Line::from(Span::styled(
+        if model_active { "  \u{25b8} Model" } else { "    Model" },
+        section_style(model_active),
+    )));
+
+    for (i, (id, desc)) in launcher.model_list.iter().enumerate() {
+        let selected = model_active && i == launcher.model_selected && !launcher.model_custom_active;
+        let bullet = if selected { " \u{25cf} " } else { " \u{25cb} " };
+        let style = if selected {
+            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::White)
+        };
+        let desc_short: String = desc.chars().take(w.saturating_sub(id.len() + 14)).collect();
+        lines.push(Line::from(vec![
+            Span::styled(format!("    {}{}", bullet, id), style),
+            Span::styled(format!("  {}", desc_short), Style::default().fg(Color::DarkGray)),
+        ]));
+    }
+
+    // Custom model row
+    let custom_model_selected = model_active && launcher.model_selected >= launcher.model_list.len();
+    let custom_style = if launcher.model_custom_active {
+        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+    } else if custom_model_selected {
+        Style::default().fg(Color::Yellow)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+    let custom_bullet = if custom_model_selected || launcher.model_custom_active { " \u{25cf} " } else { " \u{25cb} " };
+    if launcher.model_custom_active {
+        lines.push(Line::from(vec![
+            Span::styled(format!("    {}Custom: ", custom_bullet), custom_style),
+            Span::raw(&launcher.model_custom),
+            Span::styled("\u{2588}", Style::default().fg(Color::Yellow).add_modifier(Modifier::SLOW_BLINK)),
+        ]));
+    } else {
+        let custom_display = if launcher.model_custom.is_empty() {
+            "Custom: [enter model]".to_string()
+        } else {
+            format!("Custom: {}", launcher.model_custom)
+        };
+        lines.push(Line::from(Span::styled(
+            format!("    {}{}", custom_bullet, custom_display),
+            custom_style,
+        )));
+    }
+    lines.push(Line::from(""));
+
+    // Endpoint section (only for native executor)
+    if launcher.show_endpoint() {
+        let ep_active = launcher.active_section == LauncherSection::Endpoint;
+        lines.push(Line::from(Span::styled(
+            if ep_active { "  \u{25b8} Endpoint" } else { "    Endpoint" },
+            section_style(ep_active),
+        )));
+
+        for (i, (name, url)) in launcher.endpoint_list.iter().enumerate() {
+            let selected = ep_active && i == launcher.endpoint_selected && !launcher.endpoint_custom_active;
+            let bullet = if selected { " \u{25cf} " } else { " \u{25cb} " };
+            let style = if selected {
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            lines.push(Line::from(vec![
+                Span::styled(format!("    {}{}", bullet, name), style),
+                Span::styled(format!("  {}", url), Style::default().fg(Color::DarkGray)),
+            ]));
+        }
+
+        // Custom endpoint row
+        let custom_ep_selected = ep_active && launcher.endpoint_selected >= launcher.endpoint_list.len();
+        let custom_ep_style = if launcher.endpoint_custom_active {
+            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+        } else if custom_ep_selected {
+            Style::default().fg(Color::Yellow)
+        } else {
+            Style::default().fg(Color::DarkGray)
+        };
+        let ep_bullet = if custom_ep_selected || launcher.endpoint_custom_active { " \u{25cf} " } else { " \u{25cb} " };
+        if launcher.endpoint_custom_active {
+            lines.push(Line::from(vec![
+                Span::styled(format!("    {}Custom: ", ep_bullet), custom_ep_style),
+                Span::raw(&launcher.endpoint_custom),
+                Span::styled("\u{2588}", Style::default().fg(Color::Yellow).add_modifier(Modifier::SLOW_BLINK)),
+            ]));
+        } else {
+            let custom_display = if launcher.endpoint_custom.is_empty() {
+                "Custom: [enter URL]".to_string()
+            } else {
+                format!("Custom: {}", launcher.endpoint_custom)
+            };
+            lines.push(Line::from(Span::styled(
+                format!("    {}{}", ep_bullet, custom_display),
+                custom_ep_style,
+            )));
+        }
+        lines.push(Line::from(""));
+    }
+
+    // Recent combos section
+    if !launcher.recent_list.is_empty() {
+        let recent_active = launcher.active_section == LauncherSection::Recent;
+        lines.push(Line::from(Span::styled(
+            if recent_active { "  \u{25b8} Recent" } else { "    Recent" },
+            section_style(recent_active),
+        )));
+
+        for (i, entry) in launcher.recent_list.iter().enumerate() {
+            let selected = recent_active && i == launcher.recent_selected;
+            let style = if selected {
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            let model_str = entry.model.as_deref().unwrap_or("default");
+            let ep_str = entry.endpoint.as_deref().map(|e| format!(" @ {}", e)).unwrap_or_default();
+            let num = i + 1;
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!("    {}. ", num),
+                    if selected {
+                        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(Color::DarkGray)
+                    },
+                ),
+                Span::styled(
+                    format!("{} / {}{}", entry.executor, model_str, ep_str),
+                    style,
+                ),
+            ]));
+        }
+        lines.push(Line::from(""));
+    }
+
+    // Footer with keybindings
+    lines.push(Line::from(Span::styled(
+        "  [Tab] Section  [\u{2191}\u{2193}] Navigate  [Enter] Create  [Esc] Cancel",
+        Style::default().fg(Color::DarkGray),
+    )));
+
+    let paragraph = Paragraph::new(lines);
+    frame.render_widget(paragraph, area);
+}
+
 /// Draw a text prompt overlay (fail reason, message, edit description).
 /// Returns the overlay area for mouse hit-testing.
 fn draw_text_prompt(
@@ -5668,9 +5921,6 @@ fn draw_text_prompt(
         TextPromptAction::SendMessage(id) => format!("Message to '{}':", id),
         TextPromptAction::EditDescription(id) => format!("Edit description for '{}':", id),
         TextPromptAction::AttachFile => "Attach file \u{2014} enter path:".to_string(),
-        TextPromptAction::CreateCoordinator => {
-            "New Coordinator  \u{2014}  name [--executor X] [--model Y]".to_string()
-        }
     };
     let size = frame.area();
     if is_multiline {
@@ -6299,6 +6549,17 @@ fn action_hints_parts(app: &VizApp) -> (&str, &str, Color, Vec<(&str, &str)>) {
                 (label, "NAV", Color::Rgb(120, 120, 120), hints)
             }
         },
+        InputMode::Launcher => (
+            "0:Chat",
+            "LAUNCHER",
+            Color::Cyan,
+            vec![
+                ("Tab", "section"),
+                ("\u{2191}\u{2193}", "select"),
+                ("Enter", "create"),
+                ("Esc", "cancel"),
+            ],
+        ),
     }
 }
 

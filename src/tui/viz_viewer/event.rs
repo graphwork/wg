@@ -440,6 +440,7 @@ fn handle_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
         InputMode::ChatInput => handle_chat_input(app, code, modifiers),
         InputMode::MessageInput => handle_message_input(app, code, modifiers),
         InputMode::ConfigEdit => handle_config_edit_input(app, code, modifiers),
+        InputMode::Launcher => handle_launcher_input(app, code, modifiers),
         InputMode::Normal => {
             // Also check legacy search_active flag for backward compat
             if app.search_active {
@@ -790,6 +791,271 @@ fn handle_service_control_panel_key(app: &mut VizApp, code: KeyCode) {
     }
 }
 
+fn handle_launcher_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
+    use super::state::LauncherSection;
+
+    let launcher = match app.launcher.as_mut() {
+        Some(l) => l,
+        None => {
+            app.input_mode = InputMode::Normal;
+            return;
+        }
+    };
+
+    // Name section: route character input to the name field
+    if launcher.active_section == LauncherSection::Name {
+        match code {
+            KeyCode::Esc => {
+                app.close_launcher();
+                return;
+            }
+            KeyCode::Tab => {
+                if modifiers.contains(KeyModifiers::SHIFT) {
+                    launcher.prev_section();
+                } else {
+                    launcher.next_section();
+                }
+                return;
+            }
+            KeyCode::Enter => {
+                launcher.next_section();
+                return;
+            }
+            KeyCode::Char(c) if !modifiers.contains(KeyModifiers::CONTROL) => {
+                launcher.name.push(c);
+                return;
+            }
+            KeyCode::Backspace => {
+                launcher.name.pop();
+                return;
+            }
+            _ => return,
+        }
+    }
+
+    // Custom model input mode
+    if launcher.active_section == LauncherSection::Model && launcher.model_custom_active {
+        match code {
+            KeyCode::Esc => {
+                launcher.model_custom_active = false;
+                return;
+            }
+            KeyCode::Enter => {
+                if !launcher.model_custom.is_empty() {
+                    app.launch_from_launcher();
+                } else {
+                    launcher.model_custom_active = false;
+                }
+                return;
+            }
+            KeyCode::Tab => {
+                launcher.model_custom_active = false;
+                if modifiers.contains(KeyModifiers::SHIFT) {
+                    launcher.prev_section();
+                } else {
+                    launcher.next_section();
+                }
+                return;
+            }
+            KeyCode::Char(c) if !modifiers.contains(KeyModifiers::CONTROL) => {
+                launcher.model_custom.push(c);
+                return;
+            }
+            KeyCode::Backspace => {
+                launcher.model_custom.pop();
+                return;
+            }
+            _ => return,
+        }
+    }
+
+    // Custom endpoint input mode
+    if launcher.active_section == LauncherSection::Endpoint && launcher.endpoint_custom_active {
+        match code {
+            KeyCode::Esc => {
+                launcher.endpoint_custom_active = false;
+                return;
+            }
+            KeyCode::Enter => {
+                if !launcher.endpoint_custom.is_empty() {
+                    app.launch_from_launcher();
+                } else {
+                    launcher.endpoint_custom_active = false;
+                }
+                return;
+            }
+            KeyCode::Tab => {
+                launcher.endpoint_custom_active = false;
+                if modifiers.contains(KeyModifiers::SHIFT) {
+                    launcher.prev_section();
+                } else {
+                    launcher.next_section();
+                }
+                return;
+            }
+            KeyCode::Char(c) if !modifiers.contains(KeyModifiers::CONTROL) => {
+                launcher.endpoint_custom.push(c);
+                return;
+            }
+            KeyCode::Backspace => {
+                launcher.endpoint_custom.pop();
+                return;
+            }
+            _ => return,
+        }
+    }
+
+    match code {
+        KeyCode::Esc => {
+            app.close_launcher();
+            return;
+        }
+        KeyCode::Tab => {
+            if modifiers.contains(KeyModifiers::SHIFT) {
+                launcher.prev_section();
+            } else {
+                launcher.next_section();
+            }
+        }
+        KeyCode::Up | KeyCode::Char('k') => match launcher.active_section {
+            LauncherSection::Executor => {
+                if launcher.executor_selected > 0 {
+                    launcher.executor_selected -= 1;
+                }
+            }
+            LauncherSection::Model => {
+                if launcher.model_selected > 0 {
+                    launcher.model_selected -= 1;
+                }
+            }
+            LauncherSection::Endpoint => {
+                if launcher.endpoint_selected > 0 {
+                    launcher.endpoint_selected -= 1;
+                }
+            }
+            LauncherSection::Recent => {
+                if launcher.recent_selected > 0 {
+                    launcher.recent_selected -= 1;
+                }
+            }
+            _ => {}
+        },
+        KeyCode::Down | KeyCode::Char('j') => match launcher.active_section {
+            LauncherSection::Executor => {
+                let max = launcher.executor_list.len().saturating_sub(1);
+                if launcher.executor_selected < max {
+                    launcher.executor_selected += 1;
+                }
+            }
+            LauncherSection::Model => {
+                // +1 for custom entry at the end
+                let max = launcher.model_list.len(); // index == len means "custom"
+                if launcher.model_selected < max {
+                    launcher.model_selected += 1;
+                }
+            }
+            LauncherSection::Endpoint => {
+                let max = launcher.endpoint_list.len();
+                if launcher.endpoint_selected < max {
+                    launcher.endpoint_selected += 1;
+                }
+            }
+            LauncherSection::Recent => {
+                let max = launcher.recent_list.len().saturating_sub(1);
+                if launcher.recent_selected < max {
+                    launcher.recent_selected += 1;
+                }
+            }
+            _ => {}
+        },
+        KeyCode::Enter => {
+            match launcher.active_section {
+                LauncherSection::Model => {
+                    if launcher.model_selected >= launcher.model_list.len() {
+                        // "Custom" row selected — enter custom input mode
+                        launcher.model_custom_active = true;
+                        return;
+                    }
+                }
+                LauncherSection::Endpoint => {
+                    if launcher.endpoint_selected >= launcher.endpoint_list.len() {
+                        launcher.endpoint_custom_active = true;
+                        return;
+                    }
+                }
+                LauncherSection::Recent => {
+                    if let Some(entry) = launcher.recent_list.get(launcher.recent_selected) {
+                        // Populate fields from selected recent entry
+                        if let Some(pos) = launcher.executor_list.iter().position(|(name, _, _)| name == &entry.executor) {
+                            launcher.executor_selected = pos;
+                        }
+                        if let Some(ref model) = entry.model {
+                            if let Some(pos) = launcher.model_list.iter().position(|(id, _)| id == model) {
+                                launcher.model_selected = pos;
+                                launcher.model_custom_active = false;
+                            } else {
+                                launcher.model_custom = model.clone();
+                                launcher.model_selected = launcher.model_list.len();
+                                launcher.model_custom_active = false;
+                            }
+                        }
+                        if let Some(ref endpoint) = entry.endpoint {
+                            if let Some(pos) = launcher.endpoint_list.iter().position(|(_, url)| url == endpoint) {
+                                launcher.endpoint_selected = pos;
+                                launcher.endpoint_custom_active = false;
+                            } else {
+                                launcher.endpoint_custom = endpoint.clone();
+                                launcher.endpoint_selected = launcher.endpoint_list.len();
+                                launcher.endpoint_custom_active = false;
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+            // Launch the coordinator
+            app.launch_from_launcher();
+            return;
+        }
+        // Quick-select recent entries by number
+        KeyCode::Char(c @ '1'..='9') if launcher.active_section == LauncherSection::Recent => {
+            let idx = (c as usize) - ('1' as usize);
+            if idx < launcher.recent_list.len() {
+                launcher.recent_selected = idx;
+                // Populate fields then launch
+                if let Some(entry) = launcher.recent_list.get(idx).cloned() {
+                    if let Some(pos) = launcher.executor_list.iter().position(|(name, _, _)| name == &entry.executor) {
+                        launcher.executor_selected = pos;
+                    }
+                    if let Some(ref model) = entry.model {
+                        if let Some(pos) = launcher.model_list.iter().position(|(id, _)| id == model) {
+                            launcher.model_selected = pos;
+                        } else {
+                            launcher.model_custom = model.clone();
+                            launcher.model_selected = launcher.model_list.len();
+                        }
+                    }
+                    if let Some(ref endpoint) = entry.endpoint {
+                        if let Some(pos) = launcher.endpoint_list.iter().position(|(_, url)| url == endpoint) {
+                            launcher.endpoint_selected = pos;
+                        } else {
+                            launcher.endpoint_custom = endpoint.clone();
+                            launcher.endpoint_selected = launcher.endpoint_list.len();
+                        }
+                    }
+                }
+                app.launch_from_launcher();
+                return;
+            }
+        }
+        KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => {
+            app.close_launcher();
+            return;
+        }
+        _ => {}
+    }
+}
+
 fn handle_text_prompt_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
     use super::state::{editor_clear, editor_text};
     use crossterm::event::KeyEvent;
@@ -806,17 +1072,6 @@ fn handle_text_prompt_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModif
     if submit {
         let text = editor_text(&app.text_prompt.editor);
         editor_clear(&mut app.text_prompt.editor);
-        // CreateCoordinator accepts empty text (creates unnamed coordinator)
-        if action == TextPromptAction::CreateCoordinator {
-            let name = if text.trim().is_empty() {
-                None
-            } else {
-                Some(text.trim().to_string())
-            };
-            app.create_coordinator(name);
-            app.input_mode = InputMode::Normal;
-            return;
-        }
         if text.trim().is_empty() {
             if action == TextPromptAction::AttachFile {
                 app.input_mode = InputMode::ChatInput;
@@ -858,7 +1113,6 @@ fn handle_text_prompt_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModif
                 app.inspector_sub_focus = InspectorSubFocus::TextEntry;
                 return;
             }
-            TextPromptAction::CreateCoordinator => unreachable!("handled above"),
         }
         app.input_mode = InputMode::Normal;
         return;
@@ -2171,10 +2425,9 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
                 app.output_pane.has_new_content = false;
             }
         }
-        // Chat tab: '+' creates a new coordinator session
+        // Chat tab: '+' opens the coordinator launcher pane
         KeyCode::Char('+') if app.right_panel_tab == RightPanelTab::Chat => {
-            super::state::editor_clear(&mut app.text_prompt.editor);
-            app.input_mode = InputMode::TextPrompt(TextPromptAction::CreateCoordinator);
+            app.open_launcher();
         }
         // Chat tab: '-' opens choice dialog for coordinator removal
         KeyCode::Char('-') if app.right_panel_tab == RightPanelTab::Chat => {
@@ -2857,8 +3110,7 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
                 let plus = &app.coordinator_plus_hit;
                 if column >= plus.start && column < plus.end {
                     app.right_panel_tab = RightPanelTab::Chat;
-                    super::state::editor_clear(&mut app.text_prompt.editor);
-                    app.input_mode = InputMode::TextPrompt(TextPromptAction::CreateCoordinator);
+                    app.open_launcher();
                     return;
                 }
 
