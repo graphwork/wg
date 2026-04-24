@@ -418,6 +418,24 @@ fn handle_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
         && !app.chat_pty_observer;
     if vendor_pty_active {
         let is_toggle = matches!(code, KeyCode::Char('t')) && modifiers.contains(KeyModifiers::CONTROL);
+        let is_scroll = matches!(
+            code,
+            KeyCode::PageUp | KeyCode::PageDown | KeyCode::Home | KeyCode::End
+        ) && modifiers.is_empty();
+        if is_scroll {
+            let task_id = format!(".coordinator-{}", app.active_coordinator_id);
+            if let Some(pane) = app.task_panes.get_mut(&task_id) {
+                let page = (app.last_right_content_area.height as usize).max(10);
+                match code {
+                    KeyCode::PageUp => pane.scroll_up(page),
+                    KeyCode::PageDown => pane.scroll_down(page),
+                    KeyCode::Home => pane.scroll_to_top(),
+                    KeyCode::End => pane.scroll_to_bottom(),
+                    _ => {}
+                }
+                return;
+            }
+        }
         if !is_toggle {
             let task_id = format!(".coordinator-{}", app.active_coordinator_id);
             if let Some(pane) = app.task_panes.get_mut(&task_id) {
@@ -3019,10 +3037,16 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
     match kind {
         MouseEventKind::ScrollUp => {
             if in_text_prompt {
-                // Scroll up in text prompt: move cursor up to trigger viewport change.
                 scroll_editor_up(app, 3, EditorTarget::TextPrompt);
+            } else if (in_right_content || in_tab_bar)
+                && app.chat_pty_mode
+                && app.right_panel_tab == RightPanelTab::Chat
+            {
+                let task_id = format!(".coordinator-{}", app.active_coordinator_id);
+                if let Some(pane) = app.task_panes.get_mut(&task_id) {
+                    pane.scroll_up(3);
+                }
             } else if in_graph && app.scroll_axis_swapped {
-                // Axis-swap mode: vertical scroll → horizontal scroll in graph.
                 app.record_graph_hscroll_activity();
                 app.scroll.scroll_left(3);
             } else if in_graph {
@@ -3032,7 +3056,6 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
                 && app.right_panel_tab == RightPanelTab::Files
                 && app.last_file_tree_area.height > 0
             {
-                // Files tab: scroll tree or preview depending on mouse position.
                 app.record_panel_scroll_activity();
                 if app.last_file_preview_area.contains(pos) {
                     if let Some(fb) = app.file_browser.as_mut() {
@@ -3050,10 +3073,16 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
         }
         MouseEventKind::ScrollDown => {
             if in_text_prompt {
-                // Scroll down in text prompt: move cursor down to trigger viewport change.
                 scroll_editor_down(app, 3, EditorTarget::TextPrompt);
+            } else if (in_right_content || in_tab_bar)
+                && app.chat_pty_mode
+                && app.right_panel_tab == RightPanelTab::Chat
+            {
+                let task_id = format!(".coordinator-{}", app.active_coordinator_id);
+                if let Some(pane) = app.task_panes.get_mut(&task_id) {
+                    pane.scroll_down(3);
+                }
             } else if in_graph && app.scroll_axis_swapped {
-                // Axis-swap mode: vertical scroll → horizontal scroll in graph.
                 app.record_graph_hscroll_activity();
                 app.scroll.scroll_right(3);
             } else if in_graph {
@@ -3063,7 +3092,6 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
                 && app.right_panel_tab == RightPanelTab::Files
                 && app.last_file_tree_area.height > 0
             {
-                // Files tab: scroll tree or preview depending on mouse position.
                 app.record_panel_scroll_activity();
                 if app.last_file_preview_area.contains(pos) {
                     if let Some(fb) = app.file_browser.as_mut() {
