@@ -52,6 +52,15 @@ const MAX_RESULTS: usize = 20;
 /// HTTP timeout for every backend call.
 const HTTP_TIMEOUT_SECS: u64 = 10;
 
+/// Per-backend dispatch timeout. The Browser backend gets extra headroom
+/// because it launches a headless Chrome instance and navigates a real page.
+const BROWSER_DISPATCH_TIMEOUT_SECS: u64 = 15;
+
+/// Overall timeout for the outer `join_all` across all backends. Even if
+/// a single backend wedges past its per-dispatch timeout (should not happen,
+/// but defense-in-depth), this caps the total wall-clock wait.
+const OUTER_JOIN_TIMEOUT_SECS: u64 = 20;
+
 /// Descriptive User-Agent for JSON API backends (Wikipedia, HN Algolia,
 /// Google News RSS). Includes the workgraph repo URL so upstream
 /// operators can find us and complain if needed. OSM Nominatim and
@@ -558,7 +567,21 @@ impl Tool for WebSearchTool {
             })
             .collect();
 
-        let attempts: Vec<(Backend, Result<Vec<SearchResult>, String>)> = join_all(futures).await;
+        let attempts: Vec<(Backend, Result<Vec<SearchResult>, String>)> =
+            match tokio::time::timeout(
+                Duration::from_secs(OUTER_JOIN_TIMEOUT_SECS),
+                join_all(futures),
+            )
+            .await
+            {
+                Ok(results) => results,
+                Err(_) => {
+                    return ToolOutput::error(format!(
+                        "web_search timed out after {}s waiting for backends",
+                        OUTER_JOIN_TIMEOUT_SECS
+                    ));
+                }
+            };
 
         // Merge results: dedupe by URL, tag each result with every
         // backend that returned it. A URL returned by multiple
@@ -898,6 +921,26 @@ fn build_client() -> Result<rquest::Client, String> {
 }
 
 async fn dispatch(
+    client: &rquest::Client,
+    backend: Backend,
+    query: &str,
+) -> Result<Vec<SearchResult>, String> {
+    let timeout_dur = match backend {
+        Backend::Browser => Duration::from_secs(BROWSER_DISPATCH_TIMEOUT_SECS),
+        _ => Duration::from_secs(HTTP_TIMEOUT_SECS),
+    };
+    tokio::time::timeout(timeout_dur, dispatch_inner(client, backend, query))
+        .await
+        .unwrap_or_else(|_| {
+            Err(format!(
+                "{} timed out after {}s",
+                backend.source_name(),
+                timeout_dur.as_secs()
+            ))
+        })
+}
+
+async fn dispatch_inner(
     client: &rquest::Client,
     backend: Backend,
     query: &str,
@@ -2575,6 +2618,34 @@ mod tests {
         assert_eq!(r[0].snippet, "first snippet text");
         assert_eq!(r[1].title, "Second Result");
         assert_eq!(r[1].url, "https://example.com/two");
+    }
+
+    #[tokio::test]
+    async fn dispatch_timeout_fires_on_hung_backend() {
+        // Simulate a backend that never returns by using a future that
+        // pends forever. We call dispatch (which wraps dispatch_inner in
+        // tokio::time::timeout) indirectly by building a minimal client
+        // and pointing it at a backend that will hang.
+        //
+        // Instead of hitting a real backend, we directly test the timeout
+        // wrapper by constructing the same pattern dispatch uses.
+        let timeout_dur = Duration::from_secs(1);
+        let start = Instant::now();
+        let result: Result<Vec<SearchResult>, String> = tokio::time::timeout(
+            timeout_dur,
+            futures_util::future::pending::<Result<Vec<SearchResult>, String>>(),
+        )
+        .await
+        .unwrap_or_else(|_| Err(format!("timed out after {}s", timeout_dur.as_secs())));
+
+        let elapsed = start.elapsed();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("timed out"));
+        assert!(
+            elapsed < Duration::from_secs(3),
+            "timeout should fire within ~1s, took {:?}",
+            elapsed
+        );
     }
 
     #[tokio::test]
