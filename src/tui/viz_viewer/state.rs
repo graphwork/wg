@@ -11509,6 +11509,9 @@ impl VizApp {
                 "WG_DIR".to_string(),
                 self.workgraph_dir.display().to_string(),
             ),
+            // Override inherited WG_EXECUTOR_TYPE so spawn-task
+            // dispatches the same executor the TUI chose from config.
+            ("WG_EXECUTOR_TYPE".to_string(), executor.clone()),
             // Vendor CLIs (claude in particular) expect a real-looking
             // TERM. portable-pty doesn't set one by default; inheriting
             // the wg-tui parent's TERM works but passing an explicit
