@@ -64,6 +64,7 @@ pub fn run(dir: &Path, id: &str, reason: Option<&str>, superseded_by: &[String])
         // We match both by direct dependency (dot-prefixed tasks listing `id` in their `after`)
         // AND by naming convention (.evaluate-X, .flip-X, .verify-X) to handle transitive cases
         // — e.g. when FLIP is enabled, .evaluate-X depends on .flip-X, not X directly.
+        let assign_id = format!(".assign-{}", id);
         let eval_id = format!(".evaluate-{}", id);
         let flip_id = format!(".flip-{}", id);
         let verify_id = format!(".verify-{}", id);
@@ -75,7 +76,8 @@ pub fn run(dir: &Path, id: &str, reason: Option<&str>, superseded_by: &[String])
                     return false;
                 }
                 let is_system_dep = t.id.starts_with('.') && t.after.contains(&id.to_string());
-                let is_eval_scaffold = t.id == eval_id
+                let is_eval_scaffold = t.id == assign_id
+                    || t.id == eval_id
                     || t.id == flip_id
                     || t.id == verify_id
                     || t.id == verify_deferred_id;
@@ -283,6 +285,52 @@ mod tests {
         );
         // Normal dependent unaffected
         assert_eq!(g.get_task("t2").unwrap().status, Status::Open);
+    }
+
+    #[test]
+    fn test_abandon_cascades_to_assign_task() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join(".workgraph");
+        let mut graph = WorkGraph::new();
+
+        let mut main = make_task("t1", "Main task");
+        main.after = vec![".assign-t1".to_string()];
+        graph.add_node(Node::Task(main));
+
+        // .assign-t1 uses `before` (not `after`) so is NOT caught by the
+        // dependency-based check — must be caught by naming convention.
+        let mut assign = make_task(".assign-t1", "Assign t1");
+        assign.before = vec!["t1".to_string()];
+        graph.add_node(Node::Task(assign));
+
+        setup_graph(&dir, &graph);
+        run(&dir, "t1", Some("no longer needed"), &[]).unwrap();
+
+        let g = load_graph(graph_path(&dir)).unwrap();
+        assert_eq!(g.get_task("t1").unwrap().status, Status::Abandoned);
+        assert_eq!(g.get_task(".assign-t1").unwrap().status, Status::Abandoned);
+    }
+
+    #[test]
+    fn test_abandon_does_not_cascade_done_assign() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join(".workgraph");
+        let mut graph = WorkGraph::new();
+
+        let mut main = make_task("t1", "Main task");
+        main.after = vec![".assign-t1".to_string()];
+        graph.add_node(Node::Task(main));
+
+        let mut assign = make_task(".assign-t1", "Assign t1");
+        assign.before = vec!["t1".to_string()];
+        assign.status = Status::Done;
+        graph.add_node(Node::Task(assign));
+
+        setup_graph(&dir, &graph);
+        run(&dir, "t1", None, &[]).unwrap();
+
+        let g = load_graph(graph_path(&dir)).unwrap();
+        assert_eq!(g.get_task(".assign-t1").unwrap().status, Status::Done);
     }
 
     #[test]
