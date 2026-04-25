@@ -3669,10 +3669,8 @@ pub struct VizApp {
 
     /// When true, keystrokes in the Chat tab forward to the embedded
     /// PTY child's stdin instead of the TUI's chat composer. Set for
-    /// vendor CLIs (`claude`, `codex`) that ARE their own REPL and
-    /// read stdin directly; cleared for `wg nex --chat` which reads
-    /// inbox.jsonl and expects the TUI to write that via the
-    /// composer + direct-inbox path. Decided at PTY-spawn time.
+    /// all PTY executors (native, claude, codex) — they all run
+    /// interactive REPLs that read from stdin.
     pub chat_pty_forwards_stdin: bool,
 
     // ── Agent monitor state ──
@@ -11331,9 +11329,9 @@ impl VizApp {
     /// interactive chat sessions associated with this workgraph — we
     /// pick the child process per executor type:
     ///
-    /// - `native`  → `wg spawn-task .coordinator-<N>` which exec's into
-    ///   `wg nex --chat <ref>` (our own REPL, uses workgraph config
-    ///   for endpoint/model, writes to `chat/<ref>/{inbox,outbox}.jsonl`).
+    /// - `native`  → `wg nex --resume <ref>` (our own REPL inside a
+    ///   PTY, stdin-based input via rustyline, same treatment as
+    ///   claude/codex).
     /// - `claude`  → `claude` CLI direct. Uses the user's Claude
     ///   subscription auth + Claude's native interactive UI.
     /// - `codex`   → `codex` CLI direct. Uses the user's ChatGPT/Codex
@@ -11470,16 +11468,21 @@ impl VizApp {
         let (bin, args_owned, cwd_opt): (String, Vec<String>, Option<std::path::PathBuf>) =
             match executor.as_str() {
                 "native" => {
-                    // Interactive `wg nex --chat <ref>` REPL bound to
-                    // this coordinator's session. The `--chat` flag
-                    // binds the nex session to the coordinator's chat
-                    // dir so the journal persists and the session
-                    // auto-resumes across TUI exit/re-entry.
+                    // Spawn `wg nex` as a real PTY child, same as
+                    // claude/codex. Uses `--resume` (not `--chat`) so
+                    // nex reads from stdin via rustyline instead of
+                    // inbox.jsonl — keystrokes flow through the PTY.
+                    let _ = workgraph::chat_sessions::ensure_session(
+                        &self.workgraph_dir,
+                        &chat_ref,
+                        workgraph::chat_sessions::SessionKind::Coordinator,
+                        Some(format!("coordinator {}", self.active_coordinator_id)),
+                    );
                     let mut args = vec![
                         "nex".to_string(),
                         "--role".to_string(),
                         "coordinator".to_string(),
-                        "--chat".to_string(),
+                        "--resume".to_string(),
                         chat_ref.clone(),
                     ];
                     let model = config
@@ -11615,8 +11618,7 @@ impl VizApp {
                 // All three PTY modes run interactive REPLs that
                 // read from stdin: native wg nex (rustyline),
                 // claude, codex. Forward keystrokes directly.
-                self.chat_pty_forwards_stdin =
-                    matches!(executor.as_str(), "claude" | "codex");
+                self.chat_pty_forwards_stdin = true;
                 // Shift focus into the right panel so keystrokes route
                 // to the PTY (matches `toggle_chat_pty_mode` on Ctrl+T).
                 // Without this, the graph panel owns keys and hotkeys

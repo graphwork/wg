@@ -2036,15 +2036,11 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
     // Observer mode (chat_pty_observer=true) does NOT forward —
     // keys flow through the normal handler so the user can use the
     // TUI's chat composer to trigger takeover.
-    // NOTE: chat-tethered `wg nex` reads user input from the session's
-    // inbox.jsonl, NOT from stdin — so forwarding keystrokes to the
-    // embedded handler's PTY stdin achieves nothing. The PTY pane is
-    // display-only in both owner and observer modes. All user input
-    // flows through the TUI's chat composer (`Enter` in Chat tab →
-    // `InputMode::ChatInput` → `send_chat_message`), which writes to
-    // `inbox.jsonl` via `wg chat`. In owner mode the TUI's own
-    // handler processes the inbox. In observer mode, the external
-    // handler does (with release-marker triggering takeover).
+    // All three PTY executors (native, claude, codex) forward
+    // keystrokes to the child's stdin via chat_pty_forwards_stdin.
+    // Native nex uses --resume (stdin/rustyline), not --chat
+    // (inbox.jsonl), so keystrokes reach it the same way they
+    // reach claude/codex.
 
     // Files tab has its own key handler — intercept early.
     // When search mode is active, only Ctrl+C stays global; everything else
@@ -2650,43 +2646,22 @@ fn poll_chat_pty_takeover(app: &mut VizApp) -> bool {
         return true;
     }
 
-    // Lock is free. Drop observer pane and spawn owner.
+    // Lock is free. Drop observer pane and spawn owner via the
+    // per-executor spawn logic (same path as startup auto-enable).
     app.task_panes.remove(&task_id);
     app.chat_pty_observer = false;
-    // Clear any stale release marker so our new handler doesn't
-    // immediately exit upon seeing it.
     workgraph::session_lock::clear_release_marker(&chat_dir);
-
-    let self_exe = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.to_str().map(|s| s.to_string()))
-        .unwrap_or_else(|| "wg".to_string());
-    let env: Vec<(String, String)> = vec![(
-        "WG_DIR".to_string(),
-        app.workgraph_dir.display().to_string(),
-    )];
-    match crate::tui::pty_pane::PtyPane::spawn(&self_exe, &["spawn-task", &task_id], &env, 24, 80) {
-        Ok(pane) => {
-            app.task_panes.insert(task_id, pane);
-        }
-        Err(e) => {
-            eprintln!("[tui] takeover spawn failed: {}", e);
-            app.chat_pty_mode = false;
-        }
-    }
+    app.chat_pty_mode = false;
+    app.maybe_auto_enable_chat_pty();
     true
 }
 
 /// Toggle PTY-backed rendering for the active coordinator's chat.
 ///
-/// On first toggle-on, spawn `wg spawn-task .coordinator-<id>` as a
-/// PTY child and cache the pane in `app.task_panes`. On toggle-off,
-/// the pane stays in the map so re-enabling is instant (no respawn,
-/// preserving scrollback and partial input).
-///
-/// Phase 3a: owner mode only — we assume nothing else currently owns
-/// the handler. Phase 3b will add the lock-held observer path;
-/// Phase 3c will wire takeover-on-send.
+/// When the pane is live, toggles focus between graph and PTY.
+/// When the pane is dead or not spawned, delegates to
+/// `maybe_auto_enable_chat_pty` which handles per-executor spawn
+/// (native → `wg nex`, claude → `claude`, codex → `codex`).
 fn toggle_chat_pty_mode(app: &mut VizApp) {
     let task_id = format!(".coordinator-{}", app.active_coordinator_id);
     let pane_live = app
@@ -2711,58 +2686,11 @@ fn toggle_chat_pty_mode(app: &mut VizApp) {
         };
         return;
     }
-    // Pane dead or not spawned yet — turn chat_pty_mode back on
-    // so `maybe_auto_enable_chat_pty` respawns the child, and leave
-    // focus on the right panel so keys flow in immediately.
-    app.chat_pty_mode = true;
-    app.focused_panel = FocusedPanel::RightPanel;
-    if pane_live {
-        return;
-    }
+    // Pane dead or not spawned — delegate to the per-executor
+    // spawn logic (same path as startup auto-enable).
     app.task_panes.remove(&task_id);
-
-    // Decide spawn mode by lock state. Observer mode (another
-    // handler already owns the session) spawns `wg session attach`
-    // which tails the streaming/outbox files read-only. Owner mode
-    // (no current handler) spawns `wg spawn-task` which acquires
-    // the lock and runs the real handler. Phase 3c will wire the
-    // takeover-on-send path that bridges from observer → owner.
-    let chat_dir = app.workgraph_dir.join("chat").join(&task_id);
-    let observer_mode = workgraph::session_lock::read_holder(&chat_dir)
-        .ok()
-        .flatten()
-        .is_some_and(|info| info.alive);
-    app.chat_pty_observer = observer_mode;
-
-    let self_exe = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.to_str().map(|s| s.to_string()))
-        .unwrap_or_else(|| "wg".to_string());
-    let env: Vec<(String, String)> = vec![(
-        "WG_DIR".to_string(),
-        app.workgraph_dir.display().to_string(),
-    )];
-
-    let args: Vec<&str> = if observer_mode {
-        vec!["session", "attach", &task_id]
-    } else {
-        vec!["spawn-task", &task_id]
-    };
-
-    match crate::tui::pty_pane::PtyPane::spawn(&self_exe, &args, &env, 24, 80) {
-        Ok(pane) => {
-            app.task_panes.insert(task_id, pane);
-        }
-        Err(e) => {
-            eprintln!(
-                "[tui] failed to spawn {} pane for {}: {}",
-                if observer_mode { "observer" } else { "owner" },
-                task_id,
-                e
-            );
-            app.chat_pty_mode = false;
-        }
-    }
+    app.chat_pty_mode = false;
+    app.maybe_auto_enable_chat_pty();
 }
 
 fn right_panel_scroll_up(app: &mut VizApp, amount: usize) {
