@@ -3794,6 +3794,9 @@ pub struct VizApp {
     /// Session boundary gap threshold in minutes (from config).
     pub session_gap_minutes: u32,
 
+    // ── Coordinator launcher debounce ──
+    pub last_launcher_open: Option<Instant>,
+
     // ── Scrollbar auto-hide (per-pane) ──
     /// Timestamp of the last scroll activity in the graph pane.
     pub graph_scroll_activity: Option<Instant>,
@@ -4090,6 +4093,7 @@ impl VizApp {
             message_name_threshold: config.tui.message_name_threshold,
             message_indent: config.tui.message_indent,
             session_gap_minutes: config.tui.session_gap_minutes,
+            last_launcher_open: None,
             graph_scroll_activity: None,
             panel_scroll_activity: None,
             scrollbar_drag: None,
@@ -8296,6 +8300,7 @@ impl VizApp {
             message_name_threshold: 8,
             message_indent: 2,
             session_gap_minutes: 30,
+            last_launcher_open: None,
             graph_scroll_activity: None,
             panel_scroll_activity: None,
             scrollbar_drag: None,
@@ -11715,6 +11720,25 @@ impl VizApp {
         use workgraph::executor_discovery;
         use workgraph::launcher_history;
 
+        let now = Instant::now();
+        if let Some(last) = self.last_launcher_open {
+            if now.duration_since(last).as_millis() < 250 {
+                return;
+            }
+        }
+        self.last_launcher_open = Some(now);
+
+        let config = Config::load_or_default(&self.workgraph_dir);
+        let max = config.coordinator.max_coordinators;
+        let alive = self.list_coordinator_ids_and_labels().len();
+        if alive >= max {
+            self.push_toast(
+                format!("Coordinator cap reached ({}/{})", alive, max),
+                ToastSeverity::Warning,
+            );
+            return;
+        }
+
         let all_executors = executor_discovery::discover();
         let executor_list: Vec<(String, String, bool)> = all_executors
             .iter()
@@ -11724,7 +11748,6 @@ impl VizApp {
         let model_list =
             workgraph::models::load_model_choices_with_descriptions(&self.workgraph_dir);
 
-        let config = Config::load_or_default(&self.workgraph_dir);
         let endpoint_list: Vec<(String, String)> = config
             .llm_endpoints
             .endpoints
@@ -11772,6 +11795,17 @@ impl VizApp {
             None => return,
         };
         self.input_mode = InputMode::Normal;
+
+        let config = Config::load_or_default(&self.workgraph_dir);
+        let max = config.coordinator.max_coordinators;
+        let alive = self.list_coordinator_ids_and_labels().len();
+        if alive >= max {
+            self.push_toast(
+                format!("Coordinator cap reached ({}/{})", alive, max),
+                ToastSeverity::Warning,
+            );
+            return;
+        }
 
         let mut args = vec!["service".to_string(), "create-coordinator".to_string()];
 
