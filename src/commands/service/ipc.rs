@@ -1294,6 +1294,21 @@ fn handle_create_coordinator(
         Err(e) => return IpcResponse::error(&format!("Failed to load graph: {}", e)),
     };
 
+    let config = workgraph::config::Config::load_or_default(dir);
+    let max = config.coordinator.max_coordinators;
+    let alive = graph
+        .tasks()
+        .filter(|t| t.tags.iter().any(|tag| tag == "coordinator-loop"))
+        .filter(|t| !matches!(t.status, workgraph::graph::Status::Abandoned))
+        .filter(|t| !t.tags.iter().any(|tag| tag == "archived"))
+        .count();
+    if alive >= max {
+        return IpcResponse::error(&format!(
+            "Coordinator cap reached ({}/{})",
+            alive, max
+        ));
+    }
+
     // Find the next available coordinator ID by scanning both existing tasks
     // and existing chat history files to ensure truly fresh coordinators.
     let next_id = find_next_fresh_coordinator_id(&graph, dir);
