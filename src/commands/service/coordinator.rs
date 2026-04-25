@@ -3858,6 +3858,8 @@ pub fn coordinator_tick(
 
         // Phase 2.9: Unblock stuck tasks — check for tasks blocked on archived/deleted
         // dependencies or missed completion events.
+        // Note: gc is NOT called here — the daemon's archival pass (run_automatic_archival)
+        // handles terminal-task cleanup non-destructively. gc deletes; archival preserves.
         modified |= unblock_stuck_tasks(graph, dir);
 
         // Phase 2.95: Cron task reset — reset Done cron tasks to Open and compute
