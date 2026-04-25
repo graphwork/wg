@@ -262,12 +262,13 @@ pub fn run(
             changed = true;
         }
 
-        // Update verify command
-        if let Some(new_verify) = verify {
-            workgraph::verify_lint::print_warnings(new_verify);
-            task.verify = Some(new_verify.to_string());
-            println!("Updated verify: {}", new_verify);
-            changed = true;
+        // --verify is deprecated
+        if verify.is_some() {
+            error = Some(anyhow::anyhow!(
+                "--verify is deprecated and no longer accepted.\n\
+                 Use --validation=llm or a ## Validation section in the task description instead."
+            ));
+            return false;
         }
 
         // Add skills

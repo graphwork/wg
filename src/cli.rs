@@ -227,12 +227,12 @@ pub enum Commands {
         #[arg(long)]
         provider: Option<String>,
 
-        /// Verification criteria - task requires review before done
-        #[arg(long)]
+        /// [DEPRECATED] Use --validation=llm or ## Validation in description instead.
+        #[arg(long, hide = true)]
         verify: Option<String>,
 
-        /// Verification timeout (e.g., '15m', '900s'). Overrides global WG_VERIFY_TIMEOUT
-        #[arg(long = "verify-timeout")]
+        /// [DEPRECATED] Use --validation=llm instead.
+        #[arg(long = "verify-timeout", hide = true)]
         verify_timeout: Option<String>,
 
         /// Validation mode: "none", "integrated", "external", or "llm".
@@ -439,8 +439,8 @@ pub enum Commands {
         #[arg(long = "not-before")]
         not_before: Option<String>,
 
-        /// Set or update the verify command (shell command that must pass before done)
-        #[arg(long)]
+        /// [DEPRECATED] Use --validation=llm or ## Validation in description instead.
+        #[arg(long, hide = true)]
         verify: Option<String>,
 
         /// Set or clear cron schedule (empty string "" clears; 6-field: "sec min hour day month dow")

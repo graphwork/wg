@@ -278,6 +278,7 @@ pub(crate) fn discover_test_files(project_root: &Path) -> Vec<String> {
 ///
 /// Selects the most appropriate test runner based on the file types found.
 /// Returns `None` if no test files were discovered.
+#[cfg(test)]
 pub(crate) fn build_auto_verify_command(test_files: &[String]) -> Option<String> {
     if test_files.is_empty() {
         return None;
@@ -734,7 +735,7 @@ Fanout is a tool, not a default. Assess complexity first, then decide.
 ### Pipeline (Sequential Steps)
 When work must proceed in order:
 ```bash
-wg add 'Step 1: Parse input' --after $WG_TASK_ID --verify 'cargo test test_parse'
+wg add 'Step 1: Parse input' --after $WG_TASK_ID -d '## Validation\n- [ ] cargo test test_parse passes'
 wg add 'Step 2: Transform data' --after step-1-parse-input
 wg add 'Step 3: Write output' --after step-2-transform-data
 ```
@@ -754,7 +755,7 @@ wg add 'Integrate modules' --after part-a-module-x,part-b-module-y,part-c-module
 When work requires multiple passes:
 ```bash
 wg add 'Refine implementation' --after $WG_TASK_ID --max-iterations 3 \
-  --verify 'cargo test && performance_benchmark'
+  --validation=llm -d '## Validation\n- [ ] cargo test passes\n- [ ] performance benchmark target met'
 ```
 Use `wg done --converged` when work has stabilized.
 
@@ -770,7 +771,7 @@ Every **code task** description MUST include:
 - [ ] <any additional acceptance criteria>
 ```
 
-Use `--verify "command"` for machine-checkable criteria.
+Use `--validation=llm` for an LLM verification gate at completion time.
 
 ## Core Commands
 
@@ -961,7 +962,7 @@ wg add 'Final check' --after fix-issues
 Use status-based dependencies:
 ```bash
 wg add 'Deploy to staging' --after tests-pass
-wg add 'Deploy to prod' --after deploy-to-staging --verify 'health_check_passes'
+wg add 'Deploy to prod' --after deploy-to-staging --validation=llm
 ```
 
 ### Complex Fan-Out
@@ -1022,7 +1023,7 @@ wg func apply "testing-pipeline" --input target=new-feature
 Handle long-running processes:
 ```bash
 wg add 'Monitor deployment' --after deploy --max-iterations 24 \
-  --verify 'uptime > 99%' --cycle-delay 3600  # Check hourly
+  --validation=llm --cycle-delay 3600  # Check hourly
 ```
 
 ### Error Recovery Patterns

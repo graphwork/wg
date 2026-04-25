@@ -2693,10 +2693,10 @@ pub struct CoordinatorConfig {
     #[serde(default = "default_registry_refresh_interval")]
     pub registry_refresh_interval: u64,
 
-    /// Verification mode for tasks with `--verify` commands.
+    /// Verification mode for tasks with legacy verify commands (deprecated).
     /// - "inline" (default): verify command runs in the same agent process that did the work
     /// - "separate": verify runs in a separate agent context (different conversation/context window)
-    ///   This prevents false-PASS rates where the implementation agent rubber-stamps its own work.
+    /// New tasks should use --validation=llm instead.
     #[serde(default = "default_verify_mode")]
     pub verify_mode: String,
 
@@ -2755,9 +2755,7 @@ pub struct CoordinatorConfig {
     pub max_escalation_depth: u32,
 
     /// Whether to scan for test files before spawning agents and inject
-    /// discovered tests into agent context. When enabled, the executor also
-    /// auto-populates `--verify` gates for tasks that have no explicit verify
-    /// command but have discoverable test files. Default: false.
+    /// discovered tests into agent context. Default: false.
     #[serde(default = "default_auto_test_discovery")]
     pub auto_test_discovery: bool,
 

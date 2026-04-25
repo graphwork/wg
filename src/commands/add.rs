@@ -388,9 +388,22 @@ pub fn run(
         None
     };
 
-    // Validate verify command (warn about descriptive text)
-    if let Some(v) = verify {
-        workgraph::verify_lint::print_warnings(v);
+    // --verify is deprecated: error out with migration guidance
+    if verify.is_some() {
+        anyhow::bail!(
+            "--verify is deprecated and no longer accepted.\n\
+             Use one of these alternatives instead:\n\
+             \n\
+             1. Put validation criteria in the task description under a ## Validation section:\n\
+             \n\
+             wg add \"My task\" -d \"## Validation\\n- [ ] cargo test passes\"\n\
+             \n\
+             2. Use --validation=llm for an LLM verification gate at completion time:\n\
+             \n\
+             wg add \"My task\" --validation=llm -d \"...\"\n\
+             \n\
+             These approaches are more flexible and less error-prone than shell-command gates."
+        );
     }
 
     // Validate --validation mode if provided
@@ -823,9 +836,12 @@ pub fn run_remote(
     }
     let model = resolved_model_str.as_deref();
 
-    // Validate verify command (warn about descriptive text)
-    if let Some(v) = verify {
-        workgraph::verify_lint::print_warnings(v);
+    // --verify is deprecated: error out with migration guidance
+    if verify.is_some() {
+        anyhow::bail!(
+            "--verify is deprecated and no longer accepted.\n\
+             Use --validation=llm or a ## Validation section in the task description instead."
+        );
     }
 
     // Resolve peer reference to a concrete .workgraph directory

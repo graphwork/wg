@@ -209,16 +209,15 @@ TASK STATE COMMANDS
     wg add-dep <task> <dependency>     # Add a dependency: task waits for dependency
     wg rm-dep <task> <dependency>      # Remove a dependency edge
 
-VALIDATION (--verify gate)
+VALIDATION (--validation=llm gate)
 ─────────────────────────────────────────
-  Tasks created with --verify have an extra gate before completion:
+  Tasks created with --validation=llm have an LLM verification gate before completion:
 
-  wg add "Task" --verify "cargo test passes"  # Set validation criteria
-  wg done <task-id>           # Moves to pending-validation (not done yet!)
-  wg approve <task-id>        # Approve → transitions to Done
-  wg reject <task-id> --reason "Tests failing"  # Reject → reopens task
+  wg add "Task" --validation=llm -d "Validation:\n- [ ] cargo test passes"
+  wg done <task-id>           # LLM evaluates validation criteria before completing
 
-  After max rejections, the task transitions to Failed instead of reopening.
+  Include a Validation section in task descriptions with concrete acceptance criteria.
+  The LLM gate reads the description and verifies the criteria are met.
 
 INCOMPLETE STATUS (retryable work)
 ─────────────────────────────────────────
@@ -696,11 +695,9 @@ fn json_output() -> serde_json::Value {
             }
         },
         "validation": {
-            "description": "Tasks with --verify have a pending-validation gate before completion.",
-            "create": "wg add \"task\" --verify \"cargo test passes\"",
-            "approve": "wg approve <task-id>",
-            "reject": "wg reject <task-id> --reason \"reason\"",
-            "note": "After max rejections, the task transitions to Failed instead of reopening."
+            "description": "Tasks with --validation=llm have an LLM verification gate before completion.",
+            "create": "wg add \"task\" --validation=llm -d \"## Validation\\n- [ ] criteria here\"",
+            "note": "Include a ## Validation section in descriptions with concrete acceptance criteria."
         },
         "messaging": {
             "description": "Inter-agent and task-scoped messaging. Agents must check messages before and after working.",
@@ -1303,7 +1300,7 @@ mod tests {
             "MANUAL MODE",
             "DISCOVERING & ADDING WORK",
             "TASK STATE COMMANDS",
-            "VALIDATION (--verify gate)",
+            "VALIDATION (--validation=llm gate)",
             "MESSAGING",
             "CONTEXT & ARTIFACTS",
             "CYCLES",
@@ -1350,9 +1347,8 @@ mod tests {
     #[test]
     fn test_quickstart_text_contains_validation() {
         assert!(QUICKSTART_TEXT.contains("VALIDATION"));
-        assert!(QUICKSTART_TEXT.contains("wg approve"));
-        assert!(QUICKSTART_TEXT.contains("wg reject"));
-        assert!(QUICKSTART_TEXT.contains("pending-validation"));
+        assert!(QUICKSTART_TEXT.contains("--validation=llm"));
+        assert!(QUICKSTART_TEXT.contains("Validation section"));
     }
 
     #[test]

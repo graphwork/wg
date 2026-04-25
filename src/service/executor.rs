@@ -236,10 +236,10 @@ Start by doing the work yourself. Only switch to decomposition after assessing c
 
 ### Include validation criteria in subtasks
 Every code subtask description MUST include a `## Validation` section with concrete acceptance criteria. \
-Use `--verify` to attach machine-checkable criteria:
+Use `--validation=llm` for an LLM verification gate at completion time:
 ```bash
 wg add 'Implement auth endpoint' --after {{task_id}} \
-  --verify 'cargo test test_auth_ passes; endpoint returns 401 for bad tokens' \
+  --validation=llm \
   -d '## Description
 Add POST /auth/token endpoint.
 
@@ -380,22 +380,22 @@ const DECOMP_TEMPLATE_PIPELINE: &str = "\
 #### Pipeline (sequential steps)
 When work must proceed in order (e.g., parse -> transform -> write):
 ```bash
-wg add 'Step 1: Parse input' --after {{task_id}} --verify 'cargo test test_parse'
-wg add 'Step 2: Transform data' --after step-1-parse-input --verify 'cargo test test_transform'
-wg add 'Step 3: Write output' --after step-2-transform-data --verify 'cargo test test_write'
+wg add 'Step 1: Parse input' --after {{task_id}} -d '## Validation\n- [ ] cargo test test_parse passes'
+wg add 'Step 2: Transform data' --after step-1-parse-input -d '## Validation\n- [ ] cargo test test_transform passes'
+wg add 'Step 3: Write output' --after step-2-transform-data -d '## Validation\n- [ ] cargo test test_write passes'
 ```
-Each step depends on the previous. Use `--verify` on each for automatic validation.";
+Each step depends on the previous. Include a `## Validation` section for acceptance criteria.";
 
 /// Decomposition template: fan-out-merge pattern (A -> [B,C,D] -> E).
 const DECOMP_TEMPLATE_FAN_OUT: &str = "\
 #### Fan-out-merge (parallel work + integration)
 When work has independent parts that converge (e.g., implement N modules):
 ```bash
-wg add 'Part A: Module X' --after {{task_id}} --verify 'cargo test test_module_x'
-wg add 'Part B: Module Y' --after {{task_id}} --verify 'cargo test test_module_y'
-wg add 'Part C: Module Z' --after {{task_id}} --verify 'cargo test test_module_z'
+wg add 'Part A: Module X' --after {{task_id}} -d '## Validation\n- [ ] cargo test test_module_x passes'
+wg add 'Part B: Module Y' --after {{task_id}} -d '## Validation\n- [ ] cargo test test_module_y passes'
+wg add 'Part C: Module Z' --after {{task_id}} -d '## Validation\n- [ ] cargo test test_module_z passes'
 wg add 'Integrate modules' --after part-a-module-x,part-b-module-y,part-c-module-z \\
-  --verify 'cargo test test_integration'
+  -d '## Validation\n- [ ] cargo test test_integration passes'
 ```
 **CRITICAL:** The integration task (`--after` all parts) merges the work. Never leave parallel tasks unmerged.";
 
@@ -405,7 +405,7 @@ const DECOMP_TEMPLATE_ITERATE: &str = "\
 When work requires multiple passes (e.g., optimize -> benchmark -> optimize):
 ```bash
 wg add 'Refine implementation' --after {{task_id}} --max-iterations 3 \\
-  --verify 'cargo test && cargo bench | grep -q \"target met\"'
+  --validation=llm -d '## Validation\n- [ ] cargo test passes\n- [ ] benchmark target met'
 ```
 Use `wg done --converged` when the work meets criteria. Use `wg fail` if a pass doesn't work so the cycle restarts.";
 
@@ -484,10 +484,10 @@ pub fn build_decomposition_guidance(
     parts.push(format!(
         "\n### Include validation criteria in subtasks\n\
          Every code subtask description MUST include a `## Validation` section with concrete acceptance criteria. \
-         Use `--verify` to attach machine-checkable criteria:\n\
+         Use `--validation=llm` for an LLM verification gate at completion time:\n\
          ```bash\n\
          wg add 'Implement auth endpoint' --after {task_id} \\\n  \
-         --verify 'cargo test test_auth_ passes; endpoint returns 401 for bad tokens' \\\n  \
+         --validation=llm \\\n  \
          -d '## Description\nAdd POST /auth/token endpoint.\n\n\
          ## Validation\n\
          - [ ] Failing test written first: test_auth_rejects_expired_token\n\
@@ -720,7 +720,7 @@ working on one task in this graph. Other agents work on other tasks concurrently
 
 ### Task Lifecycle
 Tasks move through: `open` → `in-progress` → `done` / `failed` / `abandoned`.
-Some tasks have a `pending-validation` step before `done` (when `--verify` is set).
+Some tasks have a `pending-validation` step before `done` (when `--validation=llm` is set).
 
 ### Core Commands
 
@@ -755,15 +755,15 @@ wg add \"Subtask\" --after $CURRENT_TASK_ID
 **Always use `--after` when creating subtasks.** Without it, tasks form a flat \
 unordered list and may execute in the wrong order.
 
-### Verification with `--verify`
-Attach a shell command that gates task completion:
+### Validation
+Include a `## Validation` section in task descriptions with concrete acceptance criteria. \
+For LLM-verified gates, use `--validation=llm`:
 
 ```bash
-wg add \"Implement feature\" --verify \"cargo test test_feature passes\"
+wg add \"Implement feature\" --validation=llm -d \"## Validation
+- [ ] cargo test test_feature passes
+- [ ] feature works end-to-end\"
 ```
-
-When `wg done` is called, the verify command runs automatically. If it fails, \
-the task stays open.
 
 ### When to Decompose vs Implement Directly
 - **Implement directly** if the task is small, well-scoped, and touches ≤ 2-3 files
@@ -841,8 +841,7 @@ If ANY dependency has status=Failed:
 4. Create fix tasks that block the failed dep (so it re-runs after the fix):
    ```
    wg add \"Fix: <description>\" --before <failed-dep-id> \\
-     --verify \"<validation command>\" \\
-     -d \"<details from failure logs>\"
+     -d \"## Validation\n- [ ] <validation criteria>\n\n<details from failure logs>\"
    ```
 5. Retry the failed dependency:
    ```
@@ -2867,10 +2866,10 @@ args = ["--custom-flag"]
             "Guide must explain --after for dependencies"
         );
 
-        // Must cover --verify for automated gates
+        // Must cover --validation for LLM verification gates
         assert!(
-            guide.contains("--verify"),
-            "Guide must explain --verify for automated gates"
+            guide.contains("--validation"),
+            "Guide must explain --validation for LLM verification gates"
         );
 
         // Must cover wg log, wg done, wg fail
