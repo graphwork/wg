@@ -53,12 +53,11 @@ Everything gets dispatched through `wg add` and `wg service start`.
 
 ### Task description requirements
 
-Every **code task** description MUST include a `## Validation` section with concrete test criteria. Use `--verify` to attach machine-checkable criteria that agents see as a hard gate.
+Every **code task** description MUST include a `## Validation` section with concrete test criteria. Completed tasks are evaluated by `.evaluate` tasks (auto-created when `auto_evaluate` is enabled), which determine the final verdict (done/incomplete/failed).
 
 Template:
 ```
 wg add "Implement feature X" --after <dep> \
-  --verify "cargo test test_feature_x passes" \
   -d "## Description
 <what to implement>
 

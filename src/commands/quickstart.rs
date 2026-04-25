@@ -209,16 +209,18 @@ TASK STATE COMMANDS
     wg add-dep <task> <dependency>     # Add a dependency: task waits for dependency
     wg rm-dep <task> <dependency>      # Remove a dependency edge
 
-VALIDATION (--verify gate)
+EVALUATION (post-completion quality gate)
 ─────────────────────────────────────────
-  Tasks created with --verify have an extra gate before completion:
+  When auto_evaluate is enabled, completed tasks get an .evaluate-* task
+  that determines the final verdict (done/incomplete/failed):
 
-  wg add "Task" --verify "cargo test passes"  # Set validation criteria
-  wg done <task-id>           # Moves to pending-validation (not done yet!)
-  wg approve <task-id>        # Approve → transitions to Done
-  wg reject <task-id> --reason "Tests failing"  # Reject → reopens task
+  wg evaluate run <task-id>           # Trigger LLM evaluation of a completed task
+  wg evaluate show                    # View evaluation history
+  wg config --auto-evaluate true      # Enable automatic evaluation on completion
 
-  After max rejections, the task transitions to Failed instead of reopening.
+  The .evaluate verdict can transition tasks to incomplete (needs redo) or
+  confirm them as done. Include a ## Validation section in task descriptions
+  so evaluators have clear acceptance criteria.
 
 INCOMPLETE STATUS (retryable work)
 ─────────────────────────────────────────
@@ -692,12 +694,12 @@ fn json_output() -> serde_json::Value {
                 "rm_dep": "Remove a dependency edge (wg rm-dep <task> <dependency>)"
             }
         },
-        "validation": {
-            "description": "Tasks with --verify have a pending-validation gate before completion.",
-            "create": "wg add \"task\" --verify \"cargo test passes\"",
-            "approve": "wg approve <task-id>",
-            "reject": "wg reject <task-id> --reason \"reason\"",
-            "note": "After max rejections, the task transitions to Failed instead of reopening."
+        "evaluation": {
+            "description": "Completed tasks are evaluated by .evaluate tasks (auto-created when auto_evaluate is enabled), which determine the final verdict.",
+            "run": "wg evaluate run <task-id>",
+            "show": "wg evaluate show",
+            "enable": "wg config --auto-evaluate true",
+            "note": "Include a ## Validation section in task descriptions so evaluators have clear acceptance criteria."
         },
         "messaging": {
             "description": "Inter-agent and task-scoped messaging. Agents must check messages before and after working.",
@@ -1300,7 +1302,7 @@ mod tests {
             "MANUAL MODE",
             "DISCOVERING & ADDING WORK",
             "TASK STATE COMMANDS",
-            "VALIDATION (--verify gate)",
+            "EVALUATION (post-completion quality gate)",
             "MESSAGING",
             "CONTEXT & ARTIFACTS",
             "CYCLES",
@@ -1345,11 +1347,10 @@ mod tests {
     }
 
     #[test]
-    fn test_quickstart_text_contains_validation() {
-        assert!(QUICKSTART_TEXT.contains("VALIDATION"));
-        assert!(QUICKSTART_TEXT.contains("wg approve"));
-        assert!(QUICKSTART_TEXT.contains("wg reject"));
-        assert!(QUICKSTART_TEXT.contains("pending-validation"));
+    fn test_quickstart_text_contains_evaluation_gate() {
+        assert!(QUICKSTART_TEXT.contains("EVALUATION (post-completion quality gate)"));
+        assert!(QUICKSTART_TEXT.contains("wg evaluate run"));
+        assert!(QUICKSTART_TEXT.contains("auto_evaluate"));
     }
 
     #[test]
@@ -1363,7 +1364,7 @@ mod tests {
     #[test]
     fn test_json_output_has_new_command_sections() {
         let output = json_output();
-        assert!(output.get("validation").is_some());
+        assert!(output.get("evaluation").is_some());
         assert!(output.get("messaging").is_some());
         assert!(output.get("wait_conditions").is_some());
         assert!(output.get("discovery_publishing").is_some());
