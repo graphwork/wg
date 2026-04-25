@@ -356,6 +356,27 @@ HOUSEKEEPING
   wg cleanup nightly            # Comprehensive nightly cleanup
   wg metrics                    # Display cleanup and monitoring metrics
 
+DRAFT & PUBLISH (subgraph staging)
+─────────────────────────────────────────
+  'wg add' creates tasks as drafts so you can build a multi-task subgraph
+  atomically — add tasks with dependencies, get the structure right, THEN
+  dispatch the whole subgraph at once with 'wg publish'.
+
+  Canonical pattern:
+
+    wg add "Task A"                    # draft
+    wg add "Task B" --after task-a     # draft
+    wg add "Task C" --after task-b     # draft
+    wg publish task-a                  # dispatches task-a + descendants
+
+  'wg publish' is the orchestrator's "subgraph complete, dispatch now"
+  signal. It is NOT a user-review gate. Unless the user explicitly
+  requested draft-and-review, the orchestrator should publish as soon
+  as the subgraph structure is correct.
+
+  Publish propagates: publishing a root task also publishes its unpublished
+  descendants. Use --only to publish a single task without propagation.
+
 DISCOVERY & PUBLISHING
 ─────────────────────────────────────────
   wg discover                       # Show tasks completed in the last 24h
@@ -714,6 +735,16 @@ fn json_output() -> serde_json::Value {
             "message": "wg wait <id> --until \"message\"",
             "human-input": "wg wait <id> --until \"human-input\"",
             "file": "wg wait <id> --until \"file:path/to/file\""
+        },
+        "draft_and_publish": {
+            "description": "wg add creates tasks as drafts for subgraph staging. Build the full subgraph, then call wg publish to dispatch as a unit. Publish is the orchestrator's GO signal, NOT a user-review gate.",
+            "pattern": [
+                "wg add \"Task A\"",
+                "wg add \"Task B\" --after task-a",
+                "wg add \"Task C\" --after task-b",
+                "wg publish task-a  # dispatches task-a + descendants"
+            ],
+            "propagation": "Publishing a root task also publishes unpublished descendants. Use --only to publish a single task."
         },
         "discovery_publishing": {
             "discover": "wg discover",

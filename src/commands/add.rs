@@ -760,7 +760,7 @@ pub fn run(
     } else if paused {
         println!("Added task (draft): {} ({})", title, task_id);
         println!(
-            "  Task is paused (draft mode). When ready, run: wg publish {}",
+            "  Task created as draft. Call `wg publish {}` when your subgraph is complete to dispatch.",
             task_id
         );
     } else {

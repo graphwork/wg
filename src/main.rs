@@ -1,3 +1,4 @@
+#![recursion_limit = "256"]
 #![warn(clippy::redundant_closure)]
 // Pre-existing clippy lints surfaced by rust 1.95 that weren't in
 // 1.93. Allowed crate-wide while we decide whether to refactor each

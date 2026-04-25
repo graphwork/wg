@@ -70,3 +70,5 @@ wg add "Implement feature X" --after <dep> \
 ```
 
 Research/design tasks should specify what artifacts to produce and how to verify completeness instead of test criteria.
+
+**Draft → Publish pattern**: `wg add` creates tasks as drafts for subgraph staging. The orchestrator builds the full subgraph (multiple `wg add` with `--after` deps), then calls `wg publish <root-id>` to dispatch it as a unit. Drafts are for build-staging, not user gating — publish as soon as the subgraph structure is correct, unless the user explicitly requested draft-and-review.
