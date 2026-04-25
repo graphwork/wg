@@ -535,6 +535,8 @@ pub mod eval_source {
     pub const MANUAL: &str = "manual";
     /// FLIP (roundtrip intent fidelity) evaluation.
     pub const FLIP: &str = "flip";
+    /// Constraint-fidelity lint (detect orchestrator-fabricated constraints).
+    pub const CONSTRAINT_FIDELITY: &str = "constraint-fidelity";
     /// Human reviewing evaluator output (meta-evaluation).
     pub const META_HUMAN_REVIEW: &str = "meta:human-review";
 

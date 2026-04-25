@@ -100,6 +100,82 @@ fn compute_artifact_diff(artifacts: &[String], started_at: Option<&str>) -> Opti
     }
 }
 
+/// Try to find the user message that originated a task's creation.
+///
+/// Heuristic: look at the coordinator chat inbox for messages sent shortly
+/// before the task's `created_at` timestamp. Falls back to scanning the
+/// task's own log entries for context clues.
+fn find_originating_user_message(
+    dir: &Path,
+    task: &workgraph::graph::Task,
+) -> Option<String> {
+    let created_at = task.created_at.as_deref()?;
+    let created_ts: chrono::DateTime<chrono::Utc> = created_at.parse().ok()?;
+
+    // Strategy 1: scan coordinator chat inboxes for a user message before task creation.
+    // Walk all chat directories looking for inbox messages.
+    let chat_dir = dir.join("chat");
+    if chat_dir.is_dir() {
+        if let Ok(entries) = std::fs::read_dir(&chat_dir) {
+            let mut best_message: Option<(chrono::DateTime<chrono::Utc>, String)> = None;
+
+            for entry in entries.flatten() {
+                let inbox_path = entry.path().join("inbox.jsonl");
+                if !inbox_path.exists() {
+                    continue;
+                }
+                if let Ok(contents) = std::fs::read_to_string(&inbox_path) {
+                    for line in contents.lines() {
+                        if let Ok(msg) =
+                            serde_json::from_str::<workgraph::chat::ChatMessage>(line)
+                        {
+                            if msg.role != "user" {
+                                continue;
+                            }
+                            if let Ok(msg_ts) =
+                                msg.timestamp.parse::<chrono::DateTime<chrono::Utc>>()
+                            {
+                                // Message must be before (or within 60s of) task creation
+                                let delta = created_ts
+                                    .signed_duration_since(msg_ts)
+                                    .num_seconds();
+                                if delta >= -60 && delta <= 600 {
+                                    // Within 10 min window before creation
+                                    if best_message
+                                        .as_ref()
+                                        .map(|(ts, _)| msg_ts > *ts)
+                                        .unwrap_or(true)
+                                    {
+                                        best_message =
+                                            Some((msg_ts, msg.content.clone()));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if let Some((_, content)) = best_message {
+                return Some(content);
+            }
+        }
+    }
+
+    // Strategy 2: look at log entries for coordinator context.
+    // The coordinator sometimes logs the user request that triggered task creation.
+    for entry in &task.log {
+        if entry.actor.as_deref() == Some("coordinator")
+            && (entry.message.contains("user request")
+                || entry.message.contains("User:"))
+        {
+            return Some(entry.message.clone());
+        }
+    }
+
+    None
+}
+
 /// Run `wg evaluate <task-id>` — trigger evaluation of a completed task.
 pub fn run(
     dir: &Path,
@@ -283,6 +359,25 @@ pub fn run(
         }
     });
 
+    // Step 3.9: Run constraint-fidelity lint on the task description (deterministic, no LLM).
+    let cf_result = if let Some(desc) = task.description.as_deref() {
+        let user_message = find_originating_user_message(dir, task);
+        Some(workgraph::agency::constraint_fidelity::lint_task_description(
+            desc,
+            user_message.as_deref(),
+        ))
+    } else {
+        None
+    };
+    let cf_score = cf_result
+        .as_ref()
+        .filter(|cf| cf.total_constraints > 0)
+        .map(|cf| cf.score);
+    let cf_unanchored = cf_result
+        .as_ref()
+        .filter(|cf| cf.total_constraints > 0)
+        .map(|cf| cf.unanchored_constraints);
+
     // Step 4: Build evaluator prompt
     let evaluated_outcome = role
         .as_ref()
@@ -308,6 +403,8 @@ pub fn run(
         verify_findings: verify_findings_owned.as_deref(),
         resolved_outcome_name: evaluated_outcome_name,
         child_tasks: &child_tasks,
+        constraint_fidelity_score: cf_score,
+        constraint_fidelity_unanchored: cf_unanchored,
     };
 
     let prompt = render_evaluator_prompt(&evaluator_input);
@@ -414,6 +511,11 @@ pub fn run(
         dimensions.insert("intent_fidelity".to_string(), fs);
     }
 
+    // Step 7.5: Inject constraint-fidelity score (computed in Step 3.9).
+    if let Some(score) = cf_score {
+        dimensions.insert("constraint_fidelity".to_string(), score);
+    }
+
     let evaluation = Evaluation {
         id: eval_id,
         task_id: task_id.to_string(),
@@ -455,6 +557,10 @@ pub fn run(
             println!("Score:      {:.2}", evaluation.score);
             if let Some(f) = evaluation.dimensions.get("intent_fidelity") {
                 println!("  intent_fidelity:        {:.2}", f);
+            }
+            if let Some(cf) = evaluation.dimensions.get("constraint_fidelity") {
+                let flag = if *cf < 0.5 { " \x1b[33m⚠ unanchored constraints\x1b[0m" } else { "" };
+                println!("  constraint_fidelity:    {:.2}{}", cf, flag);
             }
             // Individual quality dimensions
             if let Some(c) = evaluation.dimensions.get("correctness") {

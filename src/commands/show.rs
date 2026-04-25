@@ -1,6 +1,7 @@
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use serde::Serialize;
+use std::collections::HashMap;
 use std::path::Path;
 use workgraph::config::Config;
 use workgraph::graph::{
@@ -130,6 +131,18 @@ struct TaskDetails {
     iteration_parent: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     iteration_config: Option<workgraph::agency::IterationConfig>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    evaluations: Vec<EvalSummary>,
+}
+
+/// Lightweight evaluation summary for wg show output.
+#[derive(Debug, Clone, Serialize)]
+struct EvalSummary {
+    score: f64,
+    source: String,
+    #[serde(skip_serializing_if = "HashMap::is_empty")]
+    dimensions: HashMap<String, f64>,
+    timestamp: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -359,6 +372,26 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
 
     let (actual_executor, actual_model, native_compaction) = gather_task_runtime_info(dir, task);
 
+    // Load evaluation data for this task (if any)
+    let evaluations = {
+        let evals_dir = dir.join("agency").join("evaluations");
+        if evals_dir.is_dir() {
+            let all_evals = workgraph::agency::load_all_evaluations_or_warn(&evals_dir);
+            all_evals
+                .into_iter()
+                .filter(|e| e.task_id == id)
+                .map(|e| EvalSummary {
+                    score: e.score,
+                    source: e.source,
+                    dimensions: e.dimensions,
+                    timestamp: e.timestamp,
+                })
+                .collect()
+        } else {
+            Vec::new()
+        }
+    };
+
     let details = TaskDetails {
         id: task.id.clone(),
         title: task.title.clone(),
@@ -413,6 +446,7 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
         iteration_anchor: task.iteration_anchor.clone(),
         iteration_parent: task.iteration_parent.clone(),
         iteration_config: task.iteration_config.clone(),
+        evaluations,
     };
 
     if json {
@@ -757,6 +791,23 @@ fn print_human_readable(details: &TaskDetails) {
         }
     }
 
+    // Evaluation data
+    if !details.evaluations.is_empty() {
+        println!();
+        println!("Evaluations:");
+        for eval in &details.evaluations {
+            println!("  Score: {:.2}  Source: {}  {}", eval.score, eval.source, eval.timestamp);
+            // Show key dimensions inline
+            if let Some(cf) = eval.dimensions.get("constraint_fidelity") {
+                let flag = if *cf < 0.5 { " \x1b[33m⚠ unanchored constraints\x1b[0m" } else { "" };
+                println!("    constraint_fidelity: {:.2}{}", cf, flag);
+            }
+            if let Some(f) = eval.dimensions.get("intent_fidelity") {
+                println!("    intent_fidelity:    {:.2}", f);
+            }
+        }
+    }
+
     // Log entries
     if !details.log.is_empty() {
         println!();
@@ -905,6 +956,7 @@ mod tests {
             iteration_anchor: None,
             iteration_parent: None,
             iteration_config: None,
+            evaluations: vec![],
         };
 
         let json = serde_json::to_string(&details).unwrap();
