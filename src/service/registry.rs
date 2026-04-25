@@ -74,7 +74,7 @@ pub struct AgentEntry {
     pub status: AgentStatus,
     /// Path to the agent's output log file
     pub output_file: String,
-    /// Model used for this agent (e.g., "anthropic/claude-opus-4-6")
+    /// Model used for this agent (e.g., "anthropic/claude-opus-latest")
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     /// When the agent finished (ISO 8601), set on transition to Done/Failed/Dead

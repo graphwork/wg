@@ -663,7 +663,7 @@ fn strict_rejects_common_bare_model_names() {
         "deepseek-chat-v3",
         "gemini-2.5-pro",
         opus_bare.as_str(),
-        "claude-sonnet-4-6",
+        "claude-sonnet-latest",
     ];
     for name in &bare_names {
         let result = parse_model_spec_strict(name);

@@ -101,7 +101,7 @@
             "total_turns": 6
           },
           "error": null,
-          "verify_output": "Evaluating task 'tb-aprime-file-ops-r0' with model 'claude-haiku-4-5-20251001'...\n\n=== Evaluation Complete ===\nTask:       A': File Operations: create project structure (rep 0) (tb-aprime-file-ops-r0)\nModel:      openrouter:minimax/minimax-m2.7\nScore:      0.96\n  correctness:            1.00\n  completeness:           1.00\n  efficiency:             0.90\n  style_adherence:        1.00\n  downstream_usability:   0.80\n  coordination_overhead:  1.00\n  blocking_impact:        1.00\nNotes:      Exception"
+          "verify_output": "Evaluating task 'tb-aprime-file-ops-r0' with model 'claude-haiku-latest'...\n\n=== Evaluation Complete ===\nTask:       A': File Operations: create project structure (rep 0) (tb-aprime-file-ops-r0)\nModel:      openrouter:minimax/minimax-m2.7\nScore:      0.96\n  correctness:            1.00\n  completeness:           1.00\n  efficiency:             0.90\n  style_adherence:        1.00\n  downstream_usability:   0.80\n  coordination_overhead:  1.00\n  blocking_impact:        1.00\nNotes:      Exception"
         },
         {
           "trial_id": "aprime-file-ops-r1",
@@ -123,7 +123,7 @@
             "total_turns": 6
           },
           "error": null,
-          "verify_output": "Evaluating task 'tb-aprime-file-ops-r1' with model 'claude-haiku-4-5-20251001'...\n\n=== Evaluation Complete ===\nTask:       A': File Operations: create project structure (rep 1) (tb-aprime-file-ops-r1)\nModel:      openrouter:minimax/minimax-m2.7\nScore:      0.99\n  correctness:            1.00\n  completeness:           1.00\n  efficiency:             1.00\n  style_adherence:        0.95\n  downstream_usability:   1.00\n  coordination_overhead:  1.00\n  blocking_impact:        1.00\nNotes:      Exception"
+          "verify_output": "Evaluating task 'tb-aprime-file-ops-r1' with model 'claude-haiku-latest'...\n\n=== Evaluation Complete ===\nTask:       A': File Operations: create project structure (rep 1) (tb-aprime-file-ops-r1)\nModel:      openrouter:minimax/minimax-m2.7\nScore:      0.99\n  correctness:            1.00\n  completeness:           1.00\n  efficiency:             1.00\n  style_adherence:        0.95\n  downstream_usability:   1.00\n  coordination_overhead:  1.00\n  blocking_impact:        1.00\nNotes:      Exception"
         },
         {
           "trial_id": "aprime-file-ops-r2",
@@ -145,7 +145,7 @@
             "total_turns": 7
           },
           "error": null,
-          "verify_output": "Evaluating task 'tb-aprime-file-ops-r2' with model 'claude-haiku-4-5-20251001'...\n\n=== Evaluation Complete ===\nTask:       A': File Operations: create project structure (rep 2) (tb-aprime-file-ops-r2)\nModel:      openrouter:minimax/minimax-m2.7\nScore:      0.92\n  correctness:            0.95\n  completeness:           1.00\n  efficiency:             0.85\n  style_adherence:        0.90\n  downstream_usability:   0.85\n  coordination_overhead:  0.95\n  blocking_impact:        0.95\nNotes:      Exception"
+          "verify_output": "Evaluating task 'tb-aprime-file-ops-r2' with model 'claude-haiku-latest'...\n\n=== Evaluation Complete ===\nTask:       A': File Operations: create project structure (rep 2) (tb-aprime-file-ops-r2)\nModel:      openrouter:minimax/minimax-m2.7\nScore:      0.92\n  correctness:            0.95\n  completeness:           1.00\n  efficiency:             0.85\n  style_adherence:        0.90\n  downstream_usability:   0.85\n  coordination_overhead:  0.95\n  blocking_impact:        0.95\nNotes:      Exception"
         },
         {
           "trial_id": "aprime-text-processing-r0",
@@ -167,7 +167,7 @@
             "total_turns": 7
           },
           "error": null,
-          "verify_output": "Evaluating task 'tb-aprime-text-processing-r0' with model 'claude-haiku-4-5-20251001'...\n\n=== Evaluation Complete ===\nTask:       A': Text Processing: word frequency counter (rep 0) (tb-aprime-text-processing-r0)\nModel:      openrouter:minimax/minimax-m2.7\nScore:      0.58\n  correctness:            0.55\n  completeness:           0.55\n  efficiency:             0.70\n  style_adherence:        0.60\n  downstream_usability:   0.50\n  coordination_overhead:  0.70\n  blocking_impact:        0.70\nNotes:   "
+          "verify_output": "Evaluating task 'tb-aprime-text-processing-r0' with model 'claude-haiku-latest'...\n\n=== Evaluation Complete ===\nTask:       A': Text Processing: word frequency counter (rep 0) (tb-aprime-text-processing-r0)\nModel:      openrouter:minimax/minimax-m2.7\nScore:      0.58\n  correctness:            0.55\n  completeness:           0.55\n  efficiency:             0.70\n  style_adherence:        0.60\n  downstream_usability:   0.50\n  coordination_overhead:  0.70\n  blocking_impact:        0.70\nNotes:   "
         },
         {
           "trial_id": "aprime-text-processing-r1",
@@ -189,7 +189,7 @@
             "total_turns": 6
           },
           "error": null,
-          "verify_output": "Evaluating task 'tb-aprime-text-processing-r1' with model 'claude-haiku-4-5-20251001'...\n\n=== Evaluation Complete ===\nTask:       A': Text Processing: word frequency counter (rep 1) (tb-aprime-text-processing-r1)\nModel:      openrouter:minimax/minimax-m2.7\nScore:      0.05\n  correctness:            0.00\n  completeness:           0.00\n  efficiency:             0.10\n  style_adherence:        0.00\n  downstream_usability:   0.00\n  coordination_overhead:  0.10\n  blocking_impact:        0.00\nNotes:   "
+          "verify_output": "Evaluating task 'tb-aprime-text-processing-r1' with model 'claude-haiku-latest'...\n\n=== Evaluation Complete ===\nTask:       A': Text Processing: word frequency counter (rep 1) (tb-aprime-text-processing-r1)\nModel:      openrouter:minimax/minimax-m2.7\nScore:      0.05\n  correctness:            0.00\n  completeness:           0.00\n  efficiency:             0.10\n  style_adherence:        0.00\n  downstream_usability:   0.00\n  coordination_overhead:  0.10\n  blocking_impact:        0.00\nNotes:   "
         },
         {
           "trial_id": "aprime-text-processing-r2",
@@ -211,7 +211,7 @@
             "total_turns": 9
           },
           "error": null,
-          "verify_output": "Evaluating task 'tb-aprime-text-processing-r2' with model 'claude-haiku-4-5-20251001'...\n\n=== Evaluation Complete ===\nTask:       A': Text Processing: word frequency counter (rep 2) (tb-aprime-text-processing-r2)\nModel:      openrouter:minimax/minimax-m2.7\nScore:      0.67\n  correctness:            0.75\n  completeness:           0.70\n  efficiency:             0.70\n  style_adherence:        0.60\n  downstream_usability:   0.50\n  coordination_overhead:  0.60\n  blocking_impact:        0.75\nNotes:   "
+          "verify_output": "Evaluating task 'tb-aprime-text-processing-r2' with model 'claude-haiku-latest'...\n\n=== Evaluation Complete ===\nTask:       A': Text Processing: word frequency counter (rep 2) (tb-aprime-text-processing-r2)\nModel:      openrouter:minimax/minimax-m2.7\nScore:      0.67\n  correctness:            0.75\n  completeness:           0.70\n  efficiency:             0.70\n  style_adherence:        0.60\n  downstream_usability:   0.50\n  coordination_overhead:  0.60\n  blocking_impact:        0.75\nNotes:   "
         },
         {
           "trial_id": "aprime-debugging-r0",
@@ -233,7 +233,7 @@
             "total_turns": 9
           },
           "error": null,
-          "verify_output": "Evaluating task 'tb-aprime-debugging-r0' with model 'claude-haiku-4-5-20251001'...\n\n=== Evaluation Complete ===\nTask:       A': Debugging: fix merge sort bugs (rep 0) (tb-aprime-debugging-r0)\nModel:      openrouter:minimax/minimax-m2.7\nScore:      0.15\n  correctness:            0.10\n  completeness:           0.05\n  efficiency:             0.65\n  style_adherence:        0.20\n  downstream_usability:   0.00\n  coordination_overhead:  0.15\n  blocking_impact:        0.10\nNotes:      Critical failure: "
+          "verify_output": "Evaluating task 'tb-aprime-debugging-r0' with model 'claude-haiku-latest'...\n\n=== Evaluation Complete ===\nTask:       A': Debugging: fix merge sort bugs (rep 0) (tb-aprime-debugging-r0)\nModel:      openrouter:minimax/minimax-m2.7\nScore:      0.15\n  correctness:            0.10\n  completeness:           0.05\n  efficiency:             0.65\n  style_adherence:        0.20\n  downstream_usability:   0.00\n  coordination_overhead:  0.15\n  blocking_impact:        0.10\nNotes:      Critical failure: "
         },
         {
           "trial_id": "aprime-debugging-r1",
@@ -255,7 +255,7 @@
             "total_turns": 7
           },
           "error": null,
-          "verify_output": "Evaluating task 'tb-aprime-debugging-r1' with model 'claude-haiku-4-5-20251001'...\n\n=== Evaluation Complete ===\nTask:       A': Debugging: fix merge sort bugs (rep 1) (tb-aprime-debugging-r1)\nModel:      openrouter:minimax/minimax-m2.7\nScore:      0.83\n  correctness:            1.00\n  completeness:           0.95\n  efficiency:             0.85\n  style_adherence:        0.75\n  downstream_usability:   0.55\n  coordination_overhead:  0.95\n  blocking_impact:        0.90\nNotes:      Agent successfully"
+          "verify_output": "Evaluating task 'tb-aprime-debugging-r1' with model 'claude-haiku-latest'...\n\n=== Evaluation Complete ===\nTask:       A': Debugging: fix merge sort bugs (rep 1) (tb-aprime-debugging-r1)\nModel:      openrouter:minimax/minimax-m2.7\nScore:      0.83\n  correctness:            1.00\n  completeness:           0.95\n  efficiency:             0.85\n  style_adherence:        0.75\n  downstream_usability:   0.55\n  coordination_overhead:  0.95\n  blocking_impact:        0.90\nNotes:      Agent successfully"
         },
         {
           "trial_id": "aprime-debugging-r2",
@@ -277,7 +277,7 @@
             "total_turns": 9
           },
           "error": null,
-          "verify_output": "Evaluating task 'tb-aprime-debugging-r2' with model 'claude-haiku-4-5-20251001'...\n\n=== Evaluation Complete ===\nTask:       A': Debugging: fix merge sort bugs (rep 2) (tb-aprime-debugging-r2)\nModel:      openrouter:minimax/minimax-m2.7\nScore:      0.42\n  correctness:            0.30\n  completeness:           0.35\n  efficiency:             0.70\n  style_adherence:        0.65\n  downstream_usability:   0.20\n  coordination_overhead:  0.70\n  blocking_impact:        0.80\nNotes:      Critical concern: "
+          "verify_output": "Evaluating task 'tb-aprime-debugging-r2' with model 'claude-haiku-latest'...\n\n=== Evaluation Complete ===\nTask:       A': Debugging: fix merge sort bugs (rep 2) (tb-aprime-debugging-r2)\nModel:      openrouter:minimax/minimax-m2.7\nScore:      0.42\n  correctness:            0.30\n  completeness:           0.35\n  efficiency:             0.70\n  style_adherence:        0.65\n  downstream_usability:   0.20\n  coordination_overhead:  0.70\n  blocking_impact:        0.80\nNotes:      Critical concern: "
         },
         {
           "trial_id": "aprime-shell-scripting-r0",
@@ -299,7 +299,7 @@
             "total_turns": 4
           },
           "error": null,
-          "verify_output": "Evaluating task 'tb-aprime-shell-scripting-r0' with model 'claude-haiku-4-5-20251001'...\n\n=== Evaluation Complete ===\nTask:       A': Shell Scripting: log file analyzer (rep 0) (tb-aprime-shell-scripting-r0)\nModel:      openrouter:minimax/minimax-m2.7\nScore:      0.15\n  correctness:            0.10\n  completeness:           0.20\n  efficiency:             0.30\n  style_adherence:        0.20\n  downstream_usability:   0.00\n  coordination_overhead:  0.20\n  blocking_impact:        0.15\nNotes:      Ta"
+          "verify_output": "Evaluating task 'tb-aprime-shell-scripting-r0' with model 'claude-haiku-latest'...\n\n=== Evaluation Complete ===\nTask:       A': Shell Scripting: log file analyzer (rep 0) (tb-aprime-shell-scripting-r0)\nModel:      openrouter:minimax/minimax-m2.7\nScore:      0.15\n  correctness:            0.10\n  completeness:           0.20\n  efficiency:             0.30\n  style_adherence:        0.20\n  downstream_usability:   0.00\n  coordination_overhead:  0.20\n  blocking_impact:        0.15\nNotes:      Ta"
         },
         {
           "trial_id": "aprime-shell-scripting-r1",
@@ -321,7 +321,7 @@
             "total_turns": 10
           },
           "error": null,
-          "verify_output": "Evaluating task 'tb-aprime-shell-scripting-r1' with model 'claude-haiku-4-5-20251001'...\n\n=== Evaluation Complete ===\nTask:       A': Shell Scripting: log file analyzer (rep 1) (tb-aprime-shell-scripting-r1)\nModel:      openrouter:minimax/minimax-m2.7\nScore:      0.12\n  correctness:            0.00\n  completeness:           0.05\n  efficiency:             0.50\n  style_adherence:        0.20\n  downstream_usability:   0.00\n  coordination_overhead:  0.15\n  blocking_impact:        0.30\nNotes:      Cr"
+          "verify_output": "Evaluating task 'tb-aprime-shell-scripting-r1' with model 'claude-haiku-latest'...\n\n=== Evaluation Complete ===\nTask:       A': Shell Scripting: log file analyzer (rep 1) (tb-aprime-shell-scripting-r1)\nModel:      openrouter:minimax/minimax-m2.7\nScore:      0.12\n  correctness:            0.00\n  completeness:           0.05\n  efficiency:             0.50\n  style_adherence:        0.20\n  downstream_usability:   0.00\n  coordination_overhead:  0.15\n  blocking_impact:        0.30\nNotes:      Cr"
         },
         {
           "trial_id": "aprime-shell-scripting-r2",
@@ -343,7 +343,7 @@
             "total_turns": 5
           },
           "error": null,
-          "verify_output": "Evaluating task 'tb-aprime-shell-scripting-r2' with model 'claude-haiku-4-5-20251001'...\n\n=== Evaluation Complete ===\nTask:       A': Shell Scripting: log file analyzer (rep 2) (tb-aprime-shell-scripting-r2)\nModel:      openrouter:minimax/minimax-m2.7\nScore:      0.10\n  correctness:            0.00\n  completeness:           0.05\n  efficiency:             0.50\n  style_adherence:        0.00\n  downstream_usability:   0.00\n  coordination_overhead:  0.20\n  blocking_impact:        0.30\nNotes:      Ta"
+          "verify_output": "Evaluating task 'tb-aprime-shell-scripting-r2' with model 'claude-haiku-latest'...\n\n=== Evaluation Complete ===\nTask:       A': Shell Scripting: log file analyzer (rep 2) (tb-aprime-shell-scripting-r2)\nModel:      openrouter:minimax/minimax-m2.7\nScore:      0.10\n  correctness:            0.00\n  completeness:           0.05\n  efficiency:             0.50\n  style_adherence:        0.00\n  downstream_usability:   0.00\n  coordination_overhead:  0.20\n  blocking_impact:        0.30\nNotes:      Ta"
         },
         {
           "trial_id": "aprime-data-processing-r0",
@@ -365,7 +365,7 @@
             "total_turns": 6
           },
           "error": null,
-          "verify_output": "Evaluating task 'tb-aprime-data-processing-r0' with model 'claude-haiku-4-5-20251001'...\n\n=== Evaluation Complete ===\nTask:       A': Data Processing: JSON to CSV department summary (rep 0) (tb-aprime-data-processing-r0)\nModel:      openrouter:minimax/minimax-m2.7\nScore:      0.03\n  correctness:            0.00\n  completeness:           0.00\n  efficiency:             0.00\n  style_adherence:        0.00\n  downstream_usability:   0.00\n  coordination_overhead:  0.25\n  blocking_impact:        0.00\nN"
+          "verify_output": "Evaluating task 'tb-aprime-data-processing-r0' with model 'claude-haiku-latest'...\n\n=== Evaluation Complete ===\nTask:       A': Data Processing: JSON to CSV department summary (rep 0) (tb-aprime-data-processing-r0)\nModel:      openrouter:minimax/minimax-m2.7\nScore:      0.03\n  correctness:            0.00\n  completeness:           0.00\n  efficiency:             0.00\n  style_adherence:        0.00\n  downstream_usability:   0.00\n  coordination_overhead:  0.25\n  blocking_impact:        0.00\nN"
         },
         {
           "trial_id": "aprime-data-processing-r1",
@@ -387,7 +387,7 @@
             "total_turns": 6
           },
           "error": null,
-          "verify_output": "Evaluating task 'tb-aprime-data-processing-r1' with model 'claude-haiku-4-5-20251001'...\n\n=== Evaluation Complete ===\nTask:       A': Data Processing: JSON to CSV department summary (rep 1) (tb-aprime-data-processing-r1)\nModel:      openrouter:minimax/minimax-m2.7\nScore:      0.68\n  correctness:            0.80\n  completeness:           0.80\n  efficiency:             0.75\n  style_adherence:        0.60\n  downstream_usability:   0.50\n  coordination_overhead:  0.60\n  blocking_impact:        0.85\nN"
+          "verify_output": "Evaluating task 'tb-aprime-data-processing-r1' with model 'claude-haiku-latest'...\n\n=== Evaluation Complete ===\nTask:       A': Data Processing: JSON to CSV department summary (rep 1) (tb-aprime-data-processing-r1)\nModel:      openrouter:minimax/minimax-m2.7\nScore:      0.68\n  correctness:            0.80\n  completeness:           0.80\n  efficiency:             0.75\n  style_adherence:        0.60\n  downstream_usability:   0.50\n  coordination_overhead:  0.60\n  blocking_impact:        0.85\nN"
         },
         {
           "trial_id": "aprime-data-processing-r2",
@@ -409,7 +409,7 @@
             "total_turns": 7
           },
           "error": null,
-          "verify_output": "Evaluating task 'tb-aprime-data-processing-r2' with model 'claude-haiku-4-5-20251001'...\n\n=== Evaluation Complete ===\nTask:       A': Data Processing: JSON to CSV department summary (rep 2) (tb-aprime-data-processing-r2)\nModel:      openrouter:minimax/minimax-m2.7\nScore:      0.08\n  correctness:            0.00\n  completeness:           0.10\n  efficiency:             0.20\n  style_adherence:        0.10\n  downstream_usability:   0.00\n  coordination_overhead:  0.20\n  blocking_impact:        0.20\nN"
+          "verify_output": "Evaluating task 'tb-aprime-data-processing-r2' with model 'claude-haiku-latest'...\n\n=== Evaluation Complete ===\nTask:       A': Data Processing: JSON to CSV department summary (rep 2) (tb-aprime-data-processing-r2)\nModel:      openrouter:minimax/minimax-m2.7\nScore:      0.08\n  correctness:            0.00\n  completeness:           0.10\n  efficiency:             0.20\n  style_adherence:        0.10\n  downstream_usability:   0.00\n  coordination_overhead:  0.20\n  blocking_impact:        0.20\nN"
         },
         {
           "trial_id": "aprime-algorithm-r0",
@@ -431,7 +431,7 @@
             "total_turns": 5
           },
           "error": null,
-          "verify_output": "Evaluating task 'tb-aprime-algorithm-r0' with model 'claude-haiku-4-5-20251001'...\n\n=== Evaluation Complete ===\nTask:       A': Algorithm: key-value store with transactions (rep 0) (tb-aprime-algorithm-r0)\nModel:      openrouter:minimax/minimax-m2.7\nScore:      0.08\n  correctness:            0.00\n  completeness:           0.10\n  efficiency:             0.20\n  style_adherence:        0.00\n  downstream_usability:   0.00\n  coordination_overhead:  0.20\n  blocking_impact:        0.15\nNotes:      Crit"
+          "verify_output": "Evaluating task 'tb-aprime-algorithm-r0' with model 'claude-haiku-latest'...\n\n=== Evaluation Complete ===\nTask:       A': Algorithm: key-value store with transactions (rep 0) (tb-aprime-algorithm-r0)\nModel:      openrouter:minimax/minimax-m2.7\nScore:      0.08\n  correctness:            0.00\n  completeness:           0.10\n  efficiency:             0.20\n  style_adherence:        0.00\n  downstream_usability:   0.00\n  coordination_overhead:  0.20\n  blocking_impact:        0.15\nNotes:      Crit"
         },
         {
           "trial_id": "aprime-algorithm-r1",
@@ -453,7 +453,7 @@
             "total_turns": 5
           },
           "error": null,
-          "verify_output": "Evaluating task 'tb-aprime-algorithm-r1' with model 'claude-haiku-4-5-20251001'...\n\n=== Evaluation Complete ===\nTask:       A': Algorithm: key-value store with transactions (rep 1) (tb-aprime-algorithm-r1)\nModel:      openrouter:minimax/minimax-m2.7\nScore:      0.68\n  correctness:            0.75\n  completeness:           0.80\n  efficiency:             0.75\n  style_adherence:        0.60\n  downstream_usability:   0.55\n  coordination_overhead:  0.75\n  blocking_impact:        0.75\nNotes:      Task"
+          "verify_output": "Evaluating task 'tb-aprime-algorithm-r1' with model 'claude-haiku-latest'...\n\n=== Evaluation Complete ===\nTask:       A': Algorithm: key-value store with transactions (rep 1) (tb-aprime-algorithm-r1)\nModel:      openrouter:minimax/minimax-m2.7\nScore:      0.68\n  correctness:            0.75\n  completeness:           0.80\n  efficiency:             0.75\n  style_adherence:        0.60\n  downstream_usability:   0.55\n  coordination_overhead:  0.75\n  blocking_impact:        0.75\nNotes:      Task"
         },
         {
           "trial_id": "aprime-algorithm-r2",
@@ -475,7 +475,7 @@
             "total_turns": 5
           },
           "error": null,
-          "verify_output": "Evaluating task 'tb-aprime-algorithm-r2' with model 'claude-haiku-4-5-20251001'...\n\n=== Evaluation Complete ===\nTask:       A': Algorithm: key-value store with transactions (rep 2) (tb-aprime-algorithm-r2)\nModel:      openrouter:minimax/minimax-m2.7\nScore:      0.08\n  correctness:            0.00\n  completeness:           0.00\n  efficiency:             0.50\n  style_adherence:        0.00\n  downstream_usability:   0.00\n  coordination_overhead:  0.20\n  blocking_impact:        0.30\nNotes:      Crit"
+          "verify_output": "Evaluating task 'tb-aprime-algorithm-r2' with model 'claude-haiku-latest'...\n\n=== Evaluation Complete ===\nTask:       A': Algorithm: key-value store with transactions (rep 2) (tb-aprime-algorithm-r2)\nModel:      openrouter:minimax/minimax-m2.7\nScore:      0.08\n  correctness:            0.00\n  completeness:           0.00\n  efficiency:             0.50\n  style_adherence:        0.00\n  downstream_usability:   0.00\n  coordination_overhead:  0.20\n  blocking_impact:        0.30\nNotes:      Crit"
         },
         {
           "trial_id": "aprime-ml-r0",
@@ -497,7 +497,7 @@
             "total_turns": 8
           },
           "error": null,
-          "verify_output": "Evaluating task 'tb-aprime-ml-r0' with model 'claude-haiku-4-5-20251001'...\n\n=== Evaluation Complete ===\nTask:       A': ML: k-means clustering from scratch (rep 0) (tb-aprime-ml-r0)\nModel:      openrouter:minimax/minimax-m2.7\nScore:      0.31\n  correctness:            0.35\n  completeness:           0.25\n  efficiency:             0.40\n  style_adherence:        0.50\n  downstream_usability:   0.10\n  coordination_overhead:  0.30\n  blocking_impact:        0.40\nNotes:      Critical issue: no artifact"
+          "verify_output": "Evaluating task 'tb-aprime-ml-r0' with model 'claude-haiku-latest'...\n\n=== Evaluation Complete ===\nTask:       A': ML: k-means clustering from scratch (rep 0) (tb-aprime-ml-r0)\nModel:      openrouter:minimax/minimax-m2.7\nScore:      0.31\n  correctness:            0.35\n  completeness:           0.25\n  efficiency:             0.40\n  style_adherence:        0.50\n  downstream_usability:   0.10\n  coordination_overhead:  0.30\n  blocking_impact:        0.40\nNotes:      Critical issue: no artifact"
         },
         {
           "trial_id": "aprime-ml-r1",
@@ -519,7 +519,7 @@
             "total_turns": 6
           },
           "error": null,
-          "verify_output": "Evaluating task 'tb-aprime-ml-r1' with model 'claude-haiku-4-5-20251001'...\n\n=== Evaluation Complete ===\nTask:       A': ML: k-means clustering from scratch (rep 1) (tb-aprime-ml-r1)\nModel:      openrouter:minimax/minimax-m2.7\nScore:      0.62\n  correctness:            0.70\n  completeness:           0.65\n  efficiency:             0.85\n  style_adherence:        0.60\n  downstream_usability:   0.40\n  coordination_overhead:  0.85\n  blocking_impact:        0.90\nNotes:      Task was marked done (imply"
+          "verify_output": "Evaluating task 'tb-aprime-ml-r1' with model 'claude-haiku-latest'...\n\n=== Evaluation Complete ===\nTask:       A': ML: k-means clustering from scratch (rep 1) (tb-aprime-ml-r1)\nModel:      openrouter:minimax/minimax-m2.7\nScore:      0.62\n  correctness:            0.70\n  completeness:           0.65\n  efficiency:             0.85\n  style_adherence:        0.60\n  downstream_usability:   0.40\n  coordination_overhead:  0.85\n  blocking_impact:        0.90\nNotes:      Task was marked done (imply"
         },
         {
           "trial_id": "aprime-ml-r2",
@@ -541,7 +541,7 @@
             "total_turns": 5
           },
           "error": null,
-          "verify_output": "Evaluating task 'tb-aprime-ml-r2' with model 'claude-haiku-4-5-20251001'...\n\n=== Evaluation Complete ===\nTask:       A': ML: k-means clustering from scratch (rep 2) (tb-aprime-ml-r2)\nModel:      openrouter:minimax/minimax-m2.7\nScore:      0.15\n  correctness:            0.00\n  completeness:           0.00\n  efficiency:             0.30\n  style_adherence:        0.00\n  downstream_usability:   0.00\n  coordination_overhead:  0.20\n  blocking_impact:        0.10\nNotes:      Critical failure: no artifa"
+          "verify_output": "Evaluating task 'tb-aprime-ml-r2' with model 'claude-haiku-latest'...\n\n=== Evaluation Complete ===\nTask:       A': ML: k-means clustering from scratch (rep 2) (tb-aprime-ml-r2)\nModel:      openrouter:minimax/minimax-m2.7\nScore:      0.15\n  correctness:            0.00\n  completeness:           0.00\n  efficiency:             0.30\n  style_adherence:        0.00\n  downstream_usability:   0.00\n  coordination_overhead:  0.20\n  blocking_impact:        0.10\nNotes:      Critical failure: no artifa"
         }
       ]
     },
@@ -642,7 +642,7 @@
             "total_turns": 9
           },
           "error": null,
-          "verify_output": "Evaluating task 'tb-f-file-ops-r0' with model 'claude-haiku-4-5-20251001'...\n\n=== Evaluation Complete ===\nTask:       F: File Operations: create project structure (rep 0) (tb-f-file-ops-r0)\nModel:      openrouter:minimax/minimax-m2.7\nScore:      0.94\n  correctness:            1.00\n  completeness:           1.00\n  efficiency:             0.95\n  style_adherence:        0.90\n  downstream_usability:   0.85\n  coordination_overhead:  0.90\n  blocking_impact:        0.95\nNotes:      Excellent execution "
+          "verify_output": "Evaluating task 'tb-f-file-ops-r0' with model 'claude-haiku-latest'...\n\n=== Evaluation Complete ===\nTask:       F: File Operations: create project structure (rep 0) (tb-f-file-ops-r0)\nModel:      openrouter:minimax/minimax-m2.7\nScore:      0.94\n  correctness:            1.00\n  completeness:           1.00\n  efficiency:             0.95\n  style_adherence:        0.90\n  downstream_usability:   0.85\n  coordination_overhead:  0.90\n  blocking_impact:        0.95\nNotes:      Excellent execution "
         },
         {
           "trial_id": "f-file-ops-r1",
@@ -664,7 +664,7 @@
             "total_turns": 12
           },
           "error": null,
-          "verify_output": "Evaluating task 'tb-f-file-ops-r1' with model 'claude-haiku-4-5-20251001'...\n\n=== Evaluation Complete ===\nTask:       F: File Operations: create project structure (rep 1) (tb-f-file-ops-r1)\nModel:      openrouter:minimax/minimax-m2.7\nScore:      0.93\n  correctness:            1.00\n  completeness:           1.00\n  efficiency:             0.90\n  style_adherence:        1.00\n  downstream_usability:   0.70\n  coordination_overhead:  0.80\n  blocking_impact:        1.00\nNotes:      Agent successfully c"
+          "verify_output": "Evaluating task 'tb-f-file-ops-r1' with model 'claude-haiku-latest'...\n\n=== Evaluation Complete ===\nTask:       F: File Operations: create project structure (rep 1) (tb-f-file-ops-r1)\nModel:      openrouter:minimax/minimax-m2.7\nScore:      0.93\n  correctness:            1.00\n  completeness:           1.00\n  efficiency:             0.90\n  style_adherence:        1.00\n  downstream_usability:   0.70\n  coordination_overhead:  0.80\n  blocking_impact:        1.00\nNotes:      Agent successfully c"
         },
         {
           "trial_id": "f-file-ops-r2",
@@ -686,7 +686,7 @@
             "total_turns": 15
           },
           "error": null,
-          "verify_output": "Evaluating task 'tb-f-file-ops-r2' with model 'claude-haiku-4-5-20251001'...\n\n=== Evaluation Complete ===\nTask:       F: File Operations: create project structure (rep 2) (tb-f-file-ops-r2)\nModel:      openrouter:minimax/minimax-m2.7\nScore:      1.00\n  correctness:            1.00\n  completeness:           1.00\n  efficiency:             1.00\n  style_adherence:        1.00\n  downstream_usability:   1.00\n  coordination_overhead:  1.00\n  blocking_impact:        1.00\nNotes:      Flawless execution. "
+          "verify_output": "Evaluating task 'tb-f-file-ops-r2' with model 'claude-haiku-latest'...\n\n=== Evaluation Complete ===\nTask:       F: File Operations: create project structure (rep 2) (tb-f-file-ops-r2)\nModel:      openrouter:minimax/minimax-m2.7\nScore:      1.00\n  correctness:            1.00\n  completeness:           1.00\n  efficiency:             1.00\n  style_adherence:        1.00\n  downstream_usability:   1.00\n  coordination_overhead:  1.00\n  blocking_impact:        1.00\nNotes:      Flawless execution. "
         },
         {
           "trial_id": "f-text-processing-r0",
@@ -708,7 +708,7 @@
             "total_turns": 7
           },
           "error": null,
-          "verify_output": "Evaluating task 'tb-f-text-processing-r0' with model 'claude-haiku-4-5-20251001'...\n\n=== Evaluation Complete ===\nTask:       F: Text Processing: word frequency counter (rep 0) (tb-f-text-processing-r0)\nModel:      openrouter:minimax/minimax-m2.7\nScore:      0.91\n  correctness:            0.95\n  completeness:           0.90\n  efficiency:             0.85\n  style_adherence:        0.95\n  downstream_usability:   0.85\n  coordination_overhead:  0.95\n  blocking_impact:        0.90\nNotes:      The Care"
+          "verify_output": "Evaluating task 'tb-f-text-processing-r0' with model 'claude-haiku-latest'...\n\n=== Evaluation Complete ===\nTask:       F: Text Processing: word frequency counter (rep 0) (tb-f-text-processing-r0)\nModel:      openrouter:minimax/minimax-m2.7\nScore:      0.91\n  correctness:            0.95\n  completeness:           0.90\n  efficiency:             0.85\n  style_adherence:        0.95\n  downstream_usability:   0.85\n  coordination_overhead:  0.95\n  blocking_impact:        0.90\nNotes:      The Care"
         },
         {
           "trial_id": "f-text-processing-r1",
@@ -730,7 +730,7 @@
             "total_turns": 11
           },
           "error": null,
-          "verify_output": "Evaluating task 'tb-f-text-processing-r1' with model 'claude-haiku-4-5-20251001'...\n\n=== Evaluation Complete ===\nTask:       F: Text Processing: word frequency counter (rep 1) (tb-f-text-processing-r1)\nModel:      openrouter:minimax/minimax-m2.7\nScore:      0.84\n  correctness:            0.88\n  completeness:           0.86\n  efficiency:             0.82\n  style_adherence:        0.82\n  downstream_usability:   0.84\n  coordination_overhead:  0.84\n  blocking_impact:        0.84\nNotes:      Agent su"
+          "verify_output": "Evaluating task 'tb-f-text-processing-r1' with model 'claude-haiku-latest'...\n\n=== Evaluation Complete ===\nTask:       F: Text Processing: word frequency counter (rep 1) (tb-f-text-processing-r1)\nModel:      openrouter:minimax/minimax-m2.7\nScore:      0.84\n  correctness:            0.88\n  completeness:           0.86\n  efficiency:             0.82\n  style_adherence:        0.82\n  downstream_usability:   0.84\n  coordination_overhead:  0.84\n  blocking_impact:        0.84\nNotes:      Agent su"
         },
         {
           "trial_id": "f-text-processing-r2",
@@ -752,7 +752,7 @@
             "total_turns": 9
           },
           "error": null,
-          "verify_output": "Evaluating task 'tb-f-text-processing-r2' with model 'claude-haiku-4-5-20251001'...\n\n=== Evaluation Complete ===\nTask:       F: Text Processing: word frequency counter (rep 2) (tb-f-text-processing-r2)\nModel:      openrouter:minimax/minimax-m2.7\nScore:      0.84\n  correctness:            1.00\n  completeness:           0.95\n  efficiency:             0.95\n  style_adherence:        1.00\n  downstream_usability:   0.75\n  coordination_overhead:  1.00\n  blocking_impact:        1.00\nNotes:      The Care"
+          "verify_output": "Evaluating task 'tb-f-text-processing-r2' with model 'claude-haiku-latest'...\n\n=== Evaluation Complete ===\nTask:       F: Text Processing: word frequency counter (rep 2) (tb-f-text-processing-r2)\nModel:      openrouter:minimax/minimax-m2.7\nScore:      0.84\n  correctness:            1.00\n  completeness:           0.95\n  efficiency:             0.95\n  style_adherence:        1.00\n  downstream_usability:   0.75\n  coordination_overhead:  1.00\n  blocking_impact:        1.00\nNotes:      The Care"
         },
         {
           "trial_id": "f-debugging-r0",
@@ -774,7 +774,7 @@
             "total_turns": 15
           },
           "error": null,
-          "verify_output": "Evaluating task 'tb-f-debugging-r0' with model 'claude-haiku-4-5-20251001'...\n\n=== Evaluation Complete ===\nTask:       F: Debugging: fix merge sort bugs (rep 0) (tb-f-debugging-r0)\nModel:      openrouter:minimax/minimax-m2.7\nScore:      0.94\n  correctness:            0.95\n  completeness:           1.00\n  efficiency:             0.90\n  style_adherence:        0.95\n  downstream_usability:   0.90\n  coordination_overhead:  0.95\n  blocking_impact:        0.95\nNotes:      Exceptional execution. Agent "
+          "verify_output": "Evaluating task 'tb-f-debugging-r0' with model 'claude-haiku-latest'...\n\n=== Evaluation Complete ===\nTask:       F: Debugging: fix merge sort bugs (rep 0) (tb-f-debugging-r0)\nModel:      openrouter:minimax/minimax-m2.7\nScore:      0.94\n  correctness:            0.95\n  completeness:           1.00\n  efficiency:             0.90\n  style_adherence:        0.95\n  downstream_usability:   0.90\n  coordination_overhead:  0.95\n  blocking_impact:        0.95\nNotes:      Exceptional execution. Agent "
         },
         {
           "trial_id": "f-debugging-r1",
@@ -796,7 +796,7 @@
             "total_turns": 13
           },
           "error": null,
-          "verify_output": "Evaluating task 'tb-f-debugging-r1' with model 'claude-haiku-4-5-20251001'...\n\n=== Evaluation Complete ===\nTask:       F: Debugging: fix merge sort bugs (rep 1) (tb-f-debugging-r1)\nModel:      openrouter:minimax/minimax-m2.7\nScore:      0.92\n  correctness:            1.00\n  completeness:           1.00\n  efficiency:             0.90\n  style_adherence:        0.90\n  downstream_usability:   0.80\n  coordination_overhead:  0.95\n  blocking_impact:        1.00\nNotes:      Agent successfully identified"
+          "verify_output": "Evaluating task 'tb-f-debugging-r1' with model 'claude-haiku-latest'...\n\n=== Evaluation Complete ===\nTask:       F: Debugging: fix merge sort bugs (rep 1) (tb-f-debugging-r1)\nModel:      openrouter:minimax/minimax-m2.7\nScore:      0.92\n  correctness:            1.00\n  completeness:           1.00\n  efficiency:             0.90\n  style_adherence:        0.90\n  downstream_usability:   0.80\n  coordination_overhead:  0.95\n  blocking_impact:        1.00\nNotes:      Agent successfully identified"
         },
         {
           "trial_id": "f-debugging-r2",
@@ -818,7 +818,7 @@
             "total_turns": 12
           },
           "error": null,
-          "verify_output": "Evaluating task 'tb-f-debugging-r2' with model 'claude-haiku-4-5-20251001'...\n\n=== Evaluation Complete ===\nTask:       F: Debugging: fix merge sort bugs (rep 2) (tb-f-debugging-r2)\nModel:      openrouter:minimax/minimax-m2.7\nScore:      0.93\n  correctness:            1.00\n  completeness:           1.00\n  efficiency:             0.85\n  style_adherence:        0.95\n  downstream_usability:   0.80\n  coordination_overhead:  0.90\n  blocking_impact:        0.90\nNotes:      Exceptional work. Agent ident"
+          "verify_output": "Evaluating task 'tb-f-debugging-r2' with model 'claude-haiku-latest'...\n\n=== Evaluation Complete ===\nTask:       F: Debugging: fix merge sort bugs (rep 2) (tb-f-debugging-r2)\nModel:      openrouter:minimax/minimax-m2.7\nScore:      0.93\n  correctness:            1.00\n  completeness:           1.00\n  efficiency:             0.85\n  style_adherence:        0.95\n  downstream_usability:   0.80\n  coordination_overhead:  0.90\n  blocking_impact:        0.90\nNotes:      Exceptional work. Agent ident"
         },
         {
           "trial_id": "f-shell-scripting-r0",
@@ -840,7 +840,7 @@
             "total_turns": 12
           },
           "error": null,
-          "verify_output": "Evaluating task 'tb-f-shell-scripting-r0' with model 'claude-haiku-4-5-20251001'...\n\n=== Evaluation Complete ===\nTask:       F: Shell Scripting: log file analyzer (rep 0) (tb-f-shell-scripting-r0)\nModel:      openrouter:minimax/minimax-m2.7\nScore:      0.91\n  correctness:            0.95\n  completeness:           1.00\n  efficiency:             0.90\n  style_adherence:        0.75\n  downstream_usability:   0.85\n  coordination_overhead:  0.95\n  blocking_impact:        0.95\nNotes:      Excellent wor"
+          "verify_output": "Evaluating task 'tb-f-shell-scripting-r0' with model 'claude-haiku-latest'...\n\n=== Evaluation Complete ===\nTask:       F: Shell Scripting: log file analyzer (rep 0) (tb-f-shell-scripting-r0)\nModel:      openrouter:minimax/minimax-m2.7\nScore:      0.91\n  correctness:            0.95\n  completeness:           1.00\n  efficiency:             0.90\n  style_adherence:        0.75\n  downstream_usability:   0.85\n  coordination_overhead:  0.95\n  blocking_impact:        0.95\nNotes:      Excellent wor"
         },
         {
           "trial_id": "f-shell-scripting-r1",
@@ -862,7 +862,7 @@
             "total_turns": 9
           },
           "error": null,
-          "verify_output": "Evaluating task 'tb-f-shell-scripting-r1' with model 'claude-haiku-4-5-20251001'...\n\n=== Evaluation Complete ===\nTask:       F: Shell Scripting: log file analyzer (rep 1) (tb-f-shell-scripting-r1)\nModel:      openrouter:minimax/minimax-m2.7\nScore:      0.72\n  correctness:            0.65\n  completeness:           0.85\n  efficiency:             0.80\n  style_adherence:        0.75\n  downstream_usability:   0.80\n  coordination_overhead:  0.85\n  blocking_impact:        0.90\nNotes:      Agent complet"
+          "verify_output": "Evaluating task 'tb-f-shell-scripting-r1' with model 'claude-haiku-latest'...\n\n=== Evaluation Complete ===\nTask:       F: Shell Scripting: log file analyzer (rep 1) (tb-f-shell-scripting-r1)\nModel:      openrouter:minimax/minimax-m2.7\nScore:      0.72\n  correctness:            0.65\n  completeness:           0.85\n  efficiency:             0.80\n  style_adherence:        0.75\n  downstream_usability:   0.80\n  coordination_overhead:  0.85\n  blocking_impact:        0.90\nNotes:      Agent complet"
         },
         {
           "trial_id": "f-shell-scripting-r2",
@@ -884,7 +884,7 @@
             "total_turns": 16
           },
           "error": null,
-          "verify_output": "Evaluating task 'tb-f-shell-scripting-r2' with model 'claude-haiku-4-5-20251001'...\n\n=== Evaluation Complete ===\nTask:       F: Shell Scripting: log file analyzer (rep 2) (tb-f-shell-scripting-r2)\nModel:      openrouter:minimax/minimax-m2.7\nScore:      0.97\n  correctness:            1.00\n  completeness:           1.00\n  efficiency:             0.90\n  style_adherence:        1.00\n  downstream_usability:   0.95\n  coordination_overhead:  0.90\n  blocking_impact:        1.00\nNotes:      Excellent wor"
+          "verify_output": "Evaluating task 'tb-f-shell-scripting-r2' with model 'claude-haiku-latest'...\n\n=== Evaluation Complete ===\nTask:       F: Shell Scripting: log file analyzer (rep 2) (tb-f-shell-scripting-r2)\nModel:      openrouter:minimax/minimax-m2.7\nScore:      0.97\n  correctness:            1.00\n  completeness:           1.00\n  efficiency:             0.90\n  style_adherence:        1.00\n  downstream_usability:   0.95\n  coordination_overhead:  0.90\n  blocking_impact:        1.00\nNotes:      Excellent wor"
         },
         {
           "trial_id": "f-data-processing-r0",
@@ -906,7 +906,7 @@
             "total_turns": 13
           },
           "error": null,
-          "verify_output": "Evaluating task 'tb-f-data-processing-r0' with model 'claude-haiku-4-5-20251001'...\n\n=== Evaluation Complete ===\nTask:       F: Data Processing: JSON to CSV department summary (rep 0) (tb-f-data-processing-r0)\nModel:      openrouter:minimax/minimax-m2.7\nScore:      0.93\n  correctness:            0.95\n  completeness:           0.95\n  efficiency:             0.90\n  style_adherence:        0.85\n  downstream_usability:   0.90\n  coordination_overhead:  0.95\n  blocking_impact:        0.95\nNotes:      "
+          "verify_output": "Evaluating task 'tb-f-data-processing-r0' with model 'claude-haiku-latest'...\n\n=== Evaluation Complete ===\nTask:       F: Data Processing: JSON to CSV department summary (rep 0) (tb-f-data-processing-r0)\nModel:      openrouter:minimax/minimax-m2.7\nScore:      0.93\n  correctness:            0.95\n  completeness:           0.95\n  efficiency:             0.90\n  style_adherence:        0.85\n  downstream_usability:   0.90\n  coordination_overhead:  0.95\n  blocking_impact:        0.95\nNotes:      "
         },
         {
           "trial_id": "f-data-processing-r1",
@@ -928,7 +928,7 @@
             "total_turns": 10
           },
           "error": null,
-          "verify_output": "Evaluating task 'tb-f-data-processing-r1' with model 'claude-haiku-4-5-20251001'...\n\n=== Evaluation Complete ===\nTask:       F: Data Processing: JSON to CSV department summary (rep 1) (tb-f-data-processing-r1)\nModel:      openrouter:minimax/minimax-m2.7\nScore:      0.82\n  correctness:            0.80\n  completeness:           0.85\n  efficiency:             0.85\n  style_adherence:        0.85\n  downstream_usability:   0.75\n  coordination_overhead:  0.85\n  blocking_impact:        0.90\nNotes:      "
+          "verify_output": "Evaluating task 'tb-f-data-processing-r1' with model 'claude-haiku-latest'...\n\n=== Evaluation Complete ===\nTask:       F: Data Processing: JSON to CSV department summary (rep 1) (tb-f-data-processing-r1)\nModel:      openrouter:minimax/minimax-m2.7\nScore:      0.82\n  correctness:            0.80\n  completeness:           0.85\n  efficiency:             0.85\n  style_adherence:        0.85\n  downstream_usability:   0.75\n  coordination_overhead:  0.85\n  blocking_impact:        0.90\nNotes:      "
         },
         {
           "trial_id": "f-data-processing-r2",
@@ -950,7 +950,7 @@
             "total_turns": 13
           },
           "error": null,
-          "verify_output": "Evaluating task 'tb-f-data-processing-r2' with model 'claude-haiku-4-5-20251001'...\n\n=== Evaluation Complete ===\nTask:       F: Data Processing: JSON to CSV department summary (rep 2) (tb-f-data-processing-r2)\nModel:      openrouter:minimax/minimax-m2.7\nScore:      0.87\n  correctness:            0.95\n  completeness:           0.95\n  efficiency:             0.85\n  style_adherence:        0.80\n  downstream_usability:   0.80\n  coordination_overhead:  0.85\n  blocking_impact:        0.85\nNotes:      "
+          "verify_output": "Evaluating task 'tb-f-data-processing-r2' with model 'claude-haiku-latest'...\n\n=== Evaluation Complete ===\nTask:       F: Data Processing: JSON to CSV department summary (rep 2) (tb-f-data-processing-r2)\nModel:      openrouter:minimax/minimax-m2.7\nScore:      0.87\n  correctness:            0.95\n  completeness:           0.95\n  efficiency:             0.85\n  style_adherence:        0.80\n  downstream_usability:   0.80\n  coordination_overhead:  0.85\n  blocking_impact:        0.85\nNotes:      "
         },
         {
           "trial_id": "f-algorithm-r0",
@@ -972,7 +972,7 @@
             "total_turns": 0
           },
           "error": null,
-          "verify_output": "Evaluating task 'tb-f-algorithm-r0' with model 'claude-haiku-4-5-20251001'...\n\n=== Evaluation Complete ===\nTask:       F: Algorithm: key-value store with transactions (rep 0) (tb-f-algorithm-r0)\nModel:      openrouter:minimax/minimax-m2.7\nScore:      0.03\n  correctness:            0.00\n  completeness:           0.00\n  efficiency:             0.10\n  style_adherence:        0.00\n  downstream_usability:   0.00\n  coordination_overhead:  0.10\n  blocking_impact:        0.20\nNotes:      Agent failure w"
+          "verify_output": "Evaluating task 'tb-f-algorithm-r0' with model 'claude-haiku-latest'...\n\n=== Evaluation Complete ===\nTask:       F: Algorithm: key-value store with transactions (rep 0) (tb-f-algorithm-r0)\nModel:      openrouter:minimax/minimax-m2.7\nScore:      0.03\n  correctness:            0.00\n  completeness:           0.00\n  efficiency:             0.10\n  style_adherence:        0.00\n  downstream_usability:   0.00\n  coordination_overhead:  0.10\n  blocking_impact:        0.20\nNotes:      Agent failure w"
         },
         {
           "trial_id": "f-algorithm-r1",
@@ -994,7 +994,7 @@
             "total_turns": 10
           },
           "error": null,
-          "verify_output": "Evaluating task 'tb-f-algorithm-r1' with model 'claude-haiku-4-5-20251001'...\n\n=== Evaluation Complete ===\nTask:       F: Algorithm: key-value store with transactions (rep 1) (tb-f-algorithm-r1)\nModel:      openrouter:minimax/minimax-m2.7\nScore:      0.96\n  correctness:            1.00\n  completeness:           1.00\n  efficiency:             0.95\n  style_adherence:        0.95\n  downstream_usability:   0.90\n  coordination_overhead:  0.95\n  blocking_impact:        0.95\nNotes:      Exceptional exe"
+          "verify_output": "Evaluating task 'tb-f-algorithm-r1' with model 'claude-haiku-latest'...\n\n=== Evaluation Complete ===\nTask:       F: Algorithm: key-value store with transactions (rep 1) (tb-f-algorithm-r1)\nModel:      openrouter:minimax/minimax-m2.7\nScore:      0.96\n  correctness:            1.00\n  completeness:           1.00\n  efficiency:             0.95\n  style_adherence:        0.95\n  downstream_usability:   0.90\n  coordination_overhead:  0.95\n  blocking_impact:        0.95\nNotes:      Exceptional exe"
         },
         {
           "trial_id": "f-algorithm-r2",
@@ -1016,7 +1016,7 @@
             "total_turns": 11
           },
           "error": null,
-          "verify_output": "Evaluating task 'tb-f-algorithm-r2' with model 'claude-haiku-4-5-20251001'...\n\n=== Evaluation Complete ===\nTask:       F: Algorithm: key-value store with transactions (rep 2) (tb-f-algorithm-r2)\nModel:      openrouter:minimax/minimax-m2.7\nScore:      0.90\n  correctness:            0.95\n  completeness:           0.95\n  efficiency:             0.85\n  style_adherence:        0.90\n  downstream_usability:   0.80\n  coordination_overhead:  0.85\n  blocking_impact:        0.90\nNotes:      Excellent execu"
+          "verify_output": "Evaluating task 'tb-f-algorithm-r2' with model 'claude-haiku-latest'...\n\n=== Evaluation Complete ===\nTask:       F: Algorithm: key-value store with transactions (rep 2) (tb-f-algorithm-r2)\nModel:      openrouter:minimax/minimax-m2.7\nScore:      0.90\n  correctness:            0.95\n  completeness:           0.95\n  efficiency:             0.85\n  style_adherence:        0.90\n  downstream_usability:   0.80\n  coordination_overhead:  0.85\n  blocking_impact:        0.90\nNotes:      Excellent execu"
         },
         {
           "trial_id": "f-ml-r0",
@@ -1038,7 +1038,7 @@
             "total_turns": 10
           },
           "error": null,
-          "verify_output": "Evaluating task 'tb-f-ml-r0' with model 'claude-haiku-4-5-20251001'...\n\n=== Evaluation Complete ===\nTask:       F: ML: k-means clustering from scratch (rep 0) (tb-f-ml-r0)\nModel:      openrouter:minimax/minimax-m2.7\nScore:      0.89\n  correctness:            0.85\n  completeness:           0.95\n  efficiency:             0.80\n  style_adherence:        0.90\n  downstream_usability:   0.90\n  coordination_overhead:  0.95\n  blocking_impact:        0.90\nNotes:      Solid implementation that meets all ta"
+          "verify_output": "Evaluating task 'tb-f-ml-r0' with model 'claude-haiku-latest'...\n\n=== Evaluation Complete ===\nTask:       F: ML: k-means clustering from scratch (rep 0) (tb-f-ml-r0)\nModel:      openrouter:minimax/minimax-m2.7\nScore:      0.89\n  correctness:            0.85\n  completeness:           0.95\n  efficiency:             0.80\n  style_adherence:        0.90\n  downstream_usability:   0.90\n  coordination_overhead:  0.95\n  blocking_impact:        0.90\nNotes:      Solid implementation that meets all ta"
         },
         {
           "trial_id": "f-ml-r1",
@@ -1060,7 +1060,7 @@
             "total_turns": 9
           },
           "error": null,
-          "verify_output": "Evaluating task 'tb-f-ml-r1' with model 'claude-haiku-4-5-20251001'...\n\n=== Evaluation Complete ===\nTask:       F: ML: k-means clustering from scratch (rep 1) (tb-f-ml-r1)\nModel:      openrouter:minimax/minimax-m2.7\nScore:      0.84\n  correctness:            0.88\n  completeness:           0.92\n  efficiency:             0.75\n  style_adherence:        0.85\n  downstream_usability:   0.80\n  coordination_overhead:  0.90\n  blocking_impact:        0.95\nNotes:      Strong execution of a k-means implemen"
+          "verify_output": "Evaluating task 'tb-f-ml-r1' with model 'claude-haiku-latest'...\n\n=== Evaluation Complete ===\nTask:       F: ML: k-means clustering from scratch (rep 1) (tb-f-ml-r1)\nModel:      openrouter:minimax/minimax-m2.7\nScore:      0.84\n  correctness:            0.88\n  completeness:           0.92\n  efficiency:             0.75\n  style_adherence:        0.85\n  downstream_usability:   0.80\n  coordination_overhead:  0.90\n  blocking_impact:        0.95\nNotes:      Strong execution of a k-means implemen"
         },
         {
           "trial_id": "f-ml-r2",
@@ -1082,7 +1082,7 @@
             "total_turns": 11
           },
           "error": null,
-          "verify_output": "Evaluating task 'tb-f-ml-r2' with model 'claude-haiku-4-5-20251001'...\n\n=== Evaluation Complete ===\nTask:       F: ML: k-means clustering from scratch (rep 2) (tb-f-ml-r2)\nModel:      openrouter:minimax/minimax-m2.7\nScore:      0.93\n  correctness:            1.00\n  completeness:           1.00\n  efficiency:             0.95\n  style_adherence:        1.00\n  downstream_usability:   0.80\n  coordination_overhead:  0.90\n  blocking_impact:        0.90\nNotes:      Excellent technical execution. Agent c"
+          "verify_output": "Evaluating task 'tb-f-ml-r2' with model 'claude-haiku-latest'...\n\n=== Evaluation Complete ===\nTask:       F: ML: k-means clustering from scratch (rep 2) (tb-f-ml-r2)\nModel:      openrouter:minimax/minimax-m2.7\nScore:      0.93\n  correctness:            1.00\n  completeness:           1.00\n  efficiency:             0.95\n  style_adherence:        1.00\n  downstream_usability:   0.80\n  coordination_overhead:  0.90\n  blocking_impact:        0.90\nNotes:      Excellent technical execution. Agent c"
         }
       ]
     }

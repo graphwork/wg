@@ -97,9 +97,9 @@ Profile {
 ```toml
 profile = "anthropic"
 # Resolves to:
-# tiers.fast     = "claude:haiku"     → claude-haiku-4-5-20251001
-# tiers.standard = "claude:sonnet"    → claude-sonnet-4-20250514
-# tiers.premium  = "claude:opus"      → claude-opus-4-6
+# tiers.fast     = "claude:haiku"     → claude-haiku-latest
+# tiers.standard = "claude:sonnet"    → claude-sonnet-latest
+# tiers.premium  = "claude:opus"      → claude-opus-latest
 ```
 
 #### `openrouter` (dynamic)
@@ -307,7 +307,7 @@ fn resolve_profile_tiers(&self) -> TierConfig {
                     // Fallback: if registry unavailable, use Anthropic defaults
                     // via OpenRouter (same models, different provider)
                     TierConfig {
-                        fast: Some("openrouter:anthropic/claude-haiku-4-5-20251001".into()),
+                        fast: Some("openrouter:anthropic/claude-haiku-latest".into()),
                         standard: Some("openrouter:anthropic/claude-sonnet-4".into()),
                         premium: Some("openrouter:anthropic/claude-opus-4".into()),
                     }

@@ -260,7 +260,7 @@ type = "native"
 command = "wg"
 args = ["native-exec", "--max-turns", "50"]
 working_dir = "{{working_dir}}"
-model = "claude-haiku-3-5-20241022"
+model = "claude-haiku-latest"
 "#;
     fs::write(executors_dir.join("native.toml"), toml_content).unwrap();
 
@@ -269,7 +269,7 @@ model = "claude-haiku-3-5-20241022"
     assert_eq!(config.executor.executor_type, "native");
     assert_eq!(
         config.executor.model.as_deref(),
-        Some("claude-haiku-3-5-20241022")
+        Some("claude-haiku-latest")
     );
 }
 
@@ -323,7 +323,7 @@ mod llm_tests {
         let registry = ToolRegistry::default_all(dir, &working_dir);
 
         // Create the API client
-        let client = AnthropicClient::from_env("claude-haiku-3-5-20241022")
+        let client = AnthropicClient::from_env("claude-haiku-latest")
             .expect("ANTHROPIC_API_KEY must be set for LLM tests");
 
         let system_prompt = format!(

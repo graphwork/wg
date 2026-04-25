@@ -107,7 +107,7 @@ Resolution cascade (5 steps):
    - Resolves via `resolve_tier()` → `effective_tiers()` → registry lookup
 
 3. **Role default_tier()** — Each role's hardcoded default tier
-   - E.g., Triage → Fast → `tiers.fast` → "claude:haiku" → registry → `claude-haiku-4-5-20251001`
+   - E.g., Triage → Fast → `tiers.fast` → "claude:haiku" → registry → `claude-haiku-latest`
 
 4. **Default model** — `models.default.model`
    - Same parse/lookup logic as step 1

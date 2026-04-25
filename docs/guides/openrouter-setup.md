@@ -66,7 +66,7 @@ Endpoints live under `[[llm_endpoints.endpoints]]` in `.workgraph/config.toml`:
 name = "openrouter"
 provider = "openrouter"
 url = "https://openrouter.ai/api/v1"
-model = "anthropic/claude-sonnet-4-20250514"
+model = "anthropic/claude-sonnet-latest"
 api_key_file = "~/.config/openrouter/api_key"
 is_default = false
 ```
@@ -122,7 +122,7 @@ These are also exposed to spawned agents so they inherit the provider context.
 OpenRouter uses the `provider/model` naming convention:
 
 ```
-anthropic/claude-sonnet-4-20250514
+anthropic/claude-sonnet-latest
 google/gemini-2.5-pro
 deepseek/deepseek-chat-v3
 meta-llama/llama-4-maverick
@@ -152,7 +152,7 @@ Agents can declare a preferred model and provider:
 wg agent create "OpenRouter Coder" \
   --role <role-hash> \
   --tradeoff <tradeoff-hash> \
-  --model anthropic/claude-sonnet-4-20250514 \
+  --model anthropic/claude-sonnet-latest \
   --provider openrouter \
   --capabilities coding,testing
 ```
@@ -162,7 +162,7 @@ View an agent's model binding:
 ```bash
 wg agent show <agent-hash>
 # Output includes:
-#   Model: anthropic/claude-sonnet-4-20250514 (preferred)
+#   Model: anthropic/claude-sonnet-latest (preferred)
 #   Provider: openrouter (preferred)
 ```
 
@@ -199,7 +199,7 @@ wg assign research-task <agent-hash>
 To override the agent's preference for a specific task, set the model on the task itself:
 
 ```bash
-wg edit research-task --model anthropic/claude-sonnet-4-20250514
+wg edit research-task --model anthropic/claude-sonnet-latest
 ```
 
 Task-level model always wins.
@@ -266,7 +266,7 @@ Models follow the `provider/model-name` pattern:
 
 | Provider | Example model ID |
 |----------|-----------------|
-| Anthropic | `anthropic/claude-sonnet-4-20250514` |
+| Anthropic | `anthropic/claude-sonnet-latest` |
 | Google | `google/gemini-2.5-pro` |
 | DeepSeek | `deepseek/deepseek-chat-v3` |
 | Meta | `meta-llama/llama-4-maverick` |

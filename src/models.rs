@@ -46,7 +46,7 @@ impl std::str::FromStr for ModelTier {
 /// A single model in the registry
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelEntry {
-    /// Model ID in provider/model-name format (e.g. "anthropic/claude-opus-4-6")
+    /// Model ID in provider/model-name format (e.g. "anthropic/claude-opus-latest")
     pub id: String,
 
     /// Provider (e.g. "openrouter", "anthropic", "openai")
