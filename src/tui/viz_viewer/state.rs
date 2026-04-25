@@ -11463,28 +11463,17 @@ impl VizApp {
         let (bin, args_owned, cwd_opt): (String, Vec<String>, Option<std::path::PathBuf>) =
             match executor.as_str() {
                 "native" => {
-                    // Interactive `wg nex -m X -e Y` REPL — same as
-                    // the CLI command that works for users. Renders
-                    // banner + prompt + responses in the PTY pane
-                    // because interactive mode writes to stdout
-                    // (chat mode writes to outbox, leaving the pane
-                    // silent except for the banner).
-                    //
-                    // Arg resolution: explicit model+endpoint from
-                    // config. If the coordinator has an override in
-                    // `[coordinator]`, use it; else `[agent].model`;
-                    // else let nex resolve from config itself (empty
-                    // -m won't be appended). Endpoint comes from the
-                    // default `[[llm_endpoints.endpoints]]` entry.
-                    // `--role coordinator` keeps the wg mutation tools
-                    // (wg_add, wg_done, ...) — nex.rs:77 otherwise strips
-                    // them on interactive sessions. Interactive mode (no
-                    // `--chat`) renders the REPL to stdout so the PTY
-                    // pane shows banner + prompt + responses.
+                    // Interactive `wg nex --chat <ref>` REPL bound to
+                    // this coordinator's session. The `--chat` flag
+                    // binds the nex session to the coordinator's chat
+                    // dir so the journal persists and the session
+                    // auto-resumes across TUI exit/re-entry.
                     let mut args = vec![
                         "nex".to_string(),
                         "--role".to_string(),
                         "coordinator".to_string(),
+                        "--chat".to_string(),
+                        chat_ref.clone(),
                     ];
                     let model = config
                         .coordinator
@@ -11558,18 +11547,25 @@ impl VizApp {
                     );
                     let agents_md = chat_dir.join("AGENTS.md");
                     let _ = std::fs::write(&agents_md, sys_prompt);
-                    // Resume: read .codex-session-id persisted by the
-                    // codex handler. If present, `codex resume <id>`
-                    // reconnects to the server-side thread. On first
-                    // launch (no file), start fresh.
+                    // Resume: three strategies, checked in order:
+                    //   1. `.codex-session-id` persisted by the daemon's
+                    //      codex_handler → `codex resume <id>`
+                    //   2. `.codex-pty-launched` marker from a prior TUI
+                    //      PTY session → `codex resume --last` (codex
+                    //      filters by CWD, so this picks up the right one)
+                    //   3. Neither → fresh session, write the marker
                     let session_id_path = chat_dir.join(".codex-session-id");
+                    let pty_marker = chat_dir.join(".codex-pty-launched");
                     let prior_session_id = std::fs::read_to_string(&session_id_path)
                         .ok()
                         .map(|s| s.trim().to_string())
                         .filter(|s| !s.is_empty());
                     let args = if let Some(sid) = prior_session_id {
                         vec!["resume".to_string(), sid]
+                    } else if pty_marker.exists() {
+                        vec!["resume".to_string(), "--last".to_string()]
                     } else {
+                        let _ = std::fs::write(&pty_marker, "");
                         Vec::new()
                     };
                     (
@@ -13990,7 +13986,9 @@ fn claude_session_exists(cwd: &std::path::Path, session_uuid: &uuid::Uuid) -> bo
     let Some(cwd_str) = cwd.to_str() else {
         return false;
     };
-    let slug = cwd_str.replace('/', "-");
+    // Claude CLI replaces both '/' and '.' with '-' when computing the
+    // project slug from the CWD path.
+    let slug = cwd_str.replace('/', "-").replace('.', "-");
     let session_file = home
         .join(".claude")
         .join("projects")

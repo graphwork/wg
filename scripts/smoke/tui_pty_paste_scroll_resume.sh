@@ -31,8 +31,10 @@ cd "$TMPHOME"
 
 # Initialize a native-executor workgraph (cheapest, no auth).
 wg init --no-agency -m local:m -e http://127.0.0.1:1 >/dev/null 2>&1
-python3 - <<'PY'
-import json, pathlib
+USER_NAME=$(whoami 2>/dev/null || echo "smoke")
+python3 - "$USER_NAME" <<'PY'
+import json, pathlib, sys
+user = sys.argv[1]
 wg = pathlib.Path.cwd() / ".wg"
 (wg / "chat").mkdir(parents=True, exist_ok=True)
 uuid = "019db700-0000-7000-8000-0000000000ff"
@@ -42,12 +44,13 @@ uuid = "019db700-0000-7000-8000-0000000000ff"
     "sessions": {uuid: {
         "kind": "coordinator",
         "created": "2026-04-22T21:00:00Z",
-        "aliases": ["coordinator-1", "1"],
+        "aliases": ["coordinator-0", "0"],
         "label": "test",
     }}
 }))
 PY
-wg add ".coordinator-1" --id .coordinator-1 --tag coordinator-loop >/dev/null 2>&1
+wg add ".coordinator-0" --id .coordinator-0 --tag coordinator-loop \
+    -d "Coordinator: $USER_NAME" >/dev/null 2>&1
 
 tmux kill-session -t "$SESSION" 2>/dev/null
 tmux new-session -d -s "$SESSION" -x 200 -y 50 \
@@ -135,8 +138,64 @@ PY
 if [[ $? -ne 0 ]]; then FAIL=1; fi
 
 echo ""
+echo "=== Test 4: Resume — native executor session persistence ==="
+# Kill the TUI, pre-seed a conversation journal with a known tag,
+# then relaunch. The native executor should pass --chat <ref> and
+# nex should auto-resume. We check the tmux pane content for the
+# "resuming session" banner that nex prints on resume.
+tmux kill-session -t "$SESSION" 2>/dev/null
+sleep 1
+
+# Resolve the coordinator session's chat dir (same path the TUI uses).
+COORD_REF="coordinator-0"
+CHAT_DIR=$(cd "$TMPHOME" && python3 -c "
+import json, pathlib
+wg = pathlib.Path('.wg')
+sessions = json.loads((wg / 'chat' / 'sessions.json').read_text())
+for uuid, info in sessions['sessions'].items():
+    if '$COORD_REF' in info.get('aliases', []):
+        print(wg / 'chat' / uuid)
+        break
+")
+if [[ -z "$CHAT_DIR" ]]; then
+    echo "  SKIP: could not resolve chat dir for $COORD_REF"
+else
+    # Seed a conversation journal so nex detects a prior session.
+    mkdir -p "$CHAT_DIR"
+    RESUME_TAG="RESUME-TAG-$$-$(date +%s)"
+    cat > "$CHAT_DIR/conversation.jsonl" <<JSONL
+{"role":"user","content":"$RESUME_TAG","turn":0,"timestamp":"2026-04-25T00:00:00Z"}
+{"role":"assistant","content":"Acknowledged: $RESUME_TAG","turn":0,"timestamp":"2026-04-25T00:00:01Z"}
+JSONL
+
+    # Relaunch TUI — native executor should pass --chat coordinator-0
+    # and nex should see the journal and print "resuming session".
+    tmux new-session -d -s "$SESSION" -x 200 -y 50 \
+        "cd '$TMPHOME' && WG_PTY_DUMP='$DUMP_PREFIX' wg tui 2>$TMPHOME/tui2.err"
+
+    # Wait for the resume banner to appear in tmux pane content.
+    RESUME_FOUND=0
+    for i in $(seq 1 "$POLL_DEADLINE"); do
+        sleep 1
+        PANE_TEXT=$(tmux capture-pane -t "$SESSION" -p 2>/dev/null)
+        if echo "$PANE_TEXT" | grep -q "resuming session"; then
+            RESUME_FOUND=1
+            break
+        fi
+    done
+    if [[ $RESUME_FOUND -eq 1 ]]; then
+        echo "  PASS: native executor resumed session (saw 'resuming session')"
+    else
+        echo "  FAIL: native executor did not resume — 'resuming session' not found in pane"
+        tmux capture-pane -t "$SESSION" -p 2>/dev/null | head -20
+        head -10 "$TMPHOME/tui2.err" 2>/dev/null
+        FAIL=1
+    fi
+fi
+
+echo ""
 if [[ $FAIL -ne 0 ]]; then
     echo "FAIL: one or more tests failed"
     exit 1
 fi
-echo "PASS: all PTY paste/scroll tests passed"
+echo "PASS: all PTY paste/scroll/resume tests passed"
