@@ -83,8 +83,12 @@ pub struct PtyPane {
     /// `<prefix>.<cmd>.<pid>.in.bin`. Smoke tests read it to assert
     /// key-forwarding byte sequences.
     input_tee: Option<Arc<Mutex<std::fs::File>>>,
-    /// Current scrollback offset (0 = live, >0 = scrolled back N lines).
-    scroll_offset: usize,
+    /// Whether auto-follow (live/tail) mode is active. When true,
+    /// the parser's scrollback_offset stays at 0 and new output is
+    /// visible immediately. When false, the parser's own
+    /// scrollback_offset auto-increments on new content, anchoring
+    /// the viewport to the content the user was reading.
+    auto_follow: bool,
     #[allow(dead_code)]
     pub growth_rate_warned: Arc<AtomicBool>,
     #[allow(dead_code)]
@@ -272,7 +276,7 @@ impl PtyPane {
             rows,
             cols,
             input_tee,
-            scroll_offset: 0,
+            auto_follow: true,
             growth_rate_warned,
             bytes_processed,
         })
@@ -291,17 +295,17 @@ impl PtyPane {
     /// from unfocused-pty-idle; the user presses keys and wonders
     /// why nothing happens.
     pub fn render_with_focus(&self, frame: &mut Frame, area: Rect, focused: bool) {
-        let mut parser = match self.parser.lock() {
+        let parser = match self.parser.lock() {
             Ok(g) => g,
             Err(poisoned) => poisoned.into_inner(),
         };
-        parser.screen_mut().set_scrollback(self.scroll_offset);
+        let scroll_offset = parser.screen().scrollback();
         let screen = parser.screen();
         let widget = tui_term::widget::PseudoTerminal::new(screen);
         frame.render_widget(widget, area);
 
-        if self.scroll_offset > 0 {
-            let indicator = format!(" [{} lines back] ", self.scroll_offset);
+        if scroll_offset > 0 {
+            let indicator = format!(" ↓{} ", scroll_offset);
             let x = area.x + area.width.saturating_sub(indicator.len() as u16 + 1);
             let y = area.y;
             if x >= area.x && y < area.y + area.height {
@@ -338,35 +342,45 @@ impl PtyPane {
 
     /// Scroll the view up (back through history) by `n` lines.
     pub fn scroll_up(&mut self, n: usize) {
-        self.scroll_offset = self.scroll_offset.saturating_add(n);
-        let max = self.max_scrollback();
-        if self.scroll_offset > max {
-            self.scroll_offset = max;
+        self.auto_follow = false;
+        if let Ok(mut p) = self.parser.lock() {
+            let current = p.screen().scrollback();
+            p.screen_mut().set_scrollback(current.saturating_add(n));
         }
     }
 
     /// Scroll the view down (toward live output) by `n` lines.
     pub fn scroll_down(&mut self, n: usize) {
-        self.scroll_offset = self.scroll_offset.saturating_sub(n);
+        if let Ok(mut p) = self.parser.lock() {
+            let current = p.screen().scrollback();
+            let new_offset = current.saturating_sub(n);
+            p.screen_mut().set_scrollback(new_offset);
+            if new_offset <= 1 {
+                self.auto_follow = true;
+                p.screen_mut().set_scrollback(0);
+            }
+        }
     }
 
     /// Jump to the top of scrollback.
     pub fn scroll_to_top(&mut self) {
-        self.scroll_offset = self.max_scrollback();
+        self.auto_follow = false;
+        if let Ok(mut p) = self.parser.lock() {
+            p.screen_mut().set_scrollback(usize::MAX);
+        }
     }
 
     /// Jump to the bottom (live output).
     pub fn scroll_to_bottom(&mut self) {
-        self.scroll_offset = 0;
+        self.auto_follow = true;
+        if let Ok(mut p) = self.parser.lock() {
+            p.screen_mut().set_scrollback(0);
+        }
     }
 
     #[allow(dead_code)]
     pub fn is_scrolled_back(&self) -> bool {
-        self.scroll_offset > 0
-    }
-
-    fn max_scrollback(&self) -> usize {
-        DEFAULT_SCROLLBACK_LINES
+        !self.auto_follow
     }
 
     #[allow(dead_code)]
@@ -379,13 +393,16 @@ impl PtyPane {
     /// writes silently. Caller should use `is_alive()` to detect exit.
     pub fn send_key(&mut self, key: KeyEvent) -> Result<()> {
         let bytes = key_event_to_bytes(&key);
-        if !bytes.is_empty()
-            && let Ok(mut w) = self.writer.lock()
-        {
-            let _ = w.write_all(&bytes);
-            let _ = w.flush();
-            self.tee_input(&bytes);
-            self.scroll_offset = 0;
+        if !bytes.is_empty() {
+            if let Ok(mut w) = self.writer.lock() {
+                let _ = w.write_all(&bytes);
+                let _ = w.flush();
+                self.tee_input(&bytes);
+            }
+            self.auto_follow = true;
+            if let Ok(mut p) = self.parser.lock() {
+                p.screen_mut().set_scrollback(0);
+            }
         }
         Ok(())
     }
@@ -788,32 +805,138 @@ mod tests {
             80,
             DEFAULT_SCROLLBACK_LINES,
         )));
-        let growth_rate_warned = Arc::new(AtomicBool::new(false));
-        let bytes_processed = Arc::new(AtomicU64::new(0));
-        let mut pane_scroll: usize = 0;
+
+        // Feed some content so there's actual scrollback to navigate
+        {
+            let mut p = parser.lock().unwrap();
+            for i in 0..50 {
+                let line = format!("line {}\r\n", i);
+                p.process(line.as_bytes());
+            }
+        }
 
         // scroll_up from 0
-        pane_scroll = pane_scroll.saturating_add(10);
-        let max = DEFAULT_SCROLLBACK_LINES;
-        if pane_scroll > max {
-            pane_scroll = max;
+        {
+            let mut p = parser.lock().unwrap();
+            let current = p.screen().scrollback();
+            assert_eq!(current, 0);
+            p.screen_mut().set_scrollback(current.saturating_add(10));
+            assert_eq!(p.screen().scrollback(), 10);
         }
-        assert_eq!(pane_scroll, 10);
 
         // scroll_down back to 0
-        pane_scroll = pane_scroll.saturating_sub(10);
-        assert_eq!(pane_scroll, 0);
+        {
+            let mut p = parser.lock().unwrap();
+            let current = p.screen().scrollback();
+            p.screen_mut().set_scrollback(current.saturating_sub(10));
+            assert_eq!(p.screen().scrollback(), 0);
+        }
 
         // scroll_down past 0 stays 0
-        pane_scroll = pane_scroll.saturating_sub(5);
-        assert_eq!(pane_scroll, 0);
-
-        // scroll_up past max clamps to max
-        pane_scroll = pane_scroll.saturating_add(DEFAULT_SCROLLBACK_LINES + 100);
-        if pane_scroll > max {
-            pane_scroll = max;
+        {
+            let mut p = parser.lock().unwrap();
+            let current = p.screen().scrollback();
+            p.screen_mut().set_scrollback(current.saturating_sub(5));
+            assert_eq!(p.screen().scrollback(), 0);
         }
-        assert_eq!(pane_scroll, DEFAULT_SCROLLBACK_LINES);
+
+        // scroll_up past max clamps to actual scrollback buffer size
+        {
+            let mut p = parser.lock().unwrap();
+            p.screen_mut().set_scrollback(usize::MAX);
+            let max = p.screen().scrollback();
+            assert!(max > 0);
+            assert!(max <= DEFAULT_SCROLLBACK_LINES);
+        }
+    }
+
+    #[test]
+    fn anchor_stable_when_new_content_arrives() {
+        let parser = Arc::new(Mutex::new(vt100::Parser::new(
+            5,
+            80,
+            DEFAULT_SCROLLBACK_LINES,
+        )));
+
+        // Feed initial content — enough to fill scrollback.
+        {
+            let mut p = parser.lock().unwrap();
+            for i in 0..20 {
+                let line = format!("line {}\r\n", i);
+                p.process(line.as_bytes());
+            }
+        }
+
+        // User scrolls up 5 lines (anchored mode).
+        {
+            let mut p = parser.lock().unwrap();
+            p.screen_mut().set_scrollback(5);
+            assert_eq!(p.screen().scrollback(), 5);
+        }
+
+        // New content arrives at the bottom — 3 more lines.
+        // The vt100 parser's scroll_up auto-increments scrollback_offset.
+        {
+            let mut p = parser.lock().unwrap();
+            for i in 20..23 {
+                let line = format!("line {}\r\n", i);
+                p.process(line.as_bytes());
+            }
+        }
+
+        // The anchor should have moved: 5 + 3 = 8 lines from bottom.
+        // (vt100's grid.scroll_up increments scrollback_offset when > 0)
+        {
+            let p = parser.lock().unwrap();
+            assert_eq!(
+                p.screen().scrollback(),
+                8,
+                "anchor should grow from 5 to 8 as 3 new lines arrive"
+            );
+        }
+    }
+
+    #[test]
+    fn live_mode_stays_at_bottom() {
+        let parser = Arc::new(Mutex::new(vt100::Parser::new(
+            5,
+            80,
+            DEFAULT_SCROLLBACK_LINES,
+        )));
+
+        // Feed initial content.
+        {
+            let mut p = parser.lock().unwrap();
+            for i in 0..20 {
+                let line = format!("line {}\r\n", i);
+                p.process(line.as_bytes());
+            }
+        }
+
+        // In live mode, scrollback_offset = 0.
+        {
+            let p = parser.lock().unwrap();
+            assert_eq!(p.screen().scrollback(), 0);
+        }
+
+        // New content arrives.
+        {
+            let mut p = parser.lock().unwrap();
+            for i in 20..30 {
+                let line = format!("line {}\r\n", i);
+                p.process(line.as_bytes());
+            }
+        }
+
+        // Still at bottom — offset stays 0.
+        {
+            let p = parser.lock().unwrap();
+            assert_eq!(
+                p.screen().scrollback(),
+                0,
+                "live mode should stay at bottom"
+            );
+        }
     }
 
     #[test]
@@ -858,7 +981,7 @@ mod tests {
     #[test]
     fn growth_rate_guard_fires() {
         let warned = Arc::new(AtomicBool::new(false));
-        let bytes = Arc::new(AtomicU64::new(0));
+        let _bytes = Arc::new(AtomicU64::new(0));
 
         // Simulate the rate check logic from the reader thread.
         let window_bytes: u64 = GROWTH_RATE_WARN_BYTES_PER_SEC * 3;
@@ -902,20 +1025,53 @@ mod tests {
             80,
             DEFAULT_SCROLLBACK_LINES,
         )));
-        let mut offset: usize = 50;
+
+        // Feed content and scroll up
+        {
+            let mut p = parser.lock().unwrap();
+            for i in 0..50 {
+                p.process(format!("line {}\r\n", i).as_bytes());
+            }
+            p.screen_mut().set_scrollback(20);
+            assert_eq!(p.screen().scrollback(), 20);
+        }
+
         // Simulate what send_key does: reset to 0
-        offset = 0;
-        assert_eq!(offset, 0);
+        {
+            let mut p = parser.lock().unwrap();
+            p.screen_mut().set_scrollback(0);
+            assert_eq!(p.screen().scrollback(), 0);
+        }
     }
 
     #[test]
     fn scroll_to_top_and_bottom() {
-        let mut offset: usize = 0;
-        // scroll_to_top
-        offset = DEFAULT_SCROLLBACK_LINES;
-        assert_eq!(offset, DEFAULT_SCROLLBACK_LINES);
+        let parser = Arc::new(Mutex::new(vt100::Parser::new(
+            5,
+            80,
+            DEFAULT_SCROLLBACK_LINES,
+        )));
+
+        {
+            let mut p = parser.lock().unwrap();
+            for i in 0..50 {
+                p.process(format!("line {}\r\n", i).as_bytes());
+            }
+        }
+
+        // scroll_to_top (set to max, clamped to actual buffer)
+        {
+            let mut p = parser.lock().unwrap();
+            p.screen_mut().set_scrollback(usize::MAX);
+            let top = p.screen().scrollback();
+            assert!(top > 0, "should scroll to top of buffer");
+        }
+
         // scroll_to_bottom
-        offset = 0;
-        assert_eq!(offset, 0);
+        {
+            let mut p = parser.lock().unwrap();
+            p.screen_mut().set_scrollback(0);
+            assert_eq!(p.screen().scrollback(), 0);
+        }
     }
 }

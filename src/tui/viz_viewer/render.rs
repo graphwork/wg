@@ -3665,6 +3665,16 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     app.chat.total_rendered_lines = total_lines;
     app.chat.viewport_height = viewport_h;
 
+    // Anchor compensation: when new content arrives while scrolled up,
+    // increase scroll-from-bottom so the viewport stays on the same content.
+    if app.chat.scroll > 0 && app.chat.prev_total_rendered_lines > 0 {
+        let delta = total_lines.saturating_sub(app.chat.prev_total_rendered_lines);
+        if delta > 0 {
+            app.chat.scroll = app.chat.scroll.saturating_add(delta);
+        }
+    }
+    app.chat.prev_total_rendered_lines = total_lines;
+
     // Calculate the visible window.
     let scroll_from_top = if total_lines <= viewport_h {
         0
@@ -3729,6 +3739,28 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
                     height: 1,
                 },
             );
+        }
+    }
+
+    // Yellow HUD: distance from bottom when scrolled up (anchored mode).
+    if app.chat.scroll > 0 && msg_area.width > 4 && msg_area.height > 0 {
+        let indicator = format!(" ↓{} ", app.chat.scroll);
+        let x = msg_area.x + msg_area.width.saturating_sub(indicator.len() as u16 + 1);
+        let y = msg_area.y;
+        if x >= msg_area.x {
+            let buf = frame.buffer_mut();
+            for (i, ch) in indicator.chars().enumerate() {
+                let cx = x + i as u16;
+                if cx < msg_area.x + msg_area.width {
+                    let cell = &mut buf[(cx, y)];
+                    cell.set_char(ch);
+                    cell.set_style(
+                        Style::default()
+                            .fg(Color::Black)
+                            .bg(Color::Yellow),
+                    );
+                }
+            }
         }
     }
 

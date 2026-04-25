@@ -1150,6 +1150,10 @@ pub struct ChatState {
     pub archives_loaded: bool,
     /// Whether there are archive files available to load.
     pub has_archives: bool,
+    /// Previous frame's total rendered lines — used to adjust scroll
+    /// when new content arrives while the user is scrolled up, so
+    /// the viewport stays anchored to the content they were reading.
+    pub prev_total_rendered_lines: usize,
 }
 
 impl ChatState {
@@ -1211,6 +1215,7 @@ impl Default for ChatState {
             search: ChatSearchState::default(),
             archives_loaded: false,
             has_archives: false,
+            prev_total_rendered_lines: 0,
         }
     }
 }
