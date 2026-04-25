@@ -1626,7 +1626,7 @@ pub enum Commands {
         reg_tier: Option<String>,
 
         /// API endpoint URL (for --registry-add)
-        #[arg(long = "endpoint", requires = "registry_add")]
+        #[arg(long = "reg-endpoint", requires = "registry_add")]
         reg_endpoint: Option<String>,
 
         /// Context window in tokens (for --registry-add)
