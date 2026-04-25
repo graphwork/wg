@@ -84,6 +84,14 @@ pub fn show(dir: &Path, scope: Option<ConfigScope>, json: bool) -> Result<()> {
         if let Some(ref m) = config.coordinator.model {
             println!("  model = \"{}\"", m);
         }
+        println!(
+            "  max_incomplete_retries = {}",
+            config.coordinator.max_incomplete_retries
+        );
+        println!(
+            "  incomplete_retry_delay = \"{}\"",
+            config.coordinator.incomplete_retry_delay
+        );
         println!();
         println!("[agency]");
         println!("  auto_evaluate = {}", config.agency.auto_evaluate);

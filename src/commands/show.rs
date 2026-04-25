@@ -419,6 +419,9 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
         println!("{}", serde_json::to_string_pretty(&details)?);
     } else {
         print_human_readable(&details);
+        if task.retry_count > 0 {
+            print_retry_history(dir, &task.id);
+        }
     }
 
     Ok(())
@@ -795,6 +798,136 @@ fn format_countdown(timestamp: &str) -> String {
         let h = (secs % 86400) / 3600;
         format!(" (in {}d {}h)", d, h)
     }
+}
+
+fn print_retry_history(dir: &Path, task_id: &str) {
+    let archive_base = dir.join("log").join("agents").join(task_id);
+    if !archive_base.exists() {
+        return;
+    }
+
+    let mut archives: Vec<_> = match std::fs::read_dir(&archive_base) {
+        Ok(entries) => entries
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().is_dir())
+            .collect(),
+        Err(_) => return,
+    };
+
+    if archives.is_empty() {
+        return;
+    }
+
+    archives.sort_by_key(|e| e.file_name());
+
+    println!();
+    println!("Attempt History:");
+
+    let evals_dir = dir.join("agency").join("evaluations");
+    let now = Utc::now();
+
+    for (idx, archive) in archives.iter().enumerate() {
+        let ts = archive.file_name().to_string_lossy().to_string();
+        let age = ts
+            .parse::<DateTime<Utc>>()
+            .ok()
+            .map(|parsed| {
+                let ago = now.signed_duration_since(parsed).num_seconds();
+                format!(" ({} ago)", workgraph::format_duration(ago.max(0), true))
+            })
+            .unwrap_or_default();
+
+        // Try to find agent id from the archive directory
+        let agent_id = archive
+            .path()
+            .join("prompt.txt")
+            .exists()
+            .then(|| {
+                // Agent ID is encoded in the registry, check the archive for hints
+                // Look at output.txt for agent references
+                std::fs::read_to_string(archive.path().join("output.txt"))
+                    .ok()
+                    .and_then(|content| {
+                        content
+                            .lines()
+                            .take(5)
+                            .find_map(|line| {
+                                if line.contains("agent-") {
+                                    line.split_whitespace()
+                                        .find(|w| w.starts_with("agent-"))
+                                        .map(|s| s.trim_matches(|c: char| !c.is_alphanumeric() && c != '-').to_string())
+                                } else {
+                                    None
+                                }
+                            })
+                    })
+            })
+            .flatten();
+
+        let agent_str = agent_id
+            .as_deref()
+            .map(|a| format!(" [{}]", a))
+            .unwrap_or_default();
+
+        // Look for eval result for this task
+        let eval_info = if evals_dir.exists() {
+            find_eval_for_attempt(&evals_dir, task_id, &ts)
+        } else {
+            None
+        };
+
+        let eval_str = eval_info
+            .map(|(score, verdict)| format!(" — eval: {:.2}{}", score, verdict))
+            .unwrap_or_default();
+
+        println!(
+            "  Attempt {}: {}{}{}{}", idx + 1, ts, age, agent_str, eval_str
+        );
+    }
+}
+
+fn find_eval_for_attempt(
+    evals_dir: &Path,
+    task_id: &str,
+    _archive_ts: &str,
+) -> Option<(f64, String)> {
+    let prefix = format!("eval-{}-", task_id);
+    let mut eval_files: Vec<_> = match std::fs::read_dir(evals_dir) {
+        Ok(entries) => entries
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().starts_with(&prefix))
+            .collect(),
+        Err(_) => return None,
+    };
+
+    if eval_files.is_empty() {
+        return None;
+    }
+
+    eval_files.sort_by_key(|e| e.file_name());
+    let latest = eval_files.last()?.path();
+
+    let content = std::fs::read_to_string(&latest).ok()?;
+    let eval: serde_json::Value = serde_json::from_str(&content).ok()?;
+
+    let score = eval.get("score")?.as_f64()?;
+    let notes = eval
+        .get("notes")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    let verdict = if !notes.is_empty() {
+        let truncated = if notes.len() > 80 {
+            format!(" ({}...)", &notes[..77])
+        } else {
+            format!(" ({})", notes)
+        };
+        truncated
+    } else {
+        String::new()
+    };
+
+    Some((score, verdict))
 }
 
 #[cfg(test)]

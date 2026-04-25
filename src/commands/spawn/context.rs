@@ -1115,12 +1115,16 @@ pub(crate) fn build_previous_attempt_context(
     // Estimate max bytes (~4 chars per token as rough heuristic)
     let max_bytes = (max_tokens as usize) * 4;
 
+    // Collect evaluation rationale if available
+    let eval_context = build_eval_rationale_context(&task.id, workgraph_dir);
+
     // Priority 1: Look for checkpoint summary from the previous agent
     let checkpoint_context = find_checkpoint_for_task(task, workgraph_dir);
     if let Some(summary) = checkpoint_context
         && !summary.is_empty()
     {
-        return format_previous_context(&archive_timestamp, &summary, max_bytes);
+        let combined = combine_with_eval_context(&summary, &eval_context);
+        return format_previous_context(&archive_timestamp, &combined, max_bytes);
     }
 
     // Priority 2: Truncated output.log from the archive
@@ -1129,8 +1133,9 @@ pub(crate) fn build_previous_attempt_context(
         && let Ok(content) = fs::read_to_string(&output_path)
         && !content.trim().is_empty()
     {
-        let tail = truncate_to_tail(&content, max_bytes);
-        return format_previous_context(&archive_timestamp, &tail, max_bytes);
+        let tail = truncate_to_tail(&content, max_bytes / 2);
+        let combined = combine_with_eval_context(&tail, &eval_context);
+        return format_previous_context(&archive_timestamp, &combined, max_bytes);
     }
 
     // Priority 3: Task log entries
@@ -1150,12 +1155,92 @@ pub(crate) fn build_previous_attempt_context(
             .join("\n");
 
         if !log_context.is_empty() {
-            let truncated = truncate_to_tail(&log_context, max_bytes);
-            return format_previous_context(&archive_timestamp, &truncated, max_bytes);
+            let truncated = truncate_to_tail(&log_context, max_bytes / 2);
+            let combined = combine_with_eval_context(&truncated, &eval_context);
+            return format_previous_context(&archive_timestamp, &combined, max_bytes);
         }
     }
 
+    // Priority 4: Eval context alone (no archive output/checkpoint/logs, but eval exists)
+    if !eval_context.is_empty() {
+        return format_previous_context(&archive_timestamp, &eval_context, max_bytes);
+    }
+
     String::new()
+}
+
+fn build_eval_rationale_context(task_id: &str, workgraph_dir: &Path) -> String {
+    let evals_dir = workgraph_dir.join("agency").join("evaluations");
+    if !evals_dir.exists() {
+        return String::new();
+    }
+
+    let prefix = format!("eval-{}-", task_id);
+    let mut eval_files: Vec<_> = match fs::read_dir(&evals_dir) {
+        Ok(entries) => entries
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .starts_with(&prefix)
+            })
+            .collect(),
+        Err(_) => return String::new(),
+    };
+
+    if eval_files.is_empty() {
+        return String::new();
+    }
+
+    eval_files.sort_by_key(|e| e.file_name());
+    let latest_eval = eval_files.last().unwrap().path();
+
+    let content = match fs::read_to_string(&latest_eval) {
+        Ok(c) => c,
+        Err(_) => return String::new(),
+    };
+
+    let eval: serde_json::Value = match serde_json::from_str(&content) {
+        Ok(v) => v,
+        Err(_) => return String::new(),
+    };
+
+    let mut parts = Vec::new();
+    parts.push("### Evaluation Feedback from Previous Attempt".to_string());
+
+    if let Some(score) = eval.get("score").and_then(|v| v.as_f64()) {
+        parts.push(format!("Score: {:.2}", score));
+    }
+
+    if let Some(notes) = eval.get("notes").and_then(|v| v.as_str()) {
+        if !notes.is_empty() {
+            parts.push(format!("Evaluator notes: {}", notes));
+        }
+    }
+
+    if let Some(dims) = eval.get("dimensions").and_then(|v| v.as_object()) {
+        if !dims.is_empty() {
+            let dim_strs: Vec<String> = dims
+                .iter()
+                .map(|(k, v)| format!("  {}: {:.2}", k, v.as_f64().unwrap_or(0.0)))
+                .collect();
+            parts.push(format!("Dimension scores:\n{}", dim_strs.join("\n")));
+        }
+    }
+
+    if parts.len() <= 1 {
+        return String::new();
+    }
+
+    parts.join("\n")
+}
+
+fn combine_with_eval_context(base: &str, eval_context: &str) -> String {
+    if eval_context.is_empty() {
+        base.to_string()
+    } else {
+        format!("{}\n\n{}", eval_context, base)
+    }
 }
 
 /// Find the most recent checkpoint for a task from any previously assigned agent.

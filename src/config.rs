@@ -2795,6 +2795,18 @@ pub struct CoordinatorConfig {
     /// Resource management configuration for worktree cleanup and recovery.
     #[serde(default)]
     pub resource_management: ResourceManagementConfig,
+
+    /// Maximum automatic retries when a task is marked incomplete.
+    /// After this many retries, the task transitions to Failed.
+    /// Default: 3. Set to 0 to disable automatic retry exhaustion.
+    #[serde(default = "default_max_incomplete_retries")]
+    pub max_incomplete_retries: u32,
+
+    /// Cooldown delay before an incomplete task becomes re-dispatchable.
+    /// Prevents rapid respawn loops. Format: "30s", "2m", "0s" (immediate).
+    /// Default: "30s".
+    #[serde(default = "default_incomplete_retry_delay")]
+    pub incomplete_retry_delay: String,
 }
 
 /// Resource management configuration for cleanup operations and recovery branches.
@@ -2834,6 +2846,14 @@ pub struct ResourceManagementConfig {
     /// Set to 0 to disable automatic pruning. Default: 3600 (1 hour).
     #[serde(default = "default_recovery_prune_interval")]
     pub recovery_prune_interval: u64,
+}
+
+fn default_max_incomplete_retries() -> u32 {
+    3
+}
+
+fn default_incomplete_retry_delay() -> String {
+    "30s".to_string()
 }
 
 fn default_auto_test_discovery() -> bool {
@@ -3054,6 +3074,8 @@ impl Default for CoordinatorConfig {
             verify_triage_enabled: default_verify_triage_enabled(),
             verify_progress_timeout: default_verify_progress_timeout(),
             resource_management: ResourceManagementConfig::default(),
+            max_incomplete_retries: default_max_incomplete_retries(),
+            incomplete_retry_delay: default_incomplete_retry_delay(),
         }
     }
 }

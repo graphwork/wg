@@ -515,7 +515,7 @@ pub enum Commands {
         superseded_by: Vec<String>,
     },
 
-    /// Retry a failed task (resets to open status)
+    /// Retry a failed or incomplete task (resets to open status)
     Retry {
         /// Task ID to retry
         #[arg(value_name = "TASK")]

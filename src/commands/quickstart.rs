@@ -186,7 +186,7 @@ TASK STATE COMMANDS
   wg done <task-id>           # Mark task complete (loop fires if present)
   wg done <task-id> --converged  # Complete and STOP the loop
   wg fail <task-id> --reason  # Mark failed (can be retried)
-  wg retry <task-id>          # Retry a failed task (resets to open)
+  wg retry <task-id>          # Retry a failed/incomplete task (resets to open)
   wg abandon <task-id>        # Give up permanently
   wg pause <task-id>          # Pause task (coordinator skips it until resumed)
   wg wait <task-id> --until "condition"  # Park task until condition is met
@@ -235,8 +235,11 @@ INCOMPLETE STATUS (retryable work)
     pending-validation = awaiting evaluation (hasn't been judged yet)
     incomplete         = evaluated and found wanting (needs redo)
 
-  Incomplete tasks appear in 'wg ready' and get automatically dispatched
-  by the coordinator like open tasks, but with the prior agent's context.
+  Incomplete tasks automatically retry (up to max_incomplete_retries, default 3).
+  Each retry gets a fresh agent with prior attempt's diff + eval rationale.
+  After exhausting retries, the task transitions to Failed.
+  Use 'wg retry <task>' to manually force another attempt.
+  Configure: wg config --max-incomplete-retries N --incomplete-retry-delay "30s"
 
 MESSAGING
 ─────────────────────────────────────────

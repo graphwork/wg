@@ -20,6 +20,7 @@ pub fn run(dir: &Path, id: &str, preserve_session: bool) -> Result<()> {
     let mut attempt: u32 = 0;
     let mut retry_count: u32 = 0;
     let mut max_retries: Option<u32> = None;
+    let mut was_incomplete = false;
 
     modify_graph(&path, |graph| {
         let task = match graph.get_task_mut(id) {
@@ -30,17 +31,20 @@ pub fn run(dir: &Path, id: &str, preserve_session: bool) -> Result<()> {
             }
         };
 
-        if task.status != Status::Failed {
+        if task.status != Status::Failed && task.status != Status::Incomplete {
             error = Some(anyhow::anyhow!(
-                "Task '{}' is not failed (status: {:?}). Only failed tasks can be retried.",
+                "Task '{}' is not failed or incomplete (status: {:?}). Only failed or incomplete tasks can be retried.",
                 id,
                 task.status
             ));
             return false;
         }
 
-        // Check if max retries exceeded
-        if let Some(max) = task.max_retries
+        was_incomplete = task.status == Status::Incomplete;
+
+        // Check if max retries exceeded (for failed tasks)
+        if task.status == Status::Failed
+            && let Some(max) = task.max_retries
             && task.retry_count >= max
         {
             error = Some(anyhow::anyhow!(
@@ -59,17 +63,27 @@ pub fn run(dir: &Path, id: &str, preserve_session: bool) -> Result<()> {
         task.status = Status::Open;
         task.failure_reason = None;
         task.assigned = None;
+        task.ready_after = None;
         if !preserve_session {
             task.session_id = None;
             task.checkpoint = None;
         }
         task.tags.retain(|t| t != "converged");
 
+        let source = if was_incomplete {
+            "incomplete"
+        } else {
+            "failed"
+        };
         task.log.push(LogEntry {
             timestamp: Utc::now().to_rfc3339(),
             actor: None,
             user: Some(workgraph::current_user()),
-            message: format!("Task reset for retry (attempt #{})", task.retry_count + 1),
+            message: format!(
+                "Task reset for retry from {} (attempt #{})",
+                source,
+                task.retry_count + 1
+            ),
         });
 
         retry_count = task.retry_count;
@@ -100,13 +114,22 @@ pub fn run(dir: &Path, id: &str, preserve_session: bool) -> Result<()> {
         "retry",
         Some(id),
         None,
-        serde_json::json!({ "attempt": attempt, "prev_failure_reason": prev_failure_reason }),
+        serde_json::json!({
+            "attempt": attempt,
+            "prev_failure_reason": prev_failure_reason,
+            "was_incomplete": was_incomplete,
+        }),
         config.log.rotation_threshold,
     );
 
+    let source = if was_incomplete {
+        "incomplete"
+    } else {
+        "failed"
+    };
     println!(
-        "Reset '{}' to open for retry (attempt #{})",
-        id,
+        "Reset '{}' from {} to open for retry (attempt #{})",
+        id, source,
         retry_count + 1
     );
 
@@ -165,6 +188,40 @@ mod tests {
     }
 
     #[test]
+    fn test_retry_incomplete_task_transitions_to_open() {
+        let dir = tempdir().unwrap();
+        let dir_path = dir.path();
+        let mut task = make_task("t1", "Test task", Status::Incomplete);
+        task.retry_count = 1;
+        setup_workgraph(dir_path, vec![task]);
+
+        let result = run(dir_path, "t1", false);
+        assert!(result.is_ok());
+
+        let path = graph_path(dir_path);
+        let graph = load_graph(&path).unwrap();
+        let task = graph.get_task("t1").unwrap();
+        assert_eq!(task.status, Status::Open);
+    }
+
+    #[test]
+    fn test_retry_incomplete_clears_ready_after() {
+        let dir = tempdir().unwrap();
+        let dir_path = dir.path();
+        let mut task = make_task("t1", "Test task", Status::Incomplete);
+        task.retry_count = 1;
+        task.ready_after = Some("2099-01-01T00:00:00Z".to_string());
+        setup_workgraph(dir_path, vec![task]);
+
+        run(dir_path, "t1", false).unwrap();
+
+        let path = graph_path(dir_path);
+        let graph = load_graph(&path).unwrap();
+        let task = graph.get_task("t1").unwrap();
+        assert_eq!(task.ready_after, None, "Retry should clear ready_after cooldown");
+    }
+
+    #[test]
     fn test_retry_non_failed_task_errors_open() {
         let dir = tempdir().unwrap();
         let dir_path = dir.path();
@@ -174,8 +231,8 @@ mod tests {
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
         assert!(
-            err_msg.contains("not failed"),
-            "Expected 'not failed' error, got: {}",
+            err_msg.contains("not failed or incomplete"),
+            "Expected error about status, got: {}",
             err_msg
         );
     }
@@ -191,7 +248,7 @@ mod tests {
 
         let result = run(dir_path, "t1", false);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("not failed"));
+        assert!(result.unwrap_err().to_string().contains("not failed or incomplete"));
     }
 
     #[test]
@@ -202,7 +259,7 @@ mod tests {
 
         let result = run(dir_path, "t1", false);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("not failed"));
+        assert!(result.unwrap_err().to_string().contains("not failed or incomplete"));
     }
 
     #[test]
@@ -402,6 +459,27 @@ mod tests {
         assert!(
             !task.tags.contains(&"converged".to_string()),
             "Retry should clear converged tag"
+        );
+    }
+
+    #[test]
+    fn test_retry_incomplete_log_mentions_incomplete() {
+        let dir = tempdir().unwrap();
+        let dir_path = dir.path();
+        let mut task = make_task("t1", "Test task", Status::Incomplete);
+        task.retry_count = 1;
+        setup_workgraph(dir_path, vec![task]);
+
+        run(dir_path, "t1", false).unwrap();
+
+        let path = graph_path(dir_path);
+        let graph = load_graph(&path).unwrap();
+        let task = graph.get_task("t1").unwrap();
+        let last_log = task.log.last().unwrap();
+        assert!(
+            last_log.message.contains("incomplete"),
+            "Log should mention source was incomplete, got: {}",
+            last_log.message
         );
     }
 }

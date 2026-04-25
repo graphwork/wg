@@ -12757,6 +12757,20 @@ impl VizApp {
             edit_kind: ConfigEditKind::TextInput,
             section: ConfigSection::Agency,
         });
+        entries.push(ConfigEntry {
+            key: "coordinator.max_incomplete_retries".into(),
+            label: "Max incomplete retries".into(),
+            value: config.coordinator.max_incomplete_retries.to_string(),
+            edit_kind: ConfigEditKind::TextInput,
+            section: ConfigSection::Agency,
+        });
+        entries.push(ConfigEntry {
+            key: "coordinator.incomplete_retry_delay".into(),
+            label: "Incomplete retry delay".into(),
+            value: config.coordinator.incomplete_retry_delay.clone(),
+            edit_kind: ConfigEditKind::TextInput,
+            section: ConfigSection::Agency,
+        });
 
         // ── 7. Guardrails ──
         entries.push(ConfigEntry {
@@ -13134,6 +13148,14 @@ impl VizApp {
                 if let Ok(v) = new_value.parse::<u32>() {
                     config.checkpoint.retry_context_tokens = v;
                 }
+            }
+            "coordinator.max_incomplete_retries" => {
+                if let Ok(v) = new_value.parse::<u32>() {
+                    config.coordinator.max_incomplete_retries = v;
+                }
+            }
+            "coordinator.incomplete_retry_delay" => {
+                config.coordinator.incomplete_retry_delay = new_value;
             }
             "tiers.fast" => {
                 config.tiers.fast = Some(new_value);
@@ -16647,7 +16669,8 @@ mod tui_config_panel_tests {
                         | "guardrails.max_task_depth"
                         | "tui.chat_history_max"
                         | "tui.session_gap_minutes"
-                        | "checkpoint.retry_context_tokens" => "42",
+                        | "checkpoint.retry_context_tokens"
+                        | "coordinator.max_incomplete_retries" => "42",
                         "tui.message_indent" => "4", // clamped to max 8
                         "agency.flip_verification_threshold" | "agency.eval_gate_threshold" => {
                             "0.85"
@@ -16804,6 +16827,8 @@ mod tui_config_panel_tests {
             "agency.eval_gate_threshold",
             "agency.eval_gate_all",
             "checkpoint.retry_context_tokens",
+            "coordinator.max_incomplete_retries",
+            "coordinator.incomplete_retry_delay",
             // Guardrails
             "guardrails.max_child_tasks_per_agent",
             "guardrails.max_task_depth",
