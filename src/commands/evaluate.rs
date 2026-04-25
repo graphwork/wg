@@ -1887,6 +1887,7 @@ mod tests {
                 d
             },
             notes: "good".to_string(),
+            verdict: None,
         };
         let flip_score: Option<f64> = Some(0.75);
 
@@ -1910,6 +1911,7 @@ mod tests {
                 d
             },
             notes: "good".to_string(),
+            verdict: None,
         };
         let flip_score: Option<f64> = None;
 

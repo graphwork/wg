@@ -696,60 +696,36 @@ mod tests {
     }
 
     #[test]
-    fn test_list_verify_failures_indicator() {
+    fn test_list_verify_failures_no_longer_shown() {
         let dir = tempdir().unwrap();
-        let mut task = make_task("t1", "Verify failing", Status::InProgress);
+        let mut task = make_task("t1", "Task with verify", Status::InProgress);
         task.verify = Some("cargo test".to_string());
         task.verify_failures = 2;
         let normal = make_task("t2", "Normal task", Status::Open);
         setup_workgraph(dir.path(), vec![task, normal]);
 
-        // Should succeed — verify indicator is displayed for t1
+        // verify_failures no longer displayed (verify is deprecated)
         let result = run(dir.path(), None, false, &[], None, false, false);
         assert!(result.is_ok());
     }
 
     #[test]
-    fn test_list_json_includes_verify_failures() {
+    fn test_list_json_no_verify_failures_field() {
         let dir = tempdir().unwrap();
-        let mut task = make_task("t1", "Verify failing", Status::InProgress);
+        let mut task = make_task("t1", "Task with verify", Status::InProgress);
         task.verify_failures = 2;
         let path = setup_workgraph(dir.path(), vec![task]);
         let graph = load_graph(&path).unwrap();
         let t = graph.get_task("t1").unwrap();
 
-        let mut obj = serde_json::json!({
+        // verify_failures is no longer included in JSON output
+        let obj = serde_json::json!({
             "id": t.id,
             "title": t.title,
             "status": t.status,
             "assigned": t.assigned,
             "after": t.after,
         });
-        if t.verify_failures > 0 {
-            obj["verify_failures"] = serde_json::json!(t.verify_failures);
-        }
-
-        assert_eq!(obj["verify_failures"], 2);
-    }
-
-    #[test]
-    fn test_list_json_no_verify_failures_when_zero() {
-        let dir = tempdir().unwrap();
-        let task = make_task("t1", "Normal", Status::Open);
-        let path = setup_workgraph(dir.path(), vec![task]);
-        let graph = load_graph(&path).unwrap();
-        let t = graph.get_task("t1").unwrap();
-
-        let mut obj = serde_json::json!({
-            "id": t.id,
-            "title": t.title,
-            "status": t.status,
-            "assigned": t.assigned,
-            "after": t.after,
-        });
-        if t.verify_failures > 0 {
-            obj["verify_failures"] = serde_json::json!(t.verify_failures);
-        }
 
         assert!(obj.get("verify_failures").is_none());
     }

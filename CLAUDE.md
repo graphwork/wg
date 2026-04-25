@@ -53,12 +53,11 @@ Everything gets dispatched through `wg add` and `wg service start`.
 
 ### Task description requirements
 
-Every **code task** description MUST include a `## Validation` section with concrete test criteria. Use `--verify` to attach machine-checkable criteria that agents see as a hard gate.
+Every **code task** description MUST include a `## Validation` section with concrete test criteria. Agents self-check during work; `.evaluate-<task>` determines the terminal status (pass/incomplete/fail).
 
 Template:
 ```
 wg add "Implement feature X" --after <dep> \
-  --verify "cargo test test_feature_x passes" \
   -d "## Description
 <what to implement>
 
@@ -68,5 +67,7 @@ wg add "Implement feature X" --after <dep> \
 - [ ] cargo build + cargo test pass with no regressions
 - [ ] <any additional acceptance criteria>"
 ```
+
+Note: `--verify` is deprecated and no longer enforced as a gate. Task quality is determined by the `.evaluate` verdict (pass → done, incomplete → retryable, fail → failed).
 
 Research/design tasks should specify what artifacts to produce and how to verify completeness instead of test criteria.

@@ -556,6 +556,7 @@ fn gather_dangling_deps(dir: &Path) -> Vec<DanglingDep> {
         .collect()
 }
 
+#[allow(dead_code)]
 fn gather_verify_failing(dir: &Path) -> Vec<VerifyFailingTask> {
     let path = super::graph_path(dir);
     if !path.exists() {
@@ -1026,66 +1027,9 @@ mod tests {
         assert_eq!(format_tokens(160000), "160k");
     }
 
-    #[test]
-    fn test_gather_verify_failing_none() {
-        let temp_dir = TempDir::new().unwrap();
-        let path = temp_dir.path().join("graph.jsonl");
-
-        let mut graph = WorkGraph::new();
-        graph.add_node(Node::Task(make_task("t1", "Normal task")));
-        save_graph(&graph, &path).unwrap();
-
-        let failing = gather_verify_failing(temp_dir.path());
-        assert!(failing.is_empty());
-    }
-
-    #[test]
-    fn test_gather_verify_failing_found() {
-        let temp_dir = TempDir::new().unwrap();
-        let path = temp_dir.path().join("graph.jsonl");
-
-        let mut graph = WorkGraph::new();
-        let mut task = make_task("t1", "Failing verify");
-        task.status = Status::InProgress;
-        task.verify = Some("cargo test".to_string());
-        task.verify_failures = 2;
-        graph.add_node(Node::Task(task));
-        save_graph(&graph, &path).unwrap();
-
-        let failing = gather_verify_failing(temp_dir.path());
-        assert_eq!(failing.len(), 1);
-        assert_eq!(failing[0].task_id, "t1");
-        assert_eq!(failing[0].failures, 2);
-        assert_eq!(failing[0].verify_command, "cargo test");
-    }
-
-    #[test]
-    fn test_gather_verify_failing_excludes_failed_tasks() {
-        let temp_dir = TempDir::new().unwrap();
-        let path = temp_dir.path().join("graph.jsonl");
-
-        let mut graph = WorkGraph::new();
-        // Task already failed (circuit breaker tripped) — should not appear
-        let mut task = make_task("t1", "Already failed");
-        task.status = Status::Failed;
-        task.verify_failures = 3;
-        task.verify = Some("cargo test".to_string());
-        graph.add_node(Node::Task(task));
-        save_graph(&graph, &path).unwrap();
-
-        let failing = gather_verify_failing(temp_dir.path());
-        assert!(
-            failing.is_empty(),
-            "Failed tasks should not be listed as verify-failing"
-        );
-    }
-
-    #[test]
-    fn test_gather_verify_failing_no_graph() {
-        let temp_dir = TempDir::new().unwrap();
-        let failing = gather_verify_failing(temp_dir.path());
-        assert!(failing.is_empty());
-    }
+    // verify-failing tests removed — --verify is deprecated and no longer
+    // gathered in status output. The gather_verify_failing function still
+    // exists for back-compat but is not called.
 
     #[test]
     fn test_gather_compaction_info_no_service() {

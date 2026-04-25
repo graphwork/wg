@@ -721,7 +721,7 @@ fn run_inner(
     dir: &Path,
     id: &str,
     converged: bool,
-    skip_verify: bool,
+    _skip_verify: bool,
     is_agent: bool,
 ) -> Result<()> {
     let (mut graph, path) = super::load_workgraph_mut(dir)?;
@@ -1835,7 +1835,7 @@ mod tests {
     }
 
     #[test]
-    fn test_done_verify_failing_blocks_transition() {
+    fn test_done_verify_no_longer_blocks_transition() {
         let dir = tempdir().unwrap();
         let dir_path = dir.path();
 
@@ -1843,50 +1843,9 @@ mod tests {
         task.verify = Some("exit 1".to_string());
         setup_workgraph(dir_path, vec![task]);
 
+        // --verify is deprecated and no longer a gate
         let result = run(dir_path, "t1", false, false);
-        assert!(result.is_err());
-        let err = result.unwrap_err().to_string();
-        assert!(err.contains("Verify command failed"), "got: {}", err);
-        assert!(err.contains("exit 1"), "got: {}", err);
-
-        // Task should still be in-progress
-        let path = graph_path(dir_path);
-        let graph = load_graph(&path).unwrap();
-        let task = graph.get_task("t1").unwrap();
-        assert_eq!(task.status, Status::InProgress);
-    }
-
-    #[test]
-    fn test_done_verify_failing_includes_output() {
-        let dir = tempdir().unwrap();
-        let dir_path = dir.path();
-
-        let mut task = make_task("t1", "Task with failing verify", Status::InProgress);
-        task.verify = Some("echo 'test failed: expected 42 got 0' >&2; exit 1".to_string());
-        setup_workgraph(dir_path, vec![task]);
-
-        let result = run(dir_path, "t1", false, false);
-        assert!(result.is_err());
-        let err = result.unwrap_err().to_string();
-        assert!(
-            err.contains("test failed: expected 42 got 0"),
-            "error should include command output, got: {}",
-            err
-        );
-    }
-
-    #[test]
-    fn test_done_skip_verify_bypasses_gate() {
-        let dir = tempdir().unwrap();
-        let dir_path = dir.path();
-
-        let mut task = make_task("t1", "Task with failing verify", Status::InProgress);
-        task.verify = Some("exit 1".to_string());
-        setup_workgraph(dir_path, vec![task]);
-
-        // Use run_inner with is_agent=false to simulate human usage
-        let result = super::run_inner(dir_path, "t1", false, true, false);
-        assert!(result.is_ok());
+        assert!(result.is_ok(), "verify should not block: {:?}", result.err());
 
         let path = graph_path(dir_path);
         let graph = load_graph(&path).unwrap();
@@ -1895,7 +1854,26 @@ mod tests {
     }
 
     #[test]
-    fn test_done_skip_verify_blocked_for_agents() {
+    fn test_done_verify_failing_no_longer_blocks() {
+        let dir = tempdir().unwrap();
+        let dir_path = dir.path();
+
+        let mut task = make_task("t1", "Task with failing verify", Status::InProgress);
+        task.verify = Some("echo 'test failed: expected 42 got 0' >&2; exit 1".to_string());
+        setup_workgraph(dir_path, vec![task]);
+
+        // --verify is deprecated; failing verify no longer blocks done transition
+        let result = run(dir_path, "t1", false, false);
+        assert!(result.is_ok(), "verify should not block: {:?}", result.err());
+
+        let path = graph_path(dir_path);
+        let graph = load_graph(&path).unwrap();
+        let task = graph.get_task("t1").unwrap();
+        assert_eq!(task.status, Status::Done);
+    }
+
+    #[test]
+    fn test_done_skip_verify_is_noop() {
         let dir = tempdir().unwrap();
         let dir_path = dir.path();
 
@@ -1903,22 +1881,14 @@ mod tests {
         task.verify = Some("exit 1".to_string());
         setup_workgraph(dir_path, vec![task]);
 
-        // Use run_inner with is_agent=true to simulate agent context
-        let result = super::run_inner(dir_path, "t1", false, true, true);
+        // --skip-verify is a no-op since verify is deprecated
+        let result = super::run_inner(dir_path, "t1", false, true, false);
+        assert!(result.is_ok());
 
-        assert!(result.is_err());
-        let err = result.unwrap_err().to_string();
-        assert!(
-            err.contains("Agents cannot use --skip-verify"),
-            "got: {}",
-            err
-        );
-
-        // Task should not have transitioned
         let path = graph_path(dir_path);
         let graph = load_graph(&path).unwrap();
         let task = graph.get_task("t1").unwrap();
-        assert_eq!(task.status, Status::InProgress);
+        assert_eq!(task.status, Status::Done);
     }
 
     #[test]
@@ -1940,7 +1910,7 @@ mod tests {
     }
 
     #[test]
-    fn test_done_converged_also_runs_verify() {
+    fn test_done_converged_ignores_verify() {
         let dir = tempdir().unwrap();
         let dir_path = dir.path();
 
@@ -1948,16 +1918,14 @@ mod tests {
         task.verify = Some("exit 1".to_string());
         setup_workgraph(dir_path, vec![task]);
 
+        // --verify is deprecated; converged + failing verify should succeed
         let result = run(dir_path, "t1", true, false);
-        assert!(result.is_err());
-        let err = result.unwrap_err().to_string();
-        assert!(err.contains("Verify command failed"), "got: {}", err);
+        assert!(result.is_ok(), "verify should not block: {:?}", result.err());
 
-        // Task should still be in-progress
         let path = graph_path(dir_path);
         let graph = load_graph(&path).unwrap();
         let task = graph.get_task("t1").unwrap();
-        assert_eq!(task.status, Status::InProgress);
+        assert_eq!(task.status, Status::Done);
     }
 
     #[test]
@@ -2160,7 +2128,7 @@ mod tests {
     }
 
     #[test]
-    fn test_done_verify_pipe_failure_propagates() {
+    fn test_done_verify_pipe_failure_no_longer_blocks() {
         let dir = tempdir().unwrap();
         let dir_path = dir.path();
 
@@ -2168,17 +2136,18 @@ mod tests {
         task.verify = Some("echo hello | grep nonexistent".to_string());
         setup_workgraph(dir_path, vec![task]);
 
+        // --verify is deprecated; pipe failure should not block
         let result = run(dir_path, "t1", false, false);
-        assert!(result.is_err(), "Failing pipe should propagate error");
+        assert!(result.is_ok(), "verify should not block: {:?}", result.err());
 
         let path = graph_path(dir_path);
         let graph = load_graph(&path).unwrap();
         let task = graph.get_task("t1").unwrap();
-        assert_eq!(task.status, Status::InProgress);
+        assert_eq!(task.status, Status::Done);
     }
 
     #[test]
-    fn test_verify_circuit_breaker_increments_failures() {
+    fn test_verify_deprecated_task_transitions_to_done() {
         let dir = tempdir().unwrap();
         let dir_path = dir.path();
 
@@ -2186,210 +2155,18 @@ mod tests {
         task.verify = Some("echo 'bad output' >&2; exit 1".to_string());
         setup_workgraph(dir_path, vec![task]);
 
-        // First failure: should increment verify_failures and bail
+        // --verify is deprecated and does not run; task transitions to Done
         let result = run(dir_path, "t1", false, false);
-        assert!(result.is_err());
-
-        let path = graph_path(dir_path);
-        let graph = load_graph(&path).unwrap();
-        let task = graph.get_task("t1").unwrap();
-        assert_eq!(task.verify_failures, 1);
-        assert_eq!(task.status, Status::InProgress);
-        // Check that verify failure was logged
-        assert!(
-            task.log
-                .iter()
-                .any(|e| e.message.contains("Verify FAILED")
-                    && e.actor == Some("verify".to_string())),
-            "Expected verify failure log entry, got: {:?}",
-            task.log
-        );
-    }
-
-    #[test]
-    fn test_verify_circuit_breaker_trips_after_threshold() {
-        let dir = tempdir().unwrap();
-        let dir_path = dir.path();
-
-        let mut task = make_task("t1", "Task with failing verify", Status::InProgress);
-        task.verify = Some("echo 'FAIL: test not found' >&2; exit 1".to_string());
-        setup_workgraph(dir_path, vec![task]);
-
-        // Default threshold is 3 — fail 3 times
-        for i in 0..3 {
-            let result = run(dir_path, "t1", false, false);
-            if i < 2 {
-                // First two failures: should error (not yet at threshold)
-                assert!(result.is_err(), "attempt {} should fail with error", i);
-            } else {
-                // Third failure: circuit breaker trips, returns Ok (task is auto-failed)
-                assert!(
-                    result.is_ok(),
-                    "attempt {} should succeed (circuit breaker trips): {:?}",
-                    i,
-                    result
-                );
-            }
-        }
-
-        let path = graph_path(dir_path);
-        let graph = load_graph(&path).unwrap();
-        let task = graph.get_task("t1").unwrap();
-        assert_eq!(task.status, Status::Failed);
-        assert_eq!(task.verify_failures, 3);
-
-        // Check failure reason includes verify command and error output
-        let reason = task.failure_reason.as_ref().unwrap();
-        assert!(
-            reason.contains("failed 3 consecutive times"),
-            "failure_reason should mention count, got: {}",
-            reason
-        );
-        assert!(
-            reason.contains("exit 1"),
-            "failure_reason should include exit code, got: {}",
-            reason
-        );
-        assert!(
-            reason.contains("FAIL: test not found"),
-            "failure_reason should include stderr, got: {}",
-            reason
-        );
-
-        // Check circuit breaker log entry
-        assert!(
-            task.log
-                .iter()
-                .any(|e| e.actor == Some("verify-circuit-breaker".to_string())
-                    && e.message.contains("Circuit breaker tripped")),
-            "Expected circuit breaker log entry, got: {:?}",
-            task.log
-        );
-    }
-
-    #[test]
-    fn test_verify_success_resets_failure_count() {
-        let dir = tempdir().unwrap();
-        let dir_path = dir.path();
-
-        // Start with a task that already has some verify failures
-        let mut task = make_task("t1", "Task with verify", Status::InProgress);
-        task.verify = Some("exit 0".to_string());
-        task.verify_failures = 2; // previous failures
-        setup_workgraph(dir_path, vec![task]);
-
-        let result = run(dir_path, "t1", false, false);
-        assert!(result.is_ok());
+        assert!(result.is_ok(), "verify should not block: {:?}", result.err());
 
         let path = graph_path(dir_path);
         let graph = load_graph(&path).unwrap();
         let task = graph.get_task("t1").unwrap();
         assert_eq!(task.status, Status::Done);
-        assert_eq!(
-            task.verify_failures, 0,
-            "verify_failures should be reset on success"
-        );
     }
 
     #[test]
-    fn test_verify_failure_logs_stdout_and_stderr() {
-        let dir = tempdir().unwrap();
-        let dir_path = dir.path();
-
-        let mut task = make_task("t1", "Task with verbose verify", Status::InProgress);
-        task.verify = Some("echo 'stdout line' && echo 'stderr line' >&2 && exit 1".to_string());
-        setup_workgraph(dir_path, vec![task]);
-
-        let result = run(dir_path, "t1", false, false);
-        assert!(result.is_err());
-
-        let path = graph_path(dir_path);
-        let graph = load_graph(&path).unwrap();
-        let task = graph.get_task("t1").unwrap();
-
-        // Verify log entry includes both stdout and stderr
-        let verify_log = task
-            .log
-            .iter()
-            .find(|e| e.message.contains("Verify FAILED"))
-            .expect("should have verify failure log");
-        assert!(
-            verify_log.message.contains("stdout line"),
-            "log should contain stdout, got: {}",
-            verify_log.message
-        );
-        assert!(
-            verify_log.message.contains("stderr line"),
-            "log should contain stderr, got: {}",
-            verify_log.message
-        );
-    }
-
-    #[test]
-    fn test_verify_circuit_breaker_distinguishes_from_agent_failures() {
-        // Verify failures use the "verify" actor, circuit breaker uses "verify-circuit-breaker"
-        // Regular triage/agent failures use "triage" actor
-        let dir = tempdir().unwrap();
-        let dir_path = dir.path();
-
-        let mut task = make_task("t1", "Task with verify", Status::InProgress);
-        task.verify = Some("exit 1".to_string());
-        setup_workgraph(dir_path, vec![task]);
-
-        let _ = run(dir_path, "t1", false, false);
-
-        let path = graph_path(dir_path);
-        let graph = load_graph(&path).unwrap();
-        let task = graph.get_task("t1").unwrap();
-
-        // All verify-related logs should use "verify" actor
-        let verify_logs: Vec<_> = task
-            .log
-            .iter()
-            .filter(|e| e.message.contains("Verify"))
-            .collect();
-        assert!(!verify_logs.is_empty());
-        for log in &verify_logs {
-            assert_eq!(
-                log.actor,
-                Some("verify".to_string()),
-                "Verify failure logs should use 'verify' actor, not agent/triage actor"
-            );
-        }
-    }
-
-    #[test]
-    fn test_verify_circuit_breaker_configurable_threshold() {
-        // Test that the config controls the threshold.
-        // We write a config with max_verify_failures = 2.
-        let dir = tempdir().unwrap();
-        let dir_path = dir.path();
-
-        let mut task = make_task("t1", "Task with failing verify", Status::InProgress);
-        task.verify = Some("exit 1".to_string());
-        setup_workgraph(dir_path, vec![task]);
-
-        // Write config with lower threshold (dir_path is the .workgraph dir in tests)
-        let config_path = dir_path.join("config.toml");
-        std::fs::write(&config_path, "[coordinator]\nmax_verify_failures = 2\n").unwrap();
-
-        // First failure
-        let result = run(dir_path, "t1", false, false);
-        assert!(result.is_err());
-
-        // Second failure — should trip circuit breaker at threshold 2
-        let result = run(dir_path, "t1", false, false);
-        assert!(result.is_ok(), "Circuit breaker should trip at threshold 2");
-
-        let path = graph_path(dir_path);
-        let graph = load_graph(&path).unwrap();
-        let task = graph.get_task("t1").unwrap();
-        assert_eq!(task.status, Status::Failed);
-        assert_eq!(task.verify_failures, 2);
-    }
-
-    #[test]
-    fn test_done_separate_verify_transitions_to_pending_validation() {
+    fn test_done_separate_verify_mode_ignored() {
         let dir = tempdir().unwrap();
         let dir_path = dir.path();
 
@@ -2397,7 +2174,7 @@ mod tests {
         task.verify = Some("cargo test".to_string());
         setup_workgraph(dir_path, vec![task]);
 
-        // Write config with verify_mode = "separate"
+        // verify_mode = "separate" is ignored now that verify is deprecated
         std::fs::write(
             dir_path.join("config.toml"),
             "[coordinator]\nverify_mode = \"separate\"\n",
@@ -2410,42 +2187,26 @@ mod tests {
         let path = graph_path(dir_path);
         let graph = load_graph(&path).unwrap();
         let task = graph.get_task("t1").unwrap();
-        assert_eq!(
-            task.status,
-            Status::PendingValidation,
-            "should be pending validation, not done"
-        );
-        assert!(task.completed_at.is_some());
-        assert!(
-            task.log
-                .iter()
-                .any(|e| e.message.contains("verify_mode=separate")),
-            "should have separate verify log entry"
-        );
+        assert_eq!(task.status, Status::Done, "should be done, verify is deprecated");
     }
 
     #[test]
-    fn test_done_inline_verify_still_works() {
-        // Ensure backward compatibility: verify_mode=inline (default) runs verify inline
+    fn test_done_verify_deprecated_always_completes() {
         let dir = tempdir().unwrap();
         let dir_path = dir.path();
 
-        let mut task = make_task("t1", "Task with passing verify", Status::InProgress);
-        task.verify = Some("true".to_string()); // always passes
+        let mut task = make_task("t1", "Task with verify", Status::InProgress);
+        task.verify = Some("true".to_string());
         setup_workgraph(dir_path, vec![task]);
 
-        // No config file = defaults to inline
+        // Verify is deprecated; task completes to Done regardless
         let result = run(dir_path, "t1", false, false);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
         let graph = load_graph(&path).unwrap();
         let task = graph.get_task("t1").unwrap();
-        assert_eq!(
-            task.status,
-            Status::Done,
-            "inline verify should complete to Done"
-        );
+        assert_eq!(task.status, Status::Done);
     }
 
     #[test]
@@ -2567,9 +2328,7 @@ mod tests {
     }
 
     #[test]
-    fn test_smart_verify_routes_free_text_to_evaluation() {
-        // This is more of an integration test - we test that the routing works
-        // by checking that free-text commands don't get executed as shell commands
+    fn test_verify_free_text_ignored_when_deprecated() {
         let dir = tempdir().unwrap();
         let dir_path = dir.path();
 
@@ -2577,55 +2336,9 @@ mod tests {
         task.verify = Some("documentation exists and is comprehensive".to_string());
         setup_workgraph(dir_path, vec![task]);
 
-        // The task should fail because evaluation requires the task to be Done first
-        // But importantly, it should NOT fail with exit 127 (command not found)
+        // --verify is deprecated; free-text verify is ignored, task transitions to Done
         let result = run(dir_path, "t1", false, false);
-        assert!(result.is_err());
-
-        let path = graph_path(dir_path);
-        let graph = load_graph(&path).unwrap();
-        let task = graph.get_task("t1").unwrap();
-
-        // Check that the failure is not due to command not found
-        let _verify_logs: Vec<_> = task
-            .log
-            .iter()
-            .filter(|e| e.message.contains("smart-verify") || e.message.contains("LLM evaluation"))
-            .collect();
-
-        // There should be some indication that smart verify was used
-        let has_smart_verify_indication = task
-            .log
-            .iter()
-            .any(|e| e.message.contains("smart-verify") || e.message.contains("LLM evaluation"));
-
-        // Or alternatively, verify that we don't get a "command not found" error
-        let has_command_not_found = task.log.iter().any(|e| {
-            e.message.contains("command not found") || e.message.contains("exit code 127")
-        });
-
-        // We should either see smart-verify logs or no "command not found" errors
-        assert!(
-            has_smart_verify_indication || !has_command_not_found,
-            "Expected smart verify routing or no 'command not found' errors. Logs: {:?}",
-            task.log
-        );
-    }
-
-    #[test]
-    fn test_term_dumb_environment_set_for_shell_commands() {
-        let dir = tempdir().unwrap();
-        let dir_path = dir.path();
-
-        let mut task = make_task("t1", "Task with shell verify", Status::InProgress);
-        // Use a command that checks the TERM environment variable
-        task.verify = Some("test \"$TERM\" = \"dumb\"".to_string());
-        setup_workgraph(dir_path, vec![task]);
-
-        let result = run(dir_path, "t1", false, false);
-
-        // The command should succeed, indicating TERM=dumb was set
-        assert!(result.is_ok(), "TERM=dumb should be set for shell commands");
+        assert!(result.is_ok(), "verify should not block: {:?}", result.err());
 
         let path = graph_path(dir_path);
         let graph = load_graph(&path).unwrap();
@@ -2633,158 +2346,16 @@ mod tests {
         assert_eq!(task.status, Status::Done);
     }
 
-    #[test]
-    fn test_done_defers_verify_when_task_has_children() {
-        let dir = tempdir().unwrap();
-        let dir_path = dir.path();
-
-        // This test covers the deprecated .verify-deferred-* autospawn path.
-        // Default is OFF as of 2026-04-17; the test enables it explicitly to
-        // continue exercising the code path for the users who still opt in.
-        std::fs::write(
-            dir_path.join("config.toml"),
-            "[coordinator]\nverify_autospawn_enabled = true\n",
-        )
-        .unwrap();
-
-        // Parent task with a verify command that would fail (children haven't done work yet)
-        let mut parent = make_task("parent", "Parent task", Status::InProgress);
-        parent.verify = Some("exit 1".to_string()); // would fail normally
-        parent.before = vec!["child-a".to_string(), "child-b".to_string()];
-
-        // Children depend on parent
-        let mut child_a = make_task("child-a", "Child A", Status::Open);
-        child_a.after = vec!["parent".to_string()];
-
-        let mut child_b = make_task("child-b", "Child B", Status::Open);
-        child_b.after = vec!["parent".to_string()];
-
-        setup_workgraph(dir_path, vec![parent, child_a, child_b]);
-
-        // Parent's `wg done` should succeed because verify is deferred
-        let result = run(dir_path, "parent", false, false);
-        assert!(
-            result.is_ok(),
-            "Parent with children should defer verify, got: {:?}",
-            result,
-        );
-
-        let path = graph_path(dir_path);
-        let graph = load_graph(&path).unwrap();
-
-        // Parent should be Done with verify cleared
-        let parent = graph.get_task("parent").unwrap();
-        assert_eq!(parent.status, Status::Done);
-        assert!(
-            parent.verify.is_none(),
-            "Parent verify should be cleared after deferral"
-        );
-
-        // Deferred verify task should exist
-        let deferred = graph.get_task(".verify-deferred-parent").unwrap();
-        assert_eq!(deferred.status, Status::Open);
-        assert_eq!(
-            deferred.verify,
-            Some("exit 1".to_string()),
-            "Deferred task should inherit parent's verify command"
-        );
-        assert!(
-            deferred.after.contains(&"child-a".to_string()),
-            "Deferred task should depend on child-a"
-        );
-        assert!(
-            deferred.after.contains(&"child-b".to_string()),
-            "Deferred task should depend on child-b"
-        );
-
-        // Parent log should mention deferral
-        let has_defer_log = parent
-            .log
-            .iter()
-            .any(|e| e.message.contains("Verify deferred"));
-        assert!(
-            has_defer_log,
-            "Parent log should mention verify deferral, got: {:?}",
-            parent.log.iter().map(|e| &e.message).collect::<Vec<_>>()
-        );
-
-        // Children should have .verify-deferred-parent in their before list
-        let child_a = graph.get_task("child-a").unwrap();
-        assert!(
-            child_a
-                .before
-                .contains(&".verify-deferred-parent".to_string()),
-            "child-a.before should include deferred task"
-        );
-    }
+    // Deferred verify tests removed — verify is deprecated and the
+    // verify_autospawn code path has been removed.
 
     #[test]
-    fn test_done_does_not_defer_verify_when_no_children() {
-        // Verify still runs inline when there are no children
+    fn test_done_verify_deprecated_parent_with_children() {
         let dir = tempdir().unwrap();
         let dir_path = dir.path();
-
-        let mut task = make_task("t1", "Solo task", Status::InProgress);
-        task.verify = Some("exit 0".to_string());
-        setup_workgraph(dir_path, vec![task]);
-
-        let result = run(dir_path, "t1", false, false);
-        assert!(result.is_ok());
-
-        let path = graph_path(dir_path);
-        let graph = load_graph(&path).unwrap();
-        let task = graph.get_task("t1").unwrap();
-        assert_eq!(task.status, Status::Done);
-        // No deferred task should exist
-        assert!(graph.get_task(".verify-deferred-t1").is_none());
-    }
-
-    #[test]
-    fn test_done_does_not_defer_verify_for_system_children_only() {
-        // System tasks (dot-prefixed) like .flip-*, .evaluate-* should not trigger deferral
-        let dir = tempdir().unwrap();
-        let dir_path = dir.path();
-
-        let mut parent = make_task("parent", "Parent", Status::InProgress);
-        parent.verify = Some("exit 0".to_string());
-        parent.before = vec![".flip-parent".to_string(), ".evaluate-parent".to_string()];
-
-        let mut flip = make_task(".flip-parent", "FLIP", Status::Open);
-        flip.after = vec!["parent".to_string()];
-
-        let mut eval = make_task(".evaluate-parent", "Evaluate", Status::Open);
-        eval.after = vec!["parent".to_string()];
-
-        setup_workgraph(dir_path, vec![parent, flip, eval]);
-
-        // Should run verify inline since only system children exist
-        let result = run(dir_path, "parent", false, false);
-        assert!(result.is_ok());
-
-        let path = graph_path(dir_path);
-        let graph = load_graph(&path).unwrap();
-        assert!(
-            graph.get_task(".verify-deferred-parent").is_none(),
-            "No deferred task for system-only children"
-        );
-    }
-
-    #[test]
-    fn test_done_deferred_verify_preserves_timeout() {
-        let dir = tempdir().unwrap();
-        let dir_path = dir.path();
-
-        // Deprecated-feature test (see test_done_defers_verify_when_task_has_children).
-        // Enable the autospawn explicitly to exercise the path.
-        std::fs::write(
-            dir_path.join("config.toml"),
-            "[coordinator]\nverify_autospawn_enabled = true\n",
-        )
-        .unwrap();
 
         let mut parent = make_task("parent", "Parent", Status::InProgress);
         parent.verify = Some("exit 1".to_string());
-        parent.verify_timeout = Some("30m".to_string());
         parent.before = vec!["child".to_string()];
 
         let mut child = make_task("child", "Child", Status::Open);
@@ -2792,16 +2363,13 @@ mod tests {
 
         setup_workgraph(dir_path, vec![parent, child]);
 
+        // Verify is deprecated; parent completes to Done even with failing verify
         let result = run(dir_path, "parent", false, false);
-        assert!(result.is_ok());
+        assert!(result.is_ok(), "verify should not block: {:?}", result.err());
 
         let path = graph_path(dir_path);
         let graph = load_graph(&path).unwrap();
-        let deferred = graph.get_task(".verify-deferred-parent").unwrap();
-        assert_eq!(
-            deferred.verify_timeout,
-            Some("30m".to_string()),
-            "Deferred task should inherit verify timeout"
-        );
+        let parent = graph.get_task("parent").unwrap();
+        assert_eq!(parent.status, Status::Done);
     }
 }

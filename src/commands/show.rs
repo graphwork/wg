@@ -1074,43 +1074,18 @@ mod tests {
     }
 
     #[test]
-    fn test_show_verify_failures_display() {
+    fn test_show_verify_deprecated_metadata() {
         let temp_dir = tempfile::TempDir::new().unwrap();
         let path = temp_dir.path().join("graph.jsonl");
         let mut graph = WorkGraph::new();
 
         let mut task = make_task("t1", "Verify task");
         task.verify = Some("cargo test".to_string());
-        task.verify_failures = 2;
         task.status = Status::InProgress;
         graph.add_node(Node::Task(task));
         workgraph::parser::save_graph(&graph, &path).unwrap();
 
-        // Should not panic and should succeed
-        let result = run(temp_dir.path(), "t1", false);
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_show_verify_circuit_breaker_tripped() {
-        let temp_dir = tempfile::TempDir::new().unwrap();
-        let path = temp_dir.path().join("graph.jsonl");
-        let mut graph = WorkGraph::new();
-
-        let mut task = make_task("t1", "CB task");
-        task.verify = Some("cargo test".to_string());
-        task.verify_failures = 3;
-        task.status = Status::Failed;
-        task.failure_reason = Some("Circuit breaker tripped".to_string());
-        task.log.push(workgraph::graph::LogEntry {
-            timestamp: "2026-01-01T00:00:00+00:00".to_string(),
-            actor: Some("verify-circuit-breaker".to_string()),
-            user: None,
-            message: "Circuit breaker tripped: verify command failed 3 times".to_string(),
-        });
-        graph.add_node(Node::Task(task));
-        workgraph::parser::save_graph(&graph, &path).unwrap();
-
+        // Verify is shown as deprecated metadata, should not panic
         let result = run(temp_dir.path(), "t1", false);
         assert!(result.is_ok());
     }
