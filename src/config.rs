@@ -2607,12 +2607,41 @@ pub struct CoordinatorConfig {
     #[serde(default = "default_coordinator_interval")]
     pub interval: u64,
 
-    /// Background poll interval in seconds for the service daemon safety net.
-    /// The daemon runs a coordinator tick on this slow interval even without
-    /// receiving any GraphChanged IPC events. Catches manual edits, lost events,
-    /// or external tools modifying the graph. Default: 60s.
-    #[serde(default = "default_poll_interval")]
+    /// Safety-timer interval (seconds) for the service daemon.
+    ///
+    /// With graph filesystem watching as the *primary* trigger, the dispatcher
+    /// loop is normally event-driven (`notify` watcher on `graph.jsonl`). This
+    /// safety timer fires on a slow schedule even when no graph events arrive,
+    /// so that purely time-based work (cycle_delay scheduling, agent heartbeat
+    /// reaping, registry refresh, compaction trigger checks) still progresses.
+    ///
+    /// Also serves as the *fallback poll interval* on filesystems where the
+    /// watcher cannot start (some NFS mounts, WSL1, certain sandbox FS): the
+    /// daemon then polls at this interval as the only trigger.
+    ///
+    /// Default: 30s. The forward-looking key name is `safety_interval`; the
+    /// legacy `poll_interval` continues to work as an alias.
+    #[serde(default = "default_poll_interval", alias = "safety_interval")]
     pub poll_interval: u64,
+
+    /// Enable filesystem watching of `graph.jsonl` as the primary dispatcher
+    /// trigger. When enabled (default), graph changes are detected via the
+    /// `notify` crate and the dispatcher wakes within ~debounce_ms of any
+    /// write — typically faster than `poll_interval`.
+    ///
+    /// When disabled, the dispatcher relies solely on the safety timer above
+    /// plus IPC `GraphChanged` events from `wg` CLI commands.
+    #[serde(default = "default_graph_watch_enabled")]
+    pub graph_watch_enabled: bool,
+
+    /// Debounce window (milliseconds) for the graph filesystem watcher.
+    ///
+    /// A single logical write (e.g. one `wg add`) often produces multiple
+    /// `write`/`fsync` syscalls visible to inotify. The debouncer collapses
+    /// events arriving within this window into one wake-up. Recommended range:
+    /// 50–200 ms. Values below 10 ms are clamped up. Default: 100 ms.
+    #[serde(default = "default_graph_watch_debounce_ms")]
+    pub graph_watch_debounce_ms: u64,
 
     /// Executor to use for spawned agents.
     /// When `None` (not set in config), `effective_executor()` auto-detects
@@ -2906,7 +2935,19 @@ fn default_coordinator_agent() -> bool {
 }
 
 fn default_poll_interval() -> u64 {
-    60
+    // Safety-timer interval (seconds). With graph watching enabled by default,
+    // the loop is event-driven; this is just the slow safety net. 30s is a
+    // good balance between catching missed events promptly and not waking the
+    // daemon constantly on idle systems.
+    30
+}
+
+fn default_graph_watch_enabled() -> bool {
+    true
+}
+
+fn default_graph_watch_debounce_ms() -> u64 {
+    100
 }
 
 fn default_compactor_interval() -> u32 {
@@ -3060,6 +3101,8 @@ impl Default for CoordinatorConfig {
             max_agents: default_max_agents(),
             interval: default_coordinator_interval(),
             poll_interval: default_poll_interval(),
+            graph_watch_enabled: default_graph_watch_enabled(),
+            graph_watch_debounce_ms: default_graph_watch_debounce_ms(),
             executor: None,
             model: None,
             provider: None,
@@ -3348,6 +3391,48 @@ fn strip_global_only_model_roles(
     }
 }
 
+/// A deprecated config key found in raw TOML, with a human-readable replacement
+/// suggestion the daemon can log on startup.
+///
+/// Use [`detect_deprecated_keys`] to scan a parsed `toml::Value` for legacy keys
+/// that the codebase still accepts via serde aliases but plans to retire.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeprecatedKey {
+    /// Dot-separated path of the deprecated key as it appears in TOML
+    /// (e.g. `"coordinator.poll_interval"`).
+    pub path: String,
+    /// Suggested replacement path the user should migrate to.
+    pub replacement: String,
+}
+
+/// Scan a (possibly merged) `toml::Value` for deprecated configuration keys.
+///
+/// Returns one entry per legacy key found anywhere in the document. The daemon
+/// uses this on startup to print one-shot deprecation warnings per legacy key,
+/// while still honoring the value via serde aliases.
+///
+/// Currently surfaces:
+/// - `[coordinator] poll_interval` → `[coordinator] safety_interval`
+/// - `[dispatcher] poll_interval` → `[dispatcher] safety_interval`
+pub fn detect_deprecated_keys(val: &toml::Value) -> Vec<DeprecatedKey> {
+    let mut found = Vec::new();
+    let table = match val.as_table() {
+        Some(t) => t,
+        None => return found,
+    };
+    for legacy_section in ["coordinator", "dispatcher"] {
+        if let Some(section) = table.get(legacy_section).and_then(|v| v.as_table())
+            && section.contains_key("poll_interval")
+        {
+            found.push(DeprecatedKey {
+                path: format!("{}.poll_interval", legacy_section),
+                replacement: format!("{}.safety_interval", legacy_section),
+            });
+        }
+    }
+    found
+}
+
 /// Walk a TOML Value table and record source per leaf key (dot-separated path).
 fn record_sources(
     val: &toml::Value,
@@ -3412,7 +3497,7 @@ impl Config {
 
     /// Load raw TOML value from a config file path.
     /// Returns empty table if file doesn't exist.
-    fn load_toml_value(path: &Path) -> anyhow::Result<toml::Value> {
+    pub fn load_toml_value(path: &Path) -> anyhow::Result<toml::Value> {
         if !path.exists() {
             return Ok(toml::Value::Table(toml::map::Map::new()));
         }

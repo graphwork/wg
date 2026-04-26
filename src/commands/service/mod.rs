@@ -124,6 +124,75 @@ pub fn log_file_path(dir: &Path) -> PathBuf {
     dir.join("service").join("daemon.log")
 }
 
+/// Create a self-pipe with both ends set to non-blocking and CLOEXEC.
+///
+/// Used by the daemon's main loop to wake `poll()` from a background thread
+/// (specifically: the graph filesystem watcher writes a byte when a debounced
+/// change arrives). Returns `(read_fd, write_fd)`.
+///
+/// Both ends are leaked into raw fds; the daemon owns them for the life of the
+/// process and never closes them explicitly (the kernel reaps them on exit).
+/// Non-blocking write means the watcher callback never stalls if the read end
+/// hasn't drained the previous wake.
+#[cfg(unix)]
+fn make_self_pipe() -> std::io::Result<(std::os::raw::c_int, std::os::raw::c_int)> {
+    let mut fds: [libc::c_int; 2] = [0; 2];
+    let rc = unsafe { libc::pipe(fds.as_mut_ptr()) };
+    if rc != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let r = fds[0];
+    let w = fds[1];
+    for fd in [r, w] {
+        unsafe {
+            let flags = libc::fcntl(fd, libc::F_GETFL);
+            if flags < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            if libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            // Best-effort CLOEXEC so child agents don't inherit it.
+            let cflags = libc::fcntl(fd, libc::F_GETFD);
+            if cflags >= 0 {
+                let _ = libc::fcntl(fd, libc::F_SETFD, cflags | libc::FD_CLOEXEC);
+            }
+        }
+    }
+    Ok((r, w))
+}
+
+/// Drain all bytes currently buffered on a non-blocking pipe read fd.
+///
+/// Returns the number of bytes drained. Used to clear graph-watcher wake
+/// signals after the daemon has handled them.
+#[cfg(unix)]
+fn drain_pipe(fd: std::os::raw::c_int) -> usize {
+    if fd < 0 {
+        return 0;
+    }
+    let mut buf = [0u8; 256];
+    let mut total = 0usize;
+    loop {
+        let n = unsafe {
+            libc::read(
+                fd,
+                buf.as_mut_ptr().cast::<libc::c_void>(),
+                buf.len() as libc::size_t,
+            )
+        };
+        if n <= 0 {
+            // 0 = EOF (pipe closed, write end gone); negative = error or EAGAIN.
+            break;
+        }
+        total += n as usize;
+        if (n as usize) < buf.len() {
+            break;
+        }
+    }
+    total
+}
+
 /// A simple file-based logger with timestamps and size-based rotation.
 ///
 /// The logger keeps one backup (`daemon.log.1`) and truncates when the active
@@ -1868,6 +1937,23 @@ pub fn run_daemon(
     // Load coordinator config strictly: invalid config must abort startup.
     let config = Config::load_merged(&dir)?;
 
+    // Surface legacy / deprecated config keys before we start the loop, so
+    // users see a one-shot warning per legacy key they're still using.
+    // This scans the merged TOML directly because by the time it lands in
+    // `Config`, serde aliases have collapsed the old and new names together.
+    let legacy_global = Config::global_config_path()
+        .ok()
+        .and_then(|p| Config::load_toml_value(&p).ok());
+    let legacy_local = Config::load_toml_value(&dir.join("config.toml")).ok();
+    for raw in [legacy_global, legacy_local].into_iter().flatten() {
+        for dep in workgraph::config::detect_deprecated_keys(&raw) {
+            logger.warn(&format!(
+                "Deprecated config key '{}' is still accepted; please rename to '{}'",
+                dep.path, dep.replacement,
+            ));
+        }
+    }
+
     // Validate configuration before starting
     let validation = config.validate_config();
     for diag in &validation.warnings {
@@ -2042,6 +2128,96 @@ pub fn run_daemon(
     // debouncing burst additions so the coordinator sees the full graph.
     let mut settling_deadline: Option<Instant> = None;
 
+    // Self-write quiet window: a coordinator tick can itself write the graph
+    // (status transitions, auto-assign placeholders, agency phases, etc.). Each
+    // such write triggers an inotify event that arrives ~debounce_ms later,
+    // which would re-wake us in a tight feedback loop. We track when those
+    // self-induced events are expected to land and silently drain them when
+    // they do.
+    //
+    // Window = (graph debounce) + slack for kernel/notify queue delay. External
+    // writes that happen *after* the quiet window expires still trigger a wake;
+    // external writes during the window are absorbed and picked up either by a
+    // later external write or by the safety timer (poll_interval).
+    let self_write_quiet_window = Duration::from_millis(
+        config
+            .coordinator
+            .graph_watch_debounce_ms
+            .saturating_add(150),
+    );
+    let mut self_write_quiet_until: Option<Instant> = None;
+
+    // ---- Graph filesystem watcher + self-pipe wakeup ----------------------
+    //
+    // The watcher runs in a background thread (spawned by notify) and observes
+    // writes to `graph.jsonl`. To wake the daemon's main poll() syscall as
+    // soon as a debounced event arrives, we use a self-pipe: the watcher
+    // writes one byte to the write end, which makes poll() return on the
+    // read end. The daemon then drains the pipe and treats it like a
+    // GraphChanged IPC event (sets the settling deadline).
+    //
+    // If the watcher fails to initialise (rare: NFS mounts, certain WSL
+    // setups), we log one warning and fall back to safety-timer-only polling.
+    // The pipe is created either way so the poll() call sites stay uniform.
+    let (graph_pipe_read_fd, graph_pipe_write_fd) = match make_self_pipe() {
+        Ok(pair) => pair,
+        Err(e) => {
+            logger.error(&format!(
+                "Failed to create graph watcher self-pipe: {} — proceeding with polling only",
+                e
+            ));
+            // Use sentinel -1 fds; poll() will skip them via revents stays 0
+            // because we'll mark them as non-watched in the pollfd array below.
+            (-1, -1)
+        }
+    };
+
+    let _graph_watcher: Option<workgraph::service::graph_watcher::GraphWatcher> =
+        if config.coordinator.graph_watch_enabled && graph_pipe_write_fd >= 0 {
+            let debounce_ms = config.coordinator.graph_watch_debounce_ms;
+            let graph_file = super::graph_path(&dir);
+            let pipe_w = graph_pipe_write_fd;
+            match workgraph::service::graph_watcher::GraphWatcher::start(
+                &graph_file,
+                Duration::from_millis(debounce_ms),
+                move || {
+                    // Best-effort wake: write one byte. EAGAIN means the pipe
+                    // is already non-empty (a previous wake hasn't been drained
+                    // yet) which is fine — that wake is still pending.
+                    let byte: u8 = 1;
+                    unsafe {
+                        libc::write(pipe_w, std::ptr::from_ref(&byte).cast::<libc::c_void>(), 1);
+                    }
+                },
+            ) {
+                Ok(watcher) => {
+                    logger.info(&format!(
+                        "Graph watcher active on {} (debounce={}ms, primary trigger; safety_interval={}s)",
+                        graph_file.display(),
+                        debounce_ms,
+                        daemon_cfg.poll_interval.as_secs(),
+                    ));
+                    Some(watcher)
+                }
+                Err(e) => {
+                    logger.warn(&format!(
+                        "Graph watcher init failed ({}); falling back to safety-timer polling at {}s",
+                        e,
+                        daemon_cfg.poll_interval.as_secs(),
+                    ));
+                    None
+                }
+            }
+        } else {
+            if !config.coordinator.graph_watch_enabled {
+                logger.info(&format!(
+                    "Graph watcher disabled (coordinator.graph_watch_enabled = false); using safety-timer polling at {}s",
+                    daemon_cfg.poll_interval.as_secs(),
+                ));
+            }
+            None
+        };
+
     // Urgent wake: when a UserChat IPC arrives, tick immediately without settling delay.
     // This flag bypasses both the settling delay and the paused state, because
     // chat is a user-facing interaction that expects sub-second acknowledgement.
@@ -2090,17 +2266,64 @@ pub fn run_daemon(
         // Floor: don't spin faster than 50ms even with a deadline in the past.
         poll_timeout_ms = poll_timeout_ms.max(50);
 
-        // Wait for an incoming connection or timeout.
-        let mut pollfd = libc::pollfd {
-            fd: listener_fd,
-            events: libc::POLLIN,
-            revents: 0,
-        };
-        let poll_ret = unsafe { libc::poll(&mut pollfd, 1, poll_timeout_ms) };
+        // Wait for an incoming connection, a graph-watcher wake, or timeout.
+        // pollfds[0] = unix socket listener; pollfds[1] = graph-watcher self-pipe.
+        // When the self-pipe fd is -1 (creation failed), libc::poll() returns
+        // POLLNVAL on it — we tolerate that and ignore the entry.
+        let mut pollfds = [
+            libc::pollfd {
+                fd: listener_fd,
+                events: libc::POLLIN,
+                revents: 0,
+            },
+            libc::pollfd {
+                fd: graph_pipe_read_fd,
+                events: if graph_pipe_read_fd >= 0 {
+                    libc::POLLIN
+                } else {
+                    0
+                },
+                revents: 0,
+            },
+        ];
+        let poll_ret = unsafe { libc::poll(pollfds.as_mut_ptr(), 2, poll_timeout_ms) };
 
         if poll_ret < 0 {
             // EINTR (e.g. SIGCHLD) — just loop back to reap and retry.
             continue;
+        }
+
+        // Drain any graph-watcher wakes and treat them as a GraphChanged event:
+        // schedule a settled tick. This is the primary trigger now; CLI commands
+        // sending IPC GraphChanged remain a redundant secondary trigger.
+        //
+        // Self-write filter: events that arrive while we're inside the post-tick
+        // quiet window are almost always echoes of writes the dispatcher itself
+        // just made. Drain them so the pipe doesn't stay readable, but don't
+        // schedule a tick.
+        if graph_pipe_read_fd >= 0 && (pollfds[1].revents & libc::POLLIN) != 0 {
+            let drained = drain_pipe(graph_pipe_read_fd);
+            let in_quiet = self_write_quiet_until
+                .as_ref()
+                .map(|q| Instant::now() < *q)
+                .unwrap_or(false);
+            if drained > 0 && !in_quiet {
+                let new_deadline = Instant::now() + daemon_cfg.settling_delay;
+                let was_pending = settling_deadline.is_some();
+                settling_deadline = Some(new_deadline);
+                if !was_pending {
+                    logger.info(&format!(
+                        "Graph file changed (fs watcher), scheduling dispatcher tick in {}ms (settling delay)",
+                        daemon_cfg.settling_delay.as_millis()
+                    ));
+                }
+            }
+            // Once we observe events past the quiet window, the dispatcher's
+            // own echoes are gone; clear the marker so it's not unnecessarily
+            // checked next iteration.
+            if !in_quiet {
+                self_write_quiet_until = None;
+            }
         }
 
         // Try to accept; may still get WouldBlock if poll was a timeout.
@@ -2311,6 +2534,16 @@ pub fn run_daemon(
         if should_tick {
             last_coordinator_tick = Instant::now();
 
+            // Open the self-write quiet window: any graph-watcher events that
+            // arrive between now and `tick_end + window` are very likely echoes
+            // of writes we're about to make ourselves (status transitions,
+            // agency-phase task creation, etc.). The pipe drain logic above
+            // silently absorbs them while this window is active. The window
+            // also stays open for a short slack past the tick so the debounced
+            // event (~debounce_ms after the tick's last write) is still inside
+            // it.
+            self_write_quiet_until = Some(Instant::now() + self_write_quiet_window);
+
             // Aggregate usage stats periodically
             match workgraph::usage::aggregate_usage_stats(&dir) {
                 Ok(count) if count > 0 => {
@@ -2370,6 +2603,14 @@ pub fn run_daemon(
 
                     // Registry refresh runs directly in the daemon and is time-gated.
                     run_registry_refresh(&dir, &mut refresh_error_count, &logger);
+
+                    // Re-arm the self-write quiet window after the tick: the
+                    // archival / registry-refresh phases above can also write
+                    // the graph, and inotify events for any of those writes
+                    // arrive ~debounce_ms later. We extend the window from
+                    // *now* so the post-tick wake gets absorbed even if the
+                    // tick itself was long-running.
+                    self_write_quiet_until = Some(Instant::now() + self_write_quiet_window);
                 }
                 Err(e) => {
                     coord_state.ticks += 1;
@@ -2378,6 +2619,7 @@ pub fn run_daemon(
                     }
                     coord_state.save(&dir);
                     logger.error(&format!("Coordinator tick error: {}", e));
+                    self_write_quiet_until = Some(Instant::now() + self_write_quiet_window);
                 }
             }
 
