@@ -3531,22 +3531,6 @@ fn spawn_agents_for_ready_tasks(
             continue;
         }
 
-        // Resolve executor: tasks with exec commands or exec_mode=shell use shell executor,
-        // otherwise: agent.executor > config.coordinator.executor
-        let agent_entity = task
-            .agent
-            .as_ref()
-            .and_then(|agent_hash| agency::find_agent_by_prefix(&agents_dir, agent_hash).ok());
-        let mut effective_executor =
-            if task.exec.is_some() || task.exec_mode.as_deref() == Some("shell") {
-                "shell".to_string()
-            } else {
-                agent_entity
-                    .as_ref()
-                    .map(|agent| agent.effective_executor().to_string())
-                    .unwrap_or_else(|| executor.to_string())
-            };
-
         // Resolve model per-task: system tasks use their respective role models,
         // all other tasks use the default (TaskAgent) model.
         let task_model = if task.id.starts_with(".assign-") {
@@ -3559,35 +3543,44 @@ fn spawn_agents_for_ready_tasks(
             default_model.map(String::from)
         };
 
-        // Auto-detect native executor for non-Anthropic models.
-        // If the resolved executor is "claude" but the effective model is a non-Anthropic
-        // model (e.g. "google/gemini-2.0-flash-001"), the Claude CLI won't be able to
-        // route it — switch to "native" executor which handles OpenRouter/OpenAI-compat.
-        if effective_executor == "claude" {
-            let effective_model_for_detect = task
-                .model
-                .as_deref()
-                .or(agent_entity
-                    .as_ref()
-                    .and_then(|a| a.preferred_model.as_deref()))
-                .or(task_model.as_deref());
-            if let Some(model) = effective_model_for_detect
-                && requires_native_executor(model, config)
-            {
-                // Log the model's context_window so operators can see what
-                // compaction_threshold the native coordinator will enforce.
-                let spec = workgraph::config::parse_model_spec(model);
-                let context_window = config
-                    .registry_lookup(&spec.model_id)
-                    .map(|e| e.context_window)
-                    .unwrap_or(0);
-                eprintln!(
-                    "[dispatcher] Model '{}' is non-Anthropic (context_window={}), switching executor from claude to native",
-                    model, context_window
+        // SINGLE SOURCE OF TRUTH: every spawn decision flows through plan_spawn.
+        // This is the ONLY place that decides {executor, model, endpoint} for
+        // a task spawn. The previous logic (auto-switching claude→native based
+        // on model) is gone: model never overrides an explicit executor floor.
+        let agent_entity = task
+            .agent
+            .as_ref()
+            .and_then(|agent_hash| agency::find_agent_by_prefix(&agents_dir, agent_hash).ok());
+        let agent_executor = agent_entity.as_ref().map(|a| a.effective_executor());
+        let plan = match workgraph::dispatch::plan_spawn(
+            task,
+            config,
+            agent_executor,
+            task_model.as_deref(),
+        ) {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("[dispatcher] plan_spawn failed for {}: {}", task.id, e);
+                record_spawn_failure(
+                    &gp,
+                    &task.id,
+                    &format!("plan_spawn: {}", e),
+                    "unknown",
+                    task.exec_mode.as_deref(),
+                    config.coordinator.max_spawn_failures,
                 );
-                effective_executor = "native".to_string();
+                continue;
             }
-        }
+        };
+        let effective_executor = plan.executor.as_str().to_string();
+
+        // Provenance: every spawn emits one line tracing each decision back to
+        // the config knob that produced it. Eliminates silent-routing bugs.
+        eprintln!(
+            "[dispatcher] {}: {}",
+            task.id,
+            plan.provenance.log_line(&plan)
+        );
         eprintln!(
             "[dispatcher] Spawning agent for: {} - {} (executor: {})",
             task.id, task.title, effective_executor
