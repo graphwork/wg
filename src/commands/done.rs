@@ -350,7 +350,13 @@ fn attempt_worktree_merge(wt: &WorktreeInfo, task_id: &str) -> Result<WorktreeMe
         if !commit_output.status.success() {
             let stderr = String::from_utf8_lossy(&commit_output.stderr);
             let stdout = String::from_utf8_lossy(&commit_output.stdout);
-            if stderr.contains("nothing to commit") || stdout.contains("nothing to commit") {
+            // "nothing to commit" is the message when git status finds no changes;
+            // "nothing added to commit" is the message when only untracked files exist.
+            // Both indicate the squash merge produced no diff (already on main).
+            let has_nothing_to_commit = |s: &str| {
+                s.contains("nothing to commit") || s.contains("nothing added to commit")
+            };
+            if has_nothing_to_commit(&stderr) || has_nothing_to_commit(&stdout) {
                 return Ok(WorktreeMergeResult::NoCommits);
             }
             anyhow::bail!("git commit failed: {}", stderr);
