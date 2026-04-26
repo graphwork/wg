@@ -43,28 +43,63 @@ fn handle_iteration_change(app: &mut VizApp) {
     }
 }
 
+/// Which arrow zone a click landed in within the iteration navigator.
+#[derive(Debug, PartialEq, Eq)]
+enum IterNavClickZone {
+    Left,
+    Right,
+    Middle,
+}
+
+/// Determine which zone of the right-aligned "◀ iter X/Y ▶" text was clicked.
+///
+/// `relative_col`: click column relative to the nav area's left edge.
+/// `area_width`: total width of the nav area.
+/// `current_display`: the current iteration number shown (1-based).
+/// `total`: total number of iterations (archives + 1).
+fn iter_nav_click_zone(
+    relative_col: usize,
+    area_width: usize,
+    current_display: usize,
+    total: usize,
+) -> IterNavClickZone {
+    let navigator_text = format!("◀ iter {}/{} ▶", current_display, total);
+    let text_len = navigator_text.chars().count();
+    let text_start = area_width.saturating_sub(text_len);
+
+    // ◀ is at text_start, space after it at text_start+1.
+    // ▶ is at area_width-1, space before it at area_width-2.
+    let left_zone_end = text_start + 1;
+    let right_zone_start = area_width.saturating_sub(2);
+
+    if relative_col <= left_zone_end {
+        IterNavClickZone::Left
+    } else if relative_col >= right_zone_start {
+        IterNavClickZone::Right
+    } else {
+        IterNavClickZone::Middle
+    }
+}
+
 /// Handle mouse clicks on the iteration navigator widget.
+///
+/// The rendered text "◀ iter X/Y ▶" is right-aligned within `last_iteration_nav_area`,
+/// so the actual character positions are offset from the area's left edge.
 fn handle_iteration_navigator_click(app: &mut VizApp, click_column: u16) {
     if app.iteration_archives.is_empty() {
-        return; // No iterations to navigate
+        return;
     }
 
     let nav_area = app.last_iteration_nav_area;
-    let relative_column = click_column.saturating_sub(nav_area.x);
+    let relative_column = click_column.saturating_sub(nav_area.x) as usize;
+    let w = nav_area.width as usize;
 
-    // Calculate click targets based on the navigator layout: "◀ iter 2/5 ▶"
-    // Left arrow is at position 0, right arrow is at the end
     let total = app.iteration_archives.len() + 1;
     let current_display = match app.viewing_iteration {
         None => total,
         Some(idx) => idx + 1,
     };
 
-    let navigator_text = format!("◀ iter {}/{} ▶", current_display, total);
-    let text_width = navigator_text.chars().count() as u16;
-    let right_arrow_pos = text_width.saturating_sub(1); // Position of ▶
-
-    // Determine navigation capabilities
     let can_go_prev = match app.viewing_iteration {
         None => !app.iteration_archives.is_empty(),
         Some(idx) => idx > 0,
@@ -74,8 +109,9 @@ fn handle_iteration_navigator_click(app: &mut VizApp, click_column: u16) {
         None => false,
     };
 
-    if relative_column == 0 && can_go_prev {
-        // Click on left arrow ◀
+    let zone = iter_nav_click_zone(relative_column, w, current_display, total);
+
+    if zone == IterNavClickZone::Left && can_go_prev {
         if app.iteration_prev() {
             handle_iteration_change(app);
             let total = app.iteration_archives.len() + 1;
@@ -85,8 +121,7 @@ fn handle_iteration_navigator_click(app: &mut VizApp, click_column: u16) {
             };
             app.push_toast(msg, super::state::ToastSeverity::Info);
         }
-    } else if relative_column == right_arrow_pos && can_go_next {
-        // Click on right arrow ▶
+    } else if zone == IterNavClickZone::Right && can_go_next {
         if app.iteration_next() {
             handle_iteration_change(app);
             let total = app.iteration_archives.len() + 1;
@@ -97,7 +132,6 @@ fn handle_iteration_navigator_click(app: &mut VizApp, click_column: u16) {
             app.push_toast(msg, super::state::ToastSeverity::Info);
         }
     }
-    // Clicks on the counter text (middle area) are ignored
 }
 
 /// Apply the current mouse capture state to the terminal.
@@ -3518,35 +3552,34 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
                 && app.right_panel_tab == RightPanelTab::Detail
             {
                 // Click on ◀ ▶ iteration navigation in Detail tab header.
+                // Layout (left-aligned): ◀ | padding | " iter X/Y " | padding | ▶
                 app.focused_panel = FocusedPanel::RightPanel;
-                let col = column.saturating_sub(app.last_iter_nav_area.x);
+                let col = column.saturating_sub(app.last_iter_nav_area.x) as usize;
                 let total = app.iteration_archives.len() + 1;
                 let usable_width = app.last_iter_nav_area.width.saturating_sub(2) as usize;
                 let center_len = format!(" iter {}/{} ", total, total).len();
-                let arrow_width = 2; // ◀ or ▶
+                let arrow_width = 2;
                 let gap = 2;
                 let side_width =
                     (usable_width.saturating_sub(center_len + arrow_width * 2 + gap * 2)) / 2;
+                let pad = side_width.max(1);
 
-                // ◀ is at position side_width (with leading space)
-                // ▶ is at position side_width + center_len + gap * 2 + arrow_width
-                let left_arrow_end = 1 + side_width;
-                let right_arrow_start = 1 + side_width + center_len + gap * 2;
+                // ◀ at 0, padding 1..pad, middle (pad+1)..(pad+center_len), padding, ▶
+                let left_zone_end = pad;
+                let right_zone_start = 1 + pad + center_len;
 
-                if usize::from(col) <= left_arrow_end {
-                    // Click on ◀: go to previous iteration
+                if col <= left_zone_end {
                     if app.iteration_prev() {
-                        app.load_hud_detail();
+                        handle_iteration_change(app);
                         let msg = match app.viewing_iteration {
                             Some(idx) => format!("Viewing iteration {}/{}", idx + 1, total),
                             None => format!("Viewing current ({}/{})", total, total),
                         };
                         app.push_toast(msg, super::state::ToastSeverity::Info);
                     }
-                } else if usize::from(col) >= right_arrow_start {
-                    // Click on ▶: go to next iteration
+                } else if col >= right_zone_start {
                     if app.iteration_next() {
-                        app.load_hud_detail();
+                        handle_iteration_change(app);
                         let msg = match app.viewing_iteration {
                             Some(idx) => format!("Viewing iteration {}/{}", idx + 1, total),
                             None => format!("Viewing current ({}/{})", total, total),
@@ -7072,5 +7105,122 @@ mod drilldown_tests {
         app.nav_stack.clear();
         app.right_panel_tab = RightPanelTab::Chat;
         assert!(app.nav_stack.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod iteration_nav_click_tests {
+    use super::*;
+
+    // Text "◀ iter 5/5 ▶" = 12 chars. total=5, current_display=5.
+
+    #[test]
+    fn left_arrow_zone_with_padding() {
+        // Area 15 wide, text 12 chars → text_start=3, left_zone_end=4.
+        assert_eq!(
+            iter_nav_click_zone(0, 15, 5, 5),
+            IterNavClickZone::Left,
+            "col 0 (before text) should be Left"
+        );
+        assert_eq!(
+            iter_nav_click_zone(3, 15, 5, 5),
+            IterNavClickZone::Left,
+            "col 3 (◀ position) should be Left"
+        );
+        assert_eq!(
+            iter_nav_click_zone(4, 15, 5, 5),
+            IterNavClickZone::Left,
+            "col 4 (space after ◀) should be Left"
+        );
+    }
+
+    #[test]
+    fn right_arrow_zone_with_padding() {
+        // Area 15, right_zone_start=13.
+        assert_eq!(
+            iter_nav_click_zone(13, 15, 5, 5),
+            IterNavClickZone::Right,
+            "col 13 (space before ▶) should be Right"
+        );
+        assert_eq!(
+            iter_nav_click_zone(14, 15, 5, 5),
+            IterNavClickZone::Right,
+            "col 14 (▶ position) should be Right"
+        );
+    }
+
+    #[test]
+    fn middle_zone() {
+        // Columns between left_zone_end (4) and right_zone_start (13) are Middle.
+        assert_eq!(
+            iter_nav_click_zone(5, 15, 5, 5),
+            IterNavClickZone::Middle,
+            "col 5 should be Middle"
+        );
+        assert_eq!(
+            iter_nav_click_zone(10, 15, 5, 5),
+            IterNavClickZone::Middle,
+            "col 10 should be Middle"
+        );
+        assert_eq!(
+            iter_nav_click_zone(12, 15, 5, 5),
+            IterNavClickZone::Middle,
+            "col 12 should be Middle"
+        );
+    }
+
+    #[test]
+    fn tight_area_exact_text_width() {
+        // Area exactly 12 wide = text width. text_start=0.
+        // left_zone_end=1, right_zone_start=10.
+        assert_eq!(
+            iter_nav_click_zone(0, 12, 5, 5),
+            IterNavClickZone::Left,
+            "col 0 (◀) should be Left"
+        );
+        assert_eq!(
+            iter_nav_click_zone(1, 12, 5, 5),
+            IterNavClickZone::Left,
+            "col 1 (space after ◀) should be Left"
+        );
+        assert_eq!(
+            iter_nav_click_zone(10, 12, 5, 5),
+            IterNavClickZone::Right,
+            "col 10 (space before ▶) should be Right"
+        );
+        assert_eq!(
+            iter_nav_click_zone(11, 12, 5, 5),
+            IterNavClickZone::Right,
+            "col 11 (▶) should be Right"
+        );
+        assert_eq!(
+            iter_nav_click_zone(5, 12, 5, 5),
+            IterNavClickZone::Middle,
+        );
+    }
+
+    #[test]
+    fn wide_area_zones_scale() {
+        // Area 30 wide, text 12 chars → text_start=18.
+        // left_zone_end=19, right_zone_start=28.
+        assert_eq!(iter_nav_click_zone(0, 30, 5, 5), IterNavClickZone::Left);
+        assert_eq!(iter_nav_click_zone(18, 30, 5, 5), IterNavClickZone::Left);
+        assert_eq!(iter_nav_click_zone(19, 30, 5, 5), IterNavClickZone::Left);
+        assert_eq!(iter_nav_click_zone(20, 30, 5, 5), IterNavClickZone::Middle);
+        assert_eq!(iter_nav_click_zone(27, 30, 5, 5), IterNavClickZone::Middle);
+        assert_eq!(iter_nav_click_zone(28, 30, 5, 5), IterNavClickZone::Right);
+        assert_eq!(iter_nav_click_zone(29, 30, 5, 5), IterNavClickZone::Right);
+    }
+
+    #[test]
+    fn different_iteration_counts() {
+        // "◀ iter 2/12 ▶" = 13 chars in area of 16.
+        // text_start=3, left_zone_end=4, right_zone_start=14.
+        assert_eq!(iter_nav_click_zone(3, 16, 2, 12), IterNavClickZone::Left);
+        assert_eq!(iter_nav_click_zone(4, 16, 2, 12), IterNavClickZone::Left);
+        assert_eq!(iter_nav_click_zone(5, 16, 2, 12), IterNavClickZone::Middle);
+        assert_eq!(iter_nav_click_zone(13, 16, 2, 12), IterNavClickZone::Middle);
+        assert_eq!(iter_nav_click_zone(14, 16, 2, 12), IterNavClickZone::Right);
+        assert_eq!(iter_nav_click_zone(15, 16, 2, 12), IterNavClickZone::Right);
     }
 }
