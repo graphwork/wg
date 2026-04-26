@@ -3249,31 +3249,65 @@ impl std::fmt::Display for ConfigSource {
     }
 }
 
-/// Deep-merge two TOML values. For (Table, Table) pairs, recursively merge
-/// with `local` keys overriding `global`. For all other cases, `local` wins.
-/// Rename a legacy top-level table key in-place so the merge logic and serde
-/// deserializer see only the canonical key. Used to migrate `[coordinator]` →
-/// `[dispatcher]` before merging.
-fn normalize_legacy_table(value: &mut toml::Value, legacy: &str, canonical: &str) {
+/// Single source of truth for legacy → canonical TOML section renames during
+/// deprecation windows. Format: `(legacy, canonical)`.
+///
+/// The merge logic (`load_merged`, `load_merged_toml_value`, `load_with_sources`)
+/// migrates each legacy key in-place via [`normalize_legacy_tables`] *before*
+/// merging, so a local `[dispatcher]` shadows a global `[coordinator]` and
+/// vice versa. To remove an alias once its deprecation window closes, just
+/// delete the entry from this slice.
+pub const LEGACY_SECTION_ALIASES: &[(&str, &str)] = &[("coordinator", "dispatcher")];
+
+/// Migrate legacy top-level TOML keys in `value` to their canonical names per
+/// [`LEGACY_SECTION_ALIASES`]. For each legacy key encountered, pushes one
+/// deprecation message into `warnings` (using `path_label` to identify the
+/// originating file).
+///
+/// When both the legacy and canonical keys are present at the top level, the
+/// canonical entry wins on conflicting subkeys; subkeys present only in the
+/// legacy entry are preserved.
+pub fn normalize_legacy_tables(
+    value: &mut toml::Value,
+    path_label: &str,
+    warnings: &mut Vec<String>,
+) {
     let Some(table) = value.as_table_mut() else {
         return;
     };
-    let Some(legacy_val) = table.remove(legacy) else {
-        return;
-    };
-    match table.remove(canonical) {
-        Some(canonical_val) => {
-            // Both present: canonical wins, but merge in any keys from legacy
-            // that are missing from canonical.
-            let merged = merge_toml(legacy_val, canonical_val);
-            table.insert(canonical.to_string(), merged);
-        }
-        None => {
-            table.insert(canonical.to_string(), legacy_val);
+    for (legacy, canonical) in LEGACY_SECTION_ALIASES {
+        let Some(legacy_val) = table.remove(*legacy) else {
+            continue;
+        };
+        warnings.push(format!(
+            "Deprecated: [{}] table is now [{}]; please rename in {}",
+            legacy, canonical, path_label
+        ));
+        match table.remove(*canonical) {
+            Some(canonical_val) => {
+                // Both present: canonical wins, but merge in any keys from
+                // legacy that are missing from canonical.
+                let merged = merge_toml(legacy_val, canonical_val);
+                table.insert(canonical.to_string(), merged);
+            }
+            None => {
+                table.insert(canonical.to_string(), legacy_val);
+            }
         }
     }
 }
 
+/// Print accumulated legacy-section deprecation warnings to stderr.
+/// Called at the tail of each `load_*` entry point so users see the message
+/// once per load (and per legacy file) instead of on every config field read.
+fn emit_legacy_warnings(warnings: &[String]) {
+    for w in warnings {
+        eprintln!("warning: {}", w);
+    }
+}
+
+/// Deep-merge two TOML values. For (Table, Table) pairs, recursively merge
+/// with `local` keys overriding `global`. For all other cases, `local` wins.
 pub fn merge_toml(global: toml::Value, local: toml::Value) -> toml::Value {
     match (global, local) {
         (toml::Value::Table(mut g), toml::Value::Table(l)) => {
@@ -3427,11 +3461,27 @@ impl Config {
     /// Load the merged TOML value (global + local) without deserializing.
     /// Useful for legacy code that needs raw TOML access to sections like
     /// `[native_executor]` while respecting the global → local merge chain.
+    ///
+    /// Legacy section names (per [`LEGACY_SECTION_ALIASES`]) are normalized to
+    /// their canonical form before merging, so callers always see the canonical
+    /// keys regardless of which file used the legacy name.
     pub fn load_merged_toml_value(workgraph_dir: &Path) -> anyhow::Result<toml::Value> {
         let global_path = Self::global_config_path()?;
         let local_path = workgraph_dir.join("config.toml");
-        let global_val = Self::load_toml_value(&global_path)?;
-        let local_val = Self::load_toml_value(&local_path)?;
+        let mut global_val = Self::load_toml_value(&global_path)?;
+        let mut local_val = Self::load_toml_value(&local_path)?;
+        let mut warnings = Vec::new();
+        normalize_legacy_tables(
+            &mut global_val,
+            &global_path.display().to_string(),
+            &mut warnings,
+        );
+        normalize_legacy_tables(
+            &mut local_val,
+            &local_path.display().to_string(),
+            &mut warnings,
+        );
+        emit_legacy_warnings(&warnings);
         Ok(merge_toml(global_val, local_val))
     }
 
@@ -3444,12 +3494,22 @@ impl Config {
         let mut global_val = Self::load_toml_value(&global_path)?;
         let mut local_val = Self::load_toml_value(&local_path)?;
 
-        // Migrate legacy `[coordinator]` to canonical `[dispatcher]` BEFORE
-        // merging, so callers don't end up with both keys in the merged value
-        // and serde isn't forced to pick one. (rename + alias on the field
-        // doesn't help when both keys are simultaneously present.)
-        normalize_legacy_table(&mut global_val, "coordinator", "dispatcher");
-        normalize_legacy_table(&mut local_val, "coordinator", "dispatcher");
+        // Migrate legacy section names (e.g. `[coordinator]` → `[dispatcher]`)
+        // BEFORE merging, so callers don't end up with both keys in the merged
+        // value and serde isn't forced to pick one. (rename + alias on the
+        // field doesn't help when both keys are simultaneously present.)
+        let mut warnings = Vec::new();
+        normalize_legacy_tables(
+            &mut global_val,
+            &global_path.display().to_string(),
+            &mut warnings,
+        );
+        normalize_legacy_tables(
+            &mut local_val,
+            &local_path.display().to_string(),
+            &mut warnings,
+        );
+        emit_legacy_warnings(&warnings);
 
         let agent_model_is_local = local_val
             .get("agent")
@@ -3738,8 +3798,27 @@ impl Config {
         let global_path = Self::global_config_path()?;
         let local_path = workgraph_dir.join("config.toml");
 
-        let global_val = Self::load_toml_value(&global_path)?;
-        let local_val = Self::load_toml_value(&local_path)?;
+        let mut global_val = Self::load_toml_value(&global_path)?;
+        let mut local_val = Self::load_toml_value(&local_path)?;
+
+        // Migrate legacy section names BEFORE recording sources, so the source
+        // map keys match the canonical field paths emitted by the merged
+        // serializer. Without this, a `[coordinator].executor = "native"` in
+        // global vs `[dispatcher].executor = "claude"` in local would land
+        // under two unrelated keys, and the merged display would only show
+        // one of them.
+        let mut warnings = Vec::new();
+        normalize_legacy_tables(
+            &mut global_val,
+            &global_path.display().to_string(),
+            &mut warnings,
+        );
+        normalize_legacy_tables(
+            &mut local_val,
+            &local_path.display().to_string(),
+            &mut warnings,
+        );
+        emit_legacy_warnings(&warnings);
 
         // Record sources: global first, then local overwrites
         let mut sources = BTreeMap::new();
@@ -7249,5 +7328,142 @@ fetch_max_chars = 16000
                 );
             }
         }
+    }
+
+    // ── Legacy section alias / merge tests ────────────────────────────
+    //
+    // Cover the rename-deprecation merge contract: when global and local
+    // disagree on which name they use for the same logical section, the
+    // *local* value must still win regardless of the spelling, and a
+    // one-time deprecation warning must fire for whichever file used the
+    // legacy name.
+
+    #[test]
+    fn test_local_dispatcher_overrides_global_coordinator() {
+        // Global uses legacy [coordinator]; local uses canonical [dispatcher].
+        // After normalization local must shadow global on overlapping keys.
+        let mut global: toml::Value = toml::from_str(
+            r#"
+[coordinator]
+executor = "native"
+max_agents = 2
+"#,
+        )
+        .unwrap();
+        let mut local: toml::Value = toml::from_str(
+            r#"
+[dispatcher]
+executor = "claude"
+"#,
+        )
+        .unwrap();
+
+        let mut warnings = Vec::new();
+        normalize_legacy_tables(&mut global, "global.toml", &mut warnings);
+        normalize_legacy_tables(&mut local, "local.toml", &mut warnings);
+
+        let merged = merge_toml(global, local);
+        let cfg: Config = merged.try_into().expect("merged must deserialize");
+
+        assert_eq!(
+            cfg.coordinator.effective_executor(),
+            "claude",
+            "local [dispatcher].executor must override global [coordinator].executor"
+        );
+        assert_eq!(
+            cfg.coordinator.max_agents, 2,
+            "global value must be preserved on subkeys local doesn't shadow"
+        );
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("[coordinator]") && w.contains("global.toml")),
+            "deprecation warning must mention legacy section + originating file, got {:?}",
+            warnings
+        );
+    }
+
+    #[test]
+    fn test_local_coordinator_overrides_global_dispatcher() {
+        // Reverse: global is fully migrated to [dispatcher]; local hasn't been
+        // updated yet and still uses [coordinator]. Local must still win.
+        let mut global: toml::Value = toml::from_str(
+            r#"
+[dispatcher]
+executor = "native"
+max_agents = 2
+"#,
+        )
+        .unwrap();
+        let mut local: toml::Value = toml::from_str(
+            r#"
+[coordinator]
+executor = "claude"
+"#,
+        )
+        .unwrap();
+
+        let mut warnings = Vec::new();
+        normalize_legacy_tables(&mut global, "global.toml", &mut warnings);
+        normalize_legacy_tables(&mut local, "local.toml", &mut warnings);
+
+        let merged = merge_toml(global, local);
+        let cfg: Config = merged.try_into().expect("merged must deserialize");
+
+        assert_eq!(
+            cfg.coordinator.effective_executor(),
+            "claude",
+            "local [coordinator].executor must override global [dispatcher].executor"
+        );
+        assert_eq!(cfg.coordinator.max_agents, 2);
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("[coordinator]") && w.contains("local.toml")),
+            "deprecation warning must mention legacy section + local file, got {:?}",
+            warnings
+        );
+    }
+
+    #[test]
+    fn test_deprecation_warning_fires_once_per_load() {
+        // A single normalization pass over a file with one legacy section
+        // pushes exactly one warning, and a follow-up pass over the now-
+        // migrated value pushes none. This is what guarantees `wg config
+        // show` doesn't spam the user with one warning per field-read.
+        let mut global: toml::Value = toml::from_str(
+            r#"
+[coordinator]
+executor = "native"
+"#,
+        )
+        .unwrap();
+
+        let mut warnings = Vec::new();
+        normalize_legacy_tables(&mut global, "/tmp/global.toml", &mut warnings);
+        assert_eq!(
+            warnings.len(),
+            1,
+            "exactly one warning per legacy section per file, got {:?}",
+            warnings
+        );
+        let msg = &warnings[0];
+        assert!(msg.contains("Deprecated"), "expected 'Deprecated' in {}", msg);
+        assert!(msg.contains("[coordinator]"), "expected legacy name in {}", msg);
+        assert!(msg.contains("[dispatcher]"), "expected canonical name in {}", msg);
+        assert!(
+            msg.contains("/tmp/global.toml"),
+            "expected file path in {}",
+            msg
+        );
+
+        // Once the legacy key is gone, a re-run is a no-op.
+        let mut warnings2 = Vec::new();
+        normalize_legacy_tables(&mut global, "/tmp/global.toml", &mut warnings2);
+        assert!(
+            warnings2.is_empty(),
+            "second pass must not re-warn after migration, got {:?}",
+            warnings2
+        );
     }
 }
