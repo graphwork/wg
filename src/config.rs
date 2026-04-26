@@ -24,8 +24,8 @@ pub struct Config {
     #[serde(default)]
     pub agent: AgentConfig,
 
-    /// Coordinator configuration
-    #[serde(default)]
+    /// Dispatcher configuration (canonical TOML key: `[dispatcher]`; legacy alias: `[coordinator]`)
+    #[serde(default, rename = "dispatcher", alias = "coordinator")]
     pub coordinator: CoordinatorConfig,
 
     /// Project metadata

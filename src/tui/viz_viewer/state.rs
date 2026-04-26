@@ -9259,13 +9259,13 @@ impl VizApp {
                                 self.switch_coordinator(cid as u32);
                                 self.right_panel_tab = RightPanelTab::Chat;
                                 self.push_toast(
-                                    format!("Coordinator {} created", cid),
+                                    format!("Chat {} created", cid),
                                     ToastSeverity::Info,
                                 );
                             }
                         } else {
                             self.push_toast(
-                                "New coordinator created".to_string(),
+                                "New chat created".to_string(),
                                 ToastSeverity::Info,
                             );
                         }
@@ -12208,7 +12208,7 @@ impl VizApp {
 
     /// On TUI startup, auto-create a coordinator labeled with the current
     /// WG_USER identity if none exists for that user. This ensures each user
-    /// gets their own coordinator managing their own agent budget.
+    /// gets their own chat agent managing their own agent budget.
     pub fn ensure_user_coordinator(&mut self) {
         let user = workgraph::current_user();
         // Don't auto-create for the fallback "unknown" identity
@@ -12216,40 +12216,39 @@ impl VizApp {
             return;
         }
 
-        let expected_title = format!("Coordinator: {}", user);
+        let expected_title = format!("Chat: {}", user);
+        let legacy_expected_title = format!("Coordinator: {}", user);
 
-        // Load the graph to check coordinator task titles directly.
+        // Load the graph to check chat task titles directly.
         // list_coordinator_ids_and_labels() returns display labels like "coord:N"
-        // which don't match the "Coordinator: {user}" title format.
+        // which don't match the "Chat: {user}" title format.
         let graph_path = self.workgraph_dir.join("graph.jsonl");
         let graph = workgraph::parser::load_graph(&graph_path).ok();
 
-        // Find a non-archived coordinator task whose title matches
+        // Find a non-archived chat task whose title matches (new or legacy)
         let existing_coord: Option<u32> = graph.as_ref().and_then(|g| {
             g.tasks()
-                .filter(|t| t.tags.iter().any(|tag| tag == "coordinator-loop"))
+                .filter(|t| t.tags.iter().any(|tag| workgraph::chat_id::is_chat_loop_tag(tag)))
                 .filter(|t| !matches!(t.status, workgraph::graph::Status::Abandoned))
                 .filter(|t| !t.tags.iter().any(|tag| tag == "archived"))
-                .filter(|t| t.title == expected_title)
+                .filter(|t| t.title == expected_title || t.title == legacy_expected_title)
                 .filter_map(|t| {
-                    t.id.strip_prefix(".coordinator-")
-                        .and_then(|s| s.parse::<u32>().ok())
-                        .or_else(|| {
-                            if t.id == ".coordinator" {
-                                Some(0)
-                            } else {
-                                None
-                            }
-                        })
+                    workgraph::chat_id::parse_chat_task_id(&t.id).or_else(|| {
+                        if t.id == ".coordinator" {
+                            Some(0)
+                        } else {
+                            None
+                        }
+                    })
                 })
                 .next()
         });
 
         if existing_coord.is_none() {
-            // No coordinator for this user — check if ANY coordinators exist
+            // No chat for this user — check if ANY chat agents exist
             let any_exist = graph.as_ref().is_some_and(|g| {
                 g.tasks().any(|t| {
-                    t.tags.iter().any(|tag| tag == "coordinator-loop")
+                    t.tags.iter().any(|tag| workgraph::chat_id::is_chat_loop_tag(tag))
                         && !matches!(t.status, workgraph::graph::Status::Abandoned)
                         && !t.tags.iter().any(|tag| tag == "archived")
                 })
@@ -12290,7 +12289,7 @@ impl VizApp {
         let alive = self.list_coordinator_ids_and_labels().len();
         if alive >= max {
             self.push_toast(
-                format!("Coordinator cap reached ({}/{})", alive, max),
+                format!("Chat cap reached ({}/{})", alive, max),
                 ToastSeverity::Warning,
             );
             return;
@@ -12357,7 +12356,7 @@ impl VizApp {
         let alive = self.list_coordinator_ids_and_labels().len();
         if alive >= max {
             self.push_toast(
-                format!("Coordinator cap reached ({}/{})", alive, max),
+                format!("Chat cap reached ({}/{})", alive, max),
                 ToastSeverity::Warning,
             );
             return;
@@ -12420,7 +12419,7 @@ impl VizApp {
         let alive = self.list_coordinator_ids_and_labels().len();
         if alive >= max {
             self.push_toast(
-                format!("Coordinator cap reached ({}/{})", alive, max),
+                format!("Chat cap reached ({}/{})", alive, max),
                 ToastSeverity::Warning,
             );
             return;

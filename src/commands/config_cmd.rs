@@ -69,7 +69,7 @@ pub fn show(dir: &Path, scope: Option<ConfigScope>, json: bool) -> Result<()> {
             println!("  max_tasks = {}", max);
         }
         println!();
-        println!("[coordinator]");
+        println!("[dispatcher]");
         println!("  max_agents = {}", config.coordinator.max_agents);
         println!(
             "  max_coordinators = {}",

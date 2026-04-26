@@ -169,7 +169,7 @@ pub fn format_summary(choices: &SetupChoices) -> String {
         format!("{}:{}", prefix, choices.model)
     };
 
-    lines.push("[coordinator]".to_string());
+    lines.push("[dispatcher]".to_string());
     lines.push(format!("  executor = \"{}\"", choices.executor));
     lines.push(format!("  model = \"{}\"", model_spec));
     lines.push(format!("  max_agents = {}", choices.max_agents));

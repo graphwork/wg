@@ -2150,7 +2150,7 @@ fn main() -> Result<()> {
             max_agents,
             coordinator_interval,
             poll_interval,
-            coordinator_executor,
+            dispatcher_executor,
             coordinator_model,
             coordinator_provider,
             matrix,
@@ -2402,7 +2402,7 @@ fn main() -> Result<()> {
                     && max_coordinators.is_none()
                     && coordinator_interval.is_none()
                     && poll_interval.is_none()
-                    && coordinator_executor.is_none()
+                    && dispatcher_executor.is_none()
                     && coordinator_model.is_none()
                     && coordinator_provider.is_none()
                     && auto_evaluate.is_none()
@@ -2444,7 +2444,7 @@ fn main() -> Result<()> {
                     max_coordinators,
                     coordinator_interval,
                     poll_interval,
-                    coordinator_executor.as_deref(),
+                    dispatcher_executor.as_deref(),
                     coordinator_model.as_deref(),
                     coordinator_provider.as_deref(),
                     auto_evaluate,
@@ -2561,7 +2561,7 @@ fn main() -> Result<()> {
                 interval,
                 model,
                 force,
-                no_coordinator_agent,
+                no_chat_agent,
             } => commands::service::run_start(
                 &workgraph_dir,
                 socket.as_deref(),
@@ -2572,7 +2572,7 @@ fn main() -> Result<()> {
                 model.as_deref(),
                 cli.json,
                 force,
-                no_coordinator_agent,
+                no_chat_agent,
             ),
             ServiceCommands::Stop { force, kill_agents } => {
                 commands::service::run_stop(&workgraph_dir, force, kill_agents, cli.json)
@@ -2607,7 +2607,7 @@ fn main() -> Result<()> {
                 executor.as_deref(),
                 model.as_deref(),
             ),
-            ServiceCommands::CreateCoordinator {
+            ServiceCommands::CreateChat {
                 name,
                 model,
                 executor,
@@ -2618,7 +2618,7 @@ fn main() -> Result<()> {
                 executor.as_deref(),
                 cli.json,
             ),
-            ServiceCommands::SetCoordinatorExecutor {
+            ServiceCommands::SetChatExecutor {
                 id,
                 executor,
                 model,
@@ -2629,16 +2629,16 @@ fn main() -> Result<()> {
                 model.as_deref(),
                 cli.json,
             ),
-            ServiceCommands::DeleteCoordinator { id } => {
+            ServiceCommands::DeleteChat { id } => {
                 commands::service::run_delete_coordinator(&workgraph_dir, id, cli.json)
             }
-            ServiceCommands::ArchiveCoordinator { id } => {
+            ServiceCommands::ArchiveChat { id } => {
                 commands::service::run_archive_coordinator(&workgraph_dir, id, cli.json)
             }
-            ServiceCommands::StopCoordinator { id } => {
+            ServiceCommands::StopChat { id } => {
                 commands::service::run_stop_coordinator(&workgraph_dir, id, cli.json)
             }
-            ServiceCommands::InterruptCoordinator { id } => {
+            ServiceCommands::InterruptChat { id } => {
                 commands::service::run_interrupt_coordinator(&workgraph_dir, id, cli.json)
             }
             ServiceCommands::Daemon {
@@ -2647,7 +2647,7 @@ fn main() -> Result<()> {
                 executor,
                 interval,
                 model,
-                no_coordinator_agent,
+                no_chat_agent,
             } => commands::service::run_daemon(
                 &workgraph_dir,
                 &socket,
@@ -2655,7 +2655,7 @@ fn main() -> Result<()> {
                 executor.as_deref(),
                 interval,
                 model.as_deref(),
-                no_coordinator_agent,
+                no_chat_agent,
             ),
         },
         Commands::Tui {
