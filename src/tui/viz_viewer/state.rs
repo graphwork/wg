@@ -860,6 +860,10 @@ pub struct FilterPicker {
     pub custom_text: String,
     /// Hint to show when items list is empty.
     pub empty_hint: String,
+    /// First visible filtered-row index (for scroll-window rendering).
+    /// Render code uses this + the rendered viewport to clamp; mouse
+    /// scroll handlers move this directly.
+    pub scroll_offset: usize,
 }
 
 impl FilterPicker {
@@ -874,6 +878,7 @@ impl FilterPicker {
             custom_active: false,
             custom_text: String::new(),
             empty_hint: String::new(),
+            scroll_offset: 0,
         }
     }
 
@@ -938,6 +943,9 @@ impl FilterPicker {
         if self.selected > 0 {
             self.selected -= 1;
         }
+        if self.selected < self.scroll_offset {
+            self.scroll_offset = self.selected;
+        }
     }
 
     /// Move selection down.
@@ -947,6 +955,18 @@ impl FilterPicker {
             self.selected += 1;
         }
     }
+
+    /// Scroll the viewport up by `n` rows (does not move selection).
+    pub fn scroll_up(&mut self, n: usize) {
+        self.scroll_offset = self.scroll_offset.saturating_sub(n);
+    }
+
+    /// Scroll the viewport down by `n` rows (does not move selection).
+    pub fn scroll_down(&mut self, n: usize) {
+        let max_offset = self.visible_count().saturating_sub(1);
+        self.scroll_offset = (self.scroll_offset + n).min(max_offset);
+    }
+
 
     /// Get the currently selected item's (id, description), or None if custom.
     pub fn selected_item(&self) -> Option<&(String, String)> {
@@ -1013,6 +1033,15 @@ pub enum LauncherSection {
     Recent,
 }
 
+/// What a row in a launcher FilterPicker maps to when clicked.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LauncherListHit {
+    /// Click selected the filtered list row at this index in `selected`-space.
+    Item(usize),
+    /// Click landed on the "Custom: ..." row (entry mode).
+    Custom,
+}
+
 /// State for the full-pane coordinator launcher.
 #[derive(Clone, Debug)]
 pub struct LauncherState {
@@ -1024,6 +1053,45 @@ pub struct LauncherState {
     pub endpoint_picker: FilterPicker,
     pub recent_list: Vec<workgraph::launcher_history::HistoryEntry>,
     pub recent_selected: usize,
+    /// Full unfiltered model catalog. The model_picker holds the
+    /// executor-filtered subset; we re-derive it on executor change.
+    pub all_models: Vec<(String, String)>,
+}
+
+/// Return models, ordered for the given `executor` (compatible-first).
+///
+/// Reorders so models known to be a "natural" fit for the executor appear
+/// at the top, but ALWAYS returns the full list — the user can still pick
+/// any model. A strict filter would trap users whose registry uses a
+/// different naming convention (e.g. `openrouter:claude-opus-4-6` with the
+/// `claude` executor) on a "Custom" row with no way to submit.
+///
+/// Recognized hints:
+/// - `claude`  → put `claude:*` and `*claude*` ids first
+/// - `codex`   → put `openai:*` first
+/// - `gemini`  → put `google:*` first
+/// - `native`/`amplifier` → no reorder (all models work via OAI-compat)
+pub fn filter_models_for_executor(
+    all_models: &[(String, String)],
+    executor: &str,
+) -> Vec<(String, String)> {
+    let needles: &[&str] = match executor {
+        "claude" => &["claude", "anthropic"],
+        "codex" => &["openai", "gpt"],
+        "gemini" => &["google", "gemini"],
+        _ => return all_models.to_vec(),
+    };
+    let mut compatible: Vec<(String, String)> = Vec::new();
+    let mut other: Vec<(String, String)> = Vec::new();
+    for m in all_models {
+        if needles.iter().any(|n| m.0.contains(n)) {
+            compatible.push(m.clone());
+        } else {
+            other.push(m.clone());
+        }
+    }
+    compatible.append(&mut other);
+    compatible
 }
 
 impl LauncherState {
@@ -1032,6 +1100,34 @@ impl LauncherState {
             .get(self.executor_selected)
             .map(|(name, _, _)| name.as_str())
             .unwrap_or("claude")
+    }
+
+    /// Rebuild `model_picker.items` for the current executor.
+    /// Preserves filter text + custom_text but resets selection + scroll.
+    pub fn refresh_model_filter_for_executor(&mut self) {
+        let executor = self.selected_executor().to_string();
+        let new_items = filter_models_for_executor(&self.all_models, &executor);
+        let preserved_filter = self.model_picker.filter.clone();
+        let preserved_custom = self.model_picker.custom_text.clone();
+        let hint = self.model_picker.empty_hint.clone();
+        let allow_custom = self.model_picker.allow_custom;
+        let mut new_picker = FilterPicker::new(new_items, allow_custom);
+        new_picker.empty_hint = hint;
+        new_picker.filter = preserved_filter;
+        new_picker.custom_text = preserved_custom;
+        new_picker.apply_filter();
+        self.model_picker = new_picker;
+    }
+
+    /// Move the executor cursor by `delta` (positive = down) and refresh
+    /// the model list. Returns true if executor selection changed.
+    pub fn select_executor(&mut self, idx: usize) -> bool {
+        if idx >= self.executor_list.len() || idx == self.executor_selected {
+            return false;
+        }
+        self.executor_selected = idx;
+        self.refresh_model_filter_for_executor();
+        true
     }
 
     pub fn show_endpoint(&self) -> bool {
@@ -4111,6 +4207,26 @@ pub struct VizApp {
     // ── Coordinator launcher ──
     /// Full-pane launcher state (replaces chat view when Some).
     pub launcher: Option<LauncherState>,
+    /// The full launcher pane area from the last render frame (for mouse hit-test).
+    pub last_launcher_area: Rect,
+    /// Hit area for the launcher's Name field (single line).
+    pub launcher_name_hit: Rect,
+    /// Per-row hit areas for executor list: (executor_idx, row Rect).
+    pub launcher_executor_hits: Vec<(usize, Rect)>,
+    /// Per-row hit areas for model list: (LauncherListHit, row Rect).
+    pub launcher_model_hits: Vec<(LauncherListHit, Rect)>,
+    /// Bounding area of the model picker rows (for scroll-wheel routing).
+    pub launcher_model_list_area: Rect,
+    /// Per-row hit areas for endpoint list: (LauncherListHit, row Rect).
+    pub launcher_endpoint_hits: Vec<(LauncherListHit, Rect)>,
+    /// Bounding area of the endpoint picker rows (for scroll-wheel routing).
+    pub launcher_endpoint_list_area: Rect,
+    /// Per-row hit areas for recent list: (recent_idx, row Rect).
+    pub launcher_recent_hits: Vec<(usize, Rect)>,
+    /// Hit area for the [Launch] button in the launcher footer.
+    pub launcher_launch_btn_hit: Rect,
+    /// Hit area for the [Cancel] button in the launcher footer.
+    pub launcher_cancel_btn_hit: Rect,
     /// State for the coordinator picker overlay.
     pub coordinator_picker: Option<CoordinatorPickerState>,
 
@@ -4527,6 +4643,16 @@ impl VizApp {
             inspector_sub_focus: InspectorSubFocus::ChatHistory,
             task_form: None,
             launcher: None,
+            last_launcher_area: Rect::default(),
+            launcher_name_hit: Rect::default(),
+            launcher_executor_hits: Vec::new(),
+            launcher_model_hits: Vec::new(),
+            launcher_model_list_area: Rect::default(),
+            launcher_endpoint_hits: Vec::new(),
+            launcher_endpoint_list_area: Rect::default(),
+            launcher_recent_hits: Vec::new(),
+            launcher_launch_btn_hit: Rect::default(),
+            launcher_cancel_btn_hit: Rect::default(),
             coordinator_picker: None,
             text_prompt: TextPromptState {
                 editor: new_emacs_editor(),
@@ -8754,6 +8880,16 @@ impl VizApp {
             inspector_sub_focus: InspectorSubFocus::ChatHistory,
             task_form: None,
             launcher: None,
+            last_launcher_area: Rect::default(),
+            launcher_name_hit: Rect::default(),
+            launcher_executor_hits: Vec::new(),
+            launcher_model_hits: Vec::new(),
+            launcher_model_list_area: Rect::default(),
+            launcher_endpoint_hits: Vec::new(),
+            launcher_endpoint_list_area: Rect::default(),
+            launcher_recent_hits: Vec::new(),
+            launcher_launch_btn_hit: Rect::default(),
+            launcher_cancel_btn_hit: Rect::default(),
             coordinator_picker: None,
             text_prompt: TextPromptState {
                 editor: new_emacs_editor(),
@@ -12301,7 +12437,7 @@ impl VizApp {
             .map(|e| (e.name.to_string(), e.description.to_string(), e.available))
             .collect();
 
-        let model_list =
+        let all_models =
             workgraph::models::load_model_choices_with_descriptions(&self.workgraph_dir);
 
         let endpoint_list: Vec<(String, String)> = config
@@ -12325,7 +12461,12 @@ impl VizApp {
             .or_else(|| executor_list.iter().position(|(_, _, avail)| *avail))
             .unwrap_or(0);
 
-        let model_picker = FilterPicker::new(model_list, true)
+        let initial_executor = executor_list
+            .get(default_executor_idx)
+            .map(|(name, _, _)| name.clone())
+            .unwrap_or_else(|| "claude".to_string());
+        let initial_models = filter_models_for_executor(&all_models, &initial_executor);
+        let model_picker = FilterPicker::new(initial_models, true)
             .with_hint("No models found. Check wg config --registry.");
         let endpoint_picker = FilterPicker::new(endpoint_list, true)
             .with_hint("No endpoints registered. wg endpoint add ... to add one.");
@@ -12339,6 +12480,7 @@ impl VizApp {
             endpoint_picker,
             recent_list,
             recent_selected: 0,
+            all_models,
         });
         self.input_mode = InputMode::Launcher;
     }
