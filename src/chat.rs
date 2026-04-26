@@ -1429,19 +1429,27 @@ pub fn load_history_segments(
     Ok(segments)
 }
 
-/// List coordinator IDs that have chat directories on disk.
+/// List active (non-archived) coordinator IDs from the session registry.
+///
+/// Uses `sessions.json` as the source of truth instead of scanning the
+/// filesystem. This prevents orphan chat dirs from being resurrected as
+/// coordinators on daemon restart.
 pub fn list_coordinator_ids(workgraph_dir: &Path) -> Vec<u32> {
-    let chat_dir = workgraph_dir.join("chat");
-    if !chat_dir.exists() {
-        return vec![];
-    }
+    let sessions = match crate::chat_sessions::list_active(workgraph_dir) {
+        Ok(s) => s,
+        Err(_) => return vec![],
+    };
     let mut ids = Vec::new();
-    if let Ok(entries) = fs::read_dir(&chat_dir) {
-        for entry in entries.flatten() {
-            if let Some(name) = entry.file_name().to_str()
-                && let Ok(id) = name.parse::<u32>()
+    for (_uuid, meta) in &sessions {
+        if meta.kind != crate::chat_sessions::SessionKind::Coordinator {
+            continue;
+        }
+        for alias in &meta.aliases {
+            if let Some(suffix) = alias.strip_prefix("coordinator-")
+                && let Ok(id) = suffix.parse::<u32>()
             {
                 ids.push(id);
+                break;
             }
         }
     }
@@ -2686,15 +2694,13 @@ mod tests {
     fn test_list_coordinator_ids() {
         let (_tmp, wg_dir) = setup();
 
-        // No chat dirs initially
+        // No sessions initially
         assert!(list_coordinator_ids(&wg_dir).is_empty());
 
-        // Create chat dirs for coordinators 0, 2, 5
-        fs::create_dir_all(wg_dir.join("chat").join("0")).unwrap();
-        fs::create_dir_all(wg_dir.join("chat").join("2")).unwrap();
-        fs::create_dir_all(wg_dir.join("chat").join("5")).unwrap();
-        // Non-numeric dir should be ignored
-        fs::create_dir_all(wg_dir.join("chat").join("not-a-number")).unwrap();
+        // Register coordinator sessions (this is the source of truth now)
+        crate::chat_sessions::register_coordinator_session(&wg_dir, 0).unwrap();
+        crate::chat_sessions::register_coordinator_session(&wg_dir, 2).unwrap();
+        crate::chat_sessions::register_coordinator_session(&wg_dir, 5).unwrap();
 
         let ids = list_coordinator_ids(&wg_dir);
         assert_eq!(ids, vec![0, 2, 5]);
@@ -2711,9 +2717,10 @@ mod tests {
     fn test_load_cross_coordinator_segments_finds_others() {
         let (_tmp, wg_dir) = setup();
 
-        // Create context summaries for coordinators 0, 1, 2
+        // Register coordinator sessions and create context summaries
         for cid in [0, 1, 2] {
-            let dir = wg_dir.join("chat").join(cid.to_string());
+            crate::chat_sessions::register_coordinator_session(&wg_dir, cid).unwrap();
+            let dir = chat_dir_for(&wg_dir, cid);
             fs::create_dir_all(&dir).unwrap();
             fs::write(
                 dir.join("context-summary.md"),
@@ -2744,12 +2751,16 @@ mod tests {
     fn test_load_cross_coordinator_segments_skips_empty() {
         let (_tmp, wg_dir) = setup();
 
+        // Register sessions first
+        crate::chat_sessions::register_coordinator_session(&wg_dir, 1).unwrap();
+        crate::chat_sessions::register_coordinator_session(&wg_dir, 2).unwrap();
+
         // Coordinator 1 has a summary, coordinator 2 has empty summary
-        let dir1 = wg_dir.join("chat").join("1");
+        let dir1 = chat_dir_for(&wg_dir, 1);
         fs::create_dir_all(&dir1).unwrap();
         fs::write(dir1.join("context-summary.md"), "Real content").unwrap();
 
-        let dir2 = wg_dir.join("chat").join("2");
+        let dir2 = chat_dir_for(&wg_dir, 2);
         fs::create_dir_all(&dir2).unwrap();
         fs::write(dir2.join("context-summary.md"), "  \n  ").unwrap();
 
@@ -2762,7 +2773,8 @@ mod tests {
         let (_tmp, wg_dir) = setup();
 
         for cid in [1, 2, 3] {
-            let dir = wg_dir.join("chat").join(cid.to_string());
+            crate::chat_sessions::register_coordinator_session(&wg_dir, cid).unwrap();
+            let dir = chat_dir_for(&wg_dir, cid);
             fs::create_dir_all(&dir).unwrap();
             fs::write(dir.join("context-summary.md"), format!("Summary {}", cid)).unwrap();
         }
@@ -3070,8 +3082,12 @@ mod tests {
     fn test_compose_history_browser_full_view() {
         let (_tmp, wg_dir) = setup();
 
+        // Register both coordinators in sessions.json
+        crate::chat_sessions::register_coordinator_session(&wg_dir, 0).unwrap();
+        crate::chat_sessions::register_coordinator_session(&wg_dir, 1).unwrap();
+
         // Coordinator 0: context summary + archives + active
-        let dir0 = wg_dir.join("chat").join("0");
+        let dir0 = chat_dir_for(&wg_dir, 0);
         fs::create_dir_all(&dir0).unwrap();
         fs::write(dir0.join("context-summary.md"), "Summary for coord 0").unwrap();
 
@@ -3080,7 +3096,7 @@ mod tests {
         append_inbox_for(&wg_dir, 0, "active", "req-2").unwrap();
 
         // Coordinator 1: has a context summary
-        let dir1 = wg_dir.join("chat").join("1");
+        let dir1 = chat_dir_for(&wg_dir, 1);
         fs::create_dir_all(&dir1).unwrap();
         fs::write(dir1.join("context-summary.md"), "Summary for coord 1").unwrap();
 

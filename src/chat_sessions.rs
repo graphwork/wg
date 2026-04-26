@@ -81,6 +81,11 @@ pub struct SessionMeta {
     /// when this is set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub forked_from: Option<String>,
+    /// When set, the session is archived: hidden from active listings,
+    /// chat dir moved to `chat/.archive/<uuid>/`. The value is an
+    /// ISO-8601 timestamp of when the archive happened.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archived_at: Option<String>,
 }
 
 /// The on-disk registry file shape.
@@ -181,6 +186,7 @@ pub fn create_session(
             aliases: aliases.to_vec(),
             label,
             forked_from: None,
+            archived_at: None,
         },
     );
     save(workgraph_dir, &reg)?;
@@ -271,6 +277,7 @@ pub fn fork_session(
             aliases: vec![alias.clone()],
             label: Some(format!("fork of: {}", parent_label)),
             forked_from: Some(source_uuid),
+            archived_at: None,
         },
     );
     save(workgraph_dir, &reg)?;
@@ -555,6 +562,109 @@ pub fn list(workgraph_dir: &Path) -> Result<Vec<(String, SessionMeta)>> {
     Ok(out)
 }
 
+/// Path to the archive directory for chat sessions.
+pub fn archive_dir(workgraph_dir: &Path) -> PathBuf {
+    workgraph_dir.join("chat").join(".archive")
+}
+
+/// Archive a session: move its chat dir to `chat/.archive/<uuid>/`
+/// and mark it as archived in the registry. The session stays in
+/// `sessions.json` (so restore works) but is hidden from active listings.
+///
+/// `reference` accepts UUID, UUID prefix, or alias.
+pub fn archive_session(workgraph_dir: &Path, reference: &str) -> Result<String> {
+    let uuid = resolve_ref(workgraph_dir, reference)?;
+    let mut reg = load(workgraph_dir).unwrap_or_default();
+    let meta = reg
+        .sessions
+        .get_mut(&uuid)
+        .ok_or_else(|| anyhow!("session {} not in registry", uuid))?;
+    if meta.archived_at.is_some() {
+        bail!("session {} is already archived", uuid);
+    }
+    meta.archived_at = Some(Utc::now().to_rfc3339());
+    save(workgraph_dir, &reg)?;
+
+    let src = chat_dir_for_uuid(workgraph_dir, &uuid);
+    if src.exists() {
+        let archive = archive_dir(workgraph_dir);
+        fs::create_dir_all(&archive)
+            .with_context(|| format!("create archive dir {:?}", archive))?;
+        let dst = archive.join(&uuid);
+        fs::rename(&src, &dst)
+            .with_context(|| format!("move {:?} -> {:?}", src, dst))?;
+    }
+    Ok(uuid)
+}
+
+/// Restore an archived session: move its chat dir back from
+/// `chat/.archive/<uuid>/` to `chat/<uuid>/` and clear the
+/// `archived_at` flag.
+pub fn restore_session(workgraph_dir: &Path, reference: &str) -> Result<String> {
+    let uuid = resolve_ref(workgraph_dir, reference)?;
+    let mut reg = load(workgraph_dir).unwrap_or_default();
+    let meta = reg
+        .sessions
+        .get_mut(&uuid)
+        .ok_or_else(|| anyhow!("session {} not in registry", uuid))?;
+    if meta.archived_at.is_none() {
+        bail!("session {} is not archived", uuid);
+    }
+    meta.archived_at = None;
+    save(workgraph_dir, &reg)?;
+
+    let archived_path = archive_dir(workgraph_dir).join(&uuid);
+    if archived_path.exists() {
+        let dst = chat_dir_for_uuid(workgraph_dir, &uuid);
+        fs::rename(&archived_path, &dst)
+            .with_context(|| format!("move {:?} -> {:?}", archived_path, dst))?;
+    }
+    Ok(uuid)
+}
+
+/// List only active (non-archived) sessions, sorted by creation time.
+pub fn list_active(workgraph_dir: &Path) -> Result<Vec<(String, SessionMeta)>> {
+    let reg = load(workgraph_dir)?;
+    let mut out: Vec<_> = reg
+        .sessions
+        .into_iter()
+        .filter(|(_, meta)| meta.archived_at.is_none())
+        .collect();
+    out.sort_by(|a, b| a.1.created.cmp(&b.1.created));
+    Ok(out)
+}
+
+/// List only archived sessions, sorted by archive time.
+pub fn list_archived(workgraph_dir: &Path) -> Result<Vec<(String, SessionMeta)>> {
+    let reg = load(workgraph_dir)?;
+    let mut out: Vec<_> = reg
+        .sessions
+        .into_iter()
+        .filter(|(_, meta)| meta.archived_at.is_some())
+        .collect();
+    out.sort_by(|a, b| a.1.created.cmp(&b.1.created));
+    Ok(out)
+}
+
+/// Check if an orphan chat dir (one without a sessions.json entry)
+/// exists. Used by daemon startup to detect stale dirs.
+pub fn is_orphan_chat_dir(workgraph_dir: &Path, dir_name: &str) -> bool {
+    let reg = load(workgraph_dir).unwrap_or_default();
+    // Check if it's a registered UUID
+    if reg.sessions.contains_key(dir_name) {
+        return false;
+    }
+    // Check if it resolves as an alias
+    if find_by_alias(&reg, dir_name).is_some() {
+        return false;
+    }
+    // Special dirs that aren't sessions
+    if dir_name == ".archive" || dir_name == "sessions.json" || dir_name == "sessions.json.tmp" {
+        return false;
+    }
+    true
+}
+
 /// Migrate an existing numeric coord dir (`chat/0`, `chat/1`, …) to a
 /// UUID-named dir with the corresponding `coordinator-N` alias.
 /// Idempotent — if `chat/N` is already a symlink into a UUID dir, it's
@@ -637,6 +747,7 @@ pub fn migrate_numeric_coord_dir(workgraph_dir: &Path, n: u32) -> Result<Option<
             aliases: vec![alias.clone(), numeric_alias.clone()],
             label: Some(format!("coordinator {} (migrated)", n)),
             forked_from: None,
+            archived_at: None,
         },
     );
     save(workgraph_dir, &reg)?;
@@ -754,6 +865,7 @@ mod tests {
                 aliases: vec![],
                 label: None,
                 forked_from: None,
+                archived_at: None,
             },
         );
         reg.sessions.insert(
@@ -764,6 +876,7 @@ mod tests {
                 aliases: vec![],
                 label: None,
                 forked_from: None,
+                archived_at: None,
             },
         );
         save(wg, &reg).unwrap();
@@ -1031,5 +1144,149 @@ mod tests {
 
         // And the `coordinator-0` alias also resolves.
         assert_eq!(resolve_ref(wg, "coordinator-0").unwrap(), uuid);
+    }
+
+    #[test]
+    fn archive_moves_chat_dir_and_marks_session() {
+        let dir = tempdir().unwrap();
+        let wg = dir.path();
+        let uuid = create_session(
+            wg,
+            SessionKind::Coordinator,
+            &["coordinator-3".into()],
+            Some("test coord".into()),
+        )
+        .unwrap();
+        let chat_dir = chat_dir_for_uuid(wg, &uuid);
+        fs::write(chat_dir.join("inbox.jsonl"), "test-message\n").unwrap();
+
+        // Archive it
+        let archived_uuid = archive_session(wg, "coordinator-3").unwrap();
+        assert_eq!(archived_uuid, uuid);
+
+        // Chat dir moved to .archive/
+        assert!(!chat_dir.exists(), "chat dir should be gone after archive");
+        let archived_path = archive_dir(wg).join(&uuid);
+        assert!(archived_path.exists(), ".archive/<uuid> should exist");
+        assert_eq!(
+            fs::read_to_string(archived_path.join("inbox.jsonl")).unwrap(),
+            "test-message\n"
+        );
+
+        // Registry marks it archived
+        let reg = load(wg).unwrap();
+        let meta = reg.sessions.get(&uuid).unwrap();
+        assert!(meta.archived_at.is_some());
+
+        // list_active should not include it
+        let active = list_active(wg).unwrap();
+        assert!(
+            !active.iter().any(|(u, _)| u == &uuid),
+            "archived session should not appear in active list"
+        );
+
+        // list_archived should include it
+        let archived = list_archived(wg).unwrap();
+        assert!(
+            archived.iter().any(|(u, _)| u == &uuid),
+            "archived session should appear in archived list"
+        );
+
+        // Alias still resolves (needed for restore)
+        assert_eq!(resolve_ref(wg, "coordinator-3").unwrap(), uuid);
+    }
+
+    #[test]
+    fn restore_moves_chat_dir_back() {
+        let dir = tempdir().unwrap();
+        let wg = dir.path();
+        let uuid = create_session(
+            wg,
+            SessionKind::Coordinator,
+            &["coordinator-5".into()],
+            None,
+        )
+        .unwrap();
+        let chat_dir = chat_dir_for_uuid(wg, &uuid);
+        fs::write(chat_dir.join("data.txt"), "important\n").unwrap();
+
+        // Archive then restore
+        archive_session(wg, "coordinator-5").unwrap();
+        assert!(!chat_dir.exists());
+
+        restore_session(wg, "coordinator-5").unwrap();
+        assert!(chat_dir.exists(), "chat dir should be back after restore");
+        assert_eq!(
+            fs::read_to_string(chat_dir.join("data.txt")).unwrap(),
+            "important\n"
+        );
+
+        // Registry clears archived_at
+        let reg = load(wg).unwrap();
+        let meta = reg.sessions.get(&uuid).unwrap();
+        assert!(meta.archived_at.is_none());
+
+        // Back in active list
+        let active = list_active(wg).unwrap();
+        assert!(active.iter().any(|(u, _)| u == &uuid));
+    }
+
+    #[test]
+    fn archive_already_archived_errors() {
+        let dir = tempdir().unwrap();
+        let wg = dir.path();
+        create_session(
+            wg,
+            SessionKind::Coordinator,
+            &["coordinator-7".into()],
+            None,
+        )
+        .unwrap();
+        archive_session(wg, "coordinator-7").unwrap();
+        let err = archive_session(wg, "coordinator-7").unwrap_err();
+        assert!(err.to_string().contains("already archived"));
+    }
+
+    #[test]
+    fn restore_non_archived_errors() {
+        let dir = tempdir().unwrap();
+        let wg = dir.path();
+        create_session(
+            wg,
+            SessionKind::Coordinator,
+            &["coordinator-9".into()],
+            None,
+        )
+        .unwrap();
+        let err = restore_session(wg, "coordinator-9").unwrap_err();
+        assert!(err.to_string().contains("not archived"));
+    }
+
+    #[test]
+    fn orphan_chat_dir_detected() {
+        let dir = tempdir().unwrap();
+        let wg = dir.path();
+
+        // Create a legitimate session
+        create_session(
+            wg,
+            SessionKind::Coordinator,
+            &["coordinator-0".into()],
+            None,
+        )
+        .unwrap();
+
+        // Create an orphan directory
+        let orphan = wg.join("chat").join("stale-orphan-dir");
+        fs::create_dir_all(&orphan).unwrap();
+
+        // The legitimate session is not an orphan
+        assert!(!is_orphan_chat_dir(wg, "coordinator-0"));
+
+        // The stale dir IS an orphan
+        assert!(is_orphan_chat_dir(wg, "stale-orphan-dir"));
+
+        // .archive is not an orphan
+        assert!(!is_orphan_chat_dir(wg, ".archive"));
     }
 }

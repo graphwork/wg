@@ -945,6 +945,10 @@ pub enum Commands {
         command: Option<ArchiveCommands>,
     },
 
+    /// Manage coordinator sessions (list, archive, restore)
+    #[command(subcommand, name = "coordinator")]
+    Coordinator(CoordinatorCommands),
+
     /// Garbage collect terminal tasks (failed, abandoned) from the graph,
     /// or orphaned worktrees under `.wg-worktrees/` with `--worktrees`.
     Gc {
@@ -2972,6 +2976,32 @@ pub enum ArchiveCommands {
 }
 
 #[derive(Subcommand)]
+pub enum CoordinatorCommands {
+    /// List coordinator sessions (active by default, --archived for archived)
+    List {
+        /// Show archived coordinators instead of active ones
+        #[arg(long)]
+        archived: bool,
+
+        /// Show all coordinators (active + archived)
+        #[arg(long)]
+        all: bool,
+    },
+
+    /// Archive a coordinator session (moves chat dir, hides from listings)
+    Archive {
+        /// Coordinator name (e.g., "coordinator-3" or just "3")
+        name: String,
+    },
+
+    /// Restore an archived coordinator session
+    Restore {
+        /// Coordinator name (e.g., "coordinator-3" or just "3")
+        name: String,
+    },
+}
+
+#[derive(Subcommand)]
 pub enum TraceCommands {
     /// Show the execution history of a task
     Show {
@@ -4297,6 +4327,7 @@ pub fn command_name(cmd: &Commands) -> &'static str {
         Commands::CriticalPath => "critical-path",
         Commands::Analyze => "analyze",
         Commands::Archive { .. } => "archive",
+        Commands::Coordinator { .. } => "coordinator",
         Commands::Gc { .. } => "gc",
         Commands::Show { .. } => "show",
         Commands::Trace { .. } => "trace",
@@ -4394,6 +4425,7 @@ pub fn supports_json(cmd: &Commands) -> bool {
             | Commands::CriticalPath
             | Commands::Analyze
             | Commands::Archive { .. }
+            | Commands::Coordinator { .. }
             | Commands::Gc { .. }
             | Commands::Show { .. }
             | Commands::Trace { .. }

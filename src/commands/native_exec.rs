@@ -167,6 +167,7 @@ pub fn run(
             aliases: vec![session_alias.clone()],
             label: Some(format!("task {}", task_id)),
             forked_from: None,
+            archived_at: None,
         }
     });
     let _ = workgraph::chat_sessions::save(workgraph_dir, &reg);

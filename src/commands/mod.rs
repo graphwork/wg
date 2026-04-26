@@ -32,6 +32,7 @@ pub mod codex_handler;
 pub mod compact;
 pub mod config_cmd;
 pub mod context;
+pub mod coordinator_cmd;
 pub mod coordinate;
 pub mod cost;
 pub mod critical_path;

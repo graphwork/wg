@@ -1262,19 +1262,20 @@ fn find_next_fresh_coordinator_id(graph: &workgraph::graph::WorkGraph, dir: &Pat
         }
     }
 
-    // Scan chat/coordinator-<N>/ dirs. The daemon auto-spawns
-    // coordinator-0 at startup before any graph task exists — without
-    // this scan, a subsequent CreateCoordinator would pick id 0 again
-    // and collide with the live handler.
-    let chat_root = dir.join("chat");
-    if let Ok(entries) = std::fs::read_dir(&chat_root) {
-        for entry in entries.flatten() {
-            let file_name = entry.file_name();
-            let name_str = file_name.to_string_lossy();
-            if let Some(suffix) = name_str.strip_prefix("coordinator-")
-                && let Ok(id) = suffix.parse::<u32>()
-            {
-                max_id = Some(max_id.map_or(id, |current_max| current_max.max(id)));
+    // Scan sessions.json for all coordinator aliases (active + archived).
+    // This replaces the old filesystem scan and catches archived
+    // coordinators whose chat dirs have been moved to .archive/.
+    if let Ok(reg) = workgraph::chat_sessions::load(dir) {
+        for meta in reg.sessions.values() {
+            if meta.kind != workgraph::chat_sessions::SessionKind::Coordinator {
+                continue;
+            }
+            for alias in &meta.aliases {
+                if let Some(suffix) = alias.strip_prefix("coordinator-")
+                    && let Ok(id) = suffix.parse::<u32>()
+                {
+                    max_id = Some(max_id.map_or(id, |current_max| current_max.max(id)));
+                }
             }
         }
     }
@@ -1459,7 +1460,9 @@ fn handle_delete_coordinator(dir: &Path, coordinator_id: u32) -> IpcResponse {
 }
 
 /// Handle ArchiveCoordinator IPC request.
-/// Like DeleteCoordinator but marks the coordinator task as Done instead of Abandoned.
+/// Marks the coordinator task as Done, tags it "archived", and
+/// archives the chat session (moves chat dir to `.archive/`, updates
+/// sessions.json) so it won't be resurrected on restart.
 fn handle_archive_coordinator(dir: &Path, coordinator_id: u32) -> IpcResponse {
     let graph_path = crate::commands::graph_path(dir);
     let task_id = format!(".coordinator-{}", coordinator_id);
@@ -1493,6 +1496,16 @@ fn handle_archive_coordinator(dir: &Path, coordinator_id: u32) -> IpcResponse {
     }
     if let Some(msg) = result_msg {
         return IpcResponse::error(&msg);
+    }
+
+    // Archive the chat session so the chat dir moves to .archive/
+    // and won't be resurrected on daemon restart.
+    let alias = format!("coordinator-{}", coordinator_id);
+    if let Err(e) = workgraph::chat_sessions::archive_session(dir, &alias) {
+        eprintln!(
+            "[ipc] Warning: coordinator {} task archived but chat session archive failed: {}",
+            coordinator_id, e
+        );
     }
 
     IpcResponse::success(serde_json::json!({

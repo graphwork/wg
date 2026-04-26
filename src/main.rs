@@ -1196,6 +1196,17 @@ fn main() -> Result<()> {
                 }
             }
         },
+        Commands::Coordinator(sub) => match sub {
+            cli::CoordinatorCommands::List { archived, all } => {
+                commands::coordinator_cmd::run_list(&workgraph_dir, archived, all, cli.json)
+            }
+            cli::CoordinatorCommands::Archive { name } => {
+                commands::coordinator_cmd::run_archive(&workgraph_dir, &name, cli.json)
+            }
+            cli::CoordinatorCommands::Restore { name } => {
+                commands::coordinator_cmd::run_restore(&workgraph_dir, &name, cli.json)
+            }
+        },
         Commands::Gc {
             dry_run,
             include_done,

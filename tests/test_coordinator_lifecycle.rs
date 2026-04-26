@@ -418,3 +418,119 @@ fn test_no_id_reuse_with_gaps() {
         "coordinator-4 is active"
     );
 }
+
+/// Regression: orphan chat dir (no sessions.json entry) must NOT be picked up
+/// by `list_coordinator_ids`. Previously, the function scanned the filesystem
+/// for numeric directories, which caused stale chat dirs to be resurrected as
+/// coordinators on daemon restart.
+#[test]
+fn test_orphan_chat_dir_not_resurrected() {
+    use std::fs;
+
+    let temp_dir = TempDir::new().unwrap();
+    let wg = temp_dir.path();
+
+    // Create a legitimate coordinator session via the registry
+    let _uuid = workgraph::chat_sessions::register_coordinator_session(wg, 0).unwrap();
+
+    // Create an orphan chat dir that has NO sessions.json entry —
+    // simulates a stale dir left behind after `wg abandon + wg gc`
+    let orphan_dir = wg.join("chat").join("coordinator-4");
+    fs::create_dir_all(&orphan_dir).unwrap();
+    fs::write(orphan_dir.join("inbox.jsonl"), "stale-data\n").unwrap();
+
+    // Also create a bare numeric orphan dir (old-style)
+    let orphan_numeric = wg.join("chat").join("7");
+    fs::create_dir_all(&orphan_numeric).unwrap();
+    fs::write(orphan_numeric.join("inbox.jsonl"), "stale-numeric\n").unwrap();
+
+    // list_coordinator_ids should ONLY return coordinator 0 (from sessions.json)
+    // and must NOT include 4 or 7 (orphan dirs with no registry entry)
+    let ids = workgraph::chat::list_coordinator_ids(wg);
+    assert_eq!(
+        ids,
+        vec![0],
+        "Only registered coordinators should appear — orphan dirs must be ignored. Got: {:?}",
+        ids
+    );
+
+    // Verify the orphan detection helper agrees
+    assert!(workgraph::chat_sessions::is_orphan_chat_dir(wg, "coordinator-4"));
+    assert!(workgraph::chat_sessions::is_orphan_chat_dir(wg, "7"));
+    assert!(!workgraph::chat_sessions::is_orphan_chat_dir(wg, "coordinator-0"));
+}
+
+/// Test that archived coordinators don't appear in list_coordinator_ids
+#[test]
+fn test_archived_coordinator_hidden_from_list() {
+    let temp_dir = TempDir::new().unwrap();
+    let wg = temp_dir.path();
+
+    // Register two coordinators
+    workgraph::chat_sessions::register_coordinator_session(wg, 0).unwrap();
+    workgraph::chat_sessions::register_coordinator_session(wg, 1).unwrap();
+
+    // Both should appear
+    let ids = workgraph::chat::list_coordinator_ids(wg);
+    assert_eq!(ids, vec![0, 1]);
+
+    // Archive coordinator 1
+    workgraph::chat_sessions::archive_session(wg, "coordinator-1").unwrap();
+
+    // Now only coordinator 0 should appear
+    let ids = workgraph::chat::list_coordinator_ids(wg);
+    assert_eq!(
+        ids,
+        vec![0],
+        "Archived coordinator should be hidden from list"
+    );
+
+    // Restore it
+    workgraph::chat_sessions::restore_session(wg, "coordinator-1").unwrap();
+
+    // Both should appear again
+    let ids = workgraph::chat::list_coordinator_ids(wg);
+    assert_eq!(ids, vec![0, 1]);
+}
+
+/// Full archive → service restart → no resurrection flow
+#[test]
+fn test_archive_survives_restart() {
+    use std::fs;
+
+    let temp_dir = TempDir::new().unwrap();
+    let wg = temp_dir.path();
+
+    // Setup: register coordinator-3 and write chat data
+    workgraph::chat_sessions::register_coordinator_session(wg, 3).unwrap();
+    let chat_dir = workgraph::chat::chat_dir_for_ref(wg, "coordinator-3");
+    fs::create_dir_all(&chat_dir).unwrap();
+    fs::write(chat_dir.join("inbox.jsonl"), "chat history\n").unwrap();
+
+    // Archive it
+    workgraph::chat_sessions::archive_session(wg, "coordinator-3").unwrap();
+
+    // Simulate daemon restart: list_coordinator_ids is called
+    let ids = workgraph::chat::list_coordinator_ids(wg);
+    assert!(
+        !ids.contains(&3),
+        "Archived coordinator must NOT appear after simulated restart"
+    );
+
+    // Chat data is preserved in .archive/
+    let archived_sessions = workgraph::chat_sessions::list_archived(wg).unwrap();
+    assert_eq!(archived_sessions.len(), 1);
+    let (uuid, _) = &archived_sessions[0];
+    let archived_data = fs::read_to_string(
+        workgraph::chat_sessions::archive_dir(wg)
+            .join(uuid)
+            .join("inbox.jsonl"),
+    )
+    .unwrap();
+    assert_eq!(archived_data, "chat history\n");
+
+    // Restore brings it back
+    workgraph::chat_sessions::restore_session(wg, "coordinator-3").unwrap();
+    let ids = workgraph::chat::list_coordinator_ids(wg);
+    assert!(ids.contains(&3), "Restored coordinator should be visible again");
+}
