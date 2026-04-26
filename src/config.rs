@@ -1096,9 +1096,12 @@ impl DispatchRole {
 
     /// Default quality tier for this role.
     ///
-    /// Metacognition/routing roles (assigner, compactor, triage, etc.) default to Fast
-    /// so they use haiku and don't burn budget on every dispatch. Only task_agent and
-    /// evolver get premium (opus) by default; creator and verification get standard (sonnet).
+    /// Metacognition/routing roles (assigner, compactor, triage, evaluator, etc.) default
+    /// to Fast so they use haiku and don't burn budget on every dispatch. TaskAgent runs
+    /// at Standard (sonnet) — typical implementation work. Evolver, Creator, and
+    /// Verification get Premium (opus) because they require strong reasoning:
+    /// evolver redesigns the agency, creator decomposes work into new tasks, and
+    /// verification is the correctness gate.
     pub fn default_tier(&self) -> Tier {
         match self {
             Self::Triage => Tier::Fast,
