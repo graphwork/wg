@@ -939,23 +939,23 @@ fn handle_launcher_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModifier
         }
     }
 
-    // Custom model input mode
-    if launcher.active_section == LauncherSection::Model && launcher.model_custom_active {
+    // Custom model input mode (via FilterPicker)
+    if launcher.active_section == LauncherSection::Model && launcher.model_picker.custom_active {
         match code {
             KeyCode::Esc => {
-                launcher.model_custom_active = false;
+                launcher.model_picker.exit_custom();
                 return;
             }
             KeyCode::Enter => {
-                if !launcher.model_custom.is_empty() {
+                if !launcher.model_picker.custom_text.is_empty() {
                     app.launch_from_launcher();
                 } else {
-                    launcher.model_custom_active = false;
+                    launcher.model_picker.exit_custom();
                 }
                 return;
             }
             KeyCode::Tab => {
-                launcher.model_custom_active = false;
+                launcher.model_picker.exit_custom();
                 if modifiers.contains(KeyModifiers::SHIFT) {
                     launcher.prev_section();
                 } else {
@@ -964,34 +964,36 @@ fn handle_launcher_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModifier
                 return;
             }
             KeyCode::Char(c) if !modifiers.contains(KeyModifiers::CONTROL) => {
-                launcher.model_custom.push(c);
+                launcher.model_picker.custom_text.push(c);
                 return;
             }
             KeyCode::Backspace => {
-                launcher.model_custom.pop();
+                launcher.model_picker.custom_text.pop();
                 return;
             }
             _ => return,
         }
     }
 
-    // Custom endpoint input mode
-    if launcher.active_section == LauncherSection::Endpoint && launcher.endpoint_custom_active {
+    // Custom endpoint input mode (via FilterPicker)
+    if launcher.active_section == LauncherSection::Endpoint
+        && launcher.endpoint_picker.custom_active
+    {
         match code {
             KeyCode::Esc => {
-                launcher.endpoint_custom_active = false;
+                launcher.endpoint_picker.exit_custom();
                 return;
             }
             KeyCode::Enter => {
-                if !launcher.endpoint_custom.is_empty() {
+                if !launcher.endpoint_picker.custom_text.is_empty() {
                     app.launch_from_launcher();
                 } else {
-                    launcher.endpoint_custom_active = false;
+                    launcher.endpoint_picker.exit_custom();
                 }
                 return;
             }
             KeyCode::Tab => {
-                launcher.endpoint_custom_active = false;
+                launcher.endpoint_picker.exit_custom();
                 if modifiers.contains(KeyModifiers::SHIFT) {
                     launcher.prev_section();
                 } else {
@@ -1000,14 +1002,66 @@ fn handle_launcher_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModifier
                 return;
             }
             KeyCode::Char(c) if !modifiers.contains(KeyModifiers::CONTROL) => {
-                launcher.endpoint_custom.push(c);
+                launcher.endpoint_picker.custom_text.push(c);
                 return;
             }
             KeyCode::Backspace => {
-                launcher.endpoint_custom.pop();
+                launcher.endpoint_picker.custom_text.pop();
                 return;
             }
             _ => return,
+        }
+    }
+
+    // Model section with filter: typing filters the list
+    if launcher.active_section == LauncherSection::Model {
+        match code {
+            KeyCode::Esc => {
+                if !launcher.model_picker.filter.is_empty() {
+                    launcher.model_picker.filter.clear();
+                    launcher.model_picker.apply_filter();
+                } else {
+                    app.close_launcher();
+                }
+                return;
+            }
+            KeyCode::Char(c)
+                if !modifiers.contains(KeyModifiers::CONTROL) && c != 'j' && c != 'k' =>
+            {
+                launcher.model_picker.type_char(c);
+                return;
+            }
+            KeyCode::Backspace => {
+                launcher.model_picker.backspace();
+                return;
+            }
+            _ => {} // fall through to generic key handling
+        }
+    }
+
+    // Endpoint section with filter: typing filters the list
+    if launcher.active_section == LauncherSection::Endpoint {
+        match code {
+            KeyCode::Esc => {
+                if !launcher.endpoint_picker.filter.is_empty() {
+                    launcher.endpoint_picker.filter.clear();
+                    launcher.endpoint_picker.apply_filter();
+                } else {
+                    app.close_launcher();
+                }
+                return;
+            }
+            KeyCode::Char(c)
+                if !modifiers.contains(KeyModifiers::CONTROL) && c != 'j' && c != 'k' =>
+            {
+                launcher.endpoint_picker.type_char(c);
+                return;
+            }
+            KeyCode::Backspace => {
+                launcher.endpoint_picker.backspace();
+                return;
+            }
+            _ => {} // fall through
         }
     }
 
@@ -1029,14 +1083,10 @@ fn handle_launcher_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModifier
                 }
             }
             LauncherSection::Model => {
-                if launcher.model_selected > 0 {
-                    launcher.model_selected -= 1;
-                }
+                launcher.model_picker.prev();
             }
             LauncherSection::Endpoint => {
-                if launcher.endpoint_selected > 0 {
-                    launcher.endpoint_selected -= 1;
-                }
+                launcher.endpoint_picker.prev();
             }
             LauncherSection::Recent => {
                 if launcher.recent_selected > 0 {
@@ -1053,17 +1103,10 @@ fn handle_launcher_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModifier
                 }
             }
             LauncherSection::Model => {
-                // +1 for custom entry at the end
-                let max = launcher.model_list.len(); // index == len means "custom"
-                if launcher.model_selected < max {
-                    launcher.model_selected += 1;
-                }
+                launcher.model_picker.next();
             }
             LauncherSection::Endpoint => {
-                let max = launcher.endpoint_list.len();
-                if launcher.endpoint_selected < max {
-                    launcher.endpoint_selected += 1;
-                }
+                launcher.endpoint_picker.next();
             }
             LauncherSection::Recent => {
                 let max = launcher.recent_list.len().saturating_sub(1);
@@ -1076,21 +1119,20 @@ fn handle_launcher_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModifier
         KeyCode::Enter => {
             match launcher.active_section {
                 LauncherSection::Model => {
-                    if launcher.model_selected >= launcher.model_list.len() {
-                        // "Custom" row selected — enter custom input mode
-                        launcher.model_custom_active = true;
+                    if launcher.model_picker.is_custom_selected() {
+                        launcher.model_picker.enter_custom();
                         return;
                     }
                 }
                 LauncherSection::Endpoint => {
-                    if launcher.endpoint_selected >= launcher.endpoint_list.len() {
-                        launcher.endpoint_custom_active = true;
+                    if launcher.endpoint_picker.is_custom_selected() {
+                        launcher.endpoint_picker.enter_custom();
                         return;
                     }
                 }
                 LauncherSection::Recent => {
-                    if let Some(entry) = launcher.recent_list.get(launcher.recent_selected) {
-                        // Populate fields from selected recent entry
+                    if let Some(entry) = launcher.recent_list.get(launcher.recent_selected).cloned()
+                    {
                         if let Some(pos) = launcher
                             .executor_list
                             .iter()
@@ -1099,36 +1141,15 @@ fn handle_launcher_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModifier
                             launcher.executor_selected = pos;
                         }
                         if let Some(ref model) = entry.model {
-                            if let Some(pos) =
-                                launcher.model_list.iter().position(|(id, _)| id == model)
-                            {
-                                launcher.model_selected = pos;
-                                launcher.model_custom_active = false;
-                            } else {
-                                launcher.model_custom = model.clone();
-                                launcher.model_selected = launcher.model_list.len();
-                                launcher.model_custom_active = false;
-                            }
+                            launcher.select_model_by_id(model);
                         }
                         if let Some(ref endpoint) = entry.endpoint {
-                            if let Some(pos) = launcher
-                                .endpoint_list
-                                .iter()
-                                .position(|(_, url)| url == endpoint)
-                            {
-                                launcher.endpoint_selected = pos;
-                                launcher.endpoint_custom_active = false;
-                            } else {
-                                launcher.endpoint_custom = endpoint.clone();
-                                launcher.endpoint_selected = launcher.endpoint_list.len();
-                                launcher.endpoint_custom_active = false;
-                            }
+                            launcher.select_endpoint_by_value(endpoint);
                         }
                     }
                 }
                 _ => {}
             }
-            // Launch the coordinator
             app.launch_from_launcher();
         }
         // Quick-select recent entries by number
@@ -1136,7 +1157,6 @@ fn handle_launcher_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModifier
             let idx = (c as usize) - ('1' as usize);
             if idx < launcher.recent_list.len() {
                 launcher.recent_selected = idx;
-                // Populate fields then launch
                 if let Some(entry) = launcher.recent_list.get(idx).cloned() {
                     if let Some(pos) = launcher
                         .executor_list
@@ -1146,26 +1166,10 @@ fn handle_launcher_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModifier
                         launcher.executor_selected = pos;
                     }
                     if let Some(ref model) = entry.model {
-                        if let Some(pos) =
-                            launcher.model_list.iter().position(|(id, _)| id == model)
-                        {
-                            launcher.model_selected = pos;
-                        } else {
-                            launcher.model_custom = model.clone();
-                            launcher.model_selected = launcher.model_list.len();
-                        }
+                        launcher.select_model_by_id(model);
                     }
                     if let Some(ref endpoint) = entry.endpoint {
-                        if let Some(pos) = launcher
-                            .endpoint_list
-                            .iter()
-                            .position(|(_, url)| url == endpoint)
-                        {
-                            launcher.endpoint_selected = pos;
-                        } else {
-                            launcher.endpoint_custom = endpoint.clone();
-                            launcher.endpoint_selected = launcher.endpoint_list.len();
-                        }
+                        launcher.select_endpoint_by_value(endpoint);
                     }
                 }
                 app.launch_from_launcher();
@@ -2550,8 +2554,13 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
             app.open_coordinator_picker();
         }
         // Chat tab: '+' opens the coordinator launcher pane (add new)
+        // With keyboard enhancement, Shift+Plus creates with defaults (fast path).
         KeyCode::Char('+') if app.right_panel_tab == RightPanelTab::Chat => {
-            app.open_launcher();
+            if app.has_keyboard_enhancement && modifiers.contains(KeyModifiers::SHIFT) {
+                app.create_coordinator_with_defaults();
+            } else {
+                app.open_launcher();
+            }
         }
         // Chat tab: '-' opens choice dialog for coordinator removal
         KeyCode::Char('-') if app.right_panel_tab == RightPanelTab::Chat => {
@@ -4338,6 +4347,11 @@ fn config_enter_edit(app: &mut VizApp) {
         ConfigEditKind::Choice(choices) => {
             let current = &app.config_panel.entries[idx].value;
             app.config_panel.choice_index = choices.iter().position(|c| c == current).unwrap_or(0);
+            let items: Vec<(String, String)> =
+                choices.iter().map(|c| (c.clone(), String::new())).collect();
+            let mut picker = super::state::FilterPicker::new(items, false);
+            picker = picker.with_selected_id(current);
+            app.config_panel.choice_picker = Some(picker);
             app.config_panel.editing = true;
             app.input_mode = InputMode::ConfigEdit;
         }
@@ -4383,27 +4397,117 @@ fn handle_config_edit_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModif
             }
             _ => {}
         },
-        ConfigEditKind::Choice(choices) => match code {
-            KeyCode::Esc => {
-                app.config_panel.editing = false;
-                app.input_mode = InputMode::Normal;
-            }
-            KeyCode::Enter => {
-                app.save_config_entry();
-                app.input_mode = InputMode::Normal;
-            }
-            KeyCode::Left | KeyCode::Char('h') => {
-                if app.config_panel.choice_index > 0 {
-                    app.config_panel.choice_index -= 1;
+        ConfigEditKind::Choice(_choices) => {
+            if let Some(ref mut picker) = app.config_panel.choice_picker {
+                match code {
+                    KeyCode::Esc => {
+                        if !picker.filter.is_empty() {
+                            picker.filter.clear();
+                            picker.apply_filter();
+                        } else {
+                            app.config_panel.choice_picker = None;
+                            app.config_panel.editing = false;
+                            app.input_mode = InputMode::Normal;
+                        }
+                    }
+                    KeyCode::Enter => {
+                        if let Some(item) = picker.selected_item() {
+                            let idx_in_choices = _choices
+                                .iter()
+                                .position(|c| c == &item.0)
+                                .unwrap_or(0);
+                            app.config_panel.choice_index = idx_in_choices;
+                        }
+                        app.config_panel.choice_picker = None;
+                        app.save_config_entry();
+                        app.input_mode = InputMode::Normal;
+                    }
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        picker.prev();
+                        if let Some(item) = picker.selected_item() {
+                            if let Some(idx_in_choices) =
+                                _choices.iter().position(|c| c == &item.0)
+                            {
+                                app.config_panel.choice_index = idx_in_choices;
+                            }
+                        }
+                    }
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        picker.next();
+                        if let Some(item) = picker.selected_item() {
+                            if let Some(idx_in_choices) =
+                                _choices.iter().position(|c| c == &item.0)
+                            {
+                                app.config_panel.choice_index = idx_in_choices;
+                            }
+                        }
+                    }
+                    KeyCode::Left | KeyCode::Char('h') => {
+                        picker.prev();
+                        if let Some(item) = picker.selected_item() {
+                            if let Some(idx_in_choices) =
+                                _choices.iter().position(|c| c == &item.0)
+                            {
+                                app.config_panel.choice_index = idx_in_choices;
+                            }
+                        }
+                    }
+                    KeyCode::Right | KeyCode::Char('l') => {
+                        picker.next();
+                        if let Some(item) = picker.selected_item() {
+                            if let Some(idx_in_choices) =
+                                _choices.iter().position(|c| c == &item.0)
+                            {
+                                app.config_panel.choice_index = idx_in_choices;
+                            }
+                        }
+                    }
+                    KeyCode::Char(c) if !modifiers.contains(KeyModifiers::CONTROL) => {
+                        picker.type_char(c);
+                        if let Some(item) = picker.selected_item() {
+                            if let Some(idx_in_choices) =
+                                _choices.iter().position(|c| c == &item.0)
+                            {
+                                app.config_panel.choice_index = idx_in_choices;
+                            }
+                        }
+                    }
+                    KeyCode::Backspace => {
+                        picker.backspace();
+                        if let Some(item) = picker.selected_item() {
+                            if let Some(idx_in_choices) =
+                                _choices.iter().position(|c| c == &item.0)
+                            {
+                                app.config_panel.choice_index = idx_in_choices;
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            } else {
+                match code {
+                    KeyCode::Esc => {
+                        app.config_panel.editing = false;
+                        app.input_mode = InputMode::Normal;
+                    }
+                    KeyCode::Enter => {
+                        app.save_config_entry();
+                        app.input_mode = InputMode::Normal;
+                    }
+                    KeyCode::Left | KeyCode::Char('h') => {
+                        if app.config_panel.choice_index > 0 {
+                            app.config_panel.choice_index -= 1;
+                        }
+                    }
+                    KeyCode::Right | KeyCode::Char('l') => {
+                        if app.config_panel.choice_index + 1 < _choices.len() {
+                            app.config_panel.choice_index += 1;
+                        }
+                    }
+                    _ => {}
                 }
             }
-            KeyCode::Right | KeyCode::Char('l') => {
-                if app.config_panel.choice_index + 1 < choices.len() {
-                    app.config_panel.choice_index += 1;
-                }
-            }
-            _ => {}
-        },
+        }
         ConfigEditKind::Toggle => {
             app.config_panel.editing = false;
             app.input_mode = InputMode::Normal;

@@ -5790,6 +5790,131 @@ fn draw_coordinator_picker(
     area
 }
 
+/// Render a FilterPicker into a list of Lines.
+/// Reused by the launcher (model/endpoint) and config panel (Choice fields).
+fn render_filter_picker(
+    picker: &super::state::FilterPicker,
+    active: bool,
+    w: usize,
+) -> Vec<Line<'static>> {
+    let mut lines: Vec<Line> = Vec::new();
+
+    // Filter input (shown only when active and filter has text or section is active)
+    if active && !picker.filter.is_empty() {
+        lines.push(Line::from(vec![
+            Span::styled("    Filter: ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                picker.filter.clone(),
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                "\u{2588}",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::SLOW_BLINK),
+            ),
+        ]));
+    } else if active {
+        lines.push(Line::from(Span::styled(
+            "    Type to filter...",
+            Style::default().fg(Color::DarkGray),
+        )));
+    }
+
+    if picker.items.is_empty() && !picker.empty_hint.is_empty() {
+        lines.push(Line::from(Span::styled(
+            format!("    {}", picker.empty_hint),
+            Style::default().fg(Color::DarkGray),
+        )));
+        return lines;
+    }
+
+    for (fi, &item_idx) in picker.filtered_indices.iter().enumerate() {
+        let (ref id, ref desc) = picker.items[item_idx];
+        let selected = active && fi == picker.selected && !picker.custom_active;
+        let bullet = if selected { " \u{25cf} " } else { " \u{25cb} " };
+        let style = if selected {
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::White)
+        };
+        let desc_short: String = desc.chars().take(w.saturating_sub(id.len() + 14)).collect();
+        if desc_short.is_empty() {
+            lines.push(Line::from(Span::styled(
+                format!("    {}{}", bullet, id),
+                style,
+            )));
+        } else {
+            lines.push(Line::from(vec![
+                Span::styled(format!("    {}{}", bullet, id), style),
+                Span::styled(
+                    format!("  {}", desc_short),
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ]));
+        }
+    }
+
+    // Show match count when filter is active
+    if !picker.filter.is_empty() {
+        let total = picker.items.len();
+        let shown = picker.filtered_indices.len();
+        if shown < total {
+            lines.push(Line::from(Span::styled(
+                format!("    ({}/{} matches)", shown, total),
+                Style::default().fg(Color::DarkGray),
+            )));
+        }
+    }
+
+    // Custom row
+    if picker.allow_custom {
+        let custom_selected = active && picker.is_custom_selected();
+        let custom_style = if picker.custom_active {
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD)
+        } else if custom_selected {
+            Style::default().fg(Color::Yellow)
+        } else {
+            Style::default().fg(Color::DarkGray)
+        };
+        let bullet = if custom_selected || picker.custom_active {
+            " \u{25cf} "
+        } else {
+            " \u{25cb} "
+        };
+        if picker.custom_active {
+            lines.push(Line::from(vec![
+                Span::styled(format!("    {}Custom: ", bullet), custom_style),
+                Span::raw(picker.custom_text.clone()),
+                Span::styled(
+                    "\u{2588}",
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::SLOW_BLINK),
+                ),
+            ]));
+        } else {
+            let display = if picker.custom_text.is_empty() {
+                "Custom: [enter value]".to_string()
+            } else {
+                format!("Custom: {}", picker.custom_text)
+            };
+            lines.push(Line::from(Span::styled(
+                format!("    {}{}", bullet, display),
+                custom_style,
+            )));
+        }
+    }
+
+    lines
+}
+
 fn draw_launcher_pane(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     use super::state::LauncherSection;
 
@@ -5911,7 +6036,7 @@ fn draw_launcher_pane(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     }
     lines.push(Line::from(""));
 
-    // Model section
+    // Model section (uses reusable FilterPicker renderer)
     let model_active = launcher.active_section == LauncherSection::Model;
     lines.push(Line::from(Span::styled(
         if model_active {
@@ -5921,70 +6046,10 @@ fn draw_launcher_pane(frame: &mut Frame, app: &mut VizApp, area: Rect) {
         },
         section_style(model_active),
     )));
-
-    for (i, (id, desc)) in launcher.model_list.iter().enumerate() {
-        let selected =
-            model_active && i == launcher.model_selected && !launcher.model_custom_active;
-        let bullet = if selected { " \u{25cf} " } else { " \u{25cb} " };
-        let style = if selected {
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(Color::White)
-        };
-        let desc_short: String = desc.chars().take(w.saturating_sub(id.len() + 14)).collect();
-        lines.push(Line::from(vec![
-            Span::styled(format!("    {}{}", bullet, id), style),
-            Span::styled(
-                format!("  {}", desc_short),
-                Style::default().fg(Color::DarkGray),
-            ),
-        ]));
-    }
-
-    // Custom model row
-    let custom_model_selected =
-        model_active && launcher.model_selected >= launcher.model_list.len();
-    let custom_style = if launcher.model_custom_active {
-        Style::default()
-            .fg(Color::Yellow)
-            .add_modifier(Modifier::BOLD)
-    } else if custom_model_selected {
-        Style::default().fg(Color::Yellow)
-    } else {
-        Style::default().fg(Color::DarkGray)
-    };
-    let custom_bullet = if custom_model_selected || launcher.model_custom_active {
-        " \u{25cf} "
-    } else {
-        " \u{25cb} "
-    };
-    if launcher.model_custom_active {
-        lines.push(Line::from(vec![
-            Span::styled(format!("    {}Custom: ", custom_bullet), custom_style),
-            Span::raw(&launcher.model_custom),
-            Span::styled(
-                "\u{2588}",
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::SLOW_BLINK),
-            ),
-        ]));
-    } else {
-        let custom_display = if launcher.model_custom.is_empty() {
-            "Custom: [enter model]".to_string()
-        } else {
-            format!("Custom: {}", launcher.model_custom)
-        };
-        lines.push(Line::from(Span::styled(
-            format!("    {}{}", custom_bullet, custom_display),
-            custom_style,
-        )));
-    }
+    lines.extend(render_filter_picker(&launcher.model_picker, model_active, w));
     lines.push(Line::from(""));
 
-    // Endpoint section (only for native executor)
+    // Endpoint section (only for native executor, uses reusable FilterPicker renderer)
     if launcher.show_endpoint() {
         let ep_active = launcher.active_section == LauncherSection::Endpoint;
         lines.push(Line::from(Span::styled(
@@ -5995,63 +6060,11 @@ fn draw_launcher_pane(frame: &mut Frame, app: &mut VizApp, area: Rect) {
             },
             section_style(ep_active),
         )));
-
-        for (i, (name, url)) in launcher.endpoint_list.iter().enumerate() {
-            let selected =
-                ep_active && i == launcher.endpoint_selected && !launcher.endpoint_custom_active;
-            let bullet = if selected { " \u{25cf} " } else { " \u{25cb} " };
-            let style = if selected {
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(Color::White)
-            };
-            lines.push(Line::from(vec![
-                Span::styled(format!("    {}{}", bullet, name), style),
-                Span::styled(format!("  {}", url), Style::default().fg(Color::DarkGray)),
-            ]));
-        }
-
-        // Custom endpoint row
-        let custom_ep_selected =
-            ep_active && launcher.endpoint_selected >= launcher.endpoint_list.len();
-        let custom_ep_style = if launcher.endpoint_custom_active {
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD)
-        } else if custom_ep_selected {
-            Style::default().fg(Color::Yellow)
-        } else {
-            Style::default().fg(Color::DarkGray)
-        };
-        let ep_bullet = if custom_ep_selected || launcher.endpoint_custom_active {
-            " \u{25cf} "
-        } else {
-            " \u{25cb} "
-        };
-        if launcher.endpoint_custom_active {
-            lines.push(Line::from(vec![
-                Span::styled(format!("    {}Custom: ", ep_bullet), custom_ep_style),
-                Span::raw(&launcher.endpoint_custom),
-                Span::styled(
-                    "\u{2588}",
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::SLOW_BLINK),
-                ),
-            ]));
-        } else {
-            let custom_display = if launcher.endpoint_custom.is_empty() {
-                "Custom: [enter URL]".to_string()
-            } else {
-                format!("Custom: {}", launcher.endpoint_custom)
-            };
-            lines.push(Line::from(Span::styled(
-                format!("    {}{}", ep_bullet, custom_display),
-                custom_ep_style,
-            )));
-        }
+        lines.extend(render_filter_picker(
+            &launcher.endpoint_picker,
+            ep_active,
+            w,
+        ));
         lines.push(Line::from(""));
     }
 
@@ -6105,7 +6118,7 @@ fn draw_launcher_pane(frame: &mut Frame, app: &mut VizApp, area: Rect) {
 
     // Footer with keybindings
     lines.push(Line::from(Span::styled(
-        "  [Tab] Section  [\u{2191}\u{2193}] Navigate  [Enter] Create  [Esc] Cancel",
+        "  [Tab] Section  [\u{2191}\u{2193}] Navigate  [type] Filter  [Enter] Create  [Esc] Cancel",
         Style::default().fg(Color::DarkGray),
     )));
 
@@ -8068,7 +8081,7 @@ fn draw_help_overlay(frame: &mut Frame) {
         blank(),
         heading("Chat Panel (coordinators)"),
         binding("~ / `", "Open coordinator picker"),
-        binding("+", "Add new coordinator"),
+        binding("+", "Add new coordinator (picker)"),
         binding("-", "Close/archive coordinator"),
         binding("[ / ]", "Prev / next coordinator"),
         binding("←/→", "Prev / next coordinator"),
@@ -8260,19 +8273,37 @@ fn draw_config_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
                     format!("[{}▏]", app.config_panel.edit_buffer)
                 }
                 ConfigEditKind::Choice(choices) => {
-                    let ci = app.config_panel.choice_index;
-                    choices
-                        .iter()
-                        .enumerate()
-                        .map(|(j, c)| {
-                            if j == ci {
-                                format!("[{}]", c)
-                            } else {
-                                c.clone()
-                            }
-                        })
-                        .collect::<Vec<_>>()
-                        .join(" ")
+                    if let Some(ref picker) = app.config_panel.choice_picker {
+                        let selected_label = picker
+                            .selected_item()
+                            .map(|(id, _)| id.as_str())
+                            .unwrap_or("");
+                        if picker.filter.is_empty() {
+                            format!("[{}] (type to filter)", selected_label)
+                        } else {
+                            format!(
+                                "[{}] filter: {} ({}/{})",
+                                selected_label,
+                                picker.filter,
+                                picker.filtered_indices.len(),
+                                picker.items.len()
+                            )
+                        }
+                    } else {
+                        let ci = app.config_panel.choice_index;
+                        choices
+                            .iter()
+                            .enumerate()
+                            .map(|(j, c)| {
+                                if j == ci {
+                                    format!("[{}]", c)
+                                } else {
+                                    c.clone()
+                                }
+                            })
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                    }
                 }
                 ConfigEditKind::Toggle => entry.value.clone(),
             }
@@ -8451,7 +8482,13 @@ fn draw_config_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
                 ConfigEditKind::TextInput | ConfigEditKind::SecretInput => {
                     "Enter: save  Esc: cancel"
                 }
-                ConfigEditKind::Choice(_) => "←/→: choose  Enter: save  Esc: cancel",
+                ConfigEditKind::Choice(_) => {
+                    if app.config_panel.choice_picker.is_some() {
+                        "↑/↓: choose  type: filter  Enter: save  Esc: cancel"
+                    } else {
+                        "←/→: choose  Enter: save  Esc: cancel"
+                    }
+                }
                 ConfigEditKind::Toggle => "Enter/Space: toggle",
             }
         } else {

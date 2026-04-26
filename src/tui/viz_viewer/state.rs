@@ -830,6 +830,179 @@ pub enum TextPromptAction {
     AttachFile,         // attach a file to the next chat message
 }
 
+// ════════════════��═════════════════════════════════════════════════════════════
+// Reusable FilterPicker — fuzzy-filterable list selector
+// ═══════════════════════════��══════════════════════════════════════════════════
+
+/// A reusable fuzzy-filterable list picker.
+///
+/// Used by the coordinator launcher (executor/model/endpoint selection)
+/// and the config panel (Choice fields). Supports:
+/// - Typing to fuzzy-filter the list
+/// - Arrow-key navigation within filtered results
+/// - Custom entry mode (type a freeform value)
+/// - Empty-list hint messages
+#[derive(Clone, Debug)]
+pub struct FilterPicker {
+    /// All available items: (id, description).
+    pub items: Vec<(String, String)>,
+    /// Current filter text (typed by the user).
+    pub filter: String,
+    /// Indices into `items` that match the current filter, sorted by score.
+    pub filtered_indices: Vec<usize>,
+    /// Selected index into `filtered_indices`.
+    pub selected: usize,
+    /// Whether custom freeform entry is allowed (shows a "Custom:" row).
+    pub allow_custom: bool,
+    /// Whether the user is currently typing a custom value.
+    pub custom_active: bool,
+    /// Custom value text buffer.
+    pub custom_text: String,
+    /// Hint to show when items list is empty.
+    pub empty_hint: String,
+}
+
+impl FilterPicker {
+    pub fn new(items: Vec<(String, String)>, allow_custom: bool) -> Self {
+        let filtered_indices: Vec<usize> = (0..items.len()).collect();
+        Self {
+            items,
+            filter: String::new(),
+            filtered_indices,
+            selected: 0,
+            allow_custom,
+            custom_active: false,
+            custom_text: String::new(),
+            empty_hint: String::new(),
+        }
+    }
+
+    pub fn with_hint(mut self, hint: &str) -> Self {
+        self.empty_hint = hint.to_string();
+        self
+    }
+
+    pub fn with_selected_id(mut self, id: &str) -> Self {
+        if let Some(pos) = self
+            .filtered_indices
+            .iter()
+            .position(|&i| self.items[i].0 == id)
+        {
+            self.selected = pos;
+        }
+        self
+    }
+
+    /// Apply fuzzy filter to items based on current filter text.
+    pub fn apply_filter(&mut self) {
+        if self.filter.is_empty() {
+            self.filtered_indices = (0..self.items.len()).collect();
+        } else {
+            let matcher = SkimMatcherV2::default();
+            let mut scored: Vec<(usize, i64)> = self
+                .items
+                .iter()
+                .enumerate()
+                .filter_map(|(i, (id, desc))| {
+                    let haystack = format!("{} {}", id, desc);
+                    matcher
+                        .fuzzy_match(&haystack, &self.filter)
+                        .map(|score| (i, score))
+                })
+                .collect();
+            scored.sort_by(|a, b| b.1.cmp(&a.1));
+            self.filtered_indices = scored.into_iter().map(|(i, _)| i).collect();
+        }
+        if self.selected >= self.visible_count() {
+            self.selected = self.visible_count().saturating_sub(1);
+        }
+    }
+
+    /// Number of visible items (filtered list + optional custom row).
+    pub fn visible_count(&self) -> usize {
+        let base = self.filtered_indices.len();
+        if self.allow_custom {
+            base + 1
+        } else {
+            base
+        }
+    }
+
+    /// Whether the selected index points to the custom row.
+    pub fn is_custom_selected(&self) -> bool {
+        self.allow_custom && self.selected >= self.filtered_indices.len()
+    }
+
+    /// Move selection up.
+    pub fn prev(&mut self) {
+        if self.selected > 0 {
+            self.selected -= 1;
+        }
+    }
+
+    /// Move selection down.
+    pub fn next(&mut self) {
+        let max = self.visible_count().saturating_sub(1);
+        if self.selected < max {
+            self.selected += 1;
+        }
+    }
+
+    /// Get the currently selected item's (id, description), or None if custom.
+    pub fn selected_item(&self) -> Option<&(String, String)> {
+        self.filtered_indices
+            .get(self.selected)
+            .and_then(|&i| self.items.get(i))
+    }
+
+    /// Get the effective value: selected item's id, or custom text.
+    pub fn value(&self) -> Option<String> {
+        if self.custom_active && !self.custom_text.is_empty() {
+            Some(self.custom_text.clone())
+        } else if self.is_custom_selected() {
+            if !self.custom_text.is_empty() {
+                Some(self.custom_text.clone())
+            } else {
+                None
+            }
+        } else {
+            self.selected_item().map(|(id, _)| id.clone())
+        }
+    }
+
+    /// Handle a character input: add to filter and re-filter.
+    pub fn type_char(&mut self, c: char) {
+        if self.custom_active {
+            self.custom_text.push(c);
+        } else {
+            self.filter.push(c);
+            self.apply_filter();
+        }
+    }
+
+    /// Handle backspace: remove from filter and re-filter.
+    pub fn backspace(&mut self) {
+        if self.custom_active {
+            self.custom_text.pop();
+        } else {
+            self.filter.pop();
+            self.apply_filter();
+        }
+    }
+
+    /// Enter custom entry mode.
+    pub fn enter_custom(&mut self) {
+        if self.allow_custom {
+            self.custom_active = true;
+        }
+    }
+
+    /// Exit custom entry mode.
+    pub fn exit_custom(&mut self) {
+        self.custom_active = false;
+    }
+}
+
 /// Which section of the launcher pane has keyboard focus.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LauncherSection {
@@ -847,14 +1020,8 @@ pub struct LauncherState {
     pub name: String,
     pub executor_list: Vec<(String, String, bool)>, // (name, description, available)
     pub executor_selected: usize,
-    pub model_list: Vec<(String, String)>, // (id, description)
-    pub model_selected: usize,
-    pub model_custom: String,
-    pub model_custom_active: bool,
-    pub endpoint_list: Vec<(String, String)>, // (name, url_or_desc)
-    pub endpoint_selected: usize,
-    pub endpoint_custom: String,
-    pub endpoint_custom_active: bool,
+    pub model_picker: FilterPicker,
+    pub endpoint_picker: FilterPicker,
     pub recent_list: Vec<workgraph::launcher_history::HistoryEntry>,
     pub recent_selected: usize,
 }
@@ -872,25 +1039,48 @@ impl LauncherState {
     }
 
     pub fn selected_model(&self) -> Option<String> {
-        if self.model_custom_active && !self.model_custom.is_empty() {
-            Some(self.model_custom.clone())
-        } else {
-            self.model_list
-                .get(self.model_selected)
-                .map(|(id, _)| id.clone())
-        }
+        self.model_picker.value()
     }
 
     pub fn selected_endpoint(&self) -> Option<String> {
         if !self.show_endpoint() {
             return None;
         }
-        if self.endpoint_custom_active && !self.endpoint_custom.is_empty() {
-            Some(self.endpoint_custom.clone())
+        self.endpoint_picker.value()
+    }
+
+    // Backward-compat accessors used by event.rs Recent-entry population
+    pub fn select_model_by_id(&mut self, id: &str) {
+        self.model_picker.filter.clear();
+        self.model_picker.apply_filter();
+        self.model_picker.custom_active = false;
+        if let Some(pos) = self
+            .model_picker
+            .filtered_indices
+            .iter()
+            .position(|&i| self.model_picker.items[i].0 == id)
+        {
+            self.model_picker.selected = pos;
         } else {
-            self.endpoint_list
-                .get(self.endpoint_selected)
-                .map(|(_, url)| url.clone())
+            self.model_picker.custom_text = id.to_string();
+            self.model_picker.selected = self.model_picker.filtered_indices.len();
+        }
+    }
+
+    pub fn select_endpoint_by_value(&mut self, val: &str) {
+        self.endpoint_picker.filter.clear();
+        self.endpoint_picker.apply_filter();
+        self.endpoint_picker.custom_active = false;
+        if let Some(pos) = self
+            .endpoint_picker
+            .filtered_indices
+            .iter()
+            .position(|&i| self.endpoint_picker.items[i].1 == val)
+        {
+            self.endpoint_picker.selected = pos;
+        } else {
+            self.endpoint_picker.custom_text = val.to_string();
+            self.endpoint_picker.selected = self.endpoint_picker.filtered_indices.len();
         }
     }
 
@@ -3149,6 +3339,8 @@ pub struct ConfigPanelState {
     pub edit_buffer: String,
     /// Selected choice index when editing a Choice entry.
     pub choice_index: usize,
+    /// Optional FilterPicker for Choice fields (fuzzy filtering).
+    pub choice_picker: Option<FilterPicker>,
     /// Notification message (e.g., "Saved!" shown briefly).
     pub save_notification: Option<std::time::Instant>,
     /// Which sections are collapsed.
@@ -11788,19 +11980,18 @@ impl VizApp {
             .or_else(|| executor_list.iter().position(|(_, _, avail)| *avail))
             .unwrap_or(0);
 
+        let model_picker = FilterPicker::new(model_list, true)
+            .with_hint("No models found. Check wg config --registry.");
+        let endpoint_picker = FilterPicker::new(endpoint_list, true)
+            .with_hint("No endpoints registered. wg endpoint add ... to add one.");
+
         self.launcher = Some(LauncherState {
             active_section: LauncherSection::Executor,
             name: String::new(),
             executor_list,
             executor_selected: default_executor_idx,
-            model_list,
-            model_selected: 0,
-            model_custom: String::new(),
-            model_custom_active: false,
-            endpoint_list,
-            endpoint_selected: 0,
-            endpoint_custom: String::new(),
-            endpoint_custom_active: false,
+            model_picker,
+            endpoint_picker,
             recent_list,
             recent_selected: 0,
         });
@@ -11874,6 +12065,21 @@ impl VizApp {
     pub fn close_launcher(&mut self) {
         self.launcher = None;
         self.input_mode = InputMode::Normal;
+    }
+
+    /// Create a coordinator with defaults (Shift+Plus shortcut, skips picker).
+    pub fn create_coordinator_with_defaults(&mut self) {
+        let config = Config::load_or_default(&self.workgraph_dir);
+        let max = config.coordinator.max_coordinators;
+        let alive = self.list_coordinator_ids_and_labels().len();
+        if alive >= max {
+            self.push_toast(
+                format!("Coordinator cap reached ({}/{})", alive, max),
+                ToastSeverity::Warning,
+            );
+            return;
+        }
+        self.create_coordinator(None);
     }
 
     /// Open the coordinator picker overlay.
@@ -20513,5 +20719,153 @@ mod test_claude_session {
         let cwd = Path::new("/nonexistent/path/that/wont/exist");
         let uuid = claude_session_uuid(cwd, "test-session");
         assert!(!claude_session_exists(cwd, &uuid));
+    }
+}
+
+#[cfg(test)]
+mod filter_picker_tests {
+    use super::FilterPicker;
+
+    fn sample_picker() -> FilterPicker {
+        FilterPicker::new(
+            vec![
+                ("claude:opus".into(), "Most capable".into()),
+                ("claude:sonnet".into(), "Balanced".into()),
+                ("claude:haiku".into(), "Fastest".into()),
+                ("openrouter:anthropic/claude".into(), "Via OpenRouter".into()),
+                ("openai:gpt-4o".into(), "OpenAI GPT-4o".into()),
+            ],
+            true,
+        )
+    }
+
+    #[test]
+    fn test_initial_state_shows_all() {
+        let picker = sample_picker();
+        assert_eq!(picker.filtered_indices.len(), 5);
+        assert_eq!(picker.selected, 0);
+        assert!(picker.filter.is_empty());
+    }
+
+    #[test]
+    fn test_fuzzy_filter_op() {
+        let mut picker = sample_picker();
+        picker.filter = "op".to_string();
+        picker.apply_filter();
+        let filtered_ids: Vec<&str> = picker
+            .filtered_indices
+            .iter()
+            .map(|&i| picker.items[i].0.as_str())
+            .collect();
+        assert!(filtered_ids.contains(&"claude:opus"));
+        assert!(filtered_ids.contains(&"openrouter:anthropic/claude"));
+        assert!(filtered_ids.contains(&"openai:gpt-4o"));
+        assert!(!filtered_ids.contains(&"claude:haiku"));
+    }
+
+    #[test]
+    fn test_filter_clear_restores_all() {
+        let mut picker = sample_picker();
+        picker.filter = "op".to_string();
+        picker.apply_filter();
+        assert!(picker.filtered_indices.len() < 5);
+
+        picker.filter.clear();
+        picker.apply_filter();
+        assert_eq!(picker.filtered_indices.len(), 5);
+    }
+
+    #[test]
+    fn test_navigation() {
+        let mut picker = sample_picker();
+        assert_eq!(picker.selected, 0);
+        picker.next();
+        assert_eq!(picker.selected, 1);
+        picker.next();
+        assert_eq!(picker.selected, 2);
+        picker.prev();
+        assert_eq!(picker.selected, 1);
+        picker.prev();
+        assert_eq!(picker.selected, 0);
+        picker.prev();
+        assert_eq!(picker.selected, 0); // clamp at 0
+    }
+
+    #[test]
+    fn test_custom_entry() {
+        let mut picker = sample_picker();
+        assert!(picker.allow_custom);
+        assert_eq!(picker.visible_count(), 6); // 5 items + 1 custom
+
+        // Navigate to custom row
+        for _ in 0..5 {
+            picker.next();
+        }
+        assert!(picker.is_custom_selected());
+
+        picker.enter_custom();
+        assert!(picker.custom_active);
+        picker.custom_text = "my-custom-model".to_string();
+        assert_eq!(picker.value(), Some("my-custom-model".to_string()));
+    }
+
+    #[test]
+    fn test_value_from_selection() {
+        let picker = sample_picker();
+        assert_eq!(picker.value(), Some("claude:opus".to_string()));
+    }
+
+    #[test]
+    fn test_with_selected_id() {
+        let picker = sample_picker().with_selected_id("claude:haiku");
+        assert_eq!(picker.selected, 2);
+    }
+
+    #[test]
+    fn test_type_char_filters() {
+        let mut picker = sample_picker();
+        picker.type_char('h');
+        picker.type_char('a');
+        picker.type_char('i');
+        assert_eq!(picker.filter, "hai");
+        let filtered_ids: Vec<&str> = picker
+            .filtered_indices
+            .iter()
+            .map(|&i| picker.items[i].0.as_str())
+            .collect();
+        assert!(filtered_ids.contains(&"claude:haiku"));
+    }
+
+    #[test]
+    fn test_backspace() {
+        let mut picker = sample_picker();
+        picker.type_char('h');
+        picker.type_char('a');
+        assert_eq!(picker.filter, "ha");
+        picker.backspace();
+        assert_eq!(picker.filter, "h");
+        picker.backspace();
+        assert_eq!(picker.filter, "");
+        assert_eq!(picker.filtered_indices.len(), 5);
+    }
+
+    #[test]
+    fn test_empty_hint() {
+        let picker = FilterPicker::new(vec![], false)
+            .with_hint("No endpoints registered. wg endpoint add ... to add one.");
+        assert!(picker.items.is_empty());
+        assert_eq!(
+            picker.empty_hint,
+            "No endpoints registered. wg endpoint add ... to add one."
+        );
+    }
+
+    #[test]
+    fn test_selected_clamps_on_filter() {
+        let mut picker = sample_picker();
+        picker.selected = 4; // last item
+        picker.filter = "opus".to_string();
+        picker.apply_filter();
+        assert!(picker.selected < picker.visible_count());
     }
 }
