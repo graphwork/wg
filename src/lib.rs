@@ -25,6 +25,7 @@ pub mod config;
 pub mod context_scope;
 pub mod cron;
 pub mod cycle;
+pub mod dispatch;
 pub mod executor;
 pub mod executor_discovery;
 pub mod federation;
