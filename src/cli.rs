@@ -558,6 +558,43 @@ pub enum Commands {
         preserve_session: bool,
     },
 
+    /// Batch-recover from credit-exhaustion / mass-failure (default: dry-run)
+    ///
+    /// Surveys failed tasks and resets them in one operation: retries
+    /// user-tasks, abandons agency followups so they regenerate from parents.
+    /// Without --yes this only prints the plan.
+    Recover {
+        /// Execute the plan (default: dry-run)
+        #[arg(long)]
+        yes: bool,
+
+        /// Filter clauses (repeatable, comma-separated). Examples:
+        /// `status=failed`, `tag=eval-scheduled`, `id-prefix=tui-`,
+        /// `attempts<=2`, `error~credit`
+        #[arg(long, value_name = "EXPR")]
+        filter: Vec<String>,
+
+        /// Override model on each user-task before retry (provider:model format)
+        #[arg(long, value_name = "MODEL")]
+        set_model: Option<String>,
+
+        /// Override endpoint on each user-task before retry
+        #[arg(long, value_name = "ENDPOINT")]
+        set_endpoint: Option<String>,
+
+        /// Don't abandon agency followups (`.evaluate-*` / `.flip-*` / `.assign-*` / `.verify-*`)
+        #[arg(long)]
+        keep_agency: bool,
+
+        /// Skip tasks whose attempt-count >= N (default: 5; protects against retry loops)
+        #[arg(long, default_value_t = 5)]
+        max_attempts: u32,
+
+        /// Reason for recovery — recorded as a log entry on each retried task
+        #[arg(long)]
+        reason: Option<String>,
+    },
+
     /// Requeue an in-progress task for failed-dependency triage (resets to open)
     Requeue {
         /// Task ID to requeue
@@ -4339,6 +4376,7 @@ pub fn command_name(cmd: &Commands) -> &'static str {
         Commands::Incomplete { .. } => "incomplete",
         Commands::Abandon { .. } => "abandon",
         Commands::Retry { .. } => "retry",
+        Commands::Recover { .. } => "recover",
         Commands::Requeue { .. } => "requeue",
         Commands::Approve { .. } => "approve",
         Commands::Reject { .. } => "reject",

@@ -87,6 +87,7 @@ pub mod quickstart;
 pub mod ready;
 pub mod reap;
 pub mod reclaim;
+pub mod recover;
 pub mod reject;
 pub mod replay;
 pub mod reprioritize;
