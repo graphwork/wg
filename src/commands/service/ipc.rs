@@ -327,6 +327,7 @@ fn handle_request(
                 &executor,
                 timeout.as_deref(),
                 model.as_deref(),
+                logger,
             );
             if !resp.ok {
                 logger.error(&format!(
@@ -583,22 +584,90 @@ fn handle_request(
     }
 }
 
-/// Handle spawn request
+/// Handle spawn request.
+///
+/// Routes through `workgraph::dispatch::plan_spawn` so the IPC spawn entry
+/// honors the same {executor, model, endpoint} precedence as the
+/// dispatcher tick. The IPC-passed `executor` is treated as a manual hint
+/// that plan_spawn consults at the `agent_executor` level (wins over
+/// `[dispatcher].executor` but loses to `task.exec` / `task.exec_mode`).
 fn handle_spawn(
     dir: &Path,
     task_id: &str,
     executor: &str,
     timeout: Option<&str>,
     model: Option<&str>,
+    logger: &DaemonLogger,
 ) -> IpcResponse {
-    // Use the spawn command implementation
-    match crate::commands::spawn::spawn_agent(dir, task_id, executor, timeout, model) {
+    let gp = graph_path(dir);
+    let graph = match load_graph(&gp) {
+        Ok(g) => g,
+        Err(e) => return IpcResponse::error(&format!("Failed to load graph: {}", e)),
+    };
+    let task = match graph.get_task(task_id) {
+        Some(t) => t.clone(),
+        None => return IpcResponse::error(&format!("Task '{}' not found", task_id)),
+    };
+
+    let config = Config::load_or_default(dir);
+
+    // Agency-derived executor wins over the IPC hint. If the task is bound
+    // to an agent, use that agent's effective_executor; otherwise fall
+    // back to the IPC-passed executor (`wg spawn --executor X`).
+    let agents_dir = dir.join("agency").join("cache/agents");
+    let agent_entity = task
+        .agent
+        .as_ref()
+        .and_then(|hash| workgraph::agency::find_agent_by_prefix(&agents_dir, hash).ok());
+    let agency_executor = agent_entity
+        .as_ref()
+        .map(|a| a.effective_executor().to_string());
+    let ipc_executor = if executor.is_empty() {
+        None
+    } else {
+        Some(executor.to_string())
+    };
+    let agent_executor_owned = agency_executor.or(ipc_executor);
+
+    // SINGLE SOURCE OF TRUTH: every spawn decision flows through plan_spawn.
+    let plan = match workgraph::dispatch::plan_spawn(
+        &task,
+        &config,
+        agent_executor_owned.as_deref(),
+        model,
+    ) {
+        Ok(p) => p,
+        Err(e) => {
+            let msg = format!("plan_spawn for {}: {}", task_id, e);
+            logger.error(&msg);
+            return IpcResponse::error(&msg);
+        }
+    };
+
+    // Provenance: every IPC-driven spawn emits one line tracing each
+    // decision back to the config knob that produced it.
+    logger.info(&format!(
+        "[ipc] {}: {}",
+        task_id,
+        plan.provenance.log_line(&plan)
+    ));
+
+    let resolved_executor = plan.executor.as_str().to_string();
+    let resolved_model = plan.model.raw.clone();
+
+    match crate::commands::spawn::spawn_agent(
+        dir,
+        task_id,
+        &resolved_executor,
+        timeout,
+        Some(&resolved_model),
+    ) {
         Ok((agent_id, pid)) => IpcResponse::success(serde_json::json!({
             "agent_id": agent_id,
             "pid": pid,
             "task_id": task_id,
-            "executor": executor,
-            "model": model,
+            "executor": resolved_executor,
+            "model": resolved_model,
         })),
         Err(e) => IpcResponse::error(&e.to_string()),
     }
