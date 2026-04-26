@@ -7186,18 +7186,6 @@ fn draw_status_bar(frame: &mut Frame, app: &VizApp, area: Rect) {
                 Style::default().fg(Color::DarkGray),
             ));
         }
-        if tc.show_compact && tc.compact_threshold > 0 {
-            let pct = (tc.compact_accumulated as f64 / tc.compact_threshold as f64 * 100.0) as u64;
-            cp.push(Span::styled(
-                format!(
-                    "C:{}/{}({}%)",
-                    format_tokens(tc.compact_accumulated),
-                    format_tokens(tc.compact_threshold),
-                    pct
-                ),
-                Style::default().fg(if pct >= 80 { Color::Red } else { Color::Blue }),
-            ));
-        }
         if !cp.is_empty() {
             spans.push(Span::styled("| ", Style::default().fg(Color::DarkGray)));
             for (i, p) in cp.into_iter().enumerate() {

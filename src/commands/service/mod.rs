@@ -582,6 +582,10 @@ impl CoordinatorState {
 
     /// Sum `accumulated_tokens` across all per-coordinator state files.
     /// Falls back to the legacy shared file when no per-ID files are found.
+    /// Currently exercised only by tests now that the graph-cycle compaction
+    /// widget has been retired; kept as a stable API for future per-chat
+    /// memory accounting.
+    #[allow(dead_code)]
     pub fn total_accumulated_tokens(dir: &Path) -> u64 {
         let service_dir = dir.join("service");
         let entries = match fs::read_dir(&service_dir) {
@@ -1528,14 +1532,12 @@ fn try_dispatch_notifications(dir: &Path, logger: &DaemonLogger) {
 /// Mark legacy daemon-managed graph tasks as abandoned.
 ///
 /// Older coordinator implementations represented daemon control flow as
-/// graph tasks (`.archive-*`, `.registry-refresh-*`, `.user-*`). These
-/// are abandoned to keep the control plane out of the graph.
+/// graph tasks (`.archive-*`, `.registry-refresh-*`, `.user-*`,
+/// `.compact-*`). These are abandoned to keep the control plane out of
+/// the graph.
 ///
-/// Coordinator tasks (`.coordinator-*`) are preserved because the TUI
-/// depends on them for coordinator discovery and tab restoration.
-///
-/// Note: `.compact-*` tasks are no longer managed here — compaction is
-/// now handled natively via the journal/compactor without graph control.
+/// Chat tasks (`.coordinator-*` / `.chat-*`) are preserved because the
+/// TUI depends on them for chat discovery and tab restoration.
 fn cleanup_legacy_daemon_tasks(dir: &Path, logger: &DaemonLogger) {
     let gp = graph_path(dir);
     let Ok(graph) = load_graph(&gp) else {
@@ -1544,10 +1546,11 @@ fn cleanup_legacy_daemon_tasks(dir: &Path, logger: &DaemonLogger) {
 
     let mut stale_ids = Vec::new();
     for task in graph.tasks() {
-        // Don't abandon coordinator tasks - TUI depends on them for coordinator discovery
+        // Don't abandon chat tasks - TUI depends on them for chat discovery
         let is_legacy = task.id.starts_with(".archive-")
             || task.id.starts_with(".registry-refresh-")
-            || task.id.starts_with(".user-");
+            || task.id.starts_with(".user-")
+            || task.id.starts_with(".compact-");
         if is_legacy && task.status != workgraph::graph::Status::Abandoned {
             stale_ids.push(task.id.clone());
         }
@@ -1558,6 +1561,9 @@ fn cleanup_legacy_daemon_tasks(dir: &Path, logger: &DaemonLogger) {
     }
 
     let ids_for_log = stale_ids.clone();
+    let has_compact_or_archive = stale_ids
+        .iter()
+        .any(|id| id.starts_with(".compact-") || id.starts_with(".archive-"));
     match workgraph::parser::modify_graph(&gp, |graph| {
         let mut changed = false;
         for task_id in &stale_ids {
@@ -1566,15 +1572,34 @@ fn cleanup_legacy_daemon_tasks(dir: &Path, logger: &DaemonLogger) {
                 task.completed_at
                     .get_or_insert_with(|| Utc::now().to_rfc3339());
                 task.cycle_config = None;
+                let msg = if task_id.starts_with(".compact-") || task_id.starts_with(".archive-") {
+                    "Retired: .compact-N / .archive-N cycles were removed; \
+                     archival now runs natively in the dispatcher"
+                        .to_string()
+                } else {
+                    "Superseded by native coordinator control plane; no longer graph-managed"
+                        .to_string()
+                };
                 task.log.push(workgraph::graph::LogEntry {
                     timestamp: Utc::now().to_rfc3339(),
                     actor: Some("daemon".to_string()),
                     user: Some(workgraph::current_user()),
-                    message:
-                        "Superseded by native coordinator control plane; no longer graph-managed"
-                            .to_string(),
+                    message: msg,
                 });
+                // Also drop dependencies on .compact-* / .archive-* tasks from
+                // any other task's `after` list so chat agents don't stay
+                // blocked waiting on retired companions.
                 changed = true;
+            }
+        }
+        if has_compact_or_archive {
+            let all_ids: Vec<String> = graph.tasks().map(|t| t.id.clone()).collect();
+            for tid in &all_ids {
+                if let Some(t) = graph.get_task_mut(tid) {
+                    t.after.retain(|dep| {
+                        !(dep.starts_with(".compact-") || dep.starts_with(".archive-"))
+                    });
+                }
             }
         }
         changed
@@ -2730,11 +2755,6 @@ pub fn run_status(dir: &Path, json: bool) -> Result<()> {
     // Load coordinator state (persisted by daemon, reflects effective config + runtime)
     let coord = CoordinatorState::load_or_default(dir);
 
-    // Compaction progress
-    let config = workgraph::config::Config::load_or_default(dir);
-    let compaction_threshold = config.effective_compaction_threshold();
-    let compactor_state = workgraph::service::compactor::CompactorState::load(dir);
-
     // Log file info
     let log_path = log_file_path(dir);
     let log_path_str = log_path.to_string_lossy().to_string();
@@ -2769,12 +2789,6 @@ pub fn run_status(dir: &Path, json: bool) -> Result<()> {
                 "agents_alive": coord.agents_alive,
                 "tasks_ready": coord.tasks_ready,
                 "agents_spawned_last_tick": coord.agents_spawned,
-            },
-            "compaction": {
-                "accumulated_tokens": coord.accumulated_tokens,
-                "threshold": compaction_threshold,
-                "last_compaction": compactor_state.last_compaction,
-                "compaction_count": compactor_state.compaction_count,
             },
             "log": {
                 "path": log_path_str,
@@ -2851,31 +2865,6 @@ pub fn run_status(dir: &Path, json: bool) -> Result<()> {
             );
         } else {
             println!("  No ticks yet");
-        }
-        if compaction_threshold > 0 {
-            let pct = if compaction_threshold > 0 {
-                ((coord.accumulated_tokens as f64 / compaction_threshold as f64) * 100.0).min(100.0)
-                    as u8
-            } else {
-                0
-            };
-            let last_str = match compactor_state.last_compaction {
-                Some(ref ts) => {
-                    if let Ok(parsed) = ts.parse::<chrono::DateTime<chrono::Utc>>() {
-                        let ago = chrono::Utc::now()
-                            .signed_duration_since(parsed)
-                            .num_seconds();
-                        format!("last: {} ago", workgraph::format_duration(ago, true))
-                    } else {
-                        "last: unknown".to_string()
-                    }
-                }
-                None => "last: never".to_string(),
-            };
-            println!(
-                "Compaction: {}/{} tokens ({}%) — {}",
-                coord.accumulated_tokens, compaction_threshold, pct, last_str
-            );
         }
         println!("Log: {}", log_path_str);
         if !recent_errors.is_empty() || !recent_fatals.is_empty() {
@@ -3864,12 +3853,13 @@ mod tests {
         let gp = dir.join("graph.jsonl");
 
         let mut graph = workgraph::graph::WorkGraph::new();
-        // Note: .compact-* is no longer cleaned up — compaction is now native/journal-based
+        // .compact-* and .archive-* are now retired and should be abandoned on boot.
         for id in [
             ".coordinator-0",
             ".archive-0",
             ".registry-refresh-0",
             ".user-erik-0",
+            ".compact-0",
         ] {
             graph.add_node(Node::Task(Task {
                 id: id.to_string(),
@@ -3878,13 +3868,6 @@ mod tests {
                 ..Default::default()
             }));
         }
-        // Add a .compact-0 task that should NOT be abandoned (native compaction handles it)
-        graph.add_node(Node::Task(Task {
-            id: ".compact-0".to_string(),
-            title: "Compact 0".to_string(),
-            status: Status::Open,
-            ..Default::default()
-        }));
         graph.add_node(Node::Task(Task {
             id: "real-task".to_string(),
             title: "real-task".to_string(),
@@ -3897,18 +3880,21 @@ mod tests {
         cleanup_legacy_daemon_tasks(dir, &logger);
 
         let graph = load_graph(&gp).unwrap();
-        // Coordinator tasks should NOT be abandoned (TUI needs them for discovery)
+        // Chat tasks should NOT be abandoned (TUI needs them for discovery)
         assert_eq!(
             graph.get_task(".coordinator-0").unwrap().status,
             Status::Open
         );
 
-        // Other legacy tasks should still be abandoned
-        for id in [".archive-0", ".registry-refresh-0", ".user-erik-0"] {
+        // All legacy daemon-managed tasks (including retired compact/archive) are abandoned.
+        for id in [
+            ".archive-0",
+            ".registry-refresh-0",
+            ".user-erik-0",
+            ".compact-0",
+        ] {
             assert_eq!(graph.get_task(id).unwrap().status, Status::Abandoned);
         }
-        // .compact-0 should NOT be abandoned — it's now handled by native compaction
-        assert_eq!(graph.get_task(".compact-0").unwrap().status, Status::Open);
         assert_eq!(graph.get_task("real-task").unwrap().status, Status::Open);
     }
 

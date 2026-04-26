@@ -2656,25 +2656,22 @@ pub struct CoordinatorConfig {
     #[serde(default = "default_coordinator_agent")]
     pub coordinator_agent: bool,
 
-    /// How often to run the compactor (every N coordinator ticks). 0 = disabled.
+    /// **Deprecated (retired-compact-archive):** the graph-cycle compactor
+    /// (`.compact-N`) has been removed. Field is parsed for one release so
+    /// existing config files keep loading; values are ignored. A warning is
+    /// emitted at config load time if the value is non-default.
     #[serde(default = "default_compactor_interval")]
     pub compactor_interval: u32,
 
-    /// Provenance ops growth threshold that triggers compaction (default: 100)
+    /// **Deprecated (retired-compact-archive):** see `compactor_interval`.
     #[serde(default = "default_compactor_ops_threshold")]
     pub compactor_ops_threshold: usize,
 
-    /// Accumulated coordinator conversation token threshold for triggering compaction.
-    /// Compaction is deferred until at least this many tokens have been accumulated
-    /// since the last compaction. Default: 100_000. Set to 0 to disable token gating.
-    /// Used as the fallback when context window size cannot be determined.
+    /// **Deprecated (retired-compact-archive):** see `compactor_interval`.
     #[serde(default = "default_compaction_token_threshold")]
     pub compaction_token_threshold: u64,
 
-    /// Fraction of the coordinator model's context window to use as compaction threshold.
-    /// Threshold = context_window * compaction_threshold_ratio.
-    /// Default: 0.8 (trigger compaction at 80% of context window).
-    /// Set to 0.0 to disable dynamic threshold (use compaction_token_threshold always).
+    /// **Deprecated (retired-compact-archive):** see `compactor_interval`.
     #[serde(default = "default_compaction_threshold_ratio")]
     pub compaction_threshold_ratio: f64,
 
@@ -3550,7 +3547,52 @@ impl Config {
 
         config.validate_model_format()?;
 
+        for warning in config.deprecated_compaction_warnings() {
+            eprintln!("warning: {}", warning);
+        }
+
         Ok(config)
+    }
+
+    /// Returns warning strings for any deprecated graph-cycle compaction keys
+    /// (`compactor_interval`, `compactor_ops_threshold`,
+    /// `compaction_token_threshold`, `compaction_threshold_ratio`) that were
+    /// loaded with non-default values. These keys are no-ops after the
+    /// `.compact-N` cycle was retired; the warning gives users one release to
+    /// migrate before the fields are removed entirely.
+    pub fn deprecated_compaction_warnings(&self) -> Vec<String> {
+        let c = &self.coordinator;
+        let mut out = Vec::new();
+        if c.compactor_interval != default_compactor_interval() {
+            out.push(format!(
+                "config key `coordinator.compactor_interval = {}` is deprecated and ignored \
+                 (graph-cycle compactor was retired in retire-compact-archive); remove it from config.toml",
+                c.compactor_interval
+            ));
+        }
+        if c.compactor_ops_threshold != default_compactor_ops_threshold() {
+            out.push(format!(
+                "config key `coordinator.compactor_ops_threshold = {}` is deprecated and ignored \
+                 (graph-cycle compactor was retired); remove it from config.toml",
+                c.compactor_ops_threshold
+            ));
+        }
+        if c.compaction_token_threshold != default_compaction_token_threshold() {
+            out.push(format!(
+                "config key `coordinator.compaction_token_threshold = {}` is deprecated and ignored \
+                 (graph-cycle compactor was retired); remove it from config.toml",
+                c.compaction_token_threshold
+            ));
+        }
+        if (c.compaction_threshold_ratio - default_compaction_threshold_ratio()).abs() > f64::EPSILON
+        {
+            out.push(format!(
+                "config key `coordinator.compaction_threshold_ratio = {}` is deprecated and ignored \
+                 (graph-cycle compactor was retired); remove it from config.toml",
+                c.compaction_threshold_ratio
+            ));
+        }
+        out
     }
 
     /// Load configuration with global+local merge, falling back to defaults on error.

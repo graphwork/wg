@@ -1372,35 +1372,9 @@ fn handle_create_coordinator(
 
     graph.add_node(workgraph::graph::Node::Task(task));
 
-    // Create companion .archive-N task (NO back-edge to chat agent).
-    // Archive runs independently and must NOT create a circular dependency.
-    // The chat agent should NOT wait for archive to complete — that creates
-    // deadlock: .chat → .archive → .chat
-    let archive_id = format!(".archive-{}", next_id);
-    if graph.get_task(&archive_id).is_none() {
-        let archive_task = workgraph::graph::Task {
-            id: archive_id.clone(),
-            title: format!("Archive {}", next_id),
-            description: Some(format!(
-                "Archive task — moves old done/abandoned tasks to archive.jsonl. \
-                 Forms a cycle with chat agent {}.",
-                next_id
-            )),
-            status: workgraph::graph::Status::Open,
-            tags: vec!["archive-loop".to_string()],
-            after: vec![workgraph::chat_id::format_chat_task_id(next_id)],
-            created_at: Some(chrono::Utc::now().to_rfc3339()),
-            log: vec![workgraph::graph::LogEntry {
-                timestamp: chrono::Utc::now().to_rfc3339(),
-                actor: Some("daemon".to_string()),
-                user: Some(workgraph::current_user()),
-                message: format!("Archive {} task created via IPC", next_id),
-            }],
-            ..Default::default()
-        };
-        graph.add_node(workgraph::graph::Node::Task(archive_task));
-        // NOTE: No back-edge from coordinator to archive. Archive runs independently.
-    }
+    // Companion `.archive-N` and `.compact-N` tasks are no longer created.
+    // Archival runs natively in the dispatcher (see `run_automatic_archival`);
+    // graph-cycle compaction has been retired entirely.
 
     match workgraph::parser::modify_graph(&graph_path, |fresh| {
         // Re-apply all mutations to a fresh graph

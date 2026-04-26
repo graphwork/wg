@@ -15,10 +15,9 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use std::path::Path;
 use workgraph::check::{OrphanRef, check_orphans};
-use workgraph::graph::{CycleAnalysis, Status, TokenUsage};
+use workgraph::graph::{CycleAnalysis, Status};
 use workgraph::parser::load_graph;
 use workgraph::query::ready_tasks;
-use workgraph::service::compactor::CompactorState;
 use workgraph::service::{AgentRegistry, AgentStatus};
 
 use super::dead_agents::is_process_alive;
@@ -95,31 +94,6 @@ struct VerifyFailingTask {
     verify_command: String,
 }
 
-/// Compaction progress info
-#[derive(Debug, Clone, serde::Serialize)]
-struct CompactionInfo {
-    accumulated_tokens: u64,
-    threshold: u64,
-    percent: u8,
-    last_compaction: Option<String>,
-    /// Duration of the last compaction LLM call in milliseconds.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    last_compaction_duration_ms: Option<u64>,
-    /// Token usage from the last compaction LLM call.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    last_compaction_tokens: Option<TokenUsage>,
-    /// Number of consecutive compaction errors (persisted across restarts).
-    #[serde(skip_serializing_if = "is_zero_u64")]
-    error_count: u64,
-    /// Byte size of context.md written in the last compaction.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    last_compaction_context_bytes: Option<u64>,
-}
-
-fn is_zero_u64(v: &u64) -> bool {
-    *v == 0
-}
-
 /// Active cycle timing info
 #[derive(Debug, Clone, serde::Serialize)]
 struct CycleTimingInfo {
@@ -142,8 +116,6 @@ struct StatusOutput {
     coordinator: CoordinatorInfo,
     agents: AgentSummaryInfo,
     tasks: TaskSummaryInfo,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    compaction: Option<CompactionInfo>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     cycles: Vec<CycleTimingInfo>,
     recent: Vec<RecentActivityEntry>,
@@ -178,23 +150,16 @@ fn gather_status(dir: &Path) -> Result<StatusOutput> {
     // 4. Task summary
     let tasks = gather_task_summary(dir)?;
 
-    // 5. Compaction progress (only when service is running)
-    let compaction = if service.running {
-        gather_compaction_info(dir)
-    } else {
-        None
-    };
-
-    // 6. Cycle timing
+    // 5. Cycle timing (legacy compaction widget removed alongside .compact-N retirement)
     let cycles = gather_cycle_timing(dir);
 
-    // 7. Recent activity
+    // 6. Recent activity
     let recent = gather_recent_activity(dir)?;
 
-    // 8. Dangling dependencies
+    // 7. Dangling dependencies
     let dangling_deps = gather_dangling_deps(dir);
 
-    // 9. Verify-failing tasks
+    // 8. Verify-failing tasks
     let verify_failing = gather_verify_failing(dir);
 
     Ok(StatusOutput {
@@ -202,7 +167,6 @@ fn gather_status(dir: &Path) -> Result<StatusOutput> {
         coordinator,
         agents,
         tasks,
-        compaction,
         cycles,
         recent,
         dangling_deps,
@@ -439,34 +403,6 @@ fn gather_recent_activity(dir: &Path) -> Result<Vec<RecentActivityEntry>> {
     Ok(recent)
 }
 
-fn gather_compaction_info(dir: &Path) -> Option<CompactionInfo> {
-    let config = workgraph::config::Config::load_or_default(dir);
-    let threshold = config.effective_compaction_threshold();
-    if threshold == 0 {
-        return None;
-    }
-
-    let accumulated = CoordinatorState::total_accumulated_tokens(dir);
-    let percent = if threshold > 0 {
-        ((accumulated as f64 / threshold as f64) * 100.0).min(100.0) as u8
-    } else {
-        0
-    };
-
-    let compactor = CompactorState::load(dir);
-
-    Some(CompactionInfo {
-        accumulated_tokens: accumulated,
-        threshold,
-        percent,
-        last_compaction: compactor.last_compaction,
-        last_compaction_duration_ms: compactor.last_compaction_duration_ms,
-        last_compaction_tokens: compactor.last_compaction_tokens,
-        error_count: compactor.error_count,
-        last_compaction_context_bytes: compactor.last_compaction_context_bytes,
-    })
-}
-
 fn gather_cycle_timing(dir: &Path) -> Vec<CycleTimingInfo> {
     let path = super::graph_path(dir);
     if !path.exists() {
@@ -599,27 +535,6 @@ fn print_status(status: &StatusOutput) {
         model_str,
         status.coordinator.poll_interval
     );
-
-    // Line 3: Compaction progress (when service is running)
-    if let Some(ref c) = status.compaction {
-        let tokens_display = format_tokens(c.accumulated_tokens);
-        let threshold_display = format_tokens(c.threshold);
-        let last_str = match c.last_compaction {
-            Some(ref ts) => {
-                if let Ok(parsed) = ts.parse::<DateTime<Utc>>() {
-                    let ago = Utc::now().signed_duration_since(parsed).num_seconds();
-                    format!("last: {} ago", workgraph::format_duration(ago, true))
-                } else {
-                    "last: unknown".to_string()
-                }
-            }
-            None => "last: never".to_string(),
-        };
-        println!(
-            "Compaction: {}/{} tokens ({}%) — {}",
-            tokens_display, threshold_display, c.percent, last_str
-        );
-    }
 
     // Line 4+: Agent summary
     println!();
@@ -762,20 +677,6 @@ fn print_status(status: &StatusOutput) {
             };
             println!("  {}  {} [done]", entry.time, title_display);
         }
-    }
-}
-
-/// Format token count in human-friendly form (e.g. 47000 → "47k", 1500 → "1.5k", 500 → "500")
-fn format_tokens(tokens: u64) -> String {
-    if tokens >= 1000 {
-        let k = tokens as f64 / 1000.0;
-        if (k - k.round()).abs() < 0.05 {
-            format!("{}k", k.round() as u64)
-        } else {
-            format!("{:.1}k", k)
-        }
-    } else {
-        format!("{}", tokens)
     }
 }
 
@@ -1031,18 +932,6 @@ mod tests {
     }
 
     #[test]
-    fn test_format_tokens() {
-        assert_eq!(format_tokens(0), "0");
-        assert_eq!(format_tokens(500), "500");
-        assert_eq!(format_tokens(999), "999");
-        assert_eq!(format_tokens(1000), "1k");
-        assert_eq!(format_tokens(1500), "1.5k");
-        assert_eq!(format_tokens(47000), "47k");
-        assert_eq!(format_tokens(100000), "100k");
-        assert_eq!(format_tokens(160000), "160k");
-    }
-
-    #[test]
     fn test_gather_verify_failing_none() {
         let temp_dir = TempDir::new().unwrap();
         let path = temp_dir.path().join("graph.jsonl");
@@ -1103,17 +992,4 @@ mod tests {
         assert!(failing.is_empty());
     }
 
-    #[test]
-    fn test_gather_compaction_info_no_service() {
-        let temp_dir = TempDir::new().unwrap();
-        // No coordinator state file → should still return Some with defaults
-        let info = gather_compaction_info(temp_dir.path());
-        // With default config, threshold should be non-zero (160k from default model)
-        assert!(info.is_some());
-        let info = info.unwrap();
-        assert_eq!(info.accumulated_tokens, 0);
-        assert!(info.threshold > 0);
-        assert_eq!(info.percent, 0);
-        assert!(info.last_compaction.is_none());
-    }
 }

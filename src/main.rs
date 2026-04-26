@@ -1884,7 +1884,6 @@ fn main() -> Result<()> {
                 )
             }
         }
-        Commands::Compact => commands::compact::run(&workgraph_dir, cli.json),
         Commands::Session { command } => commands::chat_session::run(&workgraph_dir, command),
         Commands::Artifact { task, path, remove } => {
             if let Some(artifact_path) = path {
@@ -2502,6 +2501,9 @@ fn main() -> Result<()> {
         Commands::Migrate { cmd } => match cmd {
             MigrateCommands::ChatRename { dry_run } => {
                 commands::migrate::run_chat_rename(&workgraph_dir, dry_run, cli.json)
+            }
+            MigrateCommands::RetireCompactArchive { dry_run } => {
+                commands::migrate::run_retire_compact_archive(&workgraph_dir, dry_run, cli.json)
             }
         },
         Commands::Agents {

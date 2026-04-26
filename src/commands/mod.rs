@@ -29,7 +29,6 @@ pub mod claim;
 pub mod claude_handler;
 pub mod cleanup;
 pub mod codex_handler;
-pub mod compact;
 pub mod config_cmd;
 pub mod context;
 pub mod coordinator_cmd;

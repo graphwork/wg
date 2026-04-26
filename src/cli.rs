@@ -1150,9 +1150,6 @@ pub enum Commands {
         list: bool,
     },
 
-    /// Compact: distill graph state into context.md
-    Compact,
-
     /// Chat with the coordinator agent
     Chat {
         /// Message to send (omit for interactive mode)
@@ -3992,6 +3989,18 @@ pub enum MigrateCommands {
         #[arg(long)]
         dry_run: bool,
     },
+
+    /// Mark all legacy `.compact-N` and `.archive-N` tasks as Abandoned.
+    /// The graph-cycle compactor and archive-loop scaffolding were retired
+    /// — archival now runs natively in the dispatcher; chat memory is
+    /// handled by the chat agent's own memory subsystem.
+    ///
+    /// Safe to run multiple times — idempotent.
+    RetireCompactArchive {
+        /// Only report what would change, don't write.
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -4378,7 +4387,6 @@ pub fn command_name(cmd: &Commands) -> &'static str {
         Commands::Match { .. } => "match",
         Commands::Heartbeat { .. } => "heartbeat",
         Commands::Checkpoint { .. } => "checkpoint",
-        Commands::Compact => "compact",
         Commands::Artifact { .. } => "artifact",
         Commands::Context { .. } => "context",
         Commands::Next { .. } => "next",
@@ -4476,7 +4484,6 @@ pub fn supports_json(cmd: &Commands) -> bool {
             | Commands::Match { .. }
             | Commands::Heartbeat { .. }
             | Commands::Checkpoint { .. }
-            | Commands::Compact
             | Commands::Artifact { .. }
             | Commands::Context { .. }
             | Commands::Next { .. }

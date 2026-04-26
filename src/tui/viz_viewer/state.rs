@@ -2292,9 +2292,6 @@ pub struct TimeCounters {
     pub show_cumulative: bool,
     pub show_active: bool,
     pub show_session: bool,
-    pub show_compact: bool,
-    pub compact_accumulated: u64,
-    pub compact_threshold: u64,
 }
 impl TimeCounters {
     pub fn new(config_counters: &str) -> Self {
@@ -2311,17 +2308,10 @@ impl TimeCounters {
             show_cumulative: parts.contains(&"cumulative"),
             show_active: parts.contains(&"active"),
             show_session: parts.contains(&"session"),
-            show_compact: parts.contains(&"compact"),
-            compact_accumulated: 0,
-            compact_threshold: 0,
         }
     }
     pub fn any_enabled(&self) -> bool {
-        self.show_uptime
-            || self.show_cumulative
-            || self.show_active
-            || self.show_session
-            || self.show_compact
+        self.show_uptime || self.show_cumulative || self.show_active || self.show_session
     }
     /// Current service uptime interpolated to render time (ticks every second).
     pub fn live_uptime_secs(&self) -> Option<u64> {
@@ -10741,15 +10731,6 @@ impl VizApp {
         self.time_counters.active_secs = active as u64;
         self.time_counters.active_agent_count = active_count;
         self.time_counters.counters_computed_at = Instant::now();
-
-        // Compaction progress
-        if self.time_counters.show_compact {
-            use crate::commands::service::CoordinatorState;
-            let config = Config::load_or_default(&self.workgraph_dir);
-            self.time_counters.compact_accumulated =
-                CoordinatorState::total_accumulated_tokens(&self.workgraph_dir);
-            self.time_counters.compact_threshold = config.effective_compaction_threshold();
-        }
 
         self.time_counters.last_refresh = Instant::now();
     }
