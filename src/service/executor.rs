@@ -54,6 +54,23 @@ You MUST use these commands to track your work:
      wg log {{task_id}} \"Validated: cargo build + cargo test pass\"
      ```
 
+3a. **Smoke gate (HARD GATE on `wg done`)**:
+   `wg done` automatically runs every scenario in `tests/smoke/manifest.toml` whose \
+`owners = [...]` list contains your task id. If any scenario FAILs, `wg done` refuses \
+with the broken scenario name and the task stays in-progress.
+   - You CANNOT bypass this gate as an agent. `--skip-smoke` is refused for agents \
+unless a human explicitly exports `WG_SMOKE_AGENT_OVERRIDE=1`.
+   - If a scenario emits SKIP (loud banner, exit 77 — endpoint unreachable, missing \
+credential), the gate does not block, but the SKIP is surfaced — verify the gap is \
+acceptable for your change.
+   - If you fixed a regression that should have been caught earlier, **add a permanent \
+scenario** to `tests/smoke/manifest.toml` listing your task id in `owners`. The manifest \
+is grow-only.
+   - Local dry run before `wg done`:
+     ```bash
+     wg done {{task_id}} --full-smoke    # runs every scenario, not just owned
+     ```
+
 4. **Commit and push** if you modified files:
    - Run `cargo build` and `cargo test` BEFORE committing — never commit broken code
    - Stage ONLY your files (never `git add -A`) and commit with a descriptive message:

@@ -1,0 +1,76 @@
+# Smoke gate manifest
+#
+# `wg done <task>` runs every scenario whose `owners` list contains the task
+# id. If any scenario FAILs (any non-zero exit code other than 77), `wg done`
+# refuses with the broken scenario name. Exit 77 = loud SKIP (e.g. endpoint
+# unreachable). Exit 0 = PASS.
+#
+# This manifest is grow-only: every regression in this codebase that a smoke
+# would have caught becomes a permanent scenario. Do not delete entries —
+# extend.
+#
+# Scenarios run as `bash <script>` from the directory containing this
+# manifest. Each scenario receives `WG_SMOKE_SCENARIO` and
+# `WG_SMOKE_TIMEOUT_SECS` in its environment.
+#
+# Owners are task ids (kebab-case). When in doubt, include the task that
+# introduced the regression and the task that fixed it.
+
+[[scenario]]
+name = "nex_two_message_against_lambda01"
+script = "scenarios/nex_two_message_against_lambda01.sh"
+owners = [
+    "wg-nex-native",
+    "wg-nex-native-2",
+    "wg-nex-native-3",
+    "fix-compaction-llm",
+    "smoke-test-gap",
+    "smoke-gate-is",
+]
+description = "Live two-message wg chat against a real lambda01 endpoint via wg nex. Repros the user-reported 'why isn't this working' first-message regression."
+timeout_seconds = 240
+
+[[scenario]]
+name = "dispatcher_boot_no_orphan_supervisor"
+script = "scenarios/dispatcher_boot_no_orphan_supervisor.sh"
+owners = [
+    "rename-dispatcher-daemon",
+    "bug-a-regression-test",
+    "smoke-gate-is",
+]
+description = "Boot dispatcher and confirm no orphan supervisor / ghost task is registered (Bug A regression check)."
+timeout_seconds = 60
+
+[[scenario]]
+name = "claude_executor_with_global_openrouter_default"
+script = "scenarios/claude_executor_with_global_openrouter_default.sh"
+owners = [
+    "model-is-not",
+    "wire-priority-field",
+    "smoke-gate-is",
+]
+description = "Local executor=claude + a global openrouter is_default endpoint must spawn with executor=claude (no native-exec routing leak)."
+timeout_seconds = 30
+
+[[scenario]]
+name = "priority_int_and_string_deserialize"
+script = "scenarios/priority_int_and_string_deserialize.sh"
+owners = [
+    "wire-priority-field",
+    "smoke-gate-is",
+]
+description = "graph.jsonl rows containing priority as either integer or string load cleanly (regression for the priority schema migration)."
+timeout_seconds = 20
+
+[[scenario]]
+name = "chat_create_via_ipc_works"
+script = "scenarios/chat_create_via_ipc_works.sh"
+owners = [
+    "wg-nex-native",
+    "wg-nex-native-2",
+    "fix-tui-coordinator-2",
+    "fix-tui-new",
+    "smoke-gate-is",
+]
+description = "Open a chat and send 'hi'; expect a non-error coordinator response within 30s of dispatcher boot."
+timeout_seconds = 90

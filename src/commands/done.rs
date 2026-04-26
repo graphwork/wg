@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use std::path::Path;
 use workgraph::agency::capture_task_output;
+use workgraph::smoke::{self, Manifest as SmokeManifest, ScenarioOutcome};
 use workgraph::config::{Config, CoordinatorConfig};
 use workgraph::graph::{
     LogEntry, Node, Status, create_user_board_task, evaluate_cycle_iteration, parse_token_usage,
@@ -936,12 +937,112 @@ fn check_agent_git_hygiene(dir: &Path, task_id: &str) {
     }
 }
 
+/// Run the smoke gate for `wg done`.
+///
+/// If a smoke manifest exists and the task owns scenarios in it, those
+/// scenarios run live. Any FAIL or ERROR outcome blocks `wg done` with a
+/// message naming the broken scenarios. SKIP outcomes are surfaced loudly
+/// but never block.
+///
+/// `--skip-smoke` skips the gate entirely; agents are refused the escape
+/// hatch unless `WG_SMOKE_AGENT_OVERRIDE=1` is also set in the environment.
+/// `--full-smoke` runs every scenario in the manifest, ignoring ownership.
+fn run_smoke_gate(
+    dir: &Path,
+    id: &str,
+    full_smoke: bool,
+    skip_smoke: bool,
+    is_agent: bool,
+) -> Result<()> {
+    if skip_smoke {
+        if is_agent && std::env::var("WG_SMOKE_AGENT_OVERRIDE").ok().as_deref() != Some("1") {
+            anyhow::bail!(
+                "Agents cannot use --skip-smoke. The smoke gate is the regression contract; \
+                 fix the broken scenario or escalate to a human. \
+                 If a human is intentionally bypassing for this task, export \
+                 WG_SMOKE_AGENT_OVERRIDE=1 in this shell."
+            );
+        }
+        eprintln!(
+            "WARNING: --skip-smoke bypassed the smoke gate for '{}'. Any scenario regression will not be caught.",
+            id
+        );
+        return Ok(());
+    }
+
+    let manifest_path = SmokeManifest::resolve_path(dir);
+    let manifest = SmokeManifest::load_from(&manifest_path)
+        .with_context(|| format!("loading smoke manifest from {}", manifest_path.display()))?;
+
+    let scenarios: Vec<_> = if full_smoke {
+        manifest.scenarios.iter().collect()
+    } else {
+        manifest.scenarios_for_task(id)
+    };
+
+    if scenarios.is_empty() {
+        // No scenarios owned by this task and no --full-smoke. Quiet no-op.
+        return Ok(());
+    }
+
+    let manifest_dir = manifest_path
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| dir.to_path_buf());
+
+    eprintln!(
+        "Smoke gate: running {} scenario(s) for '{}' (manifest: {})",
+        scenarios.len(),
+        id,
+        manifest_path.display()
+    );
+
+    let report = smoke::run_scenarios(&scenarios, &manifest_dir);
+    eprint!("{}", report.render());
+
+    if report.blocks_done() {
+        let mut broken: Vec<String> = report
+            .failures()
+            .iter()
+            .map(|r| match &r.outcome {
+                ScenarioOutcome::Fail { exit_code, .. } => {
+                    format!("{} (exit {})", r.name, exit_code)
+                }
+                _ => r.name.clone(),
+            })
+            .collect();
+        broken.extend(report.errors().iter().map(|r| match &r.outcome {
+            ScenarioOutcome::Error { message } => format!("{} ({})", r.name, message),
+            _ => r.name.clone(),
+        }));
+        anyhow::bail!(
+            "Smoke gate refused 'wg done {}': {} scenario(s) broken — {}\n\
+             Fix the regression or, if you understand why this is non-blocking, \
+             rerun with --skip-smoke (humans only).",
+            id,
+            broken.len(),
+            broken.join(", ")
+        );
+    }
+
+    if !report.skips().is_empty() {
+        eprintln!(
+            "Smoke gate: {} scenario(s) emitted SKIP — verify the missing endpoint/credential before claiming done.",
+            report.skips().len()
+        );
+    }
+
+    Ok(())
+}
+
 pub fn run(
     dir: &Path,
     id: &str,
     converged: bool,
     skip_verify: bool,
     ignore_unmerged_worktree: bool,
+    full_smoke: bool,
+    skip_smoke: bool,
 ) -> Result<()> {
     let is_agent = std::env::var("WG_AGENT_ID").is_ok();
     run_inner(
@@ -951,6 +1052,8 @@ pub fn run(
         skip_verify,
         ignore_unmerged_worktree,
         is_agent,
+        full_smoke,
+        skip_smoke,
     )
 }
 
@@ -961,6 +1064,8 @@ fn run_inner(
     skip_verify: bool,
     ignore_unmerged_worktree: bool,
     is_agent: bool,
+    full_smoke: bool,
+    skip_smoke: bool,
 ) -> Result<()> {
     let (mut graph, path) = super::load_workgraph_mut(dir)?;
 
@@ -1009,6 +1114,14 @@ fn run_inner(
     // Git hygiene check for agents: warn about uncommitted changes
     if is_agent {
         check_agent_git_hygiene(dir, id);
+    }
+
+    // Smoke gate: a task cannot be marked done while a regression-protecting
+    // smoke scenario it owns is failing. Refuse the agent escape hatch unless
+    // a separate override is set, so an agent can't smother a real regression
+    // by adding `--skip-smoke` to its `wg done`.
+    if let Err(e) = run_smoke_gate(dir, id, full_smoke, skip_smoke, is_agent) {
+        return Err(e);
     }
 
     // Auto-defer verify when the task has been decomposed into subtasks.
@@ -2022,7 +2135,7 @@ mod tests {
         let dir_path = dir.path();
         setup_workgraph(dir_path, vec![make_task("t1", "Test task", Status::Open)]);
 
-        let result = run(dir_path, "t1", false, false, false);
+        let result = run(dir_path, "t1", false, false, false, false, false);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
@@ -2040,7 +2153,7 @@ mod tests {
             vec![make_task("t1", "Test task", Status::InProgress)],
         );
 
-        let result = run(dir_path, "t1", false, false, false);
+        let result = run(dir_path, "t1", false, false, false, false, false);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
@@ -2056,7 +2169,7 @@ mod tests {
         setup_workgraph(dir_path, vec![make_task("t1", "Test task", Status::Done)]);
 
         // Should return Ok (idempotent) rather than error
-        let result = run(dir_path, "t1", false, false, false);
+        let result = run(dir_path, "t1", false, false, false, false, false);
         assert!(result.is_ok());
     }
 
@@ -2071,7 +2184,7 @@ mod tests {
 
         setup_workgraph(dir_path, vec![blocker, blocked]);
 
-        let result = run(dir_path, "blocked", false, false, false);
+        let result = run(dir_path, "blocked", false, false, false, false, false);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.to_string().contains("blocked by"));
@@ -2089,7 +2202,7 @@ mod tests {
 
         setup_workgraph(dir_path, vec![blocker, blocked]);
 
-        let result = run(dir_path, "blocked", false, false, false);
+        let result = run(dir_path, "blocked", false, false, false, false, false);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
@@ -2110,7 +2223,7 @@ mod tests {
 
         setup_workgraph(dir_path, vec![blocker, blocked]);
 
-        let result = run(dir_path, "blocked", false, false, false);
+        let result = run(dir_path, "blocked", false, false, false, false, false);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
@@ -2131,7 +2244,7 @@ mod tests {
 
         setup_workgraph(dir_path, vec![blocker, blocked]);
 
-        let result = run(dir_path, "blocked", false, false, false);
+        let result = run(dir_path, "blocked", false, false, false, false, false);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
@@ -2150,7 +2263,7 @@ mod tests {
 
         setup_workgraph(dir_path, vec![task]);
 
-        let result = run(dir_path, "t1", false, false, false);
+        let result = run(dir_path, "t1", false, false, false, false, false);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
@@ -2166,7 +2279,7 @@ mod tests {
         setup_workgraph(dir_path, vec![make_task("t1", "Test task", Status::Open)]);
 
         let before = Utc::now();
-        let result = run(dir_path, "t1", false, false, false);
+        let result = run(dir_path, "t1", false, false, false, false, false);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
@@ -2189,7 +2302,7 @@ mod tests {
         task.assigned = Some("agent-1".to_string());
         setup_workgraph(dir_path, vec![task]);
 
-        let result = run(dir_path, "t1", false, false, false);
+        let result = run(dir_path, "t1", false, false, false, false, false);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
@@ -2208,7 +2321,7 @@ mod tests {
         let dir_path = dir.path();
         setup_workgraph(dir_path, vec![]);
 
-        let result = run(dir_path, "nonexistent", false, false, false);
+        let result = run(dir_path, "nonexistent", false, false, false, false, false);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.to_string().contains("not found"));
@@ -2220,7 +2333,7 @@ mod tests {
         let dir_path = dir.path();
         // Don't initialize workgraph
 
-        let result = run(dir_path, "t1", false, false, false);
+        let result = run(dir_path, "t1", false, false, false, false, false);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.to_string().contains("not initialized"));
@@ -2232,7 +2345,7 @@ mod tests {
         let dir_path = dir.path();
         setup_workgraph(dir_path, vec![make_task("t1", "Test task", Status::Open)]);
 
-        let result = run(dir_path, "t1", false, false, false);
+        let result = run(dir_path, "t1", false, false, false, false, false);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
@@ -2249,7 +2362,7 @@ mod tests {
         let dir_path = dir.path();
         setup_workgraph(dir_path, vec![make_task("t1", "Test task", Status::Open)]);
 
-        let result = run(dir_path, "t1", true, false, false);
+        let result = run(dir_path, "t1", true, false, false, false, false);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
@@ -2284,7 +2397,7 @@ mod tests {
 
         setup_workgraph(dir_path, vec![header]);
 
-        let result = run(dir_path, "header", true, false, false);
+        let result = run(dir_path, "header", true, false, false, false, false);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
@@ -2334,7 +2447,7 @@ mod tests {
 
         setup_workgraph(dir_path, vec![header, worker]);
 
-        let result = run(dir_path, "worker", true, false, false);
+        let result = run(dir_path, "worker", true, false, false, false, false);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
@@ -2375,7 +2488,7 @@ mod tests {
 
         setup_workgraph(dir_path, vec![header]);
 
-        let result = run(dir_path, "header", true, false, false);
+        let result = run(dir_path, "header", true, false, false, false, false);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
@@ -2412,7 +2525,7 @@ mod tests {
 
         setup_workgraph(dir_path, vec![header]);
 
-        let result = run(dir_path, "header", true, false, false);
+        let result = run(dir_path, "header", true, false, false, false, false);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
@@ -2433,7 +2546,7 @@ mod tests {
         let dir_path = dir.path();
         setup_workgraph(dir_path, vec![make_task("t1", "Test task", Status::Open)]);
 
-        let result = run(dir_path, "t1", false, false, false);
+        let result = run(dir_path, "t1", false, false, false, false, false);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
@@ -2464,7 +2577,7 @@ mod tests {
         });
         setup_workgraph(dir_path, vec![task]);
 
-        let result = run(dir_path, "t1", false, false, false);
+        let result = run(dir_path, "t1", false, false, false, false, false);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
@@ -2500,7 +2613,7 @@ mod tests {
 
         setup_workgraph(dir_path, vec![header]);
 
-        let result = run(dir_path, "header", true, false, false);
+        let result = run(dir_path, "header", true, false, false, false, false);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
@@ -2550,7 +2663,7 @@ mod tests {
 
         setup_workgraph(dir_path, vec![header, worker]);
 
-        let result = run(dir_path, "worker", true, false, false);
+        let result = run(dir_path, "worker", true, false, false, false, false);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
@@ -2584,7 +2697,7 @@ mod tests {
         task.verify = Some("exit 0".to_string());
         setup_workgraph(dir_path, vec![task]);
 
-        let result = run(dir_path, "t1", false, false, false);
+        let result = run(dir_path, "t1", false, false, false, false, false);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
@@ -2602,7 +2715,7 @@ mod tests {
         task.verify = Some("exit 1".to_string());
         setup_workgraph(dir_path, vec![task]);
 
-        let result = run(dir_path, "t1", false, false, false);
+        let result = run(dir_path, "t1", false, false, false, false, false);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("Verify command failed"), "got: {}", err);
@@ -2624,7 +2737,7 @@ mod tests {
         task.verify = Some("echo 'test failed: expected 42 got 0' >&2; exit 1".to_string());
         setup_workgraph(dir_path, vec![task]);
 
-        let result = run(dir_path, "t1", false, false, false);
+        let result = run(dir_path, "t1", false, false, false, false, false);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(
@@ -2644,7 +2757,7 @@ mod tests {
         setup_workgraph(dir_path, vec![task]);
 
         // Use run_inner with is_agent=false to simulate human usage
-        let result = super::run_inner(dir_path, "t1", false, true, false, false);
+        let result = super::run_inner(dir_path, "t1", false, true, false, false, false, false);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
@@ -2663,7 +2776,7 @@ mod tests {
         setup_workgraph(dir_path, vec![task]);
 
         // Use run_inner with is_agent=true to simulate agent context
-        let result = super::run_inner(dir_path, "t1", false, true, false, true);
+        let result = super::run_inner(dir_path, "t1", false, true, false, true, false, false);
 
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
@@ -2689,7 +2802,7 @@ mod tests {
         assert!(task.verify.is_none());
         setup_workgraph(dir_path, vec![task]);
 
-        let result = run(dir_path, "t1", false, false, false);
+        let result = run(dir_path, "t1", false, false, false, false, false);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
@@ -2707,7 +2820,7 @@ mod tests {
         task.verify = Some("exit 1".to_string());
         setup_workgraph(dir_path, vec![task]);
 
-        let result = run(dir_path, "t1", true, false, false);
+        let result = run(dir_path, "t1", true, false, false, false, false);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("Verify command failed"), "got: {}", err);
@@ -2728,7 +2841,7 @@ mod tests {
         task.validation = Some("external".to_string());
         setup_workgraph(dir_path, vec![task]);
 
-        let result = run(dir_path, "t1", false, false, false);
+        let result = run(dir_path, "t1", false, false, false, false, false);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
@@ -2747,7 +2860,7 @@ mod tests {
         task.validation = Some("llm".to_string());
         setup_workgraph(dir_path, vec![task]);
 
-        run(dir_path, "t1", false, false, false).unwrap();
+        run(dir_path, "t1", false, false, false, false, false).unwrap();
 
         let path = graph_path(dir_path);
         let graph = load_graph(&path).unwrap();
@@ -2771,7 +2884,7 @@ mod tests {
         task.validation = Some("external".to_string());
         setup_workgraph(dir_path, vec![task]);
 
-        run(dir_path, "t1", false, false, false).unwrap();
+        run(dir_path, "t1", false, false, false, false, false).unwrap();
 
         let path = graph_path(dir_path);
         let graph = load_graph(&path).unwrap();
@@ -2790,7 +2903,7 @@ mod tests {
         setup_workgraph(dir_path, vec![task]);
 
         // Should fail: no validation log entry
-        let result = run(dir_path, "t1", false, false, false);
+        let result = run(dir_path, "t1", false, false, false, false, false);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("validation log entry"));
@@ -2811,7 +2924,7 @@ mod tests {
         });
         setup_workgraph(dir_path, vec![task]);
 
-        let result = run(dir_path, "t1", false, false, false);
+        let result = run(dir_path, "t1", false, false, false, false, false);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
@@ -2836,7 +2949,7 @@ mod tests {
         });
         setup_workgraph(dir_path, vec![task]);
 
-        let result = run(dir_path, "t1", false, false, false);
+        let result = run(dir_path, "t1", false, false, false, false, false);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("validation failed"));
@@ -2852,7 +2965,7 @@ mod tests {
         assert!(task.validation.is_none());
         setup_workgraph(dir_path, vec![task]);
 
-        let result = run(dir_path, "t1", false, false, false);
+        let result = run(dir_path, "t1", false, false, false, false, false);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
@@ -2879,7 +2992,7 @@ mod tests {
         registry.register_agent(99999, "t1", "claude", "/tmp/output.log");
         registry.save(dir_path).unwrap();
 
-        let result = run(dir_path, "t1", false, false, false);
+        let result = run(dir_path, "t1", false, false, false, false, false);
         assert!(result.is_ok());
 
         // Verify registry was updated
@@ -2905,7 +3018,7 @@ mod tests {
         task.verify = Some("echo hello | grep hello".to_string());
         setup_workgraph(dir_path, vec![task]);
 
-        let result = run(dir_path, "t1", false, false, false);
+        let result = run(dir_path, "t1", false, false, false, false, false);
         assert!(
             result.is_ok(),
             "Pipe in verify command should work: {:?}",
@@ -2927,7 +3040,7 @@ mod tests {
         task.verify = Some("echo hello | grep nonexistent".to_string());
         setup_workgraph(dir_path, vec![task]);
 
-        let result = run(dir_path, "t1", false, false, false);
+        let result = run(dir_path, "t1", false, false, false, false, false);
         assert!(result.is_err(), "Failing pipe should propagate error");
 
         let path = graph_path(dir_path);
@@ -2946,7 +3059,7 @@ mod tests {
         setup_workgraph(dir_path, vec![task]);
 
         // First failure: should increment verify_failures and bail
-        let result = run(dir_path, "t1", false, false, false);
+        let result = run(dir_path, "t1", false, false, false, false, false);
         assert!(result.is_err());
 
         let path = graph_path(dir_path);
@@ -2976,7 +3089,7 @@ mod tests {
 
         // Default threshold is 3 — fail 3 times
         for i in 0..3 {
-            let result = run(dir_path, "t1", false, false, false);
+            let result = run(dir_path, "t1", false, false, false, false, false);
             if i < 2 {
                 // First two failures: should error (not yet at threshold)
                 assert!(result.is_err(), "attempt {} should fail with error", i);
@@ -3037,7 +3150,7 @@ mod tests {
         task.verify_failures = 2; // previous failures
         setup_workgraph(dir_path, vec![task]);
 
-        let result = run(dir_path, "t1", false, false, false);
+        let result = run(dir_path, "t1", false, false, false, false, false);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
@@ -3059,7 +3172,7 @@ mod tests {
         task.verify = Some("echo 'stdout line' && echo 'stderr line' >&2 && exit 1".to_string());
         setup_workgraph(dir_path, vec![task]);
 
-        let result = run(dir_path, "t1", false, false, false);
+        let result = run(dir_path, "t1", false, false, false, false, false);
         assert!(result.is_err());
 
         let path = graph_path(dir_path);
@@ -3095,7 +3208,7 @@ mod tests {
         task.verify = Some("exit 1".to_string());
         setup_workgraph(dir_path, vec![task]);
 
-        let _ = run(dir_path, "t1", false, false, false);
+        let _ = run(dir_path, "t1", false, false, false, false, false);
 
         let path = graph_path(dir_path);
         let graph = load_graph(&path).unwrap();
@@ -3133,11 +3246,11 @@ mod tests {
         std::fs::write(&config_path, "[coordinator]\nmax_verify_failures = 2\n").unwrap();
 
         // First failure
-        let result = run(dir_path, "t1", false, false, false);
+        let result = run(dir_path, "t1", false, false, false, false, false);
         assert!(result.is_err());
 
         // Second failure — should trip circuit breaker at threshold 2
-        let result = run(dir_path, "t1", false, false, false);
+        let result = run(dir_path, "t1", false, false, false, false, false);
         assert!(result.is_ok(), "Circuit breaker should trip at threshold 2");
 
         let path = graph_path(dir_path);
@@ -3163,7 +3276,7 @@ mod tests {
         )
         .unwrap();
 
-        let result = run(dir_path, "t1", false, false, false);
+        let result = run(dir_path, "t1", false, false, false, false, false);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
@@ -3194,7 +3307,7 @@ mod tests {
         setup_workgraph(dir_path, vec![task]);
 
         // No config file = defaults to inline
-        let result = run(dir_path, "t1", false, false, false);
+        let result = run(dir_path, "t1", false, false, false, false, false);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
@@ -3338,7 +3451,7 @@ mod tests {
 
         // The task should fail because evaluation requires the task to be Done first
         // But importantly, it should NOT fail with exit 127 (command not found)
-        let result = run(dir_path, "t1", false, false, false);
+        let result = run(dir_path, "t1", false, false, false, false, false);
         assert!(result.is_err());
 
         let path = graph_path(dir_path);
@@ -3381,7 +3494,7 @@ mod tests {
         task.verify = Some("test \"$TERM\" = \"dumb\"".to_string());
         setup_workgraph(dir_path, vec![task]);
 
-        let result = run(dir_path, "t1", false, false, false);
+        let result = run(dir_path, "t1", false, false, false, false, false);
 
         // The command should succeed, indicating TERM=dumb was set
         assert!(result.is_ok(), "TERM=dumb should be set for shell commands");
@@ -3421,7 +3534,7 @@ mod tests {
         setup_workgraph(dir_path, vec![parent, child_a, child_b]);
 
         // Parent's `wg done` should succeed because verify is deferred
-        let result = run(dir_path, "parent", false, false, false);
+        let result = run(dir_path, "parent", false, false, false, false, false);
         assert!(
             result.is_ok(),
             "Parent with children should defer verify, got: {:?}",
@@ -3487,7 +3600,7 @@ mod tests {
         task.verify = Some("exit 0".to_string());
         setup_workgraph(dir_path, vec![task]);
 
-        let result = run(dir_path, "t1", false, false, false);
+        let result = run(dir_path, "t1", false, false, false, false, false);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
@@ -3517,7 +3630,7 @@ mod tests {
         setup_workgraph(dir_path, vec![parent, flip, eval]);
 
         // Should run verify inline since only system children exist
-        let result = run(dir_path, "parent", false, false, false);
+        let result = run(dir_path, "parent", false, false, false, false, false);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
@@ -3551,7 +3664,7 @@ mod tests {
 
         setup_workgraph(dir_path, vec![parent, child]);
 
-        let result = run(dir_path, "parent", false, false, false);
+        let result = run(dir_path, "parent", false, false, false, false, false);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);

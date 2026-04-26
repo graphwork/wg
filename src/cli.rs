@@ -489,6 +489,16 @@ pub enum Commands {
         /// cannot be cleanly merged, creating a .merge-<id> task for later resolution.
         #[arg(long)]
         ignore_unmerged_worktree: bool,
+
+        /// Run every scenario in the smoke manifest, not just those owned by
+        /// this task. Use before merging high-impact changes.
+        #[arg(long = "full-smoke")]
+        full_smoke: bool,
+
+        /// Bypass the smoke gate. Loud-warns; refused for agents (WG_AGENT_ID set)
+        /// unless WG_SMOKE_AGENT_OVERRIDE=1 is also exported.
+        #[arg(long = "skip-smoke")]
+        skip_smoke: bool,
     },
 
     /// Mark a task as failed (can be retried)

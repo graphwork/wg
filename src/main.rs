@@ -964,12 +964,16 @@ fn main() -> Result<()> {
             converged,
             skip_verify,
             ignore_unmerged_worktree,
+            full_smoke,
+            skip_smoke,
         } => commands::done::run(
             &workgraph_dir,
             &id,
             converged,
             skip_verify,
             ignore_unmerged_worktree,
+            full_smoke,
+            skip_smoke,
         ),
         Commands::Fail {
             id,
