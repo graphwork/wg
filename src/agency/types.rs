@@ -363,17 +363,57 @@ impl Agent {
     /// If executor was explicitly set to a non-default value, returns that.
     /// Otherwise, if `preferred_provider` is openrouter/openai/local, returns "native".
     pub fn effective_executor(&self) -> &str {
-        if !is_default_executor(&self.executor) {
-            &self.executor
+        self.effective_executor_for_model(None)
+    }
+
+    /// Return the effective executor, with model-prefix compatibility override.
+    ///
+    /// Same as [`effective_executor`], but additionally consults the model
+    /// spec: if the candidate executor would be `claude` AND the model spec
+    /// has a non-Anthropic provider prefix (e.g. `local:`, `openrouter:`,
+    /// `oai-compat:`, `openai:`), the agency CANNOT route through the claude
+    /// CLI — it does not know how to invoke those models and would 404. In
+    /// that case we override to the executor the model actually requires
+    /// (typically `native`) and log a one-line conflict resolution.
+    ///
+    /// This is the autohaiku regression: agent.executor=claude (default) +
+    /// model=local:qwen3-coder produced 100% failure because every spawn
+    /// hit the claude CLI which 404'd on `qwen3-coder`. The bug was that
+    /// the agency picked claude despite the model spec explicitly saying
+    /// "local". This method enforces that contract.
+    pub fn effective_executor_for_model(&self, model: Option<&str>) -> &str {
+        let candidate = if !is_default_executor(&self.executor) {
+            self.executor.as_str()
         } else if let Some(ref provider) = self.preferred_provider {
             if NON_ANTHROPIC_PROVIDERS.contains(&provider.as_str()) {
                 "native"
             } else {
-                &self.executor
+                self.executor.as_str()
             }
         } else {
-            &self.executor
+            self.executor.as_str()
+        };
+
+        // Model-prefix override: only kicks in when candidate is claude and
+        // the model spec has a non-claude/non-codex provider prefix. This
+        // preserves explicit non-claude executor choices made by the agent.
+        if candidate == "claude"
+            && let Some(model_str) = model
+        {
+            let spec = crate::config::parse_model_spec(model_str);
+            if let Some(ref provider) = spec.provider {
+                let required = crate::config::provider_to_executor(provider);
+                if required != "claude" {
+                    eprintln!(
+                        "[agency] effective_executor: agent role '{}' implies claude but model '{}' requires '{}'; routing to '{}'",
+                        self.role_id, model_str, required, required,
+                    );
+                    return required;
+                }
+            }
         }
+
+        candidate
     }
 }
 
@@ -677,6 +717,93 @@ pub struct TaskAssignmentRecord {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_agent_with_executor(executor: &str, preferred_provider: Option<&str>) -> Agent {
+        Agent {
+            id: "test-agent".to_string(),
+            role_id: "test-role".to_string(),
+            tradeoff_id: "test-tradeoff".to_string(),
+            name: "TestAgent".to_string(),
+            performance: PerformanceRecord {
+                task_count: 0,
+                avg_score: None,
+                evaluations: vec![],
+            },
+            lineage: Lineage::default(),
+            capabilities: vec![],
+            rate: None,
+            capacity: None,
+            trust_level: TrustLevel::Provisional,
+            contact: None,
+            executor: executor.to_string(),
+            preferred_model: None,
+            preferred_provider: preferred_provider.map(String::from),
+            deployment_history: vec![],
+            attractor_weight: 0.5,
+            staleness_flags: vec![],
+        }
+    }
+
+    /// Regression: agency must NEVER pick the claude executor when the model spec
+    /// has a non-Anthropic provider prefix (e.g. `local:`, `openrouter:`,
+    /// `oai-compat:`, `openai:`). The claude CLI cannot route those models —
+    /// it returns 404. Bug observed in autohaiku: agent.executor=claude (default)
+    /// + model=local:qwen3-coder → 100% failure rate. Fix: agency overrides
+    /// executor to a model-compatible one (native) when the conflict is detected.
+    #[test]
+    fn test_agency_does_not_pick_claude_for_local_model() {
+        let agent = test_agent_with_executor("claude", None);
+        // Sanity: with no model context, default behavior is preserved.
+        assert_eq!(agent.effective_executor(), "claude");
+
+        // The bug: agent's role implies claude, but the model is local:qwen3-coder.
+        // claude CLI cannot run qwen3-coder → must route to native.
+        assert_eq!(
+            agent.effective_executor_for_model(Some("local:qwen3-coder")),
+            "native",
+            "agency must override claude → native when model has local: prefix"
+        );
+
+        // Same for the other non-Anthropic provider prefixes.
+        assert_eq!(
+            agent.effective_executor_for_model(Some("openrouter:deepseek/deepseek-v3.2")),
+            "native",
+        );
+        assert_eq!(
+            agent.effective_executor_for_model(Some("oai-compat:llama3")),
+            "native",
+        );
+        assert_eq!(
+            agent.effective_executor_for_model(Some("openai:gpt-4o")),
+            "native",
+        );
+    }
+
+    /// claude:opus + claude executor is a valid combination — no override needed.
+    #[test]
+    fn test_agency_keeps_claude_for_anthropic_model() {
+        let agent = test_agent_with_executor("claude", None);
+        assert_eq!(
+            agent.effective_executor_for_model(Some("claude:opus")),
+            "claude",
+        );
+        // Bare aliases (no provider prefix) are also assumed claude-compatible
+        // when the agent's executor is claude.
+        assert_eq!(agent.effective_executor_for_model(Some("opus")), "claude");
+        assert_eq!(agent.effective_executor_for_model(Some("sonnet")), "claude");
+    }
+
+    /// codex executor explicitly chosen + non-Anthropic model: do NOT override
+    /// to native. The agent's explicit non-default executor wins, since the
+    /// override only fires when claude is the candidate (the broken combo).
+    #[test]
+    fn test_agency_does_not_override_explicit_non_claude_executor() {
+        let agent = test_agent_with_executor("codex", None);
+        assert_eq!(
+            agent.effective_executor_for_model(Some("local:qwen3-coder")),
+            "codex",
+        );
+    }
 
     /// Existing YAML files without `assignment_source` should deserialize
     /// with the default value (Native).

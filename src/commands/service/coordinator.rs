@@ -3691,11 +3691,30 @@ fn spawn_agents_for_ready_tasks(
         // This is the ONLY place that decides {executor, model, endpoint} for
         // a task spawn. The previous logic (auto-switching claude→native based
         // on model) is gone: model never overrides an explicit executor floor.
+        //
+        // Model-prefix override (autohaiku fix): the agency uses
+        // `effective_executor_for_model` so that an agent whose role implies
+        // `claude` but whose task model is `local:`/`openrouter:`/etc. routes
+        // to a compatible executor (`native`). The claude CLI cannot speak
+        // OpenAI-compat endpoints; the previous behavior 404'd 100% of spawns.
         let agent_entity = task
             .agent
             .as_ref()
             .and_then(|agent_hash| agency::find_agent_by_prefix(&agents_dir, agent_hash).ok());
-        let agent_executor = agent_entity.as_ref().map(|a| a.effective_executor());
+        // Mirror plan_spawn's model resolution so the agency sees the same
+        // model the dispatcher is about to use. plan_spawn has further
+        // fallbacks (config.coordinator.model, agent.model) but those only
+        // fire when task_model is None, which is the .assign-/non-default
+        // path and not the autohaiku failure mode (which has default_model
+        // = local:qwen3-coder).
+        let prospective_model = task
+            .model
+            .as_deref()
+            .or(task_model.as_deref())
+            .or(config.coordinator.model.as_deref());
+        let agent_executor = agent_entity
+            .as_ref()
+            .map(|a| a.effective_executor_for_model(prospective_model));
         let plan = match workgraph::dispatch::plan_spawn(
             task,
             config,
