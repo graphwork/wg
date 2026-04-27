@@ -613,22 +613,18 @@ fn handle_spawn(
 
     // Agency-derived executor wins over the IPC hint. If the task is bound
     // to an agent, use that agent's effective_executor; otherwise fall
-    // back to the IPC-passed executor (`wg spawn --executor X`). Pass the
-    // model so the agency can override claude → native when the model has
-    // a non-Anthropic provider prefix (autohaiku regression fix).
+    // back to the IPC-passed executor (`wg spawn --executor X`). The
+    // model-compat override (claude → native for non-Anthropic models)
+    // lives in `plan_spawn`'s `enforce_model_compat` so it doesn't fire
+    // before the dispatcher's explicit executor choice.
     let agents_dir = dir.join("agency").join("cache/agents");
     let agent_entity = task
         .agent
         .as_ref()
         .and_then(|hash| workgraph::agency::find_agent_by_prefix(&agents_dir, hash).ok());
-    let prospective_model = task
-        .model
-        .as_deref()
-        .or(model)
-        .or(config.coordinator.model.as_deref());
     let agency_executor = agent_entity
         .as_ref()
-        .map(|a| a.effective_executor_for_model(prospective_model).to_string());
+        .and_then(|a| a.explicit_executor().map(str::to_string));
     let ipc_executor = if executor.is_empty() {
         None
     } else {

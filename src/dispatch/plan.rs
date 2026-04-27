@@ -35,7 +35,7 @@
 //! always answer "why did this task spawn `native --endpoint openrouter`?"
 //! by reading one line.
 
-use crate::config::{Config, EndpointConfig, parse_model_spec};
+use crate::config::{Config, EndpointConfig, parse_model_spec, provider_to_executor};
 use crate::graph::Task;
 use anyhow::Result;
 use std::collections::HashMap;
@@ -200,6 +200,22 @@ pub fn plan_spawn(
     };
     let model = ResolvedModelSpec::from_raw(&model_raw);
 
+    // ----- 2b. Model-compat override -----
+    // The claude CLI cannot run non-Anthropic models — it would 404. If we
+    // ended up at executor=claude (whether via dispatcher.executor floor,
+    // agency-derived choice, or default fall-through) but the model has a
+    // non-Anthropic provider prefix (`local:`, `openrouter:`, `oai-compat:`,
+    // `openai:`), switch to the executor the model actually requires.
+    //
+    // This is the autohaiku-regression fix, moved here from
+    // `Agent::effective_executor_for_model` so it doesn't fire BEFORE the
+    // dispatcher's explicit executor choice (which is the bug
+    // `agency-still-picks` tracked: `wg init -x codex` was being silently
+    // rewritten to native because the agency-level override sat in
+    // resolve_executor's precedence step 3 and shadowed step 4).
+    let (executor, executor_source) =
+        enforce_model_compat(executor, executor_source, &model);
+
     // ----- 3. Endpoint (executor-scoped) -----
     let (endpoint, endpoint_source) = if executor.needs_endpoint() {
         // For native executor, prefer endpoint from task's role-resolved
@@ -244,6 +260,49 @@ pub fn plan_spawn(
         argv: Vec::new(),
         provenance,
     })
+}
+
+/// If the resolved executor is `claude` but the model spec carries a
+/// non-Anthropic provider prefix, switch to the executor the model actually
+/// needs. The claude CLI cannot speak OpenAI-compat / openrouter / local
+/// endpoints — running it against `local:qwen3-coder` returns 404 and burns
+/// the spawn (the autohaiku regression).
+///
+/// This override only fires when the resolved executor is `claude`. It does
+/// NOT touch explicit non-claude executor choices (`-x codex`, `-x native`)
+/// — those are kept even with `local:` models, on the assumption that the
+/// chosen executor is OAI-compat-aware (codex, native) or the user knows
+/// what they're doing.
+///
+/// Bare aliases like `opus` / `sonnet` (no provider prefix) do NOT trigger
+/// the override — they're claude-compatible by convention.
+fn enforce_model_compat(
+    executor: ExecutorKind,
+    executor_source: String,
+    model: &ResolvedModelSpec,
+) -> (ExecutorKind, String) {
+    if !matches!(executor, ExecutorKind::Claude) {
+        return (executor, executor_source);
+    }
+    let Some(ref provider) = model.provider else {
+        return (executor, executor_source);
+    };
+    let required = provider_to_executor(provider);
+    if required == "claude" {
+        return (executor, executor_source);
+    }
+    let Some(kind) = ExecutorKind::from_str(required) else {
+        return (executor, executor_source);
+    };
+    let new_source = format!(
+        "model-compat override: was claude (from {}), model={} prefix={} requires {}",
+        executor_source, model.raw, provider, required,
+    );
+    eprintln!(
+        "[dispatch] model-compat: claude (from {}) cannot run model '{}' (prefix '{}'); routing to '{}'",
+        executor_source, model.raw, provider, required,
+    );
+    (kind, new_source)
 }
 
 /// Resolve which executor kind to use for a task spawn, with provenance.
@@ -443,5 +502,143 @@ mod tests {
         let plan = plan_spawn(&task, &config, Some("native"), None).unwrap();
         assert_eq!(plan.executor, ExecutorKind::Native);
         assert!(plan.provenance.executor_source.contains("agency"));
+    }
+
+    /// Regression: agency-still-picks. With `wg init -x codex -m qwen3-coder
+    /// -e https://...`, the dispatcher's explicit `-x codex` MUST win, even
+    /// though the model is `local:qwen3-coder`. The previous fix
+    /// (agency-picks-claude) put a model-compat override INSIDE
+    /// `Agent::effective_executor_for_model` that fired any time the agent's
+    /// default-claude executor met a `local:` model — converting to "native"
+    /// and (via resolve_executor's precedence) overriding the dispatcher's
+    /// `-x codex` choice. This test pins down the correct behaviour: when
+    /// dispatcher explicitly chose codex, codex wins.
+    #[test]
+    fn test_codex_executor_routes_codex_not_claude() {
+        let mut config = Config::default();
+        config.coordinator.executor = Some("codex".to_string());
+        config.coordinator.model = Some("local:qwen3-coder".to_string());
+
+        let task = base_task("t1");
+        // agent_executor=None simulates an agent with no explicit choice
+        // (default claude executor). The dispatcher's `-x codex` floor
+        // must win.
+        let plan = plan_spawn(&task, &config, None, Some("local:qwen3-coder")).unwrap();
+
+        assert_eq!(
+            plan.executor,
+            ExecutorKind::Codex,
+            "dispatcher.executor=codex MUST win when explicitly set, even with model={}. provenance: {:?}",
+            plan.model.raw,
+            plan.provenance
+        );
+    }
+
+    /// Companion test: `wg init -x nex -m qwen3-coder` (canonicalised to
+    /// `native`). Native executor with `local:` model is the entire reason
+    /// you'd configure nex/native, so this is the must-not-break case.
+    #[test]
+    fn test_nex_executor_routes_native_not_claude() {
+        let mut config = Config::default();
+        config.coordinator.executor = Some("native".to_string());
+        config.coordinator.model = Some("local:qwen3-coder".to_string());
+
+        let task = base_task("t1");
+        let plan = plan_spawn(&task, &config, None, Some("local:qwen3-coder")).unwrap();
+
+        assert_eq!(
+            plan.executor,
+            ExecutorKind::Native,
+            "dispatcher.executor=native (nex) MUST be honored. provenance: {:?}",
+            plan.provenance
+        );
+    }
+
+    /// The autohaiku regression case, now enforced at the dispatch layer
+    /// rather than agency: dispatcher.executor=claude (explicit) +
+    /// model=local:qwen3-coder MUST switch to native, because the claude
+    /// CLI literally cannot run a local model and would 404.
+    #[test]
+    fn test_claude_executor_with_local_model_overrides_to_native() {
+        let mut config = Config::default();
+        config.coordinator.executor = Some("claude".to_string());
+        config.coordinator.model = Some("local:qwen3-coder".to_string());
+
+        let task = base_task("t1");
+        let plan = plan_spawn(&task, &config, None, Some("local:qwen3-coder")).unwrap();
+
+        assert_eq!(
+            plan.executor,
+            ExecutorKind::Native,
+            "claude CLI cannot run local: models — must override to native. provenance: {:?}",
+            plan.provenance
+        );
+        assert!(
+            plan.provenance.executor_source.contains("model-compat"),
+            "provenance must record the model-compat override, got {:?}",
+            plan.provenance.executor_source
+        );
+    }
+
+    /// Default dispatcher (no executor configured) + agent default (claude)
+    /// + local: model → must override to native. Same root cause as
+    /// autohaiku, just driven by the default fall-through rather than an
+    /// explicit `-x claude`.
+    #[test]
+    fn test_default_executor_with_local_model_overrides_to_native() {
+        let mut config = Config::default();
+        config.coordinator.model = Some("local:qwen3-coder".to_string());
+
+        let task = base_task("t1");
+        let plan = plan_spawn(&task, &config, None, Some("local:qwen3-coder")).unwrap();
+
+        assert_eq!(
+            plan.executor,
+            ExecutorKind::Native,
+            "default claude executor with local: model must override to native. provenance: {:?}",
+            plan.provenance
+        );
+    }
+
+    /// `claude:opus` (and bare `opus`) MUST NOT trigger an override — the
+    /// claude CLI is the right choice for Anthropic models. This locks in
+    /// the boundary: only non-Anthropic provider prefixes (local, openrouter,
+    /// oai-compat, openai) trigger the model-compat switch.
+    #[test]
+    fn test_claude_executor_with_anthropic_model_no_override() {
+        let mut config = Config::default();
+        config.coordinator.executor = Some("claude".to_string());
+
+        for model in ["opus", "sonnet", "claude:opus", "claude:sonnet"] {
+            let task = base_task("t1");
+            let plan = plan_spawn(&task, &config, None, Some(model)).unwrap();
+            assert_eq!(
+                plan.executor,
+                ExecutorKind::Claude,
+                "model={} must keep claude executor (no override). provenance: {:?}",
+                model,
+                plan.provenance
+            );
+        }
+    }
+
+    /// Codex with a local: model is fine — codex is OAI-compat-aware. The
+    /// model-compat override only fires for the claude executor (the only
+    /// CLI that genuinely can't speak non-Anthropic protocols). Without
+    /// this guard the dispatcher's explicit codex choice would be silently
+    /// rewritten.
+    #[test]
+    fn test_codex_executor_with_local_model_no_override() {
+        let mut config = Config::default();
+        config.coordinator.executor = Some("codex".to_string());
+
+        let task = base_task("t1");
+        let plan = plan_spawn(&task, &config, None, Some("local:qwen3-coder")).unwrap();
+        assert_eq!(plan.executor, ExecutorKind::Codex);
+        assert!(
+            !plan.provenance.executor_source.contains("model-compat"),
+            "codex must not be rewritten by model-compat. provenance: {:?}",
+            plan.provenance
+        );
     }
 }

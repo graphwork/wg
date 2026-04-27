@@ -3710,32 +3710,19 @@ fn spawn_agents_for_ready_tasks(
 
         // SINGLE SOURCE OF TRUTH: every spawn decision flows through plan_spawn.
         // This is the ONLY place that decides {executor, model, endpoint} for
-        // a task spawn. The previous logic (auto-switching claude→native based
-        // on model) is gone: model never overrides an explicit executor floor.
+        // a task spawn.
         //
-        // Model-prefix override (autohaiku fix): the agency uses
-        // `effective_executor_for_model` so that an agent whose role implies
-        // `claude` but whose task model is `local:`/`openrouter:`/etc. routes
-        // to a compatible executor (`native`). The claude CLI cannot speak
-        // OpenAI-compat endpoints; the previous behavior 404'd 100% of spawns.
+        // Agency reports the agent's preferred executor when it has an
+        // explicit one (non-default `executor` field, or `preferred_provider`).
+        // For default agents, agency abstains and the dispatcher's executor
+        // floor wins. The model-compat override (claude → native when the
+        // model is non-Anthropic) is applied INSIDE `plan_spawn` after
+        // executor resolution — see `enforce_model_compat`.
         let agent_entity = task
             .agent
             .as_ref()
             .and_then(|agent_hash| agency::find_agent_by_prefix(&agents_dir, agent_hash).ok());
-        // Mirror plan_spawn's model resolution so the agency sees the same
-        // model the dispatcher is about to use. plan_spawn has further
-        // fallbacks (config.coordinator.model, agent.model) but those only
-        // fire when task_model is None, which is the .assign-/non-default
-        // path and not the autohaiku failure mode (which has default_model
-        // = local:qwen3-coder).
-        let prospective_model = task
-            .model
-            .as_deref()
-            .or(task_model.as_deref())
-            .or(config.coordinator.model.as_deref());
-        let agent_executor = agent_entity
-            .as_ref()
-            .map(|a| a.effective_executor_for_model(prospective_model));
+        let agent_executor = agent_entity.as_ref().and_then(|a| a.explicit_executor());
         let plan = match workgraph::dispatch::plan_spawn(
             task,
             config,
