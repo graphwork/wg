@@ -2268,6 +2268,140 @@ fn print_diff_summary(old: &str, new: &str) {
     }
 }
 
+/// Single-key setter used by the TUI Settings tab.
+///
+/// Maps a dotted key (e.g. `agent.model`, `dispatcher.max_agents`) to the
+/// matching `Config` field, validates where appropriate, and saves to the
+/// requested scope. This is intentionally a thin dispatcher over the
+/// existing `Config` struct — the canonical CLI setters in this file
+/// (`update`, `set_tier`, `set_key`) handle their own bespoke flows; this
+/// helper covers the simple per-key edits the Settings tab issues.
+pub fn set_setting_value(
+    workgraph_dir: &Path,
+    scope: ConfigScope,
+    key: &str,
+    value: &str,
+) -> Result<()> {
+    let mut config = match scope {
+        ConfigScope::Global => Config::load_global()?.unwrap_or_default(),
+        ConfigScope::Local => Config::load(workgraph_dir)?,
+    };
+
+    apply_setting(&mut config, key, value)?;
+
+    match scope {
+        ConfigScope::Global => config.save_global()?,
+        ConfigScope::Local => config.save(workgraph_dir)?,
+    }
+    Ok(())
+}
+
+fn apply_setting(config: &mut Config, key: &str, value: &str) -> Result<()> {
+    let v = value.trim();
+    let parse_bool = |s: &str| -> Result<bool> {
+        match s.to_ascii_lowercase().as_str() {
+            "true" | "on" | "yes" | "1" => Ok(true),
+            "false" | "off" | "no" | "0" => Ok(false),
+            other => anyhow::bail!("expected boolean (got '{}')", other),
+        }
+    };
+
+    match key {
+        "agent.model" => {
+            workgraph::config::parse_model_spec_strict(v).map_err(|e| {
+                anyhow::anyhow!(
+                    "Invalid model format: {}. Use provider:model (e.g. 'claude:opus').",
+                    e
+                )
+            })?;
+            config.agent.model = v.to_string();
+        }
+        "agent.executor" => {
+            config.agent.executor = v.to_string();
+        }
+        "agent.heartbeat_timeout" => {
+            config.agent.heartbeat_timeout = v
+                .parse::<u64>()
+                .map_err(|_| anyhow::anyhow!("expected positive integer (seconds)"))?;
+        }
+        "agent.interval" => {
+            config.agent.interval = v
+                .parse::<u64>()
+                .map_err(|_| anyhow::anyhow!("expected positive integer (seconds)"))?;
+        }
+        "coordinator.max_agents" | "dispatcher.max_agents" => {
+            config.coordinator.max_agents = v
+                .parse::<usize>()
+                .map_err(|_| anyhow::anyhow!("expected positive integer"))?;
+        }
+        "coordinator.max_coordinators" | "dispatcher.max_coordinators" => {
+            config.coordinator.max_coordinators = v
+                .parse::<usize>()
+                .map_err(|_| anyhow::anyhow!("expected positive integer"))?;
+        }
+        "coordinator.poll_interval" | "dispatcher.poll_interval" => {
+            config.coordinator.poll_interval = v
+                .parse::<u64>()
+                .map_err(|_| anyhow::anyhow!("expected positive integer (seconds)"))?;
+        }
+        "coordinator.interval" | "dispatcher.interval" => {
+            config.coordinator.interval = v
+                .parse::<u64>()
+                .map_err(|_| anyhow::anyhow!("expected positive integer (seconds)"))?;
+        }
+        "coordinator.coordinator_agent" | "dispatcher.coordinator_agent" => {
+            config.coordinator.coordinator_agent = parse_bool(v)?;
+        }
+        "coordinator.model" => {
+            workgraph::config::parse_model_spec_strict(v).map_err(|e| {
+                anyhow::anyhow!(
+                    "Invalid model format: {}. Use provider:model (e.g. 'claude:opus').",
+                    e
+                )
+            })?;
+            config.coordinator.model = Some(v.to_string());
+        }
+        "coordinator.executor" => {
+            config.coordinator.executor = Some(v.to_string());
+        }
+        "coordinator.agent_timeout" => {
+            config.coordinator.agent_timeout = v.to_string();
+        }
+        "agency.auto_evaluate" => {
+            config.agency.auto_evaluate = parse_bool(v)?;
+        }
+        "agency.auto_assign" => {
+            config.agency.auto_assign = parse_bool(v)?;
+        }
+        "agency.auto_triage" => {
+            config.agency.auto_triage = parse_bool(v)?;
+        }
+        "agency.auto_create" => {
+            config.agency.auto_create = parse_bool(v)?;
+        }
+        "tiers.fast" => {
+            workgraph::config::parse_model_spec_strict(v)
+                .map_err(|e| anyhow::anyhow!("Invalid model format: {}", e))?;
+            config.tiers.fast = Some(v.to_string());
+        }
+        "tiers.standard" => {
+            workgraph::config::parse_model_spec_strict(v)
+                .map_err(|e| anyhow::anyhow!("Invalid model format: {}", e))?;
+            config.tiers.standard = Some(v.to_string());
+        }
+        "tiers.premium" => {
+            workgraph::config::parse_model_spec_strict(v)
+                .map_err(|e| anyhow::anyhow!("Invalid model format: {}", e))?;
+            config.tiers.premium = Some(v.to_string());
+        }
+        other => anyhow::bail!(
+            "set_setting_value: unsupported key '{}'. Add a match arm in apply_setting() if this is a valid Config field.",
+            other
+        ),
+    }
+    Ok(())
+}
+
 /// Set an API key file reference for a provider's endpoint.
 ///
 /// If an endpoint for the provider already exists, updates its `api_key_file`.
@@ -2451,6 +2585,108 @@ mod tests {
         // Show should work (local scope)
         let result = show(temp_dir.path(), Some(ConfigScope::Local), false);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_set_setting_value_writes_local_scope() {
+        let temp = TempDir::new().unwrap();
+        // Seed default config so set_setting_value has something to load.
+        Config::default().save(temp.path()).unwrap();
+
+        set_setting_value(
+            temp.path(),
+            ConfigScope::Local,
+            "agent.model",
+            "claude:sonnet",
+        )
+        .expect("set_setting_value should succeed for a known key");
+
+        let reloaded = Config::load(temp.path()).unwrap();
+        assert_eq!(reloaded.agent.model, "claude:sonnet");
+    }
+
+    #[test]
+    fn test_set_setting_value_validates_model_format() {
+        let temp = TempDir::new().unwrap();
+        Config::default().save(temp.path()).unwrap();
+
+        // Missing provider prefix should be rejected by parse_model_spec_strict.
+        let res = set_setting_value(
+            temp.path(),
+            ConfigScope::Local,
+            "agent.model",
+            "claude_no_colon",
+        );
+        assert!(res.is_err(), "bare model name should be rejected");
+
+        // Disk file unchanged.
+        let reloaded = Config::load(temp.path()).unwrap();
+        assert_eq!(reloaded.agent.model, Config::default().agent.model);
+    }
+
+    #[test]
+    fn test_set_setting_value_parses_numeric_keys() {
+        let temp = TempDir::new().unwrap();
+        Config::default().save(temp.path()).unwrap();
+
+        set_setting_value(
+            temp.path(),
+            ConfigScope::Local,
+            "coordinator.max_agents",
+            "12",
+        )
+        .unwrap();
+
+        let reloaded = Config::load(temp.path()).unwrap();
+        assert_eq!(reloaded.coordinator.max_agents, 12);
+
+        // Bogus integer is rejected.
+        let res = set_setting_value(
+            temp.path(),
+            ConfigScope::Local,
+            "coordinator.max_agents",
+            "abc",
+        );
+        assert!(res.is_err());
+    }
+
+    #[test]
+    fn test_set_setting_value_parses_bool_keys() {
+        let temp = TempDir::new().unwrap();
+        Config::default().save(temp.path()).unwrap();
+
+        set_setting_value(
+            temp.path(),
+            ConfigScope::Local,
+            "agency.auto_evaluate",
+            "false",
+        )
+        .unwrap();
+        let reloaded = Config::load(temp.path()).unwrap();
+        assert!(!reloaded.agency.auto_evaluate);
+
+        set_setting_value(
+            temp.path(),
+            ConfigScope::Local,
+            "agency.auto_evaluate",
+            "true",
+        )
+        .unwrap();
+        let reloaded = Config::load(temp.path()).unwrap();
+        assert!(reloaded.agency.auto_evaluate);
+    }
+
+    #[test]
+    fn test_set_setting_value_unknown_key_errors() {
+        let temp = TempDir::new().unwrap();
+        Config::default().save(temp.path()).unwrap();
+        let res = set_setting_value(
+            temp.path(),
+            ConfigScope::Local,
+            "totally.unknown.key",
+            "x",
+        );
+        assert!(res.is_err());
     }
 
     #[test]

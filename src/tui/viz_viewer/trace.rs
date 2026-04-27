@@ -209,6 +209,7 @@ pub fn capture_state_context(app: &super::state::VizApp) -> StateContext {
             RightPanelTab::Firehose => "firehose",
             RightPanelTab::Output => "output",
             RightPanelTab::Dashboard => "dashboard",
+            RightPanelTab::Settings => "settings",
         })
     } else {
         None
