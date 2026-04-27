@@ -4329,6 +4329,29 @@ pub enum ConfigSubcommand {
         #[arg(long)]
         force: bool,
     },
+
+    /// Read-only companion to `wg migrate config`. Walks the chosen
+    /// config file(s) and reports everything `wg migrate config`
+    /// would change — deprecated keys, legacy field names, stale
+    /// model strings — without rewriting anything.
+    ///
+    /// Use this as the "what's stale?" exploration step before
+    /// committing to a migration. With `--merged` (default) both
+    /// the global and local configs are linted in sequence; pass
+    /// `--global` or `--local` to scope to one file.
+    Lint {
+        /// Lint only the global config (~/.wg/config.toml).
+        #[arg(long, conflicts_with_all = ["local", "merged"])]
+        global: bool,
+
+        /// Lint only the local project config (.wg/config.toml).
+        #[arg(long, conflicts_with_all = ["global", "merged"])]
+        local: bool,
+
+        /// Lint both global and local configs (default when no flag is given).
+        #[arg(long, conflicts_with_all = ["global", "local"])]
+        merged: bool,
+    },
 }
 
 #[derive(Subcommand)]

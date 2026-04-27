@@ -2356,6 +2356,25 @@ fn main() -> Result<()> {
                             force,
                         );
                     }
+                    ConfigSubcommand::Lint {
+                        global: lint_global,
+                        local: lint_local,
+                        merged: _lint_merged,
+                    } => {
+                        let target = if lint_global {
+                            commands::config_cmd::LintTarget::Global
+                        } else if lint_local {
+                            commands::config_cmd::LintTarget::Local
+                        } else {
+                            // Default: merged (lints both global and local).
+                            commands::config_cmd::LintTarget::Merged
+                        };
+                        return commands::config_cmd::lint_config(
+                            &workgraph_dir,
+                            target,
+                            cli.json,
+                        );
+                    }
                 }
             }
 

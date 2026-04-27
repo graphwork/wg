@@ -306,6 +306,166 @@ fn migrate_dry_run_does_not_modify() {
 }
 
 // ---------------------------------------------------------------------------
+// `wg config lint` — read-only companion to `wg migrate config`.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn lint_reports_deprecated_keys() {
+    // A config with `agent.executor` (deprecated — handler is derived from
+    // model spec now) must trigger a warning from `wg config lint`. The
+    // command is read-only so the file content must be preserved exactly.
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path().join("fakehome");
+    fs::create_dir_all(&home).unwrap();
+    let wg_dir = fresh_workgraph(&tmp);
+
+    let stale = "[agent]\nexecutor = \"claude\"\nmodel = \"claude:opus\"\n";
+    fs::write(wg_dir.join("config.toml"), stale).unwrap();
+
+    let stdout = wg_ok(&wg_dir, &home, &["config", "lint", "--local"]);
+    assert!(
+        stdout.contains("agent.executor"),
+        "lint should name the deprecated key; got:\n{}",
+        stdout,
+    );
+    assert!(
+        stdout.to_lowercase().contains("deprecated")
+            || stdout.to_lowercase().contains("removed"),
+        "lint should label the finding as deprecated/removable; got:\n{}",
+        stdout,
+    );
+    assert!(
+        stdout.contains("wg migrate config"),
+        "lint should point at `wg migrate config` for the fix; got:\n{}",
+        stdout,
+    );
+}
+
+#[test]
+fn lint_reports_stale_models() {
+    // Stale openrouter model strings (e.g. claude-sonnet-4 with no minor)
+    // must be flagged with their canonical replacement.
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path().join("fakehome");
+    fs::create_dir_all(&home).unwrap();
+    let wg_dir = fresh_workgraph(&tmp);
+
+    fs::write(
+        wg_dir.join("config.toml"),
+        "[agent]\nmodel = \"openrouter:anthropic/claude-sonnet-4\"\n",
+    )
+    .unwrap();
+
+    let stdout = wg_ok(&wg_dir, &home, &["config", "lint", "--local"]);
+    assert!(
+        stdout.contains("openrouter:anthropic/claude-sonnet-4-6"),
+        "lint should announce the canonical replacement; got:\n{}",
+        stdout,
+    );
+    // The stale value (without -6) must appear as well — it's the "from" side
+    // of the rewrite. Match the exact-quoted form so we don't get a false
+    // positive from `claude-sonnet-4-6` matching the `claude-sonnet-4` prefix.
+    assert!(
+        stdout.contains("\"openrouter:anthropic/claude-sonnet-4\""),
+        "lint should mention the exact stale value as a quoted string; got:\n{}",
+        stdout,
+    );
+}
+
+#[test]
+fn lint_does_not_modify_files() {
+    // The lint command must be strictly read-only — the on-disk content
+    // (including byte-exact whitespace) must be unchanged after lint runs,
+    // and no `.bak` / `.pre-migrate.*` siblings may appear.
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path().join("fakehome");
+    fs::create_dir_all(&home).unwrap();
+    let wg_dir = fresh_workgraph(&tmp);
+
+    let original = "\n[agent]\nexecutor = \"claude\"\nmodel = \"openrouter:anthropic/claude-sonnet-4\"\n\n[dispatcher]\nchat_agent = true\nmax_chats = 4\n";
+    fs::write(wg_dir.join("config.toml"), original).unwrap();
+
+    wg_ok(&wg_dir, &home, &["config", "lint", "--local"]);
+
+    let after = fs::read_to_string(wg_dir.join("config.toml")).unwrap();
+    assert_eq!(
+        original, after,
+        "lint must not modify the config file (byte-for-byte)",
+    );
+
+    // No backup or migration siblings created.
+    let entries: Vec<String> = fs::read_dir(&wg_dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .collect();
+    for name in &entries {
+        assert!(
+            !name.contains("pre-migrate") && !name.ends_with(".bak"),
+            "lint must not create backup siblings; found {} in {:?}",
+            name,
+            entries,
+        );
+    }
+}
+
+#[test]
+fn lint_clean_local_config_reports_clean() {
+    // A canonical local config should produce a "clean" message with
+    // no warning lines.
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path().join("fakehome");
+    fs::create_dir_all(&home).unwrap();
+    let wg_dir = fresh_workgraph(&tmp);
+
+    fs::write(
+        wg_dir.join("config.toml"),
+        "[agent]\nmodel = \"claude:opus\"\n",
+    )
+    .unwrap();
+
+    let stdout = wg_ok(&wg_dir, &home, &["config", "lint", "--local"]);
+    assert!(
+        stdout.to_lowercase().contains("clean"),
+        "clean config should be announced as clean; got:\n{}",
+        stdout,
+    );
+    assert!(
+        !stdout.to_lowercase().contains("warning:"),
+        "clean config should produce no warnings; got:\n{}",
+        stdout,
+    );
+}
+
+#[test]
+fn lint_reports_renamed_keys() {
+    // `chat_agent` → `coordinator_agent` and `max_chats` → `max_coordinators`
+    // are predictable renames; lint must announce both with the new names.
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path().join("fakehome");
+    fs::create_dir_all(&home).unwrap();
+    let wg_dir = fresh_workgraph(&tmp);
+
+    fs::write(
+        wg_dir.join("config.toml"),
+        "[dispatcher]\nchat_agent = true\nmax_chats = 4\n",
+    )
+    .unwrap();
+
+    let stdout = wg_ok(&wg_dir, &home, &["config", "lint", "--local"]);
+    assert!(
+        stdout.contains("coordinator_agent"),
+        "lint should name the canonical replacement; got:\n{}",
+        stdout,
+    );
+    assert!(
+        stdout.contains("max_coordinators"),
+        "lint should name the canonical replacement; got:\n{}",
+        stdout,
+    );
+}
+
+// ---------------------------------------------------------------------------
 // `wg quickstart` works with no global config (sanity)
 // ---------------------------------------------------------------------------
 

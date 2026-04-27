@@ -597,7 +597,11 @@ fn print_one(r: &ConfigMigrateResult, dry_run: bool) {
 
 /// Read one config file, compute the canonical form, and (unless dry-run)
 /// write it back with a `.pre-migrate.<timestamp>` backup.
-fn migrate_one(path: &Path, dry_run: bool) -> Result<ConfigMigrateResult> {
+///
+/// Exposed `pub(crate)` so `wg config lint` can reuse the predicates in
+/// dry-run mode without touching the file. When `dry_run = true` the
+/// returned `ConfigMigrateResult` describes what *would* change.
+pub(crate) fn migrate_one(path: &Path, dry_run: bool) -> Result<ConfigMigrateResult> {
     let mut result = ConfigMigrateResult {
         path: path.to_path_buf(),
         ..Default::default()

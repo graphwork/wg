@@ -2318,6 +2318,123 @@ pub fn set_key(
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// `wg config lint` — read-only companion to `wg migrate config`.
+// ---------------------------------------------------------------------------
+
+/// Which scope(s) `wg config lint` should walk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LintTarget {
+    /// Only the global config (~/.wg/config.toml).
+    Global,
+    /// Only the local project config (.wg/config.toml).
+    Local,
+    /// Both global and local in sequence — the default.
+    Merged,
+}
+
+/// Walk the chosen config file(s) and report everything `wg migrate config`
+/// would change, without rewriting. This is the "what's stale?" exploration
+/// step before committing to a migration.
+///
+/// Implementation reuses `migrate::migrate_one(path, dry_run=true)` so the
+/// predicates (deprecated keys, legacy renames, stale model strings) stay
+/// in lockstep with `wg migrate config`.
+pub fn lint_config(workgraph_dir: &Path, target: LintTarget, json: bool) -> Result<()> {
+    use crate::commands::migrate::{ConfigMigrateResult, migrate_one};
+
+    let global_path = Config::global_config_path()?;
+    let local_path = workgraph_dir.join("config.toml");
+
+    let mut results: Vec<ConfigMigrateResult> = Vec::new();
+    match target {
+        LintTarget::Global => {
+            results.push(migrate_one(&global_path, true)?);
+        }
+        LintTarget::Local => {
+            results.push(migrate_one(&local_path, true)?);
+        }
+        LintTarget::Merged => {
+            results.push(migrate_one(&global_path, true)?);
+            results.push(migrate_one(&local_path, true)?);
+        }
+    }
+
+    if json {
+        let payload: Vec<serde_json::Value> = results
+            .iter()
+            .map(|r| {
+                serde_json::json!({
+                    "path": r.path.display().to_string(),
+                    "existed": r.existed,
+                    "removed_keys": r.removed_keys,
+                    "renamed_keys": r.renamed_keys,
+                    "rewritten_values": r.rewritten_values,
+                    "clean": r.is_noop(),
+                })
+            })
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&payload)?);
+        return Ok(());
+    }
+
+    let mut total_findings = 0usize;
+    for r in &results {
+        print_lint_one(r);
+        total_findings += r.removed_keys.len()
+            + r.renamed_keys.len()
+            + r.rewritten_values.len();
+    }
+
+    if total_findings == 0 {
+        // All inspected files were either missing or already canonical.
+        println!();
+        println!("All inspected files are clean — no migration needed.");
+    } else {
+        println!();
+        println!(
+            "Found {} issue{} that `wg migrate config` would fix.",
+            total_findings,
+            if total_findings == 1 { "" } else { "s" },
+        );
+        println!(
+            "Run `wg migrate config --dry-run` to preview the rewrite, then \
+             `wg migrate config` to apply.",
+        );
+    }
+    Ok(())
+}
+
+fn print_lint_one(r: &crate::commands::migrate::ConfigMigrateResult) {
+    if !r.existed {
+        println!(
+            "{}: file does not exist — nothing to lint",
+            r.path.display(),
+        );
+        return;
+    }
+    if r.is_noop() {
+        println!("{}: clean — no stale keys found", r.path.display());
+        return;
+    }
+    println!("{}:", r.path.display());
+    for k in &r.removed_keys {
+        println!("  warning: deprecated key — would be removed: {}", k);
+    }
+    for (old, new) in &r.renamed_keys {
+        println!(
+            "  warning: legacy key — would be renamed: {} → {}",
+            old, new,
+        );
+    }
+    for (k, old, new) in &r.rewritten_values {
+        println!(
+            "  warning: stale value at {} — would be rewritten: {:?} → {:?}",
+            k, old, new,
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
