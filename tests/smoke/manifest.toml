@@ -190,3 +190,16 @@ owners = [
 ]
 description = "Pins user-reported tui-cannot-retire regression: 'man why can't we retire the .chat-4 ???'. The embedded vendor CLI (claude --resume) shows a session-resume modal that swallows Esc/digit keys, so the user has no way to reach wg's Archive/Stop/Abandon dialog. Ctrl+W must be a global escape hatch that breaks out of PTY forwarding AND opens the retire dialog. Drives a real `wg tui` with three live chats, sends Ctrl+T (focus PTY) → Ctrl+W → 'x' (Abandon hotkey), and asserts the visible chat-tab count drops AND graph.jsonl shows ≥1 abandoned task."
 timeout_seconds = 90
+
+[[scenario]]
+name = "tui_chat_redesign_modal_close_persist"
+script = "scenarios/tui_chat_redesign_modal_close_persist.sh"
+owners = [
+    "integrate-tui-chat",
+    "implement-tui-modal",
+    "implement-tui-tabs",
+    "implement-tui-tab",
+    "smoke-gate-is",
+]
+description = "Pins the three critical invariants of the TUI chat redesign (umbrella: integrate-tui-chat). (1) MODAL TOGGLE: chat tab shows [PTY]/[CMD] modal indicator; Ctrl+T flips between them. Without this, users have no visual cue that the modal contract — which stops Ctrl+N/Ctrl+W/letters from being intercepted as global hotkeys inside the embedded vendor CLI — is in effect. (2) CLOSE IS NON-DESTRUCTIVE: Ctrl+W in command mode closes the active tab (visible tab count drops by 1), the underlying graph task status stays unchanged (NOT marked abandoned/archived), and NO ChoiceDialog appears. The redesign explicitly removed the close-confirmation dialog from the tab-close path. (3) PERSISTENCE: relaunching `wg tui` after a kill restores the last-active coordinator id from tui-state.json. Drives a real `wg tui` inside tmux, sends synthetic Ctrl+T / Ctrl+W / digit keys via tmux send-keys, and asserts on `wg --json tui-dump`'s screen text + graph.jsonl statuses + tui-state.json contents."
+timeout_seconds = 120
