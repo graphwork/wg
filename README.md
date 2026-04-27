@@ -335,6 +335,29 @@ wg service stop              # stop daemon (agents keep running)
 wg service stop --kill-agents  # stop daemon and all agents
 ```
 
+### Executors
+
+An **executor** is the runtime wg uses to drive an LLM for a spawned agent. Pick one with `-x` on `wg init` or `--executor` on `wg config`.
+
+| Executor | Wraps | When to use it | Status |
+|---|---|---|---|
+| `claude` | `claude` CLI | Anthropic models; reliable default if you have a `claude` CLI session | Stable |
+| `codex` | `codex exec` CLI | OpenAI **and** any OAI-compatible endpoint (local llama.cpp / vLLM / Ollama / Lambda Labs / OpenRouter) via `-e <url>` | Stable — recommended for OAI-compat |
+| `nex` (a.k.a. `native`) | wg's in-process OAI-compat HTTP client | Historical default for bring-your-own OAI endpoints | **Fragile — being phased out.** Switch to `codex` for OAI-compat workloads (one-flag change). |
+| `shell` | A shell command | Deterministic scripted steps; no LLM | Stable |
+| `amplifier` | The Amplifier multi-agent wrapper | Multi-agent delegation + bundled context | Stable |
+
+Quick recipe for the codex thin-wrapper path against a custom OAI-compat endpoint (e.g. a local `lambda01`-style server running `qwen3-coder`):
+
+```bash
+export OPENAI_API_KEY=sk-...   # or whatever token your endpoint accepts
+wg init -m qwen3-coder -e https://lambda01.tail334fe6.ts.net:30000 -x codex
+wg service start
+wg tui
+```
+
+See [docs/executors.md](docs/executors.md) for a per-executor reference, the full custom OAI-compat walkthrough, and the `nex → codex` migration note. The rationale for the thin-wrapper choice is in [docs/research/thin-wrapper-executors-2026-04.md](docs/research/thin-wrapper-executors-2026-04.md).
+
 ### Configuration
 
 The service reads from `.workgraph/config.toml`:
@@ -343,7 +366,7 @@ The service reads from `.workgraph/config.toml`:
 [dispatcher]           # legacy alias [coordinator] still accepted
 max_agents = 4         # max parallel agents (default: 4)
 poll_interval = 60     # seconds between safety-net ticks (default: 60)
-executor = "claude"    # executor: "claude" (default), "amplifier", or "shell"
+executor = "claude"    # executor: "claude" (default), "codex", "nex" (a.k.a. "native"), "amplifier", or "shell"
 model = "opus"         # model override for all spawned agents (optional)
 
 [agent]
