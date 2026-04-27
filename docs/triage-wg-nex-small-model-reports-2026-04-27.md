@@ -36,22 +36,30 @@ any output appears." "Long-running operations freeze the UI until completion."
 
 **What I verified in code:**
 
-`wg nex` runs an `AgentLoop` in REPL mode. The provider client
-(`src/executor/native/client.rs:289 messages_streaming_with_callback`) does
-real SSE streaming: it parses each `content_block_delta` event off the wire and
-forwards `TextDelta` content immediately to a `on_text` callback. In
-interactive mode, the callback writes via `eprint!` to stderr and flushes
+`wg nex` runs an `AgentLoop` in REPL mode. There are two streaming clients —
+the Anthropic SSE client at
+`src/executor/native/client.rs:289 messages_streaming_with_callback` and the
+OpenAI-compatible client at
+`src/executor/native/openai_client.rs:1043 streaming_attempt_with_callback`.
+A Qwen3-Coder-30B running through `wg nex` (any non-Anthropic endpoint —
+OpenRouter, local llama.cpp, vLLM, etc.) goes through the **openai_client**
+path, not the Anthropic one. Both have the same defect, described below;
+fixes need to land in both spots. Both forward `delta.content` (the OAI
+analogue of Anthropic's `TextDelta`) immediately to an `on_text` callback.
+In interactive mode the callback writes via `eprint!` to stderr and flushes
 (`src/executor/native/agent.rs:1707`). So **plain assistant text streams
 correctly** — the user sees it character-by-character.
 
-The freeze the model is describing is real, but its diagnosis is wrong. The
-SSE protocol carries tool calls as a separate delta type
-(`InputJsonDelta { partial_json: String }`,
-`src/executor/native/client.rs:184`). The streaming code accumulates these
-into a per-block JSON buffer (`client.rs:688`) but does **not** invoke any
-user-facing callback while doing so. There is no "tool input is being typed"
-indicator. So when a small (slow) local model generates a `write_file` call
-with 5,000 lines of content, the user sees:
+The freeze the model is describing is real, but its diagnosis is wrong.
+Both clients carry tool input as a separate delta channel: in the Anthropic
+client, `InputJsonDelta { partial_json: String }`
+(`src/executor/native/client.rs:184`); in the OpenAI-compatible client,
+`choice.delta.tool_calls[].function.arguments`
+(`src/executor/native/openai_client.rs:1152-1169`). Both implementations
+accumulate these into a per-block / per-index JSON buffer but **neither
+invokes any user-facing callback while doing so**. There is no "tool input
+is being typed" indicator. So when a small (slow) local model generates a
+`write_file` call with 5,000 lines of content, the user sees:
 
 1. Some assistant text (streams fine).
 2. Long silence while the model emits a JSON-quoted string of file content,
@@ -76,11 +84,17 @@ doesn't; tok/s is unimplemented).**
 
 **Proposed fix scope (medium):**
 
-- In `messages_streaming_with_callback`, also forward `InputJsonDelta` to a
-  new `on_tool_input` callback. The agent's interactive sink should render
-  this as a typing-indicator row showing `tool_name: <bytes accumulated>`,
-  updating in place — *not* dumping raw partial JSON to the screen
-  (would be ~unreadable for big writes anyway).
+- In **both** `messages_streaming_with_callback`
+  (`src/executor/native/client.rs:289`) **and**
+  `streaming_attempt_with_callback`
+  (`src/executor/native/openai_client.rs:1043`), forward tool-input deltas
+  to a new `on_tool_input` callback. The agent's interactive sink should
+  render this as a typing-indicator row showing
+  `tool_name: <bytes accumulated>`, updating in place — *not* dumping raw
+  partial JSON to the screen (would be ~unreadable for big writes anyway).
+  Be careful to land the fix in both clients; landing it in only the
+  Anthropic side leaves Qwen3-Coder users in exactly the state they
+  reported.
 - Add a `tok/s` readout to the existing `SpinnerGuard`
   (`src/executor/native/agent.rs:1670`). The spinner already has an elapsed
   timer; multiply by the running output-token count and update inline.
@@ -300,9 +314,13 @@ the bookkeeping:
 - `src/executor/native/tools/web_fetch.rs:51 DEFAULT_MAX_CONTENT_CHARS` —
   the 16000-char cap; markdown only.
 - `src/executor/native/client.rs:289 messages_streaming_with_callback` —
-  the SSE callback that streams text but not tool input.
+  the Anthropic SSE callback that streams text but not tool input.
 - `src/executor/native/client.rs:184 InputJsonDelta` — the
-  unstreamed-to-user delta type.
+  unstreamed-to-user delta type (Anthropic).
+- `src/executor/native/openai_client.rs:1043 streaming_attempt_with_callback` —
+  the OAI-compatible mirror of the same path; small local models hit
+  this one. Same defect: text streams, `delta.tool_calls.function.arguments`
+  silently accumulates (lines 1138-1169).
 - `src/executor/native/agent.rs:1670` — `SpinnerGuard`, where the tok/s
   readout would go.
 - `src/executor/native/agent.rs:1707` — `eprint!`/`flush` for live text.
