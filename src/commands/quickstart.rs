@@ -100,19 +100,19 @@ SERVICE MODE (recommended for parallel work)
   wg list                     # What's done, what's pending
   wg tui                      # Interactive dashboard
 
-  Multi-coordinator sessions:
+  Multi-chat sessions:
 
-  wg service create-coordinator   # Create a new coordinator session
-  wg service stop-coordinator <n> # Stop a coordinator session
-  wg service archive-coordinator <n>  # Archive a coordinator session
-  wg service delete-coordinator <n>   # Delete a coordinator session
+  wg service create-chat          # Create a new chat session
+  wg service stop-chat <n>        # Stop a chat session
+  wg service archive-chat <n>     # Archive a chat session
+  wg service delete-chat <n>      # Delete a chat session
 
-  Chat with the coordinator:
+  Chat with the chat agent:
 
-  wg chat "message"               # Send a message to the coordinator
+  wg chat "message"               # Send a message to the chat agent
   wg chat -i                      # Interactive REPL mode
   wg chat --attachment file.txt   # Attach a file to the message
-  wg chat --coordinator 1         # Target a specific coordinator session
+  wg chat --coordinator 1         # Target a specific chat session (legacy flag)
   wg chat --history               # Show chat history
   wg chat --clear                 # Clear chat history
 

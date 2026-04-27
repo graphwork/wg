@@ -1877,7 +1877,7 @@ fn draw_history_browser(frame: &mut Frame, app: &mut VizApp, area: Rect) {
         " History Browser — no segments available".to_string()
     } else {
         format!(
-            " History Browser ({} segments) — coordinator #{}",
+            " History Browser ({} segments) — chat #{}",
             seg_count, app.active_coordinator_id
         )
     };
@@ -3197,7 +3197,7 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
         let lines = if app.chat.coordinator_active {
             vec![
                 Line::from(Span::styled(
-                    "Chat with Coordinator",
+                    "Chat with Agent",
                     Style::default()
                         .fg(Color::Cyan)
                         .add_modifier(Modifier::BOLD),
@@ -3208,21 +3208,21 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
                     Style::default().fg(Color::DarkGray),
                 )),
                 Line::from(Span::styled(
-                    "Messages are sent to the coordinator agent.",
+                    "Messages are sent to the chat agent.",
                     Style::default().fg(Color::DarkGray),
                 )),
             ]
         } else {
             vec![
                 Line::from(Span::styled(
-                    "Coordinator agent not active.",
+                    "Chat agent not active.",
                     Style::default()
                         .fg(Color::Yellow)
                         .add_modifier(Modifier::BOLD),
                 )),
                 Line::from(""),
                 Line::from(Span::styled(
-                    "Start with: wg service start --coordinator-agent",
+                    "Start with: wg service start",
                     Style::default().fg(Color::DarkGray),
                 )),
                 Line::from(""),
@@ -4884,7 +4884,7 @@ fn draw_dashboard_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
 
     // ── Coordinator Cards ──
     lines.push(Line::from(Span::styled(
-        "── Coordinators ──",
+        "── Chat Agents ──",
         Style::default()
             .fg(Color::Cyan)
             .add_modifier(Modifier::BOLD),
@@ -4893,7 +4893,7 @@ fn draw_dashboard_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
 
     if app.dashboard.coordinator_cards.is_empty() {
         lines.push(Line::from(Span::styled(
-            "  No coordinators running",
+            "  No chat agents running",
             Style::default().fg(Color::DarkGray),
         )));
     } else {
@@ -5912,7 +5912,7 @@ fn draw_choice_dialog(frame: &mut Frame, state: &ChoiceDialogState) -> Rect {
     use super::state::ChoiceDialogAction;
 
     let title = match &state.action {
-        ChoiceDialogAction::RemoveCoordinator(cid) => format!(" Close Coordinator {} ", cid),
+        ChoiceDialogAction::RemoveCoordinator(cid) => format!(" Close Chat {} ", cid),
     };
 
     let size = frame.area();
@@ -5991,7 +5991,7 @@ fn draw_coordinator_picker(
     frame.render_widget(Clear, area);
 
     let block = Block::default()
-        .title(" Switch Coordinator ")
+        .title(" Switch Chat ")
         .borders(Borders::ALL)
         .border_style(
             Style::default()
@@ -7306,10 +7306,10 @@ fn action_hints_parts(app: &VizApp) -> (&str, &str, Color, Vec<(&str, &str)>) {
                         hints.push(("Ctrl+T", "focus PTY"));
                         hints.push(("Ctrl+W", "retire"));
                         hints.push(("↑↓", "scroll"));
-                        hints.push(("←→", "coordinators"));
+                        hints.push(("←→", "chats"));
                     }
                     RightPanelTab::Chat => {
-                        hints.push(("←→", "coordinators"));
+                        hints.push(("←→", "chats"));
                         hints.push(("+", "new"));
                         hints.push(("-", "close"));
                         hints.push(("Ctrl+W", "retire"));
@@ -8658,13 +8658,13 @@ fn draw_help_overlay(frame: &mut Frame) {
         binding("c", "Open chat input"),
         binding("Ctrl-C", "Kill agent on focused task"),
         blank(),
-        heading("Chat Panel (coordinators)"),
-        binding("~ / `", "Open coordinator picker"),
-        binding("+", "Add new coordinator (picker)"),
-        binding("-", "Close/archive coordinator"),
+        heading("Chat Panel (chat agents)"),
+        binding("~ / `", "Open chat picker"),
+        binding("+", "Add new chat (picker)"),
+        binding("-", "Close/archive chat"),
         binding("Ctrl-W", "Retire current chat (works inside PTY)"),
-        binding("[ / ]", "Prev / next coordinator"),
-        binding("←/→", "Prev / next coordinator"),
+        binding("[ / ]", "Prev / next chat"),
+        binding("←/→", "Prev / next chat"),
         binding("Ctrl-T", "Toggle PTY mode"),
         blank(),
         heading("Search (vim-style)"),
@@ -8681,7 +8681,7 @@ fn draw_help_overlay(frame: &mut Frame) {
         binding(".", "Toggle system tasks (visible by default)"),
         binding("<", "Toggle running system tasks only"),
         binding("*", "Toggle touch echo (click feedback)"),
-        binding("L", "Toggle coordinator log"),
+        binding("L", "Toggle chat log"),
         binding("?", "Toggle this help"),
         binding("q", "Quit"),
         blank(),

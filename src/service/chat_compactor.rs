@@ -162,7 +162,7 @@ pub fn run_chat_compaction(workgraph_dir: &Path, coordinator_id: u32) -> Result<
             return Ok(output_path);
         }
         anyhow::bail!(
-            "No chat messages to compact for coordinator {}",
+            "No chat messages to compact for chat {}",
             coordinator_id
         );
     }
@@ -252,7 +252,7 @@ fn build_chat_compactor_prompt(
     context_window: u64,
 ) -> String {
     let mut prompt = String::from(
-        "You are a conversation compactor for a workgraph coordinator. \
+        "You are a conversation compactor for a workgraph chat agent. \
          Your job is to produce a concise context summary that captures the essential \
          state of the conversation so far.\n\n",
     );

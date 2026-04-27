@@ -288,19 +288,18 @@ pub fn fork_session(
     Ok(fork_uuid)
 }
 
-/// Register a coordinator session the way the daemon needs it.
+/// Register a chat session the way the daemon needs it.
 ///
-/// Installs BOTH aliases for the coordinator's UUID:
-///   * `coordinator-<N>` — the handle the subprocess is spawned
-///     with (`wg nex --chat coordinator-<N>`) and that `wg session
-///     list` surfaces.
+/// Installs THREE aliases for the session's UUID:
+///   * `chat-<N>` — the new canonical alias for the session.
+///   * `coordinator-<N>` — legacy alias kept for backward compat
+///     (old subprocesses and IPC clients that still use it).
 ///   * `<N>` (bare numeric) — the path that the legacy
 ///     `chat::append_inbox_for(dir, N, …)` API writes to. This
 ///     API is still used by the IPC `UserChat` handler (the TUI's
 ///     `wg chat` → daemon path). Without this alias, the IPC's
 ///     writes land in a disconnected `chat/<N>/` real directory
-///     and the subprocess (inotify-watching `chat/coordinator-<N>/…`)
-///     never sees them — which manifests as "TUI chat never replies."
+///     and the subprocess never sees them — "TUI chat never replies."
 ///
 /// Also migrates any pre-existing `chat/<N>/` real directory from
 /// a previous non-aliased daemon version. Idempotent across
@@ -312,26 +311,42 @@ pub fn fork_session(
 /// locks in the invariant.
 pub fn register_coordinator_session(workgraph_dir: &Path, n: u32) -> Result<String> {
     let _ = migrate_numeric_coord_dir(workgraph_dir, n);
-    let canonical = format!("coordinator-{}", n);
-    let uuid = ensure_session(
-        workgraph_dir,
-        &canonical,
-        SessionKind::Coordinator,
-        Some(format!("coordinator {}", n)),
-    )?;
-    // Install the bare numeric alias. add_alias errors "already
-    // points to …" on restart, which is the steady-state case
-    // after the first call — swallow that specific error, surface
-    // anything else.
-    match add_alias(workgraph_dir, &canonical, &n.to_string()) {
-        Ok(()) => {}
-        Err(e) => {
-            let msg = format!("{}", e);
-            if !msg.contains("already") {
-                return Err(e);
+    let new_canonical = format!("chat-{}", n);
+    let legacy_canonical = format!("coordinator-{}", n);
+
+    // Find or create the session. Check new alias first, then legacy,
+    // so existing coordinator-N sessions get chat-N added without
+    // creating a duplicate. add_alias silently swallows "already
+    // points to …" errors (steady-state on restart).
+    let reg = load(workgraph_dir).unwrap_or_default();
+    let uuid = if let Some((uuid, _)) = find_by_alias(&reg, &new_canonical) {
+        uuid
+    } else if let Some((uuid, _)) = find_by_alias(&reg, &legacy_canonical) {
+        uuid
+    } else {
+        ensure_session(
+            workgraph_dir,
+            &new_canonical,
+            SessionKind::Coordinator,
+            Some(format!("chat {}", n)),
+        )?
+    };
+
+    // Register all three aliases. Swallow "already points to same session"
+    // errors (steady-state on restart); propagate unexpected errors.
+    let numeric_alias = n.to_string();
+    for alias in [new_canonical.as_str(), legacy_canonical.as_str(), numeric_alias.as_str()] {
+        match add_alias(workgraph_dir, &uuid, alias) {
+            Ok(()) => {}
+            Err(e) => {
+                let msg = format!("{}", e);
+                if !msg.contains("already") {
+                    return Err(e);
+                }
             }
         }
     }
+
     Ok(uuid)
 }
 
@@ -1016,25 +1031,31 @@ mod tests {
     }
 
     #[test]
+    fn register_creates_chat_n_alias_as_canonical() {
+        // New sessions must be addressable as "chat-N", not only "coordinator-N".
+        // This is the primary validation for the coordinator→chat rename.
+        let dir = tempdir().unwrap();
+        let wg = dir.path();
+        let uuid = register_coordinator_session(wg, 0).unwrap();
+        assert_eq!(
+            resolve_ref(wg, "chat-0").unwrap(),
+            uuid,
+            "chat-0 alias must resolve after registration"
+        );
+        // Idempotent — second call returns same UUID.
+        let uuid2 = register_coordinator_session(wg, 0).unwrap();
+        assert_eq!(uuid, uuid2);
+    }
+
+    #[test]
     fn daemon_style_coordinator_registration_creates_both_paths() {
         // Regression test for the "TUI chat never replies" bug.
         //
-        // When the daemon starts a coordinator, it registers TWO
-        // aliases — `coordinator-N` (subprocess arg) AND bare `N`
-        // (legacy numeric path used by `chat::append_inbox_for` via
-        // the IPC `UserChat` handler). Both must resolve to the
-        // same underlying UUID dir, otherwise:
-        //   * the TUI's `wg chat` → IPC → `append_inbox_for(dir, 0, …)`
-        //     writes to `chat/0/inbox.jsonl`, and
-        //   * the subprocess watches `chat/coordinator-0/inbox.jsonl`
-        //     — a different path — and never sees the write.
-        //
-        // This test mirrors the daemon's startup sequence in
-        // `coordinator_agent.rs` (`migrate_numeric_coord_dir` then
-        // `ensure_session("coordinator-0")` then
-        // `add_alias("coordinator-0", "0")`) and verifies that a
-        // file written through one alias path is readable through
-        // the other.
+        // When the daemon starts a chat session, it registers THREE
+        // aliases — `chat-N` (new canonical), `coordinator-N` (legacy
+        // backward-compat), and bare `N` (legacy numeric path used by
+        // `chat::append_inbox_for` via the IPC `UserChat` handler).
+        // All must resolve to the same underlying UUID dir.
         let dir = tempdir().unwrap();
         let wg = dir.path();
 
@@ -1048,7 +1069,8 @@ mod tests {
         let uuid_again = register_coordinator_session(wg, 0).unwrap();
         assert_eq!(uuid, uuid_again, "register must be idempotent");
 
-        // Both aliases resolve to the same UUID.
+        // All three aliases resolve to the same UUID.
+        assert_eq!(resolve_ref(wg, "chat-0").unwrap(), uuid);
         assert_eq!(resolve_ref(wg, "coordinator-0").unwrap(), uuid);
         assert_eq!(resolve_ref(wg, "0").unwrap(), uuid);
 
@@ -1058,17 +1080,22 @@ mod tests {
         // Round-trip: a write through the numeric alias lands at
         // the same file as a read through the named alias.
         let write_dir = crate::chat::chat_dir_for_ref(wg, "0");
-        let read_dir = crate::chat::chat_dir_for_ref(wg, "coordinator-0");
+        let read_dir_legacy = crate::chat::chat_dir_for_ref(wg, "coordinator-0");
+        let read_dir_new = crate::chat::chat_dir_for_ref(wg, "chat-0");
         assert_eq!(
-            write_dir, read_dir,
-            "both aliases must resolve to the same storage directory"
+            write_dir, read_dir_legacy,
+            "numeric alias must resolve to same dir as coordinator-0"
+        );
+        assert_eq!(
+            write_dir, read_dir_new,
+            "numeric alias must resolve to same dir as chat-0"
         );
         std::fs::create_dir_all(&write_dir).unwrap();
         std::fs::write(write_dir.join("inbox.jsonl"), "sentinel-message").unwrap();
-        let read_content = std::fs::read_to_string(read_dir.join("inbox.jsonl")).unwrap();
+        let read_content = std::fs::read_to_string(read_dir_new.join("inbox.jsonl")).unwrap();
         assert_eq!(
             read_content, "sentinel-message",
-            "write via `0` alias must be readable via `coordinator-0` alias — registry is single source of truth"
+            "write via `0` alias must be readable via `chat-0` alias — registry is single source of truth"
         );
     }
 

@@ -1337,7 +1337,7 @@ fn route_chat_to_agent(
             let _ = workgraph::chat::append_outbox_for(
                 dir,
                 coordinator_id,
-                "The coordinator agent is not available. Please try again.",
+                "The chat agent is not available. Please try again.",
                 &msg.request_id,
             );
         }

@@ -12226,21 +12226,18 @@ impl VizApp {
         let config = Config::load_or_default(&self.workgraph_dir);
         let executor = config.coordinator.effective_executor();
 
-        // Task ID (`.coordinator-N`, with dot) is what `wg spawn-task`
+        // Task ID (`.chat-N`, with dot) is what `wg spawn-task`
         // needs to look the task up in the graph and what our
-        // `task_panes` map is keyed by. Chat ref (`coordinator-N`,
-        // without dot) is what `chat::chat_dir_for_ref` and
-        // `session_lock::read_holder` take — that's the session
-        // alias registered in `sessions.json`. Mixing them up means
-        // chat_dir_for_ref can't find the alias, falls back to the
-        // literal `chat/.coordinator-N/` (which doesn't exist),
-        // observer_mode reads as false, and we then spawn-task in
-        // owner mode even though the daemon already holds the lock.
-        // spawn-task fails with "session lock busy", child exits
-        // immediately, render falls through to file-tailing — which
-        // is exactly the broken state the user smoke-tested into.
+        // `task_panes` map is keyed by. Chat ref (`chat-N`,
+        // without dot) is the session alias registered in `sessions.json`
+        // by `register_coordinator_session`. Both `chat_dir_for_ref` and
+        // `session_lock::read_holder` resolve via this alias. Mixing
+        // task_id with chat_ref (or using legacy `coordinator-N` when
+        // the registry only has `chat-N`) causes fallback to a literal
+        // path that doesn't exist, observer_mode reads false, and the
+        // TUI incorrectly spawns in owner mode — "session lock busy".
         let task_id = workgraph::chat_id::format_chat_task_id(self.active_coordinator_id);
-        let chat_ref = format!("coordinator-{}", self.active_coordinator_id);
+        let chat_ref = format!("chat-{}", self.active_coordinator_id);
 
         let pane_live = self
             .task_panes
@@ -12350,7 +12347,7 @@ impl VizApp {
                         &self.workgraph_dir,
                         &chat_ref,
                         workgraph::chat_sessions::SessionKind::Coordinator,
-                        Some(format!("coordinator {}", self.active_coordinator_id)),
+                        Some(format!("chat {}", self.active_coordinator_id)),
                     );
                     let mut args = vec![
                         "nex".to_string(),
@@ -21629,23 +21626,23 @@ mod test_claude_session {
     #[test]
     fn test_claude_session_uuid_deterministic() {
         let cwd = Path::new("/home/user/myproject");
-        let name = "wg-myproject-coordinator-0";
+        let name = "wg-myproject-chat-0";
         let u1 = claude_session_uuid(cwd, name);
         let u2 = claude_session_uuid(cwd, name);
         assert_eq!(u1, u2);
     }
 
     #[test]
-    fn test_claude_session_uuid_differs_per_coordinator() {
+    fn test_claude_session_uuid_differs_per_chat() {
         let cwd = Path::new("/home/user/myproject");
-        let u0 = claude_session_uuid(cwd, "wg-myproject-coordinator-0");
-        let u1 = claude_session_uuid(cwd, "wg-myproject-coordinator-1");
+        let u0 = claude_session_uuid(cwd, "wg-myproject-chat-0");
+        let u1 = claude_session_uuid(cwd, "wg-myproject-chat-1");
         assert_ne!(u0, u1);
     }
 
     #[test]
     fn test_claude_session_uuid_differs_per_project() {
-        let name = "wg-proj-coordinator-0";
+        let name = "wg-proj-chat-0";
         let ua = claude_session_uuid(Path::new("/home/user/project-a"), name);
         let ub = claude_session_uuid(Path::new("/home/user/project-b"), name);
         assert_ne!(ua, ub);

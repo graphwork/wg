@@ -246,13 +246,7 @@ pub fn run(
     let session_ref: String = if let Some(r) = chat_ref {
         r.to_string()
     } else if let Some(n) = chat_id {
-        let _ = workgraph::chat_sessions::migrate_numeric_coord_dir(workgraph_dir, n);
-        let _ = workgraph::chat_sessions::ensure_session(
-            workgraph_dir,
-            &format!("coordinator-{}", n),
-            workgraph::chat_sessions::SessionKind::Coordinator,
-            Some(format!("coordinator {}", n)),
-        );
+        let _ = workgraph::chat_sessions::register_coordinator_session(workgraph_dir, n);
         n.to_string()
     } else if let Some(pattern) = resume {
         // `--resume` with optional pattern. Empty pattern → picker.
