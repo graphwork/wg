@@ -234,3 +234,13 @@ owners = [
 ]
 description = "Pins the three critical invariants of the TUI chat redesign (umbrella: integrate-tui-chat). (1) MODAL TOGGLE: chat tab shows [PTY]/[CMD] modal indicator; Ctrl+T flips between them. Without this, users have no visual cue that the modal contract — which stops Ctrl+N/Ctrl+W/letters from being intercepted as global hotkeys inside the embedded vendor CLI — is in effect. (2) CLOSE IS NON-DESTRUCTIVE: Ctrl+W in command mode closes the active tab (visible tab count drops by 1), the underlying graph task status stays unchanged (NOT marked abandoned/archived), and NO ChoiceDialog appears. The redesign explicitly removed the close-confirmation dialog from the tab-close path. (3) PERSISTENCE: relaunching `wg tui` after a kill restores the last-active coordinator id from tui-state.json. Drives a real `wg tui` inside tmux, sends synthetic Ctrl+T / Ctrl+W / digit keys via tmux send-keys, and asserts on `wg --json tui-dump`'s screen text + graph.jsonl statuses + tui-state.json contents."
 timeout_seconds = 120
+
+[[scenario]]
+name = "sweep_archives_orphaned_agent"
+script = "scenarios/sweep_archives_orphaned_agent.sh"
+owners = [
+    "tui-cannot-view",
+    "smoke-gate-is",
+]
+description = "Pins tui-cannot-view: when `wg sweep` (or `wg dead-agents` / zero-output) unclaims an in-progress task whose agent died mid-stream, the agent's output.log MUST be archived to `.wg/log/agents/<task-id>/<timestamp>/` so the TUI iteration switcher can show that attempt. Before the fix, only `wg fail` / `wg done` / `wg incomplete` archived; killed-and-respawned attempts (claude.ai stream hangs) were orphaned in `.wg/agents/<id>/` and invisible in the TUI. Synthesises the orphan state directly (no daemon, no LLM), runs `wg sweep`, and asserts archive directory + content."
+timeout_seconds = 30
