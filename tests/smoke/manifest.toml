@@ -158,3 +158,14 @@ owners = [
 ]
 description = "Marking a chat-loop tagged task Done MUST NOT trigger cycle reactivation. The user-reported bug had .chat-2 dispatched 458 times in autohaiku/workgraph because Mode 2 implicit cycle iteration re-Opened the chat task on every wg done, the supervisor re-spawned, the new agent called wg done, repeat. Asserts the chat task stays status=done with loop_iteration=0 and zero 'Re-activated by cycle iteration' log entries after wg done. No LLM credentials needed."
 timeout_seconds = 60
+
+[[scenario]]
+name = "tui_chat_switch_keystrokes"
+script = "scenarios/tui_chat_switch_keystrokes.sh"
+owners = [
+    "tui-chat-tab",
+    "tui-still-cannot",
+    "smoke-gate-is",
+]
+description = "With multiple chats present, plain number-key presses ('1', '2', '3') MUST visibly switch the active chat in `wg tui`. Pins the user-reported tui-still-cannot regression: tui-chat-tab merged claiming chat-switching worked, but the handlers were gated to RightPanel focus and plain digits clashed with right-panel-tab nav, so nothing happened in the live TUI. Drives a real `wg tui` inside tmux, sends synthetic '2'/'3'/'1' keystrokes via tmux send-keys, and asserts `wg tui-dump`'s coordinator_id changes between presses."
+timeout_seconds = 90

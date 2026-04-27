@@ -1769,10 +1769,81 @@ fn handle_normal_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
         toggle_chat_pty_mode(app);
         return;
     }
+    // Global chat-tab navigation: works regardless of focused_panel so
+    // graph-focused users (the common case) can still switch chats.
+    // If consumed, return — don't fall through to digit→panel-tab nav.
+    if try_chat_tab_navigation(app, code, modifiers) {
+        return;
+    }
     match app.focused_panel {
         FocusedPanel::Graph => handle_graph_key(app, code, modifiers),
         FocusedPanel::RightPanel => handle_right_panel_key(app, code, modifiers),
     }
+}
+
+/// Global chat-tab navigation, fired from `handle_normal_key` regardless
+/// of which panel has focus. Returns `true` if the key was consumed.
+///
+/// Bindings (only active when `right_panel_tab == Chat`):
+///   - Plain `1..9`         → jump to chat tab N (when ≥2 chats; otherwise
+///     fall through so the digit keeps switching the right-panel tab)
+///   - `Alt+1..9`           → jump to chat tab N (always, even with 1 chat)
+///   - `Ctrl+Tab`           → cycle to next chat
+///   - `Ctrl+Shift+Tab`     → cycle to previous chat (also matches plain
+///     `Ctrl+BackTab` from terminals that fold Shift into BackTab)
+///
+/// The Alt+N and Ctrl+Tab bindings are also handled redundantly inside
+/// `handle_right_panel_key` for backward compatibility with code that
+/// dispatches keys directly to the right-panel handler.
+pub(crate) fn try_chat_tab_navigation(
+    app: &mut VizApp,
+    code: KeyCode,
+    modifiers: KeyModifiers,
+) -> bool {
+    if app.right_panel_tab != RightPanelTab::Chat {
+        return false;
+    }
+    // Ctrl+Tab / Ctrl+Shift+Tab — cycle chats.
+    if modifiers.contains(KeyModifiers::CONTROL) {
+        if matches!(code, KeyCode::Tab) {
+            switch_chat_tab_relative(app, 1);
+            return true;
+        }
+        if matches!(code, KeyCode::BackTab) {
+            switch_chat_tab_relative(app, -1);
+            return true;
+        }
+    }
+    // Alt+1..9 — jump to chat tab N (works even with a single chat).
+    if modifiers.contains(KeyModifiers::ALT)
+        && let KeyCode::Char(d @ '1'..='9') = code
+    {
+        let n = (d as u8 - b'0') as usize;
+        switch_chat_tab_to_index(app, n - 1);
+        return true;
+    }
+    // Plain 1..9 — jump to chat tab N. Only override the existing
+    // digit→panel-tab shortcut when there are at least 2 chat tabs to
+    // pick from (otherwise the override would be useless and would
+    // strand users on Chat with no way to reach Detail/Log/etc).
+    //
+    // Modifier guard: must be "no modifiers" (NONE). Shift+digit, etc.
+    // fall through to the underlying handlers.
+    if modifiers.is_empty()
+        && let KeyCode::Char(d @ '1'..='9') = code
+    {
+        let chat_count = app.list_coordinator_ids().len();
+        if chat_count >= 2 {
+            let n = (d as u8 - b'0') as usize;
+            // No-op for digits past chat_count so the user doesn't
+            // accidentally jump to a non-existent tab AND doesn't fall
+            // through to the right-panel-tab shortcut (which would feel
+            // arbitrarily inconsistent).
+            switch_chat_tab_to_index(app, n - 1);
+            return true;
+        }
+    }
+    false
 }
 
 fn handle_graph_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
@@ -8226,10 +8297,57 @@ mod chat_tab_navigation_tests {
     }
 
     #[test]
-    fn plain_number_key_still_switches_right_panel_tab() {
-        // Regression: don't break the existing 0-9 right-panel-tab shortcut
-        // by adding the Alt+N chat-jump handler.
+    fn plain_number_key_switches_chat_when_multiple_chats_exist() {
+        // tui-still-cannot fix: with ≥2 chats AND on the Chat tab, plain
+        // digits 1..9 jump to chat N (positional). This overrides the
+        // generic digit→right-panel-tab nav so users have a discoverable
+        // chat-switch hotkey without needing Alt.
         let (mut app, _tmp) = build_app_with_chats(&[0, 1, 2]);
+        app.focused_panel = FocusedPanel::RightPanel;
+        app.right_panel_tab = RightPanelTab::Chat;
+
+        super::handle_key(&mut app, KeyCode::Char('2'), KeyModifiers::NONE);
+        assert_eq!(
+            app.active_coordinator_id, 1,
+            "Plain '2' on Chat tab should jump to the 2nd chat (cid=1)"
+        );
+        assert_eq!(
+            app.right_panel_tab,
+            RightPanelTab::Chat,
+            "Plain digit on Chat tab must NOT change the right-panel tab"
+        );
+
+        super::handle_key(&mut app, KeyCode::Char('3'), KeyModifiers::NONE);
+        assert_eq!(app.active_coordinator_id, 2, "Plain '3' → 3rd chat (cid=2)");
+
+        super::handle_key(&mut app, KeyCode::Char('1'), KeyModifiers::NONE);
+        assert_eq!(app.active_coordinator_id, 0, "Plain '1' → 1st chat (cid=0)");
+    }
+
+    #[test]
+    fn plain_number_key_switches_chat_from_graph_focus() {
+        // The original tui-still-cannot bug was that chat-switch shortcuts
+        // only fired when focused_panel == RightPanel. Most users have the
+        // graph panel focused — so the Alt+N / Ctrl+Tab bindings were
+        // effectively invisible. The fix routes chat-tab navigation
+        // through `handle_normal_key` so it fires regardless of focus.
+        let (mut app, _tmp) = build_app_with_chats(&[0, 1, 2]);
+        app.focused_panel = FocusedPanel::Graph;
+        app.right_panel_tab = RightPanelTab::Chat;
+
+        super::handle_key(&mut app, KeyCode::Char('2'), KeyModifiers::NONE);
+        assert_eq!(
+            app.active_coordinator_id, 1,
+            "Plain '2' from graph focus should still switch chat tab"
+        );
+    }
+
+    #[test]
+    fn plain_number_key_falls_through_to_panel_tab_with_single_chat() {
+        // Regression: with only 1 chat, plain digits keep their existing
+        // right-panel-tab navigation behavior — overriding would strand
+        // users on Chat with no way to reach Detail/Log/etc via digits.
+        let (mut app, _tmp) = build_app_with_chats(&[0]);
         app.focused_panel = FocusedPanel::RightPanel;
         app.right_panel_tab = RightPanelTab::Chat;
 
@@ -8237,11 +8355,54 @@ mod chat_tab_navigation_tests {
         assert_eq!(
             app.right_panel_tab,
             RightPanelTab::Detail,
-            "Plain '1' should switch to right-panel tab #1 (Detail), not jump chats"
+            "With only 1 chat, plain '1' should still switch right-panel tab"
         );
+    }
+
+    #[test]
+    fn plain_number_key_off_chat_tab_does_not_switch_chats() {
+        // Plain digit chat-switch only fires while on the Chat tab.
+        // From Detail/Log/etc, plain digits must keep switching panels.
+        let (mut app, _tmp) = build_app_with_chats(&[0, 1, 2]);
+        app.focused_panel = FocusedPanel::RightPanel;
+        app.right_panel_tab = RightPanelTab::Detail;
+
+        super::handle_key(&mut app, KeyCode::Char('2'), KeyModifiers::NONE);
         assert_eq!(
             app.active_coordinator_id, 0,
-            "Plain '1' must not change the active chat"
+            "Plain '2' off Chat tab must NOT switch chats"
+        );
+        assert_eq!(
+            app.right_panel_tab,
+            RightPanelTab::Agency,
+            "Plain '2' off Chat tab should still switch right-panel tab"
+        );
+    }
+
+    #[test]
+    fn ctrl_tab_cycles_chat_from_graph_focus() {
+        // Same bug as above for Ctrl+Tab — it was right-panel-only.
+        let (mut app, _tmp) = build_app_with_chats(&[0, 1, 2]);
+        app.focused_panel = FocusedPanel::Graph;
+        app.right_panel_tab = RightPanelTab::Chat;
+
+        super::handle_key(&mut app, KeyCode::Tab, KeyModifiers::CONTROL);
+        assert_eq!(
+            app.active_coordinator_id, 1,
+            "Ctrl+Tab from graph focus should cycle chats"
+        );
+    }
+
+    #[test]
+    fn alt_number_key_switches_chat_from_graph_focus() {
+        let (mut app, _tmp) = build_app_with_chats(&[0, 1, 2]);
+        app.focused_panel = FocusedPanel::Graph;
+        app.right_panel_tab = RightPanelTab::Chat;
+
+        super::handle_key(&mut app, KeyCode::Char('3'), KeyModifiers::ALT);
+        assert_eq!(
+            app.active_coordinator_id, 2,
+            "Alt+3 from graph focus should jump to the 3rd chat"
         );
     }
 

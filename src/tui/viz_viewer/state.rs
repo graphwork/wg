@@ -12650,20 +12650,15 @@ impl VizApp {
         };
         let mut entries: Vec<(u32, String)> = graph
             .tasks()
-            .filter(|t| t.tags.iter().any(|tag| tag == "coordinator-loop"))
+            .filter(|t| t.tags.iter().any(|tag| workgraph::chat_id::is_chat_loop_tag(tag)))
             .filter(|t| !matches!(t.status, Status::Abandoned))
             .filter(|t| !t.tags.iter().any(|tag| tag == "archived"))
             .filter_map(|t| {
-                let cid =
-                    t.id.strip_prefix(".coordinator-")
-                        .and_then(|s| s.parse::<u32>().ok())
-                        .or_else(|| {
-                            if t.id == ".coordinator" {
-                                Some(0)
-                            } else {
-                                None
-                            }
-                        })?;
+                // Accept .chat-N, .coordinator-N (legacy), and bare .coordinator
+                // (legacy cid 0). The bare-.coordinator case is what older
+                // graphs use for the very first chat before chat-rename runs.
+                let cid = workgraph::chat_id::parse_chat_task_id(&t.id)
+                    .or_else(|| (t.id == ".coordinator").then_some(0))?;
                 // Placeholder label — will be replaced with sequential numbering below
                 Some((cid, String::new()))
             })
