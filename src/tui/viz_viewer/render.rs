@@ -2445,9 +2445,23 @@ fn format_iteration_navigator(app: &VizApp) -> String {
         Some(idx) => idx + 1, // "2/5" when viewing archive
     };
 
+    // Show "(live)" suffix when viewing the live iteration of an in-progress
+    // task — without it the user can't tell whether the right-most slot is
+    // streaming new bytes or just frozen content from the latest archive.
+    let live_suffix = if app.viewing_iteration.is_none()
+        && app
+            .hud_detail
+            .as_ref()
+            .is_some_and(|d| d.task_status == workgraph::graph::Status::InProgress)
+    {
+        " (live)"
+    } else {
+        ""
+    };
+
     // Responsive layout based on available width
     // Standard: "◀ iter 2/5 ▶", Compact: "◀ 2/5 ▶", Minimal: "◀▶"
-    format!("◀ iter {}/{} ▶", current_display, total)
+    format!("◀ iter {}/{}{} ▶", current_display, total, live_suffix)
 }
 
 /// Render the iteration navigator widget in the given area.
@@ -2538,9 +2552,22 @@ fn draw_detail_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
         app.last_iter_nav_area = ha;
 
         let total = app.iteration_archives.len() + 1; // archives + current
+        // Mark the live slot with "(live)" when the task is actively running,
+        // so the user can distinguish "rightmost slot is streaming" from
+        // "rightmost slot is frozen content from the most recent archive".
+        let live_suffix = if app.viewing_iteration.is_none()
+            && app
+                .hud_detail
+                .as_ref()
+                .is_some_and(|d| d.task_status == workgraph::graph::Status::InProgress)
+        {
+            " (live)"
+        } else {
+            ""
+        };
         let label = match app.viewing_iteration {
             Some(idx) => format!("{}/{}", idx + 1, total),
-            None => format!("{}/{}", total, total),
+            None => format!("{}/{}{}", total, total, live_suffix),
         };
 
         // ◀ arrow: clickable if not at oldest (i.e., viewing_iteration is not Some(0) when set,

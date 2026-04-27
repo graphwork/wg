@@ -3961,6 +3961,9 @@ pub struct TextPromptState {
 pub struct HudDetail {
     /// Task ID this detail was loaded for (to detect stale data).
     pub task_id: String,
+    /// Task status at load time. Used by the iteration navigator to mark the
+    /// live view as "(live)" when the task is still in progress.
+    pub task_status: Status,
     /// All content lines assembled for rendering (with section headers).
     pub rendered_lines: Vec<String>,
     /// Path to the agent output log file, if any (used for mtime-based live refresh).
@@ -7133,9 +7136,35 @@ impl VizApp {
             }
         };
 
-        // Skip reload if already loaded for this task.
+        // Refresh iteration archives EVERY load — even if hud_detail is
+        // already populated for this task — because archives can appear
+        // mid-session when the dispatcher kills a stream-hung agent and
+        // respawns. The previous behavior only refreshed on task switch,
+        // so killed-and-respawned attempts were invisible in the iteration
+        // switcher until the user navigated away and back. (readdir on a
+        // small dir is cheap; we rely on hud_detail short-circuit below
+        // to skip the expensive detail render.)
+        let switching_tasks = self.iteration_archives_task_id != task_id;
+        let prev_archive_count = self.iteration_archives.len();
+        self.iteration_archives = find_all_archives(&self.workgraph_dir, &task_id);
+        self.iteration_archives_task_id = task_id.clone();
+        if switching_tasks {
+            self.viewing_iteration = None;
+        } else if let Some(idx) = self.viewing_iteration
+            && idx >= self.iteration_archives.len()
+        {
+            // Defensive: if the underlying archives shrank (shouldn't normally
+            // happen, but possible if a user deletes the dir manually), clamp
+            // back to the live view.
+            self.viewing_iteration = None;
+        }
+
+        // Skip the expensive detail re-render if already loaded for this
+        // task AND the archive count didn't change. If new archives arrived
+        // we want the header label ("iter N/M") to update too.
         if let Some(ref detail) = self.hud_detail
             && detail.task_id == task_id
+            && prev_archive_count == self.iteration_archives.len()
         {
             return;
         }
@@ -7143,12 +7172,6 @@ impl VizApp {
         self.hud_scroll = 0;
         self.hud_follow = false;
         self.last_detail_output_mtime = None;
-        // Refresh iteration archives and reset viewing state when switching tasks.
-        if self.iteration_archives_task_id != task_id {
-            self.iteration_archives = find_all_archives(&self.workgraph_dir, &task_id);
-            self.iteration_archives_task_id = task_id.clone();
-            self.viewing_iteration = None;
-        }
 
         let graph_path = self.workgraph_dir.join("graph.jsonl");
         let graph = match load_graph(&graph_path) {
@@ -7902,6 +7925,7 @@ impl VizApp {
 
         self.hud_detail = Some(HudDetail {
             task_id,
+            task_status: task.status,
             rendered_lines: lines,
             output_path: live_output_path,
             output_mtime,
@@ -8172,6 +8196,7 @@ impl VizApp {
 
         self.hud_detail = Some(HudDetail {
             task_id: target_task_id.to_string(),
+            task_status: task.status,
             rendered_lines: lines,
             output_path: live_output_path,
             output_mtime,
@@ -8266,7 +8291,10 @@ impl VizApp {
     }
 
     /// Returns a label describing the current iteration view, if any.
-    /// E.g., "Iteration 2/5" or "Attempt 2/4".
+    /// E.g., "iter 2/5" (archive), "iter 5/5 (live)" (live, in-progress),
+    /// "iter 5/5 (last)" (live slot but task is done — same content as
+    /// previous archive). The "(live)" / "(last)" suffix tells the user
+    /// whether the live pane is actively being written to.
     pub fn iteration_view_label(&self, task: &workgraph::graph::Task) -> Option<String> {
         let total = self.iteration_archives.len();
         if total == 0 {
@@ -8274,11 +8302,21 @@ impl VizApp {
         }
         let is_cycle = task.cycle_config.is_some() || task.loop_iteration > 0;
         let kind = if is_cycle { "iter" } else { "attempt" };
-        // total archives + 1 for the "current" live iteration
+        // total archives + 1 for the "current" live iteration slot.
         let display_total = total + 1;
         match self.viewing_iteration {
             Some(idx) => Some(format!("viewing {} {}/{}", kind, idx + 1, display_total)),
-            None => Some(format!("{} {}/{}", kind, display_total, display_total)),
+            None => {
+                let suffix = if task.status == Status::InProgress {
+                    " (live)"
+                } else {
+                    ""
+                };
+                Some(format!(
+                    "{} {}/{}{}",
+                    kind, display_total, display_total, suffix
+                ))
+            }
         }
     }
 
@@ -17051,6 +17089,136 @@ mod hud_tests {
                 .rendered_lines
                 .iter()
                 .any(|l| l.contains("zero-iter"))
+        );
+    }
+
+    /// Regression test for tui-cannot-view: archives created mid-session
+    /// (e.g., dispatcher kills a stream-hung agent and archives its log)
+    /// must appear in the iteration switcher without requiring the user to
+    /// switch tasks and back. Before the fix, `iteration_archives` was only
+    /// populated when `iteration_archives_task_id != task_id`, so newly-
+    /// created archives were invisible until the user re-selected the task.
+    #[test]
+    fn tui_iteration_archives_refresh_on_each_load() {
+        let (viz, _, _tmp) = build_cyclic_task_with_archives(2);
+        let mut app = build_app(&viz, "cycle-task", _tmp.path());
+        app.load_hud_detail();
+        assert_eq!(
+            app.iteration_archives.len(),
+            2,
+            "Initial load: 2 archives expected"
+        );
+
+        // Simulate the dispatcher creating a new iteration archive while the
+        // user is still viewing the same task — this is what happens when
+        // the heartbeat-timeout / sweep / zero-output paths archive a killed
+        // agent's output. The user did NOT switch tasks.
+        let archive_base = _tmp.path().join("log").join("agents").join("cycle-task");
+        let new_iter_dir = archive_base.join("2026-01-15T11:00:00Z");
+        std::fs::create_dir_all(&new_iter_dir).unwrap();
+        std::fs::write(
+            new_iter_dir.join("output.txt"),
+            "newly archived killed-agent output",
+        )
+        .unwrap();
+        std::fs::write(new_iter_dir.join("prompt.txt"), "prompt for new attempt").unwrap();
+
+        // Reload the same task — must observe the new archive.
+        app.load_hud_detail();
+        assert_eq!(
+            app.iteration_archives.len(),
+            3,
+            "After mid-session archive append, switcher must see 3 archives \
+             (the killed-agent attempt should not be invisible)"
+        );
+    }
+
+    /// Regression test for tui-cannot-view: the iteration switcher's "(live)"
+    /// suffix must appear when viewing the live slot of an in-progress task,
+    /// so the user knows whether they're seeing streaming bytes or a frozen
+    /// archive. Before the fix, the user couldn't tell which iteration they
+    /// were viewing — a primary symptom in the bug report.
+    #[test]
+    fn tui_iteration_label_marks_live_when_in_progress() {
+        let (viz, graph, _tmp) = build_cyclic_task_with_archives(2);
+        let mut app = build_app(&viz, "cycle-task", _tmp.path());
+        app.load_hud_detail();
+
+        let task = graph
+            .tasks()
+            .find(|t| t.id == "cycle-task")
+            .cloned()
+            .unwrap();
+        // We're at viewing_iteration = None (the live slot) and the task is
+        // InProgress. The label must include "(live)".
+        let label = app.iteration_view_label(&task).unwrap();
+        assert!(
+            label.contains("(live)"),
+            "Live slot of in-progress task must be labeled (live), got: {}",
+            label
+        );
+
+        // Navigating into an archive should drop the (live) suffix — the
+        // user is no longer looking at the live stream.
+        app.iteration_prev();
+        let label_archive = app.iteration_view_label(&task).unwrap();
+        assert!(
+            !label_archive.contains("(live)"),
+            "Archive view must NOT be labeled (live), got: {}",
+            label_archive
+        );
+        assert!(
+            label_archive.starts_with("viewing"),
+            "Archive view label should say 'viewing iter X/Y', got: {}",
+            label_archive
+        );
+    }
+
+    /// Regression test for tui-cannot-view: when the task is NOT in progress
+    /// (Done, Failed), the "(live)" suffix must NOT appear — the rightmost
+    /// slot is just the most recent archive's content.
+    #[test]
+    fn tui_iteration_label_no_live_when_done() {
+        let (viz, mut graph, _tmp) = build_cyclic_task_with_archives(2);
+
+        // Mark the task as Done — simulating a completed multi-attempt task.
+        if let Some(task) = graph.get_task_mut("cycle-task") {
+            task.status = Status::Done;
+        }
+        let graph_path = _tmp.path().join("graph.jsonl");
+        save_graph(&graph, &graph_path).unwrap();
+
+        let mut app = build_app(&viz, "cycle-task", _tmp.path());
+        app.load_hud_detail();
+
+        let task = graph
+            .tasks()
+            .find(|t| t.id == "cycle-task")
+            .cloned()
+            .unwrap();
+        let label = app.iteration_view_label(&task).unwrap();
+        assert!(
+            !label.contains("(live)"),
+            "Done task must NOT show (live) on the live slot, got: {}",
+            label
+        );
+    }
+
+    /// Regression test for tui-cannot-view: HudDetail.task_status must reflect
+    /// the underlying task so the navigator can paint the correct (live)
+    /// indicator.
+    #[test]
+    fn tui_hud_detail_carries_task_status() {
+        let (viz, _, _tmp) = build_cyclic_task_with_archives(1);
+        let mut app = build_app(&viz, "cycle-task", _tmp.path());
+        app.load_hud_detail();
+
+        let detail = app.hud_detail.as_ref().expect("detail must load");
+        assert_eq!(
+            detail.task_status,
+            Status::InProgress,
+            "HudDetail.task_status must reflect the task's status so the \
+             iteration navigator can decide whether to show (live)"
         );
     }
 }

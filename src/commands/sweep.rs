@@ -197,6 +197,24 @@ pub fn run(dir: &Path, dry_run: bool, reap_targets: bool, json: bool) -> Result<
         });
     }
 
+    // Archive each orphaned agent's output BEFORE unclaiming the task, so
+    // the attempt is preserved in `.workgraph/log/agents/<task-id>/<timestamp>/`
+    // and visible in the TUI iteration switcher. Without this, an in-progress
+    // task that gets respawned via sweep loses prior attempts from the
+    // iteration history. Best-effort — failures are non-fatal. Skip the
+    // sentinel "(none)" placeholder used when assigned is None.
+    for o in &orphaned {
+        if o.assigned_agent == "(none)" {
+            continue;
+        }
+        if let Err(e) = super::log::archive_agent(dir, &o.task_id, &o.assigned_agent) {
+            eprintln!(
+                "Warning: failed to archive orphaned agent '{}' for task '{}': {}",
+                o.assigned_agent, o.task_id, e
+            );
+        }
+    }
+
     // Fix orphaned tasks: unclaim them
     let gpath = graph_path(dir);
     let mut fixed = Vec::new();
@@ -623,6 +641,74 @@ mod tests {
         assert_eq!(
             result.targets_reaped, 0,
             "dry-run must not reap any target/ dirs"
+        );
+    }
+
+    /// Regression test for tui-cannot-view: when sweep unclaims an orphaned
+    /// task, the now-dead agent's output.log must be archived to
+    /// `.workgraph/log/agents/<task-id>/<timestamp>/` so the TUI iteration
+    /// switcher can show that attempt.
+    #[test]
+    fn test_sweep_archives_orphaned_agent_for_iteration_history() {
+        let temp_dir = TempDir::new().unwrap();
+        let dir = temp_dir.path();
+        setup_with_dead_agent(dir);
+
+        // Simulate the killed agent's working dir, populated with the
+        // partial output that was written before the stream hung.
+        let agent_dir = dir.join("agents").join("dead-agent-1");
+        std::fs::create_dir_all(&agent_dir).unwrap();
+        std::fs::write(
+            agent_dir.join("output.log"),
+            "stream hung — sweep unclaimed",
+        )
+        .unwrap();
+        std::fs::write(agent_dir.join("prompt.txt"), "task prompt").unwrap();
+
+        let result = run(dir, false, false, false).unwrap();
+        assert!(result.fixed.contains(&"stuck-task".to_string()));
+
+        // Verify the archive landed where TUI's find_all_archives() looks.
+        let archive_base = dir.join("log").join("agents").join("stuck-task");
+        assert!(
+            archive_base.exists(),
+            "Per-task archive dir must be created when sweep unclaims agent"
+        );
+        let archives: Vec<_> = std::fs::read_dir(&archive_base)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_type().is_ok_and(|ft| ft.is_dir()))
+            .collect();
+        assert_eq!(archives.len(), 1);
+        let archived = std::fs::read_to_string(archives[0].path().join("output.txt")).unwrap();
+        assert!(archived.contains("stream hung"));
+    }
+
+    /// Regression test for tui-cannot-view: orphaned tasks where assigned was
+    /// already None (sentinel "(none)") should not crash sweep when archiving
+    /// — there is no agent dir to archive, so the call must be skipped.
+    #[test]
+    fn test_sweep_skips_archive_for_unassigned_orphan() {
+        let temp_dir = TempDir::new().unwrap();
+        let gpath = temp_dir.path().join("graph.jsonl");
+
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(make_task(
+            "no-agent",
+            "No Agent Task",
+            Status::InProgress,
+        )));
+        save_graph(&graph, &gpath).unwrap();
+
+        // Should not panic / error even though agent dir doesn't exist.
+        let result = run(temp_dir.path(), false, false, false).unwrap();
+        assert!(result.fixed.contains(&"no-agent".to_string()));
+
+        // No archive should be created for the "(none)" sentinel.
+        let archive_base = temp_dir.path().join("log").join("agents").join("no-agent");
+        assert!(
+            !archive_base.exists(),
+            "No archive for sentinel-only orphan"
         );
     }
 }

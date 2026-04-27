@@ -133,6 +133,20 @@ pub fn run_cleanup(
     let mut tasks_unclaimed = Vec::new();
     let mut errors = Vec::new();
 
+    // Archive each dead agent's output BEFORE resetting the task, so the
+    // attempt is preserved in `.workgraph/log/agents/<task-id>/<timestamp>/`
+    // and visible in the TUI iteration switcher. Without this, an in-progress
+    // task that gets respawned via heartbeat-timeout loses prior attempts
+    // from the iteration history. Best-effort — failures are non-fatal.
+    for dead_agent in &dead_info {
+        if let Err(e) = super::log::archive_agent(dir, &dead_agent.task_id, &dead_agent.agent_id) {
+            eprintln!(
+                "Warning: failed to archive dead agent '{}' for task '{}': {}",
+                dead_agent.agent_id, dead_agent.task_id, e
+            );
+        }
+    }
+
     let dead_info_clone = dead_info.clone();
     modify_graph(&path, |graph| {
         let mut modified = false;
@@ -658,5 +672,60 @@ mod tests {
         let log = task.log.last().unwrap();
         assert!(log.message.contains("dead"));
         assert!(log.message.contains("agent-1"));
+    }
+
+    /// Regression test for tui-cannot-view: when a stream-hung agent is
+    /// unclaimed via heartbeat-timeout, its output.log must be archived to
+    /// `.workgraph/log/agents/<task-id>/<timestamp>/` so the TUI iteration
+    /// switcher can show it. Before this fix the prior attempt's logs were
+    /// orphaned in `.workgraph/agents/<id>/` and invisible in the TUI.
+    #[test]
+    fn test_cleanup_archives_dead_agent_output_for_iteration_history() {
+        let temp_dir = setup_with_agent_and_task();
+        let dir = temp_dir.path();
+
+        // Simulate an agent that wrote some output before stream-hanging.
+        let agent_dir = dir.join("agents").join("agent-1");
+        std::fs::create_dir_all(&agent_dir).unwrap();
+        std::fs::write(
+            agent_dir.join("output.log"),
+            "claude.ai stream hung mid-response — agent killed",
+        )
+        .unwrap();
+        std::fs::write(agent_dir.join("prompt.txt"), "the original task prompt").unwrap();
+
+        // Run dead-agent cleanup (heartbeat-timeout path).
+        run_cleanup(dir, Some(1), false).unwrap();
+
+        // The unclaimed agent's logs must now appear under the per-task
+        // archive directory. Without this, the TUI's iteration switcher
+        // can't see the killed attempt — which is the exact symptom users
+        // reported on improve-wg-setup, tui-settings-tab, migrate-agency-tasks.
+        let archive_base = dir.join("log").join("agents").join("task-1");
+        assert!(
+            archive_base.exists(),
+            "Per-task archive dir must be created when dead agent is unclaimed"
+        );
+        let archives: Vec<_> = std::fs::read_dir(&archive_base)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_type().is_ok_and(|ft| ft.is_dir()))
+            .collect();
+        assert_eq!(
+            archives.len(),
+            1,
+            "Exactly one timestamped archive should exist for the unclaimed agent"
+        );
+
+        // Archive must contain the agent's actual output, not an empty stub.
+        let output_path = archives[0].path().join("output.txt");
+        assert!(output_path.exists(), "output.txt must be archived");
+        let archived_output = std::fs::read_to_string(&output_path).unwrap();
+        assert!(
+            archived_output.contains("stream hung"),
+            "archived output must contain the killed attempt's content"
+        );
+        let prompt_path = archives[0].path().join("prompt.txt");
+        assert!(prompt_path.exists(), "prompt.txt must be archived");
     }
 }

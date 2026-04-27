@@ -89,13 +89,18 @@ enum IterNavClickZone {
 /// `area_width`: total width of the nav area.
 /// `current_display`: the current iteration number shown (1-based).
 /// `total`: total number of iterations (archives + 1).
+/// `live`: whether the navigator currently displays the " (live)" suffix —
+/// must match the render-time decision so click zones line up with what the
+/// user actually sees.
 fn iter_nav_click_zone(
     relative_col: usize,
     area_width: usize,
     current_display: usize,
     total: usize,
+    live: bool,
 ) -> IterNavClickZone {
-    let navigator_text = format!("◀ iter {}/{} ▶", current_display, total);
+    let live_suffix = if live { " (live)" } else { "" };
+    let navigator_text = format!("◀ iter {}/{}{} ▶", current_display, total, live_suffix);
     let text_len = navigator_text.chars().count();
     let text_start = area_width.saturating_sub(text_len);
 
@@ -141,7 +146,12 @@ fn handle_iteration_navigator_click(app: &mut VizApp, click_column: u16) {
         None => false,
     };
 
-    let zone = iter_nav_click_zone(relative_column, w, current_display, total);
+    let live = app.viewing_iteration.is_none()
+        && app
+            .hud_detail
+            .as_ref()
+            .is_some_and(|d| d.task_status == workgraph::graph::Status::InProgress);
+    let zone = iter_nav_click_zone(relative_column, w, current_display, total, live);
 
     if zone == IterNavClickZone::Left && can_go_prev {
         if app.iteration_prev() {
@@ -8100,17 +8110,17 @@ mod iteration_nav_click_tests {
     fn left_arrow_zone_with_padding() {
         // Area 15 wide, text 12 chars → text_start=3, left_zone_end=4.
         assert_eq!(
-            iter_nav_click_zone(0, 15, 5, 5),
+            iter_nav_click_zone(0, 15, 5, 5, false),
             IterNavClickZone::Left,
             "col 0 (before text) should be Left"
         );
         assert_eq!(
-            iter_nav_click_zone(3, 15, 5, 5),
+            iter_nav_click_zone(3, 15, 5, 5, false),
             IterNavClickZone::Left,
             "col 3 (◀ position) should be Left"
         );
         assert_eq!(
-            iter_nav_click_zone(4, 15, 5, 5),
+            iter_nav_click_zone(4, 15, 5, 5, false),
             IterNavClickZone::Left,
             "col 4 (space after ◀) should be Left"
         );
@@ -8120,12 +8130,12 @@ mod iteration_nav_click_tests {
     fn right_arrow_zone_with_padding() {
         // Area 15, right_zone_start=13.
         assert_eq!(
-            iter_nav_click_zone(13, 15, 5, 5),
+            iter_nav_click_zone(13, 15, 5, 5, false),
             IterNavClickZone::Right,
             "col 13 (space before ▶) should be Right"
         );
         assert_eq!(
-            iter_nav_click_zone(14, 15, 5, 5),
+            iter_nav_click_zone(14, 15, 5, 5, false),
             IterNavClickZone::Right,
             "col 14 (▶ position) should be Right"
         );
@@ -8135,17 +8145,17 @@ mod iteration_nav_click_tests {
     fn middle_zone() {
         // Columns between left_zone_end (4) and right_zone_start (13) are Middle.
         assert_eq!(
-            iter_nav_click_zone(5, 15, 5, 5),
+            iter_nav_click_zone(5, 15, 5, 5, false),
             IterNavClickZone::Middle,
             "col 5 should be Middle"
         );
         assert_eq!(
-            iter_nav_click_zone(10, 15, 5, 5),
+            iter_nav_click_zone(10, 15, 5, 5, false),
             IterNavClickZone::Middle,
             "col 10 should be Middle"
         );
         assert_eq!(
-            iter_nav_click_zone(12, 15, 5, 5),
+            iter_nav_click_zone(12, 15, 5, 5, false),
             IterNavClickZone::Middle,
             "col 12 should be Middle"
         );
@@ -8156,27 +8166,27 @@ mod iteration_nav_click_tests {
         // Area exactly 12 wide = text width. text_start=0.
         // left_zone_end=1, right_zone_start=10.
         assert_eq!(
-            iter_nav_click_zone(0, 12, 5, 5),
+            iter_nav_click_zone(0, 12, 5, 5, false),
             IterNavClickZone::Left,
             "col 0 (◀) should be Left"
         );
         assert_eq!(
-            iter_nav_click_zone(1, 12, 5, 5),
+            iter_nav_click_zone(1, 12, 5, 5, false),
             IterNavClickZone::Left,
             "col 1 (space after ◀) should be Left"
         );
         assert_eq!(
-            iter_nav_click_zone(10, 12, 5, 5),
+            iter_nav_click_zone(10, 12, 5, 5, false),
             IterNavClickZone::Right,
             "col 10 (space before ▶) should be Right"
         );
         assert_eq!(
-            iter_nav_click_zone(11, 12, 5, 5),
+            iter_nav_click_zone(11, 12, 5, 5, false),
             IterNavClickZone::Right,
             "col 11 (▶) should be Right"
         );
         assert_eq!(
-            iter_nav_click_zone(5, 12, 5, 5),
+            iter_nav_click_zone(5, 12, 5, 5, false),
             IterNavClickZone::Middle,
         );
     }
@@ -8185,25 +8195,91 @@ mod iteration_nav_click_tests {
     fn wide_area_zones_scale() {
         // Area 30 wide, text 12 chars → text_start=18.
         // left_zone_end=19, right_zone_start=28.
-        assert_eq!(iter_nav_click_zone(0, 30, 5, 5), IterNavClickZone::Left);
-        assert_eq!(iter_nav_click_zone(18, 30, 5, 5), IterNavClickZone::Left);
-        assert_eq!(iter_nav_click_zone(19, 30, 5, 5), IterNavClickZone::Left);
-        assert_eq!(iter_nav_click_zone(20, 30, 5, 5), IterNavClickZone::Middle);
-        assert_eq!(iter_nav_click_zone(27, 30, 5, 5), IterNavClickZone::Middle);
-        assert_eq!(iter_nav_click_zone(28, 30, 5, 5), IterNavClickZone::Right);
-        assert_eq!(iter_nav_click_zone(29, 30, 5, 5), IterNavClickZone::Right);
+        assert_eq!(
+            iter_nav_click_zone(0, 30, 5, 5, false),
+            IterNavClickZone::Left
+        );
+        assert_eq!(
+            iter_nav_click_zone(18, 30, 5, 5, false),
+            IterNavClickZone::Left
+        );
+        assert_eq!(
+            iter_nav_click_zone(19, 30, 5, 5, false),
+            IterNavClickZone::Left
+        );
+        assert_eq!(
+            iter_nav_click_zone(20, 30, 5, 5, false),
+            IterNavClickZone::Middle
+        );
+        assert_eq!(
+            iter_nav_click_zone(27, 30, 5, 5, false),
+            IterNavClickZone::Middle
+        );
+        assert_eq!(
+            iter_nav_click_zone(28, 30, 5, 5, false),
+            IterNavClickZone::Right
+        );
+        assert_eq!(
+            iter_nav_click_zone(29, 30, 5, 5, false),
+            IterNavClickZone::Right
+        );
     }
 
     #[test]
     fn different_iteration_counts() {
         // "◀ iter 2/12 ▶" = 13 chars in area of 16.
         // text_start=3, left_zone_end=4, right_zone_start=14.
-        assert_eq!(iter_nav_click_zone(3, 16, 2, 12), IterNavClickZone::Left);
-        assert_eq!(iter_nav_click_zone(4, 16, 2, 12), IterNavClickZone::Left);
-        assert_eq!(iter_nav_click_zone(5, 16, 2, 12), IterNavClickZone::Middle);
-        assert_eq!(iter_nav_click_zone(13, 16, 2, 12), IterNavClickZone::Middle);
-        assert_eq!(iter_nav_click_zone(14, 16, 2, 12), IterNavClickZone::Right);
-        assert_eq!(iter_nav_click_zone(15, 16, 2, 12), IterNavClickZone::Right);
+        assert_eq!(
+            iter_nav_click_zone(3, 16, 2, 12, false),
+            IterNavClickZone::Left
+        );
+        assert_eq!(
+            iter_nav_click_zone(4, 16, 2, 12, false),
+            IterNavClickZone::Left
+        );
+        assert_eq!(
+            iter_nav_click_zone(5, 16, 2, 12, false),
+            IterNavClickZone::Middle
+        );
+        assert_eq!(
+            iter_nav_click_zone(13, 16, 2, 12, false),
+            IterNavClickZone::Middle
+        );
+        assert_eq!(
+            iter_nav_click_zone(14, 16, 2, 12, false),
+            IterNavClickZone::Right
+        );
+        assert_eq!(
+            iter_nav_click_zone(15, 16, 2, 12, false),
+            IterNavClickZone::Right
+        );
+    }
+
+    #[test]
+    fn live_suffix_shifts_zones() {
+        // With " (live)" suffix: "◀ iter 5/5 (live) ▶" = 19 chars.
+        // In area 22: text_start=3, left_zone_end=4, right_zone_start=20.
+        assert_eq!(
+            iter_nav_click_zone(0, 22, 5, 5, true),
+            IterNavClickZone::Left
+        );
+        assert_eq!(
+            iter_nav_click_zone(4, 22, 5, 5, true),
+            IterNavClickZone::Left
+        );
+        assert_eq!(
+            iter_nav_click_zone(10, 22, 5, 5, true),
+            IterNavClickZone::Middle,
+            "col 10 should be Middle (over the (live) marker)"
+        );
+        assert_eq!(
+            iter_nav_click_zone(20, 22, 5, 5, true),
+            IterNavClickZone::Right
+        );
+        assert_eq!(
+            iter_nav_click_zone(21, 22, 5, 5, true),
+            IterNavClickZone::Right
+        );
     }
 }
 

@@ -331,6 +331,17 @@ pub fn sweep_zero_output_agents(dir: &Path) -> ZeroOutputSweepResult {
                 pid, agent_id, e
             );
         }
+        // Archive the killed agent's output BEFORE the task is reset, so the
+        // attempt is preserved in `.workgraph/log/agents/<task-id>/<timestamp>/`
+        // and visible in the TUI iteration switcher. Without this, in-progress
+        // tasks that get respawned after a stream-hang lose the killed
+        // attempt's logs from iteration history. Best-effort — non-fatal.
+        if let Err(e) = crate::commands::log::archive_agent(dir, task_id, agent_id) {
+            eprintln!(
+                "[zero-output] Warning: failed to archive killed agent '{}' for task '{}': {}",
+                agent_id, task_id, e
+            );
+        }
     }
 
     // Update registry: mark killed agents as Dead
