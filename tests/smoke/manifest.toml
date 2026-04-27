@@ -223,6 +223,16 @@ description = "Pins reaper-edge-case: `wg sweep --reap-targets` MUST NOT remove 
 timeout_seconds = 30
 
 [[scenario]]
+name = "retry_kills_in_progress_agent"
+script = "scenarios/retry_kills_in_progress_agent.sh"
+owners = [
+    "add-wg-retry",
+    "smoke-gate-is",
+]
+description = "Pins add-wg-retry: `wg retry <task>` and `wg agents kill <agent>` MUST terminate hung worker processes, mark the agent Dead in the registry, and reset in-progress tasks to Open with retry_count incremented. Spawns real long-running `sleep 600` processes to stand in for hung workers; hand-crafts graph.jsonl + registry.json to bind them to in-progress tasks; asserts (a) `wg agents kill` kills the live PID and marks the agent Dead, (b) re-running `wg agents kill` on a now-dead or absent agent succeeds (no-op semantics), (c) `wg retry` on an in-progress hung task kills the worker, transitions to Open, increments retry_count 0→1, and records --reason in the log. No LLM required; pure process+graph assertions."
+timeout_seconds = 60
+
+[[scenario]]
 name = "tui_chat_redesign_modal_close_persist"
 script = "scenarios/tui_chat_redesign_modal_close_persist.sh"
 owners = [

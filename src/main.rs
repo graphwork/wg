@@ -1036,7 +1036,14 @@ fn main() -> Result<()> {
             id,
             preserve_session,
             fresh,
-        } => commands::retry::run(&workgraph_dir, &id, preserve_session, fresh),
+            reason,
+        } => commands::retry::run(
+            &workgraph_dir,
+            &id,
+            preserve_session,
+            fresh,
+            reason.as_deref(),
+        ),
         Commands::Recover {
             yes,
             filter,
@@ -2711,24 +2718,30 @@ fn main() -> Result<()> {
             }
         },
         Commands::Agents {
+            command,
             alive,
             dead,
             working,
             idle,
-        } => {
-            let filter = if alive {
-                Some(commands::agents::AgentFilter::Alive)
-            } else if dead {
-                Some(commands::agents::AgentFilter::Dead)
-            } else if working {
-                Some(commands::agents::AgentFilter::Working)
-            } else if idle {
-                Some(commands::agents::AgentFilter::Idle)
-            } else {
-                None
-            };
-            commands::agents::run(&workgraph_dir, filter, cli.json)
-        }
+        } => match command {
+            Some(cli::AgentsCommand::Kill { agent_id, force }) => {
+                commands::agents::run_kill(&workgraph_dir, &agent_id, force, cli.json)
+            }
+            None => {
+                let filter = if alive {
+                    Some(commands::agents::AgentFilter::Alive)
+                } else if dead {
+                    Some(commands::agents::AgentFilter::Dead)
+                } else if working {
+                    Some(commands::agents::AgentFilter::Working)
+                } else if idle {
+                    Some(commands::agents::AgentFilter::Idle)
+                } else {
+                    None
+                };
+                commands::agents::run(&workgraph_dir, filter, cli.json)
+            }
+        },
         Commands::Kill {
             agent,
             force,

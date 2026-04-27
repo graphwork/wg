@@ -57,15 +57,37 @@ InProgress → wg done → PendingValidation → wg approve → Done
 
 ### Retry workflow
 
-Failed tasks can be retried:
+Failed, incomplete, *and hung in-progress* tasks can be retried with a single command:
 
 ```bash
-wg retry <task-id>    # Failed → Open (clears assignment, preserves logs)
+wg retry <task-id>                          # any state → Open
+wg retry <task-id> --reason "stalled 20min" # log a reason on the task
+wg retry <task-id> --fresh                  # also discard the prior worktree
 ```
+
+Behavior by source status:
+
+| Source state | What `wg retry` does |
+|---|---|
+| Failed / Incomplete | Resets to Open, clears `failure_reason`, `assigned`, `session_id`. |
+| **In-progress (hung agent)** | SIGTERMs the assigned agent (5s grace → SIGKILL), marks the agent Dead in the registry, increments `retry_count`, resets the task to Open. The dispatcher's reconciler then respawns a fresh agent on its next tick. |
+| Done / Open / Abandoned / Blocked | Errors — these are not retryable states. |
 
 - Retry count is tracked (`retry_count`). Set `max_retries` to limit attempts.
 - Previous failure reasons and logs are preserved for the next agent to learn from.
 - The dispatcher re-dispatches the task automatically after retry.
+- Idempotent: re-running while the previous retry is still mid-transition is safe.
+
+### Killing a hung worker without retrying
+
+If you want to terminate a worker without immediately resetting its task (e.g., to inspect state first), use the lower-level building block:
+
+```bash
+wg agents kill <agent-id>          # SIGTERM; task stays open for respawn
+wg agents kill <agent-id> --force  # SIGKILL immediately
+```
+
+This is what `wg retry` calls internally for the in-progress case. It's a no-op if the agent is already dead or absent from the registry. Compare with `wg kill <agent-id>`, which *also* pauses the task to prevent re-dispatch.
 
 ### Cascade abandon
 

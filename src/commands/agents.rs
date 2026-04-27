@@ -16,7 +16,10 @@ use anyhow::Result;
 use std::path::Path;
 use workgraph::service::{AgentEntry, AgentRegistry, AgentStatus};
 
-use super::is_process_alive;
+use super::{is_process_alive, kill_process_force, kill_process_graceful};
+
+/// Default wait time between SIGTERM and SIGKILL for `wg agents kill`.
+const KILL_WAIT_SECS: u64 = 5;
 
 /// Compute the effective status of an agent by checking PID liveness.
 /// If the registry says the agent is alive but the process has exited,
@@ -191,6 +194,105 @@ fn output_table(agents: &[&AgentEntry]) {
     } else {
         println!("{} agent(s)", agents.len());
     }
+}
+
+/// `wg agents kill <agent-id>` — lower-level building block for hung-agent
+/// recovery. SIGTERM (or SIGKILL with `force`) the named process; no-op if
+/// the agent is already dead or absent. Does NOT pause the task — the
+/// dispatcher is free to respawn (used internally by `wg retry`).
+///
+/// On success: marks the registry entry as Dead with a completed_at timestamp.
+/// The dispatcher's reconciler then transitions the in-progress task back to
+/// Open on its next tick so the next dispatcher tick can spawn a fresh agent.
+pub fn run_kill(dir: &Path, agent_id: &str, force: bool, json: bool) -> Result<()> {
+    let mut locked = AgentRegistry::load_locked(dir)?;
+    let snapshot = locked.get_agent(agent_id).cloned();
+
+    let Some(agent) = snapshot else {
+        // No-op semantics: not finding the agent is success, not failure.
+        if json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "agent_id": agent_id,
+                    "killed": false,
+                    "reason": "agent not found in registry",
+                }))?
+            );
+        } else {
+            println!("Agent '{}' not in registry — nothing to kill.", agent_id);
+        }
+        return Ok(());
+    };
+
+    let was_alive = agent.is_alive() && is_process_alive(agent.pid);
+    if !was_alive {
+        // Agent already dead — make sure the registry reflects that and exit.
+        if let Some(entry) = locked.get_agent_mut(agent_id) {
+            if entry.status != AgentStatus::Dead {
+                entry.status = AgentStatus::Dead;
+            }
+            if entry.completed_at.is_none() {
+                entry.completed_at = Some(chrono::Utc::now().to_rfc3339());
+            }
+        }
+        locked.save_ref()?;
+        if json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "agent_id": agent_id,
+                    "pid": agent.pid,
+                    "task_id": agent.task_id,
+                    "killed": false,
+                    "reason": "agent already dead",
+                }))?
+            );
+        } else {
+            println!(
+                "Agent '{}' (PID {}) already dead — task '{}' will be reconciled by dispatcher.",
+                agent_id, agent.pid, agent.task_id
+            );
+        }
+        return Ok(());
+    }
+
+    // Send the signal. Both helpers are idempotent against a dead PID.
+    if force {
+        kill_process_force(agent.pid)?;
+    } else {
+        kill_process_graceful(agent.pid, KILL_WAIT_SECS)?;
+    }
+
+    // Mark Dead so the dispatcher's reconciler transitions the task without
+    // waiting for a heartbeat timeout.
+    if let Some(entry) = locked.get_agent_mut(agent_id) {
+        entry.status = AgentStatus::Dead;
+        if entry.completed_at.is_none() {
+            entry.completed_at = Some(chrono::Utc::now().to_rfc3339());
+        }
+    }
+    locked.save_ref()?;
+
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "agent_id": agent_id,
+                "pid": agent.pid,
+                "task_id": agent.task_id,
+                "killed": true,
+                "force": force,
+            }))?
+        );
+    } else {
+        let signal = if force { "SIGKILL" } else { "SIGTERM" };
+        println!(
+            "Sent {} to '{}' (PID {}, task '{}'). Dispatcher will reconcile the task on its next tick.",
+            signal, agent_id, agent.pid, agent.task_id
+        );
+    }
+    Ok(())
 }
 
 /// Get agent count summary

@@ -4,16 +4,36 @@ use std::path::Path;
 use workgraph::config::Tier;
 use workgraph::graph::{LogEntry, Status};
 use workgraph::parser::modify_graph;
+use workgraph::service::{AgentRegistry, is_process_alive, kill_process_graceful};
 
 #[cfg(test)]
 use super::graph_path;
 #[cfg(test)]
 use workgraph::parser::load_graph;
 
-pub fn run(dir: &Path, id: &str, preserve_session: bool, fresh: bool) -> Result<()> {
+pub fn run(
+    dir: &Path,
+    id: &str,
+    preserve_session: bool,
+    fresh: bool,
+    reason: Option<&str>,
+) -> Result<()> {
     let path = super::graph_path(dir);
     if !path.exists() {
         anyhow::bail!("Workgraph not initialized. Run 'wg init' first.");
+    }
+
+    // Look up the task's current status to decide which retry path to take.
+    // For InProgress tasks we kill the assigned agent and reset to Open
+    // (incrementing retry_count, which fail/incomplete normally do for us).
+    // For Failed/Incomplete we follow the existing reset path.
+    let initial_status = {
+        let graph = workgraph::parser::load_graph(&path).context("Failed to load graph")?;
+        graph.get_task(id).map(|t| t.status)
+    };
+
+    if initial_status == Some(Status::InProgress) {
+        return retry_in_progress(dir, &path, id, preserve_session, fresh, reason);
     }
 
     // --fresh: discard the prior worktree (if any) so the next spawn allocates
@@ -143,14 +163,18 @@ pub fn run(dir: &Path, id: &str, preserve_session: bool, fresh: bool) -> Result<
         } else {
             "failed"
         };
+        let reason_suffix = reason
+            .map(|r| format!(" — reason: {}", r))
+            .unwrap_or_default();
         task.log.push(LogEntry {
             timestamp: Utc::now().to_rfc3339(),
             actor: None,
             user: Some(workgraph::current_user()),
             message: format!(
-                "Task reset for retry from {} (attempt #{})",
+                "Task reset for retry from {} (attempt #{}){}",
                 source,
-                task.retry_count + 1
+                task.retry_count + 1,
+                reason_suffix
             ),
         });
 
@@ -186,6 +210,7 @@ pub fn run(dir: &Path, id: &str, preserve_session: bool, fresh: bool) -> Result<
             "prev_failure_reason": prev_failure_reason,
             "was_incomplete": was_incomplete,
             "tier_escalation": tier_escalation_msg,
+            "reason": reason,
         }),
         config.log.rotation_threshold,
     );
@@ -222,6 +247,209 @@ pub fn run(dir: &Path, id: &str, preserve_session: bool, fresh: bool) -> Result<
                 println!("  Next attempt will resume in-place at {:?}", wt);
             }
         }
+    }
+
+    Ok(())
+}
+
+/// Retry an in-progress task: kill the assigned agent (if alive), reset the
+/// task to Open, increment retry_count. The dispatcher's next tick will
+/// respawn a fresh agent on it.
+///
+/// Idempotent: if the agent is already dead the kill is a no-op, and the
+/// reconciler may have already reset the task before us — we still bump
+/// retry_count + log the retry.
+fn retry_in_progress(
+    dir: &Path,
+    path: &Path,
+    id: &str,
+    preserve_session: bool,
+    fresh: bool,
+    reason: Option<&str>,
+) -> Result<()> {
+    // 1) Kill the assigned agent if any. We do this OUTSIDE the graph lock
+    //    because kill_process_graceful sleeps up to 5s.
+    let registry = AgentRegistry::load(dir).unwrap_or_else(|_| AgentRegistry::new());
+    let task_snapshot = {
+        let graph = workgraph::parser::load_graph(path).context("Failed to load graph")?;
+        graph.get_task(id).cloned()
+    };
+    let task = task_snapshot
+        .ok_or_else(|| anyhow::anyhow!("Task '{}' not found", id))?;
+    let assigned = task.assigned.clone();
+
+    let mut killed_agent: Option<(String, u32)> = None;
+    if let Some(agent_id) = &assigned
+        && let Some(agent) = registry.get_agent(agent_id)
+        && agent.is_alive()
+        && is_process_alive(agent.pid)
+    {
+        eprintln!(
+            "[retry] Killing agent {} (PID {}) for in-progress task '{}'",
+            agent_id, agent.pid, id
+        );
+        // SIGTERM (graceful, escalates to SIGKILL after 5s if needed).
+        let _ = kill_process_graceful(agent.pid, 5);
+        killed_agent = Some((agent_id.clone(), agent.pid));
+    }
+
+    // 2) Mark the agent Dead in registry so the dispatcher's reconciler can
+    //    transition the task without waiting for heartbeat timeout.
+    if let Some((ref aid, _)) = killed_agent
+        && let Ok(mut locked) = AgentRegistry::load_locked(dir)
+    {
+        if let Some(agent) = locked.get_agent_mut(aid) {
+            agent.status = workgraph::service::AgentStatus::Dead;
+            if agent.completed_at.is_none() {
+                agent.completed_at = Some(Utc::now().to_rfc3339());
+            }
+        }
+        let _ = locked.save_ref();
+    }
+
+    // 3) Reset the task: status=Open, clear assigned, increment retry_count,
+    //    log retry. This is atomic under the graph flock.
+    let config = workgraph::config::Config::load_or_default(dir);
+    let escalate_on_retry = config.coordinator.escalate_on_retry;
+    let mut error: Option<anyhow::Error> = None;
+    let mut attempt: u32 = 0;
+    let mut tier_escalation_msg: Option<String> = None;
+
+    modify_graph(path, |graph| {
+        let task = match graph.get_task_mut(id) {
+            Some(t) => t,
+            None => {
+                error = Some(anyhow::anyhow!("Task '{}' not found", id));
+                return false;
+            }
+        };
+
+        // Honor max_retries before incrementing.
+        if let Some(max) = task.max_retries
+            && task.retry_count >= max
+        {
+            error = Some(anyhow::anyhow!(
+                "Task '{}' has reached max retries ({}/{}). Consider abandoning or increasing max_retries.",
+                id,
+                task.retry_count,
+                max
+            ));
+            return false;
+        }
+
+        task.retry_count += 1;
+        attempt = task.retry_count;
+        task.status = Status::Open;
+        task.assigned = None;
+        task.failure_reason = None;
+        task.ready_after = None;
+        if !preserve_session {
+            task.session_id = None;
+            task.checkpoint = None;
+        }
+        task.tags.retain(|t| t != "converged");
+
+        if escalate_on_retry && !task.no_tier_escalation {
+            let current_tier: Tier = task
+                .tier
+                .as_deref()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(Tier::Standard);
+            let next_tier = current_tier.escalate();
+            if next_tier != current_tier {
+                task.tier = Some(next_tier.to_string());
+                let msg = format!("Tier escalated on retry: {} → {}", current_tier, next_tier);
+                task.log.push(LogEntry {
+                    timestamp: Utc::now().to_rfc3339(),
+                    actor: None,
+                    user: Some(workgraph::current_user()),
+                    message: msg.clone(),
+                });
+                tier_escalation_msg = Some(msg);
+            }
+        }
+
+        let kill_note = killed_agent
+            .as_ref()
+            .map(|(aid, pid)| format!(" — killed agent {} (PID {})", aid, pid))
+            .unwrap_or_default();
+        let reason_suffix = reason
+            .map(|r| format!(" — reason: {}", r))
+            .unwrap_or_default();
+        task.log.push(LogEntry {
+            timestamp: Utc::now().to_rfc3339(),
+            actor: None,
+            user: Some(workgraph::current_user()),
+            message: format!(
+                "Task reset for retry from in-progress (attempt #{}){}{}",
+                task.retry_count, kill_note, reason_suffix
+            ),
+        });
+        true
+    })
+    .context("Failed to modify graph")?;
+
+    if let Some(e) = error {
+        return Err(e);
+    }
+
+    // Worktree handling (same as the failed/incomplete path).
+    if fresh {
+        if let Some(project_root) = dir.parent() {
+            if let Some((wt_path, branch)) =
+                crate::commands::spawn::worktree::find_worktree_for_task(project_root, id)
+            {
+                eprintln!(
+                    "[retry --fresh] Removing prior worktree for '{}' at {:?} (branch: {})",
+                    id, wt_path, branch
+                );
+                let _ = crate::commands::spawn::worktree::remove_worktree(
+                    project_root,
+                    &wt_path,
+                    &branch,
+                );
+            }
+        }
+    } else if let Some(project_root) = dir.parent()
+        && let Some((wt_path, _)) =
+            crate::commands::spawn::worktree::find_worktree_for_task(project_root, id)
+    {
+        let marker = wt_path.join(crate::commands::service::worktree::CLEANUP_PENDING_MARKER);
+        if marker.exists() {
+            let _ = std::fs::remove_file(&marker);
+        }
+    }
+
+    super::notify_graph_changed(dir);
+
+    let _ = workgraph::provenance::record(
+        dir,
+        "retry",
+        Some(id),
+        None,
+        serde_json::json!({
+            "attempt": attempt,
+            "was_in_progress": true,
+            "killed_agent": killed_agent.as_ref().map(|(aid, pid)| serde_json::json!({"agent_id": aid, "pid": pid})),
+            "tier_escalation": tier_escalation_msg,
+            "reason": reason,
+        }),
+        config.log.rotation_threshold,
+    );
+
+    if let Some((aid, pid)) = killed_agent {
+        println!(
+            "Reset '{}' from in-progress to open (attempt #{}); killed agent {} (PID {})",
+            id, attempt, aid, pid
+        );
+    } else {
+        println!(
+            "Reset '{}' from in-progress to open (attempt #{}); no live agent to kill",
+            id, attempt
+        );
+    }
+    if let Some(msg) = tier_escalation_msg {
+        println!("  {}", msg);
     }
 
     Ok(())
@@ -265,7 +493,7 @@ mod tests {
         task.assigned = Some("agent-1".to_string());
         setup_workgraph(dir_path, vec![task]);
 
-        let result = run(dir_path, "t1", false, false);
+        let result = run(dir_path, "t1", false, false, None);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
@@ -282,7 +510,7 @@ mod tests {
         task.retry_count = 1;
         setup_workgraph(dir_path, vec![task]);
 
-        let result = run(dir_path, "t1", false, false);
+        let result = run(dir_path, "t1", false, false, None);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
@@ -300,7 +528,7 @@ mod tests {
         task.ready_after = Some("2099-01-01T00:00:00Z".to_string());
         setup_workgraph(dir_path, vec![task]);
 
-        run(dir_path, "t1", false, false).unwrap();
+        run(dir_path, "t1", false, false, None).unwrap();
 
         let path = graph_path(dir_path);
         let graph = load_graph(&path).unwrap();
@@ -317,7 +545,7 @@ mod tests {
         let dir_path = dir.path();
         setup_workgraph(dir_path, vec![make_task("t1", "Test task", Status::Open)]);
 
-        let result = run(dir_path, "t1", false, false);
+        let result = run(dir_path, "t1", false, false, None);
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
         assert!(
@@ -328,21 +556,29 @@ mod tests {
     }
 
     #[test]
-    fn test_retry_non_failed_task_errors_in_progress() {
+    fn test_retry_in_progress_task_resets_to_open() {
+        // wg retry on an InProgress task with no assigned agent (or a dead
+        // one) resets to Open and increments retry_count. The killed-agent
+        // path is exercised in the `retry_kills_in_progress_agent` smoke
+        // scenario, which can spawn a real PID to terminate.
         let dir = tempdir().unwrap();
         let dir_path = dir.path();
-        setup_workgraph(
-            dir_path,
-            vec![make_task("t1", "Test task", Status::InProgress)],
-        );
+        let mut task = make_task("t1", "Test task", Status::InProgress);
+        task.retry_count = 0;
+        setup_workgraph(dir_path, vec![task]);
 
-        let result = run(dir_path, "t1", false, false);
-        assert!(result.is_err());
+        let result = run(dir_path, "t1", false, false, Some("hung 20min"));
+        assert!(result.is_ok(), "retry on in-progress should succeed: {:?}", result);
+
+        let path = graph_path(dir_path);
+        let graph = load_graph(&path).unwrap();
+        let task = graph.get_task("t1").unwrap();
+        assert_eq!(task.status, Status::Open);
+        assert_eq!(task.retry_count, 1, "in-progress retry must increment retry_count");
+        assert_eq!(task.assigned, None);
         assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("not failed or incomplete")
+            task.log.iter().any(|e| e.message.contains("hung 20min")),
+            "reason must be recorded in task log"
         );
     }
 
@@ -352,7 +588,7 @@ mod tests {
         let dir_path = dir.path();
         setup_workgraph(dir_path, vec![make_task("t1", "Test task", Status::Done)]);
 
-        let result = run(dir_path, "t1", false, false);
+        let result = run(dir_path, "t1", false, false, None);
         assert!(result.is_err());
         assert!(
             result
@@ -370,7 +606,7 @@ mod tests {
         task.retry_count = 3;
         setup_workgraph(dir_path, vec![task]);
 
-        run(dir_path, "t1", false, false).unwrap();
+        run(dir_path, "t1", false, false, None).unwrap();
 
         let path = graph_path(dir_path);
         let graph = load_graph(&path).unwrap();
@@ -390,7 +626,7 @@ mod tests {
         task.failure_reason = Some("compilation error".to_string());
         setup_workgraph(dir_path, vec![task]);
 
-        run(dir_path, "t1", false, false).unwrap();
+        run(dir_path, "t1", false, false, None).unwrap();
 
         let path = graph_path(dir_path);
         let graph = load_graph(&path).unwrap();
@@ -407,7 +643,7 @@ mod tests {
         task.assigned = Some("agent-1".to_string());
         setup_workgraph(dir_path, vec![task]);
 
-        run(dir_path, "t1", false, false).unwrap();
+        run(dir_path, "t1", false, false, None).unwrap();
 
         let path = graph_path(dir_path);
         let graph = load_graph(&path).unwrap();
@@ -424,7 +660,7 @@ mod tests {
         task.max_retries = Some(3);
         setup_workgraph(dir_path, vec![task]);
 
-        let result = run(dir_path, "t1", false, false);
+        let result = run(dir_path, "t1", false, false, None);
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
         assert!(
@@ -443,7 +679,7 @@ mod tests {
         task.max_retries = Some(3);
         setup_workgraph(dir_path, vec![task]);
 
-        let result = run(dir_path, "t1", false, false);
+        let result = run(dir_path, "t1", false, false, None);
         assert!(result.is_ok());
 
         let path = graph_path(dir_path);
@@ -460,7 +696,7 @@ mod tests {
         task.retry_count = 2;
         setup_workgraph(dir_path, vec![task]);
 
-        run(dir_path, "t1", false, false).unwrap();
+        run(dir_path, "t1", false, false, None).unwrap();
 
         let path = graph_path(dir_path);
         let graph = load_graph(&path).unwrap();
@@ -485,7 +721,7 @@ mod tests {
         let dir_path = dir.path();
         setup_workgraph(dir_path, vec![make_task("t1", "Test task", Status::Failed)]);
 
-        let result = run(dir_path, "nonexistent", false, false);
+        let result = run(dir_path, "nonexistent", false, false, None);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("not found"));
     }
@@ -500,7 +736,7 @@ mod tests {
         task.checkpoint = Some("Previous checkpoint context".to_string());
         setup_workgraph(dir_path, vec![task]);
 
-        run(dir_path, "t1", false, false).unwrap();
+        run(dir_path, "t1", false, false, None).unwrap();
 
         let path = graph_path(dir_path);
         let graph = load_graph(&path).unwrap();
@@ -525,7 +761,7 @@ mod tests {
         task.checkpoint = Some("checkpoint content".to_string());
         setup_workgraph(dir_path, vec![task]);
 
-        run(dir_path, "t1", true, false).unwrap();
+        run(dir_path, "t1", true, false, None).unwrap();
 
         let path = graph_path(dir_path);
         let graph = load_graph(&path).unwrap();
@@ -551,7 +787,7 @@ mod tests {
         task.tags.push("converged".to_string());
         setup_workgraph(dir_path, vec![task]);
 
-        run(dir_path, "t1", false, false).unwrap();
+        run(dir_path, "t1", false, false, None).unwrap();
 
         let path = graph_path(dir_path);
         let graph = load_graph(&path).unwrap();
@@ -570,7 +806,7 @@ mod tests {
         task.retry_count = 1;
         setup_workgraph(dir_path, vec![task]);
 
-        run(dir_path, "t1", false, false).unwrap();
+        run(dir_path, "t1", false, false, None).unwrap();
 
         let path = graph_path(dir_path);
         let graph = load_graph(&path).unwrap();
@@ -602,7 +838,7 @@ mod tests {
         setup_workgraph(dir_path, vec![task]);
         setup_config_with_escalation(dir_path);
 
-        run(dir_path, "t1", false, false).unwrap();
+        run(dir_path, "t1", false, false, None).unwrap();
 
         let path = graph_path(dir_path);
         let graph = load_graph(&path).unwrap();
@@ -624,7 +860,7 @@ mod tests {
         setup_workgraph(dir_path, vec![task]);
         setup_config_with_escalation(dir_path);
 
-        run(dir_path, "t1", false, false).unwrap();
+        run(dir_path, "t1", false, false, None).unwrap();
 
         let path = graph_path(dir_path);
         let graph = load_graph(&path).unwrap();
@@ -642,7 +878,7 @@ mod tests {
         setup_workgraph(dir_path, vec![task]);
         setup_config_with_escalation(dir_path);
 
-        run(dir_path, "t1", false, false).unwrap();
+        run(dir_path, "t1", false, false, None).unwrap();
 
         let path = graph_path(dir_path);
         let graph = load_graph(&path).unwrap();
@@ -668,7 +904,7 @@ mod tests {
         setup_workgraph(dir_path, vec![task]);
         // No escalation config — default is false
 
-        run(dir_path, "t1", false, false).unwrap();
+        run(dir_path, "t1", false, false, None).unwrap();
 
         let path = graph_path(dir_path);
         let graph = load_graph(&path).unwrap();
@@ -691,7 +927,7 @@ mod tests {
         setup_workgraph(dir_path, vec![task]);
         setup_config_with_escalation(dir_path);
 
-        run(dir_path, "t1", false, false).unwrap();
+        run(dir_path, "t1", false, false, None).unwrap();
 
         let path = graph_path(dir_path);
         let graph = load_graph(&path).unwrap();
@@ -713,7 +949,7 @@ mod tests {
         setup_workgraph(dir_path, vec![task]);
         setup_config_with_escalation(dir_path);
 
-        run(dir_path, "t1", false, false).unwrap();
+        run(dir_path, "t1", false, false, None).unwrap();
 
         let path = graph_path(dir_path);
         let graph = load_graph(&path).unwrap();
@@ -801,7 +1037,7 @@ mod tests {
         )
         .unwrap();
 
-        let result = run(&wg_dir, "retry-here", false, /*fresh=*/ false);
+        let result = run(&wg_dir, "retry-here", false, /*fresh=*/ false, None);
         assert!(result.is_ok(), "retry should succeed: {:?}", result);
 
         // Default behavior: worktree dir SURVIVES.
@@ -847,7 +1083,7 @@ mod tests {
         let wt = create_worktree(&project, "agent-prior", "retry-fresh");
         assert!(wt.exists());
 
-        let result = run(&wg_dir, "retry-fresh", false, /*fresh=*/ true);
+        let result = run(&wg_dir, "retry-fresh", false, /*fresh=*/ true, None);
         assert!(result.is_ok(), "retry --fresh should succeed: {:?}", result);
 
         // --fresh: worktree dir is REMOVED.

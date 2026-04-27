@@ -684,7 +684,7 @@ mod provenance_coverage_tests {
         .unwrap();
 
         super::fail::run(dir, "prov-retry", Some("compile error")).unwrap();
-        super::retry::run(dir, "prov-retry", false, false).unwrap();
+        super::retry::run(dir, "prov-retry", false, false, None).unwrap();
 
         let entries = ops_with_type(dir, "retry");
         assert_eq!(entries.len(), 1);
@@ -1036,7 +1036,7 @@ mod provenance_coverage_tests {
         // fail
         super::fail::run(dir, "lifecycle", Some("timeout")).unwrap();
         // retry
-        super::retry::run(dir, "lifecycle", false, false).unwrap();
+        super::retry::run(dir, "lifecycle", false, false, None).unwrap();
         // done
         super::done::run(dir, "lifecycle", false, false, false, false, false).unwrap();
 

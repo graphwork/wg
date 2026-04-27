@@ -94,6 +94,8 @@ SERVICE MODE (recommended for parallel work)
   wg service freeze           # SIGSTOP all agents and pause service
   wg service thaw             # SIGCONT agents and resume service
   wg agents                   # Who's working on what
+  wg agents kill <agent-id>   # SIGTERM agent process; task stays open for respawn
+  wg agents kill <agent-id> --force   # SIGKILL immediately
   wg kill <agent-id>          # Kill agent + pause its task (prevents re-dispatch)
   wg kill <agent-id> --redispatch  # Kill agent, leave task open for re-dispatch
   wg kill --all               # Kill all agents + pause their tasks
@@ -346,6 +348,33 @@ COMPACT, SWEEP & CHECKPOINT
   wg checkpoint <task-id> -s "Progress summary"  # Save checkpoint
   wg checkpoint <task-id> --list                 # List checkpoints for a task
   wg stats                      # Show time counters and agent statistics
+
+RECOVERY (hung agents, failed tasks, mass failures)
+─────────────────────────────────────────
+  Hung worker agent (CPU=0%, no progress)?
+    wg retry <task-id>          # Kills assigned agent, resets task to open,
+                                # increments attempt counter; dispatcher respawns
+    wg retry <task-id> --reason "stalled at 0% CPU 20min"
+    wg retry <task-id> --fresh  # Discard prior worktree, start over from main
+
+  Lower-level building block (`wg retry` calls this internally):
+    wg agents kill <agent-id>          # SIGTERM agent; task stays open for respawn
+    wg agents kill <agent-id> --force  # SIGKILL immediately
+
+  Failed task — single retry:
+    wg retry <task-id>                # Resets failed/incomplete to open
+
+  Mass failure (credit exhaustion, model outage):
+    wg recover                  # Dry-run: show recovery plan
+    wg recover --yes            # Apply: retry user tasks, abandon followups so
+                                #   agency pipeline regenerates them fresh
+    wg recover --filter id-prefix=tui- --yes
+    wg recover --set-model openrouter:anthropic/claude-sonnet-4-6 --yes
+
+  Dispatcher reconciliation (automatic; no command needed):
+    Every dispatcher tick, in-progress tasks whose assigned agent is dead
+    (registry status=Dead OR PID exited) get reset to open and re-dispatched.
+    `wg retry` triggers this immediately rather than waiting for the tick.
 
 HOUSEKEEPING
 ─────────────────────────────────────────
@@ -1429,6 +1458,14 @@ mod tests {
         assert!(QUICKSTART_TEXT.contains("wg cleanup orphaned"));
         assert!(QUICKSTART_TEXT.contains("wg cleanup nightly"));
         assert!(QUICKSTART_TEXT.contains("wg metrics"));
+    }
+
+    #[test]
+    fn test_quickstart_text_contains_recovery_section() {
+        assert!(QUICKSTART_TEXT.contains("RECOVERY"));
+        assert!(QUICKSTART_TEXT.contains("wg agents kill"));
+        assert!(QUICKSTART_TEXT.contains("Hung worker agent"));
+        assert!(QUICKSTART_TEXT.contains("--reason"));
     }
 
     #[test]

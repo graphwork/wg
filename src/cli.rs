@@ -565,7 +565,18 @@ pub enum Commands {
         superseded_by: Vec<String>,
     },
 
-    /// Retry a failed or incomplete task (resets to open status)
+    /// Retry a failed, incomplete, or in-progress (hung) task.
+    ///
+    /// For failed/incomplete: resets to open status (clears failure_reason,
+    /// assigned, session_id by default).
+    ///
+    /// For in-progress: kills the assigned agent (SIGTERM, escalating to
+    /// SIGKILL after 5s), increments retry_count, resets to open. The
+    /// dispatcher's next tick respawns a fresh agent.
+    ///
+    /// Idempotent: re-running while the previous retry is still mid-transition
+    /// is safe — the kill is a no-op on a dead PID, and the graph reset is
+    /// guarded by the file lock.
     Retry {
         /// Task ID to retry
         #[arg(value_name = "TASK")]
@@ -580,6 +591,11 @@ pub enum Commands {
         /// worktree + branch so uncommitted WIP and prior commits are preserved.
         #[arg(long)]
         fresh: bool,
+
+        /// Reason for the retry — recorded as a log entry on the task
+        /// (e.g., "agent hung at 0% CPU for 20min")
+        #[arg(long)]
+        reason: Option<String>,
     },
 
     /// Batch-recover from credit-exhaustion / mass-failure (default: dry-run)
@@ -1905,11 +1921,14 @@ pub enum Commands {
         cmd: MigrateCommands,
     },
 
-    /// List running agent processes (service workers)
+    /// List or manage running agent processes (service workers)
     #[command(
-        after_help = "This command shows agent processes spawned by the service coordinator.\nThese are runtime workers, not agent identity definitions.\n\nSee also: 'wg agent' to manage agent definitions (role + tradeoff pairings)."
+        after_help = "Without a subcommand, lists all agent processes spawned by the service\ncoordinator. These are runtime workers, not agent identity definitions.\n\nSubcommands:\n  wg agents kill <agent-id>   # SIGTERM the agent process (no-op if dead)\n\nSee also: 'wg agent' to manage agent definitions (role + tradeoff pairings)."
     )]
     Agents {
+        #[command(subcommand)]
+        command: Option<AgentsCommand>,
+
         /// Only show alive agents (starting, working, idle)
         #[arg(long)]
         alive: bool,
@@ -3479,6 +3498,26 @@ pub enum ResourceCommands {
 
     /// List all resources
     List,
+}
+
+#[derive(Subcommand)]
+pub enum AgentsCommand {
+    /// SIGTERM (or SIGKILL with --force) the named agent process.
+    ///
+    /// Lower-level building block for hung-agent recovery. Used internally
+    /// by `wg retry` for in-progress tasks. No-op if the agent is already
+    /// dead or absent from the registry. Does NOT pause the task — the
+    /// dispatcher is free to respawn (use `wg kill <agent>` instead if
+    /// you want the task paused).
+    Kill {
+        /// Agent ID (e.g., "agent-42")
+        #[arg(value_name = "AGENT")]
+        agent_id: String,
+
+        /// Use SIGKILL immediately instead of graceful SIGTERM
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 #[derive(Subcommand)]
