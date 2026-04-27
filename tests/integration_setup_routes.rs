@@ -44,7 +44,17 @@ fn run_wg_in_isolation(fake_home: &Path, args: &[&str]) -> std::process::Output 
 }
 
 fn load_global_config(fake_home: &Path) -> Config {
-    let path = fake_home.join(".workgraph/config.toml");
+    // Mirrors Config::global_dir resolution: prefer modern `~/.wg`, fall
+    // back to legacy `~/.workgraph` if only that exists.
+    let modern = fake_home.join(".wg/config.toml");
+    let legacy = fake_home.join(".workgraph/config.toml");
+    let path = if modern.exists() {
+        modern
+    } else if legacy.exists() {
+        legacy
+    } else {
+        modern
+    };
     let content = fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("Failed to read config at {:?}: {}", path, e));
     toml::from_str(&content)
@@ -278,12 +288,15 @@ fn test_setup_dry_run_does_not_write() {
     );
     assert!(output.status.success());
 
-    // No global config should have been created.
-    let global = fake_home.join(".workgraph/config.toml");
+    // No global config should have been created — under either the modern
+    // `.wg` or legacy `.workgraph` global dir.
+    let modern = fake_home.join(".wg/config.toml");
+    let legacy = fake_home.join(".workgraph/config.toml");
     assert!(
-        !global.exists(),
-        "dry-run must not create global config at {}",
-        global.display()
+        !modern.exists() && !legacy.exists(),
+        "dry-run must not create global config (neither {} nor {} should exist)",
+        modern.display(),
+        legacy.display(),
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);

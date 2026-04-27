@@ -2991,6 +2991,7 @@ fn main() -> Result<()> {
         Commands::Setup {
             route,
             provider,
+            scope,
             api_key_file,
             api_key_env,
             url,
@@ -3002,6 +3003,7 @@ fn main() -> Result<()> {
             let args = commands::setup::SetupArgs {
                 route,
                 provider,
+                scope,
                 api_key_file,
                 api_key_env,
                 url,

@@ -59,6 +59,9 @@ pub struct SetupArgs {
     /// [Legacy] Provider name: "anthropic", "openrouter", "openai", "local", "custom".
     /// Maps onto the closest route when used.
     pub provider: Option<String>,
+    /// Scope for the config write: "global", "local", "both". When None,
+    /// interactive mode prompts; non-interactive defaults to global.
+    pub scope: Option<String>,
     /// Path to API key file
     pub api_key_file: Option<String>,
     /// Environment variable name for API key
@@ -75,6 +78,37 @@ pub struct SetupArgs {
     pub dry_run: bool,
 }
 
+/// Where `wg setup` should write the config.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SetupScope {
+    /// Write `~/.wg/config.toml` only.
+    Global,
+    /// Write `./.wg/config.toml` only.
+    Local,
+    /// Write both global and local.
+    Both,
+}
+
+impl SetupScope {
+    /// Parse a CLI scope string. Accepts a few aliases.
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name.to_ascii_lowercase().as_str() {
+            "global" | "g" | "user" => Some(Self::Global),
+            "local" | "l" | "project" => Some(Self::Local),
+            "both" | "b" | "all" => Some(Self::Both),
+            _ => None,
+        }
+    }
+
+    pub fn as_name(&self) -> &'static str {
+        match self {
+            Self::Global => "global",
+            Self::Local => "local",
+            Self::Both => "both",
+        }
+    }
+}
+
 impl SetupArgs {
     /// Resolve the user's intent into a `SetupRoute`. Prefers explicit
     /// `--route`; falls back to mapping `--provider` onto the closest route.
@@ -89,6 +123,22 @@ impl SetupArgs {
             Some("local") | Some("ollama") => Some(SetupRoute::Local),
             Some("custom") | Some("openai") | Some("oai-compat") => Some(SetupRoute::NexCustom),
             _ => None,
+        }
+    }
+
+    /// Resolve `--scope` into a `SetupScope`. Returns `Err` for an
+    /// invalid string. Returns `Ok(None)` when the user didn't pass
+    /// `--scope` at all (so the caller can either prompt or fall back
+    /// to a default).
+    pub fn resolved_scope(&self) -> Result<Option<SetupScope>> {
+        match self.scope.as_deref() {
+            None => Ok(None),
+            Some(s) => SetupScope::from_name(s).map(Some).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Invalid --scope '{}'. Expected one of: global, local, both",
+                    s
+                )
+            }),
         }
     }
 }
@@ -181,6 +231,103 @@ pub fn build_config(choices: &SetupChoices, base: Option<&Config>) -> Config {
     config.agency.auto_evaluate = choices.agency_enabled;
 
     config
+}
+
+/// Format a delta summary of how the new config differs from the
+/// built-in defaults — the third bullet of `docs/config-ux-design.md`
+/// §4.3. Shows users that the on-disk file is intentionally short:
+/// a few keys differ from the default and the rest just falls through.
+pub fn format_delta_summary(config: &Config) -> String {
+    let DeltaCounts {
+        diff,
+        same,
+        diff_lines,
+    } = compute_delta(config);
+    let mut lines = Vec::new();
+    lines.push(format!("Will write {} keys:", diff));
+    for line in diff_lines {
+        lines.push(format!("  {}", line));
+    }
+    lines.push(String::new());
+    lines.push(format!(
+        "Will NOT write (built-in defaults): {} more",
+        same
+    ));
+    lines.join("\n")
+}
+
+/// Counts and key-list produced by `compute_delta`.
+pub struct DeltaCounts {
+    /// Number of leaf keys whose value differs from the built-in default.
+    pub diff: usize,
+    /// Number of leaf keys whose value matches the built-in default.
+    pub same: usize,
+    /// Human-readable lines describing each differing key (`path = value`).
+    pub diff_lines: Vec<String>,
+}
+
+/// Compare a Config against `Config::default()` and report leaf-level
+/// differences. Used by `format_delta_summary`.
+pub fn compute_delta(config: &Config) -> DeltaCounts {
+    let new_val = serde_json::to_value(config).unwrap_or(serde_json::Value::Null);
+    let def_val = serde_json::to_value(Config::default()).unwrap_or(serde_json::Value::Null);
+    let mut diff = 0usize;
+    let mut same = 0usize;
+    let mut diff_lines = Vec::new();
+    walk_compare("", &new_val, &def_val, &mut diff, &mut same, &mut diff_lines);
+    DeltaCounts {
+        diff,
+        same,
+        diff_lines,
+    }
+}
+
+fn walk_compare(
+    path: &str,
+    new: &serde_json::Value,
+    def: &serde_json::Value,
+    diff: &mut usize,
+    same: &mut usize,
+    diff_lines: &mut Vec<String>,
+) {
+    use serde_json::Value;
+    match (new, def) {
+        (Value::Object(n), Value::Object(d)) => {
+            // Walk every key in either map.
+            let mut keys: Vec<&String> = n.keys().chain(d.keys()).collect();
+            keys.sort();
+            keys.dedup();
+            for k in keys {
+                let n_v = n.get(k).unwrap_or(&Value::Null);
+                let d_v = d.get(k).unwrap_or(&Value::Null);
+                let next_path = if path.is_empty() {
+                    k.clone()
+                } else {
+                    format!("{}.{}", path, k)
+                };
+                walk_compare(&next_path, n_v, d_v, diff, same, diff_lines);
+            }
+        }
+        (a, b) if a == b => {
+            *same += 1;
+        }
+        (a, _) => {
+            *diff += 1;
+            diff_lines.push(format!("{} = {}", path, summarize_value(a)));
+        }
+    }
+}
+
+fn summarize_value(v: &serde_json::Value) -> String {
+    use serde_json::Value;
+    match v {
+        Value::String(s) => format!("{:?}", s),
+        Value::Number(n) => n.to_string(),
+        Value::Bool(b) => b.to_string(),
+        Value::Null => "null".to_string(),
+        Value::Array(a) => format!("[{} items]", a.len()),
+        Value::Object(o) => format!("{{{} keys}}", o.len()),
+    }
 }
 
 /// Format a summary of what will be written.
@@ -701,6 +848,81 @@ pub fn run_non_interactive(args: &SetupArgs) -> Result<()> {
     Ok(())
 }
 
+/// One picker entry: a label shown in the menu plus the underlying
+/// model spec the wizard should adopt if the user selects it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PickerEntry {
+    /// Text shown in the menu.
+    pub label: String,
+    /// Model spec (`provider:model`) to adopt on selection.
+    pub model: String,
+    /// True when this entry came from `launcher_history`.
+    pub from_history: bool,
+}
+
+/// Build picker entries for a model selection prompt. History entries
+/// (most-recent first, deduplicated) are listed first, followed by the
+/// route-default entries supplied by the caller. When the same model
+/// appears in both lists, the history entry wins (so the route default
+/// isn't duplicated).
+///
+/// Implements §4.2 of `docs/config-ux-design.md`: "Surface
+/// launcher_history in pickers". The picker code in `setup.rs`
+/// previously called `record_use` but never read it back; this helper
+/// closes the loop.
+pub fn build_model_picker_entries(
+    history: &[workgraph::launcher_history::HistoryEntry],
+    route_defaults: &[(String, String)],
+    history_limit: usize,
+) -> Vec<PickerEntry> {
+    let mut out: Vec<PickerEntry> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for entry in history.iter().take(history_limit) {
+        let Some(model) = entry.model.as_deref() else {
+            continue;
+        };
+        if seen.contains(model) {
+            continue;
+        }
+        seen.insert(model.to_string());
+        let label = match entry.endpoint.as_deref() {
+            Some(ep) => format!(
+                "{}  (recent — from {} via {})",
+                model, entry.source, ep
+            ),
+            None => format!("{}  (recent — from {})", model, entry.source),
+        };
+        out.push(PickerEntry {
+            label,
+            model: model.to_string(),
+            from_history: true,
+        });
+    }
+    for (model, desc) in route_defaults {
+        if seen.contains(model) {
+            continue;
+        }
+        seen.insert(model.clone());
+        let label = if desc.is_empty() {
+            model.clone()
+        } else {
+            format!("{} — {}", model, desc)
+        };
+        out.push(PickerEntry {
+            label,
+            model: model.clone(),
+            from_history: false,
+        });
+    }
+    out
+}
+
+/// Read the most recent N launcher_history combos. Errors are
+/// swallowed (history is best-effort) — callers get an empty Vec.
+pub fn recent_history(limit: usize) -> Vec<workgraph::launcher_history::HistoryEntry> {
+    workgraph::launcher_history::recent_combos(limit).unwrap_or_default()
+}
+
 /// Record a successful `wg setup` (interactive or non-interactive) in
 /// launcher history so the TUI new-coordinator dialog and other config
 /// UIs can surface this combo as a one-click recall.
@@ -866,26 +1088,38 @@ fn run_route(args: &SetupArgs) -> Result<()> {
     };
     let new_config = config_for_route(route, params);
 
-    // Diff vs current global config.
-    let existing = Config::load_global()?.unwrap_or_default();
+    // Resolve scope: explicit --scope wins; otherwise default to global
+    // (non-interactive run_route is reached only when --route or --yes
+    // is given, in which case "global" is the canonical target).
+    let scope = args.resolved_scope()?.unwrap_or(SetupScope::Global);
+
     let global_path = Config::global_config_path()?;
-    let diff = diff_summary(&existing, &new_config);
+    let local_path = std::env::current_dir()
+        .map(|p| p.join(".wg").join("config.toml"))
+        .unwrap_or_else(|_| PathBuf::from(".wg/config.toml"));
 
     if args.dry_run {
-        println!("# wg setup --dry-run (route: {})", route.as_name());
-        if !global_path.exists() {
-            println!("# (no current config — would create)");
-        } else {
-            println!("# Current config: {}", global_path.display());
-        }
-        if diff.is_empty() {
-            println!("# No changes.");
-        } else {
-            println!("# Diff vs current:");
-            for line in &diff {
-                println!("{}", line);
+        println!("# wg setup --dry-run (route: {}, scope: {})",
+            route.as_name(), scope.as_name());
+        for path in scope_paths(scope, &global_path, &local_path) {
+            let existing = load_config_at(&path).unwrap_or_default();
+            let diff = diff_summary(&existing, &new_config);
+            if !path.exists() {
+                println!("# (no current config at {} — would create)", path.display());
+            } else {
+                println!("# Current config: {}", path.display());
+            }
+            if diff.is_empty() {
+                println!("# No changes.");
+            } else {
+                println!("# Diff vs current:");
+                for line in &diff {
+                    println!("{}", line);
+                }
             }
         }
+        println!("---");
+        println!("{}", format_delta_summary(&new_config));
         println!("---");
         let toml_str = toml::to_string_pretty(&new_config)
             .map_err(|e| anyhow::anyhow!("serialize: {}", e))?;
@@ -893,29 +1127,88 @@ fn run_route(args: &SetupArgs) -> Result<()> {
         return Ok(());
     }
 
-    // Backup if existing global config has any content.
-    if global_path.exists() {
-        backup_global_config(&global_path)?;
+    // Write to each target path indicated by scope. Backup before write.
+    let mut written = Vec::new();
+    for path in scope_paths(scope, &global_path, &local_path) {
+        if path.exists() {
+            backup_config_at(&path)?;
+        }
+        save_config_at(&new_config, &path)?;
+        written.push(path);
     }
 
-    new_config.save_global()?;
-
-    println!("Wrote {}: route={}, executor={}, tiers={}/{}/{}",
-        global_path.display(),
+    let primary = written
+        .first()
+        .cloned()
+        .unwrap_or_else(|| global_path.clone());
+    println!(
+        "Wrote {}: route={}, scope={}, executor={}, tiers={}/{}/{}",
+        primary.display(),
         route.as_name(),
+        scope.as_name(),
         route.executor(),
         new_config.tiers.fast.as_deref().unwrap_or("?"),
         new_config.tiers.standard.as_deref().unwrap_or("?"),
         new_config.tiers.premium.as_deref().unwrap_or("?"),
     );
-    if !diff.is_empty() {
-        println!();
-        println!("Changes:");
-        for line in diff {
-            println!("{}", line);
+    if written.len() > 1 {
+        for extra in &written[1..] {
+            println!("Wrote {}", extra.display());
         }
     }
+
+    println!();
+    println!("{}", format_delta_summary(&new_config));
     Ok(())
+}
+
+/// Return the file paths that should be written for a given scope.
+fn scope_paths(scope: SetupScope, global_path: &Path, local_path: &Path) -> Vec<PathBuf> {
+    match scope {
+        SetupScope::Global => vec![global_path.to_path_buf()],
+        SetupScope::Local => vec![local_path.to_path_buf()],
+        SetupScope::Both => vec![global_path.to_path_buf(), local_path.to_path_buf()],
+    }
+}
+
+/// Load the Config at a specific path, or `None` if the file does not exist.
+fn load_config_at(path: &Path) -> Result<Config> {
+    if !path.exists() {
+        return Ok(Config::default());
+    }
+    let content = std::fs::read_to_string(path)
+        .with_context(|| format!("Failed to read config at {}", path.display()))?;
+    toml::from_str::<Config>(&content)
+        .map_err(|e| anyhow::anyhow!("Failed to parse {}: {}", path.display(), e))
+}
+
+/// Save a config to a specific path. Creates parent directory if needed.
+fn save_config_at(config: &Config, path: &Path) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("Failed to create directory: {}", parent.display()))?;
+    }
+    let content = toml::to_string_pretty(config)
+        .map_err(|e| anyhow::anyhow!("Failed to serialize config: {}", e))?;
+    std::fs::write(path, content)
+        .with_context(|| format!("Failed to write config to {}", path.display()))?;
+    Ok(())
+}
+
+/// Backup any config file. Mirrors backup_global_config but for any path.
+fn backup_config_at(path: &Path) -> Result<PathBuf> {
+    let stamp = chrono::Utc::now().format("%Y-%m-%dT%H-%M-%SZ").to_string();
+    let backup = path.with_file_name(format!(
+        "{}.bak-{}",
+        path.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("config.toml"),
+        stamp,
+    ));
+    std::fs::copy(path, &backup)
+        .with_context(|| format!("Failed to back up {}", path.display()))?;
+    eprintln!("Backed up existing config → {}", backup.display());
+    Ok(backup)
 }
 
 /// Produce a small diff summary (added / changed lines only) between two configs.
@@ -1244,11 +1537,19 @@ pub fn run() -> Result<()> {
         model_registry_entries,
     };
 
-    // 6. Summary and confirmation
+    // 6. Summary and confirmation — show the DELTA vs built-in defaults,
+    // not the full Config blob. Per docs/config-ux-design.md §4.3.
+    let preview_config = {
+        let mut c = build_config(&choices, Some(&existing));
+        if !choices.model_registry_entries.is_empty() {
+            c.tiers = auto_map_tiers(&choices.model_registry_entries);
+        }
+        c
+    };
     println!();
     println!("Configuration to write:");
     println!("───────────────────────");
-    println!("{}", format_summary(&choices));
+    println!("{}", format_delta_summary(&preview_config));
     println!("───────────────────────");
     println!();
 
@@ -1571,10 +1872,9 @@ fn configure_anthropic(
 ) -> Result<(Option<EndpointChoices>, Vec<ModelRegistryEntry>, String)> {
     println!();
     let registry = ModelRegistry::with_defaults();
-    let model_options = registry.model_choices_with_descriptions();
-    let model_labels: Vec<String> = model_options
-        .iter()
-        .map(|(name, desc)| format!("{} — {}", name, desc))
+    let route_defaults: Vec<(String, String)> = registry
+        .model_choices_with_descriptions()
+        .into_iter()
         .collect();
 
     let current_model = existing
@@ -1582,18 +1882,36 @@ fn configure_anthropic(
         .model
         .as_deref()
         .unwrap_or(&existing.agent.model);
-    let current_model_idx = model_options
+
+    let history = recent_history(5);
+    // Filter history to claude-flavored entries so we don't show
+    // openrouter/local models in the Anthropic picker.
+    let claude_history: Vec<_> = history
+        .into_iter()
+        .filter(|e| {
+            e.executor == "claude"
+                || e.model
+                    .as_deref()
+                    .map(|m| m.starts_with("claude:"))
+                    .unwrap_or(false)
+        })
+        .collect();
+
+    let entries = build_model_picker_entries(&claude_history, &route_defaults, 5);
+    let model_labels: Vec<String> = entries.iter().map(|e| e.label.clone()).collect();
+
+    let current_idx = entries
         .iter()
-        .position(|(name, _)| name == current_model)
+        .position(|e| e.model == current_model)
         .unwrap_or(0);
 
-    let model_idx = Select::new()
+    let idx = Select::new()
         .with_prompt("Default model for agents?")
         .items(&model_labels)
-        .default(current_model_idx)
+        .default(current_idx)
         .interact()?;
 
-    let model = model_options[model_idx].0.clone();
+    let model = entries[idx].model.clone();
 
     Ok((None, vec![], model))
 }
@@ -3126,5 +3444,405 @@ mod tests {
         assert!(config.contains("[mychannel]"));
         assert!(config.contains("mychannel"));
         let _parsed: toml::Value = toml::from_str(&config).unwrap();
+    }
+
+    // ── --scope flag parsing ──────────────────────────────────────────
+
+    #[test]
+    fn test_setup_scope_parses_global() {
+        assert_eq!(SetupScope::from_name("global"), Some(SetupScope::Global));
+        assert_eq!(SetupScope::from_name("Global"), Some(SetupScope::Global));
+        assert_eq!(SetupScope::from_name("g"), Some(SetupScope::Global));
+        assert_eq!(SetupScope::from_name("user"), Some(SetupScope::Global));
+    }
+
+    #[test]
+    fn test_setup_scope_parses_local() {
+        assert_eq!(SetupScope::from_name("local"), Some(SetupScope::Local));
+        assert_eq!(SetupScope::from_name("project"), Some(SetupScope::Local));
+        assert_eq!(SetupScope::from_name("l"), Some(SetupScope::Local));
+    }
+
+    #[test]
+    fn test_setup_scope_parses_both() {
+        assert_eq!(SetupScope::from_name("both"), Some(SetupScope::Both));
+        assert_eq!(SetupScope::from_name("all"), Some(SetupScope::Both));
+        assert_eq!(SetupScope::from_name("b"), Some(SetupScope::Both));
+    }
+
+    #[test]
+    fn test_setup_scope_rejects_unknown() {
+        assert_eq!(SetupScope::from_name("garbage"), None);
+        assert_eq!(SetupScope::from_name(""), None);
+    }
+
+    #[test]
+    fn test_setup_args_resolved_scope_none() {
+        let args = SetupArgs::default();
+        assert_eq!(args.resolved_scope().unwrap(), None);
+    }
+
+    #[test]
+    fn test_setup_args_resolved_scope_global() {
+        let args = SetupArgs {
+            scope: Some("global".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(args.resolved_scope().unwrap(), Some(SetupScope::Global));
+    }
+
+    #[test]
+    fn test_setup_args_resolved_scope_invalid_errors() {
+        let args = SetupArgs {
+            scope: Some("xyz".to_string()),
+            ..Default::default()
+        };
+        assert!(args.resolved_scope().is_err());
+    }
+
+    // ── scope_paths ───────────────────────────────────────────────────
+
+    #[test]
+    fn test_scope_paths_global_only() {
+        let g = PathBuf::from("/home/u/.wg/config.toml");
+        let l = PathBuf::from("/proj/.wg/config.toml");
+        assert_eq!(scope_paths(SetupScope::Global, &g, &l), vec![g.clone()]);
+    }
+
+    #[test]
+    fn test_scope_paths_local_only() {
+        let g = PathBuf::from("/home/u/.wg/config.toml");
+        let l = PathBuf::from("/proj/.wg/config.toml");
+        assert_eq!(scope_paths(SetupScope::Local, &g, &l), vec![l.clone()]);
+    }
+
+    #[test]
+    fn test_scope_paths_both() {
+        let g = PathBuf::from("/home/u/.wg/config.toml");
+        let l = PathBuf::from("/proj/.wg/config.toml");
+        assert_eq!(scope_paths(SetupScope::Both, &g, &l), vec![g, l]);
+    }
+
+    // ── format_delta_summary ──────────────────────────────────────────
+
+    #[test]
+    fn test_format_delta_summary_default_config_writes_zero() {
+        // A Config equal to the default should report 0 keys to write.
+        let config = Config::default();
+        let summary = format_delta_summary(&config);
+        assert!(
+            summary.contains("Will write 0 keys"),
+            "default config should report 0 keys to write, got: {}",
+            summary
+        );
+        assert!(
+            summary.contains("Will NOT write (built-in defaults):"),
+            "summary must mention NOT-written keys, got: {}",
+            summary
+        );
+    }
+
+    #[test]
+    fn test_format_delta_summary_claude_cli_route_lists_changes() {
+        // The claude-cli route diverges from default in a handful of keys.
+        let cfg = workgraph::config_defaults::config_for_route(
+            workgraph::config_defaults::SetupRoute::ClaudeCli,
+            workgraph::config_defaults::RouteParams::default(),
+        );
+        let summary = format_delta_summary(&cfg);
+        // Must list separate counts.
+        assert!(
+            summary.contains("Will write"),
+            "missing 'Will write' line: {}",
+            summary
+        );
+        assert!(
+            summary.contains("Will NOT write (built-in defaults)"),
+            "missing 'Will NOT write' line: {}",
+            summary
+        );
+        // The number of keys to write must NOT be zero (route diverges).
+        assert!(
+            !summary.contains("Will write 0 keys"),
+            "claude-cli route must write at least one key, got: {}",
+            summary
+        );
+        // Tier keys must show up since the route fills them in.
+        assert!(
+            summary.contains("tiers.fast") && summary.contains("tiers.standard"),
+            "delta should mention tiers.* keys, got: {}",
+            summary
+        );
+    }
+
+    #[test]
+    fn test_compute_delta_default_has_zero_diffs() {
+        let cfg = Config::default();
+        let counts = compute_delta(&cfg);
+        assert_eq!(counts.diff, 0);
+        assert!(counts.same > 10, "should have many same keys, got {}", counts.same);
+        assert!(counts.diff_lines.is_empty());
+    }
+
+    #[test]
+    fn test_compute_delta_separates_diff_and_same_counts() {
+        let mut cfg = Config::default();
+        cfg.agent.model = "claude:opus-9000".to_string();
+        let counts = compute_delta(&cfg);
+        assert!(counts.diff >= 1, "expected at least 1 diff, got {}", counts.diff);
+        assert!(counts.same > 10, "expected many same keys, got {}", counts.same);
+        // diff_lines should mention agent.model
+        assert!(
+            counts.diff_lines.iter().any(|l| l.contains("agent.model")),
+            "diff_lines must mention agent.model, got: {:?}",
+            counts.diff_lines
+        );
+    }
+
+    // ── build_model_picker_entries ───────────────────────────────────
+
+    #[test]
+    fn test_picker_entries_with_empty_history_returns_route_defaults() {
+        let route_defaults = vec![
+            ("claude:opus".to_string(), "premium".to_string()),
+            ("claude:sonnet".to_string(), "standard".to_string()),
+        ];
+        let entries = build_model_picker_entries(&[], &route_defaults, 5);
+        assert_eq!(entries.len(), 2);
+        assert!(entries.iter().all(|e| !e.from_history));
+        assert_eq!(entries[0].model, "claude:opus");
+    }
+
+    #[test]
+    fn test_picker_entries_history_appears_first() {
+        let history = vec![
+            workgraph::launcher_history::HistoryEntry {
+                timestamp: "2026-04-27T12:00:00Z".to_string(),
+                executor: "claude".to_string(),
+                model: Some("claude:haiku".to_string()),
+                endpoint: None,
+                source: "wg config".to_string(),
+                project: None,
+            },
+        ];
+        let route_defaults = vec![
+            ("claude:opus".to_string(), "premium".to_string()),
+            ("claude:sonnet".to_string(), "standard".to_string()),
+        ];
+        let entries = build_model_picker_entries(&history, &route_defaults, 5);
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].model, "claude:haiku");
+        assert!(entries[0].from_history);
+        assert!(entries[0].label.contains("recent"));
+        assert!(entries[0].label.contains("wg config"));
+        // Defaults follow.
+        assert_eq!(entries[1].model, "claude:opus");
+        assert_eq!(entries[2].model, "claude:sonnet");
+    }
+
+    #[test]
+    fn test_picker_entries_dedupes_history_against_defaults() {
+        // History entry shares a model with a route default — history wins,
+        // default isn't duplicated.
+        let history = vec![
+            workgraph::launcher_history::HistoryEntry {
+                timestamp: "2026-04-27T12:00:00Z".to_string(),
+                executor: "claude".to_string(),
+                model: Some("claude:opus".to_string()),
+                endpoint: None,
+                source: "wg add".to_string(),
+                project: None,
+            },
+        ];
+        let route_defaults = vec![
+            ("claude:opus".to_string(), "premium".to_string()),
+            ("claude:sonnet".to_string(), "standard".to_string()),
+        ];
+        let entries = build_model_picker_entries(&history, &route_defaults, 5);
+        assert_eq!(entries.len(), 2);
+        assert!(entries[0].from_history);
+        assert_eq!(entries[0].model, "claude:opus");
+        assert_eq!(entries[1].model, "claude:sonnet");
+    }
+
+    #[test]
+    fn test_picker_entries_skips_history_without_model() {
+        // Entries with no model field are silently dropped.
+        let history = vec![
+            workgraph::launcher_history::HistoryEntry {
+                timestamp: "2026-04-27T12:00:00Z".to_string(),
+                executor: "claude".to_string(),
+                model: None,
+                endpoint: None,
+                source: "wg cli".to_string(),
+                project: None,
+            },
+        ];
+        let entries = build_model_picker_entries(&history, &[], 5);
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn test_picker_entries_history_label_includes_endpoint() {
+        let history = vec![
+            workgraph::launcher_history::HistoryEntry {
+                timestamp: "2026-04-27T12:00:00Z".to_string(),
+                executor: "native".to_string(),
+                model: Some("local:qwen3".to_string()),
+                endpoint: Some("http://lambda01:30000".to_string()),
+                source: "wg nex".to_string(),
+                project: None,
+            },
+        ];
+        let entries = build_model_picker_entries(&history, &[], 5);
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].label.contains("http://lambda01:30000"));
+        assert!(entries[0].label.contains("wg nex"));
+    }
+
+    // ── save_config_at + load_config_at ──────────────────────────────
+
+    #[test]
+    fn test_save_and_load_config_at_roundtrip() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("nested").join("config.toml");
+        let mut config = Config::default();
+        config.agent.model = "claude:opus".to_string();
+        save_config_at(&config, &path).unwrap();
+        assert!(path.exists());
+        let loaded = load_config_at(&path).unwrap();
+        assert_eq!(loaded.agent.model, "claude:opus");
+    }
+
+    #[test]
+    fn test_load_config_at_missing_returns_default() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("nope.toml");
+        let loaded = load_config_at(&path).unwrap();
+        assert_eq!(loaded.agent.model, Config::default().agent.model);
+    }
+
+    // ── run_route writes only the requested scope ────────────────────
+
+    #[test]
+    #[serial_test::serial(setup_scope_env)]
+    fn test_run_route_global_only_writes_global() {
+        // setup --scope global writes only the global file, not the local one.
+        let tmp = TempDir::new().unwrap();
+        let fake_home = tmp.path().join("home");
+        std::fs::create_dir_all(&fake_home).unwrap();
+        let saved_home = std::env::var("HOME").ok();
+        let saved_cwd = std::env::current_dir().ok();
+        let work_dir = tmp.path().join("project");
+        std::fs::create_dir_all(&work_dir).unwrap();
+        unsafe { std::env::set_var("HOME", &fake_home) };
+        std::env::set_current_dir(&work_dir).unwrap();
+
+        let args = SetupArgs {
+            route: Some("claude-cli".to_string()),
+            scope: Some("global".to_string()),
+            yes: true,
+            ..Default::default()
+        };
+        let result = run_route(&args);
+
+        let global_path = fake_home.join(".wg").join("config.toml");
+        let local_path = work_dir.join(".wg").join("config.toml");
+
+        // Restore env before any assertions to avoid leaking on panic.
+        if let Some(h) = saved_home {
+            unsafe { std::env::set_var("HOME", h) };
+        }
+        if let Some(c) = saved_cwd {
+            let _ = std::env::set_current_dir(c);
+        }
+
+        result.unwrap();
+        assert!(
+            global_path.exists(),
+            "global config should be written at {}",
+            global_path.display()
+        );
+        assert!(
+            !local_path.exists(),
+            "--scope global must NOT write local config; found {}",
+            local_path.display()
+        );
+    }
+
+    #[test]
+    #[serial_test::serial(setup_scope_env)]
+    fn test_run_route_local_only_writes_local() {
+        let tmp = TempDir::new().unwrap();
+        let fake_home = tmp.path().join("home");
+        std::fs::create_dir_all(&fake_home).unwrap();
+        let saved_home = std::env::var("HOME").ok();
+        let saved_cwd = std::env::current_dir().ok();
+        let work_dir = tmp.path().join("project");
+        std::fs::create_dir_all(&work_dir).unwrap();
+        unsafe { std::env::set_var("HOME", &fake_home) };
+        std::env::set_current_dir(&work_dir).unwrap();
+
+        let args = SetupArgs {
+            route: Some("claude-cli".to_string()),
+            scope: Some("local".to_string()),
+            yes: true,
+            ..Default::default()
+        };
+        let result = run_route(&args);
+
+        let global_path = fake_home.join(".wg").join("config.toml");
+        let local_path = work_dir.join(".wg").join("config.toml");
+
+        if let Some(h) = saved_home {
+            unsafe { std::env::set_var("HOME", h) };
+        }
+        if let Some(c) = saved_cwd {
+            let _ = std::env::set_current_dir(c);
+        }
+
+        result.unwrap();
+        assert!(local_path.exists(), "--scope local must write local");
+        assert!(
+            !global_path.exists(),
+            "--scope local must NOT write global; found {}",
+            global_path.display()
+        );
+    }
+
+    #[test]
+    #[serial_test::serial(setup_scope_env)]
+    fn test_run_route_both_writes_global_and_local() {
+        let tmp = TempDir::new().unwrap();
+        let fake_home = tmp.path().join("home");
+        std::fs::create_dir_all(&fake_home).unwrap();
+        let saved_home = std::env::var("HOME").ok();
+        let saved_cwd = std::env::current_dir().ok();
+        let work_dir = tmp.path().join("project");
+        std::fs::create_dir_all(&work_dir).unwrap();
+        unsafe { std::env::set_var("HOME", &fake_home) };
+        std::env::set_current_dir(&work_dir).unwrap();
+
+        let args = SetupArgs {
+            route: Some("claude-cli".to_string()),
+            scope: Some("both".to_string()),
+            yes: true,
+            ..Default::default()
+        };
+        let result = run_route(&args);
+
+        let global_path = fake_home.join(".wg").join("config.toml");
+        let local_path = work_dir.join(".wg").join("config.toml");
+
+        if let Some(h) = saved_home {
+            unsafe { std::env::set_var("HOME", h) };
+        }
+        if let Some(c) = saved_cwd {
+            let _ = std::env::set_current_dir(c);
+        }
+
+        result.unwrap();
+        assert!(global_path.exists());
+        assert!(local_path.exists());
     }
 }

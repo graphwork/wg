@@ -2034,6 +2034,12 @@ pub enum Commands {
         /// openai, local, custom. Maps internally onto the closest route.
         #[arg(long)]
         provider: Option<String>,
+        /// Where to write the config: `global` (~/.wg/config.toml),
+        /// `local` (./.wg/config.toml), or `both`. When omitted, the
+        /// interactive wizard prompts; non-interactive routes default to
+        /// `global`.
+        #[arg(long)]
+        scope: Option<String>,
         /// Path to API key file (route-dependent: openrouter / nex-custom).
         #[arg(long)]
         api_key_file: Option<String>,
