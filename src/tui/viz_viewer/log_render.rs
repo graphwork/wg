@@ -410,13 +410,17 @@ fn emit_event(out: &mut Vec<Line<'static>>, event: &AgentStreamEvent) {
         }
         EventDetails::ToolResult { content, is_error } => {
             let marker = if *is_error { "✗" } else { "✓" };
-            let color = if *is_error { Color::Red } else { Color::Green };
+            let marker_color = if *is_error { Color::Red } else { Color::Green };
+            // Errors keep red body — they're the interesting ones and should
+            // pop. Successes color only the checkmark; the body uses the
+            // terminal default foreground so the view isn't a wall of green.
+            let body_color = if *is_error { Some(Color::Red) } else { None };
             let body: &str = if content.is_empty() {
                 "(empty result)"
             } else {
                 content.as_str()
             };
-            push_marker_block(out, marker, body, color);
+            push_marker_block(out, marker, body, marker_color, body_color);
         }
         EventDetails::SystemEvent { subtype, text } => {
             out.push(Line::from(Span::styled(
@@ -465,21 +469,34 @@ fn push_indented(out: &mut Vec<Line<'static>>, body: &str, color: Color) {
 /// ```
 ///
 /// The marker is bolded; the content is plain. With a single-char marker
-/// this aligns content text at column 3 on every line.
-fn push_marker_block(out: &mut Vec<Line<'static>>, marker: &str, body: &str, color: Color) {
+/// this aligns content text at column 3 on every line. `body_color = None`
+/// renders the body with the terminal default foreground.
+fn push_marker_block(
+    out: &mut Vec<Line<'static>>,
+    marker: &str,
+    body: &str,
+    marker_color: Color,
+    body_color: Option<Color>,
+) {
+    let body_style = match body_color {
+        Some(c) => Style::default().fg(c),
+        None => Style::default(),
+    };
     let mut iter = body.split('\n');
     let first = iter.next().unwrap_or("");
     out.push(Line::from(vec![
         Span::styled(
             format!("{} ", marker),
-            Style::default().fg(color).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(marker_color)
+                .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(first.to_string(), Style::default().fg(color)),
+        Span::styled(first.to_string(), body_style),
     ]));
     for src_line in iter {
         out.push(Line::from(Span::styled(
             format!("  {}", src_line),
-            Style::default().fg(color),
+            body_style,
         )));
     }
 }
@@ -934,6 +951,63 @@ mod tests {
         assert_eq!(lines.len(), 2, "two content lines, no separate header");
         assert_eq!(line_text(&lines[0]), "✗ line one");
         assert_eq!(line_text(&lines[1]), "  line two");
+    }
+
+    /// Successful tool results: only the green checkmark is colored. The
+    /// body text (and continuation lines) use the terminal default
+    /// foreground so the view isn't a wall of green. Errors keep red on
+    /// both the marker and the body so failures still pop visually.
+    #[test]
+    fn test_raw_mode_tool_pass_colors_only_checkmark() {
+        let pass = vec![tool_result("ok body\nmore", false)];
+        let pass_lines = render_raw_pretty_view(&pass);
+
+        // First line of a success: marker span is green+bold, body span is
+        // uncolored (fg is None — terminal default).
+        let first = &pass_lines[0];
+        assert!(
+            first.spans.len() >= 2,
+            "first line should have a marker span and a body span, got {:?}",
+            first
+        );
+        assert_eq!(
+            first.spans[0].style.fg,
+            Some(Color::Green),
+            "checkmark must stay green on success: {:?}",
+            first.spans[0]
+        );
+        assert_eq!(
+            first.spans[1].style.fg, None,
+            "body text on success must use default fg (no color), got {:?}",
+            first.spans[1]
+        );
+        // Continuation lines also use default fg.
+        let cont = &pass_lines[1];
+        let cont_fg = cont.spans.iter().find_map(|s| s.style.fg);
+        assert_eq!(
+            cont_fg, None,
+            "continuation lines on success must use default fg, got {:?}",
+            cont
+        );
+
+        // Errors keep red on both marker AND body — those are the
+        // interesting ones and should pop.
+        let fail = vec![tool_result("bad body\nmore", true)];
+        let fail_lines = render_raw_pretty_view(&fail);
+        let first = &fail_lines[0];
+        assert_eq!(
+            first.spans[0].style.fg,
+            Some(Color::Red),
+            "error marker stays red"
+        );
+        assert_eq!(
+            first.spans[1].style.fg,
+            Some(Color::Red),
+            "error body stays red"
+        );
+        let cont = &fail_lines[1];
+        let cont_fg = cont.spans.iter().find_map(|s| s.style.fg);
+        assert_eq!(cont_fg, Some(Color::Red), "error continuation stays red");
     }
 
     /// Blank lines appear ONLY at category boundaries: text→tool and
