@@ -666,18 +666,45 @@ fn subprocess_coordinator_loop(
             let graph_path = crate::commands::graph_path(dir);
             match workgraph::parser::load_graph(&graph_path) {
                 Ok(g) => {
-                    if g.get_task(&new_id).is_some() {
-                        new_id
+                    let resolved = if g.get_task(&new_id).is_some() {
+                        Some(new_id.clone())
                     } else if g.get_task(&legacy_id).is_some() {
-                        legacy_id
+                        Some(legacy_id.clone())
                     } else {
+                        None
+                    };
+                    let Some(rid) = resolved else {
                         logger.error(&format!(
                             "Coordinator-{}: orphan supervisor — neither {} nor {} exists in the graph. Exiting supervisor (no restart loop). \
+                             Removing stale coordinator-state-{}.json so a daemon restart does not retry. \
                              If you intended to start this chat, run `wg chat new` (or use the TUI '+' key) to create the task first.",
-                            coordinator_id, new_id, legacy_id
+                            coordinator_id, new_id, legacy_id, coordinator_id
                         ));
+                        super::CoordinatorState::remove_for(dir, coordinator_id);
                         return;
+                    };
+                    // Mid-loop archive-check: if the chat task has been
+                    // archived (Done + tag `archived`) since the last
+                    // iteration, exit cleanly instead of respawning a handler.
+                    // This is the path that `wg service purge-chats` and the
+                    // user-facing `wg chat archive` rely on to actually stop
+                    // the supervisor loop after they've mutated the graph.
+                    if let Some(t) = g.get_task(&rid) {
+                        let is_archived = t.tags.iter().any(|x| x == "archived");
+                        let is_done = matches!(t.status, workgraph::graph::Status::Done);
+                        let is_abandoned =
+                            matches!(t.status, workgraph::graph::Status::Abandoned);
+                        if is_archived || (is_done && !t.tags.iter().any(|x|
+                            workgraph::chat_id::is_chat_loop_tag(x))) || is_abandoned
+                        {
+                            logger.info(&format!(
+                                "Coordinator-{}: chat task {} is archived/Done/Abandoned — exiting supervisor (no respawn).",
+                                coordinator_id, rid
+                            ));
+                            return;
+                        }
                     }
+                    rid
                 }
                 Err(e) => {
                     logger.error(&format!(

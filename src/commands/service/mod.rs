@@ -3683,6 +3683,146 @@ pub fn run_stop_coordinator(_dir: &Path, _coordinator_id: u32, _json: bool) -> R
     anyhow::bail!("Service daemon is only supported on Unix systems")
 }
 
+/// Bulk-purge all chat agents via IPC.
+///
+/// Archives every chat-loop task in the graph, kills any live chat handler
+/// processes, and prevents respawn on daemon restart. Idempotent — re-running
+/// when no chats exist (or all are already purged) is a no-op.
+///
+/// Preserves chat task nodes + history. Reversible via `wg chat new`.
+#[cfg(unix)]
+pub fn run_purge_chats(dir: &Path, json: bool) -> Result<()> {
+    // If the daemon isn't running, fall back to direct graph mutation so the
+    // user can clean up post-crash without needing to restart the daemon
+    // first. This keeps the command useful when the supervisor itself is
+    // wedged.
+    let socket_path = default_socket_path(dir);
+    if socket_accepting(&socket_path) {
+        let response = send_request(dir, &IpcRequest::PurgeChats)?;
+        if !response.ok {
+            let msg = response
+                .error
+                .unwrap_or_else(|| "Unknown error".to_string());
+            if json {
+                let output = serde_json::json!({ "error": msg });
+                println!("{}", serde_json::to_string_pretty(&output)?);
+            } else {
+                eprintln!("Error: {}", msg);
+            }
+            anyhow::bail!("{}", msg);
+        }
+        if let Some(data) = &response.data {
+            if json {
+                println!("{}", serde_json::to_string_pretty(data)?);
+            } else {
+                let purged = data
+                    .get("purged")
+                    .and_then(|v| v.as_array())
+                    .map(|a| a.len())
+                    .unwrap_or(0);
+                let skipped = data
+                    .get("skipped")
+                    .and_then(|v| v.as_array())
+                    .map(|a| a.len())
+                    .unwrap_or(0);
+                println!(
+                    "Purged {} chat agent(s), skipped {} already-archived",
+                    purged, skipped
+                );
+            }
+        }
+        Ok(())
+    } else {
+        // Daemon not running: do the same archive operation directly via the
+        // graph, then clean up coordinator-state files so a future daemon
+        // start does not see stale state.
+        let purged = direct_purge_chats(dir)?;
+        if json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "purged": purged,
+                    "daemon_running": false,
+                }))?
+            );
+        } else {
+            println!(
+                "Daemon not running — purged {} chat agent(s) directly via graph",
+                purged.len()
+            );
+        }
+        Ok(())
+    }
+}
+
+#[cfg(not(unix))]
+pub fn run_purge_chats(_dir: &Path, _json: bool) -> Result<()> {
+    anyhow::bail!("Service daemon is only supported on Unix systems")
+}
+
+/// Direct graph-mutation purge used when the daemon is not running.
+/// Archives every chat-loop task and removes per-coordinator state files so
+/// the next daemon boot does not resurrect them.
+#[cfg(unix)]
+fn direct_purge_chats(dir: &Path) -> Result<Vec<u32>> {
+    let graph_path = crate::commands::graph_path(dir);
+    let mut purged: Vec<u32> = Vec::new();
+    workgraph::parser::modify_graph(&graph_path, |graph| {
+        let mut chat_ids: std::collections::BTreeSet<u32> =
+            std::collections::BTreeSet::new();
+        for task in graph.tasks() {
+            let has_chat_tag = task
+                .tags
+                .iter()
+                .any(|t| workgraph::chat_id::is_chat_loop_tag(t));
+            if !has_chat_tag {
+                continue;
+            }
+            if task.tags.iter().any(|t| t == "archived") {
+                continue;
+            }
+            if let Some(id) = workgraph::chat_id::parse_chat_task_id(&task.id) {
+                chat_ids.insert(id);
+            }
+        }
+        let mut changed = false;
+        for id in &chat_ids {
+            let new_id = workgraph::chat_id::format_chat_task_id(*id);
+            let legacy_id = format!(".coordinator-{}", id);
+            let resolved = if graph.get_task(&new_id).is_some() {
+                Some(new_id.clone())
+            } else if graph.get_task(&legacy_id).is_some() {
+                Some(legacy_id.clone())
+            } else {
+                None
+            };
+            let Some(rid) = resolved else { continue };
+            let task = graph.get_task_mut(&rid).unwrap();
+            task.status = workgraph::graph::Status::Done;
+            task.tags
+                .retain(|t| !workgraph::chat_id::is_chat_loop_tag(t));
+            if !task.tags.contains(&"archived".to_string()) {
+                task.tags.push("archived".to_string());
+            }
+            task.log.push(workgraph::graph::LogEntry {
+                timestamp: chrono::Utc::now().to_rfc3339(),
+                actor: Some("wg service purge-chats".to_string()),
+                user: Some(workgraph::current_user()),
+                message: format!("Chat {} purged (daemon offline)", id),
+            });
+            purged.push(*id);
+            changed = true;
+        }
+        changed
+    })?;
+    // Best-effort: remove per-coordinator state files so a daemon restart
+    // does not see stale executor/model overrides for purged chats.
+    for id in &purged {
+        CoordinatorState::remove_for(dir, *id);
+    }
+    Ok(purged)
+}
+
 /// Interrupt a coordinator's current generation via IPC (sends SIGINT, does NOT kill).
 #[cfg(unix)]
 pub fn run_interrupt_coordinator(dir: &Path, coordinator_id: u32, json: bool) -> Result<()> {
@@ -4810,5 +4950,67 @@ mod tests {
         // Coordinator 0 should be loadable independently
         let c0 = CoordinatorState::load_or_default_for(dir, 0);
         assert_eq!(c0.accumulated_tokens, 100);
+    }
+
+    /// `direct_purge_chats` is the daemon-offline path of `run_purge_chats`.
+    /// It must archive every chat-loop task in-place AND remove per-coord
+    /// state files so a future daemon start does not see stale state.
+    #[cfg(unix)]
+    #[test]
+    fn test_direct_purge_chats_archives_and_removes_state_files() {
+        let temp_dir = TempDir::new().unwrap();
+        let dir = temp_dir.path();
+
+        let mut graph = workgraph::graph::WorkGraph::new();
+        graph.add_node(workgraph::graph::Node::Task(workgraph::graph::Task {
+            id: ".chat-0".to_string(),
+            title: "Chat 0".to_string(),
+            status: workgraph::graph::Status::InProgress,
+            tags: vec!["chat-loop".to_string()],
+            ..Default::default()
+        }));
+        graph.add_node(workgraph::graph::Node::Task(workgraph::graph::Task {
+            id: ".chat-1".to_string(),
+            title: "Chat 1".to_string(),
+            status: workgraph::graph::Status::InProgress,
+            tags: vec!["chat-loop".to_string()],
+            ..Default::default()
+        }));
+        workgraph::parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
+
+        // Per-coord state files should be removed by purge.
+        CoordinatorState {
+            enabled: true,
+            ..Default::default()
+        }
+        .save_for(dir, 0);
+        CoordinatorState {
+            enabled: true,
+            ..Default::default()
+        }
+        .save_for(dir, 1);
+        assert!(CoordinatorState::load_for(dir, 0).is_some());
+        assert!(CoordinatorState::load_for(dir, 1).is_some());
+
+        let purged = direct_purge_chats(dir).expect("direct_purge_chats");
+        assert_eq!(purged.len(), 2);
+
+        // Graph: both chats archived.
+        let g = workgraph::parser::load_graph(&dir.join("graph.jsonl")).unwrap();
+        let t0 = g.get_task(".chat-0").unwrap();
+        assert_eq!(t0.status, workgraph::graph::Status::Done);
+        assert!(t0.tags.contains(&"archived".to_string()));
+        let t1 = g.get_task(".chat-1").unwrap();
+        assert_eq!(t1.status, workgraph::graph::Status::Done);
+        assert!(t1.tags.contains(&"archived".to_string()));
+
+        // State files: gone.
+        assert!(CoordinatorState::load_for(dir, 0).is_none());
+        assert!(CoordinatorState::load_for(dir, 1).is_none());
+
+        // Idempotent: re-running on already-archived graph yields zero new
+        // archives, and does not error.
+        let purged2 = direct_purge_chats(dir).expect("idempotent re-purge");
+        assert!(purged2.is_empty());
     }
 }

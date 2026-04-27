@@ -185,6 +185,16 @@ pub enum IpcRequest {
     /// List all active chat agents.
     #[serde(alias = "list_coordinators")]
     ListChats,
+    /// Bulk-purge all chat agents: archives every chat-loop task in the graph,
+    /// kills any live handler subprocesses, and prevents respawn on daemon
+    /// restart. Idempotent — re-running on an already-purged daemon is a no-op
+    /// that returns an empty `purged` list.
+    ///
+    /// Preserves the chat task nodes + their history (`chat/<ref>/*.jsonl`) so
+    /// the user can later restart fresh via `wg chat new` or restore from
+    /// history. The graph is left intact — only the supervisor lifecycle and
+    /// `chat-loop` tags are removed.
+    PurgeChats,
 }
 
 /// IPC Response types
@@ -580,6 +590,24 @@ fn handle_request(
         IpcRequest::ListChats => {
             logger.info("IPC ListChats");
             handle_list_coordinators(dir)
+        }
+        IpcRequest::PurgeChats => {
+            logger.info("IPC PurgeChats");
+            let resp = handle_purge_chats(dir);
+            // Every successfully-purged chat needs its supervisor agent
+            // shut down — same as a single ArchiveChat. The IPC dispatch
+            // loop drains delete_coordinator_ids after we return.
+            if resp.ok
+                && let Some(data) = resp.data.as_ref()
+                && let Some(arr) = data.get("purged").and_then(|v| v.as_array())
+            {
+                for v in arr {
+                    if let Some(id) = v.get("chat_id").and_then(|x| x.as_u64()) {
+                        delete_coordinator_ids.push(id as u32);
+                    }
+                }
+            }
+            resp
         }
     }
 }
@@ -1546,6 +1574,74 @@ fn handle_delete_coordinator(dir: &Path, coordinator_id: u32) -> IpcResponse {
 /// Marks the chat task as Done, tags it "archived", and
 /// archives the chat session (moves chat dir to `.archive/`, updates
 /// sessions.json) so it won't be resurrected on restart.
+/// Bulk-archive every chat-loop task in the graph.
+///
+/// Idempotent: tasks already tagged `archived` are skipped, not errored.
+/// Returns `{purged: [{chat_id, task_id}], skipped: [{chat_id, reason}]}`.
+fn handle_purge_chats(dir: &Path) -> IpcResponse {
+    let graph_path = crate::commands::graph_path(dir);
+    let graph = match workgraph::parser::load_graph(&graph_path) {
+        Ok(g) => g,
+        Err(e) => return IpcResponse::error(&format!("Failed to load graph: {}", e)),
+    };
+
+    // Collect all chat IDs from chat-loop-tagged tasks. Use BTreeSet for stable
+    // ordering and to dedupe `.chat-N` / `.coordinator-N` collisions.
+    let mut chat_ids: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
+    let mut already_archived: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
+    for task in graph.tasks() {
+        let has_chat_tag = task
+            .tags
+            .iter()
+            .any(|t| workgraph::chat_id::is_chat_loop_tag(t));
+        if !has_chat_tag {
+            continue;
+        }
+        let Some(id) = workgraph::chat_id::parse_chat_task_id(&task.id) else {
+            continue;
+        };
+        if task.tags.iter().any(|t| t == "archived") {
+            already_archived.insert(id);
+        } else {
+            chat_ids.insert(id);
+        }
+    }
+
+    let mut purged = Vec::new();
+    let mut errors = Vec::new();
+    for id in &chat_ids {
+        let r = handle_archive_coordinator(dir, *id);
+        if r.ok {
+            let task_id = workgraph::chat_id::format_chat_task_id(*id);
+            purged.push(serde_json::json!({
+                "chat_id": *id,
+                "task_id": task_id,
+            }));
+        } else {
+            errors.push(serde_json::json!({
+                "chat_id": *id,
+                "error": r.error.unwrap_or_else(|| "unknown".to_string()),
+            }));
+        }
+    }
+
+    let skipped: Vec<serde_json::Value> = already_archived
+        .iter()
+        .map(|id| {
+            serde_json::json!({
+                "chat_id": *id,
+                "reason": "already archived",
+            })
+        })
+        .collect();
+
+    IpcResponse::success(serde_json::json!({
+        "purged": purged,
+        "skipped": skipped,
+        "errors": errors,
+    }))
+}
+
 fn handle_archive_coordinator(dir: &Path, coordinator_id: u32) -> IpcResponse {
     let graph_path = crate::commands::graph_path(dir);
     let task_id = workgraph::chat_id::format_chat_task_id(coordinator_id);
@@ -2711,6 +2807,146 @@ poll_interval = 120
             find_next_fresh_coordinator_id(&graph_with_gap, dir),
             4,
             "with .chat-0 + .chat-3, next fresh id is 4 (max+1), not 1 or 2"
+        );
+    }
+
+    /// `wg service purge-chats` archives every chat-loop task in one shot.
+    /// After purge: each task is `Done` + tagged `archived`, the chat-loop
+    /// tag is removed, and the task node + ID still exist (graph preserved).
+    #[test]
+    fn test_handle_purge_chats_archives_all_chats_idempotent() {
+        let temp_dir = TempDir::new().unwrap();
+        let dir = temp_dir.path();
+
+        // Three chats: one new-prefix, one legacy-prefix, one already-archived.
+        let mut graph = workgraph::graph::WorkGraph::new();
+        graph.add_node(workgraph::graph::Node::Task(workgraph::graph::Task {
+            id: ".chat-0".to_string(),
+            title: "Chat 0".to_string(),
+            status: workgraph::graph::Status::InProgress,
+            tags: vec!["chat-loop".to_string()],
+            ..Default::default()
+        }));
+        graph.add_node(workgraph::graph::Node::Task(workgraph::graph::Task {
+            id: ".coordinator-1".to_string(),
+            title: "Legacy Coord 1".to_string(),
+            status: workgraph::graph::Status::InProgress,
+            tags: vec!["coordinator-loop".to_string()],
+            ..Default::default()
+        }));
+        graph.add_node(workgraph::graph::Node::Task(workgraph::graph::Task {
+            id: ".chat-2".to_string(),
+            title: "Already Archived Chat 2".to_string(),
+            status: workgraph::graph::Status::Done,
+            tags: vec!["chat-loop".to_string(), "archived".to_string()],
+            ..Default::default()
+        }));
+        // Non-chat task — must be untouched.
+        graph.add_node(workgraph::graph::Node::Task(workgraph::graph::Task {
+            id: "regular-work".to_string(),
+            title: "Regular Work".to_string(),
+            status: workgraph::graph::Status::Open,
+            ..Default::default()
+        }));
+        workgraph::parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
+
+        let resp = handle_purge_chats(dir);
+        assert!(resp.ok, "PurgeChats should succeed: {:?}", resp.error);
+        let data = resp.data.unwrap();
+        let purged = data["purged"].as_array().unwrap();
+        let skipped = data["skipped"].as_array().unwrap();
+        // Two purged: chat-0 and coordinator-1. chat-2 is skipped (already archived).
+        assert_eq!(purged.len(), 2, "expected 2 chats purged, got {:?}", purged);
+        assert_eq!(skipped.len(), 1, "chat-2 should be skipped (already archived)");
+
+        // Reload graph and verify state.
+        let g = workgraph::parser::load_graph(&dir.join("graph.jsonl")).unwrap();
+
+        let t0 = g.get_task(".chat-0").expect("chat-0 task still exists");
+        assert_eq!(t0.status, workgraph::graph::Status::Done);
+        assert!(t0.tags.contains(&"archived".to_string()));
+        assert!(!t0.tags.iter().any(|t| t == "chat-loop"));
+
+        let t1 = g.get_task(".coordinator-1").expect("coordinator-1 task still exists");
+        assert_eq!(t1.status, workgraph::graph::Status::Done);
+        assert!(t1.tags.contains(&"archived".to_string()));
+        assert!(!t1.tags.iter().any(|t| t == "coordinator-loop"));
+
+        let t2 = g.get_task(".chat-2").expect("chat-2 task still exists");
+        assert_eq!(t2.status, workgraph::graph::Status::Done);
+
+        // Non-chat task untouched.
+        let regular = g.get_task("regular-work").unwrap();
+        assert_eq!(regular.status, workgraph::graph::Status::Open);
+
+        // Re-running is a no-op (idempotent): everything is already archived,
+        // so the second purge produces zero new archives. Skipped includes
+        // only chats that still carry a chat-loop tag (chat-2 in this graph;
+        // the other two had their loop tags removed during the first purge).
+        let resp2 = handle_purge_chats(dir);
+        assert!(resp2.ok);
+        let data2 = resp2.data.unwrap();
+        let purged2 = data2["purged"].as_array().unwrap();
+        assert!(
+            purged2.is_empty(),
+            "second purge should purge nothing (all already archived)"
+        );
+    }
+
+    /// PurgeChats on an empty graph returns an empty success — not an error.
+    #[test]
+    fn test_handle_purge_chats_empty_graph_is_noop() {
+        let temp_dir = TempDir::new().unwrap();
+        let dir = temp_dir.path();
+        let graph = workgraph::graph::WorkGraph::new();
+        workgraph::parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
+        let resp = handle_purge_chats(dir);
+        assert!(resp.ok, "empty-graph purge should succeed");
+        let data = resp.data.unwrap();
+        assert!(data["purged"].as_array().unwrap().is_empty());
+        assert!(data["skipped"].as_array().unwrap().is_empty());
+    }
+
+    /// PurgeChats marks chats with the `archived` tag, which means
+    /// `enumerate_chat_supervisors_for_boot` must NOT spawn supervisors for
+    /// them at the next daemon restart.
+    #[test]
+    fn test_purge_chats_excludes_from_boot_enumeration() {
+        let temp_dir = TempDir::new().unwrap();
+        let dir = temp_dir.path();
+
+        let mut graph = workgraph::graph::WorkGraph::new();
+        graph.add_node(workgraph::graph::Node::Task(workgraph::graph::Task {
+            id: ".chat-0".to_string(),
+            title: "Chat 0".to_string(),
+            status: workgraph::graph::Status::InProgress,
+            tags: vec!["chat-loop".to_string()],
+            ..Default::default()
+        }));
+        graph.add_node(workgraph::graph::Node::Task(workgraph::graph::Task {
+            id: ".chat-3".to_string(),
+            title: "Chat 3".to_string(),
+            status: workgraph::graph::Status::InProgress,
+            tags: vec!["chat-loop".to_string()],
+            ..Default::default()
+        }));
+        workgraph::parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
+
+        // Pre-purge: both chats should boot.
+        let pre = workgraph::service::enumerate_chat_supervisors_for_boot(dir);
+        let pre_ids: Vec<u32> = pre.iter().map(|s| s.chat_id).collect();
+        assert_eq!(pre_ids, vec![0, 3]);
+
+        // Purge.
+        let resp = handle_purge_chats(dir);
+        assert!(resp.ok);
+
+        // Post-purge: zero supervisors enumerated → daemon restart spawns nothing.
+        let post = workgraph::service::enumerate_chat_supervisors_for_boot(dir);
+        assert!(
+            post.is_empty(),
+            "after purge, boot enumerator must yield no supervisors, got {:?}",
+            post
         );
     }
 }

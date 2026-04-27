@@ -4430,6 +4430,11 @@ pub enum ServiceCommands {
         id: u32,
     },
 
+    /// Bulk-purge all chat agents: archive every chat-loop task, kill all live
+    /// chat handler processes, prevent respawn on daemon restart. Preserves
+    /// chat task nodes + history. Idempotent. Reversible via `wg chat new`.
+    PurgeChats,
+
     /// Run the daemon (internal, called by start)
     #[command(hide = true)]
     Daemon {
