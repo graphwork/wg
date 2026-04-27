@@ -246,6 +246,16 @@ description = "Pins the three critical invariants of the TUI chat redesign (umbr
 timeout_seconds = 120
 
 [[scenario]]
+name = "native_executor_keyless_init"
+script = "scenarios/native_executor_keyless_init.sh"
+owners = [
+    "native-executor-client",
+    "smoke-gate-is",
+]
+description = "Pins the user contract: `wg init -m qwen3-coder -e <URL> --executor nex` with NO env vars MUST be sufficient. The autohaiku 100%-failure regression had wg native-exec bailing at init with 'No Anthropic API key found' because the OAI-compat client init path called the Anthropic key resolver as a fallback. This scenario asserts (a) init succeeds without any *_API_KEY env var, (b) config.toml has a complete [[llm_endpoints.endpoints]] block, (c) wg list does not surface ANTHROPIC_API_KEY in errors, (d) native-exec --help advertises --api-key. The wire-level assertions (Authorization header omitted on no-key, configured key wins over env vars, 401 surfaces config-block-named error) live in tests/integration_native_coordinator.rs::credential_wire_contract."
+timeout_seconds = 30
+
+[[scenario]]
 name = "agency_inline_spawn_registers_executor_claude"
 script = "scenarios/agency_inline_spawn_registers_executor_claude.sh"
 owners = [

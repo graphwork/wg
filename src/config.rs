@@ -786,6 +786,57 @@ impl EndpointConfig {
         }
     }
 
+    /// Resolve the API key for this endpoint **from workgraph config
+    /// only** — the strict variant used by the native executor.
+    ///
+    /// Unlike [`Self::resolve_api_key`], this method does NOT fall back
+    /// to provider-specific env vars (`ANTHROPIC_API_KEY` / `OPENAI_API_KEY`
+    /// / `OPENROUTER_API_KEY`). It honors only the user-authorized config
+    /// fields:
+    /// 1. `api_key` — inline literal
+    /// 2. `api_key_file` — read file contents (with `~`/relative-path expansion)
+    /// 3. `api_key_env` — explicit, user-named env var (this IS workgraph
+    ///    config; the user wrote `api_key_env = "MY_VAR"`)
+    ///
+    /// Returns `Ok(None)` when no key is configured. Callers should treat
+    /// `None` as "no auth header" rather than an error — if the endpoint
+    /// requires auth, the 401 response surfaces a config-pointing error.
+    pub fn resolve_api_key_strict(
+        &self,
+        workgraph_dir: Option<&Path>,
+    ) -> anyhow::Result<Option<String>> {
+        if let Some(ref key) = self.api_key {
+            return Ok(Some(key.clone()));
+        }
+        if let Some(ref file_path) = self.api_key_file {
+            let expanded = expand_tilde(file_path);
+            let path = if expanded.is_absolute() {
+                expanded
+            } else if let Some(dir) = workgraph_dir {
+                dir.join(expanded)
+            } else {
+                expanded
+            };
+            let contents = fs::read_to_string(&path).map_err(|e| {
+                anyhow::anyhow!("Failed to read API key from {}: {}", path.display(), e)
+            })?;
+            let key = contents.trim().to_string();
+            if key.is_empty() {
+                anyhow::bail!("API key file {} is empty", path.display());
+            }
+            return Ok(Some(key));
+        }
+        if let Some(ref env_name) = self.api_key_env
+            && let Ok(key) = std::env::var(env_name)
+        {
+            let key = key.trim().to_string();
+            if !key.is_empty() {
+                return Ok(Some(key));
+            }
+        }
+        Ok(None)
+    }
+
     /// Resolve the API key for this endpoint.
     ///
     /// Priority:

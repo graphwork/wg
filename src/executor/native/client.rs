@@ -199,12 +199,19 @@ const DEFAULT_MAX_TOKENS: u32 = 16384;
 /// Anthropic Messages API client.
 pub struct AnthropicClient {
     http: reqwest::Client,
+    /// Bearer token. Empty string means "send no x-api-key header" — used
+    /// for the keyless-init path where we let the endpoint decide whether
+    /// it needs auth (and surface a config-pointing 401 if it does).
     api_key: String,
     base_url: String,
     pub model: String,
     pub max_tokens: u32,
     /// Whether to use SSE streaming for requests (default: true).
     use_streaming: bool,
+    /// Endpoint name from `[[llm_endpoints.endpoints]]` (when known).
+    /// Surfaced in 401/403 error messages so the user is pointed at the
+    /// exact config block to add `api_key` to — never an env var.
+    endpoint_name: Option<String>,
 }
 
 impl AnthropicClient {
@@ -232,6 +239,7 @@ impl AnthropicClient {
             model: model.to_string(),
             max_tokens: DEFAULT_MAX_TOKENS,
             use_streaming: true,
+            endpoint_name: None,
         })
     }
 
@@ -239,6 +247,30 @@ impl AnthropicClient {
     pub fn with_base_url(mut self, url: &str) -> Self {
         self.base_url = url.trim_end_matches('/').to_string();
         self
+    }
+
+    /// Tag this client with the endpoint name it's configured against, so
+    /// 401/403 responses can surface a config-pointing error message naming
+    /// the exact `[[llm_endpoints.endpoints]]` block to set `api_key` in.
+    pub fn with_endpoint_name(mut self, name: &str) -> Self {
+        self.endpoint_name = Some(name.to_string());
+        self
+    }
+
+    /// Auth-config hint string injected into 401/403 error messages.
+    /// Names the `[[llm_endpoints.endpoints]]` block to set `api_key`
+    /// in — NEVER an env var, per the workgraph credential contract.
+    fn auth_config_hint(&self) -> String {
+        match &self.endpoint_name {
+            Some(name) => format!(
+                " To configure: set `api_key = \"...\"` (or `api_key_file`) under \
+                 [[llm_endpoints.endpoints]] block named '{}' in .workgraph/config.toml.",
+                name
+            ),
+            None => " To configure: add an `[[llm_endpoints.endpoints]]` entry with `api_key = \"...\"` \
+                     to .workgraph/config.toml (run `wg endpoints add` for a wizard)."
+                .to_string(),
+        }
     }
 
     /// Override max tokens per response.
@@ -308,7 +340,11 @@ impl AnthropicClient {
         let status = resp.status();
         if !status.is_success() {
             let body = resp.text().await.unwrap_or_default();
-            return Err(api_error(status.as_u16(), &body));
+            return Err(api_error_with_hint(
+                status.as_u16(),
+                &body,
+                &self.auth_config_hint(),
+            ));
         }
 
         let mut events = Vec::new();
@@ -355,7 +391,11 @@ impl AnthropicClient {
         let status = resp.status();
         if !status.is_success() {
             let body = resp.text().await.unwrap_or_default();
-            return Err(api_error(status.as_u16(), &body));
+            return Err(api_error_with_hint(
+                status.as_u16(),
+                &body,
+                &self.auth_config_hint(),
+            ));
         }
 
         let mut events = Vec::new();
@@ -427,7 +467,11 @@ impl AnthropicClient {
                         continue;
                     }
 
-                    return Err(api_error(status_code, &body));
+                    return Err(api_error_with_hint(
+                        status_code,
+                        &body,
+                        &self.auth_config_hint(),
+                    ));
                 }
                 Err(e) => {
                     if retry_count < max_retries {
@@ -448,10 +492,15 @@ impl AnthropicClient {
 
     fn build_headers(&self) -> HeaderMap {
         let mut headers = HeaderMap::new();
-        headers.insert(
-            "x-api-key",
-            HeaderValue::from_str(&self.api_key).expect("invalid api key header"),
-        );
+        // Empty key = no x-api-key header. The endpoint decides whether
+        // it requires one; if it does, the 401 path surfaces a config-
+        // pointing error message via `api_error_with_hint`.
+        if !self.api_key.is_empty() {
+            headers.insert(
+                "x-api-key",
+                HeaderValue::from_str(&self.api_key).expect("invalid api key header"),
+            );
+        }
         headers.insert(
             "anthropic-version",
             HeaderValue::from_static(ANTHROPIC_VERSION),
@@ -578,16 +627,31 @@ fn is_retryable(status: u16) -> bool {
     matches!(status, 429 | 500 | 502 | 503 | 529)
 }
 
-fn api_error(status: u16, body: &str) -> anyhow::Error {
+/// Build an Anthropic API error from an HTTP response. When the status
+/// is auth-related (401/403), `config_hint` is appended so the user is
+/// pointed at the right `[[llm_endpoints.endpoints]]` block — never an
+/// env var. Pass `""` for the hint when none applies.
+fn api_error_with_hint(status: u16, body: &str, config_hint: &str) -> anyhow::Error {
+    let auth_suffix = if matches!(status, 401 | 403) && !config_hint.is_empty() {
+        config_hint
+    } else {
+        ""
+    };
     if let Ok(err) = serde_json::from_str::<ApiErrorResponse>(body) {
         anyhow!(
-            "Anthropic API error {}: {} ({})",
+            "Anthropic API error {}: {} ({}){}",
             status,
             err.error.message,
-            err.error.error_type
+            err.error.error_type,
+            auth_suffix,
         )
     } else {
-        anyhow!("Anthropic API error {}: {}", status, truncate(body, 500))
+        anyhow!(
+            "Anthropic API error {}: {}{}",
+            status,
+            truncate(body, 500),
+            auth_suffix,
+        )
     }
 }
 

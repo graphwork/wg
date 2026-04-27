@@ -80,6 +80,14 @@ fn normalize_oai_compat_base_url(url: &str) -> String {
 /// Build an oai-compat client pointed directly at `url`, with an
 /// optional key override. Used by the `-e <url>` shortcut so local
 /// servers (Ollama, vLLM, llama.cpp) work without any config.
+///
+/// Per the workgraph credential contract, this path NEVER reads
+/// `OPENAI_API_KEY` / `WG_API_KEY` from the environment. If the user
+/// supplied `--api-key` (the only legitimate keyless input besides
+/// workgraph config), we use it; otherwise the client is built with
+/// an empty key and the HTTP layer skips the Authorization header.
+/// If the endpoint requires auth, the 401 path surfaces a config-
+/// pointing error.
 fn build_inline_url_client(
     model: &str,
     url: &str,
@@ -88,11 +96,7 @@ fn build_inline_url_client(
     // OpenAiClient constructs `{base_url}/chat/completions`, so
     // base_url must include the `/v1` path segment.
     let base = normalize_oai_compat_base_url(url);
-    let key = api_key_override
-        .map(String::from)
-        .or_else(|| std::env::var("OPENAI_API_KEY").ok())
-        .or_else(|| std::env::var("WG_API_KEY").ok())
-        .unwrap_or_else(|| "local".to_string());
+    let key = api_key_override.map(String::from).unwrap_or_default();
     let client = OpenAiClient::new(key, model, None)
         .context("initialize oai-compat client for inline URL")?
         .with_provider_hint("oai-compat")
@@ -155,16 +159,24 @@ fn parse_endpoint_model_shorthand(
 
 /// Create a provider, optionally overriding the provider name, endpoint, and/or API key.
 ///
-/// Resolution order for API key:
-/// 1. `api_key_override` parameter (pre-resolved by spawn path)
-/// 2. Environment variables (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, etc.)
-/// 3. Matching endpoint entry in config (by name if `endpoint_name` is set, otherwise by provider)
-/// 4. `[native_executor]` section in config (legacy fallback)
+/// Resolution order for API key (workgraph credential contract — see
+/// `feedback_native_executor_no_env_vars` and the `native-executor-client`
+/// task description):
+/// 1. `api_key_override` parameter (pre-resolved by spawn path; eg `wg nex --api-key`)
+/// 2. Matching endpoint entry's `api_key` / `api_key_file` (file content
+///    inline) / `api_key_env` (when explicitly named — this is
+///    user-authorized config, not implicit env-var fallback)
+///
+/// **No implicit env-var fallback.** `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` /
+/// `OPENROUTER_API_KEY` are NEVER consulted by this path. If no key resolves,
+/// the client is built with an empty key and the HTTP layer skips the auth
+/// header; if the endpoint then rejects the request with 401/403, the
+/// resulting error names the `[[llm_endpoints.endpoints]]` block to add
+/// `api_key` to — never an env var.
 ///
 /// Resolution order for base URL:
 /// 1. Matching endpoint entry's `url` field
-/// 2. Environment variables (`OPENAI_BASE_URL`, etc.) — OpenAI-family only
-/// 3. `[native_executor]` section's `api_base` field
+/// 2. `[native_executor]` section's `api_base` field (legacy)
 pub fn create_provider_ext(
     workgraph_dir: &Path,
     model: &str,
@@ -318,10 +330,15 @@ pub fn create_provider_ext(
         .and_then(|name| config.llm_endpoints.find_by_name(name))
         .or_else(|| config.llm_endpoints.find_for_provider(&provider_name))
         .or_else(|| config.llm_endpoints.find_default());
+    // STRICT key resolution: read api_key / api_key_file / api_key_env
+    // from the matched endpoint's config — NEVER fall back to implicit
+    // provider env vars (ANTHROPIC_API_KEY etc). See create_provider_ext
+    // doc comment for the workgraph credential contract.
     let endpoint_key =
-        endpoint.and_then(|ep| ep.resolve_api_key(Some(workgraph_dir)).ok().flatten());
+        endpoint.and_then(|ep| ep.resolve_api_key_strict(Some(workgraph_dir)).ok().flatten());
     let endpoint_url = endpoint.and_then(|ep| ep.url.clone());
     let endpoint_context_window = endpoint.and_then(|ep| ep.context_window);
+    let endpoint_name_owned: Option<String> = endpoint.map(|ep| ep.name.clone());
 
     // Resolve context window: endpoint config > model registry > provider default
     let registry_context_window = config
@@ -337,27 +354,16 @@ pub fn create_provider_ext(
         });
     let resolved_context_window = endpoint_context_window.or(registry_context_window);
 
-    let api_base: Option<String> = endpoint_url
-        .or_else(|| std::env::var("WG_ENDPOINT_URL").ok())
-        .or_else(|| {
-            // OpenAI-family env var base URLs
-            if matches!(
-                provider_name.as_str(),
-                "oai-compat" | "openai" | "openrouter" | "local"
-            ) {
-                std::env::var("OPENAI_BASE_URL")
-                    .or_else(|_| std::env::var("OPENROUTER_BASE_URL"))
-                    .ok()
-            } else {
-                None
-            }
-        })
-        .or_else(|| {
-            native_cfg
-                .and_then(|c| c.get("api_base"))
-                .and_then(|v| v.as_str())
-                .map(String::from)
-        });
+    // Base URL resolution: endpoint config > legacy [native_executor] api_base.
+    // Per the workgraph credential contract, env vars (WG_ENDPOINT_URL,
+    // OPENAI_BASE_URL, OPENROUTER_BASE_URL) are NOT consulted — endpoint
+    // configuration lives in workgraph config exclusively.
+    let api_base: Option<String> = endpoint_url.or_else(|| {
+        native_cfg
+            .and_then(|c| c.get("api_base"))
+            .and_then(|v| v.as_str())
+            .map(String::from)
+    });
 
     let max_tokens = native_cfg
         .and_then(|c| c.get("max_tokens"))
@@ -366,29 +372,27 @@ pub fn create_provider_ext(
 
     match provider_name.as_str() {
         "oai-compat" | "openai" | "openrouter" | "local" => {
-            // Resolve API key. Priority: override > env var > endpoint config > native_executor (legacy)
-            let env_key = ["WG_API_KEY", "OPENROUTER_API_KEY", "OPENAI_API_KEY"]
-                .iter()
-                .find_map(|v| std::env::var(v).ok().filter(|k| !k.is_empty()));
-            let resolved_key = api_key_override
-                .map(String::from)
-                .or(env_key)
-                .or(endpoint_key);
+            // Resolve API key from CONFIG ONLY:
+            //   override (e.g. `wg nex --api-key`) > endpoint's config-side fields
+            // No env-var fallback. If nothing resolves, build the client with
+            // an empty key — the HTTP layer skips the Authorization header
+            // and the endpoint decides whether it needs auth. A 401 from
+            // the endpoint surfaces a config-pointing error message naming
+            // the [[llm_endpoints.endpoints]] block — never an env var.
+            //
+            // See feedback `native-executor-client` for the rationale: the
+            // user's contract is that credentials live in workgraph config
+            // exclusively, and the autohaiku failure was caused by this
+            // path bailing with "No Anthropic API key found" before any
+            // HTTP call when no env var was set.
+            let resolved_key = api_key_override.map(String::from).or(endpoint_key);
 
-            let mut client = if let Some(key) = resolved_key {
-                OpenAiClient::new(key, model, None)
-            } else if provider_name == "local" {
-                // Local providers (Ollama, vLLM) don't require auth
-                OpenAiClient::new("local".to_string(), model, None)
-            } else {
-                // Legacy fallback: native_executor api_key
-                OpenAiClient::from_env(model).or_else(|_| {
-                    let key = super::client::resolve_api_key_from_dir(workgraph_dir)?;
-                    OpenAiClient::new(key, model, None)
-                })
-            }
-            .context("Failed to initialize OpenAI-compatible client")?;
+            let mut client = OpenAiClient::new(resolved_key.unwrap_or_default(), model, None)
+                .context("Failed to initialize OpenAI-compatible client")?;
             client = client.with_provider_hint(&provider_name);
+            if let Some(name) = endpoint_name_owned.as_deref() {
+                client = client.with_endpoint_name(name);
+            }
             if let Some(base) = api_base {
                 // Normalize: append `/v1` when missing. `wg init -e
                 // <bare-url>` stores the URL without `/v1`, but
@@ -443,21 +447,21 @@ pub fn create_provider_ext(
             Ok(Box::new(client))
         }
         _ => {
-            // Resolve API key. Priority: override > env var > endpoint config > from_env fallbacks
-            let env_key = std::env::var("ANTHROPIC_API_KEY")
-                .ok()
-                .filter(|k| !k.is_empty());
-            let mut client = if let Some(key) = api_key_override {
-                AnthropicClient::new(key.to_string(), model)
-            } else if let Some(key) = env_key {
-                AnthropicClient::new(key, model)
-            } else if let Some(key) = endpoint_key {
-                AnthropicClient::new(key, model)
-            } else {
-                // Legacy fallback: ~/.config/anthropic/api_key, etc.
-                AnthropicClient::from_env(model)
+            // Anthropic path. Resolve API key from CONFIG ONLY:
+            //   override > endpoint's config-side fields
+            // No env-var fallback (no ANTHROPIC_API_KEY, no
+            // ~/.config/anthropic/api_key). If nothing resolves, build the
+            // client with an empty key — the HTTP layer skips the
+            // x-api-key header and a 401 from api.anthropic.com surfaces
+            // a config-pointing error.
+            //
+            // See feedback `native-executor-client`.
+            let resolved_key = api_key_override.map(String::from).or(endpoint_key);
+            let mut client = AnthropicClient::new(resolved_key.unwrap_or_default(), model)
+                .context("Failed to initialize Anthropic client")?;
+            if let Some(name) = endpoint_name_owned.as_deref() {
+                client = client.with_endpoint_name(name);
             }
-            .context("Failed to initialize Anthropic client")?;
             if let Some(base) = api_base {
                 client = client.with_base_url(&base);
             }

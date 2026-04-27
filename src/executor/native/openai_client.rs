@@ -254,6 +254,10 @@ const DEFAULT_MAX_TOKENS: u32 = 16384;
 #[derive(Debug)]
 pub struct OpenAiClient {
     http: reqwest::Client,
+    /// Bearer token. Empty string means "send no Authorization header" — used
+    /// for local / no-auth endpoints AND for the keyless-init path where we
+    /// let the endpoint decide whether it needs auth (and surface a config-
+    /// pointing 401 if it does).
     api_key: String,
     base_url: String,
     pub model: String,
@@ -265,6 +269,10 @@ pub struct OpenAiClient {
     context_window_tokens: usize,
     /// Optional registry entry for cost estimation.
     registry_entry: Option<ModelRegistryEntry>,
+    /// Endpoint name from `[[llm_endpoints.endpoints]]` (when known).
+    /// Surfaced in 401/403 error messages so the user is pointed at the
+    /// exact config block to add `api_key` to — never an env var.
+    endpoint_name: Option<String>,
 }
 
 impl OpenAiClient {
@@ -288,7 +296,16 @@ impl OpenAiClient {
             use_streaming: false,
             context_window_tokens: 128_000,
             registry_entry: None,
+            endpoint_name: None,
         })
+    }
+
+    /// Tag this client with the endpoint name it's configured against, so
+    /// 401/403 responses can surface a config-pointing error message naming
+    /// the exact `[[llm_endpoints.endpoints]]` block to set `api_key` in.
+    pub fn with_endpoint_name(mut self, name: &str) -> Self {
+        self.endpoint_name = Some(name.to_string());
+        self
     }
 
     /// Create from environment variables.
@@ -895,7 +912,11 @@ impl OpenAiClient {
                     tokio::time::sleep(Duration::from_millis(wait_hint)).await;
                 }
             }
-            return Err(oai_api_error(status_code, &body));
+            return Err(oai_api_error_with_hint(
+                status_code,
+                &body,
+                &self.auth_config_hint(),
+            ));
         }
 
         // Parse SSE stream and accumulate into a response
@@ -1067,7 +1088,11 @@ impl OpenAiClient {
                     tokio::time::sleep(Duration::from_millis(wait_hint)).await;
                 }
             }
-            return Err(oai_api_error(status_code, &body));
+            return Err(oai_api_error_with_hint(
+                status_code,
+                &body,
+                &self.auth_config_hint(),
+            ));
         }
 
         let mut stream = resp.bytes_stream();
@@ -1321,7 +1346,11 @@ impl OpenAiClient {
                         continue;
                     }
 
-                    return Err(oai_api_error(status_code, &body));
+                    return Err(oai_api_error_with_hint(
+                        status_code,
+                        &body,
+                        &self.auth_config_hint(),
+                    ));
                 }
                 Err(e) => {
                     if retry_count < network_max_retries {
@@ -1368,11 +1397,16 @@ impl OpenAiClient {
 
     fn build_headers(&self) -> HeaderMap {
         let mut headers = HeaderMap::new();
-        headers.insert(
-            "authorization",
-            HeaderValue::from_str(&format!("Bearer {}", self.api_key))
-                .expect("invalid api key header"),
-        );
+        // Empty key = no Authorization header. The endpoint decides whether
+        // it requires one; if it does, the 401 path surfaces a config-
+        // pointing error message via `oai_api_error_with_hint`.
+        if !self.api_key.is_empty() {
+            headers.insert(
+                "authorization",
+                HeaderValue::from_str(&format!("Bearer {}", self.api_key))
+                    .expect("invalid api key header"),
+            );
+        }
         headers.insert("content-type", HeaderValue::from_static("application/json"));
 
         // OpenRouter attribution headers
@@ -1385,6 +1419,23 @@ impl OpenAiClient {
         }
 
         headers
+    }
+
+    /// Build the auth-config hint string injected into 401/403 error
+    /// messages. Names the `[[llm_endpoints.endpoints]]` block to set
+    /// `api_key` in — NEVER an env var, per the workgraph credential
+    /// contract (credentials live in workgraph config exclusively).
+    fn auth_config_hint(&self) -> String {
+        match &self.endpoint_name {
+            Some(name) => format!(
+                " To configure: set `api_key = \"...\"` (or `api_key_file`) under \
+                 [[llm_endpoints.endpoints]] block named '{}' in .workgraph/config.toml.",
+                name
+            ),
+            None => " To configure: add an `[[llm_endpoints.endpoints]]` entry with `api_key = \"...\"` \
+                     to .workgraph/config.toml (run `wg endpoints add` for a wizard)."
+                .to_string(),
+        }
     }
 }
 
@@ -1518,6 +1569,21 @@ fn oai_api_error(status: u16, body: &str) -> anyhow::Error {
     } else {
         truncate(body, 500).to_string()
     };
+    ApiError { status, message }.into()
+}
+
+/// Same as `oai_api_error`, but appends a workgraph-config-pointing hint
+/// when the status is auth-related (401/403). The hint names the
+/// `[[llm_endpoints.endpoints]]` block — never an env var.
+fn oai_api_error_with_hint(status: u16, body: &str, config_hint: &str) -> anyhow::Error {
+    let mut message = if let Ok(err) = serde_json::from_str::<OaiErrorResponse>(body) {
+        err.error.message
+    } else {
+        truncate(body, 500).to_string()
+    };
+    if matches!(status, 401 | 403) && !config_hint.is_empty() {
+        message.push_str(config_hint);
+    }
     ApiError { status, message }.into()
 }
 

@@ -390,6 +390,604 @@ provider = "openai"
     );
 }
 
+// ===========================================================================
+// Per-provider key resolution tests (native-executor-client)
+// ===========================================================================
+//
+// These tests verify the fix for the bug where the OAI-compat client init
+// path called the Anthropic key resolver and emitted "No Anthropic API key
+// found" — even when the model was an OpenAI-compatible local/openrouter
+// model that should never need an Anthropic key.
+//
+// They mutate process env vars so they're `#[serial]` to avoid races.
+
+mod per_provider_key_resolution {
+    use super::*;
+    use serial_test::serial;
+    use workgraph::executor::native::provider::create_provider_ext;
+
+    /// Snapshot the relevant env vars and unset them, returning a guard
+    /// that restores the originals on drop. Lets each test run as if
+    /// nothing was preset in the environment.
+    struct EnvSnapshot {
+        saved: Vec<(&'static str, Option<String>)>,
+    }
+    impl EnvSnapshot {
+        fn new(vars: &[&'static str]) -> Self {
+            let saved = vars
+                .iter()
+                .map(|v| (*v, std::env::var(v).ok()))
+                .collect();
+            for v in vars {
+                unsafe { std::env::remove_var(v) };
+            }
+            EnvSnapshot { saved }
+        }
+        fn set(&self, var: &str, value: &str) {
+            unsafe { std::env::set_var(var, value) };
+        }
+    }
+    impl Drop for EnvSnapshot {
+        fn drop(&mut self) {
+            for (k, v) in &self.saved {
+                match v {
+                    Some(value) => unsafe { std::env::set_var(k, value) },
+                    None => unsafe { std::env::remove_var(k) },
+                }
+            }
+        }
+    }
+
+    fn key_vars() -> &'static [&'static str] {
+        &[
+            "ANTHROPIC_API_KEY",
+            "OPENAI_API_KEY",
+            "OPENROUTER_API_KEY",
+            "WG_API_KEY",
+            "WG_LLM_PROVIDER",
+            "WG_ENDPOINT",
+            "WG_ENDPOINT_URL",
+            "WG_MODEL",
+            "OPENAI_BASE_URL",
+            "OPENROUTER_BASE_URL",
+        ]
+    }
+
+    /// Create a `.workgraph/` dir with an empty graph and the provided config
+    /// (or default config when `config_toml` is empty). Skips `wg init`
+    /// entirely so we can write whatever endpoints + model spec we want.
+    fn make_wg_dir(tmp: &TempDir, config_toml: &str) -> PathBuf {
+        let wg_dir = tmp.path().join(".workgraph");
+        std::fs::create_dir_all(&wg_dir).unwrap();
+        std::fs::write(wg_dir.join("graph.jsonl"), "").unwrap();
+        if !config_toml.is_empty() {
+            std::fs::write(wg_dir.join("config.toml"), config_toml).unwrap();
+        }
+        wg_dir
+    }
+
+    /// `local:qwen3-coder` + endpoint configured + NO ANTHROPIC_API_KEY → succeeds.
+    /// This is the explicit-prefix path that should never even consult ANTHROPIC_API_KEY.
+    #[test]
+    #[serial]
+    fn local_prefixed_model_succeeds_without_anthropic_key() {
+        let tmp = TempDir::new().unwrap();
+        let wg_dir = make_wg_dir(
+            &tmp,
+            r#"
+[[llm_endpoints.endpoints]]
+name = "lambda01"
+provider = "local"
+url = "https://lambda01.example.test:30000"
+is_default = true
+"#,
+        );
+
+        let _env = EnvSnapshot::new(key_vars());
+        let result = create_provider_ext(&wg_dir, "local:qwen3-coder", None, None, None);
+        assert!(
+            result.is_ok(),
+            "local:qwen3-coder must initialize without ANTHROPIC_API_KEY: {:?}",
+            result.err().map(|e| format!("{:#}", e))
+        );
+        let p = result.unwrap();
+        assert_eq!(p.name(), "local");
+        assert_eq!(p.model(), "qwen3-coder");
+    }
+
+    /// Bare `qwen3-coder` (no provider prefix) + default endpoint with provider="local"
+    /// + NO ANTHROPIC_API_KEY → succeeds.
+    ///
+    /// This mirrors the autohaiku failure where the dispatcher passed `--model qwen3-coder`
+    /// (bare) to native-exec; the OAI-compat init path was reaching the Anthropic key
+    /// resolver and bailing with "No Anthropic API key found".
+    #[test]
+    #[serial]
+    fn bare_model_with_local_default_endpoint_succeeds_without_anthropic_key() {
+        let tmp = TempDir::new().unwrap();
+        let wg_dir = make_wg_dir(
+            &tmp,
+            r#"
+[[llm_endpoints.endpoints]]
+name = "default"
+provider = "local"
+url = "https://lambda01.example.test:30000"
+is_default = true
+"#,
+        );
+
+        let _env = EnvSnapshot::new(key_vars());
+        let result = create_provider_ext(&wg_dir, "qwen3-coder", None, None, None);
+        assert!(
+            result.is_ok(),
+            "bare qwen3-coder + local default endpoint must NOT need ANTHROPIC_API_KEY: {:?}",
+            result.err().map(|e| format!("{:#}", e))
+        );
+    }
+
+    /// `openrouter:anthropic/claude-sonnet-4-6` + OPENROUTER_API_KEY set,
+    /// ANTHROPIC_API_KEY unset → succeeds.
+    #[test]
+    #[serial]
+    fn openrouter_model_uses_openrouter_key_not_anthropic() {
+        let tmp = TempDir::new().unwrap();
+        let wg_dir = make_wg_dir(&tmp, "");
+
+        let env = EnvSnapshot::new(key_vars());
+        env.set("OPENROUTER_API_KEY", "sk-or-v1-fake-test");
+        // ANTHROPIC_API_KEY remains unset.
+
+        let result = create_provider_ext(
+            &wg_dir,
+            "openrouter:anthropic/claude-sonnet-4-6",
+            None,
+            None,
+            None,
+        );
+        assert!(
+            result.is_ok(),
+            "openrouter model with OPENROUTER_API_KEY but no ANTHROPIC_API_KEY must succeed: {:?}",
+            result.err().map(|e| format!("{:#}", e))
+        );
+        let p = result.unwrap();
+        assert_eq!(
+            p.name(),
+            "openrouter",
+            "openrouter:* should produce openrouter provider"
+        );
+    }
+
+    /// `claude:opus` (anthropic) + no ANTHROPIC_API_KEY anywhere → client init
+    /// MUST succeed (no precondition gate on key presence). The 401 from the
+    /// real Anthropic endpoint is what surfaces the config-pointing error
+    /// later. This is the new contract per `feedback_native_executor_no_env_vars`
+    /// — env vars are never consulted by the credential path.
+    #[test]
+    #[serial]
+    fn anthropic_model_no_key_init_succeeds_keyless() {
+        let tmp = TempDir::new().unwrap();
+        let wg_dir = make_wg_dir(&tmp, "");
+
+        let _env = EnvSnapshot::new(key_vars());
+        // HOME points at a fakehome so ~/.config/anthropic/api_key (if it
+        // exists on the dev box) cannot satisfy any (now-banned) lookup.
+        let saved_home = std::env::var("HOME").ok();
+        let fake_home = tmp.path().join("fakehome");
+        std::fs::create_dir_all(&fake_home).unwrap();
+        unsafe { std::env::set_var("HOME", &fake_home) };
+
+        let result = create_provider_ext(&wg_dir, "claude:opus", None, None, None);
+
+        match saved_home {
+            Some(v) => unsafe { std::env::set_var("HOME", v) },
+            None => unsafe { std::env::remove_var("HOME") },
+        }
+
+        assert!(
+            result.is_ok(),
+            "claude:opus with no key must NOT bail at init — keyless init is the contract: {:?}",
+            result.err().map(|e| format!("{:#}", e))
+        );
+        let p = result.unwrap();
+        assert_eq!(p.name(), "anthropic");
+    }
+
+    /// Bare `openai:gpt-5` (no endpoint, no env vars) → init succeeds. Same
+    /// contract: client init must NOT precondition on key presence; the
+    /// endpoint's 401 (when it eventually rejects) is the failure signal.
+    #[test]
+    #[serial]
+    fn oai_compat_no_key_init_succeeds_keyless() {
+        let tmp = TempDir::new().unwrap();
+        let wg_dir = make_wg_dir(&tmp, "");
+
+        let _env = EnvSnapshot::new(key_vars());
+        let saved_home = std::env::var("HOME").ok();
+        let fake_home = tmp.path().join("fakehome");
+        std::fs::create_dir_all(&fake_home).unwrap();
+        unsafe { std::env::set_var("HOME", &fake_home) };
+
+        let result = create_provider_ext(&wg_dir, "openai:gpt-5", None, None, None);
+
+        match saved_home {
+            Some(v) => unsafe { std::env::set_var("HOME", v) },
+            None => unsafe { std::env::remove_var("HOME") },
+        }
+
+        assert!(
+            result.is_ok(),
+            "openai:gpt-5 with no key must NOT bail at init: {:?}",
+            result.err().map(|e| format!("{:#}", e))
+        );
+        let p = result.unwrap();
+        // `openai:` is canonicalized to "oai-compat" via `provider_to_native_provider`.
+        assert_eq!(p.name(), "oai-compat");
+    }
+
+    /// `local:qwen3-coder` + endpoint with `api_key` configured + an
+    /// ANTHROPIC_API_KEY env var poisoned with junk → the configured key
+    /// wins, env vars are NEVER consulted. Verifies the env-var-isolation
+    /// contract: workgraph config is the SOLE source of credentials.
+    ///
+    /// We don't have a packet sniffer in unit tests, so this asserts the
+    /// next-best signal: the resolved provider/model are correct AND the
+    /// env-poisoning didn't make init fail (which would happen if the
+    /// resolver had picked up the junk key and tripped some validation).
+    /// The behavioral assertion (request body bears configured key, not
+    /// env junk) is covered by the live-smoke scenario.
+    #[test]
+    #[serial]
+    fn env_var_ignored_when_endpoint_has_inline_api_key() {
+        let tmp = TempDir::new().unwrap();
+        let wg_dir = make_wg_dir(
+            &tmp,
+            r#"
+[[llm_endpoints.endpoints]]
+name = "lambda01"
+provider = "local"
+url = "https://lambda01.example.test:30000"
+api_key = "configured-real-key"
+is_default = true
+"#,
+        );
+
+        let env = EnvSnapshot::new(key_vars());
+        env.set("ANTHROPIC_API_KEY", "env-junk-should-never-be-read");
+        env.set("OPENAI_API_KEY", "env-junk-should-never-be-read-either");
+
+        let result = create_provider_ext(&wg_dir, "qwen3-coder", None, None, None);
+        assert!(
+            result.is_ok(),
+            "qwen3-coder + configured endpoint must init cleanly: {:?}",
+            result.err().map(|e| format!("{:#}", e))
+        );
+        let p = result.unwrap();
+        // Bare `qwen3-coder` (no provider prefix) and no `endpoint_name`
+        // override falls through to the heuristic default of "oai-compat"
+        // (the canonical name for the OpenAI-compatible HTTP protocol).
+        // The default endpoint's `api_key` and `url` are still used for
+        // the request — that's what this test cares about.
+        assert_eq!(p.name(), "oai-compat");
+        assert_eq!(p.model(), "qwen3-coder");
+    }
+}
+
+// ===========================================================================
+// Behavioral smoke: HTTP-level credential contract (native-executor-client)
+// ===========================================================================
+//
+// The unit-style tests above prove that init succeeds with no key. These
+// tests prove the wire-level behavior: Authorization is suppressed when
+// no key is configured, AND the configured-key wins over poisoned env vars.
+// Per memory `feedback_assertion_driven_live_smoke`, the only way to catch
+// the kind of regression that shipped this bug is to exercise the actual
+// HTTP path with assertions on what went out on the wire.
+//
+// We bind a TcpListener on a random port and capture the raw request to
+// inspect headers + body. This mirrors the pattern in
+// `tests/integration_openrouter_smoke.rs::mock_models_server`.
+
+mod credential_wire_contract {
+    use super::*;
+    use serial_test::serial;
+    use std::io::Read;
+    use std::net::TcpListener;
+    use std::sync::mpsc;
+    use workgraph::executor::native::client::{Message, MessagesRequest, Role};
+    use workgraph::executor::native::provider::create_provider_ext;
+
+    /// Spawn a minimal OAI-compat-shaped server. Captures the first
+    /// request's headers + body, replies with `status_code` and
+    /// `response_body`, then exits. Returns the bound URL and a channel
+    /// the test can read the captured request from.
+    fn spawn_capturing_server(
+        status_code: u16,
+        response_body: &str,
+    ) -> (String, mpsc::Receiver<String>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let url = format!("http://{}", addr);
+        let (tx, rx) = mpsc::channel::<String>();
+        let body = response_body.to_string();
+        let status_line = match status_code {
+            200 => "HTTP/1.1 200 OK",
+            401 => "HTTP/1.1 401 Unauthorized",
+            403 => "HTTP/1.1 403 Forbidden",
+            _ => "HTTP/1.1 500 Internal Server Error",
+        };
+        let resp = format!(
+            "{}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            status_line,
+            body.len(),
+            body,
+        );
+        std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut buf = [0u8; 16384];
+                let n = stream.read(&mut buf).unwrap_or(0);
+                let captured = String::from_utf8_lossy(&buf[..n]).to_string();
+                let _ = std::io::Write::write_all(&mut stream, resp.as_bytes());
+                let _ = tx.send(captured);
+            }
+        });
+        (url, rx)
+    }
+
+    fn make_wg_dir(tmp: &TempDir, config_toml: &str) -> std::path::PathBuf {
+        let wg_dir = tmp.path().join(".workgraph");
+        std::fs::create_dir_all(&wg_dir).unwrap();
+        std::fs::write(wg_dir.join("graph.jsonl"), "").unwrap();
+        if !config_toml.is_empty() {
+            std::fs::write(wg_dir.join("config.toml"), config_toml).unwrap();
+        }
+        wg_dir
+    }
+
+    fn key_vars() -> &'static [&'static str] {
+        &[
+            "ANTHROPIC_API_KEY",
+            "OPENAI_API_KEY",
+            "OPENROUTER_API_KEY",
+            "WG_API_KEY",
+            "WG_LLM_PROVIDER",
+            "WG_ENDPOINT",
+            "WG_ENDPOINT_URL",
+            "WG_MODEL",
+            "OPENAI_BASE_URL",
+            "OPENROUTER_BASE_URL",
+        ]
+    }
+
+    /// Snapshot the relevant env vars, unset them, restore on drop.
+    struct EnvSnapshot {
+        saved: Vec<(&'static str, Option<String>)>,
+    }
+    impl EnvSnapshot {
+        fn new(vars: &[&'static str]) -> Self {
+            let saved: Vec<_> = vars.iter().map(|v| (*v, std::env::var(v).ok())).collect();
+            for v in vars {
+                unsafe { std::env::remove_var(v) };
+            }
+            EnvSnapshot { saved }
+        }
+        fn set(&self, var: &str, value: &str) {
+            unsafe { std::env::set_var(var, value) };
+        }
+    }
+    impl Drop for EnvSnapshot {
+        fn drop(&mut self) {
+            for (k, v) in &self.saved {
+                match v {
+                    Some(value) => unsafe { std::env::set_var(k, value) },
+                    None => unsafe { std::env::remove_var(k) },
+                }
+            }
+        }
+    }
+
+    fn empty_request(model: &str) -> MessagesRequest {
+        MessagesRequest {
+            model: model.to_string(),
+            max_tokens: 50,
+            system: None,
+            messages: vec![Message {
+                role: Role::User,
+                content: vec![],
+            }],
+            tools: vec![],
+            stream: false,
+        }
+    }
+
+    /// **The autohaiku contract test.** Endpoint configured, NO api_key
+    /// in config, NO env vars → client init succeeds, the HTTP call goes
+    /// out with NO Authorization header. If the endpoint accepts (this
+    /// fake server does), the request completes normally.
+    #[test]
+    #[serial]
+    fn keyless_request_omits_authorization_header() {
+        let response_body = serde_json::json!({
+            "id": "chatcmpl-test",
+            "object": "chat.completion",
+            "created": 0,
+            "model": "qwen3-coder",
+            "choices": [{
+                "index": 0,
+                "message": {"role": "assistant", "content": "hi"},
+                "finish_reason": "stop"
+            }],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+        })
+        .to_string();
+        let (server_url, rx) = spawn_capturing_server(200, &response_body);
+
+        let tmp = TempDir::new().unwrap();
+        let wg_dir = make_wg_dir(
+            &tmp,
+            &format!(
+                r#"
+[[llm_endpoints.endpoints]]
+name = "lambda01"
+provider = "local"
+url = "{}"
+is_default = true
+"#,
+                server_url
+            ),
+        );
+
+        let _env = EnvSnapshot::new(key_vars());
+        let provider = create_provider_ext(&wg_dir, "qwen3-coder", None, None, None)
+            .expect("keyless init must succeed");
+
+        let req = empty_request("qwen3-coder");
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let resp_result = rt.block_on(async { provider.send(&req).await });
+
+        let captured = rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("server should have captured the request");
+
+        assert!(
+            resp_result.is_ok(),
+            "request should succeed against accepting endpoint: {:?}",
+            resp_result.err().map(|e| format!("{:#}", e))
+        );
+
+        // The wire-level assertion: NO Authorization header was sent.
+        let headers_lower = captured.to_lowercase();
+        assert!(
+            !headers_lower.contains("authorization:"),
+            "Authorization header MUST NOT be sent when no key is configured. \
+             Captured request:\n{}",
+            captured
+        );
+    }
+
+    /// **The 401 contract test.** Endpoint requires auth (server returns
+    /// 401) but no key is configured → client init STILL succeeds, the
+    /// request goes out without Authorization, the 401 surfaces with an
+    /// error message naming the [[llm_endpoints.endpoints]] block —
+    /// NEVER an env var.
+    #[test]
+    #[serial]
+    fn endpoint_401_surfaces_config_block_not_env_var() {
+        let error_body = serde_json::json!({
+            "error": {"message": "Missing API key", "type": "invalid_request"}
+        })
+        .to_string();
+        let (server_url, _rx) = spawn_capturing_server(401, &error_body);
+
+        let tmp = TempDir::new().unwrap();
+        let wg_dir = make_wg_dir(
+            &tmp,
+            &format!(
+                r#"
+[[llm_endpoints.endpoints]]
+name = "needs-auth"
+provider = "openai"
+url = "{}"
+is_default = true
+"#,
+                server_url
+            ),
+        );
+
+        let _env = EnvSnapshot::new(key_vars());
+        let provider = create_provider_ext(&wg_dir, "qwen3-coder", None, None, None)
+            .expect("keyless init must succeed even when endpoint will reject");
+
+        let req = empty_request("qwen3-coder");
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let result = rt.block_on(async { provider.send(&req).await });
+
+        assert!(result.is_err(), "401 from endpoint should surface as error");
+        let err = format!("{:#}", result.err().unwrap());
+
+        // The user-visible error MUST point at the config block, NOT at any env var.
+        assert!(
+            err.contains("[[llm_endpoints.endpoints]]"),
+            "401 error must name the [[llm_endpoints.endpoints]] config block; got: {}",
+            err
+        );
+        assert!(
+            err.contains("'needs-auth'"),
+            "401 error must name the specific endpoint ('needs-auth'); got: {}",
+            err
+        );
+        assert!(
+            !err.contains("ANTHROPIC_API_KEY")
+                && !err.contains("OPENAI_API_KEY")
+                && !err.contains("OPENROUTER_API_KEY")
+                && !err.contains("WG_API_KEY"),
+            "401 error must NOT mention any env var name (workgraph credential contract — \
+             credentials live in workgraph config exclusively); got: {}",
+            err
+        );
+    }
+
+    /// **The env-var-isolation contract test.** Endpoint has `api_key`
+    /// configured AND ANTHROPIC/OPENAI/OPENROUTER env vars are poisoned
+    /// with junk → request goes out bearing the CONFIGURED key, not the
+    /// env junk.
+    #[test]
+    #[serial]
+    fn configured_key_wins_over_poisoned_env_vars() {
+        let response_body = serde_json::json!({
+            "id": "chatcmpl-x", "object": "chat.completion", "created": 0,
+            "model": "qwen3-coder",
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+        }).to_string();
+        let (server_url, rx) = spawn_capturing_server(200, &response_body);
+
+        let tmp = TempDir::new().unwrap();
+        let wg_dir = make_wg_dir(
+            &tmp,
+            &format!(
+                r#"
+[[llm_endpoints.endpoints]]
+name = "configured"
+provider = "openai"
+url = "{}"
+api_key = "real-configured-key-xyz789"
+is_default = true
+"#,
+                server_url
+            ),
+        );
+
+        let env = EnvSnapshot::new(key_vars());
+        env.set("ANTHROPIC_API_KEY", "env-poison-anthropic");
+        env.set("OPENAI_API_KEY", "env-poison-openai");
+        env.set("OPENROUTER_API_KEY", "env-poison-openrouter");
+        env.set("WG_API_KEY", "env-poison-wg");
+
+        let provider = create_provider_ext(&wg_dir, "qwen3-coder", None, None, None)
+            .expect("init must succeed");
+        let req = empty_request("qwen3-coder");
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _ = rt.block_on(async { provider.send(&req).await });
+
+        let captured = rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("server must have captured the request");
+
+        // Wire-level assertion: configured key was sent, env junk was NOT.
+        assert!(
+            captured.contains("Bearer real-configured-key-xyz789"),
+            "request must bear the CONFIGURED api_key as Bearer token; captured:\n{}",
+            captured
+        );
+        assert!(
+            !captured.contains("env-poison"),
+            "request must NOT carry any env-var-sourced key (workgraph credential contract); \
+             captured:\n{}",
+            captured
+        );
+    }
+}
+
 /// Verify that the endpoint configuration (api_base) is resolved from config.
 #[test]
 fn native_coordinator_endpoint_from_config() {
@@ -1077,6 +1675,147 @@ PATH = "{}"
         picked_up,
         "Task should be dispatched by the coordinator (even though coordinator executor is native)."
     );
+}
+
+// ===========================================================================
+// `wg init` contract: autohaiku one-liner is sufficient (native-executor-client)
+// ===========================================================================
+
+/// `wg init -m qwen3-coder -e <url> --executor nex` MUST be sufficient to
+/// produce a working config. This test exercises the literal user contract:
+/// no env vars, no follow-up edits — just the init invocation, then a graph
+/// op (`wg list`) that doesn't crash on credential resolution.
+#[test]
+fn wg_init_qwen3_with_endpoint_is_sufficient() {
+    let tmp = TempDir::new().unwrap();
+    let project = tmp.path();
+    let wg_dir = project.join(".wg");
+
+    let env = [
+        // Scrub all credential env vars so we prove init+list work without them.
+        ("ANTHROPIC_API_KEY", ""),
+        ("OPENAI_API_KEY", ""),
+        ("OPENROUTER_API_KEY", ""),
+        ("WG_API_KEY", ""),
+    ];
+
+    // Run `wg init -m qwen3-coder -e https://example.invalid:30000 --executor nex`
+    let output = wg_cmd_env(
+        &wg_dir,
+        &[
+            "init",
+            "-m",
+            "qwen3-coder",
+            "-e",
+            "https://example.invalid:30000",
+            "--executor",
+            "nex",
+        ],
+        &env,
+    );
+    assert!(
+        output.status.success(),
+        "wg init must succeed without env vars.\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+
+    // Verify the config has a complete [[llm_endpoints.endpoints]] block
+    let config = workgraph::config::Config::load(&wg_dir).unwrap();
+    let eps = &config.llm_endpoints.endpoints;
+    let default_ep = eps
+        .iter()
+        .find(|e| e.is_default)
+        .expect("init -m + -e must write a default [[llm_endpoints.endpoints]] block");
+    assert_eq!(
+        default_ep.url.as_deref(),
+        Some("https://example.invalid:30000"),
+    );
+    // No env-var fallback was used — the block has no api_key, and
+    // that's fine. The whole point of the contract is that an unset
+    // key is acceptable until the endpoint actually rejects.
+    assert!(default_ep.api_key.is_none());
+
+    // `wg list` must not crash on credential resolution (the bug had it
+    // bailing immediately because of the "No Anthropic API key found"
+    // precondition check at provider init).
+    let list_output = wg_cmd_env(&wg_dir, &["list"], &env);
+    assert!(
+        list_output.status.success(),
+        "wg list must succeed after init without env vars.\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&list_output.stdout),
+        String::from_utf8_lossy(&list_output.stderr),
+    );
+}
+
+/// Static audit: main runtime code (not tests / migration) must not read
+/// `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `OPENROUTER_API_KEY` from env.
+/// This is a regression guard — if a future change re-introduces an env-var
+/// fallback in a credential path, this test fails.
+#[test]
+fn no_env_var_credential_lookups_in_credential_path() {
+    use std::io::Read;
+    use std::path::Path;
+
+    let crate_root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let credential_paths = [
+        crate_root.join("src/executor/native/provider.rs"),
+        crate_root.join("src/executor/native/client.rs"),
+        crate_root.join("src/executor/native/openai_client.rs"),
+    ];
+    // Files we deliberately allow to mention these env vars: helper
+    // scripts in tests/, doc comments, `from_env` legacy methods that
+    // are dead-end paths NOT called by the workgraph dispatcher.
+    let banned_substrings = [
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY",
+        "OPENROUTER_API_KEY",
+        "WG_API_KEY",
+    ];
+    for path in &credential_paths {
+        let mut contents = String::new();
+        std::fs::File::open(path)
+            .unwrap_or_else(|e| panic!("opening {}: {}", path.display(), e))
+            .read_to_string(&mut contents)
+            .unwrap();
+        // Check each line: env::var("…API_KEY") calls must not appear
+        // outside of clearly marked legacy/dead-end functions.
+        for (lineno, line) in contents.lines().enumerate() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("//") || trimmed.starts_with("///") {
+                continue; // doc / inline comments are fine
+            }
+            for banned in &banned_substrings {
+                if line.contains(&format!("env::var(\"{}\"", banned))
+                    || line.contains(&format!("env::var({:?}", banned))
+                {
+                    // Allow `from_env` and `resolve_api_key` legacy
+                    // functions — they're not called by the dispatcher
+                    // path. Any NEW credential-path code must not
+                    // re-introduce env vars.
+                    let preceding: Vec<&str> = contents.lines().take(lineno).collect();
+                    let in_legacy =
+                        preceding.iter().rev().take(40).any(|l| {
+                            l.contains("pub fn from_env")
+                                || l.contains("fn resolve_api_key()")
+                                || l.contains("fn resolve_api_key_from_dir")
+                                || l.contains("fn resolve_openai_api_key")
+                                || l.contains("fn resolve_openai_api_key_from_dir")
+                        });
+                    if !in_legacy {
+                        panic!(
+                            "Banned env-var lookup '{}' found in credential path:\n  \
+                             {}:{}: {}",
+                            banned,
+                            path.display(),
+                            lineno + 1,
+                            line,
+                        );
+                    }
+                }
+            }
+        }
+    }
 }
 
 // ===========================================================================
