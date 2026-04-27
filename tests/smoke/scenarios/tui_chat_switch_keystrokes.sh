@@ -112,10 +112,19 @@ get_active_cid() {
 # multi-tab choice in the first place and the rest of this scenario
 # can't tell whether key switching works.
 dump_text=$(wg --json tui-dump 2>/dev/null || true)
-distinct_coord_labels=$(printf '%s' "$dump_text" \
-    | grep -oE 'coord:[0-9]+' | sort -u | wc -l)
-if [[ "$distinct_coord_labels" -lt 3 ]]; then
-    loud_fail "tab bar only shows ${distinct_coord_labels} coord:N labels (expected ≥3) — chats are hidden from the tab bar (the list_coordinator_ids_and_labels filter is missing the chat-loop tag, or chats aren't being created with the right tag)"
+# Tab labels are the canonical chat task id (`.chat-N`), per task tui-tab-bar.
+# The legacy `coord:N` shorthand was removed because it duplicated the
+# deprecated `coordinator` role-noun and used a stale 1-indexed counter
+# that didn't track the actual task id.
+distinct_chat_labels=$(printf '%s' "$dump_text" \
+    | grep -oE '\.chat-[0-9]+' | sort -u | wc -l)
+if [[ "$distinct_chat_labels" -lt 3 ]]; then
+    loud_fail "tab bar only shows ${distinct_chat_labels} .chat-N labels (expected ≥3) — chats are hidden from the tab bar (the list_coordinator_ids_and_labels filter is missing the chat-loop tag, or chats aren't being created with the right tag)"
+fi
+# Hard-fail if any deprecated `coord:N` label leaked back into the tab bar.
+if printf '%s' "$dump_text" | grep -qE 'coord:[0-9]+'; then
+    leaked=$(printf '%s' "$dump_text" | grep -oE 'coord:[0-9]+' | sort -u | tr '\n' ' ')
+    loud_fail "tab bar still emits deprecated coord:N labels (found: ${leaked}) — labels must use the .chat-N task-id form"
 fi
 
 # Wait for the first dump to populate.

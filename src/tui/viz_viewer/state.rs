@@ -12467,7 +12467,7 @@ impl VizApp {
         let legacy_expected_title = format!("Coordinator: {}", user);
 
         // Load the graph to check chat task titles directly.
-        // list_coordinator_ids_and_labels() returns display labels like "coord:N"
+        // list_coordinator_ids_and_labels() returns display labels like ".chat-N"
         // which don't match the "Chat: {user}" title format.
         let graph_path = self.workgraph_dir.join("graph.jsonl");
         let graph = workgraph::parser::load_graph(&graph_path).ok();
@@ -12765,12 +12765,13 @@ impl VizApp {
     }
 
     /// Get coordinator IDs with display labels from the graph.
-    /// Returns Vec of (id, label) where label is `coord:N` matching the task ID number.
+    /// Returns Vec of (id, label) where label is the canonical chat task id
+    /// (`.chat-N`) matching what `wg show` / `wg list` use.
     pub fn list_coordinator_ids_and_labels(&self) -> Vec<(u32, String)> {
         let graph_path = self.workgraph_dir.join("graph.jsonl");
         let graph = match workgraph::parser::load_graph(&graph_path) {
             Ok(g) => g,
-            Err(_) => return vec![(0, "coord:1".to_string())],
+            Err(_) => return vec![(0, workgraph::chat_id::format_chat_task_id(0))],
         };
         let mut entries: Vec<(u32, String)> = graph
             .tasks()
@@ -12783,7 +12784,6 @@ impl VizApp {
                 // graphs use for the very first chat before chat-rename runs.
                 let cid = workgraph::chat_id::parse_chat_task_id(&t.id)
                     .or_else(|| (t.id == ".coordinator").then_some(0))?;
-                // Placeholder label — will be replaced with sequential numbering below
                 Some((cid, String::new()))
             })
             .collect();
@@ -12792,9 +12792,11 @@ impl VizApp {
         if entries.is_empty() {
             entries.push((0, String::new()));
         }
-        // Assign coord:N labels using the actual coordinator ID from the task ID
+        // Label = canonical task id. Per CLAUDE.md the legacy
+        // `coordinator`/`coord` role-noun is deprecated; chat tabs surface
+        // the same `.chat-N` id the user sees in `wg list` / `wg show`.
         for (cid, label) in entries.iter_mut() {
-            *label = format!("coord:{}", cid);
+            *label = workgraph::chat_id::format_chat_task_id(*cid);
         }
         entries
     }
@@ -20804,6 +20806,79 @@ mod tui_chat_tests {
             !(gap2 > threshold),
             "Second gap (5min) should NOT produce a boundary"
         );
+    }
+
+    /// Regression test for tui-tab-bar: chat tab labels must use the
+    /// `.chat-N` task-id form, not the deprecated `coord:N` shorthand,
+    /// and the tab number must come from the actual chat task id (not
+    /// a positional 1-indexed counter).
+    #[test]
+    fn tab_bar_labels_use_chat_task_id_form_not_coord_prefix() {
+        let tmp = TempDir::new().unwrap();
+        let mut graph = WorkGraph::new();
+
+        // Mimic the user-reported state: chats numbered 2, 3, 4 (no .chat-1).
+        for cid in [2u32, 3, 4] {
+            let id = format!(".chat-{}", cid);
+            let title = format!("Chat {}", cid);
+            let mut task = make_task_with_status(&id, &title, Status::InProgress);
+            task.tags = vec!["chat-loop".to_string()];
+            graph.add_node(Node::Task(task));
+        }
+        let regular = make_task_with_status("test-task", "Test Task", Status::InProgress);
+        graph.add_node(Node::Task(regular));
+
+        let wg_dir = tmp.path().join(".workgraph");
+        std::fs::create_dir_all(&wg_dir).unwrap();
+        save_graph(&graph, &wg_dir.join("graph.jsonl")).unwrap();
+
+        let tasks: Vec<_> = graph.tasks().collect();
+        let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
+        let viz = generate_ascii(
+            &graph,
+            &tasks,
+            &task_ids,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            VizLayoutMode::Tree,
+            &HashSet::new(),
+            "gray",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        let app = build_test_app(&viz, &wg_dir);
+
+        let entries = app.list_coordinator_ids_and_labels();
+        let labels: Vec<String> = entries.iter().map(|(_, l)| l.clone()).collect();
+
+        // All three task ids must appear as labels.
+        for expected in [".chat-2", ".chat-3", ".chat-4"] {
+            assert!(
+                labels.iter().any(|l| l == expected),
+                "expected label {:?} in {:?}",
+                expected,
+                labels
+            );
+        }
+        // No deprecated `coord:` prefix, and no stray `coord:1` from a
+        // positional counter (there is no `.chat-1` in this fixture).
+        for label in &labels {
+            assert!(
+                !label.starts_with("coord:"),
+                "label {:?} still uses deprecated coord: prefix",
+                label
+            );
+        }
+        assert!(
+            !labels.iter().any(|l| l == "coord:1"),
+            "label list {:?} contains stale coord:1 from a positional counter",
+            labels
+        );
+
+        // The numeric ids must come from the task ids, not positional indices.
+        let cids: Vec<u32> = entries.iter().map(|(c, _)| *c).collect();
+        assert_eq!(cids, vec![2, 3, 4], "cids should match the task-id numbers");
     }
 }
 

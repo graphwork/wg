@@ -166,6 +166,7 @@ owners = [
     "tui-chat-tab",
     "tui-still-cannot",
     "smoke-gate-is",
+    "tui-tab-bar",
 ]
-description = "With multiple chats present, plain number-key presses ('1', '2', '3') MUST visibly switch the active chat in `wg tui`. Pins the user-reported tui-still-cannot regression: tui-chat-tab merged claiming chat-switching worked, but the handlers were gated to RightPanel focus and plain digits clashed with right-panel-tab nav, so nothing happened in the live TUI. Drives a real `wg tui` inside tmux, sends synthetic '2'/'3'/'1' keystrokes via tmux send-keys, and asserts `wg tui-dump`'s coordinator_id changes between presses."
+description = "With multiple chats present, plain number-key presses ('1', '2', '3') MUST visibly switch the active chat in `wg tui`. Pins the user-reported tui-still-cannot regression: tui-chat-tab merged claiming chat-switching worked, but the handlers were gated to RightPanel focus and plain digits clashed with right-panel-tab nav, so nothing happened in the live TUI. Drives a real `wg tui` inside tmux, sends synthetic '2'/'3'/'1' keystrokes via tmux send-keys, and asserts `wg tui-dump`'s coordinator_id changes between presses. Also pins the tui-tab-bar fix: tab labels MUST be `.chat-N` (canonical task id), never the deprecated `coord:N` shorthand."
 timeout_seconds = 90
