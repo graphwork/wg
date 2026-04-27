@@ -81,9 +81,19 @@ script = "scenarios/setup_routes_complete_configs.sh"
 owners = [
     "wg-setup-5-smooth-2",
     "wg-setup-5-smooth",
+    "improve-wg-setup",
 ]
 description = "Five setup routes (openrouter / claude-cli / codex-cli / local / nex-custom) each write a complete config (filled [tiers] + endpoint when applicable). `wg init -x claude` populates [tiers] (the bug). `wg config reset` backs up. `wg setup --route nex-custom --yes` without --url refuses."
 timeout_seconds = 60
+
+[[scenario]]
+name = "setup_scope_flag"
+script = "scenarios/setup_scope_flag.sh"
+owners = [
+    "improve-wg-setup",
+]
+description = "`wg setup --scope global|local|both` writes the requested target only. --scope global writes only ~/.wg/config.toml; --scope local writes only ./.wg/config.toml; --scope both writes both. Invalid --scope refuses with helpful message. Summary screen prints DELTA: 'Will write N keys' + 'Will NOT write (built-in defaults): M more' (per docs/config-ux-design.md §4)."
+timeout_seconds = 30
 
 [[scenario]]
 name = "nex_resume_oversized_journal_does_not_loop"
