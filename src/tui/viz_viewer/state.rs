@@ -459,6 +459,7 @@ pub enum RightPanelTab {
     CoordLog,  // 5
     Dashboard, // 6
     Messages,  // 7  — wg msg traffic for the selected task
+    Settings,  // 8  — merged config view + per-key edit (docs/config-ux-design.md §7)
     // Dead tabs — kept so historical match arms compile, not reachable
     // from the tab bar.
     Files,
@@ -477,6 +478,7 @@ impl RightPanelTab {
             Self::CoordLog => "Coord",
             Self::Dashboard => "Dash",
             Self::Messages => "Msg",
+            Self::Settings => "Settings",
             Self::Files | Self::Firehose | Self::Output => "",
         }
     }
@@ -491,6 +493,7 @@ impl RightPanelTab {
             Self::CoordLog => 5,
             Self::Dashboard => 6,
             Self::Messages => 7,
+            Self::Settings => 8,
             Self::Files => usize::MAX - 2,
             Self::Firehose => usize::MAX - 1,
             Self::Output => usize::MAX,
@@ -507,6 +510,7 @@ impl RightPanelTab {
             5 => Some(Self::CoordLog),
             6 => Some(Self::Dashboard),
             7 => Some(Self::Messages),
+            8 => Some(Self::Settings),
             _ => None,
         }
     }
@@ -519,7 +523,7 @@ impl RightPanelTab {
         Self::from_index((self.index() + Self::ALL.len() - 1) % Self::ALL.len()).unwrap()
     }
 
-    pub const ALL: [RightPanelTab; 8] = [
+    pub const ALL: [RightPanelTab; 9] = [
         Self::Chat,
         Self::Detail,
         Self::Agency,
@@ -528,6 +532,7 @@ impl RightPanelTab {
         Self::CoordLog,
         Self::Dashboard,
         Self::Messages,
+        Self::Settings,
     ];
 }
 
@@ -808,6 +813,8 @@ pub enum InputMode {
     CoordinatorPicker,
     /// Config panel text editing mode.
     ConfigEdit,
+    /// Settings tab text editing mode (per-key edit dialog).
+    SettingsEdit,
     /// Chat search mode (/ key in chat tab). Keys go to chat search input.
     ChatSearch,
     /// Full-pane coordinator launcher (replaces chat view area).
@@ -3886,6 +3893,77 @@ pub struct ConfigPanelState {
     pub last_config_mtime: Option<std::time::SystemTime>,
 }
 
+/// One row in the Settings tab — a merged-config key with its origin.
+#[derive(Clone, Debug)]
+pub struct SettingsEntry {
+    /// Dotted key path (e.g. `agent.model`, `coordinator.max_agents`).
+    pub key: String,
+    /// Current effective value as a displayable string.
+    pub value: String,
+    /// Where the value came from: built-in default / global / local.
+    pub source: workgraph::config::ConfigSource,
+    /// Group label (audit §2 layout) — e.g. "Agent", "Coordinator", "Tiers".
+    pub section: &'static str,
+}
+
+/// State for the `Settings` tab (RightPanelTab::Settings).
+///
+/// Backed by `Config::load_with_sources` so each entry can show its origin.
+/// Edits go through `commands::config_cmd::set_setting_value` (single source
+/// of truth for config rewrites — design doc §7.2).
+#[derive(Default)]
+pub struct SettingsPanelState {
+    /// Loaded entries (rebuilt on tab activation and after each save).
+    pub entries: Vec<SettingsEntry>,
+    /// Currently selected row index.
+    pub selected: usize,
+    /// Vertical scroll offset.
+    pub scroll: usize,
+    /// True while user is editing the selected row.
+    pub editing: bool,
+    /// Edit buffer for the active row.
+    pub edit_buffer: String,
+    /// Which scope the next save will write to.
+    pub edit_scope: SettingsEditScope,
+    /// One-shot status message ("Saved", "Lint emitted N warnings", etc.).
+    pub notice: Option<String>,
+    /// Last error from a save attempt, surfaced in the panel until next edit.
+    pub last_error: Option<String>,
+    /// True while focus is on the action bar buttons (Run setup / Run lint).
+    pub focus_actions: bool,
+    /// Selected action button index when `focus_actions` is true.
+    pub action_index: usize,
+}
+
+/// Which config file an edit will be written to.
+#[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SettingsEditScope {
+    #[default]
+    Global,
+    Local,
+}
+
+impl SettingsEditScope {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Global => "global (~/.wg/config.toml)",
+            Self::Local => "local (./.wg/config.toml)",
+        }
+    }
+    pub fn toggle(self) -> Self {
+        match self {
+            Self::Global => Self::Local,
+            Self::Local => Self::Global,
+        }
+    }
+    pub fn to_cmd(self) -> crate::commands::config_cmd::ConfigScope {
+        match self {
+            Self::Global => crate::commands::config_cmd::ConfigScope::Global,
+            Self::Local => crate::commands::config_cmd::ConfigScope::Local,
+        }
+    }
+}
+
 /// Status of an endpoint connectivity test.
 #[derive(Clone)]
 pub enum EndpointTestStatus {
@@ -4485,6 +4563,9 @@ pub struct VizApp {
     // ── Config panel state (panel 5) ──
     pub config_panel: ConfigPanelState,
 
+    // ── Settings tab state (RightPanelTab::Settings) ──
+    pub settings_panel: SettingsPanelState,
+
     // ── Archive browser state ──
     pub archive_browser: ArchiveBrowserState,
 
@@ -4842,6 +4923,7 @@ impl VizApp {
             message_drafts: HashMap::new(),
             task_message_statuses: HashMap::new(),
             config_panel: ConfigPanelState::default(),
+            settings_panel: SettingsPanelState::default(),
             archive_browser: ArchiveBrowserState::default(),
             viewing_iteration: None,
             iteration_archives_task_id: String::new(),
@@ -9165,6 +9247,7 @@ impl VizApp {
             iteration_archives: Vec::new(),
             history_browser: HistoryBrowserState::default(),
             config_panel: ConfigPanelState::default(),
+            settings_panel: SettingsPanelState::default(),
             file_browser: None,
             fs_change_pending: Arc::new(AtomicBool::new(false)),
             _fs_watcher: None,
@@ -14074,6 +14157,257 @@ impl VizApp {
         }
     }
 
+    /// Rebuild the Settings tab entries from the merged config + sources.
+    ///
+    /// Mirrors audit §2 layout: Agent / Coordinator / Tiers / Agency. Each
+    /// entry carries its origin (`built-in default` / `global` / `local`)
+    /// so the Settings tab can show source per key without requiring the
+    /// user to drop to `wg config --list`.
+    pub fn load_settings_panel(&mut self) {
+        let (config, sources) =
+            match workgraph::config::Config::load_with_sources(&self.workgraph_dir) {
+                Ok(pair) => pair,
+                Err(_) => {
+                    let cfg = workgraph::config::Config::load_or_default(&self.workgraph_dir);
+                    (cfg, std::collections::BTreeMap::new())
+                }
+            };
+        let lookup = |key: &str| -> workgraph::config::ConfigSource {
+            sources
+                .get(key)
+                .cloned()
+                .unwrap_or(workgraph::config::ConfigSource::Default)
+        };
+
+        let mut entries: Vec<SettingsEntry> = Vec::new();
+
+        // Agent — model, executor, heartbeat
+        entries.push(SettingsEntry {
+            key: "agent.model".into(),
+            value: config.agent.model.clone(),
+            source: lookup("agent.model"),
+            section: "Agent",
+        });
+        entries.push(SettingsEntry {
+            key: "agent.executor".into(),
+            value: config.agent.executor.clone(),
+            source: lookup("agent.executor"),
+            section: "Agent",
+        });
+        entries.push(SettingsEntry {
+            key: "agent.heartbeat_timeout".into(),
+            value: config.agent.heartbeat_timeout.to_string(),
+            source: lookup("agent.heartbeat_timeout"),
+            section: "Agent",
+        });
+        entries.push(SettingsEntry {
+            key: "agent.interval".into(),
+            value: config.agent.interval.to_string(),
+            source: lookup("agent.interval"),
+            section: "Agent",
+        });
+
+        // Coordinator (a.k.a. dispatcher)
+        entries.push(SettingsEntry {
+            key: "coordinator.max_agents".into(),
+            value: config.coordinator.max_agents.to_string(),
+            source: lookup("coordinator.max_agents"),
+            section: "Coordinator",
+        });
+        entries.push(SettingsEntry {
+            key: "coordinator.max_coordinators".into(),
+            value: config.coordinator.max_coordinators.to_string(),
+            source: lookup("coordinator.max_coordinators"),
+            section: "Coordinator",
+        });
+        entries.push(SettingsEntry {
+            key: "coordinator.poll_interval".into(),
+            value: config.coordinator.poll_interval.to_string(),
+            source: lookup("coordinator.poll_interval"),
+            section: "Coordinator",
+        });
+        entries.push(SettingsEntry {
+            key: "coordinator.coordinator_agent".into(),
+            value: config.coordinator.coordinator_agent.to_string(),
+            source: lookup("coordinator.coordinator_agent"),
+            section: "Coordinator",
+        });
+        entries.push(SettingsEntry {
+            key: "coordinator.model".into(),
+            value: config.coordinator.model.clone().unwrap_or_default(),
+            source: lookup("coordinator.model"),
+            section: "Coordinator",
+        });
+        entries.push(SettingsEntry {
+            key: "coordinator.agent_timeout".into(),
+            value: config.coordinator.agent_timeout.clone(),
+            source: lookup("coordinator.agent_timeout"),
+            section: "Coordinator",
+        });
+
+        // Tiers
+        entries.push(SettingsEntry {
+            key: "tiers.fast".into(),
+            value: config.tiers.fast.clone().unwrap_or_default(),
+            source: lookup("tiers.fast"),
+            section: "Tiers",
+        });
+        entries.push(SettingsEntry {
+            key: "tiers.standard".into(),
+            value: config.tiers.standard.clone().unwrap_or_default(),
+            source: lookup("tiers.standard"),
+            section: "Tiers",
+        });
+        entries.push(SettingsEntry {
+            key: "tiers.premium".into(),
+            value: config.tiers.premium.clone().unwrap_or_default(),
+            source: lookup("tiers.premium"),
+            section: "Tiers",
+        });
+
+        // Agency toggles
+        entries.push(SettingsEntry {
+            key: "agency.auto_evaluate".into(),
+            value: config.agency.auto_evaluate.to_string(),
+            source: lookup("agency.auto_evaluate"),
+            section: "Agency",
+        });
+        entries.push(SettingsEntry {
+            key: "agency.auto_assign".into(),
+            value: config.agency.auto_assign.to_string(),
+            source: lookup("agency.auto_assign"),
+            section: "Agency",
+        });
+        entries.push(SettingsEntry {
+            key: "agency.auto_triage".into(),
+            value: config.agency.auto_triage.to_string(),
+            source: lookup("agency.auto_triage"),
+            section: "Agency",
+        });
+        entries.push(SettingsEntry {
+            key: "agency.auto_create".into(),
+            value: config.agency.auto_create.to_string(),
+            source: lookup("agency.auto_create"),
+            section: "Agency",
+        });
+
+        // Reset selection if it became out of bounds (e.g. fresh load).
+        if self.settings_panel.selected >= entries.len() {
+            self.settings_panel.selected = 0;
+        }
+        self.settings_panel.entries = entries;
+    }
+
+    /// Begin editing the currently-selected settings entry.
+    pub fn begin_settings_edit(&mut self) {
+        let idx = self.settings_panel.selected;
+        if idx >= self.settings_panel.entries.len() {
+            return;
+        }
+        self.settings_panel.edit_buffer = self.settings_panel.entries[idx].value.clone();
+        self.settings_panel.editing = true;
+        self.settings_panel.last_error = None;
+    }
+
+    /// Commit the current edit through `config_cmd::set_setting_value`,
+    /// then refresh the panel from disk.
+    pub fn commit_settings_edit(&mut self) {
+        let idx = self.settings_panel.selected;
+        if idx >= self.settings_panel.entries.len() {
+            self.settings_panel.editing = false;
+            return;
+        }
+        let key = self.settings_panel.entries[idx].key.clone();
+        let value = self.settings_panel.edit_buffer.clone();
+        let scope = self.settings_panel.edit_scope.to_cmd();
+
+        match crate::commands::config_cmd::set_setting_value(
+            &self.workgraph_dir,
+            scope,
+            &key,
+            &value,
+        ) {
+            Ok(()) => {
+                self.settings_panel.editing = false;
+                self.settings_panel.last_error = None;
+                self.settings_panel.notice = Some(format!(
+                    "Saved {} = {} → {}",
+                    key,
+                    value,
+                    self.settings_panel.edit_scope.label()
+                ));
+                self.load_settings_panel();
+            }
+            Err(e) => {
+                self.settings_panel.last_error = Some(format!("Save failed: {}", e));
+            }
+        }
+    }
+
+    /// Cancel an in-progress settings edit.
+    pub fn cancel_settings_edit(&mut self) {
+        self.settings_panel.editing = false;
+        self.settings_panel.edit_buffer.clear();
+        self.settings_panel.last_error = None;
+    }
+
+    /// Toggle which scope (global/local) edits will be written to.
+    pub fn toggle_settings_scope(&mut self) {
+        self.settings_panel.edit_scope = self.settings_panel.edit_scope.toggle();
+        self.settings_panel.notice = Some(format!(
+            "Edit scope: {}",
+            self.settings_panel.edit_scope.label()
+        ));
+    }
+
+    /// Run `wg config lint` and surface the result inline in the panel.
+    /// Shells out via `std::process::Command` — the canonical CLI is the
+    /// single source of truth for what "lint" means (design doc §7.2).
+    pub fn run_settings_lint(&mut self) {
+        let exe = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("wg"));
+        let result = std::process::Command::new(&exe)
+            .args(["config", "lint", "--merged"])
+            .current_dir(&self.workgraph_dir)
+            .output();
+        match result {
+            Ok(out) => {
+                let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+                let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+                let mut combined = String::new();
+                if !stdout.is_empty() {
+                    combined.push_str(&stdout);
+                }
+                if !stderr.is_empty() {
+                    if !combined.is_empty() {
+                        combined.push('\n');
+                    }
+                    combined.push_str(&stderr);
+                }
+                let trimmed = combined.trim();
+                let summary = if trimmed.is_empty() {
+                    "wg config lint: no warnings".to_string()
+                } else {
+                    let line = trimmed.lines().next().unwrap_or("").to_string();
+                    format!("wg config lint: {}", line)
+                };
+                self.settings_panel.notice = Some(summary);
+            }
+            Err(e) => {
+                self.settings_panel.last_error = Some(format!("lint failed: {}", e));
+            }
+        }
+    }
+
+    /// Surface "run setup wizard" hint (we don't take over the terminal here —
+    /// the user runs `wg setup` in a separate shell). Future work: replay the
+    /// wizard inline (design doc §7.1).
+    pub fn run_settings_setup_hint(&mut self) {
+        self.settings_panel.notice = Some(
+            "Run `wg setup` in a terminal to launch the interactive setup wizard."
+                .to_string(),
+        );
+    }
+
     /// Apply the current edit to the config and save to disk.
     pub fn save_config_entry(&mut self) {
         let idx = self.config_panel.selected;
@@ -17233,7 +17567,7 @@ mod remap_panel_tests {
         let mut app = build_test_app();
         app.right_panel_visible = true;
         app.layout_mode = LayoutMode::TwoThirdsInspector;
-        app.right_panel_tab = RightPanelTab::Messages; // last tab
+        app.right_panel_tab = RightPanelTab::Settings; // last tab
 
         app.cycle_inspector_view_forward();
 
@@ -17252,7 +17586,7 @@ mod remap_panel_tests {
         app.cycle_inspector_view_backward();
 
         assert!(app.right_panel_visible);
-        assert_eq!(app.right_panel_tab, RightPanelTab::Messages);
+        assert_eq!(app.right_panel_tab, RightPanelTab::Settings);
         assert!(app.slide_animation.is_some());
     }
 
@@ -17277,7 +17611,7 @@ mod remap_panel_tests {
         app.right_panel_visible = false;
         app.layout_mode = LayoutMode::Off;
 
-        // 8 live tabs + 1 close = 9 presses
+        // 9 live tabs + 1 close = 10 presses
         let expected_tabs = [
             Some(RightPanelTab::Chat),
             Some(RightPanelTab::Detail),
@@ -17287,6 +17621,7 @@ mod remap_panel_tests {
             Some(RightPanelTab::CoordLog),
             Some(RightPanelTab::Dashboard),
             Some(RightPanelTab::Messages),
+            Some(RightPanelTab::Settings),
             None, // closed
         ];
 
@@ -17511,8 +17846,9 @@ mod firehose_tests {
         assert_eq!(RightPanelTab::Firehose.label(), "");
         assert_eq!(RightPanelTab::CoordLog.next(), RightPanelTab::Dashboard);
         assert_eq!(RightPanelTab::Dashboard.next(), RightPanelTab::Messages);
-        assert_eq!(RightPanelTab::Messages.next(), RightPanelTab::Chat);
-        assert_eq!(RightPanelTab::Chat.prev(), RightPanelTab::Messages);
+        assert_eq!(RightPanelTab::Messages.next(), RightPanelTab::Settings);
+        assert_eq!(RightPanelTab::Settings.next(), RightPanelTab::Chat);
+        assert_eq!(RightPanelTab::Chat.prev(), RightPanelTab::Settings);
     }
 
     #[test]
@@ -19279,13 +19615,18 @@ mod dashboard_tests {
     }
 
     #[test]
-    fn messages_next_wraps_to_chat() {
-        assert_eq!(RightPanelTab::Messages.next(), RightPanelTab::Chat);
+    fn messages_next_is_settings() {
+        assert_eq!(RightPanelTab::Messages.next(), RightPanelTab::Settings);
     }
 
     #[test]
-    fn chat_prev_is_messages() {
-        assert_eq!(RightPanelTab::Chat.prev(), RightPanelTab::Messages);
+    fn settings_next_wraps_to_chat() {
+        assert_eq!(RightPanelTab::Settings.next(), RightPanelTab::Chat);
+    }
+
+    #[test]
+    fn chat_prev_is_settings() {
+        assert_eq!(RightPanelTab::Chat.prev(), RightPanelTab::Settings);
     }
 
     #[test]

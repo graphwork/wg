@@ -581,6 +581,7 @@ fn handle_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
         InputMode::ChatInput => handle_chat_input(app, code, modifiers),
         InputMode::MessageInput => handle_message_input(app, code, modifiers),
         InputMode::ConfigEdit => handle_config_edit_input(app, code, modifiers),
+        InputMode::SettingsEdit => handle_settings_edit_input(app, code, modifiers),
         InputMode::Launcher => handle_launcher_input(app, code, modifiers),
         InputMode::Normal => {
             // Also check legacy search_active flag for backward compat
@@ -658,6 +659,10 @@ fn handle_paste(app: &mut VizApp, text: &str) {
         InputMode::ConfigEdit => {
             let clean: String = text.chars().filter(|c| *c != '\n' && *c != '\r').collect();
             app.config_panel.edit_buffer.push_str(&clean);
+        }
+        InputMode::SettingsEdit => {
+            let clean: String = text.chars().filter(|c| *c != '\n' && *c != '\r').collect();
+            app.settings_panel.edit_buffer.push_str(&clean);
         }
         _ => {} // Normal/Confirm modes: ignore paste
     }
@@ -2745,6 +2750,15 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
                 app.input_mode = InputMode::MessageInput;
             } else if app.right_panel_tab == RightPanelTab::Config {
                 config_enter_edit(app);
+            } else if app.right_panel_tab == RightPanelTab::Settings {
+                if app.settings_panel.focus_actions {
+                    settings_invoke_action(app);
+                } else {
+                    app.begin_settings_edit();
+                    if app.settings_panel.editing {
+                        app.input_mode = InputMode::SettingsEdit;
+                    }
+                }
             } else if app.right_panel_tab == RightPanelTab::Dashboard {
                 // Drill-down: push Dashboard onto nav stack, switch to Output for selected agent
                 if let Some(row) = app.dashboard.agent_rows.get(app.dashboard.selected_row) {
@@ -2833,6 +2847,46 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
             app.config_panel.new_model_field = 0;
             app.config_panel.editing = false;
             app.input_mode = InputMode::ConfigEdit;
+        }
+
+        // Settings tab: 's' toggles edit scope (global ↔ local)
+        KeyCode::Char('s') if app.right_panel_tab == RightPanelTab::Settings => {
+            app.toggle_settings_scope();
+        }
+        // Settings tab: 'r' reloads from disk
+        KeyCode::Char('r') if app.right_panel_tab == RightPanelTab::Settings => {
+            app.load_settings_panel();
+            app.settings_panel.notice = Some("Reloaded settings from disk".to_string());
+        }
+        // Settings tab: 'a' moves focus between entries and the action bar.
+        // (Tab is already bound to toggle_panel_focus higher up; we use 'a'
+        // to flip between row focus and the action button bar.)
+        KeyCode::Char('a') if app.right_panel_tab == RightPanelTab::Settings => {
+            app.settings_panel.focus_actions = !app.settings_panel.focus_actions;
+            if app.settings_panel.focus_actions {
+                app.settings_panel.action_index = 0;
+            }
+        }
+        // Settings tab: 'L' = Run wg config lint
+        KeyCode::Char('L') if app.right_panel_tab == RightPanelTab::Settings => {
+            app.run_settings_lint();
+        }
+        // Settings tab: 'W' = show how to run wg setup
+        KeyCode::Char('W') if app.right_panel_tab == RightPanelTab::Settings => {
+            app.run_settings_setup_hint();
+        }
+        // Settings tab: 'h'/'l' cycle action buttons when focused on action bar.
+        KeyCode::Char('l')
+            if app.right_panel_tab == RightPanelTab::Settings
+                && app.settings_panel.focus_actions =>
+        {
+            app.settings_panel.action_index = (app.settings_panel.action_index + 1) % 2;
+        }
+        KeyCode::Char('h')
+            if app.right_panel_tab == RightPanelTab::Settings
+                && app.settings_panel.focus_actions =>
+        {
+            app.settings_panel.action_index = (app.settings_panel.action_index + 1) % 2;
         }
 
         // Agency tab: 'a' = view assignment task detail, 'e' = view evaluation task detail
@@ -3224,6 +3278,13 @@ fn right_panel_scroll_up(app: &mut VizApp, amount: usize) {
         RightPanelTab::Dashboard => {
             app.dashboard.selected_row = app.dashboard.selected_row.saturating_sub(amount);
         }
+        RightPanelTab::Settings => {
+            let len = app.settings_panel.entries.len();
+            if len > 0 {
+                let cur = app.settings_panel.selected;
+                app.settings_panel.selected = cur.saturating_sub(amount);
+            }
+        }
     }
 }
 
@@ -3306,6 +3367,10 @@ fn right_panel_scroll_down(app: &mut VizApp, amount: usize) {
             let max = app.dashboard.agent_rows.len().saturating_sub(1);
             app.dashboard.selected_row = (app.dashboard.selected_row + amount).min(max);
         }
+        RightPanelTab::Settings => {
+            let max = app.settings_panel.entries.len().saturating_sub(1);
+            app.settings_panel.selected = (app.settings_panel.selected + amount).min(max);
+        }
     }
 }
 
@@ -3372,6 +3437,10 @@ fn right_panel_scroll_to_top(app: &mut VizApp) {
         RightPanelTab::Dashboard => {
             app.dashboard.selected_row = 0;
         }
+        RightPanelTab::Settings => {
+            app.settings_panel.selected = 0;
+            app.settings_panel.scroll = 0;
+        }
     }
 }
 
@@ -3432,6 +3501,10 @@ fn right_panel_scroll_to_bottom(app: &mut VizApp) {
         }
         RightPanelTab::Dashboard => {
             app.dashboard.selected_row = app.dashboard.agent_rows.len().saturating_sub(1);
+        }
+        RightPanelTab::Settings => {
+            let last = app.settings_panel.entries.len().saturating_sub(1);
+            app.settings_panel.selected = last;
         }
     }
 }
@@ -4958,6 +5031,46 @@ fn handle_config_edit_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModif
             app.config_panel.editing = false;
             app.input_mode = InputMode::Normal;
         }
+    }
+}
+
+/// Invoke the currently-focused action button on the Settings tab.
+fn settings_invoke_action(app: &mut VizApp) {
+    match app.settings_panel.action_index {
+        0 => app.run_settings_setup_hint(),
+        1 => app.run_settings_lint(),
+        _ => {}
+    }
+}
+
+/// Handle key events for the Settings tab edit dialog.
+fn handle_settings_edit_input(app: &mut VizApp, code: KeyCode, _modifiers: KeyModifiers) {
+    if !app.settings_panel.editing {
+        app.input_mode = InputMode::Normal;
+        return;
+    }
+    match code {
+        KeyCode::Esc => {
+            app.cancel_settings_edit();
+            app.input_mode = InputMode::Normal;
+        }
+        KeyCode::Enter => {
+            app.commit_settings_edit();
+            // Stay in SettingsEdit if save failed (last_error set), otherwise Normal.
+            if app.settings_panel.last_error.is_some() {
+                // Keep editing so the user can correct the value.
+                app.settings_panel.editing = true;
+            } else {
+                app.input_mode = InputMode::Normal;
+            }
+        }
+        KeyCode::Backspace => {
+            app.settings_panel.edit_buffer.pop();
+        }
+        KeyCode::Char(c) => {
+            app.settings_panel.edit_buffer.push(c);
+        }
+        _ => {}
     }
 }
 

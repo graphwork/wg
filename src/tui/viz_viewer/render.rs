@@ -10,9 +10,10 @@ use super::state::{
     ActivityEventKind, ChoiceDialogState, ConfigEditKind, ConfigSection,
     ConfirmAction, ControlPanelFocus, CoordinatorPlusHit, CoordinatorTabHit, EndpointTestStatus,
     FocusedPanel, InputMode, LayoutMode, ResponsiveBreakpoint, RightPanelTab, ServiceHealthLevel,
-    SinglePanelView, SortMode, TabBarEntryKind, TaskFormField, TaskFormState, TextPromptAction,
-    ToastSeverity, VitalsStaleness, VizApp, WAVE_BOLT, WAVE_NUM_BOLTS, extract_section_name,
-    format_duration_compact, format_relative_time, spinner_wave_pos, vitals_staleness_color,
+    SettingsEditScope, SinglePanelView, SortMode, TabBarEntryKind, TaskFormField,
+    TaskFormState, TextPromptAction, ToastSeverity, VitalsStaleness, VizApp, WAVE_BOLT,
+    WAVE_NUM_BOLTS, extract_section_name, format_duration_compact, format_relative_time,
+    spinner_wave_pos, vitals_staleness_color,
 };
 use workgraph::AgentStatus;
 use workgraph::graph::{TokenUsage, format_tokens};
@@ -2329,6 +2330,12 @@ fn draw_right_panel(frame: &mut Frame, app: &mut VizApp, area: Rect) {
         RightPanelTab::Messages => {
             app.load_messages_panel();
             draw_messages_tab(frame, app, content_area);
+        }
+        RightPanelTab::Settings => {
+            if app.settings_panel.entries.is_empty() {
+                app.load_settings_panel();
+            }
+            draw_settings_tab(frame, app, content_area);
         }
         // Dead tabs — not reachable from the bar. No-op here so stray
         // state still renders as empty rather than crashing.
@@ -7213,6 +7220,12 @@ fn action_hints_parts(app: &VizApp) -> (&str, &str, Color, Vec<(&str, &str)>) {
             Color::Yellow,
             vec![("Enter", "save"), ("Esc", "cancel")],
         ),
+        InputMode::SettingsEdit => (
+            "8:Settings",
+            "EDIT",
+            Color::Yellow,
+            vec![("Enter", "save"), ("Esc", "cancel")],
+        ),
         InputMode::ChoiceDialog(_) => (
             "Choice",
             "EDIT",
@@ -7294,6 +7307,7 @@ fn action_hints_parts(app: &VizApp) -> (&str, &str, Color, Vec<(&str, &str)>) {
                     RightPanelTab::CoordLog => "5:Coord",
                     RightPanelTab::Dashboard => "6:Dash",
                     RightPanelTab::Messages => "7:Msg",
+                    RightPanelTab::Settings => "8:Settings",
                     // Dead tabs, not reachable from the bar.
                     RightPanelTab::Files => "Files",
                     RightPanelTab::Firehose => "Fire",
@@ -7360,6 +7374,14 @@ fn action_hints_parts(app: &VizApp) -> (&str, &str, Color, Vec<(&str, &str)>) {
                         hints.push(("↑↓", "select"));
                         hints.push(("Enter", "edit"));
                         hints.push(("Esc", "cancel"));
+                    }
+                    RightPanelTab::Settings => {
+                        hints.push(("↑↓", "select"));
+                        hints.push(("Enter", "edit"));
+                        hints.push(("s", "scope"));
+                        hints.push(("Tab", "actions"));
+                        hints.push(("L", "lint"));
+                        hints.push(("W", "setup"));
                     }
                     RightPanelTab::Files => {
                         hints.push(("↑↓", "select"));
@@ -8772,6 +8794,208 @@ fn render_token_breakdown<'a>(spans: &mut Vec<Span<'a>>, usage: &TokenUsage, lab
             Style::default().fg(Color::Cyan),
         ));
     }
+}
+
+/// Draw the Settings tab content: merged config grouped by section, with
+/// per-key source annotations + an action bar for `wg setup` / `wg config lint`.
+///
+/// Reference: docs/config-ux-design.md §7. The simpler sibling of the
+/// existing `Config` tab — no add-endpoint/add-model flows, just per-key
+/// edit dialogs that route through `config_cmd::set_setting_value`.
+fn draw_settings_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
+    if area.height == 0 || area.width < 4 {
+        return;
+    }
+
+    let entries = app.settings_panel.entries.clone();
+    if entries.is_empty() {
+        let msg = Paragraph::new("No settings loaded — press 'r' to reload")
+            .style(Style::default().fg(Color::DarkGray));
+        frame.render_widget(msg, area);
+        return;
+    }
+
+    // Reserve last 3 rows for: scope/notice line, action bar, hints.
+    let action_h: u16 = 4;
+    let list_h = area.height.saturating_sub(action_h);
+    let list_area = Rect { x: area.x, y: area.y, width: area.width, height: list_h };
+    let action_area = Rect {
+        x: area.x,
+        y: area.y + list_h,
+        width: area.width,
+        height: action_h,
+    };
+
+    let selected = app.settings_panel.selected.min(entries.len().saturating_sub(1));
+
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    let mut row_to_entry_idx: Vec<Option<usize>> = Vec::new();
+    let mut current_section: &str = "";
+    for (i, e) in entries.iter().enumerate() {
+        if e.section != current_section {
+            if !current_section.is_empty() {
+                lines.push(Line::from(""));
+                row_to_entry_idx.push(None);
+            }
+            lines.push(Line::from(Span::styled(
+                e.section.to_string(),
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            )));
+            row_to_entry_idx.push(None);
+            current_section = e.section;
+        }
+        let (src_label, src_color) = source_label(&e.source);
+        let value_display = if e.value.is_empty() {
+            "(unset)".to_string()
+        } else {
+            e.value.clone()
+        };
+        let key_style = if i == selected && !app.settings_panel.focus_actions {
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Yellow)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().add_modifier(Modifier::BOLD)
+        };
+        let value_style = if i == selected && !app.settings_panel.focus_actions {
+            Style::default().fg(Color::Black).bg(Color::Yellow)
+        } else {
+            Style::default().fg(Color::White)
+        };
+        let mut spans: Vec<Span<'static>> = Vec::new();
+        spans.push(Span::styled(format!("  {:30}", e.key), key_style));
+        spans.push(Span::raw(" "));
+        spans.push(Span::styled(format!("{:24}", truncate(&value_display, 24)), value_style));
+        spans.push(Span::raw(" "));
+        spans.push(Span::styled(
+            format!("[{}]", src_label),
+            Style::default().fg(src_color),
+        ));
+        lines.push(Line::from(spans));
+        row_to_entry_idx.push(Some(i));
+    }
+
+    // Inline edit dialog: replace selected row with input UI.
+    if app.settings_panel.editing
+        && let Some(row) = row_to_entry_idx
+            .iter()
+            .position(|x| *x == Some(selected))
+    {
+        let key = entries[selected].key.clone();
+        let buffer = app.settings_panel.edit_buffer.clone();
+        lines[row] = Line::from(vec![
+            Span::styled(
+                format!("  {:30}", key),
+                Style::default().add_modifier(Modifier::BOLD).fg(Color::Yellow),
+            ),
+            Span::raw(" → "),
+            Span::styled(
+                buffer,
+                Style::default().bg(Color::DarkGray).fg(Color::White),
+            ),
+            Span::styled(
+                "  (Enter=save, Esc=cancel)".to_string(),
+                Style::default().fg(Color::DarkGray),
+            ),
+        ]);
+    }
+
+    // Auto-scroll so selected stays visible.
+    let viewport_h = list_area.height as usize;
+    if let Some(sel_row) = row_to_entry_idx.iter().position(|x| *x == Some(selected)) {
+        if sel_row < app.settings_panel.scroll {
+            app.settings_panel.scroll = sel_row;
+        } else if sel_row >= app.settings_panel.scroll + viewport_h {
+            app.settings_panel.scroll = sel_row + 1 - viewport_h;
+        }
+    }
+    let scroll = app.settings_panel.scroll.min(lines.len().saturating_sub(1));
+    let visible: Vec<Line<'static>> = lines
+        .into_iter()
+        .skip(scroll)
+        .take(viewport_h)
+        .collect();
+
+    let para = Paragraph::new(visible)
+        .block(Block::default().borders(Borders::NONE));
+    frame.render_widget(para, list_area);
+
+    // Action bar: scope toggle + Run setup / Run lint buttons + notice.
+    draw_settings_actions(frame, app, action_area);
+}
+
+fn truncate(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        let mut out: String = s.chars().take(max.saturating_sub(1)).collect();
+        out.push('…');
+        out
+    }
+}
+
+fn source_label(src: &workgraph::config::ConfigSource) -> (&'static str, Color) {
+    match src {
+        workgraph::config::ConfigSource::Default => ("built-in", Color::DarkGray),
+        workgraph::config::ConfigSource::Global => ("global", Color::Green),
+        workgraph::config::ConfigSource::Local => ("local", Color::Blue),
+    }
+}
+
+fn draw_settings_actions(frame: &mut Frame, app: &VizApp, area: Rect) {
+    if area.height == 0 {
+        return;
+    }
+    let scope = app.settings_panel.edit_scope;
+    let scope_label = match scope {
+        SettingsEditScope::Global => "[g]lobal",
+        SettingsEditScope::Local => "[l]ocal",
+    };
+    let buttons = [" Run setup ", " Run lint "];
+    let focus = app.settings_panel.focus_actions;
+    let action_idx = app.settings_panel.action_index.min(buttons.len() - 1);
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    spans.push(Span::styled(
+        format!("Scope: {}  ", scope_label),
+        Style::default().fg(Color::Yellow),
+    ));
+    for (i, b) in buttons.iter().enumerate() {
+        let style = if focus && i == action_idx {
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Yellow)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::White).bg(Color::DarkGray)
+        };
+        spans.push(Span::styled(b.to_string(), style));
+        spans.push(Span::raw(" "));
+    }
+    let action_line = Line::from(spans);
+
+    let notice_line = if let Some(err) = &app.settings_panel.last_error {
+        Line::from(Span::styled(
+            err.clone(),
+            Style::default().fg(Color::Red),
+        ))
+    } else if let Some(notice) = &app.settings_panel.notice {
+        Line::from(Span::styled(
+            notice.clone(),
+            Style::default().fg(Color::Green),
+        ))
+    } else {
+        Line::from(Span::styled(
+            "↑/↓ select  Enter edit  s scope  Tab actions  L lint  W setup".to_string(),
+            Style::default().fg(Color::DarkGray),
+        ))
+    };
+
+    let para = Paragraph::new(vec![action_line, notice_line])
+        .block(Block::default().borders(Borders::TOP).border_style(Style::default().fg(Color::DarkGray)));
+    frame.render_widget(para, area);
 }
 
 /// Draw the Config tab content: full configuration dashboard.
@@ -11913,6 +12137,126 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
 
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+    }
+
+    /// Validation criterion #1: tui settings tab renders without panic.
+    /// Switches the right panel to `Settings`, drives a draw against a
+    /// TestBackend and asserts the call returns Ok().
+    #[test]
+    fn settings_tab_renders_without_panic() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let (viz, _) = build_hud_test_graph();
+        let mut app = build_app_from_viz_output(&viz, "a");
+        // Use an isolated workgraph_dir so load_settings_panel doesn't
+        // touch the developer's real config.
+        let temp = tempfile::TempDir::new().unwrap();
+        app.workgraph_dir = temp.path().to_path_buf();
+        app.right_panel_tab = RightPanelTab::Settings;
+        app.load_settings_panel();
+        assert!(
+            !app.settings_panel.entries.is_empty(),
+            "settings panel should populate with default entries"
+        );
+
+        let backend = TestBackend::new(120, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+
+        // Same draw under a narrow viewport — tab content area shrinks
+        // and the action bar must still render without panicking.
+        let backend = TestBackend::new(60, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+    }
+
+    /// Validation criterion #2: editing a key calls into the config_cmd
+    /// update path. Drives `commit_settings_edit` (which routes through
+    /// `crate::commands::config_cmd::set_setting_value`) and verifies
+    /// the change lands in the local config file.
+    #[test]
+    fn settings_tab_edit_calls_config_cmd_update_path() {
+        let (viz, _) = build_hud_test_graph();
+        let mut app = build_app_from_viz_output(&viz, "a");
+        let temp = tempfile::TempDir::new().unwrap();
+        app.workgraph_dir = temp.path().to_path_buf();
+
+        // Seed an empty local config so we can inspect what was written.
+        let cfg = workgraph::config::Config::default();
+        cfg.save(&app.workgraph_dir).unwrap();
+
+        app.right_panel_tab = RightPanelTab::Settings;
+        app.settings_panel.edit_scope = SettingsEditScope::Local;
+        app.load_settings_panel();
+
+        // Find the agent.model row and edit it.
+        let idx = app
+            .settings_panel
+            .entries
+            .iter()
+            .position(|e| e.key == "agent.model")
+            .expect("agent.model entry must exist");
+        app.settings_panel.selected = idx;
+        app.begin_settings_edit();
+        assert!(app.settings_panel.editing);
+        app.settings_panel.edit_buffer = "claude:sonnet".to_string();
+        app.commit_settings_edit();
+
+        assert_eq!(app.settings_panel.last_error, None,
+            "save should succeed, but got: {:?}", app.settings_panel.last_error);
+        assert!(!app.settings_panel.editing,
+            "editing flag should clear after a successful save");
+
+        // Reload from disk independently of the panel state and confirm
+        // the value made it through `config_cmd::set_setting_value`.
+        let reloaded = workgraph::config::Config::load(&app.workgraph_dir).unwrap();
+        assert_eq!(reloaded.agent.model, "claude:sonnet");
+
+        // The panel itself should now reflect the new value with source = local.
+        let entry = app
+            .settings_panel
+            .entries
+            .iter()
+            .find(|e| e.key == "agent.model")
+            .unwrap();
+        assert_eq!(entry.value, "claude:sonnet");
+        assert_eq!(entry.source, workgraph::config::ConfigSource::Local);
+    }
+
+    /// Invalid input must not write the config file. Confirms the
+    /// validator inside `apply_setting` is wired through the TUI path.
+    #[test]
+    fn settings_tab_edit_rejects_bad_value() {
+        let (viz, _) = build_hud_test_graph();
+        let mut app = build_app_from_viz_output(&viz, "a");
+        let temp = tempfile::TempDir::new().unwrap();
+        app.workgraph_dir = temp.path().to_path_buf();
+
+        let cfg = workgraph::config::Config::default();
+        cfg.save(&app.workgraph_dir).unwrap();
+
+        app.right_panel_tab = RightPanelTab::Settings;
+        app.settings_panel.edit_scope = SettingsEditScope::Local;
+        app.load_settings_panel();
+        let idx = app
+            .settings_panel
+            .entries
+            .iter()
+            .position(|e| e.key == "coordinator.max_agents")
+            .unwrap();
+        app.settings_panel.selected = idx;
+        app.begin_settings_edit();
+        app.settings_panel.edit_buffer = "not-a-number".to_string();
+        app.commit_settings_edit();
+
+        assert!(
+            app.settings_panel.last_error.is_some(),
+            "invalid value should surface an error"
+        );
+        // Original value preserved on disk.
+        let reloaded = workgraph::config::Config::load(&app.workgraph_dir).unwrap();
+        assert_eq!(reloaded.coordinator.max_agents, cfg.coordinator.max_agents);
     }
 
     #[test]
