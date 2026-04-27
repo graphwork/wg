@@ -4065,6 +4065,10 @@ pub fn extract_section_name(line: &str) -> Option<String> {
 }
 
 /// Task status counts for the status bar.
+///
+/// `in_progress` uses `Status::is_active()` so it matches what `wg viz`
+/// highlights as "running" (InProgress + PendingValidation + PendingEval).
+/// See the rationale on `Status::is_active`.
 #[derive(Default)]
 pub struct TaskCounts {
     pub total: usize,
@@ -6153,16 +6157,21 @@ impl VizApp {
 
         for task in graph.tasks() {
             counts.total += 1;
-            match task.status {
-                Status::Done => counts.done += 1,
-                Status::Open => counts.open += 1,
-                Status::InProgress => counts.in_progress += 1,
-                Status::Failed => counts.failed += 1,
-                Status::Blocked => counts.blocked += 1,
-                Status::Abandoned => counts.done += 1, // count with done
-                Status::Waiting | Status::PendingValidation => counts.blocked += 1, // count with blocked
-                Status::PendingEval => counts.in_progress += 1, // soft-done, awaiting eval
-                Status::Incomplete => counts.open += 1,
+            // Active states (InProgress, PendingValidation, PendingEval) are
+            // counted as "in_progress" so the HUD's "X running" matches the
+            // tasks viz highlights yellow. See `Status::is_active`.
+            if task.status.is_active() {
+                counts.in_progress += 1;
+            } else {
+                match task.status {
+                    Status::Done | Status::Abandoned => counts.done += 1,
+                    Status::Open | Status::Incomplete => counts.open += 1,
+                    Status::Failed => counts.failed += 1,
+                    Status::Blocked | Status::Waiting => counts.blocked += 1,
+                    Status::InProgress | Status::PendingValidation | Status::PendingEval => {
+                        unreachable!("handled by is_active branch")
+                    }
+                }
             }
 
             // Use stored token_usage if available, otherwise check live agent data
@@ -19605,6 +19614,134 @@ mod vitals_tests {
         let s = format_vitals(&v);
         // 600s = 10m
         assert!(s.contains("last event 10m ago"), "got: {}", s);
+    }
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// TaskCounts active-task consistency tests (regression for fix-tui-hud)
+// ══════════════════════════════════════════════════════════════════════════════
+
+#[cfg(test)]
+mod task_counts_active_tests {
+    use super::*;
+    use workgraph::graph::{Node, Status, WorkGraph};
+    use workgraph::test_helpers::make_task_with_status;
+
+    /// Build a graph with a known mix of statuses, save it, and return both
+    /// the graph and a temp dir keeping the file alive. Callers can then call
+    /// `app.load_stats_from_graph(&graph)` and assert on `app.task_counts`.
+    fn build_mixed_status_graph() -> (WorkGraph, tempfile::TempDir) {
+        let mut graph = WorkGraph::new();
+        // 2 InProgress, 2 PendingValidation, 1 PendingEval = 5 active.
+        graph.add_node(Node::Task(make_task_with_status(
+            "ip-1",
+            "ip-1",
+            Status::InProgress,
+        )));
+        graph.add_node(Node::Task(make_task_with_status(
+            "ip-2",
+            "ip-2",
+            Status::InProgress,
+        )));
+        graph.add_node(Node::Task(make_task_with_status(
+            "pv-1",
+            "pv-1",
+            Status::PendingValidation,
+        )));
+        graph.add_node(Node::Task(make_task_with_status(
+            "pv-2",
+            "pv-2",
+            Status::PendingValidation,
+        )));
+        graph.add_node(Node::Task(make_task_with_status(
+            "pe-1",
+            "pe-1",
+            Status::PendingEval,
+        )));
+        // Non-active fillers.
+        graph.add_node(Node::Task(make_task_with_status(
+            "open-1",
+            "open-1",
+            Status::Open,
+        )));
+        graph.add_node(Node::Task(make_task_with_status(
+            "waiting-1",
+            "waiting-1",
+            Status::Waiting,
+        )));
+        graph.add_node(Node::Task(make_task_with_status(
+            "done-1",
+            "done-1",
+            Status::Done,
+        )));
+
+        let tmp = tempfile::tempdir().unwrap();
+        let graph_path = tmp.path().join("graph.jsonl");
+        workgraph::parser::save_graph(&graph, &graph_path).unwrap();
+        (graph, tmp)
+    }
+
+    /// Regression for `fix-tui-hud`: HUD active-task count was undercounting
+    /// because PendingValidation was bucketed as "blocked". With the
+    /// `Status::is_active()` helper, a graph with K active tasks must
+    /// report K in `task_counts.in_progress`, not less.
+    #[test]
+    fn task_counts_in_progress_includes_all_active_statuses() {
+        let (graph, tmp) = build_mixed_status_graph();
+        let mut app = VizApp::new(
+            tmp.path().to_path_buf(),
+            crate::commands::viz::VizOptions::default(),
+            Some(true),
+            None,
+            false,
+        );
+        app.load_stats_from_graph(&graph);
+
+        // 2 InProgress + 2 PendingValidation + 1 PendingEval = 5 active.
+        let active_count = graph
+            .tasks()
+            .filter(|t| t.status.is_active())
+            .count();
+        assert_eq!(active_count, 5, "fixture sanity check");
+        assert_eq!(
+            app.task_counts.in_progress, active_count,
+            "HUD in_progress count must match the number of tasks where \
+             Status::is_active() returns true (this is what `wg viz` highlights \
+             as 'running'). Got {}, expected {}.",
+            app.task_counts.in_progress, active_count
+        );
+        assert_eq!(app.task_counts.total, 8);
+        assert_eq!(app.task_counts.done, 1);
+        assert_eq!(app.task_counts.open, 1);
+        // Waiting (not active, not terminal) lands in `blocked`.
+        assert_eq!(app.task_counts.blocked, 1);
+    }
+
+    /// HUD vitals "X running" must equal the count of tasks the viz colors
+    /// as actively running (Status::is_active). This is the user-facing
+    /// reconciliation acceptance criterion from the bug report.
+    #[test]
+    fn vitals_running_equals_active_task_count() {
+        let (graph, tmp) = build_mixed_status_graph();
+        let mut app = VizApp::new(
+            tmp.path().to_path_buf(),
+            crate::commands::viz::VizOptions::default(),
+            Some(true),
+            None,
+            false,
+        );
+        app.load_stats_from_graph(&graph);
+        app.update_vitals();
+
+        let active_count = graph
+            .tasks()
+            .filter(|t| t.status.is_active())
+            .count();
+        assert_eq!(
+            app.vitals.running, active_count,
+            "vitals.running ({}) must match active task count ({})",
+            app.vitals.running, active_count
+        );
     }
 }
 

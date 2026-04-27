@@ -203,6 +203,23 @@ impl Status {
     pub fn is_terminal(&self) -> bool {
         matches!(self, Status::Done | Status::Failed | Status::Abandoned)
     }
+
+    /// Whether this status counts as "active" for HUD/viz consistency:
+    /// the task is currently being worked on or sitting in a post-work gate
+    /// that the user expects to see highlighted as "running" in `wg viz`.
+    /// Includes:
+    /// - InProgress: agent is currently working
+    /// - PendingValidation: agent finished, --verify gate pending
+    /// - PendingEval: agent called `wg done`, awaiting evaluation
+    ///
+    /// Excludes Open (not started), Waiting (gated on a wait condition),
+    /// Blocked (dependency unmet), and all terminal states.
+    pub fn is_active(&self) -> bool {
+        matches!(
+            self,
+            Status::InProgress | Status::PendingValidation | Status::PendingEval
+        )
+    }
 }
 
 /// Task priority as an unbounded u32. Higher number = higher priority.
@@ -2285,6 +2302,24 @@ mod tests {
         // PendingEval is non-terminal — downstream dependents must wait until
         // the eval flips it to Done (or Failed via auto-rescue).
         assert!(!Status::PendingEval.is_terminal());
+    }
+
+    #[test]
+    fn test_status_is_active() {
+        // Active = "agent has touched this and it's not finished" — what
+        // viz highlights as running and what the HUD counts as in_progress.
+        assert!(Status::InProgress.is_active());
+        assert!(Status::PendingValidation.is_active());
+        assert!(Status::PendingEval.is_active());
+
+        // Not yet started, gated, or terminal — not active.
+        assert!(!Status::Open.is_active());
+        assert!(!Status::Waiting.is_active());
+        assert!(!Status::Blocked.is_active());
+        assert!(!Status::Incomplete.is_active());
+        assert!(!Status::Done.is_active());
+        assert!(!Status::Failed.is_active());
+        assert!(!Status::Abandoned.is_active());
     }
 
     #[test]
