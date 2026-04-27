@@ -147,3 +147,14 @@ owners = [
 ]
 description = "Three back-to-back `wg service create-coordinator` IPCs (the call the TUI launcher dialog drives) MUST allocate three distinct .chat-N task ids — not reuse the most recent slot. Pins the user-reported regression on tui-new-chat: 'it doesnt convert into chat-2 or whatever it takes over the last coordinator chat.' Independent of LLM credentials — a graph + IPC correctness check."
 timeout_seconds = 60
+
+[[scenario]]
+name = "chat_idle_does_not_respawn_loop"
+script = "scenarios/chat_idle_does_not_respawn_loop.sh"
+owners = [
+    "chat-agent-loops",
+    "chat-agent-loops-2",
+    "smoke-gate-is",
+]
+description = "Marking a chat-loop tagged task Done MUST NOT trigger cycle reactivation. The user-reported bug had .chat-2 dispatched 458 times in autohaiku/workgraph because Mode 2 implicit cycle iteration re-Opened the chat task on every wg done, the supervisor re-spawned, the new agent called wg done, repeat. Asserts the chat task stays status=done with loop_iteration=0 and zero 'Re-activated by cycle iteration' log entries after wg done. No LLM credentials needed."
+timeout_seconds = 60

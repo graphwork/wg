@@ -6539,3 +6539,148 @@ fn test_cli_add_with_exec_and_timeout() {
     assert_eq!(task.exec.as_deref(), Some("render.sh"));
     assert_eq!(task.timeout.as_deref(), Some("6h"));
 }
+
+// ===========================================================================
+// chat-agent-loops-2: chat-loop tagged tasks with cycle_config must NOT be
+// reactivated by cycle iteration.
+//
+// Repro of the user-visible bug: a `.chat-N` task has cycle_config (unlimited
+// iterations, no_converge). The chat agent runs, finds the inbox empty, calls
+// `wg done`. Without the guard, evaluate_cycle_iteration (Mode 2 implicit
+// cycle) re-Opens the chat task in microseconds. The chat supervisor then
+// spawns another `wg spawn-task .chat-N`, which finds the task Open, claims
+// it, the new agent calls `wg done`, repeat. .chat-2 hit dispatch count 458
+// in the user's autohaiku/workgraph project before manual archive.
+//
+// The fix lives in graph.rs::reactivate_cycle (covers wg-done sync path)
+// AND graph.rs::evaluate_all_cycle_iterations (covers dispatcher safety net).
+// ===========================================================================
+
+fn make_chat_task(id: &str) -> Task {
+    let mut t = make_task(id, id);
+    t.tags = vec![workgraph::chat_id::CHAT_LOOP_TAG.to_string()];
+    t.cycle_config = Some(CycleConfig {
+        max_iterations: 0, // unlimited — like real chat tasks
+        guard: None,
+        delay: None,
+        no_converge: true,
+        restart_on_failure: true,
+        max_failure_restarts: None,
+    });
+    t
+}
+
+#[test]
+fn test_chat_loop_task_not_reactivated_by_evaluate_cycle_iteration() {
+    // Mode 2 implicit cycle: chat task with cycle_config but no after-edges.
+    // This is the path that fired 458 times for .chat-2 in the bug repro.
+    let mut chat = make_chat_task(".chat-7");
+    chat.status = Status::Done;
+    let mut graph = build_graph(vec![chat]);
+
+    let analysis = graph.compute_cycle_analysis();
+    let reactivated = evaluate_cycle_iteration(&mut graph, ".chat-7", &analysis);
+    assert!(
+        reactivated.is_empty(),
+        "chat-loop tagged task with cycle_config must NOT be reactivated by \
+         evaluate_cycle_iteration — chat tasks are event-driven (woken on \
+         inbox writes), not polled. Got reactivated: {:?}",
+        reactivated
+    );
+    assert_eq!(
+        graph.get_task(".chat-7").unwrap().status,
+        Status::Done,
+        "chat task must remain Done after evaluate_cycle_iteration"
+    );
+    assert_eq!(
+        graph.get_task(".chat-7").unwrap().loop_iteration,
+        0,
+        "loop_iteration must NOT increment on chat-loop tasks"
+    );
+}
+
+#[test]
+fn test_legacy_coordinator_loop_tag_also_skipped() {
+    // Legacy `.coordinator-N` tasks with `coordinator-loop` tag must also
+    // be exempt from cycle reactivation — same event-driven semantics, just
+    // pre-rename naming. Without this, projects with un-migrated graphs
+    // would still spawn-loop on the legacy chat tasks.
+    let mut chat = make_task(".coordinator-3", ".coordinator-3");
+    chat.tags = vec![workgraph::chat_id::LEGACY_COORDINATOR_LOOP_TAG.to_string()];
+    chat.cycle_config = Some(CycleConfig {
+        max_iterations: 0,
+        guard: None,
+        delay: None,
+        no_converge: true,
+        restart_on_failure: true,
+        max_failure_restarts: None,
+    });
+    chat.status = Status::Done;
+    let mut graph = build_graph(vec![chat]);
+
+    let analysis = graph.compute_cycle_analysis();
+    let reactivated = evaluate_cycle_iteration(&mut graph, ".coordinator-3", &analysis);
+    assert!(
+        reactivated.is_empty(),
+        "coordinator-loop (legacy) tagged task must also be skipped"
+    );
+}
+
+#[test]
+fn test_chat_loop_skipped_by_evaluate_all_cycle_iterations() {
+    // Defense-in-depth path: dispatcher safety-net tick. This only fires for
+    // SCC-detected cycles, so build a 2-task SCC where the header has the
+    // chat-loop tag. If the guard is missing, evaluate_all_cycle_iterations
+    // would reactivate both members.
+    let mut a = make_chat_task("chat-header");
+    a.after = vec!["worker".to_string()];
+    a.status = Status::Done;
+
+    let mut b = make_task("worker", "Worker");
+    b.after = vec!["chat-header".to_string()];
+    b.status = Status::Done;
+
+    let mut graph = build_graph(vec![a, b]);
+    let analysis = graph.compute_cycle_analysis();
+    assert!(
+        !analysis.cycles.is_empty(),
+        "test setup: SCC must be detected"
+    );
+
+    let reactivated = evaluate_all_cycle_iterations(&mut graph, &analysis);
+    assert!(
+        reactivated.is_empty(),
+        "chat-loop owner must skip safety-net reactivation. Got: {:?}",
+        reactivated
+    );
+}
+
+#[test]
+fn test_non_chat_cycle_still_reactivates() {
+    // Anti-regression: ordinary cycles WITHOUT chat-loop tag must still
+    // reactivate normally. The guard is opt-in by tag.
+    let mut a = make_task("a", "A");
+    a.cycle_config = Some(CycleConfig {
+        max_iterations: 5,
+        guard: None,
+        delay: None,
+        no_converge: false,
+        restart_on_failure: true,
+        max_failure_restarts: None,
+    });
+    a.after = vec!["b".to_string()];
+    a.status = Status::Done;
+
+    let mut b = make_task("b", "B");
+    b.after = vec!["a".to_string()];
+    b.status = Status::Done;
+
+    let mut graph = build_graph(vec![a, b]);
+    let analysis = graph.compute_cycle_analysis();
+    let reactivated = evaluate_cycle_iteration(&mut graph, "a", &analysis);
+    assert_eq!(
+        reactivated.len(),
+        2,
+        "ordinary cycles must still reactivate — guard is chat-loop specific"
+    );
+}

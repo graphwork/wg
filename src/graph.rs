@@ -1769,6 +1769,21 @@ fn reactivate_cycle(
         return vec![];
     }
 
+    // Chat-loop tasks are event-driven (woken on inbox writes by the daemon's
+    // chat supervisor), NOT polled by cycle reactivation. If the chat agent
+    // marks its task done with no pending input, the task must STAY done until
+    // a real user message arrives — otherwise the cycle loop fires on every
+    // `wg done` (sync, here) and on every dispatcher tick (via
+    // evaluate_all_cycle_iterations), which is the chat-agent-loops bug:
+    // .chat-N gets re-Opened in microseconds, the supervisor spawns another
+    // worker, the worker calls `wg done`, repeat — burning tokens with no
+    // user input. See task chat-agent-loops-2.
+    if let Some(owner) = graph.get_task(config_owner_id)
+        && owner.tags.iter().any(|t| crate::chat_id::is_chat_loop_tag(t))
+    {
+        return vec![];
+    }
+
     // Check if ALL members are terminal (Done or Abandoned).
     // Abandoned and archived-Done are terminal — they won't produce more work.
     let mut has_done_member = false;
@@ -1930,18 +1945,23 @@ pub fn evaluate_all_cycle_iterations(
             continue; // No config = no cycle iteration
         };
 
-        // Chat-loop tasks are event-driven (wake on inbox), NOT polled by
-        // cycle reactivation. Skip them — otherwise the chat agent gets
-        // re-spawned on every dispatcher tick when its inbox is empty,
-        // burning tokens to dutifully report "nothing to do" + wg done +
-        // cycle resets, repeat forever (458 dispatches observed in the
-        // wild before manual archive). Bandaid until wg-chat-as ships
-        // (chat as first-class entity, not a graph cycle).
+        // Chat-loop tasks are event-driven (wake on inbox writes by the
+        // daemon's chat supervisor), NOT polled by cycle reactivation. Skip
+        // them — otherwise the chat agent gets re-spawned on every dispatcher
+        // tick when its inbox is empty, burning tokens to dutifully report
+        // "nothing to do" + wg done + cycle resets, repeat forever (458
+        // dispatches observed in the wild before manual archive).
+        //
+        // This is the dispatcher's safety-net path; the synchronous wg-done
+        // path is also guarded inside reactivate_cycle (defense-in-depth so
+        // a future caller of reactivate_cycle from elsewhere is also safe).
+        // Bandaid until wg-chat-as ships (chat as first-class entity, not a
+        // graph cycle).
         if let Some(owner_task) = graph.get_task(&config_owner_id)
             && owner_task
                 .tags
                 .iter()
-                .any(|t| t == "chat-loop" || t == "coordinator-loop")
+                .any(|t| crate::chat_id::is_chat_loop_tag(t))
         {
             continue;
         }
@@ -2050,6 +2070,16 @@ fn reactivate_cycle_on_failure(
     failed_task_id: &str,
 ) -> Vec<String> {
     if !cycle_config.restart_on_failure {
+        return vec![];
+    }
+
+    // Chat-loop tasks: the chat supervisor restarts the agent on its own
+    // restart-window policy. Don't double-restart via cycle-failure-restart
+    // (would re-Open a Failed chat task that the supervisor is about to
+    // respawn anyway, racing the supervisor's own backoff).
+    if let Some(owner) = graph.get_task(config_owner_id)
+        && owner.tags.iter().any(|t| crate::chat_id::is_chat_loop_tag(t))
+    {
         return vec![];
     }
 
