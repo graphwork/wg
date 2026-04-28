@@ -1354,6 +1354,18 @@ fn write_wrapper_script(
         }
     };
 
+    // Raw stream path for the failure classifier. Only claude/codex write this file.
+    let raw_stream_shell_var = match executor_type {
+        "claude" | "codex" => {
+            let raw_stream_file = output_dir.join("raw_stream.jsonl");
+            format!(
+                "RAW_STREAM={}",
+                shell_escape(&raw_stream_file.to_string_lossy())
+            )
+        }
+        _ => "RAW_STREAM=".to_string(),
+    };
+
     // Session resume fallback block: when the primary command tried to resume
     // a stale session (e.g., claude --resume <uuid>), detect the error and
     // retry with a fresh session.
@@ -1381,6 +1393,7 @@ fi
         r#"#!/bin/bash
 TASK_ID={escaped_task_id}
 OUTPUT_FILE={escaped_output_file}
+{raw_stream_shell_var}
 
 # Allow nested Claude Code sessions (spawned agents are independent)
 unset CLAUDECODE
@@ -1411,7 +1424,8 @@ if [ "$TASK_STATUS" = "in-progress" ]; then
     if [ $EXIT_CODE -eq 124 ]; then
         echo "" >> "$OUTPUT_FILE"
         echo "[wrapper] Agent killed by hard timeout, marking task failed" >> "$OUTPUT_FILE"
-        wg fail "$TASK_ID" --reason "Agent exceeded hard timeout" 2>> "$OUTPUT_FILE" || echo "[wrapper] WARNING: 'wg fail' failed with exit code $?" >> "$OUTPUT_FILE"
+        FAIL_CLASS=$(wg classify-failure --exit-code $EXIT_CODE 2>/dev/null || echo "agent-hard-timeout")
+        wg fail "$TASK_ID" --class "$FAIL_CLASS" --reason "Agent exceeded hard timeout" 2>> "$OUTPUT_FILE" || echo "[wrapper] WARNING: 'wg fail' failed with exit code $?" >> "$OUTPUT_FILE"
     elif [ $EXIT_CODE -eq 0 ]; then
         echo "" >> "$OUTPUT_FILE"
         # Safety net: check for unread messages the agent may have missed
@@ -1425,7 +1439,8 @@ if [ "$TASK_STATUS" = "in-progress" ]; then
     else
         echo "" >> "$OUTPUT_FILE"
         echo "[wrapper] Agent exited with code $EXIT_CODE, marking task failed" >> "$OUTPUT_FILE"
-        wg fail "$TASK_ID" --reason "Agent exited with code $EXIT_CODE" 2>> "$OUTPUT_FILE" || echo "[wrapper] WARNING: 'wg fail' failed with exit code $?" >> "$OUTPUT_FILE"
+        FAIL_CLASS=$(wg classify-failure --raw-stream "$RAW_STREAM" --exit-code $EXIT_CODE 2>/dev/null || echo "agent-exit-nonzero")
+        wg fail "$TASK_ID" --class "$FAIL_CLASS" --reason "Agent exited with code $EXIT_CODE" 2>> "$OUTPUT_FILE" || echo "[wrapper] WARNING: 'wg fail' failed with exit code $?" >> "$OUTPUT_FILE"
     fi
 fi
 
@@ -1462,6 +1477,7 @@ exit $EXIT_CODE
 "#,
         escaped_task_id = shell_escape(task_id),
         escaped_output_file = shell_escape(output_file_str),
+        raw_stream_shell_var = raw_stream_shell_var,
         run_command = run_command,
         session_fallback_block = session_fallback_block,
         timeout_note = timeout_note,

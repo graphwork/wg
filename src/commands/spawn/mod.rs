@@ -13,6 +13,7 @@
 
 pub(crate) mod context;
 mod execution;
+pub mod raw_stream_classifier;
 pub(crate) mod worktree;
 
 use anyhow::{Context, Result};

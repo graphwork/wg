@@ -1090,11 +1090,16 @@ pub fn build_coordinator_context(
         .tasks()
         .filter(|t| t.status == Status::Failed)
         .map(|t| {
+            let class_suffix = t
+                .failure_class
+                .map(|c| format!(" [class: {}]", c))
+                .unwrap_or_default();
             format!(
-                "- FAILED: {} \"{}\" — {}",
+                "- FAILED: {} \"{}\" — {}{}",
                 t.id,
                 t.title,
                 t.failure_reason.as_deref().unwrap_or("unknown reason"),
+                class_suffix,
             )
         })
         .collect();

@@ -1016,14 +1016,20 @@ fn main() -> Result<()> {
         Commands::Fail {
             id,
             reason,
+            class,
             eval_reject,
         } => {
             if eval_reject {
                 commands::fail::run_eval_reject(&workgraph_dir, &id, reason.as_deref())
             } else {
-                commands::fail::run(&workgraph_dir, &id, reason.as_deref())
+                let failure_class = class.as_deref().and_then(parse_failure_class);
+                commands::fail::run(&workgraph_dir, &id, reason.as_deref(), failure_class)
             }
         }
+        Commands::ClassifyFailure {
+            raw_stream,
+            exit_code,
+        } => commands::classify_failure::run(raw_stream.as_deref(), exit_code),
         Commands::Incomplete { id, reason } => {
             commands::incomplete::run(&workgraph_dir, &id, reason.as_deref())
         }
@@ -3393,6 +3399,20 @@ fn main() -> Result<()> {
         cli::Commands::Openrouter { command } => {
             commands::openrouter::run(&workgraph_dir, &command, cli.json)
         }
+    }
+}
+
+/// Parse a kebab-case failure class string from `wg fail --class`.
+fn parse_failure_class(s: &str) -> Option<workgraph::graph::FailureClass> {
+    use workgraph::graph::FailureClass;
+    match s.trim() {
+        "api-error-400-document" => Some(FailureClass::ApiError400Document),
+        "api-error-429-rate-limit" => Some(FailureClass::ApiError429RateLimit),
+        "api-error-5xx-transient" => Some(FailureClass::ApiError5xxTransient),
+        "agent-hard-timeout" => Some(FailureClass::AgentHardTimeout),
+        "agent-exit-nonzero" => Some(FailureClass::AgentExitNonzero),
+        "wrapper-internal" => Some(FailureClass::WrapperInternal),
+        _ => None,
     }
 }
 

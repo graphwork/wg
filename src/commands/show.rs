@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use workgraph::config::Config;
 use workgraph::graph::{
-    CycleConfig, LogEntry, LoopGuard, PRIORITY_DEFAULT, Priority, Status, Task, TokenUsage, format_tokens,
+    CycleConfig, FailureClass, LogEntry, LoopGuard, PRIORITY_DEFAULT, Priority, Status, Task, TokenUsage, format_tokens,
     parse_token_usage_live,
 };
 use workgraph::query::build_reverse_index;
@@ -73,6 +73,8 @@ struct TaskDetails {
     max_retries: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     failure_reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    failure_class: Option<FailureClass>,
     #[serde(skip_serializing_if = "Option::is_none")]
     model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -519,6 +521,7 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
         retry_count: task.retry_count,
         max_retries: task.max_retries,
         failure_reason: task.failure_reason.clone(),
+        failure_class: task.failure_class,
         model: task.model.clone(),
         actual_executor,
         actual_model,
@@ -696,6 +699,19 @@ fn print_human_readable(details: &TaskDetails) {
         && let Some(ref reason) = details.failure_reason
     {
         println!("Failure reason: {}", reason);
+    }
+    if let Some(class) = details.failure_class {
+        println!("failure_class: {}", class);
+        use FailureClass::*;
+        let hint = match class {
+            ApiError400Document => "fix the input (malformed/encrypted PDF or document) before retry — do not auto-retry",
+            ApiError429RateLimit => "rate limit — back off and retry",
+            ApiError5xxTransient => "transient upstream error — retry is safe",
+            AgentHardTimeout => "agent exceeded hard timeout — split task or raise timeout",
+            AgentExitNonzero => "generic non-zero exit — inspect agent output for details",
+            WrapperInternal => "wrapper-side issue — inspect the wrapper log (output.log)",
+        };
+        println!("  hint: {}", hint);
     }
     if !details.superseded_by.is_empty() {
         println!("Superseded by: {}", details.superseded_by.join(", "));
@@ -1260,6 +1276,7 @@ mod tests {
             retry_count: 0,
             max_retries: None,
             failure_reason: None,
+            failure_class: None,
             model: None,
             actual_executor: Some("native".to_string()),
             actual_model: Some("openrouter/minimax".to_string()),

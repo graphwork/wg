@@ -531,12 +531,33 @@ pub enum Commands {
         #[arg(long)]
         reason: Option<String>,
 
+        /// Machine-readable failure class (set by wrapper; pairs with --reason).
+        /// One of: api-error-400-document, api-error-429-rate-limit,
+        ///         api-error-5xx-transient, agent-hard-timeout,
+        ///         agent-exit-nonzero, wrapper-internal.
+        #[arg(long, value_name = "CLASS")]
+        class: Option<String>,
+
         /// Reject a done task via evaluation gate. Allows failing a task that
         /// is already Done because the evaluator determined the work is
         /// unacceptable. The task transitions to Failed and its dependents
         /// become blocked.
         #[arg(long)]
         eval_reject: bool,
+    },
+
+    /// [Internal] Classify an agent failure from raw_stream.jsonl and exit code.
+    /// Prints the kebab failure-class string to stdout. Used by the wrapper
+    /// script before calling `wg fail --class <CLASS>`.
+    #[command(hide = true)]
+    ClassifyFailure {
+        /// Path to the raw_stream.jsonl written by the executor wrapper
+        #[arg(long, value_name = "PATH")]
+        raw_stream: Option<String>,
+
+        /// Shell exit code of the agent process (124 = hard timeout)
+        #[arg(long, value_name = "N")]
+        exit_code: i32,
     },
 
     /// Mark a task as incomplete (retryable — needs another pass)
@@ -4756,6 +4777,7 @@ pub fn command_name(cmd: &Commands) -> &'static str {
         Commands::Edit { .. } => "edit",
         Commands::Done { .. } => "done",
         Commands::Fail { .. } => "fail",
+        Commands::ClassifyFailure { .. } => "classify-failure",
         Commands::Incomplete { .. } => "incomplete",
         Commands::Abandon { .. } => "abandon",
         Commands::Retry { .. } => "retry",

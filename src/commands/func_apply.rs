@@ -264,6 +264,7 @@ pub fn run(
                 retry_count: 0,
                 max_retries: None,
                 failure_reason: None,
+            failure_class: None,
                 model: task_model,
                 provider: None,
                 endpoint: None,

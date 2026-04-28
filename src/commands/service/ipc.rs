@@ -1232,6 +1232,7 @@ fn handle_add_task(
         retry_count: 0,
         max_retries: None,
         failure_reason: None,
+        failure_class: None,
         model: model.map(String::from),
         provider: None,
         endpoint: None,
@@ -1372,6 +1373,7 @@ fn handle_query_task(dir: &Path, task_id: &str) -> IpcResponse {
             "started_at": task.started_at,
             "completed_at": task.completed_at,
             "failure_reason": task.failure_reason,
+            "failure_class": task.failure_class.map(|c| c.to_string()),
         })),
         None => IpcResponse::error(&format!("Task '{}' not found", task_id)),
     }

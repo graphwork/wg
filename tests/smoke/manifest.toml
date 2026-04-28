@@ -345,6 +345,18 @@ description = "Pins the `lol you archived _this_ chat too` regression: `wg servi
 timeout_seconds = 30
 
 [[scenario]]
+name = "failure_class_pdf_400"
+script = "scenarios/failure_class_pdf_400.sh"
+owners = [
+    "design-pdf-binary",
+    "fix-pdf-binary",
+    "verify-end-to",
+    "smoke-gate-is",
+]
+description = "Pins Option A of PDF/binary failure handling: api_error_status:400 stream produces failure_class=api-error-400-document, surfaced in wg show with operator hint. Runs offline using a synthetic raw_stream.jsonl; the fixture tests/smoke/fixtures/broken.pdf is a real malformed PDF verified to trigger Anthropic HTTP 400 in live tests."
+timeout_seconds = 30
+
+[[scenario]]
 name = "html_since_filter"
 script = "scenarios/html_since_filter.sh"
 owners = [

@@ -113,6 +113,7 @@ pub(crate) fn defer_self_mutation(
         retry_count: 0,
         max_retries: None,
         failure_reason: None,
+            failure_class: None,
         model: None,
         provider: None,
         endpoint: None,

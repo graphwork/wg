@@ -8200,6 +8200,9 @@ impl VizApp {
         if let Some(ref reason) = task.failure_reason {
             lines.push("── Failure ──".to_string());
             lines.push(format!("  {}", reason));
+            if let Some(class) = task.failure_class {
+                lines.push(format!("  class: {}", class));
+            }
             lines.push(String::new());
         }
 
@@ -8473,6 +8476,9 @@ impl VizApp {
         if let Some(ref reason) = task.failure_reason {
             lines.push("── Failure ──".to_string());
             lines.push(format!("  {}", reason));
+            if let Some(class) = task.failure_class {
+                lines.push(format!("  class: {}", class));
+            }
             lines.push(String::new());
         }
 

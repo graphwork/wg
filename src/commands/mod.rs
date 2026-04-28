@@ -28,6 +28,7 @@ pub mod check;
 pub mod checkpoint;
 pub mod claim;
 pub mod claim_lifecycle;
+pub mod classify_failure;
 pub mod claude_handler;
 pub mod cleanup;
 pub mod codex_handler;
@@ -580,7 +581,7 @@ mod provenance_coverage_tests {
         )
         .unwrap();
 
-        super::fail::run(dir, "prov-fail", Some("timeout")).unwrap();
+        super::fail::run(dir, "prov-fail", Some("timeout"), None).unwrap();
         let entries = ops_with_type(dir, "fail");
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].detail["reason"], "timeout");
@@ -696,7 +697,7 @@ mod provenance_coverage_tests {
         )
         .unwrap();
 
-        super::fail::run(dir, "prov-retry", Some("compile error")).unwrap();
+        super::fail::run(dir, "prov-retry", Some("compile error"), None).unwrap();
         super::retry::run(dir, "prov-retry", false, false, None).unwrap();
 
         let entries = ops_with_type(dir, "retry");
@@ -942,7 +943,7 @@ mod provenance_coverage_tests {
             false, // subtask
         )
         .unwrap();
-        super::fail::run(dir, "prov-gc", Some("oops")).unwrap();
+        super::fail::run(dir, "prov-gc", Some("oops"), None).unwrap();
         super::abandon::run(dir, "prov-gc", Some("giving up"), &[]).unwrap();
 
         super::gc::run(dir, false, false, None).unwrap();
@@ -1047,7 +1048,7 @@ mod provenance_coverage_tests {
         // unclaim
         super::claim::unclaim(dir, "lifecycle").unwrap();
         // fail
-        super::fail::run(dir, "lifecycle", Some("timeout")).unwrap();
+        super::fail::run(dir, "lifecycle", Some("timeout"), None).unwrap();
         // retry
         super::retry::run(dir, "lifecycle", false, false, None).unwrap();
         // done

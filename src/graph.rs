@@ -119,6 +119,43 @@ pub enum WaitSpec {
     Any(Vec<WaitCondition>),
 }
 
+/// Machine-readable failure classification. Populated by the wrapper (via
+/// `wg classify-failure`) and surfaced in `wg show` / `wg service status`.
+/// Pairs with `failure_reason` which carries human prose. None means either
+/// the task succeeded or the row predates this field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum FailureClass {
+    /// HTTP 400 from the Anthropic API on a document attachment (e.g. malformed/
+    /// encrypted PDF). Action: fix the input before retry — do not auto-retry.
+    ApiError400Document,
+    /// HTTP 429 — rate limit. Auto-retriable after backoff.
+    ApiError429RateLimit,
+    /// HTTP 5xx — transient upstream error. Auto-retriable.
+    ApiError5xxTransient,
+    /// Wrapper hard timeout (exit 124). Not auto-retriable in the same form.
+    AgentHardTimeout,
+    /// Generic non-zero exit with no recognised api_error pattern.
+    /// Equivalent to the pre-classification "Agent exited with code N".
+    AgentExitNonzero,
+    /// Wrapper-side issue (e.g., missing raw_stream.jsonl). Inspect wrapper log.
+    WrapperInternal,
+}
+
+impl std::fmt::Display for FailureClass {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            FailureClass::ApiError400Document => "api-error-400-document",
+            FailureClass::ApiError429RateLimit => "api-error-429-rate-limit",
+            FailureClass::ApiError5xxTransient => "api-error-5xx-transient",
+            FailureClass::AgentHardTimeout => "agent-hard-timeout",
+            FailureClass::AgentExitNonzero => "agent-exit-nonzero",
+            FailureClass::WrapperInternal => "wrapper-internal",
+        };
+        write!(f, "{}", s)
+    }
+}
+
 /// Task status
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Default)]
 #[serde(rename_all = "kebab-case")]
@@ -363,6 +400,10 @@ pub struct Task {
     /// Reason for failure or abandonment
     #[serde(skip_serializing_if = "Option::is_none")]
     pub failure_reason: Option<String>,
+    /// Machine-readable failure classification (set by wrapper via classify-failure).
+    /// None for successful tasks or rows predating this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_class: Option<FailureClass>,
     /// Preferred model for this task (haiku, sonnet, opus)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
@@ -571,6 +612,7 @@ impl Default for Task {
             retry_count: 0,
             max_retries: None,
             failure_reason: None,
+            failure_class: None,
             model: None,
             provider: None,
             endpoint: None,
@@ -1129,6 +1171,8 @@ struct TaskHelper {
     #[serde(default)]
     failure_reason: Option<String>,
     #[serde(default)]
+    failure_class: Option<FailureClass>,
+    #[serde(default)]
     model: Option<String>,
     #[serde(default)]
     provider: Option<String>,
@@ -1277,6 +1321,7 @@ impl<'de> Deserialize<'de> for Task {
             retry_count: helper.retry_count,
             max_retries: helper.max_retries,
             failure_reason: helper.failure_reason,
+            failure_class: helper.failure_class,
             model: helper.model,
             provider: helper.provider,
             endpoint: helper.endpoint,

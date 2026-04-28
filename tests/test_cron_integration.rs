@@ -272,6 +272,7 @@ fn create_test_task() -> Task {
         retry_count: 0,
         max_retries: None,
         failure_reason: None,
+            failure_class: None,
         model: None,
         provider: None,
         endpoint: None,
