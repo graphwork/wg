@@ -445,7 +445,7 @@ Currently, `.coordinator` is filtered out as a system task when `show_internal` 
 - Existing graph-level locking (atomic write-to-temp-and-rename) handles concurrency
 - Each coordinator gets its own Claude CLI subprocess with independent conversation context
 
-**Resource limits:** `coordinator.max_coordinators = 4` (default) prevents unbounded agent creation. Lazy spawning starts a coordinator's subprocess only on first message.
+**Resource limits:** `coordinator.max_coordinators = 16` (default) prevents unbounded agent creation. Lazy spawning starts a coordinator's subprocess only on first message.
 
 ### B.7 Relevance to the Synthesis
 

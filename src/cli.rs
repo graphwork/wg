@@ -1594,7 +1594,7 @@ pub enum Commands {
         #[arg(long)]
         max_agents: Option<usize>,
 
-        /// Set max concurrent coordinator agents (LLM sessions). Default: 4.
+        /// Set max concurrent coordinator agents (LLM sessions). Default: 16.
         #[arg(long)]
         max_coordinators: Option<usize>,
 

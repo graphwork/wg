@@ -3176,7 +3176,7 @@ fn default_worktree_isolation() -> bool {
 }
 
 fn default_max_coordinators() -> usize {
-    4
+    16
 }
 
 fn default_archive_retention_days() -> u64 {

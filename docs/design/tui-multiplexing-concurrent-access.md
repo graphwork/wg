@@ -191,7 +191,7 @@ The TUI already supports multiple coordinators via a tab bar (`state.rs:2197`, `
 - Manages its own chat inbox/outbox at `.workgraph/chat/{id}/`
 - Shares a single `coordinator-state.json` (tracks ticks, agents, pause state)
 
-The `CoordinatorConfig.max_coordinators` field (default: 4) limits concurrent coordinator processes.
+The `CoordinatorConfig.max_coordinators` field (default: 16) limits concurrent coordinator processes.
 
 ### 5.2 Multi-User Coordinator Model
 

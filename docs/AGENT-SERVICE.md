@@ -491,7 +491,7 @@ wg config --global --model opus   # set default model globally
 
 [coordinator]
 max_agents = 4           # max parallel agents (default: 4)
-max_coordinators = 4     # max concurrent coordinator sessions (default: 4)
+max_coordinators = 16    # max concurrent coordinator sessions (default: 16)
 interval = 30            # standalone coordinator tick interval
 poll_interval = 5        # daemon safety-net poll interval (default: 5)
 model = "claude:opus"    # provider:model — handler is implied (claude here)

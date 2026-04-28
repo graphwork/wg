@@ -45,7 +45,7 @@
 | `compaction_threshold_ratio` | f64 | `0.8` | No | Context window fraction for compaction |
 | `eval_frequency` | string | `"every_5"` | No | How often to evaluate coordinator turns |
 | `worktree_isolation` | bool | `false` | No | Use git worktrees for isolation |
-| `max_coordinators` | usize | `4` | No | Max simultaneous coordinators |
+| `max_coordinators` | usize | `16` | No | Max simultaneous coordinators |
 | `archive_retention_days` | u64 | `7` | No | Days to keep archived coordinators |
 | `registry_refresh_interval` | u64 | `86400` | No | Model registry refresh interval (seconds) |
 | `max_verify_failures` | u32 | `3` | No | Max verify failures before giving up |
