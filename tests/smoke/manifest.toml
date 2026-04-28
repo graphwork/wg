@@ -397,3 +397,12 @@ owners = [
 ]
 description = "Belt-and-suspenders for the closure walk: `wg reset upstream --yes` (default Forward direction) must clear claims on transitive downstream tasks too, not just the seed. The existing `reset_clears_claim` scenario uses --seeds with all IDs explicit and would not catch a regression that drops downstream from `compute_closure`."
 timeout_seconds = 30
+
+[[scenario]]
+name = "wg_html_ascii_viz"
+script = "scenarios/wg_html_ascii_viz.sh"
+owners = [
+    "wg-html-redesign",
+]
+description = "Regression for wg-html-redesign: wg html --all must emit ASCII viz (not SVG) in a viz-pre element, task IDs must be wrapped in clickable task-link spans, side panel element must be present, WG_TASKS JSON must be valid, and the ASCII layout must match wg viz output."
+timeout_seconds = 60

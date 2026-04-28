@@ -1,17 +1,9 @@
-//! `wg html`: render the workgraph as a static HTML site (public tasks only).
+//! `wg html`: render the workgraph as a static HTML site.
 //!
-//! Emits a directory of plain HTML/CSS/SVG files: an index page with a
-//! layered SVG DAG view and one detail page per public task. The output is
-//! rsync-friendly (no runtime requirements, no JavaScript framework).
-//!
-//! Visibility filter: only tasks with `visibility = "public"` are included.
-//! Internal/peer tasks are excluded — including from edges (a public task
-//! that depends on an internal task does not show that edge in the rendered
-//! site, but the dependency annotation is preserved on its detail page).
-//!
-//! Layout: a simple longest-path layered layout (left-to-right). No external
-//! tools (no graphviz dot dependency); the layout is computed in Rust and
-//! rendered as inline SVG.
+//! Index page shows the ASCII viz from `wg viz` rendered verbatim in a
+//! monospace `<pre>` element. Task identifiers in the ASCII are wrapped in
+//! clickable spans that open an inline side inspector panel. Per-task detail
+//! pages remain available as deeplink targets.
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Duration, Utc};
@@ -66,7 +58,6 @@ pub fn parse_since(s: &str) -> Result<Duration> {
 }
 
 /// Return true if the task has any timestamp that falls within the window.
-/// Uses created_at, started_at, completed_at, and last_iteration_completed_at.
 fn task_in_window(task: &Task, cutoff: DateTime<Utc>) -> bool {
     let timestamps: &[Option<&str>] = &[
         task.created_at.as_deref(),
@@ -81,8 +72,7 @@ fn task_in_window(task: &Task, cutoff: DateTime<Utc>) -> bool {
     })
 }
 
-/// Status palette mirrored from `src/tui/viz_viewer/state.rs`.
-/// Returned as CSS-formatted `rgb(r,g,b)` strings for direct embedding.
+/// Status palette — CSS-formatted `rgb(r,g,b)` strings.
 fn status_color(status: Status) -> &'static str {
     match status {
         Status::Done => "rgb(80,220,100)",
@@ -97,7 +87,6 @@ fn status_color(status: Status) -> &'static str {
     }
 }
 
-/// CSS class name for a status, used for legend / per-task badge styling.
 fn status_class(status: Status) -> &'static str {
     match status {
         Status::Done => "done",
@@ -113,7 +102,6 @@ fn status_class(status: Status) -> &'static str {
     }
 }
 
-/// Escape a string for safe inclusion in HTML/SVG text or attribute contexts.
 fn escape_html(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for ch in s.chars() {
@@ -129,215 +117,6 @@ fn escape_html(s: &str) -> String {
     out
 }
 
-/// Layered placement of one node in the DAG.
-struct LaidOut {
-    layer: usize,
-    pos_in_layer: usize,
-    layer_size: usize,
-}
-
-/// Compute longest-path layering: each node's layer is `1 + max(layer of after-deps)`,
-/// considering only after-deps that are themselves in the included set.
-/// Within each layer, nodes are sorted by id for deterministic output.
-fn compute_layers(included_ids: &HashSet<&str>, tasks_by_id: &HashMap<&str, &Task>) -> HashMap<String, LaidOut> {
-    let mut layer_of: HashMap<String, usize> = HashMap::new();
-
-    // Iterative longest-path layering. Repeat until fixed point. Worst-case
-    // O(V*E) but the graph is small enough that this is fine.
-    let mut changed = true;
-    while changed {
-        changed = false;
-        for &id in included_ids {
-            let task = match tasks_by_id.get(id) {
-                Some(t) => t,
-                None => continue,
-            };
-            let mut max_dep_layer: Option<usize> = None;
-            for after in &task.after {
-                if included_ids.contains(after.as_str()) {
-                    if let Some(&l) = layer_of.get(after) {
-                        max_dep_layer = Some(max_dep_layer.map_or(l, |m| m.max(l)));
-                    } else {
-                        // dep hasn't been assigned yet — defer
-                        max_dep_layer = Some(usize::MAX);
-                        break;
-                    }
-                }
-            }
-            let new_layer = match max_dep_layer {
-                None => 0,
-                Some(usize::MAX) => continue, // wait for next pass
-                Some(l) => l + 1,
-            };
-            match layer_of.get(id) {
-                Some(&existing) if existing >= new_layer => {}
-                _ => {
-                    layer_of.insert(id.to_string(), new_layer);
-                    changed = true;
-                }
-            }
-        }
-    }
-
-    // Any remaining nodes (in a cycle) — assign to layer 0 as fallback.
-    for &id in included_ids {
-        layer_of.entry(id.to_string()).or_insert(0);
-    }
-
-    // Group by layer, sort within layer by id.
-    let mut by_layer: BTreeMap<usize, Vec<String>> = BTreeMap::new();
-    for (id, layer) in &layer_of {
-        by_layer.entry(*layer).or_default().push(id.clone());
-    }
-    for v in by_layer.values_mut() {
-        v.sort();
-    }
-
-    let mut out: HashMap<String, LaidOut> = HashMap::new();
-    for (layer, ids) in by_layer {
-        let layer_size = ids.len();
-        for (pos, id) in ids.into_iter().enumerate() {
-            out.insert(
-                id,
-                LaidOut {
-                    layer,
-                    pos_in_layer: pos,
-                    layer_size,
-                },
-            );
-        }
-    }
-    out
-}
-
-const NODE_W: usize = 220;
-const NODE_H: usize = 60;
-const LAYER_GAP_X: usize = 80;
-const NODE_GAP_Y: usize = 30;
-const MARGIN: usize = 40;
-
-/// Compute (x, y) of a node's top-left corner.
-fn node_xy(laid: &LaidOut, max_layer_size: usize) -> (usize, usize) {
-    let x = MARGIN + laid.layer * (NODE_W + LAYER_GAP_X);
-    // Center this layer's nodes vertically within the canvas.
-    let layer_height = laid.layer_size * NODE_H + laid.layer_size.saturating_sub(1) * NODE_GAP_Y;
-    let canvas_height = max_layer_size * NODE_H + max_layer_size.saturating_sub(1) * NODE_GAP_Y;
-    let layer_top = MARGIN + (canvas_height.saturating_sub(layer_height)) / 2;
-    let y = layer_top + laid.pos_in_layer * (NODE_H + NODE_GAP_Y);
-    (x, y)
-}
-
-/// Render the DAG as an inline SVG fragment.
-fn render_svg(
-    laid: &HashMap<String, LaidOut>,
-    tasks_by_id: &HashMap<&str, &Task>,
-    included_ids: &HashSet<&str>,
-) -> String {
-    let max_layer_size = laid.values().map(|l| l.layer_size).max().unwrap_or(1);
-    let max_layer = laid.values().map(|l| l.layer).max().unwrap_or(0);
-    let width = MARGIN * 2 + (max_layer + 1) * NODE_W + max_layer * LAYER_GAP_X;
-    let height = MARGIN * 2 + max_layer_size * NODE_H + max_layer_size.saturating_sub(1) * NODE_GAP_Y;
-
-    let mut svg = String::new();
-    svg.push_str(&format!(
-        "<svg class=\"dag\" xmlns=\"http://www.w3.org/2000/svg\" xmlns:xlink=\"http://www.w3.org/1999/xlink\" viewBox=\"0 0 {} {}\" width=\"{}\" height=\"{}\">\n",
-        width, height, width, height
-    ));
-
-    // Arrowhead marker definition.
-    svg.push_str(
-        "<defs>\n  <marker id=\"arrow\" viewBox=\"0 0 10 10\" refX=\"10\" refY=\"5\" \
-         markerWidth=\"6\" markerHeight=\"6\" orient=\"auto-start-reverse\">\n    \
-         <path d=\"M0,0 L10,5 L0,10 z\" fill=\"#888\" />\n  </marker>\n</defs>\n",
-    );
-
-    // Render edges first so nodes draw over them.
-    for (id, _laid_to) in laid {
-        let task = match tasks_by_id.get(id.as_str()) {
-            Some(t) => t,
-            None => continue,
-        };
-        for after in &task.after {
-            if !included_ids.contains(after.as_str()) {
-                continue;
-            }
-            let from = match laid.get(after) {
-                Some(l) => l,
-                None => continue,
-            };
-            let to = match laid.get(id) {
-                Some(l) => l,
-                None => continue,
-            };
-            let (fx, fy) = node_xy(from, max_layer_size);
-            let (tx, ty) = node_xy(to, max_layer_size);
-            // Edge from right-mid of "from" to left-mid of "to".
-            let x1 = fx + NODE_W;
-            let y1 = fy + NODE_H / 2;
-            let x2 = tx;
-            let y2 = ty + NODE_H / 2;
-            // Bezier curve with horizontal handles.
-            let cx = (x1 + x2) / 2;
-            svg.push_str(&format!(
-                "<path d=\"M{x1},{y1} C{cx},{y1} {cx},{y2} {x2},{y2}\" \
-                 fill=\"none\" stroke=\"#888\" stroke-width=\"1.5\" marker-end=\"url(#arrow)\" />\n",
-                x1 = x1, y1 = y1, cx = cx, x2 = x2, y2 = y2,
-            ));
-        }
-    }
-
-    // Render nodes.
-    for (id, laid_node) in laid {
-        let task = match tasks_by_id.get(id.as_str()) {
-            Some(t) => t,
-            None => continue,
-        };
-        let (x, y) = node_xy(laid_node, max_layer_size);
-        let fill = status_color(task.status);
-        let label_id = escape_html(&task.id);
-        let label_title = escape_html(&task.title);
-        let truncated_title = if task.title.chars().count() > 28 {
-            let mut s: String = task.title.chars().take(28).collect();
-            s.push('…');
-            escape_html(&s)
-        } else {
-            label_title.clone()
-        };
-        let href = format!("tasks/{}.html", url_encode_id(&task.id));
-        svg.push_str(&format!(
-            "<a xlink:href=\"{href}\" href=\"{href}\">\n  \
-             <title>{label_id} — {label_title} ({status})</title>\n  \
-             <rect x=\"{x}\" y=\"{y}\" width=\"{w}\" height=\"{h}\" rx=\"6\" ry=\"6\" \
-             fill=\"{fill}\" stroke=\"#222\" stroke-width=\"1\" />\n  \
-             <text x=\"{tx}\" y=\"{ty1}\" text-anchor=\"middle\" font-size=\"12\" \
-             font-family=\"monospace\" font-weight=\"bold\" fill=\"#000\">{label_id}</text>\n  \
-             <text x=\"{tx}\" y=\"{ty2}\" text-anchor=\"middle\" font-size=\"11\" \
-             font-family=\"sans-serif\" fill=\"#000\">{truncated}</text>\n\
-             </a>\n",
-            href = href,
-            label_id = label_id,
-            label_title = label_title,
-            status = task.status,
-            x = x,
-            y = y,
-            w = NODE_W,
-            h = NODE_H,
-            fill = fill,
-            tx = x + NODE_W / 2,
-            ty1 = y + 24,
-            ty2 = y + 44,
-            truncated = truncated_title,
-        ));
-    }
-
-    svg.push_str("</svg>\n");
-    svg
-}
-
-/// Percent-encode characters in a task id that aren't safe for use as a
-/// path segment in a URL. Task ids are generally kebab-case + dots, so the
-/// only character we typically need to handle is leading-dot system ids
-/// (no encoding actually needed) — but we still escape conservatively.
 fn url_encode_id(id: &str) -> String {
     let mut out = String::with_capacity(id.len());
     for ch in id.chars() {
@@ -349,102 +128,259 @@ fn url_encode_id(id: &str) -> String {
     out
 }
 
-/// Filename for a task's detail page (relative to output dir).
 fn task_filename(id: &str) -> String {
     format!("tasks/{}.html", url_encode_id(id))
 }
 
 const STYLE_CSS: &str = include_str!("html_assets/style.css");
 
-/// Generate the index page HTML.
-fn render_index(
-    graph: &WorkGraph,
-    included: &[&Task],
-    tasks_by_id: &HashMap<&str, &Task>,
-    included_ids: &HashSet<&str>,
-    laid: &HashMap<String, LaidOut>,
-    show_all: bool,
-    since_label: Option<&str>,
-) -> String {
-    // Status counts.
-    let mut counts: BTreeMap<String, usize> = BTreeMap::new();
-    for t in included {
-        *counts.entry(t.status.to_string()).or_insert(0) += 1;
-    }
-    let total_in_graph = graph.tasks().count();
-    let total_public = included.len();
+// ── ASCII viz capture ────────────────────────────────────────────────────────
 
-    let svg = if included.is_empty() {
-        "<p class=\"empty\">No tasks to display.</p>".to_string()
-    } else {
-        render_svg(laid, tasks_by_id, included_ids)
+/// Capture `wg viz --all --no-tui` output for the given workgraph directory.
+/// Falls back to an empty string if the subprocess fails.
+fn capture_viz_ascii(workgraph_dir: &Path) -> String {
+    let exe = match std::env::current_exe() {
+        Ok(p) => p,
+        Err(_) => return String::new(),
+    };
+    let result = std::process::Command::new(&exe)
+        .arg("--dir")
+        .arg(workgraph_dir)
+        .arg("viz")
+        .arg("--all")
+        .arg("--no-tui")
+        .arg("--columns")
+        .arg("120")
+        .output();
+    match result {
+        Ok(out) if out.status.success() => {
+            String::from_utf8_lossy(&out.stdout).into_owned()
+        }
+        _ => String::new(),
+    }
+}
+
+/// Scan `text` for any occurrence of a known task ID (from `task_ids`) and
+/// wrap each match in a clickable `<span data-task-id="…">`. Non-task-ID
+/// characters are HTML-escaped. Works on char boundaries so multibyte UTF-8
+/// (box-drawing chars, Unicode symbols) passes through correctly.
+fn make_task_ids_clickable(text: &str, task_ids: &HashSet<&str>) -> String {
+    if task_ids.is_empty() {
+        return escape_html(text);
+    }
+
+    let mut out = String::with_capacity(text.len() * 2);
+    let mut rest = text;
+
+    while !rest.is_empty() {
+        // Find the start of the next potential identifier (ASCII alphanumeric or . _ -)
+        let id_start = rest
+            .char_indices()
+            .find(|(_, c)| c.is_ascii_alphanumeric() || *c == '.' || *c == '_' || *c == '-');
+
+        match id_start {
+            None => {
+                // No more identifiers — escape the remainder
+                out.push_str(&escape_html(rest));
+                break;
+            }
+            Some((pos, _)) => {
+                // Emit everything before this identifier start (escaped)
+                out.push_str(&escape_html(&rest[..pos]));
+                rest = &rest[pos..];
+
+                // Find the end of the identifier span
+                let id_end = rest
+                    .char_indices()
+                    .find(|(_, c)| {
+                        !c.is_ascii_alphanumeric() && *c != '-' && *c != '_' && *c != '.'
+                    })
+                    .map(|(i, _)| i)
+                    .unwrap_or(rest.len());
+
+                let candidate = &rest[..id_end];
+                if task_ids.contains(candidate) {
+                    out.push_str("<span class=\"task-link\" data-task-id=\"");
+                    out.push_str(candidate); // task IDs are ASCII-safe
+                    out.push_str("\">");
+                    out.push_str(candidate);
+                    out.push_str("</span>");
+                } else {
+                    out.push_str(&escape_html(candidate));
+                }
+                rest = &rest[id_end..];
+            }
+        }
+    }
+    out
+}
+
+// ── Evaluation score loading ─────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Default)]
+struct EvalSummary {
+    score: f64,
+    dimensions: Vec<(String, f64)>,
+}
+
+/// Load latest evaluation score per task from agency/evaluations/*.json.
+fn load_eval_scores(workgraph_dir: &Path) -> HashMap<String, EvalSummary> {
+    let evals_dir = workgraph_dir.join("agency").join("evaluations");
+    let mut latest: HashMap<String, (String, EvalSummary)> = HashMap::new();
+
+    let entries = match fs::read_dir(&evals_dir) {
+        Ok(e) => e,
+        Err(_) => return HashMap::new(),
     };
 
-    // Ordered task list (by layer then id).
-    let mut ordered: Vec<&&Task> = included.iter().collect();
-    ordered.sort_by_key(|t| {
-        (
-            laid.get(&t.id).map(|l| l.layer).unwrap_or(0),
-            laid.get(&t.id).map(|l| l.pos_in_layer).unwrap_or(0),
-            t.id.clone(),
-        )
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().map(|e| e != "json").unwrap_or(true) {
+            continue;
+        }
+        let content = match fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        let v: serde_json::Value = match serde_json::from_str(&content) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let task_id = match v.get("task_id").and_then(|x| x.as_str()) {
+            Some(id) => id.to_string(),
+            None => continue,
+        };
+        let score = match v.get("score").and_then(|x| x.as_f64()) {
+            Some(s) => s,
+            None => continue,
+        };
+        let timestamp = v
+            .get("timestamp")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        let mut dims: Vec<(String, f64)> = v
+            .get("dimensions")
+            .and_then(|d| d.as_object())
+            .map(|obj| {
+                let mut pairs: Vec<(String, f64)> = obj
+                    .iter()
+                    .filter_map(|(k, val)| val.as_f64().map(|f| (k.clone(), f)))
+                    .collect();
+                pairs.sort_by(|a, b| a.0.cmp(&b.0));
+                pairs
+            })
+            .unwrap_or_default();
+
+        // Keep only the latest timestamp per task_id
+        let keep = match latest.get(&task_id) {
+            None => true,
+            Some((existing_ts, _)) => &timestamp > existing_ts,
+        };
+        if keep {
+            latest.insert(
+                task_id,
+                (timestamp, EvalSummary { score, dimensions: dims }),
+            );
+        }
+    }
+
+    latest
+        .into_iter()
+        .map(|(task_id, (_, summary))| (task_id, summary))
+        .collect()
+}
+
+// ── Inline task JSON ─────────────────────────────────────────────────────────
+
+fn task_to_json(
+    task: &Task,
+    eval: Option<&EvalSummary>,
+    included_ids: &HashSet<&str>,
+) -> serde_json::Value {
+    let log_entries: Vec<serde_json::Value> = task
+        .log
+        .iter()
+        .rev()
+        .take(20)
+        .rev()
+        .map(|e| {
+            serde_json::json!({
+                "timestamp": e.timestamp,
+                "message": e.message,
+            })
+        })
+        .collect();
+
+    // Only expose deps that are in the included set — don't leak internal IDs.
+    let after_visible: Vec<&str> = task
+        .after
+        .iter()
+        .map(|s| s.as_str())
+        .filter(|id| included_ids.contains(id))
+        .collect();
+
+    let mut obj = serde_json::json!({
+        "id": task.id,
+        "title": task.title,
+        "status": task.status.to_string(),
+        "after": after_visible,
+        "tags": task.tags,
+        "log": log_entries,
     });
 
-    let mut list = String::new();
-    list.push_str("<ul class=\"task-list\">\n");
-    for t in ordered {
-        list.push_str(&format!(
-            "  <li><a href=\"{href}\"><span class=\"badge {cls}\">{status}</span> \
-             <code>{id}</code> — {title}</a></li>\n",
-            href = task_filename(&t.id),
-            cls = status_class(t.status),
-            status = t.status,
-            id = escape_html(&t.id),
-            title = escape_html(&t.title),
-        ));
+    if let Some(m) = &task.model {
+        obj["model"] = serde_json::Value::String(m.clone());
     }
-    list.push_str("</ul>\n");
-
-    let legend = render_legend();
-    let footer = render_footer(total_in_graph, total_public, show_all, since_label);
-
-    format!(
-        "<!DOCTYPE html>\n\
-         <html lang=\"en\">\n\
-         <head>\n\
-         <meta charset=\"utf-8\" />\n\
-         <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />\n\
-         <title>Workgraph — Public Mirror</title>\n\
-         <link rel=\"stylesheet\" href=\"style.css\" />\n\
-         </head>\n\
-         <body>\n\
-         <header><h1>Workgraph</h1>\n\
-         <p class=\"subtitle\">Public mirror of the project's task graph.</p>\n\
-         </header>\n\
-         <main>\n\
-         <section class=\"dag-section\">\n\
-         <h2>Dependency graph</h2>\n\
-         <div class=\"dag-wrap\">{svg}</div>\n\
-         </section>\n\
-         <section class=\"legend-section\">\n\
-         <h2>Legend</h2>\n\
-         {legend}\n\
-         </section>\n\
-         <section class=\"list-section\">\n\
-         <h2>Tasks ({total_public})</h2>\n\
-         {list}\n\
-         </section>\n\
-         </main>\n\
-         <footer>{footer}</footer>\n\
-         </body>\n\
-         </html>\n",
-        svg = svg,
-        legend = legend,
-        list = list,
-        total_public = total_public,
-        footer = footer,
-    )
+    if let Some(a) = &task.agent {
+        obj["agent"] = serde_json::Value::String(a.clone());
+    }
+    if let Some(d) = &task.description {
+        // Truncate description to 3000 chars for the panel
+        let truncated = if d.len() > 3000 {
+            format!("{}…", &d[..3000])
+        } else {
+            d.clone()
+        };
+        obj["description"] = serde_json::Value::String(truncated);
+    }
+    if let Some(reason) = &task.failure_reason {
+        obj["failure_reason"] = serde_json::Value::String(reason.clone());
+    }
+    if let Some(ev) = eval {
+        obj["eval_score"] = serde_json::json!(ev.score);
+        let dims: serde_json::Value = ev
+            .dimensions
+            .iter()
+            .map(|(k, v)| (k.clone(), serde_json::json!(v)))
+            .collect::<serde_json::Map<_, _>>()
+            .into();
+        obj["eval_dims"] = dims;
+    }
+    obj
 }
+
+/// Build the inline `window.WG_TASKS = {...}` JSON blob for all included tasks.
+fn build_tasks_json(
+    included: &[&Task],
+    evals: &HashMap<String, EvalSummary>,
+    included_ids: &HashSet<&str>,
+) -> String {
+    let map: serde_json::Map<String, serde_json::Value> = included
+        .iter()
+        .map(|t| {
+            let eval = evals.get(&t.id);
+            (t.id.clone(), task_to_json(t, eval, included_ids))
+        })
+        .collect();
+    let json_str = serde_json::to_string(&serde_json::Value::Object(map))
+        .unwrap_or_else(|_| "{}".to_string());
+    // Safety: prevent </script> from breaking the script block
+    json_str.replace("</script>", "<\\/script>")
+}
+
+// ── Index page ───────────────────────────────────────────────────────────────
 
 fn render_legend() -> String {
     let entries = [
@@ -512,18 +448,225 @@ fn render_footer(
     )
 }
 
+static PANEL_JS: &str = r##"
+(function() {
+  var tasks = window.WG_TASKS || {};
+  var panel = document.getElementById('side-panel');
+  var panelContent = document.getElementById('panel-content');
+  var closeBtn = document.getElementById('panel-close');
+
+  function e(s) {
+    return String(s)
+      .replace(/&/g,'&amp;').replace(/</g,'&lt;')
+      .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  function statusCls(s) { return s.replace(/\s+/g,'-').toLowerCase(); }
+
+  function openPanel(taskId) {
+    var task = tasks[taskId];
+    if (!task) return;
+    var h = '';
+    h += '<div class="panel-header">';
+    h += '<code class="panel-id">' + e(task.id) + '</code> ';
+    h += '<span class="badge ' + statusCls(task.status) + '">' + e(task.status) + '</span>';
+    h += '</div>';
+    h += '<p class="panel-title">' + e(task.title) + '</p>';
+    if (task.model || task.agent) {
+      h += '<p class="panel-meta">';
+      if (task.model) h += '<strong>Model:</strong> <code>' + e(task.model) + '</code> &nbsp;';
+      if (task.agent) h += '<strong>Agent:</strong> <code>' + e(task.agent.slice(0,8)) + '…</code>';
+      h += '</p>';
+    }
+    if (task.tags && task.tags.length > 0) {
+      h += '<p class="panel-tags">' + task.tags.map(function(t){return '<code>'+e(t)+'</code>';}).join(' ') + '</p>';
+    }
+    if (task.description) {
+      var desc = task.description;
+      h += '<details><summary>Description</summary><pre class="panel-desc">' + e(desc) + '</pre></details>';
+    }
+    if (task.after && task.after.length > 0) {
+      h += '<details open><summary>Depends on (' + task.after.length + ')</summary><ul class="panel-deps">';
+      task.after.forEach(function(depId) {
+        var dep = tasks[depId];
+        if (dep) {
+          h += '<li><a href="#" class="dep-link" data-task-id="' + e(depId) + '">';
+          h += '<span class="badge ' + statusCls(dep.status) + '">' + e(dep.status) + '</span> ';
+          h += '<code>' + e(depId) + '</code></a></li>';
+        } else {
+          h += '<li><code>' + e(depId) + '</code></li>';
+        }
+      });
+      h += '</ul></details>';
+    }
+    if (task.eval_score != null) {
+      h += '<details open><summary>Eval score</summary>';
+      h += '<p class="eval-score">' + task.eval_score.toFixed(2) + '</p>';
+      if (task.eval_dims) {
+        h += '<table class="eval-dims"><tbody>';
+        Object.keys(task.eval_dims).sort().forEach(function(dim) {
+          var v = task.eval_dims[dim];
+          h += '<tr><td>' + e(dim.replace(/_/g,' ')) + '</td><td class="eval-dim-val">' + v.toFixed(2) + '</td></tr>';
+        });
+        h += '</tbody></table>';
+      }
+      h += '</details>';
+    }
+    if (task.log && task.log.length > 0) {
+      h += '<details><summary>Log (' + task.log.length + ' entries)</summary><ul class="panel-log">';
+      task.log.forEach(function(entry) {
+        var ts = entry.timestamp ? entry.timestamp.slice(0,19).replace('T',' ') : '';
+        h += '<li><span class="log-ts">' + e(ts) + '</span> ' + e(entry.message) + '</li>';
+      });
+      h += '</ul></details>';
+    }
+    if (task.failure_reason) {
+      h += '<details open><summary>Failure reason</summary><pre class="panel-desc">' + e(task.failure_reason) + '</pre></details>';
+    }
+    h += '<p class="panel-deeplink"><a href="tasks/' + encodeURIComponent(taskId) + '.html">View full task page →</a></p>';
+    panelContent.innerHTML = h;
+    panel.classList.remove('hidden');
+
+    // Bind dep-link clicks
+    panelContent.querySelectorAll('.dep-link').forEach(function(a) {
+      a.addEventListener('click', function(ev) {
+        ev.preventDefault();
+        openPanel(a.dataset.taskId);
+      });
+    });
+  }
+
+  // Bind task-link clicks in the viz
+  document.querySelectorAll('.task-link').forEach(function(el) {
+    el.style.cursor = 'pointer';
+    el.addEventListener('click', function() { openPanel(el.dataset.taskId); });
+  });
+
+  // Close
+  closeBtn.addEventListener('click', function() { panel.classList.add('hidden'); });
+  document.addEventListener('keydown', function(ev) {
+    if (ev.key === 'Escape') panel.classList.add('hidden');
+  });
+  document.addEventListener('click', function(ev) {
+    if (!panel.classList.contains('hidden')
+        && !panel.contains(ev.target)
+        && !ev.target.classList.contains('task-link')) {
+      panel.classList.add('hidden');
+    }
+  });
+})();
+"##;
+
+fn render_index(
+    graph: &WorkGraph,
+    included: &[&Task],
+    tasks_json: &str,
+    ascii_viz: &str,
+    show_all: bool,
+    since_label: Option<&str>,
+) -> String {
+    let total_in_graph = graph.tasks().count();
+    let total_public = included.len();
+
+    // Status counts for the summary
+    let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+    for t in included {
+        *counts.entry(t.status.to_string()).or_insert(0) += 1;
+    }
+
+    let task_ids: HashSet<&str> = included.iter().map(|t| t.id.as_str()).collect();
+
+    // ASCII viz: make task IDs clickable
+    let viz_body = if ascii_viz.trim().is_empty() {
+        escape_html("(no tasks to display)")
+    } else {
+        make_task_ids_clickable(ascii_viz, &task_ids)
+    };
+    let viz_html = format!("<pre class=\"viz-pre\">{}</pre>", viz_body);
+
+    // Ordered task list
+    let mut ordered: Vec<&&Task> = included.iter().collect();
+    ordered.sort_by_key(|t| (t.status.to_string(), t.id.clone()));
+    let mut list = String::new();
+    list.push_str("<ul class=\"task-list\">\n");
+    for t in &ordered {
+        list.push_str(&format!(
+            "  <li><a href=\"{href}\"><span class=\"badge {cls}\">{status}</span> \
+             <code>{id}</code> — {title}</a></li>\n",
+            href = task_filename(&t.id),
+            cls = status_class(t.status),
+            status = t.status,
+            id = escape_html(&t.id),
+            title = escape_html(&t.title),
+        ));
+    }
+    list.push_str("</ul>\n");
+
+    let legend = render_legend();
+    let footer = render_footer(total_in_graph, total_public, show_all, since_label);
+
+    format!(
+        "<!DOCTYPE html>\n\
+         <html lang=\"en\">\n\
+         <head>\n\
+         <meta charset=\"utf-8\" />\n\
+         <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />\n\
+         <title>Workgraph</title>\n\
+         <link rel=\"stylesheet\" href=\"style.css\" />\n\
+         </head>\n\
+         <body>\n\
+         <header><h1>Workgraph</h1>\n\
+         <p class=\"subtitle\">Task graph — {n} tasks shown.</p>\n\
+         </header>\n\
+         <div class=\"page-layout\">\n\
+         <main class=\"main-content\">\n\
+         <section class=\"dag-section\">\n\
+         <h2>Dependency graph <span class=\"viz-hint\">(click a task id to inspect)</span></h2>\n\
+         <div class=\"viz-wrap\">{viz}</div>\n\
+         </section>\n\
+         <section class=\"legend-section\">\n\
+         <h2>Legend</h2>\n\
+         {legend}\n\
+         </section>\n\
+         <section class=\"list-section\">\n\
+         <h2>Tasks ({total_public})</h2>\n\
+         {list}\n\
+         </section>\n\
+         </main>\n\
+         <aside id=\"side-panel\" class=\"side-panel hidden\">\n\
+         <button id=\"panel-close\" aria-label=\"Close\">×</button>\n\
+         <div id=\"panel-content\"></div>\n\
+         </aside>\n\
+         </div>\n\
+         <footer>{footer}</footer>\n\
+         <script>window.WG_TASKS = {tasks_json};</script>\n\
+         <script>{panel_js}</script>\n\
+         </body>\n\
+         </html>\n",
+        n = total_public,
+        viz = viz_html,
+        legend = legend,
+        list = list,
+        total_public = total_public,
+        footer = footer,
+        tasks_json = tasks_json,
+        panel_js = PANEL_JS,
+    )
+}
+
+// ── Per-task page ─────────────────────────────────────────────────────────────
+
 fn render_task_page(
     task: &Task,
     graph: &WorkGraph,
     included_ids: &HashSet<&str>,
+    eval: Option<&EvalSummary>,
 ) -> String {
     let title = escape_html(&task.title);
     let id = escape_html(&task.id);
     let status_str = task.status.to_string();
     let status_cls = status_class(task.status);
 
-    // Dependencies (after) — link to public deps; aggregate hidden ones into a count
-    // so internal task ids never leak into the rendered output.
     let mut deps_html = String::from("<ul class=\"deps\">");
     let mut hidden_dep_count = 0usize;
     if task.after.is_empty() {
@@ -556,7 +699,6 @@ fn render_task_page(
     }
     deps_html.push_str("</ul>");
 
-    // Reverse deps: who depends on this task?
     let dependents: Vec<&str> = {
         let mut v: Vec<&str> = graph
             .tasks()
@@ -603,17 +745,28 @@ fn render_task_page(
         _ => "<p class=\"none\">(no description)</p>".to_string(),
     };
 
-    // Metadata table.
     let mut meta_rows: Vec<(String, String)> = Vec::new();
-    meta_rows.push(("Status".into(), format!("<span class=\"badge {}\">{}</span>", status_cls, status_str)));
+    meta_rows.push((
+        "Status".into(),
+        format!(
+            "<span class=\"badge {}\">{}</span>",
+            status_cls, status_str
+        ),
+    ));
     if let Some(a) = &task.assigned {
         meta_rows.push(("Assigned".into(), format!("<code>{}</code>", escape_html(a))));
     }
     if let Some(agent) = &task.agent {
-        meta_rows.push(("Agent identity".into(), format!("<code>{}</code>", escape_html(agent))));
+        meta_rows.push((
+            "Agent identity".into(),
+            format!("<code>{}</code>", escape_html(agent)),
+        ));
     }
     if let Some(model) = &task.model {
-        meta_rows.push(("Model".into(), format!("<code>{}</code>", escape_html(model))));
+        meta_rows.push((
+            "Model".into(),
+            format!("<code>{}</code>", escape_html(model)),
+        ));
     }
     if let Some(c) = &task.created_at {
         meta_rows.push(("Created".into(), escape_html(c)));
@@ -642,12 +795,37 @@ fn render_task_page(
     if let Some(reason) = &task.failure_reason {
         meta_rows.push(("Failure reason".into(), escape_html(reason)));
     }
+    if let Some(ev) = eval {
+        meta_rows.push(("Eval score".into(), format!("{:.2}", ev.score)));
+        for (dim, val) in &ev.dimensions {
+            meta_rows.push((
+                format!("  └ {}", dim.replace('_', " ")),
+                format!("{:.2}", val),
+            ));
+        }
+    }
 
     let mut meta_html = String::from("<table class=\"meta-table\"><tbody>");
     for (k, v) in meta_rows {
         meta_html.push_str(&format!("<tr><th>{}</th><td>{}</td></tr>", k, v));
     }
     meta_html.push_str("</tbody></table>");
+
+    // Log entries (last 30)
+    let log_html = if task.log.is_empty() {
+        "<p class=\"none\">(no log entries)</p>".to_string()
+    } else {
+        let mut s = String::from("<ul class=\"task-log\">");
+        for entry in task.log.iter().rev().take(30).rev() {
+            let ts = escape_html(&entry.timestamp);
+            let msg = escape_html(&entry.message);
+            s.push_str(&format!(
+                "<li><span class=\"log-ts\">{ts}</span> {msg}</li>"
+            ));
+        }
+        s.push_str("</ul>");
+        s
+    };
 
     format!(
         "<!DOCTYPE html>\n\
@@ -669,6 +847,7 @@ fn render_task_page(
          <section><h2>Description</h2>{desc}</section>\n\
          <section><h2>Depends on</h2>{deps}</section>\n\
          <section><h2>Required by</h2>{revdeps}</section>\n\
+         <section><h2>Log</h2>{log}</section>\n\
          </main>\n\
          <footer><p class=\"meta\">Public mirror — visibility = <code>{vis}</code></p></footer>\n\
          </body>\n\
@@ -679,13 +858,26 @@ fn render_task_page(
         desc = description_html,
         deps = deps_html,
         revdeps = dependents_html,
+        log = log_html,
         vis = escape_html(&task.visibility),
     )
 }
 
-/// Render the entire HTML site to a directory. Returns the count of pages emitted.
+// ── Public API ────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub struct RenderSummary {
+    pub out_dir: std::path::PathBuf,
+    pub total_in_graph: usize,
+    pub public_count: usize,
+    pub pages_written: usize,
+    pub show_all: bool,
+    pub since: Option<String>,
+}
+
 pub fn render_site(
     graph: &WorkGraph,
+    workgraph_dir: &Path,
     out_dir: &Path,
     show_all: bool,
     since: Option<&str>,
@@ -725,31 +917,30 @@ pub fn render_site(
     };
 
     let included_ids: HashSet<&str> = included.iter().map(|t| t.id.as_str()).collect();
-    let tasks_by_id: HashMap<&str, &Task> = included.iter().map(|t| (t.id.as_str(), *t)).collect();
 
-    let laid = compute_layers(&included_ids, &tasks_by_id);
+    // Load eval scores
+    let evals = load_eval_scores(workgraph_dir);
+
+    // Capture ASCII viz
+    let ascii_viz = capture_viz_ascii(workgraph_dir);
+
+    // Build inline JSON for all included tasks
+    let tasks_json = build_tasks_json(&included, &evals, &included_ids);
 
     // Write style.css
     let css_path = out_dir.join("style.css");
     fs::write(&css_path, STYLE_CSS).context("failed to write style.css")?;
 
     // Write index.html
-    let index_html = render_index(
-        graph,
-        &included,
-        &tasks_by_id,
-        &included_ids,
-        &laid,
-        show_all,
-        since,
-    );
+    let index_html = render_index(graph, &included, &tasks_json, &ascii_viz, show_all, since);
     let index_path = out_dir.join("index.html");
     fs::write(&index_path, &index_html).context("failed to write index.html")?;
 
     // Write per-task pages
     let mut pages_written = 0usize;
     for task in &included {
-        let html = render_task_page(task, graph, &included_ids);
+        let eval = evals.get(&task.id);
+        let html = render_task_page(task, graph, &included_ids, eval);
         let path = tasks_dir.join(format!("{}.html", url_encode_id(&task.id)));
         fs::write(&path, html)
             .with_context(|| format!("failed to write {}", path.display()))?;
@@ -766,16 +957,6 @@ pub fn render_site(
     })
 }
 
-#[derive(Debug, Clone)]
-pub struct RenderSummary {
-    pub out_dir: std::path::PathBuf,
-    pub total_in_graph: usize,
-    pub public_count: usize,
-    pub pages_written: usize,
-    pub show_all: bool,
-    pub since: Option<String>,
-}
-
 pub fn run(workgraph_dir: &Path, out: &Path, all: bool, since: Option<&str>, json: bool) -> Result<()> {
     let graph_path = workgraph_dir.join("graph.jsonl");
     if !graph_path.exists() {
@@ -786,7 +967,7 @@ pub fn run(workgraph_dir: &Path, out: &Path, all: bool, since: Option<&str>, jso
     }
     let graph = load_graph(&graph_path).context("failed to load graph")?;
 
-    let summary = render_site(&graph, out, all, since)?;
+    let summary = render_site(&graph, workgraph_dir, out, all, since)?;
 
     if json {
         let payload = serde_json::json!({
@@ -800,21 +981,11 @@ pub fn run(workgraph_dir: &Path, out: &Path, all: bool, since: Option<&str>, jso
         println!("{}", serde_json::to_string_pretty(&payload)?);
     } else {
         let filter = if summary.show_all {
-            let since_str = summary
-                .since
-                .as_deref()
-                .map(|s| format!(", last {}", s))
-                .unwrap_or_default();
-            format!("all tasks (visibility filter OFF{})", since_str)
+            "all tasks (visibility filter OFF)".to_string()
         } else {
-            let since_str = summary
-                .since
-                .as_deref()
-                .map(|s| format!(", last {}", s))
-                .unwrap_or_default();
             format!(
-                "{} public of {} total{}",
-                summary.public_count, summary.total_in_graph, since_str,
+                "{} public of {} total",
+                summary.public_count, summary.total_in_graph,
             )
         };
         println!(
@@ -827,100 +998,4 @@ pub fn run(workgraph_dir: &Path, out: &Path, all: bool, since: Option<&str>, jso
     }
 
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    // ── parse_since tests ──────────────────────────────────────────────────────
-
-    #[test]
-    fn test_parse_since_hours() {
-        let d = parse_since("1h").unwrap();
-        assert_eq!(d.num_seconds(), 3600);
-        let d24 = parse_since("24h").unwrap();
-        assert_eq!(d24.num_seconds(), 24 * 3600);
-    }
-
-    #[test]
-    fn test_parse_since_days() {
-        let d = parse_since("7d").unwrap();
-        assert_eq!(d.num_seconds(), 7 * 86400);
-        let d30 = parse_since("30d").unwrap();
-        assert_eq!(d30.num_seconds(), 30 * 86400);
-    }
-
-    #[test]
-    fn test_parse_since_weeks() {
-        let d = parse_since("2w").unwrap();
-        assert_eq!(d.num_seconds(), 2 * 7 * 86400);
-    }
-
-    #[test]
-    fn test_parse_since_minutes() {
-        let d = parse_since("30m").unwrap();
-        assert_eq!(d.num_seconds(), 30 * 60);
-    }
-
-    #[test]
-    fn test_parse_since_rejects_garbage() {
-        assert!(parse_since("").is_err(), "empty string should fail");
-        assert!(parse_since("abc").is_err(), "no unit and non-numeric should fail");
-        assert!(parse_since("7x").is_err(), "unknown unit 'x' should fail");
-        assert!(parse_since("0d").is_err(), "zero is not positive");
-        assert!(parse_since("-1d").is_err(), "negative should fail");
-    }
-
-    #[test]
-    fn test_parse_since_rejects_no_unit() {
-        // No unit → error (unlike archive.rs which defaults to days)
-        assert!(parse_since("7").is_err());
-    }
-
-    // ── task_in_window tests ───────────────────────────────────────────────────
-
-    #[test]
-    fn test_task_in_window_created_at_matches() {
-        use crate::graph::Task;
-        let now = Utc::now();
-        let recent = (now - Duration::hours(1)).to_rfc3339();
-        let mut task = Task::default();
-        task.created_at = Some(recent);
-        let cutoff = now - Duration::hours(2);
-        assert!(task_in_window(&task, cutoff));
-    }
-
-    #[test]
-    fn test_task_in_window_old_task_excluded() {
-        use crate::graph::Task;
-        let now = Utc::now();
-        let old = (now - Duration::days(10)).to_rfc3339();
-        let mut task = Task::default();
-        task.created_at = Some(old);
-        let cutoff = now - Duration::hours(24);
-        assert!(!task_in_window(&task, cutoff));
-    }
-
-    #[test]
-    fn test_task_in_window_completed_at_matches() {
-        use crate::graph::Task;
-        let now = Utc::now();
-        let old_created = (now - Duration::days(30)).to_rfc3339();
-        let recent_completed = (now - Duration::hours(2)).to_rfc3339();
-        let mut task = Task::default();
-        task.created_at = Some(old_created);
-        task.completed_at = Some(recent_completed);
-        let cutoff = now - Duration::hours(24);
-        assert!(task_in_window(&task, cutoff));
-    }
-
-    #[test]
-    fn test_task_in_window_no_timestamps_excluded() {
-        use crate::graph::Task;
-        let now = Utc::now();
-        let task = Task::default();
-        let cutoff = now - Duration::hours(24);
-        assert!(!task_in_window(&task, cutoff));
-    }
 }
