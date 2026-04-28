@@ -3150,7 +3150,7 @@ pub fn run_status(dir: &Path, json: bool) -> Result<()> {
             && coord.tasks_ready > 0
         {
             output["agents"]["note"] = serde_json::json!(
-                "tasks are ready but no agents have been spawned — check agent configuration"
+                "tasks are ready but no agents have been spawned — possible causes: (a) agent configuration; (b) stale `assigned` claims from dead agents (run `wg list --status open` to inspect; `wg unclaim <task>` clears one claim, `wg reset <task> --yes` clears + reopens)"
             );
         }
         if !recent_errors.is_empty() || !recent_fatals.is_empty() {
@@ -3178,7 +3178,7 @@ pub fn run_status(dir: &Path, json: bool) -> Result<()> {
                 && coord.tasks_ready > 0
             {
                 println!(
-                    "  Note: tasks are ready but no agents have been spawned — check agent configuration"
+                    "  Note: tasks are ready but no agents have been spawned — possible causes: (a) agent configuration; (b) stale `assigned` claims from dead agents (run `wg list --status open` to inspect; `wg unclaim <task>` clears one claim, `wg reset <task> --yes` clears + reopens)"
                 );
             }
         }
