@@ -4596,7 +4596,20 @@ pub enum ServiceCommands {
     /// Bulk-purge all chat agents: archive every chat-loop task, kill all live
     /// chat handler processes, prevent respawn on daemon restart. Preserves
     /// chat task nodes + history. Idempotent. Reversible via `wg chat new`.
-    PurgeChats,
+    ///
+    /// By default, chats considered "active" — the chat the calling shell is
+    /// inside (via `WG_CHAT_REF`), or any chat with recent consumer-cursor
+    /// activity (TUI attached, recent `wg chat read`) — are SKIPPED so you
+    /// don't accidentally archive the chat you're sitting in. Pass
+    /// `--include-active` to nuke everything regardless.
+    PurgeChats {
+        /// Archive every chat-loop task even if it looks active. Required to
+        /// reach the pre-2026-04 full-nuke behavior; otherwise the calling
+        /// chat (via `WG_CHAT_REF`) and any chat with recent consumer
+        /// activity are skipped.
+        #[arg(long, visible_alias = "force", visible_alias = "all")]
+        include_active: bool,
+    },
 
     /// Run the daemon (internal, called by start)
     #[command(hide = true)]

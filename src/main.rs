@@ -2882,8 +2882,8 @@ fn main() -> Result<()> {
             ServiceCommands::InterruptChat { id } => {
                 commands::service::run_interrupt_coordinator(&workgraph_dir, id, cli.json)
             }
-            ServiceCommands::PurgeChats => {
-                commands::service::run_purge_chats(&workgraph_dir, cli.json)
+            ServiceCommands::PurgeChats { include_active } => {
+                commands::service::run_purge_chats(&workgraph_dir, cli.json, include_active)
             }
             ServiceCommands::Daemon {
                 socket,

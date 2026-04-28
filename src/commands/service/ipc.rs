@@ -203,7 +203,25 @@ pub enum IpcRequest {
     /// the user can later restart fresh via `wg chat new` or restore from
     /// history. The graph is left intact — only the supervisor lifecycle and
     /// `chat-loop` tags are removed.
-    PurgeChats,
+    ///
+    /// By default, chats considered "active" (recent consumer cursor activity
+    /// or pending inbox traffic, plus the optional `caller_chat_id` self-protect
+    /// hint passed by the CLI) are SKIPPED — the user's currently-attached chat
+    /// must not get nuked silently. `include_active=true` overrides and archives
+    /// every chat-loop task regardless of activity (the pre-2026-04 behavior).
+    PurgeChats {
+        /// When true, archive every chat-loop task even if it looks active.
+        /// Default false: protect the user's currently-attached chat.
+        #[serde(default)]
+        include_active: bool,
+        /// Chat ID the calling `wg` invocation thinks it is running inside
+        /// (derived from `WG_CHAT_REF` / `WG_CHAT_ID` env on the CLI side).
+        /// Always treated as active when `include_active` is false. Optional —
+        /// the daemon also infers active status from on-disk state, so a
+        /// missing hint just means no env-based self-protection.
+        #[serde(default)]
+        caller_chat_id: Option<u32>,
+    },
 }
 
 /// IPC Response types
@@ -613,9 +631,15 @@ fn handle_request(
             logger.info("IPC ListChats");
             handle_list_coordinators(dir)
         }
-        IpcRequest::PurgeChats => {
-            logger.info("IPC PurgeChats");
-            let resp = handle_purge_chats(dir);
+        IpcRequest::PurgeChats {
+            include_active,
+            caller_chat_id,
+        } => {
+            logger.info(&format!(
+                "IPC PurgeChats include_active={} caller_chat_id={:?}",
+                include_active, caller_chat_id
+            ));
+            let resp = handle_purge_chats(dir, include_active, caller_chat_id);
             // Every successfully-purged chat needs its supervisor agent
             // shut down — same as a single ArchiveChat. The IPC dispatch
             // loop drains delete_coordinator_ids after we return.
@@ -1598,8 +1622,20 @@ fn handle_delete_coordinator(dir: &Path, coordinator_id: u32) -> IpcResponse {
 /// Bulk-archive every chat-loop task in the graph.
 ///
 /// Idempotent: tasks already tagged `archived` are skipped, not errored.
-/// Returns `{purged: [{chat_id, task_id}], skipped: [{chat_id, reason}]}`.
-fn handle_purge_chats(dir: &Path) -> IpcResponse {
+///
+/// Active chats — those with recent consumer cursor activity, pending inbox
+/// traffic, or matching the caller's own `WG_CHAT_REF` hint — are skipped
+/// when `include_active == false`. Pass `include_active = true` to nuke
+/// everything regardless of activity.
+///
+/// Returns `{purged: [{chat_id, task_id}], skipped: [{chat_id, reason}]}`
+/// where `reason` is one of `"already archived"`, `"active"`, or
+/// `"caller chat"` (the env-hint match).
+fn handle_purge_chats(
+    dir: &Path,
+    include_active: bool,
+    caller_chat_id: Option<u32>,
+) -> IpcResponse {
     let graph_path = crate::commands::graph_path(dir);
     let graph = match workgraph::parser::load_graph(&graph_path) {
         Ok(g) => g,
@@ -1628,9 +1664,26 @@ fn handle_purge_chats(dir: &Path) -> IpcResponse {
         }
     }
 
+    // Decide which chats are "active" (skipped unless --include-active).
+    let mut active_skips: Vec<(u32, &'static str)> = Vec::new();
+    let mut to_purge: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
+    for id in &chat_ids {
+        if !include_active {
+            if Some(*id) == caller_chat_id {
+                active_skips.push((*id, "caller chat"));
+                continue;
+            }
+            if super::is_chat_active_on_disk(dir, *id) {
+                active_skips.push((*id, "active"));
+                continue;
+            }
+        }
+        to_purge.insert(*id);
+    }
+
     let mut purged = Vec::new();
     let mut errors = Vec::new();
-    for id in &chat_ids {
+    for id in &to_purge {
         let r = handle_archive_coordinator(dir, *id);
         if r.ok {
             let task_id = workgraph::chat_id::format_chat_task_id(*id);
@@ -1646,7 +1699,7 @@ fn handle_purge_chats(dir: &Path) -> IpcResponse {
         }
     }
 
-    let skipped: Vec<serde_json::Value> = already_archived
+    let mut skipped: Vec<serde_json::Value> = already_archived
         .iter()
         .map(|id| {
             serde_json::json!({
@@ -1655,6 +1708,13 @@ fn handle_purge_chats(dir: &Path) -> IpcResponse {
             })
         })
         .collect();
+    for (id, reason) in &active_skips {
+        skipped.push(serde_json::json!({
+            "chat_id": *id,
+            "task_id": workgraph::chat_id::format_chat_task_id(*id),
+            "reason": *reason,
+        }));
+    }
 
     IpcResponse::success(serde_json::json!({
         "purged": purged,
@@ -2999,7 +3059,11 @@ poll_interval = 120
         }));
         workgraph::parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
 
-        let resp = handle_purge_chats(dir);
+        // include_active=true preserves the original full-nuke semantics this
+        // test was written against (no on-disk activity exists for these in-
+        // memory test chats anyway, but we want this assertion to hold even
+        // if a future change makes "no inbox" briefly look active).
+        let resp = handle_purge_chats(dir, true, None);
         assert!(resp.ok, "PurgeChats should succeed: {:?}", resp.error);
         let data = resp.data.unwrap();
         let purged = data["purged"].as_array().unwrap();
@@ -3032,7 +3096,7 @@ poll_interval = 120
         // so the second purge produces zero new archives. Skipped includes
         // only chats that still carry a chat-loop tag (chat-2 in this graph;
         // the other two had their loop tags removed during the first purge).
-        let resp2 = handle_purge_chats(dir);
+        let resp2 = handle_purge_chats(dir, true, None);
         assert!(resp2.ok);
         let data2 = resp2.data.unwrap();
         let purged2 = data2["purged"].as_array().unwrap();
@@ -3049,7 +3113,7 @@ poll_interval = 120
         let dir = temp_dir.path();
         let graph = workgraph::graph::WorkGraph::new();
         workgraph::parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
-        let resp = handle_purge_chats(dir);
+        let resp = handle_purge_chats(dir, false, None);
         assert!(resp.ok, "empty-graph purge should succeed");
         let data = resp.data.unwrap();
         assert!(data["purged"].as_array().unwrap().is_empty());
@@ -3170,8 +3234,10 @@ poll_interval = 120
         let pre_ids: Vec<u32> = pre.iter().map(|s| s.chat_id).collect();
         assert_eq!(pre_ids, vec![0, 3]);
 
-        // Purge.
-        let resp = handle_purge_chats(dir);
+        // Purge. include_active=true to keep the test independent of on-disk
+        // activity heuristics — this test is asserting the boot-enumeration
+        // post-condition, not the active-skip rule.
+        let resp = handle_purge_chats(dir, true, None);
         assert!(resp.ok);
 
         // Post-purge: zero supervisors enumerated → daemon restart spawns nothing.
@@ -3181,5 +3247,224 @@ poll_interval = 120
             "after purge, boot enumerator must yield no supervisors, got {:?}",
             post
         );
+    }
+
+    /// Active-skip rule (default `include_active=false`): a chat with a
+    /// freshly-touched consumer cursor is reported in `skipped` with
+    /// `reason=active` and stays chat-loop-tagged in the graph. The other
+    /// idle chats are archived. This is the regression guard for the
+    /// "lol you archived _this_ chat too" footgun.
+    #[test]
+    fn test_handle_purge_chats_skips_active_chat_by_default() {
+        let temp_dir = TempDir::new().unwrap();
+        let dir = temp_dir.path();
+
+        let mut graph = workgraph::graph::WorkGraph::new();
+        for id in [5u32, 6, 7] {
+            graph.add_node(workgraph::graph::Node::Task(workgraph::graph::Task {
+                id: workgraph::chat_id::format_chat_task_id(id),
+                title: format!("Chat {}", id),
+                status: workgraph::graph::Status::InProgress,
+                tags: vec!["chat-loop".to_string()],
+                ..Default::default()
+            }));
+        }
+        workgraph::parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
+
+        // Mark .chat-5 as active (freshly-touched consumer cursor).
+        workgraph::chat::write_cursor_for(dir, 5, 0).unwrap();
+
+        let resp = handle_purge_chats(dir, false, None);
+        assert!(resp.ok, "purge should succeed: {:?}", resp.error);
+        let data = resp.data.unwrap();
+
+        let purged = data["purged"].as_array().unwrap();
+        let purged_ids: Vec<u64> = purged
+            .iter()
+            .map(|v| v["chat_id"].as_u64().unwrap())
+            .collect();
+        assert_eq!(purged_ids, vec![6, 7]);
+
+        let skipped = data["skipped"].as_array().unwrap();
+        let active_skips: Vec<u64> = skipped
+            .iter()
+            .filter(|v| v["reason"].as_str() == Some("active"))
+            .map(|v| v["chat_id"].as_u64().unwrap())
+            .collect();
+        assert_eq!(
+            active_skips,
+            vec![5],
+            "active chat .chat-5 must surface in skipped[].reason=active"
+        );
+
+        // Verify graph: .chat-5 keeps chat-loop tag; others archived.
+        let g = workgraph::parser::load_graph(&dir.join("graph.jsonl")).unwrap();
+        let t5 = g.get_task(".chat-5").unwrap();
+        assert!(
+            t5.tags.iter().any(|t| t == "chat-loop"),
+            "active chat keeps its chat-loop tag"
+        );
+        assert!(!t5.tags.iter().any(|t| t == "archived"));
+    }
+
+    /// `include_active=true` opts back into pre-2026-04 full-nuke behavior:
+    /// every chat-loop task gets archived regardless of activity.
+    #[test]
+    fn test_handle_purge_chats_include_active_archives_everything() {
+        let temp_dir = TempDir::new().unwrap();
+        let dir = temp_dir.path();
+
+        let mut graph = workgraph::graph::WorkGraph::new();
+        for id in [5u32, 6] {
+            graph.add_node(workgraph::graph::Node::Task(workgraph::graph::Task {
+                id: workgraph::chat_id::format_chat_task_id(id),
+                title: format!("Chat {}", id),
+                status: workgraph::graph::Status::InProgress,
+                tags: vec!["chat-loop".to_string()],
+                ..Default::default()
+            }));
+        }
+        workgraph::parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
+        // Active chat cursor — should be ignored under include_active=true.
+        workgraph::chat::write_cursor_for(dir, 5, 0).unwrap();
+
+        let resp = handle_purge_chats(dir, true, None);
+        assert!(resp.ok);
+        let data = resp.data.unwrap();
+        let purged = data["purged"].as_array().unwrap();
+        assert_eq!(
+            purged.len(),
+            2,
+            "include_active=true archives all chat-loop tasks"
+        );
+        // No "active"-reason skips under include_active=true.
+        let skipped = data["skipped"].as_array().unwrap();
+        let active_skips = skipped
+            .iter()
+            .filter(|v| v["reason"].as_str() == Some("active"))
+            .count();
+        assert_eq!(active_skips, 0);
+    }
+
+    /// `caller_chat_id` is treated as active: protects a chat-handler-spawned
+    /// `wg` invocation from archiving the very session it's running inside.
+    #[test]
+    fn test_handle_purge_chats_skips_caller_chat_id() {
+        let temp_dir = TempDir::new().unwrap();
+        let dir = temp_dir.path();
+
+        let mut graph = workgraph::graph::WorkGraph::new();
+        for id in [3u32, 4] {
+            graph.add_node(workgraph::graph::Node::Task(workgraph::graph::Task {
+                id: workgraph::chat_id::format_chat_task_id(id),
+                title: format!("Chat {}", id),
+                status: workgraph::graph::Status::InProgress,
+                tags: vec!["chat-loop".to_string()],
+                ..Default::default()
+            }));
+        }
+        workgraph::parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
+
+        // No on-disk activity — only the caller hint differentiates.
+        let resp = handle_purge_chats(dir, false, Some(3));
+        assert!(resp.ok);
+        let data = resp.data.unwrap();
+
+        let purged_ids: Vec<u64> = data["purged"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v["chat_id"].as_u64().unwrap())
+            .collect();
+        assert_eq!(purged_ids, vec![4]);
+
+        let caller_skips: Vec<u64> = data["skipped"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|v| v["reason"].as_str() == Some("caller chat"))
+            .map(|v| v["chat_id"].as_u64().unwrap())
+            .collect();
+        assert_eq!(caller_skips, vec![3]);
+    }
+
+    /// Zero-active-chats default behavior matches today: with no consumer
+    /// cursors and no caller hint, every chat-loop task gets archived.
+    #[test]
+    fn test_handle_purge_chats_no_active_chats_archives_all() {
+        let temp_dir = TempDir::new().unwrap();
+        let dir = temp_dir.path();
+
+        let mut graph = workgraph::graph::WorkGraph::new();
+        for id in [10u32, 11, 12] {
+            graph.add_node(workgraph::graph::Node::Task(workgraph::graph::Task {
+                id: workgraph::chat_id::format_chat_task_id(id),
+                title: format!("Chat {}", id),
+                status: workgraph::graph::Status::InProgress,
+                tags: vec!["chat-loop".to_string()],
+                ..Default::default()
+            }));
+        }
+        workgraph::parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
+
+        let resp = handle_purge_chats(dir, false, None);
+        assert!(resp.ok);
+        let data = resp.data.unwrap();
+        let purged_ids: Vec<u64> = data["purged"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v["chat_id"].as_u64().unwrap())
+            .collect();
+        assert_eq!(purged_ids, vec![10, 11, 12]);
+
+        // No "active" reasons in skipped (all idle, no caller hint).
+        let skipped = data["skipped"].as_array().unwrap();
+        let active_count = skipped
+            .iter()
+            .filter(|v| {
+                let r = v["reason"].as_str();
+                r == Some("active") || r == Some("caller chat")
+            })
+            .count();
+        assert_eq!(active_count, 0);
+    }
+
+    /// Backward-compat: the IPC `PurgeChats` variant defaults
+    /// `include_active=false` and `caller_chat_id=None` when those fields
+    /// are absent from the wire JSON. The enum is internally tagged with
+    /// `cmd`, so old clients sending `{"cmd":"purge_chats"}` (the previous
+    /// unit-variant form) still deserialize cleanly into the new struct
+    /// variant with safe-by-default semantics.
+    #[test]
+    fn test_purge_chats_ipc_defaults_to_safe_mode() {
+        let req: IpcRequest =
+            serde_json::from_str(r#"{"cmd":"purge_chats"}"#).unwrap();
+        match req {
+            IpcRequest::PurgeChats {
+                include_active,
+                caller_chat_id,
+            } => {
+                assert!(!include_active, "default must be include_active=false");
+                assert!(caller_chat_id.is_none());
+            }
+            _ => panic!("expected PurgeChats variant"),
+        }
+
+        // New clients sending the full payload are honored.
+        let req2: IpcRequest = serde_json::from_str(
+            r#"{"cmd":"purge_chats","include_active":true,"caller_chat_id":7}"#,
+        )
+        .unwrap();
+        match req2 {
+            IpcRequest::PurgeChats {
+                include_active,
+                caller_chat_id,
+            } => {
+                assert!(include_active);
+                assert_eq!(caller_chat_id, Some(7));
+            }
+            _ => panic!("expected PurgeChats variant"),
+        }
     }
 }
