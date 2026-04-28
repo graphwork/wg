@@ -3750,6 +3750,19 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
                 // Click on coordinator/user-board tab bar.
                 app.focused_panel = FocusedPanel::RightPanel;
 
+                // Check scroll arrows first — they take precedence over the
+                // "click anywhere on the bar" handlers below.
+                let left = &app.coordinator_left_arrow_hit;
+                if left.start != left.end && column >= left.start && column < left.end {
+                    app.scroll_chat_tabs(-1);
+                    return;
+                }
+                let right = &app.coordinator_right_arrow_hit;
+                if right.start != right.end && column >= right.start && column < right.end {
+                    app.scroll_chat_tabs(1);
+                    return;
+                }
+
                 // Check [+] button first
                 let plus = &app.coordinator_plus_hit;
                 if column >= plus.start && column < plus.end {

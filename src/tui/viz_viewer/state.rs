@@ -1293,6 +1293,15 @@ pub struct CoordinatorPlusHit {
     pub end: u16,
 }
 
+/// Column range for the off-screen-tabs scroll arrows (◀ / ▶) in the
+/// coordinator tab bar. `start == end` means the arrow is not currently
+/// rendered (no overflow on that side).
+#[derive(Clone, Debug, Default)]
+pub struct CoordinatorArrowHit {
+    pub start: u16,
+    pub end: u16,
+}
+
 /// State for the task creation form overlay.
 pub struct TaskFormState {
     /// Which field is currently focused.
@@ -4325,6 +4334,15 @@ pub struct VizApp {
     pub coordinator_tab_hits: Vec<CoordinatorTabHit>,
     /// Hit area for the [+] button in the coordinator tab bar.
     pub coordinator_plus_hit: CoordinatorPlusHit,
+    /// Index of the first visible tab in the combined coordinator + user-board
+    /// tab list. When the bar overflows, tabs before this index are hidden
+    /// behind a `◀` indicator. The renderer auto-adjusts this so the active
+    /// tab is always visible.
+    pub chat_tab_scroll_offset: usize,
+    /// Hit area for the left scroll arrow (◀) in the coordinator tab bar.
+    pub coordinator_left_arrow_hit: CoordinatorArrowHit,
+    /// Hit area for the right scroll arrow (▶) in the coordinator tab bar.
+    pub coordinator_right_arrow_hit: CoordinatorArrowHit,
     /// The message input area from the last render frame (for click-to-type).
     pub last_message_input_area: Rect,
 
@@ -4839,6 +4857,9 @@ impl VizApp {
             last_coordinator_bar_area: Rect::default(),
             coordinator_tab_hits: Vec::new(),
             coordinator_plus_hit: CoordinatorPlusHit::default(),
+            chat_tab_scroll_offset: 0,
+            coordinator_left_arrow_hit: CoordinatorArrowHit::default(),
+            coordinator_right_arrow_hit: CoordinatorArrowHit::default(),
             last_message_input_area: Rect::default(),
             last_text_prompt_area: Rect::default(),
             last_dialog_area: Rect::default(),
@@ -9154,6 +9175,9 @@ impl VizApp {
             last_coordinator_bar_area: Rect::default(),
             coordinator_tab_hits: Vec::new(),
             coordinator_plus_hit: CoordinatorPlusHit::default(),
+            chat_tab_scroll_offset: 0,
+            coordinator_left_arrow_hit: CoordinatorArrowHit::default(),
+            coordinator_right_arrow_hit: CoordinatorArrowHit::default(),
             last_message_input_area: Rect::default(),
             last_text_prompt_area: Rect::default(),
             last_dialog_area: Rect::default(),
@@ -13078,6 +13102,24 @@ impl VizApp {
             .filter(|&&id| current.contains(&id))
             .map(|&id| (id, workgraph::chat_id::format_chat_task_id(id)))
             .collect()
+    }
+
+    /// Scroll the chat tab bar by `delta` entries (positive = right, negative
+    /// = left). Used by the click handlers on the ◀/▶ overflow arrows. The
+    /// renderer clamps the offset and may re-adjust if the active tab is no
+    /// longer visible after scrolling — this just nudges the user's stored
+    /// preference.
+    pub fn scroll_chat_tabs(&mut self, delta: i32) {
+        let total =
+            self.active_tab_ids_and_labels().len() + self.list_user_board_entries().len();
+        if total == 0 {
+            self.chat_tab_scroll_offset = 0;
+            return;
+        }
+        let max_offset = total.saturating_sub(1);
+        let new_off = (self.chat_tab_scroll_offset as i32 + delta)
+            .clamp(0, max_offset as i32) as usize;
+        self.chat_tab_scroll_offset = new_off;
     }
 
     /// Sync active_tabs with the current graph state:

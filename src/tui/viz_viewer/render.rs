@@ -8,7 +8,8 @@ use unicode_width::UnicodeWidthStr;
 
 use super::state::{
     ActivityEventKind, ChoiceDialogState, ConfigEditKind, ConfigSection,
-    ConfirmAction, ControlPanelFocus, CoordinatorPlusHit, CoordinatorTabHit, EndpointTestStatus,
+    ConfirmAction, ControlPanelFocus, CoordinatorArrowHit, CoordinatorPlusHit, CoordinatorTabHit,
+    EndpointTestStatus,
     FocusedPanel, InputMode, LayoutMode, ResponsiveBreakpoint, RightPanelTab, ServiceHealthLevel,
     SettingsEditScope, SinglePanelView, SortMode, TabBarEntryKind, TaskFormField,
     TaskFormState, TextPromptAction, ToastSeverity, VitalsStaleness, VizApp, WAVE_BOLT,
@@ -2857,6 +2858,138 @@ fn draw_detail_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     }
 }
 
+/// Layout result for the chat tab bar's visible window.
+///
+/// Computed each frame from the per-entry widths plus the user's stored
+/// scroll offset. The renderer auto-adjusts the offset so that the active
+/// tab is always visible.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ChatBarLayout {
+    /// Index of the first visible entry in the combined entry list.
+    pub offset: usize,
+    /// Exclusive end index — entries `[offset, end)` are visible.
+    pub end: usize,
+    /// True iff there are entries before `offset` (◀ should be drawn).
+    pub show_left_arrow: bool,
+    /// True iff there are entries after `end - 1` (▶ should be drawn).
+    pub show_right_arrow: bool,
+}
+
+/// Compute the visible-window layout for the chat tab bar.
+///
+/// `widths`: per-entry render width (cells) excluding the inter-entry "│"
+///   separator (1 cell), the leading bar space (1 cell), and the trailing
+///   `[+]` button (3 cells) — those are accounted for here.
+/// `active_idx`: position of the active tab (if any). The returned `offset`
+///   guarantees the active tab is in the visible window when at all possible.
+/// `bar_width`: total cells available on the bar (`tab_area.width`).
+/// `requested_offset`: the user's stored scroll offset; used as the starting
+///   point. May shrink (if active is to the left) or grow (if active is to
+///   the right of the window). Clamped to `[0, widths.len())`.
+pub(super) fn compute_chat_bar_layout(
+    widths: &[usize],
+    active_idx: Option<usize>,
+    bar_width: usize,
+    requested_offset: usize,
+) -> ChatBarLayout {
+    let n = widths.len();
+    if n == 0 {
+        return ChatBarLayout {
+            offset: 0,
+            end: 0,
+            show_left_arrow: false,
+            show_right_arrow: false,
+        };
+    }
+
+    let mut offset = requested_offset.min(n - 1);
+    if let Some(a) = active_idx
+        && a < offset
+    {
+        offset = a;
+    }
+
+    // Try a candidate offset and return (end, show_left, show_right) if the
+    // active tab is visible in the resulting window — None otherwise.
+    let try_offset = |off: usize| -> Option<(usize, bool, bool)> {
+        let show_left = off > 0;
+        // Reserve space for leading " " (1) + ◀+space (2 if shown) + [+] (3).
+        let reserve_no_right = 1 + if show_left { 2 } else { 0 } + 3;
+        let avail_no_right = bar_width.saturating_sub(reserve_no_right);
+
+        // First pass: assume no right arrow, see how many fit.
+        let mut col_used: usize = 0;
+        let mut end = off;
+        while end < n {
+            let sep = if end > off { 1 } else { 0 };
+            let needed = sep + widths[end];
+            if col_used + needed > avail_no_right {
+                break;
+            }
+            col_used += needed;
+            end += 1;
+        }
+        let mut show_right = end < n;
+
+        if show_right {
+            // Need 2 more cells for "▶ "; recompute fit.
+            let avail_with_right = avail_no_right.saturating_sub(2);
+            col_used = 0;
+            end = off;
+            while end < n {
+                let sep = if end > off { 1 } else { 0 };
+                let needed = sep + widths[end];
+                if col_used + needed > avail_with_right {
+                    break;
+                }
+                col_used += needed;
+                end += 1;
+            }
+            show_right = end < n;
+        }
+
+        // The active tab must be inside [off, end) for this offset to be
+        // acceptable. (If the active tab is wider than the bar itself,
+        // we'll still rendered it — it just gets clipped by ratatui.)
+        let active_visible = match active_idx {
+            None => true,
+            Some(a) => a >= off && a < end,
+        };
+        if !active_visible {
+            return None;
+        }
+        // Special case: if `end == off` (nothing fit at all — bar way too
+        // narrow), still treat it as a valid placement so we don't loop
+        // forever advancing the offset.
+        Some((end, show_left, show_right))
+    };
+
+    // Advance the offset until the active tab is visible (or we run out).
+    loop {
+        if let Some((end, show_left, show_right)) = try_offset(offset) {
+            return ChatBarLayout {
+                offset,
+                end,
+                show_left_arrow: show_left,
+                show_right_arrow: show_right,
+            };
+        }
+        if offset >= n - 1 {
+            // Fallback: pin to last entry.
+            offset = n - 1;
+            let (end, show_left, show_right) =
+                try_offset(offset).unwrap_or((n, offset > 0, false));
+            return ChatBarLayout {
+                offset,
+                end,
+                show_left_arrow: show_left,
+                show_right_arrow: show_right,
+            };
+        }
+        offset += 1;
+    }
+}
+
 /// Draw the Chat tab content with word-wrapped messages, scrolling, and input area.
 fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     let width = area.width as usize;
@@ -2899,7 +3032,6 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     // Coordinator + user board tab bar — always visible so the user can discover [+]
     let coordinator_entries = app.active_tab_ids_and_labels();
     let user_board_entries = app.list_user_board_entries();
-    let total_tab_count = coordinator_entries.len() + user_board_entries.len();
     let tab_bar_height: u16 = 1;
 
     {
@@ -2918,37 +3050,47 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
 
         let active_snapshot = ActiveChatSnapshot {
             awaiting_response: app.chat.awaiting_response(),
-            // Future: wire chat-level error state if/when surfaced.
             error: false,
         };
         let service_alive = app.chat.coordinator_active;
 
-        // Determine which user board is currently selected (if any).
         let selected_user_board: Option<String> = app
             .selected_task_idx
             .and_then(|idx| app.task_order.get(idx))
             .filter(|id| workgraph::graph::is_user_board(id))
             .cloned();
 
-        let bar_x = tab_area.x;
-        let max_width = tab_area.width as usize;
-        let mut spans = Vec::new();
-        let mut tab_hits = Vec::new();
-        let mut col: usize = 1; // start after leading space
-        let mut overflow = false;
-        let mut tab_index: usize = 0; // combined index across all tabs
+        // Build the unified entry list (coordinator tabs first, then user-board tabs)
+        // and pre-compute each entry's render width so we can compute scroll offset
+        // without rendering twice.
+        struct CoordEntryStyling {
+            cid: u32,
+            tab_state: ChatTabState,
+            effective_color: Color,
+        }
+        enum BarEntryKind2 {
+            Coord(CoordEntryStyling),
+            UserBoard(String),
+        }
+        struct BarEntry {
+            kind: BarEntryKind2,
+            label: String,
+            is_active: bool,
+            /// Cells consumed by this entry on the bar (incl. leading dot,
+            /// label padding, close button, and trailing space; excludes
+            /// the "│" separator between consecutive entries).
+            content_width: usize,
+            /// Global tab index (zero-based); used to render `[N]` hotkey hints.
+            global_idx: usize,
+        }
 
-        // Leading space
-        spans.push(Span::raw(" "));
+        let mut entries: Vec<BarEntry> = Vec::new();
+        let mut active_idx: Option<usize> = None;
 
         for (cid, label) in coordinator_entries.iter() {
             let cid = *cid;
             let is_active = cid == app.active_coordinator_id;
-            let snapshot_for_cid = if is_active {
-                Some(active_snapshot)
-            } else {
-                None
-            };
+            let snapshot_for_cid = if is_active { Some(active_snapshot) } else { None };
             let tab_state = infer_tab_state(
                 &app.workgraph_dir,
                 cid,
@@ -2956,184 +3098,214 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
                 snapshot_for_cid,
             );
             let state_color = tab_state.color();
-            // Effective color: legacy .coordinator-N tabs use muted gray regardless
-            // of chat state; current .chat-N tabs use the state color normally.
             let effective_color = chat_task_label_color(label, state_color);
-            // Tab content: "[N] ◉ Label ✕ "
-            // hotkey(3=" [N]") + space+dot(2) + space+label + space+close(2)
-            let label_width = label.len();
-            let close_width: usize = 2; // " ✕"
-            // Hotkey hint: "[1]".."[9]" for the first 9 tabs, blank otherwise.
-            let hotkey_n = tab_index + 1;
-            let hotkey_str: String = if hotkey_n <= 9 {
-                format!(" [{}]", hotkey_n)
-            } else {
-                String::new()
-            };
-            let hotkey_width = hotkey_str.len();
-            // Content: hotkey + " ◉"(2) + " "+label + " "+close(2)
-            let tab_content_width = hotkey_width + 2 + 1 + label_width + 1 + close_width;
-            // Separator: "│" between tabs (1 column wide)
-            let sep_w: usize = if tab_index > 0 { 1 } else { 0 };
-
-            let total_tab_width = sep_w + tab_content_width;
-
-            // Check if this tab fits (also need room for "… [+]" = 5 if there are more tabs)
-            let remaining_tabs = total_tab_count - tab_index - 1;
-            let suffix_width = if remaining_tabs > 0 { 6 } else { 4 }; // "… [+]" or " [+]"
-            if col + total_tab_width + suffix_width > max_width && remaining_tabs > 0 {
-                overflow = true;
-                break;
+            let global_idx = entries.len();
+            let hotkey_n = global_idx + 1;
+            let hotkey_width: usize = if hotkey_n <= 9 { 4 } else { 0 }; // " [N]"
+            let label_width = label.chars().count();
+            // hotkey(0|4) + " ◉"(2) + " "+label(1+label_width) + " ✕"(2) + " "(trailing,1)
+            let content_width = hotkey_width + 2 + 1 + label_width + 2 + 1;
+            if is_active {
+                active_idx = Some(global_idx);
             }
+            entries.push(BarEntry {
+                kind: BarEntryKind2::Coord(CoordEntryStyling {
+                    cid,
+                    tab_state,
+                    effective_color,
+                }),
+                label: label.clone(),
+                is_active,
+                content_width,
+                global_idx,
+            });
+        }
 
-            // Separator
-            if tab_index > 0 {
+        for (task_id, label) in user_board_entries.iter() {
+            let is_active = selected_user_board.as_deref() == Some(task_id.as_str());
+            let global_idx = entries.len();
+            let label_width = label.chars().count();
+            // No hotkey for user board tabs in the current scheme:
+            // " ◉"(2) + " "+label(1+label_width) + " ✕"(2) + " "(trailing,1)
+            let content_width = 2 + 1 + label_width + 2 + 1;
+            if is_active {
+                active_idx = Some(global_idx);
+            }
+            entries.push(BarEntry {
+                kind: BarEntryKind2::UserBoard(task_id.clone()),
+                label: label.clone(),
+                is_active,
+                content_width,
+                global_idx,
+            });
+        }
+
+        let bar_x = tab_area.x;
+        let max_width = tab_area.width as usize;
+
+        // Resolve the visible window: pick a scroll offset that keeps the
+        // active tab visible within `max_width`, using the user's stored
+        // `chat_tab_scroll_offset` as the starting point. The offset may
+        // need to grow if the active tab is to the right of the previous
+        // window, or shrink if active is to the left.
+        let widths: Vec<usize> = entries.iter().map(|e| e.content_width).collect();
+        let layout = compute_chat_bar_layout(
+            &widths,
+            active_idx,
+            max_width,
+            app.chat_tab_scroll_offset,
+        );
+        // Persist any offset adjustments back to app state so that the next
+        // frame stays consistent and `wg`'s scroll handlers see the same value.
+        app.chat_tab_scroll_offset = layout.offset;
+
+        let mut spans = Vec::new();
+        let mut tab_hits = Vec::new();
+        let mut col: usize = 0;
+
+        // Leading space
+        spans.push(Span::raw(" "));
+        col += 1;
+
+        // Left scroll arrow when there are tabs hidden to the left.
+        let left_arrow_hit = if layout.show_left_arrow {
+            let start = (bar_x as usize + col) as u16;
+            spans.push(Span::styled("◀", Style::default().fg(Color::Cyan)));
+            col += 1;
+            spans.push(Span::raw(" "));
+            col += 1;
+            let end = (bar_x as usize + col) as u16;
+            CoordinatorArrowHit { start, end }
+        } else {
+            CoordinatorArrowHit::default()
+        };
+
+        // Render visible tabs from layout.offset .. layout.end (exclusive).
+        for vis_pos in 0..(layout.end.saturating_sub(layout.offset)) {
+            let entry_idx = layout.offset + vis_pos;
+            let entry = &entries[entry_idx];
+
+            if vis_pos > 0 {
                 spans.push(Span::styled("│", Style::default().fg(Color::DarkGray)));
-                col += sep_w;
+                col += 1;
             }
 
             let tab_start = (bar_x as usize + col) as u16;
+            let label_width = entry.label.chars().count();
 
-            // Hotkey hint (Alt+N jumps to this tab).
-            if hotkey_width > 0 {
-                spans.push(Span::styled(
-                    hotkey_str,
-                    Style::default().fg(Color::DarkGray),
-                ));
-                col += hotkey_width;
+            match &entry.kind {
+                BarEntryKind2::Coord(styling) => {
+                    let hotkey_n = entry.global_idx + 1;
+                    if hotkey_n <= 9 {
+                        let hotkey_str = format!(" [{}]", hotkey_n);
+                        let hk_w = hotkey_str.len();
+                        spans.push(Span::styled(
+                            hotkey_str,
+                            Style::default().fg(Color::DarkGray),
+                        ));
+                        col += hk_w;
+                    }
+                    let dot_glyph = if entry.is_active { " ◉" } else { " ●" };
+                    let dot_style = if entry.is_active {
+                        Style::default()
+                            .fg(styling.effective_color)
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        let dim_color = match styling.tab_state {
+                            ChatTabState::SupervisorDown => Color::DarkGray,
+                            _ => styling.effective_color,
+                        };
+                        Style::default().fg(dim_color)
+                    };
+                    spans.push(Span::styled(dot_glyph, dot_style));
+                    col += 2;
+
+                    let label_style = if entry.is_active {
+                        Style::default()
+                            .fg(Color::White)
+                            .bg(styling.effective_color)
+                            .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+                    } else {
+                        Style::default().fg(styling.effective_color)
+                    };
+                    spans.push(Span::styled(format!(" {}", entry.label), label_style));
+                    col += 1 + label_width;
+
+                    let close_start = (bar_x as usize + col) as u16;
+                    spans.push(Span::styled(" ✕", Style::default().fg(Color::Red)));
+                    col += 2;
+                    let close_end = (bar_x as usize + col) as u16;
+
+                    spans.push(Span::raw(" "));
+                    col += 1;
+
+                    let tab_end = (bar_x as usize + col) as u16;
+                    tab_hits.push(CoordinatorTabHit {
+                        kind: TabBarEntryKind::Coordinator(styling.cid),
+                        tab_start,
+                        tab_end,
+                        close_start,
+                        close_end,
+                    });
+                }
+                BarEntryKind2::UserBoard(task_id) => {
+                    if entry.is_active {
+                        spans.push(Span::styled(
+                            " ◉",
+                            Style::default()
+                                .fg(Color::Yellow)
+                                .add_modifier(Modifier::BOLD),
+                        ));
+                    } else {
+                        spans.push(Span::styled(
+                            " ●",
+                            Style::default().fg(Color::DarkGray),
+                        ));
+                    }
+                    col += 2;
+
+                    let label_style = if entry.is_active {
+                        Style::default()
+                            .fg(Color::White)
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(Color::DarkGray)
+                    };
+                    spans.push(Span::styled(format!(" {}", entry.label), label_style));
+                    col += 1 + label_width;
+
+                    let close_start = (bar_x as usize + col) as u16;
+                    spans.push(Span::styled(" ✕", Style::default().fg(Color::Red)));
+                    col += 2;
+                    let close_end = (bar_x as usize + col) as u16;
+
+                    spans.push(Span::raw(" "));
+                    col += 1;
+
+                    let tab_end = (bar_x as usize + col) as u16;
+                    tab_hits.push(CoordinatorTabHit {
+                        kind: TabBarEntryKind::UserBoard(task_id.clone()),
+                        tab_start,
+                        tab_end,
+                        close_start,
+                        close_end,
+                    });
+                }
             }
+        }
 
-            // Dot — colored by effective color (muted for legacy, state-color for current).
-            // Active tab uses ◉ + bold; inactive uses ● in the same color.
-            let dot_glyph = if is_active { " ◉" } else { " ●" };
-            let dot_style = if is_active {
-                Style::default()
-                    .fg(effective_color)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                // Inactive: dim the state color slightly so the active tab stands out.
-                let dim_color = match tab_state {
-                    ChatTabState::SupervisorDown => Color::DarkGray,
-                    _ => effective_color,
-                };
-                Style::default().fg(dim_color)
-            };
-            spans.push(Span::styled(dot_glyph, dot_style));
-            col += 2; // " ◉" = space + dot
-
-            // Label — bright + bold + underlined for active; effective-colored for inactive.
-            // Legacy .coordinator-N tabs use muted gray for both active and inactive.
-            let label_style = if is_active {
-                Style::default()
-                    .fg(Color::White)
-                    .bg(effective_color)
-                    .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
-            } else {
-                Style::default().fg(effective_color)
-            };
-            spans.push(Span::styled(format!(" {}", label), label_style));
-            col += 1 + label_width; // " " + label
-
-            // Close button (padded for wider touch target)
-            let close_start = (bar_x as usize + col) as u16;
-            spans.push(Span::styled(" ✕", Style::default().fg(Color::Red)));
-            col += 2; // " ✕"
-            let close_end = (bar_x as usize + col) as u16;
-
-            // Trailing space
+        // Right scroll arrow when there are tabs hidden to the right.
+        let right_arrow_hit = if layout.show_right_arrow {
+            let start = (bar_x as usize + col) as u16;
+            spans.push(Span::styled("▶", Style::default().fg(Color::Cyan)));
+            col += 1;
             spans.push(Span::raw(" "));
             col += 1;
-
-            let tab_end = (bar_x as usize + col) as u16;
-
-            tab_hits.push(CoordinatorTabHit {
-                kind: TabBarEntryKind::Coordinator(cid),
-                tab_start,
-                tab_end,
-                close_start,
-                close_end,
-            });
-            tab_index += 1;
-        }
-
-        // User board tabs — yellow color scheme
-        if !overflow {
-            for (task_id, label) in user_board_entries.iter() {
-                let is_active = selected_user_board.as_deref() == Some(task_id.as_str());
-                let label_width = label.len();
-                // User board tabs: " ◉ Label ✕ " (no state indicator)
-                let close_width: usize = 2; // " ✕"
-                let tab_content_width = 1 + 1 + label_width + 1 + close_width;
-                let sep_w: usize = if tab_index > 0 { 1 } else { 0 };
-
-                let total_tab_width = sep_w + tab_content_width;
-
-                let remaining_tabs = total_tab_count - tab_index - 1;
-                let suffix_width = if remaining_tabs > 0 { 6 } else { 4 };
-                if col + total_tab_width + suffix_width > max_width && remaining_tabs > 0 {
-                    overflow = true;
-                    break;
-                }
-
-                // Separator
-                if tab_index > 0 {
-                    spans.push(Span::styled("│", Style::default().fg(Color::DarkGray)));
-                    col += sep_w;
-                }
-
-                let tab_start = (bar_x as usize + col) as u16;
-
-                // Dot — yellow for user boards
-                if is_active {
-                    spans.push(Span::styled(
-                        " ◉",
-                        Style::default()
-                            .fg(Color::Yellow)
-                            .add_modifier(Modifier::BOLD),
-                    ));
-                } else {
-                    spans.push(Span::styled(" ●", Style::default().fg(Color::DarkGray)));
-                }
-                col += 2;
-
-                // Label
-                let label_style = if is_active {
-                    Style::default()
-                        .fg(Color::White)
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(Color::DarkGray)
-                };
-                spans.push(Span::styled(format!(" {}", label), label_style));
-                col += 1 + label_width;
-
-                // Close button
-                let close_start = (bar_x as usize + col) as u16;
-                spans.push(Span::styled(" ✕", Style::default().fg(Color::Red)));
-                col += 2;
-                let close_end = (bar_x as usize + col) as u16;
-
-                // Trailing space
-                spans.push(Span::raw(" "));
-                col += 1;
-
-                let tab_end = (bar_x as usize + col) as u16;
-
-                tab_hits.push(CoordinatorTabHit {
-                    kind: TabBarEntryKind::UserBoard(task_id.clone()),
-                    tab_start,
-                    tab_end,
-                    close_start,
-                    close_end,
-                });
-                tab_index += 1;
-            }
-        }
-
-        if overflow {
-            spans.push(Span::styled("… ", Style::default().fg(Color::DarkGray)));
-            col += 2;
-        }
+            let end = (bar_x as usize + col) as u16;
+            CoordinatorArrowHit { start, end }
+        } else {
+            CoordinatorArrowHit::default()
+        };
 
         let plus_start = (bar_x as usize + col) as u16;
         spans.push(Span::styled("[+]", Style::default().fg(Color::DarkGray)));
@@ -3145,6 +3317,8 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
             start: plus_start,
             end: plus_end,
         };
+        app.coordinator_left_arrow_hit = left_arrow_hit;
+        app.coordinator_right_arrow_hit = right_arrow_hit;
 
         let tab_line = Line::from(spans);
         frame.render_widget(Paragraph::new(vec![tab_line]), tab_area);
@@ -13198,6 +13372,166 @@ mod tests {
         );
     }
 
+    /// Render `draw_chat_tab` into a TestBackend with a configurable width,
+    /// returning the buffer + a flat string of the first row only (the tab
+    /// bar).
+    fn render_chat_tab_bar_to_string(app: &mut VizApp, width: u16) -> String {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        let backend = TestBackend::new(width, 12);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                draw_chat_tab(frame, app, area);
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let mut row = String::new();
+        for x in 0..buf.area().width {
+            row.push_str(buf.cell((x, 0)).unwrap().symbol());
+        }
+        row
+    }
+
+    /// With cap=16 chats spawned at narrow terminal width, the active tab
+    /// must always be reachable: cycling through tabs auto-scrolls the bar
+    /// and overflow arrows surface the hidden state.
+    #[test]
+    fn test_chat_tab_bar_overflow_arrows_at_narrow_width() {
+        let cids: Vec<u32> = (0..16).collect();
+        let (mut app, _tmp) = build_app_for_tab_color_test(&cids);
+        app.chat.coordinator_active = true;
+
+        // Active = first tab → should render right arrow only.
+        app.active_coordinator_id = 0;
+        app.chat_tab_scroll_offset = 0;
+        let row = render_chat_tab_bar_to_string(&mut app, 80);
+        assert!(
+            row.contains('▶'),
+            "right arrow ▶ must appear when tabs are off-screen to the right.\nRow: {row}"
+        );
+        assert!(
+            !row.contains('◀'),
+            "left arrow ◀ must NOT appear when offset == 0.\nRow: {row}"
+        );
+
+        // Active = last tab → bar must auto-scroll, left arrow visible.
+        app.switch_coordinator(15);
+        let row = render_chat_tab_bar_to_string(&mut app, 80);
+        assert!(
+            row.contains('◀'),
+            "left arrow ◀ must appear when tabs are off-screen to the left.\nRow: {row}"
+        );
+        assert!(
+            !row.contains('▶'),
+            "right arrow ▶ must NOT appear once we've scrolled to the end.\nRow: {row}"
+        );
+
+        // Wide terminal — no arrows at all even with 16 tabs. Reset to the
+        // first tab so the renderer's auto-scroll-to-active drops offset to 0.
+        app.switch_coordinator(0);
+        let row_wide = render_chat_tab_bar_to_string(&mut app, 300);
+        assert!(
+            !row_wide.contains('◀'),
+            "no left arrow at wide width with 16 short labels.\nRow: {row_wide}"
+        );
+        assert!(
+            !row_wide.contains('▶'),
+            "no right arrow at wide width with 16 short labels.\nRow: {row_wide}"
+        );
+    }
+
+    /// Cycling through chats with 16 tabs and a narrow width must keep the
+    /// active tab visible at every step. This is the keyboard-reachability
+    /// guarantee from the task validation criteria.
+    #[test]
+    fn test_chat_tab_bar_cycling_keeps_active_visible_at_narrow_width() {
+        let cids: Vec<u32> = (0..16).collect();
+        let (mut app, _tmp) = build_app_for_tab_color_test(&cids);
+        app.chat.coordinator_active = true;
+
+        for &cid in &cids {
+            app.switch_coordinator(cid);
+            let row = render_chat_tab_bar_to_string(&mut app, 80);
+            // The label is the chat task id, e.g. ".chat-7".
+            let label = format!(".chat-{}", cid);
+            assert!(
+                row.contains(&label),
+                "active tab '{label}' must be visible after switching; row: {row}"
+            );
+            // The active marker `◉` must appear somewhere in the row.
+            assert!(
+                row.contains('◉'),
+                "active dot ◉ must appear when there is an active chat tab; row: {row}"
+            );
+        }
+    }
+
+    /// Smoke render at terminal widths 80, 120, 200 with 16 tabs — the bar
+    /// must not garble (no Unicode replacement characters), and at width=200
+    /// there is no overflow so neither arrow is rendered.
+    #[test]
+    fn test_chat_tab_bar_smoke_widths_80_120_200() {
+        let cids: Vec<u32> = (0..16).collect();
+        let (mut app, _tmp) = build_app_for_tab_color_test(&cids);
+        app.chat.coordinator_active = true;
+        app.switch_coordinator(0);
+
+        for &w in &[80u16, 120, 200] {
+            let row = render_chat_tab_bar_to_string(&mut app, w);
+            assert!(
+                row.contains("[+]"),
+                "[+] button must always render at width {w}; row: {row}"
+            );
+            assert!(
+                !row.contains('\u{FFFD}'),
+                "Unicode replacement char must NOT appear at width {w}; row: {row}"
+            );
+            assert!(
+                row.contains('◉'),
+                "active dot must render at width {w}; row: {row}"
+            );
+        }
+
+        // 16 tabs of `.chat-N` are each ~15-17 cells incl. separator, so
+        // they need ~270 cells. 200 is still an overflow case — verify
+        // arrows render correctly and don't garble at that width.
+        let row200 = render_chat_tab_bar_to_string(&mut app, 200);
+        assert!(
+            row200.contains('▶'),
+            "right arrow must render at width 200 (16 tabs > 200 cells); row: {row200}"
+        );
+
+        // 320 fits all 16 — no arrows.
+        let row320 = render_chat_tab_bar_to_string(&mut app, 320);
+        assert!(
+            !row320.contains('◀') && !row320.contains('▶'),
+            "no overflow arrows at width 320 with 16 short labels; row: {row320}"
+        );
+    }
+
+    /// Click on the right arrow should advance `chat_tab_scroll_offset` by 1.
+    /// (Shrinks down again if active tab forces it back.)
+    #[test]
+    fn test_scroll_chat_tabs_advances_and_clamps_offset() {
+        let cids: Vec<u32> = (0..5).collect();
+        let (mut app, _tmp) = build_app_for_tab_color_test(&cids);
+        assert_eq!(app.chat_tab_scroll_offset, 0);
+        app.scroll_chat_tabs(1);
+        assert_eq!(app.chat_tab_scroll_offset, 1);
+        app.scroll_chat_tabs(1);
+        assert_eq!(app.chat_tab_scroll_offset, 2);
+        app.scroll_chat_tabs(-1);
+        assert_eq!(app.chat_tab_scroll_offset, 1);
+        // Cannot go below 0
+        app.scroll_chat_tabs(-10);
+        assert_eq!(app.chat_tab_scroll_offset, 0);
+        // Cannot go above max (n-1 = 4 for 5 tabs)
+        app.scroll_chat_tabs(100);
+        assert_eq!(app.chat_tab_scroll_offset, 4);
+    }
+
     #[test]
     fn test_chat_tab_renders_hotkey_hint_for_first_nine_tabs() {
         // The tab bar should render `[1]`, `[2]`, ... hints so users
@@ -15305,5 +15639,133 @@ mod tests {
              Rendered:\n{}",
             rendered
         );
+    }
+
+    /// `compute_chat_bar_layout` regression tests.
+    ///
+    /// These cover the chat-tab-bar overflow scrolling behavior: the layout
+    /// must keep the active tab visible, render arrow indicators when (and
+    /// only when) tabs are off-screen, and respect the user's stored offset
+    /// when it doesn't conflict with the active-visible invariant.
+    mod chat_bar_layout {
+        use super::super::{ChatBarLayout, compute_chat_bar_layout};
+
+        /// 16 tabs of width 12 → all-visible at width=300, no arrows.
+        #[test]
+        fn no_overflow_at_wide_terminal() {
+            let widths = vec![12usize; 16];
+            let layout = compute_chat_bar_layout(&widths, Some(0), 300, 0);
+            assert_eq!(layout.offset, 0);
+            assert_eq!(layout.end, 16);
+            assert!(!layout.show_left_arrow);
+            assert!(!layout.show_right_arrow);
+        }
+
+        /// Narrow bar with 16 tabs, active=0 → offset=0, right arrow visible,
+        /// left arrow hidden, partial set rendered.
+        #[test]
+        fn overflow_active_at_start() {
+            let widths = vec![12usize; 16];
+            let layout = compute_chat_bar_layout(&widths, Some(0), 80, 0);
+            assert_eq!(layout.offset, 0);
+            assert!(layout.end > 0 && layout.end < 16);
+            assert!(!layout.show_left_arrow);
+            assert!(layout.show_right_arrow);
+            // Active tab (idx 0) must be visible.
+            assert!(0 >= layout.offset && 0 < layout.end);
+        }
+
+        /// Active=15 (last tab) at width=80 forces offset to grow until tab 15 is visible.
+        #[test]
+        fn overflow_active_at_end_advances_offset() {
+            let widths = vec![12usize; 16];
+            let layout = compute_chat_bar_layout(&widths, Some(15), 80, 0);
+            assert!(layout.offset > 0, "offset must advance to keep active visible");
+            assert_eq!(layout.end, 16);
+            assert!(layout.show_left_arrow, "left arrow must show when offset > 0");
+            assert!(!layout.show_right_arrow, "right arrow must hide when end == n");
+            assert!(15 >= layout.offset && 15 < layout.end);
+        }
+
+        /// User-supplied offset is respected when active tab is still visible.
+        #[test]
+        fn respects_user_offset_when_active_visible() {
+            let widths = vec![12usize; 16];
+            // Active=5, requested_offset=3 → since 5 is visible from offset 3
+            // (assuming 80 cols fits multiple tabs), the offset stays at 3.
+            let layout = compute_chat_bar_layout(&widths, Some(5), 80, 3);
+            assert_eq!(layout.offset, 3);
+            assert!(5 >= layout.offset && 5 < layout.end);
+        }
+
+        /// Requested offset shrinks when active is to the left of it.
+        #[test]
+        fn shrinks_offset_when_active_to_the_left() {
+            let widths = vec![12usize; 16];
+            let layout = compute_chat_bar_layout(&widths, Some(2), 80, 10);
+            assert_eq!(layout.offset, 2, "offset must shrink to make active visible");
+            assert!(2 >= layout.offset && 2 < layout.end);
+        }
+
+        /// No active tab + non-zero offset stays where the user put it.
+        #[test]
+        fn no_active_tab_keeps_user_offset() {
+            let widths = vec![12usize; 16];
+            let layout = compute_chat_bar_layout(&widths, None, 80, 4);
+            assert_eq!(layout.offset, 4);
+            assert!(layout.show_left_arrow);
+        }
+
+        /// Empty entries → trivial empty layout, no arrows.
+        #[test]
+        fn empty_entries_returns_empty_layout() {
+            let layout = compute_chat_bar_layout(&[], None, 80, 0);
+            assert_eq!(
+                layout,
+                ChatBarLayout {
+                    offset: 0,
+                    end: 0,
+                    show_left_arrow: false,
+                    show_right_arrow: false,
+                }
+            );
+        }
+
+        /// Width=80, 16 tabs of 12 cells each — assert no clipping (the
+        /// computed end-offset window plus arrows + leading + [+] all fit).
+        #[test]
+        fn visible_window_fits_inside_bar_width() {
+            let widths = vec![12usize; 16];
+            for active in [0, 5, 10, 15] {
+                let layout = compute_chat_bar_layout(&widths, Some(active), 80, 0);
+                let lead = 1usize;
+                let left_arrow = if layout.show_left_arrow { 2 } else { 0 };
+                let right_arrow = if layout.show_right_arrow { 2 } else { 0 };
+                let plus = 3;
+                // Sum of visible widths + (n-1) separators
+                let visible_count = layout.end - layout.offset;
+                let entries_w: usize = widths[layout.offset..layout.end].iter().sum::<usize>()
+                    + visible_count.saturating_sub(1);
+                let total = lead + left_arrow + entries_w + right_arrow + plus;
+                assert!(
+                    total <= 80,
+                    "active={active}: total cells used ({total}) must fit in bar width 80; \
+                     layout={layout:?}"
+                );
+            }
+        }
+
+        /// Mixed widths, narrow bar — verify active is always inside the window.
+        #[test]
+        fn variable_widths_keep_active_visible() {
+            let widths = vec![10, 14, 8, 20, 12, 16, 10, 8, 14, 12];
+            for active in 0..widths.len() {
+                let layout = compute_chat_bar_layout(&widths, Some(active), 60, 0);
+                assert!(
+                    active >= layout.offset && active < layout.end,
+                    "active={active} must be visible; layout={layout:?}"
+                );
+            }
+        }
     }
 }
