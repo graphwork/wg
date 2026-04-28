@@ -6648,6 +6648,7 @@ pub(crate) fn draw_launcher_pane(frame: &mut Frame, app: &mut VizApp, area: Rect
         show_endpoint,
         recent_list,
         recent_selected,
+        creating,
     ) = match app.launcher.as_ref() {
         Some(l) => (
             l.active_section.clone(),
@@ -6659,6 +6660,7 @@ pub(crate) fn draw_launcher_pane(frame: &mut Frame, app: &mut VizApp, area: Rect
             l.show_endpoint(),
             l.recent_list.clone(),
             l.recent_selected,
+            l.creating,
         ),
         None => return,
     };
@@ -6696,12 +6698,20 @@ pub(crate) fn draw_launcher_pane(frame: &mut Frame, app: &mut VizApp, area: Rect
         }
     };
 
-    // Title
+    // Title — flips to a creating-state banner while the
+    // `wg service create-coordinator` IPC is in flight. The pane
+    // intentionally stays visible during that ~100-500ms window so
+    // the previously-active chat does not flash in (fix-tui-new
+    // symptom 2).
+    let title_text = if creating {
+        "  Creating chat..."
+    } else {
+        "  New Chat"
+    };
+    let title_color = if creating { Color::Yellow } else { Color::Cyan };
     lines.push(Line::from(Span::styled(
-        "  New Chat",
-        Style::default()
-            .fg(Color::Cyan)
-            .add_modifier(Modifier::BOLD),
+        title_text,
+        Style::default().fg(title_color).add_modifier(Modifier::BOLD),
     )));
 
     // Action row: [Launch] [Cancel] + Name input live at the TOP. The user

@@ -1064,6 +1064,14 @@ pub struct LauncherState {
     /// Full unfiltered model catalog. The model_picker holds the
     /// executor-filtered subset; we re-derive it on executor change.
     pub all_models: Vec<(String, String)>,
+    /// True between Enter-to-launch and the IPC roundtrip completing.
+    /// Closes the input gate (no double-submit, no field edits) and
+    /// keeps the pane visible so we don't briefly fall back to the
+    /// previously-active chat while `wg service create-coordinator`
+    /// runs on the worker thread. Cleared in `drain_commands` —
+    /// success drops the launcher entirely; failure resets this flag
+    /// so the user can fix their selection and retry.
+    pub creating: bool,
 }
 
 /// Return models, ordered for the given `executor` (compatible-first).
@@ -9918,6 +9926,15 @@ impl VizApp {
                 }
                 CommandEffect::CreateCoordinator => {
                     if result.success {
+                        // Dismiss the launcher pane and switch focus
+                        // ATOMICALLY in this single drain step. The pane
+                        // was held open across the IPC roundtrip
+                        // (`launch_from_launcher` set creating=true)
+                        // precisely so the user does not see the
+                        // previously-active chat between launcher-close
+                        // and new-chat-ready — fix-tui-new symptom 2.
+                        self.launcher = None;
+                        self.input_mode = InputMode::Normal;
                         if let Ok(data) = serde_json::from_str::<serde_json::Value>(&result.output)
                         {
                             if let Some(cid) = data["coordinator_id"].as_u64() {
@@ -9937,6 +9954,12 @@ impl VizApp {
                         }
                         self.persist_tab_state();
                     } else {
+                        // Reset the in-flight flag so the user can fix
+                        // their selection and retry without reopening
+                        // the launcher.
+                        if let Some(l) = self.launcher.as_mut() {
+                            l.creating = false;
+                        }
                         let err = result
                             .output
                             .lines()
@@ -13100,17 +13123,36 @@ impl VizApp {
             recent_list,
             recent_selected: 0,
             all_models,
+            creating: false,
         });
         self.input_mode = InputMode::Launcher;
     }
 
     /// Launch a coordinator with the selections from the launcher pane.
     pub fn launch_from_launcher(&mut self) {
-        let launcher = match self.launcher.take() {
-            Some(l) => l,
-            None => return,
+        // Read selections WITHOUT closing the launcher. The pane stays
+        // visible (with a "Creating chat..." overlay — see render) until
+        // `drain_commands::CreateCoordinator` returns. Closing the
+        // launcher synchronously caused a jarring flash to the
+        // previously-active chat during the ~100-500ms IPC roundtrip
+        // (graph load + coordinator-state write), then a second focus
+        // hop to the new chat — fix-tui-new symptom 2.
+
+        // Snapshot the args we need from the launcher (and bail on the
+        // already-creating duplicate-submit path) without holding the
+        // mutable borrow across `self.live_chat_count()` /
+        // `self.push_toast()` / `self.exec_command()` calls below.
+        let (name, executor, model, endpoint) = match self.launcher.as_ref() {
+            Some(l) if !l.creating => (
+                l.name.trim().to_string(),
+                l.selected_executor().to_string(),
+                l.selected_model(),
+                l.selected_endpoint(),
+            ),
+            // None (no launcher open) or creating=true (in-flight) —
+            // both no-op.
+            _ => return,
         };
-        self.input_mode = InputMode::Normal;
 
         let config = Config::load_or_default(&self.workgraph_dir);
         let max = config.coordinator.max_coordinators;
@@ -13120,37 +13162,44 @@ impl VizApp {
                 format!("Chat cap reached ({}/{})", alive, max),
                 ToastSeverity::Warning,
             );
+            // Drop the launcher in the cap-exceeded path — there's no
+            // point keeping it open with selections that can't submit.
+            self.launcher = None;
+            self.input_mode = InputMode::Normal;
             return;
         }
 
         let mut args = vec!["service".to_string(), "create-coordinator".to_string()];
 
-        let name = launcher.name.trim().to_string();
         if !name.is_empty() {
             args.push("--name".to_string());
             args.push(name);
         }
 
-        let executor = launcher.selected_executor().to_string();
         args.push("--executor".to_string());
         args.push(executor.clone());
 
-        if let Some(model) = launcher.selected_model() {
+        if let Some(ref m) = model {
             args.push("--model".to_string());
-            args.push(model.clone());
+            args.push(m.clone());
 
-            // Record history entry
-            let endpoint = launcher.selected_endpoint();
+            // Record history entry.
             if let Ok(()) = workgraph::launcher_history::record_use(
                 &workgraph::launcher_history::HistoryEntry::new(
                     &executor,
-                    Some(&model),
+                    Some(m),
                     endpoint.as_deref(),
                     "tui",
                 ),
             ) {}
         }
 
+        // Mark the launcher as in-flight BEFORE firing the command —
+        // the flag also serves as the input gate (handle_launcher_input
+        // ignores keys while it is set).
+        if let Some(l) = self.launcher.as_mut() {
+            l.creating = true;
+        }
         self.exec_command(args, CommandEffect::CreateCoordinator);
     }
 
@@ -21775,6 +21824,130 @@ mod tui_chat_tests {
             InspectorSubFocus::ChatHistory,
             "Switching coordinator should reset inspector sub-focus"
         );
+    }
+
+    /// Regression lock for fix-tui-new symptom 2 (focus flash).
+    ///
+    /// When the launcher submits, `launch_from_launcher` sets
+    /// `launcher.creating = true` and keeps the pane visible. The
+    /// launcher MUST stay open — and `active_coordinator_id` MUST stay
+    /// pointed at the previous chat — until `drain_commands` processes
+    /// the `CreateCoordinator` result. THEN, in a single drain step, we
+    /// dismiss the launcher AND switch to the new chat. This avoids
+    /// the visible "previous chat" flash that the original
+    /// (synchronously-close-launcher) flow produced.
+    #[test]
+    fn drain_commands_create_coordinator_dismisses_launcher_and_switches() {
+        let tmp = TempDir::new().unwrap();
+        let (viz, wg_dir) = setup_workgraph_with_coordinators(&tmp, &[0, 1]);
+
+        let mut app = build_test_app(&viz, &wg_dir);
+        // build_test_app wires cmd_tx + cmd_rx to disjoint channels (the
+        // default test scaffold doesn't expect anyone to send). For
+        // drain_commands tests we need both ends connected.
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.cmd_tx = tx;
+        app.cmd_rx = rx;
+        app.active_coordinator_id = 0;
+        // Simulate post-launch state: launcher is open and in-flight.
+        app.launcher = Some(LauncherState {
+            active_section: LauncherSection::Executor,
+            name: String::new(),
+            executor_list: vec![("claude".to_string(), "claude CLI".to_string(), true)],
+            executor_selected: 0,
+            model_picker: FilterPicker::new(vec![], true),
+            endpoint_picker: FilterPicker::new(vec![], true),
+            recent_list: vec![],
+            recent_selected: 0,
+            all_models: vec![],
+            creating: true,
+        });
+        app.input_mode = InputMode::Launcher;
+
+        // Hand drain_commands a synthetic IPC success result.
+        app.cmd_tx
+            .send(CommandResult {
+                success: true,
+                output: r#"{"coordinator_id": 1}"#.to_string(),
+                effect: CommandEffect::CreateCoordinator,
+            })
+            .expect("cmd channel should accept send");
+
+        let drained = app.drain_commands();
+        assert!(drained, "drain_commands must report it processed an event");
+
+        // Launcher must be gone and input_mode reset in the SAME drain.
+        assert!(
+            app.launcher.is_none(),
+            "launcher must be dismissed when CreateCoordinator returns success"
+        );
+        assert_eq!(
+            app.input_mode,
+            InputMode::Normal,
+            "input_mode must transition to Normal in the same drain step"
+        );
+        // And focus must have switched to the new chat — not stayed on
+        // the previous one (which was the visible-flash bug).
+        assert_eq!(
+            app.active_coordinator_id, 1,
+            "active_coordinator_id must switch to the freshly-created chat"
+        );
+    }
+
+    /// Regression lock: when the IPC FAILS, the launcher must stay
+    /// visible AND `creating` must reset, so the user can fix their
+    /// selection (e.g. invalid model name, bad endpoint) and retry
+    /// without reopening the picker. Pre-fix this case was unreachable
+    /// because the launcher had already been closed synchronously.
+    #[test]
+    fn drain_commands_create_coordinator_failure_resets_creating_flag() {
+        let tmp = TempDir::new().unwrap();
+        let (viz, wg_dir) = setup_workgraph_with_coordinators(&tmp, &[0]);
+
+        let mut app = build_test_app(&viz, &wg_dir);
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.cmd_tx = tx;
+        app.cmd_rx = rx;
+        app.active_coordinator_id = 0;
+        app.launcher = Some(LauncherState {
+            active_section: LauncherSection::Executor,
+            name: String::new(),
+            executor_list: vec![("claude".to_string(), "claude CLI".to_string(), true)],
+            executor_selected: 0,
+            model_picker: FilterPicker::new(vec![], true),
+            endpoint_picker: FilterPicker::new(vec![], true),
+            recent_list: vec![],
+            recent_selected: 0,
+            all_models: vec![],
+            creating: true,
+        });
+        app.input_mode = InputMode::Launcher;
+
+        app.cmd_tx
+            .send(CommandResult {
+                success: false,
+                output: "Error: bogus model id".to_string(),
+                effect: CommandEffect::CreateCoordinator,
+            })
+            .unwrap();
+
+        app.drain_commands();
+
+        let l = app
+            .launcher
+            .as_ref()
+            .expect("launcher must remain visible after IPC failure");
+        assert!(
+            !l.creating,
+            "creating flag must reset so the user can retry"
+        );
+        assert_eq!(
+            app.input_mode,
+            InputMode::Launcher,
+            "input_mode must stay Launcher when IPC fails"
+        );
+        // active_coordinator_id should not have changed.
+        assert_eq!(app.active_coordinator_id, 0);
     }
 
     #[test]

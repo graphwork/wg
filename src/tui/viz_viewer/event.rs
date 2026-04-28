@@ -1162,6 +1162,15 @@ pub(super) fn handle_launcher_mouse_click(app: &mut VizApp, row: u16, column: u1
 fn handle_launcher_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
     use super::state::LauncherSection;
 
+    // While a previous Enter is still in-flight (waiting for `wg
+    // service create-coordinator` IPC to return), swallow keys so the
+    // user can't double-submit, Esc-cancel a half-created chat, or
+    // mutate fields whose values were already shipped. The pane is
+    // visible during this window — see fix-tui-new symptom 2.
+    if app.launcher.as_ref().is_some_and(|l| l.creating) {
+        return;
+    }
+
     // Universal submit: Ctrl+Enter from any section/state. Bypasses the
     // section-specific handlers (which can swallow Enter — e.g. Name section
     // moves to next field, Custom row enters edit mode). Without this safety
@@ -7567,6 +7576,7 @@ mod scrollbar_tests {
             recent_list: vec![],
             recent_selected: 0,
             all_models,
+            creating: false,
         }
     }
 
@@ -7779,11 +7789,18 @@ mod scrollbar_tests {
         // Park in Name section — the section that historically did NOT submit
         // on Enter (it just stepped to the next field).
         app.launcher.as_mut().unwrap().active_section = LauncherSection::Name;
-        // Ctrl+Enter should submit (close launcher) regardless of section.
+        // Ctrl+Enter should submit regardless of section. After fix-tui-new
+        // symptom 2 the pane stays visible (creating=true) until the IPC
+        // returns; verify both halves so a regression that re-closes
+        // synchronously is caught.
         handle_launcher_input(&mut app, KeyCode::Enter, KeyModifiers::CONTROL);
+        let l = app
+            .launcher
+            .as_ref()
+            .expect("Ctrl+Enter must keep the pane open until IPC returns");
         assert!(
-            app.launcher.is_none(),
-            "Ctrl+Enter on Name section should submit + close launcher"
+            l.creating,
+            "Ctrl+Enter on Name section should submit (creating=true)"
         );
     }
 
@@ -7802,9 +7819,13 @@ mod scrollbar_tests {
         app.input_mode = InputMode::Launcher;
         app.launcher.as_mut().unwrap().active_section = LauncherSection::Name;
         handle_launcher_input(&mut app, KeyCode::Enter, KeyModifiers::empty());
+        let l = app
+            .launcher
+            .as_ref()
+            .expect("Enter must keep the pane open until IPC returns");
         assert!(
-            app.launcher.is_none(),
-            "Enter on Name section should submit + close launcher"
+            l.creating,
+            "Enter on Name section should submit (creating=true)"
         );
     }
 
@@ -7831,11 +7852,16 @@ mod scrollbar_tests {
         };
         // Click on the Launch button.
         handle_mouse(&mut app, MouseEventKind::Down(MouseButton::Left), 28, 5);
-        assert!(
-            app.launcher.is_none(),
-            "[Launch] click should submit + close launcher"
+        let l = app
+            .launcher
+            .as_ref()
+            .expect("[Launch] click must keep the pane open until IPC returns");
+        assert!(l.creating, "[Launch] click should submit (creating=true)");
+        assert_eq!(
+            app.input_mode,
+            InputMode::Launcher,
+            "input_mode must stay Launcher until drain_commands clears it"
         );
-        assert_eq!(app.input_mode, InputMode::Normal);
     }
 
     /// Test: clicking [Cancel] button dismisses without submitting.
@@ -7911,12 +7937,16 @@ mod scrollbar_tests {
         );
     }
 
-    /// Test: full submit flow — open launcher, press Enter, dialog dismisses
-    /// and exec_command was scheduled (we can't intercept the wg subprocess
-    /// here, but the launcher being None + InputMode back to Normal means
-    /// `launch_from_launcher` ran end-to-end).
+    /// Test: full submit flow — open launcher, press Enter. The launcher
+    /// MUST stay visible (with `creating=true`) and `input_mode` MUST stay
+    /// `Launcher` while the `wg service create-coordinator` IPC is in flight.
+    /// Closing the pane synchronously caused a jarring flash to the
+    /// previously-active chat during the ~100-500ms IPC roundtrip — this is
+    /// the regression lock for fix-tui-new symptom 2. The launcher is
+    /// dismissed + focus switched in `drain_commands::CreateCoordinator`,
+    /// which runs only after the subprocess returns.
     #[test]
-    fn test_dialog_enter_submits_end_to_end() {
+    fn test_dialog_enter_keeps_launcher_visible_until_ipc_returns() {
         use super::handle_launcher_input;
         let (mut app, _tmp) = build_test_app();
         // Build a launcher with a real model, on Executor section (default).
@@ -7926,17 +7956,54 @@ mod scrollbar_tests {
         ));
         app.input_mode = InputMode::Launcher;
         // Default: active_section = Executor, model_picker.selected = 0.
-        // Plain Enter should submit.
+        // Plain Enter should fire the IPC but NOT close the pane.
         handle_launcher_input(&mut app, KeyCode::Enter, KeyModifiers::empty());
+        let launcher = app
+            .launcher
+            .as_ref()
+            .expect("launcher must remain visible during in-flight IPC");
         assert!(
-            app.launcher.is_none(),
-            "Enter on Executor section should submit + close launcher"
+            launcher.creating,
+            "creating flag must be set while the IPC is in flight"
         );
         assert_eq!(
             app.input_mode,
-            InputMode::Normal,
-            "input_mode should be Normal after submit"
+            InputMode::Launcher,
+            "input_mode must stay Launcher until drain_commands clears it"
         );
+    }
+
+    /// Test: while the launcher is in `creating=true`, additional keystrokes
+    /// must be swallowed. No double-submit, no field edits, no Esc-cancel of
+    /// a half-created chat. The pane stays inert until drain_commands fires.
+    #[test]
+    fn test_dialog_input_gated_while_creating() {
+        use super::handle_launcher_input;
+        let (mut app, _tmp) = build_test_app();
+        let mut launcher = make_launcher(
+            vec![("claude", "claude CLI", true)],
+            vec![("claude:opus", "")],
+        );
+        launcher.creating = true;
+        let original_name = launcher.name.clone();
+        app.launcher = Some(launcher);
+        app.input_mode = InputMode::Launcher;
+        // Pressing Esc must NOT close the pane mid-flight.
+        handle_launcher_input(&mut app, KeyCode::Esc, KeyModifiers::empty());
+        assert!(app.launcher.is_some(), "Esc must not cancel mid-creation");
+        assert_eq!(app.input_mode, InputMode::Launcher);
+        // Typing a character must NOT mutate the name field.
+        handle_launcher_input(&mut app, KeyCode::Char('x'), KeyModifiers::empty());
+        assert_eq!(
+            app.launcher.as_ref().unwrap().name,
+            original_name,
+            "field input must be ignored while creating"
+        );
+        // A second Enter must NOT spawn a duplicate IPC (creating stays true,
+        // launcher stays present — no re-entry into launch_from_launcher
+        // that would push another exec_command).
+        handle_launcher_input(&mut app, KeyCode::Enter, KeyModifiers::empty());
+        assert!(app.launcher.as_ref().unwrap().creating);
     }
 
     /// Test: clicking a model row selects it and switches focus to Model section.
@@ -7996,11 +8063,15 @@ mod scrollbar_tests {
         // Move to Model section so Enter is unambiguously a submit action.
         app.launcher.as_mut().unwrap().active_section = LauncherSection::Model;
         handle_launcher_input(&mut app, KeyCode::Enter, KeyModifiers::SHIFT);
+        let l = app
+            .launcher
+            .as_ref()
+            .expect("Shift+Enter must keep the pane open until IPC returns");
         assert!(
-            app.launcher.is_none(),
-            "Shift+Enter should submit + close launcher (mirror of plain Enter)"
+            l.creating,
+            "Shift+Enter should submit (creating=true) — mirror of plain Enter"
         );
-        assert_eq!(app.input_mode, InputMode::Normal);
+        assert_eq!(app.input_mode, InputMode::Launcher);
     }
 
     /// Test: keyboard ↑/↓ moves the model list selection. Regression guard
