@@ -1,0 +1,21 @@
+description = "OpenAI Codex CLI: gpt-5.5 worker, gpt-5.4-mini for agency"
+
+[agent]
+model = "codex:gpt-5.5"
+
+[dispatcher]
+model = "codex:gpt-5.5"
+
+[tiers]
+fast = "codex:gpt-5.4-mini"
+standard = "codex:gpt-5.4"
+premium = "codex:gpt-5.5"
+
+[models.evaluator]
+model = "codex:gpt-5.4-mini"
+
+[models.assigner]
+model = "codex:gpt-5.4-mini"
+
+[models.flip]
+model = "codex:gpt-5.4-mini"

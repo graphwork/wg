@@ -1,0 +1,21 @@
+description = "Claude CLI: opus worker, haiku for agency meta-tasks"
+
+[agent]
+model = "claude:opus"
+
+[dispatcher]
+model = "claude:opus"
+
+[tiers]
+fast = "claude:haiku"
+standard = "claude:sonnet"
+premium = "claude:opus"
+
+[models.evaluator]
+model = "claude:haiku"
+
+[models.assigner]
+model = "claude:haiku"
+
+[models.flip]
+model = "claude:haiku"

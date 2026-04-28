@@ -83,6 +83,10 @@ pub enum IpcRequest {
         poll_interval: Option<u64>,
         #[serde(default)]
         model: Option<String>,
+        /// Active profile name — for audit logging only.
+        /// The actual config is applied by re-reading from disk (when other fields are None).
+        #[serde(default)]
+        profile: Option<String>,
     },
     /// Create a task in this workgraph (cross-repo dispatch)
     AddTask {
@@ -455,10 +459,11 @@ fn handle_request(
             executor,
             poll_interval,
             model,
+            profile,
         } => {
             logger.info(&format!(
-                "IPC Reconfigure: max_agents={:?}, executor={:?}, poll_interval={:?}, model={:?}",
-                max_agents, executor, poll_interval, model
+                "IPC Reconfigure: max_agents={:?}, executor={:?}, poll_interval={:?}, model={:?}, profile={:?}",
+                max_agents, executor, poll_interval, model, profile
             ));
             handle_reconfigure(
                 dir,
@@ -2044,6 +2049,7 @@ mod tests {
             executor: Some("opencode".to_string()),
             poll_interval: Some(120),
             model: Some("sonnet".to_string()),
+            profile: None,
         };
         let json = serde_json::to_string(&req).unwrap();
         assert!(json.contains("\"cmd\":\"reconfigure\""));
@@ -2059,6 +2065,7 @@ mod tests {
                 executor,
                 poll_interval,
                 model,
+                profile: _,
             } => {
                 assert_eq!(max_agents, Some(8));
                 assert_eq!(executor, Some("opencode".to_string()));
@@ -2077,6 +2084,7 @@ mod tests {
             executor: None,
             poll_interval: None,
             model: None,
+            profile: None,
         };
         let json = serde_json::to_string(&req).unwrap();
         assert!(json.contains("\"cmd\":\"reconfigure\""));
@@ -2088,6 +2096,7 @@ mod tests {
                 executor,
                 poll_interval,
                 model,
+                profile: _,
             } => {
                 assert!(max_agents.is_none());
                 assert!(executor.is_none());

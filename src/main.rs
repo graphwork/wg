@@ -2254,10 +2254,46 @@ fn main() -> Result<()> {
                 standard.as_deref(),
                 premium.as_deref(),
             ),
-            ProfileCommands::Show { verbose } => {
-                commands::profile_cmd::show(&workgraph_dir, cli.json, verbose)
+            ProfileCommands::Use {
+                name,
+                no_reload,
+                clear,
+            } => commands::profile_cmd::use_profile(&workgraph_dir, name.as_deref(), no_reload, clear),
+            ProfileCommands::Show {
+                profile_name,
+                verbose,
+                diff_base,
+            } => commands::profile_cmd::show(&workgraph_dir, cli.json, verbose, profile_name.as_deref(), diff_base),
+            ProfileCommands::List { installed } => {
+                commands::profile_cmd::list(&workgraph_dir, cli.json, installed)
             }
-            ProfileCommands::List => commands::profile_cmd::list(&workgraph_dir, cli.json),
+            ProfileCommands::Create {
+                name,
+                model,
+                endpoint,
+                from,
+                description,
+                force,
+            } => commands::profile_cmd::create_profile(
+                &name,
+                model.as_deref(),
+                endpoint.as_deref(),
+                from.as_deref(),
+                description.as_deref(),
+                force,
+            ),
+            ProfileCommands::Edit { name, no_reload } => {
+                commands::profile_cmd::edit_profile(&workgraph_dir, &name, no_reload)
+            }
+            ProfileCommands::Delete { name, force } => {
+                commands::profile_cmd::delete_profile(&name, force)
+            }
+            ProfileCommands::Diff { a, b } => {
+                commands::profile_cmd::diff_profiles(&a, b.as_deref())
+            }
+            ProfileCommands::InitStarters { force } => {
+                commands::profile_cmd::init_starters(force)
+            }
             ProfileCommands::Refresh => commands::profile_cmd::refresh(&workgraph_dir),
         },
         Commands::Config {

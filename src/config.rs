@@ -3871,6 +3871,23 @@ impl Config {
             .map_err(|e| anyhow::anyhow!("Failed to deserialize merged config: {}", e))?;
         config.agent_model_is_local = agent_model_is_local;
 
+        // Apply active named profile overlay (global-dir layer, on top of global+local merge).
+        // Failure to load the profile is non-fatal — we log and continue with base config.
+        // Project-local config already won in the merge above, so any profile key that was
+        // also set in local config will already be in `config`; the overlay only affects keys
+        // NOT present in local config.
+        if let Ok(Some(profile_name)) = crate::profile::named::active() {
+            match crate::profile::named::load(&profile_name) {
+                Ok(prof) => crate::profile::named::overlay_onto(&mut config, &prof),
+                Err(e) => {
+                    eprintln!(
+                        "warning: active profile '{}' could not be loaded: {}",
+                        profile_name, e
+                    );
+                }
+            }
+        }
+
         config.validate_model_format()?;
 
         Ok(config)

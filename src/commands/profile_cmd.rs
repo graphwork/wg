@@ -5,6 +5,7 @@ use std::path::Path;
 use workgraph::config::Config;
 use workgraph::model_benchmarks::{self, BenchmarkRegistry, RankedTiers};
 use workgraph::profile;
+use workgraph::profile::named as named_profile;
 
 /// File name for the cached ranked tiers (inside .workgraph/).
 /// Note: `profile::load_ranked_tiers()` provides the public read path;
@@ -221,10 +222,72 @@ pub fn refresh(dir: &Path) -> Result<()> {
 }
 
 /// Show current profile and resolved model mappings.
-pub fn show(dir: &Path, json: bool, verbose: bool) -> Result<()> {
-    let config = Config::load_merged(dir)?;
+pub fn show(dir: &Path, json: bool, verbose: bool, profile_name: Option<&str>, _diff_base: bool) -> Result<()> {
+    // If a specific named profile is requested, show its raw contents.
+    if let Some(name) = profile_name {
+        let prof = named_profile::load(name)?;
+        if json {
+            println!("{}", serde_json::to_string_pretty(&prof)?);
+        } else {
+            println!("Profile: {}", name);
+            if let Some(ref desc) = prof.description {
+                println!("  {}", desc);
+            }
+            println!();
+            if let Some(ref agent) = prof.agent {
+                if let Some(ref m) = agent.model {
+                    println!("  agent.model = \"{}\"", m);
+                }
+            }
+            if let Some(ref dispatcher) = prof.dispatcher {
+                if let Some(ref m) = dispatcher.model {
+                    println!("  dispatcher.model = \"{}\"", m);
+                }
+            }
+            if let Some(ref tiers) = prof.tiers {
+                if let Some(ref f) = tiers.fast {
+                    println!("  tiers.fast = \"{}\"", f);
+                }
+                if let Some(ref s) = tiers.standard {
+                    println!("  tiers.standard = \"{}\"", s);
+                }
+                if let Some(ref p) = tiers.premium {
+                    println!("  tiers.premium = \"{}\"", p);
+                }
+            }
+            if let Some(ref models) = prof.models {
+                if let Some(ref m) = models.evaluator {
+                    if let Some(ref ms) = m.model {
+                        println!("  models.evaluator.model = \"{}\"", ms);
+                    }
+                }
+                if let Some(ref m) = models.assigner {
+                    if let Some(ref ms) = m.model {
+                        println!("  models.assigner.model = \"{}\"", ms);
+                    }
+                }
+                if let Some(ref m) = models.flip {
+                    if let Some(ref ms) = m.model {
+                        println!("  models.flip.model = \"{}\"", ms);
+                    }
+                }
+            }
+            if let Some(ref ep) = prof.llm_endpoints {
+                for endpoint in &ep.endpoints {
+                    println!("  endpoint: {} ({}) url={}", endpoint.name, endpoint.provider, endpoint.url.as_deref().unwrap_or("(none)"));
+                }
+            }
+            let path = named_profile::profile_path(name)?;
+            println!();
+            println!("  File: {}", path.display());
+        }
+        return Ok(());
+    }
 
+    // Default: show current merged config (with active profile applied).
+    let config = Config::load_merged(dir)?;
     let effective_tiers = config.effective_tiers_public();
+    let active = named_profile::active().unwrap_or(None);
 
     // Load ranked alternatives if available.
     let ranked_tiers = load_ranked_tiers(dir)?;
@@ -237,7 +300,9 @@ pub fn show(dir: &Path, json: bool, verbose: bool) -> Result<()> {
 
     if json {
         let mut val = serde_json::json!({
+            "active_named_profile": active,
             "profile": config.profile,
+            "agent_model": config.agent.model,
             "effective_tiers": {
                 "fast": effective_tiers.fast,
                 "standard": effective_tiers.standard,
@@ -252,22 +317,34 @@ pub fn show(dir: &Path, json: bool, verbose: bool) -> Result<()> {
     }
 
     // Header
-    match config.profile.as_deref() {
+    match active.as_deref() {
         Some(name) => {
-            if let Some(prof) = profile::get_profile(name) {
-                println!("Profile: {} ({})", name, prof.strategy_label());
-                println!("  {}", prof.description);
-            } else {
-                println!("Profile: {} (unknown — not a built-in profile)", name);
+            println!("Active named profile: {} *", name);
+            if let Ok(prof) = named_profile::load(name) {
+                if let Some(ref desc) = prof.description {
+                    println!("  {}", desc);
+                }
             }
         }
-        None => {
-            println!("Profile: (none)");
-            println!("  Using default Anthropic tier mappings.");
-            println!("  Set a profile with: wg profile set <name>");
-        }
+        None => match config.profile.as_deref() {
+            Some(name) => {
+                if let Some(prof) = profile::get_profile(name) {
+                    println!("Profile: {} ({})", name, prof.strategy_label());
+                    println!("  {}", prof.description);
+                } else {
+                    println!("Profile: {} (unknown — not a built-in profile)", name);
+                }
+            }
+            None => {
+                println!("Profile: (none)");
+                println!("  Using default config. Run `wg profile init-starters` and `wg profile use <name>`.");
+            }
+        },
     }
 
+    println!();
+    println!("  Effective settings (base config + profile overlay):");
+    println!("    agent.model  = {}", config.agent.model);
     println!();
     println!("  Tier Mappings:");
     println!(
@@ -399,68 +476,406 @@ fn print_ranked_tier(tier_name: &str, ranked: &[model_benchmarks::RankedModel], 
     }
 }
 
-/// List available profiles.
-pub fn list(dir: &Path, json: bool) -> Result<()> {
-    let config = Config::load_merged(dir)?;
-    let active_profile = config.profile.as_deref();
-
-    let profiles = profile::builtin_profiles();
+/// List available profiles (installed user profiles + built-in starters).
+pub fn list(dir: &Path, json: bool, installed_only: bool) -> Result<()> {
+    let active = named_profile::active().unwrap_or(None);
+    let installed = named_profile::list_installed().unwrap_or_default();
+    let builtin_names = named_profile::STARTER_NAMES;
 
     if json {
-        let val: Vec<serde_json::Value> = profiles
-            .iter()
-            .map(|p| {
-                let tiers = p.resolve_tiers();
-                serde_json::json!({
+        let mut items: Vec<serde_json::Value> = vec![];
+
+        // Installed user profiles
+        for name in &installed {
+            let is_active = active.as_deref() == Some(name.as_str());
+            let desc = named_profile::load(name)
+                .ok()
+                .and_then(|p| p.description);
+            items.push(serde_json::json!({
+                "name": name,
+                "kind": "user",
+                "active": is_active,
+                "description": desc,
+            }));
+        }
+
+        // Built-in starters (not shown if installed_only)
+        if !installed_only {
+            for name in builtin_names {
+                if !installed.iter().any(|i| i == name) {
+                    items.push(serde_json::json!({
+                        "name": name,
+                        "kind": "builtin",
+                        "active": false,
+                        "description": named_profile::starter_template(name)
+                            .and_then(|s| toml::from_str::<named_profile::NamedProfile>(s).ok())
+                            .and_then(|p| p.description),
+                    }));
+                }
+            }
+        }
+
+        // Legacy built-in profiles (for backward compat display)
+        if !installed_only {
+            for p in profile::builtin_profiles() {
+                items.push(serde_json::json!({
                     "name": p.name,
+                    "kind": "legacy-builtin",
+                    "active": active.is_none() && false,
                     "description": p.description,
-                    "strategy": p.strategy_label(),
-                    "active": active_profile == Some(p.name),
-                    "tiers": tiers.as_ref().map(|t| serde_json::json!({
-                        "fast": t.fast,
-                        "standard": t.standard,
-                        "premium": t.premium,
-                    })),
-                })
-            })
-            .collect();
-        println!("{}", serde_json::to_string_pretty(&val)?);
+                }));
+            }
+        }
+
+        println!("{}", serde_json::to_string_pretty(&items)?);
         return Ok(());
     }
 
-    println!("Available profiles:");
+    println!("Named profiles:");
     println!();
 
-    for p in &profiles {
-        let active_marker = if active_profile == Some(p.name) {
-            " *"
-        } else {
-            ""
-        };
-        println!(
-            "  {:<12} {} ({}){}",
-            p.name,
-            p.description,
-            p.strategy_label(),
-            active_marker
-        );
-
-        if let Some(tiers) = p.resolve_tiers() {
-            println!(
-                "               fast: {}  standard: {}  premium: {}",
-                tiers.fast.as_deref().unwrap_or("?"),
-                tiers.standard.as_deref().unwrap_or("?"),
-                tiers.premium.as_deref().unwrap_or("?"),
-            );
-        } else {
-            println!("               (resolved dynamically from benchmark registry)");
+    if installed.is_empty() && !installed_only {
+        println!("  (no profiles installed — run `wg profile init-starters`)");
+    } else {
+        for name in &installed {
+            let is_active = active.as_deref() == Some(name.as_str());
+            let desc = named_profile::load(name)
+                .ok()
+                .and_then(|p| p.description)
+                .unwrap_or_default();
+            let marker = if is_active { " *" } else { "" };
+            println!("  [user]    {:<14} {}{}", name, desc, marker);
         }
-        println!();
     }
 
-    match active_profile {
-        Some(name) => println!("  Active: {}", name),
-        None => println!("  Active: (none — using default Anthropic tiers)"),
+    if !installed_only {
+        println!();
+        println!("Starter templates (not yet installed — run `wg profile init-starters`):");
+        println!();
+        for name in builtin_names {
+            if !installed.iter().any(|i| i == name) {
+                let desc = named_profile::starter_template(name)
+                    .and_then(|s| toml::from_str::<named_profile::NamedProfile>(s).ok())
+                    .and_then(|p| p.description)
+                    .unwrap_or_default();
+                println!("  [builtin] {:<14} {}", name, desc);
+            }
+        }
+    }
+
+    println!();
+    match active.as_deref() {
+        Some(name) => println!("Active: {} *", name),
+        None => println!("Active: (none — run `wg profile use <name>` to activate)"),
+    }
+
+    // Also show legacy built-in profiles
+    if !installed_only {
+        let legacy = profile::builtin_profiles();
+        if !legacy.is_empty() {
+            println!();
+            println!("Legacy tier presets (wg profile set <name>):");
+            for p in &legacy {
+                let config = Config::load_merged(dir)?;
+                let active_legacy = config.profile.as_deref();
+                let marker = if active_legacy == Some(p.name) { " *" } else { "" };
+                println!("  {:<12} {}{}", p.name, p.description, marker);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+// ── Named profile commands ────────────────────────────────────────────────────
+
+/// Activate a named profile: write active-pointer, hot-reload daemon.
+pub fn use_profile(dir: &Path, name: Option<&str>, no_reload: bool, clear: bool) -> Result<()> {
+    if clear || name.is_none() {
+        let prev = named_profile::active().unwrap_or(None);
+        named_profile::set_active(None)?;
+        match prev.as_deref() {
+            Some(p) => println!("Active profile cleared (was: {}).", p),
+            None => println!("No active profile was set. Nothing changed."),
+        }
+        if !no_reload {
+            trigger_daemon_reload(dir, None);
+        }
+        return Ok(());
+    }
+
+    let profile_name = name.unwrap();
+    named_profile::load(profile_name)?;
+
+    let prev = named_profile::active().unwrap_or(None);
+    named_profile::set_active(Some(profile_name))?;
+
+    match prev.as_deref() {
+        Some(p) if p != profile_name => println!(
+            "Active profile: {} (was: {}). Next worker will use {} models.",
+            profile_name, p, profile_name
+        ),
+        Some(_) => println!("Active profile: {} (unchanged).", profile_name),
+        None => println!(
+            "Active profile: {}. Next worker will use {} models.",
+            profile_name, profile_name
+        ),
+    }
+
+    if !no_reload {
+        trigger_daemon_reload(dir, Some(profile_name));
+    }
+
+    Ok(())
+}
+
+/// Send a Reconfigure IPC to the running daemon (if any), or silently continue.
+fn trigger_daemon_reload(dir: &Path, profile_name: Option<&str>) {
+    use crate::commands::service::{self, ServiceState};
+    use crate::commands::service::ipc::IpcRequest;
+    use workgraph::service::is_process_alive;
+
+    let running = match ServiceState::load(dir) {
+        Ok(Some(state)) => is_process_alive(state.pid),
+        _ => false,
+    };
+
+    if !running {
+        println!("  (Daemon not running — profile applies on next wg service start)");
+        return;
+    }
+
+    let req = IpcRequest::Reconfigure {
+        max_agents: None,
+        executor: None,
+        poll_interval: None,
+        model: None,
+        profile: profile_name.map(str::to_string),
+    };
+
+    match service::send_request(dir, &req) {
+        Ok(resp) if resp.ok => {
+            println!("  Daemon reloaded — next worker will use the new profile.");
+        }
+        Ok(resp) => {
+            eprintln!(
+                "  Warning: daemon reconfigure returned error: {}",
+                resp.error.unwrap_or_default()
+            );
+        }
+        Err(e) => {
+            eprintln!("  Warning: could not reach daemon: {}. Profile will apply on next start.", e);
+        }
+    }
+}
+
+/// Create a new named profile file.
+pub fn create_profile(
+    name: &str,
+    model: Option<&str>,
+    endpoint: Option<&str>,
+    from: Option<&str>,
+    description: Option<&str>,
+    force: bool,
+) -> Result<()> {
+    use workgraph::profile::named::{NamedProfile, ProfileAgentSection, ProfileDispatcherSection, ProfileEndpointsSection};
+    use workgraph::config::EndpointConfig;
+
+    let path = named_profile::profile_path(name)?;
+    if path.exists() && !force {
+        anyhow::bail!(
+            "Profile '{}' already exists at {}.\nUse --force to overwrite.",
+            name,
+            path.display()
+        );
+    }
+
+    let mut prof = if let Some(from_name) = from {
+        match named_profile::load(from_name) {
+            Ok(p) => p,
+            Err(_) => {
+                if let Some(tmpl) = named_profile::starter_template(from_name) {
+                    toml::from_str(tmpl).with_context(|| format!("Failed to parse starter template '{}'", from_name))?
+                } else {
+                    anyhow::bail!("Profile or starter '{}' not found", from_name);
+                }
+            }
+        }
+    } else {
+        NamedProfile::default()
+    };
+
+    if let Some(desc) = description {
+        prof.description = Some(desc.to_string());
+    }
+    if let Some(m) = model {
+        prof.agent = Some(ProfileAgentSection { model: Some(m.to_string()) });
+        prof.dispatcher = Some(ProfileDispatcherSection { model: Some(m.to_string()) });
+    }
+    if let Some(url) = endpoint {
+        prof.llm_endpoints = Some(ProfileEndpointsSection {
+            endpoints: vec![EndpointConfig {
+                name: "default".to_string(),
+                provider: "oai-compat".to_string(),
+                url: Some(url.to_string()),
+                model: None,
+                api_key: None,
+                api_key_file: None,
+                api_key_env: None,
+                is_default: true,
+                context_window: None,
+            }],
+        });
+    }
+
+    named_profile::save(name, &prof)?;
+    println!("Profile '{}' created at {}", name, path.display());
+    println!("  Use it with: wg profile use {}", name);
+    Ok(())
+}
+
+/// Open a profile file in $EDITOR, then validate and optionally hot-reload.
+pub fn edit_profile(dir: &Path, name: &str, no_reload: bool) -> Result<()> {
+    let path = named_profile::profile_path(name)?;
+    if !path.exists() {
+        anyhow::bail!(
+            "Profile '{}' not found at {}.\nCreate it first with: wg profile create {}",
+            name,
+            path.display(),
+            name,
+        );
+    }
+
+    let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
+    let status = std::process::Command::new(&editor)
+        .arg(&path)
+        .status()
+        .with_context(|| format!("Failed to launch editor '{}'", editor))?;
+
+    if !status.success() {
+        anyhow::bail!("Editor exited with non-zero status");
+    }
+
+    named_profile::validate_file(&path).with_context(|| {
+        format!(
+            "Profile '{}' has invalid content after editing. File at {}",
+            name,
+            path.display()
+        )
+    })?;
+    println!("Profile '{}' saved and validated.", name);
+
+    let is_active = named_profile::active()
+        .unwrap_or(None)
+        .as_deref() == Some(name);
+
+    if is_active && !no_reload {
+        trigger_daemon_reload(dir, Some(name));
+    }
+
+    Ok(())
+}
+
+/// Delete a named profile file.
+pub fn delete_profile(name: &str, force: bool) -> Result<()> {
+    let path = named_profile::profile_path(name)?;
+    if !path.exists() {
+        anyhow::bail!("Profile '{}' not found at {}", name, path.display());
+    }
+
+    let is_active = named_profile::active()
+        .unwrap_or(None)
+        .as_deref() == Some(name);
+
+    if is_active && !force {
+        anyhow::bail!(
+            "Profile '{}' is currently active. Use --force to delete it.",
+            name,
+        );
+    }
+
+    std::fs::remove_file(&path)
+        .with_context(|| format!("Failed to delete profile file {}", path.display()))?;
+
+    if is_active {
+        named_profile::set_active(None)?;
+        println!("Profile '{}' deleted. Active profile cleared.", name);
+    } else {
+        println!("Profile '{}' deleted.", name);
+    }
+
+    Ok(())
+}
+
+/// Show a diff between two profiles (or empty vs a profile).
+pub fn diff_profiles(a: &str, b: Option<&str>) -> Result<()> {
+    let prof_a = named_profile::load(a)?;
+    let toml_a = toml::to_string_pretty(&prof_a)?;
+
+    let (label_b, toml_b) = if let Some(b_name) = b {
+        let prof_b = named_profile::load(b_name)?;
+        (b_name.to_string(), toml::to_string_pretty(&prof_b)?)
+    } else {
+        ("(base)".to_string(), String::new())
+    };
+
+    println!("--- {}", if b.is_some() { a } else { "(base)" });
+    println!("+++ {}", label_b);
+    println!();
+
+    let lines_a: Vec<&str> = if b.is_some() { toml_a.lines().collect() } else { vec![] };
+    let lines_b: Vec<&str> = if b.is_some() { toml_b.lines().collect() } else { toml_a.lines().collect() };
+    print_simple_diff(&lines_a, &lines_b);
+
+    Ok(())
+}
+
+fn print_simple_diff(a: &[&str], b: &[&str]) {
+    // Build sets for quick lookup
+    let a_set: std::collections::HashSet<&str> = a.iter().copied().collect();
+    let b_set: std::collections::HashSet<&str> = b.iter().copied().collect();
+
+    for line in a {
+        if !b_set.contains(line) {
+            println!("- {}", line);
+        } else {
+            println!("  {}", line);
+        }
+    }
+    for line in b {
+        if !a_set.contains(line) {
+            println!("+ {}", line);
+        }
+    }
+}
+
+/// Write the three starter profiles to ~/.wg/profiles/ if missing.
+pub fn init_starters(force: bool) -> Result<()> {
+    let dir = named_profile::profiles_dir()?;
+    std::fs::create_dir_all(&dir)
+        .with_context(|| format!("Failed to create profiles directory {}", dir.display()))?;
+
+    let mut written = 0;
+    let mut skipped = 0;
+
+    for &name in named_profile::STARTER_NAMES {
+        let path = dir.join(format!("{}.toml", name));
+        if path.exists() && !force {
+            skipped += 1;
+            println!("  skip  {} (already exists; use --force to overwrite)", name);
+            continue;
+        }
+        let tmpl = named_profile::starter_template(name).expect("starter template must exist");
+        std::fs::write(&path, tmpl)
+            .with_context(|| format!("Failed to write {}", path.display()))?;
+        written += 1;
+        println!("  wrote {}", path.display());
+    }
+
+    println!();
+    println!("Starter profiles: {} written, {} skipped.", written, skipped);
+    if written > 0 {
+        println!("Activate one with: wg profile use claude|codex|wgnext");
     }
 
     Ok(())

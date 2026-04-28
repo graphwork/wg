@@ -406,3 +406,39 @@ owners = [
 ]
 description = "Regression for wg-html-redesign: wg html --all must emit ASCII viz (not SVG) in a viz-pre element, task IDs must be wrapped in clickable task-link spans, side panel element must be present, WG_TASKS JSON must be valid, and the ASCII layout must match wg viz output."
 timeout_seconds = 60
+
+[[scenario]]
+name = "profile_create_and_list"
+script = "scenarios/profile_create_and_list.sh"
+owners = [
+    "implement-named-profiles",
+]
+description = "Named profiles: create a profile, verify file written, wg profile list shows it as [user], wg profile show displays agent.model."
+timeout_seconds = 30
+
+[[scenario]]
+name = "profile_use_without_daemon"
+script = "scenarios/profile_use_without_daemon.sh"
+owners = [
+    "implement-named-profiles",
+]
+description = "Named profiles: wg profile use <name> writes active-pointer, wg config --merged reflects the profile's models, wg profile use --clear removes the pointer."
+timeout_seconds = 30
+
+[[scenario]]
+name = "profile_diff"
+script = "scenarios/profile_diff.sh"
+owners = [
+    "implement-named-profiles",
+]
+description = "Named profiles: wg profile diff claude codex shows both model strings in output."
+timeout_seconds = 30
+
+[[scenario]]
+name = "profile_allowlist_rejects_tui"
+script = "scenarios/profile_allowlist_rejects_tui.sh"
+owners = [
+    "implement-named-profiles",
+]
+description = "Named profiles: a profile file with unknown field [tui] is rejected at parse time with a clear error naming the field."
+timeout_seconds = 30

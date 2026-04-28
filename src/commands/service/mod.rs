@@ -3245,6 +3245,7 @@ pub fn run_reload(
         executor: executor.map(std::string::ToString::to_string),
         poll_interval: interval,
         model: model.map(std::string::ToString::to_string),
+        profile: None,
     };
 
     let response = send_request(dir, &request)?;

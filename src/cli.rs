@@ -3076,7 +3076,7 @@ pub enum EvaluateCommands {
 
 #[derive(Subcommand)]
 pub enum ProfileCommands {
-    /// Set the active provider profile
+    /// Set the active provider profile (deprecated alias for `use`)
     Set {
         /// Profile name (e.g., anthropic, openrouter, openai)
         name: String,
@@ -3093,14 +3093,95 @@ pub enum ProfileCommands {
         #[arg(long)]
         premium: Option<String>,
     },
+    /// Activate a named profile (writes active-profile pointer, hot-reloads daemon)
+    Use {
+        /// Profile name to activate, or omit with --clear to deactivate
+        name: Option<String>,
+
+        /// Skip sending IPC reload to daemon (just write the active-profile pointer)
+        #[arg(long)]
+        no_reload: bool,
+
+        /// Clear the active profile (revert to base config)
+        #[arg(long)]
+        clear: bool,
+    },
     /// Show current profile and resolved model mappings
     Show {
+        /// Profile name to show (defaults to active profile)
+        profile_name: Option<String>,
+
         /// Show raw metrics (pricing, context length, benchmark scores) per model
         #[arg(long, short = 'v')]
         verbose: bool,
+
+        /// Also show what this profile changes vs base config
+        #[arg(long)]
+        diff_base: bool,
     },
-    /// List available profiles
-    List,
+    /// List available profiles (installed + built-in starters)
+    List {
+        /// Show only installed profiles (skip built-in starters)
+        #[arg(long)]
+        installed: bool,
+    },
+    /// Create a new named profile
+    Create {
+        /// Profile name
+        name: String,
+
+        /// Primary model for this profile (e.g., claude:opus, codex:gpt-5.5)
+        #[arg(long, short = 'm')]
+        model: Option<String>,
+
+        /// Endpoint URL (e.g., http://127.0.0.1:8088)
+        #[arg(long, short = 'e')]
+        endpoint: Option<String>,
+
+        /// Copy an existing profile as the starting point
+        #[arg(long)]
+        from: Option<String>,
+
+        /// Human-readable description
+        #[arg(long)]
+        description: Option<String>,
+
+        /// Overwrite if profile already exists
+        #[arg(long)]
+        force: bool,
+    },
+    /// Open a profile file in $EDITOR
+    Edit {
+        /// Profile name
+        name: String,
+
+        /// Skip sending IPC reload after save
+        #[arg(long)]
+        no_reload: bool,
+    },
+    /// Delete a named profile
+    Delete {
+        /// Profile name
+        name: String,
+
+        /// Force deletion even if this is the active profile
+        #[arg(long)]
+        force: bool,
+    },
+    /// Show diff between two profiles (or base config vs a profile)
+    Diff {
+        /// First profile name (or base config when only one arg given)
+        a: String,
+
+        /// Second profile name (optional; if omitted, diff is base vs a)
+        b: Option<String>,
+    },
+    /// Write the three starter profiles (claude, codex, wgnext) to ~/.wg/profiles/
+    InitStarters {
+        /// Overwrite existing starter files
+        #[arg(long)]
+        force: bool,
+    },
     /// Refresh model data from OpenRouter and recompute rankings
     Refresh,
 }
