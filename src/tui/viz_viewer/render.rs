@@ -4562,6 +4562,11 @@ fn draw_log_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
         } else {
             "tail=off"
         };
+        let summary_label = if app.log_pane.summary_mode {
+            "summary=on"
+        } else {
+            "summary=off"
+        };
         Line::from(vec![
             Span::styled(
                 format!(" {} ", task_label),
@@ -4570,11 +4575,14 @@ fn draw_log_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                format!(" {}  {}  {}", agent_label, mode_label, tail_label),
+                format!(
+                    " {}  {}  {}  {}",
+                    agent_label, mode_label, tail_label, summary_label
+                ),
                 Style::default().fg(Color::DarkGray),
             ),
             Span::styled(
-                "    [4] cycle view  [J] json",
+                "    [4] cycle view  [s] summary  [J] json",
                 Style::default().fg(Color::Indexed(239)),
             ),
         ])
@@ -4601,7 +4609,10 @@ fn draw_log_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
         match app.log_pane.view_mode {
             LogViewMode::Events => render_events_view(&app.log_pane.stream_events),
             LogViewMode::HighLevel => render_high_level_view(&app.log_pane.stream_events),
-            LogViewMode::RawPretty => render_raw_pretty_view(&app.log_pane.stream_events),
+            LogViewMode::RawPretty => render_raw_pretty_view(
+                &app.log_pane.stream_events,
+                app.log_pane.summary_mode,
+            ),
             LogViewMode::WgLog => unreachable!("handled above"),
         }
     } else {

@@ -29,6 +29,46 @@ use ratatui::text::{Line, Span};
 use super::chat_palette;
 use super::state::{AgentStreamEvent, AgentStreamEventKind, EventDetails};
 
+/// Default head/tail counts for summary mode in the RawPretty view.
+/// Tuned to fit typical cargo error context on either end (3 felt too
+/// tight when first piloted on real outputs).
+pub const SUMMARY_HEAD_LINES: usize = 5;
+pub const SUMMARY_TAIL_LINES: usize = 5;
+/// Below this many lines, summary mode is a no-op — the visual save
+/// from eliding 1 line (12 → 11 displayed) isn't worth the noise of an
+/// elision marker. At >12 lines truncated form is at least 2 lines
+/// shorter than the original, which is when summarization starts to pay
+/// for itself.
+pub const SUMMARY_THRESHOLD: usize = 12;
+
+/// Truncate `body` to the first `head` + last `tail` lines with an
+/// elision marker line in between. Returns the original string when the
+/// total line count is at or below `SUMMARY_THRESHOLD`.
+///
+/// The marker is exactly `… N lines elided …` where `N` is the count
+/// of lines actually elided — it preserves the user's mental model of
+/// the underlying content size and distinguishes truncated output from
+/// genuinely short output.
+fn summarize_body_head_tail(body: &str, head: usize, tail: usize) -> String {
+    let lines: Vec<&str> = body.split('\n').collect();
+    if lines.len() <= SUMMARY_THRESHOLD || lines.len() <= head + tail {
+        return body.to_string();
+    }
+    let elided = lines.len() - head - tail;
+    let mut out: Vec<String> = Vec::with_capacity(head + 1 + tail);
+    out.extend(lines[..head].iter().map(|s| s.to_string()));
+    out.push(format!("… {} lines elided …", elided));
+    out.extend(lines[lines.len() - tail..].iter().map(|s| s.to_string()));
+    out.join("\n")
+}
+
+/// Returns true when the line is a summary elision marker — used by
+/// renderers to apply the dim/grey style to that line specifically.
+fn is_elision_line(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    trimmed.starts_with("… ") && trimmed.ends_with(" elided …")
+}
+
 /// Convert an event kind to its display color, using the shared
 /// `chat_palette` so structure/role coloring stays coherent across the
 /// chat and Log surfaces.
@@ -322,7 +362,14 @@ fn categorize(kind: &AgentStreamEventKind) -> EventCategory {
 /// boundaries (text↔tool, tool↔system, etc.), never between events of
 /// the same category. This emphasizes the transition between speaking
 /// and acting without adding noise to consecutive same-mode events.
-pub fn render_raw_pretty_view(events: &[AgentStreamEvent]) -> Vec<Line<'static>> {
+///
+/// When `summary_mode` is on, multi-line bodies (tool result content,
+/// long assistant text, multi-line tool inputs, etc.) longer than
+/// `SUMMARY_THRESHOLD` lines collapse to head/tail with an elided count.
+pub fn render_raw_pretty_view(
+    events: &[AgentStreamEvent],
+    summary_mode: bool,
+) -> Vec<Line<'static>> {
     let mut out: Vec<Line<'static>> = Vec::new();
     let mut prev_category: Option<EventCategory> = None;
 
@@ -333,7 +380,7 @@ pub fn render_raw_pretty_view(events: &[AgentStreamEvent]) -> Vec<Line<'static>>
         {
             push_blank(&mut out);
         }
-        emit_event(&mut out, event);
+        emit_event(&mut out, event, summary_mode);
         prev_category = Some(curr);
     }
 
@@ -364,14 +411,14 @@ pub fn render_wg_log_view(rendered_lines: &[String]) -> Vec<Line<'static>> {
         .collect()
 }
 
-fn emit_event(out: &mut Vec<Line<'static>>, event: &AgentStreamEvent) {
+fn emit_event(out: &mut Vec<Line<'static>>, event: &AgentStreamEvent, summary_mode: bool) {
     let details = match &event.details {
         Some(d) => d,
         None => {
             // No structured details — fall back to the summary so we
             // never produce a totally empty section.
             push_header(out, &event.kind, "untyped");
-            push_indented(out, &event.summary, Color::Gray);
+            push_indented(out, &event.summary, Color::Gray, summary_mode);
             return;
         }
     };
@@ -379,15 +426,15 @@ fn emit_event(out: &mut Vec<Line<'static>>, event: &AgentStreamEvent) {
     match details {
         EventDetails::UserInput { text } => {
             push_header(out, &event.kind, "[user]");
-            push_indented(out, text, Color::Yellow);
+            push_indented(out, text, Color::Yellow, summary_mode);
         }
         EventDetails::TextOutput { text } => {
             push_header(out, &event.kind, "[assistant]");
-            push_indented(out, text, Color::White);
+            push_indented(out, text, Color::White, summary_mode);
         }
         EventDetails::Thinking { text } => {
             push_header(out, &event.kind, "<thinking>");
-            push_indented(out, text, Color::Magenta);
+            push_indented(out, text, Color::Magenta, summary_mode);
             out.push(Line::from(Span::styled(
                 "</thinking>".to_string(),
                 Style::default()
@@ -405,7 +452,7 @@ fn emit_event(out: &mut Vec<Line<'static>>, event: &AgentStreamEvent) {
             )));
             let body = format_tool_call_body(name, input);
             if !body.is_empty() {
-                push_indented(out, &body, Color::Cyan);
+                push_indented(out, &body, Color::Cyan, summary_mode);
             }
         }
         EventDetails::ToolResult { content, is_error } => {
@@ -420,7 +467,7 @@ fn emit_event(out: &mut Vec<Line<'static>>, event: &AgentStreamEvent) {
             } else {
                 content.as_str()
             };
-            push_marker_block(out, marker, body, marker_color, body_color);
+            push_marker_block(out, marker, body, marker_color, body_color, summary_mode);
         }
         EventDetails::SystemEvent { subtype, text } => {
             out.push(Line::from(Span::styled(
@@ -429,7 +476,7 @@ fn emit_event(out: &mut Vec<Line<'static>>, event: &AgentStreamEvent) {
                     .fg(Color::DarkGray)
                     .add_modifier(Modifier::BOLD),
             )));
-            push_indented(out, text, Color::DarkGray);
+            push_indented(out, text, Color::DarkGray, summary_mode);
         }
     }
 }
@@ -450,12 +497,26 @@ fn push_blank(out: &mut Vec<Line<'static>>) {
 
 /// Push `body`, indented two spaces and styled with `color`.
 /// Multiline input is split into one Line per source line.
-fn push_indented(out: &mut Vec<Line<'static>>, body: &str, color: Color) {
-    for src_line in body.split('\n') {
-        out.push(Line::from(Span::styled(
-            format!("  {}", src_line),
-            Style::default().fg(color),
-        )));
+///
+/// When `summary_mode` is on and `body` exceeds `SUMMARY_THRESHOLD` lines,
+/// the middle is replaced with a dim/grey `… N lines elided …` marker.
+fn push_indented(out: &mut Vec<Line<'static>>, body: &str, color: Color, summary_mode: bool) {
+    let summarized: String;
+    let render_body: &str = if summary_mode {
+        summarized = summarize_body_head_tail(body, SUMMARY_HEAD_LINES, SUMMARY_TAIL_LINES);
+        summarized.as_str()
+    } else {
+        body
+    };
+    for src_line in render_body.split('\n') {
+        let style = if is_elision_line(src_line) {
+            Style::default()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::DIM)
+        } else {
+            Style::default().fg(color)
+        };
+        out.push(Line::from(Span::styled(format!("  {}", src_line), style)));
     }
 }
 
@@ -477,13 +538,29 @@ fn push_marker_block(
     body: &str,
     marker_color: Color,
     body_color: Option<Color>,
+    summary_mode: bool,
 ) {
     let body_style = match body_color {
         Some(c) => Style::default().fg(c),
         None => Style::default(),
     };
-    let mut iter = body.split('\n');
+    let summarized: String;
+    let render_body: &str = if summary_mode {
+        summarized = summarize_body_head_tail(body, SUMMARY_HEAD_LINES, SUMMARY_TAIL_LINES);
+        summarized.as_str()
+    } else {
+        body
+    };
+    let mut iter = render_body.split('\n');
     let first = iter.next().unwrap_or("");
+    let first_is_elision = is_elision_line(first);
+    let first_style = if first_is_elision {
+        Style::default()
+            .fg(Color::DarkGray)
+            .add_modifier(Modifier::DIM)
+    } else {
+        body_style
+    };
     out.push(Line::from(vec![
         Span::styled(
             format!("{} ", marker),
@@ -491,13 +568,17 @@ fn push_marker_block(
                 .fg(marker_color)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(first.to_string(), body_style),
+        Span::styled(first.to_string(), first_style),
     ]));
     for src_line in iter {
-        out.push(Line::from(Span::styled(
-            format!("  {}", src_line),
-            body_style,
-        )));
+        let style = if is_elision_line(src_line) {
+            Style::default()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::DIM)
+        } else {
+            body_style
+        };
+        out.push(Line::from(Span::styled(format!("  {}", src_line), style)));
     }
 }
 
@@ -725,7 +806,7 @@ mod tests {
     #[test]
     fn test_raw_mode_renders_user_messages_pretty() {
         let events = vec![user_event("please add a feature flag")];
-        let lines = render_raw_pretty_view(&events);
+        let lines = render_raw_pretty_view(&events, false);
         let text = lines_to_text(&lines);
 
         assert!(
@@ -759,7 +840,7 @@ mod tests {
             tool_call_bash("cargo test"),
             tool_call_edit("src/main.rs", "old text", "new text"),
         ];
-        let lines = render_raw_pretty_view(&events);
+        let lines = render_raw_pretty_view(&events, false);
         let text = lines_to_text(&lines);
 
         // Bash call rendered as transcript.
@@ -900,7 +981,7 @@ mod tests {
                     4 set -euo pipefail\n\
                     5 echo done";
         let events = vec![tool_result(body, false)];
-        let lines = render_raw_pretty_view(&events);
+        let lines = render_raw_pretty_view(&events, false);
 
         assert_eq!(
             lines.len(),
@@ -946,7 +1027,7 @@ mod tests {
     fn test_raw_mode_error_tool_result_uses_hanging_indent() {
         let body = "line one\nline two";
         let events = vec![tool_result(body, true)];
-        let lines = render_raw_pretty_view(&events);
+        let lines = render_raw_pretty_view(&events, false);
 
         assert_eq!(lines.len(), 2, "two content lines, no separate header");
         assert_eq!(line_text(&lines[0]), "✗ line one");
@@ -960,7 +1041,7 @@ mod tests {
     #[test]
     fn test_raw_mode_tool_pass_colors_only_checkmark() {
         let pass = vec![tool_result("ok body\nmore", false)];
-        let pass_lines = render_raw_pretty_view(&pass);
+        let pass_lines = render_raw_pretty_view(&pass, false);
 
         // First line of a success: marker span is green+bold, body span is
         // uncolored (fg is None — terminal default).
@@ -993,7 +1074,7 @@ mod tests {
         // Errors keep red on both marker AND body — those are the
         // interesting ones and should pop.
         let fail = vec![tool_result("bad body\nmore", true)];
-        let fail_lines = render_raw_pretty_view(&fail);
+        let fail_lines = render_raw_pretty_view(&fail, false);
         let first = &fail_lines[0];
         assert_eq!(
             first.spans[0].style.fg,
@@ -1020,7 +1101,7 @@ mod tests {
             tool_result("ok", false),
             text_output("done!"),
         ];
-        let lines = render_raw_pretty_view(&events);
+        let lines = render_raw_pretty_view(&events, false);
         let text = lines_to_text(&lines);
 
         let blanks: usize = lines.iter().filter(|l| is_blank(l)).count();
@@ -1059,7 +1140,7 @@ mod tests {
             text_output("part 2"),
             text_output("part 3"),
         ];
-        let lines = render_raw_pretty_view(&events);
+        let lines = render_raw_pretty_view(&events, false);
         let text = lines_to_text(&lines);
 
         let blanks: usize = lines.iter().filter(|l| is_blank(l)).count();
@@ -1079,7 +1160,7 @@ mod tests {
             tool_call_bash("cargo test"),
             tool_call_bash("cargo run"),
         ];
-        let lines = render_raw_pretty_view(&events);
+        let lines = render_raw_pretty_view(&events, false);
         let blanks: usize = lines.iter().filter(|l| is_blank(l)).count();
         assert_eq!(
             blanks,
@@ -1341,7 +1422,7 @@ mod tests {
             high_text
         );
 
-        let raw = render_raw_pretty_view(&events);
+        let raw = render_raw_pretty_view(&events, false);
         let raw_text = lines_to_text(&raw);
         // Raw still uses the tighter "⌁ <label>" header per call AND
         // emits the result with its own ✓ marker block.
@@ -1392,6 +1473,213 @@ mod tests {
         assert!(
             !text.contains("assistant text response"),
             "WgLog must not contain assistant text: {}",
+            text
+        );
+    }
+
+    /// Summary mode collapses a long tool result body to head/tail lines
+    /// with an elision marker carrying the actual elided count. The view
+    /// should be exactly head + 1 (marker) + tail = 11 lines for a body
+    /// that exceeds the threshold.
+    #[test]
+    fn test_summary_mode_collapses_long_tool_output_to_head_tail() {
+        let body: String = (1..=50)
+            .map(|i| format!("line {}", i))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let events = vec![tool_result(&body, false)];
+        let lines = render_raw_pretty_view(&events, true);
+
+        assert_eq!(
+            lines.len(),
+            SUMMARY_HEAD_LINES + 1 + SUMMARY_TAIL_LINES,
+            "expected {} lines (head + elision + tail), got {}: {}",
+            SUMMARY_HEAD_LINES + 1 + SUMMARY_TAIL_LINES,
+            lines.len(),
+            lines_to_text(&lines)
+        );
+
+        let text = lines_to_text(&lines);
+        // Head: lines 1..=5 should be present.
+        for i in 1..=5 {
+            assert!(
+                text.contains(&format!("line {}\n", i))
+                    || text.contains(&format!("line {}", i)),
+                "head line {} missing in summary view:\n{}",
+                i,
+                text
+            );
+        }
+        // Tail: lines 46..=50 should be present.
+        for i in 46..=50 {
+            assert!(
+                text.contains(&format!("line {}", i)),
+                "tail line {} missing in summary view:\n{}",
+                i,
+                text
+            );
+        }
+        // Middle: lines 6..=45 should NOT be present.
+        for i in 6..=45 {
+            assert!(
+                !text.contains(&format!("line {}\n", i))
+                    && !text.lines().any(|l| l.trim_end() == format!("  line {}", i)
+                        || l.trim_end() == format!("✓ line {}", i)),
+                "middle line {} should be elided in summary view:\n{}",
+                i,
+                text
+            );
+        }
+        // Elision marker shows the count of elided lines (50 - 5 - 5 = 40).
+        assert!(
+            text.contains("… 40 lines elided …"),
+            "elision marker missing or wrong count in:\n{}",
+            text
+        );
+    }
+
+    /// Below the threshold (≤12 lines), summary mode is a no-op: the
+    /// rendered output is identical to non-summary rendering. The
+    /// elision marker would actually make the view *longer* in that
+    /// case, so leaving it alone is the right call.
+    #[test]
+    fn test_summary_mode_does_not_truncate_below_threshold() {
+        let body: String = (1..=8)
+            .map(|i| format!("line {}", i))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let events = vec![tool_result(&body, false)];
+
+        let summary = render_raw_pretty_view(&events, true);
+        let full = render_raw_pretty_view(&events, false);
+
+        assert_eq!(
+            summary.len(),
+            full.len(),
+            "below-threshold body must render identically in both modes; \
+             summary={} full={}",
+            summary.len(),
+            full.len()
+        );
+        let summary_text = lines_to_text(&summary);
+        let full_text = lines_to_text(&full);
+        assert_eq!(
+            summary_text, full_text,
+            "below-threshold body content must match exactly across modes"
+        );
+        assert!(
+            !summary_text.contains("elided"),
+            "no elision marker should appear below threshold:\n{}",
+            summary_text
+        );
+        for i in 1..=8 {
+            assert!(
+                summary_text.contains(&format!("line {}", i)),
+                "all 8 lines must be present in summary mode below threshold (line {} missing):\n{}",
+                i,
+                summary_text
+            );
+        }
+    }
+
+    /// Full mode (summary_mode=false) on a 50-line tool output renders
+    /// every line — no regression on the existing default behavior.
+    #[test]
+    fn test_full_mode_renders_all_lines_no_regression() {
+        let body: String = (1..=50)
+            .map(|i| format!("line {}", i))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let events = vec![tool_result(&body, false)];
+        let lines = render_raw_pretty_view(&events, false);
+
+        assert_eq!(
+            lines.len(),
+            50,
+            "full mode must render all 50 lines, got {}",
+            lines.len()
+        );
+        let text = lines_to_text(&lines);
+        for i in 1..=50 {
+            assert!(
+                text.contains(&format!("line {}", i)),
+                "line {} missing from full-mode render",
+                i
+            );
+        }
+        assert!(
+            !text.contains("elided"),
+            "full mode must NOT have an elision marker:\n{}",
+            text
+        );
+    }
+
+    /// The elision marker line uses dim/grey styling so the user can
+    /// visually distinguish it from real output. Verify the marker line's
+    /// span style is DarkGray with the DIM modifier.
+    #[test]
+    fn test_summary_elision_marker_uses_dim_grey_style() {
+        let body: String = (1..=50)
+            .map(|i| format!("line {}", i))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let events = vec![tool_result(&body, false)];
+        let lines = render_raw_pretty_view(&events, true);
+
+        // Find the elision line.
+        let marker_line = lines
+            .iter()
+            .find(|l| line_text(l).contains("lines elided"))
+            .expect("elision marker line missing");
+        let body_span = marker_line
+            .spans
+            .iter()
+            .find(|s| s.content.contains("elided"))
+            .expect("span containing elision text missing");
+        assert_eq!(
+            body_span.style.fg,
+            Some(Color::DarkGray),
+            "elision marker must be DarkGray, got {:?}",
+            body_span.style.fg
+        );
+        assert!(
+            body_span.style.add_modifier.contains(Modifier::DIM),
+            "elision marker must be DIM, got {:?}",
+            body_span.style.add_modifier
+        );
+    }
+
+    /// Summary mode also truncates long assistant text bodies (push_indented
+    /// path), not just tool results — assert this so a refactor that only
+    /// applies summarization to one body type gets caught.
+    #[test]
+    fn test_summary_mode_truncates_long_assistant_text() {
+        let body: String = (1..=50)
+            .map(|i| format!("para {}", i))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let events = vec![text_output(&body)];
+        let lines = render_raw_pretty_view(&events, true);
+
+        let text = lines_to_text(&lines);
+        assert!(
+            text.contains("para 1") && text.contains("para 5"),
+            "head paragraphs missing:\n{}",
+            text
+        );
+        assert!(
+            text.contains("para 46") && text.contains("para 50"),
+            "tail paragraphs missing:\n{}",
+            text
+        );
+        assert!(
+            !text.contains("para 25") && !text.contains("para 30"),
+            "middle paragraphs should be elided:\n{}",
+            text
+        );
+        assert!(
+            text.contains("… 40 lines elided …"),
+            "elision marker missing for assistant text:\n{}",
             text
         );
     }

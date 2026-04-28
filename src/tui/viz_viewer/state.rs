@@ -3244,6 +3244,11 @@ pub struct LogPaneState {
     /// Which of the four view modes is active. Cycled by pressing `4`
     /// while the Log pane is focused: events → high-level → raw → wg-log → events.
     pub view_mode: LogViewMode,
+    /// In RawPretty view, when true, long multi-line bodies (tool result
+    /// content, assistant text, etc.) collapse to head + elision marker
+    /// + tail. Toggled with `s` while the Log pane is active.
+    /// In-session only — does not persist across TUI restarts.
+    pub summary_mode: bool,
     /// Cached rendered log lines for the currently selected task.
     pub rendered_lines: Vec<String>,
     /// Task ID these lines were rendered for (to detect staleness).
@@ -3274,6 +3279,7 @@ impl Default for LogPaneState {
             auto_tail: true,
             json_mode: false,
             view_mode: LogViewMode::Events,
+            summary_mode: false,
             rendered_lines: Vec::new(),
             task_id: None,
             viewport_height: 0,
@@ -8725,6 +8731,16 @@ impl VizApp {
     /// (auto-tail enabled).
     pub fn cycle_log_view(&mut self) {
         self.log_pane.view_mode = self.log_pane.view_mode.next();
+        self.log_scroll_to_bottom();
+    }
+
+    /// Toggle the log pane's summary (head/tail) rendering for the
+    /// RawPretty view. Long multi-line bodies collapse to head + elision
+    /// marker + tail when on. Affects only RawPretty rendering — toggling
+    /// in another view mode is a no-op visually until the user cycles
+    /// back to raw. Resets scroll to keep the latest content visible.
+    pub fn toggle_log_summary(&mut self) {
+        self.log_pane.summary_mode = !self.log_pane.summary_mode;
         self.log_scroll_to_bottom();
     }
 
