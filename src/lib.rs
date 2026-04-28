@@ -33,6 +33,7 @@ pub mod federation;
 pub mod function;
 pub mod function_memory;
 pub mod graph;
+pub mod html;
 pub mod json_extract;
 pub mod launcher_history;
 pub mod lifecycle;

@@ -1901,6 +1901,20 @@ pub enum Commands {
         threshold: Option<u64>,
     },
 
+    /// Render the workgraph as a static HTML site (public tasks only)
+    #[command(
+        after_help = "Generates a directory of static HTML/CSS/SVG files mirroring the\nworkgraph state. Only tasks with `visibility = public` are included;\ninternal/peer tasks are excluded.\n\nThe output is rsync-friendly — no JavaScript framework, no runtime\nrequirements. Open `<out>/index.html` in any browser.\n\nExamples:\n  wg html                       # Emit to ./public/\n  wg html --out ./site/         # Emit to a custom directory\n  wg html --out ./public/ --all # Include all tasks (override visibility filter)"
+    )]
+    Html {
+        /// Output directory (will be created if missing)
+        #[arg(long, default_value = "./public")]
+        out: std::path::PathBuf,
+
+        /// Include ALL tasks regardless of visibility (defaults to public-only)
+        #[arg(long)]
+        all: bool,
+    },
+
     /// Detect and recover orphaned in-progress tasks with dead agents
     #[command(
         after_help = "Sweep detects in-progress tasks whose assigned agent has died,\nbeen marked Dead, or is missing from the registry. It resets them\nto Open so the dispatcher can re-dispatch.\n\nWith --reap-targets, also removes cargo build artifacts from\nworktrees of agents that are no longer live (preserving source\nfiles and the worktree itself).\n\nThis is safe to run anytime — it is idempotent."
@@ -4802,6 +4816,7 @@ pub fn command_name(cmd: &Commands) -> &'static str {
         Commands::Profile { .. } => "profile",
         Commands::Config { .. } => "config",
         Commands::DeadAgents { .. } => "dead-agents",
+        Commands::Html { .. } => "html",
         Commands::Sweep { .. } => "sweep",
         Commands::Migrate { .. } => "migrate",
         Commands::Agents { .. } => "agents",
@@ -4897,6 +4912,7 @@ pub fn supports_json(cmd: &Commands) -> bool {
             | Commands::Profile { .. }
             | Commands::Config { .. }
             | Commands::DeadAgents { .. }
+            | Commands::Html { .. }
             | Commands::Sweep { .. }
             | Commands::Agents { .. }
             | Commands::Kill { .. }

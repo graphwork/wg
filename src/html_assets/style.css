@@ -1,0 +1,249 @@
+/* Workgraph public mirror — shared stylesheet */
+
+:root {
+    --color-done: rgb(80, 220, 100);
+    --color-failed: rgb(220, 60, 60);
+    --color-in-progress: rgb(60, 200, 220);
+    --color-open: rgb(200, 200, 80);
+    --color-blocked: rgb(180, 120, 60);
+    --color-abandoned: rgb(140, 100, 160);
+    --color-waiting: rgb(60, 160, 220);
+    --color-pending-validation: rgb(60, 160, 220);
+    --color-pending-eval: rgb(140, 230, 80);
+    --color-incomplete: rgb(255, 165, 0);
+
+    --bg: #1a1a1a;
+    --fg: #e0e0e0;
+    --muted: #888;
+    --link: #6cbcfb;
+    --panel: #232323;
+    --border: #333;
+}
+
+* {
+    box-sizing: border-box;
+}
+
+html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    line-height: 1.5;
+}
+
+body {
+    max-width: 1400px;
+    margin: 0 auto;
+    padding: 1rem 2rem 4rem;
+}
+
+a {
+    color: var(--link);
+    text-decoration: none;
+}
+
+a:hover {
+    text-decoration: underline;
+}
+
+code {
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 0.9em;
+    background: var(--panel);
+    padding: 0.1em 0.3em;
+    border-radius: 3px;
+}
+
+header h1 {
+    margin: 0.5rem 0 0.25rem;
+}
+
+.subtitle {
+    color: var(--muted);
+    margin: 0 0 2rem;
+}
+
+h2 {
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 0.25rem;
+    margin-top: 2rem;
+}
+
+section {
+    margin-bottom: 2rem;
+}
+
+.dag-wrap {
+    overflow-x: auto;
+    background: #fafafa;
+    border-radius: 6px;
+    padding: 0.5rem;
+}
+
+svg.dag {
+    display: block;
+    max-width: 100%;
+    height: auto;
+}
+
+svg.dag a:hover rect {
+    stroke-width: 2.5;
+}
+
+.legend {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem 1.5rem;
+}
+
+.legend li {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+}
+
+.swatch {
+    display: inline-block;
+    width: 1em;
+    height: 1em;
+    border: 1px solid #444;
+    border-radius: 3px;
+}
+
+.task-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+}
+
+.task-list li {
+    border-bottom: 1px solid var(--border);
+    padding: 0.4rem 0;
+}
+
+.task-list a {
+    color: var(--fg);
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.task-list a:hover {
+    text-decoration: none;
+    color: var(--link);
+}
+
+.badge {
+    display: inline-block;
+    padding: 0.1em 0.5em;
+    border-radius: 3px;
+    font-size: 0.8em;
+    font-weight: 600;
+    color: #000;
+    border: 1px solid rgba(0, 0, 0, 0.2);
+    min-width: 5em;
+    text-align: center;
+}
+
+.badge.done             { background: var(--color-done); }
+.badge.failed           { background: var(--color-failed); color: #fff; }
+.badge.in-progress      { background: var(--color-in-progress); }
+.badge.open             { background: var(--color-open); }
+.badge.blocked          { background: var(--color-blocked); color: #fff; }
+.badge.abandoned        { background: var(--color-abandoned); color: #fff; }
+.badge.waiting          { background: var(--color-waiting); color: #fff; }
+.badge.pending-validation { background: var(--color-pending-validation); color: #fff; }
+.badge.pending-eval     { background: var(--color-pending-eval); }
+.badge.incomplete       { background: var(--color-incomplete); }
+
+footer {
+    color: var(--muted);
+    font-size: 0.85em;
+    border-top: 1px solid var(--border);
+    padding-top: 1rem;
+    margin-top: 3rem;
+}
+
+footer .meta {
+    color: var(--muted);
+}
+
+/* Per-task page */
+
+.task-page header {
+    margin-bottom: 1.5rem;
+}
+
+.task-page .breadcrumb {
+    margin: 0.25rem 0;
+}
+
+.task-page h1 {
+    margin: 0.25rem 0 0.5rem;
+}
+
+.task-title {
+    font-size: 1.25rem;
+    margin: 0.25rem 0 0;
+    color: var(--fg);
+}
+
+.meta-table {
+    border-collapse: collapse;
+    width: 100%;
+    max-width: 700px;
+}
+
+.meta-table th, .meta-table td {
+    text-align: left;
+    padding: 0.35rem 0.75rem;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+}
+
+.meta-table th {
+    color: var(--muted);
+    font-weight: 500;
+    width: 12em;
+}
+
+.description {
+    background: var(--panel);
+    padding: 1rem;
+    border-radius: 6px;
+    overflow-x: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.95em;
+}
+
+.deps {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+}
+
+.deps li {
+    padding: 0.2rem 0;
+}
+
+.deps li.none, .deps li.hidden-dep {
+    color: var(--muted);
+}
+
+.note {
+    color: var(--muted);
+    font-style: italic;
+    font-size: 0.9em;
+}
+
+.empty {
+    color: var(--muted);
+    font-style: italic;
+}
