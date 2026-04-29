@@ -151,6 +151,7 @@ pub fn run_add(
         api_key: api_key.map(|s| s.to_string()),
         api_key_file: api_key_file.map(|s| s.to_string()),
         api_key_env: key_env.map(|s| s.to_string()),
+        api_key_ref: None,
         is_default,
         context_window: None,
     });
@@ -1182,6 +1183,7 @@ mod tests {
             api_key: Some("sk-test".into()),
             api_key_file: None,
             api_key_env: None,
+            api_key_ref: None,
             is_default: true,
             context_window: None,
         });
@@ -1203,6 +1205,7 @@ mod tests {
             api_key: Some("sk-bad".into()),
             api_key_file: None,
             api_key_env: None,
+            api_key_ref: None,
             is_default: true,
             context_window: None,
         });
@@ -1224,6 +1227,7 @@ mod tests {
             api_key: None,
             api_key_file: None,
             api_key_env: None,
+            api_key_ref: None,
             is_default: true,
             context_window: None,
         });
@@ -1251,6 +1255,7 @@ mod tests {
             api_key: Some("sk-x".into()),
             api_key_file: None,
             api_key_env: None,
+            api_key_ref: None,
             is_default: true,
             context_window: None,
         });

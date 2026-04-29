@@ -2450,6 +2450,7 @@ pub fn set_key(
             api_key: None,
             api_key_file: Some(file_path.to_string()),
             api_key_env: None,
+            api_key_ref: None,
             is_default: is_first,
             context_window: None,
         });
@@ -3018,6 +3019,7 @@ mod tests {
             api_key: None,
             api_key_file: None,
             api_key_env: None,
+            api_key_ref: None,
             is_default: true,
             context_window: None,
         });

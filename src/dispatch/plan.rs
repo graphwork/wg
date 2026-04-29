@@ -380,6 +380,7 @@ mod tests {
             api_key: None,
             api_key_file: None,
             api_key_env: Some("OPENROUTER_API_KEY".to_string()),
+            api_key_ref: None,
             is_default: true,
             context_window: None,
         }

@@ -3601,6 +3601,7 @@ mod tests {
             api_key: Some("sk-test-inline".to_string()),
             api_key_file: None,
             api_key_env: None,
+            api_key_ref: None,
             is_default: false,
             context_window: None,
         };
@@ -3623,6 +3624,7 @@ mod tests {
             api_key: None,
             api_key_file: Some(key_path.to_string_lossy().to_string()),
             api_key_env: None,
+            api_key_ref: None,
             is_default: false,
             context_window: None,
         };
@@ -3645,6 +3647,7 @@ mod tests {
             api_key: None,
             api_key_file: None,
             api_key_env: None,
+            api_key_ref: None,
             is_default: false,
             context_window: None,
         };
@@ -3665,6 +3668,7 @@ mod tests {
             api_key: Some("sk-test".to_string()),
             api_key_file: None,
             api_key_env: None,
+            api_key_ref: None,
             is_default: false,
             context_window: None,
         };

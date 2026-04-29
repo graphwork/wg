@@ -15313,6 +15313,7 @@ impl VizApp {
                 },
                 api_key_file: None,
                 api_key_env: None,
+                api_key_ref: None,
                 is_default: is_first,
                 context_window: None,
             });

@@ -2219,6 +2219,23 @@ pub enum Commands {
         command: KeyCommands,
     },
 
+    /// Manage secrets (API keys) in the credential store
+    ///
+    /// Secrets are stored outside env vars, config files, and shell history.
+    /// Default backend: keyring (secure file store at ~/.wg/keystore/).
+    /// Plaintext backend: enabled via `secrets.allow_plaintext = true` in config.
+    ///
+    /// Quick start:
+    ///   wg secret set openrouter        # store key (prompts for value)
+    ///   wg secret list                  # show stored names only
+    ///   wg secret get openrouter        # show redacted; --reveal for full value
+    ///   wg secret rm openrouter         # delete
+    ///   wg secret backend show          # show active backend(s)
+    Secret {
+        #[command(subcommand)]
+        command: SecretCommands,
+    },
+
     /// Interactive agentic REPL — coding assistant powered by any model
     Nex {
         /// Model to use (e.g., openrouter:qwen/qwen3-coder, ollama:llama3.2, sonnet)
@@ -2899,6 +2916,80 @@ pub enum ModelCommands {
         /// Write to global config
         #[arg(long)]
         global: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum SecretCommands {
+    /// Store a secret (API key) in the credential store.
+    ///
+    /// Prompts for the value interactively (echo off) unless --value is given.
+    /// Use --value only for scripting; it may appear in shell history.
+    Set {
+        /// Secret name (e.g., openrouter, anthropic)
+        name: String,
+
+        /// Secret value (omit to be prompted interactively with echo off)
+        #[arg(long)]
+        value: Option<String>,
+
+        /// Backend to use: keyring (default) or plaintext
+        #[arg(long)]
+        backend: Option<String>,
+    },
+
+    /// Show a secret (redacted by default).
+    ///
+    /// Without --reveal, prints only a masked preview: "sk-ab****...ef12".
+    /// With --reveal, prints the full value and warns you it's visible.
+    Get {
+        /// Secret name
+        name: String,
+
+        /// Print the full value (with warning)
+        #[arg(long)]
+        reveal: bool,
+
+        /// Backend to use: keyring (default) or plaintext
+        #[arg(long)]
+        backend: Option<String>,
+    },
+
+    /// List stored secret names (never values).
+    List,
+
+    /// Delete a stored secret.
+    Rm {
+        /// Secret name
+        name: String,
+
+        /// Backend to use: keyring (default) or plaintext
+        #[arg(long)]
+        backend: Option<String>,
+    },
+
+    /// Check whether a secret ref is reachable (for pre-flight validation).
+    Check {
+        /// Secret ref URI: keyring:<name>, plain:<name>, env:<VAR>, op://<path>, pass:<path>
+        api_key_ref: String,
+    },
+
+    /// Backend management subcommands.
+    Backend {
+        #[command(subcommand)]
+        command: SecretBackendCommands,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum SecretBackendCommands {
+    /// Show which backend(s) are active and reachable.
+    Show,
+
+    /// Set the default backend for new `wg secret set` calls.
+    Set {
+        /// Backend name: keyring or plaintext
+        backend: String,
     },
 }
 
@@ -4457,6 +4548,33 @@ pub enum MigrateCommands {
         #[arg(long)]
         dry_run: bool,
     },
+
+    /// Walk existing configs that use `api_key_env` and migrate them to
+    /// `api_key_ref = "keyring:<name>"`, prompting before each change.
+    ///
+    /// For each endpoint with `api_key_env`, the command:
+    /// 1. Reads the env var value (if set)
+    /// 2. Offers to store it in the keyring
+    /// 3. Rewrites the config entry to use `api_key_ref`
+    ///
+    /// Safe to run multiple times — idempotent.
+    Secrets {
+        /// Only report what would change, don't write.
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Migrate the global config (~/.wg/config.toml). Default if neither flag given.
+        #[arg(long, conflicts_with = "local")]
+        global: bool,
+
+        /// Migrate the local project config (.workgraph/config.toml).
+        #[arg(long, conflicts_with = "global")]
+        local: bool,
+
+        /// Don't copy env var values into keyring — just rewrite config refs.
+        #[arg(long)]
+        no_copy: bool,
+    },
 }
 
 /// Subcommand variants for `wg config`.
@@ -4968,6 +5086,7 @@ pub fn command_name(cmd: &Commands) -> &'static str {
         Commands::Models { .. } => "models",
         Commands::Model { .. } => "model",
         Commands::Key { .. } => "key",
+        Commands::Secret { .. } => "secret",
         Commands::Nex { .. } => "nex",
         Commands::TuiNex { .. } => "tui-nex",
         Commands::TuiPty { .. } => "tui-pty",
@@ -5061,6 +5180,7 @@ pub fn supports_json(cmd: &Commands) -> bool {
             | Commands::Models { .. }
             | Commands::Model { .. }
             | Commands::Key { .. }
+            | Commands::Secret { .. }
             | Commands::TuiDump { .. }
     ) || {
         #[cfg(any(feature = "matrix", feature = "matrix-lite"))]

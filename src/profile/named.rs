@@ -497,6 +497,7 @@ is_default = true
             api_key: None,
             api_key_file: None,
             api_key_env: None,
+            api_key_ref: None,
             is_default: true,
             context_window: None,
         }

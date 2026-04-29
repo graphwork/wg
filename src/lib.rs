@@ -59,6 +59,7 @@ pub mod registry {
     pub use crate::service::registry::AgentStatus;
 }
 pub mod runs;
+pub mod secret;
 pub mod service;
 pub mod session_lock;
 pub mod smoke;

@@ -2917,6 +2917,18 @@ fn main() -> Result<()> {
                 };
                 commands::migrate::run_config_migrate(&workgraph_dir, target, dry_run, cli.json)
             }
+            MigrateCommands::Secrets {
+                dry_run,
+                global,
+                local,
+                no_copy,
+            } => commands::secret_cmd::run_migrate_secrets(
+                &workgraph_dir,
+                dry_run,
+                global,
+                local,
+                no_copy,
+            ),
         },
         Commands::Agents {
             command,
@@ -3591,6 +3603,41 @@ fn main() -> Result<()> {
         cli::Commands::Openrouter { command } => {
             commands::openrouter::run(&workgraph_dir, &command, cli.json)
         }
+        Commands::Secret { command } => match command {
+            cli::SecretCommands::Set { name, value, backend } => {
+                commands::secret_cmd::run_set(
+                    &workgraph_dir,
+                    &name,
+                    value.as_deref(),
+                    backend.as_deref(),
+                )
+            }
+            cli::SecretCommands::Get { name, reveal, backend } => {
+                commands::secret_cmd::run_get(
+                    &workgraph_dir,
+                    &name,
+                    backend.as_deref(),
+                    reveal,
+                )
+            }
+            cli::SecretCommands::List => {
+                commands::secret_cmd::run_list(&workgraph_dir, cli.json)
+            }
+            cli::SecretCommands::Rm { name, backend } => {
+                commands::secret_cmd::run_rm(&workgraph_dir, &name, backend.as_deref())
+            }
+            cli::SecretCommands::Check { api_key_ref } => {
+                commands::secret_cmd::run_check(&workgraph_dir, &api_key_ref)
+            }
+            cli::SecretCommands::Backend { command } => match command {
+                cli::SecretBackendCommands::Show => {
+                    commands::secret_cmd::run_backend_show(&workgraph_dir)
+                }
+                cli::SecretBackendCommands::Set { backend } => {
+                    commands::secret_cmd::run_backend_set(&workgraph_dir, &backend)
+                }
+            },
+        },
     }
 }
 

@@ -88,6 +88,7 @@ pub fn run_set(
             api_key: None,
             api_key_file: new_api_key_file.clone(),
             api_key_env: new_api_key_env.clone(),
+            api_key_ref: None,
             is_default: is_first,
             context_window: None,
         });

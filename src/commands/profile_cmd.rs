@@ -605,7 +605,38 @@ pub fn use_profile(dir: &Path, name: Option<&str>, no_reload: bool, clear: bool)
     }
 
     let profile_name = name.unwrap();
-    named_profile::load(profile_name)?;
+    let prof = named_profile::load(profile_name)?;
+
+    // Pre-flight: check that any api_key_ref in the profile's endpoints are reachable.
+    if let Some(ref eps_section) = prof.llm_endpoints {
+        let secrets_cfg = workgraph::secret::SecretsConfig::load_global();
+        for ep in &eps_section.endpoints {
+            if let Some(ref r) = ep.api_key_ref {
+                match workgraph::secret::check_ref_reachable(r, &secrets_cfg) {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        let hint = if let Some(n) = r.strip_prefix("keyring:") {
+                            format!("Run: wg secret set {}", n)
+                        } else if let Some(n) = r.strip_prefix("plain:") {
+                            format!("Run: wg secret set {} --backend plaintext", n)
+                        } else {
+                            String::new()
+                        };
+                        eprintln!(
+                            "Warning: profile '{}' references secret '{}' but no entry found.\n  {}",
+                            profile_name, r, hint
+                        );
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "Warning: profile '{}' secret check failed for '{}': {}",
+                            profile_name, r, e
+                        );
+                    }
+                }
+            }
+        }
+    }
 
     let prev = named_profile::active().unwrap_or(None);
     named_profile::set_active(Some(profile_name))?;
@@ -722,6 +753,7 @@ pub fn create_profile(
                 api_key: None,
                 api_key_file: None,
                 api_key_env: None,
+                api_key_ref: None,
                 is_default: true,
                 context_window: None,
             }],

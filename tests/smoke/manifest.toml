@@ -482,3 +482,30 @@ owners = [
 ]
 description = "PTY scrollback dedup: verifies that SIGWINCH reflow echo rows are hidden from scrollback navigation after a terminal resize. Runs the two unit tests for the resize-dedup code path in PtyPane (sigwinch_reflow_duplicates_scrollback_and_dedup_hides_them + scroll_up_skips_sigwinch_hidden_rows)."
 timeout_seconds = 120
+
+[[scenario]]
+name = "secret_keyring_round_trip"
+script = "scenarios/secret_keyring_round_trip.sh"
+owners = [
+    "implement-wg-secret",
+]
+description = "Keyring backend round-trip: set / get / list / rm / check. Verifies the secure file keystore at ~/.wg/keystore/ works end-to-end and list never reveals values."
+timeout_seconds = 30
+
+[[scenario]]
+name = "secret_plaintext_round_trip"
+script = "scenarios/secret_plaintext_round_trip.sh"
+owners = [
+    "implement-wg-secret",
+]
+description = "Plaintext backend round-trip with allow_plaintext=true: set / get / list / rm. Verifies file is created with 0600 perms at ~/.wg/secrets/."
+timeout_seconds = 30
+
+[[scenario]]
+name = "secret_api_key_ref_resolve"
+script = "scenarios/secret_api_key_ref_resolve.sh"
+owners = [
+    "implement-wg-secret",
+]
+description = "api_key_ref resolution in endpoint config: store a secret, configure endpoint with api_key_ref = 'keyring:<name>', verify wg endpoints list shows key present (✓)."
+timeout_seconds = 60

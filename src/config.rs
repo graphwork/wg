@@ -114,6 +114,10 @@ pub struct Config {
     #[serde(default)]
     pub openrouter: OpenRouterConfig,
 
+    /// Credential storage settings
+    #[serde(default)]
+    pub secrets: crate::secret::SecretsConfig,
+
     /// Native executor settings (web, background, delegate)
     #[serde(default)]
     pub native_executor: NativeExecutorConfig,
@@ -752,6 +756,10 @@ pub struct EndpointConfig {
     /// Environment variable name containing the API key (explicit reference)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_key_env: Option<String>,
+    /// Secret store reference: "keyring:<name>", "plain:<name>", "env:<VAR>", "op://<path>", "pass:<path>"
+    /// Preferred over api_key_env for new configs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key_ref: Option<String>,
     /// Whether this is the default endpoint for new agents
     #[serde(default)]
     pub is_default: bool,
@@ -826,6 +834,20 @@ impl EndpointConfig {
             }
             return Ok(Some(key));
         }
+        // Secret store reference
+        if let Some(ref r) = self.api_key_ref {
+            let secrets_cfg = crate::secret::SecretsConfig::load_global();
+            match crate::secret::resolve_ref(r, &secrets_cfg) {
+                Ok(Some(key)) => {
+                    let key = key.trim().to_string();
+                    if !key.is_empty() {
+                        return Ok(Some(key));
+                    }
+                }
+                Ok(None) => {}
+                Err(e) => return Err(e),
+            }
+        }
         if let Some(ref env_name) = self.api_key_env
             && let Ok(key) = std::env::var(env_name)
         {
@@ -842,8 +864,9 @@ impl EndpointConfig {
     /// Priority:
     /// 1. `api_key` — use directly if set
     /// 2. `api_key_file` — read file contents, trim whitespace
-    /// 3. `api_key_env` — read from explicitly named env var
-    /// 4. Environment variable fallback based on provider
+    /// 3. `api_key_ref` — secret store reference (keyring/plain/env/op/pass)
+    /// 4. `api_key_env` — read from explicitly named env var (deprecated; prefer api_key_ref)
+    /// 5. Environment variable fallback based on provider
     ///
     /// For `api_key_file`, supports:
     /// - `~` expansion to home directory
@@ -870,7 +893,21 @@ impl EndpointConfig {
             }
             return Ok(Some(key));
         }
-        // Explicit env var reference
+        // Secret store reference (preferred over api_key_env)
+        if let Some(ref r) = self.api_key_ref {
+            let secrets_cfg = crate::secret::SecretsConfig::load_global();
+            match crate::secret::resolve_ref(r, &secrets_cfg) {
+                Ok(Some(key)) => {
+                    let key = key.trim().to_string();
+                    if !key.is_empty() {
+                        return Ok(Some(key));
+                    }
+                }
+                Ok(None) => {}
+                Err(e) => return Err(e),
+            }
+        }
+        // Explicit env var reference (deprecated; api_key_ref is preferred)
         if let Some(ref env_name) = self.api_key_env
             && let Ok(key) = std::env::var(env_name)
         {
@@ -4140,6 +4177,7 @@ impl Config {
                 api_key: None,
                 api_key_file: None,
                 api_key_env: None,
+                api_key_ref: None,
                 is_default: true,
                 context_window: None,
             });
@@ -5572,6 +5610,7 @@ model = "claude:haiku"
                 api_key: Some("sk-test-key".to_string()),
                 api_key_file: None,
                 api_key_env: None,
+                api_key_ref: None,
                 is_default: false,
                 context_window: None,
             }],
@@ -5593,6 +5632,7 @@ model = "claude:haiku"
                 api_key: Some("sk-test".to_string()),
                 api_key_file: None,
                 api_key_env: None,
+                api_key_ref: None,
                 is_default: false,
                 context_window: None,
             }],
@@ -5613,6 +5653,7 @@ model = "claude:haiku"
                     api_key: Some("sk-first".to_string()),
                     api_key_file: None,
                     api_key_env: None,
+                    api_key_ref: None,
                     is_default: false,
                     context_window: None,
                 },
@@ -5624,6 +5665,7 @@ model = "claude:haiku"
                     api_key: Some("sk-default".to_string()),
                     api_key_file: None,
                     api_key_env: None,
+                    api_key_ref: None,
                     is_default: true,
                     context_window: None,
                 },
@@ -5635,6 +5677,7 @@ model = "claude:haiku"
                     api_key: Some("sk-third".to_string()),
                     api_key_file: None,
                     api_key_env: None,
+                    api_key_ref: None,
                     is_default: false,
                     context_window: None,
                 },
@@ -5658,6 +5701,7 @@ model = "claude:haiku"
                     api_key: Some("ant-key".to_string()),
                     api_key_file: None,
                     api_key_env: None,
+                    api_key_ref: None,
                     is_default: false,
                     context_window: None,
                 },
@@ -5669,6 +5713,7 @@ model = "claude:haiku"
                     api_key: Some("sk-first".to_string()),
                     api_key_file: None,
                     api_key_env: None,
+                    api_key_ref: None,
                     is_default: false,
                     context_window: None,
                 },
@@ -5680,6 +5725,7 @@ model = "claude:haiku"
                     api_key: Some("sk-second".to_string()),
                     api_key_file: None,
                     api_key_env: None,
+                    api_key_ref: None,
                     is_default: false,
                     context_window: None,
                 },
@@ -5702,6 +5748,7 @@ model = "claude:haiku"
                 api_key: Some("sk-or-test".to_string()),
                 api_key_file: None,
                 api_key_env: None,
+                api_key_ref: None,
                 is_default: true,
                 context_window: None,
             }],
@@ -5734,6 +5781,7 @@ model = "claude:haiku"
                     api_key: None,
                     api_key_file: None,
                     api_key_env: None,
+                    api_key_ref: None,
                     is_default: false,
                     context_window: None,
                 },
@@ -5745,6 +5793,7 @@ model = "claude:haiku"
                     api_key: None,
                     api_key_file: None,
                     api_key_env: None,
+                    api_key_ref: None,
                     is_default: true,
                     context_window: None,
                 },
@@ -5766,6 +5815,7 @@ model = "claude:haiku"
                 api_key: None,
                 api_key_file: None,
                 api_key_env: None,
+                api_key_ref: None,
                 is_default: false,
                 context_window: None,
             }],
@@ -5789,6 +5839,7 @@ model = "claude:haiku"
                 api_key: Some("sk-or-test-key".to_string()),
                 api_key_file: None,
                 api_key_env: None,
+                api_key_ref: None,
                 is_default: true,
                 context_window: None,
             }],
@@ -5817,6 +5868,7 @@ model = "claude:haiku"
             api_key: Some("sk-inline".to_string()),
             api_key_file: None,
             api_key_env: None,
+            api_key_ref: None,
             is_default: false,
             context_window: None,
         };
@@ -5834,6 +5886,7 @@ model = "claude:haiku"
             api_key: Some("sk-inline".to_string()),
             api_key_file: Some("/nonexistent/file".to_string()),
             api_key_env: None,
+            api_key_ref: None,
             is_default: false,
             context_window: None,
         };
@@ -5855,6 +5908,7 @@ model = "claude:haiku"
             api_key: None,
             api_key_file: Some(key_path.to_string_lossy().to_string()),
             api_key_env: None,
+            api_key_ref: None,
             is_default: false,
             context_window: None,
         };
@@ -5875,6 +5929,7 @@ model = "claude:haiku"
             api_key: None,
             api_key_file: Some(key_path.to_string_lossy().to_string()),
             api_key_env: None,
+            api_key_ref: None,
             is_default: false,
             context_window: None,
         };
@@ -5892,6 +5947,7 @@ model = "claude:haiku"
             api_key: None,
             api_key_file: Some("/nonexistent/path/key.txt".to_string()),
             api_key_env: None,
+            api_key_ref: None,
             is_default: false,
             context_window: None,
         };
@@ -5914,6 +5970,7 @@ model = "claude:haiku"
             api_key: None,
             api_key_file: Some(key_path.to_string_lossy().to_string()),
             api_key_env: None,
+            api_key_ref: None,
             is_default: false,
             context_window: None,
         };
@@ -5935,6 +5992,7 @@ model = "claude:haiku"
             api_key: None,
             api_key_file: Some("keys/test.key".to_string()),
             api_key_env: None,
+            api_key_ref: None,
             is_default: false,
             context_window: None,
         };
@@ -5953,6 +6011,7 @@ model = "claude:haiku"
             api_key: None,
             api_key_file: None,
             api_key_env: None,
+            api_key_ref: None,
             is_default: false,
             context_window: None,
         };
@@ -5974,6 +6033,7 @@ model = "claude:haiku"
             api_key: None,
             api_key_file: None,
             api_key_env: None,
+            api_key_ref: None,
             is_default: false,
             context_window: None,
         };
@@ -5999,6 +6059,7 @@ model = "claude:haiku"
             api_key: Some("sk-inline-wins".to_string()),
             api_key_file: None,
             api_key_env: None,
+            api_key_ref: None,
             is_default: false,
             context_window: None,
         };
@@ -6026,6 +6087,7 @@ model = "claude:haiku"
             api_key: None,
             api_key_file: Some(key_path.to_string_lossy().to_string()),
             api_key_env: None,
+            api_key_ref: None,
             is_default: false,
             context_window: None,
         };
@@ -6053,6 +6115,7 @@ model = "claude:haiku"
             api_key: None,
             api_key_file: None,
             api_key_env: None,
+            api_key_ref: None,
             is_default: false,
             context_window: None,
         };
@@ -6097,6 +6160,7 @@ model = "claude:haiku"
             api_key: None,
             api_key_file: Some("~/.config/workgraph/openai.key".to_string()),
             api_key_env: None,
+            api_key_ref: None,
             is_default: false,
             context_window: None,
         };
@@ -6118,6 +6182,7 @@ model = "claude:haiku"
                     api_key: Some("sk-or-test".to_string()),
                     api_key_file: None,
                     api_key_env: None,
+                    api_key_ref: None,
                     is_default: false,
                     context_window: None,
                 },
@@ -6129,6 +6194,7 @@ model = "claude:haiku"
                     api_key: Some("sk-ant-test".to_string()),
                     api_key_file: None,
                     api_key_env: None,
+                    api_key_ref: None,
                     is_default: true,
                     context_window: None,
                 },
@@ -6531,6 +6597,7 @@ model = "claude:haiku"
             api_key: None,
             api_key_file: Some("/nonexistent/path/to/api-key.txt".into()),
             api_key_env: None,
+            api_key_ref: None,
             is_default: false,
             context_window: None,
         });
@@ -6554,6 +6621,7 @@ model = "claude:haiku"
             api_key: None,
             api_key_file: Some(key_file.to_string_lossy().into_owned()),
             api_key_env: None,
+            api_key_ref: None,
             is_default: false,
             context_window: None,
         });
@@ -6577,6 +6645,7 @@ model = "claude:haiku"
             api_key: None,
             api_key_file: Some(key_file.to_string_lossy().into_owned()),
             api_key_env: None,
+            api_key_ref: None,
             is_default: false,
             context_window: None,
         });
@@ -6611,6 +6680,7 @@ model = "claude:haiku"
             api_key: None,
             api_key_file: Some("/nonexistent/path/to/key.txt".into()),
             api_key_env: None,
+            api_key_ref: None,
             is_default: false,
             context_window: None,
         });
@@ -7070,6 +7140,7 @@ provider = "openrouter"
             api_key: Some("sk-endpoint-key".into()),
             api_key_file: None,
             api_key_env: None,
+            api_key_ref: None,
             is_default: true,
             context_window: None,
         });
@@ -7093,6 +7164,7 @@ provider = "openrouter"
             api_key: None,
             api_key_file: Some(key_file.to_string_lossy().into_owned()),
             api_key_env: None,
+            api_key_ref: None,
             is_default: true,
             context_window: None,
         });
@@ -7138,6 +7210,7 @@ provider = "openrouter"
             api_key: Some("sk-endpoint-wins".into()),
             api_key_file: None,
             api_key_env: None,
+            api_key_ref: None,
             is_default: true,
             context_window: None,
         });
@@ -7601,6 +7674,7 @@ inherit_global = true
             api_key: Some("sk-or-from-endpoint".to_string()),
             api_key_file: None,
             api_key_env: None,
+            api_key_ref: None,
             model: None,
             is_default: true,
             context_window: None,

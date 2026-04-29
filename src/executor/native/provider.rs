@@ -490,6 +490,7 @@ mod tests {
                 model: None,
                 api_key: None,
                 api_key_env: None,
+                api_key_ref: None,
                 api_key_file: None,
                 is_default: false,
                 context_window: Some(32768),
