@@ -3600,45 +3600,27 @@ fn right_panel_scroll_to_bottom(app: &mut VizApp) {
     }
 }
 
-/// Route a mouse-wheel `ScrollUp` / `ScrollDown` event over the chat tab to
-/// the right scroll target.
+/// Route a mouse-wheel `ScrollUp` / `ScrollDown` event over the chat tab
+/// to the wg vt100 pane's own scrollback — never to the inner child's
+/// stdin.
 ///
-/// Vendor PTY focus mode (chat_pty_forwards_stdin + RightPanel focus +
-/// !observer) → forward as Up/Down arrow keys to the embedded child so
-/// codex/claude/nex can scroll their own chat view (matches what touch
-/// scroll does, since most terminals translate trackpad gestures into
-/// arrow-key sequences forwarded through the PTY). Without this, mouse
-/// wheel was a no-op for users on terminals that send mouse events on
-/// wheel but key events on touch — fix-mouse-wheel.
-///
-/// Otherwise (observer mode, or chat-PTY rendered but stdin-detached) →
-/// navigate the wg vt100 pane's own scrollback so the user can review
-/// rendered output.
+/// Earlier versions (`fix-mouse-wheel`) translated wheel events into
+/// Up/Down arrow keys when the chat PTY was focused, with the goal of
+/// making touch and wheel feel identical for vendor CLIs. claude code
+/// detects this and emits a "Scroll wheel is sending arrow keys" warning;
+/// codex shows similar oddness. The right contract is: wheel ALWAYS
+/// scrolls the outer scrollback (the wg vt100 buffer), inner app sees
+/// nothing. Keyboard scrolling lives behind Ctrl+] scroll mode (see
+/// `implement-tui-scroll`). — fix-mouse-wheel-2.
 fn forward_chat_wheel(app: &mut VizApp, kind: MouseEventKind) {
     let task_id = workgraph::chat_id::format_chat_task_id(app.active_coordinator_id);
     let Some(pane) = app.task_panes.get_mut(&task_id) else {
         return;
     };
-    let vendor_pty_active = app.chat_pty_forwards_stdin
-        && app.focused_panel == FocusedPanel::RightPanel
-        && !app.chat_pty_observer;
-    if vendor_pty_active {
-        let key = match kind {
-            MouseEventKind::ScrollUp => KeyCode::Up,
-            MouseEventKind::ScrollDown => KeyCode::Down,
-            _ => return,
-        };
-        // Three notches per wheel "tick" matches the existing 3-line
-        // scroll_up/down behavior the vt100-fallback path uses.
-        for _ in 0..3 {
-            let _ = pane.send_key(KeyEvent::new(key, KeyModifiers::empty()));
-        }
-    } else {
-        match kind {
-            MouseEventKind::ScrollUp => pane.scroll_up(3),
-            MouseEventKind::ScrollDown => pane.scroll_down(3),
-            _ => {}
-        }
+    match kind {
+        MouseEventKind::ScrollUp => pane.scroll_up(3),
+        MouseEventKind::ScrollDown => pane.scroll_down(3),
+        _ => {}
     }
 }
 
@@ -9095,23 +9077,31 @@ mod chat_tab_navigation_tests {
         );
     }
 
-    /// Repro for fix-mouse-wheel: in the chat tab, mouse-wheel
-    /// `ScrollUp`/`ScrollDown` over the chat content area must produce
-    /// a visible scroll effect. The user reported that touch scroll
-    /// worked but mouse wheel did nothing in the codex chat tab — touch
-    /// scroll forwards arrow keys through the PTY and codex scrolls its
-    /// own view, while wheel previously only nudged the wg vt100 buffer
-    /// (which is mostly empty for codex thanks to `fix-codex-chat-3`'s
-    /// sync-mode trim). The fix: in vendor-PTY focus mode, forward
-    /// wheel as Up/Down arrow keys so the embedded child scrolls.
+    /// Pins fix-mouse-wheel-2: in the chat tab, mouse-wheel
+    /// `ScrollUp`/`ScrollDown` MUST scroll the outer wg vt100 pane
+    /// (the scrollback the user is viewing in wg) — NEVER forward
+    /// translated arrow-key bytes to the inner PTY child's stdin.
     ///
-    /// We distinguish the forward-keys path from the navigate-vt100
-    /// path by relying on `send_key`'s side-effect of resetting the
-    /// pane's scrollback to 0 (auto_follow = true). If the wheel
-    /// handler called `pane.scroll_up` instead of `pane.send_key`,
-    /// the manually-set scrollback would still be > 0.
+    /// History:
+    /// * `fix-mouse-wheel` (8ddeb9e42) shipped a heuristic that, in
+    ///   vendor-PTY focus mode, translated wheel events into Up/Down
+    ///   arrow keys forwarded through the PTY master writer. The goal
+    ///   was to make wheel feel like touch scroll (which sends arrows).
+    /// * That heuristic was visible to the embedded vendor CLI: claude
+    ///   code emits `'Scroll wheel is sending arrow keys · use PgUp/PgDn
+    ///   to scroll in claude code'` whenever it sees the pattern. Codex
+    ///   shows similar oddness. Tmux + double-translation made it worse.
+    /// * `fix-mouse-wheel-2` (this test) reverts to: wheel always scrolls
+    ///   the outer scrollback. Keyboard-driven scroll is the Ctrl+] scroll
+    ///   mode added by `implement-tui-scroll`.
+    ///
+    /// Two assertions guard the contract:
+    /// 1. `is_scrolled_back()` is true after a wheel event — the outer
+    ///    pane's scroll offset advanced.
+    /// 2. `child_input_bytes_written()` is unchanged — zero bytes were
+    ///    written to the child's stdin via the wheel path.
     #[test]
-    fn mouse_wheel_in_vendor_pty_mode_forwards_arrow_keys() {
+    fn mouse_wheel_in_vendor_pty_mode_scrolls_outer_not_inner() {
         let (mut app, _tmp) = build_app_with_chats(&[0]);
         app.right_panel_tab = RightPanelTab::Chat;
         app.focused_panel = FocusedPanel::RightPanel;
@@ -9121,7 +9111,7 @@ mod chat_tab_navigation_tests {
         app.mouse_enabled = true;
 
         let task_id = workgraph::chat_id::format_chat_task_id(app.active_coordinator_id);
-        let Ok(mut pane) = crate::tui::pty_pane::PtyPane::spawn_in(
+        let Ok(pane) = crate::tui::pty_pane::PtyPane::spawn_in(
             "/bin/sh",
             &["-c", "for i in $(seq 1 60); do echo line $i; done; sleep 60"],
             &[],
@@ -9131,19 +9121,17 @@ mod chat_tab_navigation_tests {
         ) else {
             return;
         };
+        // Wait for output to reach the parser so scrollback has rows.
         for _ in 0..50 {
             std::thread::sleep(std::time::Duration::from_millis(20));
             if pane.bytes_processed() > 200 {
                 break;
             }
         }
-        // Manually scroll the pane back so we can detect whether the
-        // wheel handler routed to scroll_up (no change) or to send_key
-        // (resets scrollback to 0).
-        pane.scroll_up(5);
+        let bytes_before = pane.child_input_bytes_written();
         assert!(
-            pane.is_scrolled_back(),
-            "pre-condition: pane was scrolled back via direct scroll_up"
+            !pane.is_scrolled_back(),
+            "pre-condition: pane should be at the live tail before the wheel event"
         );
         app.task_panes.insert(task_id.clone(), pane);
 
@@ -9161,23 +9149,28 @@ mod chat_tab_navigation_tests {
         };
 
         handle_mouse(&mut app, MouseEventKind::ScrollUp, 12, 80);
-        // Wheel events in vendor-PTY mode forward Up keys to the child.
-        // `send_key` resets the pane's scrollback to 0 (auto_follow), so
-        // the previously-scrolled-back state is gone. If the handler
-        // had instead called `pane.scroll_up`, the scrollback would
-        // have grown — and `is_scrolled_back()` would still be true.
+
+        let pane_after = app.task_panes.get(&task_id).unwrap();
         assert!(
-            !app.task_panes.get_mut(&task_id).unwrap().is_scrolled_back(),
-            "ScrollUp in vendor-PTY mode must forward keys (resets scrollback to 0), \
-             not navigate vt100 scrollback (regression: fix-mouse-wheel)."
+            pane_after.is_scrolled_back(),
+            "ScrollUp in vendor-PTY mode must scroll the OUTER vt100 pane \
+             (regression: fix-mouse-wheel-2)."
+        );
+        assert_eq!(
+            pane_after.child_input_bytes_written(),
+            bytes_before,
+            "ScrollUp must NOT write any bytes to the embedded child's stdin \
+             — claude code warns 'Scroll wheel is sending arrow keys' when it does \
+             (regression: fix-mouse-wheel-2)."
         );
     }
 
     /// Counterpart to the vendor-PTY case: when chat is rendered in
     /// observer mode (no stdin forwarding), the wheel must still produce
     /// a useful scroll — namely, navigate the vt100 pane's scrollback
-    /// so the user can review rendered output. This guards the
-    /// fall-through branch in `forward_chat_wheel`.
+    /// so the user can review rendered output. Same contract as the
+    /// vendor-PTY case post-fix-mouse-wheel-2: outer scrollback only,
+    /// zero bytes to child stdin.
     #[test]
     fn mouse_wheel_in_chat_observer_mode_scrolls_vt100_pane() {
         let (mut app, _tmp) = build_app_with_chats(&[0]);
@@ -9189,7 +9182,7 @@ mod chat_tab_navigation_tests {
         app.mouse_enabled = true;
 
         let task_id = workgraph::chat_id::format_chat_task_id(app.active_coordinator_id);
-        let Ok(mut pane) = crate::tui::pty_pane::PtyPane::spawn_in(
+        let Ok(pane) = crate::tui::pty_pane::PtyPane::spawn_in(
             "/bin/sh",
             &["-c", "for i in $(seq 1 60); do echo line $i; done; sleep 60"],
             &[],
@@ -9205,6 +9198,7 @@ mod chat_tab_navigation_tests {
                 break;
             }
         }
+        let bytes_before = pane.child_input_bytes_written();
         app.task_panes.insert(task_id.clone(), pane);
 
         app.last_tab_bar_area = Rect {
@@ -9225,9 +9219,15 @@ mod chat_tab_navigation_tests {
             "pre-condition: pane should be at the live tail"
         );
         handle_mouse(&mut app, MouseEventKind::ScrollUp, 12, 80);
+        let pane_after = app.task_panes.get(&task_id).unwrap();
         assert!(
-            app.task_panes.get_mut(&task_id).unwrap().is_scrolled_back(),
+            pane_after.is_scrolled_back(),
             "ScrollUp in observer mode must scroll the vt100 pane back"
+        );
+        assert_eq!(
+            pane_after.child_input_bytes_written(),
+            bytes_before,
+            "ScrollUp in observer mode must not write to child stdin"
         );
     }
 

@@ -611,6 +611,18 @@ description = "Pins the Ctrl+] scroll mode implementation. Runs cargo test for a
 timeout_seconds = 120
 
 [[scenario]]
+name = "tui_mouse_wheel_does_not_send_arrows"
+script = "scenarios/tui_mouse_wheel_does_not_send_arrows.sh"
+owners = [
+    "fix-mouse-wheel",
+    "fix-mouse-wheel-2",
+    "implement-tui-scroll",
+    "smoke-gate-is",
+]
+description = "Pins fix-mouse-wheel-2: mouse-wheel ScrollUp/ScrollDown over the chat tab MUST scroll the outer wg vt100 pane and MUST NOT translate to Up/Down arrow-key bytes forwarded to the embedded child's stdin. Pre-fix, claude code emitted 'Scroll wheel is sending arrow keys · use PgUp/PgDn to scroll in claude code' because fix-mouse-wheel's vendor-PTY heuristic translated wheel notches to arrow keys. Asserts (a) is_scrolled_back() is true after a wheel event (outer scrollback advanced), and (b) child_input_bytes_written() is unchanged (zero bytes to PTY child stdin) — the byte-level guard is the real gate. Also covers the observer-mode path so fix-mouse-wheel's original scroll-the-vt100 contract doesn't regress."
+timeout_seconds = 120
+
+[[scenario]]
 name = "failed_pending_eval_state_machine"
 script = "scenarios/failed_pending_eval_state_machine.sh"
 owners = [

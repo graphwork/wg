@@ -93,6 +93,13 @@ pub struct PtyPane {
     pub growth_rate_warned: Arc<AtomicBool>,
     #[allow(dead_code)]
     bytes_processed: Arc<AtomicU64>,
+    /// Cumulative bytes written from the host TUI to the embedded
+    /// child's stdin via `send_key` / `send_text`. Tests use this to
+    /// assert that a given event path does NOT forward bytes to the
+    /// child (e.g. fix-mouse-wheel-2: wheel must not produce arrow-key
+    /// bytes). Capability-query replies emitted from the reader thread
+    /// are NOT counted here — only host-driven input is.
+    input_bytes_written: Arc<AtomicU64>,
 }
 
 impl PtyPane {
@@ -310,6 +317,7 @@ impl PtyPane {
             auto_follow: true,
             growth_rate_warned,
             bytes_processed,
+            input_bytes_written: Arc::new(AtomicU64::new(0)),
         })
     }
 
@@ -444,6 +452,8 @@ impl PtyPane {
                 let _ = w.write_all(&bytes);
                 let _ = w.flush();
                 self.tee_input(&bytes);
+                self.input_bytes_written
+                    .fetch_add(bytes.len() as u64, Ordering::Relaxed);
             }
             self.auto_follow = true;
             if let Ok(mut p) = self.parser.lock() {
@@ -460,8 +470,19 @@ impl PtyPane {
             let _ = w.write_all(text.as_bytes());
             let _ = w.flush();
             self.tee_input(text.as_bytes());
+            self.input_bytes_written
+                .fetch_add(text.len() as u64, Ordering::Relaxed);
         }
         Ok(())
+    }
+
+    /// Cumulative bytes written from the host TUI to the embedded
+    /// child's stdin via `send_key`/`send_text`. Reader-thread
+    /// capability-query replies are NOT counted here. Used by tests to
+    /// assert that an event path (e.g. mouse wheel — fix-mouse-wheel-2)
+    /// produces zero forwarded input.
+    pub fn child_input_bytes_written(&self) -> u64 {
+        self.input_bytes_written.load(Ordering::Relaxed)
     }
 
     fn tee_input(&self, bytes: &[u8]) {
