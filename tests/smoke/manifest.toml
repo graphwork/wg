@@ -442,6 +442,15 @@ description = "Regression for wg-html-redesign + wg-html-v2: `wg html` (no flags
 timeout_seconds = 60
 
 [[scenario]]
+name = "wg_html_chat"
+script = "scenarios/wg_html_chat.sh"
+owners = [
+    "wg-html-chat",
+]
+description = "Regression for wg-html-chat: `wg html --chat` renders chat transcripts with visibility-respecting defaults. Asserts default omits transcripts (chat task node still rendered); --chat includes only public transcripts and shows a 'transcript hidden' notice on internal chats; --chat --all includes non-public transcripts; --chat --public-only drops internal chat tasks entirely; the secret sanitizer redacts sk- api keys, OPENAI_API_KEY=... assignments, and ~/.wg/secrets paths in the rendered output."
+timeout_seconds = 60
+
+[[scenario]]
 name = "wg_html_v2_tui_parity"
 script = "scenarios/wg_html_v2_tui_parity.sh"
 owners = [

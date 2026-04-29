@@ -2879,14 +2879,27 @@ fn main() -> Result<()> {
         Commands::Html {
             out,
             public_only,
-            all: _legacy_all,
+            all,
+            chat,
             since,
         } => {
             // Defaults: include all tasks (TUI parity). `--public-only` opts
             // in to the legacy public-only mirror for sanitized output.
-            // `--all` is a deprecated no-op alias.
-            let show_all = !public_only;
-            workgraph::html::run(&workgraph_dir, &out, show_all, since.as_deref(), cli.json)
+            // `--chat` opts into rendering chat transcripts; `--all`
+            // (when paired with `--chat`) extends transcript inclusion to
+            // non-public chats.
+            let show_all_tasks = !public_only;
+            let include_chat = chat;
+            let all_chats = chat && all;
+            workgraph::html::run(
+                &workgraph_dir,
+                &out,
+                show_all_tasks,
+                since.as_deref(),
+                include_chat,
+                all_chats,
+                cli.json,
+            )
         }
         Commands::Sweep {
             dry_run,

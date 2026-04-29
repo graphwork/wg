@@ -1926,7 +1926,7 @@ pub enum Commands {
 
     /// Render the workgraph as a static, clickable HTML viewer (TUI-parity).
     #[command(
-        after_help = "Generates a directory of static HTML/CSS/JS files mirroring the\nworkgraph state. The page is a read-only sibling of the TUI viewer:\nthe ASCII viz from `wg viz --all` is rendered with clickable task ids\nand status indicators that open a detail overlay matching `wg show`.\nClick a task to highlight its before/after edges in the TUI palette\n(magenta = upstream deps, cyan = downstream consumers).\n\nDefaults: ALL tasks are shown, dark theme follows the OS preference\n(prefers-color-scheme), with a manual toggle that persists in\nlocalStorage. Pass `--public-only` to mirror only `visibility = public`\ntasks (e.g. for a sanitized public mirror).\n\nThe output is rsync-friendly — no JavaScript framework, no server,\nno backend. Open `<out>/index.html` in any browser (file:// works).\n\nExamples:\n  wg html                       # Emit all tasks to ./public/\n  wg html --out ./site/         # Custom output directory\n  wg html --public-only         # Sanitized mirror — public tasks only\n  wg html --since 24h           # Only tasks touched in the last 24h"
+        after_help = "Generates a directory of static HTML/CSS/JS files mirroring the\nworkgraph state. The page is a read-only sibling of the TUI viewer:\nthe ASCII viz from `wg viz --all` is rendered with clickable task ids\nand status indicators that open a detail overlay matching `wg show`.\nClick a task to highlight its before/after edges in the TUI palette\n(magenta = upstream deps, cyan = downstream consumers).\n\nDefaults: ALL tasks are shown, NO chat transcripts are rendered\n(chat task nodes still appear in the viz, but the conversation is\nomitted). Pass `--chat` to render transcripts; `--chat --all` to\ninclude non-public transcripts; `--public-only` to mirror only\n`visibility = public` tasks AND public chats.\n\nA best-effort sanitizer redacts api-key-shaped strings, env-var\nassignments (OPENAI_API_KEY=..., GITHUB_TOKEN=..., etc.), and\npaths under `~/.wg/secrets`. Review transcripts manually before\npublishing — sanitization is NOT a security guarantee.\n\nThe output is rsync-friendly — no JavaScript framework, no server,\nno backend. Open `<out>/index.html` in any browser (file:// works).\n\nExamples:\n  wg html                       # All tasks, no chat transcripts\n  wg html --chat                # All tasks + public chats' transcripts\n  wg html --chat --all          # All tasks + every transcript\n  wg html --chat --public-only  # Public tasks + public chats only\n  wg html --since 24h           # Only tasks touched in the last 24h"
     )]
     Html {
         /// Output directory (will be created if missing)
@@ -1934,14 +1934,21 @@ pub enum Commands {
         out: std::path::PathBuf,
 
         /// Restrict to tasks with `visibility = public`. Default: include all
-        /// tasks (matches the TUI viewer).
+        /// tasks (matches the TUI viewer). When combined with `--chat`,
+        /// also restricts transcripts to public chats only.
         #[arg(long, alias = "public", conflicts_with = "all")]
         public_only: bool,
 
-        /// (Deprecated) Include ALL tasks. This is now the default — kept as
-        /// a no-op for compatibility with older invocations.
-        #[arg(long, hide = true)]
+        /// When combined with `--chat`, include transcripts for ALL chats —
+        /// public and non-public. Without `--chat`, this flag is a no-op.
+        #[arg(long)]
         all: bool,
+
+        /// Render chat transcripts on chat task pages. By default only
+        /// transcripts of `visibility = public` chats are included; pass
+        /// `--all` to include non-public transcripts as well.
+        #[arg(long)]
+        chat: bool,
 
         /// Only include tasks active within this time window (e.g. 1h, 24h, 7d, 30d)
         #[arg(long)]

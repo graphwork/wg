@@ -25,11 +25,15 @@
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Duration, Utc};
+use regex::Regex;
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::path::Path;
+use std::sync::OnceLock;
 
+use crate::chat::{self, ChatMessage};
+use crate::chat_id;
 use crate::graph::{Status, Task, WorkGraph};
 use crate::parser::load_graph;
 
@@ -88,6 +92,33 @@ pub struct RenderSummary {
     pub pages_written: usize,
     pub show_all: bool,
     pub since: Option<String>,
+    /// Number of chat task pages whose transcript was rendered (only counts
+    /// chats that actually had at least one inbox/outbox message).
+    pub chat_transcripts_shown: usize,
+    /// Number of chat task pages whose transcript was omitted by the
+    /// visibility filter (would have been shown with `--all`).
+    pub chat_transcripts_hidden_by_visibility: usize,
+}
+
+/// Render-mode options. `Default::default()` reproduces the historical
+/// `wg html` behavior: include all tasks (TUI parity), no chat transcripts,
+/// no time filter.
+#[derive(Debug, Clone, Default)]
+pub struct RenderOptions {
+    /// Include tasks regardless of `visibility`. When `false`, only
+    /// `visibility = public` tasks are rendered (the `--public-only` mode).
+    pub show_all: bool,
+    /// Time-window filter (e.g. `"24h"`, `"7d"`).
+    pub since: Option<String>,
+    /// Render chat transcripts on chat task pages (`.chat-N`/`.coordinator-N`).
+    /// When `false`, chat task pages still render but the conversation
+    /// section is omitted entirely (the historical default).
+    pub include_chat: bool,
+    /// When `include_chat` is true, also include transcripts whose chat
+    /// task's `visibility != public`. When `false`, only public chats'
+    /// transcripts are rendered; non-public chats show a hidden-marker line.
+    /// Has no effect unless `include_chat = true`.
+    pub all_chats: bool,
 }
 
 /// Public render entry point. Builds the complete static site.
@@ -95,9 +126,12 @@ pub fn render_site(
     graph: &WorkGraph,
     workgraph_dir: &Path,
     out_dir: &Path,
-    show_all: bool,
-    since: Option<&str>,
+    opts: RenderOptions,
 ) -> Result<RenderSummary> {
+    let show_all = opts.show_all;
+    let since = opts.since.as_deref();
+    let include_chat = opts.include_chat;
+    let all_chats = opts.all_chats;
     let since_cutoff: Option<DateTime<Utc>> = since
         .map(|s| parse_since(s).map(|d| Utc::now() - d))
         .transpose()?;
@@ -151,7 +185,34 @@ pub fn render_site(
     fs::write(out_dir.join("style.css"), STYLE_CSS).context("failed to write style.css")?;
     fs::write(out_dir.join("panel.js"), PANEL_JS).context("failed to write panel.js")?;
 
-    // Render the index.
+    // Per-task pages (deep-link targets — work with file:// URLs).
+    let mut pages_written = 0usize;
+    let mut chat_transcripts_shown = 0usize;
+    let mut chat_transcripts_hidden = 0usize;
+    for task in &included {
+        let eval = evals.get(&task.id);
+        let chat_decision = decide_chat_render(task, include_chat, all_chats);
+        let chat_block = match &chat_decision {
+            ChatRender::Render(session_ref) => {
+                let messages = load_chat_messages(workgraph_dir, session_ref);
+                if !messages.is_empty() {
+                    chat_transcripts_shown += 1;
+                }
+                Some(render_conversation_block(&messages))
+            }
+            ChatRender::HiddenByVisibility(visibility) => {
+                chat_transcripts_hidden += 1;
+                Some(render_chat_hidden_notice(visibility))
+            }
+            ChatRender::None => None,
+        };
+        let html = render_task_page(task, graph, &included_ids, eval, chat_block.as_deref());
+        let path = tasks_dir.join(format!("{}.html", url_encode_id(&task.id)));
+        fs::write(&path, html).with_context(|| format!("failed to write {}", path.display()))?;
+        pages_written += 1;
+    }
+
+    // Render the index (after chat counts are known so the header can show them).
     let index_html = render_index(
         graph,
         &included,
@@ -162,18 +223,11 @@ pub fn render_site(
         &cycles_json,
         show_all,
         since,
+        include_chat,
+        chat_transcripts_shown,
+        chat_transcripts_hidden,
     );
     fs::write(out_dir.join("index.html"), &index_html).context("failed to write index.html")?;
-
-    // Per-task pages (deep-link targets — work with file:// URLs).
-    let mut pages_written = 0usize;
-    for task in &included {
-        let eval = evals.get(&task.id);
-        let html = render_task_page(task, graph, &included_ids, eval);
-        let path = tasks_dir.join(format!("{}.html", url_encode_id(&task.id)));
-        fs::write(&path, html).with_context(|| format!("failed to write {}", path.display()))?;
-        pages_written += 1;
-    }
 
     Ok(RenderSummary {
         out_dir: out_dir.to_path_buf(),
@@ -182,10 +236,20 @@ pub fn render_site(
         pages_written,
         show_all,
         since: since.map(|s| s.to_string()),
+        chat_transcripts_shown,
+        chat_transcripts_hidden_by_visibility: chat_transcripts_hidden,
     })
 }
 
-pub fn run(workgraph_dir: &Path, out: &Path, all: bool, since: Option<&str>, json: bool) -> Result<()> {
+pub fn run(
+    workgraph_dir: &Path,
+    out: &Path,
+    all: bool,
+    since: Option<&str>,
+    include_chat: bool,
+    all_chats: bool,
+    json: bool,
+) -> Result<()> {
     let graph_path = workgraph_dir.join("graph.jsonl");
     if !graph_path.exists() {
         anyhow::bail!(
@@ -195,7 +259,17 @@ pub fn run(workgraph_dir: &Path, out: &Path, all: bool, since: Option<&str>, jso
     }
     let graph = load_graph(&graph_path).context("failed to load graph")?;
 
-    let summary = render_site(&graph, workgraph_dir, out, all, since)?;
+    let summary = render_site(
+        &graph,
+        workgraph_dir,
+        out,
+        RenderOptions {
+            show_all: all,
+            since: since.map(|s| s.to_string()),
+            include_chat,
+            all_chats,
+        },
+    )?;
 
     if json {
         let payload = serde_json::json!({
@@ -205,6 +279,8 @@ pub fn run(workgraph_dir: &Path, out: &Path, all: bool, since: Option<&str>, jso
             "pages_written": summary.pages_written,
             "show_all": summary.show_all,
             "since": summary.since,
+            "chat_transcripts_shown": summary.chat_transcripts_shown,
+            "chat_transcripts_hidden_by_visibility": summary.chat_transcripts_hidden_by_visibility,
         });
         println!("{}", serde_json::to_string_pretty(&payload)?);
     } else {
@@ -222,6 +298,23 @@ pub fn run(workgraph_dir: &Path, out: &Path, all: bool, since: Option<&str>, jso
             summary.out_dir.display(),
             filter,
         );
+        if include_chat {
+            if summary.chat_transcripts_shown == 0
+                && summary.chat_transcripts_hidden_by_visibility > 0
+            {
+                println!(
+                    "No chat transcripts shown (all {} chats are non-public; pass --all to include them).",
+                    summary.chat_transcripts_hidden_by_visibility,
+                );
+            } else {
+                println!(
+                    "Showing {} chat transcript{} ({} omitted by visibility).",
+                    summary.chat_transcripts_shown,
+                    if summary.chat_transcripts_shown == 1 { "" } else { "s" },
+                    summary.chat_transcripts_hidden_by_visibility,
+                );
+            }
+        }
         println!("Open {}/index.html in a browser.", summary.out_dir.display());
     }
 
@@ -1020,6 +1113,9 @@ fn render_index(
     cycles_json: &str,
     show_all: bool,
     since_label: Option<&str>,
+    include_chat: bool,
+    chat_transcripts_shown: usize,
+    chat_transcripts_hidden: usize,
 ) -> String {
     let total_in_graph = graph.tasks().count();
     let total_shown = included.len();
@@ -1048,6 +1144,35 @@ fn render_index(
     let legend = render_legend();
     let footer = render_footer(total_in_graph, total_shown, show_all, since_label);
 
+    // Header chat banner — only when --chat is active. Tells the user how many
+    // transcripts were rendered (and how many were filtered out by visibility),
+    // so a `wg html --chat` against an all-internal graph doesn't look broken.
+    let chat_banner = if include_chat {
+        if chat_transcripts_shown == 0 && chat_transcripts_hidden > 0 {
+            format!(
+                "<p class=\"chat-banner\">Showing 0 chat transcripts \
+                 ({} hidden by visibility — pass <code>--all</code> to include them).</p>\n",
+                chat_transcripts_hidden,
+            )
+        } else if chat_transcripts_hidden > 0 {
+            format!(
+                "<p class=\"chat-banner\">Showing {} chat transcript{} \
+                 ({} omitted by visibility).</p>\n",
+                chat_transcripts_shown,
+                if chat_transcripts_shown == 1 { "" } else { "s" },
+                chat_transcripts_hidden,
+            )
+        } else {
+            format!(
+                "<p class=\"chat-banner\">Showing {} chat transcript{}.</p>\n",
+                chat_transcripts_shown,
+                if chat_transcripts_shown == 1 { "" } else { "s" },
+            )
+        }
+    } else {
+        String::new()
+    };
+
     let title_suffix = if show_all { "all tasks" } else { "public mirror" };
 
     format!(
@@ -1075,6 +1200,7 @@ fn render_index(
          <div>\n\
          <h1>Workgraph</h1>\n\
          <p class=\"subtitle\">{n} tasks shown · click a task id to inspect</p>\n\
+         {chat_banner}\
          </div>\n\
          <div class=\"header-controls\">\n\
          <button id=\"theme-toggle\" class=\"theme-toggle\" type=\"button\">Light theme</button>\n\
@@ -1114,6 +1240,7 @@ fn render_index(
         list = list,
         total_shown = total_shown,
         footer = footer,
+        chat_banner = chat_banner,
         tasks_json = tasks_json,
         edges_json = edges_json,
         cycles_json = cycles_json,
@@ -1129,6 +1256,7 @@ fn render_task_page(
     graph: &WorkGraph,
     included_ids: &HashSet<&str>,
     eval: Option<&EvalSummary>,
+    chat_block: Option<&str>,
 ) -> String {
     let title = escape_html(&task.title);
     let id = escape_html(&task.id);
@@ -1322,6 +1450,7 @@ fn render_task_page(
          <section><h2>Description</h2>{desc}</section>\n\
          <section><h2>Depends on</h2>{deps}</section>\n\
          <section><h2>Required by</h2>{revdeps}</section>\n\
+         {chat}\
          <section><h2>Log</h2>{log}</section>\n\
          </main>\n\
          <footer><p class=\"meta\">Visibility = <code>{vis}</code></p></footer>\n\
@@ -1333,8 +1462,191 @@ fn render_task_page(
         desc = description_html,
         deps = deps_html,
         revdeps = dependents_html,
+        chat = chat_block.unwrap_or(""),
         log = log_html,
         vis = escape_html(&task.visibility),
+    )
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Chat transcript rendering (`--chat` flag)
+// ────────────────────────────────────────────────────────────────────────────
+
+/// Decision for whether and how to render a task's chat transcript.
+enum ChatRender {
+    /// Render the transcript using the given chat session reference (alias).
+    Render(String),
+    /// Task is a chat task but transcript is filtered out by visibility —
+    /// emit a hidden-marker line instead. Carries the visibility string for
+    /// the user-facing message.
+    HiddenByVisibility(String),
+    /// Task is not a chat task, or `--chat` was not requested. No section
+    /// emitted at all.
+    None,
+}
+
+fn decide_chat_render(task: &Task, include_chat: bool, all_chats: bool) -> ChatRender {
+    if !include_chat {
+        return ChatRender::None;
+    }
+    if !chat_id::is_chat_task_id(&task.id) {
+        return ChatRender::None;
+    }
+    let vis = task.visibility.as_str();
+    if all_chats || vis == "public" {
+        // The chat session reference is the task id minus its leading `.`
+        // (the chat sessions registry stores aliases without the prefix —
+        // e.g. task `.chat-12` maps to chat ref `chat-12`).
+        let session_ref = task.id.trim_start_matches('.').to_string();
+        ChatRender::Render(session_ref)
+    } else {
+        ChatRender::HiddenByVisibility(vis.to_string())
+    }
+}
+
+/// Read both inbox (user messages) and outbox (agent responses) for a chat
+/// session and return them in chronological order.
+fn load_chat_messages(workgraph_dir: &Path, session_ref: &str) -> Vec<ChatMessage> {
+    let inbox = chat::read_inbox_ref(workgraph_dir, session_ref).unwrap_or_default();
+    let outbox = chat::read_outbox_since_ref(workgraph_dir, session_ref, 0).unwrap_or_default();
+    let mut all: Vec<ChatMessage> = inbox.into_iter().chain(outbox.into_iter()).collect();
+    all.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
+    all
+}
+
+/// Best-effort secret-redaction patterns. Documented for transparency:
+/// this is NOT a security guarantee — it is a safety net against accidental
+/// shell-history leaks (api-key-shaped strings, env-var assignments, paths
+/// to the secrets dir). Anyone publishing a transcript SHOULD review it
+/// manually before publishing.
+///
+/// Patterns:
+///   1. `sk-[A-Za-z0-9]{20,}` — OpenAI / Anthropic / generic API-key shape.
+///   2. `(?i)(OPENAI_API_KEY|ANTHROPIC_API_KEY|GITHUB_TOKEN|SECRET_KEY|ACCESS_TOKEN|API_KEY|AUTH_TOKEN|BEARER_TOKEN|PASSWORD|PASSWD)\s*=\s*\S+`
+///      — env-var assignments and shell `KEY=value` exports.
+///   3. paths under `~/.wg/secrets` (or `/home/<user>/.wg/secrets`,
+///      `/Users/<user>/.wg/secrets`, `$HOME/.wg/secrets`).
+fn sanitize_transcript(s: &str) -> String {
+    static API_KEY: OnceLock<Regex> = OnceLock::new();
+    static ENV_KEY: OnceLock<Regex> = OnceLock::new();
+    static SECRET_PATH: OnceLock<Regex> = OnceLock::new();
+
+    let api_key = API_KEY.get_or_init(|| {
+        Regex::new(r"sk-[A-Za-z0-9]{20,}").expect("api-key regex")
+    });
+    let env_key = ENV_KEY.get_or_init(|| {
+        Regex::new(
+            r"(?i)\b(OPENAI_API_KEY|ANTHROPIC_API_KEY|GITHUB_TOKEN|SECRET_KEY|ACCESS_TOKEN|API_KEY|AUTH_TOKEN|BEARER_TOKEN|PASSWORD|PASSWD)\s*=\s*\S+",
+        )
+        .expect("env-key regex")
+    });
+    let secret_path = SECRET_PATH.get_or_init(|| {
+        Regex::new(r"(?:~|\$HOME|/home/[^/\s]+|/Users/[^/\s]+)/\.wg/secrets[^\s]*")
+            .expect("secret-path regex")
+    });
+
+    let s = api_key.replace_all(s, "[redacted]");
+    let s = env_key.replace_all(&s, "[redacted]");
+    let s = secret_path.replace_all(&s, "[redacted]");
+    s.into_owned()
+}
+
+/// Render a 'Conversation' section containing every message in the chat,
+/// in order, with role + timestamp + sanitized content. Code fences are
+/// preserved verbatim (escaped) inside `<pre class="chat-code">`.
+fn render_conversation_block(messages: &[ChatMessage]) -> String {
+    let mut s = String::new();
+    s.push_str("<section class=\"chat-conversation\"><h2>Conversation</h2>\n");
+    if messages.is_empty() {
+        s.push_str("<p class=\"none\">(empty transcript)</p>\n</section>\n");
+        return s;
+    }
+    s.push_str(&format!(
+        "<p class=\"chat-meta\">{} message{} in transcript.</p>\n",
+        messages.len(),
+        if messages.len() == 1 { "" } else { "s" },
+    ));
+    s.push_str("<ol class=\"chat-messages\">\n");
+    for msg in messages {
+        let role_cls = match msg.role.as_str() {
+            "user" => "chat-msg-user",
+            "coordinator" | "assistant" | "agent" => "chat-msg-agent",
+            _ => "chat-msg-other",
+        };
+        s.push_str(&format!(
+            "<li class=\"chat-msg {role_cls}\">\
+             <div class=\"chat-msg-head\">\
+             <span class=\"chat-role\">{role}</span> \
+             <span class=\"chat-ts\">{ts}</span>\
+             </div>\
+             {body}\
+             </li>\n",
+            role_cls = role_cls,
+            role = escape_html(&msg.role),
+            ts = escape_html(&msg.timestamp),
+            body = render_chat_body(&msg.content),
+        ));
+    }
+    s.push_str("</ol>\n</section>\n");
+    s
+}
+
+/// Convert the message body to safe HTML. Triple-backtick fenced code blocks
+/// become `<pre class="chat-code">` blocks (no syntax highlighting at this
+/// stage — same treatment as task descriptions); other text is wrapped in
+/// `<pre class="chat-text">` to preserve linebreaks. All content is run
+/// through `sanitize_transcript` first.
+fn render_chat_body(content: &str) -> String {
+    let sanitized = sanitize_transcript(content);
+    // Light fenced-code block detection: split on lines beginning with ```.
+    // Even if the message has no code fences this still produces correct
+    // output (a single text block).
+    let mut out = String::new();
+    let mut in_code = false;
+    let mut buf = String::new();
+    for line in sanitized.split_inclusive('\n') {
+        if line.trim_end_matches('\n').trim_start().starts_with("```") {
+            // Flush current buffer.
+            if !buf.is_empty() {
+                out.push_str(&format_chat_block(&buf, in_code));
+                buf.clear();
+            }
+            in_code = !in_code;
+            continue;
+        }
+        buf.push_str(line);
+    }
+    if !buf.is_empty() {
+        out.push_str(&format_chat_block(&buf, in_code));
+    }
+    out
+}
+
+fn format_chat_block(text: &str, is_code: bool) -> String {
+    let trimmed = text.trim_matches('\n');
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    if is_code {
+        format!(
+            "<pre class=\"chat-code\">{}</pre>\n",
+            escape_html(trimmed)
+        )
+    } else {
+        format!(
+            "<pre class=\"chat-text\">{}</pre>\n",
+            escape_html(trimmed)
+        )
+    }
+}
+
+fn render_chat_hidden_notice(visibility: &str) -> String {
+    format!(
+        "<section class=\"chat-conversation chat-hidden\"><h2>Conversation</h2>\n\
+         <p class=\"chat-hidden-note\">Chat transcript hidden (visibility: {}). \
+         Use <code>--all</code> to include.</p>\n\
+         </section>\n",
+        escape_html(visibility),
     )
 }
 
@@ -1384,5 +1696,128 @@ mod tests {
         assert_eq!(parse_since("2w").unwrap(), Duration::weeks(2));
         assert!(parse_since("0h").is_err());
         assert!(parse_since("abc").is_err());
+    }
+
+    // ────────────────────────────────────────────────────────────────────
+    // Chat-transcript sanitizer
+    // ────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn sanitizer_redacts_sk_api_key() {
+        let s = "here is a key: sk-abcdefghijklmnopqrstuvwxyz1234 in text";
+        let out = sanitize_transcript(s);
+        assert!(!out.contains("sk-abcdefghijklmnopqrstuvwxyz1234"), "raw sk key leaked: {out}");
+        assert!(out.contains("[redacted]"), "redaction marker missing: {out}");
+    }
+
+    #[test]
+    fn sanitizer_redacts_env_var_assignments() {
+        for sample in [
+            "OPENAI_API_KEY=hunter2",
+            "export ANTHROPIC_API_KEY=swordfish",
+            "GITHUB_TOKEN=ghp_abcdefghijklmnopqrstuvwxyz12345678",
+            "API_KEY=letmein",
+            "PASSWORD=qwerty",
+        ] {
+            let out = sanitize_transcript(sample);
+            assert!(out.contains("[redacted]"), "no redaction for {sample:?}: {out}");
+            for secret in ["hunter2", "swordfish", "ghp_abcdefghijklmnopqrstuvwxyz12345678", "letmein", "qwerty"] {
+                if sample.contains(secret) {
+                    assert!(!out.contains(secret), "secret {secret:?} leaked from {sample:?}: {out}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn sanitizer_redacts_paths_under_wg_secrets() {
+        for sample in [
+            "see ~/.wg/secrets/openai.key for the key",
+            "stored at /home/erik/.wg/secrets/anthropic.token today",
+            "macOS path: /Users/dev/.wg/secrets/github.pat",
+            "shell: $HOME/.wg/secrets/bot.json",
+        ] {
+            let out = sanitize_transcript(sample);
+            assert!(out.contains("[redacted]"), "no redaction for {sample:?}: {out}");
+            assert!(!out.contains("/secrets/openai.key"), "openai.key path leaked: {out}");
+            assert!(!out.contains("/secrets/anthropic.token"), "anthropic.token path leaked: {out}");
+            assert!(!out.contains("/secrets/github.pat"), "github.pat path leaked: {out}");
+            assert!(!out.contains("/secrets/bot.json"), "bot.json path leaked: {out}");
+        }
+    }
+
+    #[test]
+    fn sanitizer_does_not_touch_innocent_text() {
+        let sample = "Plain text with no secrets — paths like /home/erik/.cargo/bin are fine.";
+        assert_eq!(sanitize_transcript(sample), sample);
+    }
+
+    // ────────────────────────────────────────────────────────────────────
+    // Chat-render decision
+    // ────────────────────────────────────────────────────────────────────
+
+    fn chat_task(id: &str, vis: &str) -> Task {
+        let mut t = Task::default();
+        t.id = id.to_string();
+        t.visibility = vis.to_string();
+        t
+    }
+
+    #[test]
+    fn decide_chat_render_off_when_chat_disabled() {
+        let t = chat_task(".chat-1", "public");
+        assert!(matches!(decide_chat_render(&t, false, false), ChatRender::None));
+    }
+
+    #[test]
+    fn decide_chat_render_off_for_non_chat_tasks() {
+        let mut t = Task::default();
+        t.id = "regular-task".into();
+        t.visibility = "public".into();
+        assert!(matches!(decide_chat_render(&t, true, true), ChatRender::None));
+    }
+
+    #[test]
+    fn decide_chat_render_public_chat_is_rendered() {
+        let t = chat_task(".chat-7", "public");
+        match decide_chat_render(&t, true, false) {
+            ChatRender::Render(r) => assert_eq!(r, "chat-7"),
+            other => panic!("expected Render, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn decide_chat_render_internal_hidden_unless_all_chats() {
+        let t = chat_task(".chat-3", "internal");
+        assert!(matches!(
+            decide_chat_render(&t, true, false),
+            ChatRender::HiddenByVisibility(_)
+        ));
+        match decide_chat_render(&t, true, true) {
+            ChatRender::Render(r) => assert_eq!(r, "chat-3"),
+            other => panic!("expected Render with --all, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn decide_chat_render_legacy_coordinator_id_works() {
+        let t = chat_task(".coordinator-2", "public");
+        match decide_chat_render(&t, true, false) {
+            ChatRender::Render(r) => assert_eq!(r, "coordinator-2"),
+            other => panic!("expected Render for legacy id, got {other:?}"),
+        }
+    }
+}
+
+#[cfg(test)]
+impl std::fmt::Debug for ChatRender {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ChatRender::None => write!(f, "ChatRender::None"),
+            ChatRender::Render(r) => write!(f, "ChatRender::Render({r:?})"),
+            ChatRender::HiddenByVisibility(v) => {
+                write!(f, "ChatRender::HiddenByVisibility({v:?})")
+            }
+        }
     }
 }

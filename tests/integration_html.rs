@@ -10,6 +10,8 @@ use std::fs;
 use std::path::Path;
 
 use tempfile::TempDir;
+use workgraph::chat;
+use workgraph::chat_sessions::{self, SessionKind};
 use workgraph::graph::{Node, Status, Task, WorkGraph};
 
 use workgraph::html;
@@ -82,7 +84,7 @@ fn renders_index_with_only_public_task_count() {
     let graph = build_graph(vec![t1, t2, t3, internal_a, internal_b]);
 
     let dir = TempDir::new().unwrap();
-    let summary = html::render_site(&graph, dir.path(), dir.path(), false, None).unwrap();
+    let summary = html::render_site(&graph, dir.path(), dir.path(), html::RenderOptions::default()).unwrap();
 
     assert_eq!(summary.public_count, 3, "expected 3 public tasks");
     assert_eq!(summary.total_in_graph, 5);
@@ -109,7 +111,7 @@ fn internal_tasks_excluded_from_all_output() {
     let graph = build_graph(vec![public, internal, peer]);
 
     let dir = TempDir::new().unwrap();
-    html::render_site(&graph, dir.path(), dir.path(), false, None).unwrap();
+    html::render_site(&graph, dir.path(), dir.path(), html::RenderOptions::default()).unwrap();
 
     // The internal-only id should not appear in any rendered file.
     let blob = read_all(dir.path());
@@ -143,7 +145,7 @@ fn internal_tasks_excluded_from_all_output() {
 
 #[test]
 fn per_task_links_resolve_within_output() {
-    let mut t1 = make_task("a", "A", "public");
+    let t1 = make_task("a", "A", "public");
     let mut t2 = make_task("b", "B", "public");
     let mut t3 = make_task("c", "C", "public");
     t2.after = vec!["a".into()];
@@ -152,7 +154,7 @@ fn per_task_links_resolve_within_output() {
     let graph = build_graph(vec![t1.clone(), t2, t3]);
 
     let dir = TempDir::new().unwrap();
-    html::render_site(&graph, dir.path(), dir.path(), false, None).unwrap();
+    html::render_site(&graph, dir.path(), dir.path(), html::RenderOptions::default()).unwrap();
 
     // Index should link to tasks/a.html, tasks/b.html, tasks/c.html.
     let index = fs::read_to_string(dir.path().join("index.html")).unwrap();
@@ -186,7 +188,7 @@ fn empty_public_graph_renders_without_crashing() {
     let graph = build_graph(vec![internal]);
 
     let dir = TempDir::new().unwrap();
-    let summary = html::render_site(&graph, dir.path(), dir.path(), false, None).unwrap();
+    let summary = html::render_site(&graph, dir.path(), dir.path(), html::RenderOptions::default()).unwrap();
     assert_eq!(summary.public_count, 0);
     assert_eq!(summary.pages_written, 0);
 
@@ -204,7 +206,12 @@ fn show_all_overrides_visibility_filter() {
     let graph = build_graph(vec![public, internal]);
 
     let dir = TempDir::new().unwrap();
-    let summary = html::render_site(&graph, dir.path(), dir.path(), true, None).unwrap();
+    let summary = html::render_site(
+        &graph,
+        dir.path(),
+        dir.path(),
+        html::RenderOptions { show_all: true, ..Default::default() },
+    ).unwrap();
     assert_eq!(summary.public_count, 2, "with --all both tasks should appear");
     assert_eq!(summary.pages_written, 2);
 
@@ -227,7 +234,7 @@ fn dag_layout_renders_task_ids() {
 
     let graph = build_graph(vec![a, b, c]);
     let dir = TempDir::new().unwrap();
-    html::render_site(&graph, dir.path(), dir.path(), false, None).unwrap();
+    html::render_site(&graph, dir.path(), dir.path(), html::RenderOptions::default()).unwrap();
 
     let index = fs::read_to_string(dir.path().join("index.html")).unwrap();
     // viz-pre element present (ASCII viz, not SVG).
@@ -249,7 +256,7 @@ fn description_html_is_escaped() {
 
     let graph = build_graph(vec![t]);
     let dir = TempDir::new().unwrap();
-    html::render_site(&graph, dir.path(), dir.path(), false, None).unwrap();
+    html::render_site(&graph, dir.path(), dir.path(), html::RenderOptions::default()).unwrap();
 
     let page = fs::read_to_string(dir.path().join("tasks/xss-test.html")).unwrap();
     assert!(
@@ -277,7 +284,7 @@ fn dependency_on_internal_task_aggregates_as_count_no_id_leak() {
 
     let graph = build_graph(vec![pub_a, internal_assign, internal_other]);
     let dir = TempDir::new().unwrap();
-    html::render_site(&graph, dir.path(), dir.path(), false, None).unwrap();
+    html::render_site(&graph, dir.path(), dir.path(), html::RenderOptions::default()).unwrap();
 
     let page = fs::read_to_string(dir.path().join("tasks/pub-a.html")).unwrap();
     assert!(
@@ -305,7 +312,7 @@ fn output_files_layout_matches_expected() {
     let graph = build_graph(vec![p1, p2]);
 
     let dir = TempDir::new().unwrap();
-    html::render_site(&graph, dir.path(), dir.path(), false, None).unwrap();
+    html::render_site(&graph, dir.path(), dir.path(), html::RenderOptions::default()).unwrap();
 
     let files: HashSet<String> = paths_in(dir.path()).into_iter().collect();
     assert!(files.contains("index.html"));
@@ -330,7 +337,16 @@ fn since_filter_excludes_old_tasks_and_notes_in_footer() {
     let graph = build_graph(vec![recent, old]);
 
     let dir = TempDir::new().unwrap();
-    let summary = html::render_site(&graph, dir.path(), dir.path(), true, Some("24h")).unwrap();
+    let summary = html::render_site(
+        &graph,
+        dir.path(),
+        dir.path(),
+        html::RenderOptions {
+            show_all: true,
+            since: Some("24h".into()),
+            ..Default::default()
+        },
+    ).unwrap();
 
     assert_eq!(summary.public_count, 1, "expected only 1 task within 24h window");
     assert!(dir.path().join("tasks/recent-task.html").exists(), "recent-task page missing");
@@ -357,7 +373,15 @@ fn since_filter_composes_with_visibility() {
     let graph = build_graph(vec![pub_task, int_task]);
     let dir = TempDir::new().unwrap();
 
-    let summary = html::render_site(&graph, dir.path(), dir.path(), false, Some("24h")).unwrap();
+    let summary = html::render_site(
+        &graph,
+        dir.path(),
+        dir.path(),
+        html::RenderOptions {
+            since: Some("24h".into()),
+            ..Default::default()
+        },
+    ).unwrap();
     assert_eq!(summary.public_count, 1, "public-only filter should keep 1 public task");
     assert!(dir.path().join("tasks/pub-recent.html").exists(), "public recent task page missing");
     assert!(!dir.path().join("tasks/int-recent.html").exists(), "internal task must not appear");
@@ -373,7 +397,12 @@ fn v2_index_includes_theme_toggle_and_panel_assets() {
     t.status = Status::Open;
     let graph = build_graph(vec![t]);
     let dir = TempDir::new().unwrap();
-    html::render_site(&graph, dir.path(), dir.path(), true, None).unwrap();
+    html::render_site(
+        &graph,
+        dir.path(),
+        dir.path(),
+        html::RenderOptions { show_all: true, ..Default::default() },
+    ).unwrap();
 
     let index = fs::read_to_string(dir.path().join("index.html")).unwrap();
 
@@ -411,7 +440,12 @@ fn v2_css_carries_tui_palette() {
     // edge highlight colors from render.rs:1500.
     let dir = TempDir::new().unwrap();
     let graph = build_graph(vec![make_task("anything", "A", "public")]);
-    html::render_site(&graph, dir.path(), dir.path(), true, None).unwrap();
+    html::render_site(
+        &graph,
+        dir.path(),
+        dir.path(),
+        html::RenderOptions { show_all: true, ..Default::default() },
+    ).unwrap();
 
     let css = fs::read_to_string(dir.path().join("style.css")).unwrap();
     // Status colors (TUI flash_color_for_status, state.rs:271)
@@ -435,7 +469,12 @@ fn v2_css_carries_tui_palette() {
 fn v2_css_supports_dark_and_light_themes() {
     let dir = TempDir::new().unwrap();
     let graph = build_graph(vec![make_task("any", "A", "public")]);
-    html::render_site(&graph, dir.path(), dir.path(), true, None).unwrap();
+    html::render_site(
+        &graph,
+        dir.path(),
+        dir.path(),
+        html::RenderOptions { show_all: true, ..Default::default() },
+    ).unwrap();
 
     let css = fs::read_to_string(dir.path().join("style.css")).unwrap();
     // Dark theme is the default (no media query needed).
@@ -465,7 +504,12 @@ fn v2_inline_json_blobs_present_in_index() {
 
     let graph = build_graph(vec![a, b]);
     let dir = TempDir::new().unwrap();
-    html::render_site(&graph, dir.path(), dir.path(), true, None).unwrap();
+    html::render_site(
+        &graph,
+        dir.path(),
+        dir.path(),
+        html::RenderOptions { show_all: true, ..Default::default() },
+    ).unwrap();
 
     let index = fs::read_to_string(dir.path().join("index.html")).unwrap();
     // Three JSON blobs feed the panel JS: tasks, edges (reachability), cycles.
@@ -505,7 +549,12 @@ fn v2_task_list_links_carry_data_task_id_for_panel_wiring() {
 
     let graph = build_graph(vec![a, b]);
     let dir = TempDir::new().unwrap();
-    html::render_site(&graph, dir.path(), dir.path(), true, None).unwrap();
+    html::render_site(
+        &graph,
+        dir.path(),
+        dir.path(),
+        html::RenderOptions { show_all: true, ..Default::default() },
+    ).unwrap();
 
     let index = fs::read_to_string(dir.path().join("index.html")).unwrap();
     assert!(
@@ -539,7 +588,12 @@ fn v2_index_renders_static_when_viz_subprocess_unavailable() {
     let t = make_task("standalone", "Standalone", "public");
     let graph = build_graph(vec![t]);
     let dir = TempDir::new().unwrap();
-    html::render_site(&graph, dir.path(), dir.path(), true, None).unwrap();
+    html::render_site(
+        &graph,
+        dir.path(),
+        dir.path(),
+        html::RenderOptions { show_all: true, ..Default::default() },
+    ).unwrap();
 
     let index = fs::read_to_string(dir.path().join("index.html")).unwrap();
     // Even without viz, the panel container must exist for clickability.
@@ -552,4 +606,336 @@ fn v2_index_renders_static_when_viz_subprocess_unavailable() {
         index.contains("Showing 1 of 1 tasks") || index.contains("Tasks (1)"),
         "task count missing from index"
     );
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// wg-html-chat: --chat flag with visibility-respecting transcript inclusion
+// ────────────────────────────────────────────────────────────────────────────
+
+/// Test fixture: create a chat session with the given alias and seed a few
+/// inbox/outbox messages. Returns the working directory.
+fn seed_chat_session(workgraph_dir: &Path, alias: &str, kind: SessionKind) {
+    chat_sessions::create_session(
+        workgraph_dir,
+        kind,
+        &[alias.to_string()],
+        Some(format!("test session {alias}")),
+    )
+    .unwrap();
+    chat::append_inbox_ref(workgraph_dir, alias, "hello assistant", "req-1").unwrap();
+    chat::append_outbox_ref(workgraph_dir, alias, "hello back", "req-1").unwrap();
+    chat::append_inbox_ref(workgraph_dir, alias, "what is 2+2", "req-2").unwrap();
+    chat::append_outbox_ref(workgraph_dir, alias, "4", "req-2").unwrap();
+}
+
+fn chat_task(id: &str, vis: &str) -> Task {
+    let mut t = make_task(id, "Chat", vis);
+    t.tags = vec!["chat-loop".into()];
+    t
+}
+
+/// Read only the rendered HTML files (index + tasks/*.html). The fixture
+/// also writes JSONL chat transcripts under `chat/<uuid>/`; we don't want
+/// those raw files to count toward "what the user sees" assertions.
+fn read_rendered_html(out_dir: &Path) -> String {
+    let mut buf = String::new();
+    if let Ok(s) = fs::read_to_string(out_dir.join("index.html")) {
+        buf.push_str(&s);
+        buf.push('\n');
+    }
+    if let Ok(rd) = fs::read_dir(out_dir.join("tasks")) {
+        for entry in rd.flatten() {
+            let p = entry.path();
+            if p.extension().map(|e| e == "html").unwrap_or(false) {
+                if let Ok(s) = fs::read_to_string(&p) {
+                    buf.push_str(&s);
+                    buf.push('\n');
+                }
+            }
+        }
+    }
+    buf
+}
+
+#[test]
+fn chat_default_no_chat_flag_omits_transcript_but_keeps_task_node() {
+    let dir = TempDir::new().unwrap();
+    seed_chat_session(dir.path(), "chat-9", SessionKind::Coordinator);
+
+    let chat = chat_task(".chat-9", "public");
+    let graph = build_graph(vec![chat]);
+
+    let summary = html::render_site(
+        &graph,
+        dir.path(),
+        dir.path(),
+        html::RenderOptions::default(),
+    )
+    .unwrap();
+    assert_eq!(summary.chat_transcripts_shown, 0);
+    assert_eq!(summary.chat_transcripts_hidden_by_visibility, 0);
+
+    let blob = read_rendered_html(dir.path());
+    // Task node still appears.
+    assert!(blob.contains(".chat-9"), "chat task id missing from default-mode output");
+    // But transcript content is absent.
+    assert!(!blob.contains("hello assistant"), "transcript leaked without --chat");
+    assert!(!blob.contains("hello back"), "transcript leaked without --chat");
+    assert!(!blob.contains("Conversation"), "Conversation header rendered without --chat");
+}
+
+#[test]
+fn chat_flag_includes_public_transcripts_only() {
+    let dir = TempDir::new().unwrap();
+    seed_chat_session(dir.path(), "chat-1", SessionKind::Coordinator);
+    seed_chat_session(dir.path(), "chat-2", SessionKind::Coordinator);
+
+    let public = chat_task(".chat-1", "public");
+    let internal = chat_task(".chat-2", "internal");
+    let graph = build_graph(vec![public, internal]);
+
+    let summary = html::render_site(
+        &graph,
+        dir.path(),
+        dir.path(),
+        html::RenderOptions {
+            show_all: true,
+            include_chat: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(summary.chat_transcripts_shown, 1, "expected 1 public transcript");
+    assert_eq!(
+        summary.chat_transcripts_hidden_by_visibility, 1,
+        "expected 1 internal transcript hidden"
+    );
+
+    // Public chat page contains transcript content.
+    let pub_page = fs::read_to_string(dir.path().join("tasks/.chat-1.html")).unwrap();
+    assert!(pub_page.contains("Conversation"), "public chat page missing Conversation");
+    assert!(pub_page.contains("hello assistant"), "public chat msg missing");
+    assert!(pub_page.contains("hello back"), "public chat reply missing");
+
+    // Internal chat page exists but transcript is hidden behind a notice.
+    let int_page = fs::read_to_string(dir.path().join("tasks/.chat-2.html")).unwrap();
+    assert!(
+        int_page.contains("Chat transcript hidden"),
+        "expected hidden marker on internal chat page, got: {int_page}"
+    );
+    assert!(int_page.contains("visibility: internal"), "visibility label missing");
+    assert!(int_page.contains("--all"), "remediation hint missing");
+    assert!(
+        !int_page.contains("hello assistant"),
+        "internal transcript content leaked: {int_page}"
+    );
+
+    // Index header banner shows count.
+    let index = fs::read_to_string(dir.path().join("index.html")).unwrap();
+    assert!(
+        index.contains("Showing 1 chat transcript") || index.contains("Showing 1 chat transcripts"),
+        "header banner missing or wrong: {}",
+        &index[..index.len().min(2000)],
+    );
+    assert!(
+        index.contains("1 omitted"),
+        "header banner doesn't mention hidden count"
+    );
+}
+
+#[test]
+fn chat_all_includes_internal_transcripts() {
+    let dir = TempDir::new().unwrap();
+    seed_chat_session(dir.path(), "chat-1", SessionKind::Coordinator);
+    seed_chat_session(dir.path(), "chat-2", SessionKind::Coordinator);
+
+    let public = chat_task(".chat-1", "public");
+    let internal = chat_task(".chat-2", "internal");
+    let graph = build_graph(vec![public, internal]);
+
+    let summary = html::render_site(
+        &graph,
+        dir.path(),
+        dir.path(),
+        html::RenderOptions {
+            show_all: true,
+            include_chat: true,
+            all_chats: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(summary.chat_transcripts_shown, 2, "all chats should be rendered");
+    assert_eq!(summary.chat_transcripts_hidden_by_visibility, 0);
+
+    let int_page = fs::read_to_string(dir.path().join("tasks/.chat-2.html")).unwrap();
+    assert!(int_page.contains("hello assistant"), "internal chat content not rendered with --all");
+    assert!(
+        !int_page.contains("Chat transcript hidden"),
+        "hidden marker should not appear with --all"
+    );
+}
+
+#[test]
+fn chat_public_only_filters_both_tasks_and_transcripts() {
+    let dir = TempDir::new().unwrap();
+    seed_chat_session(dir.path(), "chat-1", SessionKind::Coordinator);
+    seed_chat_session(dir.path(), "chat-2", SessionKind::Coordinator);
+
+    let public_chat = chat_task(".chat-1", "public");
+    let internal_chat = chat_task(".chat-2", "internal");
+    let graph = build_graph(vec![public_chat, internal_chat]);
+
+    let summary = html::render_site(
+        &graph,
+        dir.path(),
+        dir.path(),
+        html::RenderOptions {
+            show_all: false, // public-only TASKS
+            include_chat: true,
+            all_chats: false,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    // Only public chat task is in the rendered set.
+    assert_eq!(summary.public_count, 1);
+    assert_eq!(summary.chat_transcripts_shown, 1);
+    assert_eq!(summary.chat_transcripts_hidden_by_visibility, 0);
+
+    // The internal chat is filtered out at the task level — its page must not exist.
+    assert!(
+        !dir.path().join("tasks/.chat-2.html").exists(),
+        "internal chat page should not be written under --public-only"
+    );
+    let blob = read_rendered_html(dir.path());
+    assert!(!blob.contains(".chat-2"), "internal chat id leaked");
+}
+
+#[test]
+fn chat_zero_visible_with_chat_flag_message_when_all_internal() {
+    let dir = TempDir::new().unwrap();
+    seed_chat_session(dir.path(), "chat-7", SessionKind::Coordinator);
+    let only_internal_chat = chat_task(".chat-7", "internal");
+    let graph = build_graph(vec![only_internal_chat]);
+
+    let summary = html::render_site(
+        &graph,
+        dir.path(),
+        dir.path(),
+        html::RenderOptions {
+            show_all: true,
+            include_chat: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(summary.chat_transcripts_shown, 0);
+    assert_eq!(summary.chat_transcripts_hidden_by_visibility, 1);
+
+    let index = fs::read_to_string(dir.path().join("index.html")).unwrap();
+    assert!(
+        index.contains("Showing 0 chat transcripts"),
+        "expected 'Showing 0 chat transcripts' message, got: {}",
+        &index[..index.len().min(3000)],
+    );
+    assert!(index.contains("--all"), "remediation hint missing for zero-shown case");
+}
+
+#[test]
+fn chat_transcript_sanitizes_secrets_before_rendering() {
+    let dir = TempDir::new().unwrap();
+    chat_sessions::create_session(
+        dir.path(),
+        SessionKind::Coordinator,
+        &["chat-secret".into()],
+        None,
+    )
+    .unwrap();
+    // Smuggle three classes of secret into the transcript.
+    chat::append_inbox_ref(
+        dir.path(),
+        "chat-secret",
+        "use sk-abcdefghijklmnopqrstuvwxyz12345 with OPENAI_API_KEY=hunter2 stored at ~/.wg/secrets/openai.key",
+        "r1",
+    )
+    .unwrap();
+    chat::append_outbox_ref(dir.path(), "chat-secret", "ok understood", "r1").unwrap();
+
+    let chat = chat_task(".chat-secret", "public");
+    let graph = build_graph(vec![chat]);
+
+    html::render_site(
+        &graph,
+        dir.path(),
+        dir.path(),
+        html::RenderOptions {
+            show_all: true,
+            include_chat: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    let page = fs::read_to_string(dir.path().join("tasks/.chat-secret.html")).unwrap();
+    assert!(
+        !page.contains("sk-abcdefghijklmnopqrstuvwxyz12345"),
+        "raw api key leaked: {page}"
+    );
+    assert!(!page.contains("hunter2"), "env-var secret leaked: {page}");
+    assert!(!page.contains("openai.key"), "secret path leaked: {page}");
+    assert!(page.contains("[redacted]"), "expected redaction marker: {page}");
+}
+
+#[test]
+fn chat_transcript_renders_in_chronological_order() {
+    let dir = TempDir::new().unwrap();
+    seed_chat_session(dir.path(), "chat-order", SessionKind::Coordinator);
+
+    let chat = chat_task(".chat-order", "public");
+    let graph = build_graph(vec![chat]);
+
+    html::render_site(
+        &graph,
+        dir.path(),
+        dir.path(),
+        html::RenderOptions {
+            show_all: true,
+            include_chat: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    let page = fs::read_to_string(dir.path().join("tasks/.chat-order.html")).unwrap();
+    let p1 = page.find("hello assistant").expect("first inbox missing");
+    let p2 = page.find("hello back").expect("first outbox missing");
+    let p3 = page.find("what is 2+2").expect("second inbox missing");
+    let p4 = page.find("4</pre>").or_else(|| page.find("4<")).expect("second outbox missing");
+    assert!(p1 < p2 && p2 < p3 && p3 < p4, "messages out of order in {page}");
+}
+
+#[test]
+fn chat_legacy_coordinator_id_resolves() {
+    let dir = TempDir::new().unwrap();
+    seed_chat_session(dir.path(), "coordinator-3", SessionKind::Coordinator);
+
+    let chat = chat_task(".coordinator-3", "public");
+    let graph = build_graph(vec![chat]);
+
+    let summary = html::render_site(
+        &graph,
+        dir.path(),
+        dir.path(),
+        html::RenderOptions {
+            show_all: true,
+            include_chat: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(summary.chat_transcripts_shown, 1);
+    let page = fs::read_to_string(dir.path().join("tasks/.coordinator-3.html")).unwrap();
+    assert!(page.contains("hello assistant"));
 }
