@@ -6947,6 +6947,7 @@ pub(crate) fn draw_launcher_pane(frame: &mut Frame, app: &mut VizApp, area: Rect
         recent_list,
         recent_selected,
         creating,
+        last_error,
     ) = match app.launcher.as_ref() {
         Some(l) => (
             l.active_section.clone(),
@@ -6959,6 +6960,7 @@ pub(crate) fn draw_launcher_pane(frame: &mut Frame, app: &mut VizApp, area: Rect
             l.recent_list.clone(),
             l.recent_selected,
             l.creating,
+            l.last_error.clone(),
         ),
         None => return,
     };
@@ -7012,6 +7014,23 @@ pub(crate) fn draw_launcher_pane(frame: &mut Frame, app: &mut VizApp, area: Rect
         title_text,
         Style::default().fg(title_color).add_modifier(Modifier::BOLD),
     )));
+
+    // Persistent error banner (fix-chat-creation): when the previous IPC
+    // submit failed, show the daemon's error message above the form so
+    // the user can see what went wrong (bogus endpoint, missing CLI,
+    // etc.) while they adjust their selection. Cleared on the next
+    // submit attempt.
+    if let Some(ref err) = last_error {
+        // Truncate at a reasonable width to keep the banner one line.
+        let max_w = w.saturating_sub(6).max(20);
+        let truncated: String = err.chars().take(max_w).collect();
+        lines.push(Line::from(Span::styled(
+            format!("  ⚠ {}", truncated),
+            Style::default()
+                .fg(Color::Red)
+                .add_modifier(Modifier::BOLD),
+        )));
+    }
 
     // Action row: [Launch] [Cancel] + Name input live at the TOP. The user
     // asked for "launch at top of view so its clear why we are doing the

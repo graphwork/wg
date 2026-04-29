@@ -171,12 +171,13 @@ pub fn run_create(
     name: Option<&str>,
     model: Option<&str>,
     executor: Option<&str>,
+    endpoint: Option<&str>,
     json: bool,
 ) -> Result<()> {
     if service_is_running(dir) {
-        run_create_via_ipc(dir, name, model, executor, json)
+        run_create_via_ipc(dir, name, model, executor, endpoint, json)
     } else {
-        run_create_direct(dir, name, model, executor, json)
+        run_create_direct(dir, name, model, executor, endpoint, json)
     }
 }
 
@@ -186,6 +187,7 @@ fn run_create_via_ipc(
     name: Option<&str>,
     model: Option<&str>,
     executor: Option<&str>,
+    endpoint: Option<&str>,
     json: bool,
 ) -> Result<()> {
     crate::commands::service::run_create_coordinator(
@@ -193,6 +195,7 @@ fn run_create_via_ipc(
         name,
         model,
         executor,
+        endpoint,
         json,
     )
 }
@@ -203,6 +206,7 @@ fn run_create_via_ipc(
     _name: Option<&str>,
     _model: Option<&str>,
     _executor: Option<&str>,
+    _endpoint: Option<&str>,
     _json: bool,
 ) -> Result<()> {
     anyhow::bail!("Service IPC is only supported on Unix systems")
@@ -213,10 +217,11 @@ fn run_create_direct(
     name: Option<&str>,
     model: Option<&str>,
     executor: Option<&str>,
+    endpoint: Option<&str>,
     json: bool,
 ) -> Result<()> {
     let next_id = crate::commands::service::ipc::create_chat_in_graph(
-        dir, name, model, executor,
+        dir, name, model, executor, endpoint,
     )?;
     let task_id = chat_id::format_chat_task_id(next_id);
     if json {
@@ -745,7 +750,7 @@ mod tests {
         // service_is_running is false (no service/state.json) — exercise
         // the direct path:
         assert!(!service_is_running(dir));
-        run_create_direct(dir, Some("alpha"), None, None, true).unwrap();
+        run_create_direct(dir, Some("alpha"), None, None, None, true).unwrap();
 
         // Graph contains a .chat-N task
         let g = workgraph::parser::load_graph(&graph_path(dir)).unwrap();
@@ -761,7 +766,7 @@ mod tests {
     fn send_to_dormant_chat_appends_inbox() {
         let td = mk_workgraph_dir();
         let dir = td.path();
-        run_create_direct(dir, Some("bot"), None, None, true).unwrap();
+        run_create_direct(dir, Some("bot"), None, None, None, true).unwrap();
 
         // Find the chat id we just created
         let g = workgraph::parser::load_graph(&graph_path(dir)).unwrap();
@@ -789,7 +794,7 @@ mod tests {
     fn resume_errors_clearly_when_service_down() {
         let td = mk_workgraph_dir();
         let dir = td.path();
-        run_create_direct(dir, Some("c"), None, None, true).unwrap();
+        run_create_direct(dir, Some("c"), None, None, None, true).unwrap();
         let g = workgraph::parser::load_graph(&graph_path(dir)).unwrap();
         let chat = g
             .tasks()
@@ -810,8 +815,8 @@ mod tests {
     fn list_truthful_status_when_service_down() {
         let td = mk_workgraph_dir();
         let dir = td.path();
-        run_create_direct(dir, Some("alpha"), None, None, true).unwrap();
-        run_create_direct(dir, Some("beta"), None, None, true).unwrap();
+        run_create_direct(dir, Some("alpha"), None, None, None, true).unwrap();
+        run_create_direct(dir, Some("beta"), None, None, None, true).unwrap();
 
         // Build the in-memory representation list_truthfully would emit.
         let g = workgraph::parser::load_graph(&graph_path(dir)).unwrap();

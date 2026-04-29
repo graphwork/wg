@@ -76,6 +76,16 @@ description = "Open a chat and send 'hi'; expect a non-error coordinator respons
 timeout_seconds = 90
 
 [[scenario]]
+name = "chat_create_endpoint_persists"
+script = "scenarios/chat_create_endpoint_persists.sh"
+owners = [
+    "fix-chat-creation",
+    "smoke-gate-is",
+]
+description = "`wg chat create -e <URL>` (and the legacy `wg service create-coordinator --endpoint <URL>` alias the TUI launcher invokes) must persist endpoint_override into CoordinatorState AND record `endpoint` on the .chat-N graph task. Pre-fix the launcher captured the endpoint into history but the chat used the daemon-default — exactly the gap the user reported with `wg nex -m qwen3-coder -e https://lambda01...`."
+timeout_seconds = 30
+
+[[scenario]]
 name = "setup_routes_complete_configs"
 script = "scenarios/setup_routes_complete_configs.sh"
 owners = [

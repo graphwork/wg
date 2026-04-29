@@ -4027,6 +4027,13 @@ pub enum ChatCommands {
         /// Per-chat model override (e.g. "claude:opus", "openai:qwen3-coder-30b").
         #[arg(long, short = 'm')]
         model: Option<String>,
+
+        /// Per-chat LLM endpoint URL (e.g.
+        /// "https://lambda01.tail334fe6.ts.net:30000"). Mirrors
+        /// `wg nex -e <URL>` and pins this single chat to a specific
+        /// server. Persists across daemon / TUI restarts.
+        #[arg(long, short = 'e')]
+        endpoint: Option<String>,
     },
 
     /// List all chat agents with their runtime status.
@@ -4797,6 +4804,9 @@ pub enum ServiceCommands {
         /// Executor for this chat agent (e.g., "native", "claude")
         #[arg(long)]
         executor: Option<String>,
+        /// LLM endpoint URL for this chat (mirrors `wg nex -e <URL>`).
+        #[arg(long, short = 'e')]
+        endpoint: Option<String>,
     },
 
     /// Hot-swap a chat agent's executor and/or model.

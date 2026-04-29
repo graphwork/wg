@@ -7784,6 +7784,7 @@ mod scrollbar_tests {
             recent_selected: 0,
             all_models,
             creating: false,
+            last_error: None,
         }
     }
 

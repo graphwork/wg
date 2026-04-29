@@ -154,6 +154,11 @@ pub enum IpcRequest {
         /// Per-chat executor override (e.g., "native").
         #[serde(default)]
         executor: Option<String>,
+        /// Per-chat LLM endpoint URL (e.g., "https://lambda01.example/30000").
+        /// Mirrors the CLI's `wg nex -e <URL>` form so the TUI launcher can
+        /// pin a single chat to a specific server without touching global config.
+        #[serde(default)]
+        endpoint: Option<String>,
     },
     /// Hot-swap a chat agent's executor and/or model. Persists
     /// the override in CoordinatorState, SIGTERMs the current
@@ -562,12 +567,19 @@ fn handle_request(
             name,
             model,
             executor,
+            endpoint,
         } => {
             logger.info(&format!(
-                "IPC CreateChat: name={:?}, model={:?}, executor={:?}",
-                name, model, executor
+                "IPC CreateChat: name={:?}, model={:?}, executor={:?}, endpoint={:?}",
+                name, model, executor, endpoint
             ));
-            handle_create_coordinator(dir, name.as_deref(), model.as_deref(), executor.as_deref())
+            handle_create_coordinator(
+                dir,
+                name.as_deref(),
+                model.as_deref(),
+                executor.as_deref(),
+                endpoint.as_deref(),
+            )
         }
         IpcRequest::SetChatExecutor {
             chat_id,
@@ -1473,6 +1485,7 @@ pub fn create_chat_in_graph(
     name: Option<&str>,
     model: Option<&str>,
     executor: Option<&str>,
+    endpoint: Option<&str>,
 ) -> Result<u32> {
     let graph_path = crate::commands::graph_path(dir);
     let mut graph = workgraph::parser::load_graph(&graph_path)
@@ -1514,6 +1527,12 @@ pub fn create_chat_in_graph(
             restart_on_failure: true,
             max_failure_restarts: None,
         }),
+        // Per-task overrides — `plan_spawn` reads these directly off the
+        // chat task on every supervisor iteration. Setting them here means
+        // the supervisor honors the user's launcher choices on first spawn
+        // AND on respawn after handler crash.
+        model: model.map(String::from),
+        endpoint: endpoint.map(String::from),
         created_at: Some(chrono::Utc::now().to_rfc3339()),
         started_at: Some(chrono::Utc::now().to_rfc3339()),
         log: vec![workgraph::graph::LogEntry {
@@ -1546,19 +1565,20 @@ pub fn create_chat_in_graph(
     })
     .with_context(|| "Failed to save graph")?;
 
-    // Record executor/model combo in launcher history
+    // Record executor/model/endpoint combo in launcher history
     {
         let exec = executor.unwrap_or("claude");
         let _ = workgraph::launcher_history::record_use(
-            &workgraph::launcher_history::HistoryEntry::new(exec, model, None, "tui"),
+            &workgraph::launcher_history::HistoryEntry::new(exec, model, endpoint, "tui"),
         );
     }
 
-    // Write per-coordinator state file with model/executor overrides if specified.
-    if model.is_some() || executor.is_some() {
+    // Write per-coordinator state file with model/executor/endpoint overrides if specified.
+    if model.is_some() || executor.is_some() || endpoint.is_some() {
         let mut state = super::CoordinatorState::load_or_default_for(dir, next_id);
         state.model_override = model.map(String::from);
         state.executor_override = executor.map(String::from);
+        state.endpoint_override = endpoint.map(String::from);
         state.save_for(dir, next_id);
     }
 
@@ -1571,8 +1591,9 @@ fn handle_create_coordinator(
     name: Option<&str>,
     model: Option<&str>,
     executor: Option<&str>,
+    endpoint: Option<&str>,
 ) -> IpcResponse {
-    match create_chat_in_graph(dir, name, model, executor) {
+    match create_chat_in_graph(dir, name, model, executor, endpoint) {
         Ok(next_id) => IpcResponse::success(serde_json::json!({
             "coordinator_id": next_id,
             "chat_id": next_id,
@@ -2273,6 +2294,7 @@ poll_interval = 120
             name: Some("Feature Work".to_string()),
             model: None,
             executor: None,
+            endpoint: None,
         };
         let json = serde_json::to_string(&req).unwrap();
         // New canonical command name
@@ -2284,10 +2306,12 @@ poll_interval = 120
                 name,
                 model,
                 executor,
+                endpoint,
             } => {
                 assert_eq!(name, Some("Feature Work".to_string()));
                 assert_eq!(model, None);
                 assert_eq!(executor, None);
+                assert_eq!(endpoint, None);
             }
             _ => panic!("Wrong request type"),
         }
@@ -2297,6 +2321,7 @@ poll_interval = 120
             name: Some("Local Model".to_string()),
             model: Some("openai:qwen3-coder-30b".to_string()),
             executor: Some("native".to_string()),
+            endpoint: None,
         };
         let json2 = serde_json::to_string(&req2).unwrap();
         let parsed2: IpcRequest = serde_json::from_str(&json2).unwrap();
@@ -2305,12 +2330,66 @@ poll_interval = 120
                 name,
                 model,
                 executor,
+                endpoint,
             } => {
                 assert_eq!(name, Some("Local Model".to_string()));
                 assert_eq!(model, Some("openai:qwen3-coder-30b".to_string()));
                 assert_eq!(executor, Some("native".to_string()));
+                assert_eq!(endpoint, None);
             }
             _ => panic!("Wrong request type"),
+        }
+    }
+
+    /// Endpoint must round-trip through IPC serialization. This is the
+    /// over-the-wire shape that lets the TUI launcher's
+    /// `wg nex -m qwen3-coder -e https://...` form reach the daemon.
+    #[test]
+    fn test_ipc_create_chat_endpoint_round_trips() {
+        let req = IpcRequest::CreateChat {
+            name: Some("Lambda Box".to_string()),
+            model: Some("qwen3-coder".to_string()),
+            executor: Some("native".to_string()),
+            endpoint: Some("https://lambda01.tail334fe6.ts.net:30000".to_string()),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(
+            json.contains("\"endpoint\":\"https://lambda01.tail334fe6.ts.net:30000\""),
+            "endpoint must be present in the on-the-wire JSON. Got: {}",
+            json
+        );
+
+        let parsed: IpcRequest = serde_json::from_str(&json).unwrap();
+        match parsed {
+            IpcRequest::CreateChat {
+                endpoint,
+                ..
+            } => {
+                assert_eq!(
+                    endpoint,
+                    Some("https://lambda01.tail334fe6.ts.net:30000".to_string())
+                );
+            }
+            _ => panic!("Wrong request type"),
+        }
+    }
+
+    /// Legacy CreateChat IPC payloads (pre-endpoint) MUST still parse: the
+    /// daemon may be old when the CLI sends the new form, or vice versa.
+    /// `endpoint` is `Option<String>` with `#[serde(default)]` so omission
+    /// resolves to `None`.
+    #[test]
+    fn test_ipc_create_chat_endpoint_omitted_parses_as_none() {
+        let raw = r#"{"cmd":"create_chat","name":"Old Client","model":"opus","executor":"claude"}"#;
+        let parsed: IpcRequest = serde_json::from_str(raw).unwrap();
+        match parsed {
+            IpcRequest::CreateChat {
+                endpoint, name, ..
+            } => {
+                assert_eq!(name, Some("Old Client".to_string()));
+                assert_eq!(endpoint, None);
+            }
+            _ => panic!("Pre-endpoint create_chat must still parse"),
         }
     }
 
@@ -2886,7 +2965,7 @@ poll_interval = 120
         workgraph::parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
 
         // Create chat agent labeled "alice"
-        let resp = handle_create_coordinator(dir, Some("alice"), None, None);
+        let resp = handle_create_coordinator(dir, Some("alice"), None, None, None);
         assert!(resp.ok, "create_chat should succeed");
 
         // Verify the chat task was created with correct label and new prefix
@@ -2898,7 +2977,7 @@ poll_interval = 120
         assert!(coord.tags.contains(&"chat-loop".to_string()));
 
         // Create chat labeled "bob"
-        let resp = handle_create_coordinator(dir, Some("bob"), None, None);
+        let resp = handle_create_coordinator(dir, Some("bob"), None, None, None);
         assert!(resp.ok, "create_chat for bob should succeed");
 
         let graph = workgraph::parser::load_graph(&dir.join("graph.jsonl")).unwrap();
@@ -2922,8 +3001,8 @@ poll_interval = 120
         let graph = workgraph::graph::WorkGraph::new();
         workgraph::parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
 
-        handle_create_coordinator(dir, Some("alice"), None, None);
-        handle_create_coordinator(dir, Some("bob"), None, None);
+        handle_create_coordinator(dir, Some("alice"), None, None, None);
+        handle_create_coordinator(dir, Some("bob"), None, None, None);
 
         // Write per-coordinator state files
         let alice_state = CoordinatorState {
@@ -3133,6 +3212,84 @@ poll_interval = 120
         assert!(data["skipped"].as_array().unwrap().is_empty());
     }
 
+    /// Per-chat config persistence (fix-chat-creation): when a TUI
+    /// launcher creates a chat with `wg nex -m qwen3-coder -e https://X`,
+    /// all three (executor, model, endpoint) must land in the per-chat
+    /// CoordinatorState file so the supervisor reads them on respawn /
+    /// reattach. Without this, restarting the TUI silently drops the
+    /// endpoint override and the chat hits the default endpoint instead.
+    #[test]
+    fn test_create_chat_persists_endpoint_override() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        std::fs::create_dir_all(dir.join("service")).unwrap();
+
+        let graph = workgraph::graph::WorkGraph::new();
+        workgraph::parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
+
+        let resp = handle_create_coordinator(
+            dir,
+            Some("Lambda Box"),
+            Some("nex:qwen3-coder"),
+            Some("native"),
+            Some("https://lambda01.tail334fe6.ts.net:30000"),
+        );
+        assert!(resp.ok, "create_chat with endpoint should succeed: {:?}", resp.error);
+
+        let chat_id = resp
+            .data
+            .as_ref()
+            .and_then(|d| d.get("chat_id"))
+            .and_then(|v| v.as_u64())
+            .expect("response should include chat_id") as u32;
+
+        let state = super::CoordinatorState::load_for(dir, chat_id)
+            .expect("CoordinatorState file must exist after IPC create");
+        assert_eq!(
+            state.executor_override.as_deref(),
+            Some("native"),
+            "executor_override must persist"
+        );
+        assert_eq!(
+            state.model_override.as_deref(),
+            Some("nex:qwen3-coder"),
+            "model_override must persist"
+        );
+        assert_eq!(
+            state.endpoint_override.as_deref(),
+            Some("https://lambda01.tail334fe6.ts.net:30000"),
+            "endpoint_override must persist (TUI restart reuses this on reattach)"
+        );
+    }
+
+    /// CoordinatorState must round-trip endpoint_override through JSON
+    /// serialization — this is what TUI reattach reads on restart.
+    #[test]
+    fn test_coordinator_state_endpoint_override_round_trips() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        std::fs::create_dir_all(dir.join("service")).unwrap();
+
+        let original = super::CoordinatorState {
+            enabled: true,
+            max_agents: 1,
+            executor: "native".to_string(),
+            executor_override: Some("native".to_string()),
+            model_override: Some("qwen3-coder".to_string()),
+            endpoint_override: Some("https://lambda01.example/30000".to_string()),
+            ..Default::default()
+        };
+        original.save_for(dir, 7);
+
+        let loaded = super::CoordinatorState::load_for(dir, 7)
+            .expect("state file must exist");
+        assert_eq!(
+            loaded.endpoint_override.as_deref(),
+            Some("https://lambda01.example/30000"),
+            "endpoint_override must survive a save/load round-trip"
+        );
+    }
+
     /// Cap regression (parent task fix-chat-cap): `create_chat_in_graph`
     /// must use `count_live_chats`, not raw chat-loop count. With 4 chats
     /// of which 2 are archived, the cap reads 2/4 — and the user can
@@ -3168,7 +3325,7 @@ poll_interval = 120
         // Default max_coordinators is 4. We have 2 live + 2 archived =
         // 2/4 — creation must succeed (fresh chat 4 lands).
         let new_id =
-            create_chat_in_graph(dir, Some("New One"), None, None).expect("cap not reached");
+            create_chat_in_graph(dir, Some("New One"), None, None, None).expect("cap not reached");
         assert!(
             new_id >= 4,
             "new chat id should be at least 4 (after .chat-3), got {}",
@@ -3209,7 +3366,7 @@ poll_interval = 120
         // 4 zombies + cap of 4 = pre-fix would bail with "Chat cap
         // reached (4/4)". Post-fix the zombies don't count and creation
         // succeeds.
-        let result = create_chat_in_graph(dir, None, None, None);
+        let result = create_chat_in_graph(dir, None, None, None, None);
         assert!(
             result.is_ok(),
             "zombie supervisors must not block new chats; got: {:?}",

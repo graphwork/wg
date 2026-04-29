@@ -579,6 +579,12 @@ pub struct CoordinatorState {
     /// executor instead of the daemon-wide default. Persists across daemon restarts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub executor_override: Option<String>,
+    /// Per-coordinator endpoint override. When set, the chat handler uses this
+    /// LLM endpoint URL instead of the daemon-wide default. Lets a single chat
+    /// hit a specific server (e.g. `wg nex -m qwen3-coder -e https://...`)
+    /// without rewriting global config. Persists across daemon restarts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint_override: Option<String>,
 }
 
 impl CoordinatorState {
@@ -2116,6 +2122,7 @@ pub fn run_daemon(
         cost_tracking: SessionCostTracking::default(),
         model_override: None,
         executor_override: None,
+        endpoint_override: None,
     };
     coord_state.save(&dir);
 
@@ -3541,6 +3548,7 @@ pub fn run_create_coordinator(
     name: Option<&str>,
     model: Option<&str>,
     executor: Option<&str>,
+    endpoint: Option<&str>,
     json: bool,
 ) -> Result<()> {
     let response = send_request(
@@ -3549,6 +3557,7 @@ pub fn run_create_coordinator(
             name: name.map(|s| s.to_string()),
             model: model.map(|s| s.to_string()),
             executor: executor.map(|s| s.to_string()),
+            endpoint: endpoint.map(|s| s.to_string()),
         },
     )?;
 
@@ -3578,6 +3587,7 @@ pub fn run_create_coordinator(
     _name: Option<&str>,
     _model: Option<&str>,
     _executor: Option<&str>,
+    _endpoint: Option<&str>,
     _json: bool,
 ) -> Result<()> {
     anyhow::bail!("Service daemon is only supported on Unix systems")

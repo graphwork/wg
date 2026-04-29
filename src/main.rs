@@ -1825,11 +1825,13 @@ fn main() -> Result<()> {
                         name,
                         executor,
                         model,
+                        endpoint,
                     } => commands::chat_cmd::run_create(
                         &workgraph_dir,
                         name.as_deref(),
                         model.as_deref(),
                         executor.as_deref(),
+                        endpoint.as_deref(),
                         cli.json,
                     ),
                     ChatCommands::List => {
@@ -3061,6 +3063,7 @@ fn main() -> Result<()> {
                 name,
                 model,
                 executor,
+                endpoint,
             } => {
                 eprintln!(
                     "warning: 'wg service create-chat' is deprecated; use 'wg chat create' instead."
@@ -3070,6 +3073,7 @@ fn main() -> Result<()> {
                     name.as_deref(),
                     model.as_deref(),
                     executor.as_deref(),
+                    endpoint.as_deref(),
                     cli.json,
                 )
             }

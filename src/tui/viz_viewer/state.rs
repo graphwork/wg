@@ -1124,6 +1124,12 @@ pub struct LauncherState {
     /// success drops the launcher entirely; failure resets this flag
     /// so the user can fix their selection and retry.
     pub creating: bool,
+    /// Last provisioning error shown in the launcher pane when an IPC
+    /// roundtrip fails. Persists across re-renders so the user can see
+    /// what went wrong (bogus endpoint URL, vendor CLI missing, etc.) —
+    /// the toast alone disappears too quickly to read. Cleared on the
+    /// next successful submit attempt or when the launcher is closed.
+    pub last_error: Option<String>,
 }
 
 /// Return models, ordered for the given `executor` (compatible-first).
@@ -10354,16 +10360,25 @@ impl VizApp {
                         // Reset the in-flight flag so the user can fix
                         // their selection and retry without reopening
                         // the launcher.
-                        if let Some(l) = self.launcher.as_mut() {
-                            l.creating = false;
-                        }
                         let err = result
                             .output
                             .lines()
                             .find(|l| !l.is_empty())
-                            .unwrap_or("unknown");
+                            .unwrap_or("unknown")
+                            .to_string();
+                        if let Some(l) = self.launcher.as_mut() {
+                            l.creating = false;
+                            // Persist the error in the launcher pane so it
+                            // stays visible while the user adjusts their
+                            // selection — toasts disappear too quickly to
+                            // read a vendor-CLI / endpoint-unreachable
+                            // message (see fix-chat-creation validation:
+                            // "Failed provisioning ... renders an error
+                            // state in the tab, not silent drop").
+                            l.last_error = Some(err.clone());
+                        }
                         self.push_toast(
-                            format!("Failed to create coordinator: {}", err),
+                            format!("Failed to create chat: {}", err),
                             ToastSeverity::Error,
                         );
                     }
@@ -13771,6 +13786,7 @@ impl VizApp {
             recent_selected: 0,
             all_models,
             creating: false,
+            last_error: None,
         });
         self.input_mode = InputMode::Launcher;
     }
@@ -13829,12 +13845,25 @@ impl VizApp {
         if let Some(ref m) = model {
             args.push("--model".to_string());
             args.push(m.clone());
+        }
 
-            // Record history entry.
+        // Endpoint is captured from the launcher's endpoint picker (visible
+        // only for the native/nex handler) and passed through so the chat
+        // pins to that server. Without this, the launcher captured the
+        // endpoint into history but the resulting chat used the default —
+        // exactly the gap the user reported with `wg nex -e https://...`.
+        if let Some(ref ep) = endpoint {
+            args.push("--endpoint".to_string());
+            args.push(ep.clone());
+        }
+
+        // Record history (executor + model + endpoint) so the recent-list
+        // in subsequent launcher opens can surface this combo as a quick-pick.
+        if model.is_some() || endpoint.is_some() {
             if let Ok(()) = workgraph::launcher_history::record_use(
                 &workgraph::launcher_history::HistoryEntry::new(
                     &executor,
-                    Some(m),
+                    model.as_deref(),
                     endpoint.as_deref(),
                     "tui",
                 ),
@@ -13843,9 +13872,12 @@ impl VizApp {
 
         // Mark the launcher as in-flight BEFORE firing the command —
         // the flag also serves as the input gate (handle_launcher_input
-        // ignores keys while it is set).
+        // ignores keys while it is set). Clear any prior error: the
+        // user is retrying with new selections, so the stale failure
+        // banner should not stay visible.
         if let Some(l) = self.launcher.as_mut() {
             l.creating = true;
+            l.last_error = None;
         }
         self.exec_command(args, CommandEffect::CreateCoordinator);
     }
@@ -22967,6 +22999,7 @@ mod tui_chat_tests {
             recent_selected: 0,
             all_models: vec![],
             creating: true,
+            last_error: None,
         });
         app.input_mode = InputMode::Launcher;
 
@@ -23026,6 +23059,7 @@ mod tui_chat_tests {
             recent_selected: 0,
             all_models: vec![],
             creating: true,
+            last_error: None,
         });
         app.input_mode = InputMode::Launcher;
 
@@ -23046,6 +23080,19 @@ mod tui_chat_tests {
         assert!(
             !l.creating,
             "creating flag must reset so the user can retry"
+        );
+        // fix-chat-creation: failed provisioning must surface in the
+        // launcher pane itself (a persistent banner), not just a fading
+        // toast. The user needs to read the actual error to fix their
+        // selection (bogus endpoint URL, missing vendor CLI, etc.).
+        assert!(
+            l.last_error.is_some(),
+            "last_error must be populated when CreateCoordinator IPC fails"
+        );
+        assert!(
+            l.last_error.as_deref().unwrap().contains("bogus"),
+            "last_error must include the underlying daemon error so the user knows what to fix; got: {:?}",
+            l.last_error
         );
         assert_eq!(
             app.input_mode,
