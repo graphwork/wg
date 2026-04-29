@@ -549,3 +549,12 @@ owners = [
 ]
 description = "OS-native keyring round-trip when the platform has one (macOS Keychain or Linux secret-service). On headless / unsupported environments, loud-SKIPs (exit 77) so the gate doesn't block CI. When reachable, verifies `wg secret set --from-stdin` actually lands in OS storage (looked up via `security find-generic-password` / `secret-tool lookup`), get --reveal round-trips, backend show reports OS keyring reachable, and rm --yes removes from OS storage."
 timeout_seconds = 30
+
+[[scenario]]
+name = "pty_codex_query_responses"
+script = "scenarios/pty_codex_query_responses.sh"
+owners = [
+    "fix-codex-agent",
+]
+description = "Pins the codex chat-tab rendering fix. Codex's interactive CLI sends CPR (ESC [ 6 n), kitty keyboard query (ESC [ ? u) and OSC 10/11 fg/bg queries on startup and BLOCKS waiting for replies — without responses the chat tab shows only 40 bytes of query output (no UI). Re-runs the unit tests for each new query response handler in compute_query_replies, plus a regression test that feeds the actual 40-byte burst captured from codex 0.125.0 at 24x80 and asserts CPR + kitty + Primary DA + OSC 10 replies are all generated."
+timeout_seconds = 120

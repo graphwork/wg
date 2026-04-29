@@ -246,7 +246,7 @@ impl PtyPane {
                                 let _ = f.write_all(&buf[..n]);
                                 let _ = f.flush();
                             }
-                            respond_to_queries(&buf[..n], &reader_responder);
+                            respond_to_queries(&buf[..n], &reader_responder, &reader_parser);
 
                             reader_bytes.fetch_add(n as u64, Ordering::Relaxed);
                             window_bytes += n as u64;
@@ -611,19 +611,28 @@ impl Drop for PtyPane {
 /// expects. Handles control characters, arrow keys (CSI sequences),
 /// function keys, and plain text. Not exhaustive — covers what a
 /// `wg nex` REPL user actually presses.
-/// Scan PTY output for terminal capability queries and write the
-/// conventional replies back through the shared writer. Minimal
-/// coverage — just the queries claude and codex send on startup that,
-/// if unanswered, make the CLI freeze post-splash.
+/// Scan PTY output for terminal capability queries and return the
+/// conventional reply bytes. Pure (no I/O) so it is unit-testable.
 ///
-/// This is standard terminal emulator behavior: xterm, gnome-terminal,
-/// alacritty etc. all respond to these. portable-pty is a raw pipe
-/// and vt100-the-parser doesn't generate replies, so we fill the gap.
-fn respond_to_queries(chunk: &[u8], writer: &std::sync::Arc<Mutex<Box<dyn Write + Send>>>) {
+/// `cursor_position` is the parser's current `(row, col)` (0-indexed)
+/// at the moment the query bytes arrived. CPR (`ESC [ 6 n`) replies
+/// with this position in 1-indexed form, matching xterm semantics.
+///
+/// Coverage targets the queries claude and codex actually send on
+/// startup; if any are unanswered, the vendor CLI blocks post-splash
+/// and the embedded TUI shows nothing usable. This is standard
+/// terminal emulator behavior — xterm, gnome-terminal, alacritty etc.
+/// all answer these — portable-pty is a raw pipe so vt100-the-parser
+/// doesn't generate replies and we fill the gap.
+fn compute_query_replies(chunk: &[u8], cursor_position: (u16, u16)) -> Vec<u8> {
     // Scan for well-known query sequences. Byte patterns:
     //   ESC [ c            — Primary Device Attributes (DA1)
     //   ESC [ > c          — Secondary Device Attributes (DA2)
-    //   ESC [ ? 6 n        — cursor position request (also common)
+    //   ESC [ 6 n          — Cursor Position Report (CPR)
+    //   ESC [ 5 n          — Device Status Report (DSR)
+    //   ESC [ ? u          — Kitty keyboard protocol query
+    //   ESC ] 10 ; ? ESC \ — OSC 10 (foreground color query)
+    //   ESC ] 11 ; ? ESC \ — OSC 11 (background color query)
     //   ESC [ > 0 q        — XTVERSION
     //   ESC [ ? 2026 $ p   — DECRQM for mode 2026 (synchronized output)
     //
@@ -681,8 +690,81 @@ fn respond_to_queries(chunk: &[u8], writer: &std::sync::Arc<Mutex<Box<dyn Write 
             i += end + 1;
             continue;
         }
+        // ESC [ 6 n — Cursor Position Report (CPR). Reply with the
+        // parser's current cursor in 1-indexed form. Codex's interactive
+        // TUI sends this on startup and BLOCKS waiting for the reply —
+        // without it, the splash never advances and the chat tab shows
+        // nothing useful (root cause of the codex chat-tab regression).
+        if tail.starts_with(b"\x1b[6n") {
+            let (row, col) = cursor_position;
+            let resp = format!(
+                "\x1b[{};{}R",
+                row.saturating_add(1),
+                col.saturating_add(1)
+            );
+            reply.extend_from_slice(resp.as_bytes());
+            i += 4;
+            continue;
+        }
+        // ESC [ 5 n — Device Status Report. Reply 0 = "ready, no malfunction".
+        if tail.starts_with(b"\x1b[5n") {
+            reply.extend_from_slice(b"\x1b[0n");
+            i += 4;
+            continue;
+        }
+        // ESC [ ? u — Kitty keyboard protocol query. Reply 0 = legacy mode
+        // (no kitty progressive enhancement). Codex falls back to xterm
+        // sequences when this is the answer.
+        if tail.starts_with(b"\x1b[?u") {
+            reply.extend_from_slice(b"\x1b[?0u");
+            i += 4;
+            continue;
+        }
+        // ESC ] 10 ; ? ESC \ — OSC 10 (foreground color query). Reply with
+        // a typical dark-theme light-gray foreground. Codex uses this to
+        // pick a readable palette; an unanswered query leaves it stalled
+        // at startup. Also accept BEL terminator (ESC ] 10 ; ? BEL).
+        if tail.starts_with(b"\x1b]10;?\x1b\\") {
+            reply.extend_from_slice(b"\x1b]10;rgb:cccc/cccc/cccc\x1b\\");
+            i += 8;
+            continue;
+        }
+        if tail.starts_with(b"\x1b]10;?\x07") {
+            reply.extend_from_slice(b"\x1b]10;rgb:cccc/cccc/cccc\x07");
+            i += 7;
+            continue;
+        }
+        // ESC ] 11 ; ? ESC \ — OSC 11 (background color query). Reply
+        // black (typical dark-theme bg). Same blocking behavior as OSC 10
+        // if unanswered.
+        if tail.starts_with(b"\x1b]11;?\x1b\\") {
+            reply.extend_from_slice(b"\x1b]11;rgb:0000/0000/0000\x1b\\");
+            i += 8;
+            continue;
+        }
+        if tail.starts_with(b"\x1b]11;?\x07") {
+            reply.extend_from_slice(b"\x1b]11;rgb:0000/0000/0000\x07");
+            i += 7;
+            continue;
+        }
         i += 1;
     }
+    reply
+}
+
+/// I/O wrapper: read the parser's current cursor position, compute
+/// replies for any queries in `chunk`, and write them back through
+/// the shared writer.
+fn respond_to_queries(
+    chunk: &[u8],
+    writer: &std::sync::Arc<Mutex<Box<dyn Write + Send>>>,
+    parser: &std::sync::Arc<Mutex<vt100::Parser>>,
+) {
+    let cursor_position = match parser.lock() {
+        Ok(p) => p.screen().cursor_position(),
+        Err(poisoned) => poisoned.into_inner().screen().cursor_position(),
+    };
+    let reply = compute_query_replies(chunk, cursor_position);
     if !reply.is_empty()
         && let Ok(mut w) = writer.lock()
     {
@@ -895,6 +977,131 @@ mod tests {
             "did not see 'hello from pty' in PTY output; screen was:\n{}",
             p.screen().contents()
         );
+    }
+
+    /// End-to-end integration test for the codex chat-tab fix:
+    /// spawn a real PTY child that emits the codex startup query burst,
+    /// then reads the response wg writes back, then echoes it as a
+    /// marker so the test can observe via the parser screen.
+    ///
+    /// Without the CPR / kitty / OSC 10 handlers, the child reads
+    /// nothing for those queries and hangs at `read`, the test times
+    /// out, and the screen never shows the marker. With the handlers,
+    /// the child receives the responses through the PTY slave stdin,
+    /// echoes them, and the marker shows up — proving the full
+    /// reader-thread → respond_to_queries → writer → child stdin path
+    /// works end-to-end (not just the pure compute_query_replies fn).
+    #[test]
+    fn pty_pane_unblocks_codex_style_query_burst_end_to_end() {
+        // Bash script: emit the codex startup query burst, read up to
+        // 64 bytes (covers DA + CPR + kitty + OSC10 replies easily),
+        // base64 the bytes, then echo them with a unique marker.
+        // Using base64 keeps the response printable so the parser screen
+        // shows ASCII we can grep for; the raw response bytes contain
+        // ESC/CSI which would be re-interpreted by the parser.
+        //
+        // The query burst matches what codex 0.125.0 actually sent at
+        // 24×80 (verified via pty.fork()).
+        let script = r#"
+printf '\x1b[?2004h\x1b[>7u\x1b[?1004h\x1b[6n\x1b[?u\x1b[c\x1b]10;?\x1b\\'
+# Drain whatever the responder sends. -N 64 = up to 64 bytes;
+# -t 3 = 3-second timeout per read attempt. Loop a couple of times
+# in case the responses are delivered in chunks.
+got=""
+for _ in 1 2 3; do
+  IFS= read -r -t 1 -N 64 chunk || true
+  got="$got$chunk"
+done
+b64=$(printf %s "$got" | base64 | tr -d '\n')
+printf 'CODEX_RESP_MARKER:%s:END\n' "$b64"
+sleep 5
+"#;
+        let mut pane = PtyPane::spawn("/bin/bash", &["-c", script], &[], 24, 80)
+            .expect("spawn bash with codex burst");
+        // Give the script up to 5 s to emit queries, receive responses,
+        // and print the marker. 50 ms × 100 = 5 s.
+        let mut last_screen = String::new();
+        for _ in 0..100 {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            let p = pane.parser.lock().unwrap();
+            let contents = p.screen().contents();
+            if contents.contains("CODEX_RESP_MARKER:") && contents.contains(":END") {
+                // Decode the base64 between the markers.
+                let start = contents.find("CODEX_RESP_MARKER:").unwrap()
+                    + "CODEX_RESP_MARKER:".len();
+                let rest = &contents[start..];
+                let end = rest.find(":END").expect("END marker present");
+                // The base64 may have been wrapped across PTY rows by the
+                // emulator; strip whitespace before decoding.
+                let b64: String = rest[..end].chars().filter(|c| !c.is_whitespace()).collect();
+                let decoded = base64_decode_lenient(&b64);
+                drop(p);
+
+                // The raw response bytes must contain the four key replies:
+                // DA1, CPR, kitty, and OSC 10. (DA1 was already supported
+                // pre-fix; the other three are the new handlers.)
+                assert!(
+                    decoded.windows(b"\x1b[?65;1;6c".len()).any(|w| w == b"\x1b[?65;1;6c"),
+                    "expected DA1 reply in PTY responses, got: {:?}",
+                    decoded
+                );
+                assert!(
+                    decoded.windows(b"\x1b[1;1R".len()).any(|w| w == b"\x1b[1;1R"),
+                    "expected CPR reply in PTY responses (the bytes wg writes back \
+                     to the child via the master writer must round-trip through the \
+                     PTY slave stdin), got: {:?}",
+                    decoded
+                );
+                assert!(
+                    decoded.windows(b"\x1b[?0u".len()).any(|w| w == b"\x1b[?0u"),
+                    "expected kitty keyboard reply in PTY responses, got: {:?}",
+                    decoded
+                );
+                assert!(
+                    decoded.windows(b"\x1b]10;rgb:".len()).any(|w| w == b"\x1b]10;rgb:"),
+                    "expected OSC 10 fg-color reply in PTY responses, got: {:?}",
+                    decoded
+                );
+                return;
+            }
+            last_screen = contents;
+        }
+        let _ = pane.kill();
+        panic!(
+            "PTY child never emitted the CODEX_RESP_MARKER within 5 s — \
+             responder likely failed to write CPR/kitty/OSC10 replies \
+             back through the PTY master writer. Last screen was:\n{}",
+            last_screen
+        );
+    }
+
+    /// Minimal RFC-4648 base64 decoder for test use only — the codex
+    /// integration test base64-encodes the bytes the bash child read
+    /// from stdin so they survive vt100 parser interpretation. We
+    /// don't pull in a base64 crate just for one test.
+    fn base64_decode_lenient(s: &str) -> Vec<u8> {
+        const TABLE: &[u8; 64] =
+            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let s: String = s.chars().filter(|c| !c.is_whitespace()).collect();
+        let s = s.trim_end_matches('=');
+        let mut out = Vec::with_capacity(s.len() * 3 / 4);
+        let mut buf = 0u32;
+        let mut bits = 0u32;
+        for ch in s.bytes() {
+            let v = TABLE.iter().position(|&b| b == ch);
+            let v = match v {
+                Some(v) => v as u32,
+                None => continue,
+            };
+            buf = (buf << 6) | v;
+            bits += 6;
+            if bits >= 8 {
+                bits -= 8;
+                out.push((buf >> bits) as u8);
+                buf &= (1u32 << bits) - 1;
+            }
+        }
+        out
     }
 
     #[test]
@@ -1913,5 +2120,165 @@ mod tests {
             .expect("spawn /bin/sh -c sleep");
         assert_eq!(pane.dims(), (30, 120));
         // Deliberately drop the pane (sleep gets killed by Drop).
+    }
+
+    // ─── Terminal-capability query responder tests ──────────────────────
+    //
+    // Codex's interactive CLI sends a burst of capability queries on
+    // startup (CPR / kitty keyboard / OSC 10 + 11 / DA / DECRQM) and
+    // BLOCKS waiting for replies — a real terminal answers them; the
+    // wg PTY pane has to fill that role. These tests cover each query
+    // we now answer; without the responses, codex's chat tab in the
+    // wg TUI shows only its query bytes and never advances past the
+    // splash. A live capture at 24×80 produced exactly 40 bytes (the
+    // query block) until the responder was added; with replies in
+    // place, codex emits its full TUI on the next read.
+
+    #[test]
+    fn cpr_query_replies_with_cursor_position() {
+        // ESC [ 6 n at cursor (0,0) → ESC [ 1 ; 1 R (1-indexed).
+        let reply = compute_query_replies(b"\x1b[6n", (0, 0));
+        assert_eq!(reply, b"\x1b[1;1R");
+    }
+
+    #[test]
+    fn cpr_query_uses_real_cursor_position() {
+        // ESC [ 6 n at cursor (3, 9) → ESC [ 4 ; 10 R (row+1, col+1).
+        let reply = compute_query_replies(b"\x1b[6n", (3, 9));
+        assert_eq!(reply, b"\x1b[4;10R");
+    }
+
+    #[test]
+    fn dsr_query_replies_ok() {
+        // ESC [ 5 n → ESC [ 0 n (terminal ready, no malfunction).
+        let reply = compute_query_replies(b"\x1b[5n", (0, 0));
+        assert_eq!(reply, b"\x1b[0n");
+    }
+
+    #[test]
+    fn kitty_keyboard_query_replies_legacy_mode() {
+        // ESC [ ? u → ESC [ ? 0 u (no kitty progressive enhancement).
+        let reply = compute_query_replies(b"\x1b[?u", (0, 0));
+        assert_eq!(reply, b"\x1b[?0u");
+    }
+
+    #[test]
+    fn osc10_foreground_query_replies_with_rgb() {
+        // ESC ] 10 ; ? ESC \ → ESC ] 10 ; rgb:cccc/cccc/cccc ESC \
+        let reply = compute_query_replies(b"\x1b]10;?\x1b\\", (0, 0));
+        assert_eq!(reply, b"\x1b]10;rgb:cccc/cccc/cccc\x1b\\");
+    }
+
+    #[test]
+    fn osc10_foreground_query_with_bel_terminator() {
+        // BEL-terminated form: ESC ] 10 ; ? BEL.
+        let reply = compute_query_replies(b"\x1b]10;?\x07", (0, 0));
+        assert_eq!(reply, b"\x1b]10;rgb:cccc/cccc/cccc\x07");
+    }
+
+    #[test]
+    fn osc11_background_query_replies_with_rgb() {
+        // ESC ] 11 ; ? ESC \ → ESC ] 11 ; rgb:0000/0000/0000 ESC \
+        let reply = compute_query_replies(b"\x1b]11;?\x1b\\", (0, 0));
+        assert_eq!(reply, b"\x1b]11;rgb:0000/0000/0000\x1b\\");
+    }
+
+    #[test]
+    fn osc11_background_query_with_bel_terminator() {
+        let reply = compute_query_replies(b"\x1b]11;?\x07", (0, 0));
+        assert_eq!(reply, b"\x1b]11;rgb:0000/0000/0000\x07");
+    }
+
+    /// Regression: the actual 40-byte query burst captured from a
+    /// fresh `codex` PTY at 24×80 must produce a non-empty reply
+    /// containing all four query answers (CPR, kitty, OSC 10, OSC 11)
+    /// PLUS Primary DA (already supported). Without these replies
+    /// codex never proceeds past its initial query block.
+    ///
+    /// Capture command:
+    ///   pty.fork() → execvp("codex") with TERM=xterm-256color, COLORTERM=truecolor
+    ///   read for 4 s, kill — output is the 40 bytes below verbatim.
+    #[test]
+    fn codex_startup_query_burst_unblocks() {
+        // Bytes captured from codex 0.125.0 startup at 24×80.
+        let burst: &[u8] = b"\x1b[?2004h\x1b[>7u\x1b[?1004h\x1b[6n\x1b[?u\x1b[c\x1b]10;?\x1b\\";
+        let reply = compute_query_replies(burst, (0, 0));
+        // Must contain a CPR reply.
+        assert!(
+            reply.windows(b"\x1b[1;1R".len()).any(|w| w == b"\x1b[1;1R"),
+            "codex CPR query (ESC [ 6 n) must be answered, got: {:?}",
+            reply
+        );
+        // Must contain a kitty keyboard reply.
+        assert!(
+            reply.windows(b"\x1b[?0u".len()).any(|w| w == b"\x1b[?0u"),
+            "codex kitty kbd query (ESC [ ? u) must be answered, got: {:?}",
+            reply
+        );
+        // Must contain Primary DA reply.
+        assert!(
+            reply.windows(b"\x1b[?65;1;6c".len()).any(|w| w == b"\x1b[?65;1;6c"),
+            "codex DA1 query must be answered, got: {:?}",
+            reply
+        );
+        // Must contain OSC 10 fg reply.
+        assert!(
+            reply.windows(b"\x1b]10;rgb:".len()).any(|w| w == b"\x1b]10;rgb:"),
+            "codex OSC 10 fg query must be answered, got: {:?}",
+            reply
+        );
+        // Mode-set bytes (\x1b[?2004h, \x1b[>7u, \x1b[?1004h) are not
+        // queries — they should not produce replies.
+        assert!(
+            !reply.windows(b"\x1b[?2004".len()).any(|w| w == b"\x1b[?2004"),
+            "mode-set bytes must not be echoed as replies, got: {:?}",
+            reply
+        );
+    }
+
+    /// CPR queries embedded in a stream of ordinary output should still
+    /// be answered without truncating surrounding bytes from the reply
+    /// scan (the function only writes responses; it doesn't gate
+    /// vt100 processing).
+    #[test]
+    fn cpr_query_in_mixed_stream() {
+        let chunk: &[u8] = b"hello\x1b[6nworld";
+        let reply = compute_query_replies(chunk, (5, 0));
+        assert_eq!(reply, b"\x1b[6;1R");
+    }
+
+    /// Multiple queries in a single chunk should each produce their
+    /// own reply, in stream order. Codex sends CPR + kitty + OSC10
+    /// + DA1 in one TCP-style flush.
+    #[test]
+    fn multiple_queries_yield_concatenated_replies() {
+        let chunk: &[u8] = b"\x1b[6n\x1b[?u\x1b[c";
+        let reply = compute_query_replies(chunk, (0, 0));
+        // Order matches input.
+        let cpr = b"\x1b[1;1R";
+        let kitty = b"\x1b[?0u";
+        let da = b"\x1b[?65;1;6c";
+        let cpr_pos = reply
+            .windows(cpr.len())
+            .position(|w| w == cpr)
+            .expect("CPR reply present");
+        let kitty_pos = reply
+            .windows(kitty.len())
+            .position(|w| w == kitty)
+            .expect("kitty reply present");
+        let da_pos = reply
+            .windows(da.len())
+            .position(|w| w == da)
+            .expect("DA reply present");
+        assert!(cpr_pos < kitty_pos, "CPR reply must come before kitty");
+        assert!(kitty_pos < da_pos, "kitty reply must come before DA");
+    }
+
+    /// A chunk with no recognized queries must return an empty reply
+    /// (no spurious bytes get written back to the PTY).
+    #[test]
+    fn no_query_yields_empty_reply() {
+        let reply = compute_query_replies(b"hello world\r\n", (0, 0));
+        assert!(reply.is_empty(), "non-query bytes must not produce replies");
     }
 }
