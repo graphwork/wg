@@ -1,23 +1,40 @@
 #!/usr/bin/env bash
 # Scenario: codex_chat_pty_passes_bypass_approvals
 #
-# Pins fix-codex-chat: the codex chat agent in the wg TUI MUST be
-# launched with `--dangerously-bypass-approvals-and-sandbox`. Without
-# this flag codex prompts the user to approve every shell command
-# (including `wg status`, `wg add`), so the chat agent cannot inspect
-# the graph or call `wg` tools — the user reported "it cant even see
-# wg".
+# Pins fix-codex-chat (bypass flag) AND fix-codex-chat-2 (correct cwd
+# + chat_dir add-dir).
+#
+# fix-codex-chat: the codex chat agent in the wg TUI MUST be launched
+# with `--dangerously-bypass-approvals-and-sandbox`. Without this flag
+# codex prompts the user to approve every shell command (including
+# `wg status`, `wg add`), so the chat agent cannot inspect the graph
+# or call `wg` tools — the user reported "it cant even see wg".
+#
+# fix-codex-chat-2: the codex chat agent MUST be spawned with cwd =
+# project root, NOT the per-chat scratch dir under `.wg/chat/chat-N/`.
+# The first attempt at fix-codex-chat shipped with the spawn cwd still
+# pointing at chat_dir, which made the codex banner report
+# `directory: <project>/.wg/chat/chat-0` and the agent could not see
+# project files or even launch `bash` (compounded by the half-empty
+# chat_dir workspace confusing the LLM). The fix mirrors the claude
+# chat path's `cwd = project_root` posture; per-chat scratch is still
+# made writable via `--add-dir <chat_dir>`.
 #
 # The user's authorization is implicit: opening `wg tui` from their
 # own terminal session is the same gesture as `claude
 # --dangerously-skip-permissions` in claude-handler/PTY paths. Both
 # paths share this bypass posture.
 #
-# This scenario installs a fake `codex` shim that captures its argv to
-# a file, drives `wg tui` long enough for the auto-PTY to spawn the
-# shim once, and asserts the captured argv contains the bypass flag.
-# A pure source-grep would fire on innocent renames; argv capture
-# verifies the actual launch behavior.
+# This scenario installs a fake `codex` shim that captures its argv +
+# cwd to a file, drives `wg tui` long enough for the auto-PTY to spawn
+# the shim once, and asserts:
+#   1. argv contains `--dangerously-bypass-approvals-and-sandbox`
+#   2. argv contains `--add-dir <chat_dir>` so per-chat scratch stays
+#      writable from the project-root cwd
+#   3. PWD at spawn time is the project root (the scratch dir), NOT
+#      the per-chat scratch dir under `.wg/chat/chat-N/`
+# A pure source-grep would fire on innocent renames; argv + PWD
+# capture verifies the actual launch behavior.
 #
 # No real codex CLI required (the shim never calls it). No LLM.
 
@@ -39,22 +56,30 @@ kill_tmux_session() {
 }
 add_cleanup_hook kill_tmux_session
 
-# Fake codex binary: capture argv and exit. The TUI's PTY pane will
-# spawn this in lieu of real codex. We don't need the binary to do
-# anything useful — just record what wg asked it to run.
+# Fake codex binary: capture argv + PWD and exit. The TUI's PTY pane
+# will spawn this in lieu of real codex. We don't need the binary to
+# do anything useful — just record what wg asked it to run AND the
+# directory wg ran it from.
 shim_dir="$scratch/bin"
 mkdir -p "$shim_dir"
 argv_log="$scratch/codex.argv"
+cwd_log="$scratch/codex.cwd"
 cat > "$shim_dir/codex" <<EOF
 #!/usr/bin/env bash
-# Append all argv (one per line, NUL-terminated for safety) plus a
-# delimiter so multiple invocations are distinguishable.
+# Append all argv (one per line) plus a delimiter so multiple
+# invocations are distinguishable. Also record the cwd at spawn time —
+# fix-codex-chat-2 pins this to the project root, not the per-chat
+# scratch dir under .wg/chat/chat-N/.
 {
     echo "----invocation----"
     for a in "\$@"; do
         printf '%s\n' "\$a"
     done
 } >> "$argv_log"
+{
+    echo "----invocation----"
+    pwd
+} >> "$cwd_log"
 # Hold the process open briefly so the TUI sees a live child; a quick
 # exit can race the dump cycle and fail to register as "spawned".
 sleep 30
@@ -98,11 +123,51 @@ if [[ ! -s "$argv_log" ]]; then
     loud_fail "wg tui never spawned codex shim within 30s. dump:\n$(wg --json tui-dump 2>&1 | head -40)"
 fi
 
-# Hard assertion: bypass flag MUST be present in the captured argv.
+# Hard assertion 1 (fix-codex-chat): bypass flag MUST be in argv.
 if ! grep -q -- '--dangerously-bypass-approvals-and-sandbox' "$argv_log"; then
-    loud_fail "codex chat PTY launched WITHOUT --dangerously-bypass-approvals-and-sandbox. Captured argv:\n$(cat "$argv_log")"
+    loud_fail "codex chat PTY launched WITHOUT --dangerously-bypass-approvals-and-sandbox. Captured argv:
+$(cat "$argv_log")"
 fi
 
-echo "PASS: codex chat PTY launched with --dangerously-bypass-approvals-and-sandbox. Captured argv:"
+# Hard assertion 2 (fix-codex-chat-2 / Bug 1): spawn cwd MUST be the
+# project root. Resolve through `realpath` so /tmp vs /private/tmp on
+# darwin or symlink hops don't false-fail.
+expected_cwd="$(cd "$scratch" && pwd -P)"
+captured_cwd="$(grep -v '^----invocation----$' "$cwd_log" | head -1)"
+captured_cwd_resolved="$(cd "$captured_cwd" 2>/dev/null && pwd -P || echo "$captured_cwd")"
+if [[ "$captured_cwd_resolved" != "$expected_cwd" ]]; then
+    loud_fail "codex chat PTY spawned with WRONG cwd.
+expected (project root): $expected_cwd
+captured (spawn pwd):    $captured_cwd_resolved
+Bug 1 of fix-codex-chat-2: previous behaviour spawned with cwd =
+.wg/chat/chat-N/ which made the codex banner report 'directory:
+<proj>/.wg/chat/chat-0' and broke shell command discovery."
+fi
+
+# Hard assertion 3 (fix-codex-chat-2 / chat_dir writability): when
+# the spawn cwd is the project root, per-chat scratch (codex resume
+# markers, session-id) lives under <project>/.wg/chat/chat-N/. We
+# pass that via --add-dir so codex can still write there. Reject any
+# spawn that omits the flag — it would silently break resume.
+if ! grep -q -- '--add-dir' "$argv_log"; then
+    loud_fail "codex chat PTY launched WITHOUT --add-dir <chat_dir>. Without it, codex cannot write the resume markers under .wg/chat/chat-N/. Captured argv:
+$(cat "$argv_log")"
+fi
+# Verify the --add-dir argument actually points at chat_dir under
+# .wg/chat/. A bare `--add-dir` flag without a chat-dir-shaped value
+# would still be a regression.
+add_dir_value="$(awk '/^--add-dir$/{getline; print; exit}' "$argv_log")"
+case "$add_dir_value" in
+    */.wg/chat/*) ;;
+    *)
+        loud_fail "codex chat PTY --add-dir does not point at a .wg/chat/ chat dir. Got: $add_dir_value"
+        ;;
+esac
+
+echo "PASS: codex chat PTY"
+echo "  flag:    --dangerously-bypass-approvals-and-sandbox  ✓"
+echo "  cwd:     $captured_cwd_resolved (project root)        ✓"
+echo "  add-dir: $add_dir_value                               ✓"
+echo "Captured argv:"
 cat "$argv_log"
 exit 0

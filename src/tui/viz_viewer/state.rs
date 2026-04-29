@@ -1133,10 +1133,18 @@ pub fn resolve_chat_pty_executor_and_model(
 ///
 /// `chat_model` is an optional model override (provider prefix is
 /// stripped — codex expects bare model ids).
+///
+/// `chat_dir` is the per-chat scratch directory (e.g.
+/// `<project>/.wg/chat/chat-0/`). It is NOT used as the spawn cwd —
+/// the spawn cwd is the project root, mirroring the claude chat path.
+/// We pass it via `--add-dir` so the agent can still write per-chat
+/// scratch files (chat history persistence, codex's `.codex-session-id`
+/// marker) without giving up project-root visibility.
 pub fn build_codex_chat_pty_args(
     prior_session_id: Option<&str>,
     pty_marker_exists: bool,
     chat_model: Option<&str>,
+    chat_dir: Option<&std::path::Path>,
 ) -> Vec<String> {
     let mut args: Vec<String> = if let Some(sid) = prior_session_id {
         vec!["resume".to_string(), sid.to_string()]
@@ -1151,6 +1159,10 @@ pub fn build_codex_chat_pty_args(
     // agent cannot do its job. Mirrors the claude path's
     // `--dangerously-skip-permissions`.
     args.push("--dangerously-bypass-approvals-and-sandbox".to_string());
+    if let Some(dir) = chat_dir {
+        args.push("--add-dir".to_string());
+        args.push(dir.display().to_string());
+    }
     if let Some(m) = chat_model {
         let spec = workgraph::config::parse_model_spec(m);
         if !spec.model_id.is_empty() {
@@ -12985,26 +12997,33 @@ impl VizApp {
                     ("claude".to_string(), args, Some(project_root))
                 }
                 "codex" => {
-                    // Coordinator priming: codex auto-loads AGENTS.md
-                    // from CWD (hierarchically, up to the git root), so
-                    // we materialize the full coordinator prompt into
-                    // `<chat_dir>/AGENTS.md` before spawn. codex has no
-                    // --system-prompt flag in interactive mode; AGENTS.md
-                    // is the supported mechanism. Scoping to chat_dir
-                    // keeps per-coordinator priming isolated from any
-                    // project-level AGENTS.md.
-                    let sys_prompt =
-                        crate::commands::service::coordinator_agent::build_system_prompt(
-                            &self.workgraph_dir,
-                        );
-                    let agents_md = chat_dir.join("AGENTS.md");
-                    let _ = std::fs::write(&agents_md, sys_prompt);
+                    // Spawn cwd = project root (mirrors the claude path
+                    // above). The previous behaviour of using chat_dir
+                    // as cwd surfaced two user-visible bugs:
+                    //   1. The codex banner reported
+                    //      `directory: <project>/.wg/chat/chat-0`, so
+                    //      the agent appeared to be in a sparse subdir
+                    //      and could not see the user's project files.
+                    //   2. Even with --dangerously-bypass-approvals-and-
+                    //      sandbox, the agent reported it could not
+                    //      launch shell commands — running from a
+                    //      half-empty workspace under .wg/chat/ confused
+                    //      the LLM about its own environment.
+                    // Per-chat scratch (the codex resume marker, the
+                    // session-id file) still lives under chat_dir; we
+                    // pass that via --add-dir so codex retains write
+                    // access to the per-chat dir without making it the
+                    // working root.
+                    let project_root = self
+                        .workgraph_dir
+                        .parent()
+                        .unwrap_or(&self.workgraph_dir)
+                        .to_path_buf();
                     // Resume: three strategies, checked in order:
                     //   1. `.codex-session-id` persisted by the daemon's
                     //      codex_handler → `codex resume <id>`
                     //   2. `.codex-pty-launched` marker from a prior TUI
-                    //      PTY session → `codex resume --last` (codex
-                    //      filters by CWD, so this picks up the right one)
+                    //      PTY session → `codex resume --last`
                     //   3. Neither → fresh session, write the marker
                     let session_id_path = chat_dir.join(".codex-session-id");
                     let pty_marker = chat_dir.join(".codex-pty-launched");
@@ -13020,8 +13039,9 @@ impl VizApp {
                         prior_session_id.as_deref(),
                         pty_marker_exists,
                         chat_model.as_deref(),
+                        Some(chat_dir.as_path()),
                     );
-                    ("codex".to_string(), args, Some(chat_dir.clone()))
+                    ("codex".to_string(), args, Some(project_root))
                 }
                 _ => {
                     // Unknown executor — leave file-tailing path in charge.
@@ -24133,6 +24153,7 @@ mod chat_pty_executor_resolution_tests {
 #[cfg(test)]
 mod build_codex_chat_pty_args_tests {
     use super::build_codex_chat_pty_args;
+    use std::path::Path;
 
     /// Regression lock for fix-codex-chat: the codex chat agent in the
     /// wg TUI MUST always be spawned with
@@ -24144,7 +24165,7 @@ mod build_codex_chat_pty_args_tests {
     /// `--dangerously-skip-permissions`.
     #[test]
     fn fresh_session_includes_bypass_flag() {
-        let args = build_codex_chat_pty_args(None, false, None);
+        let args = build_codex_chat_pty_args(None, false, None, None);
         assert!(
             args.contains(&"--dangerously-bypass-approvals-and-sandbox".to_string()),
             "codex chat args MUST include --dangerously-bypass-approvals-and-sandbox; got: {:?}",
@@ -24154,7 +24175,7 @@ mod build_codex_chat_pty_args_tests {
 
     #[test]
     fn resume_with_session_id_includes_bypass_flag() {
-        let args = build_codex_chat_pty_args(Some("abc-123-uuid"), false, None);
+        let args = build_codex_chat_pty_args(Some("abc-123-uuid"), false, None, None);
         assert_eq!(args[0], "resume");
         assert_eq!(args[1], "abc-123-uuid");
         assert!(
@@ -24166,7 +24187,7 @@ mod build_codex_chat_pty_args_tests {
 
     #[test]
     fn resume_last_includes_bypass_flag() {
-        let args = build_codex_chat_pty_args(None, true, None);
+        let args = build_codex_chat_pty_args(None, true, None, None);
         assert_eq!(args[0], "resume");
         assert_eq!(args[1], "--last");
         assert!(
@@ -24178,7 +24199,7 @@ mod build_codex_chat_pty_args_tests {
 
     #[test]
     fn model_override_strips_provider_prefix() {
-        let args = build_codex_chat_pty_args(None, false, Some("codex:gpt-5"));
+        let args = build_codex_chat_pty_args(None, false, Some("codex:gpt-5"), None);
         let model_idx = args
             .iter()
             .position(|a| a == "--model")
@@ -24195,7 +24216,7 @@ mod build_codex_chat_pty_args_tests {
     fn codex_bypass_flag_is_current_codex_cli_name() {
         // codex 0.125+ uses --dangerously-bypass-approvals-and-sandbox
         // (verified via `codex --help` at fix-codex-chat time).
-        let args = build_codex_chat_pty_args(None, false, None);
+        let args = build_codex_chat_pty_args(None, false, None, None);
         let bypass_flags: Vec<&String> = args
             .iter()
             .filter(|a| a.starts_with("--dangerously"))
@@ -24209,6 +24230,50 @@ mod build_codex_chat_pty_args_tests {
         assert_eq!(
             bypass_flags[0], "--dangerously-bypass-approvals-and-sandbox",
             "if codex CLI renamed the bypass flag, update build_codex_chat_pty_args + this test"
+        );
+    }
+
+    /// Regression lock for fix-codex-chat-2 (Bug 1: wrong cwd).
+    ///
+    /// Before this fix, the codex chat agent was spawned with cwd =
+    /// `<project>/.wg/chat/chat-N/` instead of the project root. The
+    /// codex banner reported `directory: <project>/.wg/chat/chat-0`,
+    /// the agent could not see project files, and (compounded by the
+    /// half-empty workspace under `.wg/chat/`) reported it could not
+    /// launch shell commands at all even with the bypass flag set.
+    ///
+    /// The contract is now: spawn cwd = project root. Per-chat scratch
+    /// (resume markers, session id) still lives under chat_dir; we make
+    /// it writable for the agent by passing `--add-dir <chat_dir>`.
+    /// This test pins that posture: when caller supplies a chat_dir,
+    /// build_codex_chat_pty_args MUST emit `--add-dir <chat_dir>` so
+    /// the project-root cwd choice is symmetric with chat_dir
+    /// writability — neither half can silently disappear.
+    #[test]
+    fn add_dir_includes_chat_dir_when_provided() {
+        let chat_dir = Path::new("/tmp/wgsmoke-fake-project/.wg/chat/chat-0");
+        let args = build_codex_chat_pty_args(None, false, None, Some(chat_dir));
+        let add_dir_idx = args
+            .iter()
+            .position(|a| a == "--add-dir")
+            .expect("--add-dir flag missing — codex chat agent will lose write access to chat_dir scratch");
+        assert_eq!(
+            args[add_dir_idx + 1],
+            chat_dir.display().to_string(),
+            "--add-dir must point at the chat_dir so resume markers + session-id files remain writable"
+        );
+    }
+
+    /// `--add-dir` is conditional on caller supplying a chat_dir. When
+    /// no chat_dir is given (e.g. in a unit test or a future caller that
+    /// does not have a per-chat scratch), no `--add-dir` flag is added.
+    #[test]
+    fn add_dir_omitted_when_chat_dir_not_provided() {
+        let args = build_codex_chat_pty_args(None, false, None, None);
+        assert!(
+            !args.iter().any(|a| a == "--add-dir"),
+            "expected no --add-dir flag when chat_dir is None; got: {:?}",
+            args
         );
     }
 }
