@@ -518,7 +518,9 @@ impl PtyPane {
     ///    because tmux uses the alt-screen, so the outer vt100 has
     ///    no scrollback to advance through — calling vt100
     ///    `set_scrollback(N)` on a tmux-wrapped pane is silently a
-    ///    no-op (fix-mouse-wheel-3).
+    ///    no-op (fix-mouse-wheel-3). Walking the outer vt100's
+    ///    scrollback also rendered garble — it contains tmux
+    ///    repaint frames, not clean logical lines (fix-scroll-via).
     /// 2. raw PTY panes (smoke fixtures, observer-mode panes whose
     ///    child writes to the primary screen): advance the vt100
     ///    parser's own scrollback offset.
@@ -651,6 +653,27 @@ impl PtyPane {
         }
     }
 
+    /// If the underlying tmux session is in copy-mode (because we
+    /// drove it there via scroll), exit it. Idempotent. No-op for
+    /// non-tmux-wrapped panes and for sessions already at the live
+    /// tail. Called from `send_key` / `send_text` so user typing
+    /// always lands in the live inner CLI rather than tmux's
+    /// copy-mode interpreter (fix-scroll-via).
+    pub fn exit_tmux_copy_mode(&mut self) {
+        if self.tmux_scroll_lines == 0 {
+            return;
+        }
+        if let Some(session) = self.tmux_session.clone() {
+            let _ = std::process::Command::new("tmux")
+                .args(["send-keys", "-t", &session, "-X", "cancel"])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+        }
+        self.tmux_scroll_lines = 0;
+        self.auto_follow = true;
+    }
+
     #[allow(dead_code)]
     pub fn is_scrolled_back(&self) -> bool {
         !self.auto_follow
@@ -688,6 +711,13 @@ impl PtyPane {
     pub fn send_key(&mut self, key: KeyEvent) -> Result<()> {
         let bytes = key_event_to_bytes(&key);
         if !bytes.is_empty() {
+            // fix-scroll-via: if the underlying tmux is in copy-mode
+            // (we drove it there via scroll), exit copy-mode first so
+            // the keystroke lands in the live inner app, not the
+            // copy-mode command set. tmux's `cancel` returns to the
+            // live shell and re-renders the post-scroll bottom of
+            // history; the keystroke that follows feeds into stdin.
+            self.exit_tmux_copy_mode();
             if let Ok(mut w) = self.writer.lock() {
                 let _ = w.write_all(&bytes);
                 let _ = w.flush();
@@ -706,6 +736,10 @@ impl PtyPane {
     /// Forward arbitrary text (e.g. pasted content) to the child's
     /// stdin verbatim, no key-event encoding.
     pub fn send_text(&mut self, text: &str) -> Result<()> {
+        // Same copy-mode bail-out as `send_key`. Pasting while in
+        // copy-mode would hand the bytes to tmux's copy/buffer
+        // interpreter, not the inner CLI.
+        self.exit_tmux_copy_mode();
         if let Ok(mut w) = self.writer.lock() {
             let _ = w.write_all(text.as_bytes());
             let _ = w.flush();
@@ -910,9 +944,20 @@ pub fn tmux_kill_session(name: &str) {
 /// - `status off` — wg's TUI provides the chrome the user actually
 ///   interacts with; tmux's default green status bar is an
 ///   implementation detail of the wrapper and visually out of place.
+/// - `mouse off` — wg owns scroll for chat sessions (fix-scroll-via).
+///   Tmux's default mouse-mode is off, but we explicitly disable it
+///   so any user `.tmux.conf` that flips it on can't accidentally
+///   re-enable autonomous copy-mode entry on the wheel — that path
+///   emits copy-mode escape sequences into our vt100 parser and the
+///   rendered output garbles after the first few lines.
 pub fn apply_session_options(session_name: &str) {
     let _ = std::process::Command::new("tmux")
         .args(["set-option", "-t", session_name, "status", "off"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+    let _ = std::process::Command::new("tmux")
+        .args(["set-option", "-t", session_name, "mouse", "off"])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status();
@@ -936,6 +981,28 @@ pub fn sync_chat_session_settings(prefix: &str) {
     for session in tmux_list_sessions_with_prefix(prefix) {
         apply_session_options(&session);
     }
+}
+
+/// Query whether `session`'s active pane is currently in any tmux
+/// mode (copy-mode, view-mode, etc.). Returns `Some(true)` /
+/// `Some(false)`; `None` when tmux isn't installed or the session
+/// is gone. Used by tests + smoke scenarios.
+pub fn tmux_pane_in_mode(session: &str) -> Option<bool> {
+    let out = std::process::Command::new("tmux")
+        .args([
+            "display-message",
+            "-p",
+            "-t",
+            session,
+            "#{pane_in_mode}",
+        ])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let s = String::from_utf8_lossy(&out.stdout);
+    Some(s.trim() == "1")
 }
 
 /// Read a single row's content into a UTF-8 byte buffer plus its `wrapped`
@@ -3698,6 +3765,138 @@ sleep 5
                 s
             );
         }
+
+        tmux_kill_session(&session);
+    }
+
+    /// fix-scroll-via: typing a key while a tmux-wrapped pane is in
+    /// copy-mode (because the user scrolled up) MUST auto-cancel
+    /// copy-mode so the bytes land in the inner CLI, not in tmux's
+    /// copy-mode command interpreter. Pre-fix the user would scroll
+    /// up to inspect history, type something, and watch the keystroke
+    /// disappear into tmux's copy buffer.
+    #[test]
+    fn send_key_cancels_tmux_copy_mode() {
+        if !tmux_available() {
+            eprintln!("tmux not installed — skipping send_key-cancels-copy-mode test");
+            return;
+        }
+        let suffix = format!(
+            "{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        );
+        let session = format!("wg-chat-test-send-cancel-{}", suffix);
+
+        let mut pane = PtyPane::spawn_via_tmux(
+            &session,
+            "sh",
+            &["-c", "while true; do sleep 1; done"],
+            &[],
+            None,
+            24,
+            80,
+        )
+        .expect("spawn_via_tmux ok");
+
+        // Pre-scroll: not in copy mode.
+        assert_eq!(
+            tmux_pane_in_mode(&session),
+            Some(false),
+            "pane should not be in copy-mode before any scroll"
+        );
+
+        pane.scroll_up(5);
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        assert!(
+            pane.scrollback() > 0,
+            "scroll_up should bump tmux_scroll_lines"
+        );
+        assert_eq!(
+            tmux_pane_in_mode(&session),
+            Some(true),
+            "tmux session must be in copy-mode after scroll_up"
+        );
+
+        // Sending a key auto-cancels copy-mode AND forwards bytes to
+        // the inner stdin. Both halves matter: cancel without forward
+        // would lose the keystroke; forward without cancel would
+        // route the byte through tmux's copy-mode interpreter.
+        let bytes_before = pane.child_input_bytes_written();
+        pane.send_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('x'),
+            crossterm::event::KeyModifiers::NONE,
+        ))
+        .expect("send_key ok");
+        let bytes_after = pane.child_input_bytes_written();
+        assert!(
+            bytes_after > bytes_before,
+            "send_key MUST forward bytes to inner stdin after auto-cancel; \
+             pre={}, post={}",
+            bytes_before,
+            bytes_after
+        );
+        assert_eq!(
+            pane.scrollback(),
+            0,
+            "send_key MUST clear tmux_scroll_lines (copy-mode cancelled)"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        assert_eq!(
+            tmux_pane_in_mode(&session),
+            Some(false),
+            "tmux session must have exited copy-mode after send_key"
+        );
+
+        tmux_kill_session(&session);
+    }
+
+    /// fix-scroll-via: tmux's autonomous mouse-mode is explicitly
+    /// disabled at session creation so wheel events on the host
+    /// terminal don't get re-interpreted by tmux into copy-mode
+    /// keystrokes that emit garbled escape sequences into our vt100.
+    /// wg owns scroll; tmux just executes our explicit copy-mode
+    /// commands.
+    #[test]
+    fn spawn_via_tmux_disables_mouse_mode() {
+        if !tmux_available() {
+            eprintln!("tmux not installed — skipping mouse-mode test");
+            return;
+        }
+        let suffix = format!(
+            "{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        );
+        let session = format!("wg-chat-test-mouse-{}", suffix);
+
+        let _pane = PtyPane::spawn_via_tmux(
+            &session,
+            "sh",
+            &["-c", "while true; do sleep 1; done"],
+            &[],
+            None,
+            24,
+            80,
+        )
+        .expect("spawn_via_tmux ok");
+
+        let out = std::process::Command::new("tmux")
+            .args(["show-options", "-t", &session, "mouse"])
+            .output()
+            .expect("tmux show-options must run");
+        let s = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            s.contains("mouse off"),
+            "expected mouse mode to be off, got: {:?}",
+            s
+        );
 
         tmux_kill_session(&session);
     }

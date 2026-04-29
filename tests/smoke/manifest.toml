@@ -660,3 +660,12 @@ owners = [
 ]
 description = "Pins the chat-archive -> kill_underlying_session contract from the tmux-persistence design. Manually starts a wg-chat-* tmux session matching the canonical schema, runs wg chat archive, asserts the session is killed within 2 seconds. Skips when tmux is missing."
 timeout_seconds = 60
+
+[[scenario]]
+name = "chat_scroll_via_drives_tmux_copy_mode"
+script = "scenarios/chat_scroll_via_drives_tmux_copy_mode.sh"
+owners = [
+    "fix-scroll-via",
+]
+description = "fix-scroll-via: scrolling a tmux-wrapped chat must drive tmux's own copy-mode (so tmux re-emits a clean post-scroll view), not walk the outer vt100 parser's scrollback. Drives copy-mode + cursor-up + cancel via the same tmux send-keys -X commands wg's PtyPane issues, asserts pane_in_mode toggles 0->1->0 and that mouse mode is off. Skips when tmux is missing."
+timeout_seconds = 30
