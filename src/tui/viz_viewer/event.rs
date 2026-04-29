@@ -4147,9 +4147,23 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
 
                         if let Some(region) = clicked_annotation {
                             // Select the parent task (keeps graph node highlighted).
+                            // `select_task_at_line` clears any prior `hud_pin`; we
+                            // re-set it below so the inspector keeps showing the
+                            // meta-task across graph-refresh ticks.
                             app.select_task_at_line(orig_line);
-                            // Show the dot-task detail in the inspector.
+                            // Show the dot-task detail in the inspector and pin
+                            // it so the periodic invalidate_hud + load_hud_detail
+                            // refresh path doesn't reset the inspector to the
+                            // parent task.
                             if let Some(dot_id) = region.dot_task_ids.first() {
+                                if let Some(parent_id) =
+                                    app.selected_task_id().map(|s| s.to_string())
+                                {
+                                    app.hud_pin = Some(super::state::HudPin {
+                                        dot_task_id: dot_id.clone(),
+                                        anchor_parent_id: parent_id,
+                                    });
+                                }
                                 app.load_hud_detail_for_task(dot_id);
                             }
                             app.right_panel_visible = true;

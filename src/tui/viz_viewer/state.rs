@@ -204,6 +204,21 @@ pub struct AnnotationClickFlash {
     pub start: Instant,
 }
 
+/// Override for which task fills the Detail inspector, decoupling it from
+/// `selected_task_idx`. Set when the user clicks a phase annotation
+/// (e.g. `[∴ evaluating]`) so the inspector shows the meta-task while the
+/// parent stays selected for graph trace highlighting. The pin auto-clears
+/// when the user navigates to a different parent (anchor mismatch) or via
+/// any user-driven selection change.
+#[derive(Clone, Debug)]
+pub struct HudPin {
+    /// Task ID to load into hud_detail (e.g. ".evaluate-foo").
+    pub dot_task_id: String,
+    /// The selected parent task ID at the moment the pin was set.
+    /// If `selected_task_id()` later differs from this, the pin is stale.
+    pub anchor_parent_id: String,
+}
+
 /// A single active flash-and-fade animation on a task.
 #[derive(Clone)]
 pub struct Animation {
@@ -4645,6 +4660,12 @@ pub struct VizApp {
     pub annotation_hit_regions: Vec<AnnotationHitRegion>,
     /// Active annotation click flash (for visual feedback). Clears after 500ms.
     pub annotation_click_flash: Option<AnnotationClickFlash>,
+    /// When set, `load_hud_detail()` loads `dot_task_id` instead of the
+    /// currently-selected task. Used to keep the meta-task (e.g.
+    /// `.evaluate-foo`) visible in the inspector after the user clicked
+    /// its `[∴ evaluating]` annotation, surviving graph-refresh ticks
+    /// that would otherwise reset the inspector to the parent task.
+    pub hud_pin: Option<HudPin>,
     /// Set of task IDs in the same SCC as the currently selected task.
     /// Empty if the selected task is not in any cycle.
     pub cycle_set: HashSet<String>,
@@ -5159,6 +5180,7 @@ impl VizApp {
             sticky_annotations: HashMap::new(),
             annotation_hit_regions: Vec::new(),
             annotation_click_flash: None,
+            hud_pin: None,
             cycle_set: HashSet::new(),
             hud_detail: None,
             hud_scroll: 0,
@@ -5647,6 +5669,7 @@ impl VizApp {
             Some(i) => i - 1,
             None => 0,
         };
+        self.hud_pin = None;
         self.selected_task_idx = Some(idx);
         self.recompute_trace();
         self.sync_coordinator_from_selection();
@@ -5664,6 +5687,7 @@ impl VizApp {
             Some(i) => i + 1,
             None => 0,
         };
+        self.hud_pin = None;
         self.selected_task_idx = Some(idx);
         self.recompute_trace();
         self.sync_coordinator_from_selection();
@@ -5679,6 +5703,7 @@ impl VizApp {
             Some(i) => i.saturating_sub(n),
             None => 0,
         };
+        self.hud_pin = None;
         self.selected_task_idx = Some(idx);
         self.recompute_trace();
         self.sync_coordinator_from_selection();
@@ -5695,6 +5720,7 @@ impl VizApp {
             Some(i) => (i + n).min(last),
             None => 0,
         };
+        self.hud_pin = None;
         self.selected_task_idx = Some(idx);
         self.recompute_trace();
         self.sync_coordinator_from_selection();
@@ -5706,6 +5732,7 @@ impl VizApp {
         if self.task_order.is_empty() {
             return;
         }
+        self.hud_pin = None;
         self.selected_task_idx = Some(0);
         self.recompute_trace();
         self.sync_coordinator_from_selection();
@@ -5717,6 +5744,7 @@ impl VizApp {
         if self.task_order.is_empty() {
             return;
         }
+        self.hud_pin = None;
         self.selected_task_idx = Some(self.task_order.len() - 1);
         self.recompute_trace();
         self.sync_coordinator_from_selection();
@@ -5919,6 +5947,11 @@ impl VizApp {
             Some(i) => i,
             None => return false,
         };
+        // User-driven selection change always invalidates any pinned meta-task
+        // override. Annotation-click handlers re-set `hud_pin` after this call
+        // returns; text-body / chat-node clicks leave it cleared so the
+        // inspector falls back to the parent task.
+        self.hud_pin = None;
         self.selected_task_idx = Some(idx);
         self.recompute_trace();
         self.sync_coordinator_from_selection();
@@ -5951,6 +5984,7 @@ impl VizApp {
         // to see their fresh work.  The splash animation (registered earlier
         // in refresh_data) provides an additional visual highlight.
         if let Some(idx) = self.task_order.iter().position(|id| id == &task_id) {
+            self.hud_pin = None;
             self.selected_task_idx = Some(idx);
             self.recompute_trace();
             self.sync_coordinator_from_selection();
@@ -7430,6 +7464,7 @@ impl VizApp {
             SortMode::Chronological => {
                 self.scroll.go_top();
                 if !self.task_order.is_empty() {
+                    self.hud_pin = None;
                     self.selected_task_idx = Some(0);
                     self.recompute_trace();
                     self.sync_coordinator_from_selection();
@@ -7438,6 +7473,7 @@ impl VizApp {
             SortMode::ReverseChronological => {
                 self.scroll.go_bottom();
                 if !self.task_order.is_empty() {
+                    self.hud_pin = None;
                     self.selected_task_idx = Some(self.task_order.len() - 1);
                     self.recompute_trace();
                     self.sync_coordinator_from_selection();
@@ -7446,6 +7482,7 @@ impl VizApp {
             SortMode::StatusGrouped => {
                 // Select the first task in priority order (likely in-progress).
                 if !self.task_order.is_empty() {
+                    self.hud_pin = None;
                     self.selected_task_idx = Some(0);
                     self.recompute_trace();
                     self.sync_coordinator_from_selection();
@@ -7525,9 +7562,27 @@ impl VizApp {
     /// Load HUD detail for the currently selected task.
     /// Called when selection changes or trace is toggled on.
     pub fn load_hud_detail(&mut self) {
-        let task_id = match self.selected_task_id() {
-            Some(id) => id.to_string(),
-            None => {
+        // If an annotation-click pinned a meta-task to the inspector, honor
+        // it as long as the parent it was anchored to is still selected.
+        // Without this, the periodic graph-refresh path (invalidate_hud +
+        // load_hud_detail) flips the inspector back to the parent task,
+        // making `[∴ evaluating]` clicks appear to "open the parent".
+        let selected = self.selected_task_id().map(|s| s.to_string());
+        let pinned = match (&self.hud_pin, &selected) {
+            (Some(pin), Some(sel)) if &pin.anchor_parent_id == sel => {
+                Some(pin.dot_task_id.clone())
+            }
+            (Some(_), _) => {
+                // Selection drifted away from the anchor — pin is stale.
+                self.hud_pin = None;
+                None
+            }
+            _ => None,
+        };
+        let task_id = match (pinned, selected) {
+            (Some(pin_id), _) => pin_id,
+            (None, Some(sel)) => sel,
+            (None, None) => {
                 self.hud_detail = None;
                 return;
             }
@@ -9508,6 +9563,7 @@ impl VizApp {
             sticky_annotations: HashMap::new(),
             annotation_hit_regions: Vec::new(),
             annotation_click_flash: None,
+            hud_pin: None,
             cycle_set: HashSet::new(),
             hud_detail: None,
             hud_scroll: 0,
@@ -16990,6 +17046,132 @@ mod hud_tests {
         assert_ne!(
             second_id, back_id,
             "HUD should show different content after navigating back"
+        );
+    }
+
+    /// Build a graph where parent task `b` has a child meta-task `.evaluate-b`
+    /// running. Returns (VizOutput, WorkGraph, TempDir).
+    fn build_with_evaluate_meta() -> (VizOutput, WorkGraph, tempfile::TempDir) {
+        let mut graph = WorkGraph::new();
+        let a = make_task_with_status("a", "Task Alpha", Status::Done);
+        let mut b = make_task_with_status("b", "Task Bravo", Status::PendingEval);
+        b.after = vec!["a".to_string()];
+        let mut eval = make_task_with_status(".evaluate-b", "Evaluate b", Status::InProgress);
+        eval.assigned = Some("agent-eval".to_string());
+        eval.description = Some("Evaluator scoring task b".to_string());
+
+        graph.add_node(Node::Task(a));
+        graph.add_node(Node::Task(b));
+        graph.add_node(Node::Task(eval));
+
+        let tmp = tempfile::tempdir().unwrap();
+        let graph_path = tmp.path().join("graph.jsonl");
+        save_graph(&graph, &graph_path).unwrap();
+
+        let tasks: Vec<_> = graph.tasks().collect();
+        let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
+        let result = generate_ascii(
+            &graph,
+            &tasks,
+            &task_ids,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            LayoutMode::Tree,
+            &HashSet::new(),
+            "gray",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        (result, graph, tmp)
+    }
+
+    /// Repro for the [∴ evaluating] click bug: when the user clicks a phase
+    /// annotation, the inspector should show the meta-task. A subsequent
+    /// graph-refresh tick (which calls invalidate_hud + load_hud_detail)
+    /// must NOT flip the inspector back to the parent.
+    #[test]
+    fn hud_pin_keeps_meta_task_visible_across_refresh() {
+        let (viz, _, _tmp) = build_with_evaluate_meta();
+        let mut app = build_app(&viz, "b", _tmp.path());
+
+        // Simulate annotation click handler:
+        // 1. select_task_at_line was already done by build_app (parent "b")
+        // 2. set the pin
+        // 3. load_hud_detail_for_task on the dot-task
+        app.hud_pin = Some(HudPin {
+            dot_task_id: ".evaluate-b".to_string(),
+            anchor_parent_id: "b".to_string(),
+        });
+        app.load_hud_detail_for_task(".evaluate-b");
+        assert_eq!(
+            app.hud_detail.as_ref().unwrap().task_id,
+            ".evaluate-b",
+            "Inspector should initially show the meta-task"
+        );
+
+        // Simulate the periodic refresh path: invalidate_hud then load_hud_detail.
+        // Pre-fix: load_hud_detail keys off selected_task_id (still "b") so the
+        // inspector flips back to "b". Post-fix: pin is honored when the
+        // anchor matches the selection.
+        app.invalidate_hud();
+        app.load_hud_detail();
+        assert_eq!(
+            app.hud_detail.as_ref().unwrap().task_id,
+            ".evaluate-b",
+            "Pin should keep meta-task in inspector across graph-refresh ticks"
+        );
+        assert!(app.hud_pin.is_some(), "Pin should still be set");
+    }
+
+    #[test]
+    fn hud_pin_clears_when_user_navigates_away() {
+        let (viz, _, _tmp) = build_with_evaluate_meta();
+        let mut app = build_app(&viz, "b", _tmp.path());
+
+        // Pin to meta-task while parent "b" is selected.
+        app.hud_pin = Some(HudPin {
+            dot_task_id: ".evaluate-b".to_string(),
+            anchor_parent_id: "b".to_string(),
+        });
+        app.load_hud_detail_for_task(".evaluate-b");
+
+        // User keyboard-navigates to the previous task.
+        app.select_prev_task();
+        assert!(
+            app.hud_pin.is_none(),
+            "Keyboard nav must clear hud_pin so the inspector follows selection"
+        );
+
+        // Inspector now shows whatever task was selected, not the meta-task.
+        app.load_hud_detail();
+        let shown = app.hud_detail.as_ref().unwrap().task_id.clone();
+        assert_ne!(
+            shown, ".evaluate-b",
+            "After nav-away, inspector must not still show the meta-task"
+        );
+    }
+
+    #[test]
+    fn hud_pin_clears_when_anchor_drifts() {
+        let (viz, _, _tmp) = build_with_evaluate_meta();
+        let mut app = build_app(&viz, "b", _tmp.path());
+
+        // Pin's anchor is "a" but selection is "b" — pin is stale and must be dropped.
+        app.hud_pin = Some(HudPin {
+            dot_task_id: ".evaluate-b".to_string(),
+            anchor_parent_id: "a".to_string(),
+        });
+
+        app.load_hud_detail();
+        assert!(
+            app.hud_pin.is_none(),
+            "Stale pin (anchor != selection) must be cleared on load_hud_detail"
+        );
+        assert_eq!(
+            app.hud_detail.as_ref().unwrap().task_id,
+            "b",
+            "Inspector should fall back to the selected task when pin is stale"
         );
     }
 
