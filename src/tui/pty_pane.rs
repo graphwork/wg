@@ -107,6 +107,14 @@ pub struct PtyPane {
     /// bytes). Capability-query replies emitted from the reader thread
     /// are NOT counted here — only host-driven input is.
     input_bytes_written: Arc<AtomicU64>,
+    /// Approximate copy-mode scroll offset for tmux-wrapped panes
+    /// (post `implement-tmux-wrapped`). When non-zero, the pane is in
+    /// tmux copy-mode and the user has scrolled `tmux_scroll_lines`
+    /// rows above the live tail. This is host-side bookkeeping driven
+    /// by `scroll_up`/`scroll_down`/`scroll_to_top`/`scroll_to_bottom`
+    /// — NOT a query against tmux's actual scroll position. See
+    /// `scroll_up` for why we track it locally (fix-mouse-wheel-3).
+    tmux_scroll_lines: usize,
 }
 
 impl PtyPane {
@@ -326,6 +334,7 @@ impl PtyPane {
             bytes_processed,
             tmux_session: None,
             input_bytes_written: Arc::new(AtomicU64::new(0)),
+            tmux_scroll_lines: 0,
         })
     }
 
@@ -501,17 +510,38 @@ impl PtyPane {
     }
 
     /// Scroll the view up (back through history) by `n` lines.
+    ///
+    /// Two backends:
+    /// 1. tmux-wrapped panes (real chat tabs after
+    ///    `implement-tmux-wrapped`): drive tmux's copy mode via
+    ///    out-of-band IPC (`tmux send-keys -X scroll-up`). Required
+    ///    because tmux uses the alt-screen, so the outer vt100 has
+    ///    no scrollback to advance through — calling vt100
+    ///    `set_scrollback(N)` on a tmux-wrapped pane is silently a
+    ///    no-op (fix-mouse-wheel-3).
+    /// 2. raw PTY panes (smoke fixtures, observer-mode panes whose
+    ///    child writes to the primary screen): advance the vt100
+    ///    parser's own scrollback offset.
+    ///
+    /// In both cases zero bytes are written to the PTY child's stdin
+    /// — fix-mouse-wheel-2's invariant is preserved.
     pub fn scroll_up(&mut self, n: usize) {
-        self.auto_follow = false;
-        if let Ok(mut p) = self.parser.lock() {
-            let current = p.screen().scrollback();
-            p.screen_mut().set_scrollback(current.saturating_add(n));
+        if let Some(session) = self.tmux_session.clone() {
+            self.tmux_scroll_up(&session, n);
+        } else {
+            self.auto_follow = false;
+            if let Ok(mut p) = self.parser.lock() {
+                let current = p.screen().scrollback();
+                p.screen_mut().set_scrollback(current.saturating_add(n));
+            }
         }
     }
 
     /// Scroll the view down (toward live output) by `n` lines.
     pub fn scroll_down(&mut self, n: usize) {
-        if let Ok(mut p) = self.parser.lock() {
+        if let Some(session) = self.tmux_session.clone() {
+            self.tmux_scroll_down(&session, n);
+        } else if let Ok(mut p) = self.parser.lock() {
             let current = p.screen().scrollback();
             let new_offset = current.saturating_sub(n);
             p.screen_mut().set_scrollback(new_offset);
@@ -524,17 +554,100 @@ impl PtyPane {
 
     /// Jump to the top of scrollback.
     pub fn scroll_to_top(&mut self) {
-        self.auto_follow = false;
-        if let Ok(mut p) = self.parser.lock() {
-            p.screen_mut().set_scrollback(usize::MAX);
+        if let Some(session) = self.tmux_session.clone() {
+            // Enter copy mode (idempotent) then jump to history top.
+            if self.tmux_scroll_lines == 0 {
+                let _ = std::process::Command::new("tmux")
+                    .args(["copy-mode", "-t", &session])
+                    .status();
+            }
+            let _ = std::process::Command::new("tmux")
+                .args(["send-keys", "-t", &session, "-X", "history-top"])
+                .status();
+            // Tmux history is bounded; we can't know the exact line
+            // count without querying. Mark "scrolled" via a large
+            // sentinel — render only uses it for the ↓N indicator
+            // and the auto_follow flag.
+            self.tmux_scroll_lines = usize::MAX;
+            self.auto_follow = false;
+        } else {
+            self.auto_follow = false;
+            if let Ok(mut p) = self.parser.lock() {
+                p.screen_mut().set_scrollback(usize::MAX);
+            }
         }
     }
 
     /// Jump to the bottom (live output).
     pub fn scroll_to_bottom(&mut self) {
-        self.auto_follow = true;
-        if let Ok(mut p) = self.parser.lock() {
-            p.screen_mut().set_scrollback(0);
+        if let Some(session) = self.tmux_session.clone() {
+            if self.tmux_scroll_lines > 0 {
+                // `cancel` exits copy mode, restoring the live tail.
+                let _ = std::process::Command::new("tmux")
+                    .args(["send-keys", "-t", &session, "-X", "cancel"])
+                    .status();
+            }
+            self.tmux_scroll_lines = 0;
+            self.auto_follow = true;
+        } else {
+            self.auto_follow = true;
+            if let Ok(mut p) = self.parser.lock() {
+                p.screen_mut().set_scrollback(0);
+            }
+        }
+    }
+
+    /// `tmux send-keys -X scroll-up` driver. Called from `scroll_up`
+    /// for tmux-wrapped panes only. Enters copy mode lazily on the
+    /// first scroll-up (if not already in copy mode) so the IPC
+    /// `scroll-up` command has somewhere to land.
+    fn tmux_scroll_up(&mut self, session: &str, n: usize) {
+        if self.tmux_scroll_lines == 0 {
+            let _ = std::process::Command::new("tmux")
+                .args(["copy-mode", "-t", session])
+                .status();
+        }
+        let _ = std::process::Command::new("tmux")
+            .args([
+                "send-keys",
+                "-t",
+                session,
+                "-X",
+                "-N",
+                &n.to_string(),
+                "scroll-up",
+            ])
+            .status();
+        self.tmux_scroll_lines = self.tmux_scroll_lines.saturating_add(n);
+        self.auto_follow = false;
+    }
+
+    /// `tmux send-keys -X scroll-down` driver. Cancels copy mode if
+    /// the scroll brings us back to the live tail.
+    fn tmux_scroll_down(&mut self, session: &str, n: usize) {
+        if self.tmux_scroll_lines == 0 {
+            // Already at live tail — nothing to do.
+            return;
+        }
+        let _ = std::process::Command::new("tmux")
+            .args([
+                "send-keys",
+                "-t",
+                session,
+                "-X",
+                "-N",
+                &n.to_string(),
+                "scroll-down",
+            ])
+            .status();
+        self.tmux_scroll_lines = self.tmux_scroll_lines.saturating_sub(n);
+        if self.tmux_scroll_lines == 0 {
+            // Reached live tail — exit copy mode so subsequent live
+            // output flows through normally.
+            let _ = std::process::Command::new("tmux")
+                .args(["send-keys", "-t", session, "-X", "cancel"])
+                .status();
+            self.auto_follow = true;
         }
     }
 
@@ -544,7 +657,13 @@ impl PtyPane {
     }
 
     /// Current scrollback offset (lines above live output). 0 means live.
+    /// For tmux-wrapped panes this is host-side bookkeeping
+    /// (`tmux_scroll_lines`), not a query against tmux's actual
+    /// position.
     pub fn scrollback(&self) -> usize {
+        if self.tmux_session.is_some() {
+            return self.tmux_scroll_lines;
+        }
         self.parser
             .lock()
             .map(|p| p.screen().scrollback())
@@ -3397,6 +3516,141 @@ sleep 5
 
         tmux_kill_session(&session);
         let _ = std::fs::remove_file(&marker);
+    }
+
+    /// Pins fix-mouse-wheel-3: a tmux-wrapped PtyPane (the real
+    /// chat-tab setup post `implement-tmux-wrapped`) MUST scroll its
+    /// inner tmux history when `scroll_up` is called, AND must do
+    /// so without writing any bytes to the PTY child's stdin
+    /// (preserves fix-mouse-wheel-2's invariant).
+    ///
+    /// Why this test exists separately from the
+    /// `mouse_wheel_in_vendor_pty_mode_scrolls_outer_not_inner` test:
+    /// that test uses `PtyPane::spawn_in("/bin/sh", ...)` — a primary
+    /// screen child with real vt100 scrollback. fix-mouse-wheel-2
+    /// passed there but failed in production because real chat panes
+    /// use `spawn_via_tmux`, and tmux paints the alt screen, leaving
+    /// the outer vt100 parser's scrollback empty. `set_scrollback(N)`
+    /// on the outer parser is a silent no-op for tmux-wrapped panes.
+    /// The user reported "scroll wheel does bupkis" — exactly this.
+    ///
+    /// The fix is to dispatch `scroll_up` on tmux-wrapped panes to
+    /// `tmux send-keys -t <session> -X scroll-up` (out-of-band IPC,
+    /// not a write to the attach client's stdin). Tmux redraws the
+    /// attached client to reflect the scrolled copy-mode view; our
+    /// vt100 reader thread pumps the redraw into the parser; the
+    /// user sees scrolled content.
+    #[test]
+    fn tmux_wrapped_scroll_up_advances_render_without_writing_to_child() {
+        if !tmux_available() {
+            eprintln!("tmux not installed — skipping tmux scroll test");
+            return;
+        }
+        let suffix = format!(
+            "{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        );
+        let session = format!("wg-chat-test-scroll-{}", suffix);
+        let mut pane = PtyPane::spawn_via_tmux(
+            &session,
+            "sh",
+            &[
+                "-c",
+                "for i in $(seq 1 80); do echo line $i; done; sleep 30",
+            ],
+            &[],
+            None,
+            24,
+            80,
+        )
+        .expect("spawn_via_tmux ok");
+        // Wait for tmux to draw the post-loop screen.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while std::time::Instant::now() < deadline && pane.bytes_processed() < 200 {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(400));
+
+        let snapshot = |p: &PtyPane| -> String {
+            let parser = p.parser.lock().unwrap();
+            let s = parser.screen();
+            let (rows, cols) = s.size();
+            let mut acc = String::new();
+            for r in 0..rows {
+                for c in 0..cols {
+                    if let Some(cell) = s.cell(r, c) {
+                        acc.push_str(cell.contents());
+                    }
+                }
+                acc.push('\n');
+            }
+            acc
+        };
+
+        let before = snapshot(&pane);
+        let bytes_before = pane.child_input_bytes_written();
+        assert!(
+            !pane.is_scrolled_back(),
+            "pre-condition: pane should be at the live tail before scroll_up"
+        );
+
+        pane.scroll_up(30);
+        // Wait for tmux's redraw to propagate through the PTY into
+        // our vt100 parser. tmux processes copy-mode commands quickly
+        // but the IPC roundtrip + reader thread takes a few hundred
+        // ms in practice.
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        let after = snapshot(&pane);
+        let bytes_after = pane.child_input_bytes_written();
+
+        assert_eq!(
+            bytes_before, bytes_after,
+            "scroll_up MUST NOT write any bytes to the PTY child's stdin \
+             — this preserves fix-mouse-wheel-2's invariant. Tmux IPC is \
+             out-of-band."
+        );
+        assert!(
+            pane.is_scrolled_back(),
+            "post-condition: scroll_up should put the pane in scrolled-back state"
+        );
+        assert!(
+            pane.scrollback() >= 30,
+            "tmux_scroll_lines bookkeeping should reflect 30 lines scrolled, got {}",
+            pane.scrollback()
+        );
+        assert_ne!(
+            before, after,
+            "fix-mouse-wheel-3: scroll_up MUST change rendered content on a \
+             tmux-wrapped pane. If this regresses, check that:\n\
+             1. `tmux_session: Some(...)` is set after spawn_via_tmux\n\
+             2. scroll_up dispatches to tmux_scroll_up for tmux-wrapped panes\n\
+             3. tmux_scroll_up issues `tmux copy-mode` + `send-keys -X scroll-up`"
+        );
+
+        // Scroll back down to the live tail; the pane should exit
+        // copy mode and report not-scrolled-back again.
+        pane.scroll_down(30);
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let bytes_after_down = pane.child_input_bytes_written();
+        assert_eq!(
+            bytes_before, bytes_after_down,
+            "scroll_down MUST also not write to PTY child stdin"
+        );
+        assert!(
+            !pane.is_scrolled_back(),
+            "scroll_down(30) should bring us back to live tail"
+        );
+        assert_eq!(
+            pane.scrollback(),
+            0,
+            "tmux_scroll_lines should be 0 after scroll_down brings us home"
+        );
+
+        pane.kill_underlying_session();
     }
 
     /// Status-bar suppression: a tmux session created via spawn_via_tmux

@@ -633,6 +633,15 @@ description = "Pins fix-mouse-wheel-2: mouse-wheel ScrollUp/ScrollDown over the 
 timeout_seconds = 120
 
 [[scenario]]
+name = "tui_mouse_wheel_tmux_wrapped_advances_scroll"
+script = "scenarios/tui_mouse_wheel_tmux_wrapped_advances_scroll.sh"
+owners = [
+    "fix-mouse-wheel-3",
+]
+description = "Pins fix-mouse-wheel-3: mouse-wheel scroll on a TMUX-WRAPPED chat pane (the real chat-tab setup post implement-tmux-wrapped) MUST advance the user-visible rendered content AND MUST NOT write any bytes to the PTY child's stdin. fix-mouse-wheel-2 asserted scroll on a raw /bin/sh primary-screen child and shipped — but real chat panes use spawn_via_tmux, and tmux paints the alt screen, so the outer vt100 parser had no scrollback to advance. The wheel-event handler stole tmux's native mouse handling without doing anything useful with it (user: 'i rebuilt now and the scroll wheel does bupkis'). The fix dispatches scroll_up/down on tmux-wrapped panes to `tmux send-keys -X scroll-up`/-X scroll-down (out-of-band IPC, not a write to the attach client's stdin). This scenario pins both halves of the new contract: rendered content changes AND zero bytes to PTY child stdin. Strengthens the existing fix-mouse-wheel-2 test's scrollback() assertion so a future is_scrolled_back-only no-op can't slip through."
+timeout_seconds = 120
+
+[[scenario]]
 name = "failed_pending_eval_state_machine"
 script = "scenarios/failed_pending_eval_state_machine.sh"
 owners = [

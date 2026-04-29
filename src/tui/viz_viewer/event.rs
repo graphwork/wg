@@ -9215,11 +9215,23 @@ mod chat_tab_navigation_tests {
     ///   the outer scrollback. Keyboard-driven scroll is the Ctrl+] scroll
     ///   mode added by `implement-tui-scroll`.
     ///
-    /// Two assertions guard the contract:
+    /// Three assertions guard the contract (fix-mouse-wheel-2 +
+    /// fix-mouse-wheel-3):
     /// 1. `is_scrolled_back()` is true after a wheel event — the outer
-    ///    pane's scroll offset advanced.
-    /// 2. `child_input_bytes_written()` is unchanged — zero bytes were
+    ///    pane's auto-follow flag flipped off.
+    /// 2. `scrollback()` advanced to a non-zero offset — the user-
+    ///    visible scroll position actually moved (fix-mouse-wheel-3:
+    ///    the original test only asserted (1), and (1) is true even
+    ///    when (2) didn't happen, so a regression where scroll
+    ///    silently no-ops would have slipped through).
+    /// 3. `child_input_bytes_written()` is unchanged — zero bytes were
     ///    written to the child's stdin via the wheel path.
+    ///
+    /// This test uses a raw `/bin/sh` PTY child (primary screen, real
+    /// vt100 scrollback). The tmux-wrapped path — which is what real
+    /// chat tabs use post `implement-tmux-wrapped` — is covered by
+    /// `tmux_wrapped_scroll_up_advances_render_without_writing_to_child`
+    /// in `pty_pane.rs`.
     #[test]
     fn mouse_wheel_in_vendor_pty_mode_scrolls_outer_not_inner() {
         let (mut app, _tmp) = build_app_with_chats(&[0]);
@@ -9275,6 +9287,14 @@ mod chat_tab_navigation_tests {
             pane_after.is_scrolled_back(),
             "ScrollUp in vendor-PTY mode must scroll the OUTER vt100 pane \
              (regression: fix-mouse-wheel-2)."
+        );
+        assert!(
+            pane_after.scrollback() > 0,
+            "ScrollUp must advance the user-visible scroll offset (got {}). \
+             Without this, scroll wheel silently no-ops on tmux-wrapped panes — \
+             the half-passing-test pattern fix-mouse-wheel-3 was created to \
+             catch.",
+            pane_after.scrollback()
         );
         assert_eq!(
             pane_after.child_input_bytes_written(),
@@ -9343,6 +9363,11 @@ mod chat_tab_navigation_tests {
         assert!(
             pane_after.is_scrolled_back(),
             "ScrollUp in observer mode must scroll the vt100 pane back"
+        );
+        assert!(
+            pane_after.scrollback() > 0,
+            "ScrollUp must advance the user-visible scroll offset (got {})",
+            pane_after.scrollback()
         );
         assert_eq!(
             pane_after.child_input_bytes_written(),
