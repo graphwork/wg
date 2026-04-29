@@ -407,16 +407,13 @@ impl PtyPane {
                     session_name
                 );
             }
-            // Hide the tmux status bar — wg's TUI provides the chrome the
-            // user actually interacts with; tmux's default green bar is
-            // an implementation detail of the wrapper and visually harsh.
-            // Best-effort: a failure here is cosmetic, not fatal.
-            let _ = std::process::Command::new("tmux")
-                .args(["set-option", "-t", session_name, "status", "off"])
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status();
         }
+
+        // wg owns the desired tmux session state. Re-assert on every
+        // spawn (both fresh-create AND reattach) so any drift since
+        // the last run gets corrected here. See `apply_session_options`
+        // for the centralized list of options wg controls.
+        apply_session_options(session_name);
 
         // Attach client lives in our PTY child. `-d` detaches any other
         // clients first — single-attach semantics, even if a prior TUI
@@ -778,6 +775,48 @@ pub fn tmux_kill_session(name: &str) {
     let _ = std::process::Command::new("tmux")
         .args(["kill-session", "-t", name])
         .status();
+}
+
+/// Apply wg's desired tmux session options to `session_name`. Idempotent
+/// and best-effort — failures here are cosmetic (a status bar visible
+/// when it shouldn't be), not fatal, so we silence them.
+///
+/// wg owns the state of every `wg-chat-*` tmux session. Anything wg cares
+/// about goes here, and both spawn-time application and the runtime sync
+/// sweep (`sync_chat_session_settings`) pick it up automatically. Adding
+/// a new tmux-relevant setting later is one line in this function — not
+/// a thread through every callsite.
+///
+/// Currently sets:
+/// - `status off` — wg's TUI provides the chrome the user actually
+///   interacts with; tmux's default green status bar is an
+///   implementation detail of the wrapper and visually out of place.
+pub fn apply_session_options(session_name: &str) {
+    let _ = std::process::Command::new("tmux")
+        .args(["set-option", "-t", session_name, "status", "off"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+}
+
+/// Re-assert wg's desired tmux session options across every existing
+/// session whose name starts with `prefix`. No-op when tmux isn't
+/// installed or no sessions match.
+///
+/// Self-healing: if a chat tmux session has drifted (user manually
+/// flipped `status on`, or wg's defaults changed since the session was
+/// created), the next call corrects it. Safe to call from any hook
+/// point — TUI startup, theme toggle, future settings changes.
+///
+/// `prefix` should be the project-namespaced `wg-chat-<project>-`
+/// prefix so unrelated tmux sessions on the same machine are untouched.
+pub fn sync_chat_session_settings(prefix: &str) {
+    if !tmux_available() {
+        return;
+    }
+    for session in tmux_list_sessions_with_prefix(prefix) {
+        apply_session_options(&session);
+    }
 }
 
 /// Read a single row's content into a UTF-8 byte buffer plus its `wrapped`
@@ -3429,5 +3468,249 @@ sleep 5
                 name
             );
         }
+    }
+
+    /// Helper: read tmux's current `status` option for `session`.
+    /// Returns `"off"` / `"on"` / something else; panics on tmux error.
+    fn read_tmux_status_option(session: &str) -> String {
+        let out = std::process::Command::new("tmux")
+            .args(["show-options", "-t", session, "status"])
+            .output()
+            .expect("tmux show-options must run");
+        let s = String::from_utf8_lossy(&out.stdout);
+        // tmux prints `status off` or `status on`. Extract the value.
+        s.lines()
+            .find_map(|l| {
+                let l = l.trim();
+                l.strip_prefix("status ").map(|v| v.trim().to_string())
+            })
+            .unwrap_or_default()
+    }
+
+    /// Helper: produce a unique suffix for parallel test isolation.
+    fn unique_suffix(label: &str) -> String {
+        format!(
+            "{}-{}-{}",
+            label,
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        )
+    }
+
+    /// THE re-assertion invariant: a wg-chat-* tmux session whose
+    /// `status` was manually flipped on (e.g. by a prior wg version, or
+    /// by a stray `tmux set status on`) gets corrected back to `off`
+    /// when wg next runs `sync_chat_session_settings`. This is the
+    /// retroactive cleanup path that subsumes fix-tmux-status-2.
+    #[test]
+    fn sync_chat_session_settings_reverts_drifted_status() {
+        if !tmux_available() {
+            eprintln!("tmux not installed — skipping drift-revert test");
+            return;
+        }
+        let suffix = unique_suffix("revert");
+        let session = format!("wg-chat-test-{}", suffix);
+
+        // Create the session with a long-running command, then flip
+        // status ON manually to simulate a drifted / older-wg session.
+        let _ = std::process::Command::new("tmux")
+            .args([
+                "new-session",
+                "-d",
+                "-s",
+                &session,
+                "--",
+                "sh",
+                "-c",
+                "while true; do sleep 1; done",
+            ])
+            .status()
+            .expect("tmux new-session must run");
+        let _ = std::process::Command::new("tmux")
+            .args(["set-option", "-t", &session, "status", "on"])
+            .status();
+        assert_eq!(
+            read_tmux_status_option(&session),
+            "on",
+            "precondition: status should be on before sync"
+        );
+
+        // Run the sync sweep with a prefix that matches our test session.
+        sync_chat_session_settings("wg-chat-test-");
+
+        assert_eq!(
+            read_tmux_status_option(&session),
+            "off",
+            "sync_chat_session_settings must re-assert `status off` on drifted session"
+        );
+
+        tmux_kill_session(&session);
+    }
+
+    /// Idempotency invariant: running the sync twice produces no
+    /// observable change. (If we ever start setting options that have
+    /// side effects on the running session — e.g. visible flicker —
+    /// this is the test that should catch the regression.)
+    #[test]
+    fn sync_chat_session_settings_is_idempotent() {
+        if !tmux_available() {
+            eprintln!("tmux not installed — skipping idempotency test");
+            return;
+        }
+        let suffix = unique_suffix("idem");
+        let session = format!("wg-chat-test-{}", suffix);
+
+        let _ = std::process::Command::new("tmux")
+            .args([
+                "new-session",
+                "-d",
+                "-s",
+                &session,
+                "--",
+                "sh",
+                "-c",
+                "while true; do sleep 1; done",
+            ])
+            .status()
+            .expect("tmux new-session must run");
+
+        sync_chat_session_settings("wg-chat-test-");
+        let after_first = read_tmux_status_option(&session);
+        sync_chat_session_settings("wg-chat-test-");
+        let after_second = read_tmux_status_option(&session);
+
+        assert_eq!(
+            after_first, "off",
+            "first sync should produce status off"
+        );
+        assert_eq!(
+            after_first, after_second,
+            "second sync must produce identical observable state (idempotency)"
+        );
+
+        tmux_kill_session(&session);
+    }
+
+    /// Scope invariant: sync only touches sessions matching the given
+    /// prefix. A user's own tmux work in an unrelated session must not
+    /// have its status bar flipped. (Without this, a careless prefix
+    /// would silently rewrite the user's tmux config.)
+    #[test]
+    fn sync_chat_session_settings_skips_non_matching_sessions() {
+        if !tmux_available() {
+            eprintln!("tmux not installed — skipping scope test");
+            return;
+        }
+        let suffix = unique_suffix("scope");
+        // Foreign session: NOT under wg-chat-test-* prefix. Should be
+        // untouched by the sync.
+        let foreign = format!("user-work-{}", suffix);
+        let _ = std::process::Command::new("tmux")
+            .args([
+                "new-session",
+                "-d",
+                "-s",
+                &foreign,
+                "--",
+                "sh",
+                "-c",
+                "while true; do sleep 1; done",
+            ])
+            .status()
+            .expect("tmux new-session must run");
+        // Force status ON on the foreign session — the sync must
+        // leave it in this state.
+        let _ = std::process::Command::new("tmux")
+            .args(["set-option", "-t", &foreign, "status", "on"])
+            .status();
+        assert_eq!(
+            read_tmux_status_option(&foreign),
+            "on",
+            "precondition: foreign session has status on"
+        );
+
+        sync_chat_session_settings("wg-chat-test-");
+
+        assert_eq!(
+            read_tmux_status_option(&foreign),
+            "on",
+            "sync must NOT touch sessions outside its prefix"
+        );
+
+        tmux_kill_session(&foreign);
+    }
+
+    /// No-op safety: calling sync with a prefix that matches nothing
+    /// must not crash, even if tmux has zero sessions of that shape.
+    #[test]
+    fn sync_chat_session_settings_no_matching_sessions_is_noop() {
+        if !tmux_available() {
+            eprintln!("tmux not installed — skipping no-match test");
+            return;
+        }
+        // Prefix designed to match nothing real.
+        sync_chat_session_settings("wg-chat-test-noop-prefix-that-matches-nothing-");
+        // If we got here without panic, the test passes.
+    }
+
+    /// Spawn-time re-assertion: spawn_via_tmux must apply wg's desired
+    /// options on EVERY spawn (both create and reattach), so a session
+    /// that drifted between TUI runs gets corrected on the next attach.
+    /// This is the "spawn path also self-heals" guarantee.
+    #[test]
+    fn spawn_via_tmux_reasserts_status_on_reattach() {
+        if !tmux_available() {
+            eprintln!("tmux not installed — skipping reattach-reassert test");
+            return;
+        }
+        let suffix = unique_suffix("reassert");
+        let session = format!("wg-chat-test-{}", suffix);
+
+        // First spawn creates the session and applies options.
+        {
+            let _pane = PtyPane::spawn_via_tmux(
+                &session,
+                "sh",
+                &["-c", "while true; do sleep 1; done"],
+                &[],
+                None,
+                24,
+                80,
+            )
+            .expect("first spawn ok");
+        }
+        // Simulate drift between runs: flip status ON externally.
+        let _ = std::process::Command::new("tmux")
+            .args(["set-option", "-t", &session, "status", "on"])
+            .status();
+        assert_eq!(
+            read_tmux_status_option(&session),
+            "on",
+            "precondition: status drifted to on before reattach"
+        );
+
+        // Second spawn (reattach) must re-assert status off.
+        {
+            let _pane = PtyPane::spawn_via_tmux(
+                &session,
+                "sh",
+                &["-c", "while true; do sleep 1; done"],
+                &[],
+                None,
+                24,
+                80,
+            )
+            .expect("reattach ok");
+        }
+        assert_eq!(
+            read_tmux_status_option(&session),
+            "off",
+            "reattach must re-assert wg's desired status off"
+        );
+
+        tmux_kill_session(&session);
     }
 }

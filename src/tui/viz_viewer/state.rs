@@ -13525,6 +13525,41 @@ impl VizApp {
     /// Only matches sessions whose project tag equals the current
     /// project root's basename — so two different projects' TUIs can
     /// run side-by-side without sweeping each other's sessions.
+    /// Project-namespaced prefix matching every `wg-chat-*` tmux session
+    /// for THIS project (`wg-chat-<project>-`). Used by orphan-sweep,
+    /// settings-sync, and the chat-exit prompt to scope tmux operations
+    /// to this project so co-running TUIs in sibling projects don't
+    /// touch each other's sessions.
+    fn chat_tmux_session_prefix(&self) -> String {
+        let project_root = self
+            .workgraph_dir
+            .parent()
+            .unwrap_or(&self.workgraph_dir)
+            .to_path_buf();
+        let project_tag = project_root
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("project")
+            .to_string();
+        format!(
+            "{}{}-",
+            workgraph::chat_id::CHAT_TMUX_SESSION_PREFIX,
+            project_tag.replace([':', '.'], "-")
+        )
+    }
+
+    /// Re-assert wg's desired tmux session options across every chat
+    /// session for this project. wg owns the state — call this on TUI
+    /// startup, after theme toggles, and from any future hook where a
+    /// setting that affects tmux changes. Idempotent and self-healing:
+    /// running twice produces no observable change, and a session that
+    /// drifted (user manually `tmux set status on`) is corrected on the
+    /// next call. No-op when tmux isn't installed.
+    pub fn sync_chat_tmux_settings(&self) {
+        let prefix = self.chat_tmux_session_prefix();
+        crate::tui::pty_pane::sync_chat_session_settings(&prefix);
+    }
+
     pub fn sweep_orphan_chat_tmux_sessions(&mut self) {
         if !crate::tui::pty_pane::tmux_available() {
             return;
@@ -13592,6 +13627,13 @@ impl VizApp {
         // `wg chat delete` / archive-while-tui-was-down. See design
         // doc Lifecycle invariants.
         self.sweep_orphan_chat_tmux_sessions();
+
+        // Re-assert wg's desired tmux options on every surviving chat
+        // session. Catches sessions created by a prior wg version (or
+        // a prior wg with different defaults), and corrects any drift
+        // from manual user edits. See `sync_chat_session_settings` in
+        // pty_pane for the centralized list of options wg owns.
+        self.sync_chat_tmux_settings();
 
         let user = workgraph::current_user();
         // Don't auto-create for the fallback "unknown" identity
@@ -15745,6 +15787,12 @@ impl VizApp {
             "tui.color_theme" => {
                 config.tui.color_theme = new_value.clone();
                 self.is_light_theme = new_value == "light";
+                // wg owns tmux session state — push the new theme to
+                // every active chat session. Today this re-asserts
+                // `status off`; once theme-aware status colors land
+                // (fix-tmux-status option B), this same hook pushes
+                // the new palette without further plumbing.
+                self.sync_chat_tmux_settings();
             }
             "tui.timestamp_format" => config.tui.timestamp_format = new_value,
             "tui.show_token_counts" => config.tui.show_token_counts = new_value == "on",
