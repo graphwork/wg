@@ -893,18 +893,45 @@ pub fn init_starters(force: bool) -> Result<()> {
     let legacy_path = dir.join(format!("{}.toml", named_profile::LEGACY_NEX_NAME));
     let canonical_path = dir.join("nex.toml");
     let mut migrated = 0;
-    if legacy_path.exists() && !canonical_path.exists() {
-        std::fs::rename(&legacy_path, &canonical_path).with_context(|| {
-            format!(
-                "Failed to migrate {} -> {}",
+    if legacy_path.exists() {
+        if !canonical_path.exists() {
+            std::fs::rename(&legacy_path, &canonical_path).with_context(|| {
+                format!(
+                    "Failed to migrate {} -> {}",
+                    legacy_path.display(),
+                    canonical_path.display()
+                )
+            })?;
+            migrated += 1;
+            println!(
+                "  migrated {} -> {} (canonical name now matches `wg nex`)",
                 legacy_path.display(),
                 canonical_path.display()
-            )
-        })?;
+            );
+        } else {
+            // Both files exist — never clobber. Surface a one-line note so the
+            // user knows the legacy file is being preserved alongside the
+            // canonical one and can resolve manually if intentional.
+            println!(
+                "  note: both {} and {} exist; preserving both. Run `wg profile delete wgnext` to drop the legacy file once you've migrated any custom edits.",
+                legacy_path.display(),
+                canonical_path.display()
+            );
+        }
+    }
+
+    // Refresh stale `wg-next:` descriptions in an on-disk `nex.toml` left over
+    // from before the rename. This is content (not file) migration: a user who
+    // ran an older `init-starters` got a `nex.toml` (or a freshly renamed
+    // `wgnext.toml -> nex.toml`) that still says `wg-next:` in its description.
+    // The previous rename only updated the in-binary template; existing files
+    // were untouched. Conservative: only the description line is rewritten.
+    if canonical_path.exists()
+        && named_profile::migrate_stale_description(&canonical_path)?
+    {
         migrated += 1;
         println!(
-            "  migrated {} -> {} (canonical name now matches `wg nex`)",
-            legacy_path.display(),
+            "  refreshed description in {} (was 'wg-next:', now 'wg nex:')",
             canonical_path.display()
         );
     }

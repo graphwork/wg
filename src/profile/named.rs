@@ -169,16 +169,34 @@ pub fn set_active(name: Option<&str>) -> Result<()> {
 }
 
 /// Load a named profile by name from `~/.wg/profiles/<name>.toml`.
+///
+/// Legacy alias: when called with `name == "wgnext"` and `wgnext.toml` is
+/// absent but `nex.toml` exists, transparently load `nex.toml` and emit a
+/// one-line note. This keeps existing `wg profile use wgnext` invocations and
+/// scripts working after the rename.
 pub fn load(name: &str) -> Result<NamedProfile> {
     let path = profile_path(name)?;
-    if name == LEGACY_NEX_NAME && path.exists() {
-        eprintln!(
-            "warning: profile '{}' is deprecated — the canonical name is 'nex' (matches `wg nex`).\n\
-             Rename your profile file: mv {} {}",
-            LEGACY_NEX_NAME,
-            path.display(),
-            path.with_file_name("nex.toml").display(),
-        );
+    if name == LEGACY_NEX_NAME {
+        if path.exists() {
+            eprintln!(
+                "warning: profile '{}' is deprecated — the canonical name is 'nex' (matches `wg nex`).\n\
+                 Rename your profile file: mv {} {}",
+                LEGACY_NEX_NAME,
+                path.display(),
+                path.with_file_name("nex.toml").display(),
+            );
+        } else {
+            // wgnext.toml is absent — fall back to the canonical nex.toml so
+            // legacy `wg profile use wgnext` still works after the rename.
+            let canonical = path.with_file_name("nex.toml");
+            if canonical.exists() {
+                eprintln!(
+                    "note: 'wgnext' is the legacy name; loading {} (use 'nex' going forward).",
+                    canonical.display(),
+                );
+                return load_from_path(&canonical, "nex");
+            }
+        }
     }
     if !path.exists() {
         // Suggest closest match
@@ -200,7 +218,12 @@ pub fn load(name: &str) -> Result<NamedProfile> {
             );
         }
     }
-    let content = std::fs::read_to_string(&path)
+    load_from_path(&path, name)
+}
+
+/// Read and parse a profile file at a given path, attributing errors to `name`.
+fn load_from_path(path: &Path, name: &str) -> Result<NamedProfile> {
+    let content = std::fs::read_to_string(path)
         .with_context(|| format!("Failed to read profile file {}", path.display()))?;
     let profile: NamedProfile = toml::from_str(&content).map_err(|e| {
         anyhow::anyhow!(
@@ -212,6 +235,44 @@ pub fn load(name: &str) -> Result<NamedProfile> {
         )
     })?;
     Ok(profile)
+}
+
+/// Migrate a stale legacy `wg-next:` description prefix in an existing
+/// `nex.toml` to the canonical `wg nex:`. Returns true when the file was
+/// rewritten. Conservative: only touches the description line, preserves all
+/// other fields, comments, and formatting verbatim.
+///
+/// This catches users whose `nex.toml` was created (or renamed from
+/// `wgnext.toml`) with the old template content, before the description was
+/// updated. The previous rename only updated the in-binary template, so users
+/// with on-disk files saw stale `wg-next:` text in `wg profile list`.
+pub fn migrate_stale_description(path: &Path) -> Result<bool> {
+    if !path.exists() {
+        return Ok(false);
+    }
+    let content = std::fs::read_to_string(path)
+        .with_context(|| format!("Failed to read {}", path.display()))?;
+    let mut changed = false;
+    let mut out: Vec<String> = Vec::with_capacity(content.lines().count());
+    for line in content.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("description") && line.contains("wg-next") {
+            out.push(line.replace("wg-next", "wg nex"));
+            changed = true;
+        } else {
+            out.push(line.to_string());
+        }
+    }
+    if !changed {
+        return Ok(false);
+    }
+    let mut new_content = out.join("\n");
+    if content.ends_with('\n') && !new_content.ends_with('\n') {
+        new_content.push('\n');
+    }
+    std::fs::write(path, new_content)
+        .with_context(|| format!("Failed to write {}", path.display()))?;
+    Ok(true)
 }
 
 /// Save a named profile to `~/.wg/profiles/<name>.toml`.
@@ -646,6 +707,104 @@ is_default = true
             // Loading by the legacy name must still succeed (backward compat).
             let loaded = load(LEGACY_NEX_NAME).unwrap();
             assert_eq!(loaded.description.as_deref(), Some("legacy"));
+        });
+    }
+
+    #[test]
+    fn test_load_wgnext_falls_back_to_nex_when_legacy_file_absent() {
+        // A user runs `wg profile use wgnext` long after init-starters has
+        // migrated wgnext.toml -> nex.toml. The legacy filename no longer
+        // exists, but the call must still resolve (so old scripts/aliases
+        // don't break) by transparently loading nex.toml.
+        let _tmp = with_home(|| {
+            let prof = NamedProfile {
+                description: Some("canonical-nex".to_string()),
+                ..Default::default()
+            };
+            save("nex", &prof).unwrap();
+            assert!(!profile_path(LEGACY_NEX_NAME).unwrap().exists());
+
+            let loaded = load(LEGACY_NEX_NAME).unwrap();
+            assert_eq!(
+                loaded.description.as_deref(),
+                Some("canonical-nex"),
+                "load(\"wgnext\") must fall back to nex.toml when wgnext.toml is absent"
+            );
+        });
+    }
+
+    #[test]
+    fn test_migrate_stale_description_rewrites_wg_next_to_wg_nex() {
+        // Files written by older binaries had a description of:
+        //   description = "wg-next: in-process nex handler ..."
+        // The previous rename only changed the in-binary template; on-disk
+        // files were never refreshed. migrate_stale_description must surgically
+        // fix the description without disturbing the rest of the file.
+        let _tmp = with_home(|| {
+            let stale = "description = \"wg-next: in-process nex handler at a localhost endpoint (edit URL per machine)\"\n\n[agent]\nmodel = \"local:qwen3-coder-30b\"\n\n# user comment that must be preserved\n";
+            let path = profile_path("nex").unwrap();
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, stale).unwrap();
+
+            let changed = migrate_stale_description(&path).unwrap();
+            assert!(changed, "expected migration to rewrite stale description");
+
+            let after = std::fs::read_to_string(&path).unwrap();
+            assert!(
+                after.contains("description = \"wg nex:"),
+                "description must be rewritten to start with `wg nex:`; got: {}",
+                after
+            );
+            assert!(
+                !after.contains("wg-next"),
+                "no 'wg-next' substring may remain; got: {}",
+                after
+            );
+            assert!(
+                after.contains("# user comment that must be preserved"),
+                "comments must be preserved verbatim; got: {}",
+                after
+            );
+
+            // Idempotent: a second migrate call returns false, file unchanged.
+            let changed_again = migrate_stale_description(&path).unwrap();
+            assert!(!changed_again, "second migration must be a no-op");
+        });
+    }
+
+    #[test]
+    fn test_migrate_stale_description_leaves_clean_files_alone() {
+        let _tmp = with_home(|| {
+            let clean = STARTER_NEX;
+            let path = profile_path("nex").unwrap();
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, clean).unwrap();
+
+            let changed = migrate_stale_description(&path).unwrap();
+            assert!(
+                !changed,
+                "fresh nex.toml from the current template must not be rewritten"
+            );
+            let after = std::fs::read_to_string(&path).unwrap();
+            assert_eq!(after, clean, "file must be byte-identical when no migration needed");
+        });
+    }
+
+    #[test]
+    fn test_migrate_stale_description_only_touches_description_line() {
+        // If a non-description line happens to contain "wg-next" (e.g., a user
+        // comment or a model id we don't ship), it must NOT be rewritten —
+        // we only fix the description line which we know was a stale template.
+        let _tmp = with_home(|| {
+            let mixed = "description = \"my custom\"\n\n[agent]\nmodel = \"local:wg-next-model\"\n# wg-next: legacy reference in a comment\n";
+            let path = profile_path("nex").unwrap();
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, mixed).unwrap();
+
+            let changed = migrate_stale_description(&path).unwrap();
+            assert!(!changed, "must not migrate when description is clean");
+            let after = std::fs::read_to_string(&path).unwrap();
+            assert_eq!(after, mixed);
         });
     }
 }
