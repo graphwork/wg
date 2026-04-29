@@ -96,6 +96,16 @@ description = "fix-new-chat: the TUI new-chat dialog allows ad-hoc Custom URL en
 timeout_seconds = 30
 
 [[scenario]]
+name = "tui_launcher_modal_does_not_leak_keys"
+script = "scenarios/tui_launcher_modal_does_not_leak_keys.sh"
+owners = [
+    "fix-new-chat-2",
+    "smoke-gate-is",
+]
+description = "fix-new-chat-2: while the new-chat launcher (or any non-Normal InputMode) is open, ZERO keystrokes may reach the underlying chat-pane PTY child's stdin. Pre-fix, opening the launcher via [+] left focused_panel = RightPanel so the vendor_pty_active branch ran before the launcher dispatch and forwarded typed characters (e.g. a custom URL) into the background chat tab. Same byte-level pattern as fix-mouse-wheel-2."
+timeout_seconds = 60
+
+[[scenario]]
 name = "setup_routes_complete_configs"
 script = "scenarios/setup_routes_complete_configs.sh"
 owners = [

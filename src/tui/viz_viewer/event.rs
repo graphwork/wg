@@ -561,11 +561,21 @@ fn handle_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
     // without needing Ctrl-T — matches pane-focus behavior users
     // expect from tmux/vim splits. Ctrl-T still works as the
     // keyboard escape hatch (handled below).
+    //
+    // Modal gating (fix-new-chat-2): when ANY non-Normal input mode
+    // is active (Launcher, Confirm, ChoiceDialog, TextPrompt, etc.),
+    // the user is interacting with a modal overlay and keystrokes
+    // belong to it — never the underlying PTY. Without this guard,
+    // opening the launcher via the [+] button (which leaves
+    // focused_panel = RightPanel) would silently leak typed
+    // characters into the chat-pane child's stdin while the modal
+    // appears to "swallow" them.
     let vendor_pty_active = app.chat_pty_mode
         && app.chat_pty_forwards_stdin
         && app.right_panel_tab == RightPanelTab::Chat
         && app.focused_panel == FocusedPanel::RightPanel
-        && !app.chat_pty_observer;
+        && !app.chat_pty_observer
+        && matches!(app.input_mode, InputMode::Normal);
     if vendor_pty_active {
         // Modal contract (implement-tui-modal): when chat PTY has focus, the
         // ONLY key allowed to break out is Ctrl+T. Every other keystroke —
@@ -9702,6 +9712,132 @@ mod chat_tab_navigation_tests {
         assert!(
             app.launcher.is_none(),
             "'n' in PTY mode must NOT open the launcher"
+        );
+    }
+
+    /// fix-new-chat-2 regression lock: while the new-chat launcher (or
+    /// any non-Normal `InputMode`) is open, ZERO keystrokes may reach
+    /// the underlying chat-pane PTY child's stdin. The pre-fix bug:
+    /// when the launcher was opened via the [+] button click,
+    /// `focused_panel` stayed `RightPanel` and `chat_pty_mode` stayed
+    /// true, so the `vendor_pty_active` branch in `handle_key` ran
+    /// BEFORE the `InputMode::Launcher` dispatch and forwarded every
+    /// typed character into the PTY child — visible in the user's
+    /// chat-tab conversation as a URL appearing where it had no
+    /// business being.
+    ///
+    /// Byte-level assertion (per task validation): the PtyPane's
+    /// `child_input_bytes_written()` counter must be unchanged after
+    /// sending a string of arbitrary keys.
+    #[test]
+    fn launcher_open_does_not_leak_keys_to_underlying_pty() {
+        let (mut app, _tmp) = build_app_with_chats(&[0]);
+        app.right_panel_tab = RightPanelTab::Chat;
+        app.focused_panel = FocusedPanel::RightPanel;
+        app.chat_pty_mode = true;
+        app.chat_pty_forwards_stdin = true;
+        app.chat_pty_observer = false;
+
+        // Spawn a real PTY child (cat blocks on stdin so it stays alive)
+        // so we can read `child_input_bytes_written()` on it.
+        let task_id = workgraph::chat_id::format_chat_task_id(app.active_coordinator_id);
+        let Ok(pane) = crate::tui::pty_pane::PtyPane::spawn_in(
+            "/bin/sh",
+            &["-c", "exec cat"],
+            &[],
+            None,
+            24,
+            80,
+        ) else {
+            // CI without /bin/sh or no PTY support: skip silently — the
+            // unit-level guard (matches!(app.input_mode, InputMode::Normal)
+            // in vendor_pty_active) is also covered by the assertion in
+            // launcher_open_clears_pty_input_routing below.
+            return;
+        };
+        let bytes_before = pane.child_input_bytes_written();
+        app.task_panes.insert(task_id.clone(), pane);
+
+        // Open the launcher (modal). Mirrors the [+] click path: focus
+        // is NOT switched away from RightPanel.
+        app.open_launcher();
+        assert!(
+            matches!(app.input_mode, super::InputMode::Launcher),
+            "open_launcher must transition input_mode to Launcher"
+        );
+        // open_launcher rate-limits double-opens and bails (push_toast)
+        // when the chat cap is reached. If for any reason the launcher
+        // didn't initialize, the rest of the test is meaningless.
+        if app.launcher.is_none() {
+            return;
+        }
+
+        // Type a string of arbitrary keys — exactly the user's reported
+        // scenario: typing a custom URL into a section that has no input
+        // field.
+        let keys = "http://127.0.0.1:8088";
+        for c in keys.chars() {
+            super::handle_key(&mut app, KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        // Plus a few non-character keys that have no obvious binding in
+        // the dialog and historically would have leaked through.
+        super::handle_key(&mut app, KeyCode::F(5), KeyModifiers::NONE);
+        super::handle_key(&mut app, KeyCode::Insert, KeyModifiers::NONE);
+
+        let pane_after = app.task_panes.get(&task_id).unwrap();
+        assert_eq!(
+            pane_after.child_input_bytes_written(),
+            bytes_before,
+            "While Launcher modal is open, ZERO bytes may reach the \
+             chat-pane PTY child's stdin (fix-new-chat-2). Got {} bytes \
+             written; expected unchanged from {}.",
+            pane_after.child_input_bytes_written(),
+            bytes_before,
+        );
+    }
+
+    /// Companion to `launcher_open_does_not_leak_keys_to_underlying_pty`
+    /// that does NOT require a real PTY child — exercises the
+    /// `vendor_pty_active` guard purely at the input-mode level. This
+    /// test is the canary that catches the regression even on CI hosts
+    /// where PtyPane::spawn_in fails (no /bin/sh, no PTY).
+    ///
+    /// The contract: with chat_pty_mode + forwards_stdin + RightPanel
+    /// focus all true, opening the launcher must change input_mode to
+    /// `Launcher`, and a subsequent `handle_key` must NOT reach the
+    /// vendor_pty_active branch — it must reach the launcher handler,
+    /// which mutates launcher state instead.
+    #[test]
+    fn launcher_open_clears_pty_input_routing() {
+        let (mut app, _tmp) = build_app_with_chats(&[0]);
+        app.right_panel_tab = RightPanelTab::Chat;
+        app.focused_panel = FocusedPanel::RightPanel;
+        app.chat_pty_mode = true;
+        app.chat_pty_forwards_stdin = true;
+        app.chat_pty_observer = false;
+        // Skip if launcher couldn't open (e.g. coordinator cap).
+        app.open_launcher();
+        if app.launcher.is_none() {
+            return;
+        }
+        // Move to the Name section so typed characters land in
+        // `launcher.name` — a field whose content we can inspect.
+        app.launcher.as_mut().unwrap().active_section =
+            super::super::state::LauncherSection::Name;
+
+        super::handle_key(&mut app, KeyCode::Char('x'), KeyModifiers::NONE);
+        super::handle_key(&mut app, KeyCode::Char('y'), KeyModifiers::NONE);
+        super::handle_key(&mut app, KeyCode::Char('z'), KeyModifiers::NONE);
+
+        let launcher = app
+            .launcher
+            .as_ref()
+            .expect("launcher should still be open after typing");
+        assert_eq!(
+            launcher.name, "xyz",
+            "Keys must reach the launcher's Name field even when \
+             chat_pty_mode + forwards_stdin + RightPanel focus would \
+             otherwise route to the PTY (fix-new-chat-2)."
         );
     }
 }
