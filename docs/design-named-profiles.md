@@ -14,7 +14,7 @@
 2. **Active pointer: `~/.wg/active-profile`** (one-line file containing the name). Absent file = no profile active = behave like today.
 3. **Command surface extends the existing `wg profile`** subcommand. New verbs: `use`, `create`, `edit`, `delete`, `diff`, `init-starters`. Existing verbs `list`, `show`, `set`, `refresh` stay (with adjusted semantics, see §3).
 4. **Hot-reload uses the existing `IpcRequest::Reconfigure`** that `wg config -m` already triggers. `wg profile use <name>` resolves the profile and sends the same IPC. No new IPC verb.
-5. **Three starter profiles ship via `wg profile init-starters`** (also auto-invoked the first time `wg setup` finishes): `claude`, `codex`, `wgnext`. Templates baked into the binary (see §7).
+5. **Three starter profiles ship via `wg profile init-starters`** (also auto-invoked the first time `wg setup` finishes): `claude`, `codex`, `nex` (matches the `wg nex` subcommand). Templates baked into the binary (see §7).
 6. **Switching semantics**: daemon picks up new profile on the next worker spawn. **In-flight workers keep their original config** (already true today for `wg config -m`). **Chat agents read profile name on startup and stay on that profile** for their lifetime — switching requires `wg chat <id> --restart` (already exists as `SetChatExecutor`).
 7. **Migration**: existing `~/.wg/config.toml` stays as the implicit base. `wg profile use <name>` overlays; `wg profile use --clear` reverts to base. No destructive rewrite — your old config is untouched.
 8. **`wg init --route codex-cli` no longer mutates global config.** It writes `~/.wg/profiles/codex.toml` and sets it active. (Resolves the open issue called out in the task description.)
@@ -25,12 +25,12 @@
 
 ### What the user asked for
 
-> "profiles that we can switch at runtime quickly... so we could have several profiles, I think, that are available to us, and make them easy to configure. So there should be claude, codex, and there should also now be wgnext, configured with localhost or something, but then we can just change the endpoint there."
+> "profiles that we can switch at runtime quickly... so we could have several profiles, I think, that are available to us, and make them easy to configure. So there should be claude, codex, and there should also now be nex, configured with localhost or something, but then we can just change the endpoint there."
 
 Three concrete asks:
 - **Bundle**: (model, endpoint, per-role overrides) move together as a unit.
 - **Runtime switch**: one command flips the daemon to a new bundle without restart.
-- **Easy edit per machine**: `wgnext`'s endpoint differs per host (laptop vs server), so per-machine override has to be a one-line edit.
+- **Easy edit per machine**: `nex`'s endpoint differs per host (laptop vs server), so per-machine override has to be a one-line edit.
 
 ### Reuse of what already exists
 
@@ -63,7 +63,7 @@ This design **extends** the existing `wg profile` rather than introducing a new 
 
 **Rejected: option C (both).** Adds a second mental model for no real win — partial overrides under `[profiles.*]` AND full snapshots in files would mean two ways to express the same thing.
 
-**Reason for A**: one file = one profile = trivially shareable / git-tracked / `cp`-able. The user can `scp ~/.wg/profiles/wgnext.toml otherhost:~/.wg/profiles/` and edit the endpoint locally without touching anything else.
+**Reason for A**: one file = one profile = trivially shareable / git-tracked / `cp`-able. The user can `scp ~/.wg/profiles/nex.toml otherhost:~/.wg/profiles/` and edit the endpoint locally without touching anything else.
 
 ### 2.2 Layout
 
@@ -74,7 +74,7 @@ This design **extends** the existing `wg profile` rather than introducing a new 
 └── profiles/
     ├── claude.toml        # starter, written by `wg profile init-starters`
     ├── codex.toml         # starter
-    ├── wgnext.toml        # starter
+    ├── nex.toml           # starter
     └── <user-defined>.toml
 ```
 
@@ -173,10 +173,10 @@ model = "codex:gpt-5.4-mini"
 
 (Same — codex CLI is local, no endpoint needed.)
 
-#### `~/.wg/profiles/wgnext.toml`
+#### `~/.wg/profiles/nex.toml`
 
 ```toml
-description = "wg-next: in-process nex handler at a localhost endpoint (edit URL per machine)"
+description = "wg nex: in-process LLM handler at a localhost endpoint (edit URL per machine)"
 
 [agent]
 model = "local:qwen3-coder-30b"
@@ -201,7 +201,7 @@ api_key_env = ""
 is_default = true
 ```
 
-This is the profile users edit per-machine (`wg profile edit wgnext` to change the URL).
+This is the profile users edit per-machine (`wg profile edit nex` to change the URL).
 
 ---
 
@@ -225,7 +225,7 @@ Flag: `--clear` (remove active pointer, revert to base config). `wg profile use 
 - Build a new profile file. With `--from <existing>`, copy the existing profile as starting point. Without `--from`, start from a minimal template (just `agent.model`).
 - Refuse if `~/.wg/profiles/<name>.toml` already exists, unless `--force`.
 - After write, do NOT auto-`use` it. User runs `wg profile use <name>` separately. Reason: create-and-switch is two distinct decisions; conflating them is the same kind of footgun `wg add` avoids.
-- `wg profile create wgnext -m local:llama3 -e http://127.0.0.1:8088` produces a working wgnext-style profile.
+- `wg profile create nex -m local:llama3 -e http://127.0.0.1:8088` produces a working nex-style profile.
 
 #### `wg profile edit <name>`
 - Open `~/.wg/profiles/<name>.toml` in `$EDITOR` (default `vi`).
@@ -246,7 +246,7 @@ Flag: `--no-reload` to skip the IPC.
 - Reason: when a user has 5+ profiles, "what's actually different between these two" is a real question.
 
 #### `wg profile init-starters [--force]`
-- Write the three starters (`claude`, `codex`, `wgnext`) to `~/.wg/profiles/` if missing.
+- Write the three starters (`claude`, `codex`, `nex`) to `~/.wg/profiles/` if missing.
 - `--force` overwrites existing starters (e.g., to pick up upstream model-string updates).
 - Auto-invoked at the end of `wg setup` if `~/.wg/profiles/` is empty.
 
@@ -395,9 +395,9 @@ The implementation task's smoke gate (`tests/smoke/scenarios/`) MUST include at 
 7. `wg service stop`.
 
 ### 6.4 `profile-edit-applies.sh`
-1. Fresh `$HOME`. `wg profile init-starters`. `wg profile use wgnext`. `wg service start --max-agents 1` (background).
-2. Programmatically rewrite `~/.wg/profiles/wgnext.toml` to change endpoint URL from `http://127.0.0.1:8088` to `http://127.0.0.1:9999` (simulate `wg profile edit`).
-3. Run `wg profile use wgnext` (re-issue same name) — this is the explicit "I edited, please reload" path.
+1. Fresh `$HOME`. `wg profile init-starters`. `wg profile use nex`. `wg service start --max-agents 1` (background).
+2. Programmatically rewrite `~/.wg/profiles/nex.toml` to change endpoint URL from `http://127.0.0.1:8088` to `http://127.0.0.1:9999` (simulate `wg profile edit`).
+3. Run `wg profile use nex` (re-issue same name) — this is the explicit "I edited, please reload" path.
 4. Assert: daemon log shows reconfigure with the new URL.
 
 ### 6.5 `profile-diff.sh`
@@ -426,16 +426,22 @@ See §2.5 example. Model strings cross-checked against `docs/config-ux-design.md
 - premium: `codex:gpt-5.5`
 - agency / fast / FLIP: `codex:gpt-5.4-mini`
 
-### 7.3 `wgnext.toml`
-See §2.5 example. Defaults to `local:qwen3-coder-30b` at `http://127.0.0.1:8088`. The user is expected to edit both fields to match their local nex setup.
+### 7.3 `nex.toml`
+See §2.5 example. Defaults to `local:qwen3-coder-30b` at `http://127.0.0.1:8088`. The user is expected to edit both fields to match their local `wg nex` setup.
 
 **Per-machine workflow:**
 ```bash
 # On a fresh machine:
 wg profile init-starters
-wg profile edit wgnext      # change url to http://desktop.local:30000 etc.
-wg profile use wgnext
+wg profile edit nex         # change url to http://desktop.local:30000 etc.
+wg profile use nex
 ```
+
+**Legacy `wgnext` name:** earlier builds of `wg profile init-starters` wrote
+this template as `wgnext.toml`. On the next run `init-starters` auto-renames
+`~/.wg/profiles/wgnext.toml` → `~/.wg/profiles/nex.toml` (only when the
+canonical file is absent — never clobbers an existing `nex.toml`). Loading the
+legacy name still works but emits a deprecation hint.
 
 ---
 
@@ -491,7 +497,7 @@ In recommended order. Each item is a discrete commit.
    - Same for `--route claude-cli` → `claude` profile, `--route nex-custom` → user-named (prompt) profile.
 
 9. **Starter templates.**
-   - `src/profile/templates/claude.toml`, `codex.toml`, `wgnext.toml` (literal files).
+   - `src/profile/templates/claude.toml`, `codex.toml`, `nex.toml` (literal files).
    - `pub fn starter_template(name: &str) -> Option<&'static str>` returns `include_str!` content.
    - `init-starters` writes each template to `~/.wg/profiles/<name>.toml` if missing.
 
@@ -550,5 +556,5 @@ These are listed for traceability so the implementer doesn't accidentally build 
 - Existing IPC reconfigure: `src/commands/service/ipc.rs:75` (Reconfigure variant), :453 (handler), :1092 (log line format).
 - `wg config -m` hot-reload reference: `wg config --help` output documents `--no-reload` flag (default reloads).
 - Canonical config UX (model strings, route definitions): [`docs/config-ux-design.md`](config-ux-design.md), specifically §3.1 (claude-cli), §3.2b (codex-cli).
-- CLAUDE.md "Agency tasks run on claude CLI": justifies pinning `[models.evaluator]` etc. to a cheap fast model in every starter (claude:haiku for claude profile, codex:gpt-5.4-mini for codex profile, claude:haiku as the documented fallback for wgnext profile).
+- CLAUDE.md "Agency tasks run on claude CLI": justifies pinning `[models.evaluator]` etc. to a cheap fast model in every starter (claude:haiku for claude profile, codex:gpt-5.4-mini for codex profile, claude:haiku as the documented fallback for nex profile).
 - Chat-executor hot-swap: `src/commands/service/ipc.rs:154` (`SetChatExecutor`) — basis for §4.3 per-chat profile switching.

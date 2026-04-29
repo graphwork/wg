@@ -17,17 +17,23 @@ use crate::config::{Config, EndpointConfig, RoleModelConfig, TierConfig};
 
 pub const STARTER_CLAUDE: &str = include_str!("templates/claude.toml");
 pub const STARTER_CODEX: &str = include_str!("templates/codex.toml");
-pub const STARTER_WGNEXT: &str = include_str!("templates/wgnext.toml");
+pub const STARTER_NEX: &str = include_str!("templates/nex.toml");
 
 /// The three built-in starter profile names.
-pub const STARTER_NAMES: &[&str] = &["claude", "codex", "wgnext"];
+pub const STARTER_NAMES: &[&str] = &["claude", "codex", "nex"];
+
+/// Legacy starter name retired in favour of the canonical `nex` name (matching
+/// the `wg nex` subcommand). Recognised by `load()` and `init_starters()` so
+/// existing `~/.wg/profiles/wgnext.toml` files keep working with a deprecation
+/// hint until the user migrates.
+pub const LEGACY_NEX_NAME: &str = "wgnext";
 
 /// Return the baked-in template content for a starter name, or None.
 pub fn starter_template(name: &str) -> Option<&'static str> {
     match name {
         "claude" => Some(STARTER_CLAUDE),
         "codex" => Some(STARTER_CODEX),
-        "wgnext" => Some(STARTER_WGNEXT),
+        "nex" => Some(STARTER_NEX),
         _ => None,
     }
 }
@@ -165,6 +171,15 @@ pub fn set_active(name: Option<&str>) -> Result<()> {
 /// Load a named profile by name from `~/.wg/profiles/<name>.toml`.
 pub fn load(name: &str) -> Result<NamedProfile> {
     let path = profile_path(name)?;
+    if name == LEGACY_NEX_NAME && path.exists() {
+        eprintln!(
+            "warning: profile '{}' is deprecated — the canonical name is 'nex' (matches `wg nex`).\n\
+             Rename your profile file: mv {} {}",
+            LEGACY_NEX_NAME,
+            path.display(),
+            path.with_file_name("nex.toml").display(),
+        );
+    }
     if !path.exists() {
         // Suggest closest match
         let installed = list_installed().unwrap_or_default();
@@ -569,6 +584,67 @@ is_default = true
             let names = list_installed().unwrap();
             assert!(names.contains(&"alpha".to_string()));
             assert!(names.contains(&"beta".to_string()));
+        });
+    }
+
+    #[test]
+    fn test_starter_names_uses_canonical_nex_name() {
+        assert!(
+            STARTER_NAMES.contains(&"nex"),
+            "STARTER_NAMES must include the canonical 'nex' name (matches `wg nex`); got {:?}",
+            STARTER_NAMES
+        );
+        assert!(
+            !STARTER_NAMES.contains(&"wgnext"),
+            "STARTER_NAMES must NOT include the legacy 'wgnext' name; got {:?}",
+            STARTER_NAMES
+        );
+        assert!(
+            starter_template("nex").is_some(),
+            "starter_template(\"nex\") must return the template"
+        );
+        assert!(
+            starter_template("wgnext").is_none(),
+            "starter_template(\"wgnext\") must NOT return a template (legacy name retired)"
+        );
+    }
+
+    #[test]
+    fn test_nex_starter_template_uses_wg_nex_phrasing() {
+        let tmpl = starter_template("nex").unwrap();
+        assert!(
+            tmpl.contains("wg nex"),
+            "nex starter template must describe itself as `wg nex` (matches the subcommand); got: {}",
+            tmpl
+        );
+        assert!(
+            !tmpl.contains("wg-next"),
+            "nex starter template must not contain the legacy 'wg-next' hyphenation; got: {}",
+            tmpl
+        );
+        assert!(
+            !tmpl.contains("wgnext"),
+            "nex starter template must not contain the legacy 'wgnext' spelling; got: {}",
+            tmpl
+        );
+    }
+
+    #[test]
+    fn test_load_legacy_wgnext_profile_still_works() {
+        let _tmp = with_home(|| {
+            // Simulate a user who ran `wg profile init-starters` on an older
+            // build that wrote `wgnext.toml` and never re-ran init-starters.
+            let prof = NamedProfile {
+                description: Some("legacy".to_string()),
+                agent: Some(ProfileAgentSection {
+                    model: Some("local:qwen3-coder-30b".to_string()),
+                }),
+                ..Default::default()
+            };
+            save(LEGACY_NEX_NAME, &prof).unwrap();
+            // Loading by the legacy name must still succeed (backward compat).
+            let loaded = load(LEGACY_NEX_NAME).unwrap();
+            assert_eq!(loaded.description.as_deref(), Some("legacy"));
         });
     }
 }

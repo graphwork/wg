@@ -1,4 +1,4 @@
-description = "wg-next: in-process nex handler at a localhost endpoint (edit URL per machine)"
+description = "wg nex: in-process LLM handler at a localhost endpoint (edit URL per machine)"
 
 [agent]
 model = "local:qwen3-coder-30b"

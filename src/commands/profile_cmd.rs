@@ -855,6 +855,28 @@ pub fn init_starters(force: bool) -> Result<()> {
     std::fs::create_dir_all(&dir)
         .with_context(|| format!("Failed to create profiles directory {}", dir.display()))?;
 
+    // Auto-migrate the legacy `wgnext.toml` starter to the canonical `nex.toml`
+    // name (matches the `wg nex` subcommand). Only renames when the canonical
+    // file is absent — never clobbers a user's existing nex.toml.
+    let legacy_path = dir.join(format!("{}.toml", named_profile::LEGACY_NEX_NAME));
+    let canonical_path = dir.join("nex.toml");
+    let mut migrated = 0;
+    if legacy_path.exists() && !canonical_path.exists() {
+        std::fs::rename(&legacy_path, &canonical_path).with_context(|| {
+            format!(
+                "Failed to migrate {} -> {}",
+                legacy_path.display(),
+                canonical_path.display()
+            )
+        })?;
+        migrated += 1;
+        println!(
+            "  migrated {} -> {} (canonical name now matches `wg nex`)",
+            legacy_path.display(),
+            canonical_path.display()
+        );
+    }
+
     let mut written = 0;
     let mut skipped = 0;
 
@@ -873,9 +895,18 @@ pub fn init_starters(force: bool) -> Result<()> {
     }
 
     println!();
-    println!("Starter profiles: {} written, {} skipped.", written, skipped);
+    println!(
+        "Starter profiles: {} written, {} skipped{}.",
+        written,
+        skipped,
+        if migrated > 0 {
+            format!(", {} migrated", migrated)
+        } else {
+            String::new()
+        }
+    );
     if written > 0 {
-        println!("Activate one with: wg profile use claude|codex|wgnext");
+        println!("Activate one with: wg profile use claude|codex|nex");
     }
 
     Ok(())

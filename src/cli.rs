@@ -3182,7 +3182,7 @@ pub enum ProfileCommands {
         /// Second profile name (optional; if omitted, diff is base vs a)
         b: Option<String>,
     },
-    /// Write the three starter profiles (claude, codex, wgnext) to ~/.wg/profiles/
+    /// Write the three starter profiles (claude, codex, nex) to ~/.wg/profiles/
     InitStarters {
         /// Overwrite existing starter files
         #[arg(long)]

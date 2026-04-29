@@ -465,6 +465,15 @@ description = "Named profiles: a profile file with unknown field [tui] is reject
 timeout_seconds = 30
 
 [[scenario]]
+name = "profile_nex_canonical_name"
+script = "scenarios/profile_nex_canonical_name.sh"
+owners = [
+    "rename-wgnext-profile",
+]
+description = "The in-process LLM handler starter profile is named `nex` (matches `wg nex`), not the legacy `wgnext` / `wg-next`. Pins rename-wgnext-profile: (1) fresh init-starters writes nex.toml only, (2) the rendered template/description say `wg nex`, (3) wg profile list shows `[user] nex   wg nex: ...`, (4) an existing `wgnext.toml` on disk is auto-migrated to `nex.toml` preserving user edits, (5) loading the legacy `wgnext` name still works but emits a deprecation hint."
+timeout_seconds = 30
+
+[[scenario]]
 name = "pty_resize_dedup_no_scrollback_echo"
 script = "scenarios/pty_resize_dedup_no_scrollback_echo.sh"
 owners = [
