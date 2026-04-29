@@ -12,7 +12,7 @@
 //! - **wire protocol** (Anthropic vs OAI-compat)
 //!
 //! From a user's standpoint, the only knobs that matter are the **model**
-//! (`claude:opus`, `local:qwen3-coder`, `openrouter:anthropic/claude-opus-4-6`,
+//! (`claude:opus`, `nex:qwen3-coder`, `openrouter:anthropic/claude-opus-4-6`,
 //! ...) and an optional **endpoint** URL. Everything else — which subprocess
 //! to spawn, which wire protocol to speak, whether to ask the CLI to handle
 //! its own auth or pass an explicit `--endpoint` — is a derived consequence
@@ -29,13 +29,18 @@
 //! |---------------------------|----------------|-------------|-------------------|
 //! | `claude:*` (and bare)     | `claude` CLI   | Anthropic   | no (CLI auths)    |
 //! | `codex:*`                 | `codex` CLI    | OAI-compat  | no (CLI auths)    |
-//! | `local:*`                 | `native` (nex) | OAI-compat  | yes               |
+//! | `nex:*` (canonical)       | `native` (nex) | OAI-compat  | yes               |
 //! | `openrouter:*`            | `native` (nex) | OAI-compat  | optional          |
-//! | `oai-compat:*`/`openai:*` | `native` (nex) | OAI-compat  | yes               |
+//! | `local:*` (deprecated)    | `native` (nex) | OAI-compat  | yes               |
+//! | `oai-compat:*` (deprecated) / `openai:*` | `native` (nex) | OAI-compat  | yes               |
 //! | `ollama:*`                | `native` (nex) | OAI-compat  | yes               |
 //! | `vllm:*`/`llamacpp:*`     | `native` (nex) | OAI-compat  | yes               |
 //! | `gemini:*`                | `native` (nex) | (per impl)  | yes               |
 //! | `native:*`                | `native` (nex) | OAI-compat  | yes               |
+//!
+//! `local:` and `oai-compat:` are deprecated aliases for `nex:` — they
+//! still route to the same handler for one release with a stderr warning,
+//! and `wg migrate config` rewrites them in existing configs.
 //!
 //! Bare aliases without a provider prefix (`opus`, `sonnet`, `haiku`) default
 //! to the `claude` handler — they're Anthropic models by convention.
@@ -53,7 +58,7 @@ use crate::dispatch::ExecutorKind;
 /// know "which binary do I spawn for this model?" must go through here.
 ///
 /// `model` is a model spec string as the user wrote it (`claude:opus`,
-/// `local:qwen3-coder`, `opus`, etc). The function:
+/// `nex:qwen3-coder`, `opus`, etc). The function:
 ///
 /// 1. Parses the provider prefix (lenient — bare names → `None`).
 /// 2. Maps prefix → executor kind via `provider_to_executor`.
@@ -97,7 +102,19 @@ mod tests {
     }
 
     #[test]
+    fn test_nex_prefix_routes_to_native() {
+        // `nex:` is the canonical prefix for the in-process nex handler
+        // (matches the `wg nex` subcommand name).
+        assert_eq!(
+            handler_for_model("nex:qwen3-coder"),
+            ExecutorKind::Native
+        );
+    }
+
+    #[test]
     fn test_local_prefix_routes_to_native() {
+        // `local:` is the deprecated alias for `nex:` — still routes to
+        // the same handler for one release with a stderr warning.
         assert_eq!(
             handler_for_model("local:qwen3-coder"),
             ExecutorKind::Native
@@ -114,6 +131,8 @@ mod tests {
 
     #[test]
     fn test_oai_compat_prefix_routes_to_native() {
+        // `oai-compat:` is the deprecated alias for `nex:` — still routes
+        // to the same handler for one release with a stderr warning.
         assert_eq!(
             handler_for_model("oai-compat:gpt-5"),
             ExecutorKind::Native

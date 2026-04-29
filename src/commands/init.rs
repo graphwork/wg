@@ -25,7 +25,7 @@ matrix.toml
 /// warning) but the supported entry points are now:
 ///
 /// - `wg init -m claude:opus`           (claude handler implied)
-/// - `wg init -m local:qwen3-coder -e https://…`   (nex/native implied)
+/// - `wg init -m nex:qwen3-coder -e https://…`     (nex/native implied)
 /// - `wg init --route <name>`           (canonical for fully-filled tiers)
 ///
 /// When the user supplies neither route nor model we fall back to the
@@ -241,7 +241,7 @@ fn suggested_model_for_executor(executor: &str) -> &'static str {
     match executor {
         "claude" => "claude:opus",
         "codex" => "codex:gpt-5",
-        "nex" | "native" => "local:qwen3-coder -e <ENDPOINT>",
+        "nex" | "native" => "nex:qwen3-coder -e <ENDPOINT>",
         "amplifier" => "claude:opus  # amplifier wraps the same model",
         "shell" => "shell  # exec_mode, not a model — keep the route",
         _ => "<provider>:<model>",
@@ -326,7 +326,7 @@ pub fn run(
                 \n\
                   wg init -m claude:opus                                 # Anthropic Claude Code\n\
                   wg init -m codex:gpt-5                                 # OpenAI Codex CLI\n\
-                  wg init -m local:qwen3-coder -e http://127.0.0.1:8088  # local OAI-compat server\n\
+                  wg init -m nex:qwen3-coder -e http://127.0.0.1:8088    # local OAI-compat server (via nex)\n\
                   wg init -m openrouter:anthropic/claude-opus-4-6        # OpenRouter via nex\n\
                 \n\
                 Or pick a complete preset with --route:\n\
@@ -803,16 +803,17 @@ mod tests {
         .unwrap();
 
         let config = workgraph::config::Config::load(&wg_dir).unwrap();
-        // With an endpoint given, the model fields get the `local:` prefix
-        // so the provider:model validator accepts them on reload.
+        // With an endpoint given, the model fields get the `nex:` prefix
+        // (canonical, matches `wg nex`) so the provider:model validator
+        // accepts them on reload.
         assert_eq!(
             config.coordinator.model.as_deref(),
-            Some("local:nemotron-h-8b"),
-            "coordinator.model should be persisted with local: prefix"
+            Some("nex:nemotron-h-8b"),
+            "coordinator.model should be persisted with nex: prefix"
         );
         assert_eq!(
-            config.agent.model, "local:nemotron-h-8b",
-            "agent.model should be persisted with local: prefix"
+            config.agent.model, "nex:nemotron-h-8b",
+            "agent.model should be persisted with nex: prefix"
         );
         let eps = &config.llm_endpoints.endpoints;
         let default_ep = eps

@@ -226,6 +226,10 @@ fn test_handler_for_model_is_single_source_of_truth() {
     assert_eq!(handler_for_model("opus"), ExecutorKind::Claude);
 
     // OAI-compat / local / openrouter → native (nex) handler.
+    // `nex:*` is the canonical prefix matching the `wg nex` subcommand.
+    assert_eq!(handler_for_model("nex:qwen3-coder"), ExecutorKind::Native);
+    // `local:` and `oai-compat:` are deprecated aliases for `nex:` —
+    // they still route to the same handler for one release.
     assert_eq!(handler_for_model("local:qwen3-coder"), ExecutorKind::Native);
     assert_eq!(
         handler_for_model("openrouter:anthropic/claude-opus-4-6"),

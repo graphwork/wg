@@ -1671,25 +1671,38 @@ pub struct ResolvedModel {
 /// The `:` delimiter is unambiguous: provider names never contain `:`,
 /// and model IDs may contain `/` but never `:`.
 ///
-/// "oai-compat" and "openai" are aliases for the same thing: the
-/// OpenAI-compatible HTTP protocol (POST /v1/chat/completions). Any
-/// vLLM/Ollama/SGLang/etc. server speaking that wire format qualifies.
-/// "oai-compat" is the preferred name going forward (more accurate —
-/// "openai" has always been a misnomer referring to the protocol, not
-/// the vendor). Both work in configs and match arms.
+/// `nex` is the canonical prefix for the in-process nex handler (matches
+/// the `wg nex` subcommand name). `local` and `oai-compat` are deprecated
+/// aliases — accepted for one release with a stderr warning, then
+/// rewritten to `nex` by `wg migrate config`. `openai` is a legacy alias
+/// for `oai-compat` (the protocol, not the vendor). All of these route
+/// through the same in-process nex handler.
 pub const KNOWN_PROVIDERS: &[&str] = &[
     "claude",
     "openrouter",
-    "oai-compat",
-    "openai", // alias for "oai-compat" — kept for backwards compatibility
+    "nex",
+    "oai-compat", // deprecated — use "nex"
+    "openai",     // legacy alias for "oai-compat" — kept for backwards compatibility
     "codex",
     "gemini",
     "ollama",
     "llamacpp",
     "vllm",
-    "local",
+    "local", // deprecated — use "nex"
     "native",
 ];
+
+/// Provider prefixes that have been deprecated in favor of the canonical
+/// `nex:` prefix. Returning a non-empty string from this function emits a
+/// one-line stderr deprecation warning at config-load / parse time.
+///
+/// Keep this in sync with `STALE_PROVIDER_REWRITES` in `commands/migrate.rs`.
+pub fn deprecated_provider_prefix_replacement(provider: &str) -> Option<&'static str> {
+    match provider {
+        "local" | "oai-compat" => Some("nex"),
+        _ => None,
+    }
+}
 
 /// Result of parsing a `provider:model` spec.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1813,11 +1826,12 @@ pub fn parse_model_spec_strict(spec: &str) -> Result<ModelSpec, ModelSpecError> 
         input: spec.to_string(),
         message: format!(
             "Invalid model format '{}'. Models must use provider:model format. \
-             For example: 'claude:{}', 'openrouter:{}', 'oai-compat:{}'. \
+             For example: 'claude:{}', 'openrouter:{}', 'nex:{}'. \
              Known providers: {}. \
-             (Note: 'openai' is accepted as a legacy alias for 'oai-compat' — \
-             both refer to the OpenAI-compatible HTTP protocol, not to OpenAI \
-             Inc. specifically.)",
+             (Note: 'nex' is the canonical prefix for the in-process nex handler \
+             — it matches `wg nex`. 'local' and 'oai-compat' are deprecated \
+             aliases retained for one release; 'openai' is a legacy alias for \
+             'oai-compat'.)",
             spec,
             spec,
             spec,
@@ -1831,7 +1845,9 @@ pub fn parse_model_spec_strict(spec: &str) -> Result<ModelSpec, ModelSpecError> 
 ///
 /// - `claude` → `"claude"` (Claude CLI)
 /// - `codex` → `"codex"` (Codex CLI)
-/// - All others → `"native"` (OpenAI-compatible API)
+/// - `nex` (canonical) / `local` / `oai-compat` / `openrouter` / etc. → `"native"`
+///   (the in-process nex handler — name kept as `"native"` for the legacy
+///   ExecutorKind variant, but the user-facing prefix is `nex:`)
 pub fn provider_to_executor(provider: &str) -> &'static str {
     match provider {
         "claude" => "claude",
@@ -1896,7 +1912,7 @@ pub fn deprecated_executor_warnings_for_toml(content: &str) -> Vec<String> {
             "config key `{0} = \"{1}\"` is deprecated{2}; \
              wg now derives the handler from the model spec's provider \
              prefix (e.g. `model = \"claude:opus\"` → claude CLI, \
-             `model = \"local:qwen3-coder\"` → nex). Remove the explicit \
+             `model = \"nex:qwen3-coder\"` → nex). Remove the explicit \
              `executor` key; use a `provider:model` value in `model` instead.",
             label, exec_v, detail,
         ));
@@ -1912,6 +1928,62 @@ fn lookup_toml_path<'a>(root: &'a toml::Value, path: &[&str]) -> Option<&'a toml
         current = current.as_table()?.get(*seg)?;
     }
     Some(current)
+}
+
+/// Inspect a raw config.toml string and produce deprecation warnings for
+/// any model strings that use the deprecated `local:` / `oai-compat:`
+/// provider prefixes. Both prefixes were retired in favor of the canonical
+/// `nex:` (matches the `wg nex` subcommand). Existing configs keep
+/// working for one release; this surface is what tells users to migrate.
+///
+/// Walks every string value in the document and reports each occurrence
+/// once with its dotted-path location so users can find and rewrite it.
+/// Pair with `wg migrate config` for an automated rewrite.
+pub fn deprecated_model_prefix_warnings_for_toml(content: &str) -> Vec<String> {
+    let Ok(value) = content.parse::<toml::Value>() else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    walk_strings_readonly(&value, "", &mut |path, s| {
+        if let Some((prefix, rest)) = s.split_once(':')
+            && let Some(replacement) = deprecated_provider_prefix_replacement(prefix)
+        {
+            out.push(format!(
+                "model spec `{} = \"{}\"` uses deprecated `{}:` prefix — \
+                 use `{}:{}` instead (the `nex:` prefix matches the `wg nex` \
+                 subcommand). Run `wg migrate config` to rewrite automatically.",
+                path, s, prefix, replacement, rest,
+            ));
+        }
+    });
+    out
+}
+
+fn walk_strings_readonly<'a>(
+    val: &'a toml::Value,
+    path: &str,
+    f: &mut dyn FnMut(&str, &'a str),
+) {
+    match val {
+        toml::Value::String(s) => f(path, s.as_str()),
+        toml::Value::Array(arr) => {
+            for (i, child) in arr.iter().enumerate() {
+                let child_path = format!("{}[{}]", path, i);
+                walk_strings_readonly(child, &child_path, f);
+            }
+        }
+        toml::Value::Table(tbl) => {
+            for (k, child) in tbl.iter() {
+                let child_path = if path.is_empty() {
+                    k.clone()
+                } else {
+                    format!("{}.{}", path, k)
+                };
+                walk_strings_readonly(child, &child_path, f);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Drop the `executor` keys from `[agent]` / `[dispatcher]` / `[coordinator]`
@@ -1970,10 +2042,13 @@ pub fn provider_to_native_provider(provider: &str) -> &'static str {
         "claude" => "anthropic",
         "codex" => "oai-compat",
         "openrouter" => "openrouter",
-        // "oai-compat" is the canonical name for the OpenAI-compatible
-        // HTTP protocol. "openai" remains accepted as a legacy alias
-        // (both user-input configs and older serialized state), but the
-        // canonical form returned here is "oai-compat".
+        // `nex` is the canonical prefix for the in-process nex handler —
+        // it speaks OAI-compat by default, with `openrouter:` as the
+        // implicit-endpoint convenience case.
+        "nex" => "oai-compat",
+        // "oai-compat" is the legacy alias for the OpenAI-compatible HTTP
+        // protocol — `nex` is the canonical prefix going forward.
+        // "openai" is the older legacy alias retained for back-compat.
         "oai-compat" | "openai" => "oai-compat",
         "gemini" => "oai-compat", // Gemini uses OpenAI-compatible endpoint
         "ollama" | "llamacpp" | "vllm" | "local" => "local",
@@ -1985,14 +2060,17 @@ pub fn provider_to_native_provider(provider: &str) -> &'static str {
 /// Reverse map: internal provider name → user-facing `provider:model` prefix.
 ///
 /// This is the inverse of [`provider_to_native_provider`] for display purposes.
+/// Returns `nex` for the OAI-compat / local cases — the canonical prefix
+/// matching the `wg nex` subcommand. `openrouter` keeps its own prefix
+/// because the URL convention (api.openrouter.ai) is implicit when the
+/// user picks it.
 pub fn native_provider_to_prefix(provider: &str) -> &str {
     match provider {
         "anthropic" => "claude",
         "openrouter" => "openrouter",
-        // Both the canonical "oai-compat" and the legacy "openai" internal
-        // tag map to the user-facing "oai-compat:" prefix.
-        "oai-compat" | "openai" => "oai-compat",
-        "local" => "local",
+        // Internal "oai-compat" / "openai" / "local" all map to the
+        // user-facing canonical "nex:" prefix (matches `wg nex`).
+        "oai-compat" | "openai" | "local" => "nex",
         other => other,
     }
 }
@@ -3891,6 +3969,9 @@ impl Config {
                 for w in deprecated_executor_warnings_for_toml(&content) {
                     eprintln!("warning: ({}) {}", label, w);
                 }
+                for w in deprecated_model_prefix_warnings_for_toml(&content) {
+                    eprintln!("warning: ({}) {}", label, w);
+                }
             }
         }
 
@@ -4023,6 +4104,13 @@ impl Config {
             eprintln!("warning: {}", warning);
         }
 
+        // Same one-release deprecation window for the legacy `local:` /
+        // `oai-compat:` model-spec prefixes, replaced by the canonical
+        // `nex:` (matches the `wg nex` subcommand).
+        for warning in deprecated_model_prefix_warnings_for_toml(&content) {
+            eprintln!("warning: {}", warning);
+        }
+
         Ok(config)
     }
 
@@ -4124,9 +4212,9 @@ impl Config {
     ///   `default` is replaced and all other entries lose `is_default`.
     /// - `model` (if Some) goes into `agent.model` and
     ///   `coordinator.model`. When combined with `endpoint`, the model
-    ///   name is prefixed with `local:` so the provider:model validator
-    ///   accepts it on reload; when `model` is provider-prefixed
-    ///   already (`claude:opus`), it's used verbatim.
+    ///   name is prefixed with `nex:` (canonical, matches `wg nex`) so
+    ///   the provider:model validator accepts it on reload; when `model`
+    ///   is provider-prefixed already (`claude:opus`), it's used verbatim.
     /// - `endpoint` must start with `http://` or `https://`; otherwise
     ///   this fn returns an error before mutating anything.
     ///
@@ -4147,14 +4235,16 @@ impl Config {
             anyhow::bail!("Endpoint must be an http:// or https:// URL (got: {})", url);
         }
 
-        // With an endpoint, bare model names need a `local:` prefix to
-        // pass the provider:model validator.
+        // With an endpoint, bare model names need a `nex:` prefix to
+        // pass the provider:model validator. The `nex:` prefix is the
+        // canonical form (matches the `wg nex` subcommand); `local:` and
+        // `oai-compat:` are deprecated aliases retained for back-compat.
         let effective_model: Option<String> = if endpoint.is_some() {
             model.map(|m| {
                 if m.contains(':') {
                     m.to_string()
                 } else {
-                    format!("local:{}", m)
+                    format!("nex:{}", m)
                 }
             })
         } else {
@@ -6866,6 +6956,7 @@ provider = "openrouter"
         assert_eq!(provider_to_executor("gemini"), "native");
         assert_eq!(provider_to_executor("ollama"), "native");
         assert_eq!(provider_to_executor("local"), "native");
+        assert_eq!(provider_to_executor("nex"), "native");
     }
 
     #[test]
@@ -6873,11 +6964,117 @@ provider = "openrouter"
         assert_eq!(provider_to_native_provider("openrouter"), "openrouter");
         assert_eq!(provider_to_native_provider("openai"), "oai-compat");
         assert_eq!(provider_to_native_provider("oai-compat"), "oai-compat");
+        assert_eq!(provider_to_native_provider("nex"), "oai-compat");
         assert_eq!(provider_to_native_provider("claude"), "anthropic");
         assert_eq!(provider_to_native_provider("codex"), "oai-compat");
         assert_eq!(provider_to_native_provider("gemini"), "oai-compat");
         assert_eq!(provider_to_native_provider("ollama"), "local");
         assert_eq!(provider_to_native_provider("local"), "local");
+    }
+
+    #[test]
+    fn test_native_provider_to_prefix_canonical_nex() {
+        // Internal "oai-compat" / "openai" / "local" → user-facing "nex:"
+        // (canonical, matches `wg nex`). The deprecated "oai-compat:" /
+        // "local:" forms still parse, but we never emit them.
+        assert_eq!(native_provider_to_prefix("oai-compat"), "nex");
+        assert_eq!(native_provider_to_prefix("openai"), "nex");
+        assert_eq!(native_provider_to_prefix("local"), "nex");
+        // Canonical handler-name prefixes pass through.
+        assert_eq!(native_provider_to_prefix("anthropic"), "claude");
+        assert_eq!(native_provider_to_prefix("openrouter"), "openrouter");
+    }
+
+    #[test]
+    fn test_deprecated_provider_prefix_replacement() {
+        assert_eq!(deprecated_provider_prefix_replacement("local"), Some("nex"));
+        assert_eq!(
+            deprecated_provider_prefix_replacement("oai-compat"),
+            Some("nex")
+        );
+        // Not deprecated:
+        assert_eq!(deprecated_provider_prefix_replacement("nex"), None);
+        assert_eq!(deprecated_provider_prefix_replacement("claude"), None);
+        assert_eq!(deprecated_provider_prefix_replacement("openrouter"), None);
+    }
+
+    #[test]
+    fn test_nex_prefix_routes_to_native_handler() {
+        // The whole point of the rename: nex:<model> must route to the
+        // native (in-process nex) handler, just like local:/oai-compat: did.
+        let spec = parse_model_spec("nex:qwen3-coder-30b");
+        assert_eq!(spec.provider.as_deref(), Some("nex"));
+        assert_eq!(spec.model_id, "qwen3-coder-30b");
+        assert_eq!(provider_to_executor("nex"), "native");
+    }
+
+    #[test]
+    fn test_deprecated_model_prefix_warnings_local() {
+        let toml = r#"
+[agent]
+model = "local:qwen3-coder"
+
+[tiers]
+fast = "local:qwen3-coder"
+"#;
+        let warnings = deprecated_model_prefix_warnings_for_toml(toml);
+        // Two model strings with deprecated `local:` prefix → two warnings.
+        assert_eq!(warnings.len(), 2, "got: {:?}", warnings);
+        for w in &warnings {
+            assert!(w.contains("local:"), "warning must mention local: — got {}", w);
+            assert!(w.contains("nex:"), "warning must suggest nex: — got {}", w);
+            assert!(
+                w.contains("wg migrate config"),
+                "warning must hint at migrate command — got {}",
+                w,
+            );
+        }
+    }
+
+    #[test]
+    fn test_deprecated_model_prefix_warnings_oai_compat() {
+        let toml = r#"
+[agent]
+model = "oai-compat:gpt-5"
+"#;
+        let warnings = deprecated_model_prefix_warnings_for_toml(toml);
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("oai-compat:"));
+        assert!(warnings[0].contains("nex:gpt-5"));
+    }
+
+    #[test]
+    fn test_deprecated_model_prefix_warnings_canonical_silent() {
+        // `nex:` (canonical) and `claude:` (handler-name match) must NOT
+        // emit a warning. Same for `openrouter:` — that one keeps its
+        // implicit-endpoint convenience and stays.
+        let toml = r#"
+[agent]
+model = "nex:qwen3-coder"
+
+[tiers]
+fast = "claude:haiku"
+standard = "openrouter:anthropic/claude-sonnet-4-6"
+"#;
+        let warnings = deprecated_model_prefix_warnings_for_toml(toml);
+        assert!(warnings.is_empty(), "no warnings expected; got {:?}", warnings);
+    }
+
+    #[test]
+    fn test_deprecated_model_prefix_warnings_includes_path() {
+        // The warning must include a dotted path so users can find the
+        // offending field in their config.toml.
+        let toml = r#"
+[agent]
+model = "local:qwen3-coder"
+"#;
+        let warnings = deprecated_model_prefix_warnings_for_toml(toml);
+        assert_eq!(warnings.len(), 1);
+        assert!(
+            warnings[0].contains("agent.model"),
+            "warning must include the dotted path 'agent.model' — got {}",
+            warnings[0],
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -7878,13 +8075,13 @@ fetch_max_chars = 16000
             .unwrap();
         // Both endpoint + model mentions in summary.
         assert!(summary.iter().any(|s| s.contains("http://lambda01:8089")));
-        assert!(summary.iter().any(|s| s.contains("local:qwen3-coder")));
-        // Model gets the local: prefix.
+        assert!(summary.iter().any(|s| s.contains("nex:qwen3-coder")));
+        // Model gets the nex: prefix (canonical, matches `wg nex`).
         assert_eq!(
             config.coordinator.model.as_deref(),
-            Some("local:qwen3-coder")
+            Some("nex:qwen3-coder")
         );
-        assert_eq!(config.agent.model, "local:qwen3-coder");
+        assert_eq!(config.agent.model, "nex:qwen3-coder");
         // Endpoint entry is default.
         let default_ep = config
             .llm_endpoints

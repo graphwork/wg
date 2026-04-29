@@ -358,12 +358,13 @@ fn local_config(params: &RouteParams) -> Config {
         ..Default::default()
     }];
 
-    let default_model = format!("local:{}", model_id);
+    let default_model = format!("nex:{}", model_id);
 
     // Single local model fills all tiers — user should adjust as they
     // load more models. This is honest about the local single-model
     // reality, not pretending haiku/sonnet/opus exist locally. Stored in
-    // provider:model format to satisfy the strict validator.
+    // provider:model format (canonical `nex:` prefix matching `wg nex`)
+    // so the strict validator accepts on reload.
     config.tiers = TierConfig {
         fast: Some(default_model.clone()),
         standard: Some(default_model.clone()),
@@ -416,7 +417,7 @@ fn nex_custom_config(params: &RouteParams) -> Config {
         ..Default::default()
     }];
 
-    let default_model = format!("oai-compat:{}", model_id);
+    let default_model = format!("nex:{}", model_id);
 
     // Single custom model — same single-model treatment as local.
     // provider:model format to satisfy the strict validator.
@@ -774,7 +775,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        let expected = "local:qwen3-coder";
+        let expected = "nex:qwen3-coder";
         assert_eq!(config.agent.model, expected);
         assert_eq!(config.coordinator.model.as_deref(), Some(expected));
         assert_eq!(config.tiers.fast.as_deref(), Some(expected));
@@ -807,7 +808,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        let expected = "oai-compat:my-model";
+        let expected = "nex:my-model";
         assert_eq!(
             config.models.evaluator.as_ref().unwrap().model.as_deref(),
             Some(expected),
@@ -872,12 +873,13 @@ mod tests {
         assert!(ep.api_key_file.is_none());
 
         assert_tiers_filled(&config);
-        // Single local model fills all tiers (provider:model format)
-        assert_eq!(config.tiers.fast.as_deref(), Some("local:qwen3:4b"));
-        assert_eq!(config.tiers.standard.as_deref(), Some("local:qwen3:4b"));
-        assert_eq!(config.tiers.premium.as_deref(), Some("local:qwen3:4b"));
+        // Single local model fills all tiers (provider:model format,
+        // canonical `nex:` prefix).
+        assert_eq!(config.tiers.fast.as_deref(), Some("nex:qwen3:4b"));
+        assert_eq!(config.tiers.standard.as_deref(), Some("nex:qwen3:4b"));
+        assert_eq!(config.tiers.premium.as_deref(), Some("nex:qwen3:4b"));
 
-        assert_eq!(config.agent.model, "local:qwen3:4b");
+        assert_eq!(config.agent.model, "nex:qwen3:4b");
 
         assert_models_evaluator_and_assigner_pinned(&config);
 
@@ -920,18 +922,18 @@ mod tests {
         assert_tiers_filled(&config);
         assert_eq!(
             config.tiers.fast.as_deref(),
-            Some("oai-compat:my-special-model")
+            Some("nex:my-special-model")
         );
         assert_eq!(
             config.tiers.standard.as_deref(),
-            Some("oai-compat:my-special-model")
+            Some("nex:my-special-model")
         );
         assert_eq!(
             config.tiers.premium.as_deref(),
-            Some("oai-compat:my-special-model")
+            Some("nex:my-special-model")
         );
 
-        assert_eq!(config.agent.model, "oai-compat:my-special-model");
+        assert_eq!(config.agent.model, "nex:my-special-model");
 
         assert_models_evaluator_and_assigner_pinned(&config);
 
@@ -1002,8 +1004,8 @@ mod tests {
     fn test_ensure_provider_prefix_adds_prefix() {
         assert_eq!(ensure_provider_prefix("opus", "claude"), "claude:opus");
         assert_eq!(
-            ensure_provider_prefix("qwen3:4b", "local"),
-            "local:qwen3:4b",
+            ensure_provider_prefix("qwen3:4b", "nex"),
+            "nex:qwen3:4b",
             "ollama-style tag (model:tag) without a known provider prefix should still get prefixed"
         );
     }

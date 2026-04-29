@@ -22,8 +22,10 @@ Pick a **(model, endpoint)** pair — wg derives the handler from the model spec
 
 - `wg config -m claude:opus` → claude CLI handler (no endpoint needed; CLI auths itself)
 - `wg config -m codex:gpt-5.5` → codex CLI handler (no endpoint needed)
-- `wg config -m local:qwen3-coder -e http://127.0.0.1:8088` → in-process nex handler
+- `wg config -m nex:qwen3-coder -e http://127.0.0.1:8088` → in-process nex handler
 - `wg config -m openrouter:anthropic/claude-opus-4-7` → in-process nex handler
+
+The model prefix matches the handler / subcommand name (`claude` / `codex` / `nex`). The previous `local:` and `oai-compat:` prefixes for the in-process nex handler are deprecated aliases for `nex:`; they keep working for one release with a stderr warning, and `wg migrate config` rewrites them in existing config files.
 
 The legacy `--executor` / `-x` flag and `[agent].executor` / `[dispatcher].executor` config keys are deprecated; they still work for one release with a deprecation warning, but the model spec is the single source of truth for which handler runs. Spawned agents continue to receive `WG_EXECUTOR_TYPE` and `WG_MODEL` env vars (handler kind + resolved model). See `src/dispatch/handler_for_model.rs` for the full mapping.
 

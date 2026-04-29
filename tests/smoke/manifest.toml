@@ -495,6 +495,16 @@ description = "The in-process LLM handler starter profile is named `nex` (matche
 timeout_seconds = 30
 
 [[scenario]]
+name = "nex_canonical_prefix"
+script = "scenarios/nex_canonical_prefix.sh"
+owners = [
+    "fix-model-prefix",
+    "smoke-gate-is",
+]
+description = "`nex:<model>` is the canonical model-prefix for the in-process nex handler (matches `wg nex`); the previous `local:` and `oai-compat:` prefixes are deprecated. Pins fix-model-prefix: (1) `wg init -m nex:<model> -e <URL>` writes a clean config that round-trips with no warnings, (2) legacy `local:` / `oai-compat:` configs still load but emit a stderr deprecation warning naming `nex:` as the replacement, (3) `wg migrate config` rewrites the deprecated prefixes to `nex:`, writes a `.pre-migrate.<ts>` backup, and is idempotent (second run is a no-op), (4) the dispatcher routes `nex:<model>` to the in-process native handler (visible via spawn-task --dry-run with WG_EXECUTOR_TYPE=native + WG_MODEL=nex:*)."
+timeout_seconds = 60
+
+[[scenario]]
 name = "pty_resize_dedup_no_scrollback_echo"
 script = "scenarios/pty_resize_dedup_no_scrollback_echo.sh"
 owners = [

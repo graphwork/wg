@@ -104,6 +104,10 @@ mod tests {
         assert!(uses_o200k("openai/gpt-4.1-mini"));
         assert!(uses_o200k("o3-mini"));
         assert!(!uses_o200k("claude-sonnet-4-6"));
+        // Both the canonical `nex:` and the deprecated `oai-compat:`
+        // prefix should fall through to the cl100k tokenizer for non-
+        // OpenAI models running through the in-process nex handler.
+        assert!(!uses_o200k("nex:qwen3-coder-30b"));
         assert!(!uses_o200k("oai-compat:qwen3-coder-30b"));
     }
 

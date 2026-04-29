@@ -2031,11 +2031,12 @@ context_window = 32768
         std::fs::write(dir.path().join("model_cache.json"), cache.to_string()).unwrap();
 
         let result = resolve_model_input("qwen3-coder-30b", dir.path()).unwrap();
-        // Serialized models now emit "oai-compat:" prefix (the internal
-        // provider tag "openai" → user-facing prefix "oai-compat" via
-        // native_provider_to_prefix). The legacy "openai:" form still
-        // parses correctly; we just don't emit it any more.
-        assert_eq!(result, "oai-compat:qwen3-coder-30b");
+        // Serialized models now emit "nex:" prefix (the canonical name
+        // matching the `wg nex` subcommand; legacy internal tags "openai"
+        // / "oai-compat" / "local" all map to the user-facing "nex:" via
+        // native_provider_to_prefix). The legacy "openai:" / "oai-compat:"
+        // / "local:" forms still parse correctly; we just don't emit them.
+        assert_eq!(result, "nex:qwen3-coder-30b");
     }
 
     #[test]

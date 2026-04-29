@@ -179,15 +179,15 @@ model = "codex:gpt-5.4-mini"
 description = "wg nex: in-process LLM handler at a localhost endpoint (edit URL per machine)"
 
 [agent]
-model = "local:qwen3-coder-30b"
+model = "nex:qwen3-coder-30b"
 
 [dispatcher]
-model = "local:qwen3-coder-30b"
+model = "nex:qwen3-coder-30b"
 
 [tiers]
-fast = "local:qwen3-coder-30b"
-standard = "local:qwen3-coder-30b"
-premium = "local:qwen3-coder-30b"
+fast = "nex:qwen3-coder-30b"
+standard = "nex:qwen3-coder-30b"
+premium = "nex:qwen3-coder-30b"
 
 # NOTE: agency tasks (.evaluate-*, .flip-*, .assign-*) are pinned to claude:haiku
 # by design (see CLAUDE.md "Agency tasks run on claude CLI"). Override here only

@@ -803,6 +803,18 @@ fn fix_stale_model_strings(
                 return Some(new_str);
             }
         }
+        // Generic rewrite for the deprecated `local:` / `oai-compat:` prefixes
+        // — replace with the canonical `nex:` (matches `wg nex`).
+        // Only fires on values that match `<deprecated>:<rest>` where
+        // <deprecated> is in `deprecated_provider_prefix_replacement`.
+        if let Some((prefix, rest)) = s.split_once(':')
+            && let Some(replacement) =
+                workgraph::config::deprecated_provider_prefix_replacement(prefix)
+        {
+            let new_str = format!("{}:{}", replacement, rest);
+            rewritten.push((path.to_string(), s.clone(), new_str.clone()));
+            return Some(new_str);
+        }
         None
     });
 }
@@ -1024,6 +1036,77 @@ premium = "codex:gpt-5.4-pro"
             "should rewrite codex:gpt-5.4-pro to codex:gpt-5.5; got {:?}",
             r.rewritten_values,
         );
+    }
+
+    #[test]
+    fn rewrites_deprecated_local_prefix_to_nex() {
+        // `local:` is the deprecated alias for `nex:` (canonical, matches
+        // the `wg nex` subcommand). `wg migrate config` rewrites it.
+        let tmp = TempDir::new().unwrap();
+        let path = write_config(
+            tmp.path(),
+            r#"
+[agent]
+model = "local:qwen3-coder-30b"
+
+[tiers]
+fast = "local:qwen3-coder-30b"
+"#,
+        );
+        let r = migrate_one(&path, false).unwrap();
+        assert!(
+            r.rewritten_values
+                .iter()
+                .any(|(_, old, new)| old == "local:qwen3-coder-30b"
+                    && new == "nex:qwen3-coder-30b"),
+            "should rewrite local:qwen3-coder-30b to nex:qwen3-coder-30b; got {:?}",
+            r.rewritten_values,
+        );
+        let migrated = std::fs::read_to_string(&path).unwrap();
+        assert!(migrated.contains("\"nex:qwen3-coder-30b\""));
+        assert!(!migrated.contains("\"local:qwen3-coder-30b\""));
+    }
+
+    #[test]
+    fn rewrites_deprecated_oai_compat_prefix_to_nex() {
+        let tmp = TempDir::new().unwrap();
+        let path = write_config(
+            tmp.path(),
+            r#"
+[agent]
+model = "oai-compat:gpt-5"
+"#,
+        );
+        let r = migrate_one(&path, false).unwrap();
+        assert!(
+            r.rewritten_values
+                .iter()
+                .any(|(_, old, new)| old == "oai-compat:gpt-5" && new == "nex:gpt-5"),
+            "should rewrite oai-compat:gpt-5 to nex:gpt-5; got {:?}",
+            r.rewritten_values,
+        );
+        let migrated = std::fs::read_to_string(&path).unwrap();
+        assert!(migrated.contains("\"nex:gpt-5\""));
+        assert!(!migrated.contains("\"oai-compat:gpt-5\""));
+    }
+
+    #[test]
+    fn migrate_writes_pre_migrate_backup() {
+        let tmp = TempDir::new().unwrap();
+        let path = write_config(
+            tmp.path(),
+            r#"
+[agent]
+model = "local:qwen3-coder"
+"#,
+        );
+        let r = migrate_one(&path, false).unwrap();
+        assert!(r.wrote);
+        let backup = r.backup_path.expect("backup path must be set on a write");
+        assert!(backup.exists(), "backup file must exist on disk");
+        let backup_body = std::fs::read_to_string(&backup).unwrap();
+        // Backup is the pre-migration content — still the deprecated prefix.
+        assert!(backup_body.contains("local:qwen3-coder"));
     }
 
     #[test]

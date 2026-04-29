@@ -208,12 +208,12 @@ pub fn create_provider_ext(
     if let Some(url) = endpoint_name
         && (url.starts_with("http://") || url.starts_with("https://"))
     {
-        // Strip the canonical provider prefix (`local:`, `oai-compat:`,
-        // `openrouter:`, etc.) before passing the model name to the
-        // wire layer. `wg init` stores models in the prefixed form
-        // (`local:qwen3-coder`), but downstream OAI-compat servers
-        // (SGLang, vLLM, llama.cpp, Ollama) treat a colon in the
-        // `model` field as a LoRA-adapter reference and reject
+        // Strip the canonical provider prefix (`nex:`, `local:`,
+        // `oai-compat:`, `openrouter:`, etc.) before passing the model
+        // name to the wire layer. `wg init` stores models in the
+        // prefixed form (`nex:qwen3-coder`), but downstream OAI-compat
+        // servers (SGLang, vLLM, llama.cpp, Ollama) treat a colon in
+        // the `model` field as a LoRA-adapter reference and reject
         // anything they don't have loaded with HTTP 400 — which broke
         // every `wg nex -e <url> -m <prefixed>` invocation on the
         // first message.

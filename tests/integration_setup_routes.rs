@@ -246,9 +246,9 @@ fn test_setup_route_local_uses_supplied_model() {
 
     let cfg = load_global_config(&fake_home);
     assert_eq!(cfg.coordinator.executor.as_deref(), Some("native"));
-    assert_eq!(cfg.tiers.fast.as_deref(), Some("local:qwen3:4b"));
-    assert_eq!(cfg.tiers.standard.as_deref(), Some("local:qwen3:4b"));
-    assert_eq!(cfg.tiers.premium.as_deref(), Some("local:qwen3:4b"));
+    assert_eq!(cfg.tiers.fast.as_deref(), Some("nex:qwen3:4b"));
+    assert_eq!(cfg.tiers.standard.as_deref(), Some("nex:qwen3:4b"));
+    assert_eq!(cfg.tiers.premium.as_deref(), Some("nex:qwen3:4b"));
 }
 
 #[test]

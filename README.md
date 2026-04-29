@@ -61,10 +61,12 @@ Writes `~/.wg/config.toml`. Pick one of 5 smooth routes — each produces a comp
 | `claude-cli` | `claude:opus` | Local `claude` CLI login (no API key in config) |
 | `codex-cli` | `codex:gpt-5` | Local `codex` CLI login |
 | `openrouter` | `openrouter:<model>` | One API key, every major provider |
-| `local` | `local:<model>` | Ollama / vLLM / llama.cpp on `localhost` |
-| `nex-custom` | `oai-compat:<model>` | Bring your own OAI-compatible URL + key + model |
+| `local` | `nex:<model>` | Ollama / vLLM / llama.cpp on `localhost` (via nex) |
+| `nex-custom` | `nex:<model>` | Bring your own OAI-compatible URL + key + model |
 
-You don't pick an executor — wg derives the handler from the model spec's provider prefix (`claude:*` → claude CLI, `codex:*` → codex CLI, everything else → in-process nex). The `nex` (a.k.a. `native`) handler is the in-process OAI-compatible HTTP client; three of the five routes use it under the hood.
+You don't pick an executor — wg derives the handler from the model spec's provider prefix. The prefix matches the handler / subcommand name: `claude:*` → claude CLI, `codex:*` → codex CLI, `nex:*` → in-process nex (`wg nex`). `openrouter:*` also routes through nex but uses an implicit `api.openrouter.ai` endpoint.
+
+(`local:` and `oai-compat:` are deprecated aliases for `nex:` retained for one release; `wg migrate config` rewrites them in existing config files.)
 
 Non-interactive use:
 

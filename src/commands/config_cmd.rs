@@ -466,8 +466,8 @@ pub fn render_minimal_config(
                     R::ClaudeCli => "claude:opus",
                     R::CodexCli => "codex:gpt-5.5",
                     R::Openrouter => "openrouter:anthropic/claude-opus-4-7",
-                    R::Local => "local:qwen2.5-coder:7b",
-                    R::NexCustom => "oai-compat:custom-model",
+                    R::Local => "nex:qwen2.5-coder:7b",
+                    R::NexCustom => "nex:custom-model",
                 };
                 format!(
                     "# ~/.wg/config.toml — written by `wg config init --global --bare`\n\
@@ -560,7 +560,7 @@ pub fn render_minimal_config(
         (R::Local, ConfigScope::Global) => format!(
             "{header}\
              [agent]\n\
-             model = \"local:qwen2.5-coder:7b\"\n\
+             model = \"nex:qwen2.5-coder:7b\"\n\
              \n\
              [[llm_endpoints.endpoints]]\n\
              name = \"local\"\n\
@@ -573,7 +573,7 @@ pub fn render_minimal_config(
             "{header}\
              # Edit endpoint url + api_key_env to match your provider.\n\
              [agent]\n\
-             model = \"oai-compat:custom-model\"\n\
+             model = \"nex:custom-model\"\n\
              \n\
              [[llm_endpoints.endpoints]]\n\
              name = \"custom\"\n\
@@ -625,7 +625,7 @@ pub fn render_minimal_config(
              name = \"\"\n\
              \n\
              [agent]\n\
-             model = \"local:qwen2.5-coder:7b\"\n\
+             model = \"nex:qwen2.5-coder:7b\"\n\
              \n\
              [[llm_endpoints.endpoints]]\n\
              name = \"local\"\n\
@@ -640,7 +640,7 @@ pub fn render_minimal_config(
              name = \"\"\n\
              \n\
              [agent]\n\
-             model = \"oai-compat:custom-model\"\n\
+             model = \"nex:custom-model\"\n\
              \n\
              [[llm_endpoints.endpoints]]\n\
              name = \"custom\"\n\
@@ -700,7 +700,7 @@ pub fn update(
     let mut changed = false;
 
     // Endpoint-driven update: shares semantics with `wg init -m/-e`.
-    // Writes a default oai-compat endpoint entry + applies the `local:`
+    // Writes a default oai-compat endpoint entry + applies the `nex:`
     // prefix to the model name so the provider:model validator accepts
     // it on reload. Model-only sets flow through the existing validated
     // agent.model / coordinator.model blocks further down (we re-check

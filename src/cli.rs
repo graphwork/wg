@@ -59,20 +59,22 @@ pub enum Commands {
         executor: Option<String>,
 
         /// Model spec for this project. Use `provider:model` form
-        /// (e.g. `claude:opus`, `local:qwen3-coder`,
-        /// `openrouter:anthropic/claude-opus-4-6`, `oai-compat:gpt-5`).
+        /// (e.g. `claude:opus`, `nex:qwen3-coder`,
+        /// `openrouter:anthropic/claude-opus-4-6`).
         /// The provider prefix tells wg which handler to spawn — claude
         /// CLI for `claude:*`, codex CLI for `codex:*`, in-process nex
-        /// for `local:*` / `openrouter:*` / `oai-compat:*` / etc.
+        /// for `nex:*` / `openrouter:*` / etc.
         /// Bare aliases (`opus`, `sonnet`, `haiku`) default to claude.
+        /// (Legacy: `local:` and `oai-compat:` are deprecated aliases for
+        /// `nex:` and emit a warning; `wg migrate config` rewrites them.)
         #[arg(short = 'm', long)]
         model: Option<String>,
 
-        /// Inline LLM endpoint URL. Required for `local:*` models and
+        /// Inline LLM endpoint URL. Required for `nex:*` models and
         /// any other model whose handler needs an explicit URL (nex /
         /// native). Ignored for handlers that auth themselves
         /// (claude / codex CLIs).
-        /// Example: `wg init -m local:qwen3-coder -e http://127.0.0.1:8088`
+        /// Example: `wg init -m nex:qwen3-coder -e http://127.0.0.1:8088`
         #[arg(short = 'e', long)]
         endpoint: Option<String>,
 
