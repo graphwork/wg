@@ -86,6 +86,16 @@ description = "`wg chat create -e <URL>` (and the legacy `wg service create-coor
 timeout_seconds = 30
 
 [[scenario]]
+name = "launcher_custom_url_register_persists"
+script = "scenarios/launcher_custom_url_register_persists.sh"
+owners = [
+    "fix-new-chat",
+    "smoke-gate-is",
+]
+description = "fix-new-chat: the TUI new-chat dialog allows ad-hoc Custom URL entry plus optional 'register with name'. Filling the name persists the endpoint to GLOBAL config (~/.wg/config.toml) so it shows up in `wg endpoint list` afterward, while the chat itself still pins to that URL."
+timeout_seconds = 30
+
+[[scenario]]
 name = "setup_routes_complete_configs"
 script = "scenarios/setup_routes_complete_configs.sh"
 owners = [

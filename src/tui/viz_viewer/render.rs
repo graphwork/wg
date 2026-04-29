@@ -6669,7 +6669,14 @@ fn render_filter_picker_with_hits(
             format!("    {}", picker.empty_hint),
             Style::default().fg(Color::DarkGray),
         )));
-        return lines;
+        local_offset += 1;
+        // CRITICAL: when allow_custom is set, fall through so the Custom
+        // row still renders even with zero items. Pre-fix this branch
+        // returned early — users with no registered endpoints saw the
+        // empty-hint and no way to drop a URL in (fix-new-chat).
+        if !picker.allow_custom {
+            return lines;
+        }
     }
 
     // Apply scroll window: skip first `scroll_offset` filtered rows, show up
@@ -6770,7 +6777,10 @@ fn render_filter_picker_with_hits(
         let line_idx = local_offset;
         if picker.custom_active {
             lines.push(Line::from(vec![
-                Span::styled(format!("    {}Custom: ", bullet), custom_style),
+                Span::styled(
+                    format!("    {}{}: ", bullet, picker.custom_label),
+                    custom_style,
+                ),
                 Span::raw(picker.custom_text.clone()),
                 Span::styled(
                     "\u{2588}",
@@ -6781,9 +6791,9 @@ fn render_filter_picker_with_hits(
             ]));
         } else {
             let display = if picker.custom_text.is_empty() {
-                "Custom: [enter value]".to_string()
+                format!("{}: [enter value]", picker.custom_label)
             } else {
-                format!("Custom: {}", picker.custom_text)
+                format!("{}: {}", picker.custom_label, picker.custom_text)
             };
             lines.push(Line::from(Span::styled(
                 format!("    {}{}", bullet, display),
@@ -6844,7 +6854,12 @@ fn render_filter_picker(
             format!("    {}", picker.empty_hint),
             Style::default().fg(Color::DarkGray),
         )));
-        return lines;
+        // Mirror render_filter_picker_with_hits: when allow_custom is
+        // set, keep going so the Custom row still renders even with
+        // zero items (fix-new-chat).
+        if !picker.allow_custom {
+            return lines;
+        }
     }
 
     for (fi, &item_idx) in picker.filtered_indices.iter().enumerate() {
@@ -6906,7 +6921,10 @@ fn render_filter_picker(
         };
         if picker.custom_active {
             lines.push(Line::from(vec![
-                Span::styled(format!("    {}Custom: ", bullet), custom_style),
+                Span::styled(
+                    format!("    {}{}: ", bullet, picker.custom_label),
+                    custom_style,
+                ),
                 Span::raw(picker.custom_text.clone()),
                 Span::styled(
                     "\u{2588}",
@@ -6917,9 +6935,9 @@ fn render_filter_picker(
             ]));
         } else {
             let display = if picker.custom_text.is_empty() {
-                "Custom: [enter value]".to_string()
+                format!("{}: [enter value]", picker.custom_label)
             } else {
-                format!("Custom: {}", picker.custom_text)
+                format!("{}: {}", picker.custom_label, picker.custom_text)
             };
             lines.push(Line::from(Span::styled(
                 format!("    {}{}", bullet, display),
@@ -6944,6 +6962,8 @@ pub(crate) fn draw_launcher_pane(frame: &mut Frame, app: &mut VizApp, area: Rect
         model_picker,
         endpoint_picker,
         show_endpoint,
+        show_endpoint_register,
+        register_endpoint_name,
         recent_list,
         recent_selected,
         creating,
@@ -6957,6 +6977,8 @@ pub(crate) fn draw_launcher_pane(frame: &mut Frame, app: &mut VizApp, area: Rect
             l.model_picker.clone(),
             l.endpoint_picker.clone(),
             l.show_endpoint(),
+            l.show_endpoint_register(),
+            l.register_endpoint_name.clone(),
             l.recent_list.clone(),
             l.recent_selected,
             l.creating,
@@ -7230,6 +7252,60 @@ pub(crate) fn draw_launcher_pane(frame: &mut Frame, app: &mut VizApp, area: Rect
             app.is_light_theme,
         );
         lines.extend(ep_lines);
+
+        // Optional inline registration row: only shown when the user has
+        // started typing a Custom URL (fix-new-chat). Filling this in
+        // persists the endpoint to global config; leaving blank uses the
+        // URL as a one-shot for THIS chat only.
+        if show_endpoint_register {
+            let reg_active = active_section == LauncherSection::EndpointRegister;
+            let reg_style = if reg_active {
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::DarkGray)
+            };
+            let prefix = if reg_active { "  \u{25b8} " } else { "    " };
+            let mut spans: Vec<Span> = vec![
+                Span::styled(
+                    format!("{}Optional: also register this endpoint with name ", prefix),
+                    reg_style,
+                ),
+            ];
+            if register_endpoint_name.is_empty() {
+                spans.push(Span::styled(
+                    if reg_active {
+                        "[\u{2588}]"
+                    } else {
+                        "[                ]"
+                    },
+                    if reg_active {
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::SLOW_BLINK)
+                    } else {
+                        Style::default().fg(Color::DarkGray)
+                    },
+                ));
+            } else {
+                spans.push(Span::raw(format!("[{}", register_endpoint_name)));
+                if reg_active {
+                    spans.push(Span::styled(
+                        "\u{2588}",
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::SLOW_BLINK),
+                    ));
+                }
+                spans.push(Span::raw("]"));
+            }
+            lines.push(Line::from(spans));
+            lines.push(Line::from(Span::styled(
+                "      (leave blank for one-shot)",
+                Style::default().fg(Color::DarkGray),
+            )));
+        }
         lines.push(Line::from(""));
     }
 

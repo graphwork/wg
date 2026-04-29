@@ -1444,6 +1444,40 @@ fn handle_launcher_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModifier
         }
     }
 
+    // EndpointRegister section: typing edits the optional registration
+    // name for an ad-hoc Custom URL (fix-new-chat). Shown only when the
+    // user has filled in a Custom URL above; filling this in causes
+    // launch_from_launcher to persist the endpoint to global config.
+    if launcher.active_section == LauncherSection::EndpointRegister {
+        match code {
+            KeyCode::Esc => {
+                app.close_launcher();
+                return;
+            }
+            KeyCode::Tab => {
+                if modifiers.contains(KeyModifiers::SHIFT) {
+                    launcher.prev_section();
+                } else {
+                    launcher.next_section();
+                }
+                return;
+            }
+            KeyCode::Enter => {
+                app.launch_from_launcher();
+                return;
+            }
+            KeyCode::Char(c) if !modifiers.contains(KeyModifiers::CONTROL) => {
+                launcher.register_endpoint_name.push(c);
+                return;
+            }
+            KeyCode::Backspace => {
+                launcher.register_endpoint_name.pop();
+                return;
+            }
+            _ => return,
+        }
+    }
+
     // Custom endpoint input mode (via FilterPicker)
     if launcher.active_section == LauncherSection::Endpoint
         && launcher.endpoint_picker.custom_active
@@ -1563,6 +1597,9 @@ fn handle_launcher_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModifier
                     launcher.recent_selected -= 1;
                 }
             }
+            // Name + EndpointRegister are single-row text inputs; arrow
+            // keys do nothing (handled earlier in the section-specific
+            // input branches).
             _ => {}
         },
         KeyCode::Down | KeyCode::Char('j') => match launcher.active_section {
@@ -7785,6 +7822,7 @@ mod scrollbar_tests {
             all_models,
             creating: false,
             last_error: None,
+            register_endpoint_name: String::new(),
         }
     }
 
@@ -8378,6 +8416,124 @@ mod scrollbar_tests {
             model_list_h >= 10,
             "model list should dominate vertical space — got height={}, expected >=10",
             model_list_h,
+        );
+    }
+
+    /// fix-new-chat regression lock: with the native executor selected
+    /// and ZERO endpoints registered, the launcher must still render a
+    /// 'Custom URL' affordance so users can drop in a tailnet / lab URL
+    /// inline. Pre-fix, the renderer early-returned on `picker.items
+    /// .is_empty()` and the user only saw "No endpoints registered.
+    /// wg endpoint add ..." with no way out of the TUI.
+    #[test]
+    fn test_dialog_shows_custom_url_with_no_registered_endpoints() {
+        use crate::tui::viz_viewer::render::draw_launcher_pane;
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let (mut app, _tmp) = build_test_app();
+        app.launcher = Some(make_launcher(
+            vec![("native", "in-process loop", true)],
+            vec![("local:qwen3-coder", "")],
+        ));
+        // Force the endpoint picker into the same shape as `open_launcher`:
+        // empty items, allow_custom=true, custom_label="Custom URL".
+        if let Some(l) = app.launcher.as_mut() {
+            l.endpoint_picker = FilterPicker::new(vec![], true)
+                .with_custom_label("Custom URL")
+                .with_hint("No endpoints registered.");
+            // Native executor → Endpoint section is shown.
+            assert!(l.show_endpoint(), "native executor should expose endpoint section");
+            l.active_section = LauncherSection::Endpoint;
+        }
+        app.input_mode = InputMode::Launcher;
+
+        let backend = TestBackend::new(120, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 120,
+            height: 40,
+        };
+        terminal
+            .draw(|frame| draw_launcher_pane(frame, &mut app, area))
+            .unwrap();
+
+        // Buffer scan: every cell concatenated as a single string —
+        // "Custom URL" must appear somewhere even with zero registered
+        // endpoints.
+        let buffer = terminal.backend().buffer().clone();
+        let mut text = String::new();
+        for y in 0..buffer.area.height {
+            for x in 0..buffer.area.width {
+                text.push_str(buffer[(x, y)].symbol());
+            }
+            text.push('\n');
+        }
+        assert!(
+            text.contains("Custom URL"),
+            "launcher pane must show 'Custom URL' affordance when no endpoints registered.\n\
+             Buffer dump:\n{}",
+            text,
+        );
+    }
+
+    /// fix-new-chat regression lock: when the user starts typing a
+    /// Custom URL, the launcher must expose the optional "register with
+    /// name" field. Without this, ad-hoc URLs would always be one-shot
+    /// — the user has no way to persist them to global config.
+    #[test]
+    fn test_dialog_shows_register_name_field_when_custom_url_active() {
+        use crate::tui::viz_viewer::render::draw_launcher_pane;
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let (mut app, _tmp) = build_test_app();
+        app.launcher = Some(make_launcher(
+            vec![("native", "in-process loop", true)],
+            vec![("local:qwen3-coder", "")],
+        ));
+        if let Some(l) = app.launcher.as_mut() {
+            l.endpoint_picker = FilterPicker::new(vec![], true)
+                .with_custom_label("Custom URL")
+                .with_hint("No endpoints registered.");
+            l.endpoint_picker.enter_custom();
+            l.endpoint_picker.custom_text = "https://my-endpoint.example.com:8080".to_string();
+            l.active_section = LauncherSection::Endpoint;
+
+            assert!(
+                l.show_endpoint_register(),
+                "with a Custom URL filled in, register field must be visible"
+            );
+        }
+        app.input_mode = InputMode::Launcher;
+
+        let backend = TestBackend::new(140, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 140,
+            height: 40,
+        };
+        terminal
+            .draw(|frame| draw_launcher_pane(frame, &mut app, area))
+            .unwrap();
+
+        let buffer = terminal.backend().buffer().clone();
+        let mut text = String::new();
+        for y in 0..buffer.area.height {
+            for x in 0..buffer.area.width {
+                text.push_str(buffer[(x, y)].symbol());
+            }
+            text.push('\n');
+        }
+        assert!(
+            text.contains("register this endpoint"),
+            "launcher pane must surface the 'register this endpoint' field when Custom URL is active.\n\
+             Buffer dump:\n{}",
+            text,
         );
     }
 }

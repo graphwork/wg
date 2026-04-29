@@ -918,6 +918,11 @@ pub struct FilterPicker {
     pub custom_active: bool,
     /// Custom value text buffer.
     pub custom_text: String,
+    /// Label for the custom row — defaults to "Custom" but the endpoint
+    /// picker overrides to "Custom URL" so users with no registered
+    /// endpoints see an obvious "drop a URL in here" affordance instead
+    /// of a generic "Custom" they have to guess about (fix-new-chat).
+    pub custom_label: String,
     /// Hint to show when items list is empty.
     pub empty_hint: String,
     /// First visible filtered-row index (for scroll-window rendering).
@@ -937,6 +942,7 @@ impl FilterPicker {
             allow_custom,
             custom_active: false,
             custom_text: String::new(),
+            custom_label: "Custom".to_string(),
             empty_hint: String::new(),
             scroll_offset: 0,
         }
@@ -944,6 +950,11 @@ impl FilterPicker {
 
     pub fn with_hint(mut self, hint: &str) -> Self {
         self.empty_hint = hint.to_string();
+        self
+    }
+
+    pub fn with_custom_label(mut self, label: &str) -> Self {
+        self.custom_label = label.to_string();
         self
     }
 
@@ -1090,6 +1101,13 @@ pub enum LauncherSection {
     Executor,
     Model,
     Endpoint,
+    /// Optional "register this endpoint with name X" input shown only
+    /// when the user has entered a Custom URL in the Endpoint section.
+    /// Filling this in causes `launch_from_launcher` to write the new
+    /// endpoint into `~/.wg/config.toml` (global) before creating the
+    /// chat — so the URL persists for future launches. Leaving it
+    /// blank keeps the endpoint as a one-shot for THIS chat only.
+    EndpointRegister,
     Recent,
 }
 
@@ -1130,6 +1148,13 @@ pub struct LauncherState {
     /// the toast alone disappears too quickly to read. Cleared on the
     /// next successful submit attempt or when the launcher is closed.
     pub last_error: Option<String>,
+    /// Optional name for registering an ad-hoc Custom URL endpoint into
+    /// the global registry (`~/.wg/config.toml`). Only consumed when
+    /// `endpoint_picker.custom_active` and `custom_text` looks like a URL
+    /// — left blank, the URL is used for THIS chat only and not saved.
+    /// Surfaced as the `LauncherSection::EndpointRegister` field
+    /// (fix-new-chat).
+    pub register_endpoint_name: String,
 }
 
 /// Return models, ordered for the given `executor` (compatible-first).
@@ -1308,6 +1333,42 @@ impl LauncherState {
         self.selected_executor() == "native"
     }
 
+    /// Whether the optional "register this endpoint with name" field is
+    /// available for navigation. Only true when the user has selected the
+    /// Custom URL row in the endpoint section AND typed something into it
+    /// — there's no point exposing the field when no URL is being supplied.
+    pub fn show_endpoint_register(&self) -> bool {
+        self.show_endpoint()
+            && self.endpoint_picker.allow_custom
+            && (self.endpoint_picker.custom_active
+                || self.endpoint_picker.is_custom_selected())
+            && !self.endpoint_picker.custom_text.trim().is_empty()
+    }
+
+    /// Compute the (name, url) pair that should be persisted to global
+    /// config when the user clicks Launch. Returns `Some` only when the
+    /// user has filled in BOTH a Custom URL (with http:// or https://
+    /// scheme) AND a non-empty registration name. Pure function so the
+    /// "should we register?" decision can be unit-tested without
+    /// touching the global config file.
+    pub fn endpoint_register_pair(&self) -> Option<(String, String)> {
+        let trimmed_name = self.register_endpoint_name.trim().to_string();
+        if trimmed_name.is_empty() {
+            return None;
+        }
+        let is_custom_url = self.endpoint_picker.custom_active
+            || (self.endpoint_picker.is_custom_selected()
+                && !self.endpoint_picker.custom_text.trim().is_empty());
+        if !is_custom_url {
+            return None;
+        }
+        let url = self.selected_endpoint()?;
+        if !(url.starts_with("http://") || url.starts_with("https://")) {
+            return None;
+        }
+        Some((trimmed_name, url))
+    }
+
     pub fn selected_model(&self) -> Option<String> {
         self.model_picker.value()
     }
@@ -1368,6 +1429,15 @@ impl LauncherState {
                 }
             }
             LauncherSection::Endpoint => {
+                if self.show_endpoint_register() {
+                    LauncherSection::EndpointRegister
+                } else if !self.recent_list.is_empty() {
+                    LauncherSection::Recent
+                } else {
+                    LauncherSection::Name
+                }
+            }
+            LauncherSection::EndpointRegister => {
                 if !self.recent_list.is_empty() {
                     LauncherSection::Recent
                 } else {
@@ -1383,6 +1453,8 @@ impl LauncherState {
             LauncherSection::Name => {
                 if !self.recent_list.is_empty() {
                     LauncherSection::Recent
+                } else if self.show_endpoint_register() {
+                    LauncherSection::EndpointRegister
                 } else if self.show_endpoint() {
                     LauncherSection::Endpoint
                 } else {
@@ -1392,8 +1464,11 @@ impl LauncherState {
             LauncherSection::Executor => LauncherSection::Name,
             LauncherSection::Model => LauncherSection::Executor,
             LauncherSection::Endpoint => LauncherSection::Model,
+            LauncherSection::EndpointRegister => LauncherSection::Endpoint,
             LauncherSection::Recent => {
-                if self.show_endpoint() {
+                if self.show_endpoint_register() {
+                    LauncherSection::EndpointRegister
+                } else if self.show_endpoint() {
                     LauncherSection::Endpoint
                 } else {
                     LauncherSection::Model
@@ -13772,8 +13847,16 @@ impl VizApp {
         let initial_models = filter_models_for_executor(&all_models, &initial_executor);
         let model_picker = FilterPicker::new(initial_models, true)
             .with_hint("No models found. Check wg config --registry.");
+        // Endpoint picker: empty hint mentions Custom URL inline so users
+        // with no registered endpoints understand they can drop a URL in
+        // (fix-new-chat). The picker still renders the Custom row even
+        // when items is empty — the renderer no longer early-returns
+        // on empty items + allow_custom=true.
         let endpoint_picker = FilterPicker::new(endpoint_list, true)
-            .with_hint("No endpoints registered. wg endpoint add ... to add one.");
+            .with_custom_label("Custom URL")
+            .with_hint(
+                "No endpoints registered. Pick 'Custom URL' below to drop in any URL inline.",
+            );
 
         self.launcher = Some(LauncherState {
             active_section: LauncherSection::Executor,
@@ -13787,6 +13870,7 @@ impl VizApp {
             all_models,
             creating: false,
             last_error: None,
+            register_endpoint_name: String::new(),
         });
         self.input_mode = InputMode::Launcher;
     }
@@ -13805,12 +13889,13 @@ impl VizApp {
         // already-creating duplicate-submit path) without holding the
         // mutable borrow across `self.live_chat_count()` /
         // `self.push_toast()` / `self.exec_command()` calls below.
-        let (name, executor, model, endpoint) = match self.launcher.as_ref() {
+        let (name, executor, model, endpoint, register_pair) = match self.launcher.as_ref() {
             Some(l) if !l.creating => (
                 l.name.trim().to_string(),
                 l.selected_executor().to_string(),
                 l.selected_model(),
                 l.selected_endpoint(),
+                l.endpoint_register_pair(),
             ),
             // None (no launcher open) or creating=true (in-flight) —
             // both no-op.
@@ -13830,6 +13915,49 @@ impl VizApp {
             self.launcher = None;
             self.input_mode = InputMode::Normal;
             return;
+        }
+
+        // Optional inline endpoint registration (fix-new-chat): when the
+        // user filled in a Custom URL AND a register-name, persist the
+        // endpoint to project config (`.wg/config.toml`) BEFORE firing
+        // the chat-create IPC. The chat itself still uses the URL via
+        // `--endpoint` below — registration just makes the endpoint
+        // appear in the NEXT launcher open's pre-registered list.
+        //
+        // We save to project (not global) config because the launcher's
+        // `open_launcher` reads through `Config::load_or_default` which
+        // strips global endpoints unless `[llm_endpoints]
+        // inherit_global = true` is set in the project. Saving globally
+        // here would silently fail the user's "register so it shows up
+        // next time" expectation. Project-local registration keeps the
+        // endpoint scoped to the project, which is also a better fit
+        // for ad-hoc URLs (a tailnet box used for THIS project, not
+        // every workgraph project on the machine).
+        //
+        // Duplicate name is a soft failure: surface as a toast and
+        // still create the chat, so the user isn't blocked.
+        if let Some((reg_name, reg_url)) = register_pair {
+            match crate::commands::endpoints::run_add(
+                &self.workgraph_dir,
+                &reg_name,
+                None,
+                Some(&reg_url),
+                None,
+                None,
+                None,
+                None,
+                false,
+                /* global */ false,
+            ) {
+                Ok(()) => self.push_toast(
+                    format!("Registered endpoint '{}'", reg_name),
+                    ToastSeverity::Info,
+                ),
+                Err(e) => self.push_toast(
+                    format!("Endpoint registration failed: {}", e),
+                    ToastSeverity::Warning,
+                ),
+            }
         }
 
         let mut args = vec!["service".to_string(), "create-coordinator".to_string()];
@@ -23000,6 +23128,7 @@ mod tui_chat_tests {
             all_models: vec![],
             creating: true,
             last_error: None,
+            register_endpoint_name: String::new(),
         });
         app.input_mode = InputMode::Launcher;
 
@@ -23060,6 +23189,7 @@ mod tui_chat_tests {
             all_models: vec![],
             creating: true,
             last_error: None,
+            register_endpoint_name: String::new(),
         });
         app.input_mode = InputMode::Launcher;
 
@@ -24429,13 +24559,153 @@ mod filter_picker_tests {
         );
     }
 
+    /// fix-new-chat regression lock: an empty endpoint list with
+    /// allow_custom=true MUST still expose the Custom row as selectable.
+    /// Pre-fix, `visible_count()` reported 1 (the custom row) but the
+    /// renderer early-returned on empty items, so users couldn't drop
+    /// in a URL.
     #[test]
-    fn test_selected_clamps_on_filter() {
+    fn test_empty_picker_keeps_custom_row_selectable() {
+        let mut picker = FilterPicker::new(vec![], true)
+            .with_custom_label("Custom URL")
+            .with_hint("No endpoints registered.");
+        assert!(picker.items.is_empty());
+        assert_eq!(
+            picker.visible_count(),
+            1,
+            "empty + allow_custom must still expose 1 row (the Custom row)"
+        );
+        // Selecting the only row puts focus on the custom entry.
+        assert!(picker.is_custom_selected());
+        picker.enter_custom();
+        picker.custom_text = "https://my-endpoint.example.com:8080".to_string();
+        assert_eq!(
+            picker.value().as_deref(),
+            Some("https://my-endpoint.example.com:8080"),
+            "Custom URL must round-trip through value() even when items is empty"
+        );
+        assert_eq!(picker.custom_label, "Custom URL");
+    }
+
+    #[test]
+    fn test_with_custom_label_overrides_default() {
+        let picker = FilterPicker::new(vec![], true).with_custom_label("Custom URL");
+        assert_eq!(picker.custom_label, "Custom URL");
+
+        let default = FilterPicker::new(vec![], true);
+        assert_eq!(default.custom_label, "Custom");
+    }
+
+    #[test]
+    fn test_selected_clamps_on_filter_again() {
         let mut picker = sample_picker();
         picker.selected = 4; // last item
         picker.filter = "opus".to_string();
         picker.apply_filter();
         assert!(picker.selected < picker.visible_count());
+    }
+}
+
+#[cfg(test)]
+mod launcher_register_pair_tests {
+    use super::{FilterPicker, LauncherSection, LauncherState};
+
+    fn make_state(executor: &str) -> LauncherState {
+        LauncherState {
+            active_section: LauncherSection::Endpoint,
+            name: String::new(),
+            executor_list: vec![(executor.to_string(), "test".to_string(), true)],
+            executor_selected: 0,
+            model_picker: FilterPicker::new(vec![("local:qwen".into(), "".into())], true),
+            endpoint_picker: FilterPicker::new(vec![], true)
+                .with_custom_label("Custom URL"),
+            recent_list: vec![],
+            recent_selected: 0,
+            all_models: vec![],
+            creating: false,
+            last_error: None,
+            register_endpoint_name: String::new(),
+        }
+    }
+
+    #[test]
+    fn pair_none_when_no_register_name() {
+        let mut state = make_state("native");
+        state.endpoint_picker.enter_custom();
+        state.endpoint_picker.custom_text = "https://lambda01.example/30000".into();
+        // No register name typed.
+        assert_eq!(state.endpoint_register_pair(), None);
+    }
+
+    #[test]
+    fn pair_none_when_url_missing() {
+        let mut state = make_state("native");
+        state.register_endpoint_name = "my-lab".into();
+        // Custom not active, custom_text empty.
+        assert_eq!(state.endpoint_register_pair(), None);
+    }
+
+    #[test]
+    fn pair_none_when_endpoint_value_is_a_pre_registered_name() {
+        // Pre-registered endpoint selected, custom inactive — even with a
+        // register name typed (stale UI state), we must NOT register.
+        let items = vec![("openrouter".to_string(), "https://...".to_string())];
+        let mut state = make_state("native");
+        state.endpoint_picker = FilterPicker::new(items, true).with_custom_label("Custom URL");
+        state.register_endpoint_name = "my-lab".into();
+        // Selected row 0 = "openrouter" (the pre-registered name, not a URL).
+        assert_eq!(state.endpoint_register_pair(), None);
+    }
+
+    #[test]
+    fn pair_some_when_url_and_name_filled() {
+        let mut state = make_state("native");
+        state.endpoint_picker.enter_custom();
+        state.endpoint_picker.custom_text = "https://lambda01.example/30000".into();
+        state.register_endpoint_name = "my-lab".into();
+        assert_eq!(
+            state.endpoint_register_pair(),
+            Some(("my-lab".to_string(), "https://lambda01.example/30000".to_string()))
+        );
+    }
+
+    #[test]
+    fn pair_trims_whitespace_from_register_name() {
+        let mut state = make_state("native");
+        state.endpoint_picker.enter_custom();
+        state.endpoint_picker.custom_text = "https://x.example".into();
+        state.register_endpoint_name = "  spaced-name  ".into();
+        assert_eq!(
+            state.endpoint_register_pair(),
+            Some(("spaced-name".to_string(), "https://x.example".to_string()))
+        );
+    }
+
+    #[test]
+    fn pair_rejects_non_http_scheme() {
+        let mut state = make_state("native");
+        state.endpoint_picker.enter_custom();
+        state.endpoint_picker.custom_text = "ftp://wrong.example".into();
+        state.register_endpoint_name = "my-lab".into();
+        assert_eq!(state.endpoint_register_pair(), None);
+    }
+
+    #[test]
+    fn show_endpoint_register_only_when_url_pending() {
+        let mut state = make_state("native");
+        // No URL → no register field.
+        assert!(!state.show_endpoint_register());
+        // Custom active, but empty text → still no field.
+        state.endpoint_picker.enter_custom();
+        assert!(!state.show_endpoint_register());
+        // Custom active + text → field appears.
+        state.endpoint_picker.custom_text = "https://x.example".into();
+        assert!(state.show_endpoint_register());
+        // Different executor (claude) hides endpoint section entirely → no field.
+        let mut state2 = make_state("claude");
+        state2.endpoint_picker.enter_custom();
+        state2.endpoint_picker.custom_text = "https://x.example".into();
+        assert!(!state2.show_endpoint_register());
     }
 }
 
