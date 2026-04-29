@@ -1113,6 +1113,51 @@ fn build_auto_assign_tasks(
         }
     }
 
+    // Phase 1b: Reopen Failed/Abandoned `.assign-*` tasks even when their
+    // source task is not "ready" by the standard query — Failed is not
+    // dep-satisfied, so source stays Blocked and Phase 1 above misses it.
+    // Without this, a transient LLM error during assignment permanently
+    // strands the source task. Mirrors Phase 1's reopen logic.
+    {
+        let stuck_assign_ids: Vec<(String, String, Status)> = graph
+            .tasks()
+            .filter_map(|t| {
+                let source_id = t.id.strip_prefix(".assign-")?;
+                if !matches!(t.status, Status::Failed | Status::Abandoned) {
+                    return None;
+                }
+                let source = graph.get_task(source_id)?;
+                if source.agent.is_some() || source.assigned.is_some() {
+                    return None;
+                }
+                if !matches!(source.status, Status::Open | Status::Incomplete) {
+                    return None;
+                }
+                Some((t.id.clone(), source_id.to_string(), t.status))
+            })
+            .collect();
+
+        for (assign_id, _source_id, prev_status) in stuck_assign_ids {
+            if let Some(t) = graph.get_task_mut(&assign_id) {
+                t.status = Status::Open;
+                t.assigned = None;
+                t.completed_at = None;
+                t.description = None;
+                t.failure_reason = None;
+                t.log.push(LogEntry {
+                    timestamp: Utc::now().to_rfc3339(),
+                    actor: Some("coordinator".to_string()),
+                    user: Some(workgraph::current_user()),
+                    message: format!(
+                        "Reopened for retry (was {:?}, source task still needs assignment)",
+                        prev_status
+                    ),
+                });
+                modified = true;
+            }
+        }
+    }
+
     // Phase 2: Process ready .assign-* tasks (run lightweight LLM assignment).
     // These may have been created at publish time or in Phase 1 above.
     //

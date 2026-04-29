@@ -13416,6 +13416,9 @@ mod tests {
         app.right_panel_tab = RightPanelTab::Chat;
         app.active_coordinator_id = 1;
         app.chat.coordinator_active = true;
+        // Populate active_tabs + cached_coordinator_id_set from the graph so the
+        // tab bar actually has an entry to render.
+        app.sync_active_tabs_from_graph();
 
         // Write streaming data for cid=1 — state would normally be Yellow for .chat-N.
         workgraph::chat::write_streaming(&wg_dir, 1, "partial reply").unwrap();

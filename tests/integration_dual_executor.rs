@@ -922,6 +922,7 @@ async fn scenario_6_compaction_on_resume() {
     let config = ResumeConfig {
         budget_pct: 0.50,
         context_window_tokens: 2000, // Very small to force compaction
+        ..Default::default()
     };
 
     let resume_data = load_resume_data(&j_path, tmp.path(), &config)

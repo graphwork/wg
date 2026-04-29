@@ -4968,11 +4968,16 @@ pub struct VizApp {
     /// `maybe_refresh()` alongside `cached_chat_tab_entries`. Pairs with the
     /// chat-tab renderer's tab-bar build.
     pub cached_user_board_entries: Vec<(String, String)>,
-    /// Set of cids known to the most recently loaded graph — used by
+    /// Map of cid → canonical task id (`.chat-N` for new chats, `.coordinator-N`
+    /// for legacy graphs) from the most recently loaded graph. Used by
     /// `rebuild_active_tab_entries_from_cache()` to recompute
     /// `cached_chat_tab_entries` after `active_tabs` mutations (close_tab,
-    /// sync_active_tabs_from_graph) without touching disk.
-    cached_coordinator_id_set: std::collections::HashSet<u32>,
+    /// sync_active_tabs_from_graph) without touching disk. Storing canonical
+    /// labels here is what lets the chat-tab renderer keep the muted-gray
+    /// treatment for legacy `.coordinator-N` ids — losing the label would
+    /// always coerce to `.chat-N` and the deprecation styling would silently
+    /// stop firing.
+    cached_coordinator_id_set: std::collections::HashMap<u32, String>,
 
     // ── Live refresh ──
     /// Last observed modification time of graph.jsonl.
@@ -5261,7 +5266,7 @@ impl VizApp {
             editor_handler: create_editor_handler(),
             cached_chat_tab_entries: Vec::new(),
             cached_user_board_entries: Vec::new(),
-            cached_coordinator_id_set: std::collections::HashSet::new(),
+            cached_coordinator_id_set: std::collections::HashMap::new(),
             last_graph_mtime: graph_mtime,
             last_refresh: Instant::now(),
             last_refresh_display: chrono::Local::now().format("%H:%M:%S").to_string(),
@@ -9601,7 +9606,7 @@ impl VizApp {
             editor_handler: create_editor_handler(),
             cached_chat_tab_entries: Vec::new(),
             cached_user_board_entries: Vec::new(),
-            cached_coordinator_id_set: std::collections::HashSet::new(),
+            cached_coordinator_id_set: std::collections::HashMap::new(),
             last_graph_mtime: None,
             last_refresh: Instant::now(),
             last_refresh_display: String::new(),
@@ -13525,8 +13530,10 @@ impl VizApp {
     /// the 2 MB+ `graph.jsonl` on every frame (the original 55 % CPU bug).
     pub fn refresh_chat_tab_caches(&mut self, graph: &workgraph::graph::WorkGraph) {
         let coordinator_entries = Self::list_coordinator_ids_and_labels_from_graph(graph);
-        self.cached_coordinator_id_set =
-            coordinator_entries.iter().map(|(id, _)| *id).collect();
+        self.cached_coordinator_id_set = coordinator_entries
+            .iter()
+            .map(|(id, label)| (*id, label.clone()))
+            .collect();
         self.rebuild_active_tab_entries_from_cache();
         self.cached_user_board_entries = Self::list_user_board_entries_from_graph(graph);
     }
@@ -13535,13 +13542,18 @@ impl VizApp {
     /// `cached_coordinator_id_set` — purely in-memory, no disk I/O. Called
     /// after any mutation of `active_tabs` (`close_tab`,
     /// `sync_active_tabs_from_graph`) so the cache stays consistent with the
-    /// user-visible tab bar without re-parsing `graph.jsonl`.
+    /// user-visible tab bar without re-parsing `graph.jsonl`. Falls back to
+    /// `format_chat_task_id` for ids missing from the canonical-label map
+    /// (only happens before the first `refresh_chat_tab_caches`).
     fn rebuild_active_tab_entries_from_cache(&mut self) {
         self.cached_chat_tab_entries = self
             .active_tabs
             .iter()
-            .filter(|&&id| self.cached_coordinator_id_set.contains(&id))
-            .map(|&id| (id, workgraph::chat_id::format_chat_task_id(id)))
+            .filter_map(|&id| {
+                self.cached_coordinator_id_set
+                    .get(&id)
+                    .map(|label| (id, label.clone()))
+            })
             .collect();
     }
 
@@ -13608,12 +13620,13 @@ impl VizApp {
     /// tasks are dropped). New graph chats not yet in active_tabs are NOT
     /// included here — use sync_active_tabs_from_graph for that.
     pub fn active_tab_ids_and_labels(&self) -> Vec<(u32, String)> {
-        let current: std::collections::HashSet<u32> =
-            self.list_coordinator_ids().into_iter().collect();
+        let current: std::collections::HashMap<u32, String> = self
+            .list_coordinator_ids_and_labels()
+            .into_iter()
+            .collect();
         self.active_tabs
             .iter()
-            .filter(|&&id| current.contains(&id))
-            .map(|&id| (id, workgraph::chat_id::format_chat_task_id(id)))
+            .filter_map(|&id| current.get(&id).map(|label| (id, label.clone())))
             .collect()
     }
 
@@ -13640,8 +13653,12 @@ impl VizApp {
     ///     (in sorted order so the initial population is deterministic).
     ///   - Remove tabs for chats that no longer exist (abandoned/archived).
     pub fn sync_active_tabs_from_graph(&mut self) {
-        let sorted_ids = self.list_coordinator_ids(); // already sorted by cid
-        let current: std::collections::HashSet<u32> = sorted_ids.iter().copied().collect();
+        let entries = self.list_coordinator_ids_and_labels(); // canonical labels, sorted
+        let current: std::collections::HashMap<u32, String> = entries
+            .iter()
+            .map(|(id, label)| (*id, label.clone()))
+            .collect();
+        let sorted_ids: Vec<u32> = entries.iter().map(|(id, _)| *id).collect();
         // Add newly-appeared chats in sorted order so the tab bar is stable
         for &id in &sorted_ids {
             if !self.active_tabs.contains(&id) && !self.closed_tabs.contains(&id) {
@@ -13649,7 +13666,7 @@ impl VizApp {
             }
         }
         // Drop tabs whose underlying tasks were abandoned/archived
-        self.active_tabs.retain(|id| current.contains(id));
+        self.active_tabs.retain(|id| current.contains_key(id));
         // If the active coordinator was dropped, switch to first available tab
         if !self.active_tabs.is_empty()
             && !self.active_tabs.contains(&self.active_coordinator_id)
@@ -13657,9 +13674,8 @@ impl VizApp {
             let next = self.active_tabs[0];
             self.switch_coordinator(next);
         }
-        // Refresh the per-frame cache: list_coordinator_ids() above already
-        // populated cached_coordinator_id_set indirectly via the cid set
-        // we just computed; replace it and rebuild the tab-bar cache.
+        // Refresh the per-frame cache with canonical labels so legacy
+        // `.coordinator-N` ids keep their muted-gray treatment in the tab bar.
         self.cached_coordinator_id_set = current;
         self.rebuild_active_tab_entries_from_cache();
     }

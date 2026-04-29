@@ -398,101 +398,134 @@ mod tests {
         }
     }
 
-    // These tests expect Native handler; isolate from WG_EXECUTOR_TYPE env var
-    // which the coordinator daemon sets per-agent.
+    /// Save and restore WG_EXECUTOR_TYPE + WG_MODEL across a test body.
+    /// `set_exec` / `set_model` configure the env for the duration of `f`.
+    /// Env restoration runs even on panic via Drop, so failed assertions
+    /// don't leak into other tests.
+    fn with_env<R>(
+        set_exec: Option<&str>,
+        set_model: Option<&str>,
+        f: impl FnOnce() -> R,
+    ) -> R {
+        struct EnvGuard {
+            saved_exec: Option<String>,
+            saved_model: Option<String>,
+        }
+        impl Drop for EnvGuard {
+            fn drop(&mut self) {
+                unsafe {
+                    match self.saved_exec.take() {
+                        Some(v) => std::env::set_var("WG_EXECUTOR_TYPE", v),
+                        None => std::env::remove_var("WG_EXECUTOR_TYPE"),
+                    }
+                    match self.saved_model.take() {
+                        Some(v) => std::env::set_var("WG_MODEL", v),
+                        None => std::env::remove_var("WG_MODEL"),
+                    }
+                }
+            }
+        }
+        let _guard = EnvGuard {
+            saved_exec: std::env::var("WG_EXECUTOR_TYPE").ok(),
+            saved_model: std::env::var("WG_MODEL").ok(),
+        };
+        unsafe {
+            match set_exec {
+                Some(v) => std::env::set_var("WG_EXECUTOR_TYPE", v),
+                None => std::env::remove_var("WG_EXECUTOR_TYPE"),
+            }
+            match set_model {
+                Some(v) => std::env::set_var("WG_MODEL", v),
+                None => std::env::remove_var("WG_MODEL"),
+            }
+        }
+        f()
+    }
+
+    // These tests pin WG_EXECUTOR_TYPE=native because role/resume are
+    // Native-handler-specific concepts; the dispatcher default (Claude)
+    // would route to a Claude handler with no role/resume fields. We also
+    // scrub WG_MODEL because the agent harness running cargo test sets it
+    // to the agent's resolved model, which would otherwise leak in via
+    // dispatch::plan_spawn's `default_model` arg.
     #[test]
     #[serial]
     fn coordinator_task_gets_coordinator_role() {
-        let saved = std::env::var("WG_EXECUTOR_TYPE").ok();
-        unsafe { std::env::remove_var("WG_EXECUTOR_TYPE") };
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(dir.path().join(".workgraph")).unwrap();
-        let task = mktask(".coordinator-0");
-        let spec = resolve_handler(dir.path(), &task, None).unwrap();
-        if let Some(v) = saved {
-            unsafe { std::env::set_var("WG_EXECUTOR_TYPE", v) };
-        }
-        match spec {
-            HandlerSpec::Native { role, .. } => {
-                assert_eq!(role, Some("coordinator".to_string()));
+        with_env(Some("native"), None, || {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::create_dir_all(dir.path().join(".workgraph")).unwrap();
+            let task = mktask(".coordinator-0");
+            let spec = resolve_handler(dir.path(), &task, None).unwrap();
+            match spec {
+                HandlerSpec::Native { role, .. } => {
+                    assert_eq!(role, Some("coordinator".to_string()));
+                }
+                _ => panic!("expected Native handler"),
             }
-            _ => panic!("expected Native handler"),
-        }
+        });
     }
 
     #[test]
     #[serial]
     fn non_coordinator_task_gets_no_role() {
-        let saved = std::env::var("WG_EXECUTOR_TYPE").ok();
-        unsafe { std::env::remove_var("WG_EXECUTOR_TYPE") };
-        let dir = tempfile::tempdir().unwrap();
-        let task = mktask("my-task");
-        let spec = resolve_handler(dir.path(), &task, None).unwrap();
-        if let Some(v) = saved {
-            unsafe { std::env::set_var("WG_EXECUTOR_TYPE", v) };
-        }
-        match spec {
-            HandlerSpec::Native { role, .. } => {
-                assert!(role.is_none(), "regular task should not have a role");
+        with_env(Some("native"), None, || {
+            let dir = tempfile::tempdir().unwrap();
+            let task = mktask("my-task");
+            let spec = resolve_handler(dir.path(), &task, None).unwrap();
+            match spec {
+                HandlerSpec::Native { role, .. } => {
+                    assert!(role.is_none(), "regular task should not have a role");
+                }
+                _ => panic!("expected Native handler"),
             }
-            _ => panic!("expected Native handler"),
-        }
+        });
     }
 
     #[test]
     #[serial]
     fn role_override_wins() {
-        let saved = std::env::var("WG_EXECUTOR_TYPE").ok();
-        unsafe { std::env::remove_var("WG_EXECUTOR_TYPE") };
-        let dir = tempfile::tempdir().unwrap();
-        let task = mktask(".coordinator-0");
-        let spec = resolve_handler(dir.path(), &task, Some("evaluator")).unwrap();
-        if let Some(v) = saved {
-            unsafe { std::env::set_var("WG_EXECUTOR_TYPE", v) };
-        }
-        match spec {
-            HandlerSpec::Native { role, .. } => {
-                assert_eq!(role, Some("evaluator".to_string()));
+        with_env(Some("native"), None, || {
+            let dir = tempfile::tempdir().unwrap();
+            let task = mktask(".coordinator-0");
+            let spec = resolve_handler(dir.path(), &task, Some("evaluator")).unwrap();
+            match spec {
+                HandlerSpec::Native { role, .. } => {
+                    assert_eq!(role, Some("evaluator".to_string()));
+                }
+                _ => panic!("expected Native handler"),
             }
-            _ => panic!("expected Native handler"),
-        }
+        });
     }
 
     #[test]
     #[serial]
     fn resume_true_when_journal_exists() {
-        let saved = std::env::var("WG_EXECUTOR_TYPE").ok();
-        unsafe { std::env::remove_var("WG_EXECUTOR_TYPE") };
-        let dir = tempfile::tempdir().unwrap();
-        let task = mktask("have-journal");
-        let chat = dir.path().join("chat").join(&task.id);
-        std::fs::create_dir_all(&chat).unwrap();
-        std::fs::write(chat.join("conversation.jsonl"), b"").unwrap();
-        let spec = resolve_handler(dir.path(), &task, None).unwrap();
-        if let Some(v) = saved {
-            unsafe { std::env::set_var("WG_EXECUTOR_TYPE", v) };
-        }
-        match spec {
-            HandlerSpec::Native { resume, .. } => assert!(resume),
-            _ => panic!(),
-        }
+        with_env(Some("native"), None, || {
+            let dir = tempfile::tempdir().unwrap();
+            let task = mktask("have-journal");
+            let chat = dir.path().join("chat").join(&task.id);
+            std::fs::create_dir_all(&chat).unwrap();
+            std::fs::write(chat.join("conversation.jsonl"), b"").unwrap();
+            let spec = resolve_handler(dir.path(), &task, None).unwrap();
+            match spec {
+                HandlerSpec::Native { resume, .. } => assert!(resume),
+                _ => panic!(),
+            }
+        });
     }
 
     #[test]
     #[serial]
     fn resume_false_when_fresh() {
-        let saved = std::env::var("WG_EXECUTOR_TYPE").ok();
-        unsafe { std::env::remove_var("WG_EXECUTOR_TYPE") };
-        let dir = tempfile::tempdir().unwrap();
-        let task = mktask("fresh-task");
-        let spec = resolve_handler(dir.path(), &task, None).unwrap();
-        if let Some(v) = saved {
-            unsafe { std::env::set_var("WG_EXECUTOR_TYPE", v) };
-        }
-        match spec {
-            HandlerSpec::Native { resume, .. } => assert!(!resume),
-            _ => panic!(),
-        }
+        with_env(Some("native"), None, || {
+            let dir = tempfile::tempdir().unwrap();
+            let task = mktask("fresh-task");
+            let spec = resolve_handler(dir.path(), &task, None).unwrap();
+            match spec {
+                HandlerSpec::Native { resume, .. } => assert!(!resume),
+                _ => panic!(),
+            }
+        });
     }
 
     #[test]
@@ -550,42 +583,36 @@ mod tests {
     #[test]
     #[serial]
     fn spawn_task_falls_back_to_config_model() {
-        let saved = std::env::var("WG_EXECUTOR_TYPE").ok();
-        unsafe { std::env::set_var("WG_EXECUTOR_TYPE", "claude") };
-        let dir = tempfile::tempdir().unwrap();
-        let wg_dir = dir.path();
-        std::fs::write(
-            wg_dir.join("config.toml"),
-            b"[coordinator]\nmodel = \"claude:opus\"\n",
-        )
-        .unwrap();
+        with_env(Some("claude"), None, || {
+            let dir = tempfile::tempdir().unwrap();
+            let wg_dir = dir.path();
+            std::fs::write(
+                wg_dir.join("config.toml"),
+                b"[coordinator]\nmodel = \"claude:opus\"\n",
+            )
+            .unwrap();
 
-        let task = mktask(".coordinator-0");
-        assert!(task.model.is_none(), "synthesized task has no model");
-        let spec = resolve_handler(wg_dir, &task, None).unwrap();
+            let task = mktask(".coordinator-0");
+            assert!(task.model.is_none(), "synthesized task has no model");
+            let spec = resolve_handler(wg_dir, &task, None).unwrap();
 
-        if let Some(v) = saved {
-            unsafe { std::env::set_var("WG_EXECUTOR_TYPE", v) };
-        } else {
-            unsafe { std::env::remove_var("WG_EXECUTOR_TYPE") };
-        }
-
-        let preview = spec.command_preview();
-        match spec {
-            HandlerSpec::Claude { model, .. } => {
-                assert_eq!(
-                    model,
-                    Some("claude:opus".to_string()),
-                    "should fall back to config.coordinator.model when task.model is None"
-                );
+            let preview = spec.command_preview();
+            match spec {
+                HandlerSpec::Claude { model, .. } => {
+                    assert_eq!(
+                        model,
+                        Some("claude:opus".to_string()),
+                        "should fall back to config.coordinator.model when task.model is None"
+                    );
+                }
+                _ => panic!("expected Claude handler"),
             }
-            _ => panic!("expected Claude handler"),
-        }
-        assert!(
-            preview.contains("-m claude:opus"),
-            "dry-run should include config model: {}",
-            preview
-        );
+            assert!(
+                preview.contains("-m claude:opus"),
+                "dry-run should include config model: {}",
+                preview
+            );
+        });
     }
 
     #[test]

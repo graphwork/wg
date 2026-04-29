@@ -152,6 +152,7 @@ fn context_size_reported_from_config() {
     let custom = ResumeConfig {
         budget_pct: 0.75,
         context_window_tokens: 128_000,
+        ..Default::default()
     };
     assert_eq!(custom.context_window_tokens, 128_000);
     assert!((custom.budget_pct - 0.75).abs() < f64::EPSILON);
@@ -198,6 +199,7 @@ fn context_pressure_triggers_compaction() {
     let config = ResumeConfig {
         budget_pct: 0.50,
         context_window_tokens: 1_000, // Very small: ~500 token budget
+        ..Default::default()
     };
 
     let resume = load_resume_data(&journal_path, tmp.path(), &config)
@@ -245,6 +247,7 @@ fn no_compaction_within_budget() {
     let config = ResumeConfig {
         budget_pct: 0.50,
         context_window_tokens: 200_000, // Large enough
+        ..Default::default()
     };
 
     let resume = load_resume_data(&journal_path, tmp.path(), &config)
@@ -318,6 +321,7 @@ fn compaction_preserves_recent_messages() {
     let config = ResumeConfig {
         budget_pct: 0.10,
         context_window_tokens: 100,
+        ..Default::default()
     };
 
     let resume = load_resume_data(&journal_path, tmp.path(), &config)
@@ -355,6 +359,7 @@ fn compaction_maintains_alternation() {
     let config = ResumeConfig {
         budget_pct: 0.10,
         context_window_tokens: 100,
+        ..Default::default()
     };
 
     let resume = load_resume_data(&journal_path, tmp.path(), &config)
@@ -495,6 +500,7 @@ fn compaction_summary_captures_tool_calls() {
     let config = ResumeConfig {
         budget_pct: 0.01,
         context_window_tokens: 100,
+        ..Default::default()
     };
 
     let resume = load_resume_data(&path, tmp.path(), &config)

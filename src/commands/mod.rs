@@ -959,6 +959,16 @@ mod provenance_coverage_tests {
         let tmp = setup_dir();
         let dir = tmp.path();
 
+        // Disable agency scaffolding so resume() doesn't create
+        // .assign-lifecycle / .flip-lifecycle / .evaluate-lifecycle blockers
+        // that would prevent the final done() call. The test cares about
+        // provenance ops, not the eval pipeline.
+        std::fs::write(
+            dir.join("config.toml"),
+            b"[agency]\nauto_assign = false\nauto_evaluate = false\n",
+        )
+        .unwrap();
+
         // add
         super::add::run(
             dir,

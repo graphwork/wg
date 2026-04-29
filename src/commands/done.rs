@@ -1403,6 +1403,15 @@ fn run_inner(
                 if dependent_is_system && b.status == Status::PendingEval {
                     return false;
                 }
+                // Terminal blockers (Failed / Abandoned) don't gate manual
+                // `wg done` on a downstream task. The operator is explicitly
+                // marking work complete; auto-spawn against broken artifacts
+                // is the concern `is_dep_satisfied` guards, not this path.
+                // (Done is already excluded by `query::after` via
+                // `is_dep_satisfied`.)
+                if matches!(b.status, Status::Failed | Status::Abandoned) {
+                    return false;
+                }
                 true
             })
             .collect();
