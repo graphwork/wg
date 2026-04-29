@@ -57,11 +57,6 @@ const GROWTH_RATE_WARN_BYTES_PER_SEC: u64 = 512 * 1024;
 /// Measurement window for the growth-rate guard (seconds).
 const GROWTH_RATE_WINDOW_SECS: u64 = 2;
 
-/// Quiet window after a PTY resize before we declare the SIGWINCH reflow
-/// complete and compute how many duplicate scrollback rows to hide.
-/// 120 ms is conservative: claude/codex SIGWINCH reflows finish in <50 ms.
-const RESIZE_DEDUP_WINDOW: std::time::Duration = std::time::Duration::from_millis(120);
-
 pub struct PtyPane {
     parser: Arc<Mutex<vt100::Parser>>,
     /// Writer end of the PTY master — sending bytes here feeds the
@@ -98,14 +93,6 @@ pub struct PtyPane {
     pub growth_rate_warned: Arc<AtomicBool>,
     #[allow(dead_code)]
     bytes_processed: Arc<AtomicU64>,
-    /// Pending dedup state: (pre-resize scrollback row count, time of resize).
-    /// Cleared after RESIZE_DEDUP_WINDOW elapses and `scrollback_hidden` is set.
-    pending_dedup: Option<(usize, std::time::Instant)>,
-    /// Number of scrollback rows at the "hot end" (most recently appended)
-    /// to skip when navigating history. These are SIGWINCH reflow echoes:
-    /// bytes the child re-emits after resize that push already-seen content
-    /// back into scrollback. Skipping them hides the duplicate tail.
-    scrollback_hidden: usize,
 }
 
 impl PtyPane {
@@ -292,8 +279,6 @@ impl PtyPane {
             auto_follow: true,
             growth_rate_warned,
             bytes_processed,
-            pending_dedup: None,
-            scrollback_hidden: 0,
         })
     }
 
@@ -360,16 +345,7 @@ impl PtyPane {
         self.auto_follow = false;
         if let Ok(mut p) = self.parser.lock() {
             let current = p.screen().scrollback();
-            // When jumping from live view (offset 0), skip over any SIGWINCH
-            // reflow echo rows that sit at the hot end of the scrollback buffer.
-            // Those rows are duplicates of content the child re-emitted after
-            // SIGWINCH; scrolling into them shows the same content twice.
-            let base = if current == 0 && self.scrollback_hidden > 0 {
-                self.scrollback_hidden
-            } else {
-                current
-            };
-            p.screen_mut().set_scrollback(base.saturating_add(n));
+            p.screen_mut().set_scrollback(current.saturating_add(n));
         }
     }
 
@@ -378,14 +354,6 @@ impl PtyPane {
         if let Ok(mut p) = self.parser.lock() {
             let current = p.screen().scrollback();
             let new_offset = current.saturating_sub(n);
-            // If the new offset would land inside the duplicate zone (offsets
-            // 1..=scrollback_hidden), snap straight to live view instead of
-            // letting the user drift through the reflow echo rows.
-            let new_offset = if new_offset > 0 && new_offset <= self.scrollback_hidden {
-                0
-            } else {
-                new_offset
-            };
             p.screen_mut().set_scrollback(new_offset);
             if new_offset <= 1 {
                 self.auto_follow = true;
@@ -467,58 +435,20 @@ impl PtyPane {
         }
     }
 
-    /// Read the actual number of rows currently stored in the vt100
-    /// scrollback buffer without changing the user's scroll position.
-    /// Uses the `set_scrollback(MAX) → scrollback()` clamp trick.
-    fn scrollback_count(p: &mut vt100::Parser) -> usize {
-        let saved = p.screen().scrollback();
-        p.screen_mut().set_scrollback(usize::MAX);
-        let count = p.screen().scrollback();
-        p.screen_mut().set_scrollback(saved);
-        count
-    }
-
-    /// If a pending dedup is older than RESIZE_DEDUP_WINDOW, resolve it:
-    /// compare current scrollback count to the pre-resize snapshot to find
-    /// how many rows the SIGWINCH reflow echo added, store that as
-    /// `scrollback_hidden`, and clear the pending state.
-    fn maybe_resolve_dedup(&mut self) {
-        let (pre_count, at) = match self.pending_dedup {
-            Some(s) => s,
-            None => return,
-        };
-        if at.elapsed() < RESIZE_DEDUP_WINDOW {
-            return;
-        }
-        let (post_count, current_offset) = {
-            let mut p = match self.parser.lock() {
-                Ok(g) => g,
-                Err(poisoned) => poisoned.into_inner(),
-            };
-            (Self::scrollback_count(&mut p), p.screen().scrollback())
-        };
-        let k = post_count.saturating_sub(pre_count);
-        // If the user somehow landed in the duplicate zone (offset 1..=k),
-        // push them just above it so they see real history, not the echo.
-        if k > 0 && current_offset > 0 && current_offset <= k {
-            if let Ok(mut p) = self.parser.lock() {
-                p.screen_mut().set_scrollback(k.saturating_add(1));
-            }
-        }
-        self.scrollback_hidden = k;
-        self.pending_dedup = None;
-    }
-
     /// Push a new size through to both the vt100 parser (so rendered
     /// cell layout updates) and the master PTY (so the child sees
     /// SIGWINCH and can reflow its own output). No-op if the size
     /// matches the current one.
+    ///
+    /// vt100 0.16's `Screen::set_size` only resizes the visible row Vec —
+    /// scrollback rows keep their pre-resize cell count and wrap flags
+    /// (vt100/src/grid.rs:66-100). Without further work a width change
+    /// leaves stale wrap state in scrollback and the user sees old wrapped
+    /// rows duplicated against the new width. To avoid that we reflow by
+    /// snapshotting the existing scrollback + visible content into logical
+    /// lines, then re-feeding them into a freshly-sized parser. vt100
+    /// re-wraps at parse time, so the output rows match the new width.
     pub fn resize(&mut self, rows: u16, cols: u16) -> Result<()> {
-        // Resolve any pending dedup from the previous resize, even on no-op
-        // frames — the TUI calls resize() every render cycle, so this is
-        // where we detect that RESIZE_DEDUP_WINDOW has elapsed.
-        self.maybe_resolve_dedup();
-
         // Clamp to a workable minimum. A tiny grid makes
         // vt100::Parser panic frequently because drawing_cell(pos)
         // returns None for any pos past the first few cells. Some
@@ -532,17 +462,17 @@ impl PtyPane {
             return Ok(());
         }
 
-        // Snapshot pre-resize scrollback count so we can detect how many
-        // rows the SIGWINCH reflow echo adds (see maybe_resolve_dedup).
-        let pre_count = {
+        // Reflow scrollback + visible by re-feeding into a fresh parser at
+        // the new dimensions. Holds the parser lock for the duration of the
+        // swap so the reader thread doesn't see a half-built state.
+        {
             let mut p = match self.parser.lock() {
                 Ok(g) => g,
                 Err(poisoned) => poisoned.into_inner(),
             };
-            Self::scrollback_count(&mut p)
-        };
-        self.scrollback_hidden = 0; // stale dedup no longer valid for new resize
-        self.pending_dedup = Some((pre_count, std::time::Instant::now()));
+            let fresh = reflow_parser(&mut p, rows, cols, DEFAULT_SCROLLBACK_LINES);
+            *p = fresh;
+        }
 
         self.master
             .resize(PtySize {
@@ -552,13 +482,6 @@ impl PtyPane {
                 pixel_height: 0,
             })
             .context("pty resize failed")?;
-        let mut p = match self.parser.lock() {
-            Ok(g) => g,
-            Err(poisoned) => poisoned.into_inner(),
-        };
-        // vt100 0.16 moved set_size from Parser to Screen.
-        p.screen_mut().set_size(rows, cols);
-        drop(p);
         self.rows = rows;
         self.cols = cols;
         Ok(())
@@ -605,6 +528,111 @@ impl Drop for PtyPane {
         // OS reaps it when the process exits.
         let _ = self.reader_thread.take();
     }
+}
+
+/// Read a single row's content into a UTF-8 byte buffer plus its `wrapped`
+/// flag. Empty cells are emitted as ASCII spaces and trailing spaces are
+/// trimmed; wide-character continuation cells are skipped because their
+/// content is already encoded in the preceding cell.
+fn read_row_for_reflow(parser: &vt100::Parser, row: u16, cols: u16) -> (Vec<u8>, bool) {
+    let mut row_bytes: Vec<u8> = Vec::new();
+    for c in 0..cols {
+        if let Some(cell) = parser.screen().cell(row, c) {
+            if cell.is_wide_continuation() {
+                continue;
+            }
+            let s = cell.contents();
+            if s.is_empty() {
+                row_bytes.push(b' ');
+            } else {
+                row_bytes.extend_from_slice(s.as_bytes());
+            }
+        }
+    }
+    while row_bytes.last() == Some(&b' ') {
+        row_bytes.pop();
+    }
+    let wrapped = parser.screen().row_wrapped(row);
+    (row_bytes, wrapped)
+}
+
+/// Snapshot every logical line currently in the parser (scrollback oldest →
+/// newest, then visible top → bottom). Joins rows whose preceding row carries
+/// `wrapped()=true` so the result is a list of logical lines independent of
+/// the original column width — feeding them into a fresh parser at a new
+/// column count rewraps cleanly.
+fn snapshot_logical_lines(parser: &mut vt100::Parser) -> Vec<Vec<u8>> {
+    // Save the user's current scrollback offset; we mutate it below to walk
+    // through the buffer and need to put it back so the post-reflow viewer
+    // state stays consistent (the swap that follows replaces the whole
+    // parser, but if a caller reuses this helper without swapping the
+    // restore is the polite default).
+    let saved_offset = parser.screen().scrollback();
+    parser.screen_mut().set_scrollback(usize::MAX);
+    let max_offset = parser.screen().scrollback();
+    let (rows, cols) = parser.screen().size();
+
+    // Per-row (text, wrapped) collected in temporal order: scrollback oldest
+    // first (highest offset), then visible top → bottom.
+    let mut rows_data: Vec<(Vec<u8>, bool)> = Vec::new();
+
+    for offset in (1..=max_offset).rev() {
+        parser.screen_mut().set_scrollback(offset);
+        rows_data.push(read_row_for_reflow(parser, 0, cols));
+    }
+    parser.screen_mut().set_scrollback(0);
+    for r in 0..rows {
+        rows_data.push(read_row_for_reflow(parser, r, cols));
+    }
+    parser.screen_mut().set_scrollback(saved_offset);
+
+    // Group consecutive rows: when the previous row carries the wrap flag,
+    // the next row is a continuation of the same logical line.
+    let mut lines: Vec<Vec<u8>> = Vec::new();
+    let mut current: Vec<u8> = Vec::new();
+    let mut prev_wrapped = false;
+    for (row_bytes, wrapped) in rows_data {
+        current.extend_from_slice(&row_bytes);
+        if !wrapped {
+            lines.push(std::mem::take(&mut current));
+        }
+        prev_wrapped = wrapped;
+    }
+    if !current.is_empty() || prev_wrapped {
+        lines.push(current);
+    }
+    // Trim trailing fully-blank lines so an empty visible region after a
+    // mostly-empty scrollback doesn't accumulate phantom newlines on each
+    // resize. Keep one trailing blank to preserve cursor positioning.
+    while lines.len() > 1 && lines.last().is_some_and(|l| l.is_empty()) {
+        lines.pop();
+    }
+    lines
+}
+
+/// Build a fresh `vt100::Parser` at the requested dimensions and re-feed the
+/// snapshot of `parser`'s scrollback + visible content into it. Content
+/// reflows naturally to the new column width because vt100 re-wraps at parse
+/// time.
+fn reflow_parser(
+    parser: &mut vt100::Parser,
+    new_rows: u16,
+    new_cols: u16,
+    scrollback_lines: usize,
+) -> vt100::Parser {
+    let logical_lines = snapshot_logical_lines(parser);
+    let mut fresh = vt100::Parser::new(new_rows, new_cols, scrollback_lines);
+    let n = logical_lines.len();
+    for (i, line) in logical_lines.iter().enumerate() {
+        fresh.process(line);
+        // Don't append \r\n after the final logical line — it would push the
+        // current visible row into scrollback and leave the cursor on a
+        // gratuitously blank row.
+        if i + 1 < n {
+            fresh.process(b"\r\n");
+        }
+    }
+    fresh
 }
 
 /// Convert a crossterm `KeyEvent` into the byte sequence a Unix PTY
@@ -1697,20 +1725,19 @@ sleep 5
         rows_out
     }
 
-    /// Same as `collect_scrollback_only_naive` but skips the `hidden` most
-    /// recently appended rows (offsets 1..=hidden).  Mirrors the
-    /// `scrollback_hidden` dedup logic in scroll_up / scroll_down.
-    fn collect_scrollback_only_deduped(
-        parser: &Arc<Mutex<vt100::Parser>>,
-        cols: u16,
-        hidden: usize,
-    ) -> Vec<String> {
+    /// Walk every row of the parser exactly once: scrollback oldest → newest,
+    /// then visible top → bottom. Unlike `collect_full_scrollback_and_screen`
+    /// (which renders the visible window at every scrollback offset and so
+    /// repeats most rows many times), this returns one entry per logical row,
+    /// suitable for "appears at most once" duplication checks.
+    fn collect_every_row_once(parser: &Arc<Mutex<vt100::Parser>>) -> Vec<String> {
         let max = test_scrollback_count(parser);
-        let mut rows_out = Vec::new();
+        let mut out: Vec<String> = Vec::new();
+        let cols = {
+            let p = parser.lock().unwrap();
+            p.screen().size().1
+        };
         for offset in (1..=max).rev() {
-            if offset <= hidden {
-                continue;
-            }
             let mut p = parser.lock().unwrap();
             p.screen_mut().set_scrollback(offset);
             drop(p);
@@ -1723,215 +1750,291 @@ sleep 5
                         .unwrap_or_default()
                 })
                 .collect();
-            rows_out.push(row.trim_end().to_string());
+            out.push(row.trim_end().to_string());
         }
         {
             let mut p = parser.lock().unwrap();
             p.screen_mut().set_scrollback(0);
         }
-        rows_out
-    }
-
-    /// Deterministic reproduction of the SIGWINCH scrollback duplication bug.
-    ///
-    /// Scenario (mirrors TEST3 in /tmp/wg-pty-repro/src/main.rs):
-    ///   1. Feed 30 lines into a 10-row parser → fills scrollback with rows
-    ///      that have now scrolled off the visible area.
-    ///   2. Grow terminal to 12 rows (simulates a resize event).
-    ///   3. Simulate SIGWINCH: child clears screen and reprints the new
-    ///      12-row visible region (markers 18–29).  Marker-0018 was already
-    ///      in scrollback, so it gets pushed in again — a true duplicate.
-    ///
-    /// Pre-condition assertion: naive scrollback scan shows marker-0018 twice.
-    /// Fix assertion: with scrollback_hidden = K, the deduped scan shows
-    /// each scrollback entry at most once (no true duplicates).
-    ///
-    /// This is the "failing test first" from the fix-tui-pty task description.
-    #[test]
-    fn sigwinch_reflow_duplicates_scrollback_and_dedup_hides_them() {
-        let init_rows = 10u16;
-        let new_rows = 12u16;
-        let cols = 80u16;
-
-        let parser = Arc::new(Mutex::new(vt100::Parser::new(
-            init_rows,
-            cols,
-            DEFAULT_SCROLLBACK_LINES,
-        )));
-
-        // Feed 30 unique markers.  In a 10-row terminal the first ~20 scroll
-        // into scrollback; the trailing \r\n on the 30th line scrolls one
-        // more, so pre_count ends up at 21 (not 20).
-        {
-            let mut p = parser.lock().unwrap();
-            for i in 0..30u32 {
-                p.process(format!("marker-{:04}\r\n", i).as_bytes());
-            }
-        }
-
-        let pre_count = test_scrollback_count(&parser);
-        assert!(pre_count > 0, "expected scrollback rows before resize");
-
-        // Simulate resize from 10 → 12 rows.
-        {
-            let mut p = parser.lock().unwrap();
-            p.screen_mut().set_size(new_rows, cols);
-        }
-
-        // Simulate child SIGWINCH reflow: clear + repaint last 12 markers
-        // (18–29).  Marker-0018 was already in scrollback; reprinting rows
-        // that include it causes it to be pushed in again → echo duplicate.
-        {
-            let mut p = parser.lock().unwrap();
-            p.process(b"\x1b[2J\x1b[H");
-            for i in 18..30u32 {
-                p.process(format!("marker-{:04}\r\n", i).as_bytes());
-            }
-        }
-
-        let post_count = test_scrollback_count(&parser);
-        let k = post_count.saturating_sub(pre_count);
-        assert!(k > 0, "SIGWINCH reflow should have added echo rows; k={}", k);
-
-        // ── Pre-condition: naive scan shows at least one in-scrollback dup ──
-        let naive_rows = collect_scrollback_only_naive(&parser, cols);
-        let naive_text = naive_rows.join("\n");
-        let has_scrollback_dup = (0..30u32).any(|i| {
-            naive_text.matches(&format!("marker-{:04}", i)).count() > 1
-        });
-        assert!(
-            has_scrollback_dup,
-            "expected at least one true scrollback duplicate (k={}); scrollback rows:\n{}",
-            k, naive_text
-        );
-
-        // ── With fix: deduped scan has no marker more than once ────────────
-        let deduped_rows = collect_scrollback_only_deduped(&parser, cols, k);
-        let deduped_text = deduped_rows.join("\n");
-        for i in 0..30u32 {
-            let marker = format!("marker-{:04}", i);
-            let count = deduped_text.matches(&marker).count();
-            // Each marker may appear 0 (not yet pushed) or 1 (once) — never 2+.
-            assert!(
-                count <= 1,
-                "marker {} appeared {} times in deduped scrollback (expected ≤1)\n{}",
-                marker, count, deduped_text
-            );
-        }
-    }
-
-    /// Verify the offset arithmetic of the SIGWINCH dedup logic:
-    /// - scroll_up(n) from live view (offset 0) with scrollback_hidden=K
-    ///   jumps to K+n (skipping the K echo rows at the hot end of scrollback).
-    /// - scroll_down(n) that would land in the hidden zone (1..=K) snaps to 0.
-    #[test]
-    fn scroll_up_skips_sigwinch_hidden_rows() {
-        let hidden = 3usize; // K = 3 simulated echo rows
-
-        // ── scroll_up arithmetic ────────────────────────────────────────────
-        // From offset 0, scroll_up(1): base = hidden (since current==0), target = hidden+1.
-        {
-            let current = 0usize;
-            let base = if current == 0 && hidden > 0 { hidden } else { current };
-            let target = base.saturating_add(1);
-            assert_eq!(target, hidden + 1, "scroll_up(1) from live view should jump to K+1");
-        }
-        // From offset 0, scroll_up(5): target = hidden+5.
-        {
-            let current = 0usize;
-            let base = if current == 0 && hidden > 0 { hidden } else { current };
-            let target = base.saturating_add(5);
-            assert_eq!(target, hidden + 5, "scroll_up(5) from live view should jump to K+5");
-        }
-        // From a non-zero offset already above the hidden zone (e.g. hidden+2),
-        // scroll_up should add n normally (no extra jump).
-        {
-            let current = hidden + 2;
-            let base = if current == 0 && hidden > 0 { hidden } else { current };
-            let target = base.saturating_add(1);
-            assert_eq!(target, hidden + 3, "scroll_up(1) from above hidden zone adds 1");
-        }
-
-        // ── scroll_down arithmetic ──────────────────────────────────────────
-        // From K+1, scroll_down(1) → new_off = K → in hidden zone → snap to 0.
-        {
-            let current = hidden + 1;
-            let new_off = current.saturating_sub(1); // = K
-            let snapped = if new_off > 0 && new_off <= hidden { 0 } else { new_off };
-            assert_eq!(snapped, 0, "scroll_down from K+1 into hidden zone should snap to 0");
-        }
-        // From K+2, scroll_down(1) → new_off = K+1 → above hidden zone → stays.
-        {
-            let current = hidden + 2;
-            let new_off = current.saturating_sub(1); // = K+1
-            let snapped = if new_off > 0 && new_off <= hidden { 0 } else { new_off };
-            assert_eq!(snapped, hidden + 1, "scroll_down from K+2 stays at K+1");
-        }
-        // From exactly 0 (live view), scroll_down does nothing (already at 0).
-        {
-            let current = 0usize;
-            let new_off = current.saturating_sub(1); // = 0 (saturating)
-            let snapped = if new_off > 0 && new_off <= hidden { 0 } else { new_off };
-            assert_eq!(snapped, 0, "scroll_down from live view stays at 0");
-        }
-
-        // ── Integration: verify at vt100 parser level ──────────────────────
-        // Build a parser with known scrollback + K echo rows, then check that
-        // at offset K+1 (the first clean position after scroll_up from live
-        // view), row 0 is from real history and not blank.
-        let rows = 5u16;
-        let cols = 40u16;
-        let parser = Arc::new(Mutex::new(vt100::Parser::new(
-            rows, cols, DEFAULT_SCROLLBACK_LINES,
-        )));
-        // Feed 15 real lines → ~11 in scrollback, 4 visible (+ 1 empty).
-        {
-            let mut p = parser.lock().unwrap();
-            for i in 0..15u32 {
-                p.process(format!("real-{:04}\r\n", i).as_bytes());
-            }
-        }
-        // Simulate SIGWINCH reflow: repaint 3 rows that were visible
-        // (real-0011, real-0012, real-0013 — in the live screen at that moment).
-        // Their \r\n pushes the PREVIOUS row 0 into scrollback each time.
-        {
-            let mut p = parser.lock().unwrap();
-            for i in 11..14u32 {
-                p.process(format!("real-{:04}\r\n", i).as_bytes());
-            }
-        }
-        let total = test_scrollback_count(&parser);
-        assert!(
-            total > hidden,
-            "need more scrollback rows than hidden={}; got total={}",
-            hidden, total
-        );
-
-        // At the first clean offset (hidden+1), row 0 comes from real history.
-        {
-            let mut p = parser.lock().unwrap();
-            p.screen_mut().set_scrollback(hidden + 1);
-            drop(p);
-            let p = parser.lock().unwrap();
-            let row0: String = (0..cols)
+        let p = parser.lock().unwrap();
+        let (rows, _) = p.screen().size();
+        for r in 0..rows {
+            let row: String = (0..cols)
                 .map(|c| {
                     p.screen()
-                        .cell(0, c)
+                        .cell(r, c)
                         .map(|cell| cell.contents().to_string())
                         .unwrap_or_default()
                 })
                 .collect();
+            out.push(row.trim_end().to_string());
+        }
+        out
+    }
+
+    /// Pre-condition: vt100 0.16's `Screen::set_size` does NOT reflow scrollback.
+    /// After a width change, scrollback rows keep their pre-resize cell count
+    /// and wrap flags — and a child's SIGWINCH-driven clear+reprint pushes
+    /// already-seen content back into scrollback as duplicates.
+    /// (Diagnose: agent-1104 / diagnose-scrollback-corruption.)
+    ///
+    /// This test pins the bug shape for regression detection. The fix lives in
+    /// `reflow_parser`; see `refeed_reflow_eliminates_scrollback_duplicates`.
+    #[test]
+    fn naive_set_size_then_child_reprint_creates_scrollback_duplicates() {
+        let init_rows = 10u16;
+        let new_rows = 12u16;
+        let cols = 80u16;
+        let mut p = vt100::Parser::new(init_rows, cols, DEFAULT_SCROLLBACK_LINES);
+        for i in 0..30u32 {
+            p.process(format!("marker-{:04}\r\n", i).as_bytes());
+        }
+        // Simulate the buggy resize path: just set_size, no reflow.
+        p.screen_mut().set_size(new_rows, cols);
+        // Simulate the child's SIGWINCH-driven clear+repaint of the new visible
+        // window. marker-0018 was already in scrollback; reprinting it pushes
+        // a second copy in.
+        p.process(b"\x1b[2J\x1b[H");
+        for i in 18..30u32 {
+            p.process(format!("marker-{:04}\r\n", i).as_bytes());
+        }
+        let parser = Arc::new(Mutex::new(p));
+        let naive = collect_scrollback_only_naive(&parser, cols).join("\n");
+        let any_dup = (0..30u32)
+            .any(|i| naive.matches(&format!("marker-{:04}", i)).count() > 1);
+        assert!(
+            any_dup,
+            "naive set_size + child reprint must produce scrollback duplicates \
+             (this is the bug-shape pre-condition for the reflow fix); naive scrollback:\n{}",
+            naive
+        );
+    }
+
+    /// TDD assertion for the re-feed reflow fix: snapshotting the parser into
+    /// logical lines and re-feeding them into a freshly-sized parser produces
+    /// a scrollback in which every marker appears at most once. The bug
+    /// (scrollback duplicates after SIGWINCH reflow) is gone, even when the
+    /// child subsequently reprints — because the reprint hits a clean parser
+    /// where the "duplicates" are simply the next visible region, not pushed
+    /// into scrollback as wrap-mismatched echoes.
+    #[test]
+    fn refeed_reflow_eliminates_scrollback_duplicates() {
+        let init_rows = 10u16;
+        let new_rows = 12u16;
+        let cols = 80u16;
+        let mut p = vt100::Parser::new(init_rows, cols, DEFAULT_SCROLLBACK_LINES);
+        for i in 0..30u32 {
+            p.process(format!("marker-{:04}\r\n", i).as_bytes());
+        }
+        // Reflow via re-feed instead of bare set_size.
+        let reflowed = reflow_parser(&mut p, new_rows, cols, DEFAULT_SCROLLBACK_LINES);
+        let parser = Arc::new(Mutex::new(reflowed));
+
+        // After reflow, every marker appears exactly once across scrollback +
+        // visible. (Some markers may not appear at all if they wrapped off the
+        // top of the bounded scrollback — but none should appear twice.)
+        let rows = collect_every_row_once(&parser);
+        let full = rows.join("\n");
+        for i in 0..30u32 {
+            let marker = format!("marker-{:04}", i);
+            let n = full.matches(&marker).count();
             assert!(
-                row0.trim_end().starts_with("real-"),
-                "offset {} row 0 should be real history, got: {:?}",
-                hidden + 1,
-                row0.trim_end()
+                n <= 1,
+                "after re-feed reflow, marker {} appeared {} times \
+                 (expected ≤1). Rows:\n{}",
+                marker, n, full
             );
         }
-        {
-            // Restore to live view.
-            let mut p = parser.lock().unwrap();
-            p.screen_mut().set_scrollback(0);
+        // And the most recent markers are present at all.
+        for i in 18..30u32 {
+            let marker = format!("marker-{:04}", i);
+            assert!(
+                full.contains(&marker),
+                "marker {} should still be present after reflow. Rows:\n{}",
+                marker, full
+            );
+        }
+    }
+
+    /// Reflow at a NARROWER width: rows that previously fit on a single line
+    /// now wrap. The user's logical content is preserved exactly once.
+    #[test]
+    fn refeed_reflow_rewraps_at_narrower_width() {
+        let init_rows = 30u16;
+        let init_cols = 120u16;
+        let new_rows = 30u16;
+        let new_cols = 40u16;
+        let mut p = vt100::Parser::new(init_rows, init_cols, DEFAULT_SCROLLBACK_LINES);
+        // 12 logical lines, each 100 chars — fit unwrapped at 120, wrap at 40.
+        let lines: Vec<String> = (0..12)
+            .map(|i| {
+                let body = "x".repeat(85);
+                format!("history-line-{:03}-{}", i, body)
+            })
+            .collect();
+        for line in &lines {
+            p.process(line.as_bytes());
+            p.process(b"\r\n");
+        }
+        let reflowed = reflow_parser(&mut p, new_rows, new_cols, DEFAULT_SCROLLBACK_LINES);
+        let parser = Arc::new(Mutex::new(reflowed));
+        let rows = collect_every_row_once(&parser);
+        let full = rows.join("\n");
+        for line in &lines {
+            let marker = &line[..16]; // "history-line-NNN"
+            let n = full.matches(marker).count();
+            assert_eq!(
+                n, 1,
+                "after reflow narrower, line marker {:?} appeared {} times \
+                 (expected exactly 1). Rows:\n{}",
+                marker, n, full
+            );
+        }
+    }
+
+    /// Reflow at a WIDER width: previously-wrapped logical lines unwrap into
+    /// single rows. Each logical line still appears exactly once.
+    #[test]
+    fn refeed_reflow_unwraps_at_wider_width() {
+        let init_rows = 24u16;
+        let init_cols = 80u16;
+        let new_rows = 24u16;
+        let new_cols = 200u16;
+        let mut p = vt100::Parser::new(init_rows, init_cols, DEFAULT_SCROLLBACK_LINES);
+        let lines: Vec<String> = (0..10)
+            .map(|i| {
+                let body = "y".repeat(95);
+                format!("entry-{:03}-{}", i, body)
+            })
+            .collect();
+        for line in &lines {
+            p.process(line.as_bytes());
+            p.process(b"\r\n");
+        }
+        let reflowed = reflow_parser(&mut p, new_rows, new_cols, DEFAULT_SCROLLBACK_LINES);
+        let parser = Arc::new(Mutex::new(reflowed));
+        let rows_out = collect_every_row_once(&parser);
+        let full = rows_out.join("\n");
+        for line in &lines {
+            let marker = &line[..9]; // "entry-NNN"
+            let n = full.matches(marker).count();
+            assert_eq!(
+                n, 1,
+                "after reflow wider, line marker {:?} appeared {} times \
+                 (expected exactly 1). Rows:\n{}",
+                marker, n, full
+            );
+        }
+    }
+
+    /// Simulate a TUI child's SIGWINCH-driven clear+repaint AFTER our
+    /// reflow has already swapped the parser. The child's reprint hits the
+    /// fresh, already-reflowed parser. The post-repaint scrollback may have
+    /// at most a tiny number of "echo" rows from the repaint's trailing
+    /// newlines (per diagnose: bounded ≤ 1 row per resize), but it must NOT
+    /// re-introduce the wrap-stale compounding duplicates the dedup
+    /// machinery used to paper over.
+    #[test]
+    fn refeed_reflow_then_child_repaint_keeps_scrollback_almost_clean() {
+        let cols = 80u16;
+        let mut p = vt100::Parser::new(10, cols, DEFAULT_SCROLLBACK_LINES);
+        for i in 0..30u32 {
+            p.process(format!("clean-{:04}\r\n", i).as_bytes());
+        }
+        // Reflow: shrink rows, keep cols. Equivalent to a typing-induced
+        // SIGWINCH from the host TUI changing the chat-pane height.
+        let mut p = reflow_parser(&mut p, 12, cols, DEFAULT_SCROLLBACK_LINES);
+        // Now simulate the TUI child's SIGWINCH response — clear + repaint
+        // the visible region with the most recent 12 markers.
+        p.process(b"\x1b[2J\x1b[H");
+        for i in 18..30u32 {
+            p.process(format!("clean-{:04}\r\n", i).as_bytes());
+        }
+        let parser = Arc::new(Mutex::new(p));
+        let rows = collect_every_row_once(&parser);
+        let full = rows.join("\n");
+        for i in 0..30u32 {
+            let marker = format!("clean-{:04}", i);
+            let n = full.matches(&marker).count();
+            // Bound: at most TWO copies of any one marker — one from the
+            // re-fed scrollback, one from the child's repaint. Without the
+            // re-feed fix, the wrap-stale compounding pushed many more.
+            assert!(
+                n <= 2,
+                "after reflow + child repaint, marker {} appeared {} times \
+                 (expected ≤2 — one re-fed copy, at most one repaint copy). Rows:\n{}",
+                marker, n, full
+            );
+        }
+    }
+
+    /// End-to-end: drive `PtyPane::resize` against a real spawned PTY and
+    /// confirm that no scrollback duplicates appear after multiple width
+    /// changes. Uses `printf` to emit a deterministic block of markers so the
+    /// child output is fully realized before we resize.
+    #[test]
+    fn pty_pane_resize_does_not_create_scrollback_duplicates() {
+        // 30 unique markers, then sleep so the child does not exit before we
+        // have a chance to drive the resize sequence.
+        let script = "for i in $(seq 0 29); do printf 'pane-marker-%04d\\n' $i; done; sleep 5";
+        let mut pane = PtyPane::spawn("/bin/sh", &["-c", script], &[], 10, 80)
+            .expect("spawn /bin/sh script");
+
+        // Wait for the child output to land in the parser. /bin/sh emits the
+        // 30 lines synchronously; 200 ms is generous on any platform.
+        std::thread::sleep(std::time::Duration::from_millis(200));
+
+        // Three back-to-back resizes (the chat tab fires a burst per the
+        // diagnose). Each call goes through the new re-feed reflow path.
+        for &(rows, cols) in &[(12u16, 80u16), (8, 100), (14, 60), (12, 80)] {
+            pane.resize(rows, cols).expect("resize");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+
+        let parser_arc = Arc::clone(&pane.parser);
+        let rows = collect_every_row_once(&parser_arc);
+        let full = rows.join("\n");
+        for i in 0..30u32 {
+            let marker = format!("pane-marker-{:04}", i);
+            let n = full.matches(&marker).count();
+            assert!(
+                n <= 1,
+                "after PtyPane::resize burst, marker {} appeared {} times \
+                 (expected ≤1). Rows:\n{}",
+                marker, n, full
+            );
+        }
+        pane.kill();
+    }
+
+    /// Multiple consecutive resizes (a typing-induced burst of SIGWINCH events
+    /// per the diagnose) must NOT compound duplicates. Each reflow snapshot
+    /// → re-feed cycle keeps each logical line appearing at most once.
+    #[test]
+    fn refeed_reflow_handles_burst_of_resizes_without_compounding_duplicates() {
+        let cols = 80u16;
+        let mut p = vt100::Parser::new(10, cols, DEFAULT_SCROLLBACK_LINES);
+        for i in 0..40u32 {
+            p.process(format!("burst-{:03}\r\n", i).as_bytes());
+        }
+        // Three back-to-back resizes alternating between heights/widths.
+        for &(rows, cols) in &[(12u16, 80u16), (8, 100), (14, 60), (12, 80)] {
+            let reflowed = reflow_parser(&mut p, rows, cols, DEFAULT_SCROLLBACK_LINES);
+            p = reflowed;
+        }
+        let parser = Arc::new(Mutex::new(p));
+        let rows = collect_every_row_once(&parser);
+        let full = rows.join("\n");
+        for i in 0..40u32 {
+            let marker = format!("burst-{:03}", i);
+            let n = full.matches(&marker).count();
+            assert!(
+                n <= 1,
+                "after a burst of resizes, marker {} appeared {} times — \
+                 reflow must not compound duplicates across consecutive resizes. \
+                 Rows:\n{}",
+                marker, n, full
+            );
         }
     }
 

@@ -489,9 +489,11 @@ script = "scenarios/pty_resize_dedup_no_scrollback_echo.sh"
 owners = [
     "fix-tui-pty",
     "diagnose-tui-pty",
+    "fix-scrollback-reflow",
+    "diagnose-scrollback-corruption",
 ]
-description = "PTY scrollback dedup: verifies that SIGWINCH reflow echo rows are hidden from scrollback navigation after a terminal resize. Runs the two unit tests for the resize-dedup code path in PtyPane (sigwinch_reflow_duplicates_scrollback_and_dedup_hides_them + scroll_up_skips_sigwinch_hidden_rows)."
-timeout_seconds = 120
+description = "PTY scrollback duplication after SIGWINCH reflow. Originally landed as a navigation-time dedup heuristic (fix-tui-pty); replaced with true re-feed reflow in fix-scrollback-reflow (PtyPane::resize snapshots scrollback+visible into logical lines, re-feeds into a fresh vt100::Parser at the new dimensions). Pins the bug-shape pre-condition (naive set_size + reprint creates duplicates), the primary fix (re-feed eliminates duplicates), narrower/wider rewrap semantics, multi-resize burst stress, and end-to-end PtyPane::resize integration."
+timeout_seconds = 240
 
 [[scenario]]
 name = "pty_initial_spawn_no_scrollback_doubling"

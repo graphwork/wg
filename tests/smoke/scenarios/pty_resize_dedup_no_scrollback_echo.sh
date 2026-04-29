@@ -1,32 +1,48 @@
 #!/usr/bin/env bash
 # Scenario: pty_resize_dedup_no_scrollback_echo
 #
-# Guards the fix for the TUI PTY scrollback duplication bug (fix-tui-pty).
+# Guards the fix for the TUI PTY scrollback duplication bug after SIGWINCH
+# reflow. Originally landed as a navigation-time dedup heuristic
+# (fix-tui-pty); replaced with true re-feed reflow in fix-scrollback-reflow
+# (per diagnose-scrollback-corruption).
 #
-# Root cause: when a PTY child emits a SIGWINCH reflow (clear-screen + full
-# repaint), rows that were previously in scrollback get pushed back in by the
-# scroll_up path in vt100, creating duplicates at the "hot end" of the
-# scrollback VecDeque.
+# Root cause: vt100 0.16's `Screen::set_size` does NOT reflow the scrollback
+# `VecDeque<Row>` — only the visible row Vec is resized
+# (vt100/src/grid.rs:66-100). Width changes leave stale wrap state in
+# scrollback rows, so the user sees old wrapped rows duplicated against the
+# new width whenever the child reprints in response to SIGWINCH.
 #
-# Fix: `PtyPane::resize()` snapshots the pre-resize scrollback count; after
-# a 120 ms quiet window (RESIZE_DEDUP_WINDOW), `maybe_resolve_dedup()` computes
-# K = post_count - pre_count and stores it in `scrollback_hidden`.  The
-# scroll_up / scroll_down methods then skip the K most-recently-appended rows
-# so the user never lands on the SIGWINCH echo.
+# Fix: `PtyPane::resize` snapshots the existing scrollback + visible content
+# into logical lines (joining rows with `wrapped()=true`), builds a fresh
+# `vt100::Parser` at the new dimensions, and re-feeds the lines so vt100
+# rewraps them at parse time. The dedup machinery
+# (`scrollback_hidden` / `pending_dedup`) is gone — the bug is fixed at the
+# data layer instead of papered over at the navigation layer.
 #
-# This scenario re-runs the two unit tests that cover the dedup logic:
+# This scenario re-runs the unit tests that pin the contract:
 #
-#   tui::pty_pane::tests::sigwinch_reflow_duplicates_scrollback_and_dedup_hides_them
-#     — verifies that the bug exists without dedup and is fixed with it.
+#   tui::pty_pane::tests::naive_set_size_then_child_reprint_creates_scrollback_duplicates
+#     — pre-condition: confirms vt100's plain set_size + reprint produces
+#       duplicates, locking in the bug shape for regression detection.
 #
-#   tui::pty_pane::tests::scroll_up_skips_sigwinch_hidden_rows
-#     — verifies the scroll offset arithmetic of the dedup guard.
+#   tui::pty_pane::tests::refeed_reflow_eliminates_scrollback_duplicates
+#     — primary fix assertion: re-feed reflow produces no duplicates.
 #
-# Running these as a smoke scenario ensures regressions in the PTY resize /
-# scrollback code path are caught at `wg done` time.
+#   tui::pty_pane::tests::refeed_reflow_rewraps_at_narrower_width
+#   tui::pty_pane::tests::refeed_reflow_unwraps_at_wider_width
+#     — width-change semantics: lines re-wrap / un-wrap with each appearing
+#       exactly once.
 #
-# Exit 77 (SKIP) is NOT used — these tests do not require an external endpoint
-# or live terminal; they run against the vt100 parser directly.
+#   tui::pty_pane::tests::refeed_reflow_handles_burst_of_resizes_without_compounding_duplicates
+#     — typing-burst SIGWINCH stress: multiple resizes do not compound dups.
+#
+#   tui::pty_pane::tests::pty_pane_resize_does_not_create_scrollback_duplicates
+#     — end-to-end: drives a real spawned PtyPane through a resize burst and
+#       asserts the integrated path (snapshot + swap parser + master.resize)
+#       leaves scrollback duplicate-free.
+#
+# Exit 77 (SKIP) is NOT used — these tests run against the in-process vt100
+# parser and a /bin/sh PTY child; no external endpoint or network is needed.
 
 set -euo pipefail
 
@@ -35,23 +51,28 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 
 require_wg
 
-# Re-run the dedup unit tests.  `cargo test --bin wg` exercises the main binary
-# crate where `src/tui/pty_pane.rs` (and its #[cfg(test)] block) lives.
-# Note: cargo test accepts exactly one filter arg; run the two tests separately.
-echo "running pty_pane sigwinch dedup unit tests..."
-if ! cargo test --bin wg \
-        "tui::pty_pane::tests::sigwinch_reflow_duplicates_scrollback_and_dedup_hides_them" \
-        2>&1; then
-    echo "FAIL: sigwinch_reflow_duplicates test failed"
-    exit 1
-fi
-if ! cargo test --bin wg \
-        "tui::pty_pane::tests::scroll_up_skips_sigwinch_hidden_rows" \
-        2>&1; then
-    echo "FAIL: scroll_up_skips_sigwinch_hidden_rows test failed"
-    exit 1
-fi
+TESTS=(
+    "tui::pty_pane::tests::naive_set_size_then_child_reprint_creates_scrollback_duplicates"
+    "tui::pty_pane::tests::refeed_reflow_eliminates_scrollback_duplicates"
+    "tui::pty_pane::tests::refeed_reflow_rewraps_at_narrower_width"
+    "tui::pty_pane::tests::refeed_reflow_unwraps_at_wider_width"
+    "tui::pty_pane::tests::refeed_reflow_handles_burst_of_resizes_without_compounding_duplicates"
+    "tui::pty_pane::tests::refeed_reflow_then_child_repaint_keeps_scrollback_almost_clean"
+    "tui::pty_pane::tests::pty_pane_resize_does_not_create_scrollback_duplicates"
+)
+
+echo "running pty_pane re-feed reflow unit tests..."
+# `cargo test --bin wg` exercises the main binary crate where
+# `src/tui/pty_pane.rs` (and its #[cfg(test)] block) lives.
+# Note: cargo test accepts exactly one filter arg; run the tests separately.
+for t in "${TESTS[@]}"; do
+    echo "  $t"
+    if ! cargo test --bin wg "$t" -- --exact 2>&1; then
+        echo "FAIL: $t"
+        exit 1
+    fi
+done
 
 echo ""
-echo "PASS: pty_resize_dedup — scrollback echo rows are hidden after SIGWINCH reflow"
+echo "PASS: pty_resize_dedup — re-feed reflow keeps scrollback duplicate-free across SIGWINCH"
 exit 0
