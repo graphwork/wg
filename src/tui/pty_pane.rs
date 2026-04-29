@@ -407,6 +407,15 @@ impl PtyPane {
                     session_name
                 );
             }
+            // Hide the tmux status bar — wg's TUI provides the chrome the
+            // user actually interacts with; tmux's default green bar is
+            // an implementation detail of the wrapper and visually harsh.
+            // Best-effort: a failure here is cosmetic, not fatal.
+            let _ = std::process::Command::new("tmux")
+                .args(["set-option", "-t", session_name, "status", "off"])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
         }
 
         // Attach client lives in our PTY child. `-d` detaches any other
@@ -3349,6 +3358,55 @@ sleep 5
 
         tmux_kill_session(&session);
         let _ = std::fs::remove_file(&marker);
+    }
+
+    /// Status-bar suppression: a tmux session created via spawn_via_tmux
+    /// must have its status bar disabled — the wg TUI provides the
+    /// chrome the user actually interacts with, and tmux's default
+    /// green bar is visually out of place. Skip if tmux isn't
+    /// installed.
+    #[test]
+    fn spawn_via_tmux_disables_status_bar() {
+        if !tmux_available() {
+            eprintln!("tmux not installed — skipping status-bar test");
+            return;
+        }
+        let suffix = format!(
+            "{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        );
+        let session = format!("wg-chat-test-status-{}", suffix);
+
+        {
+            let _pane = PtyPane::spawn_via_tmux(
+                &session,
+                "sh",
+                &["-c", "while true; do sleep 1; done"],
+                &[],
+                None,
+                24,
+                80,
+            )
+            .expect("spawn_via_tmux should succeed when tmux is available");
+
+            let out = std::process::Command::new("tmux")
+                .args(["show-options", "-t", &session, "status"])
+                .output()
+                .expect("tmux show-options must run");
+            let s = String::from_utf8_lossy(&out.stdout);
+            // tmux prints either `status off` or `status on` (no quotes).
+            assert!(
+                s.contains("status off"),
+                "expected status bar to be off, got: {:?}",
+                s
+            );
+        }
+
+        tmux_kill_session(&session);
     }
 
     #[test]
