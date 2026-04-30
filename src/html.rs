@@ -25,6 +25,7 @@
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Duration, Utc};
+use pulldown_cmark::{html as md_html, Options, Parser as MdParser};
 use regex::Regex;
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -410,6 +411,18 @@ fn task_filename(id: &str) -> String {
     format!("tasks/{}.html", url_encode_id(id))
 }
 
+/// Convert markdown text to an HTML string using pulldown-cmark.
+/// Raw HTML in the input is not passed through (safe by default).
+fn markdown_to_html(text: &str) -> String {
+    let opts = Options::ENABLE_STRIKETHROUGH
+        | Options::ENABLE_TABLES
+        | Options::ENABLE_TASKLISTS;
+    let parser = MdParser::new_ext(text, opts);
+    let mut out = String::with_capacity(text.len() * 2);
+    md_html::push_html(&mut out, parser);
+    out
+}
+
 // ────────────────────────────────────────────────────────────────────────────
 // Structured viz capture (subprocess `wg viz --json`)
 // ────────────────────────────────────────────────────────────────────────────
@@ -651,7 +664,10 @@ fn render_line(
         if let Some(&(start, end, id, status)) = range_iter.peek() {
             if col == *start {
                 let s_class = status_class(*status);
-                out.push_str("<span class=\"task-link\" data-task-id=\"");
+                let chat_class = if chat_id::is_chat_task_id(id) { " chat-agent" } else { "" };
+                out.push_str("<span class=\"task-link");
+                out.push_str(chat_class);
+                out.push_str("\" data-task-id=\"");
                 out.push_str(&escape_html(id));
                 out.push_str("\" data-status=\"");
                 out.push_str(s_class);
@@ -967,7 +983,9 @@ fn task_to_json(
         } else {
             d.clone()
         };
+        let rendered_html = markdown_to_html(&truncated);
         obj["description"] = serde_json::Value::String(truncated);
+        obj["description_html"] = serde_json::Value::String(rendered_html);
     }
     if let Some(ev) = eval {
         obj["eval_score"] = serde_json::json!(ev.score);
@@ -1338,7 +1356,43 @@ fn render_task_page(
 
     let description_html = match &task.description {
         Some(d) if !d.trim().is_empty() => {
-            format!("<pre class=\"description\">{}</pre>", escape_html(d))
+            let rendered = markdown_to_html(d);
+            format!(
+                "<div class=\"desc-header\">\
+                 <button id=\"desc-toggle\" class=\"desc-toggle\" type=\"button\">raw</button>\
+                 </div>\
+                 <div id=\"desc-pretty\" class=\"description-rendered\">{rendered}</div>\
+                 <pre id=\"desc-raw\" class=\"description\" style=\"display:none\">{raw}</pre>\
+                 <script>\
+                 (function(){{\
+                 var KEY='wg-html-desc-view';\
+                 var btn=document.getElementById('desc-toggle');\
+                 var pretty=document.getElementById('desc-pretty');\
+                 var raw=document.getElementById('desc-raw');\
+                 function apply(v){{\
+                 if(v==='raw'){{\
+                 pretty.style.display='none';\
+                 raw.style.display='';\
+                 btn.textContent='pretty';\
+                 }}else{{\
+                 pretty.style.display='';\
+                 raw.style.display='none';\
+                 btn.textContent='raw';\
+                 }}\
+                 }}\
+                 var saved;try{{saved=localStorage.getItem(KEY);}}catch(_){{saved=null;}}\
+                 apply(saved==='raw'?'raw':'pretty');\
+                 btn.addEventListener('click',function(){{\
+                 var cur=pretty.style.display==='none'?'raw':'pretty';\
+                 var nxt=cur==='pretty'?'raw':'pretty';\
+                 try{{localStorage.setItem(KEY,nxt);}}catch(_){{}}\
+                 apply(nxt);\
+                 }});\
+                 }})();\
+                 </script>",
+                rendered = rendered,
+                raw = escape_html(d),
+            )
         }
         _ => "<p class=\"none\">(no description)</p>".to_string(),
     };
@@ -1698,6 +1752,76 @@ mod tests {
         assert_eq!(parse_since("2w").unwrap(), Duration::weeks(2));
         assert!(parse_since("0h").is_err());
         assert!(parse_since("abc").is_err());
+    }
+
+    // ────────────────────────────────────────────────────────────────────
+    // Chat agent color (smoke-polish-wg-html)
+    // ────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn chat_task_span_gets_chat_agent_class() {
+        // render_line must emit class="task-link chat-agent" for .chat-N ids
+        let mut out = String::new();
+        let ranges: Vec<(usize, usize, &str, Status)> =
+            vec![(0, 6, ".chat-1", Status::Open)];
+        let line_chars: Vec<char> = ".chat-1".chars().collect();
+        let edges: HashMap<(usize, usize), Vec<(String, String)>> = HashMap::new();
+        render_line(&mut out, 0, &line_chars, &ranges, &edges, ".chat-1");
+        assert!(
+            out.contains("task-link chat-agent"),
+            "chat task span must have 'chat-agent' class; got: {out}"
+        );
+    }
+
+    #[test]
+    fn regular_task_span_no_chat_agent_class() {
+        let mut out = String::new();
+        let ranges: Vec<(usize, usize, &str, Status)> =
+            vec![(0, 6, "my-task", Status::Open)];
+        let line_chars: Vec<char> = "my-task".chars().collect();
+        let edges: HashMap<(usize, usize), Vec<(String, String)>> = HashMap::new();
+        render_line(&mut out, 0, &line_chars, &ranges, &edges, "my-task");
+        assert!(
+            !out.contains("chat-agent"),
+            "regular task span must NOT have 'chat-agent' class; got: {out}"
+        );
+    }
+
+    // ────────────────────────────────────────────────────────────────────
+    // Markdown description rendering (smoke-polish-wg-html)
+    // ────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn markdown_to_html_renders_headings_and_lists() {
+        let md = "## Hello\n\n- item one\n- item two\n";
+        let html = markdown_to_html(md);
+        assert!(html.contains("<h2>"), "heading not rendered: {html}");
+        assert!(html.contains("<li>"), "list items not rendered: {html}");
+        assert!(!html.contains("## Hello"), "raw heading leaked into output: {html}");
+    }
+
+    #[test]
+    fn markdown_to_html_renders_code_blocks() {
+        let md = "```rust\nfn main() {}\n```\n";
+        let html = markdown_to_html(md);
+        assert!(html.contains("<code"), "code block not rendered: {html}");
+        assert!(html.contains("fn main()"), "code content missing: {html}");
+    }
+
+    #[test]
+    fn task_json_includes_description_html() {
+        use crate::graph::WorkGraph;
+        let mut task = Task::default();
+        task.id = "test-task".to_string();
+        task.description = Some("## Title\n\n- item\n".to_string());
+        let graph = WorkGraph::new();
+        let included: HashSet<&str> = std::iter::once("test-task").collect();
+        let json = task_to_json(&task, &graph, None, &included);
+        let desc_html = json.get("description_html").and_then(|v| v.as_str());
+        assert!(desc_html.is_some(), "description_html field missing");
+        let html = desc_html.unwrap();
+        assert!(html.contains("<h2>"), "heading not in description_html: {html}");
+        assert!(html.contains("<li>"), "list not in description_html: {html}");
     }
 
     // ────────────────────────────────────────────────────────────────────

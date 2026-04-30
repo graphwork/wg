@@ -47,6 +47,18 @@
         return String(s || '').replace(/\s+/g, '-').toLowerCase();
     }
 
+    // ── Description view preference ─────────────────────────────────────
+
+    var DESC_VIEW_KEY = 'wg-html-desc-view';
+
+    function getDescView() {
+        try { return localStorage.getItem(DESC_VIEW_KEY) || 'pretty'; } catch (_) { return 'pretty'; }
+    }
+
+    function setDescView(v) {
+        try { localStorage.setItem(DESC_VIEW_KEY, v); } catch (_) {}
+    }
+
     // ── Theme management ────────────────────────────────────────────────
 
     var STORAGE_KEY = 'wg-html-theme';
@@ -222,9 +234,19 @@
             h += '</div>';
         }
 
-        if (task.description) {
-            h += '<details open><summary>Description</summary>';
-            h += '<pre class="panel-desc">' + escapeHtml(task.description) + '</pre>';
+        if (task.description || task.description_html) {
+            var descView = getDescView();
+            var hasPretty = !!task.description_html;
+            var toggleLabel = (descView === 'pretty' && hasPretty) ? 'raw' : 'pretty';
+            var toggleHtml = hasPretty
+                ? ' <button type="button" class="desc-toggle" id="panel-desc-toggle">' + toggleLabel + '</button>'
+                : '';
+            h += '<details open><summary>Description' + toggleHtml + '</summary>';
+            if (descView === 'pretty' && hasPretty) {
+                h += '<div class="panel-desc-html">' + task.description_html + '</div>';
+            } else {
+                h += '<pre class="panel-desc">' + escapeHtml(task.description || '') + '</pre>';
+            }
             h += '</details>';
         }
 
@@ -313,6 +335,20 @@
                     openTask(a.getAttribute('data-task-id'));
                 });
             })(deps[dd]);
+        }
+
+        // Wire description view toggle.
+        var descToggle = document.getElementById('panel-desc-toggle');
+        if (descToggle) {
+            (function (t) {
+                t.addEventListener('click', function (ev) {
+                    ev.preventDefault();
+                    ev.stopPropagation();
+                    var cur = getDescView();
+                    setDescView(cur === 'pretty' ? 'raw' : 'pretty');
+                    renderPanel(task);
+                });
+            })(descToggle);
         }
     }
 

@@ -712,3 +712,12 @@ owners = [
 ]
 description = "fix-scroll-via: scrolling a tmux-wrapped chat must drive tmux's own copy-mode (so tmux re-emits a clean post-scroll view), not walk the outer vt100 parser's scrollback. Drives copy-mode + cursor-up + cancel via the same tmux send-keys -X commands wg's PtyPane issues, asserts pane_in_mode toggles 0->1->0 and that mouse mode is off. Skips when tmux is missing."
 timeout_seconds = 30
+
+[[scenario]]
+name = "wg_html_chat_color_and_markdown"
+script = "scenarios/wg_html_chat_color_and_markdown.sh"
+owners = [
+    "polish-wg-html",
+]
+description = "Pins polish-wg-html: (1) chat task nodes in the viz must carry the 'chat-agent' CSS class (so --chat-task blue overrides open/yellow status color); (2) description JSON must include description_html (markdown rendered to HTML); (3) panel.js must have the desc-toggle wiring for raw/pretty toggle; (4) CSS must declare --chat-task color (TUI Color::Blue = rgb(36,114,200))."
+timeout_seconds = 60
