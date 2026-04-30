@@ -5553,8 +5553,10 @@ impl VizApp {
 
     /// Apply a viz result (shared implementation for load_viz and load_viz_from_graph).
     fn apply_viz_result(&mut self, viz_result: Result<VizOutput>) {
-        // Smart-follow: snapshot whether the user is at the bottom before reloading.
-        let was_at_bottom = self.smart_follow_active || self.initial_load;
+        // Smart-follow: check whether the user is at the exact bottom before reloading.
+        // Use strict (no +3 slack) so users who scrolled near-but-not-at the bottom
+        // are not dragged along by new content appended below them.
+        let was_at_bottom = self.scroll.is_at_bottom_strict() || self.initial_load;
 
         // Anchor on the selected task's RELATIVE position within the viewport.
         // This keeps the task visually stable even when lines shift above it.
@@ -5761,8 +5763,16 @@ impl VizApp {
                         self.scroll_to_selected_task();
                     }
                 } else if new_task_focused {
-                    // New task appeared — defer centering until render sets viewport_height.
-                    self.needs_center_on_selected = true;
+                    // Sticky viewport policy for new tasks.
+                    // If the user is anchored at the top (offset_y == 0), keep them
+                    // there — top-anchor wins over the focus pull.
+                    // Otherwise, use a gentle comfort-zone scroll (scroll_to_selected_task)
+                    // deferred to render time. That function is a no-op when the task is
+                    // already on-screen, so the viewport only moves when the new task is
+                    // genuinely off-screen.
+                    if self.scroll.offset_y != 0 {
+                        self.needs_scroll_into_view = true;
+                    }
                 } else {
                     // Selection changed (different task) — only scroll if off-screen.
                     self.needs_scroll_into_view = true;
@@ -17250,6 +17260,13 @@ impl ViewportScroll {
         self.offset_y + 3 >= max_y || self.content_height <= self.viewport_height
     }
 
+    /// Returns true only when the viewport is scrolled to the exact bottom (no slack).
+    /// Use this for smart-follow decisions where near-bottom should NOT auto-advance.
+    pub fn is_at_bottom_strict(&self) -> bool {
+        let max_y = self.content_height.saturating_sub(self.viewport_height);
+        self.offset_y >= max_y || self.content_height <= self.viewport_height
+    }
+
     pub fn page_left(&mut self) {
         self.scroll_left(self.viewport_width / 2);
     }
@@ -26070,5 +26087,345 @@ mod chat_exit_prompt_tests {
         assert!(matches!(app.input_mode, InputMode::Normal));
         assert!(app.should_quit);
         assert!(app.exit_prompt_resolved);
+    }
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Tests for viewport stability (implement-tui-viewport)
+// ══════════════════════════════════════════════════════════════════════════════
+#[cfg(test)]
+mod viewport_stability_tests {
+    use super::*;
+    use std::collections::{HashMap, HashSet};
+    use workgraph::graph::{Node, Status, WorkGraph};
+    use workgraph::parser::save_graph;
+    use workgraph::test_helpers::make_task_with_status;
+
+    use crate::commands::viz::ascii::generate_ascii;
+    use crate::commands::viz::{LayoutMode, VizOutput};
+
+    /// Build a linear graph of `n` tasks (task-0, task-1, ...) and return
+    /// the resulting VizOutput, graph, and tempdir.
+    fn build_linear_graph(n: usize) -> (VizOutput, WorkGraph, tempfile::TempDir) {
+        let mut graph = WorkGraph::new();
+        for i in 0..n {
+            let id = format!("task-{}", i);
+            let title = format!("Task {}", i);
+            let mut task = make_task_with_status(&id, &title, Status::Open);
+            if i > 0 {
+                task.after = vec![format!("task-{}", i - 1)];
+            }
+            graph.add_node(Node::Task(task));
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let graph_path = tmp.path().join("graph.jsonl");
+        save_graph(&graph, &graph_path).unwrap();
+
+        let tasks: Vec<_> = graph.tasks().collect();
+        let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
+        let viz = generate_ascii(
+            &graph,
+            &tasks,
+            &task_ids,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            LayoutMode::Tree,
+            &HashSet::new(),
+            "gray",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        (viz, graph, tmp)
+    }
+
+    /// Build a VizApp that looks like it completed an initial load:
+    /// content_height set, viewport_height simulated, scrolled to top.
+    ///
+    /// Avoids calling apply_viz_result on a fresh (empty) scroll state —
+    /// is_at_bottom_strict() is trivially true when content_height=0, which
+    /// would trigger go_bottom() and leave offset_y at max_y instead of 0.
+    fn build_app_post_initial(
+        viz: &VizOutput,
+        workgraph_dir: &std::path::Path,
+        viewport_height: usize,
+    ) -> VizApp {
+        let mut app = VizApp::from_viz_output_for_test(viz);
+        app.workgraph_dir = workgraph_dir.to_path_buf();
+        // Simulate a real terminal viewport so scroll math works.
+        app.scroll.viewport_height = viewport_height;
+        // Set content_height from lines (mimics update_scroll_bounds).
+        app.update_scroll_bounds();
+        // Start at top as the real initial load would.
+        app.scroll.go_top();
+        app
+    }
+
+    // ── is_at_bottom_strict unit tests ──
+
+    #[test]
+    fn is_at_bottom_strict_true_at_exact_bottom() {
+        let mut s = ViewportScroll::new();
+        s.content_height = 30;
+        s.viewport_height = 20;
+        s.offset_y = 10; // max_y = 30-20 = 10 → exactly at bottom
+        assert!(s.is_at_bottom_strict());
+    }
+
+    #[test]
+    fn is_at_bottom_strict_false_one_line_above_bottom() {
+        let mut s = ViewportScroll::new();
+        s.content_height = 30;
+        s.viewport_height = 20;
+        s.offset_y = 9; // max_y = 10; 9 < 10 → not at bottom
+        assert!(!s.is_at_bottom_strict());
+    }
+
+    #[test]
+    fn is_at_bottom_loose_true_within_3_lines() {
+        let mut s = ViewportScroll::new();
+        s.content_height = 30;
+        s.viewport_height = 20;
+        s.offset_y = 8; // max_y=10; 8+3=11 >= 10 → loose says bottom
+        assert!(s.is_at_bottom());
+        // strict says not
+        assert!(!s.is_at_bottom_strict());
+    }
+
+    // ── Viewport stability: mid-scroll state transition ──
+
+    /// Scroll to mid-graph, simulate a graph reload (status change on another task),
+    /// and assert the viewport did NOT jump.
+    #[test]
+    fn viewport_stable_on_offscreen_state_change() {
+        let (viz, _, tmp) = build_linear_graph(30);
+        let mut app = build_app_post_initial(&viz, tmp.path(), 20);
+
+        // Scroll to the middle.
+        app.scroll.offset_y = 10;
+
+        // Reload with the same graph — simulates an off-screen status change.
+        app.apply_viz_result(Ok(viz.clone()));
+
+        assert_eq!(
+            app.scroll.offset_y, 10,
+            "viewport must not jump on off-screen state change"
+        );
+        assert!(
+            !app.needs_center_on_selected,
+            "needs_center_on_selected must not be set"
+        );
+    }
+
+    // ── New-task focus: top-anchor wins ──
+
+    /// When the user is at the top (offset_y == 0) and a new task is added,
+    /// the viewport must stay at offset_y == 0 (top-anchor wins).
+    #[test]
+    fn new_task_at_top_viewport_stays_at_top() {
+        let (viz, mut graph, tmp) = build_linear_graph(30);
+        let mut app = build_app_post_initial(&viz, tmp.path(), 20);
+
+        // Confirm we start at the top.
+        assert_eq!(app.scroll.offset_y, 0);
+
+        // Add a new task to the graph and rebuild viz.
+        let mut new_task = make_task_with_status("task-new", "New Task", Status::Open);
+        new_task.after = vec!["task-29".to_string()];
+        graph.add_node(Node::Task(new_task));
+
+        let graph_path = tmp.path().join("graph.jsonl");
+        save_graph(&graph, &graph_path).unwrap();
+
+        let tasks: Vec<_> = graph.tasks().collect();
+        let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
+        let viz2 = generate_ascii(
+            &graph,
+            &tasks,
+            &task_ids,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            LayoutMode::Tree,
+            &HashSet::new(),
+            "gray",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+
+        // Write the .new_task_focus marker.
+        std::fs::write(tmp.path().join(".new_task_focus"), "task-new").unwrap();
+
+        app.apply_viz_result(Ok(viz2));
+
+        assert_eq!(
+            app.scroll.offset_y, 0,
+            "top-anchor must win: viewport must stay at offset_y=0 when user is at top"
+        );
+        assert!(
+            !app.needs_center_on_selected,
+            "needs_center_on_selected must NOT be set when at top"
+        );
+    }
+
+    // ── New-task focus: mid-scroll does NOT center ──
+
+    /// When the user is scrolled mid-graph and a new task is added off-screen,
+    /// the viewport must NOT unconditionally center on the new task.
+    /// Instead, needs_scroll_into_view is used (gentle comfort-zone, not center).
+    #[test]
+    fn new_task_mid_scroll_does_not_center() {
+        let (viz, mut graph, tmp) = build_linear_graph(30);
+        let mut app = build_app_post_initial(&viz, tmp.path(), 20);
+
+        // Scroll to mid-graph.
+        app.scroll.offset_y = 10;
+
+        // Add a new task to the graph.
+        let mut new_task = make_task_with_status("task-new", "New Task", Status::Open);
+        new_task.after = vec!["task-29".to_string()];
+        graph.add_node(Node::Task(new_task));
+
+        let graph_path = tmp.path().join("graph.jsonl");
+        save_graph(&graph, &graph_path).unwrap();
+
+        let tasks: Vec<_> = graph.tasks().collect();
+        let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
+        let viz2 = generate_ascii(
+            &graph,
+            &tasks,
+            &task_ids,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            LayoutMode::Tree,
+            &HashSet::new(),
+            "gray",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+
+        // Write the .new_task_focus marker.
+        std::fs::write(tmp.path().join(".new_task_focus"), "task-new").unwrap();
+
+        app.apply_viz_result(Ok(viz2));
+
+        // The critical invariant: unconditional center is forbidden.
+        assert!(
+            !app.needs_center_on_selected,
+            "needs_center_on_selected must NOT be set for mid-scroll new task"
+        );
+        // Offset must not have changed (deferred scroll happens in render, not here).
+        assert_eq!(
+            app.scroll.offset_y, 10,
+            "offset_y must be unchanged before render handles needs_scroll_into_view"
+        );
+    }
+
+    // ── Smart-follow: near-bottom does NOT auto-advance ──
+
+    /// When the user is near (but not at) the exact bottom, adding a new task
+    /// must NOT trigger smart-follow (go_bottom). The strict threshold means
+    /// "within 3 lines" no longer counts.
+    #[test]
+    fn near_bottom_does_not_trigger_smart_follow() {
+        let (viz, mut graph, tmp) = build_linear_graph(30);
+        let mut app = build_app_post_initial(&viz, tmp.path(), 20);
+
+        // content_height is set by update_scroll_bounds: lines.len() + 1.
+        // For 30 tasks with tree connectors, lines.len() >= 30. max_y = content_height - 20.
+        // Set offset_y to max_y - 2 (near bottom, within the old +3 slack).
+        let max_y = app.scroll.content_height.saturating_sub(app.scroll.viewport_height);
+        assert!(max_y >= 2, "graph must be taller than viewport for this test");
+        app.scroll.offset_y = max_y.saturating_sub(2);
+        let initial_offset = app.scroll.offset_y;
+
+        // Add a new task that appends below everything.
+        let mut new_task = make_task_with_status("task-new", "New Task", Status::Open);
+        new_task.after = vec!["task-29".to_string()];
+        graph.add_node(Node::Task(new_task));
+
+        let graph_path = tmp.path().join("graph.jsonl");
+        save_graph(&graph, &graph_path).unwrap();
+
+        let tasks: Vec<_> = graph.tasks().collect();
+        let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
+        let viz2 = generate_ascii(
+            &graph,
+            &tasks,
+            &task_ids,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            LayoutMode::Tree,
+            &HashSet::new(),
+            "gray",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+
+        app.apply_viz_result(Ok(viz2));
+
+        // offset_y must NOT have jumped to the new bottom via go_bottom().
+        // It may have been clamped slightly (new content could extend max_y), but
+        // it must not equal the new max_y (which would indicate smart-follow fired).
+        let new_max_y = app.scroll.content_height.saturating_sub(app.scroll.viewport_height);
+        assert_ne!(
+            app.scroll.offset_y, new_max_y,
+            "near-bottom user must NOT be auto-dragged to new bottom by smart-follow"
+        );
+        // And the offset should not have increased dramatically.
+        assert!(
+            app.scroll.offset_y <= initial_offset + 2,
+            "offset must stay near its original position, got {} (initial {})",
+            app.scroll.offset_y,
+            initial_offset
+        );
+    }
+
+    // ── Smart-follow: exact bottom DOES auto-advance ──
+
+    /// When the user IS at the exact bottom, smart-follow fires and keeps them there.
+    #[test]
+    fn exact_bottom_triggers_smart_follow() {
+        let (viz, mut graph, tmp) = build_linear_graph(30);
+        let mut app = build_app_post_initial(&viz, tmp.path(), 20);
+
+        // Scroll to exact bottom.
+        let max_y = app.scroll.content_height.saturating_sub(app.scroll.viewport_height);
+        app.scroll.offset_y = max_y;
+
+        // Add a new task that appends below everything.
+        let mut new_task = make_task_with_status("task-new", "New Task", Status::Open);
+        new_task.after = vec!["task-29".to_string()];
+        graph.add_node(Node::Task(new_task));
+
+        let graph_path = tmp.path().join("graph.jsonl");
+        save_graph(&graph, &graph_path).unwrap();
+
+        let tasks: Vec<_> = graph.tasks().collect();
+        let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
+        let viz2 = generate_ascii(
+            &graph,
+            &tasks,
+            &task_ids,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            LayoutMode::Tree,
+            &HashSet::new(),
+            "gray",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+
+        app.apply_viz_result(Ok(viz2));
+
+        // Smart-follow must have fired: offset_y must equal the new max_y.
+        let new_max_y = app.scroll.content_height.saturating_sub(app.scroll.viewport_height);
+        assert_eq!(
+            app.scroll.offset_y, new_max_y,
+            "exact-bottom user must be kept at the new bottom via smart-follow"
+        );
     }
 }

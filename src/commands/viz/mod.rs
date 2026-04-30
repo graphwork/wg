@@ -22,6 +22,7 @@ pub struct AnnotationInfo {
 
 /// Structured output from viz generation, containing both the rendered string
 /// and metadata needed for interactive features (e.g., TUI task selection).
+#[derive(Clone)]
 pub struct VizOutput {
     /// The rendered visualization string.
     pub text: String,
