@@ -513,6 +513,15 @@ description = "TUI-parity contract for `wg html` (v2). Pins: (1) default = all t
 timeout_seconds = 60
 
 [[scenario]]
+name = "wg_html_declutter"
+script = "scenarios/wg_html_declutter.sh"
+owners = [
+    "wg-html-declutter",
+]
+description = "Regression for wg-html-declutter: the page header is decluttered (just <h1>Workgraph</h1> + '<n> tasks shown' — no 'click a task id to inspect' subtitle, no 'Dependency graph (...)' parenthetical headline above the viz, no inline `<section class=\"legend-section\">`). A 'Legend' button in the header opens the side panel with a full legend covering edge colors, status colors, click behaviors, and CLI flags. The legend HTML lives inside a hidden `<template id=\"wg-legend-template\">`; panel.js binds the legend toggle and reuses the existing side-panel infrastructure, swatches reference the --edge-* CSS variables for theme-aware colors."
+timeout_seconds = 60
+
+[[scenario]]
 name = "profile_create_and_list"
 script = "scenarios/profile_create_and_list.sh"
 owners = [

@@ -30,7 +30,16 @@
     var panelContent = document.getElementById('panel-content');
     var closeBtn = document.getElementById('panel-close');
     var themeToggle = document.getElementById('theme-toggle');
+    var legendToggle = document.getElementById('legend-toggle');
+    var legendTemplate = document.getElementById('wg-legend-template');
     var vizPre = document.querySelector('.viz-pre');
+
+    // Track the last opened task so we can restore it after the user closes
+    // the legend overlay. Spec: "Closing the panel returns to the previous
+    // task detail or empty state."
+    var lastTaskId = null;
+    // Mode of currently-open panel: 'task' | 'legend' | null.
+    var panelMode = null;
 
     // ── Helpers ─────────────────────────────────────────────────────────
 
@@ -358,11 +367,32 @@
         renderPanel(task);
         panel.classList.add('is-open');
         applyHighlight(id);
+        lastTaskId = id;
+        panelMode = 'task';
+    }
+
+    function openLegend() {
+        if (!legendTemplate) return;
+        // Use template.innerHTML — works regardless of whether the template
+        // element actually instantiates a DocumentFragment in this browser.
+        panelContent.innerHTML = legendTemplate.innerHTML;
+        panel.classList.add('is-open');
+        // Legend doesn't highlight any task, but keep prior task highlight
+        // disabled while it's showing so the viz isn't visually misleading.
+        clearHighlight();
+        panelMode = 'legend';
     }
 
     function closePanel() {
+        // If the user is closing the legend and there was a prior task
+        // detail, restore it instead of going to empty state.
+        if (panelMode === 'legend' && lastTaskId && tasks[lastTaskId]) {
+            openTask(lastTaskId);
+            return;
+        }
         panel.classList.remove('is-open');
         clearHighlight();
+        panelMode = null;
     }
 
     // ── Wire viz click handlers ─────────────────────────────────────────
@@ -405,6 +435,20 @@
     });
 
     if (closeBtn) closeBtn.addEventListener('click', closePanel);
+
+    if (legendToggle) {
+        legendToggle.addEventListener('click', function (ev) {
+            ev.preventDefault();
+            ev.stopPropagation();  // prevent the document-click "click outside" handler
+            // Toggle: if the legend is already open, close it (and restore
+            // last task detail if any). Otherwise open the legend.
+            if (panelMode === 'legend') {
+                closePanel();
+            } else {
+                openLegend();
+            }
+        });
+    }
 
     document.addEventListener('keydown', function (ev) {
         if (ev.key === 'Escape') closePanel();

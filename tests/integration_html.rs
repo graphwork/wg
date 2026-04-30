@@ -391,6 +391,118 @@ fn since_filter_composes_with_visibility() {
 // wg-html-v2: theme support, edge JSON, panel JS wiring
 // ────────────────────────────────────────────────────────────────────────────
 
+// ────────────────────────────────────────────────────────────────────────────
+// wg-html-declutter: clean header + clickable Legend in side panel
+// ────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn declutter_index_has_clean_header_no_redundant_text() {
+    // Spec: top of page shows "Workgraph" + task count, no "click a task to
+    // inspect" subtitle, no "Dependency graph (...)" parenthetical, no
+    // inline `<section class="legend-section">` (legend lives in panel only).
+    let t = make_task("only", "Only", "public");
+    let graph = build_graph(vec![t]);
+    let dir = TempDir::new().unwrap();
+    html::render_site(
+        &graph,
+        dir.path(),
+        dir.path(),
+        html::RenderOptions { show_all: true, ..Default::default() },
+    )
+    .unwrap();
+
+    let index = fs::read_to_string(dir.path().join("index.html")).unwrap();
+
+    // Subtitle is just "<n> tasks shown" — no "click a task id to inspect".
+    assert!(
+        !index.contains("click a task id to inspect"),
+        "header subtitle still has 'click a task id to inspect'"
+    );
+    assert!(
+        index.contains("1 tasks shown"),
+        "subtitle missing or wrong: should be '1 tasks shown'"
+    );
+
+    // Old "Dependency graph (...)" headline + parenthetical hint are gone.
+    assert!(
+        !index.contains("Dependency graph"),
+        "redundant 'Dependency graph' h2 still in index"
+    );
+    assert!(
+        !index.contains("magenta = upstream deps"),
+        "redundant edge-color parenthetical still in index"
+    );
+
+    // Inline legend section is removed (legend lives in side panel via template).
+    assert!(
+        !index.contains("class=\"legend-section\""),
+        "inline legend-section should be removed"
+    );
+}
+
+#[test]
+fn declutter_index_includes_legend_toggle_button_and_template() {
+    // Spec: a "Legend" button in the header opens the side panel with a full
+    // legend. The legend HTML is shipped inside a hidden template so the JS
+    // can clone it on click — no separate fetch required.
+    let t = make_task("any", "T", "public");
+    let graph = build_graph(vec![t]);
+    let dir = TempDir::new().unwrap();
+    html::render_site(
+        &graph,
+        dir.path(),
+        dir.path(),
+        html::RenderOptions { show_all: true, ..Default::default() },
+    )
+    .unwrap();
+
+    let index = fs::read_to_string(dir.path().join("index.html")).unwrap();
+
+    // Legend button is present in the header controls.
+    assert!(
+        index.contains(r#"id="legend-toggle""#),
+        "legend toggle button missing from header"
+    );
+
+    // Legend content template is present and covers all spec'd sections.
+    assert!(
+        index.contains(r#"id="wg-legend-template""#),
+        "legend template element missing"
+    );
+    // Edge colors section uses the CSS variables so it tracks dark/light.
+    assert!(
+        index.contains("var(--edge-upstream)"),
+        "legend should reference --edge-upstream for magenta swatch"
+    );
+    assert!(
+        index.contains("var(--edge-downstream)"),
+        "legend should reference --edge-downstream for cyan swatch"
+    );
+    assert!(
+        index.contains("var(--edge-cycle)"),
+        "legend should reference --edge-cycle for yellow swatch"
+    );
+    // Status colors must be present (use the same palette as before).
+    assert!(
+        index.contains("rgb(80,220,100)"),
+        "legend missing Done status color"
+    );
+    // Mentions of click behaviors and theme toggle.
+    assert!(
+        index.contains("Click any task id"),
+        "legend missing click-behavior text"
+    );
+    assert!(
+        index.contains("theme toggle"),
+        "legend missing theme toggle reminder"
+    );
+    // CLI affordances.
+    assert!(
+        index.contains("--chat") && index.contains("--since") && index.contains("--all"),
+        "legend missing CLI flag affordances"
+    );
+}
+
 #[test]
 fn v2_index_includes_theme_toggle_and_panel_assets() {
     let mut t = make_task("theme-tester", "T", "public");

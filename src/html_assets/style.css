@@ -186,7 +186,8 @@ code {
     align-items: center;
 }
 
-.theme-toggle {
+.theme-toggle,
+.legend-toggle {
     background: var(--bg-elevated);
     color: var(--fg);
     border: 1px solid var(--border-strong);
@@ -197,7 +198,8 @@ code {
     cursor: pointer;
     line-height: 1;
 }
-.theme-toggle:hover {
+.theme-toggle:hover,
+.legend-toggle:hover {
     border-color: var(--link);
     color: var(--link);
 }
@@ -210,12 +212,6 @@ h2 {
 }
 
 section { margin-bottom: 2rem; }
-
-.viz-hint {
-    font-size: 0.75em;
-    font-weight: normal;
-    color: var(--fg-muted);
-}
 
 /* ── Page layout ────────────────────────────────────────────────────────── */
 
@@ -355,6 +351,38 @@ body[data-selected] .viz-pre .edge.is-cycle {
     height: 0.85em;
     border-radius: 2px;
     border: 1px solid var(--border-strong);
+    flex-shrink: 0;
+}
+
+/* ── Legend in side panel (column layout, more breathing room) ──────────── */
+
+.panel-legend .legend {
+    flex-direction: column;
+    gap: 0.4rem;
+}
+
+.panel-legend .legend li {
+    align-items: flex-start;
+}
+
+.panel-legend .legend-text {
+    list-style: disc;
+    padding-left: 1.25rem;
+    margin: 0;
+    font-size: 0.85rem;
+}
+
+.panel-legend .legend-text li {
+    margin: 0.3rem 0;
+}
+
+.panel-legend kbd {
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-strong);
+    border-radius: 3px;
+    padding: 0.1em 0.35em;
+    font-size: 0.85em;
+    font-family: 'JetBrains Mono', ui-monospace, 'Cascadia Code', 'Source Code Pro', Menlo, Consolas, monospace;
 }
 
 /* ── Task list (compact index) ──────────────────────────────────────────── */

@@ -1057,8 +1057,12 @@ fn build_cycles_json(viz: &VizJson) -> String {
 // Page render
 // ────────────────────────────────────────────────────────────────────────────
 
-fn render_legend() -> String {
-    let entries = [
+/// Build the rich legend HTML shown in the side panel when the user clicks
+/// the **Legend** button. Covers edge colors, status colors, click
+/// behaviors, theme toggle, and other CLI affordances. This is the single
+/// source of UI explanation — the page header stays clean.
+fn render_legend_panel() -> String {
+    let statuses = [
         Status::Open,
         Status::InProgress,
         Status::Done,
@@ -1067,19 +1071,54 @@ fn render_legend() -> String {
         Status::Waiting,
         Status::PendingValidation,
         Status::PendingEval,
+        Status::FailedPendingEval,
         Status::Abandoned,
         Status::Incomplete,
     ];
     let mut s = String::new();
-    s.push_str("<ul class=\"legend\">\n");
-    for st in entries {
+    s.push_str("<div class=\"panel-legend\">\n");
+    s.push_str("<div class=\"panel-header\"><code class=\"panel-id\">Legend</code></div>\n");
+    s.push_str("<p class=\"panel-title\">Visual conventions and interactions</p>\n");
+
+    // Edge colors — pulled from CSS variables so dark/light themes track the
+    // same swatches used in the actual viz.
+    s.push_str("<details open><summary>Edge colors</summary>\n");
+    s.push_str("<ul class=\"legend legend-edges\">\n");
+    s.push_str("<li><span class=\"swatch\" style=\"background:var(--edge-upstream)\"></span>magenta — upstream dependencies (what this task waits on)</li>\n");
+    s.push_str("<li><span class=\"swatch\" style=\"background:var(--edge-downstream)\"></span>cyan — downstream consumers (what waits on this task)</li>\n");
+    s.push_str("<li><span class=\"swatch\" style=\"background:var(--edge-cycle)\"></span>yellow — cycle membership (back-edges in the same loop)</li>\n");
+    s.push_str("</ul>\n</details>\n");
+
+    // Status colors — same palette as the TUI.
+    s.push_str("<details open><summary>Status colors</summary>\n");
+    s.push_str("<ul class=\"legend legend-statuses\">\n");
+    for st in statuses {
         s.push_str(&format!(
             "  <li><span class=\"swatch\" style=\"background:{color}\"></span>{name}</li>\n",
             color = status_color(st),
             name = st,
         ));
     }
-    s.push_str("</ul>\n");
+    s.push_str("</ul>\n</details>\n");
+
+    // Click behaviors.
+    s.push_str("<details open><summary>Interactions</summary>\n");
+    s.push_str("<ul class=\"legend-text\">\n");
+    s.push_str("<li>Click any task id or status glyph to open its detail panel.</li>\n");
+    s.push_str("<li>Click links inside the panel to navigate between related tasks.</li>\n");
+    s.push_str("<li>Press <kbd>Esc</kbd> or click outside the panel to close it.</li>\n");
+    s.push_str("<li>Use the <strong>theme toggle</strong> in the page header to switch dark/light.</li>\n");
+    s.push_str("</ul>\n</details>\n");
+
+    // Other CLI affordances — hint at flags users may not know about.
+    s.push_str("<details><summary>CLI flags</summary>\n");
+    s.push_str("<ul class=\"legend-text\">\n");
+    s.push_str("<li><code>wg html --chat</code> — include rendered chat transcripts in task pages.</li>\n");
+    s.push_str("<li><code>wg html --since 24h</code> — filter to recent tasks (e.g. <code>1h</code>, <code>7d</code>).</li>\n");
+    s.push_str("<li><code>wg html --all</code> — include non-public tasks (default is public visibility).</li>\n");
+    s.push_str("</ul>\n</details>\n");
+
+    s.push_str("</div>\n");
     s
 }
 
@@ -1161,7 +1200,7 @@ fn render_index(
     }
     list.push_str("</ul>\n");
 
-    let legend = render_legend();
+    let legend_panel = render_legend_panel();
     let footer = render_footer(total_in_graph, total_shown, show_all, since_label);
 
     // Header chat banner — only when --chat is active. Tells the user how many
@@ -1219,22 +1258,18 @@ fn render_index(
          <header class=\"page-header\">\n\
          <div>\n\
          <h1>Workgraph</h1>\n\
-         <p class=\"subtitle\">{n} tasks shown · click a task id to inspect</p>\n\
+         <p class=\"subtitle\">{n} tasks shown</p>\n\
          {chat_banner}\
          </div>\n\
          <div class=\"header-controls\">\n\
+         <button id=\"legend-toggle\" class=\"legend-toggle\" type=\"button\" aria-label=\"Show legend\">Legend</button>\n\
          <button id=\"theme-toggle\" class=\"theme-toggle\" type=\"button\">Light theme</button>\n\
          </div>\n\
          </header>\n\
          <div class=\"page-layout\">\n\
          <main class=\"main-content\">\n\
          <section class=\"dag-section\">\n\
-         <h2>Dependency graph <span class=\"viz-hint\">(click a task to inspect — magenta = upstream deps · cyan = downstream consumers)</span></h2>\n\
          <div class=\"viz-wrap\">{viz}</div>\n\
-         </section>\n\
-         <section class=\"legend-section\">\n\
-         <h2>Legend</h2>\n\
-         {legend}\n\
          </section>\n\
          <section class=\"list-section\">\n\
          <h2>Tasks ({total_shown})</h2>\n\
@@ -1246,6 +1281,7 @@ fn render_index(
          <div id=\"panel-content\"></div>\n\
          </aside>\n\
          </div>\n\
+         <template id=\"wg-legend-template\">{legend_panel}</template>\n\
          <footer>{footer}</footer>\n\
          <script id=\"wg-tasks-json\">window.WG_TASKS = {tasks_json};</script>\n\
          <script id=\"wg-edges-json\">window.WG_EDGES = {edges_json};</script>\n\
@@ -1256,7 +1292,7 @@ fn render_index(
         title_suffix = title_suffix,
         n = total_shown,
         viz = viz_html,
-        legend = legend,
+        legend_panel = legend_panel,
         list = list,
         total_shown = total_shown,
         footer = footer,
