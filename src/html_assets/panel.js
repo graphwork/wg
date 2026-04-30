@@ -30,9 +30,15 @@
     var panelContent = document.getElementById('panel-content');
     var closeBtn = document.getElementById('panel-close');
     var themeToggle = document.getElementById('theme-toggle');
+    var agencyToggle = document.getElementById('agency-toggle');
     var legendToggle = document.getElementById('legend-toggle');
     var legendTemplate = document.getElementById('wg-legend-template');
-    var vizPre = document.querySelector('.viz-pre');
+    // Pages with the agency toggle render two `<pre class="viz-pre">` blocks
+    // (substantive + agency-included); single-viz pages render exactly one.
+    // We treat the list as the unit for click delegation + highlight scans
+    // so both blocks behave identically when present.
+    var vizPres = Array.prototype.slice.call(document.querySelectorAll('.viz-pre'));
+    var vizPre = vizPres[0] || null;
 
     // Track the last opened task so we can restore it after the user closes
     // the legend overlay. Spec: "Closing the panel returns to the previous
@@ -128,6 +134,42 @@
 
     initTheme();
 
+    // ── Agency-task toggle (web equivalent of TUI period key) ──────────
+
+    var AGENCY_STORAGE_KEY = 'wg-html-show-agency';
+
+    function isShowingAgency() {
+        return document.documentElement.getAttribute('data-show-agency') === 'true';
+    }
+
+    function applyAgencyState(showing) {
+        // Always set to an explicit value (not removeAttribute) so CSS rules
+        // keyed on `:root[data-show-agency='false']` keep matching after toggle.
+        document.documentElement.setAttribute(
+            'data-show-agency', showing ? 'true' : 'false'
+        );
+        if (agencyToggle) {
+            agencyToggle.setAttribute('aria-pressed', showing ? 'true' : 'false');
+            agencyToggle.textContent = showing ? 'Hide meta tasks' : 'Show meta tasks';
+        }
+    }
+
+    function initAgencyToggle() {
+        if (!agencyToggle) return;
+        var saved = null;
+        try { saved = localStorage.getItem(AGENCY_STORAGE_KEY); } catch (_) {}
+        applyAgencyState(saved === 'true');
+        agencyToggle.addEventListener('click', function () {
+            var next = !isShowingAgency();
+            applyAgencyState(next);
+            try {
+                localStorage.setItem(AGENCY_STORAGE_KEY, next ? 'true' : 'false');
+            } catch (_) {}
+        });
+    }
+
+    initAgencyToggle();
+
     // ── Edge / node highlighting ────────────────────────────────────────
 
     /**
@@ -135,7 +177,7 @@
      * upstream / downstream / cycle sets for the selected task.
      */
     function applyHighlight(selectedId) {
-        if (!vizPre) return;
+        if (!vizPres.length) return;
 
         // Clear any existing highlight classes.
         clearHighlight();
@@ -152,17 +194,21 @@
         var cycleSet = {};
         (cycleMap[selectedId] || []).forEach(function (id) { cycleSet[id] = true; });
 
-        // Tag every task-link with selection / upstream / downstream classes.
-        var links = vizPre.querySelectorAll('.task-link');
-        for (var i = 0; i < links.length; i++) {
-            var el = links[i];
-            var id = el.getAttribute('data-task-id');
-            if (id === selectedId) {
-                el.classList.add('is-selected');
-            } else if (upSet[id]) {
-                el.classList.add('is-upstream');
-            } else if (downSet[id]) {
-                el.classList.add('is-downstream');
+        // Tag every task-link with selection / upstream / downstream classes,
+        // across every viz-pre block (one for single-viz pages, two for
+        // dual-viz pages with the agency toggle).
+        for (var p = 0; p < vizPres.length; p++) {
+            var links = vizPres[p].querySelectorAll('.task-link');
+            for (var i = 0; i < links.length; i++) {
+                var el = links[i];
+                var id = el.getAttribute('data-task-id');
+                if (id === selectedId) {
+                    el.classList.add('is-selected');
+                } else if (upSet[id]) {
+                    el.classList.add('is-upstream');
+                } else if (downSet[id]) {
+                    el.classList.add('is-downstream');
+                }
             }
         }
 
@@ -173,7 +219,13 @@
         var inDown = function (id) { return id === selectedId || downSet[id] === true; };
         var inCycle = function (id) { return cycleSet[id] === true; };
 
-        var edges = vizPre.querySelectorAll('.edge');
+        var edges = [];
+        for (var ep = 0; ep < vizPres.length; ep++) {
+            var pe = vizPres[ep].querySelectorAll('.edge');
+            for (var pi = 0; pi < pe.length; pi++) {
+                edges.push(pe[pi]);
+            }
+        }
         for (var j = 0; j < edges.length; j++) {
             var ee = edges[j];
             var raw = ee.getAttribute('data-edges') || '';
@@ -197,12 +249,13 @@
     }
 
     function clearHighlight() {
-        if (!vizPre) return;
-        var classed = vizPre.querySelectorAll(
-            '.is-selected, .is-upstream, .is-downstream, .is-cycle'
-        );
-        for (var i = 0; i < classed.length; i++) {
-            classed[i].classList.remove('is-selected', 'is-upstream', 'is-downstream', 'is-cycle');
+        for (var p = 0; p < vizPres.length; p++) {
+            var classed = vizPres[p].querySelectorAll(
+                '.is-selected, .is-upstream, .is-downstream, .is-cycle'
+            );
+            for (var i = 0; i < classed.length; i++) {
+                classed[i].classList.remove('is-selected', 'is-upstream', 'is-downstream', 'is-cycle');
+            }
         }
         document.body.removeAttribute('data-selected');
     }
@@ -397,25 +450,27 @@
 
     // ── Wire viz click handlers ─────────────────────────────────────────
 
-    // Use event delegation on the viz container so dynamically-rendered nodes
-    // also work. This handles both .task-link span clicks and clicks on any
-    // descendant (status glyph, etc.).
-    if (vizPre) {
-        vizPre.addEventListener('click', function (ev) {
-            var t = ev.target;
-            // Walk up to the nearest .task-link.
-            while (t && t !== vizPre) {
-                if (t.classList && t.classList.contains('task-link')) {
-                    var id = t.getAttribute('data-task-id');
-                    if (id) {
-                        ev.preventDefault();
-                        openTask(id);
-                        return;
+    // Use event delegation on each viz container so dynamically-rendered
+    // nodes also work. This handles both .task-link span clicks and clicks
+    // on any descendant (status glyph, etc.). Iterating vizPres instead of a
+    // single vizPre lets dual-viz pages (with agency toggle) wire both blocks.
+    for (var vp = 0; vp < vizPres.length; vp++) {
+        (function (container) {
+            container.addEventListener('click', function (ev) {
+                var t = ev.target;
+                while (t && t !== container) {
+                    if (t.classList && t.classList.contains('task-link')) {
+                        var id = t.getAttribute('data-task-id');
+                        if (id) {
+                            ev.preventDefault();
+                            openTask(id);
+                            return;
+                        }
                     }
+                    t = t.parentNode;
                 }
-                t = t.parentNode;
-            }
-        });
+            });
+        })(vizPres[vp]);
     }
 
     // Also wire generic [data-task-id] elsewhere on the page (legend, list).

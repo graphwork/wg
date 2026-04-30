@@ -1051,3 +1051,169 @@ fn chat_legacy_coordinator_id_resolves() {
     let page = fs::read_to_string(dir.path().join("tasks/.coordinator-3.html")).unwrap();
     assert!(page.contains("hello assistant"));
 }
+
+// ────────────────────────────────────────────────────────────────────────────
+// wg-html-agency: toggle button to show/hide agency tasks
+// (.evaluate-*, .assign-*, .place-*, .flip-*, .create-*) — TUI period-key parity
+// ────────────────────────────────────────────────────────────────────────────
+
+/// Build a graph with a substantive task plus its agency companions.
+fn agency_fixture() -> WorkGraph {
+    let mut work = make_task("widget-impl", "Build the widget", "internal");
+    work.status = Status::InProgress;
+    let mut assign = make_task(".assign-widget-impl", "Assign", "internal");
+    assign.status = Status::Done;
+    let mut eval = make_task(".evaluate-widget-impl", "Evaluate", "internal");
+    eval.after = vec!["widget-impl".into()];
+    let mut flip = make_task(".flip-widget-impl", "FLIP", "internal");
+    flip.after = vec!["widget-impl".into()];
+    build_graph(vec![work, assign, eval, flip])
+}
+
+#[test]
+fn agency_toggle_button_present_in_show_all_mode() {
+    let dir = TempDir::new().unwrap();
+    html::render_site(
+        &agency_fixture(),
+        dir.path(),
+        dir.path(),
+        html::RenderOptions {
+            show_all: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    let index = fs::read_to_string(dir.path().join("index.html")).unwrap();
+    // Toggle button is wired by id and lives in the page header.
+    assert!(
+        index.contains(r#"id="agency-toggle""#),
+        "agency toggle button missing from index.html"
+    );
+    // Default state advertises the inactive (hidden-agency) label.
+    assert!(
+        index.contains("Show meta tasks") || index.contains("Show all tasks"),
+        "agency toggle should advertise its default 'show' action"
+    );
+}
+
+#[test]
+fn agency_toggle_default_hides_agency_in_viz_pre() {
+    let dir = TempDir::new().unwrap();
+    html::render_site(
+        &agency_fixture(),
+        dir.path(),
+        dir.path(),
+        html::RenderOptions {
+            show_all: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    let index = fs::read_to_string(dir.path().join("index.html")).unwrap();
+    // The body element carries an explicit data-show-agency attribute so JS
+    // and CSS can toggle in lock-step.
+    assert!(
+        index.contains(r#"data-show-agency="false""#),
+        "body should default to data-show-agency=\"false\""
+    );
+    // The substantive viz <pre> stays visible by default; the with-agency viz
+    // is rendered too but in a sibling <pre> that's hidden until toggle.
+    assert!(
+        index.contains("viz-substantive"),
+        "expected viz-substantive class on default-visible viz"
+    );
+    assert!(
+        index.contains("viz-agency"),
+        "expected viz-agency class on hidden-by-default agency viz"
+    );
+}
+
+#[test]
+fn agency_toggle_persists_via_localstorage() {
+    let dir = TempDir::new().unwrap();
+    html::render_site(
+        &agency_fixture(),
+        dir.path(),
+        dir.path(),
+        html::RenderOptions {
+            show_all: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    let panel_js = fs::read_to_string(dir.path().join("panel.js")).unwrap();
+    // localStorage key must be present in panel.js so the choice persists.
+    assert!(
+        panel_js.contains("wg-html-show-agency"),
+        "panel.js should reference the wg-html-show-agency localStorage key"
+    );
+
+    let index = fs::read_to_string(dir.path().join("index.html")).unwrap();
+    // The bootstrap script reads localStorage before paint to avoid flash.
+    assert!(
+        index.contains("wg-html-show-agency"),
+        "index.html bootstrap should read the agency localStorage key"
+    );
+}
+
+#[test]
+fn agency_tasks_get_dim_marker_class_when_visible() {
+    let dir = TempDir::new().unwrap();
+    html::render_site(
+        &agency_fixture(),
+        dir.path(),
+        dir.path(),
+        html::RenderOptions {
+            show_all: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    let index = fs::read_to_string(dir.path().join("index.html")).unwrap();
+    // task-link spans for agency tasks must carry the is-agency class so the
+    // CSS dim treatment applies.
+    assert!(
+        index.contains(r#"class="task-link is-agency""#)
+            || index.contains(r#"is-agency"#),
+        "expected is-agency class somewhere in the rendered viz / list"
+    );
+
+    // CSS provides a visual treatment for the is-agency class so agency tasks
+    // are dimmed (or otherwise visually distinct) when shown.
+    let css = fs::read_to_string(dir.path().join("style.css")).unwrap();
+    assert!(
+        css.contains(".is-agency"),
+        "style.css must define a .is-agency rule for dim treatment"
+    );
+}
+
+#[test]
+fn agency_toggle_omitted_when_no_agency_tasks_present() {
+    // If the graph has no agency tasks at all, the toggle is pointless and
+    // should be omitted to avoid clutter.
+    let mut t = make_task("only-substantive", "T", "public");
+    t.status = Status::Open;
+    let graph = build_graph(vec![t]);
+
+    let dir = TempDir::new().unwrap();
+    html::render_site(
+        &graph,
+        dir.path(),
+        dir.path(),
+        html::RenderOptions {
+            show_all: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    let index = fs::read_to_string(dir.path().join("index.html")).unwrap();
+    assert!(
+        !index.contains(r#"id="agency-toggle""#),
+        "agency toggle should be omitted when no agency tasks exist"
+    );
+}

@@ -204,6 +204,58 @@ code {
     color: var(--link);
 }
 
+/* Agency-task toggle — web equivalent of TUI period key.
+   Visual treatment matches the theme-toggle so the controls feel paired.
+   When pressed (data-show-agency=true) we mark it active so it's clear the
+   user has opted into the noisier view. */
+.agency-toggle {
+    background: var(--bg-elevated);
+    color: var(--fg);
+    border: 1px solid var(--border-strong);
+    padding: 0.4rem 0.8rem;
+    border-radius: 4px;
+    font: inherit;
+    font-size: 0.85rem;
+    cursor: pointer;
+    line-height: 1;
+}
+.agency-toggle:hover {
+    border-color: var(--link);
+    color: var(--link);
+}
+.agency-toggle[aria-pressed="true"] {
+    background: var(--bg-pre);
+    border-color: var(--link);
+    color: var(--link);
+}
+
+/* Dual-viz swap: hide the alternate viz block based on toggle state. The
+   fallback :not() rule handles the (default) case where no toggle exists yet
+   — single-viz pages render `<pre class="viz-pre">` with neither
+   modifier and stay visible. */
+:root[data-show-agency="false"] .viz-pre.viz-agency { display: none; }
+:root[data-show-agency="true"]  .viz-pre.viz-substantive { display: none; }
+
+/* Agency tasks in the task list section. Hidden by default; dimmed when
+   the toggle is on so they read as supporting metadata rather than peer
+   work. (Matches the spec — same dim treatment the TUI uses on system
+   tasks.) */
+:root[data-show-agency="false"] .task-list li.is-agency { display: none; }
+:root[data-show-agency="true"]  .task-list li.is-agency a {
+    opacity: 0.55;
+    font-style: italic;
+}
+
+/* Agency task-link spans inside the agency viz: dim them so they don't
+   visually overwhelm the substantive task labels. The status color still
+   shows through so the at-a-glance status read still works. */
+.viz-pre.viz-agency .task-link.is-agency {
+    opacity: 0.6;
+}
+.viz-pre.viz-agency .task-link.is-agency:hover {
+    opacity: 1;
+}
+
 h2 {
     border-bottom: 1px solid var(--border);
     padding-bottom: 0.25rem;

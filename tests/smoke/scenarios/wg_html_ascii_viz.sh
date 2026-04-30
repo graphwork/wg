@@ -20,8 +20,10 @@ INDEX="$OUTDIR/index.html"
 [ -f "$OUTDIR/style.css" ] || { echo "FAIL: style.css missing"; exit 1; }
 [ -f "$OUTDIR/panel.js"  ] || { echo "FAIL: panel.js missing";  exit 1; }
 
-# ASCII viz element must be present (not SVG).
-grep -q 'class="viz-pre"' "$INDEX" || { echo "FAIL: viz-pre element missing"; exit 1; }
+# ASCII viz element must be present (not SVG). Tolerate the agency-toggle
+# variant where the class becomes `class="viz-pre viz-substantive"` /
+# `class="viz-pre viz-agency"` (wg-html-agency).
+grep -qE 'class="viz-pre[ "]' "$INDEX" || { echo "FAIL: viz-pre element missing"; exit 1; }
 
 # At least one clickable task-link span (the user's must-have: clickability).
 grep -q 'class="task-link"' "$INDEX" || { echo "FAIL: no clickable task-link spans"; exit 1; }

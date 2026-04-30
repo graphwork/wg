@@ -167,8 +167,22 @@ pub fn render_site(
     };
     let included_ids: HashSet<&str> = included.iter().map(|t| t.id.as_str()).collect();
 
+    // Detect whether any agency tasks (.evaluate-/.assign-/.flip-/.place-/.create-)
+    // are in scope. When present we render two viz captures — one substantive,
+    // one with the agency layer included — so the in-page toggle can switch
+    // between them without a server round-trip. (Web equivalent of the TUI
+    // period-key behavior.)
+    let has_agency_tasks = included.iter().any(|t| is_agency_task(&t.id));
+
     // Capture structured viz output (text + node positions + char-level edge map).
-    let viz = capture_viz_json(workgraph_dir, show_all);
+    // Always grab the substantive (no agency) viz; if agency tasks are present,
+    // also grab the agency-included viz for the toggle-on state.
+    let viz = capture_viz_json(workgraph_dir, show_all, false);
+    let viz_agency = if has_agency_tasks {
+        Some(capture_viz_json(workgraph_dir, show_all, true))
+    } else {
+        None
+    };
 
     // Eval scores per task.
     let evals = load_eval_scores(workgraph_dir);
@@ -219,6 +233,7 @@ pub fn render_site(
         &included,
         &included_ids,
         &viz,
+        viz_agency.as_ref(),
         &tasks_json,
         &edges_json,
         &cycles_json,
@@ -227,6 +242,7 @@ pub fn render_site(
         include_chat,
         chat_transcripts_shown,
         chat_transcripts_hidden,
+        has_agency_tasks,
     );
     fs::write(out_dir.join("index.html"), &index_html).context("failed to write index.html")?;
 
@@ -454,7 +470,11 @@ struct CharEdge {
 /// Capture viz output as structured JSON via subprocess. Falls back to an
 /// empty viz if the subprocess fails (the page still renders, just without
 /// the ASCII tree section).
-fn capture_viz_json(workgraph_dir: &Path, show_all: bool) -> VizJson {
+///
+/// `show_all` corresponds to viz's `--all` (visibility/WCC scope).
+/// `show_agency` corresponds to viz's `--show-internal` (include agency-style
+/// `.evaluate-*`, `.assign-*`, etc. tasks in the rendered ASCII layout).
+fn capture_viz_json(workgraph_dir: &Path, show_all: bool, show_agency: bool) -> VizJson {
     let exe = match std::env::current_exe() {
         Ok(p) => p,
         Err(_) => return VizJson::default(),
@@ -474,11 +494,25 @@ fn capture_viz_json(workgraph_dir: &Path, show_all: bool) -> VizJson {
     if show_all {
         cmd.arg("--all");
     }
+    if show_agency {
+        cmd.arg("--show-internal");
+    }
     let out = match cmd.output() {
         Ok(o) if o.status.success() => o,
         _ => return VizJson::default(),
     };
     serde_json::from_slice(&out.stdout).unwrap_or_default()
+}
+
+/// Match the TUI's `is_agency_task_id` (src/tui/viz_viewer/event.rs:5566) —
+/// these prefixes mark internal agency-pipeline tasks (.evaluate-, .assign-,
+/// .place-, .flip-, .create-).
+pub(crate) fn is_agency_task(id: &str) -> bool {
+    id.starts_with(".evaluate-")
+        || id.starts_with(".assign-")
+        || id.starts_with(".place-")
+        || id.starts_with(".flip-")
+        || id.starts_with(".create-")
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -537,14 +571,24 @@ fn strip_ansi(s: &str) -> String {
 ///    - `Marker::Edge(edges)` for cells in the `char_edge_map`.
 ///    - `Marker::Plain` otherwise.
 /// 3. Walk character cells, opening/closing spans on marker transitions.
+///
+/// `extra_pre_class` is appended to the outer `<pre>` element's class list so
+/// callers can render multiple viz blocks (e.g. substantive vs. agency-included)
+/// and switch between them via CSS.
 fn render_viz_html(
     viz: &VizJson,
     graph: &WorkGraph,
     included_ids: &HashSet<&str>,
+    extra_pre_class: &str,
 ) -> String {
     let plain = strip_ansi(&viz.text);
     if plain.trim().is_empty() {
-        return "<pre class=\"viz-pre\">(no tasks to display)</pre>".to_string();
+        let cls = if extra_pre_class.is_empty() {
+            "viz-pre".to_string()
+        } else {
+            format!("viz-pre {}", extra_pre_class)
+        };
+        return format!("<pre class=\"{}\">(no tasks to display)</pre>", cls);
     }
 
     // Per-line cells of (column → list of edges). Note: char_edge_map columns
@@ -572,7 +616,13 @@ fn render_viz_html(
     task_id_strs.sort_by(|a, b| b.len().cmp(&a.len()));
 
     let mut html = String::with_capacity(plain.len() * 2);
-    html.push_str("<pre class=\"viz-pre\">");
+    if extra_pre_class.is_empty() {
+        html.push_str("<pre class=\"viz-pre\">");
+    } else {
+        html.push_str("<pre class=\"viz-pre ");
+        html.push_str(extra_pre_class);
+        html.push_str("\">");
+    }
 
     for (line_idx, line) in plain.lines().enumerate() {
         // Collect `(start_char_idx, end_char_idx, task_id)` ranges where a
@@ -664,8 +714,10 @@ fn render_line(
         if let Some(&(start, end, id, status)) = range_iter.peek() {
             if col == *start {
                 let s_class = status_class(*status);
+                let agency_cls = if is_agency_task(id) { " is-agency" } else { "" };
                 let chat_class = if chat_id::is_chat_task_id(id) { " chat-agent" } else { "" };
                 out.push_str("<span class=\"task-link");
+                out.push_str(agency_cls);
                 out.push_str(chat_class);
                 out.push_str("\" data-task-id=\"");
                 out.push_str(&escape_html(id));
@@ -1167,6 +1219,7 @@ fn render_index(
     included: &[&Task],
     included_ids: &HashSet<&str>,
     viz: &VizJson,
+    viz_agency: Option<&VizJson>,
     tasks_json: &str,
     edges_json: &str,
     cycles_json: &str,
@@ -1175,21 +1228,43 @@ fn render_index(
     include_chat: bool,
     chat_transcripts_shown: usize,
     chat_transcripts_hidden: usize,
+    has_agency_tasks: bool,
 ) -> String {
     let total_in_graph = graph.tasks().count();
     let total_shown = included.len();
 
-    let viz_html = render_viz_html(viz, graph, included_ids);
+    // When agency tasks exist we render two viz blocks (substantive vs.
+    // agency-included) and CSS shows one based on body[data-show-agency]. When
+    // there are no agency tasks the toggle is omitted and we only emit the
+    // single substantive viz with no extra class.
+    let viz_html = if has_agency_tasks {
+        let mut combined = render_viz_html(viz, graph, included_ids, "viz-substantive");
+        if let Some(va) = viz_agency {
+            combined.push('\n');
+            combined.push_str(&render_viz_html(va, graph, included_ids, "viz-agency"));
+        }
+        combined
+    } else {
+        render_viz_html(viz, graph, included_ids, "")
+    };
 
-    // Ordered task list (by status then id).
+    // Ordered task list (by status then id). Agency entries get a data-agency
+    // marker so CSS can hide them by default and dim them when the toggle is on.
     let mut ordered: Vec<&&Task> = included.iter().collect();
     ordered.sort_by_key(|t| (t.status.to_string(), t.id.clone()));
     let mut list = String::new();
     list.push_str("<ul class=\"task-list\">\n");
     for t in &ordered {
+        let agency = is_agency_task(&t.id);
+        let li_attrs = if agency {
+            " class=\"is-agency\" data-agency=\"true\""
+        } else {
+            ""
+        };
         list.push_str(&format!(
-            "  <li><a href=\"{href}\" data-task-id=\"{id_attr}\"><span class=\"badge {cls}\">{status}</span> \
+            "  <li{li_attrs}><a href=\"{href}\" data-task-id=\"{id_attr}\"><span class=\"badge {cls}\">{status}</span> \
              <code>{id}</code> — {title}</a></li>\n",
+            li_attrs = li_attrs,
             href = task_filename(&t.id),
             id_attr = escape_html(&t.id),
             cls = status_class(t.status),
@@ -1234,9 +1309,44 @@ fn render_index(
 
     let title_suffix = if show_all { "all tasks" } else { "public mirror" };
 
+    // Agency toggle UI (button + body data attribute) — emitted only when
+    // there are actual agency tasks in scope. Web equivalent of the TUI's
+    // period-key behavior. Default is hidden ("false"); the bootstrap script
+    // overrides the body attribute before paint to avoid a flash if the user
+    // has already opted in.
+    let agency_toggle_btn = if has_agency_tasks {
+        "<button id=\"agency-toggle\" class=\"agency-toggle\" type=\"button\" \
+         aria-pressed=\"false\" title=\"Toggle agency / meta tasks (.evaluate-, .assign-, .flip-)\">\
+         Show meta tasks</button>\n"
+    } else {
+        ""
+    };
+    let agency_bootstrap = if has_agency_tasks {
+        "/* Agency-toggle bootstrap — runs before paint to avoid a flash. */\n\
+         (function () {\n\
+             try {\n\
+                 var saved = localStorage.getItem('wg-html-show-agency');\n\
+                 if (saved === 'true') {\n\
+                     document.documentElement.setAttribute('data-show-agency', 'true');\n\
+                 }\n\
+             } catch (_) {}\n\
+         })();\n"
+    } else {
+        ""
+    };
+    // The default state is recorded directly on the <html> element so
+    // (a) the bootstrap can override it before paint when the user previously
+    // opted in, and (b) CSS can target `:root[data-show-agency='true']` /
+    // `:root[data-show-agency='false']` without needing JS to wait for body.
+    let html_show_agency = if has_agency_tasks {
+        " data-show-agency=\"false\""
+    } else {
+        ""
+    };
+
     format!(
         "<!DOCTYPE html>\n\
-         <html lang=\"en\">\n\
+         <html lang=\"en\"{html_show_agency}>\n\
          <head>\n\
          <meta charset=\"utf-8\" />\n\
          <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />\n\
@@ -1252,6 +1362,7 @@ fn render_index(
                  }}\n\
              }} catch (_) {{}}\n\
          }})();\n\
+         {agency_bootstrap}\
          </script>\n\
          </head>\n\
          <body>\n\
@@ -1262,6 +1373,7 @@ fn render_index(
          {chat_banner}\
          </div>\n\
          <div class=\"header-controls\">\n\
+         {agency_toggle_btn}\
          <button id=\"legend-toggle\" class=\"legend-toggle\" type=\"button\" aria-label=\"Show legend\">Legend</button>\n\
          <button id=\"theme-toggle\" class=\"theme-toggle\" type=\"button\">Light theme</button>\n\
          </div>\n\
@@ -1300,6 +1412,9 @@ fn render_index(
         tasks_json = tasks_json,
         edges_json = edges_json,
         cycles_json = cycles_json,
+        agency_toggle_btn = agency_toggle_btn,
+        agency_bootstrap = agency_bootstrap,
+        html_show_agency = html_show_agency,
     )
 }
 
