@@ -6606,381 +6606,36 @@ fn draw_coordinator_picker(
     area
 }
 
-/// Render a FilterPicker WITH hit-area collection + scroll-window clamping.
-/// Used by the launcher to make rows clickable.
-///
-/// `parent_line_offset` is the number of lines already pushed into the
-/// containing paragraph so we can compute absolute Y positions for each row.
-/// `parent_area` is the launcher pane rect we're rendering into.
-/// `hits` is appended with one (LauncherListHit, Rect) per visible row.
-/// `list_area` is set to the bounding box of all visible rows (for scroll-wheel routing).
-#[allow(clippy::too_many_arguments)]
-fn render_filter_picker_with_hits(
-    picker: &super::state::FilterPicker,
-    active: bool,
-    w: usize,
-    viewport_height: usize,
-    parent_line_offset: usize,
-    parent_area: Rect,
-    hits: &mut Vec<(super::state::LauncherListHit, Rect)>,
-    list_area: &mut Rect,
-    is_light: bool,
-) -> Vec<Line<'static>> {
-    use super::state::LauncherListHit;
-    let mut lines: Vec<Line> = Vec::new();
-    let mut local_offset = parent_line_offset;
-    let row_rect = |line_idx: usize| -> Rect {
-        Rect {
-            x: parent_area.x,
-            y: parent_area.y.saturating_add(line_idx as u16),
-            width: parent_area.width,
-            height: 1,
-        }
-    };
-
-    // Filter input (consume one line if shown)
-    if active && !picker.filter.is_empty() {
-        lines.push(Line::from(vec![
-            Span::styled("    Filter: ", Style::default().fg(Color::DarkGray)),
-            Span::styled(
-                picker.filter.clone(),
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                "\u{2588}",
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::SLOW_BLINK),
-            ),
-        ]));
-        local_offset += 1;
-    } else if active {
-        lines.push(Line::from(Span::styled(
-            "    Type to filter...",
-            Style::default().fg(Color::DarkGray),
-        )));
-        local_offset += 1;
-    }
-
-    if picker.items.is_empty() && !picker.empty_hint.is_empty() {
-        lines.push(Line::from(Span::styled(
-            format!("    {}", picker.empty_hint),
-            Style::default().fg(Color::DarkGray),
-        )));
-        local_offset += 1;
-        // CRITICAL: when allow_custom is set, fall through so the Custom
-        // row still renders even with zero items. Pre-fix this branch
-        // returned early — users with no registered endpoints saw the
-        // empty-hint and no way to drop a URL in (fix-new-chat).
-        if !picker.allow_custom {
-            return lines;
-        }
-    }
-
-    // Apply scroll window: skip first `scroll_offset` filtered rows, show up
-    // to `viewport_height` of them.
-    let total_filtered = picker.filtered_indices.len();
-    let mut scroll = picker.scroll_offset;
-    // Auto-clamp: if scroll_offset is past the end, render still works.
-    if scroll >= total_filtered && total_filtered > 0 {
-        scroll = total_filtered - 1;
-    }
-    // Auto-scroll selected into view (selected indexes filtered_indices when not custom).
-    let visible_end = if picker.is_custom_selected() {
-        // Custom row is always rendered separately; window can stay where it is.
-        (scroll + viewport_height).min(total_filtered)
-    } else {
-        let sel = picker.selected;
-        let mut s = scroll;
-        if sel < s {
-            s = sel;
-        } else if sel >= s + viewport_height && viewport_height > 0 {
-            s = sel + 1 - viewport_height;
-        }
-        scroll = s;
-        (s + viewport_height).min(total_filtered)
-    };
-    let list_first_y = parent_area.y.saturating_add(local_offset as u16);
-
-    for fi in scroll..visible_end {
-        let item_idx = picker.filtered_indices[fi];
-        let (id, desc) = &picker.items[item_idx];
-        let selected = active && fi == picker.selected && !picker.custom_active;
-        let bullet = if selected { " \u{25cf} " } else { " \u{25cb} " };
-        let style = if selected {
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(text_primary(is_light))
-        };
-        let desc_short: String = desc.chars().take(w.saturating_sub(id.len() + 14)).collect();
-        let line_idx = local_offset;
-        if desc_short.is_empty() {
-            lines.push(Line::from(Span::styled(
-                format!("    {}{}", bullet, id),
-                style,
-            )));
-        } else {
-            lines.push(Line::from(vec![
-                Span::styled(format!("    {}{}", bullet, id), style),
-                Span::styled(
-                    format!("  {}", desc_short),
-                    Style::default().fg(Color::DarkGray),
-                ),
-            ]));
-        }
-        hits.push((LauncherListHit::Item(fi), row_rect(line_idx)));
-        local_offset += 1;
-    }
-
-    // "(N/M matches)" / scroll indicator
-    if !picker.filter.is_empty() || total_filtered > viewport_height {
-        let total = picker.items.len();
-        let shown_range_end = visible_end;
-        let prefix = if !picker.filter.is_empty() {
-            format!("({}/{} matches", total_filtered, total)
-        } else {
-            format!("({}-{}/{}", scroll + 1, shown_range_end, total_filtered)
-        };
-        let suffix = if total_filtered > viewport_height {
-            format!(", scroll wheel) [{}+]", scroll)
-        } else {
-            ")".to_string()
-        };
-        lines.push(Line::from(Span::styled(
-            format!("    {}{}", prefix, suffix),
-            Style::default().fg(Color::DarkGray),
-        )));
-        local_offset += 1;
-    }
-
-    // Custom row
-    if picker.allow_custom {
-        let custom_selected = active && picker.is_custom_selected();
-        let custom_style = if picker.custom_active {
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD)
-        } else if custom_selected {
-            Style::default().fg(Color::Yellow)
-        } else {
-            Style::default().fg(Color::DarkGray)
-        };
-        let bullet = if custom_selected || picker.custom_active {
-            " \u{25cf} "
-        } else {
-            " \u{25cb} "
-        };
-        let line_idx = local_offset;
-        if picker.custom_active {
-            lines.push(Line::from(vec![
-                Span::styled(
-                    format!("    {}{}: ", bullet, picker.custom_label),
-                    custom_style,
-                ),
-                Span::raw(picker.custom_text.clone()),
-                Span::styled(
-                    "\u{2588}",
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::SLOW_BLINK),
-                ),
-            ]));
-        } else {
-            let display = if picker.custom_text.is_empty() {
-                format!("{}: [enter value]", picker.custom_label)
-            } else {
-                format!("{}: {}", picker.custom_label, picker.custom_text)
-            };
-            lines.push(Line::from(Span::styled(
-                format!("    {}{}", bullet, display),
-                custom_style,
-            )));
-        }
-        hits.push((LauncherListHit::Custom, row_rect(line_idx)));
-        local_offset += 1;
-    }
-
-    // Set list_area to the bounding box of all clickable rows.
-    let list_height = (local_offset as u16).saturating_sub(list_first_y - parent_area.y);
-    *list_area = Rect {
-        x: parent_area.x,
-        y: list_first_y,
-        width: parent_area.width,
-        height: list_height,
-    };
-
-    lines
-}
-
-/// Render a FilterPicker into a list of Lines.
-/// Reused by the launcher (model/endpoint) and config panel (Choice fields).
-fn render_filter_picker(
-    picker: &super::state::FilterPicker,
-    active: bool,
-    w: usize,
-) -> Vec<Line<'static>> {
-    let mut lines: Vec<Line> = Vec::new();
-
-    // Filter input (shown only when active and filter has text or section is active)
-    if active && !picker.filter.is_empty() {
-        lines.push(Line::from(vec![
-            Span::styled("    Filter: ", Style::default().fg(Color::DarkGray)),
-            Span::styled(
-                picker.filter.clone(),
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                "\u{2588}",
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::SLOW_BLINK),
-            ),
-        ]));
-    } else if active {
-        lines.push(Line::from(Span::styled(
-            "    Type to filter...",
-            Style::default().fg(Color::DarkGray),
-        )));
-    }
-
-    if picker.items.is_empty() && !picker.empty_hint.is_empty() {
-        lines.push(Line::from(Span::styled(
-            format!("    {}", picker.empty_hint),
-            Style::default().fg(Color::DarkGray),
-        )));
-        // Mirror render_filter_picker_with_hits: when allow_custom is
-        // set, keep going so the Custom row still renders even with
-        // zero items (fix-new-chat).
-        if !picker.allow_custom {
-            return lines;
-        }
-    }
-
-    for (fi, &item_idx) in picker.filtered_indices.iter().enumerate() {
-        let (ref id, ref desc) = picker.items[item_idx];
-        let selected = active && fi == picker.selected && !picker.custom_active;
-        let bullet = if selected { " \u{25cf} " } else { " \u{25cb} " };
-        let style = if selected {
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(Color::White)
-        };
-        let desc_short: String = desc.chars().take(w.saturating_sub(id.len() + 14)).collect();
-        if desc_short.is_empty() {
-            lines.push(Line::from(Span::styled(
-                format!("    {}{}", bullet, id),
-                style,
-            )));
-        } else {
-            lines.push(Line::from(vec![
-                Span::styled(format!("    {}{}", bullet, id), style),
-                Span::styled(
-                    format!("  {}", desc_short),
-                    Style::default().fg(Color::DarkGray),
-                ),
-            ]));
-        }
-    }
-
-    // Show match count when filter is active
-    if !picker.filter.is_empty() {
-        let total = picker.items.len();
-        let shown = picker.filtered_indices.len();
-        if shown < total {
-            lines.push(Line::from(Span::styled(
-                format!("    ({}/{} matches)", shown, total),
-                Style::default().fg(Color::DarkGray),
-            )));
-        }
-    }
-
-    // Custom row
-    if picker.allow_custom {
-        let custom_selected = active && picker.is_custom_selected();
-        let custom_style = if picker.custom_active {
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD)
-        } else if custom_selected {
-            Style::default().fg(Color::Yellow)
-        } else {
-            Style::default().fg(Color::DarkGray)
-        };
-        let bullet = if custom_selected || picker.custom_active {
-            " \u{25cf} "
-        } else {
-            " \u{25cb} "
-        };
-        if picker.custom_active {
-            lines.push(Line::from(vec![
-                Span::styled(
-                    format!("    {}{}: ", bullet, picker.custom_label),
-                    custom_style,
-                ),
-                Span::raw(picker.custom_text.clone()),
-                Span::styled(
-                    "\u{2588}",
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::SLOW_BLINK),
-                ),
-            ]));
-        } else {
-            let display = if picker.custom_text.is_empty() {
-                format!("{}: [enter value]", picker.custom_label)
-            } else {
-                format!("{}: {}", picker.custom_label, picker.custom_text)
-            };
-            lines.push(Line::from(Span::styled(
-                format!("    {}{}", bullet, display),
-                custom_style,
-            )));
-        }
-    }
-
-    lines
-}
-
 pub(crate) fn draw_launcher_pane(frame: &mut Frame, app: &mut VizApp, area: Rect) {
-    use super::state::{LauncherListHit, LauncherSection};
+    use super::state::{
+        ADD_NEW_EXECUTOR_CHOICES, AddNewField, LauncherMode, LauncherSection,
+    };
 
     // Snapshot read-only data we need from the launcher so we can mutate
     // hit-area buffers on `app` without holding a long borrow.
     let (
+        mode,
         active_section,
         name,
-        executor_list,
-        executor_selected,
-        model_picker,
-        endpoint_picker,
+        presets,
+        default_selected,
+        add_executor_idx,
+        add_model,
+        add_endpoint,
         show_endpoint,
-        show_endpoint_register,
-        register_endpoint_name,
-        recent_list,
-        recent_selected,
         creating,
         last_error,
     ) = match app.launcher.as_ref() {
         Some(l) => (
+            l.mode.clone(),
             l.active_section.clone(),
             l.name.clone(),
-            l.executor_list.clone(),
-            l.executor_selected,
-            l.model_picker.clone(),
-            l.endpoint_picker.clone(),
-            l.show_endpoint(),
-            l.show_endpoint_register(),
-            l.register_endpoint_name.clone(),
-            l.recent_list.clone(),
-            l.recent_selected,
+            l.presets.clone(),
+            l.default_selected,
+            l.add_executor_idx,
+            l.add_model.clone(),
+            l.add_endpoint.clone(),
+            l.add_new_show_endpoint(),
             l.creating,
             l.last_error.clone(),
         ),
@@ -6989,18 +6644,15 @@ pub(crate) fn draw_launcher_pane(frame: &mut Frame, app: &mut VizApp, area: Rect
 
     // Reset hit areas for this frame.
     app.last_launcher_area = area;
-    app.launcher_executor_hits.clear();
-    app.launcher_model_hits.clear();
-    app.launcher_endpoint_hits.clear();
-    app.launcher_recent_hits.clear();
+    app.launcher_default_hits.clear();
+    app.launcher_add_executor_hits.clear();
+    app.launcher_add_model_hit = Rect::default();
+    app.launcher_add_endpoint_hit = Rect::default();
     app.launcher_name_hit = Rect::default();
-    app.launcher_model_list_area = Rect::default();
-    app.launcher_endpoint_list_area = Rect::default();
 
     let w = area.width as usize;
     let mut lines: Vec<Line> = Vec::new();
 
-    // Helper: turn the upcoming line index into an absolute row Rect.
     let row_rect = |line_idx: usize| -> Rect {
         Rect {
             x: area.x,
@@ -7011,39 +6663,22 @@ pub(crate) fn draw_launcher_pane(frame: &mut Frame, app: &mut VizApp, area: Rect
     };
 
     let is_light = app.is_light_theme;
-    let section_style = |active: bool| {
-        if active {
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(text_primary(is_light))
-        }
-    };
 
-    // Title — flips to a creating-state banner while the
-    // `wg service create-coordinator` IPC is in flight. The pane
-    // intentionally stays visible during that ~100-500ms window so
-    // the previously-active chat does not flash in (fix-tui-new
-    // symptom 2).
-    let title_text = if creating {
-        "  Creating chat..."
-    } else {
-        "  New Chat"
+    // Title (flips while the create-coordinator IPC is in flight).
+    let title_text = match (&mode, creating) {
+        (_, true) => "  Creating chat...",
+        (LauncherMode::Default, _) => "  New chat",
+        (LauncherMode::AddNew, _) => "  New chat — Add new",
     };
     let title_color = if creating { Color::Yellow } else { Color::Cyan };
     lines.push(Line::from(Span::styled(
-        title_text,
+        title_text.to_string(),
         Style::default().fg(title_color).add_modifier(Modifier::BOLD),
     )));
+    lines.push(Line::from(""));
 
-    // Persistent error banner (fix-chat-creation): when the previous IPC
-    // submit failed, show the daemon's error message above the form so
-    // the user can see what went wrong (bogus endpoint, missing CLI,
-    // etc.) while they adjust their selection. Cleared on the next
-    // submit attempt.
+    // Persistent error banner (fix-chat-creation).
     if let Some(ref err) = last_error {
-        // Truncate at a reasonable width to keep the banner one line.
         let max_w = w.saturating_sub(6).max(20);
         let truncated: String = err.chars().take(max_w).collect();
         lines.push(Line::from(Span::styled(
@@ -7054,18 +6689,260 @@ pub(crate) fn draw_launcher_pane(frame: &mut Frame, app: &mut VizApp, area: Rect
         )));
     }
 
-    // Action row: [Launch] [Cancel] + Name input live at the TOP. The user
-    // asked for "launch at top of view so its clear why we are doing the
-    // list below" — this is that row. Mouse hits are wired to the same
-    // handlers as the legacy footer buttons.
+    // Body: one of two compact forms (Default or AddNew).
+    match mode {
+        LauncherMode::Default => {
+            // Render preset rows + "+ Add new..." trailing row. Total
+            // body fits in (presets.len() + 1) lines + a trailing blank
+            // before the action row.
+            for (i, preset) in presets.iter().enumerate() {
+                let selected = active_section == LauncherSection::Defaults
+                    && i == default_selected;
+                let bullet = if selected { " \u{25c9} " } else { " \u{25cb} " };
+                let style = if selected {
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(text_primary(is_light))
+                };
+                let label_w = preset.label.len();
+                let pad_w = if label_w < 16 { 16 - label_w } else { 1 };
+                let pad: String = std::iter::repeat(' ').take(pad_w).collect();
+                let row_idx = lines.len();
+                lines.push(Line::from(vec![
+                    Span::styled(format!("  {}{}{}", bullet, preset.label, pad), style),
+                    Span::styled(
+                        preset.description.clone(),
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                ]));
+                app.launcher_default_hits.push((i, row_rect(row_idx)));
+            }
+            // "+ Add new..." row uses index `presets.len()`.
+            let add_idx = presets.len();
+            let add_selected = active_section == LauncherSection::Defaults
+                && default_selected == add_idx;
+            let add_bullet = if add_selected { " \u{25c9} " } else { " \u{25cb} " };
+            let add_style = if add_selected {
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::Cyan)
+            };
+            let row_idx = lines.len();
+            lines.push(Line::from(Span::styled(
+                format!("  {}+ Add new...", add_bullet),
+                add_style,
+            )));
+            app.launcher_default_hits.push((add_idx, row_rect(row_idx)));
+            lines.push(Line::from(""));
+        }
+        LauncherMode::AddNew => {
+            // Executor radio (claude / codex / nex)
+            let exec_active =
+                active_section == LauncherSection::AddNew(AddNewField::Executor);
+            let exec_label_style = if exec_active {
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(text_primary(is_light))
+            };
+            let mut spans: Vec<Span> = vec![Span::styled(
+                if exec_active { "  \u{25b8} Executor: " } else { "    Executor: " }
+                    .to_string(),
+                exec_label_style,
+            )];
+            for (i, choice) in ADD_NEW_EXECUTOR_CHOICES.iter().enumerate() {
+                let is_chosen = i == add_executor_idx;
+                let bullet = if is_chosen { "\u{25c9}" } else { "\u{25cb}" };
+                let chosen_style = if is_chosen && exec_active {
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD)
+                } else if is_chosen {
+                    Style::default().fg(text_primary(is_light))
+                } else {
+                    Style::default().fg(Color::DarkGray)
+                };
+                spans.push(Span::styled(
+                    format!("{} {}", bullet, choice.label),
+                    chosen_style,
+                ));
+                if i + 1 < ADD_NEW_EXECUTOR_CHOICES.len() {
+                    spans.push(Span::raw("  "));
+                }
+            }
+            let exec_row_idx = lines.len();
+            lines.push(Line::from(spans));
+            // Per-choice click areas — approximate tile widths starting
+            // after "    Executor: " (15 cols). Each tile is "◉ label  ".
+            let mut tile_x = area.x.saturating_add(15);
+            let exec_y = area.y.saturating_add(exec_row_idx as u16);
+            for (i, choice) in ADD_NEW_EXECUTOR_CHOICES.iter().enumerate() {
+                let tile_w: u16 = (choice.label.len() as u16) + 4; // "◉ X  "
+                app.launcher_add_executor_hits.push((
+                    i,
+                    Rect {
+                        x: tile_x,
+                        y: exec_y,
+                        width: tile_w,
+                        height: 1,
+                    },
+                ));
+                tile_x = tile_x.saturating_add(tile_w);
+            }
+            lines.push(Line::from(""));
+
+            // Model field (always shown, always required).
+            let model_active =
+                active_section == LauncherSection::AddNew(AddNewField::Model);
+            let model_label_style = if model_active {
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(text_primary(is_light))
+            };
+            let model_prefix = if model_active { "  \u{25b8} Model:    " } else { "    Model:    " };
+            let mut model_spans: Vec<Span> =
+                vec![Span::styled(model_prefix.to_string(), model_label_style)];
+            if add_model.is_empty() {
+                model_spans.push(Span::styled(
+                    if model_active { "\u{2588}".to_string() } else { "(required)".to_string() },
+                    if model_active {
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::SLOW_BLINK)
+                    } else {
+                        Style::default().fg(Color::DarkGray)
+                    },
+                ));
+            } else {
+                model_spans.push(Span::raw(add_model.clone()));
+                if model_active {
+                    model_spans.push(Span::styled(
+                        "\u{2588}".to_string(),
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::SLOW_BLINK),
+                    ));
+                }
+            }
+            let model_row_idx = lines.len();
+            lines.push(Line::from(model_spans));
+            app.launcher_add_model_hit = Rect {
+                x: area.x.saturating_add(13),
+                y: area.y.saturating_add(model_row_idx as u16),
+                width: area.width.saturating_sub(13),
+                height: 1,
+            };
+            lines.push(Line::from(""));
+
+            // Endpoint field (only when executor=nex).
+            if show_endpoint {
+                let ep_active =
+                    active_section == LauncherSection::AddNew(AddNewField::Endpoint);
+                let ep_label_style = if ep_active {
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(text_primary(is_light))
+                };
+                let ep_prefix = if ep_active {
+                    "  \u{25b8} Endpoint: "
+                } else {
+                    "    Endpoint: "
+                };
+                let mut ep_spans: Vec<Span> =
+                    vec![Span::styled(ep_prefix.to_string(), ep_label_style)];
+                if add_endpoint.is_empty() {
+                    ep_spans.push(Span::styled(
+                        if ep_active {
+                            "\u{2588}".to_string()
+                        } else {
+                            "(URL — required for nex)".to_string()
+                        },
+                        if ep_active {
+                            Style::default()
+                                .fg(Color::Yellow)
+                                .add_modifier(Modifier::SLOW_BLINK)
+                        } else {
+                            Style::default().fg(Color::DarkGray)
+                        },
+                    ));
+                } else {
+                    ep_spans.push(Span::raw(add_endpoint.clone()));
+                    if ep_active {
+                        ep_spans.push(Span::styled(
+                            "\u{2588}".to_string(),
+                            Style::default()
+                                .fg(Color::Yellow)
+                                .add_modifier(Modifier::SLOW_BLINK),
+                        ));
+                    }
+                }
+                let ep_row_idx = lines.len();
+                lines.push(Line::from(ep_spans));
+                app.launcher_add_endpoint_hit = Rect {
+                    x: area.x.saturating_add(13),
+                    y: area.y.saturating_add(ep_row_idx as u16),
+                    width: area.width.saturating_sub(13),
+                    height: 1,
+                };
+                lines.push(Line::from(""));
+            }
+        }
+    }
+
+    // Name field (optional, in both modes).
     let name_active = active_section == LauncherSection::Name;
-    let name_style = if name_active {
+    let name_label_style = if name_active {
         Style::default()
             .fg(Color::Yellow)
             .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(text_primary(is_light))
     };
+    let name_prefix = if name_active { "  \u{25b8} Name:     " } else { "    Name:     " };
+    let mut name_spans: Vec<Span> =
+        vec![Span::styled(name_prefix.to_string(), name_label_style)];
+    if name.is_empty() {
+        name_spans.push(Span::styled(
+            if name_active { "\u{2588}".to_string() } else { "(optional)".to_string() },
+            if name_active {
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::SLOW_BLINK)
+            } else {
+                Style::default().fg(Color::DarkGray)
+            },
+        ));
+    } else {
+        name_spans.push(Span::raw(name.clone()));
+        if name_active {
+            name_spans.push(Span::styled(
+                "\u{2588}".to_string(),
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::SLOW_BLINK),
+            ));
+        }
+    }
+    let name_row_idx = lines.len();
+    lines.push(Line::from(name_spans));
+    app.launcher_name_hit = Rect {
+        x: area.x.saturating_add(13),
+        y: area.y.saturating_add(name_row_idx as u16),
+        width: area.width.saturating_sub(13),
+        height: 1,
+    };
+    lines.push(Line::from(""));
+
+    // Action row: [Launch] [Cancel].
     let action_line_idx = lines.len();
     let action_y = area.y.saturating_add(action_line_idx as u16);
     let launch_x = area.x.saturating_add(2);
@@ -7084,7 +6961,7 @@ pub(crate) fn draw_launcher_pane(frame: &mut Frame, app: &mut VizApp, area: Rect
         width: cancel_w,
         height: 1,
     };
-    let mut action_spans: Vec<Span> = vec![
+    lines.push(Line::from(vec![
         Span::raw("  "),
         Span::styled(
             "[Launch]",
@@ -7098,280 +6975,25 @@ pub(crate) fn draw_launcher_pane(frame: &mut Frame, app: &mut VizApp, area: Rect
             "[Cancel]",
             Style::default().fg(Color::White).bg(Color::DarkGray),
         ),
-        Span::raw("   "),
-    ];
-    let name_prefix = if name_active { "\u{25b8} Name: " } else { "  Name: " };
-    action_spans.push(Span::styled(name_prefix.to_string(), name_style));
-    if name.is_empty() {
-        action_spans.push(Span::styled(
-            if name_active { "\u{2588}" } else { "(optional)" },
-            if name_active {
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::SLOW_BLINK)
-            } else {
-                Style::default().fg(Color::DarkGray)
-            },
-        ));
-    } else {
-        action_spans.push(Span::raw(name.clone()));
-        if name_active {
-            action_spans.push(Span::styled(
-                "\u{2588}",
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::SLOW_BLINK),
-            ));
+    ]));
+
+    // Footer hint.
+    lines.push(Line::from(""));
+    let footer_hint = match mode {
+        LauncherMode::Default => {
+            "    Enter launch  ·  ↑↓ pick  ·  Tab name  ·  Esc cancel"
         }
-    }
-    lines.push(Line::from(action_spans));
-    // Hit area for the Name input is the right portion of the action row,
-    // starting after "[Launch] [Cancel]   " (2 + 8 + 1 + 8 + 3 = 22 cols).
-    let name_x = area.x.saturating_add(22);
-    app.launcher_name_hit = Rect {
-        x: name_x,
-        y: action_y,
-        width: area.width.saturating_sub(22),
-        height: 1,
+        LauncherMode::AddNew => {
+            "    Enter launch  ·  Tab field  ·  ←→ executor  ·  Esc back"
+        }
     };
     lines.push(Line::from(Span::styled(
-        format!("  {}", "\u{2500}".repeat(w.saturating_sub(4).min(60))),
-        Style::default().fg(Color::DarkGray),
-    )));
-
-    // Executor section
-    let exec_active = active_section == LauncherSection::Executor;
-    lines.push(Line::from(Span::styled(
-        if exec_active {
-            "  \u{25b8} Executor"
-        } else {
-            "    Executor"
-        },
-        section_style(exec_active),
-    )));
-
-    for (i, (ename, desc, available)) in executor_list.iter().enumerate() {
-        let selected = exec_active && i == executor_selected;
-        let bullet = if selected { " \u{25cf} " } else { " \u{25cb} " };
-        let style = if !available {
-            Style::default().fg(Color::DarkGray)
-        } else if selected {
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(text_primary(is_light))
-        };
-        let suffix = if !available { " (not found)" } else { "" };
-        let desc_short: String = desc
-            .chars()
-            .take(w.saturating_sub(ename.len() + 14))
-            .collect();
-        let row_idx = lines.len();
-        lines.push(Line::from(vec![
-            Span::styled(format!("    {}{}", bullet, ename), style),
-            Span::styled(
-                format!("  {}{}", desc_short, suffix),
-                Style::default().fg(Color::DarkGray),
-            ),
-        ]));
-        app.launcher_executor_hits.push((i, row_rect(row_idx)));
-    }
-    lines.push(Line::from(""));
-
-    // Model section header
-    let model_active = active_section == LauncherSection::Model;
-    lines.push(Line::from(Span::styled(
-        if model_active {
-            "  \u{25b8} Model"
-        } else {
-            "    Model"
-        },
-        section_style(model_active),
-    )));
-
-    // Compute remaining vertical space, reserving room for endpoint + recent + footer.
-    let mut reserved = 1usize; // footer
-    if show_endpoint {
-        // header + items + custom row + blank
-        reserved += 2
-            + endpoint_picker.filtered_indices.len()
-            + if endpoint_picker.allow_custom { 1 } else { 0 };
-    }
-    if !recent_list.is_empty() {
-        reserved += 2 + recent_list.len(); // header + items + blank
-    }
-    let used_so_far = lines.len();
-    let area_h = area.height as usize;
-    let model_room = area_h
-        .saturating_sub(used_so_far)
-        .saturating_sub(reserved)
-        .saturating_sub(2); // blank line + safety
-    // Per-section max items shown in viewport (clamped to at least 3).
-    let model_viewport = model_room.max(3);
-
-    let model_lines = render_filter_picker_with_hits(
-        &model_picker,
-        model_active,
-        w,
-        model_viewport,
-        lines.len(),
-        area,
-        &mut app.launcher_model_hits,
-        &mut app.launcher_model_list_area,
-        app.is_light_theme,
-    );
-    lines.extend(model_lines);
-    lines.push(Line::from(""));
-
-    // Endpoint section
-    if show_endpoint {
-        let ep_active = active_section == LauncherSection::Endpoint;
-        lines.push(Line::from(Span::styled(
-            if ep_active {
-                "  \u{25b8} Endpoint"
-            } else {
-                "    Endpoint"
-            },
-            section_style(ep_active),
-        )));
-        let ep_viewport = endpoint_picker
-            .filtered_indices
-            .len()
-            .max(3)
-            .min(area_h.saturating_sub(lines.len()).saturating_sub(2));
-        let ep_lines = render_filter_picker_with_hits(
-            &endpoint_picker,
-            ep_active,
-            w,
-            ep_viewport.max(3),
-            lines.len(),
-            area,
-            &mut app.launcher_endpoint_hits,
-            &mut app.launcher_endpoint_list_area,
-            app.is_light_theme,
-        );
-        lines.extend(ep_lines);
-
-        // Optional inline registration row: only shown when the user has
-        // started typing a Custom URL (fix-new-chat). Filling this in
-        // persists the endpoint to global config; leaving blank uses the
-        // URL as a one-shot for THIS chat only.
-        if show_endpoint_register {
-            let reg_active = active_section == LauncherSection::EndpointRegister;
-            let reg_style = if reg_active {
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(Color::DarkGray)
-            };
-            let prefix = if reg_active { "  \u{25b8} " } else { "    " };
-            let mut spans: Vec<Span> = vec![
-                Span::styled(
-                    format!("{}Optional: also register this endpoint with name ", prefix),
-                    reg_style,
-                ),
-            ];
-            if register_endpoint_name.is_empty() {
-                spans.push(Span::styled(
-                    if reg_active {
-                        "[\u{2588}]"
-                    } else {
-                        "[                ]"
-                    },
-                    if reg_active {
-                        Style::default()
-                            .fg(Color::Yellow)
-                            .add_modifier(Modifier::SLOW_BLINK)
-                    } else {
-                        Style::default().fg(Color::DarkGray)
-                    },
-                ));
-            } else {
-                spans.push(Span::raw(format!("[{}", register_endpoint_name)));
-                if reg_active {
-                    spans.push(Span::styled(
-                        "\u{2588}",
-                        Style::default()
-                            .fg(Color::Yellow)
-                            .add_modifier(Modifier::SLOW_BLINK),
-                    ));
-                }
-                spans.push(Span::raw("]"));
-            }
-            lines.push(Line::from(spans));
-            lines.push(Line::from(Span::styled(
-                "      (leave blank for one-shot)",
-                Style::default().fg(Color::DarkGray),
-            )));
-        }
-        lines.push(Line::from(""));
-    }
-
-    // Recent combos section
-    if !recent_list.is_empty() {
-        let recent_active = active_section == LauncherSection::Recent;
-        lines.push(Line::from(Span::styled(
-            if recent_active {
-                "  \u{25b8} Recent"
-            } else {
-                "    Recent"
-            },
-            section_style(recent_active),
-        )));
-
-        for (i, entry) in recent_list.iter().enumerate() {
-            let selected = recent_active && i == recent_selected;
-            let style = if selected {
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(text_primary(is_light))
-            };
-            let model_str = entry.model.as_deref().unwrap_or("default");
-            let ep_str = entry
-                .endpoint
-                .as_deref()
-                .map(|e| format!(" @ {}", e))
-                .unwrap_or_default();
-            let num = i + 1;
-            let row_idx = lines.len();
-            lines.push(Line::from(vec![
-                Span::styled(
-                    format!("    {}. ", num),
-                    if selected {
-                        Style::default()
-                            .fg(Color::Yellow)
-                            .add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default().fg(Color::DarkGray)
-                    },
-                ),
-                Span::styled(
-                    format!("{} / {}{}", entry.executor, model_str, ep_str),
-                    style,
-                ),
-            ]));
-            app.launcher_recent_hits.push((i, row_rect(row_idx)));
-        }
-        lines.push(Line::from(""));
-    }
-
-    // Footer hint only — the [Launch] / [Cancel] buttons live at the top
-    // of the dialog now (see action row above), so users see the action
-    // before scrolling through the list of choices.
-    lines.push(Line::from(Span::styled(
-        "    Enter / Ctrl+Enter / Shift+Enter launch  ·  Tab section  ·  ↑↓ pgup/pgdn scroll  ·  Esc cancel",
+        footer_hint,
         Style::default().fg(Color::DarkGray),
     )));
 
     let paragraph = Paragraph::new(lines);
     frame.render_widget(paragraph, area);
-
-    // Suppress the "LauncherListHit::Custom unused" warning when only Item is constructed.
-    let _ = LauncherListHit::Custom;
 }
 
 /// Draw a text prompt overlay (fail reason, message, edit description).

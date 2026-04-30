@@ -100,6 +100,7 @@ name = "tui_launcher_modal_does_not_leak_keys"
 script = "scenarios/tui_launcher_modal_does_not_leak_keys.sh"
 owners = [
     "fix-new-chat-2",
+    "redesign-new-chat",
     "smoke-gate-is",
 ]
 description = "fix-new-chat-2: while the new-chat launcher (or any non-Normal InputMode) is open, ZERO keystrokes may reach the underlying chat-pane PTY child's stdin. Pre-fix, opening the launcher via [+] left focused_panel = RightPanel so the vendor_pty_active branch ran before the launcher dispatch and forwarded typed characters (e.g. a custom URL) into the background chat tab. Same byte-level pattern as fix-mouse-wheel-2."
@@ -111,9 +112,20 @@ script = "scenarios/tui_launcher_modal_does_not_leak_paste.sh"
 owners = [
     "fix-paste-events",
     "fix-new-chat-2",
+    "redesign-new-chat",
     "smoke-gate-is",
 ]
 description = "fix-paste-events: while the new-chat launcher (or any non-Normal InputMode) is open, ZERO bytes of an Event::Paste may reach the underlying chat-pane PTY child's stdin. fix-new-chat-2 closed the keystroke path but missed paste events — crossterm delivers bracketed paste as a single Event::Paste(String) rather than a sequence of Event::Keys, so the keystroke-path guard never fired. User repro 2026-04-30: pasted a tailscale URL into the new-chat dialog → URL appeared in the background chat tab. Pins both halves: (a) byte-level child_input_bytes_written() stays at 0 across dispatch_event(Event::Paste) with launcher open, (b) the paste reaches the focused launcher section's text field (Name, Endpoint custom_text), (c) negative control — Normal-mode paste still forwards to the chat PTY (guard must not over-block). Third iteration of the new-chat input-leak bug class (fix-new-chat → fix-new-chat-2 → fix-paste-events)."
+timeout_seconds = 90
+
+[[scenario]]
+name = "launcher_redesign_default_and_addnew"
+script = "scenarios/launcher_redesign_default_and_addnew.sh"
+owners = [
+    "redesign-new-chat",
+    "smoke-gate-is",
+]
+description = "redesign-new-chat 2026-04-30: the TUI new-chat dialog opens in a minimal Default mode with exactly two preset radios (codex:gpt-5.5, claude:opus) plus a '+ Add new...' row, NOT a populated openrouter list or recent-history list. Picking '+ Add new...' flips into a small inline form with executor radio (claude/codex/nex), model field, and an endpoint field that is shown ONLY for executor=nex. Pins the entire redesign contract via the launcher_redesign_tests + launcher_open_tests modules."
 timeout_seconds = 90
 
 [[scenario]]

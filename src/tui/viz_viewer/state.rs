@@ -1094,46 +1094,105 @@ impl FilterPicker {
     }
 }
 
-/// Which section of the launcher pane has keyboard focus.
+/// Which mode the launcher is in.
+///
+/// The default state shows a tiny radio of preset (executor, model)
+/// combos — matching the user's repeatedly-stated preference for "just
+/// let me launch" with the common defaults. Picking the "+ Add new..."
+/// row flips the launcher into `AddNew` mode, which surfaces the full
+/// form (executor radio, model field, optional endpoint, name).
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum LauncherSection {
-    Name,
+pub enum LauncherMode {
+    Default,
+    AddNew,
+}
+
+/// Which field of the Add-new form has keyboard focus.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AddNewField {
     Executor,
     Model,
     Endpoint,
-    /// Optional "register this endpoint with name X" input shown only
-    /// when the user has entered a Custom URL in the Endpoint section.
-    /// Filling this in causes `launch_from_launcher` to write the new
-    /// endpoint into `~/.wg/config.toml` (global) before creating the
-    /// chat — so the URL persists for future launches. Leaving it
-    /// blank keeps the endpoint as a one-shot for THIS chat only.
-    EndpointRegister,
-    Recent,
+    Name,
 }
 
-/// What a row in a launcher FilterPicker maps to when clicked.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum LauncherListHit {
-    /// Click selected the filtered list row at this index in `selected`-space.
-    Item(usize),
-    /// Click landed on the "Custom: ..." row (entry mode).
-    Custom,
+/// Which section of the launcher pane has keyboard focus.
+///
+/// Default mode focuses either the radio of presets or the optional
+/// Name field. Add-new mode focuses one of the AddNew form fields.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LauncherSection {
+    /// Default-mode radio: select a preset combo or "+ Add new..."
+    Defaults,
+    /// Optional chat name field (shown in both modes).
+    Name,
+    /// Add-new mode: focused on one of the AddNew form fields.
+    AddNew(AddNewField),
 }
+
+/// One preset combo offered in Default mode (e.g. codex:gpt-5.5).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LauncherPreset {
+    /// Internal executor handler name passed to `--executor` (e.g.
+    /// "claude", "codex"). Distinct from `label` for nex/native.
+    pub executor: String,
+    /// Model spec passed to `--model` (e.g. "claude:opus").
+    pub model: String,
+    /// Short user-facing label shown in the radio (e.g. "claude:opus").
+    pub label: String,
+    /// One-line description shown next to the label.
+    pub description: String,
+}
+
+/// Add-new form's executor radio choice.
+///
+/// `internal_executor` is what gets passed to `--executor`; `label` is
+/// what the user sees. Diverges only for the in-process nex handler,
+/// which the dispatch layer still calls "native".
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AddNewExecutorChoice {
+    pub label: &'static str,
+    pub internal_executor: &'static str,
+}
+
+/// The three executor options offered in Add-new mode.
+pub const ADD_NEW_EXECUTOR_CHOICES: &[AddNewExecutorChoice] = &[
+    AddNewExecutorChoice { label: "claude", internal_executor: "claude" },
+    AddNewExecutorChoice { label: "codex", internal_executor: "codex" },
+    AddNewExecutorChoice { label: "nex", internal_executor: "native" },
+];
 
 /// State for the full-pane coordinator launcher.
+///
+/// Two-mode design (redesign-new-chat 2026-04-30):
+///   * `Default` mode: ~10-line dialog with two preset radios
+///     (codex:gpt-5.5, claude:opus) plus a "+ Add new..." row.
+///   * `AddNew` mode: ~15-line form (executor radio + model + optional
+///     endpoint + name) revealed when the user picks "+ Add new...".
 #[derive(Clone, Debug)]
 pub struct LauncherState {
+    pub mode: LauncherMode,
     pub active_section: LauncherSection,
     pub name: String,
-    pub executor_list: Vec<(String, String, bool)>, // (name, description, available)
-    pub executor_selected: usize,
-    pub model_picker: FilterPicker,
-    pub endpoint_picker: FilterPicker,
-    pub recent_list: Vec<workgraph::launcher_history::HistoryEntry>,
-    pub recent_selected: usize,
-    /// Full unfiltered model catalog. The model_picker holds the
-    /// executor-filtered subset; we re-derive it on executor change.
-    pub all_models: Vec<(String, String)>,
+
+    // ── Default-mode state ──
+    /// Preset combos shown as radio rows. The "+ Add new..." row is
+    /// implicit (its index is `presets.len()`).
+    pub presets: Vec<LauncherPreset>,
+    /// Selected radio row, in `0..=presets.len()`. Equal to
+    /// `presets.len()` when "+ Add new..." is highlighted.
+    pub default_selected: usize,
+
+    // ── Add-new-mode state ──
+    /// Index into `ADD_NEW_EXECUTOR_CHOICES`.
+    pub add_executor_idx: usize,
+    /// User-typed model spec (free text).
+    pub add_model: String,
+    /// User-typed endpoint URL (free text). Only relevant when the
+    /// selected Add-new executor is `nex`.
+    pub add_endpoint: String,
+
+    // ── Status / IPC flags ──
     /// True between Enter-to-launch and the IPC roundtrip completing.
     /// Closes the input gate (no double-submit, no field edits) and
     /// keeps the pane visible so we don't briefly fall back to the
@@ -1148,13 +1207,6 @@ pub struct LauncherState {
     /// the toast alone disappears too quickly to read. Cleared on the
     /// next successful submit attempt or when the launcher is closed.
     pub last_error: Option<String>,
-    /// Optional name for registering an ad-hoc Custom URL endpoint into
-    /// the global registry (`~/.wg/config.toml`). Only consumed when
-    /// `endpoint_picker.custom_active` and `custom_text` looks like a URL
-    /// — left blank, the URL is used for THIS chat only and not saved.
-    /// Surfaced as the `LauncherSection::EndpointRegister` field
-    /// (fix-new-chat).
-    pub register_endpoint_name: String,
 }
 
 /// Return models, ordered for the given `executor` (compatible-first).
@@ -1294,187 +1346,141 @@ pub fn filter_models_for_executor(
 }
 
 impl LauncherState {
-    pub fn selected_executor(&self) -> &str {
-        self.executor_list
-            .get(self.executor_selected)
-            .map(|(name, _, _)| name.as_str())
-            .unwrap_or("claude")
+    /// Built-in default presets shown in Default mode. Two combos:
+    /// codex:gpt-5.5 and claude:opus. Order is significant — the
+    /// initially-selected row is index 0 (codex per spec).
+    pub fn default_presets() -> Vec<LauncherPreset> {
+        vec![
+            LauncherPreset {
+                executor: "codex".to_string(),
+                model: "codex:gpt-5.5".to_string(),
+                label: "codex:gpt-5.5".to_string(),
+                description: "OpenAI Codex CLI (gpt-5.5)".to_string(),
+            },
+            LauncherPreset {
+                executor: "claude".to_string(),
+                model: "claude:opus".to_string(),
+                label: "claude:opus".to_string(),
+                description: "Claude CLI (Opus)".to_string(),
+            },
+        ]
     }
 
-    /// Rebuild `model_picker.items` for the current executor.
-    /// Preserves filter text + custom_text but resets selection + scroll.
-    pub fn refresh_model_filter_for_executor(&mut self) {
-        let executor = self.selected_executor().to_string();
-        let new_items = filter_models_for_executor(&self.all_models, &executor);
-        let preserved_filter = self.model_picker.filter.clone();
-        let preserved_custom = self.model_picker.custom_text.clone();
-        let hint = self.model_picker.empty_hint.clone();
-        let allow_custom = self.model_picker.allow_custom;
-        let mut new_picker = FilterPicker::new(new_items, allow_custom);
-        new_picker.empty_hint = hint;
-        new_picker.filter = preserved_filter;
-        new_picker.custom_text = preserved_custom;
-        new_picker.apply_filter();
-        self.model_picker = new_picker;
+    /// True when the highlighted Default-mode row is "+ Add new...".
+    pub fn is_add_new_highlighted(&self) -> bool {
+        self.default_selected >= self.presets.len()
     }
 
-    /// Move the executor cursor by `delta` (positive = down) and refresh
-    /// the model list. Returns true if executor selection changed.
-    pub fn select_executor(&mut self, idx: usize) -> bool {
-        if idx >= self.executor_list.len() || idx == self.executor_selected {
-            return false;
-        }
-        self.executor_selected = idx;
-        self.refresh_model_filter_for_executor();
-        true
+    /// The preset at the currently-highlighted Default-mode row, or
+    /// `None` when "+ Add new..." is highlighted.
+    pub fn highlighted_preset(&self) -> Option<&LauncherPreset> {
+        self.presets.get(self.default_selected)
     }
 
-    pub fn show_endpoint(&self) -> bool {
-        self.selected_executor() == "native"
+    /// The Add-new executor choice currently selected in the radio.
+    pub fn add_executor_choice(&self) -> &'static AddNewExecutorChoice {
+        ADD_NEW_EXECUTOR_CHOICES
+            .get(self.add_executor_idx)
+            .unwrap_or(&ADD_NEW_EXECUTOR_CHOICES[0])
     }
 
-    /// Whether the optional "register this endpoint with name" field is
-    /// available for navigation. Only true when the user has selected the
-    /// Custom URL row in the endpoint section AND typed something into it
-    /// — there's no point exposing the field when no URL is being supplied.
-    pub fn show_endpoint_register(&self) -> bool {
-        self.show_endpoint()
-            && self.endpoint_picker.allow_custom
-            && (self.endpoint_picker.custom_active
-                || self.endpoint_picker.is_custom_selected())
-            && !self.endpoint_picker.custom_text.trim().is_empty()
+    /// In Add-new mode: whether the Endpoint field is shown. Only true
+    /// when the selected executor is `nex` — claude and codex auth
+    /// themselves and have no endpoint to specify.
+    pub fn add_new_show_endpoint(&self) -> bool {
+        self.add_executor_choice().label == "nex"
     }
 
-    /// Compute the (name, url) pair that should be persisted to global
-    /// config when the user clicks Launch. Returns `Some` only when the
-    /// user has filled in BOTH a Custom URL (with http:// or https://
-    /// scheme) AND a non-empty registration name. Pure function so the
-    /// "should we register?" decision can be unit-tested without
-    /// touching the global config file.
-    pub fn endpoint_register_pair(&self) -> Option<(String, String)> {
-        let trimmed_name = self.register_endpoint_name.trim().to_string();
-        if trimmed_name.is_empty() {
-            return None;
-        }
-        let is_custom_url = self.endpoint_picker.custom_active
-            || (self.endpoint_picker.is_custom_selected()
-                && !self.endpoint_picker.custom_text.trim().is_empty());
-        if !is_custom_url {
-            return None;
-        }
-        let url = self.selected_endpoint()?;
-        if !(url.starts_with("http://") || url.starts_with("https://")) {
-            return None;
-        }
-        Some((trimmed_name, url))
+    /// Switch the launcher into Add-new mode. Resets the form fields so
+    /// stale state from a previous open doesn't bleed through.
+    pub fn enter_add_new(&mut self) {
+        self.mode = LauncherMode::AddNew;
+        self.add_executor_idx = 0;
+        self.add_model.clear();
+        self.add_endpoint.clear();
+        self.active_section = LauncherSection::AddNew(AddNewField::Executor);
     }
 
-    pub fn selected_model(&self) -> Option<String> {
-        self.model_picker.value()
-    }
-
-    pub fn selected_endpoint(&self) -> Option<String> {
-        if !self.show_endpoint() {
-            return None;
-        }
-        self.endpoint_picker.value()
-    }
-
-    // Backward-compat accessors used by event.rs Recent-entry population
-    pub fn select_model_by_id(&mut self, id: &str) {
-        self.model_picker.filter.clear();
-        self.model_picker.apply_filter();
-        self.model_picker.custom_active = false;
-        if let Some(pos) = self
-            .model_picker
-            .filtered_indices
-            .iter()
-            .position(|&i| self.model_picker.items[i].0 == id)
-        {
-            self.model_picker.selected = pos;
-        } else {
-            self.model_picker.custom_text = id.to_string();
-            self.model_picker.selected = self.model_picker.filtered_indices.len();
-        }
-    }
-
-    pub fn select_endpoint_by_value(&mut self, val: &str) {
-        self.endpoint_picker.filter.clear();
-        self.endpoint_picker.apply_filter();
-        self.endpoint_picker.custom_active = false;
-        if let Some(pos) = self
-            .endpoint_picker
-            .filtered_indices
-            .iter()
-            .position(|&i| self.endpoint_picker.items[i].1 == val)
-        {
-            self.endpoint_picker.selected = pos;
-        } else {
-            self.endpoint_picker.custom_text = val.to_string();
-            self.endpoint_picker.selected = self.endpoint_picker.filtered_indices.len();
-        }
-    }
-
+    /// Cycle to the next form field. Default mode toggles between the
+    /// preset radio and the Name field. Add-new mode walks
+    /// Executor → Model → [Endpoint when nex] → Name → Executor.
     pub fn next_section(&mut self) {
-        self.active_section = match self.active_section {
-            LauncherSection::Name => LauncherSection::Executor,
-            LauncherSection::Executor => LauncherSection::Model,
-            LauncherSection::Model => {
-                if self.show_endpoint() {
-                    LauncherSection::Endpoint
-                } else if !self.recent_list.is_empty() {
-                    LauncherSection::Recent
+        self.active_section = match (&self.mode, &self.active_section) {
+            (LauncherMode::Default, LauncherSection::Defaults) => LauncherSection::Name,
+            (LauncherMode::Default, LauncherSection::Name) => LauncherSection::Defaults,
+            (LauncherMode::Default, LauncherSection::AddNew(_)) => LauncherSection::Defaults,
+            (LauncherMode::AddNew, LauncherSection::AddNew(AddNewField::Executor)) => {
+                LauncherSection::AddNew(AddNewField::Model)
+            }
+            (LauncherMode::AddNew, LauncherSection::AddNew(AddNewField::Model)) => {
+                if self.add_new_show_endpoint() {
+                    LauncherSection::AddNew(AddNewField::Endpoint)
                 } else {
-                    LauncherSection::Name
+                    LauncherSection::AddNew(AddNewField::Name)
                 }
             }
-            LauncherSection::Endpoint => {
-                if self.show_endpoint_register() {
-                    LauncherSection::EndpointRegister
-                } else if !self.recent_list.is_empty() {
-                    LauncherSection::Recent
-                } else {
-                    LauncherSection::Name
-                }
+            (LauncherMode::AddNew, LauncherSection::AddNew(AddNewField::Endpoint)) => {
+                LauncherSection::AddNew(AddNewField::Name)
             }
-            LauncherSection::EndpointRegister => {
-                if !self.recent_list.is_empty() {
-                    LauncherSection::Recent
-                } else {
-                    LauncherSection::Name
-                }
+            (LauncherMode::AddNew, LauncherSection::AddNew(AddNewField::Name)) => {
+                LauncherSection::AddNew(AddNewField::Executor)
             }
-            LauncherSection::Recent => LauncherSection::Name,
+            (LauncherMode::AddNew, _) => LauncherSection::AddNew(AddNewField::Executor),
         };
     }
 
+    /// Cycle to the previous form field — inverse of `next_section`.
     pub fn prev_section(&mut self) {
-        self.active_section = match self.active_section {
-            LauncherSection::Name => {
-                if !self.recent_list.is_empty() {
-                    LauncherSection::Recent
-                } else if self.show_endpoint_register() {
-                    LauncherSection::EndpointRegister
-                } else if self.show_endpoint() {
-                    LauncherSection::Endpoint
+        self.active_section = match (&self.mode, &self.active_section) {
+            (LauncherMode::Default, LauncherSection::Defaults) => LauncherSection::Name,
+            (LauncherMode::Default, LauncherSection::Name) => LauncherSection::Defaults,
+            (LauncherMode::Default, LauncherSection::AddNew(_)) => LauncherSection::Defaults,
+            (LauncherMode::AddNew, LauncherSection::AddNew(AddNewField::Executor)) => {
+                LauncherSection::AddNew(AddNewField::Name)
+            }
+            (LauncherMode::AddNew, LauncherSection::AddNew(AddNewField::Model)) => {
+                LauncherSection::AddNew(AddNewField::Executor)
+            }
+            (LauncherMode::AddNew, LauncherSection::AddNew(AddNewField::Endpoint)) => {
+                LauncherSection::AddNew(AddNewField::Model)
+            }
+            (LauncherMode::AddNew, LauncherSection::AddNew(AddNewField::Name)) => {
+                if self.add_new_show_endpoint() {
+                    LauncherSection::AddNew(AddNewField::Endpoint)
                 } else {
-                    LauncherSection::Model
+                    LauncherSection::AddNew(AddNewField::Model)
                 }
             }
-            LauncherSection::Executor => LauncherSection::Name,
-            LauncherSection::Model => LauncherSection::Executor,
-            LauncherSection::Endpoint => LauncherSection::Model,
-            LauncherSection::EndpointRegister => LauncherSection::Endpoint,
-            LauncherSection::Recent => {
-                if self.show_endpoint_register() {
-                    LauncherSection::EndpointRegister
-                } else if self.show_endpoint() {
-                    LauncherSection::Endpoint
-                } else {
-                    LauncherSection::Model
-                }
-            }
+            (LauncherMode::AddNew, _) => LauncherSection::AddNew(AddNewField::Executor),
         };
+    }
+
+    /// Resolve the (executor, model, endpoint) tuple that Launch will
+    /// dispatch with. Returns `None` when "+ Add new..." is highlighted
+    /// in Default mode (the caller should switch into Add-new mode
+    /// rather than try to launch nothing) or when Add-new is missing
+    /// a required field (model).
+    pub fn resolved_launch_args(&self) -> Option<(String, Option<String>, Option<String>)> {
+        match self.mode {
+            LauncherMode::Default => {
+                let preset = self.presets.get(self.default_selected)?;
+                Some((preset.executor.clone(), Some(preset.model.clone()), None))
+            }
+            LauncherMode::AddNew => {
+                let executor = self.add_executor_choice().internal_executor.to_string();
+                let model_trimmed = self.add_model.trim();
+                if model_trimmed.is_empty() {
+                    return None;
+                }
+                let endpoint = if self.add_new_show_endpoint() {
+                    let trimmed = self.add_endpoint.trim();
+                    if trimmed.is_empty() { None } else { Some(trimmed.to_string()) }
+                } else {
+                    None
+                };
+                Some((executor, Some(model_trimmed.to_string()), endpoint))
+            }
+        }
     }
 }
 
@@ -4872,18 +4878,19 @@ pub struct VizApp {
     pub last_launcher_area: Rect,
     /// Hit area for the launcher's Name field (single line).
     pub launcher_name_hit: Rect,
-    /// Per-row hit areas for executor list: (executor_idx, row Rect).
-    pub launcher_executor_hits: Vec<(usize, Rect)>,
-    /// Per-row hit areas for model list: (LauncherListHit, row Rect).
-    pub launcher_model_hits: Vec<(LauncherListHit, Rect)>,
-    /// Bounding area of the model picker rows (for scroll-wheel routing).
-    pub launcher_model_list_area: Rect,
-    /// Per-row hit areas for endpoint list: (LauncherListHit, row Rect).
-    pub launcher_endpoint_hits: Vec<(LauncherListHit, Rect)>,
-    /// Bounding area of the endpoint picker rows (for scroll-wheel routing).
-    pub launcher_endpoint_list_area: Rect,
-    /// Per-row hit areas for recent list: (recent_idx, row Rect).
-    pub launcher_recent_hits: Vec<(usize, Rect)>,
+    /// Per-row hit areas for Default-mode preset radio rows. The
+    /// "+ Add new..." row is included as the trailing entry; its
+    /// `usize` payload equals `presets.len()`.
+    pub launcher_default_hits: Vec<(usize, Rect)>,
+    /// Per-row hit areas for Add-new mode executor radio (claude /
+    /// codex / nex). The `usize` is the index into
+    /// `ADD_NEW_EXECUTOR_CHOICES`.
+    pub launcher_add_executor_hits: Vec<(usize, Rect)>,
+    /// Hit area for the Add-new mode Model text field.
+    pub launcher_add_model_hit: Rect,
+    /// Hit area for the Add-new mode Endpoint text field. Empty when
+    /// the selected executor is not nex (the field isn't rendered).
+    pub launcher_add_endpoint_hit: Rect,
     /// Hit area for the [Launch] button in the launcher footer.
     pub launcher_launch_btn_hit: Rect,
     /// Hit area for the [Cancel] button in the launcher footer.
@@ -5373,12 +5380,10 @@ impl VizApp {
             launcher: None,
             last_launcher_area: Rect::default(),
             launcher_name_hit: Rect::default(),
-            launcher_executor_hits: Vec::new(),
-            launcher_model_hits: Vec::new(),
-            launcher_model_list_area: Rect::default(),
-            launcher_endpoint_hits: Vec::new(),
-            launcher_endpoint_list_area: Rect::default(),
-            launcher_recent_hits: Vec::new(),
+            launcher_default_hits: Vec::new(),
+            launcher_add_executor_hits: Vec::new(),
+            launcher_add_model_hit: Rect::default(),
+            launcher_add_endpoint_hit: Rect::default(),
             launcher_launch_btn_hit: Rect::default(),
             launcher_cancel_btn_hit: Rect::default(),
             coordinator_picker: None,
@@ -9885,12 +9890,10 @@ impl VizApp {
             launcher: None,
             last_launcher_area: Rect::default(),
             launcher_name_hit: Rect::default(),
-            launcher_executor_hits: Vec::new(),
-            launcher_model_hits: Vec::new(),
-            launcher_model_list_area: Rect::default(),
-            launcher_endpoint_hits: Vec::new(),
-            launcher_endpoint_list_area: Rect::default(),
-            launcher_recent_hits: Vec::new(),
+            launcher_default_hits: Vec::new(),
+            launcher_add_executor_hits: Vec::new(),
+            launcher_add_model_hit: Rect::default(),
+            launcher_add_endpoint_hit: Rect::default(),
             launcher_launch_btn_hit: Rect::default(),
             launcher_cancel_btn_hit: Rect::default(),
             coordinator_picker: None,
@@ -13785,12 +13788,13 @@ impl VizApp {
         }
     }
 
-    /// Open the full-pane coordinator launcher, populating it with
-    /// available executors, models, endpoints, and recent combos.
+    /// Open the full-pane coordinator launcher in its minimal default
+    /// state (redesign-new-chat 2026-04-30): two preset radios
+    /// (codex:gpt-5.5, claude:opus) plus an "+ Add new..." row that
+    /// flips into the full form when picked. No openrouter dump, no
+    /// recent-history list, no executor/model/endpoint pickers up
+    /// front — those live in the Add-new flow only.
     pub fn open_launcher(&mut self) {
-        use workgraph::executor_discovery;
-        use workgraph::launcher_history;
-
         let now = Instant::now();
         if let Some(last) = self.last_launcher_open {
             if now.duration_since(last).as_millis() < 250 {
@@ -13810,67 +13814,17 @@ impl VizApp {
             return;
         }
 
-        let all_executors = executor_discovery::discover();
-        let executor_list: Vec<(String, String, bool)> = all_executors
-            .iter()
-            .map(|e| (e.name.to_string(), e.description.to_string(), e.available))
-            .collect();
-
-        let all_models =
-            workgraph::models::load_model_choices_with_descriptions(&self.workgraph_dir);
-
-        let endpoint_list: Vec<(String, String)> = config
-            .llm_endpoints
-            .endpoints
-            .iter()
-            .map(|ep| {
-                let desc = ep
-                    .url
-                    .clone()
-                    .unwrap_or_else(|| format!("{} (default)", ep.provider));
-                (ep.name.clone(), desc)
-            })
-            .collect();
-
-        let recent_list = launcher_history::recent_combos(10).unwrap_or_default();
-
-        let default_executor_idx = executor_list
-            .iter()
-            .position(|(name, _, avail)| *avail && name == "claude")
-            .or_else(|| executor_list.iter().position(|(_, _, avail)| *avail))
-            .unwrap_or(0);
-
-        let initial_executor = executor_list
-            .get(default_executor_idx)
-            .map(|(name, _, _)| name.clone())
-            .unwrap_or_else(|| "claude".to_string());
-        let initial_models = filter_models_for_executor(&all_models, &initial_executor);
-        let model_picker = FilterPicker::new(initial_models, true)
-            .with_hint("No models found. Check wg config --registry.");
-        // Endpoint picker: empty hint mentions Custom URL inline so users
-        // with no registered endpoints understand they can drop a URL in
-        // (fix-new-chat). The picker still renders the Custom row even
-        // when items is empty — the renderer no longer early-returns
-        // on empty items + allow_custom=true.
-        let endpoint_picker = FilterPicker::new(endpoint_list, true)
-            .with_custom_label("Custom URL")
-            .with_hint(
-                "No endpoints registered. Pick 'Custom URL' below to drop in any URL inline.",
-            );
-
         self.launcher = Some(LauncherState {
-            active_section: LauncherSection::Executor,
+            mode: LauncherMode::Default,
+            active_section: LauncherSection::Defaults,
             name: String::new(),
-            executor_list,
-            executor_selected: default_executor_idx,
-            model_picker,
-            endpoint_picker,
-            recent_list,
-            recent_selected: 0,
-            all_models,
+            presets: LauncherState::default_presets(),
+            default_selected: 0,
+            add_executor_idx: 0,
+            add_model: String::new(),
+            add_endpoint: String::new(),
             creating: false,
             last_error: None,
-            register_endpoint_name: String::new(),
         });
         self.input_mode = InputMode::Launcher;
     }
@@ -13885,21 +13839,43 @@ impl VizApp {
         // (graph load + coordinator-state write), then a second focus
         // hop to the new chat — fix-tui-new symptom 2.
 
-        // Snapshot the args we need from the launcher (and bail on the
-        // already-creating duplicate-submit path) without holding the
-        // mutable borrow across `self.live_chat_count()` /
-        // `self.push_toast()` / `self.exec_command()` calls below.
-        let (name, executor, model, endpoint, register_pair) = match self.launcher.as_ref() {
+        // Read selections WITHOUT closing the launcher. In Default mode
+        // a "+ Add new..." highlight is a UI-only transition (flips into
+        // Add-new mode) — bail before any IPC. Add-new mode without a
+        // model is also a no-op.
+        let (name, mode_was_default, add_new_highlighted) = match self.launcher.as_ref() {
             Some(l) if !l.creating => (
                 l.name.trim().to_string(),
-                l.selected_executor().to_string(),
-                l.selected_model(),
-                l.selected_endpoint(),
-                l.endpoint_register_pair(),
+                matches!(l.mode, LauncherMode::Default),
+                matches!(l.mode, LauncherMode::Default) && l.is_add_new_highlighted(),
             ),
-            // None (no launcher open) or creating=true (in-flight) —
-            // both no-op.
             _ => return,
+        };
+
+        // "+ Add new..." in Default mode flips into Add-new mode rather
+        // than launching. The user needs to fill out the form first.
+        if add_new_highlighted {
+            if let Some(l) = self.launcher.as_mut() {
+                l.enter_add_new();
+            }
+            return;
+        }
+
+        let (executor, model, endpoint) = match self
+            .launcher
+            .as_ref()
+            .and_then(|l| l.resolved_launch_args())
+        {
+            Some(args) => args,
+            None => {
+                if mode_was_default {
+                    return;
+                }
+                if let Some(l) = self.launcher.as_mut() {
+                    l.last_error = Some("Model is required".to_string());
+                }
+                return;
+            }
         };
 
         let config = Config::load_or_default(&self.workgraph_dir);
@@ -13910,54 +13886,9 @@ impl VizApp {
                 format!("Chat cap reached ({}/{})", alive, max),
                 ToastSeverity::Warning,
             );
-            // Drop the launcher in the cap-exceeded path — there's no
-            // point keeping it open with selections that can't submit.
             self.launcher = None;
             self.input_mode = InputMode::Normal;
             return;
-        }
-
-        // Optional inline endpoint registration (fix-new-chat): when the
-        // user filled in a Custom URL AND a register-name, persist the
-        // endpoint to project config (`.wg/config.toml`) BEFORE firing
-        // the chat-create IPC. The chat itself still uses the URL via
-        // `--endpoint` below — registration just makes the endpoint
-        // appear in the NEXT launcher open's pre-registered list.
-        //
-        // We save to project (not global) config because the launcher's
-        // `open_launcher` reads through `Config::load_or_default` which
-        // strips global endpoints unless `[llm_endpoints]
-        // inherit_global = true` is set in the project. Saving globally
-        // here would silently fail the user's "register so it shows up
-        // next time" expectation. Project-local registration keeps the
-        // endpoint scoped to the project, which is also a better fit
-        // for ad-hoc URLs (a tailnet box used for THIS project, not
-        // every workgraph project on the machine).
-        //
-        // Duplicate name is a soft failure: surface as a toast and
-        // still create the chat, so the user isn't blocked.
-        if let Some((reg_name, reg_url)) = register_pair {
-            match crate::commands::endpoints::run_add(
-                &self.workgraph_dir,
-                &reg_name,
-                None,
-                Some(&reg_url),
-                None,
-                None,
-                None,
-                None,
-                false,
-                /* global */ false,
-            ) {
-                Ok(()) => self.push_toast(
-                    format!("Registered endpoint '{}'", reg_name),
-                    ToastSeverity::Info,
-                ),
-                Err(e) => self.push_toast(
-                    format!("Endpoint registration failed: {}", e),
-                    ToastSeverity::Warning,
-                ),
-            }
         }
 
         let mut args = vec!["service".to_string(), "create-coordinator".to_string()];
@@ -13975,18 +13906,15 @@ impl VizApp {
             args.push(m.clone());
         }
 
-        // Endpoint is captured from the launcher's endpoint picker (visible
-        // only for the native/nex handler) and passed through so the chat
-        // pins to that server. Without this, the launcher captured the
-        // endpoint into history but the resulting chat used the default —
-        // exactly the gap the user reported with `wg nex -e https://...`.
+        // Endpoint is only set in Add-new mode with executor=nex. Default
+        // mode never specifies an endpoint — claude/codex auth themselves.
         if let Some(ref ep) = endpoint {
             args.push("--endpoint".to_string());
             args.push(ep.clone());
         }
 
-        // Record history (executor + model + endpoint) so the recent-list
-        // in subsequent launcher opens can surface this combo as a quick-pick.
+        // Record history (executor + model + endpoint) so a future v2
+        // recall list (deferred — see task spec) can surface this combo.
         if model.is_some() || endpoint.is_some() {
             if let Ok(()) = workgraph::launcher_history::record_use(
                 &workgraph::launcher_history::HistoryEntry::new(
@@ -23115,18 +23043,16 @@ mod tui_chat_tests {
         app.active_coordinator_id = 0;
         // Simulate post-launch state: launcher is open and in-flight.
         app.launcher = Some(LauncherState {
-            active_section: LauncherSection::Executor,
+            mode: LauncherMode::Default,
+            active_section: LauncherSection::Defaults,
             name: String::new(),
-            executor_list: vec![("claude".to_string(), "claude CLI".to_string(), true)],
-            executor_selected: 0,
-            model_picker: FilterPicker::new(vec![], true),
-            endpoint_picker: FilterPicker::new(vec![], true),
-            recent_list: vec![],
-            recent_selected: 0,
-            all_models: vec![],
+            presets: LauncherState::default_presets(),
+            default_selected: 0,
+            add_executor_idx: 0,
+            add_model: String::new(),
+            add_endpoint: String::new(),
             creating: true,
             last_error: None,
-            register_endpoint_name: String::new(),
         });
         app.input_mode = InputMode::Launcher;
 
@@ -23176,18 +23102,16 @@ mod tui_chat_tests {
         app.cmd_rx = rx;
         app.active_coordinator_id = 0;
         app.launcher = Some(LauncherState {
-            active_section: LauncherSection::Executor,
+            mode: LauncherMode::Default,
+            active_section: LauncherSection::Defaults,
             name: String::new(),
-            executor_list: vec![("claude".to_string(), "claude CLI".to_string(), true)],
-            executor_selected: 0,
-            model_picker: FilterPicker::new(vec![], true),
-            endpoint_picker: FilterPicker::new(vec![], true),
-            recent_list: vec![],
-            recent_selected: 0,
-            all_models: vec![],
+            presets: LauncherState::default_presets(),
+            default_selected: 0,
+            add_executor_idx: 0,
+            add_model: String::new(),
+            add_endpoint: String::new(),
             creating: true,
             last_error: None,
-            register_endpoint_name: String::new(),
         });
         app.input_mode = InputMode::Launcher;
 
@@ -24605,105 +24529,184 @@ mod filter_picker_tests {
 }
 
 #[cfg(test)]
-mod launcher_register_pair_tests {
-    use super::{FilterPicker, LauncherSection, LauncherState};
+mod launcher_redesign_tests {
+    use super::{
+        ADD_NEW_EXECUTOR_CHOICES, AddNewField, LauncherMode, LauncherSection, LauncherState,
+    };
 
-    fn make_state(executor: &str) -> LauncherState {
+    fn make_state() -> LauncherState {
         LauncherState {
-            active_section: LauncherSection::Endpoint,
+            mode: LauncherMode::Default,
+            active_section: LauncherSection::Defaults,
             name: String::new(),
-            executor_list: vec![(executor.to_string(), "test".to_string(), true)],
-            executor_selected: 0,
-            model_picker: FilterPicker::new(vec![("local:qwen".into(), "".into())], true),
-            endpoint_picker: FilterPicker::new(vec![], true)
-                .with_custom_label("Custom URL"),
-            recent_list: vec![],
-            recent_selected: 0,
-            all_models: vec![],
+            presets: LauncherState::default_presets(),
+            default_selected: 0,
+            add_executor_idx: 0,
+            add_model: String::new(),
+            add_endpoint: String::new(),
             creating: false,
             last_error: None,
-            register_endpoint_name: String::new(),
         }
     }
 
     #[test]
-    fn pair_none_when_no_register_name() {
-        let mut state = make_state("native");
-        state.endpoint_picker.enter_custom();
-        state.endpoint_picker.custom_text = "https://lambda01.example/30000".into();
-        // No register name typed.
-        assert_eq!(state.endpoint_register_pair(), None);
+    fn default_presets_are_codex_then_claude() {
+        let presets = LauncherState::default_presets();
+        assert_eq!(presets.len(), 2, "exactly two preset rows in default state");
+        assert_eq!(presets[0].executor, "codex");
+        assert_eq!(presets[0].model, "codex:gpt-5.5");
+        assert_eq!(presets[1].executor, "claude");
+        assert_eq!(presets[1].model, "claude:opus");
     }
 
     #[test]
-    fn pair_none_when_url_missing() {
-        let mut state = make_state("native");
-        state.register_endpoint_name = "my-lab".into();
-        // Custom not active, custom_text empty.
-        assert_eq!(state.endpoint_register_pair(), None);
+    fn default_mode_resolves_first_preset() {
+        let state = make_state();
+        let (executor, model, endpoint) = state.resolved_launch_args().unwrap();
+        assert_eq!(executor, "codex");
+        assert_eq!(model.as_deref(), Some("codex:gpt-5.5"));
+        assert!(endpoint.is_none(), "default presets never set an endpoint");
     }
 
     #[test]
-    fn pair_none_when_endpoint_value_is_a_pre_registered_name() {
-        // Pre-registered endpoint selected, custom inactive — even with a
-        // register name typed (stale UI state), we must NOT register.
-        let items = vec![("openrouter".to_string(), "https://...".to_string())];
-        let mut state = make_state("native");
-        state.endpoint_picker = FilterPicker::new(items, true).with_custom_label("Custom URL");
-        state.register_endpoint_name = "my-lab".into();
-        // Selected row 0 = "openrouter" (the pre-registered name, not a URL).
-        assert_eq!(state.endpoint_register_pair(), None);
+    fn default_mode_resolves_claude_preset_when_selected() {
+        let mut state = make_state();
+        state.default_selected = 1;
+        let (executor, model, _) = state.resolved_launch_args().unwrap();
+        assert_eq!(executor, "claude");
+        assert_eq!(model.as_deref(), Some("claude:opus"));
     }
 
     #[test]
-    fn pair_some_when_url_and_name_filled() {
-        let mut state = make_state("native");
-        state.endpoint_picker.enter_custom();
-        state.endpoint_picker.custom_text = "https://lambda01.example/30000".into();
-        state.register_endpoint_name = "my-lab".into();
+    fn default_mode_returns_none_when_add_new_highlighted() {
+        let mut state = make_state();
+        state.default_selected = state.presets.len();
+        assert!(state.is_add_new_highlighted());
+        assert!(state.resolved_launch_args().is_none());
+    }
+
+    #[test]
+    fn enter_add_new_resets_form_and_focuses_executor() {
+        let mut state = make_state();
+        state.default_selected = state.presets.len();
+        state.add_model = "stale".into();
+        state.add_endpoint = "stale".into();
+        state.enter_add_new();
+        assert_eq!(state.mode, LauncherMode::AddNew);
+        assert_eq!(state.active_section, LauncherSection::AddNew(AddNewField::Executor));
+        assert_eq!(state.add_executor_idx, 0);
+        assert_eq!(state.add_model, "");
+        assert_eq!(state.add_endpoint, "");
+    }
+
+    #[test]
+    fn add_new_show_endpoint_only_for_nex() {
+        let mut state = make_state();
+        state.mode = LauncherMode::AddNew;
+        // claude (idx 0)
+        state.add_executor_idx = 0;
+        assert!(!state.add_new_show_endpoint());
+        // codex (idx 1)
+        state.add_executor_idx = 1;
+        assert!(!state.add_new_show_endpoint());
+        // nex (idx 2)
+        state.add_executor_idx = 2;
+        assert!(state.add_new_show_endpoint());
+    }
+
+    #[test]
+    fn add_new_with_nex_resolves_with_endpoint() {
+        let mut state = make_state();
+        state.mode = LauncherMode::AddNew;
+        state.add_executor_idx = 2; // nex
+        state.add_model = "qwen3-coder".into();
+        state.add_endpoint = "https://lambda01.tail334fe6.ts.net:30000".into();
+        let (executor, model, endpoint) = state.resolved_launch_args().unwrap();
+        // nex maps to internal executor "native"
+        assert_eq!(executor, "native");
+        assert_eq!(model.as_deref(), Some("qwen3-coder"));
         assert_eq!(
-            state.endpoint_register_pair(),
-            Some(("my-lab".to_string(), "https://lambda01.example/30000".to_string()))
+            endpoint.as_deref(),
+            Some("https://lambda01.tail334fe6.ts.net:30000")
         );
     }
 
     #[test]
-    fn pair_trims_whitespace_from_register_name() {
-        let mut state = make_state("native");
-        state.endpoint_picker.enter_custom();
-        state.endpoint_picker.custom_text = "https://x.example".into();
-        state.register_endpoint_name = "  spaced-name  ".into();
+    fn add_new_claude_omits_endpoint_even_when_filled() {
+        // The endpoint field is hidden for claude/codex; if stale text
+        // sits in the buffer (e.g. user toggled executor after typing),
+        // it must NOT be included in the launch args.
+        let mut state = make_state();
+        state.mode = LauncherMode::AddNew;
+        state.add_executor_idx = 0; // claude
+        state.add_model = "claude:sonnet".into();
+        state.add_endpoint = "https://stale.example".into();
+        let (executor, model, endpoint) = state.resolved_launch_args().unwrap();
+        assert_eq!(executor, "claude");
+        assert_eq!(model.as_deref(), Some("claude:sonnet"));
+        assert!(endpoint.is_none(), "claude executor must never carry an endpoint");
+    }
+
+    #[test]
+    fn add_new_returns_none_when_model_missing() {
+        let mut state = make_state();
+        state.mode = LauncherMode::AddNew;
+        state.add_executor_idx = 1; // codex
+        // No model typed.
+        assert!(state.resolved_launch_args().is_none());
+    }
+
+    #[test]
+    fn add_new_executor_choices_match_spec() {
+        // The redesign spec calls for exactly three radio choices:
+        // claude / codex / nex (in that order). Pin it.
+        let labels: Vec<_> = ADD_NEW_EXECUTOR_CHOICES.iter().map(|c| c.label).collect();
+        assert_eq!(labels, vec!["claude", "codex", "nex"]);
+        // nex must lower to internal "native" — that's the executor
+        // handler name the dispatch layer uses.
+        let nex = ADD_NEW_EXECUTOR_CHOICES
+            .iter()
+            .find(|c| c.label == "nex")
+            .unwrap();
+        assert_eq!(nex.internal_executor, "native");
+    }
+
+    #[test]
+    fn next_section_default_mode_toggles_between_defaults_and_name() {
+        let mut state = make_state();
+        assert_eq!(state.active_section, LauncherSection::Defaults);
+        state.next_section();
+        assert_eq!(state.active_section, LauncherSection::Name);
+        state.next_section();
+        assert_eq!(state.active_section, LauncherSection::Defaults);
+    }
+
+    #[test]
+    fn next_section_add_new_skips_endpoint_for_claude() {
+        let mut state = make_state();
+        state.mode = LauncherMode::AddNew;
+        state.add_executor_idx = 0; // claude — no endpoint
+        state.active_section = LauncherSection::AddNew(AddNewField::Model);
+        state.next_section();
         assert_eq!(
-            state.endpoint_register_pair(),
-            Some(("spaced-name".to_string(), "https://x.example".to_string()))
+            state.active_section,
+            LauncherSection::AddNew(AddNewField::Name),
+            "claude executor: Tab from Model goes straight to Name (no endpoint field)"
         );
     }
 
     #[test]
-    fn pair_rejects_non_http_scheme() {
-        let mut state = make_state("native");
-        state.endpoint_picker.enter_custom();
-        state.endpoint_picker.custom_text = "ftp://wrong.example".into();
-        state.register_endpoint_name = "my-lab".into();
-        assert_eq!(state.endpoint_register_pair(), None);
-    }
-
-    #[test]
-    fn show_endpoint_register_only_when_url_pending() {
-        let mut state = make_state("native");
-        // No URL → no register field.
-        assert!(!state.show_endpoint_register());
-        // Custom active, but empty text → still no field.
-        state.endpoint_picker.enter_custom();
-        assert!(!state.show_endpoint_register());
-        // Custom active + text → field appears.
-        state.endpoint_picker.custom_text = "https://x.example".into();
-        assert!(state.show_endpoint_register());
-        // Different executor (claude) hides endpoint section entirely → no field.
-        let mut state2 = make_state("claude");
-        state2.endpoint_picker.enter_custom();
-        state2.endpoint_picker.custom_text = "https://x.example".into();
-        assert!(!state2.show_endpoint_register());
+    fn next_section_add_new_includes_endpoint_for_nex() {
+        let mut state = make_state();
+        state.mode = LauncherMode::AddNew;
+        state.add_executor_idx = 2; // nex
+        state.active_section = LauncherSection::AddNew(AddNewField::Model);
+        state.next_section();
+        assert_eq!(
+            state.active_section,
+            LauncherSection::AddNew(AddNewField::Endpoint),
+            "nex executor: Tab from Model goes through the Endpoint field"
+        );
     }
 }
 
@@ -25147,37 +25150,17 @@ mod agent_stream_tests {
 }
 
 #[cfg(test)]
-mod launcher_history_tests {
+mod launcher_open_tests {
     use super::*;
-    use std::io::Write as _;
 
-    /// `open_launcher` should pull recent invocations from
-    /// `launcher_history` and surface them as a one-click recall list,
-    /// per the user expectation that any prior CLI/TUI invocation
-    /// reappears as a recallable option.
+    /// open_launcher must initialize the redesigned dialog in Default
+    /// mode with exactly the codex:gpt-5.5 + claude:opus presets and
+    /// nothing else (no openrouter dump, no recent-list, no
+    /// pre-populated executor/model/endpoint pickers). This is the
+    /// regression lock for redesign-new-chat 2026-04-30.
     #[test]
-    #[serial_test::serial(launcher_history_env)]
-    fn test_tui_dialog_reads_history_and_offers_picker() {
+    fn open_launcher_starts_in_default_mode_with_two_presets() {
         let tmp = tempfile::tempdir().unwrap();
-        let history_path = tmp.path().join("launcher-history.jsonl");
-
-        // Seed launcher history with a `wg nex -m qwen3-coder -e ...`
-        // invocation, like the example in the task spec.
-        let entry = workgraph::launcher_history::HistoryEntry::new(
-            "native",
-            Some("qwen3-coder"),
-            Some("https://lambda01.tail334fe6.ts.net:30000"),
-            "cli",
-        );
-        {
-            let mut f = std::fs::File::create(&history_path).unwrap();
-            writeln!(f, "{}", serde_json::to_string(&entry).unwrap()).unwrap();
-        }
-
-        unsafe {
-            std::env::set_var("WG_LAUNCHER_HISTORY_PATH", &history_path);
-        }
-
         let workgraph_dir = tmp.path().to_path_buf();
         std::fs::write(workgraph_dir.join("graph.jsonl"), "").unwrap();
         let mut app = VizApp::new(
@@ -25190,25 +25173,18 @@ mod launcher_history_tests {
 
         app.open_launcher();
 
-        unsafe {
-            std::env::remove_var("WG_LAUNCHER_HISTORY_PATH");
-        }
-
-        let launcher = app
-            .launcher
-            .as_ref()
-            .expect("open_launcher should have populated the launcher state");
-        assert!(
-            !launcher.recent_list.is_empty(),
-            "launcher should surface the seeded history entry as a recall option"
-        );
-        let recent = &launcher.recent_list[0];
-        assert_eq!(recent.executor, "native");
-        assert_eq!(recent.model.as_deref(), Some("qwen3-coder"));
-        assert_eq!(
-            recent.endpoint.as_deref(),
-            Some("https://lambda01.tail334fe6.ts.net:30000")
-        );
+        let launcher = app.launcher.as_ref().expect("launcher must populate");
+        assert_eq!(launcher.mode, LauncherMode::Default);
+        assert_eq!(launcher.active_section, LauncherSection::Defaults);
+        assert_eq!(launcher.presets.len(), 2);
+        assert_eq!(launcher.presets[0].label, "codex:gpt-5.5");
+        assert_eq!(launcher.presets[1].label, "claude:opus");
+        assert_eq!(launcher.default_selected, 0);
+        // Add-new form starts blank — no stale openrouter / endpoint
+        // values bleeding through.
+        assert_eq!(launcher.add_model, "");
+        assert_eq!(launcher.add_endpoint, "");
+        assert_eq!(launcher.name, "");
     }
 }
 

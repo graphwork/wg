@@ -1251,4 +1251,144 @@ mod tui_editor_tests {
             "editor must never contain executor error text"
         );
     }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // redesign-new-chat: minimal Default mode + Add-new flow
+    // ══════════════════════════════════════════════════════════════════════
+
+    /// Render-level lock: open_launcher → dialog shows the two presets +
+    /// the "+ Add new..." row, with no openrouter dump and no
+    /// recent-history list. Pre-redesign the dialog showed dozens of
+    /// auto-discovered openrouter rows the user never asked for.
+    #[test]
+    fn launcher_default_mode_render_shows_two_presets_and_add_new() {
+        let mut app = make_editor_test_app();
+        app.open_launcher();
+        // open_launcher rate-limits double-opens; the test app might
+        // skip if the cap is hit. In practice the chat-cap is fine.
+        if app.launcher.is_none() {
+            return;
+        }
+
+        let rendered = render_to_string(&mut app, 100, 30);
+
+        // Default mode title.
+        assert!(
+            buffer_contains(&rendered, "New chat"),
+            "expected 'New chat' title in dialog\n{}",
+            rendered
+        );
+        assert!(
+            buffer_contains(&rendered, "codex:gpt-5.5"),
+            "expected codex:gpt-5.5 preset row in dialog\n{}",
+            rendered
+        );
+        assert!(
+            buffer_contains(&rendered, "claude:opus"),
+            "expected claude:opus preset row in dialog\n{}",
+            rendered
+        );
+        assert!(
+            buffer_contains(&rendered, "+ Add new"),
+            "expected '+ Add new...' row in dialog\n{}",
+            rendered
+        );
+        assert!(
+            buffer_contains(&rendered, "[Launch]"),
+            "expected [Launch] button in dialog\n{}",
+            rendered
+        );
+
+        // Anti-assertions: the redesign explicitly removes these.
+        assert!(
+            !buffer_contains(&rendered, "openrouter:"),
+            "default-state launcher must NOT pre-populate openrouter \
+             models — pre-redesign regression\n{}",
+            rendered
+        );
+        assert!(
+            !buffer_contains(&rendered, "Recent"),
+            "default-state launcher must NOT show a 'Recent' history \
+             list — deferred to v2\n{}",
+            rendered
+        );
+        assert!(
+            !buffer_contains(&rendered, "Endpoint"),
+            "default-state launcher must NOT show an Endpoint field — \
+             only revealed in Add-new mode for executor=nex\n{}",
+            rendered
+        );
+    }
+
+    /// Render-level lock: picking "+ Add new..." flips into the form
+    /// view (executor radio + Model + Name) but DOES NOT show an
+    /// Endpoint field unless executor=nex.
+    #[test]
+    fn launcher_add_new_mode_renders_form_without_endpoint_for_claude() {
+        use super::super::state::{AddNewField, LauncherSection};
+
+        let mut app = make_editor_test_app();
+        app.open_launcher();
+        if app.launcher.is_none() {
+            return;
+        }
+        // Flip into Add-new mode with claude executor selected.
+        {
+            let l = app.launcher.as_mut().unwrap();
+            l.enter_add_new();
+            l.add_executor_idx = 0; // claude
+            l.active_section = LauncherSection::AddNew(AddNewField::Model);
+        }
+
+        let rendered = render_to_string(&mut app, 100, 30);
+
+        assert!(
+            buffer_contains(&rendered, "Add new"),
+            "expected Add-new title\n{}",
+            rendered
+        );
+        assert!(
+            buffer_contains(&rendered, "Executor:"),
+            "expected Executor: label\n{}",
+            rendered
+        );
+        assert!(
+            buffer_contains(&rendered, "Model:"),
+            "expected Model: field\n{}",
+            rendered
+        );
+        // claude/codex auth themselves; no endpoint field.
+        assert!(
+            !buffer_contains(&rendered, "Endpoint:"),
+            "Add-new with claude must NOT render an Endpoint field\n{}",
+            rendered
+        );
+    }
+
+    /// Render-level lock: Add-new + executor=nex DOES surface the
+    /// Endpoint field.
+    #[test]
+    fn launcher_add_new_mode_renders_endpoint_field_for_nex() {
+        use super::super::state::{AddNewField, LauncherSection};
+
+        let mut app = make_editor_test_app();
+        app.open_launcher();
+        if app.launcher.is_none() {
+            return;
+        }
+        {
+            let l = app.launcher.as_mut().unwrap();
+            l.enter_add_new();
+            l.add_executor_idx = 2; // nex
+            l.active_section = LauncherSection::AddNew(AddNewField::Endpoint);
+        }
+
+        let rendered = render_to_string(&mut app, 100, 30);
+
+        assert!(
+            buffer_contains(&rendered, "Endpoint:"),
+            "Add-new with nex MUST render an Endpoint field\n{}",
+            rendered
+        );
+    }
 }

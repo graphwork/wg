@@ -781,44 +781,33 @@ fn handle_paste(app: &mut VizApp, text: &str) {
             app.settings_panel.edit_buffer.push_str(&clean);
         }
         InputMode::Launcher => {
-            // Route pasted text to the focused launcher section's text
-            // field. URLs / model strings are single-line, so newlines
-            // and carriage returns are stripped before insertion.
-            // Without this arm, `_ => {}` would drop the paste silently —
-            // safe but useless after the user just Cmd-V'd a URL into
-            // the new-chat dialog. (The leak fix above is the real
-            // gate; this is just UX so the paste lands somewhere
-            // visible to the user.)
-            use super::state::LauncherSection;
+            // Route pasted text to the focused launcher text field.
+            // URLs / model strings are single-line, so newlines and
+            // carriage returns are stripped first. Default mode's
+            // preset radio has no text field — drop pastes there
+            // (the leak fix above is the real PTY guard; this is just
+            // UX so the paste lands somewhere visible to the user).
+            use super::state::{AddNewField, LauncherSection};
             let clean: String = text.chars().filter(|c| *c != '\n' && *c != '\r').collect();
             if let Some(launcher) = app.launcher.as_mut() {
                 match launcher.active_section {
                     LauncherSection::Name => {
                         launcher.name.push_str(&clean);
                     }
-                    LauncherSection::EndpointRegister => {
-                        launcher.register_endpoint_name.push_str(&clean);
+                    LauncherSection::AddNew(AddNewField::Model) => {
+                        launcher.add_model.push_str(&clean);
                     }
-                    LauncherSection::Model => {
-                        if launcher.model_picker.custom_active {
-                            launcher.model_picker.custom_text.push_str(&clean);
-                        } else {
-                            launcher.model_picker.filter.push_str(&clean);
-                            launcher.model_picker.apply_filter();
-                        }
+                    LauncherSection::AddNew(AddNewField::Endpoint) => {
+                        launcher.add_endpoint.push_str(&clean);
                     }
-                    LauncherSection::Endpoint => {
-                        if launcher.endpoint_picker.custom_active {
-                            launcher.endpoint_picker.custom_text.push_str(&clean);
-                        } else {
-                            launcher.endpoint_picker.filter.push_str(&clean);
-                            launcher.endpoint_picker.apply_filter();
-                        }
+                    LauncherSection::AddNew(AddNewField::Name) => {
+                        launcher.name.push_str(&clean);
                     }
-                    // Executor / Recent are list-pickers with no
-                    // text-input semantics; drop the paste rather
-                    // than silently mangle the selection.
-                    LauncherSection::Executor | LauncherSection::Recent => {}
+                    // Defaults radio + AddNew Executor radio have no
+                    // text field; drop the paste rather than silently
+                    // mangle the selection.
+                    LauncherSection::Defaults
+                    | LauncherSection::AddNew(AddNewField::Executor) => {}
                 }
             }
         }
@@ -1306,20 +1295,19 @@ fn handle_service_control_panel_key(app: &mut VizApp, code: KeyCode) {
 /// - Recent row         → populate executor/model/endpoint from history entry, launch.
 /// - Click outside any row → no-op (modal stays open; Esc or tab-click dismisses).
 pub(super) fn handle_launcher_mouse_click(app: &mut VizApp, row: u16, column: u16) {
-    use super::state::{LauncherListHit, LauncherSection};
+    use super::state::{AddNewField, LauncherSection};
     let pos = Position::new(column, row);
 
     // Take ownership of hit lists to avoid borrow conflicts when mutating launcher.
     let name_hit = app.launcher_name_hit;
-    let exec_hits = app.launcher_executor_hits.clone();
-    let model_hits = app.launcher_model_hits.clone();
-    let ep_hits = app.launcher_endpoint_hits.clone();
-    let recent_hits = app.launcher_recent_hits.clone();
+    let default_hits = app.launcher_default_hits.clone();
+    let exec_hits = app.launcher_add_executor_hits.clone();
+    let model_hit = app.launcher_add_model_hit;
+    let endpoint_hit = app.launcher_add_endpoint_hit;
     let launch_btn = app.launcher_launch_btn_hit;
     let cancel_btn = app.launcher_cancel_btn_hit;
 
-    // Action buttons take priority over field rows (they're in the footer below
-    // everything else, but a click on either should commit the dialog state).
+    // Action buttons take priority over field rows.
     if launch_btn.height > 0 && launch_btn.contains(pos) {
         app.launch_from_launcher();
         return;
@@ -1338,77 +1326,35 @@ pub(super) fn handle_launcher_mouse_click(app: &mut VizApp, row: u16, column: u1
         launcher.active_section = LauncherSection::Name;
         return;
     }
+    // Default-mode preset / Add-new rows.
+    for (idx, rect) in &default_hits {
+        if rect.contains(pos) {
+            launcher.active_section = LauncherSection::Defaults;
+            launcher.default_selected = *idx;
+            return;
+        }
+    }
+    // Add-new-mode executor radio (claude / codex / nex).
     for (idx, rect) in &exec_hits {
         if rect.contains(pos) {
-            launcher.active_section = LauncherSection::Executor;
-            launcher.select_executor(*idx);
+            launcher.active_section = LauncherSection::AddNew(AddNewField::Executor);
+            launcher.add_executor_idx = *idx;
             return;
         }
     }
-    for (hit, rect) in &model_hits {
-        if rect.contains(pos) {
-            launcher.active_section = LauncherSection::Model;
-            match hit {
-                LauncherListHit::Item(filtered_idx) => {
-                    launcher.model_picker.custom_active = false;
-                    launcher.model_picker.selected = *filtered_idx;
-                }
-                LauncherListHit::Custom => {
-                    launcher.model_picker.selected =
-                        launcher.model_picker.filtered_indices.len();
-                    launcher.model_picker.enter_custom();
-                }
-            }
-            return;
-        }
+    if model_hit.height > 0 && model_hit.contains(pos) {
+        launcher.active_section = LauncherSection::AddNew(AddNewField::Model);
+        return;
     }
-    for (hit, rect) in &ep_hits {
-        if rect.contains(pos) {
-            launcher.active_section = LauncherSection::Endpoint;
-            match hit {
-                LauncherListHit::Item(filtered_idx) => {
-                    launcher.endpoint_picker.custom_active = false;
-                    launcher.endpoint_picker.selected = *filtered_idx;
-                }
-                LauncherListHit::Custom => {
-                    launcher.endpoint_picker.selected =
-                        launcher.endpoint_picker.filtered_indices.len();
-                    launcher.endpoint_picker.enter_custom();
-                }
-            }
-            return;
-        }
-    }
-    for (idx, rect) in &recent_hits {
-        if rect.contains(pos) {
-            launcher.active_section = LauncherSection::Recent;
-            launcher.recent_selected = *idx;
-            if let Some(entry) = launcher.recent_list.get(*idx).cloned() {
-                if let Some(pos_e) = launcher
-                    .executor_list
-                    .iter()
-                    .position(|(name, _, _)| name == &entry.executor)
-                {
-                    launcher.select_executor(pos_e);
-                }
-                if let Some(ref model) = entry.model {
-                    launcher.select_model_by_id(model);
-                }
-                if let Some(ref endpoint) = entry.endpoint {
-                    launcher.select_endpoint_by_value(endpoint);
-                }
-            }
-            // Single-click on a recent entry launches immediately, matching
-            // the keyboard "1..9" quick-select behavior.
-            app.launch_from_launcher();
-            return;
-        }
+    if endpoint_hit.height > 0 && endpoint_hit.contains(pos) {
+        launcher.active_section = LauncherSection::AddNew(AddNewField::Endpoint);
+        return;
     }
     // Click in launcher area but no row matched: just no-op.
 }
 
 fn handle_launcher_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
-    use super::state::LauncherSection;
+    use super::state::{ADD_NEW_EXECUTOR_CHOICES, AddNewField, LauncherMode, LauncherSection};
 
     // While a previous Enter is still in-flight (waiting for `wg
     // service create-coordinator` IPC to return), swallow keys so the
@@ -1420,9 +1366,8 @@ fn handle_launcher_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModifier
     }
 
     // Universal submit: Ctrl+Enter from any section/state. Bypasses the
-    // section-specific handlers (which can swallow Enter — e.g. Name section
-    // moves to next field, Custom row enters edit mode). Without this safety
-    // valve, users have reported getting "stuck" in the dialog.
+    // section-specific handlers that swallow Enter (e.g. Add-new model
+    // text field where Enter consumes the keypress to launch).
     if matches!(code, KeyCode::Enter) && modifiers.contains(KeyModifiers::CONTROL) {
         app.launch_from_launcher();
         return;
@@ -1436,320 +1381,138 @@ fn handle_launcher_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModifier
         }
     };
 
-    // Name section: route character input to the name field
-    if launcher.active_section == LauncherSection::Name {
-        match code {
-            KeyCode::Esc => {
-                app.close_launcher();
-                return;
+    // Esc/Ctrl+C: in Add-new mode goes back to Default. In Default mode
+    // closes the launcher entirely.
+    if matches!(code, KeyCode::Esc)
+        || (matches!(code, KeyCode::Char('c')) && modifiers.contains(KeyModifiers::CONTROL))
+    {
+        match launcher.mode {
+            LauncherMode::AddNew => {
+                launcher.mode = LauncherMode::Default;
+                launcher.active_section = LauncherSection::Defaults;
+                launcher.last_error = None;
             }
-            KeyCode::Tab => {
-                if modifiers.contains(KeyModifiers::SHIFT) {
-                    launcher.prev_section();
-                } else {
-                    launcher.next_section();
+            LauncherMode::Default => {
+                app.close_launcher();
+            }
+        }
+        return;
+    }
+
+    // Tab / Shift+Tab cycles between fields in both modes.
+    if matches!(code, KeyCode::Tab) {
+        if modifiers.contains(KeyModifiers::SHIFT) {
+            launcher.prev_section();
+        } else {
+            launcher.next_section();
+        }
+        return;
+    }
+    if matches!(code, KeyCode::BackTab) {
+        launcher.prev_section();
+        return;
+    }
+
+    // Section-specific dispatch. Each branch returns at the end so the
+    // generic fallthrough at the bottom handles only un-claimed keys.
+    match launcher.active_section.clone() {
+        LauncherSection::Defaults => match code {
+            KeyCode::Up | KeyCode::Char('k') => {
+                if launcher.default_selected > 0 {
+                    launcher.default_selected -= 1;
                 }
-                return;
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                let max = launcher.presets.len(); // last index is "+ Add new"
+                if launcher.default_selected < max {
+                    launcher.default_selected += 1;
+                }
             }
             KeyCode::Enter => {
-                // Submit immediately — Name is optional, no need to step through
-                // the rest of the form. Users have reported getting "stuck" in
-                // the selector when Enter just navigated to the next section
-                // (no clear indication it was a Tab-style move, not a submit).
+                // Either launches a preset OR flips into Add-new mode.
+                // launch_from_launcher handles both branches.
                 app.launch_from_launcher();
-                return;
+            }
+            _ => {}
+        },
+        LauncherSection::Name => match code {
+            KeyCode::Enter => {
+                app.launch_from_launcher();
             }
             KeyCode::Char(c) if !modifiers.contains(KeyModifiers::CONTROL) => {
                 launcher.name.push(c);
-                return;
             }
             KeyCode::Backspace => {
                 launcher.name.pop();
-                return;
             }
-            _ => return,
-        }
-    }
-
-    // Custom model input mode (via FilterPicker)
-    if launcher.active_section == LauncherSection::Model && launcher.model_picker.custom_active {
-        match code {
-            KeyCode::Esc => {
-                launcher.model_picker.exit_custom();
-                return;
+            _ => {}
+        },
+        LauncherSection::AddNew(AddNewField::Executor) => match code {
+            KeyCode::Left | KeyCode::Char('h') => {
+                if launcher.add_executor_idx > 0 {
+                    launcher.add_executor_idx -= 1;
+                }
+            }
+            KeyCode::Right | KeyCode::Char('l') => {
+                let max = ADD_NEW_EXECUTOR_CHOICES.len().saturating_sub(1);
+                if launcher.add_executor_idx < max {
+                    launcher.add_executor_idx += 1;
+                }
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                if launcher.add_executor_idx > 0 {
+                    launcher.add_executor_idx -= 1;
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                let max = ADD_NEW_EXECUTOR_CHOICES.len().saturating_sub(1);
+                if launcher.add_executor_idx < max {
+                    launcher.add_executor_idx += 1;
+                }
             }
             KeyCode::Enter => {
-                if !launcher.model_picker.custom_text.is_empty() {
-                    app.launch_from_launcher();
-                } else {
-                    launcher.model_picker.exit_custom();
-                }
-                return;
-            }
-            KeyCode::Tab => {
-                launcher.model_picker.exit_custom();
-                if modifiers.contains(KeyModifiers::SHIFT) {
-                    launcher.prev_section();
-                } else {
-                    launcher.next_section();
-                }
-                return;
-            }
-            KeyCode::Char(c) if !modifiers.contains(KeyModifiers::CONTROL) => {
-                launcher.model_picker.custom_text.push(c);
-                return;
-            }
-            KeyCode::Backspace => {
-                launcher.model_picker.custom_text.pop();
-                return;
-            }
-            _ => return,
-        }
-    }
-
-    // EndpointRegister section: typing edits the optional registration
-    // name for an ad-hoc Custom URL (fix-new-chat). Shown only when the
-    // user has filled in a Custom URL above; filling this in causes
-    // launch_from_launcher to persist the endpoint to global config.
-    if launcher.active_section == LauncherSection::EndpointRegister {
-        match code {
-            KeyCode::Esc => {
-                app.close_launcher();
-                return;
-            }
-            KeyCode::Tab => {
-                if modifiers.contains(KeyModifiers::SHIFT) {
-                    launcher.prev_section();
-                } else {
-                    launcher.next_section();
-                }
-                return;
-            }
-            KeyCode::Enter => {
-                app.launch_from_launcher();
-                return;
-            }
-            KeyCode::Char(c) if !modifiers.contains(KeyModifiers::CONTROL) => {
-                launcher.register_endpoint_name.push(c);
-                return;
-            }
-            KeyCode::Backspace => {
-                launcher.register_endpoint_name.pop();
-                return;
-            }
-            _ => return,
-        }
-    }
-
-    // Custom endpoint input mode (via FilterPicker)
-    if launcher.active_section == LauncherSection::Endpoint
-        && launcher.endpoint_picker.custom_active
-    {
-        match code {
-            KeyCode::Esc => {
-                launcher.endpoint_picker.exit_custom();
-                return;
-            }
-            KeyCode::Enter => {
-                if !launcher.endpoint_picker.custom_text.is_empty() {
-                    app.launch_from_launcher();
-                } else {
-                    launcher.endpoint_picker.exit_custom();
-                }
-                return;
-            }
-            KeyCode::Tab => {
-                launcher.endpoint_picker.exit_custom();
-                if modifiers.contains(KeyModifiers::SHIFT) {
-                    launcher.prev_section();
-                } else {
-                    launcher.next_section();
-                }
-                return;
-            }
-            KeyCode::Char(c) if !modifiers.contains(KeyModifiers::CONTROL) => {
-                launcher.endpoint_picker.custom_text.push(c);
-                return;
-            }
-            KeyCode::Backspace => {
-                launcher.endpoint_picker.custom_text.pop();
-                return;
-            }
-            _ => return,
-        }
-    }
-
-    // Model section with filter: typing filters the list
-    if launcher.active_section == LauncherSection::Model {
-        match code {
-            KeyCode::Esc => {
-                if !launcher.model_picker.filter.is_empty() {
-                    launcher.model_picker.filter.clear();
-                    launcher.model_picker.apply_filter();
-                } else {
-                    app.close_launcher();
-                }
-                return;
-            }
-            KeyCode::Char(c)
-                if !modifiers.contains(KeyModifiers::CONTROL) && c != 'j' && c != 'k' =>
-            {
-                launcher.model_picker.type_char(c);
-                return;
-            }
-            KeyCode::Backspace => {
-                launcher.model_picker.backspace();
-                return;
-            }
-            _ => {} // fall through to generic key handling
-        }
-    }
-
-    // Endpoint section with filter: typing filters the list
-    if launcher.active_section == LauncherSection::Endpoint {
-        match code {
-            KeyCode::Esc => {
-                if !launcher.endpoint_picker.filter.is_empty() {
-                    launcher.endpoint_picker.filter.clear();
-                    launcher.endpoint_picker.apply_filter();
-                } else {
-                    app.close_launcher();
-                }
-                return;
-            }
-            KeyCode::Char(c)
-                if !modifiers.contains(KeyModifiers::CONTROL) && c != 'j' && c != 'k' =>
-            {
-                launcher.endpoint_picker.type_char(c);
-                return;
-            }
-            KeyCode::Backspace => {
-                launcher.endpoint_picker.backspace();
-                return;
-            }
-            _ => {} // fall through
-        }
-    }
-
-    match code {
-        KeyCode::Esc => {
-            app.close_launcher();
-        }
-        KeyCode::Tab => {
-            if modifiers.contains(KeyModifiers::SHIFT) {
-                launcher.prev_section();
-            } else {
+                // Move to model field rather than submitting — the user
+                // hasn't filled out the form yet.
                 launcher.next_section();
             }
-        }
-        KeyCode::Up | KeyCode::Char('k') => match launcher.active_section {
-            LauncherSection::Executor => {
-                if launcher.executor_selected > 0 {
-                    let new_idx = launcher.executor_selected - 1;
-                    launcher.select_executor(new_idx);
-                }
-            }
-            LauncherSection::Model => {
-                launcher.model_picker.prev();
-            }
-            LauncherSection::Endpoint => {
-                launcher.endpoint_picker.prev();
-            }
-            LauncherSection::Recent => {
-                if launcher.recent_selected > 0 {
-                    launcher.recent_selected -= 1;
-                }
-            }
-            // Name + EndpointRegister are single-row text inputs; arrow
-            // keys do nothing (handled earlier in the section-specific
-            // input branches).
             _ => {}
         },
-        KeyCode::Down | KeyCode::Char('j') => match launcher.active_section {
-            LauncherSection::Executor => {
-                let max = launcher.executor_list.len().saturating_sub(1);
-                if launcher.executor_selected < max {
-                    let new_idx = launcher.executor_selected + 1;
-                    launcher.select_executor(new_idx);
-                }
-            }
-            LauncherSection::Model => {
-                launcher.model_picker.next();
-            }
-            LauncherSection::Endpoint => {
-                launcher.endpoint_picker.next();
-            }
-            LauncherSection::Recent => {
-                let max = launcher.recent_list.len().saturating_sub(1);
-                if launcher.recent_selected < max {
-                    launcher.recent_selected += 1;
-                }
-            }
-            _ => {}
-        },
-        KeyCode::Enter => {
-            match launcher.active_section {
-                LauncherSection::Model => {
-                    if launcher.model_picker.is_custom_selected() {
-                        launcher.model_picker.enter_custom();
-                        return;
-                    }
-                }
-                LauncherSection::Endpoint => {
-                    if launcher.endpoint_picker.is_custom_selected() {
-                        launcher.endpoint_picker.enter_custom();
-                        return;
-                    }
-                }
-                LauncherSection::Recent => {
-                    if let Some(entry) = launcher.recent_list.get(launcher.recent_selected).cloned()
-                    {
-                        if let Some(pos) = launcher
-                            .executor_list
-                            .iter()
-                            .position(|(name, _, _)| name == &entry.executor)
-                        {
-                            launcher.executor_selected = pos;
-                        }
-                        if let Some(ref model) = entry.model {
-                            launcher.select_model_by_id(model);
-                        }
-                        if let Some(ref endpoint) = entry.endpoint {
-                            launcher.select_endpoint_by_value(endpoint);
-                        }
-                    }
-                }
-                _ => {}
-            }
-            app.launch_from_launcher();
-        }
-        // Quick-select recent entries by number
-        KeyCode::Char(c @ '1'..='9') if launcher.active_section == LauncherSection::Recent => {
-            let idx = (c as usize) - ('1' as usize);
-            if idx < launcher.recent_list.len() {
-                launcher.recent_selected = idx;
-                if let Some(entry) = launcher.recent_list.get(idx).cloned() {
-                    if let Some(pos) = launcher
-                        .executor_list
-                        .iter()
-                        .position(|(name, _, _)| name == &entry.executor)
-                    {
-                        launcher.executor_selected = pos;
-                    }
-                    if let Some(ref model) = entry.model {
-                        launcher.select_model_by_id(model);
-                    }
-                    if let Some(ref endpoint) = entry.endpoint {
-                        launcher.select_endpoint_by_value(endpoint);
-                    }
-                }
+        LauncherSection::AddNew(AddNewField::Model) => match code {
+            KeyCode::Enter => {
                 app.launch_from_launcher();
             }
-        }
-        KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => {
-            app.close_launcher();
-        }
-        _ => {}
+            KeyCode::Char(c) if !modifiers.contains(KeyModifiers::CONTROL) => {
+                launcher.add_model.push(c);
+            }
+            KeyCode::Backspace => {
+                launcher.add_model.pop();
+            }
+            _ => {}
+        },
+        LauncherSection::AddNew(AddNewField::Endpoint) => match code {
+            KeyCode::Enter => {
+                app.launch_from_launcher();
+            }
+            KeyCode::Char(c) if !modifiers.contains(KeyModifiers::CONTROL) => {
+                launcher.add_endpoint.push(c);
+            }
+            KeyCode::Backspace => {
+                launcher.add_endpoint.pop();
+            }
+            _ => {}
+        },
+        LauncherSection::AddNew(AddNewField::Name) => match code {
+            KeyCode::Enter => {
+                app.launch_from_launcher();
+            }
+            KeyCode::Char(c) if !modifiers.contains(KeyModifiers::CONTROL) => {
+                launcher.name.push(c);
+            }
+            KeyCode::Backspace => {
+                launcher.name.pop();
+            }
+            _ => {}
+        },
     }
 }
 
@@ -3889,53 +3652,14 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
     app.fullscreen_top_hover = in_fullscreen_top;
     app.fullscreen_bottom_hover = in_fullscreen_bottom;
 
-    // Launcher modal: route scroll wheel to whichever picker the cursor is
-    // over. Done before the generic match so scroll events don't fall through
-    // to the graph/chat handlers behind the modal.
+    // Launcher modal: redesigned dialog has no scrollable picker
+    // (Default mode is a 3-row radio, Add-new mode is a fixed-height
+    // form). Swallow scroll events so they don't reach the graph/chat
+    // handlers behind the modal but otherwise no-op.
     if matches!(app.input_mode, InputMode::Launcher)
         && (matches!(kind, MouseEventKind::ScrollUp) || matches!(kind, MouseEventKind::ScrollDown))
     {
-        let in_model_list = app.launcher_model_list_area.height > 0
-            && app.launcher_model_list_area.contains(pos);
-        let in_endpoint_list = app.launcher_endpoint_list_area.height > 0
-            && app.launcher_endpoint_list_area.contains(pos);
-        if let Some(launcher) = app.launcher.as_mut() {
-            let delta = 3usize;
-            match kind {
-                MouseEventKind::ScrollUp => {
-                    if in_model_list {
-                        launcher.model_picker.scroll_up(delta);
-                    } else if in_endpoint_list {
-                        launcher.endpoint_picker.scroll_up(delta);
-                    } else {
-                        // Scroll over launcher but not over a list:
-                        // default to the active section's picker.
-                        match launcher.active_section {
-                            super::state::LauncherSection::Endpoint => {
-                                launcher.endpoint_picker.scroll_up(delta)
-                            }
-                            _ => launcher.model_picker.scroll_up(delta),
-                        }
-                    }
-                }
-                MouseEventKind::ScrollDown => {
-                    if in_model_list {
-                        launcher.model_picker.scroll_down(delta);
-                    } else if in_endpoint_list {
-                        launcher.endpoint_picker.scroll_down(delta);
-                    } else {
-                        match launcher.active_section {
-                            super::state::LauncherSection::Endpoint => {
-                                launcher.endpoint_picker.scroll_down(delta)
-                            }
-                            _ => launcher.model_picker.scroll_down(delta),
-                        }
-                    }
-                }
-                _ => {}
-            }
-            return;
-        }
+        return;
     }
 
     match kind {
@@ -7849,756 +7573,6 @@ mod scrollbar_tests {
         );
     }
 
-    // ──────────────────────────────────────────────────────────────────────
-    // Launcher (new-chat dialog) mouse + scroll tests
-    // ──────────────────────────────────────────────────────────────────────
-
-    use crate::tui::viz_viewer::state::{
-        FilterPicker, LauncherListHit, LauncherSection, LauncherState, filter_models_for_executor,
-    };
-
-    fn make_launcher(executors: Vec<(&str, &str, bool)>, models: Vec<(&str, &str)>) -> LauncherState {
-        let executor_list: Vec<(String, String, bool)> = executors
-            .into_iter()
-            .map(|(n, d, a)| (n.to_string(), d.to_string(), a))
-            .collect();
-        let all_models: Vec<(String, String)> = models
-            .into_iter()
-            .map(|(n, d)| (n.to_string(), d.to_string()))
-            .collect();
-        let initial_executor = executor_list
-            .first()
-            .map(|(n, _, _)| n.clone())
-            .unwrap_or_else(|| "claude".to_string());
-        let initial_models = filter_models_for_executor(&all_models, &initial_executor);
-        let model_picker = FilterPicker::new(initial_models, true);
-        let endpoint_picker = FilterPicker::new(vec![], true);
-        LauncherState {
-            active_section: LauncherSection::Executor,
-            name: String::new(),
-            executor_list,
-            executor_selected: 0,
-            model_picker,
-            endpoint_picker,
-            recent_list: vec![],
-            recent_selected: 0,
-            all_models,
-            creating: false,
-            last_error: None,
-            register_endpoint_name: String::new(),
-        }
-    }
-
-    /// Test: clicking on an executor row in the launcher selects it AND
-    /// re-filters the model list to compatible models only.
-    #[test]
-    fn test_dialog_handles_mouse_click_on_executor_selector() {
-        let (mut app, _tmp) = build_test_app();
-        app.launcher = Some(make_launcher(
-            vec![
-                ("claude", "claude CLI", true),
-                ("native", "in-process loop", true),
-            ],
-            vec![
-                ("claude:opus", ""),
-                ("openai:gpt-4o", ""),
-                ("google:gemini-2.5-pro", ""),
-            ],
-        ));
-        app.input_mode = InputMode::Launcher;
-        app.last_launcher_area = Rect {
-            x: 0,
-            y: 0,
-            width: 80,
-            height: 30,
-        };
-        app.launcher_executor_hits = vec![
-            (
-                0,
-                Rect {
-                    x: 0,
-                    y: 5,
-                    width: 80,
-                    height: 1,
-                },
-            ),
-            (
-                1,
-                Rect {
-                    x: 0,
-                    y: 6,
-                    width: 80,
-                    height: 1,
-                },
-            ),
-        ];
-        // Click on the second executor row (native).
-        handle_mouse(&mut app, MouseEventKind::Down(MouseButton::Left), 6, 10);
-        let l = app.launcher.as_ref().unwrap();
-        assert_eq!(l.executor_selected, 1, "click should select native");
-        assert_eq!(
-            l.active_section,
-            LauncherSection::Executor,
-            "section should be Executor"
-        );
-        // native shows endpoint section
-        assert!(l.show_endpoint(), "native should reveal endpoint");
-        // model list always shows all models — filter never strips
-        assert_eq!(l.model_picker.items.len(), 3);
-    }
-
-    /// Test: scroll-wheel events over the model list area scroll the picker.
-    #[test]
-    fn test_dialog_handles_scroll_wheel_in_model_list() {
-        let (mut app, _tmp) = build_test_app();
-        let many_models: Vec<(&str, &str)> = (0..20)
-            .map(|i| {
-                let s: &'static str = Box::leak(format!("claude:model-{}", i).into_boxed_str());
-                (s, "")
-            })
-            .collect();
-        app.launcher = Some(make_launcher(
-            vec![("claude", "claude CLI", true)],
-            many_models,
-        ));
-        app.input_mode = InputMode::Launcher;
-        app.last_launcher_area = Rect {
-            x: 0,
-            y: 0,
-            width: 80,
-            height: 30,
-        };
-        app.launcher_model_list_area = Rect {
-            x: 0,
-            y: 8,
-            width: 80,
-            height: 6,
-        };
-        let initial = app.launcher.as_ref().unwrap().model_picker.scroll_offset;
-        assert_eq!(initial, 0);
-        handle_mouse(&mut app, MouseEventKind::ScrollDown, 10, 10);
-        let after_down = app.launcher.as_ref().unwrap().model_picker.scroll_offset;
-        assert!(after_down > 0, "scroll down should move offset forward");
-        handle_mouse(&mut app, MouseEventKind::ScrollUp, 10, 10);
-        let after_up = app.launcher.as_ref().unwrap().model_picker.scroll_offset;
-        assert!(after_up < after_down, "scroll up should move offset back");
-    }
-
-    /// Test: clicking another coordinator tab while the launcher is open
-    /// dismisses the launcher AND switches to that tab in one action.
-    #[test]
-    fn test_dialog_click_on_other_tab_dismisses_and_switches() {
-        let (mut app, _tmp) = build_test_app();
-        // Add two coordinators so we have a second tab to click.
-        app.coordinator_chats.insert(0, Default::default());
-        app.coordinator_chats.insert(1, Default::default());
-        app.active_coordinator_id = 0;
-        app.launcher = Some(make_launcher(
-            vec![("claude", "claude CLI", true)],
-            vec![("claude:opus", "")],
-        ));
-        app.input_mode = InputMode::Launcher;
-        app.last_launcher_area = Rect {
-            x: 0,
-            y: 1,
-            width: 80,
-            height: 29,
-        };
-        app.last_coordinator_bar_area = Rect {
-            x: 0,
-            y: 0,
-            width: 80,
-            height: 1,
-        };
-        app.coordinator_tab_hits = vec![crate::tui::viz_viewer::state::CoordinatorTabHit {
-            tab_start: 5,
-            tab_end: 15,
-            close_start: 0,
-            close_end: 0,
-            kind: crate::tui::viz_viewer::state::TabBarEntryKind::Coordinator(1),
-        }];
-        // Click on the tab (column 10, row 0).
-        handle_mouse(&mut app, MouseEventKind::Down(MouseButton::Left), 0, 10);
-        assert!(app.launcher.is_none(), "launcher should be dismissed");
-        assert_eq!(
-            app.input_mode,
-            InputMode::Normal,
-            "input mode should be Normal"
-        );
-        assert_eq!(
-            app.active_coordinator_id, 1,
-            "should switch to clicked coordinator"
-        );
-    }
-
-    /// Test: selecting the native executor reveals the endpoint section
-    /// (which would not be present for claude). Sanity check on
-    /// `LauncherState::show_endpoint`, which the renderer keys off of.
-    #[test]
-    fn test_dialog_native_executor_reveals_endpoint_input() {
-        let mut launcher = make_launcher(
-            vec![
-                ("claude", "claude CLI", true),
-                ("native", "in-process loop", true),
-            ],
-            vec![("claude:opus", ""), ("openai:gpt-4o", "")],
-        );
-        // Default executor (claude) — endpoint hidden.
-        assert!(!launcher.show_endpoint());
-        launcher.select_executor(1);
-        assert!(launcher.show_endpoint(), "native should reveal endpoint");
-    }
-
-    /// Test: model list reorders by executor (compatible first), but ALWAYS
-    /// returns all models — never strips them. A strict filter would trap
-    /// users whose registry uses unconventional naming on the Custom row.
-    #[test]
-    fn test_filter_models_for_executor_reorders_compatible_first() {
-        let all = vec![
-            ("openrouter:claude-opus-4-6".to_string(), "".to_string()),
-            ("openrouter:gpt-4o".to_string(), "".to_string()),
-            ("openrouter:gemini-2.5-pro".to_string(), "".to_string()),
-            ("claude:opus".to_string(), "".to_string()),
-            ("openai:gpt-4o-mini".to_string(), "".to_string()),
-        ];
-        // claude executor: all 5 returned, claude/anthropic ones first
-        let claude_models = filter_models_for_executor(&all, "claude");
-        assert_eq!(claude_models.len(), 5, "should never strip models");
-        assert!(
-            claude_models[0].0.contains("claude"),
-            "claude-compatible model should come first, got {:?}",
-            claude_models[0].0
-        );
-        // codex executor: openai first
-        let codex_models = filter_models_for_executor(&all, "codex");
-        assert_eq!(codex_models.len(), 5);
-        assert!(codex_models[0].0.contains("openai") || codex_models[0].0.contains("gpt"));
-        // gemini executor: google first
-        let gemini_models = filter_models_for_executor(&all, "gemini");
-        assert_eq!(gemini_models.len(), 5);
-        assert!(gemini_models[0].0.contains("google") || gemini_models[0].0.contains("gemini"));
-        // native executor: all models, original order
-        let native_models = filter_models_for_executor(&all, "native");
-        assert_eq!(native_models.len(), 5);
-        assert_eq!(native_models, all);
-    }
-
-    /// Test: Ctrl+Enter from any section submits the launcher.
-    /// Regression guard for "stuck in selector" — users couldn't always find
-    /// the submit path because Enter is overloaded across sections.
-    #[test]
-    fn test_dialog_ctrl_enter_submits_from_any_section() {
-        use super::handle_launcher_input;
-        let (mut app, _tmp) = build_test_app();
-        app.launcher = Some(make_launcher(
-            vec![("claude", "claude CLI", true)],
-            vec![("claude:opus", "")],
-        ));
-        app.input_mode = InputMode::Launcher;
-        // Park in Name section — the section that historically did NOT submit
-        // on Enter (it just stepped to the next field).
-        app.launcher.as_mut().unwrap().active_section = LauncherSection::Name;
-        // Ctrl+Enter should submit regardless of section. After fix-tui-new
-        // symptom 2 the pane stays visible (creating=true) until the IPC
-        // returns; verify both halves so a regression that re-closes
-        // synchronously is caught.
-        handle_launcher_input(&mut app, KeyCode::Enter, KeyModifiers::CONTROL);
-        let l = app
-            .launcher
-            .as_ref()
-            .expect("Ctrl+Enter must keep the pane open until IPC returns");
-        assert!(
-            l.creating,
-            "Ctrl+Enter on Name section should submit (creating=true)"
-        );
-    }
-
-    /// Test: plain Enter on Name section now submits too (was: navigated).
-    /// The old "Enter in Name moves to next section" behavior was the most
-    /// common reason users got stuck — they typed a name, hit Enter, nothing
-    /// visible happened.
-    #[test]
-    fn test_dialog_enter_on_name_section_submits() {
-        use super::handle_launcher_input;
-        let (mut app, _tmp) = build_test_app();
-        app.launcher = Some(make_launcher(
-            vec![("claude", "claude CLI", true)],
-            vec![("claude:opus", "")],
-        ));
-        app.input_mode = InputMode::Launcher;
-        app.launcher.as_mut().unwrap().active_section = LauncherSection::Name;
-        handle_launcher_input(&mut app, KeyCode::Enter, KeyModifiers::empty());
-        let l = app
-            .launcher
-            .as_ref()
-            .expect("Enter must keep the pane open until IPC returns");
-        assert!(
-            l.creating,
-            "Enter on Name section should submit (creating=true)"
-        );
-    }
-
-    /// Test: clicking [Launch] button submits the launcher.
-    #[test]
-    fn test_dialog_click_launch_button_submits() {
-        let (mut app, _tmp) = build_test_app();
-        app.launcher = Some(make_launcher(
-            vec![("claude", "claude CLI", true)],
-            vec![("claude:opus", "")],
-        ));
-        app.input_mode = InputMode::Launcher;
-        app.last_launcher_area = Rect {
-            x: 0,
-            y: 0,
-            width: 80,
-            height: 30,
-        };
-        app.launcher_launch_btn_hit = Rect {
-            x: 2,
-            y: 28,
-            width: 8,
-            height: 1,
-        };
-        // Click on the Launch button.
-        handle_mouse(&mut app, MouseEventKind::Down(MouseButton::Left), 28, 5);
-        let l = app
-            .launcher
-            .as_ref()
-            .expect("[Launch] click must keep the pane open until IPC returns");
-        assert!(l.creating, "[Launch] click should submit (creating=true)");
-        assert_eq!(
-            app.input_mode,
-            InputMode::Launcher,
-            "input_mode must stay Launcher until drain_commands clears it"
-        );
-    }
-
-    /// Test: clicking [Cancel] button dismisses without submitting.
-    #[test]
-    fn test_dialog_click_cancel_button_dismisses() {
-        let (mut app, _tmp) = build_test_app();
-        app.launcher = Some(make_launcher(
-            vec![("claude", "claude CLI", true)],
-            vec![("claude:opus", "")],
-        ));
-        app.input_mode = InputMode::Launcher;
-        app.last_launcher_area = Rect {
-            x: 0,
-            y: 0,
-            width: 80,
-            height: 30,
-        };
-        app.launcher_cancel_btn_hit = Rect {
-            x: 13,
-            y: 28,
-            width: 8,
-            height: 1,
-        };
-        handle_mouse(&mut app, MouseEventKind::Down(MouseButton::Left), 28, 16);
-        assert!(app.launcher.is_none(), "[Cancel] click should close launcher");
-        assert_eq!(app.input_mode, InputMode::Normal);
-    }
-
-    /// Test: in command mode (PTY not focused / focused_panel = Graph),
-    /// the legacy global Ctrl+N alias still opens the launcher. The
-    /// modal contract only swallows keys when the chat PTY has focus.
-    #[test]
-    fn test_command_mode_ctrl_n_opens_launcher() {
-        let (mut app, tmp) = build_test_app();
-        app.right_panel_tab = RightPanelTab::Chat;
-        // Command mode: focused_panel = Graph (Ctrl+T'd out of PTY).
-        app.focused_panel = FocusedPanel::Graph;
-        app.chat_pty_mode = true;
-        app.chat_pty_forwards_stdin = true;
-        app.workgraph_dir = tmp.path().to_path_buf();
-        std::fs::write(tmp.path().join("config.toml"), "").ok();
-        super::handle_key(&mut app, KeyCode::Char('n'), KeyModifiers::CONTROL);
-        assert!(
-            app.launcher.is_some(),
-            "Ctrl+N in command mode must open the launcher"
-        );
-        assert_eq!(app.input_mode, InputMode::Launcher);
-    }
-
-    /// Test: when chat PTY has focus (modal "PTY mode"), Ctrl+N is forwarded
-    /// to the embedded editor rather than escaping to open the launcher.
-    /// Only Ctrl+T is allowed to break out of PTY focus — see implement-tui-modal.
-    #[test]
-    fn test_pty_mode_passes_ctrl_n_to_editor() {
-        let (mut app, tmp) = build_test_app();
-        // Simulate vendor PTY active and forwarding stdin.
-        app.right_panel_tab = RightPanelTab::Chat;
-        app.focused_panel = FocusedPanel::RightPanel;
-        app.chat_pty_mode = true;
-        app.chat_pty_forwards_stdin = true;
-        app.workgraph_dir = tmp.path().to_path_buf();
-        std::fs::write(tmp.path().join("config.toml"), "").ok();
-        // Simulate Ctrl+N keystroke.
-        super::handle_key(&mut app, KeyCode::Char('n'), KeyModifiers::CONTROL);
-        assert!(
-            app.launcher.is_none(),
-            "Ctrl+N in PTY mode must NOT open the launcher (must pass through to editor)"
-        );
-        assert_eq!(
-            app.input_mode,
-            InputMode::Normal,
-            "input_mode must remain Normal — only Ctrl+T should escape PTY mode"
-        );
-    }
-
-    /// Test: full submit flow — open launcher, press Enter. The launcher
-    /// MUST stay visible (with `creating=true`) and `input_mode` MUST stay
-    /// `Launcher` while the `wg service create-coordinator` IPC is in flight.
-    /// Closing the pane synchronously caused a jarring flash to the
-    /// previously-active chat during the ~100-500ms IPC roundtrip — this is
-    /// the regression lock for fix-tui-new symptom 2. The launcher is
-    /// dismissed + focus switched in `drain_commands::CreateCoordinator`,
-    /// which runs only after the subprocess returns.
-    #[test]
-    fn test_dialog_enter_keeps_launcher_visible_until_ipc_returns() {
-        use super::handle_launcher_input;
-        let (mut app, _tmp) = build_test_app();
-        // Build a launcher with a real model, on Executor section (default).
-        app.launcher = Some(make_launcher(
-            vec![("claude", "claude CLI", true)],
-            vec![("claude:opus", "Most capable")],
-        ));
-        app.input_mode = InputMode::Launcher;
-        // Default: active_section = Executor, model_picker.selected = 0.
-        // Plain Enter should fire the IPC but NOT close the pane.
-        handle_launcher_input(&mut app, KeyCode::Enter, KeyModifiers::empty());
-        let launcher = app
-            .launcher
-            .as_ref()
-            .expect("launcher must remain visible during in-flight IPC");
-        assert!(
-            launcher.creating,
-            "creating flag must be set while the IPC is in flight"
-        );
-        assert_eq!(
-            app.input_mode,
-            InputMode::Launcher,
-            "input_mode must stay Launcher until drain_commands clears it"
-        );
-    }
-
-    /// Test: while the launcher is in `creating=true`, additional keystrokes
-    /// must be swallowed. No double-submit, no field edits, no Esc-cancel of
-    /// a half-created chat. The pane stays inert until drain_commands fires.
-    #[test]
-    fn test_dialog_input_gated_while_creating() {
-        use super::handle_launcher_input;
-        let (mut app, _tmp) = build_test_app();
-        let mut launcher = make_launcher(
-            vec![("claude", "claude CLI", true)],
-            vec![("claude:opus", "")],
-        );
-        launcher.creating = true;
-        let original_name = launcher.name.clone();
-        app.launcher = Some(launcher);
-        app.input_mode = InputMode::Launcher;
-        // Pressing Esc must NOT close the pane mid-flight.
-        handle_launcher_input(&mut app, KeyCode::Esc, KeyModifiers::empty());
-        assert!(app.launcher.is_some(), "Esc must not cancel mid-creation");
-        assert_eq!(app.input_mode, InputMode::Launcher);
-        // Typing a character must NOT mutate the name field.
-        handle_launcher_input(&mut app, KeyCode::Char('x'), KeyModifiers::empty());
-        assert_eq!(
-            app.launcher.as_ref().unwrap().name,
-            original_name,
-            "field input must be ignored while creating"
-        );
-        // A second Enter must NOT spawn a duplicate IPC (creating stays true,
-        // launcher stays present — no re-entry into launch_from_launcher
-        // that would push another exec_command).
-        handle_launcher_input(&mut app, KeyCode::Enter, KeyModifiers::empty());
-        assert!(app.launcher.as_ref().unwrap().creating);
-    }
-
-    /// Test: clicking a model row selects it and switches focus to Model section.
-    #[test]
-    fn test_launcher_click_on_model_row_selects_model() {
-        let (mut app, _tmp) = build_test_app();
-        app.launcher = Some(make_launcher(
-            vec![("claude", "claude CLI", true)],
-            vec![("claude:opus", ""), ("claude:sonnet", "")],
-        ));
-        app.input_mode = InputMode::Launcher;
-        app.last_launcher_area = Rect {
-            x: 0,
-            y: 0,
-            width: 80,
-            height: 30,
-        };
-        app.launcher_model_hits = vec![
-            (
-                LauncherListHit::Item(0),
-                Rect {
-                    x: 0,
-                    y: 8,
-                    width: 80,
-                    height: 1,
-                },
-            ),
-            (
-                LauncherListHit::Item(1),
-                Rect {
-                    x: 0,
-                    y: 9,
-                    width: 80,
-                    height: 1,
-                },
-            ),
-        ];
-        handle_mouse(&mut app, MouseEventKind::Down(MouseButton::Left), 9, 10);
-        let l = app.launcher.as_ref().unwrap();
-        assert_eq!(l.active_section, LauncherSection::Model);
-        assert_eq!(l.model_picker.selected, 1);
-    }
-
-    /// Test: Shift+Enter on Model section also submits, mirroring the
-    /// common chat-input convention where Shift+Enter is a "send"
-    /// affordance. Plain Enter has always submitted; this guards against
-    /// regressions if Shift gets accidentally captured elsewhere.
-    #[test]
-    fn test_dialog_shift_enter_also_submits() {
-        use super::handle_launcher_input;
-        let (mut app, _tmp) = build_test_app();
-        app.launcher = Some(make_launcher(
-            vec![("claude", "claude CLI", true)],
-            vec![("claude:opus", "Most capable")],
-        ));
-        app.input_mode = InputMode::Launcher;
-        // Move to Model section so Enter is unambiguously a submit action.
-        app.launcher.as_mut().unwrap().active_section = LauncherSection::Model;
-        handle_launcher_input(&mut app, KeyCode::Enter, KeyModifiers::SHIFT);
-        let l = app
-            .launcher
-            .as_ref()
-            .expect("Shift+Enter must keep the pane open until IPC returns");
-        assert!(
-            l.creating,
-            "Shift+Enter should submit (creating=true) — mirror of plain Enter"
-        );
-        assert_eq!(app.input_mode, InputMode::Launcher);
-    }
-
-    /// Test: keyboard ↑/↓ moves the model list selection. Regression guard
-    /// for "we still cant scroll the coordinator config" — selection-by-
-    /// keyboard is the primary navigation path when the list overflows.
-    #[test]
-    fn test_dialog_scroll_with_keyboard() {
-        use super::handle_launcher_input;
-        let (mut app, _tmp) = build_test_app();
-        let many_models: Vec<(&str, &str)> = (0..20)
-            .map(|i| {
-                let s: &'static str = Box::leak(format!("claude:model-{}", i).into_boxed_str());
-                (s, "")
-            })
-            .collect();
-        app.launcher = Some(make_launcher(
-            vec![("claude", "claude CLI", true)],
-            many_models,
-        ));
-        app.input_mode = InputMode::Launcher;
-        // Park focus on the Model section so up/down navigates the picker.
-        app.launcher.as_mut().unwrap().active_section = LauncherSection::Model;
-        let initial = app.launcher.as_ref().unwrap().model_picker.selected;
-        assert_eq!(initial, 0);
-        handle_launcher_input(&mut app, KeyCode::Down, KeyModifiers::empty());
-        let after_down = app.launcher.as_ref().unwrap().model_picker.selected;
-        assert!(
-            after_down > initial,
-            "keyboard down should advance the model selection"
-        );
-        handle_launcher_input(&mut app, KeyCode::Down, KeyModifiers::empty());
-        handle_launcher_input(&mut app, KeyCode::Down, KeyModifiers::empty());
-        let after_more = app.launcher.as_ref().unwrap().model_picker.selected;
-        assert!(after_more > after_down, "more downs should keep advancing");
-        handle_launcher_input(&mut app, KeyCode::Up, KeyModifiers::empty());
-        let after_up = app.launcher.as_ref().unwrap().model_picker.selected;
-        assert!(after_up < after_more, "keyboard up should move selection back");
-    }
-
-    /// Test: after rendering the launcher, the [Launch] button hit area
-    /// is positioned ABOVE the model list. This pins the user-requested
-    /// layout — "launch at top of view so its clear why we are doing the
-    /// list below". Without this assertion the renderer is free to put
-    /// Launch at the bottom (the old layout) and users keep getting lost.
-    #[test]
-    fn test_dialog_launch_at_top_of_layout() {
-        use crate::tui::viz_viewer::render::draw_launcher_pane;
-        use ratatui::Terminal;
-        use ratatui::backend::TestBackend;
-
-        let (mut app, _tmp) = build_test_app();
-        let many_models: Vec<(&str, &str)> = (0..30)
-            .map(|i| {
-                let s: &'static str = Box::leak(format!("claude:model-{}", i).into_boxed_str());
-                (s, "")
-            })
-            .collect();
-        app.launcher = Some(make_launcher(
-            vec![("claude", "claude CLI", true)],
-            many_models,
-        ));
-        app.input_mode = InputMode::Launcher;
-
-        let backend = TestBackend::new(120, 40);
-        let mut terminal = Terminal::new(backend).unwrap();
-        let launcher_area = Rect {
-            x: 0,
-            y: 1,
-            width: 120,
-            height: 38,
-        };
-        terminal
-            .draw(|frame| draw_launcher_pane(frame, &mut app, launcher_area))
-            .unwrap();
-
-        let launch_y = app.launcher_launch_btn_hit.y;
-        let model_list_y = app.launcher_model_list_area.y;
-        let model_list_h = app.launcher_model_list_area.height;
-        assert!(
-            launch_y > 0 && model_list_y > 0,
-            "render should populate hit areas for both launch and model list (got launch={}, model={})",
-            launch_y,
-            model_list_y,
-        );
-        assert!(
-            launch_y < model_list_y,
-            "[Launch] button must render ABOVE the model list — \
-             launch_y={}, model_list_y={}",
-            launch_y,
-            model_list_y,
-        );
-        // Also assert the model list is given enough vertical real estate
-        // to actually scroll. With 30 models and a 40-row terminal, we
-        // expect at least 10 rows of list visible.
-        assert!(
-            model_list_h >= 10,
-            "model list should dominate vertical space — got height={}, expected >=10",
-            model_list_h,
-        );
-    }
-
-    /// fix-new-chat regression lock: with the native executor selected
-    /// and ZERO endpoints registered, the launcher must still render a
-    /// 'Custom URL' affordance so users can drop in a tailnet / lab URL
-    /// inline. Pre-fix, the renderer early-returned on `picker.items
-    /// .is_empty()` and the user only saw "No endpoints registered.
-    /// wg endpoint add ..." with no way out of the TUI.
-    #[test]
-    fn test_dialog_shows_custom_url_with_no_registered_endpoints() {
-        use crate::tui::viz_viewer::render::draw_launcher_pane;
-        use ratatui::Terminal;
-        use ratatui::backend::TestBackend;
-
-        let (mut app, _tmp) = build_test_app();
-        app.launcher = Some(make_launcher(
-            vec![("native", "in-process loop", true)],
-            vec![("local:qwen3-coder", "")],
-        ));
-        // Force the endpoint picker into the same shape as `open_launcher`:
-        // empty items, allow_custom=true, custom_label="Custom URL".
-        if let Some(l) = app.launcher.as_mut() {
-            l.endpoint_picker = FilterPicker::new(vec![], true)
-                .with_custom_label("Custom URL")
-                .with_hint("No endpoints registered.");
-            // Native executor → Endpoint section is shown.
-            assert!(l.show_endpoint(), "native executor should expose endpoint section");
-            l.active_section = LauncherSection::Endpoint;
-        }
-        app.input_mode = InputMode::Launcher;
-
-        let backend = TestBackend::new(120, 40);
-        let mut terminal = Terminal::new(backend).unwrap();
-        let area = Rect {
-            x: 0,
-            y: 0,
-            width: 120,
-            height: 40,
-        };
-        terminal
-            .draw(|frame| draw_launcher_pane(frame, &mut app, area))
-            .unwrap();
-
-        // Buffer scan: every cell concatenated as a single string —
-        // "Custom URL" must appear somewhere even with zero registered
-        // endpoints.
-        let buffer = terminal.backend().buffer().clone();
-        let mut text = String::new();
-        for y in 0..buffer.area.height {
-            for x in 0..buffer.area.width {
-                text.push_str(buffer[(x, y)].symbol());
-            }
-            text.push('\n');
-        }
-        assert!(
-            text.contains("Custom URL"),
-            "launcher pane must show 'Custom URL' affordance when no endpoints registered.\n\
-             Buffer dump:\n{}",
-            text,
-        );
-    }
-
-    /// fix-new-chat regression lock: when the user starts typing a
-    /// Custom URL, the launcher must expose the optional "register with
-    /// name" field. Without this, ad-hoc URLs would always be one-shot
-    /// — the user has no way to persist them to global config.
-    #[test]
-    fn test_dialog_shows_register_name_field_when_custom_url_active() {
-        use crate::tui::viz_viewer::render::draw_launcher_pane;
-        use ratatui::Terminal;
-        use ratatui::backend::TestBackend;
-
-        let (mut app, _tmp) = build_test_app();
-        app.launcher = Some(make_launcher(
-            vec![("native", "in-process loop", true)],
-            vec![("local:qwen3-coder", "")],
-        ));
-        if let Some(l) = app.launcher.as_mut() {
-            l.endpoint_picker = FilterPicker::new(vec![], true)
-                .with_custom_label("Custom URL")
-                .with_hint("No endpoints registered.");
-            l.endpoint_picker.enter_custom();
-            l.endpoint_picker.custom_text = "https://my-endpoint.example.com:8080".to_string();
-            l.active_section = LauncherSection::Endpoint;
-
-            assert!(
-                l.show_endpoint_register(),
-                "with a Custom URL filled in, register field must be visible"
-            );
-        }
-        app.input_mode = InputMode::Launcher;
-
-        let backend = TestBackend::new(140, 40);
-        let mut terminal = Terminal::new(backend).unwrap();
-        let area = Rect {
-            x: 0,
-            y: 0,
-            width: 140,
-            height: 40,
-        };
-        terminal
-            .draw(|frame| draw_launcher_pane(frame, &mut app, area))
-            .unwrap();
-
-        let buffer = terminal.backend().buffer().clone();
-        let mut text = String::new();
-        for y in 0..buffer.area.height {
-            for x in 0..buffer.area.width {
-                text.push_str(buffer[(x, y)].symbol());
-            }
-            text.push('\n');
-        }
-        assert!(
-            text.contains("register this endpoint"),
-            "launcher pane must surface the 'register this endpoint' field when Custom URL is active.\n\
-             Buffer dump:\n{}",
-            text,
-        );
-    }
 }
 
 #[cfg(test)]
@@ -10004,10 +8978,10 @@ mod chat_tab_navigation_tests {
     }
 
     /// fix-paste-events: the user's exact repro flow — paste a custom
-    /// URL into the Endpoint section's custom-text input. This pins the
-    /// "URL appears in the dialog field" half of the validation: the
-    /// launcher's `endpoint_picker.custom_text` must hold the pasted
-    /// URL after `dispatch_event(Event::Paste)`.
+    /// URL into the Add-new Endpoint field. This pins the "URL appears
+    /// in the dialog field" half of the validation: the launcher's
+    /// `add_endpoint` field must hold the pasted URL after
+    /// `dispatch_event(Event::Paste)`.
     #[test]
     fn launcher_paste_reaches_custom_endpoint_text() {
         use crossterm::event::Event;
@@ -10022,12 +8996,16 @@ mod chat_tab_navigation_tests {
         if app.launcher.is_none() {
             return;
         }
-        // Move to Endpoint section + enter custom-URL mode (the state
-        // the user is in when they Cmd-V a URL into the dialog).
+        // Switch into Add-new mode + nex executor + Endpoint field —
+        // the state the user is in when they Cmd-V a URL into the
+        // redesigned dialog (post-2026-04-30).
         {
             let launcher = app.launcher.as_mut().unwrap();
-            launcher.active_section = super::super::state::LauncherSection::Endpoint;
-            launcher.endpoint_picker.enter_custom();
+            launcher.enter_add_new();
+            launcher.add_executor_idx = 2; // nex
+            launcher.active_section = super::super::state::LauncherSection::AddNew(
+                super::super::state::AddNewField::Endpoint,
+            );
         }
 
         let url = "https://lambda01.tail334fe6.ts.net:30000";
@@ -10038,9 +9016,9 @@ mod chat_tab_navigation_tests {
             .as_ref()
             .expect("launcher should still be open after paste");
         assert_eq!(
-            launcher.endpoint_picker.custom_text, url,
-            "Paste while in Endpoint custom-URL mode must populate the \
-             custom_text field (fix-paste-events)."
+            launcher.add_endpoint, url,
+            "Paste while in Add-new Endpoint field must populate \
+             add_endpoint (fix-paste-events)."
         );
     }
 
