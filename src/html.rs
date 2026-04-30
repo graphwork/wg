@@ -1482,6 +1482,7 @@ fn render_index(
          </section>\n\
          </main>\n\
          <aside id=\"side-panel\" class=\"side-panel\" aria-label=\"Task detail\">\n\
+         <div id=\"panel-resize-handle\" class=\"panel-resize-handle\" role=\"separator\" aria-orientation=\"vertical\" aria-label=\"Resize detail panel\" tabindex=\"-1\"></div>\n\
          <button id=\"panel-close\" class=\"panel-close\" type=\"button\" aria-label=\"Close detail panel\">×</button>\n\
          <div id=\"panel-content\"></div>\n\
          </aside>\n\

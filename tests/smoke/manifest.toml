@@ -513,6 +513,15 @@ description = "TUI-parity contract for `wg html` (v2). Pins: (1) default = all t
 timeout_seconds = 60
 
 [[scenario]]
+name = "wg_html_resizable_inspector"
+script = "scenarios/wg_html_resizable_inspector.sh"
+owners = [
+    "wg-html-resizable",
+]
+description = "Regression for wg-html-resizable: the inspector panel is drag-resizable and the chosen size persists. Pins: (1) panel-resize-handle element exists with role=separator. (2) CSS exposes both col-resize (wide layout) and row-resize (narrow layout) cursors so the handle reorients with the panel. (3) panel.js wires pointerdown/pointermove/pointerup so the drag is responsive. (4) The width is persisted to localStorage under wg-html-inspector-width-px and re-applied on reload. (5) The user-chosen size is propagated by setting --panel-width inline; the existing CSS rule width: var(--panel-width) consumes it. (6) panel.js remains vanilla — no fetch, no module imports, no framework — and passes node --check."
+timeout_seconds = 60
+
+[[scenario]]
 name = "wg_html_declutter"
 script = "scenarios/wg_html_declutter.sh"
 owners = [

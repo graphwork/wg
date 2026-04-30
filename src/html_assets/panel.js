@@ -170,6 +170,197 @@
 
     initAgencyToggle();
 
+    // ── Inspector panel resize (drag-to-resize, persisted) ─────────────
+    //
+    // Wide layout: panel is anchored to the right; left edge is a vertical
+    // drag handle that adjusts the panel's width.
+    // Narrow layout (≤900px, panel at the bottom): top edge is a horizontal
+    // drag handle that adjusts the panel's height.
+    //
+    // Sizes are persisted in localStorage under origin-scoped keys, so
+    // different deployed wg html mirrors don't share state.
+    var WIDTH_KEY = 'wg-html-inspector-width-px';
+    var HEIGHT_KEY = 'wg-html-inspector-height-px';
+    var MIN_PANEL_PX = 250;
+    var resizeHandle = document.getElementById('panel-resize-handle');
+
+    function isNarrowLayout() {
+        // Mirror the @media (max-width: 900px) breakpoint in style.css.
+        return window.matchMedia && window.matchMedia('(max-width: 900px)').matches;
+    }
+
+    function maxWidthPx() {
+        // 80% of viewport, rounded down.
+        return Math.floor(window.innerWidth * 0.8);
+    }
+
+    function maxHeightPx() {
+        return Math.floor(window.innerHeight * 0.92);
+    }
+
+    function clamp(value, lo, hi) {
+        if (!Number.isFinite(value)) return null;
+        if (lo > hi) return lo;
+        return Math.min(hi, Math.max(lo, value));
+    }
+
+    function readStored(key) {
+        try {
+            var raw = localStorage.getItem(key);
+            if (!raw) return null;
+            var n = parseInt(raw, 10);
+            return Number.isFinite(n) ? n : null;
+        } catch (_) {
+            return null;
+        }
+    }
+
+    function writeStored(key, px) {
+        try { localStorage.setItem(key, String(Math.round(px))); } catch (_) {}
+    }
+
+    function applyStoredPanelSize() {
+        if (!panel) return;
+        if (isNarrowLayout()) {
+            var h = readStored(HEIGHT_KEY);
+            if (h !== null) {
+                var hClamped = clamp(h, MIN_PANEL_PX, maxHeightPx());
+                if (hClamped !== null) {
+                    panel.style.setProperty('--panel-height', hClamped + 'px');
+                }
+            }
+            // Don't apply width override in narrow layout; the panel is full-width.
+            panel.style.removeProperty('--panel-width');
+        } else {
+            var w = readStored(WIDTH_KEY);
+            if (w !== null) {
+                var wClamped = clamp(w, MIN_PANEL_PX, maxWidthPx());
+                if (wClamped !== null) {
+                    panel.style.setProperty('--panel-width', wClamped + 'px');
+                }
+            }
+            // Don't apply height override in wide layout.
+            panel.style.removeProperty('--panel-height');
+        }
+    }
+
+    applyStoredPanelSize();
+
+    // Re-apply when viewport flips between narrow and wide so the
+    // saved value for the *current* orientation takes effect.
+    if (window.matchMedia) {
+        var orientationMq = window.matchMedia('(max-width: 900px)');
+        var orientationListener = function () { applyStoredPanelSize(); };
+        if (orientationMq.addEventListener) orientationMq.addEventListener('change', orientationListener);
+        else if (orientationMq.addListener) orientationMq.addListener(orientationListener);
+    }
+
+    // Pointer-driven resize. Uses pointermove for live feedback; pointerup
+    // commits the new size to localStorage.
+    if (resizeHandle && panel) {
+        var dragState = null;
+
+        function onPointerMove(ev) {
+            if (!dragState) return;
+            ev.preventDefault();
+            var delta;
+            if (dragState.axis === 'x') {
+                // Panel anchored right; dragging the LEFT edge leftwards
+                // grows the panel (negative dx → larger width).
+                delta = dragState.startX - ev.clientX;
+                var w = clamp(dragState.startSize + delta, MIN_PANEL_PX, maxWidthPx());
+                if (w !== null) {
+                    panel.style.setProperty('--panel-width', w + 'px');
+                    dragState.lastSize = w;
+                }
+            } else {
+                // Panel anchored bottom; dragging the TOP edge upwards
+                // grows the panel (negative dy → larger height).
+                delta = dragState.startY - ev.clientY;
+                var h = clamp(dragState.startSize + delta, MIN_PANEL_PX, maxHeightPx());
+                if (h !== null) {
+                    panel.style.setProperty('--panel-height', h + 'px');
+                    dragState.lastSize = h;
+                }
+            }
+        }
+
+        function onPointerUp(ev) {
+            if (!dragState) return;
+            try { resizeHandle.releasePointerCapture(dragState.pointerId); } catch (_) {}
+            window.removeEventListener('pointermove', onPointerMove);
+            window.removeEventListener('pointerup', onPointerUp);
+            window.removeEventListener('pointercancel', onPointerUp);
+            resizeHandle.classList.remove('is-dragging');
+            document.body.classList.remove('is-resizing-panel', 'is-resizing-col', 'is-resizing-row');
+            if (dragState.lastSize !== null && dragState.lastSize !== undefined) {
+                writeStored(dragState.axis === 'x' ? WIDTH_KEY : HEIGHT_KEY, dragState.lastSize);
+            }
+            dragState = null;
+        }
+
+        resizeHandle.addEventListener('pointerdown', function (ev) {
+            // Left button only.
+            if (ev.button !== undefined && ev.button !== 0) return;
+            ev.preventDefault();
+            var narrow = isNarrowLayout();
+            var rect = panel.getBoundingClientRect();
+            dragState = {
+                pointerId: ev.pointerId,
+                axis: narrow ? 'y' : 'x',
+                startX: ev.clientX,
+                startY: ev.clientY,
+                startSize: narrow ? rect.height : rect.width,
+                lastSize: null
+            };
+            try { resizeHandle.setPointerCapture(ev.pointerId); } catch (_) {}
+            resizeHandle.classList.add('is-dragging');
+            document.body.classList.add('is-resizing-panel');
+            document.body.classList.add(narrow ? 'is-resizing-row' : 'is-resizing-col');
+            window.addEventListener('pointermove', onPointerMove);
+            window.addEventListener('pointerup', onPointerUp);
+            window.addEventListener('pointercancel', onPointerUp);
+        });
+
+        // Stop the resize handle from triggering the document's "click
+        // outside the panel = close" listener by killing click bubbling.
+        resizeHandle.addEventListener('click', function (ev) {
+            ev.stopPropagation();
+        });
+
+        // Double-click resets to the CSS default for the current orientation.
+        resizeHandle.addEventListener('dblclick', function (ev) {
+            ev.stopPropagation();
+            ev.preventDefault();
+            if (isNarrowLayout()) {
+                panel.style.removeProperty('--panel-height');
+                try { localStorage.removeItem(HEIGHT_KEY); } catch (_) {}
+            } else {
+                panel.style.removeProperty('--panel-width');
+                try { localStorage.removeItem(WIDTH_KEY); } catch (_) {}
+            }
+        });
+    }
+
+    // Re-clamp the saved size to the current viewport on resize, so a
+    // stored value that exceeds new max bounds gets pinned to the cap.
+    window.addEventListener('resize', function () {
+        if (!panel) return;
+        if (isNarrowLayout()) {
+            var h = readStored(HEIGHT_KEY);
+            if (h !== null) {
+                var hClamped = clamp(h, MIN_PANEL_PX, maxHeightPx());
+                if (hClamped !== null) panel.style.setProperty('--panel-height', hClamped + 'px');
+            }
+        } else {
+            var w = readStored(WIDTH_KEY);
+            if (w !== null) {
+                var wClamped = clamp(w, MIN_PANEL_PX, maxWidthPx());
+                if (wClamped !== null) panel.style.setProperty('--panel-width', wClamped + 'px');
+            }
+        }
+    });
+
     // ── Edge / node highlighting ────────────────────────────────────────
 
     /**

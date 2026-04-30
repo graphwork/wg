@@ -721,6 +721,72 @@ fn v2_index_renders_static_when_viz_subprocess_unavailable() {
 }
 
 // ────────────────────────────────────────────────────────────────────────────
+// wg-html-resizable: drag-to-resize the inspector panel + persist via localStorage
+// ────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn v2_inspector_panel_has_resize_handle() {
+    // The inspector panel must include a drag handle element so the user
+    // can click-and-drag to adjust the panel's width (or height on narrow
+    // viewports). Per spec wg-html-resizable.
+    let t = make_task("standalone", "Standalone", "public");
+    let graph = build_graph(vec![t]);
+    let dir = TempDir::new().unwrap();
+    html::render_site(
+        &graph,
+        dir.path(),
+        dir.path(),
+        html::RenderOptions { show_all: true, ..Default::default() },
+    ).unwrap();
+
+    let index = fs::read_to_string(dir.path().join("index.html")).unwrap();
+    assert!(
+        index.contains(r#"id="panel-resize-handle""#),
+        "resize handle element missing from inspector panel"
+    );
+    // role=separator + aria-orientation make the handle accessible to AT.
+    assert!(
+        index.contains(r#"role="separator""#),
+        "resize handle missing role=separator"
+    );
+
+    // The CSS bundle must include the cursor + dragging styles for the handle.
+    let css = fs::read_to_string(dir.path().join("style.css")).unwrap();
+    assert!(
+        css.contains(".panel-resize-handle"),
+        "style.css missing .panel-resize-handle rule"
+    );
+    assert!(
+        css.contains("col-resize"),
+        "style.css missing col-resize cursor for wide-layout drag"
+    );
+    assert!(
+        css.contains("row-resize"),
+        "style.css missing row-resize cursor for narrow-layout drag"
+    );
+
+    // The JS bundle must wire up pointer events and persist to localStorage
+    // under origin-scoped keys so reload preserves the user's chosen size.
+    let js = fs::read_to_string(dir.path().join("panel.js")).unwrap();
+    assert!(
+        js.contains("'wg-html-inspector-width-px'"),
+        "panel.js missing localStorage key for inspector width"
+    );
+    assert!(
+        js.contains("pointerdown"),
+        "panel.js missing pointerdown handler for resize"
+    );
+    assert!(
+        js.contains("pointermove"),
+        "panel.js missing pointermove handler for live drag feedback"
+    );
+    assert!(
+        js.contains("--panel-width") && js.contains("setProperty"),
+        "panel.js must set --panel-width inline so resize takes effect"
+    );
+}
+
+// ────────────────────────────────────────────────────────────────────────────
 // wg-html-chat: --chat flag with visibility-respecting transcript inclusion
 // ────────────────────────────────────────────────────────────────────────────
 

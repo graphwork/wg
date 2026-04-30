@@ -51,6 +51,7 @@
     --selection-bg: rgba(255, 255, 255, 0.06);
     --edge-default: #4a4a4a;
     --panel-width: 460px;
+    --panel-height: 60vh;
 }
 
 /* Auto-follow OS light mode unless user has explicitly chosen */
@@ -523,6 +524,40 @@ body[data-selected] .viz-pre .edge.is-cycle {
 .side-panel.is-open {
     transform: translateX(0);
 }
+
+/* ── Resize handle ──────────────────────────────────────────────────────
+   The handle is a thin transparent strip overlapping the panel's edge
+   (left edge in wide mode, top edge in narrow mode). It catches the
+   pointer slightly outside the panel's visible border so it's easy to
+   grab. A subtle hover/drag highlight gives feedback without dominating.
+   --------------------------------------------------------------------- */
+.panel-resize-handle {
+    position: absolute;
+    top: 0;
+    left: -3px;
+    width: 6px;
+    height: 100%;
+    cursor: col-resize;
+    background: transparent;
+    z-index: 101;
+    touch-action: none;
+    transition: background-color 0.15s;
+}
+.panel-resize-handle:hover,
+.panel-resize-handle.is-dragging {
+    background-color: var(--link);
+    opacity: 0.4;
+}
+
+/* While dragging, suppress text selection + force the resize cursor
+   even when the pointer briefly leaves the handle's hit-area. */
+body.is-resizing-panel,
+body.is-resizing-panel * {
+    user-select: none !important;
+    -webkit-user-select: none !important;
+}
+body.is-resizing-panel.is-resizing-col { cursor: col-resize !important; }
+body.is-resizing-panel.is-resizing-row { cursor: row-resize !important; }
 
 .panel-close {
     position: absolute;
@@ -1010,7 +1045,8 @@ body.task-page {
         bottom: 0;
         width: 100%;
         max-width: 100%;
-        max-height: 70vh;
+        height: var(--panel-height);
+        max-height: 92vh;
         border-left: 0;
         border-top: 1px solid var(--border-strong);
         transform: translateY(100%);
@@ -1018,5 +1054,12 @@ body.task-page {
     }
     .side-panel.is-open {
         transform: translateY(0);
+    }
+    .panel-resize-handle {
+        top: -3px;
+        left: 0;
+        width: 100%;
+        height: 6px;
+        cursor: row-resize;
     }
 }
