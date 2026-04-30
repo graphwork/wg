@@ -833,6 +833,16 @@ impl PtyPane {
         }
     }
 
+    /// Non-blocking: if the child has exited, return a human-readable
+    /// description of the exit status ("exit code 1"). Returns `None`
+    /// when the child is still running or the status is unavailable.
+    pub fn try_exit_status_desc(&mut self) -> Option<String> {
+        match self.child.try_wait() {
+            Ok(Some(status)) => Some(format!("exit code {}", status.exit_code())),
+            _ => None,
+        }
+    }
+
     /// SIGKILL the embedded child and wait for teardown. Safe to call
     /// multiple times.
     pub fn kill(&mut self) {

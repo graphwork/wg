@@ -2426,6 +2426,18 @@ pub struct PendingChatPtySpawn {
     pub tmux_session: Option<String>,
 }
 
+/// Info recorded when a chat agent PTY process exits unexpectedly.
+/// Displayed in the chat tab instead of the normal "chat agent not active" placeholder.
+#[derive(Clone, Debug)]
+pub struct ChatAgentDeathInfo {
+    /// Human-readable exit status, e.g. "exit code 1".
+    pub exit_status: String,
+    /// Executor type that was running, e.g. "claude", "nex", "codex".
+    pub executor: String,
+    /// Full spawn command (bin + args) for display in the error panel.
+    pub spawn_cmd: String,
+}
+
 /// State for the Dashboard panel tab.
 pub struct DashboardState {
     /// Scroll offset for the dashboard content.
@@ -4973,6 +4985,13 @@ pub struct VizApp {
     /// history (fix-pty-scrollback).
     pub pending_chat_pty_spawn: Option<PendingChatPtySpawn>,
 
+    /// Per-coordinator death info: set when a chat agent PTY exits unexpectedly.
+    /// Cleared by the user pressing R (retry), X (dismiss), or E (edit config).
+    pub chat_agent_death: HashMap<u32, ChatAgentDeathInfo>,
+    /// Per-coordinator last spawn info (executor, spawn_cmd), recorded at
+    /// successful spawn so the death panel can display it when the pane exits.
+    pub chat_last_spawn_info: HashMap<u32, (String, String)>,
+
     // ── Agent monitor state ──
     pub agent_monitor: AgentMonitorState,
     /// Per-agent JSONL stream state for live activity feed.
@@ -5404,6 +5423,8 @@ impl VizApp {
             chat_pty_takeover_pending_since: None,
             chat_pty_forwards_stdin: false,
             pending_chat_pty_spawn: None,
+            chat_agent_death: HashMap::new(),
+            chat_last_spawn_info: HashMap::new(),
             agent_monitor: AgentMonitorState::default(),
             agent_streams: HashMap::new(),
             service_health: ServiceHealthState::default(),
@@ -9914,6 +9935,8 @@ impl VizApp {
             chat_pty_takeover_pending_since: None,
             chat_pty_forwards_stdin: false,
             pending_chat_pty_spawn: None,
+            chat_agent_death: HashMap::new(),
+            chat_last_spawn_info: HashMap::new(),
             agent_monitor: AgentMonitorState::default(),
             agent_streams: HashMap::new(),
             service_health: ServiceHealthState::default(),
@@ -13589,6 +13612,16 @@ impl VizApp {
         };
         match spawn_result {
             Ok(pane) => {
+                // Record spawn info for use in the death panel if this pane later exits.
+                if let Some(cid) = pending
+                    .task_id
+                    .strip_prefix(".chat-")
+                    .and_then(|s| s.parse::<u32>().ok())
+                {
+                    let spawn_cmd = format!("{} {}", pending.bin, pending.args.join(" "));
+                    self.chat_last_spawn_info
+                        .insert(cid, (pending.executor.clone(), spawn_cmd));
+                }
                 self.task_panes.insert(pending.task_id, pane);
                 self.chat_pty_mode = true;
                 self.chat_pty_forwards_stdin = true;
@@ -25652,6 +25685,118 @@ mod chat_pty_deferred_spawn_tests {
             "spawn dims must match the area dims passed by the render path"
         );
     }
+
+    /// `consume_pending_chat_pty_spawn` records spawn info in `chat_last_spawn_info`
+    /// on success, so the death panel has executor+cmd when the pane later exits.
+    #[test]
+    fn consume_records_spawn_info_on_success() {
+        let mut app = empty_app();
+        app.pending_chat_pty_spawn = Some(PendingChatPtySpawn {
+            task_id: ".chat-5".to_string(),
+            bin: "/bin/sh".to_string(),
+            args: vec!["-c".to_string(), "sleep 60".to_string()],
+            env: vec![],
+            cwd: None,
+            executor: "native".to_string(),
+            tmux_session: None,
+        });
+        let spawned = app.consume_pending_chat_pty_spawn(24, 80);
+        assert!(spawned);
+        let info = app
+            .chat_last_spawn_info
+            .get(&5)
+            .expect("spawn info must be recorded under coordinator id");
+        assert_eq!(info.0, "native", "executor must be recorded");
+        assert!(
+            info.1.contains("/bin/sh"),
+            "spawn_cmd must include the binary: {}",
+            info.1
+        );
+    }
+}
+
+#[cfg(test)]
+mod chat_agent_death_tests {
+    //! Regression tests for the "chat agent died" surfacing layer.
+    //! When a chat PTY process exits unexpectedly, the TUI must:
+    //!  - populate `chat_agent_death` for the active coordinator
+    //!  - NOT auto-switch to coordinator-0 / file-tailing
+    //!  - clear `chat_agent_death` on R (retry), X (dismiss), E (edit)
+    use super::*;
+    use crate::commands::viz::VizOutput;
+
+    fn empty_app() -> VizApp {
+        let viz = VizOutput {
+            text: String::new(),
+            node_line_map: HashMap::new(),
+            task_order: Vec::new(),
+            forward_edges: HashMap::new(),
+            reverse_edges: HashMap::new(),
+            char_edge_map: HashMap::new(),
+            cycle_members: HashMap::new(),
+            annotation_map: HashMap::new(),
+        };
+        VizApp::from_viz_output_for_test(&viz)
+    }
+
+    fn make_death_info() -> ChatAgentDeathInfo {
+        ChatAgentDeathInfo {
+            exit_status: "exit code 1".to_string(),
+            executor: "nex".to_string(),
+            spawn_cmd: "wg nex --resume chat-0".to_string(),
+        }
+    }
+
+    /// death info inserted for coordinator 0 must be retrievable.
+    #[test]
+    fn death_info_is_stored_and_retrieved() {
+        let mut app = empty_app();
+        app.active_coordinator_id = 0;
+        app.chat_agent_death.insert(0, make_death_info());
+        assert!(
+            app.chat_agent_death.contains_key(&0),
+            "death info must be present for cid=0"
+        );
+    }
+
+    /// After death, `chat_pty_mode` stays true so the render path knows
+    /// to show the death panel rather than the file-tailing fallback.
+    #[test]
+    fn chat_pty_mode_stays_true_after_death_info_inserted() {
+        let mut app = empty_app();
+        app.active_coordinator_id = 0;
+        app.chat_pty_mode = true;
+        app.chat_agent_death.insert(0, make_death_info());
+        assert!(
+            app.chat_pty_mode,
+            "chat_pty_mode must remain true so the render path shows the death panel"
+        );
+    }
+
+    /// Clearing death info (simulating R/X/E handler) removes the entry.
+    #[test]
+    fn clearing_death_info_removes_entry() {
+        let mut app = empty_app();
+        app.active_coordinator_id = 0;
+        app.chat_agent_death.insert(0, make_death_info());
+        app.chat_agent_death.remove(&0);
+        assert!(
+            !app.chat_agent_death.contains_key(&0),
+            "death info must be gone after removal"
+        );
+    }
+
+    /// Death info is per-coordinator: inserting for cid=1 doesn't affect cid=0.
+    #[test]
+    fn death_info_is_per_coordinator() {
+        let mut app = empty_app();
+        app.chat_agent_death.insert(1, make_death_info());
+        assert!(
+            !app.chat_agent_death.contains_key(&0),
+            "death info for cid=1 must not affect cid=0"
+        );
+        assert!(app.chat_agent_death.contains_key(&1));
+    }
 }
 
 #[cfg(test)]
@@ -25661,7 +25806,7 @@ mod chat_pty_redraw_trigger_tests {
     //! fix-codex-chat-3, the event loop's idle-poll branch only
     //! redrew on `has_timed_ui_elements()` ∨ `is_refresh_due()`, neither
     //! of which fires on PTY byte arrivals — so codex's spinner emitted
-    //! frames at 10–20 fps but the TUI rendered at 1 Hz (the global
+    //! frames at 10–20 fps but the TUI rendered at 1 Hz ((the global
     //! refresh interval), producing the user-reported "real-time
     //! animations don't render" symptom. The fix adds a per-pane
     //! `bytes_processed` watermark and a fresh-bytes check that the

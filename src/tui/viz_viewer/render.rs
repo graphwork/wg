@@ -3445,16 +3445,40 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     // the Ctrl+T branch in event.rs.
     if app.chat_pty_mode {
         let task_id = workgraph::chat_id::format_chat_task_id(app.active_coordinator_id);
-        // Dead-handler cleanup: if the embedded process exited, drop
-        // the pane so the next toggle-on respawns.
-        let alive = app
-            .task_panes
-            .get_mut(&task_id)
-            .map(|p| p.is_alive())
-            .unwrap_or(false);
-        if !alive {
+        let cid = app.active_coordinator_id;
+
+        // Dead-handler detection: if the embedded process exited, capture
+        // its exit status into `chat_agent_death` before removing the pane.
+        let pane_exists = app.task_panes.contains_key(&task_id);
+        let alive = pane_exists
+            && app
+                .task_panes
+                .get_mut(&task_id)
+                .map(|p| p.is_alive())
+                .unwrap_or(false);
+        if pane_exists && !alive {
+            // Capture exit status before drop.
+            let exit_status = app
+                .task_panes
+                .get_mut(&task_id)
+                .and_then(|p| p.try_exit_status_desc())
+                .unwrap_or_else(|| "unknown exit status".to_string());
+            let (executor, spawn_cmd) = app
+                .chat_last_spawn_info
+                .get(&cid)
+                .cloned()
+                .unwrap_or_else(|| ("unknown".to_string(), "(unknown command)".to_string()));
+            app.chat_agent_death.insert(
+                cid,
+                super::state::ChatAgentDeathInfo {
+                    exit_status,
+                    executor,
+                    spawn_cmd,
+                },
+            );
             app.task_panes.remove(&task_id);
         }
+
         // Lazy spawn at the actual msg_area dimensions. If
         // `maybe_auto_enable_chat_pty` deferred the spawn (because
         // it was called before any frame had drawn — area unknown),
@@ -3462,17 +3486,27 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
         // at the right size from the start avoids the SIGWINCH reflow
         // that would otherwise echo wrap-mismatched content into vt100
         // scrollback (fix-pty-scrollback).
-        if !app.task_panes.contains_key(&task_id) {
+        // Skip auto-spawn when the agent just died — user must retry explicitly.
+        if !app.task_panes.contains_key(&task_id)
+            && !app.chat_agent_death.contains_key(&cid)
+        {
             app.consume_pending_chat_pty_spawn(msg_area.height, msg_area.width);
         }
+
         if let Some(pane) = app.task_panes.get_mut(&task_id) {
             let _ = pane.resize(msg_area.height, msg_area.width);
             let focused = app.focused_panel == super::state::FocusedPanel::RightPanel;
             pane.render_with_focus(frame, msg_area, focused);
-        } else {
-            // Pane gone (exited or never spawned); fall through to
-            // the normal renderer so the user still sees chat content.
+        } else if let Some(death_info) = app.chat_agent_death.get(&cid).cloned() {
+            // Agent died — show error panel instead of falling back to the
+            // normal file-tailing renderer. The user sees what happened and
+            // can press R to retry, E to edit config, or X to dismiss.
+            draw_chat_agent_death_panel(frame, msg_area, &death_info);
+            draw_chat_input(frame, app, input_area);
+            return;
         }
+        // else: pane never spawned — fall through to normal renderer
+
         // Scroll mode banner: overlay a one-row hint at the top of msg_area.
         if matches!(&app.input_mode, InputMode::ScrollMode { task_id: tid } if *tid == task_id)
             && msg_area.height > 1
@@ -4203,6 +4237,61 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
 
     // Input area.
     draw_chat_input(frame, app, input_area);
+}
+
+/// Render the "chat agent died" error panel inside `area`.
+/// Shown instead of the normal chat content when the PTY process has exited.
+fn draw_chat_agent_death_panel(
+    frame: &mut Frame,
+    area: Rect,
+    info: &super::state::ChatAgentDeathInfo,
+) {
+    use ratatui::text::Text;
+    let mut lines: Vec<Line> = Vec::new();
+    lines.push(Line::from(Span::styled(
+        " Chat agent died ",
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::Red)
+            .add_modifier(Modifier::BOLD),
+    )));
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled("  Exit status: ", Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            info.exit_status.clone(),
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+        ),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled("  Executor:    ", Style::default().fg(Color::DarkGray)),
+        Span::styled(info.executor.clone(), Style::default().fg(Color::White)),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled("  Command:     ", Style::default().fg(Color::DarkGray)),
+        Span::styled(info.spawn_cmd.clone(), Style::default().fg(Color::Yellow)),
+    ]));
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "  Stderr not captured for this handler — see daemon.log for details.",
+        Style::default().fg(Color::DarkGray),
+    )));
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "  Press R to retry with same config",
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
+    )));
+    lines.push(Line::from(Span::styled(
+        "  Press E to edit config in launcher dialog",
+        Style::default().fg(Color::Cyan),
+    )));
+    lines.push(Line::from(Span::styled(
+        "  Press X to dismiss (show chat history)",
+        Style::default().fg(Color::Cyan),
+    )));
+    frame.render_widget(Paragraph::new(Text::from(lines)), area);
 }
 
 /// Draw the chat search bar showing the current query and match count.

@@ -1896,6 +1896,34 @@ fn handle_normal_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
     if try_chat_tab_navigation(app, code, modifiers) {
         return;
     }
+    // Death-panel recovery: when the chat agent died and the death panel is
+    // showing, intercept R/E/X before they reach any other handler so the
+    // user can act on the panel regardless of which panel has focus.
+    if app.right_panel_tab == RightPanelTab::Chat
+        && app
+            .chat_agent_death
+            .contains_key(&app.active_coordinator_id)
+        && modifiers.is_empty()
+    {
+        match code {
+            KeyCode::Char('r') | KeyCode::Char('R') => {
+                app.chat_agent_death.remove(&app.active_coordinator_id);
+                app.maybe_auto_enable_chat_pty();
+                return;
+            }
+            KeyCode::Char('x') | KeyCode::Char('X') => {
+                app.chat_agent_death.remove(&app.active_coordinator_id);
+                app.chat_pty_mode = false;
+                return;
+            }
+            KeyCode::Char('e') | KeyCode::Char('E') => {
+                app.chat_agent_death.remove(&app.active_coordinator_id);
+                app.open_launcher();
+                return;
+            }
+            _ => {}
+        }
+    }
     match app.focused_panel {
         FocusedPanel::Graph => handle_graph_key(app, code, modifiers),
         FocusedPanel::RightPanel => handle_right_panel_key(app, code, modifiers),
