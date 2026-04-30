@@ -328,6 +328,17 @@ section { margin-bottom: 2rem; }
    Comes after status rules so it wins the cascade for chat task nodes in the viz. */
 .viz-pre .task-link.chat-agent { color: var(--chat-task); }
 
+/* Status-decorator parens — `(in-progress · →44k ←6.6k …)`. Rendered with
+   the foreground colour so the decorator stays readable but doesn't share
+   the task id's status hue, which would dominate visually. The nested
+   selector beats the [data-status] colour (same specificity, declared later
+   in source order). */
+.viz-pre .task-link .decorator { color: var(--fg); }
+
+/* Trailing relative time suffix (` 5m`, ` 1d`, etc.) — muted so the
+   timestamp metadata fades behind the active status info. */
+.viz-pre .time-suffix { color: var(--fg-muted); }
+
 /* ── Selection state: edge + node highlighting ──────────────────────────── */
 
 /* When a task is selected, body gets data-selected="<id>".

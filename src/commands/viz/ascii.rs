@@ -227,8 +227,15 @@ pub(crate) fn generate_ascii(
     // Task lookup
     let task_map: HashMap<&str, &Task> = tasks.iter().map(|t| (t.id.as_str(), *t)).collect();
 
-    // Color helpers
-    let use_color = std::io::stdout().is_terminal();
+    // Color helpers — honour the standard CLICOLOR_FORCE / NO_COLOR
+    // overrides so callers can pipe to a file or test the ANSI output.
+    let use_color = if std::env::var_os("NO_COLOR").is_some() {
+        false
+    } else if std::env::var_os("CLICOLOR_FORCE").is_some_and(|v| v != "0") {
+        true
+    } else {
+        std::io::stdout().is_terminal()
+    };
 
     let status_color = |status: &Status| -> &str {
         if !use_color {
@@ -439,12 +446,24 @@ pub(crate) fn generate_ascii(
                 }
             })
             .unwrap_or_default();
+        // Parens decorator (status + tokens + priority) renders as white so
+        // it stands out from the timestamp suffix and reads as foreground info,
+        // while the trailing time suffix stays gray (already coloured below by
+        // `relative_ts`). Status-coloured task ids remain the most prominent
+        // element on the line.
+        let (paren_color, paren_reset) = if use_color {
+            ("\x1b[37m", "\x1b[0m")
+        } else {
+            ("", "")
+        };
         format!(
-            "{}{}{}  ({}){}{}{}{}{}",
+            "{}{}{}  {}({}){}{}{}{}{}{}",
             color,
             id,
             reset,
+            paren_color,
             status_with_tokens,
+            paren_reset,
             delay_hint,
             relative_ts,
             msg_indicator,
@@ -1766,6 +1785,96 @@ mod tests {
 
         assert!(result.text.contains("(in-progress)"));
         assert!(result.text.contains("(blocked)"));
+    }
+
+    /// Serialise tests that mutate process-global colour env vars.
+    static COLOR_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn test_generate_ascii_paren_decorator_renders_white() {
+        // With colour forced on, the parenthetical decorator must be wrapped
+        // in `\x1b[37m`/`\x1b[0m` (white) so it reads as foreground info,
+        // distinct from the status-coloured task id.
+        let _guard = COLOR_ENV_LOCK.lock().unwrap();
+        // SAFETY: serialised by COLOR_ENV_LOCK; no other thread reads env here.
+        unsafe {
+            std::env::remove_var("NO_COLOR");
+            std::env::set_var("CLICOLOR_FORCE", "1");
+        }
+
+        let mut graph = WorkGraph::new();
+        let mut t = make_task("solo-task", "Solo");
+        t.status = Status::Done;
+        graph.add_node(Node::Task(t));
+        let tasks: Vec<_> = graph.tasks().collect();
+        let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
+        let result = generate_ascii(
+            &graph,
+            &tasks,
+            &task_ids,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            LayoutMode::default(),
+            &HashSet::new(),
+            "gray",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+
+        // SAFETY: serialised by COLOR_ENV_LOCK.
+        unsafe {
+            std::env::remove_var("CLICOLOR_FORCE");
+        }
+
+        // The line should contain the white-wrapped parens block. The exact
+        // surrounding format is `…id\x1b[0m  \x1b[37m(done)\x1b[0m…`.
+        assert!(
+            result.text.contains("\x1b[37m(done)\x1b[0m"),
+            "parens should be wrapped in white ANSI codes; got: {:?}",
+            result.text
+        );
+    }
+
+    #[test]
+    fn test_generate_ascii_no_color_strips_ansi() {
+        // With NO_COLOR set, no ANSI escapes should appear in the output.
+        let _guard = COLOR_ENV_LOCK.lock().unwrap();
+        // SAFETY: serialised by COLOR_ENV_LOCK.
+        unsafe {
+            std::env::remove_var("CLICOLOR_FORCE");
+            std::env::set_var("NO_COLOR", "1");
+        }
+
+        let mut graph = WorkGraph::new();
+        let t = make_task("solo-task", "Solo");
+        graph.add_node(Node::Task(t));
+        let tasks: Vec<_> = graph.tasks().collect();
+        let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
+        let result = generate_ascii(
+            &graph,
+            &tasks,
+            &task_ids,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            LayoutMode::default(),
+            &HashSet::new(),
+            "gray",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+
+        // SAFETY: serialised by COLOR_ENV_LOCK.
+        unsafe {
+            std::env::remove_var("NO_COLOR");
+        }
+
+        assert!(
+            !result.text.contains('\x1b'),
+            "NO_COLOR should suppress ANSI escapes; got: {:?}",
+            result.text
+        );
     }
 
     #[test]

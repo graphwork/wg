@@ -631,7 +631,13 @@ fn render_viz_html(
         // opens the same task as clicking the id.
         let line_chars: Vec<char> = line.chars().collect();
         let line_str: String = line_chars.iter().collect();
-        let mut task_ranges: Vec<(usize, usize, &str, Status)> = Vec::new();
+        // (id_start, decorator_start, end, id, status). decorator_start == end
+        // means no `(status · ...)` decorator follows the id.
+        let mut task_ranges: Vec<(usize, usize, usize, &str, Status)> = Vec::new();
+        // Time-suffix ranges (e.g. " 5m", " 1d") that follow the parenthetical.
+        // Rendered with the muted-foreground colour to demote them below the
+        // active info inside the parens.
+        let mut time_ranges: Vec<(usize, usize)> = Vec::new();
 
         // Use byte-index find, then convert to char index.
         for &id in &task_id_strs {
@@ -657,35 +663,45 @@ fn render_viz_html(
                         .unwrap_or(true);
                 if prev_ok && next_ok {
                     let char_start = line[..byte_pos].chars().count();
-                    let mut char_end = char_start + id.chars().count();
+                    let id_end = char_start + id.chars().count();
                     // Extend the range across an immediately-following
                     // status decorator like "  (in-progress · ...)" so the
-                    // whole label is clickable.
-                    char_end = extend_through_status_decorator(&line_chars, char_end);
+                    // whole label is clickable. The decorator_start marks
+                    // where the leading spaces+`(` begin so render_line can
+                    // colour the decorator white separately from the
+                    // status-coloured id.
+                    let char_end = extend_through_status_decorator(&line_chars, id_end);
+                    let decorator_start = if char_end > id_end { id_end } else { id_end };
                     let st = task_status.get(id).copied().unwrap_or(Status::Open);
-                    task_ranges.push((char_start, char_end, id, st));
+                    task_ranges.push((char_start, decorator_start, char_end, id, st));
+                    if let Some(time) = find_time_suffix_after(&line_chars, char_end) {
+                        time_ranges.push(time);
+                    }
                 }
                 byte_search_start = byte_pos + id.len();
             }
         }
 
         // Resolve overlaps: prefer earlier start, longer end. Sort and dedupe.
-        task_ranges.sort_by(|a, b| (a.0, std::cmp::Reverse(a.1)).cmp(&(b.0, std::cmp::Reverse(b.1))));
-        let mut nonoverlapping: Vec<(usize, usize, &str, Status)> = Vec::new();
+        task_ranges.sort_by(|a, b| (a.0, std::cmp::Reverse(a.2)).cmp(&(b.0, std::cmp::Reverse(b.2))));
+        let mut nonoverlapping: Vec<(usize, usize, usize, &str, Status)> = Vec::new();
         for r in task_ranges {
             if let Some(last) = nonoverlapping.last() {
-                if r.0 < last.1 {
+                if r.0 < last.2 {
                     continue;
                 }
             }
             nonoverlapping.push(r);
         }
+        time_ranges.sort_by_key(|t| t.0);
+        time_ranges.dedup();
 
         render_line(
             &mut html,
             line_idx,
             &line_chars,
             &nonoverlapping,
+            &time_ranges,
             &edges_by_pos,
             &line_str,
         );
@@ -702,16 +718,18 @@ fn render_line(
     out: &mut String,
     line_idx: usize,
     line_chars: &[char],
-    task_ranges: &[(usize, usize, &str, Status)],
+    task_ranges: &[(usize, usize, usize, &str, Status)],
+    time_ranges: &[(usize, usize)],
     edges_by_pos: &HashMap<(usize, usize), Vec<(String, String)>>,
     _line_str: &str,
 ) {
     let mut col = 0usize;
     let mut range_iter = task_ranges.iter().peekable();
+    let mut time_iter = time_ranges.iter().peekable();
 
     while col < line_chars.len() {
         // Are we at the start of a task-link range?
-        if let Some(&(start, end, id, status)) = range_iter.peek() {
+        if let Some(&(start, decorator_start, end, id, status)) = range_iter.peek() {
             if col == *start {
                 let s_class = status_class(*status);
                 let agency_cls = if is_agency_task(id) { " is-agency" } else { "" };
@@ -724,17 +742,41 @@ fn render_line(
                 out.push_str("\" data-status=\"");
                 out.push_str(s_class);
                 out.push_str("\">");
-                // Emit characters within the range (each cell may also be an
-                // edge cell — e.g., a connector inside a label is rare but
-                // possible — however, we prefer the task-link semantics here
-                // so the whole label clicks as one task).
+                // Id portion — coloured by status via [data-status].
                 let span_end = (*end).min(line_chars.len());
+                let decor_start = (*decorator_start).min(span_end);
+                for c in &line_chars[col..decor_start] {
+                    out.push_str(&escape_html(&c.to_string()));
+                }
+                // Decorator portion — clickable but rendered with the
+                // foreground colour so the parens read as active info instead
+                // of inheriting the status hue (which dominates and inverts
+                // the visual hierarchy with the gray time suffix).
+                if decor_start < span_end {
+                    out.push_str("<span class=\"decorator\">");
+                    for c in &line_chars[decor_start..span_end] {
+                        out.push_str(&escape_html(&c.to_string()));
+                    }
+                    out.push_str("</span>");
+                }
+                out.push_str("</span>");
+                col = span_end;
+                range_iter.next();
+                continue;
+            }
+        }
+
+        // Are we at the start of a time-suffix range?
+        if let Some(&&(t_start, t_end)) = time_iter.peek() {
+            if col == t_start {
+                let span_end = t_end.min(line_chars.len());
+                out.push_str("<span class=\"time-suffix\">");
                 for c in &line_chars[col..span_end] {
                     out.push_str(&escape_html(&c.to_string()));
                 }
                 out.push_str("</span>");
                 col = span_end;
-                range_iter.next();
+                time_iter.next();
                 continue;
             }
         }
@@ -774,6 +816,57 @@ fn render_line(
 /// True if `c` is part of a task identifier.
 fn is_id_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.'
+}
+
+/// Locate the relative-time suffix (e.g. ` 5m`, ` 1d`, ` 2mo`) that follows
+/// the parenthetical decorator. Skips an optional intervening delay hint
+/// (` ⏳<duration>`). Returns `(start_col, end_col)` covering the leading
+/// space + digits + unit so the whole token can be coloured as one piece.
+fn find_time_suffix_after(line_chars: &[char], after_paren_col: usize) -> Option<(usize, usize)> {
+    let mut i = after_paren_col;
+
+    // Skip optional `⏳<duration>` delay hint (with leading space).
+    let mut j = i;
+    while j < line_chars.len() && line_chars[j] == ' ' {
+        j += 1;
+    }
+    if j < line_chars.len() && line_chars[j] == '⏳' {
+        j += 1;
+        while j < line_chars.len() && line_chars[j] != ' ' {
+            j += 1;
+        }
+        i = j;
+    }
+
+    // Match `\s+\d+(unit)` where unit ∈ {mo, s, m, h, d, w, y}.
+    let token_start = i;
+    let mut k = i;
+    while k < line_chars.len() && line_chars[k] == ' ' {
+        k += 1;
+    }
+    if k == token_start {
+        return None;
+    }
+    let digits_start = k;
+    while k < line_chars.len() && line_chars[k].is_ascii_digit() {
+        k += 1;
+    }
+    if k == digits_start {
+        return None;
+    }
+    // `mo` must be matched before `m` so the longer unit wins.
+    let unit_chars: &[&[char]] = &[&['m', 'o'], &['s'], &['m'], &['h'], &['d'], &['w'], &['y']];
+    for unit in unit_chars {
+        if k + unit.len() <= line_chars.len() && line_chars[k..k + unit.len()] == **unit {
+            let after = k + unit.len();
+            // Boundary: next char must not be a letter (so `1d` matches but
+            // `done` doesn't, and `5mo` isn't truncated to `5m`).
+            if after >= line_chars.len() || !line_chars[after].is_ascii_alphabetic() {
+                return Some((token_start, after));
+            }
+        }
+    }
+    None
 }
 
 /// If position `start_col` lies right after a task id, see whether the next
@@ -1913,11 +2006,11 @@ mod tests {
     fn chat_task_span_gets_chat_agent_class() {
         // render_line must emit class="task-link chat-agent" for .chat-N ids
         let mut out = String::new();
-        let ranges: Vec<(usize, usize, &str, Status)> =
-            vec![(0, 6, ".chat-1", Status::Open)];
+        let ranges: Vec<(usize, usize, usize, &str, Status)> =
+            vec![(0, 7, 7, ".chat-1", Status::Open)];
         let line_chars: Vec<char> = ".chat-1".chars().collect();
         let edges: HashMap<(usize, usize), Vec<(String, String)>> = HashMap::new();
-        render_line(&mut out, 0, &line_chars, &ranges, &edges, ".chat-1");
+        render_line(&mut out, 0, &line_chars, &ranges, &[], &edges, ".chat-1");
         assert!(
             out.contains("task-link chat-agent"),
             "chat task span must have 'chat-agent' class; got: {out}"
@@ -1927,15 +2020,75 @@ mod tests {
     #[test]
     fn regular_task_span_no_chat_agent_class() {
         let mut out = String::new();
-        let ranges: Vec<(usize, usize, &str, Status)> =
-            vec![(0, 6, "my-task", Status::Open)];
+        let ranges: Vec<(usize, usize, usize, &str, Status)> =
+            vec![(0, 7, 7, "my-task", Status::Open)];
         let line_chars: Vec<char> = "my-task".chars().collect();
         let edges: HashMap<(usize, usize), Vec<(String, String)>> = HashMap::new();
-        render_line(&mut out, 0, &line_chars, &ranges, &edges, "my-task");
+        render_line(&mut out, 0, &line_chars, &ranges, &[], &edges, "my-task");
         assert!(
             !out.contains("chat-agent"),
             "regular task span must NOT have 'chat-agent' class; got: {out}"
         );
+    }
+
+    // ────────────────────────────────────────────────────────────────────
+    // Decorator + time-suffix coloring (fix-task-list)
+    // ────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn decorator_parens_get_decorator_class() {
+        // Whole `id  (status · ...)` block is one task-link span; the
+        // parens portion is wrapped in a nested `.decorator` so CSS can
+        // colour it white instead of inheriting the status hue.
+        let mut out = String::new();
+        let line = "verify-end-to  (done · →44k ←6.6k ◎1.3M §8.7k) 1d";
+        let line_chars: Vec<char> = line.chars().collect();
+        let id_chars = "verify-end-to".chars().count();
+        let end = extend_through_status_decorator(&line_chars, id_chars);
+        let ranges: Vec<(usize, usize, usize, &str, Status)> =
+            vec![(0, id_chars, end, "verify-end-to", Status::Done)];
+        let time = find_time_suffix_after(&line_chars, end).expect("time suffix");
+        let edges: HashMap<(usize, usize), Vec<(String, String)>> = HashMap::new();
+        render_line(&mut out, 0, &line_chars, &ranges, &[time], &edges, line);
+        assert!(
+            out.contains("<span class=\"decorator\">  (done"),
+            "decorator span should wrap the parens block; got: {out}"
+        );
+        assert!(
+            out.contains("<span class=\"time-suffix\"> 1d</span>"),
+            "time suffix span should wrap ` 1d`; got: {out}"
+        );
+    }
+
+    #[test]
+    fn time_suffix_detection_units() {
+        // Each compact unit produced by format_duration must be detected.
+        for unit_str in ["5s", "12m", "3h", "1d", "2w", "4mo", "1y"] {
+            let line = format!("task-x  (done) {}", unit_str);
+            let line_chars: Vec<char> = line.chars().collect();
+            let id_end = "task-x".chars().count();
+            let decor_end = extend_through_status_decorator(&line_chars, id_end);
+            let time = find_time_suffix_after(&line_chars, decor_end);
+            assert!(
+                time.is_some(),
+                "time suffix `{unit_str}` should be detected in `{line}`"
+            );
+            let (start, end) = time.unwrap();
+            // Range starts at the leading space and consumes the whole unit.
+            assert_eq!(line_chars[start], ' ', "range starts with space");
+            let captured: String = line_chars[start + 1..end].iter().collect();
+            assert_eq!(captured, unit_str);
+        }
+    }
+
+    #[test]
+    fn time_suffix_does_not_match_other_words() {
+        // Words like `done` look like time tokens but must not match (the
+        // boundary check rejects letters after the digit-unit prefix).
+        let line: Vec<char> = "task-x  (open) phase".chars().collect();
+        let id_end = "task-x".chars().count();
+        let decor_end = extend_through_status_decorator(&line, id_end);
+        assert!(find_time_suffix_after(&line, decor_end).is_none());
     }
 
     // ────────────────────────────────────────────────────────────────────
