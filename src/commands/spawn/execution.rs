@@ -537,10 +537,16 @@ pub(crate) fn spawn_agent_inner(
         }
     };
 
-    // Build the actual command line, optionally wrapped with `timeout`
+    // Build the actual command line, optionally wrapped with `timeout`.
+    //
+    // The timeout binary is resolved at runtime via $WG_TIMEOUT_BIN (set by
+    // the wrapper header). macOS ships no GNU timeout — coreutils provides
+    // it as `gtimeout`. When neither is available the wrapper warns and the
+    // ${VAR:+...} expansion collapses to nothing, so the inner command runs
+    // unwrapped instead of failing silently with empty stdin to the executor.
     let timed_command = if let Some(secs) = effective_timeout_secs {
         format!(
-            "timeout --signal=TERM --kill-after=30 {} {}",
+            r#"${{WG_TIMEOUT_BIN:+"$WG_TIMEOUT_BIN" --signal=TERM --kill-after=30 {} }}{}"#,
             secs, inner_command
         )
     } else {
@@ -548,7 +554,10 @@ pub(crate) fn spawn_agent_inner(
     };
     let timed_fallback = fallback_command.map(|fb| {
         if let Some(secs) = effective_timeout_secs {
-            format!("timeout --signal=TERM --kill-after=30 {} {}", secs, fb)
+            format!(
+                r#"${{WG_TIMEOUT_BIN:+"$WG_TIMEOUT_BIN" --signal=TERM --kill-after=30 {} }}{}"#,
+                secs, fb
+            )
         } else {
             fb
         }
@@ -1247,8 +1256,20 @@ fn write_wrapper_script(
 
     let timeout_note = if let Some(secs) = effective_timeout_secs {
         format!(
-            "\n# Hard timeout: {}s (SIGTERM, then SIGKILL after 30s)\n",
-            secs
+            r#"
+# Hard timeout: {secs}s (SIGTERM, then SIGKILL after 30s).
+# Resolve a GNU `timeout` binary. macOS ships no GNU timeout — coreutils
+# provides it as `gtimeout`. Linux distros usually have `timeout` directly.
+# When neither is available we warn and the ${{WG_TIMEOUT_BIN:+...}} expansion
+# in the run command collapses to nothing, so the executor still runs (just
+# without a hard timeout). Without this probe a missing `timeout` would
+# silently break the pipeline and pipe empty stdin into the executor.
+WG_TIMEOUT_BIN="$(command -v gtimeout 2>/dev/null || command -v timeout 2>/dev/null || true)"
+if [ -z "$WG_TIMEOUT_BIN" ]; then
+    echo "[wrapper] WARNING: GNU timeout not found (install coreutils on macOS: 'brew install coreutils'); running without hard timeout" >> "$OUTPUT_FILE"
+fi
+"#,
+            secs = secs
         )
     } else {
         String::new()
