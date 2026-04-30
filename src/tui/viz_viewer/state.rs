@@ -14195,7 +14195,7 @@ impl VizApp {
         let mut entries: Vec<(u32, String)> = graph
             .tasks()
             .filter(|t| t.tags.iter().any(|tag| workgraph::chat_id::is_chat_loop_tag(tag)))
-            .filter(|t| !matches!(t.status, Status::Abandoned))
+            .filter(|t| !t.status.is_terminal())
             .filter(|t| !t.tags.iter().any(|tag| tag == "archived"))
             .filter_map(|t| {
                 let cid = workgraph::chat_id::parse_chat_task_id(&t.id)
@@ -14302,7 +14302,7 @@ impl VizApp {
         let mut entries: Vec<(u32, String)> = graph
             .tasks()
             .filter(|t| t.tags.iter().any(|tag| workgraph::chat_id::is_chat_loop_tag(tag)))
-            .filter(|t| !matches!(t.status, Status::Abandoned))
+            .filter(|t| !t.status.is_terminal())
             .filter(|t| !t.tags.iter().any(|tag| tag == "archived"))
             .filter_map(|t| {
                 // Accept .chat-N, .coordinator-N (legacy), and bare .coordinator
@@ -23815,6 +23815,107 @@ mod tui_chat_tests {
             vec![0, 1],
             "sync_active_tabs_from_graph must populate cached_chat_tab_entries"
         );
+    }
+
+    /// chat picker must exclude non-terminal chat tasks only:
+    /// Done, Failed, and Abandoned sessions must NOT appear; Open and InProgress must.
+    #[test]
+    fn chat_picker_excludes_terminal_status_tasks() {
+        let tmp = TempDir::new().unwrap();
+        let mut graph = WorkGraph::new();
+
+        // Active chat: should appear in picker
+        let mut active = make_task_with_status(".chat-1", "Chat 1", Status::InProgress);
+        active.tags = vec!["chat-loop".to_string()];
+        graph.add_node(Node::Task(active));
+
+        // Open chat: should appear in picker
+        let mut open_chat = make_task_with_status(".chat-2", "Chat 2", Status::Open);
+        open_chat.tags = vec!["chat-loop".to_string()];
+        graph.add_node(Node::Task(open_chat));
+
+        // Done chat: must NOT appear in picker
+        let mut done_chat = make_task_with_status(".chat-3", "Chat 3 done", Status::Done);
+        done_chat.tags = vec!["chat-loop".to_string()];
+        graph.add_node(Node::Task(done_chat));
+
+        // Abandoned chat: must NOT appear in picker
+        let mut abandoned = make_task_with_status(".chat-4", "Chat 4 abandoned", Status::Abandoned);
+        abandoned.tags = vec!["chat-loop".to_string()];
+        graph.add_node(Node::Task(abandoned));
+
+        // Failed chat: must NOT appear in picker
+        let mut failed = make_task_with_status(".chat-5", "Chat 5 failed", Status::Failed);
+        failed.tags = vec!["chat-loop".to_string()];
+        graph.add_node(Node::Task(failed));
+
+        // Regular non-chat task: must NOT appear in picker
+        let regular = make_task_with_status("fix-new-chat-3", "Fix something", Status::Abandoned);
+        graph.add_node(Node::Task(regular));
+
+        let wg_dir = tmp.path().join(".workgraph");
+        std::fs::create_dir_all(&wg_dir).unwrap();
+        save_graph(&graph, &wg_dir.join("graph.jsonl")).unwrap();
+
+        let tasks: Vec<_> = graph.tasks().collect();
+        let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
+        let viz = generate_ascii(
+            &graph,
+            &tasks,
+            &task_ids,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            VizLayoutMode::Tree,
+            &HashSet::new(),
+            "gray",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        let app = build_test_app(&viz, &wg_dir);
+
+        let entries = app.list_coordinator_ids_and_labels();
+        let cids: Vec<u32> = entries.iter().map(|(c, _)| *c).collect();
+
+        // Only .chat-1 (cid=1) and .chat-2 (cid=2) should appear
+        assert!(cids.contains(&1), "InProgress chat must appear in picker, got {:?}", cids);
+        assert!(cids.contains(&2), "Open chat must appear in picker, got {:?}", cids);
+        assert!(!cids.contains(&3), "Done chat must NOT appear in picker, got {:?}", cids);
+        assert!(!cids.contains(&4), "Abandoned chat must NOT appear in picker, got {:?}", cids);
+        assert!(!cids.contains(&5), "Failed chat must NOT appear in picker, got {:?}", cids);
+
+        // Labels must not include non-chat task IDs
+        let labels: Vec<&str> = entries.iter().map(|(_, l)| l.as_str()).collect();
+        assert!(
+            !labels.iter().any(|l| l.contains("fix-new-chat")),
+            "regular non-chat task must not appear in picker, got {:?}", labels
+        );
+    }
+
+    /// Same filtering applies to list_coordinator_ids_and_labels_from_graph
+    /// (the per-tick cache path used by refresh_chat_tab_caches).
+    #[test]
+    fn chat_picker_from_graph_excludes_terminal_status_tasks() {
+        let mut graph = WorkGraph::new();
+
+        let mut active = make_task_with_status(".chat-10", "Active chat", Status::InProgress);
+        active.tags = vec!["chat-loop".to_string()];
+        graph.add_node(Node::Task(active));
+
+        let mut done_chat = make_task_with_status(".chat-11", "Done chat", Status::Done);
+        done_chat.tags = vec!["chat-loop".to_string()];
+        graph.add_node(Node::Task(done_chat));
+
+        let mut failed_chat = make_task_with_status(".chat-12", "Failed chat", Status::Failed);
+        failed_chat.tags = vec!["chat-loop".to_string()];
+        graph.add_node(Node::Task(failed_chat));
+
+        let entries = VizApp::list_coordinator_ids_and_labels_from_graph(&graph);
+        let cids: Vec<u32> = entries.iter().map(|(c, _)| *c).collect();
+
+        assert!(cids.contains(&10), "InProgress chat must appear");
+        assert!(!cids.contains(&11), "Done chat must NOT appear");
+        assert!(!cids.contains(&12), "Failed chat must NOT appear");
     }
 }
 
