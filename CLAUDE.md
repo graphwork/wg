@@ -19,6 +19,7 @@ This file only covers things specific to the workgraph repo:
 - How to use `wg` itself in this session
 - How to develop and rebuild the `wg` binary
 - Service configuration recipes (model / endpoint pairs)
+- Named profiles (`wg profile use ...`) and secret backends (`wg secret ...`)
 - Agency-task model pinning (a workgraph-only quirk)
 
 For project orientation, run `wg quickstart`.
@@ -55,10 +56,32 @@ The legacy `--executor` / `-x` flag and `[agent].executor` / `[dispatcher].execu
 
 A fresh install with no `~/.wg/config.toml` already runs `claude:opus` via the
 claude CLI handler — built-in defaults cover the common case. To commit choices
-to disk run `wg config init --global` (minimal canonical claude-cli config) or
-`wg setup` (interactive wizard). To clean up an old config with deprecated
-keys or stale model strings, run `wg migrate config --dry-run` then
-`wg migrate config --all`. See `docs/config-ux-design.md` for full details.
+to disk run `wg config init --global` (minimal canonical claude-cli config; pass
+`--route claude-cli` / `codex-cli` / `openrouter` / `local` / `nex-custom` for
+non-default routes) or `wg setup` (interactive wizard). To inspect a config
+without rewriting, run `wg config lint` (read-only companion to `wg migrate
+config`). To clean up an old config with deprecated keys or stale model strings,
+run `wg migrate config --dry-run` then `wg migrate config --all`. `wg config
+-m/-e` auto-reloads the running daemon by default — pass `--no-reload` to skip.
+See `docs/config-ux-design.md` for full details.
+
+### Named profiles and secrets
+
+Three starter profiles ship in the binary: `claude` (opus worker), `codex`
+(gpt-5.5), `nex` (in-process endpoint). Activate one with `wg profile use
+<name>`; this writes `~/.wg/active-profile` and hot-reloads the daemon.
+`wg profile show` / `list` / `create` / `edit` / `diff` / `init-starters`
+cover the rest of the management surface. Profiles overlay onto the
+global+local merge but never clobber project-local config.
+
+API keys live in a credential store managed by `wg secret`. Endpoints
+should reference keys via `api_key_ref = "keyring:<name>"` (preferred);
+the older `api_key_env = "VAR_NAME"` is still accepted but
+`wg migrate secrets` walks configs and rewrites them. Backends are
+`keyring` (OS native, default), `keystore` (~/.wg/keystore, 0600), and
+`plaintext` (requires `[secrets].allow_plaintext = true`). Passthrough URI
+schemes (`op://...`, `pass:...`, `env:VAR`, `literal:...`) work without
+storing the secret in wg.
 
 ### Agency tasks run on claude CLI
 

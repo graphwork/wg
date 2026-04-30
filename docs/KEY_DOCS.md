@@ -2,7 +2,7 @@
 
 Canonical list of all key documentation files and their purpose. Used as the reference for future doc-sync runs.
 
-Last updated: 2026-04-12 (verified by doc-sync-apr12-doc-sync-mar28-ds4-doc-sync-ds3-ds2-doc-sync-spec)
+Last updated: 2026-04-29 (verified by doc-sync-audit, fan-out of 12 per-zone audits)
 
 ---
 
@@ -13,18 +13,20 @@ Last updated: 2026-04-12 (verified by doc-sync-apr12-doc-sync-mar28-ds4-doc-sync
 | `README.md` | Project overview, install, setup, usage patterns, feature summary | Everyone (entry point) |
 | `.claude/skills/wg/SKILL.md` | Claude Code skill definition — teaches AI agents to use workgraph | AI agents (Claude Code) |
 | `docs/COMMANDS.md` | Complete CLI command reference with examples | Users, agents |
-| `docs/AGENT-GUIDE.md` | How spawned agents should think about task graphs: patterns, structures, anti-patterns | AI agents, advanced users |
-| `docs/AGENT-SERVICE.md` | Service daemon architecture: coordinator tick, dispatch cycle, agent lifecycle | Operators, contributors |
+| `docs/AGENT-GUIDE.md` | How spawned agents should think about task graphs: patterns, structures, retry/kill mechanics, anti-patterns | AI agents, advanced users |
+| `docs/AGENT-SERVICE.md` | Service daemon architecture: dispatcher tick, dispatch cycle, agent lifecycle, model-spec handler routing | Operators, contributors |
 | `docs/AGENCY.md` | Agency system: roles, tradeoffs, evaluation, evolution, skill system | Users setting up agency |
 | `docs/LOGGING.md` | Logging and provenance system: operation log, agent archives, rotation | Operators, integrators |
 | `docs/DEV.md` | Development notes: build, test, reusable functions, common pitfalls | Contributors |
 | `docs/WORKTREE-ISOLATION.md` | Worktree-based isolation for concurrent agents | Operators, contributors |
-| `docs/COORDINATOR_ENTITY.md` | Design: coordinator as visible entity | Contributors |
-| `docs/models.md` | Model, endpoint, and API key management guide | Users, agents |
+| `docs/COORDINATOR_ENTITY.md` | Design: coordinator (now "chat agent") as visible entity | Contributors |
+| `docs/models.md` | Model, endpoint, and API key management guide (companion: `docs/config-ux-design.md` for config UX) | Users, agents |
+| `docs/config-canonical.md` | Canonical config-key audit: what to keep, what's stale, what each key does | Operators, contributors |
+| `docs/config-ux-design.md` | Config UX design: `wg config init` / `wg setup`, named profiles, secrets, migration strategy | Users, operators, contributors |
 | `docs/MODEL_REGISTRY.md` | Model provider registry with quality tiers | Contributors |
 | `docs/AGENCY_AUDIT.md` | Agency audit | Contributors, operators |
-| `docs/AGENT-LIFECYCLE.md` | Hardened agent lifecycle: spawn, work, complete, die — full state machine | Operators, contributors |
-| `docs/SECURITY.md` | Security guide: pre-commit hooks, GitGuardian, secret management | Operators, contributors |
+| `docs/AGENT-LIFECYCLE.md` | Hardened agent lifecycle: spawn, work, complete, die — full state machine + target-dir reaper + dispatcher persistence | Operators, contributors |
+| `docs/SECURITY.md` | Security guide: pre-commit hooks, GitGuardian, secret management (companion: `wg secret`) | Operators, contributors |
 | `docs/agent-git-hygiene.md` | Git hygiene rules for multi-agent shared repos | Agents, operators |
 | `docs/guides/openrouter-setup.md` | OpenRouter provider setup guide | Users, operators |
 | `docs/guides/server-setup.md` | Server setup guide | Users, operators |
@@ -34,7 +36,9 @@ Last updated: 2026-04-12 (verified by doc-sync-apr12-doc-sync-mar28-ds4-doc-sync
 | File | Purpose | Audience |
 |------|---------|----------|
 | `src/commands/quickstart.rs` | Quickstart text shown by `wg quickstart` — onboarding cheat sheet | AI agents, new users |
-| `CLAUDE.md` | Project-level Claude Code instructions | AI agents |
+| `src/text/agent_guide.md` | Universal role contract bundled into the `wg` binary — emitted by `wg agent-guide`. Defines chat agent / dispatcher / worker agent roles, validation requirement, smoke gate, cycle handling, git hygiene, worktree isolation. | AI agents (any project) |
+| `CLAUDE.md` | Project-level Claude Code instructions (workgraph repo: layer-2, project-specific) | AI agents |
+| `AGENTS.md` | AI coding-assistant contract for non-Claude tools (GitHub Copilot, Cursor, Claude Code without skill) | AI agents |
 | `~/.claude/CLAUDE.md` | Global Claude Code instructions (may not exist) | AI agents |
 
 ## Manual (Typst)
@@ -154,6 +158,27 @@ Last updated: 2026-04-12 (verified by doc-sync-apr12-doc-sync-mar28-ds4-doc-sync
 | `docs/designs/failed-dep-triage.md` | Failed dependency triage design | Implemented |
 | `docs/designs/quality-pass.md` | Quality pass design | Design |
 | `docs/designs/tui-iteration-history-and-viz-selfloop.md` | TUI iteration history and viz self-loop | Implemented |
+| `docs/designs/README.md` | Designs directory README (audience: contributors) | Reference |
+| `docs/design/sessions-as-identity.md` | Unified handler/session model: claude, codex, nex as a common "session" abstraction | Design |
+| `docs/design/sessions-as-identity-rollout.md` | Staged rollout plan for sessions-as-identity | Design |
+| `docs/design/native-executor-run-loop.md` | Nex unified run loop + interruptibility + compaction design | Design |
+| `docs/design/nex-as-coordinator.md` | Nex = task = evaluate = coordinate unification design | Design |
+| `docs/design/nex-executor-improvements.md` | wg nex executor improvements toward self-bootstrapping | Design |
+| `docs/design/nex-web-access-status-2026-04-16.md` | Nex web access status + next steps (snapshot 2026-04-16) | Reference |
+| `docs/design/verify-deprecation-plan.md` | --verify deprecation plan (now errors at runtime; use ## Validation) | Implemented |
+| `docs/design/llm-verification-gate.md` | LLM-based verification gate design (replaces --verify) | Design |
+| `docs/design/model-config-propagation.md` | Model/config propagation from seed tasks to subgraphs | Design |
+| `docs/design/pdf-binary-failure-handling.md` | PDF/binary attachment failure handling design | Implemented |
+| `docs/design/chat-agent-persistence.md` | Chat agent persistence: tmux wrapper vs codex fix vs custom detach | Design |
+| `docs/design/external-executor-class.md` | External executor class: claude, codex, amplifier as uniform family | Design |
+| `docs/design/unified-path-forward.md` | Unified path forward plan (post-tool-fragmentation hardening) | Reference |
+| `docs/design/tool-scoping-for-agents-research.md` | Tool scoping for native-executor agents research | Research |
+| `docs/design-actor-driven-cleanup.md` | Actor-driven worktree cleanup: status-as-cleanup-intent design | Design |
+| `docs/design-cow-worktrees.md` | Copy-on-write worktrees for agent isolation | Design |
+| `docs/design-merge-task.md` | .merge-* tasks: visible, retryable, batchable merge surface | Design |
+| `docs/design-agency-tasks-on-claude.md` | Migrate .evaluate/.flip/.assign tasks to claude CLI path | Reference |
+| `docs/design-named-profiles.md` | Named profiles for runtime model/endpoint switching | Implemented (`wg profile`) |
+| `docs/archival-design.md` | Archival behavior + cross-graph overlay design | Design |
 
 ## Research Documents
 
@@ -249,6 +274,18 @@ Last updated: 2026-04-12 (verified by doc-sync-apr12-doc-sync-mar28-ds4-doc-sync
 | `docs/research/shell-executor-and-retry-patterns.md` | Shell executor and retry patterns research | Research |
 | `docs/research/native-executor-compact-messages-pattern.md` | Native executor compact messages pattern | Research |
 | `docs/research/existing-design-documents-journal-compaction.md` | Existing design docs on journal compaction | Research |
+| `docs/research/README.md` | Research directory README (audience: contributors) | Reference |
+| `docs/research/agent-lifecycle-and-kill-mechanics.md` | Agent lifecycle and kill mechanics research | Research |
+| `docs/research/agent-wg-awareness.md` | Agent self-discovery of wg (for nex/Harbor context) | Research |
+| `docs/research/context-window-determination.md` | Context length determination for OAI-compatible endpoints | Research |
+| `docs/research/eval-wait-points.md` | When should agents wait on evaluation before terminating | Research |
+| `docs/research/model-propagation-subgraphs.md` | Model propagation within subgraphs | Research |
+| `docs/research/qwen3-nex-config.md` | Qwen3 endpoint configuration for wg nex | Research |
+| `docs/research/shell-verify-vs-llm-eval-gap.md` | Shell --verify vs LLM agency evaluation gap analysis | Research |
+| `docs/research/thin-wrapper-executors-2026-04.md` | Thin-wrapper executors for wg nex (recommendation: pty-wrap OAI CLI) | Research |
+| `docs/research/tui-detail-audit.md` | TUI 1:Detail view + evaluation visibility audit | Research |
+| `docs/research/tui-evaluation-color-state.md` | TUI evaluation-state coloring research | Research |
+| `docs/research/verify-deprecation-survey.md` | --verify deprecation survey (factual basis for deprecation) | Research |
 
 ## Report Documents (additional)
 
@@ -284,6 +321,7 @@ Last updated: 2026-04-12 (verified by doc-sync-apr12-doc-sync-mar28-ds4-doc-sync
 | `docs/plans/provider-profiles.md` | Provider profiles plan |
 | `docs/plans/spiral-unrolling-design.md` | Spiral unrolling design plan |
 | `docs/plans/user-board-design.md` | User board design plan |
+| `docs/plan-of-attack-wg-nex.md` | Plan of attack: wg nex + TerminalBench + Harbor (2026-04-21) |
 
 ## Other Documentation
 
@@ -318,6 +356,14 @@ Last updated: 2026-04-12 (verified by doc-sync-apr12-doc-sync-mar28-ds4-doc-sync
 | File | Purpose | Status |
 |------|---------|--------|
 | `docs/audit/doc-sync-apr12-delta-checklist.md` | Documentation audit delta checklist (2026-04-12) | Current |
+| `docs/doc-sync-audit-2026-04-12.md` | Documentation audit checklist (2026-04-12) | Current |
+| `docs/doc-sync-audit-2026-04-29.md` | Documentation audit consolidated report (2026-04-29) | Current |
+| `docs/audit-recovery-docs-2026-04-27.md` | Audit: recovery + outage workflows in agent-visible docs | Current |
+| `docs/audit-unmerged-branches-2026-04-25.md` | Audit: unmerged agent branches (2026-04-25, read-only) | Current |
+| `docs/audit-unmerged-branches-2026-04-26.md` | Audit: unmerged agent branches (2026-04-26, execution + root-cause) | Current |
+| `docs/tui-coordinator-resumption-findings.md` | TUI chat-agent resumption investigation findings | Current |
+| `docs/codex-handler-merge-bug.md` | Bug: wg done silently drops staged-uncommitted worktree changes | Current |
+| `docs/triage-wg-nex-small-model-reports-2026-04-27.md` | Triage: 3 small-model bug reports from wg nex (Qwen3) | Current |
 
 ## Archive
 
@@ -325,3 +371,4 @@ Last updated: 2026-04-12 (verified by doc-sync-apr12-doc-sync-mar28-ds4-doc-sync
 |-----------|---------|
 | `docs/archive/research/` | Historical research documents |
 | `docs/archive/reviews/` | Historical review documents |
+| `docs/archive/2026-04-17-rescued/` | Rescued engineering work from accidentally-lost commit eef15157; INDEX.md explains provenance |

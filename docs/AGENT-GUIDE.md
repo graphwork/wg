@@ -36,7 +36,8 @@ Every task moves through a state machine. Understanding the states and transitio
 | **Open** | Ready to be claimed/dispatched (all `--after` deps are done) |
 | **Blocked** | Waiting for upstream dependencies to complete |
 | **InProgress** | An agent has claimed the task and is working on it |
-| **PendingValidation** | Agent called `wg done`, but the task has a `--verify` criterion requiring external validation |
+| **PendingValidation** | Agent called `wg done`, but the task is queued for external validation (e.g. via `wg reject` retry loop) |
+| **FailedPendingEval** | Agent exited without `wg done` and `auto_evaluate` is enabled — awaits evaluator verdict before terminal Failed |
 | **Done** | Completed successfully |
 | **Failed** | Agent called `wg fail` or validation failed |
 | **Abandoned** | Manually abandoned via `wg abandon` |
@@ -44,7 +45,7 @@ Every task moves through a state machine. Understanding the states and transitio
 
 ### Validation flow (PendingValidation)
 
-Tasks created with `--verify` go through an extra validation gate:
+Tasks describe acceptance criteria via a `## Validation` section in the task description. The agency evaluator (auto_evaluate + FLIP) reads that section and scores the agent's output against it. Tasks may also be queued for manual review via `wg reject` (which keeps the task in `pending-validation` while retries remain).
 
 ```
 InProgress → wg done → PendingValidation → wg approve → Done
@@ -54,6 +55,7 @@ InProgress → wg done → PendingValidation → wg approve → Done
 - `wg approve <task-id>` — transitions PendingValidation → Done
 - `wg reject <task-id> --reason "..."` — reopens the task for re-dispatch (clears assignment)
 - After `max_rejections` (default: 3), `wg reject` transitions the task to Failed instead of Open
+- The legacy `--verify <CRITERIA>` flag is no longer accepted (errors at runtime). Put criteria under `## Validation` in the description.
 
 ### Retry workflow
 
@@ -664,16 +666,17 @@ The user-facing primitives are **model** and **endpoint**. Pass a `provider:mode
 | Model spec example                          | Handler            | Wire protocol  | Endpoint required          |
 |---------------------------------------------|--------------------|----------------|----------------------------|
 | `claude:opus` (or bare `opus`/`sonnet`)     | claude CLI         | Anthropic      | no (CLI auths itself)      |
-| `codex:gpt-5`                               | codex CLI          | OAI-compat     | no (CLI auths itself)      |
-| `local:qwen3-coder`                         | nex (in-process)   | OAI-compat     | yes (`-e <url>`)           |
-| `openrouter:anthropic/claude-opus-4-6`      | nex (in-process)   | OAI-compat     | optional                   |
-| `oai-compat:gpt-5`                          | nex (in-process)   | OAI-compat     | yes                        |
+| `codex:gpt-5.5`                             | codex CLI          | OAI-compat     | no (CLI auths itself)      |
+| `nex:qwen3-coder`                           | nex (in-process)   | OAI-compat     | yes (`-e <url>`)           |
+| `openrouter:anthropic/claude-opus-4-7`      | nex (in-process)   | OAI-compat     | optional                   |
 
 ```bash
 wg config -m claude:opus                                  # claude handler
-wg config -m local:qwen3-coder -e http://127.0.0.1:8088   # nex handler against local server
-wg config -m openrouter:anthropic/claude-opus-4-6         # nex handler against openrouter
+wg config -m nex:qwen3-coder -e http://127.0.0.1:8088     # nex handler against local server
+wg config -m openrouter:anthropic/claude-opus-4-7         # nex handler against openrouter
 ```
+
+The `local:` and `oai-compat:` prefixes are deprecated aliases for `nex:`; they still load with a stderr warning, and `wg migrate config` rewrites them.
 
 The legacy `--executor` / `-x` CLI flag and `[agent].executor` / `[dispatcher].executor` config keys are deprecated. They still work for one release with a deprecation warning, but the model spec is the single source of truth — see `src/dispatch/handler_for_model.rs`. After the deprecation window, `executor` is removed entirely.
 

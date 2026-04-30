@@ -83,12 +83,11 @@ Everything gets dispatched through `wg add` and the dispatcher (`wg service star
 
 ### Task description requirements
 
-Every **code task** description MUST include a `## Validation` section with concrete test criteria. Use `--verify` to attach machine-checkable criteria that agents see as a hard gate.
+Every **code task** description MUST include a `## Validation` section with concrete test criteria. The agency evaluator (auto_evaluate + FLIP) reads the `## Validation` section and scores the agent's output against it.
 
 Template:
 ```
 wg add "Implement feature X" --after <dep> \
-  --verify "cargo test test_feature_x passes" \
   -d "## Description
 <what to implement>
 
@@ -98,6 +97,8 @@ wg add "Implement feature X" --after <dep> \
 - [ ] cargo build + cargo test pass with no regressions
 - [ ] <any additional acceptance criteria>"
 ```
+
+The legacy `--verify` flag is no longer accepted (`wg add` errors at runtime if you pass it). Put criteria under `## Validation` in the description body.
 
 Research/design tasks should specify what artifacts to produce and how to verify completeness instead of test criteria.
 

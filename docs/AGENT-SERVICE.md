@@ -6,10 +6,10 @@ The agent service is a background daemon that automatically spawns agents on rea
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                    Service Daemon (wg service start)        │
+│              Dispatcher Daemon (wg service start)           │
 │                                                             │
 │  Unix socket listener  ←──── IPC: graph_changed, spawn,    │
-│  Coordinator loop            kill, pause, resume, status    │
+│  Dispatcher loop             kill, pause, resume, status    │
 │  Agent reaper                                               │
 │  Dead agent detector                                        │
 └──────┬──────────────┬──────────────┬───────────────────────┘
@@ -37,9 +37,9 @@ wg service stop                   # stop daemon (agents keep running)
 wg service stop --kill-agents     # stop daemon and agents
 ```
 
-## The Coordinator Tick
+## The Dispatcher Tick
 
-The daemon runs a coordinator tick on two triggers:
+(Historical name: "coordinator tick".) The daemon runs a dispatcher tick on two triggers:
 
 1. **IPC-driven**: Any command that modifies the graph (done, add, edit, fail, etc.) sends a `graph_changed` notification over the Unix socket, triggering an immediate tick
 2. **Safety-net poll**: A background tick every `poll_interval` seconds (default: 60s) catches manual graph.jsonl edits or missed events
@@ -198,7 +198,7 @@ Re-read config.toml or apply specific overrides without restarting.
 wg service reload                                  # re-read config.toml
 wg service reload --max-agents 8 --model claude:haiku  # apply overrides
 wg service reload --interval 120                   # change poll interval
-wg service reload --model local:qwen3-coder        # switch handler by switching model
+wg service reload --model nex:qwen3-coder          # switch handler by switching model
 ```
 
 Sends a `reconfigure` IPC message to the running daemon.
@@ -281,19 +281,20 @@ You don't pick a handler directly — wg derives it from the model spec's provid
 | Model spec example                          | Handler subprocess        | Wire protocol  | Endpoint                  |
 |---------------------------------------------|---------------------------|----------------|---------------------------|
 | `claude:opus` (and bare `opus`/`sonnet`)    | `claude` CLI              | Anthropic      | none (CLI auths itself)   |
-| `codex:gpt-5`                               | `codex` CLI               | OAI-compat     | none (CLI auths itself)   |
-| `local:qwen3-coder`                         | `native` (in-process nex) | OAI-compat     | required (`-e <url>`)     |
-| `openrouter:anthropic/claude-opus-4-6`      | `native` (in-process nex) | OAI-compat     | optional                  |
-| `oai-compat:gpt-5` / `openai:gpt-5`         | `native` (in-process nex) | OAI-compat     | required                  |
+| `codex:gpt-5.5`                             | `codex` CLI               | OAI-compat     | none (CLI auths itself)   |
+| `nex:qwen3-coder`                           | `native` (in-process nex) | OAI-compat     | required (`-e <url>`)     |
+| `openrouter:anthropic/claude-opus-4-7`      | `native` (in-process nex) | OAI-compat     | optional                  |
 | `ollama:llama3` / `vllm:*` / `llamacpp:*`   | `native` (in-process nex) | OAI-compat     | required                  |
 | (task with `exec` field set)                | `shell`                   | n/a            | n/a                       |
+
+The `local:` and `oai-compat:` (and `openai:`) prefixes are deprecated aliases for `nex:`; they still load with a stderr warning, and `wg migrate config` rewrites them.
 
 The mapping lives in one place: `src/dispatch/handler_for_model.rs`. Adding a new handler (aider, llm, …) is a one-arm change there; nothing else in the codebase needs to know.
 
 ```bash
 wg config -m claude:opus                                   # claude CLI
-wg config -m local:qwen3-coder -e http://127.0.0.1:8088    # nex against local server
-wg config -m openrouter:anthropic/claude-opus-4-6          # nex against openrouter
+wg config -m nex:qwen3-coder -e http://127.0.0.1:8088      # nex against local server
+wg config -m openrouter:anthropic/claude-opus-4-7          # nex against openrouter
 ```
 
 Legacy `--executor` / `-x` flags and `[agent].executor` / `[dispatcher].executor` config keys are deprecated. They still work for one release with a deprecation warning, but the model spec is the single source of truth. After the deprecation window, the executor surfaces are removed entirely.

@@ -125,8 +125,8 @@ wg add "Quick lint fix" --exec-mode shell       # no LLM, just runs shell comman
 wg add "Research task" --exec-mode light         # read-only tools
 wg add "Full implementation" --exec-mode full    # default: all tools
 
-# Task requiring review before completion
-wg add "Security audit" --verify "All findings documented with severity ratings"
+# Task with acceptance criteria — put criteria under `## Validation` in the description
+wg add "Security audit" -d $'## Description\nReview surface for vulns.\n\n## Validation\n- [ ] All findings documented with severity ratings'
 
 # Scheduling: delay or absolute time gate
 wg add "Follow-up check" --delay 1h             # becomes ready 1h after deps complete
@@ -154,7 +154,6 @@ wg edit my-task --add-after other-task
 wg edit my-task --remove-tag stale --add-tag urgent
 wg edit my-task --model opus
 wg edit my-task --exec-mode light
-wg edit my-task --verify "cargo test passes"
 wg edit my-task --delay 30m --not-before 2026-03-20T09:00:00Z
 wg edit my-task --add-skill security --remove-skill docs
 ```
@@ -191,21 +190,21 @@ wg done set-up-ci-pipeline       # unblocks deploy-to-staging
 
 ### 7. Verification workflow
 
-Tasks created with `--verify` go through a validation gate before completion. When an agent calls `wg done`, the task transitions to `PendingValidation` instead of `Done`:
+Code tasks should include a `## Validation` section in their description listing acceptance criteria. When an agent calls `wg done`, the agency evaluator (auto_evaluate) reads the `## Validation` section and scores the agent's output against it. If `auto_evaluate` is enabled, agents that exit without `wg done` enter `failed-pending-eval` instead of `failed` until the evaluator runs.
 
 ```bash
-# Create a task that needs review
-wg add "Security audit" --verify "All findings documented with severity ratings"
+# Create a task with explicit acceptance criteria
+wg add "Security audit" -d $'## Description\nReview surface for vulns.\n\n## Validation\n- [ ] All findings documented with severity ratings\n- [ ] Each finding has reproduction steps'
 
-# Agent works on it, then marks it done — status becomes PendingValidation
+# Agent works on it, then marks it done — evaluator scores against the Validation section
 wg done security-audit
 
-# Reviewer approves or rejects
+# Operator can approve / reject pending-validation tasks (e.g. when --max-rejections governs a manual review loop)
 wg approve security-audit                          # transitions to Done
 wg reject security-audit --reason "Missing CVE references"  # reopens for rework
 ```
 
-Rejected tasks reopen for the agent to address feedback. After too many rejections (default: 3), the task is failed automatically. See [docs/COMMANDS.md](docs/COMMANDS.md) for full details.
+Rejected tasks reopen for the agent to address feedback. After too many rejections (default: 3), the task is failed automatically. The legacy `--verify <CRITERIA>` flag is no longer accepted; `wg add --verify` errors at runtime. See [docs/COMMANDS.md](docs/COMMANDS.md) for full details.
 
 ## Using with AI Coding Assistants
 
@@ -216,7 +215,7 @@ Workgraph includes a skill definition that teaches AI assistants to use the serv
 Install the skill from the workgraph directory:
 
 ```bash
-wg skill install           # installs to ~/.claude/skills/ (all your projects)
+wg skill install           # installs to ~/.claude/skills/wg/ (all your projects)
 ```
 
 You can also discover and inspect available skills:
@@ -790,8 +789,14 @@ For most projects:
    wg add "New thing we discovered" --after whatever
    wg edit stuck-task --add-tag needs-rethink
    wg fail stuck-task --reason "Need to rethink this"
-   wg retry stuck-task  # when ready to try again
+   wg retry stuck-task                                # retry-in-place: keep prior worktree + WIP
+   wg retry stuck-task --fresh                        # discard prior worktree, start over from main
+   wg retry stuck-task --reason "agent hung at 0% for 20min"
    ```
+
+   `wg retry` also rescues hung in-progress tasks (SIGTERM → SIGKILL → reset).
+   Default is retry-in-place; pass `--fresh` to discard the worktree, or
+   `--preserve-session` to keep the stored Claude session ID across the retry.
 
 5. **Ship**: When `wg ready` is empty and everything important is done, you're there.
 

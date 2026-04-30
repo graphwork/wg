@@ -18,10 +18,17 @@ the most common source of bugs.
 - **dispatcher** — the daemon launched by `wg service start`. Polls the
   graph and spawns worker agents on ready tasks. Replaces the older
   "coordinator" terminology for the daemon.
-- **chat agent** — the persistent LLM session the user talks to. Lives
-  inside the `wg` TUI or in a terminal Claude Code / codex / nex session.
-  Same role contract in both places. Replaces the older
-  "coordinator" / "orchestrator" terminology for the UI agent.
+- **chat agent** — the persistent LLM session the user talks to. Each
+  chat is a graph entity (`.chat-N`) with its own command surface:
+  `wg chat create / list / show / attach / send / stop / resume /
+  archive / delete`. The dispatcher supervisor spawns a handler
+  subprocess per active chat, and `wg service` exposes legacy aliases
+  (`create-coordinator` etc.) for back-compat with prior versions.
+  Lives inside the `wg` TUI or in a terminal Claude Code / codex / nex
+  session — same role contract in both places. Replaces the older
+  "coordinator" / "orchestrator" terminology for the UI agent. Legacy
+  graphs with `.coordinator-N` task IDs can be rewritten via
+  `wg migrate chat-rename`.
 - **worker agent** — an LLM process spawned by the dispatcher to do a
   single workgraph task. Lives only as long as that task is in-progress.
 
@@ -60,14 +67,16 @@ Uncertainty is a signal to delegate, not to explore.
 When a chat agent creates more than a couple of tasks in response to one
 user request, it should insert a `.quality-pass-<batch-id>` task that
 gates downstream execution. The quality pass reviews the just-created
-tasks, edits descriptions / verify criteria / tags, and then completes,
-unblocking the batch. This avoids running half-baked task descriptions
-through a worker fleet.
+tasks, edits descriptions / `## Validation` sections / tags, and then
+completes, unblocking the batch. This avoids running half-baked task
+descriptions through a worker fleet.
 
-Mechanism: the chat agent creates the batch with `wg add`, creates a
-single `.quality-pass-<batch-id>` task with no `--after` (immediately
-ready), and wires every task in the batch to depend on it via `--before`
-or `--after .quality-pass-<batch-id>`.
+Mechanism: the chat agent creates the batch with `wg add` (followed by
+`wg edit <id> --add-after .quality-pass-<batch-id>` for each, or by
+passing `--after .quality-pass-<batch-id>` at creation time), and
+creates a single `.quality-pass-<batch-id>` task with no `--after`
+(immediately ready). There is no `--before` dependency flag in
+`wg add`; use `--add-after` (or `--after` at creation) instead.
 
 ### Paused-task convention
 
@@ -125,6 +134,15 @@ work has stabilized.
 
 If a cycle iteration's verification fails and you cannot fix it, use
 `wg fail` so the cycle can restart with the next iteration.
+
+Advanced cycle flags:
+
+- `--no-converge` — force every iteration to run; agents cannot signal
+  early stop with `--converged`.
+- `--no-restart-on-failure` — disable automatic cycle restart when a
+  member fails. Restart is on by default.
+- `--max-failure-restarts <N>` — cap failure-triggered cycle restarts
+  (default 3).
 
 ## Smoke Gate (Hard Gate on `wg done`)
 
@@ -186,8 +204,21 @@ A worker agent assigned to task `<task-id>` follows this sequence:
    ```
    wg done <task-id>                  # normal completion
    wg done <task-id> --converged      # cycle work has stabilized
+   wg done <task-id> --ignore-unmerged-worktree  # defer worktree merge → creates .merge-<id> task
+   wg incomplete <task-id> --reason "..."   # work landed but needs another pass; auto-retries (default 3)
    wg fail <task-id> --reason "..."   # genuine blocker, after attempt
+   wg retry <task-id>                 # reset failed/incomplete/hung task to open (retry-in-place)
+   wg retry <task-id> --fresh         # discard prior worktree, start over from main
+   wg retry <task-id> --preserve-session  # keep stored Claude session ID across retry
+   wg wait <task-id> --until <cond>   # park task; dispatcher resumes when condition is met
+                                      #   conditions: task:X=done | timer:5m | message | human-input | file:path
    ```
+
+   **failed-pending-eval state** — when an agent exits without `wg done` and
+   `auto_evaluate=true` is configured, the task transitions to
+   `failed-pending-eval` instead of immediately Failed. The evaluator can
+   rescue the task (transition to Done) or confirm Failed. `wg fail` on a
+   `failed-pending-eval` task forces terminal Failed.
 
 ### Anti-pattern: Explain-and-Bail
 
@@ -282,6 +313,19 @@ off** rather than redoing it. If it's broken or wrong, commit a clean
 reset and start over from there. Either way, do not blindly overwrite
 the prior agent's commits — they may contain valuable progress.
 
+## Exec Modes
+
+Workers run with an `exec-mode` that limits available tools:
+
+- `full` (default) — all tools (read / write / shell / web)
+- `light` — read-only tools; cannot write files
+- `bare` — wg CLI only (coordination tasks)
+- `shell` — no LLM; the task runs a shell command (set with `--exec`)
+
+`exec-mode` is set at task creation (`wg add ... --exec-mode <mode>`)
+and is exposed to the worker via `$WG_EXEC_MODE`. Workers in `light`
+mode that try to write files will fail.
+
 ## Environment Variables
 
 - `$WG_TASK_ID` — the task you are working on
@@ -290,6 +334,12 @@ the prior agent's commits — they may contain valuable progress.
   `shell`, ...)
 - `$WG_MODEL` — the resolved model spec
 - `$WG_TIER` — your quality tier (fast, standard, premium)
+- `$WG_EXEC_MODE` — exec mode for this task (`full` / `light` / `bare`
+  / `shell`)
+- `$WG_USER` — current user identity
+- `$WG_WORKTREE_PATH` / `$WG_BRANCH` / `$WG_PROJECT_ROOT` /
+  `$WG_WORKTREE_ACTIVE` — set when worktree isolation is active; the
+  spawn wrapper uses these to detect worktree escape
 
 Tiers control capability and cost: **fast** for triage / routing /
 compaction, **standard** for typical implementation, **premium** for
