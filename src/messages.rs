@@ -485,7 +485,7 @@ use crate::service::registry::AgentEntry;
 
 /// Defines how an executor delivers messages to a running agent.
 ///
-/// Each executor type (claude, amplifier, shell) has different capabilities
+/// Each executor type (claude, codex, shell) has different capabilities
 /// for mid-session message injection. The adapter abstracts these differences.
 pub trait MessageAdapter: Send + Sync {
     /// Deliver a message to a running agent.
@@ -501,7 +501,7 @@ pub trait MessageAdapter: Send + Sync {
     /// poll using `wg msg read` or `wg msg poll`.
     fn supports_realtime(&self) -> bool;
 
-    /// Executor type name (e.g. "claude", "amplifier", "shell").
+    /// Executor type name (e.g. "claude", "codex", "shell").
     fn executor_type(&self) -> &str;
 }
 
@@ -588,35 +588,6 @@ impl MessageAdapter for CodexMessageAdapter {
 
     fn executor_type(&self) -> &str {
         "codex"
-    }
-}
-
-/// Amplifier executor message adapter.
-///
-/// Amplifier runs in `--mode single` with text output. Like the Claude adapter,
-/// mid-session injection is not supported in v1. Messages accumulate in the queue
-/// and are written to a notification file. The agent can self-poll using
-/// `wg msg poll` or `wg msg read`.
-///
-/// When spawning a new Amplifier agent, queued messages are included in the
-/// initial prompt context via `ScopeContext::queued_messages` (handled by
-/// `build_scope_context` in `src/commands/spawn/context.rs`).
-pub struct AmplifierMessageAdapter;
-
-impl MessageAdapter for AmplifierMessageAdapter {
-    fn deliver(&self, workgraph_dir: &Path, agent: &AgentEntry, message: &Message) -> Result<bool> {
-        // Write notification file for the agent to detect
-        write_notification(workgraph_dir, &agent.id, message)?;
-        // Amplifier --mode single doesn't support mid-session injection
-        Ok(false)
-    }
-
-    fn supports_realtime(&self) -> bool {
-        false
-    }
-
-    fn executor_type(&self) -> &str {
-        "amplifier"
     }
 }
 
@@ -748,7 +719,6 @@ pub fn adapter_for_executor(executor_type: &str) -> Box<dyn MessageAdapter> {
     match executor_type {
         "claude" => Box::new(ClaudeMessageAdapter),
         "codex" => Box::new(CodexMessageAdapter),
-        "amplifier" => Box::new(AmplifierMessageAdapter),
         "shell" => Box::new(ShellMessageAdapter),
         // Default to claude-like behavior for unknown executors
         _ => Box::new(ClaudeMessageAdapter),
@@ -1145,13 +1115,6 @@ mod tests {
     }
 
     #[test]
-    fn test_adapter_for_executor_amplifier() {
-        let adapter = adapter_for_executor("amplifier");
-        assert_eq!(adapter.executor_type(), "amplifier");
-        assert!(!adapter.supports_realtime());
-    }
-
-    #[test]
     fn test_adapter_for_executor_codex() {
         let adapter = adapter_for_executor("codex");
         assert_eq!(adapter.executor_type(), "codex");
@@ -1205,46 +1168,12 @@ mod tests {
     }
 
     #[test]
-    fn test_amplifier_adapter_writes_notification() {
-        let (_tmp, wg_dir) = setup();
-        let agent = make_agent("agent-2", "amplifier");
-
-        // Create agent directory
-        fs::create_dir_all(wg_dir.join("agents").join("agent-2")).unwrap();
-
-        let adapter = AmplifierMessageAdapter;
-        let msg = Message {
-            id: 1,
-            timestamp: "2026-02-28T00:00:00Z".to_string(),
-            sender: "coordinator".to_string(),
-            body: "Context update".to_string(),
-            priority: "urgent".to_string(),
-            status: DeliveryStatus::Sent,
-            read_at: None,
-        };
-
-        let delivered = adapter.deliver(&wg_dir, &agent, &msg).unwrap();
-        assert!(
-            !delivered,
-            "Amplifier adapter should not support realtime delivery"
-        );
-
-        // Check notification file was written
-        let notif_path = notification_file(&wg_dir, "agent-2");
-        assert!(notif_path.exists(), "Notification file should exist");
-        let content = fs::read_to_string(&notif_path).unwrap();
-        assert!(content.contains("Context update"));
-        assert!(content.contains("[URGENT]"));
-        assert!(content.contains("coordinator"));
-    }
-
-    #[test]
     fn test_adapter_notification_accumulates() {
         let (_tmp, wg_dir) = setup();
-        let agent = make_agent("agent-3", "amplifier");
+        let agent = make_agent("agent-3", "claude");
         fs::create_dir_all(wg_dir.join("agents").join("agent-3")).unwrap();
 
-        let adapter = AmplifierMessageAdapter;
+        let adapter = ClaudeMessageAdapter;
 
         // Send multiple messages
         for i in 1..=3 {
@@ -1272,7 +1201,7 @@ mod tests {
     #[test]
     fn test_deliver_message_stores_and_notifies() {
         let (_tmp, wg_dir) = setup();
-        let agent = make_agent("agent-4", "amplifier");
+        let agent = make_agent("agent-4", "claude");
         fs::create_dir_all(wg_dir.join("agents").join("agent-4")).unwrap();
 
         let (msg_id, delivered) = deliver_message(

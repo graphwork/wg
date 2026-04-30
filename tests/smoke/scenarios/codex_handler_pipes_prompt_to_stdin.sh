@@ -4,7 +4,7 @@
 # Regression (codex-handler-doesn): the dispatch pipeline auto-builds a
 # `PromptTemplate` for built-in handlers that ship without one, but the
 # gating condition in `spawn_agent_inner` (src/commands/spawn/execution.rs)
-# hard-coded the list as `claude | amplifier | native` — codex was missing.
+# hard-coded the list as `claude | native` — codex was missing.
 # Result: every codex agent spawn produced a run.sh that invoked `codex
 # exec ...` with no `cat prompt.txt | ` prefix and no prompt.txt on disk,
 # so the codex CLI sat reading stdin, got nothing, and exited 1 with

@@ -233,10 +233,10 @@ fn test_no_independent_argv_executor_construction_outside_spawn_sites() {
         };
         let code = strip_comments_and_strings(&raw);
 
-        // ExecutorKind::Native / ::Claude / ::Codex / ::Amplifier / ::Shell
-        // construction outside src/dispatch/ is a strong signal of an
-        // independent spawn-decision site.
-        for variant in ["Native", "Claude", "Codex", "Amplifier", "Shell"] {
+        // ExecutorKind::Native / ::Claude / ::Codex / ::Shell construction
+        // outside src/dispatch/ is a strong signal of an independent
+        // spawn-decision site.
+        for variant in ["Native", "Claude", "Codex", "Shell"] {
             let needle = format!("ExecutorKind::{}", variant);
             if code.contains(&needle) {
                 offenders.push((rel.clone(), "ExecutorKind::* construction"));

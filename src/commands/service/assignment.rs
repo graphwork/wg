@@ -660,8 +660,5 @@ mod tests {
         assert_eq!(validate_exec_mode(Some("full"), "native"), "full");
         assert_eq!(validate_exec_mode(Some("shell"), "native"), "full");
 
-        // amplifier executor — same valid modes as claude
-        assert_eq!(validate_exec_mode(Some("light"), "amplifier"), "light");
-        assert_eq!(validate_exec_mode(Some("shell"), "amplifier"), "full");
     }
 }

@@ -6,7 +6,7 @@
 //!
 //! Use `provider::create_provider()` to route a model string to the right backend.
 //! Executes tools in-process. Eliminates external dependencies on
-//! Claude CLI or Amplifier for agent execution.
+//! Claude CLI or Codex CLI for agent execution.
 
 pub mod agent;
 pub mod background;

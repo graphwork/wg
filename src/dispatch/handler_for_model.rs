@@ -7,7 +7,7 @@
 //! executor, provider, endpoint, route, handler, model — that reduce to
 //! exactly two real axes:
 //!
-//! - **delegate-to-CLI vs in-process** (claude / codex / amplifier are CLIs;
+//! - **delegate-to-CLI vs in-process** (claude / codex are CLIs;
 //!   native / nex is in-process)
 //! - **wire protocol** (Anthropic vs OAI-compat)
 //!

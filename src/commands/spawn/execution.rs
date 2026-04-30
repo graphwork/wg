@@ -456,7 +456,7 @@ pub(crate) fn spawn_agent_inner(
     let effective_provider: Option<String> = resolved.provider.or(registry_provider.clone());
 
     // Endpoint resolution: plan.endpoint is the single source of truth. For
-    // executors that don't need an endpoint (claude/codex/amplifier/shell),
+    // executors that don't need an endpoint (claude/codex/shell),
     // plan.endpoint is None and the argv builder skips --endpoint-* flags
     // entirely. For native, plan.endpoint carries the resolved EndpointConfig.
     // No ad-hoc cascade lookup happens here anymore — that decision lives in
@@ -904,14 +904,14 @@ pub(crate) fn should_create_worktree(
 /// Built-in executors that ship without a `prompt_template` and rely on
 /// `build_prompt()` to assemble the agent prompt at spawn time.
 ///
-/// CLI handlers (claude, codex) and in-process handlers (native, amplifier)
-/// all need the same workgraph-context preamble, so the spawn pipeline
-/// auto-builds a `PromptTemplate` for any of these when the user hasn't
-/// supplied one in their executor config. Adding a new built-in handler
-/// without listing it here means the spawn writes no prompt.txt and the
-/// resulting subprocess receives empty stdin — exactly the codex bug.
+/// CLI handlers (claude, codex) and in-process handlers (native) all need
+/// the same workgraph-context preamble, so the spawn pipeline auto-builds a
+/// `PromptTemplate` for any of these when the user hasn't supplied one in
+/// their executor config. Adding a new built-in handler without listing it
+/// here means the spawn writes no prompt.txt and the resulting subprocess
+/// receives empty stdin — exactly the codex bug.
 fn executor_uses_auto_prompt(executor_type: &str) -> bool {
-    matches!(executor_type, "claude" | "codex" | "amplifier" | "native")
+    matches!(executor_type, "claude" | "codex" | "native")
 }
 
 /// Build the inner command string for the executor.
@@ -1101,38 +1101,6 @@ fn build_inner_command(
                 codex_cmd
             }
         }
-        "amplifier" => {
-            // Write prompt to file and pipe to amplifier - same pattern as claude
-            let mut cmd_parts = vec![shell_escape(&settings.command)];
-            for arg in &settings.args {
-                cmd_parts.push(shell_escape(arg));
-            }
-            // Add model flag if specified.
-            // Model can be "provider:model" (e.g., "provider-openai:minimax/minimax-m2.5")
-            // which splits into -p provider -m model, or just "model" which passes -m only.
-            // If no model is set, amplifier uses its settings.yaml default.
-            if let Some(m) = effective_model {
-                if let Some((provider, model)) = m.split_once(':') {
-                    cmd_parts.push("-p".to_string());
-                    cmd_parts.push(shell_escape(provider));
-                    cmd_parts.push("-m".to_string());
-                    cmd_parts.push(shell_escape(model));
-                } else {
-                    cmd_parts.push("-m".to_string());
-                    cmd_parts.push(shell_escape(m));
-                }
-            }
-            let amplifier_cmd = cmd_parts.join(" ");
-
-            if let Some(ref prompt_template) = settings.prompt_template {
-                let prompt_file = output_dir.join("prompt.txt");
-                fs::write(&prompt_file, &prompt_template.template)
-                    .with_context(|| format!("Failed to write prompt file: {:?}", prompt_file))?;
-                prompt_file_command(&prompt_file.to_string_lossy(), &amplifier_cmd)
-            } else {
-                amplifier_cmd
-            }
-        }
         "native" => {
             // Native executor: runs the agent loop in-process via `wg native-exec`.
             // Prompt is written to a file and passed as an argument. The bundle is
@@ -1299,7 +1267,7 @@ fn write_wrapper_script(
     // For Claude executor: split stdout (JSONL) to raw_stream.jsonl, stderr to output.log.
     // Also tee stdout to output.log for backward compatibility.
     // For native: the agent loop writes stream.jsonl directly; wrapper just adds bookends.
-    // For amplifier/shell/other: wrapper emits Init+Result bookend events.
+    // For shell/other: wrapper emits Init+Result bookend events.
     let (run_command, fallback_run_command, stream_init, stream_result) = match executor_type {
         "claude" | "codex" => {
             let raw_stream_file = output_dir.join("raw_stream.jsonl");
@@ -1329,7 +1297,7 @@ fn write_wrapper_script(
             (cmd, None, String::new(), String::new())
         }
         _ => {
-            // Amplifier, shell, and custom executors: wrapper writes bookend events.
+            // Shell and custom executors: wrapper writes bookend events.
             let cmd = format!(
                 "{timed_command} >> \"$OUTPUT_FILE\" 2>&1",
                 timed_command = timed_command,
@@ -1905,12 +1873,12 @@ mod tests {
     // --- executor_uses_auto_prompt tests ---
 
     // Regression for codex-handler-doesn: the spawn pipeline used to hard-code
-    // the auto-prompt list as `claude | amplifier | native`, which silently
-    // dropped codex. Codex agents spawned with no prompt_template, fell
-    // through to the codex case in build_inner_command's `else { codex_cmd }`
-    // branch, and the resulting run.sh had no `cat prompt.txt | ...` prefix.
-    // Codex CLI sat reading stdin, got nothing, exited with 'No prompt
-    // provided via stdin'. Pin the four built-in handlers here.
+    // the auto-prompt list as `claude | native`, which silently dropped
+    // codex. Codex agents spawned with no prompt_template, fell through to
+    // the codex case in build_inner_command's `else { codex_cmd }` branch,
+    // and the resulting run.sh had no `cat prompt.txt | ...` prefix. Codex
+    // CLI sat reading stdin, got nothing, exited with 'No prompt provided
+    // via stdin'. Pin the three built-in handlers here.
     #[test]
     fn test_executor_uses_auto_prompt_includes_codex() {
         assert!(executor_uses_auto_prompt("codex"));
@@ -1918,7 +1886,7 @@ mod tests {
 
     #[test]
     fn test_executor_uses_auto_prompt_includes_all_builtins() {
-        for kind in ["claude", "codex", "amplifier", "native"] {
+        for kind in ["claude", "codex", "native"] {
             assert!(
                 executor_uses_auto_prompt(kind),
                 "{} must auto-build prompt",

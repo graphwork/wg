@@ -1291,7 +1291,7 @@ impl ExecMode {
     /// Return the valid exec_modes for a given executor type.
     ///
     /// - `"shell"` executor: only `Shell`
-    /// - `"claude"`, `"native"`, `"amplifier"`, or any other: `Bare`, `Light`, `Full`
+    /// - `"claude"`, `"native"`, `"codex"`, or any other: `Bare`, `Light`, `Full`
     pub fn valid_for_executor(executor: &str) -> &'static [ExecMode] {
         match executor {
             "shell" => &[ExecMode::Shell],
@@ -1787,6 +1787,22 @@ pub fn parse_model_spec_strict(spec: &str) -> Result<ModelSpec, ModelSpecError> 
             input: spec.to_string(),
             message: "Model spec cannot be empty. Use provider:model format (e.g., 'claude:opus')."
                 .to_string(),
+        });
+    }
+
+    if let Some((prefix, _rest)) = spec.split_once(':')
+        && prefix == "amplifier"
+    {
+        return Err(ModelSpecError {
+            input: spec.to_string(),
+            message: format!(
+                "amplifier executor was removed; use claude:/codex:/nex: instead \
+                 (got '{}'). The previous `amplifier` handler delegated to a CLI that \
+                 was never tested in this codebase and silently failed at spawn time. \
+                 Migrate to `claude:opus`, `codex:gpt-5.4`, or `nex:<model>` with a \
+                 matching `-e <ENDPOINT>`.",
+                spec,
+            ),
         });
     }
 
@@ -5049,7 +5065,7 @@ executor = "claude"
 model = "haiku"
 
 [coordinator]
-executor = "amplifier"
+executor = "native"
 "#,
         )
         .unwrap();
@@ -5069,7 +5085,7 @@ executor = "amplifier"
             t["coordinator"].as_table().unwrap()["executor"]
                 .as_str()
                 .unwrap(),
-            "amplifier"
+            "native"
         );
     }
 
@@ -6957,6 +6973,37 @@ provider = "openrouter"
         assert_eq!(provider_to_executor("ollama"), "native");
         assert_eq!(provider_to_executor("local"), "native");
         assert_eq!(provider_to_executor("nex"), "native");
+    }
+
+    #[test]
+    fn test_parse_model_spec_strict_rejects_amplifier_with_migration_message() {
+        // amplifier was a CLI handler that was never tested; removed entirely.
+        // Strict parsing must reject `amplifier:foo` with a clear migration
+        // message so users coming back to old configs get pointed at
+        // claude:/codex:/nex: instead of getting a generic "unknown provider"
+        // error.
+        let err = parse_model_spec_strict("amplifier:claude-3-haiku")
+            .expect_err("amplifier: prefix must be rejected");
+        assert!(
+            err.message.contains("amplifier executor was removed"),
+            "error must call out the removal explicitly, got: {}",
+            err.message,
+        );
+        assert!(
+            err.message.contains("claude:")
+                && err.message.contains("codex:")
+                && err.message.contains("nex:"),
+            "error must list the three valid handler prefixes, got: {}",
+            err.message,
+        );
+    }
+
+    #[test]
+    fn test_amplifier_not_in_known_providers() {
+        // Belt-and-suspenders: KNOWN_PROVIDERS should never contain "amplifier"
+        // — the strict parser branches on the prefix before this check, but
+        // pinning this guards against a future re-introduction.
+        assert!(!KNOWN_PROVIDERS.contains(&"amplifier"));
     }
 
     #[test]

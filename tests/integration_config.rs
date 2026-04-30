@@ -188,7 +188,7 @@ fn config_set_multiple_values() {
         &[
             "config",
             "--executor",
-            "amplifier",
+            "native",
             "--model",
             "claude:sonnet",
             "--max-agents",
@@ -205,7 +205,7 @@ fn config_set_coordinator_executor() {
     let tmp = TempDir::new().unwrap();
     let wg_dir = setup_workgraph(&tmp);
 
-    let output = wg_ok(&wg_dir, &["config", "--coordinator-executor", "amplifier"]);
+    let output = wg_ok(&wg_dir, &["config", "--coordinator-executor", "native"]);
     assert!(output.contains("Set coordinator.executor"));
 }
 

@@ -580,51 +580,6 @@ fn adapter_claude_writes_notification_file() {
 }
 
 #[test]
-fn adapter_amplifier_writes_notification_file() {
-    let (_tmp, wg_dir) = init_wg();
-    wg_ok(&wg_dir, &["add", "Amplifier test", "--id", "amp-1"]);
-
-    let agent = workgraph::service::registry::AgentEntry {
-        id: "agent-amp-1".to_string(),
-        pid: 88888,
-        task_id: "amp-1".to_string(),
-        executor: "amplifier".to_string(),
-        started_at: "2026-02-28T00:00:00Z".to_string(),
-        last_heartbeat: "2026-02-28T00:00:00Z".to_string(),
-        status: workgraph::service::registry::AgentStatus::Working,
-        output_file: "/tmp/output.log".to_string(),
-        model: None,
-        completed_at: None,
-        worktree_path: None,
-    };
-
-    let (msg_id, delivered) = messages::deliver_message(
-        &wg_dir,
-        "amp-1",
-        &agent,
-        "Amplifier context update",
-        "coordinator",
-        "urgent",
-    )
-    .unwrap();
-
-    assert_eq!(msg_id, 1);
-    assert!(
-        !delivered,
-        "Amplifier adapter should not support realtime delivery"
-    );
-
-    let notif_path = wg_dir
-        .join("agents")
-        .join("agent-amp-1")
-        .join("pending_messages.txt");
-    assert!(notif_path.exists());
-    let content = fs::read_to_string(&notif_path).unwrap();
-    assert!(content.contains("Amplifier context update"));
-    assert!(content.contains("[URGENT]"));
-}
-
-#[test]
 fn adapter_shell_writes_notification_file() {
     let (_tmp, wg_dir) = init_wg();
     wg_ok(&wg_dir, &["add", "Shell test", "--id", "shell-1"]);
@@ -674,9 +629,9 @@ fn adapter_factory_returns_correct_types() {
     assert_eq!(claude.executor_type(), "claude");
     assert!(!claude.supports_realtime());
 
-    let amplifier = messages::adapter_for_executor("amplifier");
-    assert_eq!(amplifier.executor_type(), "amplifier");
-    assert!(!amplifier.supports_realtime());
+    let codex = messages::adapter_for_executor("codex");
+    assert_eq!(codex.executor_type(), "codex");
+    assert!(!codex.supports_realtime());
 
     let shell = messages::adapter_for_executor("shell");
     assert_eq!(shell.executor_type(), "shell");
@@ -1003,7 +958,7 @@ fn coordinator_multiple_deliveries_across_tasks() {
         id: "agent-b".to_string(),
         pid: 22222,
         task_id: "multi-b".to_string(),
-        executor: "amplifier".to_string(),
+        executor: "codex".to_string(),
         started_at: "2026-02-28T00:00:00Z".to_string(),
         last_heartbeat: "2026-02-28T00:00:00Z".to_string(),
         status: workgraph::service::registry::AgentStatus::Working,

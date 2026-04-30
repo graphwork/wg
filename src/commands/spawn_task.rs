@@ -13,9 +13,9 @@
 //!
 //! Adapters live inline here (one match arm per executor). Native
 //! execs into `wg nex`; Claude execs into `wg claude-handler`
-//! (the standalone Claude CLI ↔ chat/*.jsonl bridge). Codex /
-//! Gemini / Amplifier are still stubs — they error cleanly with a
-//! "not yet implemented" message when selected.
+//! (the standalone Claude CLI ↔ chat/*.jsonl bridge). Codex / Gemini
+//! are still stubs — they error cleanly with a "not yet implemented"
+//! message when selected.
 //!
 //! ## Stdout-is-protocol contract
 //!
@@ -54,9 +54,6 @@ pub enum HandlerSpec {
         model: Option<String>,
     },
     Gemini {
-        chat_ref: String,
-    },
-    Amplifier {
         chat_ref: String,
     },
 }
@@ -102,9 +99,6 @@ impl HandlerSpec {
                 s
             }
             Self::Gemini { chat_ref } => format!("gemini [TODO: adapter for session={}]", chat_ref),
-            Self::Amplifier { chat_ref } => {
-                format!("wg amplifier-run {} [TODO]", chat_ref)
-            }
         }
     }
 }
@@ -248,7 +242,6 @@ pub fn resolve_handler(
         },
         workgraph::dispatch::ExecutorKind::Claude => HandlerSpec::Claude { chat_ref, model },
         workgraph::dispatch::ExecutorKind::Codex => HandlerSpec::Codex { chat_ref, model },
-        workgraph::dispatch::ExecutorKind::Amplifier => HandlerSpec::Amplifier { chat_ref },
         workgraph::dispatch::ExecutorKind::Shell => {
             return Err(anyhow!(
                 "shell executor is not supported by spawn-task; \
@@ -287,10 +280,6 @@ fn dispatch(spec: &HandlerSpec, _workgraph_dir: &Path) -> Result<()> {
         HandlerSpec::Codex { chat_ref, model } => dispatch_codex(chat_ref, model.as_deref()),
         HandlerSpec::Gemini { .. } => Err(anyhow!(
             "gemini adapter not yet implemented (Phase 7). Use --executor native for now."
-        )),
-        HandlerSpec::Amplifier { .. } => Err(anyhow!(
-            "amplifier adapter via spawn-task not yet implemented (Phase 7). \
-             Use the existing service-level amplifier dispatch for now."
         )),
     }
 }
@@ -748,7 +737,6 @@ mod tests {
                     HandlerSpec::Codex { model, .. } =>
                         format!("Codex {{ model: {:?} }}", model),
                     HandlerSpec::Gemini { .. } => "Gemini".to_string(),
-                    HandlerSpec::Amplifier { .. } => "Amplifier".to_string(),
                 }
             ),
         }

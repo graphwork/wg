@@ -69,12 +69,12 @@ executor = "claude"
     let legacy_toml = r#"
 [coordinator]
 max_agents = 5
-executor = "amplifier"
+executor = "native"
 "#;
     let legacy_cfg: workgraph::config::Config =
         toml::from_str(legacy_toml).expect("legacy [coordinator] must still parse");
     assert_eq!(legacy_cfg.coordinator.max_agents, 5);
-    assert_eq!(legacy_cfg.coordinator.effective_executor(), "amplifier");
+    assert_eq!(legacy_cfg.coordinator.effective_executor(), "native");
 }
 
 #[test]

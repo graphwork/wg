@@ -102,9 +102,9 @@ impl SetupRoute {
 
     /// Conservative version of [`SetupRoute::from_executor`]: returns
     /// `None` for executors that don't map to any of the 5 routes
-    /// (e.g. `shell`, `amplifier`, custom executor names). Callers
-    /// should fall back to the legacy path when this returns `None`
-    /// rather than substituting a default route.
+    /// (e.g. `shell`, custom executor names). Callers should fall back
+    /// to the legacy path when this returns `None` rather than
+    /// substituting a default route.
     pub fn try_from_executor(executor: &str) -> Option<Self> {
         match executor {
             "claude" => Some(Self::ClaudeCli),

@@ -1376,20 +1376,15 @@ pub fn run() -> Result<()> {
     };
 
     println!();
-    let executor_ok = match (default_executor, detection.claude_cli, detection.amplifier) {
-        ("claude", true, _) => {
+    let executor_ok = match (default_executor, detection.claude_cli) {
+        ("claude", true) => {
             println!(
                 "  Using '{}' executor — you've got the claude CLI, perfect.",
                 default_executor
             );
             true
         }
-        ("claude", false, true) => {
-            println!("  Heads up: claude CLI isn't installed, but amplifier is.");
-            println!("  You might want to switch the executor.");
-            false
-        }
-        ("claude", false, false) => {
+        ("claude", false) => {
             println!("  Note: claude CLI isn't installed yet.");
             println!(
                 "  You'll need it before running agents. Install from: https://docs.anthropic.com/claude-code"
@@ -1418,7 +1413,7 @@ pub fn run() -> Result<()> {
     };
 
     let executor = if override_executor {
-        let executor_options = &["claude", "native", "amplifier", "custom"];
+        let executor_options = &["claude", "native", "custom"];
         let current_idx = executor_options
             .iter()
             .position(|&e| e == default_executor)
@@ -1428,7 +1423,7 @@ pub fn run() -> Result<()> {
             .items(executor_options)
             .default(current_idx)
             .interact()?;
-        if idx == 3 {
+        if idx == executor_options.len() - 1 {
             let custom: String = Input::new()
                 .with_prompt("Custom executor name")
                 .interact_text()?;
@@ -1961,17 +1956,6 @@ pub fn is_claude_skill_installed() -> bool {
     }
 }
 
-/// Check if the amplifier-bundle-workgraph setup script exists in common locations.
-fn find_amplifier_bundle_setup() -> Option<PathBuf> {
-    if let Ok(home) = std::env::var("HOME") {
-        let candidate = PathBuf::from(&home).join("amplifier-bundle-workgraph/setup.sh");
-        if candidate.exists() {
-            return Some(candidate);
-        }
-    }
-    None
-}
-
 /// After executor selection, guide the user to install the appropriate skill or bundle.
 /// Returns a status string for the summary.
 fn guide_skill_bundle_install(executor: &str) -> Result<String> {
@@ -1996,36 +1980,6 @@ fn guide_skill_bundle_install(executor: &str) -> Result<String> {
                 }
             }
         }
-        "amplifier" => {
-            if let Some(setup_path) = find_amplifier_bundle_setup() {
-                println!(
-                    "Found amplifier-bundle-workgraph at: {}",
-                    setup_path.parent().unwrap().display()
-                );
-                println!("  Run the setup script to install the executor and bundle:");
-                println!("    {}", setup_path.display());
-                println!();
-                println!("  Then start sessions with: amplifier run -B workgraph");
-            } else {
-                println!(
-                    "Spawned Amplifier agents need the workgraph bundle to understand wg commands."
-                );
-                println!();
-                println!("  Install the bundle:");
-                println!(
-                    "    git clone https://github.com/graphwork/amplifier-bundle-workgraph ~/amplifier-bundle-workgraph"
-                );
-                println!("    cd ~/amplifier-bundle-workgraph && ./setup.sh");
-                println!();
-                println!("  Or add it directly:");
-                println!(
-                    "    amplifier bundle add git+https://github.com/graphwork/amplifier-bundle-workgraph"
-                );
-                println!();
-                println!("  Then start sessions with: amplifier run -B workgraph");
-            }
-            Ok("amplifier bundle — see instructions above".to_string())
-        }
         _ => {
             println!("Custom executor selected. Make sure your agents know about wg commands.");
             println!("  For reference, see: wg quickstart");
@@ -2044,8 +1998,6 @@ pub struct DetectionResult {
     pub claude_cli: bool,
     /// Version string of the `claude` CLI, if detected.
     pub claude_cli_version: Option<String>,
-    /// Whether `amplifier` was found in PATH.
-    pub amplifier: bool,
     /// Whether `git` was found in PATH.
     pub git: bool,
     /// Whether `tmux` was found in PATH.
@@ -2107,7 +2059,6 @@ pub fn detect_environment() -> DetectionResult {
     DetectionResult {
         claude_cli,
         claude_cli_version,
-        amplifier: is_command_available("amplifier"),
         git: is_command_available("git"),
         tmux: is_command_available("tmux"),
         anthropic_key: std::env::var("ANTHROPIC_API_KEY")
@@ -2139,12 +2090,6 @@ pub fn format_detection_summary(det: &DetectionResult) -> String {
         }
     } else {
         lines.push("  ✗ claude CLI — not found (needed for executor=claude)".to_string());
-    }
-
-    if det.amplifier {
-        lines.push("  ✓ amplifier — installed!".to_string());
-    } else {
-        lines.push("  · amplifier — not installed (optional)".to_string());
     }
 
     if det.git {
@@ -2442,27 +2387,6 @@ mod tests {
     }
 
     #[test]
-    fn test_build_config_amplifier() {
-        let choices = SetupChoices {
-            provider: "anthropic".to_string(),
-            executor: "amplifier".to_string(),
-            model: "sonnet".to_string(),
-            agency_enabled: false,
-            max_agents: 8,
-            endpoint: None,
-            model_registry_entries: vec![],
-        };
-
-        let config = build_config(&choices, None);
-        assert_eq!(config.coordinator.executor, Some("amplifier".to_string()));
-        assert_eq!(config.agent.executor, "amplifier");
-        assert_eq!(config.agent.model, "claude:sonnet");
-        assert_eq!(config.coordinator.max_agents, 8);
-        assert!(!config.agency.auto_assign);
-        assert!(!config.agency.auto_evaluate);
-    }
-
-    #[test]
     fn test_build_config_preserves_base() {
         let mut base = Config::default();
         base.project.name = Some("my-project".to_string());
@@ -2552,7 +2476,7 @@ mod tests {
     fn test_format_summary_agency_disabled() {
         let choices = SetupChoices {
             provider: "anthropic".to_string(),
-            executor: "amplifier".to_string(),
+            executor: "claude".to_string(),
             model: "sonnet".to_string(),
             agency_enabled: false,
             max_agents: 8,
@@ -2561,7 +2485,7 @@ mod tests {
         };
 
         let summary = format_summary(&choices);
-        assert!(summary.contains("executor = \"amplifier\""));
+        assert!(summary.contains("executor = \"claude\""));
         assert!(summary.contains("auto_assign = false"));
         assert!(summary.contains("auto_evaluate = false"));
     }
@@ -3305,7 +3229,6 @@ mod tests {
     fn test_detection_result_default_all_false() {
         let det = DetectionResult::default();
         assert!(!det.claude_cli);
-        assert!(!det.amplifier);
         assert!(!det.git);
         assert!(!det.tmux);
         assert!(!det.anthropic_key);
@@ -3323,7 +3246,6 @@ mod tests {
         assert!(summary.contains("Let's see what you've got"));
         assert!(summary.contains("✗ claude CLI"));
         assert!(summary.contains("not found"));
-        assert!(summary.contains("· amplifier"));
         assert!(summary.contains("No API keys detected"));
         assert!(summary.contains("No global config yet"));
     }
@@ -3333,7 +3255,6 @@ mod tests {
         let det = DetectionResult {
             claude_cli: true,
             claude_cli_version: Some("1.2.3".to_string()),
-            amplifier: true,
             git: true,
             tmux: true,
             anthropic_key: true,
@@ -3344,7 +3265,6 @@ mod tests {
         };
         let summary = format_detection_summary(&det);
         assert!(summary.contains("claude CLI — 1.2.3 — nice!"));
-        assert!(summary.contains("✓ amplifier"));
         assert!(summary.contains("✓ git"));
         assert!(summary.contains("✓ tmux"));
         assert!(summary.contains("ANTHROPIC_API_KEY — set!"));

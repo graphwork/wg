@@ -184,7 +184,7 @@ owners = [
     "codex-handler-doesn",
     "smoke-gate-is",
 ]
-description = "Dispatcher MUST write a non-empty prompt.txt and a run.sh that pipes it into `codex exec` via stdin. Regression for codex-handler-doesn: spawn_agent_inner's auto-prompt gate hard-coded `claude | amplifier | native`, omitting codex, so every codex agent shipped with empty stdin and exited 1 reading 'No prompt provided via stdin'. Asserts cat <prompt.txt> | 'codex' 'exec' appears in the agent's run.sh and prompt.txt has content — no LLM call required."
+description = "Dispatcher MUST write a non-empty prompt.txt and a run.sh that pipes it into `codex exec` via stdin. Regression for codex-handler-doesn: spawn_agent_inner's auto-prompt gate hard-coded `claude | native`, omitting codex, so every codex agent shipped with empty stdin and exited 1 reading 'No prompt provided via stdin'. Asserts cat <prompt.txt> | 'codex' 'exec' appears in the agent's run.sh and prompt.txt has content — no LLM call required."
 timeout_seconds = 60
 
 [[scenario]]

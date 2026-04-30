@@ -116,7 +116,7 @@ fn check_stream_liveness(agent: &AgentEntry) -> Option<i64> {
     let output_path = std::path::Path::new(&agent.output_file);
     let agent_dir = output_path.parent()?;
 
-    // Try unified stream.jsonl first (native executor, amplifier/shell bookends)
+    // Try unified stream.jsonl first (native executor, shell bookends)
     let stream_path = agent_dir.join(stream_event::STREAM_FILE_NAME);
     if stream_path.exists()
         && let Ok((events, _)) = stream_event::read_stream_events(&stream_path, 0)

@@ -16,7 +16,7 @@ use std::path::PathBuf;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ExecutorInfo {
     /// Short name matching `coordinator.executor` config values:
-    /// "native", "claude", "codex", "gemini", "amplifier".
+    /// "native", "claude", "codex", "gemini".
     pub name: &'static str,
     /// Human-readable description.
     pub description: &'static str,
@@ -87,11 +87,6 @@ const EXECUTORS: &[ExecutorSpec] = &[
         description: "Google Gemini CLI",
         binary_candidates: &["gemini"],
     },
-    ExecutorSpec {
-        name: "amplifier",
-        description: "Amplifier (multi-agent delegation)",
-        binary_candidates: &["amplifier"],
-    },
 ];
 
 /// Look up each candidate on PATH via `which`-style lookup. Returns
@@ -158,7 +153,7 @@ mod tests {
         assert!(names.contains(&"claude"));
         assert!(names.contains(&"codex"));
         assert!(names.contains(&"gemini"));
-        assert!(names.contains(&"amplifier"));
+        assert!(!names.contains(&"amplifier"));
     }
 
     #[test]

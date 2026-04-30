@@ -60,8 +60,8 @@ pub fn run_with_route(
     // 2. Explicit --route always wins. Otherwise, derive a route from the
     //    (legacy or model-derived) executor — but ONLY when the executor
     //    maps to one of the named routes. Unknown executors (`shell`,
-    //    `amplifier`, custom names) fall through to the legacy path so we
-    //    don't clobber them with claude defaults.
+    //    custom names) fall through to the legacy path so we don't clobber
+    //    them with claude defaults.
     let resolved_route: Option<SetupRoute> = if let Some(name) = route {
         Some(SetupRoute::from_name(name).ok_or_else(|| {
             anyhow::anyhow!(
@@ -242,7 +242,6 @@ fn suggested_model_for_executor(executor: &str) -> &'static str {
         "claude" => "claude:opus",
         "codex" => "codex:gpt-5",
         "nex" | "native" => "nex:qwen3-coder -e <ENDPOINT>",
-        "amplifier" => "claude:opus  # amplifier wraps the same model",
         "shell" => "shell  # exec_mode, not a model — keep the route",
         _ => "<provider>:<model>",
     }
@@ -296,10 +295,6 @@ fn write_executor_templates(dir: &Path) -> Result<()> {
         (
             "codex.toml.example",
             include_str!("../../templates/executors/codex.toml.example"),
-        ),
-        (
-            "amplifier.toml.example",
-            include_str!("../../templates/executors/amplifier.toml.example"),
         ),
     ] {
         fs::write(executors_dir.join(name), contents)
@@ -427,10 +422,6 @@ pub fn run(
             "codex.toml.example",
             include_str!("../../templates/executors/codex.toml.example"),
         ),
-        (
-            "amplifier.toml.example",
-            include_str!("../../templates/executors/amplifier.toml.example"),
-        ),
     ] {
         fs::write(executors_dir.join(name), contents)
             .with_context(|| format!("Failed to write executor template {}", name))?;
@@ -470,18 +461,6 @@ pub fn run(
                 println!("Hint: The wg skill for Claude Code is not installed.");
                 println!("  Spawned agents won't know wg commands without it.");
                 println!("  Run: wg skill install");
-            }
-        }
-        "amplifier" => {
-            // Check if executor config exists in the newly created .workgraph
-            let executor_toml = dir.join("executors/amplifier.toml");
-            if !executor_toml.exists() {
-                println!();
-                println!(
-                    "Hint: Amplifier executor is configured but not installed in this project."
-                );
-                println!("  Spawned agents won't know wg commands without the workgraph bundle.");
-                println!("  Run: cd ~/amplifier-bundle-workgraph && ./setup.sh");
             }
         }
         _ => {} // Custom executor — user knows what they're doing
@@ -525,8 +504,8 @@ pub fn run(
 /// used to populate `[tiers]` and the model registry — fixing the empty
 /// `[tiers]` bug from the old `wg init -x claude` flow.
 ///
-/// For executors with no matching route (`shell`, `amplifier`, custom),
-/// only `coordinator.executor` is set and `[tiers]` is left empty so the
+/// For executors with no matching route (`shell`, custom), only
+/// `coordinator.executor` is set and `[tiers]` is left empty so the
 /// custom-executor user can decide for themselves.
 fn apply_executor(dir: &Path, executor: &str) -> Result<()> {
     let canonical = match executor {

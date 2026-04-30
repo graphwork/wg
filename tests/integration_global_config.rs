@@ -276,7 +276,7 @@ executor = "claude"
         Some(
             r#"
 [coordinator]
-executor = "amplifier"
+executor = "native"
 "#,
         ),
     );
@@ -493,7 +493,7 @@ poll_interval = 120
         Some(
             r#"
 [coordinator]
-executor = "amplifier"
+executor = "native"
 "#,
         ),
     );
@@ -504,7 +504,7 @@ executor = "amplifier"
     assert_eq!(config.coordinator.max_agents, 8, "inherited from global");
     assert_eq!(
         config.coordinator.executor,
-        Some("amplifier".to_string()),
+        Some("native".to_string()),
         "local overrides"
     );
     assert_eq!(config.coordinator.interval, 30, "inherited from global");

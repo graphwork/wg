@@ -386,7 +386,6 @@ pub fn extract_provider_id(executor: &str, model: Option<&str>) -> String {
                 "native:unknown".to_string()
             }
         }
-        "amplifier" => "amplifier".to_string(),
         "shell" => "shell".to_string(),
         _ => executor.to_string(),
     }

@@ -24,7 +24,6 @@
 //!   pass `--endpoint`.
 //! - `executor=shell`   →  endpoint is always `None`.
 //! - `executor=codex`   →  endpoint is always `None` (codex CLI handles its own).
-//! - `executor=amplifier`→ endpoint is always `None`.
 //! - `executor=native`  →  endpoint is required; resolved via merged config
 //!   (per-task → role → default).
 //!
@@ -54,8 +53,6 @@ pub enum ExecutorKind {
     Shell,
     /// Codex CLI (`codex exec …`). Handles its own auth.
     Codex,
-    /// Amplifier wrapper. Handles its own auth via amplifier settings.
-    Amplifier,
 }
 
 impl ExecutorKind {
@@ -65,7 +62,6 @@ impl ExecutorKind {
             ExecutorKind::Native => "native",
             ExecutorKind::Shell => "shell",
             ExecutorKind::Codex => "codex",
-            ExecutorKind::Amplifier => "amplifier",
         }
     }
 
@@ -75,7 +71,6 @@ impl ExecutorKind {
             "native" => Some(ExecutorKind::Native),
             "shell" => Some(ExecutorKind::Shell),
             "codex" => Some(ExecutorKind::Codex),
-            "amplifier" => Some(ExecutorKind::Amplifier),
             _ => None,
         }
     }
@@ -152,7 +147,7 @@ pub struct SpawnPlan {
     pub executor: ExecutorKind,
     pub model: ResolvedModelSpec,
     /// `None` for executors that handle their own endpoint (claude/codex/
-    /// amplifier/shell). `Some(_)` only for `executor=native`.
+    /// shell). `Some(_)` only for `executor=native`.
     pub endpoint: Option<EndpointConfig>,
     /// Environment variables to set on the spawned process. Plan-level only;
     /// the spawn-execution layer is free to add wrapper-internal vars

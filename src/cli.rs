@@ -51,7 +51,7 @@ pub enum Commands {
         global: bool,
 
         /// [DEPRECATED] Agent executor (`claude`, `codex`, `nex`/`native`,
-        /// `amplifier`, `shell`). The executor is now derived from the
+        /// `shell`). The executor is now derived from the
         /// model spec's provider prefix — you should not need this flag.
         /// Kept for one release with a deprecation warning so existing
         /// scripts keep working. Migrate to `-m <provider>:<model>`.
@@ -1519,7 +1519,7 @@ pub enum Commands {
         /// Task ID to spawn an agent for
         task: String,
 
-        /// Executor to use (claude, amplifier, shell, or custom config name)
+        /// Executor to use (claude, codex, native, shell, or custom config name)
         #[arg(long)]
         executor: String,
 
@@ -1585,7 +1585,7 @@ pub enum Commands {
         #[arg(long)]
         list: bool,
 
-        /// Set executor (claude, amplifier, shell, or custom config name)
+        /// Set executor (claude, codex, native, shell, or custom config name)
         #[arg(long)]
         executor: Option<String>,
 
@@ -4020,7 +4020,7 @@ pub enum ChatCommands {
         #[arg(long)]
         name: Option<String>,
 
-        /// Per-chat executor override (e.g. "claude", "amplifier", "native").
+        /// Per-chat executor override (e.g. "claude", "codex", "native").
         #[arg(long)]
         executor: Option<String>,
 

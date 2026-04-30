@@ -634,7 +634,7 @@ const WG_CONTEXT_HINT: &str = "\
 
 /// Native executor tool guidance. Injected into the prompt only when the
 /// executor is `native`, since these tool names are specific to the native
-/// executor's in-process tool registry — claude/amplifier/etc. have
+/// executor's in-process tool registry — claude/codex/etc. have
 /// different names provided by their own runtimes.
 ///
 /// The goal is to make the full native toolset visible in the system
@@ -1542,29 +1542,6 @@ impl ExecutorRegistry {
                     model: None,
                 },
             }),
-            "amplifier" => Ok(ExecutorConfig {
-                executor: ExecutorSettings {
-                    executor_type: "amplifier".to_string(),
-                    command: "amplifier".to_string(),
-                    args: vec![
-                        "run".to_string(),
-                        "--mode".to_string(),
-                        "single".to_string(),
-                        "--output-format".to_string(),
-                        "text".to_string(),
-                    ],
-                    env: {
-                        let mut env = HashMap::new();
-                        env.insert("WG_TASK_ID".to_string(), "{{task_id}}".to_string());
-                        env
-                    },
-                    // No default template — uses scope-based build_prompt() assembly.
-                    prompt_template: None,
-                    working_dir: Some("{{working_dir}}".to_string()),
-                    timeout: Some(600),
-                    model: None,
-                },
-            }),
             "native" => Ok(ExecutorConfig {
                 executor: ExecutorSettings {
                     executor_type: "native".to_string(),
@@ -1595,7 +1572,7 @@ impl ExecutorRegistry {
                 },
             }),
             _ => Err(anyhow!(
-                "Unknown executor '{}'. Available: claude, codex, amplifier, native, shell, default",
+                "Unknown executor '{}'. Available: claude, codex, native, shell, default",
                 name,
             )),
         }
@@ -2519,18 +2496,6 @@ args = ["--custom-flag"]
         // But should still have task info
         assert!(prompt.contains("task-1"));
         assert!(prompt.contains("Clean Task"));
-    }
-
-    #[test]
-    fn test_default_amplifier_no_prompt_template() {
-        // Built-in amplifier executor uses scope-based build_prompt() instead of a template
-        let temp_dir = TempDir::new().unwrap();
-        let registry = ExecutorRegistry::new(temp_dir.path());
-        let config = registry.load_config("amplifier").unwrap();
-        assert!(
-            config.executor.prompt_template.is_none(),
-            "Built-in amplifier config should have no prompt_template (uses build_prompt)"
-        );
     }
 
     #[test]

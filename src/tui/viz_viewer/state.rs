@@ -1169,7 +1169,7 @@ pub struct LauncherState {
 /// - `claude`  → put `claude:*` and `*claude*` ids first
 /// - `codex`   → put `openai:*` first
 /// - `gemini`  → put `google:*` first
-/// - `native`/`amplifier` → no reorder (all models work via OAI-compat)
+/// - `native` → no reorder (all models work via OAI-compat)
 /// Resolve the executor + model the TUI's auto-PTY launcher should use for
 /// chat `coordinator_id`. Per-chat overrides written by `wg chat create
 /// --executor <X> --model <M>` (stored in `CoordinatorState`) win over
@@ -14964,7 +14964,6 @@ impl VizApp {
             edit_kind: ConfigEditKind::Choice(vec![
                 "claude".into(),
                 "native".into(),
-                "amplifier".into(),
                 "opencode".into(),
                 "codex".into(),
                 "shell".into(),
@@ -15172,7 +15171,6 @@ impl VizApp {
             value: config.agent.executor.clone(),
             edit_kind: ConfigEditKind::Choice(vec![
                 "claude".into(),
-                "amplifier".into(),
                 "opencode".into(),
                 "codex".into(),
                 "shell".into(),

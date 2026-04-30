@@ -85,7 +85,6 @@ fn test_provider_health_provider_id_extraction() {
         extract_provider_id("native", Some("custom:model")),
         "native:custom"
     );
-    assert_eq!(extract_provider_id("amplifier", None), "amplifier");
     assert_eq!(extract_provider_id("shell", None), "shell");
 }
 

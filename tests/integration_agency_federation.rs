@@ -1729,7 +1729,7 @@ fn transfer_preserves_all_agent_fields() {
 
     let mut agent = make_agent("a1", "full-agent", "r1", "m1");
     agent.capabilities = vec!["rust".to_string(), "testing".to_string()];
-    agent.executor = "amplifier".to_string();
+    agent.executor = "codex".to_string();
     source.save_agent(&agent).unwrap();
 
     federation::transfer(&source, &target, &TransferOptions::default()).unwrap();
@@ -1740,7 +1740,7 @@ fn transfer_preserves_all_agent_fields() {
     assert_eq!(transferred.role_id, "r1");
     assert_eq!(transferred.tradeoff_id, "m1");
     assert_eq!(transferred.capabilities, vec!["rust", "testing"]);
-    assert_eq!(transferred.executor, "amplifier");
+    assert_eq!(transferred.executor, "codex");
 }
 
 /// Evaluation relevance filtering: only evals for transferred entities are copied.
@@ -1963,7 +1963,7 @@ fn transfer_preserves_all_optional_agent_fields() {
     agent.capacity = Some(3.0);
     agent.trust_level = TrustLevel::Verified;
     agent.contact = Some("agent@example.com".to_string());
-    agent.executor = "amplifier".to_string();
+    agent.executor = "codex".to_string();
     source.save_agent(&agent).unwrap();
 
     federation::transfer(&source, &target, &TransferOptions::default()).unwrap();
@@ -1974,7 +1974,7 @@ fn transfer_preserves_all_optional_agent_fields() {
     assert_eq!(transferred.capacity, Some(3.0));
     assert_eq!(transferred.trust_level, TrustLevel::Verified);
     assert_eq!(transferred.contact.as_deref(), Some("agent@example.com"));
-    assert_eq!(transferred.executor, "amplifier");
+    assert_eq!(transferred.executor, "codex");
     assert_eq!(transferred.capabilities.len(), 3);
 }
 
@@ -2120,7 +2120,7 @@ fn force_flag_overwrites_agent() {
         .unwrap();
 
     let mut source_agent = make_agent("a1", "source-agent", "r1", "m1");
-    source_agent.executor = "amplifier".to_string();
+    source_agent.executor = "codex".to_string();
     source.save_agent(&source_agent).unwrap();
 
     let mut target_agent = make_agent("a1", "target-agent", "r1", "m1");
@@ -2137,7 +2137,7 @@ fn force_flag_overwrites_agent() {
     let agents = target.load_agents().unwrap();
     let merged = agents.iter().find(|a| a.id == "a1").unwrap();
     assert_eq!(merged.name, "source-agent");
-    assert_eq!(merged.executor, "amplifier");
+    assert_eq!(merged.executor, "codex");
 }
 
 /// No_evaluations + force: overwrites metadata, keeps evaluations out.

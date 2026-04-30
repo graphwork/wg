@@ -165,8 +165,8 @@ if grep -qE 'SpawnPlan executor=claude' <<<"$spawn_lines"; then
     loud_fail "agency still routes a local: model through executor=claude — autohaiku regression returned:\n$spawn_lines"
 fi
 
-# Positive assertion: native executor must be the chosen kind. (codex/
-# amplifier could in principle satisfy a non-claude model spec, but for a
+# Positive assertion: native executor must be the chosen kind. (codex
+# could in principle satisfy a non-claude model spec, but for a
 # `local:` prefix the canonical mapping is native.)
 if ! grep -qE 'SpawnPlan executor=native' <<<"$spawn_lines"; then
     loud_fail "SpawnPlan executor is not native for a local: model — got:\n$spawn_lines"

@@ -23,11 +23,6 @@ SKILL & BUNDLE SETUP (required for agents to use wg)
     wg skill install             # Installs ~/.claude/skills/wg/SKILL.md
                                  # This is injected into every Claude Code session
 
-  Amplifier executor:
-    cd ~/amplifier-bundle-workgraph && ./setup.sh
-                                 # Installs the workgraph bundle and executor
-                                 # Then use: amplifier run -B workgraph
-
   Custom executor:
     Ensure your executor's agent prompt includes wg CLI instructions.
     See 'wg quickstart' (this text) for the command reference.
@@ -439,9 +434,9 @@ TIPS
 EXECUTORS & MODELS
 ─────────────────────────────────────────
   The coordinator spawns agents using an executor (default: claude).
-  Switch to amplifier for OpenRouter-backed models:
+  Switch to nex (in-process) for OpenRouter / local-OAI-compat models:
 
-  wg config --coordinator-executor amplifier
+  wg config -m nex:qwen3-coder -e http://127.0.0.1:8088
 
   Set a default model for all agents:
 
@@ -641,11 +636,6 @@ fn json_output() -> serde_json::Value {
                 "location": "~/.claude/skills/wg/SKILL.md",
                 "note": "Injected into every Claude Code session automatically"
             },
-            "amplifier": {
-                "install": "cd ~/amplifier-bundle-workgraph && ./setup.sh",
-                "alternative": "amplifier bundle add git+https://github.com/graphwork/amplifier-bundle-workgraph",
-                "usage": "amplifier run -B workgraph"
-            },
             "custom": "Ensure your executor's agent prompt includes wg CLI instructions"
         },
         "agency": {
@@ -813,7 +803,7 @@ fn json_output() -> serde_json::Value {
             "Use 'wg why-blocked <task-id>' for the full transitive blocking chain"
         ],
         "executors_and_models": {
-            "switch_executor": "wg config --coordinator-executor amplifier",
+            "switch_executor": "wg config -m nex:qwen3-coder -e http://127.0.0.1:8088",
             "set_model_cli": "wg service start --model anthropic:claude-sonnet-4-6",
             "set_model_config": "[coordinator] model = \"anthropic:claude-sonnet-4-6\"",
             "per_task_model": "wg add \"task\" --model openrouter:google/gemini-2.5-flash",
@@ -1170,7 +1160,7 @@ mod tests {
     #[test]
     fn test_quickstart_text_contains_executors_and_models() {
         assert!(QUICKSTART_TEXT.contains("EXECUTORS & MODELS"));
-        assert!(QUICKSTART_TEXT.contains("--coordinator-executor amplifier"));
+        assert!(QUICKSTART_TEXT.contains("nex:"));
         assert!(QUICKSTART_TEXT.contains("--model"));
     }
 
@@ -1199,7 +1189,6 @@ mod tests {
     fn test_quickstart_text_contains_skill_bundle_setup() {
         assert!(QUICKSTART_TEXT.contains("SKILL & BUNDLE SETUP"));
         assert!(QUICKSTART_TEXT.contains("wg skill install"));
-        assert!(QUICKSTART_TEXT.contains("amplifier run -B workgraph"));
     }
 
     #[test]
@@ -1209,7 +1198,6 @@ mod tests {
             .get("skill_bundle_setup")
             .expect("missing skill_bundle_setup");
         assert!(sbs.get("claude").is_some());
-        assert!(sbs.get("amplifier").is_some());
         assert!(sbs.get("custom").is_some());
         assert!(
             sbs["claude"]["install"]
