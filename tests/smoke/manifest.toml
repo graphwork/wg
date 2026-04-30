@@ -106,6 +106,17 @@ description = "fix-new-chat-2: while the new-chat launcher (or any non-Normal In
 timeout_seconds = 60
 
 [[scenario]]
+name = "tui_launcher_modal_does_not_leak_paste"
+script = "scenarios/tui_launcher_modal_does_not_leak_paste.sh"
+owners = [
+    "fix-paste-events",
+    "fix-new-chat-2",
+    "smoke-gate-is",
+]
+description = "fix-paste-events: while the new-chat launcher (or any non-Normal InputMode) is open, ZERO bytes of an Event::Paste may reach the underlying chat-pane PTY child's stdin. fix-new-chat-2 closed the keystroke path but missed paste events — crossterm delivers bracketed paste as a single Event::Paste(String) rather than a sequence of Event::Keys, so the keystroke-path guard never fired. User repro 2026-04-30: pasted a tailscale URL into the new-chat dialog → URL appeared in the background chat tab. Pins both halves: (a) byte-level child_input_bytes_written() stays at 0 across dispatch_event(Event::Paste) with launcher open, (b) the paste reaches the focused launcher section's text field (Name, Endpoint custom_text), (c) negative control — Normal-mode paste still forwards to the chat PTY (guard must not over-block). Third iteration of the new-chat input-leak bug class (fix-new-chat → fix-new-chat-2 → fix-paste-events)."
+timeout_seconds = 90
+
+[[scenario]]
 name = "setup_routes_complete_configs"
 script = "scenarios/setup_routes_complete_configs.sh"
 owners = [

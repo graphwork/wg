@@ -700,11 +700,22 @@ fn handle_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
 }
 
 fn handle_paste(app: &mut VizApp, text: &str) {
+    // Modal gating (fix-paste-events): symmetric to the input_mode guard
+    // on `vendor_pty_active` in `handle_key`. fix-new-chat-2 closed the
+    // keystroke-leak path but missed paste events, which crossterm
+    // delivers as a separate `Event::Paste(String)` rather than a
+    // sequence of `Event::Key`s. Result: with the new-chat launcher
+    // open, Cmd-V / middle-click of bracketed paste content was still
+    // forwarded into the underlying chat-pane child's stdin (the user
+    // pasted a URL into the dialog, the URL appeared in the background
+    // chat tab). When ANY non-Normal input mode is active, paste belongs
+    // to the focused dialog widget — never the underlying PTY.
     let vendor_pty_active = app.chat_pty_mode
         && app.chat_pty_forwards_stdin
         && app.right_panel_tab == RightPanelTab::Chat
         && app.focused_panel == FocusedPanel::RightPanel
-        && !app.chat_pty_observer;
+        && !app.chat_pty_observer
+        && matches!(app.input_mode, InputMode::Normal);
     if vendor_pty_active {
         let task_id = workgraph::chat_id::format_chat_task_id(app.active_coordinator_id);
         if let Some(pane) = app.task_panes.get_mut(&task_id) {
@@ -768,6 +779,48 @@ fn handle_paste(app: &mut VizApp, text: &str) {
         InputMode::SettingsEdit => {
             let clean: String = text.chars().filter(|c| *c != '\n' && *c != '\r').collect();
             app.settings_panel.edit_buffer.push_str(&clean);
+        }
+        InputMode::Launcher => {
+            // Route pasted text to the focused launcher section's text
+            // field. URLs / model strings are single-line, so newlines
+            // and carriage returns are stripped before insertion.
+            // Without this arm, `_ => {}` would drop the paste silently —
+            // safe but useless after the user just Cmd-V'd a URL into
+            // the new-chat dialog. (The leak fix above is the real
+            // gate; this is just UX so the paste lands somewhere
+            // visible to the user.)
+            use super::state::LauncherSection;
+            let clean: String = text.chars().filter(|c| *c != '\n' && *c != '\r').collect();
+            if let Some(launcher) = app.launcher.as_mut() {
+                match launcher.active_section {
+                    LauncherSection::Name => {
+                        launcher.name.push_str(&clean);
+                    }
+                    LauncherSection::EndpointRegister => {
+                        launcher.register_endpoint_name.push_str(&clean);
+                    }
+                    LauncherSection::Model => {
+                        if launcher.model_picker.custom_active {
+                            launcher.model_picker.custom_text.push_str(&clean);
+                        } else {
+                            launcher.model_picker.filter.push_str(&clean);
+                            launcher.model_picker.apply_filter();
+                        }
+                    }
+                    LauncherSection::Endpoint => {
+                        if launcher.endpoint_picker.custom_active {
+                            launcher.endpoint_picker.custom_text.push_str(&clean);
+                        } else {
+                            launcher.endpoint_picker.filter.push_str(&clean);
+                            launcher.endpoint_picker.apply_filter();
+                        }
+                    }
+                    // Executor / Recent are list-pickers with no
+                    // text-input semantics; drop the paste rather
+                    // than silently mangle the selection.
+                    LauncherSection::Executor | LauncherSection::Recent => {}
+                }
+            }
         }
         _ => {} // Normal/Confirm modes: ignore paste
     }
@@ -9838,6 +9891,199 @@ mod chat_tab_navigation_tests {
             "Keys must reach the launcher's Name field even when \
              chat_pty_mode + forwards_stdin + RightPanel focus would \
              otherwise route to the PTY (fix-new-chat-2)."
+        );
+    }
+
+    /// fix-paste-events regression lock (PTY-required variant): while
+    /// the new-chat launcher (or any non-Normal `InputMode`) is open,
+    /// ZERO bytes of a bracketed-paste event may reach the underlying
+    /// chat-pane PTY child's stdin. fix-new-chat-2 closed the keystroke
+    /// path but missed `Event::Paste`, which crossterm delivers as a
+    /// single `Event::Paste(String)` rather than a sequence of `Key`s
+    /// — the user's reported repro 2026-04-30 was Cmd-V'ing a URL into
+    /// the new-chat dialog and watching the URL appear in the
+    /// background chat tab.
+    ///
+    /// Byte-level assertion: PtyPane's `child_input_bytes_written()`
+    /// counter must be unchanged after `dispatch_event(Event::Paste)`.
+    #[test]
+    fn launcher_open_does_not_leak_paste_to_underlying_pty() {
+        use crossterm::event::Event;
+        let (mut app, _tmp) = build_app_with_chats(&[0]);
+        app.right_panel_tab = RightPanelTab::Chat;
+        app.focused_panel = FocusedPanel::RightPanel;
+        app.chat_pty_mode = true;
+        app.chat_pty_forwards_stdin = true;
+        app.chat_pty_observer = false;
+
+        let task_id = workgraph::chat_id::format_chat_task_id(app.active_coordinator_id);
+        let Ok(pane) = crate::tui::pty_pane::PtyPane::spawn_in(
+            "/bin/sh",
+            &["-c", "exec cat"],
+            &[],
+            None,
+            24,
+            80,
+        ) else {
+            // CI without /bin/sh or no PTY support: skip silently —
+            // `launcher_open_clears_paste_routing_to_launcher_field`
+            // covers the routing contract without a real PTY child.
+            return;
+        };
+        let bytes_before = pane.child_input_bytes_written();
+        app.task_panes.insert(task_id.clone(), pane);
+
+        // Open the launcher (mirrors the [+] click path: focus stays
+        // on RightPanel, chat_pty_mode stays true).
+        app.open_launcher();
+        assert!(
+            matches!(app.input_mode, super::InputMode::Launcher),
+            "open_launcher must transition input_mode to Launcher"
+        );
+        if app.launcher.is_none() {
+            return;
+        }
+
+        // The exact user-reported payload — a tailscale URL pasted into
+        // the new-chat dialog while the dialog was open.
+        let pasted = "https://lambda01.tail334fe6.ts.net:30000".to_string();
+        super::dispatch_event(&mut app, Event::Paste(pasted));
+
+        let pane_after = app.task_panes.get(&task_id).unwrap();
+        assert_eq!(
+            pane_after.child_input_bytes_written(),
+            bytes_before,
+            "While Launcher modal is open, ZERO bytes of a paste event \
+             may reach the chat-pane PTY child's stdin (fix-paste-events). \
+             Got {} bytes written; expected unchanged from {}.",
+            pane_after.child_input_bytes_written(),
+            bytes_before,
+        );
+    }
+
+    /// Companion to `launcher_open_does_not_leak_paste_to_underlying_pty`
+    /// that does NOT require a real PTY child — exercises both halves of
+    /// the fix in isolation: (a) the paste does not enter the
+    /// vendor_pty_active branch, and (b) the paste reaches the focused
+    /// launcher section's text field.
+    ///
+    /// Specifically, with the launcher's active_section set to Name,
+    /// `dispatch_event(Event::Paste)` must mutate `launcher.name` —
+    /// matching the validation contract "URL appears in the dialog field
+    /// (not the background chat)".
+    #[test]
+    fn launcher_open_clears_paste_routing_to_launcher_field() {
+        use crossterm::event::Event;
+        let (mut app, _tmp) = build_app_with_chats(&[0]);
+        app.right_panel_tab = RightPanelTab::Chat;
+        app.focused_panel = FocusedPanel::RightPanel;
+        app.chat_pty_mode = true;
+        app.chat_pty_forwards_stdin = true;
+        app.chat_pty_observer = false;
+
+        app.open_launcher();
+        if app.launcher.is_none() {
+            return;
+        }
+        // Move to Name so the paste lands somewhere we can inspect.
+        app.launcher.as_mut().unwrap().active_section =
+            super::super::state::LauncherSection::Name;
+
+        super::dispatch_event(&mut app, Event::Paste("my-chat".to_string()));
+
+        let launcher = app
+            .launcher
+            .as_ref()
+            .expect("launcher should still be open after paste");
+        assert_eq!(
+            launcher.name, "my-chat",
+            "Paste must reach the launcher's Name field even when \
+             chat_pty_mode + forwards_stdin + RightPanel focus would \
+             otherwise route to the PTY (fix-paste-events)."
+        );
+    }
+
+    /// fix-paste-events: the user's exact repro flow — paste a custom
+    /// URL into the Endpoint section's custom-text input. This pins the
+    /// "URL appears in the dialog field" half of the validation: the
+    /// launcher's `endpoint_picker.custom_text` must hold the pasted
+    /// URL after `dispatch_event(Event::Paste)`.
+    #[test]
+    fn launcher_paste_reaches_custom_endpoint_text() {
+        use crossterm::event::Event;
+        let (mut app, _tmp) = build_app_with_chats(&[0]);
+        app.right_panel_tab = RightPanelTab::Chat;
+        app.focused_panel = FocusedPanel::RightPanel;
+        app.chat_pty_mode = true;
+        app.chat_pty_forwards_stdin = true;
+        app.chat_pty_observer = false;
+
+        app.open_launcher();
+        if app.launcher.is_none() {
+            return;
+        }
+        // Move to Endpoint section + enter custom-URL mode (the state
+        // the user is in when they Cmd-V a URL into the dialog).
+        {
+            let launcher = app.launcher.as_mut().unwrap();
+            launcher.active_section = super::super::state::LauncherSection::Endpoint;
+            launcher.endpoint_picker.enter_custom();
+        }
+
+        let url = "https://lambda01.tail334fe6.ts.net:30000";
+        super::dispatch_event(&mut app, Event::Paste(url.to_string()));
+
+        let launcher = app
+            .launcher
+            .as_ref()
+            .expect("launcher should still be open after paste");
+        assert_eq!(
+            launcher.endpoint_picker.custom_text, url,
+            "Paste while in Endpoint custom-URL mode must populate the \
+             custom_text field (fix-paste-events)."
+        );
+    }
+
+    /// Negative control for `fix-paste-events`: when input_mode IS
+    /// Normal and the chat PTY is the active surface, the paste path
+    /// must STILL forward to the PTY child. Without this assertion, an
+    /// over-eager guard could silently break Cmd-V into the chat tab
+    /// itself — a regression in the OPPOSITE direction.
+    #[test]
+    fn paste_in_normal_mode_still_reaches_chat_pty() {
+        use crossterm::event::Event;
+        let (mut app, _tmp) = build_app_with_chats(&[0]);
+        app.right_panel_tab = RightPanelTab::Chat;
+        app.focused_panel = FocusedPanel::RightPanel;
+        app.chat_pty_mode = true;
+        app.chat_pty_forwards_stdin = true;
+        app.chat_pty_observer = false;
+        app.input_mode = super::InputMode::Normal;
+
+        let task_id = workgraph::chat_id::format_chat_task_id(app.active_coordinator_id);
+        let Ok(pane) = crate::tui::pty_pane::PtyPane::spawn_in(
+            "/bin/sh",
+            &["-c", "exec cat"],
+            &[],
+            None,
+            24,
+            80,
+        ) else {
+            return;
+        };
+        let bytes_before = pane.child_input_bytes_written();
+        app.task_panes.insert(task_id.clone(), pane);
+
+        let payload = "hello pty";
+        super::dispatch_event(&mut app, Event::Paste(payload.to_string()));
+
+        let pane_after = app.task_panes.get(&task_id).unwrap();
+        assert_eq!(
+            pane_after.child_input_bytes_written(),
+            bytes_before + payload.len() as u64,
+            "In Normal mode with chat PTY active, paste must forward \
+             every byte to the child's stdin (fix-paste-events guard \
+             must not over-block)."
         );
     }
 }
