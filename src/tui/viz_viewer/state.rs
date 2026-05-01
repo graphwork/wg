@@ -1234,6 +1234,75 @@ pub struct LauncherState {
 /// global override is configured (the vendor CLI then runs with its own
 /// default).
 ///
+/// Last-activity timestamp for a task, expressed as Unix epoch seconds.
+/// Returns `0` when no activity is known so unsorted tasks sink to the
+/// bottom of their status group.
+///
+/// For chat tasks (`.chat-N` / legacy `.coordinator-N`), reads the mtime
+/// of `chat/<id>/inbox.jsonl` and `outbox.jsonl` and takes the max — the
+/// freshest signal of "user just typed" or "agent just replied". File
+/// mtime is one syscall per file (no JSON parse) and matches existing
+/// patterns in this codebase (e.g. `operations.jsonl` mtime polling).
+///
+/// For non-chat tasks, takes the max of the most recent log-entry
+/// timestamp and the task's lifecycle timestamps (started/completed/
+/// last-iteration/created). The freshest of these is "when work last
+/// happened on this task".
+///
+/// Used by [`VizApp::apply_sort_mode`] under [`SortMode::StatusGrouped`]
+/// so the actively-messaged chat bubbles to the top of the in-progress
+/// group — see task `fix-tui-graph`.
+pub fn task_last_activity_secs(
+    workgraph_dir: &std::path::Path,
+    task: &workgraph::graph::Task,
+) -> i64 {
+    let mut best: i64 = 0;
+
+    if workgraph::chat_id::is_chat_task_id(&task.id)
+        && let Some(cid) = workgraph::chat_id::parse_chat_task_id(&task.id)
+    {
+        let chat_dir = workgraph::chat::chat_dir_for_ref(workgraph_dir, &cid.to_string());
+        for fname in ["inbox.jsonl", "outbox.jsonl"] {
+            if let Ok(meta) = std::fs::metadata(chat_dir.join(fname))
+                && let Ok(mtime) = meta.modified()
+                && let Ok(d) = mtime.duration_since(std::time::UNIX_EPOCH)
+            {
+                let secs = d.as_secs() as i64;
+                if secs > best {
+                    best = secs;
+                }
+            }
+        }
+    }
+
+    let mut consider = |ts: &str| {
+        if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(ts) {
+            let secs = dt.timestamp();
+            if secs > best {
+                best = secs;
+            }
+        }
+    };
+
+    if let Some(entry) = task.log.last() {
+        consider(&entry.timestamp);
+    }
+    if let Some(ts) = task.started_at.as_deref() {
+        consider(ts);
+    }
+    if let Some(ts) = task.completed_at.as_deref() {
+        consider(ts);
+    }
+    if let Some(ts) = task.last_iteration_completed_at.as_deref() {
+        consider(ts);
+    }
+    if let Some(ts) = task.created_at.as_deref() {
+        consider(ts);
+    }
+
+    best
+}
+
 /// Pure function (no &mut self) so unit tests can exercise it without
 /// constructing a full `VizViewer`. See
 /// `chat_launched_with_uses_per_chat_executor` for the regression lock.
@@ -5565,7 +5634,13 @@ impl VizApp {
             toasts: Vec::new(),
             prev_agent_statuses: HashMap::new(),
             last_tab_press: None,
-            sort_mode: SortMode::Chronological,
+            // Default to StatusGrouped: groups by status (in-progress first)
+            // and sorts by last-activity within each group, so the chat the
+            // user is actively messaging bubbles to the top. Other modes
+            // (Chronological, ReverseChronological) remain available via the
+            // `s` keybinding for users who want raw tree-line order.
+            // See task `fix-tui-graph`.
+            sort_mode: SortMode::StatusGrouped,
             smart_follow_active: true,
             initial_load: true,
             splash_animations: HashMap::new(),
@@ -7913,38 +7988,56 @@ impl VizApp {
                     .sort_by_key(|id| self.node_line_map.get(id).copied().unwrap_or(usize::MAX));
             }
             SortMode::StatusGrouped => {
-                // Sort navigation order by status priority: in-progress first, then
-                // failed, open, blocked, and done last. Within each group, preserve
-                // the tree line order.
+                // Sort navigation order by status priority (in-progress first,
+                // then failed, open, blocked, done last). Within each status
+                // group, sort by last-activity descending so the chat the user
+                // is currently messaging bubbles to the top of in-progress.
+                // Stable line-order is the final tiebreaker when activity is
+                // equal/unknown.
                 let graph_path = self.workgraph_dir.join("graph.jsonl");
-                let status_map: HashMap<String, u8> = match load_graph(&graph_path) {
-                    Ok(g) => g
-                        .tasks()
-                        .map(|t| {
-                            let priority = match t.status {
-                                Status::InProgress => 0,
-                                Status::Failed => 1,
-                                Status::Open => 2,
-                                Status::Blocked => 3,
-                                Status::Done => 4,
-                                Status::Abandoned => 5,
-                                Status::Waiting | Status::PendingValidation => 3,
-                                Status::PendingEval | Status::FailedPendingEval => 0, // visible like in-progress
-                                Status::Incomplete => 1, // high priority like failed
-                            };
-                            (t.id.clone(), priority)
-                        })
-                        .collect(),
-                    Err(_) => HashMap::new(),
-                };
+                let (status_map, activity_map): (HashMap<String, u8>, HashMap<String, i64>) =
+                    match load_graph(&graph_path) {
+                        Ok(g) => {
+                            let mut sm = HashMap::new();
+                            let mut am = HashMap::new();
+                            for t in g.tasks() {
+                                let priority = match t.status {
+                                    Status::InProgress => 0,
+                                    Status::Failed => 1,
+                                    Status::Open => 2,
+                                    Status::Blocked => 3,
+                                    Status::Done => 4,
+                                    Status::Abandoned => 5,
+                                    Status::Waiting | Status::PendingValidation => 3,
+                                    Status::PendingEval | Status::FailedPendingEval => 0, // visible like in-progress
+                                    Status::Incomplete => 1, // high priority like failed
+                                };
+                                sm.insert(t.id.clone(), priority);
+                                am.insert(
+                                    t.id.clone(),
+                                    task_last_activity_secs(&self.workgraph_dir, t),
+                                );
+                            }
+                            (sm, am)
+                        }
+                        Err(_) => (HashMap::new(), HashMap::new()),
+                    };
                 self.task_order.sort_by(|a, b| {
                     let sa = status_map.get(a).copied().unwrap_or(99);
                     let sb = status_map.get(b).copied().unwrap_or(99);
-                    sa.cmp(&sb).then_with(|| {
-                        let la = self.node_line_map.get(a).copied().unwrap_or(usize::MAX);
-                        let lb = self.node_line_map.get(b).copied().unwrap_or(usize::MAX);
-                        la.cmp(&lb)
-                    })
+                    sa.cmp(&sb)
+                        .then_with(|| {
+                            // Activity descending (newest first). Tasks with no
+                            // known activity (0) sink to the bottom of the group.
+                            let aa = activity_map.get(a).copied().unwrap_or(0);
+                            let ab = activity_map.get(b).copied().unwrap_or(0);
+                            ab.cmp(&aa)
+                        })
+                        .then_with(|| {
+                            let la = self.node_line_map.get(a).copied().unwrap_or(usize::MAX);
+                            let lb = self.node_line_map.get(b).copied().unwrap_or(usize::MAX);
+                            la.cmp(&lb)
+                        })
                 });
             }
         }
@@ -14566,6 +14659,15 @@ impl VizApp {
     /// pre-loaded graph — no disk I/O. Used by `refresh_chat_tab_caches`
     /// in the per-tick refresh path (see `maybe_refresh`) so we don't
     /// re-parse `graph.jsonl` once per render frame.
+    ///
+    /// Order is by chat id (creation order) — *intentionally divergent*
+    /// from the graph view's last-activity sort. Chat tabs occupy fixed
+    /// positions because Ctrl+Tab cycles through them by index; if the
+    /// list reordered every time a chat received a message, keyboard
+    /// navigation would be unpredictable. The active tab already has
+    /// distinct visual styling (filled dot, bold label) so users don't
+    /// need positional emphasis to find it. See task `fix-tui-graph` for
+    /// the broader sort design.
     fn list_coordinator_ids_and_labels_from_graph(
         graph: &workgraph::graph::WorkGraph,
     ) -> Vec<(u32, String)> {
@@ -27049,6 +27151,215 @@ mod message_indicator_refresh_tests {
             app.task_message_statuses.get("t1"),
             Some(&CoordinatorMessageStatus::Seen),
             "cursor advance must transition Unseen → Seen, not clear the indicator"
+        );
+    }
+}
+
+/// Tests for `task_last_activity_secs` and `apply_sort_mode` (StatusGrouped).
+/// Locks the regression `fix-tui-graph`: chat tasks must bubble to the top of
+/// the in-progress group based on last-message activity, not creation/tree order.
+#[cfg(test)]
+mod activity_sort_tests {
+    use super::*;
+    use std::collections::{HashMap, HashSet};
+    use workgraph::graph::{LogEntry, Node, Status, WorkGraph};
+    use workgraph::parser::save_graph;
+    use workgraph::test_helpers::make_task_with_status;
+
+    use crate::commands::viz::ascii::generate_ascii;
+    use crate::commands::viz::{LayoutMode, VizOutput};
+
+    fn render_viz(graph: &WorkGraph) -> VizOutput {
+        let tasks: Vec<_> = graph.tasks().collect();
+        let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
+        generate_ascii(
+            graph,
+            &tasks,
+            &task_ids,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            LayoutMode::Tree,
+            &HashSet::new(),
+            "gray",
+            &HashMap::new(),
+            &HashMap::new(),
+        )
+    }
+
+    fn rfc3339(secs: i64) -> String {
+        chrono::DateTime::from_timestamp(secs, 0)
+            .unwrap()
+            .to_rfc3339()
+    }
+
+    #[test]
+    fn last_activity_uses_log_entry_for_non_chat_task() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut t = make_task_with_status("plain", "Plain Task", Status::InProgress);
+        t.created_at = Some(rfc3339(1_000_000));
+        t.started_at = Some(rfc3339(2_000_000));
+        t.log.push(LogEntry {
+            timestamp: rfc3339(3_000_000),
+            actor: None,
+            user: None,
+            message: "did stuff".into(),
+        });
+        let activity = task_last_activity_secs(tmp.path(), &t);
+        assert_eq!(activity, 3_000_000, "log timestamp should win when newest");
+    }
+
+    #[test]
+    fn last_activity_uses_inbox_mtime_for_chat_task() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Create chat dir + inbox file with a known mtime via filetime.
+        let chat_dir = tmp.path().join("chat").join("3");
+        std::fs::create_dir_all(&chat_dir).unwrap();
+        let inbox = chat_dir.join("inbox.jsonl");
+        std::fs::write(&inbox, "{}\n").unwrap();
+        // Backdate via libc utimes — same trick used by chat::tests below.
+        let target_secs: i64 = 5_000_000;
+        let times = [
+            libc::timeval {
+                tv_sec: target_secs as libc::time_t,
+                tv_usec: 0,
+            },
+            libc::timeval {
+                tv_sec: target_secs as libc::time_t,
+                tv_usec: 0,
+            },
+        ];
+        let path_c = std::ffi::CString::new(inbox.as_os_str().as_encoded_bytes()).unwrap();
+        let rc = unsafe { libc::utimes(path_c.as_ptr(), times.as_ptr()) };
+        assert_eq!(rc, 0, "utimes failed");
+
+        let mut t = make_task_with_status(".chat-3", "Chat 3", Status::InProgress);
+        // Older log + lifecycle stamps — chat-file mtime should win.
+        t.created_at = Some(rfc3339(1_000_000));
+        t.started_at = Some(rfc3339(2_000_000));
+        t.log.push(LogEntry {
+            timestamp: rfc3339(3_000_000),
+            actor: None,
+            user: None,
+            message: "spawned".into(),
+        });
+        let activity = task_last_activity_secs(tmp.path(), &t);
+        assert_eq!(
+            activity, target_secs,
+            "inbox mtime should beat log/lifecycle for chat tasks"
+        );
+    }
+
+    #[test]
+    fn status_grouped_sort_bubbles_recently_messaged_chat_to_top() {
+        // Two in-progress chat tasks: chat-1 has older inbox activity,
+        // chat-2 has newer inbox activity. Expect chat-2 first within the
+        // in-progress group, then chat-1, then any open task. A done task
+        // sinks below all of them (status grouping preserved).
+        let tmp = tempfile::tempdir().unwrap();
+        let workgraph_dir = tmp.path();
+
+        let mut graph = WorkGraph::new();
+
+        let mut chat1 = make_task_with_status(".chat-1", "Chat 1", Status::InProgress);
+        chat1.tags = vec!["chat-loop".into()];
+        chat1.created_at = Some(rfc3339(1_000_000));
+        let mut chat2 = make_task_with_status(".chat-2", "Chat 2", Status::InProgress);
+        chat2.tags = vec!["chat-loop".into()];
+        chat2.created_at = Some(rfc3339(1_000_000));
+        let mut other_open = make_task_with_status("other", "Other Open", Status::Open);
+        other_open.created_at = Some(rfc3339(9_999_999)); // newest, but Open sinks below in-progress
+        let mut done = make_task_with_status("done", "Done Task", Status::Done);
+        done.completed_at = Some(rfc3339(9_999_999));
+
+        graph.add_node(Node::Task(chat1));
+        graph.add_node(Node::Task(chat2));
+        graph.add_node(Node::Task(other_open));
+        graph.add_node(Node::Task(done));
+
+        save_graph(&graph, &workgraph_dir.join("graph.jsonl")).unwrap();
+
+        // Backdate chat-1 inbox to t=2_000_000 and chat-2 inbox to t=8_000_000
+        // — chat-2 is the most-recently-messaged chat.
+        for (cid, mtime_secs) in [(1u32, 2_000_000i64), (2u32, 8_000_000i64)] {
+            let chat_dir = workgraph_dir.join("chat").join(cid.to_string());
+            std::fs::create_dir_all(&chat_dir).unwrap();
+            let inbox = chat_dir.join("inbox.jsonl");
+            std::fs::write(&inbox, "{}\n").unwrap();
+            let times = [
+                libc::timeval {
+                    tv_sec: mtime_secs as libc::time_t,
+                    tv_usec: 0,
+                },
+                libc::timeval {
+                    tv_sec: mtime_secs as libc::time_t,
+                    tv_usec: 0,
+                },
+            ];
+            let path_c = std::ffi::CString::new(inbox.as_os_str().as_encoded_bytes()).unwrap();
+            let rc = unsafe { libc::utimes(path_c.as_ptr(), times.as_ptr()) };
+            assert_eq!(rc, 0);
+        }
+
+        let viz = render_viz(&graph);
+        let mut app = VizApp::from_viz_output_for_test(&viz);
+        app.workgraph_dir = workgraph_dir.to_path_buf();
+        app.sort_mode = SortMode::StatusGrouped;
+        app.apply_sort_mode();
+
+        // chat-2 (newest activity, in-progress) must be first; chat-1 second
+        // (in-progress, older activity); other (open) third; done last.
+        let pos = |id: &str| app.task_order.iter().position(|t| t == id).unwrap();
+        assert!(
+            pos(".chat-2") < pos(".chat-1"),
+            "recently-messaged chat-2 must rank above chat-1: {:?}",
+            app.task_order
+        );
+        assert!(
+            pos(".chat-1") < pos("other"),
+            "in-progress chats must rank above open tasks: {:?}",
+            app.task_order
+        );
+        assert!(
+            pos("other") < pos("done"),
+            "open must rank above done: {:?}",
+            app.task_order
+        );
+    }
+
+    #[test]
+    fn status_grouped_sort_falls_back_to_line_order_when_activity_unknown() {
+        // Two open tasks with no activity — expect tree-line order preserved.
+        let tmp = tempfile::tempdir().unwrap();
+        let workgraph_dir = tmp.path();
+
+        let mut graph = WorkGraph::new();
+        let a = make_task_with_status("a-task", "A", Status::Open);
+        let b = make_task_with_status("b-task", "B", Status::Open);
+        graph.add_node(Node::Task(a));
+        graph.add_node(Node::Task(b));
+        save_graph(&graph, &workgraph_dir.join("graph.jsonl")).unwrap();
+
+        let viz = render_viz(&graph);
+        let mut app = VizApp::from_viz_output_for_test(&viz);
+        app.workgraph_dir = workgraph_dir.to_path_buf();
+        app.sort_mode = SortMode::StatusGrouped;
+        app.apply_sort_mode();
+
+        // Both same status, both unknown activity — line-order tiebreaker
+        // must yield a stable, deterministic ordering.
+        let line_order: Vec<String> = {
+            let mut pairs: Vec<(String, usize)> = viz
+                .node_line_map
+                .iter()
+                .map(|(id, &line)| (id.clone(), line))
+                .collect();
+            pairs.sort_by_key(|(_, line)| *line);
+            pairs.into_iter().map(|(id, _)| id).collect()
+        };
+        assert_eq!(
+            app.task_order, line_order,
+            "with no activity differences, sort must fall back to tree-line order"
         );
     }
 }
