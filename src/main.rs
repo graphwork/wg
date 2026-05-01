@@ -611,9 +611,13 @@ fn maybe_print_subcommand_help() -> bool {
     }
 
     // Walk the subcommand chain: start from the root command and drill down
-    // through non-flag args that match subcommand names at each level.
+    // through non-flag args that match subcommand names at each level. Track
+    // the matched names so the final help output's `Usage:` line reflects the
+    // full invocation path (`wg html publish` vs. just `publish`) — clap does
+    // not propagate bin_name through cloned subcommands, so we set it
+    // explicitly on the leaf.
     let mut current_cmd = Cli::command();
-    let mut matched_any = false;
+    let mut path: Vec<String> = vec![current_cmd.get_name().to_string()];
 
     for arg in args.iter().skip(1) {
         if arg.starts_with('-') {
@@ -624,13 +628,16 @@ fn maybe_print_subcommand_help() -> bool {
             .find(|c| c.get_name() == arg)
             .cloned();
         if let Some(sub) = maybe_sub {
+            path.push(sub.get_name().to_string());
             current_cmd = sub;
-            matched_any = true;
         }
     }
 
-    if matched_any {
-        let mut cmd = current_cmd.disable_help_flag(false);
+    if path.len() > 1 {
+        let bin_name = path.join(" ");
+        let mut cmd = current_cmd
+            .disable_help_flag(false)
+            .bin_name(bin_name);
         cmd.print_help().ok();
         println!();
         std::process::exit(0);
