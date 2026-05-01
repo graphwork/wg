@@ -24,7 +24,7 @@
 
 use anyhow::{Context, Result};
 use std::collections::VecDeque;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
@@ -822,17 +822,46 @@ fn subprocess_coordinator_loop(
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
+        // Fix D (fix-nex-chat): per-chat persistent stderr log file for nex
+        // spawns, matching `claude_handler.rs:399-411` parity. The reader
+        // thread below tees each stderr line BOTH to daemon.log (inline
+        // preview, existing behavior) AND to this file (durable record).
+        // On any future spawn-time failure the user has a discoverable
+        // path to inspect even when daemon.log is rotated or noisy.
+        let nex_stderr_log_path = dir
+            .join("service")
+            .join(format!("nex-handler-stderr-{}.log", coordinator_id));
+        if let Some(parent) = nex_stderr_log_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+
+        // Provenance breadcrumb BEFORE cmd.spawn() — matches the
+        // claude_handler.rs:413-419 line. Lists executor, model, the
+        // resolved endpoint (so dropped-endpoint regressions are visible),
+        // and the persistent stderr log path. Emitted unconditionally so
+        // even spawn-time failures leave a "here's where the file is"
+        // breadcrumb in daemon.log.
+        let endpoint_for_log = plan
+            .endpoint
+            .as_ref()
+            .map(|e| e.name.as_str())
+            .unwrap_or("none");
         logger.info(&format!(
-            "Coordinator-{}: spawning via `wg spawn-task {}` (executor={}, model={:?})",
-            coordinator_id, task_id, effective_exec, effective_model_override
+            "Coordinator-{}: spawning via `wg spawn-task {}` (executor={}, model={:?}, endpoint={}, stderr_log={:?})",
+            coordinator_id,
+            task_id,
+            effective_exec,
+            effective_model_override,
+            endpoint_for_log,
+            nex_stderr_log_path,
         ));
         let _ = chat_alias; // silence unused — retained for register_coordinator_session above
         let mut child: Child = match cmd.spawn() {
             Ok(c) => c,
             Err(e) => {
                 logger.error(&format!(
-                    "Coordinator-{}: failed to spawn nex subprocess: {}",
-                    coordinator_id, e
+                    "Coordinator-{}: failed to spawn nex subprocess: {} (stderr_log={:?})",
+                    coordinator_id, e, nex_stderr_log_path
                 ));
                 restart_timestamps.push_back(std::time::Instant::now());
                 std::thread::sleep(std::time::Duration::from_secs(5));
@@ -866,12 +895,28 @@ fn subprocess_coordinator_loop(
             .ok();
         let logger_err = logger.clone();
         let stderr = child.stderr.take();
+        let stderr_log_for_thread = nex_stderr_log_path.clone();
         std::thread::Builder::new()
             .name(format!("coordinator-nex-stderr-{}", cid))
             .spawn(move || {
                 if let Some(err) = stderr {
+                    // Open the persistent stderr file (create+append). Each
+                    // line is tee'd to BOTH daemon.log (logger_err) and this
+                    // file. If the file fails to open we silently fall back
+                    // to daemon-log-only — the inline preview is still
+                    // useful and the breadcrumb in the parent already
+                    // logged the path so the user sees the open-failure
+                    // implicitly (no file shows up).
+                    let mut file = std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(&stderr_log_for_thread)
+                        .ok();
                     for line in BufReader::new(err).lines().map_while(|l| l.ok()) {
                         logger_err.info(&format!("[coordinator-{} stderr] {}", cid, line));
+                        if let Some(ref mut f) = file {
+                            let _ = writeln!(f, "{}", line);
+                        }
                     }
                 }
             })

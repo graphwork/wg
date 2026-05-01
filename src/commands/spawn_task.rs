@@ -741,4 +741,56 @@ mod tests {
             ),
         }
     }
+
+    /// Fix C end-to-end (fix-nex-chat / diagnose-wg-nex root cause #2):
+    /// `wg spawn-task --dry-run` for a task with `task.endpoint` set to an
+    /// inline http(s)://URL must emit `wg nex --chat ... -e <url>` on
+    /// stdout. Before Fix C, the URL was silently dropped and the dry-run
+    /// emitted no `-e` flag — meaning even when the supervisor DID spawn,
+    /// nex would talk to the global default endpoint (or fall through
+    /// to provider heuristics) instead of the user's chosen URL.
+    ///
+    /// This is the exact reproduction scenario from `diagnose-wg-nex`:
+    ///   `WG_EXECUTOR_TYPE=native WG_MODEL=qwen3-coder \
+    ///    wg spawn-task --dry-run .chat-32`
+    #[test]
+    #[serial]
+    fn dry_run_includes_inline_url_endpoint_from_task() {
+        with_env(Some("native"), Some("nex:qwen3-coder"), || {
+            let dir = tempfile::tempdir().unwrap();
+            let wg_dir = dir.path();
+
+            let mut task = mktask(".chat-32");
+            task.tags = vec![workgraph::chat_id::CHAT_LOOP_TAG.to_string()];
+            task.model = Some("nex:qwen3-coder".to_string());
+            task.endpoint =
+                Some("https://lambda01.tail334fe6.ts.net:30000".to_string());
+
+            let spec = resolve_handler(wg_dir, &task, None).unwrap();
+            let preview = spec.command_preview();
+
+            match &spec {
+                HandlerSpec::Native {
+                    endpoint, model, ..
+                } => {
+                    assert_eq!(
+                        endpoint.as_deref(),
+                        Some("https://lambda01.tail334fe6.ts.net:30000"),
+                        "Native handler MUST carry task.endpoint URL — got endpoint={:?}, model={:?}, preview={}",
+                        endpoint, model, preview
+                    );
+                }
+                other => panic!(
+                    "expected Native handler with inline URL endpoint, got: {}",
+                    other.command_preview()
+                ),
+            }
+
+            assert!(
+                preview.contains("-e https://lambda01.tail334fe6.ts.net:30000"),
+                "dry-run preview MUST include -e <url>, got: {}",
+                preview
+            );
+        });
+    }
 }

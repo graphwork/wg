@@ -573,13 +573,25 @@ fn handle_request(
                 "IPC CreateChat: name={:?}, model={:?}, executor={:?}, endpoint={:?}",
                 name, model, executor, endpoint
             ));
-            handle_create_coordinator(
+            let (resp, new_chat_id) = handle_create_coordinator(
                 dir,
                 name.as_deref(),
                 model.as_deref(),
                 executor.as_deref(),
                 endpoint.as_deref(),
-            )
+            );
+            // Fix B (fix-nex-chat): eagerly enqueue the new chat for
+            // supervisor spawn AND signal urgent_wake so the daemon's main
+            // loop fires the lazy-spawn block within ~100ms instead of
+            // waiting for the user's first UserChat IPC. Without this,
+            // newly-created chats sit with no supervisor process between
+            // creation and first message; if the user opens a TUI tab in
+            // that window, the chat appears to die silently.
+            if let Some(cid) = new_chat_id {
+                pending_coordinator_ids.push(cid);
+                *urgent_wake = true;
+            }
+            resp
         }
         IpcRequest::SetChatExecutor {
             chat_id,
@@ -1586,21 +1598,31 @@ pub fn create_chat_in_graph(
 }
 
 /// Handle CreateCoordinator IPC request — wraps `create_chat_in_graph`.
+/// Returns `(IpcResponse, Option<u32>)` where the second element is the
+/// newly-created chat_id on success, so the caller can plumb it into
+/// `pending_coordinator_ids` for eager supervisor spawn (Fix B —
+/// `fix-nex-chat`). Without this, the supervisor for a new chat does not
+/// spawn until the user sends the first `UserChat` IPC, leaving a
+/// user-visible gap between create and first message during which no
+/// process exists.
 fn handle_create_coordinator(
     dir: &Path,
     name: Option<&str>,
     model: Option<&str>,
     executor: Option<&str>,
     endpoint: Option<&str>,
-) -> IpcResponse {
+) -> (IpcResponse, Option<u32>) {
     match create_chat_in_graph(dir, name, model, executor, endpoint) {
-        Ok(next_id) => IpcResponse::success(serde_json::json!({
-            "coordinator_id": next_id,
-            "chat_id": next_id,
-            "task_id": workgraph::chat_id::format_chat_task_id(next_id),
-            "name": name,
-        })),
-        Err(e) => IpcResponse::error(&e.to_string()),
+        Ok(next_id) => (
+            IpcResponse::success(serde_json::json!({
+                "coordinator_id": next_id,
+                "chat_id": next_id,
+                "task_id": workgraph::chat_id::format_chat_task_id(next_id),
+                "name": name,
+            })),
+            Some(next_id),
+        ),
+        Err(e) => (IpcResponse::error(&e.to_string()), None),
     }
 }
 
@@ -2493,6 +2515,146 @@ poll_interval = 120
         }
     }
 
+    /// Fix B regression-guard (fix-nex-chat / diagnose-wg-nex root cause #1
+    /// follow-up): the IPC `CreateChat` handler must enqueue the new chat_id
+    /// into `pending_coordinator_ids` AND set `urgent_wake = true` so the
+    /// daemon's main loop spawns a supervisor for the new chat eagerly,
+    /// instead of waiting for the user's first `UserChat` IPC. Before this
+    /// fix, the supervisor only spawned on first message — opening the TUI
+    /// chat tab in the gap saw no live agent and silently fell back to
+    /// chat-0.
+    #[test]
+    fn test_handle_create_chat_signals_eager_spawn() {
+        let temp_dir = TempDir::new().unwrap();
+        let dir = temp_dir.path();
+        fs::create_dir_all(dir.join("service")).unwrap();
+        let graph = workgraph::graph::WorkGraph::new();
+        workgraph::parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
+
+        let mut running = true;
+        let mut wake_coordinator = false;
+        let mut kick_dispatcher = false;
+        let mut urgent_wake = false;
+        let mut pending_coordinator_ids: Vec<u32> = Vec::new();
+        let mut delete_coordinator_ids: Vec<u32> = Vec::new();
+        let mut interrupt_coordinator_ids: Vec<u32> = Vec::new();
+        let mut cfg = DaemonConfig {
+            max_agents: 4,
+            executor: "claude".to_string(),
+            poll_interval: Duration::from_secs(60),
+            model: None,
+            provider: None,
+            paused: false,
+            settling_delay: Duration::from_millis(2000),
+        };
+        let logger = DaemonLogger::open(dir).unwrap();
+
+        let resp = handle_request(
+            dir,
+            IpcRequest::CreateChat {
+                name: Some("alice".to_string()),
+                model: Some("nex:qwen3-coder".to_string()),
+                executor: Some("native".to_string()),
+                endpoint: Some("https://lambda01.example:30000".to_string()),
+            },
+            &mut running,
+            &mut wake_coordinator,
+            &mut kick_dispatcher,
+            &mut urgent_wake,
+            &mut pending_coordinator_ids,
+            &mut delete_coordinator_ids,
+            &mut interrupt_coordinator_ids,
+            &mut cfg,
+            &logger,
+        );
+
+        assert!(resp.ok, "create_chat should succeed: {:?}", resp.error);
+        let data = resp.data.expect("response should carry data");
+        let new_id = data
+            .get("chat_id")
+            .and_then(|v| v.as_u64())
+            .expect("chat_id must be present in response") as u32;
+
+        assert!(
+            urgent_wake,
+            "urgent_wake must be set so daemon's lazy-spawn block fires within ~100ms"
+        );
+        assert_eq!(
+            pending_coordinator_ids,
+            vec![new_id],
+            "pending_coordinator_ids must contain the newly-created chat_id ({}) for eager supervisor spawn",
+            new_id
+        );
+        assert!(
+            delete_coordinator_ids.is_empty(),
+            "create must not enqueue into delete_coordinator_ids"
+        );
+    }
+
+    /// Negative case: a CreateChat that fails (e.g., chat cap reached) must
+    /// NOT signal urgent_wake or push into pending_coordinator_ids.
+    /// Otherwise the daemon would be told to spawn a supervisor for an
+    /// id that doesn't exist.
+    #[test]
+    fn test_handle_create_chat_failure_does_not_signal() {
+        let temp_dir = TempDir::new().unwrap();
+        let dir = temp_dir.path();
+        fs::create_dir_all(dir.join("service")).unwrap();
+        let graph = workgraph::graph::WorkGraph::new();
+        workgraph::parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
+
+        // Force chat-cap-reached by writing a config with max_coordinators=0.
+        let toml = "[coordinator]\nmax_coordinators = 0\n";
+        std::fs::write(dir.join("config.toml"), toml).unwrap();
+
+        let mut running = true;
+        let mut wake_coordinator = false;
+        let mut kick_dispatcher = false;
+        let mut urgent_wake = false;
+        let mut pending_coordinator_ids: Vec<u32> = Vec::new();
+        let mut delete_coordinator_ids: Vec<u32> = Vec::new();
+        let mut interrupt_coordinator_ids: Vec<u32> = Vec::new();
+        let mut cfg = DaemonConfig {
+            max_agents: 4,
+            executor: "claude".to_string(),
+            poll_interval: Duration::from_secs(60),
+            model: None,
+            provider: None,
+            paused: false,
+            settling_delay: Duration::from_millis(2000),
+        };
+        let logger = DaemonLogger::open(dir).unwrap();
+
+        let resp = handle_request(
+            dir,
+            IpcRequest::CreateChat {
+                name: Some("over-cap".to_string()),
+                model: None,
+                executor: None,
+                endpoint: None,
+            },
+            &mut running,
+            &mut wake_coordinator,
+            &mut kick_dispatcher,
+            &mut urgent_wake,
+            &mut pending_coordinator_ids,
+            &mut delete_coordinator_ids,
+            &mut interrupt_coordinator_ids,
+            &mut cfg,
+            &logger,
+        );
+
+        assert!(!resp.ok, "create_chat must fail when cap is 0");
+        assert!(
+            !urgent_wake,
+            "urgent_wake must NOT be set on failed create"
+        );
+        assert!(
+            pending_coordinator_ids.is_empty(),
+            "pending_coordinator_ids must be empty on failed create"
+        );
+    }
+
     #[test]
     fn test_handle_user_chat_sets_urgent_wake() {
         let temp_dir = TempDir::new().unwrap();
@@ -2965,8 +3127,9 @@ poll_interval = 120
         workgraph::parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
 
         // Create chat agent labeled "alice"
-        let resp = handle_create_coordinator(dir, Some("alice"), None, None, None);
+        let (resp, new_id) = handle_create_coordinator(dir, Some("alice"), None, None, None);
         assert!(resp.ok, "create_chat should succeed");
+        assert_eq!(new_id, Some(0), "first chat should be chat 0");
 
         // Verify the chat task was created with correct label and new prefix
         let graph = workgraph::parser::load_graph(&dir.join("graph.jsonl")).unwrap();
@@ -2977,8 +3140,9 @@ poll_interval = 120
         assert!(coord.tags.contains(&"chat-loop".to_string()));
 
         // Create chat labeled "bob"
-        let resp = handle_create_coordinator(dir, Some("bob"), None, None, None);
+        let (resp, new_id) = handle_create_coordinator(dir, Some("bob"), None, None, None);
         assert!(resp.ok, "create_chat for bob should succeed");
+        assert_eq!(new_id, Some(1), "second chat should be chat 1");
 
         let graph = workgraph::parser::load_graph(&dir.join("graph.jsonl")).unwrap();
         let coord = graph
@@ -3001,8 +3165,8 @@ poll_interval = 120
         let graph = workgraph::graph::WorkGraph::new();
         workgraph::parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
 
-        handle_create_coordinator(dir, Some("alice"), None, None, None);
-        handle_create_coordinator(dir, Some("bob"), None, None, None);
+        let _ = handle_create_coordinator(dir, Some("alice"), None, None, None);
+        let _ = handle_create_coordinator(dir, Some("bob"), None, None, None);
 
         // Write per-coordinator state files
         let alice_state = CoordinatorState {
@@ -3227,7 +3391,7 @@ poll_interval = 120
         let graph = workgraph::graph::WorkGraph::new();
         workgraph::parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
 
-        let resp = handle_create_coordinator(
+        let (resp, new_id) = handle_create_coordinator(
             dir,
             Some("Lambda Box"),
             Some("nex:qwen3-coder"),
@@ -3235,6 +3399,7 @@ poll_interval = 120
             Some("https://lambda01.tail334fe6.ts.net:30000"),
         );
         assert!(resp.ok, "create_chat with endpoint should succeed: {:?}", resp.error);
+        assert!(new_id.is_some(), "new chat_id should be returned for eager-spawn (Fix B)");
 
         let chat_id = resp
             .data

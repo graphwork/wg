@@ -212,10 +212,66 @@ pub fn plan_spawn(
         enforce_model_compat(executor, executor_source, &model);
 
     // ----- 3. Endpoint (executor-scoped) -----
+    //
+    // Precedence (highest first):
+    //   1. `task.endpoint` — set by `wg add -e <url|name>`, or by the IPC
+    //      `CreateChat` handler from the user's launcher choice.
+    //      - http(s):// URL  → synthesized inline `EndpointConfig` (matches
+    //        the `-e http(s)://...` shortcut at provider.rs:208-230).
+    //        The name carries the URL itself; spawn_task.rs:233 forwards
+    //        `plan.endpoint.name` as the `-e` arg, so `wg nex` receives
+    //        the literal URL and routes through the inline-URL path.
+    //      - bare name      → looked up via `find_by_name`.
+    //   2. Named endpoint matching `agent_executor`-derived role (TODO).
+    //   3. Global `is_default` endpoint.
+    //
+    // Without precedence step 1, IPC-created chats with a custom endpoint
+    // (e.g. TUI new-chat dialog with `-e https://lambda01...`) silently
+    // dropped the URL and fell back to whatever endpoint was marked
+    // `is_default` in config — talking to the wrong server.
+    // (fix-nex-chat / Fix C — diagnose-wg-nex root cause #2.)
     let (endpoint, endpoint_source) = if executor.needs_endpoint() {
-        // For native executor, prefer endpoint from task's role-resolved
-        // config; fall back to the global default endpoint.
-        if let Some(default_ep) = config.llm_endpoints.find_default() {
+        if let Some(ep_str) = task.endpoint.as_deref() {
+            if ep_str.starts_with("http://") || ep_str.starts_with("https://") {
+                let synth = EndpointConfig {
+                    name: ep_str.to_string(),
+                    provider: "oai-compat".to_string(),
+                    url: Some(ep_str.to_string()),
+                    model: None,
+                    api_key: None,
+                    api_key_file: None,
+                    api_key_env: None,
+                    api_key_ref: None,
+                    is_default: false,
+                    context_window: None,
+                };
+                (
+                    Some(synth),
+                    format!("task.endpoint (inline URL: {})", ep_str),
+                )
+            } else if let Some(ep) = config.llm_endpoints.find_by_name(ep_str) {
+                (
+                    Some(ep.clone()),
+                    format!("task.endpoint (named: {})", ep_str),
+                )
+            } else if let Some(default_ep) = config.llm_endpoints.find_default() {
+                (
+                    Some(default_ep.clone()),
+                    format!(
+                        "[llm_endpoints] is_default (task.endpoint={:?} not found)",
+                        ep_str
+                    ),
+                )
+            } else {
+                (
+                    None,
+                    format!(
+                        "none (task.endpoint={:?} not found and no default)",
+                        ep_str
+                    ),
+                )
+            }
+        } else if let Some(default_ep) = config.llm_endpoints.find_default() {
             (
                 Some(default_ep.clone()),
                 "[llm_endpoints] is_default".to_string(),
@@ -635,6 +691,122 @@ mod tests {
             !plan.provenance.executor_source.contains("model-compat"),
             "codex must not be rewritten by model-compat. provenance: {:?}",
             plan.provenance
+        );
+    }
+
+    /// Fix C regression-guard (fix-nex-chat / diagnose-wg-nex root cause #2):
+    /// When a task has `task.endpoint` set to an http(s):// URL, plan_spawn
+    /// MUST synthesize an `EndpointConfig` carrying that URL — NOT silently
+    /// fall back to `find_default()`. Without this, IPC `CreateChat` with
+    /// `endpoint=Some("https://lambda01...")` had its URL dropped on the
+    /// floor: `wg spawn-task --dry-run .chat-N` emitted no `-e` flag.
+    #[test]
+    fn test_task_endpoint_inline_url_overrides_default() {
+        let mut config = Config::default();
+        config.coordinator.executor = Some("native".to_string());
+        config.llm_endpoints.endpoints.push(openrouter_default_endpoint());
+
+        let mut task = base_task(".chat-32");
+        task.model = Some("nex:qwen3-coder".to_string());
+        task.endpoint = Some("https://lambda01.tail334fe6.ts.net:30000".to_string());
+
+        let plan = plan_spawn(&task, &config, None, None).unwrap();
+
+        assert_eq!(plan.executor, ExecutorKind::Native);
+        let ep = plan.endpoint.as_ref().expect("endpoint must be Some");
+        assert_eq!(
+            ep.name, "https://lambda01.tail334fe6.ts.net:30000",
+            "synthesized endpoint name must equal the inline URL so spawn_task forwards it as the -e arg"
+        );
+        assert_eq!(
+            ep.url.as_deref(),
+            Some("https://lambda01.tail334fe6.ts.net:30000")
+        );
+        assert!(
+            plan.provenance.endpoint_source.contains("task.endpoint"),
+            "endpoint_source must trace to task.endpoint, got {:?}",
+            plan.provenance.endpoint_source
+        );
+        assert!(
+            !plan.provenance.endpoint_source.contains("is_default"),
+            "MUST NOT fall back to is_default when task.endpoint is set, got {:?}",
+            plan.provenance.endpoint_source
+        );
+    }
+
+    /// Fix C variant: `task.endpoint` referencing a configured endpoint by
+    /// NAME (not URL) must look it up via `find_by_name`, not fall back to
+    /// the default.
+    #[test]
+    fn test_task_endpoint_named_overrides_default() {
+        let mut config = Config::default();
+        config.coordinator.executor = Some("native".to_string());
+        config.llm_endpoints.endpoints.push(openrouter_default_endpoint());
+        config.llm_endpoints.endpoints.push(EndpointConfig {
+            name: "lambda01".to_string(),
+            provider: "oai-compat".to_string(),
+            url: Some("https://lambda01.example:30000".to_string()),
+            model: None,
+            api_key: None,
+            api_key_file: None,
+            api_key_env: None,
+            api_key_ref: None,
+            is_default: false,
+            context_window: None,
+        });
+
+        let mut task = base_task(".chat-1");
+        task.endpoint = Some("lambda01".to_string());
+
+        let plan = plan_spawn(&task, &config, None, Some("nex:qwen3-coder")).unwrap();
+
+        let ep = plan.endpoint.as_ref().expect("endpoint must be Some");
+        assert_eq!(ep.name, "lambda01");
+        assert_eq!(ep.url.as_deref(), Some("https://lambda01.example:30000"));
+        assert!(
+            plan.provenance.endpoint_source.contains("named"),
+            "endpoint_source should record the named-lookup path, got {:?}",
+            plan.provenance.endpoint_source
+        );
+    }
+
+    /// Fix C boundary: when no `task.endpoint` is set, behaviour is
+    /// unchanged — the default endpoint still wins. Locks in that the
+    /// new branch is purely additive.
+    #[test]
+    fn test_no_task_endpoint_falls_back_to_default() {
+        let mut config = Config::default();
+        config.coordinator.executor = Some("native".to_string());
+        config.llm_endpoints.endpoints.push(openrouter_default_endpoint());
+
+        let task = base_task("t1");
+        let plan = plan_spawn(&task, &config, None, Some("nex:qwen3-coder")).unwrap();
+
+        let ep = plan.endpoint.as_ref().expect("endpoint must be Some");
+        assert_eq!(ep.name, "openrouter");
+        assert!(
+            plan.provenance.endpoint_source.contains("is_default"),
+            "with no task.endpoint, fall back to is_default. got {:?}",
+            plan.provenance.endpoint_source
+        );
+    }
+
+    /// Fix C boundary: claude executor must continue to ignore task.endpoint
+    /// (the claude CLI handles its own auth/url). Per the precedence rules
+    /// at the top of this file, executor=claude → endpoint=None always.
+    #[test]
+    fn test_claude_executor_ignores_task_endpoint() {
+        let mut config = Config::default();
+        config.coordinator.executor = Some("claude".to_string());
+
+        let mut task = base_task("t1");
+        task.endpoint = Some("https://anything.example".to_string());
+
+        let plan = plan_spawn(&task, &config, None, Some("opus")).unwrap();
+        assert_eq!(plan.executor, ExecutorKind::Claude);
+        assert!(
+            plan.endpoint.is_none(),
+            "executor=claude must produce no endpoint, even with task.endpoint set"
         );
     }
 }

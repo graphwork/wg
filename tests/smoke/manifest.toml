@@ -767,3 +767,13 @@ owners = [
 ]
 description = "Pins wg-html-surface: HTML export shows a message indicator on tasks with messages (parity with TUI envelope glyph). Verifies (1) .msg-indicator span on task-list rows that have messages, none on rows without; (2) status-class breakdown (msg-none/msg-unseen/msg-seen/msg-replied) maps to the same CoordinatorMessageStatus the TUI uses; (3) per-task page renders #messages-section with escaped bodies; (4) WG_TASKS JSON exposes msg bundle for messaged tasks only; (5) CSS provides theme-aware status colors + has-unread-msg row highlight; (6) panel.js gained renderMessagesPanelHtml + scrollPanelToMessages helpers + a data-msg-action click handler; (7) panel.js stays vanilla (no fetch / imports)."
 timeout_seconds = 60
+
+[[scenario]]
+name = "chat_native_endpoint_full_pipeline"
+script = "scenarios/chat_native_endpoint_full_pipeline.sh"
+owners = [
+    "fix-nex-chat",
+    "diagnose-wg-nex",
+]
+description = "Pins fix-nex-chat: the four stacked fixes from diagnose-wg-nex. Creates a native chat with --endpoint <URL> and asserts (A) wg sweep --dry-run does not flag the chat-loop task as orphaned (sweep.rs Fix A), (C) `wg spawn-task --dry-run .chat-0` includes `-e <URL>` and the provenance line records `task.endpoint` as the source (plan.rs Fix C), and CoordinatorState persists endpoint_override for TUI-reattach. Pure graph-state + dry-run check; no live LLM call required. Pre-fix the chat-loop task got reset to Open by sweep within ~2s and the dry-run silently dropped the endpoint URL."
+timeout_seconds = 30

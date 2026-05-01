@@ -72,12 +72,20 @@ pub fn find_orphaned_tasks(dir: &Path) -> Result<Vec<OrphanedTask>> {
             Some(id) => id,
             None => {
                 // InProgress but no agent assigned — orphaned (split-save).
-                orphaned.push(OrphanedTask {
-                    task_id: task.id.clone(),
-                    task_title: task.title.clone(),
-                    assigned_agent: "(none)".to_string(),
-                    reason: "InProgress with no assigned agent".to_string(),
+                // Skip long-lived loop tasks (chat/compact) that intentionally
+                // sit InProgress between user messages or compaction cycles
+                // without an inline agent.
+                let is_loop_task = task.tags.iter().any(|t| {
+                    workgraph::chat_id::is_chat_loop_tag(t) || t == "compact-loop"
                 });
+                if !is_loop_task {
+                    orphaned.push(OrphanedTask {
+                        task_id: task.id.clone(),
+                        task_title: task.title.clone(),
+                        assigned_agent: "(none)".to_string(),
+                        reason: "InProgress with no assigned agent".to_string(),
+                    });
+                }
                 continue;
             }
         };
@@ -389,10 +397,15 @@ pub fn reconcile_orphaned_tasks(dir: &Path, graph_path: &Path) -> Result<usize> 
                         // Status=Open with no assigned is normal — skip.
                         // Status=InProgress with no assigned IS orphaned
                         // (split-save race), unless this is a long-lived
-                        // loop task without an agent (coordinator/compact).
+                        // loop task without an agent (chat/compact). Chat-loop
+                        // tasks are kept InProgress between user messages by
+                        // design — orphan-recovery would race the supervisor
+                        // and reset newly-created chats to Open before the
+                        // first user message arrives.
                         task.status == Status::InProgress
                             && !task.tags.iter().any(|t| {
-                                t == "coordinator-loop" || t == "compact-loop"
+                                workgraph::chat_id::is_chat_loop_tag(t)
+                                    || t == "compact-loop"
                             })
                     }
                 };
@@ -878,6 +891,115 @@ mod tests {
         assert!(
             !archive_base.exists(),
             "No archive for sentinel-only orphan"
+        );
+    }
+
+    /// Fix A regression-guard (fix-nex-chat / diagnose-wg-nex root cause #1):
+    /// chat-loop and legacy coordinator-loop tagged tasks must NOT be
+    /// reset to Open by orphan-recovery just because they're InProgress
+    /// without an inline `assigned` value. Newly-created chats via the
+    /// `CreateChat` IPC sit InProgress with `assigned=None` until the
+    /// supervisor process spawns; if reconciliation flips them to Open
+    /// in that ~2s window, the supervisor's pre-flight invariant breaks
+    /// and the chat dies silently.
+    #[test]
+    fn test_reconcile_skips_chat_loop_tagged_tasks() {
+        let temp_dir = TempDir::new().unwrap();
+        let dir = temp_dir.path();
+        std::fs::create_dir_all(dir).unwrap();
+        let gpath = dir.join("graph.jsonl");
+
+        let mut graph = WorkGraph::new();
+        // chat-loop (new tag): must be skipped
+        let mut chat_new =
+            make_task(".chat-7", "Chat 7", Status::InProgress);
+        chat_new.tags = vec![workgraph::chat_id::CHAT_LOOP_TAG.to_string()];
+        graph.add_node(Node::Task(chat_new));
+        // coordinator-loop (legacy tag): must be skipped via is_chat_loop_tag
+        let mut chat_legacy =
+            make_task(".coordinator-3", "Coordinator 3", Status::InProgress);
+        chat_legacy.tags = vec!["coordinator-loop".to_string()];
+        graph.add_node(Node::Task(chat_legacy));
+        // compact-loop: must be skipped
+        let mut compact = make_task(".compact-0", "Compact 0", Status::InProgress);
+        compact.tags = vec!["compact-loop".to_string()];
+        graph.add_node(Node::Task(compact));
+        // Untagged InProgress with no assigned: SHOULD be flipped (control)
+        let plain = make_task("plain-stuck", "Plain Stuck", Status::InProgress);
+        graph.add_node(Node::Task(plain));
+        save_graph(&graph, &gpath).unwrap();
+
+        // Empty registry — every InProgress-with-no-assigned would normally
+        // qualify as orphaned.
+        AgentRegistry::new().save(dir).unwrap();
+
+        let recovered = reconcile_orphaned_tasks(dir, &gpath).unwrap();
+        assert_eq!(recovered, 1, "only the untagged plain task should be recovered");
+
+        let g2 = workgraph::parser::load_graph(&gpath).unwrap();
+        assert_eq!(
+            g2.get_task(".chat-7").unwrap().status,
+            Status::InProgress,
+            "chat-loop task must remain InProgress"
+        );
+        assert_eq!(
+            g2.get_task(".coordinator-3").unwrap().status,
+            Status::InProgress,
+            "legacy coordinator-loop task must remain InProgress"
+        );
+        assert_eq!(
+            g2.get_task(".compact-0").unwrap().status,
+            Status::InProgress,
+            "compact-loop task must remain InProgress"
+        );
+        assert_eq!(
+            g2.get_task("plain-stuck").unwrap().status,
+            Status::Open,
+            "untagged plain orphan should be flipped to Open"
+        );
+    }
+
+    /// Fix A regression-guard for the user-facing `wg sweep` command:
+    /// `find_orphaned_tasks` must skip chat-loop and compact-loop tagged
+    /// tasks. Without this, running `wg sweep` between chat creation and
+    /// supervisor spawn would reset the chat to Open just like the
+    /// dispatcher's reconciliation tick did.
+    #[test]
+    fn test_find_orphaned_skips_chat_loop_tagged_tasks() {
+        let temp_dir = TempDir::new().unwrap();
+        let dir = temp_dir.path();
+        std::fs::create_dir_all(dir).unwrap();
+        let gpath = dir.join("graph.jsonl");
+
+        let mut graph = WorkGraph::new();
+        let mut chat_new =
+            make_task(".chat-9", "Chat 9", Status::InProgress);
+        chat_new.tags = vec![workgraph::chat_id::CHAT_LOOP_TAG.to_string()];
+        graph.add_node(Node::Task(chat_new));
+        let mut compact = make_task(".compact-0", "Compact", Status::InProgress);
+        compact.tags = vec!["compact-loop".to_string()];
+        graph.add_node(Node::Task(compact));
+        let plain = make_task("plain-orphan", "Plain", Status::InProgress);
+        graph.add_node(Node::Task(plain));
+        save_graph(&graph, &gpath).unwrap();
+        AgentRegistry::new().save(dir).unwrap();
+
+        let orphaned = find_orphaned_tasks(dir).unwrap();
+        let ids: Vec<&str> = orphaned.iter().map(|o| o.task_id.as_str()).collect();
+        assert!(
+            !ids.contains(&".chat-9"),
+            "chat-loop task must NOT appear in find_orphaned_tasks: {:?}",
+            ids
+        );
+        assert!(
+            !ids.contains(&".compact-0"),
+            "compact-loop task must NOT appear in find_orphaned_tasks: {:?}",
+            ids
+        );
+        assert!(
+            ids.contains(&"plain-orphan"),
+            "untagged orphan should still be reported: {:?}",
+            ids
         );
     }
 }
