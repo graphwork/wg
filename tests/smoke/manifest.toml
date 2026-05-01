@@ -63,6 +63,16 @@ description = "graph.jsonl rows containing priority as either integer or string 
 timeout_seconds = 20
 
 [[scenario]]
+name = "wg_msg_send_shows_indicator_in_viz"
+script = "scenarios/wg_msg_send_shows_indicator_in_viz.sh"
+owners = [
+    "fix-tui-message",
+    "smoke-gate-is",
+]
+description = "After `wg msg send`, the per-task ✉ indicator must appear in `wg viz` (which shares the TUI task-list rendering path). Pre-fix the indicator stayed stale because the fs watcher only reloaded viz on graph.jsonl mtime changes, while `wg msg send` writes only to messages/<task>.jsonl."
+timeout_seconds = 20
+
+[[scenario]]
 name = "chat_create_via_ipc_works"
 script = "scenarios/chat_create_via_ipc_works.sh"
 owners = [

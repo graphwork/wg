@@ -5212,6 +5212,12 @@ pub struct VizApp {
     /// Flag set by the background file watcher when `.workgraph/` content changes.
     /// Checked and cleared by `maybe_refresh()` to trigger immediate panel reloads.
     pub fs_change_pending: Arc<AtomicBool>,
+    /// Flag set by the background file watcher when a file under
+    /// `.workgraph/messages/` (excluding `.cursors/`) changes. Drives a viz
+    /// reload so per-task message indicators and the right-panel Msg tab
+    /// indicator update promptly after `wg msg send` — graph.jsonl is not
+    /// touched by message writes, so the graph-mtime check alone misses them.
+    pub messages_change_pending: Arc<AtomicBool>,
     /// Keep the watcher alive for the lifetime of the app.
     _fs_watcher: Option<notify_debouncer_mini::Debouncer<notify::RecommendedWatcher>>,
     /// Last mtime of the messages file for the currently-viewed task.
@@ -5496,6 +5502,7 @@ impl VizApp {
             last_refresh_display: chrono::Local::now().format("%H:%M:%S").to_string(),
             refresh_interval: std::time::Duration::from_secs(1),
             fs_change_pending: Arc::new(AtomicBool::new(false)),
+            messages_change_pending: Arc::new(AtomicBool::new(false)),
             _fs_watcher: None,
             last_messages_mtime: None,
             last_daemon_log_mtime: None,
@@ -7077,22 +7084,42 @@ impl VizApp {
 
     /// Start a background file watcher on the `.workgraph/` directory.
     /// Sets `fs_change_pending` flag when any file changes, which triggers
-    /// immediate panel reloads in `maybe_refresh()`.
+    /// immediate panel reloads in `maybe_refresh()`. Also sets
+    /// `messages_change_pending` when a message file (under `messages/`,
+    /// excluding the `.cursors/` subdir) changes, since `wg msg send` writes
+    /// only there and doesn't bump graph.jsonl mtime — the message indicator
+    /// would otherwise stay stale until something else mutates the graph.
     fn start_fs_watcher(&mut self) {
         use notify_debouncer_mini::new_debouncer;
         use std::time::Duration;
 
         let flag = self.fs_change_pending.clone();
+        let messages_flag = self.messages_change_pending.clone();
+        let messages_dir = self.workgraph_dir.join("messages");
+        let cursors_segment = std::ffi::OsString::from(".cursors");
         // 5ms debounce: just enough to coalesce a burst of events
         // from one write (inotify can fire twice per append on some
         // filesystems), not so much that the user perceives lag.
         // On a chat write, we want the TUI to react within a single
         // frame (16ms @ 60Hz), and 5ms leaves plenty of headroom.
-        let debouncer = new_debouncer(Duration::from_millis(5), move |res| {
-            if let Ok(_events) = res {
-                flag.store(true, Ordering::Relaxed);
-            }
-        });
+        let debouncer = new_debouncer(
+            Duration::from_millis(5),
+            move |res: notify_debouncer_mini::DebounceEventResult| {
+                if let Ok(events) = res {
+                    flag.store(true, Ordering::Relaxed);
+                    let touched_messages = events.iter().any(|e| {
+                        e.path.starts_with(&messages_dir)
+                            && !e
+                                .path
+                                .components()
+                                .any(|c| c.as_os_str() == cursors_segment.as_os_str())
+                    });
+                    if touched_messages {
+                        messages_flag.store(true, Ordering::Relaxed);
+                    }
+                }
+            },
+        );
 
         match debouncer {
             Ok(mut debouncer) => {
@@ -7116,6 +7143,9 @@ impl VizApp {
     pub fn maybe_refresh(&mut self) -> bool {
         // Check if the file watcher detected changes in .workgraph/.
         let fs_changed = self.fs_change_pending.swap(false, Ordering::Relaxed);
+        // Drain messages_change_pending lazily — only when we actually plan to
+        // consume it — so a chat-streaming early-return doesn't drop a pending
+        // message-indicator refresh.
 
         // Fast-path: when the streaming file changes (via fs watcher or polling),
         // immediately read it so chat text appears token-by-token.
@@ -7137,6 +7167,7 @@ impl VizApp {
         // chat outbox) update in real-time.
         if fs_changed {
             let mut content_updated = false;
+            let messages_changed = self.messages_change_pending.swap(false, Ordering::Relaxed);
 
             // Graph-dependent content: check if graph.jsonl itself changed.
             // Log entries are stored in graph.jsonl, so we need to detect
@@ -7204,6 +7235,18 @@ impl VizApp {
                     self.load_activity_feed();
                 }
                 content_updated = true;
+            } else if messages_changed {
+                // A message file changed but graph.jsonl didn't — `wg msg send`
+                // writes only to `messages/<task>.jsonl`, so the graph-mtime
+                // check above misses it. Reload viz + stats so the per-task
+                // ✉ indicator and the right-panel Msg tab indicator update
+                // promptly.
+                let graph_path = self.workgraph_dir.join("graph.jsonl");
+                if let Ok(graph) = load_graph(&graph_path) {
+                    self.load_viz_from_graph(&graph);
+                    self.load_stats_from_graph(&graph);
+                    content_updated = true;
+                }
             }
 
             // Messages panel: check if the message file for the viewed task changed.
@@ -10018,6 +10061,7 @@ impl VizApp {
             settings_panel: SettingsPanelState::default(),
             file_browser: None,
             fs_change_pending: Arc::new(AtomicBool::new(false)),
+            messages_change_pending: Arc::new(AtomicBool::new(false)),
             _fs_watcher: None,
             last_messages_mtime: None,
             last_daemon_log_mtime: None,
@@ -26426,6 +26470,204 @@ mod viewport_stability_tests {
         assert_eq!(
             app.scroll.offset_y, new_max_y,
             "exact-bottom user must be kept at the new bottom via smart-follow"
+        );
+    }
+}
+
+#[cfg(test)]
+mod message_indicator_refresh_tests {
+    use super::*;
+    use std::collections::{HashMap, HashSet};
+    use workgraph::graph::{Node, Status, WorkGraph};
+    use workgraph::messages::CoordinatorMessageStatus;
+    use workgraph::parser::save_graph;
+    use workgraph::test_helpers::make_task_with_status;
+
+    use crate::commands::viz::ascii::generate_ascii;
+    use crate::commands::viz::LayoutMode;
+
+    /// Build a single-task workgraph on disk and return a VizApp pinned to its
+    /// directory, with `last_graph_mtime` set so a subsequent maybe_refresh
+    /// call sees the graph as unchanged. Mirrors the post-initial-load state.
+    fn build_app_for_msg_test(task_id: &str) -> (VizApp, tempfile::TempDir) {
+        let mut graph = WorkGraph::new();
+        let task = make_task_with_status(task_id, "T", Status::Open);
+        graph.add_node(Node::Task(task));
+        let tmp = tempfile::tempdir().unwrap();
+        let graph_path = tmp.path().join("graph.jsonl");
+        save_graph(&graph, &graph_path).unwrap();
+
+        let tasks: Vec<_> = graph.tasks().collect();
+        let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
+        let viz = generate_ascii(
+            &graph,
+            &tasks,
+            &task_ids,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            LayoutMode::Tree,
+            &HashSet::new(),
+            "gray",
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+
+        let mut app = VizApp::from_viz_output_for_test(&viz);
+        app.workgraph_dir = tmp.path().to_path_buf();
+        app.last_graph_mtime = std::fs::metadata(&graph_path)
+            .ok()
+            .and_then(|m| m.modified().ok());
+        (app, tmp)
+    }
+
+    fn write_message(wg_dir: &std::path::Path, task_id: &str, sender: &str, id: u64) {
+        let msg_dir = wg_dir.join("messages");
+        std::fs::create_dir_all(&msg_dir).unwrap();
+        let msg_path = msg_dir.join(format!("{}.jsonl", task_id));
+        let line = serde_json::json!({
+            "id": id,
+            "timestamp": "2026-04-30T10:00:00Z",
+            "sender": sender,
+            "body": "hello",
+            "priority": "normal",
+            "status": "sent"
+        });
+        // Append so multiple messages accumulate in a single file.
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open(&msg_path)
+            .unwrap();
+        writeln!(f, "{}", line).unwrap();
+    }
+
+    /// `wg msg send` from a non-coordinator-side sender (an agent or task
+    /// alias) should make the M:Msg tab indicator appear after the next
+    /// maybe_refresh, even though graph.jsonl mtime did not change.
+    #[test]
+    fn message_file_change_refreshes_tab_indicator() {
+        let (mut app, tmp) = build_app_for_msg_test("t1");
+
+        // Sanity: no messages → no indicator entry.
+        assert!(app.task_message_statuses.is_empty());
+
+        // Simulate `wg msg send t1 "hi"` from an agent context.
+        write_message(tmp.path(), "t1", "agent-x", 1);
+
+        // Simulate the fs watcher firing for the message file.
+        app.fs_change_pending
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        app.messages_change_pending
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+
+        app.maybe_refresh();
+
+        assert_eq!(
+            app.task_message_statuses.get("t1"),
+            Some(&CoordinatorMessageStatus::Unseen),
+            "tab indicator must update after a message file write"
+        );
+    }
+
+    /// The indicator must persist across a follow-up refresh that touches no
+    /// message files. Regression for: indicator appearing once and then
+    /// disappearing on the next graph-state-change refresh.
+    #[test]
+    fn message_indicator_persists_across_subsequent_refresh() {
+        let (mut app, tmp) = build_app_for_msg_test("t1");
+        write_message(tmp.path(), "t1", "agent-x", 1);
+
+        app.fs_change_pending
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        app.messages_change_pending
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        app.maybe_refresh();
+        assert!(app.task_message_statuses.contains_key("t1"));
+
+        // Simulate a subsequent unrelated fs change that does NOT touch the
+        // messages dir (e.g., agent output log appended). The indicator must
+        // remain because the underlying message file is still on disk.
+        app.fs_change_pending
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        // messages_change_pending intentionally NOT set this time.
+        app.maybe_refresh();
+
+        assert_eq!(
+            app.task_message_statuses.get("t1"),
+            Some(&CoordinatorMessageStatus::Unseen),
+            "indicator must persist when the underlying message file is unchanged"
+        );
+    }
+
+    /// Without the messages_change_pending signal, a fs-watcher tick that
+    /// only saw a graph-unrelated change must NOT pick up message-file
+    /// updates. This codifies the watcher's discrimination: cursor-only
+    /// changes (advancement under `.cursors/`) should not be conflated with
+    /// real message-content changes.
+    #[test]
+    fn fs_change_without_messages_flag_does_not_force_message_reload() {
+        let (mut app, tmp) = build_app_for_msg_test("t1");
+
+        // Pre-state: a message exists on disk but the app has not seen it
+        // yet (initial task_message_statuses is empty and last_graph_mtime
+        // matches current graph mtime, so no reload would happen on its
+        // own).
+        write_message(tmp.path(), "t1", "agent-x", 1);
+        assert!(app.task_message_statuses.is_empty());
+
+        // Simulate a fs change that did NOT touch the messages dir (e.g.,
+        // an agent output log appended). Only fs_change_pending is set.
+        app.fs_change_pending
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        // messages_change_pending intentionally NOT set.
+        app.maybe_refresh();
+
+        // Without the messages signal, the heavy viz reload does not run
+        // (graph mtime unchanged), so the indicator stays empty until a
+        // real message change is detected.
+        assert!(
+            app.task_message_statuses.is_empty(),
+            "fs-change without messages signal must not trigger a message-stats reload"
+        );
+    }
+
+    /// The indicator must clear when the TUI cursor is advanced past the last
+    /// incoming message id (i.e., the user has read it). Status flips Unseen
+    /// → Seen, not None — but it must not silently disappear.
+    #[test]
+    fn message_indicator_clears_to_seen_after_cursor_advance() {
+        let (mut app, tmp) = build_app_for_msg_test("t1");
+        write_message(tmp.path(), "t1", "agent-x", 1);
+
+        app.fs_change_pending
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        app.messages_change_pending
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        app.maybe_refresh();
+        assert_eq!(
+            app.task_message_statuses.get("t1"),
+            Some(&CoordinatorMessageStatus::Unseen)
+        );
+
+        // Advance the TUI cursor as load_messages_panel would do when the
+        // user opens the Messages tab on this task.
+        workgraph::messages::write_cursor(tmp.path(), "tui", "t1", 1).unwrap();
+
+        // The cursor file change touches messages/.cursors/, which our
+        // watcher filter excludes. Drive the refresh manually since this
+        // test is not running the real fs watcher.
+        app.fs_change_pending
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        app.messages_change_pending
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        app.maybe_refresh();
+
+        assert_eq!(
+            app.task_message_statuses.get("t1"),
+            Some(&CoordinatorMessageStatus::Seen),
+            "cursor advance must transition Unseen → Seen, not clear the indicator"
         );
     }
 }
