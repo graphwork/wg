@@ -2677,6 +2677,20 @@ pub enum HtmlPublishCommands {
         /// ~/.ssh/config Host alias
         #[arg(long = "ssh-config-host")]
         ssh_config_host: Option<String>,
+
+        /// Append `--mkpath` to the default rsync flags so a fresh remote
+        /// path is auto-created on first run (avoids rsync exit 11 when the
+        /// destination directory doesn't exist yet). Requires rsync >= 3.2.3.
+        /// Mutually exclusive with --rsync-flags.
+        #[arg(long = "mkpath", conflicts_with = "rsync_flags")]
+        mkpath: bool,
+
+        /// Override the rsync flags entirely as a single whitespace-separated
+        /// string (default when omitted: "-avz --delete"). Replaces the
+        /// default — use e.g. --rsync-flags='-avz --delete --mkpath -P' to
+        /// keep the defaults plus extras. Mutually exclusive with --mkpath.
+        #[arg(long = "rsync-flags", conflicts_with = "mkpath")]
+        rsync_flags: Option<String>,
     },
 
     /// List registered deployments

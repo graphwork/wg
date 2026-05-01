@@ -14,6 +14,13 @@
 #   * config persistence regressions (html-publish.toml round-trip),
 #   * rsync invocation flag drift (-avz --delete defaults).
 #
+# Also pins wg-html-publish: opt-in `--mkpath` appends one flag to the
+# default; opt-in `--rsync-flags '<custom>'` fully replaces the default;
+# the two are mutually exclusive at the CLI; and adding a deployment with
+# NEITHER opt-in must keep the legacy '-avz --delete' default unchanged
+# (no silent --mkpath upgrade — older rsync still works). The fresh-path
+# subscenario at the bottom asserts --mkpath actually does what it says.
+#
 # Pure local rsync — no SSH, no network. Works in CI/sandbox.
 
 set -u
@@ -102,5 +109,91 @@ if ! echo "$help_text" | grep -qi "publish a draft task"; then
     loud_fail "wg publish --help did not advertise legacy publish-task semantics: $help_text"
 fi
 
-echo "PASS: wg html publish add/list/show/run/remove + scheduled task lifecycle + wg publish task surface intact"
+# ── --mkpath / --rsync-flags opt-ins (wg-html-publish) ────────────────
+# 1) Default with no opt-in: rsync flags surface as '-avz --delete' (legacy
+#    contract preserved).
+# 2) --mkpath: rsync flags surface as '-avz --delete --mkpath' AND a `run`
+#    against a NON-EXISTENT remote subdir succeeds (creates the path)
+#    instead of hitting rsync exit 11. The non-opt-in default would fail
+#    here on a fresh path; this is the user-visible reason --mkpath exists.
+# 3) --rsync-flags: full override — '-avzP' surfaces verbatim, NO -avz/--delete
+#    silently merged in.
+# 4) --mkpath + --rsync-flags together: clap rejects with non-zero exit and
+#    a message naming both flags. No deployment is persisted.
+# 5) help text advertises both flags.
+
+# (1) default unchanged
+if ! wg html publish add legacydefault --rsync "$dest/" >legacy.log 2>&1; then
+    loud_fail "default add (no opt-in) failed: $(tail -10 legacy.log)"
+fi
+default_flags=$(wg html publish show legacydefault 2>&1 | grep -E "^  rsync flags:" || true)
+if [[ "$default_flags" != *"-avz --delete"* ]]; then
+    loud_fail "default rsync flags must be '-avz --delete'; got: $default_flags"
+fi
+if [[ "$default_flags" == *"--mkpath"* ]]; then
+    loud_fail "default rsync flags must NOT silently include --mkpath; got: $default_flags"
+fi
+wg html publish remove legacydefault >/dev/null 2>&1
+
+# (2) --mkpath opt-in + fresh-path live run
+fresh_parent="$scratch/fresh-parent"
+mkdir -p "$fresh_parent"
+fresh_path="$fresh_parent/freshly/created/sub/path"
+if [[ -e "$fresh_path" ]]; then
+    loud_fail "test setup error: $fresh_path should NOT exist before add"
+fi
+if ! wg html publish add freshpath --rsync "$fresh_path/" --mkpath >fresh-add.log 2>&1; then
+    loud_fail "wg html publish add --mkpath failed: $(tail -10 fresh-add.log)"
+fi
+mk_flags=$(wg html publish show freshpath 2>&1 | grep -E "^  rsync flags:" || true)
+if ! echo "$mk_flags" | grep -q -- "--mkpath"; then
+    loud_fail "--mkpath must surface in show; got: $mk_flags"
+fi
+if ! echo "$mk_flags" | grep -q -- "-avz"; then
+    loud_fail "--mkpath must append to default ('-avz --delete'); got: $mk_flags"
+fi
+if ! wg html publish run freshpath >fresh-run.log 2>&1; then
+    loud_fail "wg html publish run (fresh path + --mkpath) failed: $(tail -20 fresh-run.log)"
+fi
+if [[ ! -f "$fresh_path/index.html" ]]; then
+    loud_fail "expected $fresh_path/index.html after --mkpath run; got: $(ls -la "$fresh_path" 2>&1 || echo missing)"
+fi
+wg html publish remove freshpath >/dev/null 2>&1
+
+# (3) --rsync-flags full override
+if ! wg html publish add overrideflags --rsync "$dest/" --rsync-flags='-avzP' >ov.log 2>&1; then
+    loud_fail "wg html publish add --rsync-flags failed: $(tail -10 ov.log)"
+fi
+ov_flags=$(wg html publish show overrideflags 2>&1 | grep -E "^  rsync flags:" || true)
+if [[ "$ov_flags" != *"-avzP"* ]]; then
+    loud_fail "--rsync-flags must round-trip; got: $ov_flags"
+fi
+if echo "$ov_flags" | grep -q -- "--delete"; then
+    loud_fail "--rsync-flags must FULLY REPLACE the default; got: $ov_flags"
+fi
+wg html publish remove overrideflags >/dev/null 2>&1
+
+# (4) --mkpath + --rsync-flags is a CLI-level mutex
+mutex_out=$(wg html publish add conflict --rsync "$dest/" --mkpath --rsync-flags='-avzP' 2>&1) && mutex_rc=0 || mutex_rc=$?
+if [[ "$mutex_rc" == "0" ]]; then
+    loud_fail "--mkpath + --rsync-flags must be rejected; instead exit=0 out=$mutex_out"
+fi
+if [[ "$mutex_out" != *"--mkpath"* || "$mutex_out" != *"--rsync-flags"* ]]; then
+    loud_fail "mutex error must name both flags; got: $mutex_out"
+fi
+# Must NOT have persisted the rejected deployment.
+if wg html publish list 2>&1 | grep -q '^  conflict$'; then
+    loud_fail "rejected --mkpath+--rsync-flags add must NOT persist 'conflict' deployment"
+fi
+
+# (5) --help advertises both
+help_out=$(wg html publish add --help 2>&1)
+if ! echo "$help_out" | grep -qE "^\s+--mkpath"; then
+    loud_fail "wg html publish add --help must advertise --mkpath; got:\n$help_out"
+fi
+if ! echo "$help_out" | grep -qE "^\s+--rsync-flags"; then
+    loud_fail "wg html publish add --help must advertise --rsync-flags; got:\n$help_out"
+fi
+
+echo "PASS: wg html publish add/list/show/run/remove + scheduled lifecycle + default unchanged + --mkpath opt-in + --rsync-flags override + mutex + help advertised + wg publish task surface intact"
 exit 0

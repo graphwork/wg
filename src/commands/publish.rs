@@ -99,11 +99,18 @@ pub fn default_out_dir(name: &str) -> PathBuf {
 }
 
 /// Default rsync flags applied when the deployment has no explicit override.
+///
+/// Kept conservative for compatibility with older rsync versions. Users on
+/// rsync >= 3.2.3 who want the destination path auto-created on first run
+/// can pass `--mkpath` at `add` time, which appends `--mkpath` to the
+/// default. For full control, pass `--rsync-flags '<custom>'`.
 pub fn default_rsync_flags() -> Vec<String> {
-    vec![
-        "-avz".to_string(),
-        "--delete".to_string(),
-    ]
+    vec!["-avz".to_string(), "--delete".to_string()]
+}
+
+/// Whitespace-split an rsync_flags string into argv tokens. Empty input → empty vec.
+pub fn parse_rsync_flags_str(s: &str) -> Vec<String> {
+    s.split_whitespace().map(|t| t.to_string()).collect()
 }
 
 /// Cron-task ID for a deployment.
@@ -150,6 +157,8 @@ pub fn run_add(
     out_dir: Option<&str>,
     ssh_key: Option<&str>,
     ssh_config_host: Option<&str>,
+    rsync_flags: Option<&str>,
+    mkpath: bool,
 ) -> Result<()> {
     if name.is_empty() {
         bail!("Deployment name must not be empty.");
@@ -162,6 +171,34 @@ pub fn run_add(
         workgraph::cron::parse_cron_expression(expr)
             .with_context(|| format!("invalid cron expression: {}", expr))?;
     }
+
+    // --mkpath is a single-flag opt-in that appends to the default flag set;
+    // --rsync-flags is a full override that replaces the default. Combining
+    // them is ambiguous (does --mkpath append to the override? to the
+    // default?), so refuse — the user can spell out --mkpath inside their
+    // --rsync-flags string if they want both.
+    let has_explicit_flags = matches!(rsync_flags, Some(s) if !s.trim().is_empty());
+    if mkpath && has_explicit_flags {
+        bail!(
+            "--mkpath and --rsync-flags are mutually exclusive. \
+             --mkpath appends one flag to the default ('-avz --delete'); \
+             --rsync-flags replaces the default entirely. Pick one."
+        );
+    }
+
+    // Resolve the on-disk rsync_flags field:
+    //   * --rsync-flags '...'  → store the parsed list (full override)
+    //   * --mkpath             → store default + ['--mkpath']
+    //   * neither              → leave as None (runtime falls back to default)
+    let resolved_flags: Option<Vec<String>> = if has_explicit_flags {
+        Some(parse_rsync_flags_str(rsync_flags.unwrap()))
+    } else if mkpath {
+        let mut v = default_rsync_flags();
+        v.push("--mkpath".to_string());
+        Some(v)
+    } else {
+        None
+    };
 
     let mut cfg = load_config(workgraph_dir)?;
     if cfg.deployments.iter().any(|d| d.name == name) {
@@ -179,6 +216,7 @@ pub fn run_add(
     dep.out_dir = out_dir.map(|s| s.to_string());
     dep.ssh_key = ssh_key.map(|s| s.to_string());
     dep.ssh_config_host = ssh_config_host.map(|s| s.to_string());
+    dep.rsync_flags = resolved_flags;
 
     if let Some(expr) = schedule {
         let task_id = ensure_cron_task(workgraph_dir, name, expr)?;
@@ -582,10 +620,40 @@ mod tests {
         tmp
     }
 
+    /// 12-arg run_add wrapper that defaults the new flags to "neither set"
+    /// — so the existing test bodies stay focused on what they actually
+    /// exercise (cron, persistence, list, etc.) rather than re-spelling
+    /// the rsync_flags+mkpath args every time.
+    #[allow(clippy::too_many_arguments)]
+    fn run_add_default(
+        workgraph_dir: &Path,
+        name: &str,
+        rsync_target: &str,
+        schedule: Option<&str>,
+        since: Option<&str>,
+        public_only: bool,
+        include_chat: bool,
+    ) -> Result<()> {
+        run_add(
+            workgraph_dir,
+            name,
+            rsync_target,
+            schedule,
+            since,
+            public_only,
+            include_chat,
+            None, // out_dir
+            None, // ssh_key
+            None, // ssh_config_host
+            None, // rsync_flags
+            false, // mkpath
+        )
+    }
+
     #[test]
     fn publish_add_persists_deployment() {
         let tmp = fresh_dir();
-        run_add(
+        run_add_default(
             tmp.path(),
             "blog",
             "user@example.com:/var/www/blog/",
@@ -593,9 +661,6 @@ mod tests {
             None,
             false,
             false,
-            None,
-            None,
-            None,
         )
         .unwrap();
 
@@ -606,12 +671,20 @@ mod tests {
         assert_eq!(d.rsync_target, "user@example.com:/var/www/blog/");
         assert!(d.schedule.is_none());
         assert!(d.schedule_task_id.is_none());
+        // No --mkpath, no --rsync-flags → on-disk rsync_flags stays None
+        // and the runtime default ('-avz --delete', no --mkpath) applies.
+        assert!(
+            d.rsync_flags.is_none(),
+            "no opt-in must leave rsync_flags=None so the existing default is preserved"
+        );
+        // Compatibility default: NO --mkpath. Older rsync still works.
+        assert_eq!(default_rsync_flags(), vec!["-avz".to_string(), "--delete".to_string()]);
     }
 
     #[test]
     fn publish_add_duplicate_errors() {
         let tmp = fresh_dir();
-        run_add(
+        run_add_default(
             tmp.path(),
             "blog",
             "user@example.com:/var/www/blog/",
@@ -619,12 +692,9 @@ mod tests {
             None,
             false,
             false,
-            None,
-            None,
-            None,
         )
         .unwrap();
-        let err = run_add(
+        let err = run_add_default(
             tmp.path(),
             "blog",
             "user@example.com:/var/www/blog/",
@@ -632,9 +702,6 @@ mod tests {
             None,
             false,
             false,
-            None,
-            None,
-            None,
         )
         .unwrap_err();
         assert!(err.to_string().contains("already exists"));
@@ -643,7 +710,7 @@ mod tests {
     #[test]
     fn publish_add_invalid_cron_errors() {
         let tmp = fresh_dir();
-        let err = run_add(
+        let err = run_add_default(
             tmp.path(),
             "blog",
             "user@example.com:/var/www/blog/",
@@ -651,9 +718,6 @@ mod tests {
             None,
             false,
             false,
-            None,
-            None,
-            None,
         )
         .unwrap_err();
         assert!(
@@ -666,7 +730,7 @@ mod tests {
     #[test]
     fn publish_add_with_schedule_creates_cron_task() {
         let tmp = fresh_dir();
-        run_add(
+        run_add_default(
             tmp.path(),
             "site",
             "user@example.com:/srv/site/",
@@ -674,9 +738,6 @@ mod tests {
             None,
             false,
             false,
-            None,
-            None,
-            None,
         )
         .unwrap();
         let cfg = load_config(tmp.path()).unwrap();
@@ -685,7 +746,6 @@ mod tests {
         assert_eq!(d.schedule.as_deref(), Some("*/15 * * * *"));
         assert_eq!(d.schedule_task_id.as_deref(), Some(".html-publish-site"));
 
-        // Verify a wg task was created.
         let graph =
             workgraph::parser::load_graph(&tmp.path().join("graph.jsonl")).unwrap();
         assert!(
@@ -697,7 +757,7 @@ mod tests {
     #[test]
     fn publish_remove_drops_deployment_and_task() {
         let tmp = fresh_dir();
-        run_add(
+        run_add_default(
             tmp.path(),
             "site",
             "user@example.com:/srv/site/",
@@ -705,16 +765,12 @@ mod tests {
             None,
             false,
             false,
-            None,
-            None,
-            None,
         )
         .unwrap();
         run_remove(tmp.path(), "site").unwrap();
         let cfg = load_config(tmp.path()).unwrap();
         assert!(cfg.deployments.is_empty());
 
-        // Task should be marked abandoned (not removed from graph entirely).
         let graph =
             workgraph::parser::load_graph(&tmp.path().join("graph.jsonl")).unwrap();
         let task = graph
@@ -745,59 +801,21 @@ mod tests {
     #[test]
     fn publish_list_with_data() {
         let tmp = fresh_dir();
-        run_add(
-            tmp.path(),
-            "a",
-            "u@h:/a/",
-            None,
-            None,
-            false,
-            false,
-            None,
-            None,
-            None,
-        )
-        .unwrap();
-        run_add(
-            tmp.path(),
-            "b",
-            "u@h:/b/",
-            None,
-            Some("7d"),
-            true,
-            false,
-            None,
-            None,
-            None,
-        )
-        .unwrap();
+        run_add_default(tmp.path(), "a", "u@h:/a/", None, None, false, false).unwrap();
+        run_add_default(tmp.path(), "b", "u@h:/b/", None, Some("7d"), true, false).unwrap();
         run_list(tmp.path(), false).unwrap();
         run_list(tmp.path(), true).unwrap();
     }
 
     #[test]
     fn publish_run_against_local_path_target_succeeds() {
-        // Use a local-path rsync target (no SSH) so this works in CI/sandbox.
         let tmp = fresh_dir();
         let dest = TempDir::new().unwrap();
         let dest_path = dest.path().to_path_buf();
 
         let target = format!("{}/", dest_path.display());
-        run_add(
-            tmp.path(),
-            "local",
-            &target,
-            None,
-            None,
-            false,
-            false,
-            None,
-            None,
-            None,
-        )
-        .unwrap();
+        run_add_default(tmp.path(), "local", &target, None, None, false, false).unwrap();
 
-        // Run it. wg html should produce content; rsync should mirror to dest.
         run_run(tmp.path(), "local", false).expect("publish run should succeed");
 
         let cfg = load_config(tmp.path()).unwrap();
@@ -808,8 +826,6 @@ mod tests {
             .unwrap();
         assert_eq!(d.last_status.as_deref(), Some("ok"));
         assert!(d.last_run_at.is_some());
-
-        // Verify destination has at least an index.html.
         assert!(
             dest_path.join("index.html").exists(),
             "rsync should have produced index.html at {}",
@@ -820,8 +836,7 @@ mod tests {
     #[test]
     fn publish_run_records_failure_on_bad_rsync_target() {
         let tmp = fresh_dir();
-        // /nonexistent path will make rsync fail.
-        run_add(
+        run_add_default(
             tmp.path(),
             "broken",
             "/nonexistent-root-only-path/wg-publish-test/",
@@ -829,16 +844,10 @@ mod tests {
             None,
             false,
             false,
-            None,
-            None,
-            None,
         )
         .unwrap();
 
-        // We expect a failure on a path the user cannot create.
         let err = run_run(tmp.path(), "broken", false);
-        // It might or might not fail depending on rsync's ability to mkdir; the
-        // contract under test is that on failure we record it.
         let cfg = load_config(tmp.path()).unwrap();
         let d = cfg
             .deployments
@@ -850,5 +859,249 @@ mod tests {
             assert_eq!(d.last_status.as_deref(), Some("fail"));
             assert!(d.last_error.is_some());
         }
+    }
+
+    // ── --mkpath / --rsync-flags opt-ins ──────────────────────────────
+
+    #[test]
+    fn publish_add_no_optin_keeps_default_unchanged() {
+        // Validation row: `add foo --rsync ...` (no flag) → resolved flags
+        // = '-avz --delete' (current default). We assert via the runtime
+        // resolution path that this is what gets passed to rsync.
+        let tmp = fresh_dir();
+        run_add_default(tmp.path(), "noop", "u@h:/p/", None, None, false, false).unwrap();
+        let cfg = load_config(tmp.path()).unwrap();
+        let d = &cfg.deployments[0];
+        assert!(d.rsync_flags.is_none(), "no opt-in must persist as None");
+        let resolved = d.rsync_flags.clone().unwrap_or_else(default_rsync_flags);
+        assert_eq!(
+            resolved,
+            vec!["-avz".to_string(), "--delete".to_string()],
+            "unchanged from pre-task behaviour: NO --mkpath"
+        );
+    }
+
+    #[test]
+    fn publish_add_mkpath_appends_to_default() {
+        // Validation row: `add foo --rsync ... --mkpath` → rsync_flags
+        // = '-avz --delete --mkpath'.
+        let tmp = fresh_dir();
+        run_add(
+            tmp.path(),
+            "withmk",
+            "u@h:/p/",
+            None,
+            None,
+            false,
+            false,
+            None,
+            None,
+            None,
+            None,
+            true, // mkpath
+        )
+        .unwrap();
+        let cfg = load_config(tmp.path()).unwrap();
+        let d = &cfg.deployments[0];
+        assert_eq!(
+            d.rsync_flags.as_deref(),
+            Some(
+                &[
+                    "-avz".to_string(),
+                    "--delete".to_string(),
+                    "--mkpath".to_string()
+                ][..]
+            ),
+            "--mkpath must append exactly one flag to the existing default"
+        );
+    }
+
+    #[test]
+    fn publish_add_rsync_flags_full_override() {
+        // Validation row: `add foo --rsync ... --rsync-flags '-avzP'` →
+        // rsync_flags = '-avzP' (default fully replaced).
+        let tmp = fresh_dir();
+        run_add(
+            tmp.path(),
+            "override",
+            "u@h:/p/",
+            None,
+            None,
+            false,
+            false,
+            None,
+            None,
+            None,
+            Some("-avzP"),
+            false,
+        )
+        .unwrap();
+        let cfg = load_config(tmp.path()).unwrap();
+        let d = &cfg.deployments[0];
+        assert_eq!(
+            d.rsync_flags.as_deref(),
+            Some(&["-avzP".to_string()][..]),
+            "--rsync-flags must completely replace the default — no -avz or --delete added"
+        );
+    }
+
+    #[test]
+    fn publish_add_rsync_flags_with_mkpath_fully_overrides() {
+        // Variant of the override row: --rsync-flags can include --mkpath
+        // explicitly when the user wants both. Default flags are NOT merged
+        // in.
+        let tmp = fresh_dir();
+        run_add(
+            tmp.path(),
+            "both",
+            "u@h:/p/",
+            None,
+            None,
+            false,
+            false,
+            None,
+            None,
+            None,
+            Some("-avz --delete --mkpath -P"),
+            false,
+        )
+        .unwrap();
+        let cfg = load_config(tmp.path()).unwrap();
+        let d = &cfg.deployments[0];
+        assert_eq!(
+            d.rsync_flags.as_deref(),
+            Some(
+                &[
+                    "-avz".to_string(),
+                    "--delete".to_string(),
+                    "--mkpath".to_string(),
+                    "-P".to_string(),
+                ][..]
+            ),
+            "explicit --rsync-flags must round-trip verbatim, even when it spells out --mkpath"
+        );
+    }
+
+    #[test]
+    fn publish_add_mkpath_and_rsync_flags_are_mutually_exclusive() {
+        // Validation row: `--mkpath` and `--rsync-flags` together → error
+        // at add time, no deployment written.
+        let tmp = fresh_dir();
+        let err = run_add(
+            tmp.path(),
+            "conflict",
+            "u@h:/p/",
+            None,
+            None,
+            false,
+            false,
+            None,
+            None,
+            None,
+            Some("-avzP"),
+            true, // mkpath
+        )
+        .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("mutually exclusive"),
+            "expected mutually-exclusive error, got: {}",
+            msg
+        );
+        assert!(
+            msg.contains("--mkpath") && msg.contains("--rsync-flags"),
+            "error message must name both flags so the user knows which to drop, got: {}",
+            msg
+        );
+        let cfg = load_config(tmp.path()).unwrap();
+        assert!(
+            cfg.deployments.is_empty(),
+            "a rejected --mkpath+--rsync-flags add must NOT persist a deployment"
+        );
+    }
+
+    #[test]
+    fn publish_existing_deployment_without_rsync_flags_unchanged() {
+        // Validation row: existing deployments (no rsync_flags field on
+        // disk) MUST keep behaving as they did pre-task. Specifically, the
+        // resolved flag set is the unchanged default ('-avz --delete') —
+        // there is NO silent --mkpath upgrade.
+        let tmp = fresh_dir();
+        let dest = TempDir::new().unwrap();
+        let target = format!("{}/", dest.path().display());
+        let toml = format!(
+            "[[deployments]]\nname = \"legacy\"\nrsync_target = \"{}\"\npublic_only = false\ninclude_chat = false\n",
+            target
+        );
+        std::fs::write(publish_config_path(tmp.path()), toml).unwrap();
+        let cfg = load_config(tmp.path()).unwrap();
+        assert!(cfg.deployments[0].rsync_flags.is_none());
+        let resolved = cfg.deployments[0]
+            .rsync_flags
+            .clone()
+            .unwrap_or_else(default_rsync_flags);
+        assert_eq!(
+            resolved,
+            vec!["-avz".to_string(), "--delete".to_string()],
+            "legacy deployments must continue to use the unchanged default"
+        );
+
+        // And rerun — the destination already exists so even without
+        // --mkpath the run succeeds. Validates the no-auto-rewrite contract
+        // end-to-end.
+        run_run(tmp.path(), "legacy", false).unwrap();
+        let cfg_after = load_config(tmp.path()).unwrap();
+        assert!(
+            cfg_after.deployments[0].rsync_flags.is_none(),
+            "run must NOT silently rewrite the on-disk rsync_flags field"
+        );
+    }
+
+    #[test]
+    fn publish_run_with_mkpath_creates_missing_remote_path() {
+        // Live: --mkpath opt-in, fresh non-existent destination, run
+        // succeeds and creates the path. Pre-fix this path produced rsync
+        // exit 11 because the absent parent dir was not auto-created.
+        let tmp = fresh_dir();
+        let parent = TempDir::new().unwrap();
+        let nested = parent.path().join("does/not/exist/yet");
+        assert!(!nested.exists());
+        let target = format!("{}/", nested.display());
+        run_add(
+            tmp.path(),
+            "freshpath",
+            &target,
+            None,
+            None,
+            false,
+            false,
+            None,
+            None,
+            None,
+            None,
+            true, // mkpath
+        )
+        .unwrap();
+        run_run(tmp.path(), "freshpath", false)
+            .expect("with --mkpath, fresh destination should be created");
+        assert!(
+            nested.join("index.html").exists(),
+            "expected --mkpath to have created {} and rsync'd index.html into it",
+            nested.display()
+        );
+    }
+
+    #[test]
+    fn parse_rsync_flags_str_basic() {
+        assert_eq!(
+            parse_rsync_flags_str("-avz --delete"),
+            vec!["-avz".to_string(), "--delete".to_string()]
+        );
+        assert_eq!(parse_rsync_flags_str("   "), Vec::<String>::new());
+        assert_eq!(parse_rsync_flags_str(""), Vec::<String>::new());
+        assert_eq!(
+            parse_rsync_flags_str("-a  --delete   --mkpath"),
+            vec!["-a".to_string(), "--delete".to_string(), "--mkpath".to_string()]
+        );
     }
 }

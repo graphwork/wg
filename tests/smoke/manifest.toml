@@ -766,8 +766,9 @@ name = "publish_run_against_local_rsync_target"
 script = "scenarios/publish_run_against_local_rsync_target.sh"
 owners = [
     "wg-publish-easy",
+    "wg-html-publish",
 ]
-description = "Pins wg-publish-easy: end-to-end add/list/show/run/remove against a local rsync target, plus scheduled-deployment lifecycle (creates a `.publish-<name>` cron task on add, abandons it on remove). Verifies html builds, files are mirrored to the destination, and last_status=ok is recorded. Skips when rsync is missing."
+description = "Pins wg-publish-easy: end-to-end add/list/show/run/remove against a local rsync target, plus scheduled-deployment lifecycle (creates a `.publish-<name>` cron task on add, abandons it on remove). Verifies html builds, files are mirrored to the destination, and last_status=ok is recorded. Also pins wg-html-publish: the default rsync flags stay '-avz --delete' (NO silent --mkpath upgrade — older rsync still works); opt-in --mkpath appends one flag and a `run` against a NON-EXISTENT remote subdir succeeds (creates the path) instead of hitting rsync exit 11; opt-in --rsync-flags fully replaces the default and is not silently augmented; --mkpath + --rsync-flags together is rejected with a non-zero exit naming both flags; --help advertises both flags. Skips when rsync is missing."
 timeout_seconds = 120
 
 [[scenario]]
