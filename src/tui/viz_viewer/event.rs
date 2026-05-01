@@ -570,12 +570,24 @@ fn handle_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
     // focused_panel = RightPanel) would silently leak typed
     // characters into the chat-pane child's stdin while the modal
     // appears to "swallow" them.
+    //
+    // Death-panel gating (fix-chat-died): when the embedded child has
+    // exited and the death panel is showing, `chat_pty_mode` stays true
+    // (so render still goes through the PTY path) but the pane has
+    // been removed from `task_panes`. Without this guard the keystroke
+    // would be "forwarded" to a missing pane and silently dropped via
+    // the unconditional `return`, leaving R/E/X unreachable. Letting
+    // keys fall through here lets `handle_normal_key` route them to
+    // the death-panel recovery branch.
     let vendor_pty_active = app.chat_pty_mode
         && app.chat_pty_forwards_stdin
         && app.right_panel_tab == RightPanelTab::Chat
         && app.focused_panel == FocusedPanel::RightPanel
         && !app.chat_pty_observer
-        && matches!(app.input_mode, InputMode::Normal);
+        && matches!(app.input_mode, InputMode::Normal)
+        && !app
+            .chat_agent_death
+            .contains_key(&app.active_coordinator_id);
     if vendor_pty_active {
         // Modal contract (implement-tui-modal): when chat PTY has focus, the
         // ONLY key allowed to break out is Ctrl+T. Every other keystroke —
@@ -715,7 +727,10 @@ fn handle_paste(app: &mut VizApp, text: &str) {
         && app.right_panel_tab == RightPanelTab::Chat
         && app.focused_panel == FocusedPanel::RightPanel
         && !app.chat_pty_observer
-        && matches!(app.input_mode, InputMode::Normal);
+        && matches!(app.input_mode, InputMode::Normal)
+        && !app
+            .chat_agent_death
+            .contains_key(&app.active_coordinator_id);
     if vendor_pty_active {
         let task_id = workgraph::chat_id::format_chat_task_id(app.active_coordinator_id);
         if let Some(pane) = app.task_panes.get_mut(&task_id) {
@@ -1899,11 +1914,18 @@ fn handle_normal_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
     // Death-panel recovery: when the chat agent died and the death panel is
     // showing, intercept R/E/X before they reach any other handler so the
     // user can act on the panel regardless of which panel has focus.
+    // Accept the key regardless of SHIFT — the panel's labels say
+    // "Press R/E/X" (uppercase), so users naturally try shift+letter,
+    // which crossterm delivers as `Char('R')` + SHIFT. Reject CONTROL /
+    // ALT / META so we don't shadow other bindings (Ctrl+R, Alt+E, etc.).
+    let death_panel_modifier_ok = !modifiers.intersects(
+        KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::META,
+    );
     if app.right_panel_tab == RightPanelTab::Chat
         && app
             .chat_agent_death
             .contains_key(&app.active_coordinator_id)
-        && modifiers.is_empty()
+        && death_panel_modifier_ok
     {
         match code {
             KeyCode::Char('r') | KeyCode::Char('R') => {
@@ -9090,6 +9112,163 @@ mod chat_tab_navigation_tests {
             "In Normal mode with chat PTY active, paste must forward \
              every byte to the child's stdin (fix-paste-events guard \
              must not over-block)."
+        );
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    // fix-chat-died: when the embedded chat agent's PTY child has exited,
+    // `chat_pty_mode` stays true (so the render path knows to show the death
+    // panel instead of falling back to the file-tailing renderer) but the
+    // pane is removed from `task_panes`. Without the death-panel guard in
+    // `vendor_pty_active`, R/E/X keystrokes were "forwarded" to the missing
+    // pane and silently dropped — leaving the user staring at the panel
+    // with no way to act on it.
+    // ══════════════════════════════════════════════════════════════════════════
+
+    fn make_death_info() -> super::super::state::ChatAgentDeathInfo {
+        super::super::state::ChatAgentDeathInfo {
+            exit_status: "exit code 1".to_string(),
+            executor: "codex".to_string(),
+            spawn_cmd: "codex --resume chat-0".to_string(),
+        }
+    }
+
+    /// Simulate the user-reported scenario: codex died, panel is showing,
+    /// chat_pty_mode is still true with PTY focus. Pressing R must clear
+    /// the death info (so the render path will respawn) — not be silently
+    /// swallowed by the vendor-PTY forwarder.
+    #[test]
+    fn r_key_clears_death_info_when_chat_pty_focused() {
+        let (mut app, _tmp) = build_app_with_chats(&[0]);
+        app.right_panel_tab = RightPanelTab::Chat;
+        app.focused_panel = FocusedPanel::RightPanel;
+        // Simulate post-death state: PTY mode flags still set, pane removed,
+        // death info populated.
+        app.chat_pty_mode = true;
+        app.chat_pty_forwards_stdin = true;
+        app.chat_pty_observer = false;
+        app.input_mode = super::InputMode::Normal;
+        app.chat_agent_death.insert(0, make_death_info());
+
+        super::handle_key(&mut app, KeyCode::Char('r'), KeyModifiers::NONE);
+
+        assert!(
+            !app.chat_agent_death.contains_key(&0),
+            "R must clear death info so the render path can respawn the PTY \
+             (vendor_pty_active forwarder was swallowing R)"
+        );
+    }
+
+    /// X dismisses the panel and exits PTY mode — must reach the death-panel
+    /// recovery handler even with full PTY focus state.
+    #[test]
+    fn x_key_dismisses_death_panel_when_chat_pty_focused() {
+        let (mut app, _tmp) = build_app_with_chats(&[0]);
+        app.right_panel_tab = RightPanelTab::Chat;
+        app.focused_panel = FocusedPanel::RightPanel;
+        app.chat_pty_mode = true;
+        app.chat_pty_forwards_stdin = true;
+        app.chat_pty_observer = false;
+        app.input_mode = super::InputMode::Normal;
+        app.chat_agent_death.insert(0, make_death_info());
+
+        super::handle_key(&mut app, KeyCode::Char('x'), KeyModifiers::NONE);
+
+        assert!(
+            !app.chat_agent_death.contains_key(&0),
+            "X must clear death info"
+        );
+        assert!(
+            !app.chat_pty_mode,
+            "X must turn off chat_pty_mode so the file-tailing fallback renders"
+        );
+    }
+
+    /// E opens the launcher dialog — must reach the death-panel recovery
+    /// handler even with full PTY focus state.
+    #[test]
+    fn e_key_opens_launcher_when_chat_pty_focused() {
+        let (mut app, _tmp) = build_app_with_chats(&[0]);
+        app.right_panel_tab = RightPanelTab::Chat;
+        app.focused_panel = FocusedPanel::RightPanel;
+        app.chat_pty_mode = true;
+        app.chat_pty_forwards_stdin = true;
+        app.chat_pty_observer = false;
+        app.input_mode = super::InputMode::Normal;
+        app.chat_agent_death.insert(0, make_death_info());
+
+        super::handle_key(&mut app, KeyCode::Char('e'), KeyModifiers::NONE);
+
+        assert!(
+            !app.chat_agent_death.contains_key(&0),
+            "E must clear death info"
+        );
+        assert!(
+            matches!(app.input_mode, super::InputMode::Launcher),
+            "E must open the launcher (got {:?})",
+            app.input_mode
+        );
+    }
+
+    /// Shift+R (uppercase 'R' with SHIFT modifier — the form most terminal
+    /// emulators emit when the user reads "Press R" and types capital R)
+    /// must also reach the death-panel handler. The original handler used
+    /// `modifiers.is_empty()` which rejected SHIFT.
+    #[test]
+    fn shift_r_clears_death_info_when_chat_pty_focused() {
+        let (mut app, _tmp) = build_app_with_chats(&[0]);
+        app.right_panel_tab = RightPanelTab::Chat;
+        app.focused_panel = FocusedPanel::RightPanel;
+        app.chat_pty_mode = true;
+        app.chat_pty_forwards_stdin = true;
+        app.chat_pty_observer = false;
+        app.input_mode = super::InputMode::Normal;
+        app.chat_agent_death.insert(0, make_death_info());
+
+        super::handle_key(&mut app, KeyCode::Char('R'), KeyModifiers::SHIFT);
+
+        assert!(
+            !app.chat_agent_death.contains_key(&0),
+            "Shift+R (uppercase R) must clear death info"
+        );
+    }
+
+    /// Negative control: when there is NO death panel showing, vendor-PTY
+    /// forwarding must still work normally — the death-panel guard must
+    /// not over-block. This pins us against an opposite-direction
+    /// regression where the guard accidentally disables PTY forwarding.
+    #[test]
+    fn key_still_reaches_pty_when_no_death_info() {
+        let (mut app, _tmp) = build_app_with_chats(&[0]);
+        app.right_panel_tab = RightPanelTab::Chat;
+        app.focused_panel = FocusedPanel::RightPanel;
+        app.chat_pty_mode = true;
+        app.chat_pty_forwards_stdin = true;
+        app.chat_pty_observer = false;
+        app.input_mode = super::InputMode::Normal;
+        // No death info — normal PTY operation.
+
+        let task_id = workgraph::chat_id::format_chat_task_id(app.active_coordinator_id);
+        let Ok(pane) = crate::tui::pty_pane::PtyPane::spawn_in(
+            "/bin/sh",
+            &["-c", "exec cat"],
+            &[],
+            None,
+            24,
+            80,
+        ) else {
+            return;
+        };
+        let bytes_before = pane.child_input_bytes_written();
+        app.task_panes.insert(task_id.clone(), pane);
+
+        super::handle_key(&mut app, KeyCode::Char('r'), KeyModifiers::NONE);
+
+        let pane_after = app.task_panes.get(&task_id).unwrap();
+        assert!(
+            pane_after.child_input_bytes_written() > bytes_before,
+            "Without death info, 'r' must reach the PTY child's stdin \
+             (death-panel guard must not over-block)"
         );
     }
 }
