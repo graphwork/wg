@@ -553,6 +553,57 @@ wg publish my-draft-task --only
 # Publish just this task without propagating to the subgraph
 ```
 
+For rsync-based deployment of `wg html` output, see [`wg html publish`](#wg-html-publish).
+
+---
+
+### `wg html publish`
+
+Manage rsync deployments for `wg html` output. Subcommands:
+
+| Subcommand | Purpose |
+|------------|---------|
+| `add <name> --rsync <target>` | Register a new rsync deployment |
+| `list` | List registered deployments |
+| `show <name>` | Show details (rsync target, schedule, last run) |
+| `run <name>` | Run a deployment now (build html + rsync) |
+| `remove <name>` | Remove a deployment (abandons its scheduling task) |
+| `edit` | Edit the html-publish.toml in `$EDITOR` |
+
+**`wg html publish add` options:**
+| Option | Description |
+|--------|-------------|
+| `--rsync <target>` | rsync destination (e.g. `user@host:/var/www/wg/`) — required |
+| `--schedule <expr>` | Cron expression — runs the deployment on a schedule |
+| `--since <duration>` | `--since` flag passed to `wg html` (e.g. `7d`, `24h`) |
+| `--public-only` | Pass `--public-only` to `wg html` |
+| `--chat` | Include chat transcripts in the html output |
+| `--out <path>` | Staging dir (default: `$TMPDIR/wg-html-publish-<name>`) |
+| `--ssh-key <path>` | Use a specific SSH private key for rsync |
+| `--ssh-config-host <name>` | `~/.ssh/config` Host alias |
+
+**Examples:**
+```bash
+# Register a manual deployment
+wg html publish add my-blog --rsync user@host:/var/www/blog/
+
+# Register a scheduled deployment (runs every 15 minutes via wg cron)
+wg html publish add my-blog --rsync user@host:/var/www/blog/ \
+    --schedule '*/15 * * * *' --since 7d --public-only
+
+# Run it now (build html + rsync)
+wg html publish run my-blog
+
+# Inspect details (last run timestamp, status, etc.)
+wg html publish show my-blog
+```
+
+Deployments are persisted to `<workgraph_dir>/html-publish.toml`. Scheduling
+uses wg's own cron mechanism: `--schedule` registers a `.html-publish-<name>`
+task with `exec_mode = shell`, fired by `wg service` on the cron schedule.
+Failures are logged to `~/.wg/html-publish.log` and recorded on the
+deployment as `last_status` / `last_error`.
+
 ---
 
 ### `wg add-dep`

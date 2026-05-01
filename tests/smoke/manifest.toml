@@ -739,3 +739,12 @@ owners = [
 ]
 description = "Pins polish-wg-html: (1) chat task nodes in the viz must carry the 'chat-agent' CSS class (so --chat-task blue overrides open/yellow status color); (2) description JSON must include description_html (markdown rendered to HTML); (3) panel.js must have the desc-toggle wiring for raw/pretty toggle; (4) CSS must declare --chat-task color (TUI Color::Blue = rgb(36,114,200))."
 timeout_seconds = 60
+
+[[scenario]]
+name = "publish_run_against_local_rsync_target"
+script = "scenarios/publish_run_against_local_rsync_target.sh"
+owners = [
+    "wg-publish-easy",
+]
+description = "Pins wg-publish-easy: end-to-end add/list/show/run/remove against a local rsync target, plus scheduled-deployment lifecycle (creates a `.publish-<name>` cron task on add, abandons it on remove). Verifies html builds, files are mirrored to the destination, and last_status=ok is recorded. Skips when rsync is missing."
+timeout_seconds = 120

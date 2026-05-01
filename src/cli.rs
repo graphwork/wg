@@ -1929,6 +1929,12 @@ pub enum Commands {
         after_help = "Generates a directory of static HTML/CSS/JS files mirroring the\nworkgraph state. The page is a read-only sibling of the TUI viewer:\nthe ASCII viz from `wg viz --all` is rendered with clickable task ids\nand status indicators that open a detail overlay matching `wg show`.\nClick a task to highlight its before/after edges in the TUI palette\n(magenta = upstream deps, cyan = downstream consumers).\n\nDefaults: ALL tasks are shown, NO chat transcripts are rendered\n(chat task nodes still appear in the viz, but the conversation is\nomitted). Pass `--chat` to render transcripts; `--chat --all` to\ninclude non-public transcripts; `--public-only` to mirror only\n`visibility = public` tasks AND public chats.\n\nA best-effort sanitizer redacts api-key-shaped strings, env-var\nassignments (OPENAI_API_KEY=..., GITHUB_TOKEN=..., etc.), and\npaths under `~/.wg/secrets`. Review transcripts manually before\npublishing — sanitization is NOT a security guarantee.\n\nThe output is rsync-friendly — no JavaScript framework, no server,\nno backend. Open `<out>/index.html` in any browser (file:// works).\n\nExamples:\n  wg html                       # All tasks, no chat transcripts\n  wg html --chat                # All tasks + public chats' transcripts\n  wg html --chat --all          # All tasks + every transcript\n  wg html --chat --public-only  # Public tasks + public chats only\n  wg html --since 24h           # Only tasks touched in the last 24h"
     )]
     Html {
+        /// Optional subcommand. Without one, runs the default render.
+        ///   wg html publish add <name> --rsync <target> [--schedule <cron>] ...
+        ///   wg html publish list / show / run / remove / edit
+        #[command(subcommand)]
+        command: Option<HtmlCommands>,
+
         /// Output directory (will be created if missing)
         #[arg(long, default_value = "./public")]
         out: std::path::PathBuf,
@@ -2621,6 +2627,84 @@ pub enum WorktreeCommand {
         #[arg(long)]
         dead_only: bool,
     },
+}
+
+#[derive(Subcommand)]
+pub enum HtmlCommands {
+    /// Manage rsync deployments for `wg html` output
+    Publish {
+        #[command(subcommand)]
+        command: HtmlPublishCommands,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum HtmlPublishCommands {
+    /// Register a new rsync deployment for `wg html` output
+    Add {
+        /// Deployment name (used in `wg html publish run <name>`)
+        name: String,
+
+        /// rsync target (e.g. user@host:/var/www/wg/)
+        #[arg(long)]
+        rsync: String,
+
+        /// Cron expression (5- or 6-field) — runs the deployment on a schedule.
+        /// Without this flag, the deployment is manual-only.
+        #[arg(long)]
+        schedule: Option<String>,
+
+        /// `--since` flag passed to `wg html` (e.g. 7d, 24h)
+        #[arg(long)]
+        since: Option<String>,
+
+        /// Pass `--public-only` to `wg html`
+        #[arg(long = "public-only")]
+        public_only: bool,
+
+        /// Include chat transcripts in the html output (off by default)
+        #[arg(long = "chat")]
+        include_chat: bool,
+
+        /// Staging dir for the html output (default: $TMPDIR/wg-html-publish-<name>)
+        #[arg(long)]
+        out: Option<String>,
+
+        /// Path to an SSH private key to use for rsync
+        #[arg(long = "ssh-key")]
+        ssh_key: Option<String>,
+
+        /// ~/.ssh/config Host alias
+        #[arg(long = "ssh-config-host")]
+        ssh_config_host: Option<String>,
+    },
+
+    /// List registered deployments
+    List,
+
+    /// Show details for one deployment
+    Show {
+        /// Deployment name
+        name: String,
+    },
+
+    /// Run a deployment immediately (build html, rsync to target)
+    Run {
+        /// Deployment name
+        name: String,
+        /// Print rsync's planned changes without modifying the target
+        #[arg(long = "dry-run")]
+        dry_run: bool,
+    },
+
+    /// Remove a deployment (also abandons its scheduling task if any)
+    Remove {
+        /// Deployment name
+        name: String,
+    },
+
+    /// Edit html-publish.toml in $EDITOR (validates after save)
+    Edit,
 }
 
 #[derive(Subcommand)]

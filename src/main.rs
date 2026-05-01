@@ -2880,30 +2880,70 @@ fn main() -> Result<()> {
             }
         }
         Commands::Html {
+            command,
             out,
             public_only,
             all,
             chat,
             since,
-        } => {
-            // Defaults: include all tasks (TUI parity). `--public-only` opts
-            // in to the legacy public-only mirror for sanitized output.
-            // `--chat` opts into rendering chat transcripts; `--all`
-            // (when paired with `--chat`) extends transcript inclusion to
-            // non-public chats.
-            let show_all_tasks = !public_only;
-            let include_chat = chat;
-            let all_chats = chat && all;
-            workgraph::html::run(
-                &workgraph_dir,
-                &out,
-                show_all_tasks,
-                since.as_deref(),
-                include_chat,
-                all_chats,
-                cli.json,
-            )
-        }
+        } => match command {
+            Some(HtmlCommands::Publish { command }) => match command {
+                HtmlPublishCommands::Add {
+                    name,
+                    rsync,
+                    schedule,
+                    since,
+                    public_only,
+                    include_chat,
+                    out,
+                    ssh_key,
+                    ssh_config_host,
+                } => commands::publish::run_add(
+                    &workgraph_dir,
+                    &name,
+                    &rsync,
+                    schedule.as_deref(),
+                    since.as_deref(),
+                    public_only,
+                    include_chat,
+                    out.as_deref(),
+                    ssh_key.as_deref(),
+                    ssh_config_host.as_deref(),
+                ),
+                HtmlPublishCommands::List => {
+                    commands::publish::run_list(&workgraph_dir, cli.json)
+                }
+                HtmlPublishCommands::Show { name } => {
+                    commands::publish::run_show(&workgraph_dir, &name, cli.json)
+                }
+                HtmlPublishCommands::Run { name, dry_run } => {
+                    commands::publish::run_run(&workgraph_dir, &name, dry_run)
+                }
+                HtmlPublishCommands::Remove { name } => {
+                    commands::publish::run_remove(&workgraph_dir, &name)
+                }
+                HtmlPublishCommands::Edit => commands::publish::run_edit(&workgraph_dir),
+            },
+            None => {
+                // Defaults: include all tasks (TUI parity). `--public-only` opts
+                // in to the legacy public-only mirror for sanitized output.
+                // `--chat` opts into rendering chat transcripts; `--all`
+                // (when paired with `--chat`) extends transcript inclusion to
+                // non-public chats.
+                let show_all_tasks = !public_only;
+                let include_chat = chat;
+                let all_chats = chat && all;
+                workgraph::html::run(
+                    &workgraph_dir,
+                    &out,
+                    show_all_tasks,
+                    since.as_deref(),
+                    include_chat,
+                    all_chats,
+                    cli.json,
+                )
+            }
+        },
         Commands::Sweep {
             dry_run,
             reap_targets,

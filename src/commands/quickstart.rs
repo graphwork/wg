@@ -409,6 +409,10 @@ DISCOVERY & PUBLISHING
   wg publish <task-id>              # Publish a draft task (validates deps, resumes subgraph)
   wg publish <task-id> --only       # Publish just this task (skip subgraph propagation)
 
+  wg html publish add <name> --rsync user@host:/path/  # Register an html rsync deployment
+  wg html publish run <name>        # Run the html rsync deployment now
+  wg html publish list              # List configured rsync deployments
+
   wg reclaim <task-id> --from <actor> --to <actor>  # Reclaim task from dead agent
 
 GROWING THE GRAPH
@@ -805,6 +809,9 @@ fn json_output() -> serde_json::Value {
             "discover_artifacts": "wg discover --with-artifacts",
             "publish": "wg publish <task-id>",
             "publish_only": "wg publish <task-id> --only",
+            "html_publish_add": "wg html publish add <name> --rsync user@host:/path/",
+            "html_publish_run": "wg html publish run <name>",
+            "html_publish_list": "wg html publish list",
             "reclaim": "wg reclaim <task-id> --from <actor> --to <actor>"
         },
         "exec_modes": {
