@@ -1627,13 +1627,44 @@ fn handle_create_coordinator(
 }
 
 /// Handle DeleteCoordinator IPC request.
+///
+/// Per fix-tui-chat validation: `the abandon path kills the agent cleanly
+/// first`. Mirrors `handle_stop_coordinator`'s kill-agent block so a chat
+/// with a live worker is not silently orphaned when the user clicks ✕.
 fn handle_delete_coordinator(dir: &Path, coordinator_id: u32) -> IpcResponse {
     let graph_path = crate::commands::graph_path(dir);
     let task_id = workgraph::chat_id::format_chat_task_id(coordinator_id);
     let legacy_task_id = format!(".coordinator-{}", coordinator_id);
+
+    let resolved_task_id = if let Ok(graph) = workgraph::parser::load_graph(&graph_path) {
+        if graph.get_task(&task_id).is_some() {
+            task_id.clone()
+        } else if graph.get_task(&legacy_task_id).is_some() {
+            legacy_task_id.clone()
+        } else if coordinator_id == 0 && graph.get_task(".coordinator").is_some() {
+            ".coordinator".to_string()
+        } else {
+            task_id.clone()
+        }
+    } else {
+        task_id.clone()
+    };
+
+    if let Ok(graph) = workgraph::parser::load_graph(&graph_path)
+        && let Some(task) = graph.get_task(&resolved_task_id)
+        && task.agent.is_some()
+        && let Ok(registry) = AgentRegistry::load(dir)
+    {
+        for agent in registry.list_agents() {
+            if agent.task_id == resolved_task_id {
+                let _ = crate::commands::kill::run(dir, &agent.id, false, true, true);
+                break;
+            }
+        }
+    }
+
     let mut result_msg: Option<String> = None;
     match workgraph::parser::modify_graph(&graph_path, |graph| {
-        // Try .chat-N (new), then .coordinator-N (legacy), then .coordinator (very-legacy ID 0)
         let resolved_id = if graph.get_task(&task_id).is_some() {
             task_id.as_str()
         } else if graph.get_task(&legacy_task_id).is_some() {
@@ -3801,5 +3832,66 @@ poll_interval = 120
             }
             _ => panic!("expected PurgeChats variant"),
         }
+    }
+
+    /// Per fix-tui-chat: `handle_delete_coordinator` must mark the chat
+    /// task `Abandoned` AND log an entry. The agent-kill block runs first
+    /// when an agent is bound to the task, but a chat with no live agent
+    /// (the typical "empty chat" cleanup target) must still abandon
+    /// cleanly without erroring.
+    #[test]
+    fn test_handle_delete_coordinator_marks_abandoned() {
+        use workgraph::graph::{Node, Status, WorkGraph};
+        use workgraph::test_helpers::make_task_with_status;
+        let temp_dir = TempDir::new().unwrap();
+        let dir = temp_dir.path();
+
+        // Build a graph with a chat task at cid=4 (no agent bound — the
+        // common case for empty chats the user wants to bulk-clean).
+        let mut graph = WorkGraph::new();
+        let mut task = make_task_with_status(".chat-4", "Chat 4", Status::InProgress);
+        task.tags = vec!["chat-loop".to_string()];
+        graph.add_node(Node::Task(task));
+        let graph_path = dir.join("graph.jsonl");
+        workgraph::parser::save_graph(&graph, &graph_path).unwrap();
+
+        let resp = handle_delete_coordinator(dir, 4);
+        assert!(resp.ok, "delete must succeed; error = {:?}", resp.error);
+
+        let graph2 = workgraph::parser::load_graph(&graph_path).unwrap();
+        let task = graph2.get_task(".chat-4").expect("task must still exist");
+        assert_eq!(
+            task.status,
+            Status::Abandoned,
+            "delete-coordinator must mark task Abandoned"
+        );
+        assert!(
+            task.log.iter().any(|l| l.message.contains("deleted via IPC")),
+            "delete-coordinator must append a log entry"
+        );
+    }
+
+    /// Legacy `.coordinator-N` and bare `.coordinator` task ids must
+    /// resolve identically. Regression lock for the chat_id::format vs.
+    /// legacy fallback ladder in `handle_delete_coordinator`.
+    #[test]
+    fn test_handle_delete_coordinator_legacy_id_resolves() {
+        use workgraph::graph::{Node, Status, WorkGraph};
+        use workgraph::test_helpers::make_task_with_status;
+        let temp_dir = TempDir::new().unwrap();
+        let dir = temp_dir.path();
+
+        let mut graph = WorkGraph::new();
+        let mut task = make_task_with_status(".coordinator-7", "Legacy Chat 7", Status::InProgress);
+        task.tags = vec!["coordinator-loop".to_string()];
+        graph.add_node(Node::Task(task));
+        workgraph::parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
+
+        let resp = handle_delete_coordinator(dir, 7);
+        assert!(resp.ok);
+
+        let graph2 = workgraph::parser::load_graph(&dir.join("graph.jsonl")).unwrap();
+        let task = graph2.get_task(".coordinator-7").unwrap();
+        assert_eq!(task.status, Status::Abandoned);
     }
 }

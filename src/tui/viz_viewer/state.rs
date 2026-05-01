@@ -827,6 +827,10 @@ pub enum InputMode {
     ChoiceDialog(ChoiceDialogState),
     /// Coordinator picker overlay (list of all coordinators).
     CoordinatorPicker,
+    /// Chat manager pane: list of all chat tasks with multi-select +
+    /// bulk-abandon, plus filter (all/empty/non-empty/alive).
+    /// See `ChatManagerState`. Triggered by uppercase `M` from the Chat tab.
+    ChatManager,
     /// Config panel text editing mode.
     ConfigEdit,
     /// Settings tab text editing mode (per-key edit dialog).
@@ -1510,6 +1514,91 @@ pub struct CoordinatorPickerState {
     pub entries: Vec<(u32, String, String, bool)>,
 }
 
+/// Filter mode for the chat manager pane.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChatManagerFilter {
+    /// Show every chat task except those tagged `archived`.
+    All,
+    /// Hide chats whose history file is missing or has zero messages.
+    NonEmpty,
+    /// Show only chats with zero messages — the typical bulk-cleanup target.
+    EmptyOnly,
+    /// Hide chats whose underlying task is already in a terminal state
+    /// (Done/Abandoned/Failed). Useful for "what's still alive".
+    AliveOnly,
+}
+
+impl ChatManagerFilter {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::All => "all",
+            Self::NonEmpty => "non-empty",
+            Self::EmptyOnly => "empty",
+            Self::AliveOnly => "alive",
+        }
+    }
+
+    pub fn cycle(self) -> Self {
+        match self {
+            Self::All => Self::NonEmpty,
+            Self::NonEmpty => Self::EmptyOnly,
+            Self::EmptyOnly => Self::AliveOnly,
+            Self::AliveOnly => Self::All,
+        }
+    }
+}
+
+/// One row in the chat manager pane.
+#[derive(Clone, Debug)]
+pub struct ChatManagerEntry {
+    /// Numeric chat coordinator id.
+    pub cid: u32,
+    /// Resolved task id (e.g. `.chat-3`, `.coordinator-3`, or `.coordinator`).
+    pub task_id: String,
+    /// Lower-case status label (open, in-progress, done, abandoned, ...).
+    pub status: String,
+    /// True iff the underlying task is in a terminal state.
+    pub terminal: bool,
+    /// Number of persisted chat messages on disk.
+    pub message_count: usize,
+    /// ISO 8601 timestamp of the last log entry on the chat task, if any.
+    pub last_activity: Option<String>,
+    /// Task title.
+    pub title: String,
+}
+
+/// State for the chat manager pane (bulk cleanup of chat tasks).
+///
+/// Per fix-tui-chat: the user accumulated many empty `.chat-N` tasks and
+/// needs a list view with multi-select + bulk-abandon to clean them up.
+#[derive(Clone, Debug)]
+pub struct ChatManagerState {
+    pub entries: Vec<ChatManagerEntry>,
+    /// Index of the currently highlighted row (post-filter).
+    pub selected: usize,
+    /// Set of `cid`s the user has marked for bulk action via Space.
+    pub multi_selected: std::collections::HashSet<u32>,
+    /// Active filter (cycles via `f` key).
+    pub filter: ChatManagerFilter,
+}
+
+impl ChatManagerState {
+    /// Indices into `entries` that pass the current filter, in original order.
+    pub fn visible_indices(&self) -> Vec<usize> {
+        self.entries
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| match self.filter {
+                ChatManagerFilter::All => true,
+                ChatManagerFilter::NonEmpty => e.message_count > 0,
+                ChatManagerFilter::EmptyOnly => e.message_count == 0,
+                ChatManagerFilter::AliveOnly => !e.terminal,
+            })
+            .map(|(i, _)| i)
+            .collect()
+    }
+}
+
 /// What kind of entry a tab bar hit represents.
 #[derive(Clone, Debug)]
 pub enum TabBarEntryKind {
@@ -1859,6 +1948,18 @@ struct PersistedChatMessage {
 /// Uses `chat-history-{cid}.jsonl` for all coordinators.
 fn chat_history_path(workgraph_dir: &std::path::Path, coordinator_id: u32) -> std::path::PathBuf {
     workgraph_dir.join(format!("chat-history-{}.jsonl", coordinator_id))
+}
+
+/// Count persisted chat messages for a given coordinator id by counting
+/// non-empty lines in the JSONL history file. Returns 0 if the file is
+/// missing or unreadable. Used by the chat manager pane for the
+/// "empty / non-empty" filter.
+fn count_chat_messages(workgraph_dir: &std::path::Path, coordinator_id: u32) -> usize {
+    let path = chat_history_path(workgraph_dir, coordinator_id);
+    let Ok(content) = std::fs::read_to_string(&path) else {
+        return 0;
+    };
+    content.lines().filter(|l| !l.trim().is_empty()).count()
 }
 
 /// Path to the legacy JSON array chat history file (for backward-compat migration).
@@ -4909,6 +5010,8 @@ pub struct VizApp {
     pub launcher_cancel_btn_hit: Rect,
     /// State for the coordinator picker overlay.
     pub coordinator_picker: Option<CoordinatorPickerState>,
+    /// State for the chat manager pane (bulk-cleanup of chat tasks).
+    pub chat_manager: Option<ChatManagerState>,
 
     // ── Text prompt ──
     /// Text prompt input buffer (for fail reason, message, etc.)
@@ -5412,6 +5515,7 @@ impl VizApp {
             launcher_launch_btn_hit: Rect::default(),
             launcher_cancel_btn_hit: Rect::default(),
             coordinator_picker: None,
+            chat_manager: None,
             text_prompt: TextPromptState {
                 editor: new_emacs_editor(),
             },
@@ -9971,6 +10075,7 @@ impl VizApp {
             launcher_launch_btn_hit: Rect::default(),
             launcher_cancel_btn_hit: Rect::default(),
             coordinator_picker: None,
+            chat_manager: None,
             text_prompt: TextPromptState {
                 editor: new_emacs_editor(),
             },
@@ -14144,6 +14249,166 @@ impl VizApp {
         self.input_mode = InputMode::Normal;
     }
 
+    /// Open the chat manager pane: enumerate every chat-loop task in the
+    /// graph (active + terminal), sort by cid, and present as a multi-
+    /// selectable list for bulk-abandon. See `ChatManagerState`.
+    pub fn open_chat_manager(&mut self) {
+        let graph_path = self.workgraph_dir.join("graph.jsonl");
+        let graph = match workgraph::parser::load_graph(&graph_path) {
+            Ok(g) => g,
+            Err(_) => return,
+        };
+
+        let mut entries: Vec<ChatManagerEntry> = Vec::new();
+        for task in graph.tasks() {
+            let is_chat = task
+                .tags
+                .iter()
+                .any(|t| workgraph::chat_id::is_chat_loop_tag(t));
+            if !is_chat {
+                continue;
+            }
+            // Skip tasks already tagged "archived" — those are the user's
+            // intentional "filed away" set, not the cleanup target.
+            if task.tags.iter().any(|t| t == "archived") {
+                continue;
+            }
+            let cid = match workgraph::chat_id::parse_chat_task_id(&task.id) {
+                Some(c) => c,
+                None if task.id == ".coordinator" => 0,
+                None => continue,
+            };
+            let message_count = count_chat_messages(&self.workgraph_dir, cid);
+            let last_activity = task.log.last().map(|e| e.timestamp.clone());
+            entries.push(ChatManagerEntry {
+                cid,
+                task_id: task.id.clone(),
+                status: format!("{:?}", task.status).to_lowercase(),
+                terminal: task.status.is_terminal(),
+                message_count,
+                last_activity,
+                title: task.title.clone(),
+            });
+        }
+        entries.sort_by_key(|e| e.cid);
+
+        if entries.is_empty() {
+            self.push_toast(
+                "No chat tasks found".to_string(),
+                ToastSeverity::Info,
+            );
+            return;
+        }
+
+        self.chat_manager = Some(ChatManagerState {
+            entries,
+            selected: 0,
+            multi_selected: std::collections::HashSet::new(),
+            filter: ChatManagerFilter::All,
+        });
+        self.input_mode = InputMode::ChatManager;
+    }
+
+    /// Close the chat manager pane.
+    pub fn close_chat_manager(&mut self) {
+        self.chat_manager = None;
+        self.input_mode = InputMode::Normal;
+    }
+
+    /// Abandon the selected chat tasks (multi-select set ∪ highlighted row),
+    /// then close the manager.
+    pub fn chat_manager_abandon_selected(&mut self) {
+        let cids: Vec<u32> = if let Some(ref mgr) = self.chat_manager {
+            let mut cids: Vec<u32> = mgr.multi_selected.iter().copied().collect();
+            if cids.is_empty() {
+                let visible = mgr.visible_indices();
+                if let Some(&idx) = visible.get(mgr.selected)
+                    && let Some(entry) = mgr.entries.get(idx)
+                {
+                    cids.push(entry.cid);
+                }
+            }
+            cids.sort();
+            cids
+        } else {
+            return;
+        };
+        if cids.is_empty() {
+            return;
+        }
+        let count = cids.len();
+        for cid in cids {
+            self.delete_coordinator(cid);
+            self.close_tab(cid);
+        }
+        self.push_toast(
+            format!("Abandoning {} chat task{}", count, if count == 1 { "" } else { "s" }),
+            ToastSeverity::Info,
+        );
+        self.close_chat_manager();
+    }
+
+    /// Toggle multi-select on the currently highlighted row.
+    pub fn chat_manager_toggle_select(&mut self) {
+        if let Some(ref mut mgr) = self.chat_manager {
+            let visible = mgr.visible_indices();
+            if let Some(&idx) = visible.get(mgr.selected)
+                && let Some(entry) = mgr.entries.get(idx)
+            {
+                let cid = entry.cid;
+                if !mgr.multi_selected.insert(cid) {
+                    mgr.multi_selected.remove(&cid);
+                }
+            }
+        }
+    }
+
+    /// Move highlight by `delta` rows, clamped to the visible range.
+    pub fn chat_manager_navigate(&mut self, delta: i32) {
+        if let Some(ref mut mgr) = self.chat_manager {
+            let visible_len = mgr.visible_indices().len();
+            if visible_len == 0 {
+                mgr.selected = 0;
+                return;
+            }
+            let max = visible_len as i32 - 1;
+            let new = (mgr.selected as i32 + delta).clamp(0, max);
+            mgr.selected = new as usize;
+        }
+    }
+
+    /// Cycle through filter modes (all → non-empty → empty → alive → all).
+    pub fn chat_manager_cycle_filter(&mut self) {
+        if let Some(ref mut mgr) = self.chat_manager {
+            mgr.filter = mgr.filter.cycle();
+            // Clamp selected into the new visible range.
+            let len = mgr.visible_indices().len();
+            if len == 0 {
+                mgr.selected = 0;
+            } else if mgr.selected >= len {
+                mgr.selected = len - 1;
+            }
+        }
+    }
+
+    /// Select all currently-visible (post-filter) entries.
+    pub fn chat_manager_select_all_visible(&mut self) {
+        if let Some(ref mut mgr) = self.chat_manager {
+            for &idx in &mgr.visible_indices() {
+                if let Some(entry) = mgr.entries.get(idx) {
+                    mgr.multi_selected.insert(entry.cid);
+                }
+            }
+        }
+    }
+
+    /// Clear the multi-select set without closing.
+    pub fn chat_manager_clear_selection(&mut self) {
+        if let Some(ref mut mgr) = self.chat_manager {
+            mgr.multi_selected.clear();
+        }
+    }
+
     /// Delete a coordinator session via IPC.
     /// Sends the delete command to the backend; on success the effect handler
     /// cleans up local chat state, switches to another coordinator, and refreshes.
@@ -14276,6 +14541,17 @@ impl VizApp {
             cid.to_string(),
         ];
         self.exec_command(args, CommandEffect::DeleteCoordinator(cid));
+    }
+
+    /// Mouse click on the `✕` close button of a chat tab.
+    ///
+    /// Per fix-tui-chat: `X = gone for good`. Both kills the underlying chat
+    /// task (via `delete_coordinator` IPC) AND hides the tab immediately for
+    /// snappy UX. If the IPC fails (daemon dead), the tab still stays hidden
+    /// for this session via `close_tab`.
+    pub fn click_close_button(&mut self, cid: u32) {
+        self.delete_coordinator(cid);
+        self.close_tab(cid);
     }
 
     /// Get a list of known coordinator IDs from the graph.

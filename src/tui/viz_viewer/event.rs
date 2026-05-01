@@ -691,6 +691,7 @@ fn handle_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
         InputMode::TextPrompt(_) => handle_text_prompt_input(app, code, modifiers),
         InputMode::ChoiceDialog(_) => handle_choice_dialog_input(app, code),
         InputMode::CoordinatorPicker => handle_coordinator_picker_input(app, code),
+        InputMode::ChatManager => handle_chat_manager_input(app, code, modifiers),
         InputMode::ChatInput => handle_chat_input(app, code, modifiers),
         InputMode::MessageInput => handle_message_input(app, code, modifiers),
         InputMode::ConfigEdit => handle_config_edit_input(app, code, modifiers),
@@ -1220,6 +1221,46 @@ fn handle_coordinator_picker_input(app: &mut VizApp, code: KeyCode) {
         KeyCode::Char('+') => {
             app.close_coordinator_picker();
             app.open_launcher();
+        }
+        _ => {}
+    }
+}
+
+/// Key handler for the chat manager pane (`InputMode::ChatManager`).
+///
+/// Bindings:
+///   - Up/Down or j/k: navigate visible rows
+///   - Space:          toggle multi-select on highlighted row
+///   - 'a':            select-all-visible
+///   - 'c':            clear multi-select
+///   - 'f':            cycle filter (all → non-empty → empty → alive)
+///   - 'd' or Enter:   abandon selected (or highlighted if no multi-select)
+///   - Esc or 'q':     close without action
+fn handle_chat_manager_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
+    if app.chat_manager.is_none() {
+        app.input_mode = InputMode::Normal;
+        return;
+    }
+    match code {
+        KeyCode::Up | KeyCode::Char('k') => app.chat_manager_navigate(-1),
+        KeyCode::Down | KeyCode::Char('j') => app.chat_manager_navigate(1),
+        KeyCode::PageUp => app.chat_manager_navigate(-10),
+        KeyCode::PageDown => app.chat_manager_navigate(10),
+        KeyCode::Char(' ') => app.chat_manager_toggle_select(),
+        KeyCode::Char('a') if modifiers.is_empty() => {
+            app.chat_manager_select_all_visible();
+        }
+        KeyCode::Char('c') if modifiers.is_empty() => {
+            app.chat_manager_clear_selection();
+        }
+        KeyCode::Char('f') if modifiers.is_empty() => {
+            app.chat_manager_cycle_filter();
+        }
+        KeyCode::Char('d') | KeyCode::Enter => {
+            app.chat_manager_abandon_selected();
+        }
+        KeyCode::Esc | KeyCode::Char('q') => {
+            app.close_chat_manager();
         }
         _ => {}
     }
@@ -2344,7 +2385,13 @@ fn handle_graph_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
             }
         }
 
-        // M: send message to selected task's agent
+        // M on Chat tab: open the chat manager pane for bulk-cleanup
+        // (fix-tui-chat). Takes precedence over the bare-graph "send
+        // message" binding so chat-tab users get the cleanup UX.
+        KeyCode::Char('M') if app.right_panel_tab == RightPanelTab::Chat => {
+            app.open_chat_manager();
+        }
+        // M (graph context): send message to selected task's agent.
         KeyCode::Char('M') => {
             if let Some(task_id) = app.selected_task_id().map(|s| s.to_string()) {
                 super::state::editor_clear(&mut app.text_prompt.editor);
@@ -3800,9 +3847,11 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
             match &app.input_mode {
                 InputMode::ChoiceDialog(_)
                 | InputMode::Confirm(_)
-                | InputMode::CoordinatorPicker => {
+                | InputMode::CoordinatorPicker
+                | InputMode::ChatManager => {
                     if !in_dialog {
                         app.coordinator_picker = None;
+                        app.chat_manager = None;
                         app.input_mode = InputMode::Normal;
                         return;
                     }
@@ -3871,13 +3920,15 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
                         match &hit.kind {
                             TabBarEntryKind::Coordinator(cid) => {
                                 app.right_panel_tab = RightPanelTab::Chat;
-                                // Close button: remove tab from view (no graph change)
+                                // Close button: abandon underlying chat task
+                                // AND hide tab immediately. Per user mental
+                                // model "X = gone for good" (fix-tui-chat).
                                 if hit.close_start != hit.close_end
                                     && column >= hit.close_start
                                     && column < hit.close_end
                                 {
                                     let cid = *cid;
-                                    app.close_tab(cid);
+                                    app.click_close_button(cid);
                                 } else {
                                     app.switch_coordinator(*cid);
                                 }
@@ -8309,6 +8360,170 @@ mod chat_tab_navigation_tests {
             task.status,
             workgraph::graph::Status::InProgress,
             "task status must be unchanged after close_tab"
+        );
+    }
+
+    /// Per fix-tui-chat: clicking the ✕ close button on a chat tab must
+    /// route through `delete_coordinator` (which marks the task abandoned
+    /// + kills the agent), NOT just `close_tab` (which only hides). The
+    /// hide-only behavior was the user-reported bug: closed tabs reappear
+    /// every TUI restart because the underlying chat task is still in the
+    /// graph.
+    #[test]
+    fn click_close_button_enqueues_delete_coordinator_ipc() {
+        use crate::tui::viz_viewer::state::CommandEffect;
+        let (mut app, _tmp) = build_app_with_chats(&[0, 4, 7]);
+        app.right_panel_tab = RightPanelTab::Chat;
+        // Wire cmd_tx + cmd_rx to a single connected channel — the
+        // default test scaffold uses disjoint channels, so any IPC
+        // result sent by the spawned thread is dropped on the floor.
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.cmd_tx = tx;
+        app.cmd_rx = rx;
+        switch_chat_tab_to_index(&mut app, 1); // active = cid 4
+
+        app.click_close_button(4);
+
+        // Tab is hidden immediately for snappy UX.
+        assert!(
+            !app.active_tabs.contains(&4),
+            "click_close_button must hide the tab from active_tabs"
+        );
+        // The IPC subprocess was enqueued. Even if the daemon is dead and
+        // the subprocess fails, exec_command always sends a CommandResult
+        // with the requested effect — verifies routing through
+        // delete_coordinator (NOT plain close_tab, which never spawns).
+        let result = app
+            .cmd_rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("click_close_button must enqueue an IPC subprocess");
+        assert!(
+            matches!(result.effect, CommandEffect::DeleteCoordinator(4)),
+            "click_close_button must enqueue DeleteCoordinator(4)"
+        );
+    }
+
+    /// Per fix-tui-chat: 'M' (uppercase) on the Chat tab opens the chat
+    /// manager pane for bulk-cleanup of accumulated chat tasks. The pane
+    /// must enumerate every chat-loop task, support multi-select, and
+    /// invoke `delete_coordinator` per selected entry on abandon.
+    #[test]
+    fn chat_manager_opens_and_lists_all_chat_tasks() {
+        use crate::tui::viz_viewer::state::InputMode;
+        let (mut app, _tmp) = build_app_with_chats(&[0, 4, 7]);
+        app.right_panel_tab = RightPanelTab::Chat;
+        app.focused_panel = FocusedPanel::Graph;
+        app.input_mode = InputMode::Normal;
+
+        super::handle_key(&mut app, KeyCode::Char('M'), KeyModifiers::SHIFT);
+
+        assert_eq!(app.input_mode, InputMode::ChatManager);
+        let mgr = app.chat_manager.as_ref().expect("manager must be open");
+        assert_eq!(mgr.entries.len(), 3, "manager must list all 3 chat tasks");
+        let cids: Vec<u32> = mgr.entries.iter().map(|e| e.cid).collect();
+        assert!(cids.contains(&0) && cids.contains(&4) && cids.contains(&7));
+    }
+
+    /// Multi-select then bulk-abandon enqueues a delete-coordinator IPC
+    /// per selected cid.
+    #[test]
+    fn chat_manager_bulk_abandon_enqueues_per_selected() {
+        use crate::tui::viz_viewer::state::{CommandEffect, InputMode};
+        let (mut app, _tmp) = build_app_with_chats(&[0, 4, 7]);
+        app.right_panel_tab = RightPanelTab::Chat;
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.cmd_tx = tx;
+        app.cmd_rx = rx;
+        app.input_mode = InputMode::Normal;
+
+        super::handle_key(&mut app, KeyCode::Char('M'), KeyModifiers::SHIFT);
+        // Select all visible.
+        super::handle_key(&mut app, KeyCode::Char('a'), KeyModifiers::NONE);
+        // Verify all 3 entries got selected.
+        assert_eq!(
+            app.chat_manager
+                .as_ref()
+                .map(|m| m.multi_selected.len())
+                .unwrap_or(0),
+            3,
+            "select-all must mark every visible entry"
+        );
+        // Trigger bulk abandon.
+        super::handle_key(&mut app, KeyCode::Char('d'), KeyModifiers::NONE);
+        // Manager closes.
+        assert!(app.chat_manager.is_none(), "manager must close after abandon");
+        assert_eq!(app.input_mode, InputMode::Normal);
+
+        // Expect 3 DeleteCoordinator IPC subprocess results in any order.
+        let mut received: std::collections::HashSet<u32> =
+            std::collections::HashSet::new();
+        for _ in 0..3 {
+            let r = app
+                .cmd_rx
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .expect("each abandon must enqueue a CommandResult");
+            if let CommandEffect::DeleteCoordinator(cid) = r.effect {
+                received.insert(cid);
+            }
+        }
+        assert!(received.contains(&0));
+        assert!(received.contains(&4));
+        assert!(received.contains(&7));
+    }
+
+    /// Filter cycling: `f` advances all → non-empty → empty → alive → all.
+    #[test]
+    fn chat_manager_filter_cycle() {
+        use crate::tui::viz_viewer::state::{ChatManagerFilter, InputMode};
+        let (mut app, _tmp) = build_app_with_chats(&[0, 4]);
+        app.right_panel_tab = RightPanelTab::Chat;
+        app.input_mode = InputMode::Normal;
+        super::handle_key(&mut app, KeyCode::Char('M'), KeyModifiers::SHIFT);
+        assert_eq!(
+            app.chat_manager.as_ref().unwrap().filter,
+            ChatManagerFilter::All
+        );
+        super::handle_key(&mut app, KeyCode::Char('f'), KeyModifiers::NONE);
+        assert_eq!(
+            app.chat_manager.as_ref().unwrap().filter,
+            ChatManagerFilter::NonEmpty
+        );
+        super::handle_key(&mut app, KeyCode::Char('f'), KeyModifiers::NONE);
+        assert_eq!(
+            app.chat_manager.as_ref().unwrap().filter,
+            ChatManagerFilter::EmptyOnly
+        );
+        super::handle_key(&mut app, KeyCode::Char('f'), KeyModifiers::NONE);
+        assert_eq!(
+            app.chat_manager.as_ref().unwrap().filter,
+            ChatManagerFilter::AliveOnly
+        );
+        super::handle_key(&mut app, KeyCode::Char('f'), KeyModifiers::NONE);
+        assert_eq!(
+            app.chat_manager.as_ref().unwrap().filter,
+            ChatManagerFilter::All
+        );
+    }
+
+    /// Esc closes the chat manager without enqueuing any IPC.
+    #[test]
+    fn chat_manager_esc_closes_without_action() {
+        use crate::tui::viz_viewer::state::InputMode;
+        let (mut app, _tmp) = build_app_with_chats(&[0, 4]);
+        app.right_panel_tab = RightPanelTab::Chat;
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.cmd_tx = tx;
+        app.cmd_rx = rx;
+        app.input_mode = InputMode::Normal;
+
+        super::handle_key(&mut app, KeyCode::Char('M'), KeyModifiers::SHIFT);
+        super::handle_key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert!(app.chat_manager.is_none());
+        assert_eq!(app.input_mode, InputMode::Normal);
+        // No IPC enqueued.
+        assert!(
+            app.cmd_rx.try_recv().is_err(),
+            "Esc must NOT enqueue any IPC"
         );
     }
 

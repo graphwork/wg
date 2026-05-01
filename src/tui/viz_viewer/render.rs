@@ -703,6 +703,10 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
             app.last_dialog_area =
                 draw_coordinator_picker(frame, picker, app.active_coordinator_id);
         }
+    } else if matches!(app.input_mode, InputMode::ChatManager) {
+        if let Some(ref mgr) = app.chat_manager {
+            app.last_dialog_area = draw_chat_manager(frame, mgr);
+        }
     } else {
         app.last_dialog_area = Rect::default();
     }
@@ -6767,6 +6771,150 @@ fn draw_coordinator_picker(
     area
 }
 
+/// Draw the chat manager pane overlay (fix-tui-chat).
+///
+/// Shows every chat-loop task in the graph with status, message count,
+/// and last-activity timestamp; supports multi-select (Space), select-all
+/// visible (a), clear (c), filter cycling (f), abandon (d/Enter).
+fn draw_chat_manager(
+    frame: &mut Frame,
+    mgr: &super::state::ChatManagerState,
+) -> Rect {
+    let size = frame.area();
+    let width: u16 = 76.min(size.width.saturating_sub(4));
+    let visible = mgr.visible_indices();
+    let body_rows = visible.len().max(1) as u16;
+    // border(2) + title(1) + entries + footer(2) + border(0 — overlap)
+    let height: u16 = (4 + body_rows + 2).min(size.height.saturating_sub(2));
+    let x = (size.width.saturating_sub(width)) / 2;
+    let y = (size.height.saturating_sub(height)) / 2;
+    let area = Rect::new(x, y, width, height);
+
+    frame.render_widget(Clear, area);
+
+    let title = format!(
+        " Chat Manager ({} task{}, filter: {}, {} selected) ",
+        mgr.entries.len(),
+        if mgr.entries.len() == 1 { "" } else { "s" },
+        mgr.filter.label(),
+        mgr.multi_selected.len(),
+    );
+    let block = Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_style(
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        );
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let mut lines: Vec<Line> = Vec::new();
+    // Header row
+    lines.push(Line::from(vec![
+        Span::styled(
+            format!(" {:>3}  {:<14} {:<10} {:>5}  {:<20} {}",
+                "id", "task", "status", "msgs", "last activity", "title"),
+            Style::default()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ]));
+
+    if visible.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  (no chats match this filter)",
+            Style::default().fg(Color::DarkGray),
+        )));
+    } else {
+        for (row_idx, &orig_idx) in visible.iter().enumerate() {
+            let entry = &mgr.entries[orig_idx];
+            let is_highlighted = row_idx == mgr.selected;
+            let is_selected = mgr.multi_selected.contains(&entry.cid);
+
+            let bg = if is_highlighted {
+                Color::DarkGray
+            } else {
+                Color::Reset
+            };
+            let fg = if entry.terminal {
+                Color::DarkGray
+            } else if entry.message_count == 0 {
+                Color::Yellow
+            } else {
+                Color::White
+            };
+            let marker = if is_selected { "✓" } else { " " };
+
+            let last = entry
+                .last_activity
+                .as_deref()
+                .map(|s| s.split('T').next().unwrap_or(s).to_string())
+                .unwrap_or_else(|| "-".to_string());
+            // Truncate title to fit
+            let title_max = (inner.width as usize).saturating_sub(60);
+            let title_disp = if entry.title.len() > title_max && title_max > 3 {
+                format!("{}…", &entry.title[..title_max.saturating_sub(1)])
+            } else {
+                entry.title.clone()
+            };
+
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!(" {} ", marker),
+                    Style::default()
+                        .bg(bg)
+                        .fg(Color::Green)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!("{:>3}  ", entry.cid),
+                    Style::default().bg(bg).fg(fg),
+                ),
+                Span::styled(
+                    format!("{:<14} ", truncate(&entry.task_id, 14)),
+                    Style::default().bg(bg).fg(fg),
+                ),
+                Span::styled(
+                    format!("{:<10} ", truncate(&entry.status, 10)),
+                    Style::default().bg(bg).fg(fg),
+                ),
+                Span::styled(
+                    format!("{:>5}  ", entry.message_count),
+                    Style::default().bg(bg).fg(fg),
+                ),
+                Span::styled(
+                    format!("{:<20} ", truncate(&last, 20)),
+                    Style::default().bg(bg).fg(fg),
+                ),
+                Span::styled(title_disp, Style::default().bg(bg).fg(fg)),
+            ]));
+        }
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled("[↑↓]", Style::default().fg(Color::DarkGray)),
+        Span::raw(" Nav  "),
+        Span::styled("[Space]", Style::default().fg(Color::DarkGray)),
+        Span::raw(" Toggle  "),
+        Span::styled("[a]", Style::default().fg(Color::DarkGray)),
+        Span::raw(" All  "),
+        Span::styled("[c]", Style::default().fg(Color::DarkGray)),
+        Span::raw(" Clear  "),
+        Span::styled("[f]", Style::default().fg(Color::DarkGray)),
+        Span::raw(" Filter  "),
+        Span::styled("[d/Enter]", Style::default().fg(Color::Red)),
+        Span::raw(" Abandon  "),
+        Span::styled("[Esc]", Style::default().fg(Color::DarkGray)),
+        Span::raw(" Close"),
+    ]));
+
+    frame.render_widget(Paragraph::new(lines), inner);
+    area
+}
+
 pub(crate) fn draw_launcher_pane(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     use super::state::{
         ADD_NEW_EXECUTOR_CHOICES, AddNewField, LauncherMode, LauncherSection,
@@ -7687,6 +7835,20 @@ fn action_hints_parts(app: &VizApp) -> (&str, &str, Color, Vec<(&str, &str)>) {
                 ("Esc", "cancel"),
             ],
         ),
+        InputMode::ChatManager => (
+            "Chats",
+            "NAV",
+            Color::Cyan,
+            vec![
+                ("↑↓", "nav"),
+                ("Space", "toggle"),
+                ("a", "all"),
+                ("c", "clear"),
+                ("f", "filter"),
+                ("d/Enter", "abandon"),
+                ("Esc", "close"),
+            ],
+        ),
         InputMode::Normal => match app.focused_panel {
             FocusedPanel::Graph if app.archive_browser.active => {
                 if app.archive_browser.filter_active {
@@ -7788,6 +7950,7 @@ fn action_hints_parts(app: &VizApp) -> (&str, &str, Color, Vec<(&str, &str)>) {
                         hints.push(("←→", "chats"));
                         hints.push(("+", "new"));
                         hints.push(("-", "close"));
+                        hints.push(("M", "manage chats"));
                         hints.push(("Enter", "chat"));
                         hints.push(("↑↓", "scroll"));
                     }
