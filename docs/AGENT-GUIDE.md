@@ -691,7 +691,7 @@ Spawned agents receive environment variables indicating their runtime context:
 ### Configuration
 
 ```toml
-# .workgraph/config.toml
+# .wg/config.toml
 [dispatcher]
 max_agents = 4
 poll_interval = 5

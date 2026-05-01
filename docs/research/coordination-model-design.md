@@ -59,7 +59,7 @@ Before describing the target, we must be precise about the current state. Today'
 
 ### 3.2 Layer 1: The Stigmergic Medium
 
-The task graph (`.workgraph/graph.jsonl`) is the primary coordination mechanism. This is already true today and is workgraph's most important design property. The deliberation confirmed this unanimously and elevated it from an implicit convention to a stated architectural principle.
+The task graph (`.wg/graph.jsonl`) is the primary coordination mechanism. This is already true today and is workgraph's most important design property. The deliberation confirmed this unanimously and elevated it from an implicit convention to a stated architectural principle.
 
 **What this means concretely:**
 
@@ -222,10 +222,10 @@ This channel is workgraph's default and most important coordination mechanism. T
 Task-attached, JSONL-based mailbox messaging for cases where stigmergic coordination is insufficient — typically when an agent needs to communicate updated requirements, corrections, or context to a running task.
 
 **Properties:**
-- Medium: JSONL files in `.workgraph/messages/{task-id}.jsonl`
+- Medium: JSONL files in `.wg/messages/{task-id}.jsonl`
 - Parties: Task ↔ Task, User → Task
 - Synchronization: Semi-asynchronous (delivery via notification file, polling by agent)
-- Graph trace: Already in the graph (messages stored in `.workgraph/`)
+- Graph trace: Already in the graph (messages stored in `.wg/`)
 - Addressing: Point-to-point (task-bound)
 - Delivery guarantee: Best-effort (agent may not check)
 
@@ -386,7 +386,7 @@ The migration follows six phases, each delivering independent value. Phases can 
 
 **What stays the same:**
 - Chat mechanics unchanged
-- Raw chat history still stored in `.workgraph/chat/` files (not removed)
+- Raw chat history still stored in `.wg/chat/` files (not removed)
 - Message queue semantics unchanged
 
 **Why this is Phase 5 (not earlier):** Implementing decision-level tracing requires understanding what constitutes a "decision" in chat context. This needs the Session abstraction (Phase 3) to be in place. The tracing logic lives in the session agent, not in the chat transport.
@@ -394,7 +394,7 @@ The migration follows six phases, each delivering independent value. Phases can 
 ### Phase 6: Event-Sourced Operation Log
 
 **What changes:**
-- New file: `.workgraph/operations.jsonl` as an append-only event store
+- New file: `.wg/operations.jsonl` as an append-only event store
 - All graph mutations emit events to this log
 - Events include structural (task_created, status_changed) and decision (dispatch_decision, retry_decision with rationale)
 - Graph state files remain as materialized views

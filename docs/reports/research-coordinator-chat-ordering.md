@@ -27,7 +27,7 @@ run_send()                             [src/commands/chat.rs:51]
   │   handle_connection()              [src/commands/service/ipc.rs:530]
   │     └─ IpcRequest::UserChat        [src/commands/service/ipc.rs:420]
   │       ├─ append_chat_inbox()       [src/commands/service/ipc.rs:1112]
-  │       │    └─ Writes to .workgraph/chat/{cid}/inbox.jsonl
+  │       │    └─ Writes to .wg/chat/{cid}/inbox.jsonl
   │       ├─ Sets urgent_wake = true
   │       └─ Pushes cid to pending_coordinator_ids
   │
@@ -67,8 +67,8 @@ TUI poll_chat_messages()               [src/tui/viz_viewer/state.rs:9756]
 
 | Cursor/State | Location | Purpose |
 |---|---|---|
-| `.coordinator-cursor` | `.workgraph/chat/{cid}/` | Last inbox message ID processed by coordinator agent |
-| `.cursor` | `.workgraph/chat/{cid}/` | Last outbox message ID read by CLI/TUI |
+| `.coordinator-cursor` | `.wg/chat/{cid}/` | Last inbox message ID processed by coordinator agent |
+| `.cursor` | `.wg/chat/{cid}/` | Last outbox message ID read by CLI/TUI |
 | `outbox_cursor` | TUI in-memory (`self.chat.outbox_cursor`) | Last outbox ID polled by TUI |
 | `awaiting_response` | TUI in-memory (`self.chat.awaiting_response`) | Whether TUI is waiting for a response |
 | `last_request_id` | TUI in-memory (`self.chat.last_request_id`) | The request_id of the pending message |

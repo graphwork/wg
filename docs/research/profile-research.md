@@ -143,7 +143,7 @@ pub struct ResolvedModel {
 
 ### Benchmark Registry (`src/model_benchmarks.rs`)
 
-File: `.workgraph/model_benchmarks.json`  
+File: `.wg/model_benchmarks.json`  
 Schema struct: `BenchmarkRegistry`
 
 **Per-model fields (`ModelBenchmark`):**
@@ -180,7 +180,7 @@ Schema struct: `BenchmarkRegistry`
 
 ### Separate YAML Registry (`src/models.rs`)
 
-File: `.workgraph/models.yaml`  
+File: `.wg/models.yaml`  
 Schema: `ModelRegistry` with `ModelEntry` items  
 **Three-tier system**: Frontier / Mid / Budget (different from config's Fast/Standard/Premium)  
 Fields: `id`, `provider`, `cost_per_1m_input`, `cost_per_1m_output`, `context_window`, `capabilities: Vec<String>`, `tier: ModelTier`

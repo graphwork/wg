@@ -20,7 +20,7 @@ This document translates the git worktree isolation decision into concrete code 
 
 `spawn_agent_inner()` in `src/commands/spawn/execution.rs` does:
 1. Claims the task in the graph
-2. Creates agent output directory at `.workgraph/agents/<agent-id>/`
+2. Creates agent output directory at `.wg/agents/<agent-id>/`
 3. Builds the inner command (executor-specific)
 4. Writes `run.sh` wrapper script via `write_wrapper_script()`
 5. Spawns `bash run.sh` with env vars (`WG_TASK_ID`, `WG_AGENT_ID`, `WG_EXECUTOR_TYPE`, `WG_MODEL`)
@@ -291,7 +291,7 @@ fi
 
 3. **Conflict = fail + retry:** If the squash merge has conflicts, the wrapper aborts and marks the task as failed with reason "Merge conflict". The coordinator will re-dispatch the task, and the new agent starts from updated HEAD (which includes all previously merged work). The conflict typically resolves itself because the new agent sees the latest state.
 
-4. **No commits = no-op:** If the agent didn't make any commits on its branch (e.g., research/docs task that only modified files in `.workgraph/`), skip the merge.
+4. **No commits = no-op:** If the agent didn't make any commits on its branch (e.g., research/docs task that only modified files in `.wg/`), skip the merge.
 
 ### What if the merge fails?
 

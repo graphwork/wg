@@ -409,7 +409,7 @@ struct Filter {
 
 ### 6.5 File Watching
 
-Watch `.workgraph/graph.jsonl` for external changes (from CLI or other agents).
+Watch `.wg/graph.jsonl` for external changes (from CLI or other agents).
 
 ```rust
 async fn start_file_watcher(

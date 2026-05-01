@@ -7,7 +7,7 @@
 
 Executor configuration lives in two places:
 
-### 1.1 Global defaults in `.workgraph/config.toml`
+### 1.1 Global defaults in `.wg/config.toml`
 
 ```toml
 [agent]
@@ -22,7 +22,7 @@ model = ...             # Optional: override agent.model for service
 The `coordinator.executor` field determines which executor the daemon uses
 when spawning agents. It defaults to `"claude"` (`src/config.rs:214`).
 
-### 1.2 Per-executor TOML files in `.workgraph/executors/<name>.toml`
+### 1.2 Per-executor TOML files in `.wg/executors/<name>.toml`
 
 Each executor is a TOML file with this schema (`src/service/executor.rs:184-219`):
 
@@ -43,7 +43,7 @@ template = "..."
 
 ### 1.3 Built-in defaults (no file required)
 
-If `.workgraph/executors/<name>.toml` doesn't exist, `ExecutorRegistry::default_config()`
+If `.wg/executors/<name>.toml` doesn't exist, `ExecutorRegistry::default_config()`
 (`executor.rs:315-418`) provides hardcoded defaults for three names:
 
 | Name      | Type      | Command  | Behavior                                        |
@@ -60,7 +60,7 @@ Any name not in this list AND without a `.toml` file produces an error:
 At spawn time (`spawn.rs:190-191`):
 ```
 ExecutorRegistry::new(dir).load_config(executor_name)
-  -> if .workgraph/executors/<name>.toml exists: load it
+  -> if .wg/executors/<name>.toml exists: load it
   -> else: return hardcoded default or error
 ```
 
@@ -75,7 +75,7 @@ that name (e.g., placing `claude.toml` replaces the built-in claude config).
    - `{{task_id}}`, `{{task_title}}`, `{{task_description}}`
    - `{{task_context}}` — aggregated logs/artifacts from `blocked_by` dependencies
    - `{{task_identity}}` — resolved from the task's assigned Agent entity (role + motivation)
-   - `{{working_dir}}` — project root (parent of `.workgraph/`)
+   - `{{working_dir}}` — project root (parent of `.wg/`)
    - `{{skills_preamble}}` — content from `.claude/skills/using-superpowers/SKILL.md`
 
 2. **Template application** (`executor.rs:259-286`): all `{{var}}` placeholders

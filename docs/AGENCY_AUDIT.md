@@ -298,7 +298,7 @@ This is the Stage 2 → Stage 3 bootstrap gap. Stage 3 would mean: compose speci
 
 - `AccessControl` metadata on all primitives (owner, policy: Private/Shared/Open)
 - `federation.rs` (1,783 lines) with pull/push/merge/scan operations
-- Named remotes stored in `.workgraph/federation.yaml`
+- Named remotes stored in `.wg/federation.yaml`
 - Transfer system with dry-run, entity filtering, conflict resolution
 - Access policy enforcement (Private → reject, Shared → confirm, Open → allow)
 - Peer workgraph discovery

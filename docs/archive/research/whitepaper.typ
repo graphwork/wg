@@ -36,7 +36,7 @@ Workgraph's design follows several core principles:
 
 *Simplicity over features.* The data model contains only what is necessary: tasks, actors, resources, and their relationships. There are no sprints, story points, epics, or other project management abstractions. These can be layered on top if needed, but the core remains minimal.
 
-*Git-friendly storage.* All data lives in `.workgraph/graph.jsonl`---one JSON object per line. This format has important properties: files diff cleanly in git, merge conflicts are localized to specific lines, and the full history of project evolution is preserved in version control. There is no external database to synchronize.
+*Git-friendly storage.* All data lives in `.wg/graph.jsonl`---one JSON object per line. This format has important properties: files diff cleanly in git, merge conflicts are localized to specific lines, and the full history of project evolution is preserved in version control. There is no external database to synchronize.
 
 *Human-readable, machine-parseable.* The JSON format is verbose enough for humans to read and edit directly, yet structured enough for any programming language to parse. AI agents can understand the graph without specialized tooling.
 

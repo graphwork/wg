@@ -10,7 +10,7 @@ Workgraph originally had two overlapping identity systems:
 
 1. **Actor** (graph.rs) — a node in the work graph representing a human or AI that can perform work. Had capabilities, rate, capacity, trust levels, heartbeats, and a Matrix binding. Stored in `graph.jsonl` as `kind: "actor"`.
 
-2. **Agent** (agency.rs) — a content-addressed pairing of a Role (what it does) and a Motivation (why/how it acts). Had performance tracking, lineage, and prompt rendering. Stored as YAML in `.workgraph/agency/agents/`.
+2. **Agent** (agency.rs) — a content-addressed pairing of a Role (what it does) and a Motivation (why/how it acts). Had performance tracking, lineage, and prompt rendering. Stored as YAML in `.wg/agency/agents/`.
 
 The two systems overlapped in confusing ways:
 - Both claimed to represent "an agent"

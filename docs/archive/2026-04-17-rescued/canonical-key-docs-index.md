@@ -177,7 +177,7 @@ This index organizes documentation by location and purpose, providing the defini
 
 ### Configuration Documentation
 **Location:** Various  
-- `.workgraph/config.toml` structure examples (in README.md)
+- `.wg/config.toml` structure examples (in README.md)
 - Environment variable documentation (in CLAUDE.md)
 - Model provider setup guides (scattered, needs consolidation)
 

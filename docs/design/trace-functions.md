@@ -33,7 +33,7 @@ A trace function is NOT a recorded macro or conversation replay. It captures the
 ### Data Structure
 
 ```yaml
-# .workgraph/functions/impl-feature.yaml
+# .wg/functions/impl-feature.yaml
 kind: trace-function
 version: 1
 
@@ -64,7 +64,7 @@ inputs:
     type: text
     description: "Full description of what to implement"
     required: true
-    example: "Add global config at ~/.workgraph/config.toml with merge semantics"
+    example: "Add global config at ~/.wg/config.toml with merge semantics"
 
   - name: source_files
     type: file_list
@@ -337,11 +337,11 @@ Tasks: 1 (standalone task, no subgraph)
 
 Suggested parameters:
   feature_name (string, required): "global-config" → extracted from task ID
-  feature_description (text, required): "Add global config at ~/.workgraph/..." → from description
+  feature_description (text, required): "Add global config at ~/.wg/..." → from description
   source_files (file_list): ["src/config.rs", "src/main.rs"] → from artifacts
   test_command (string): "cargo test" → detected in conversation
 
-Saved to: .workgraph/functions/impl-feature.yaml
+Saved to: .wg/functions/impl-feature.yaml
 
 Review and edit the function file to adjust parameters and descriptions.
 ```
@@ -353,7 +353,7 @@ $ wg trace extract impl-global-config --name impl-feature --generalize
 
 [LLM rewrites descriptions to be generic...]
 
-Saved to: .workgraph/functions/impl-feature.yaml
+Saved to: .wg/functions/impl-feature.yaml
 ```
 
 #### 4. Extract from a multi-task subgraph
@@ -407,10 +407,10 @@ Functions:
 
 ### Storage
 
-Trace functions are stored as YAML files in `.workgraph/functions/`:
+Trace functions are stored as YAML files in `.wg/functions/`:
 
 ```
-.workgraph/
+.wg/
   functions/
     impl-feature.yaml
     design-and-impl.yaml
@@ -438,7 +438,7 @@ OPTIONS:
   --name <id>          Function name/ID (default: derived from task ID)
   --subgraph           Include all subtasks (tasks blocked by this one) in the function
   --generalize         Use LLM to generalize descriptions (removes instance-specific details)
-  --output <path>      Write to specific path instead of .workgraph/functions/<name>.yaml
+  --output <path>      Write to specific path instead of .wg/functions/<name>.yaml
   --force              Overwrite existing function with same name
 ```
 
@@ -631,7 +631,7 @@ The implementation breaks into five independent modules plus tests:
 1. **Core data structures and storage** (`src/function.rs`)
    - `TraceFunction`, `FunctionInput`, `TaskTemplate` structs
    - YAML serialization/deserialization
-   - Load/save to `.workgraph/functions/`
+   - Load/save to `.wg/functions/`
    - Input validation
    - Template substitution
 

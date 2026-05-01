@@ -46,9 +46,9 @@ These are always seeded by `seed_starters()`, regardless of CSV import status.
 
 ### 1.4 Per-Project Materialized Store
 
-`wg agency init` materializes primitives into `.workgraph/agency/`:
+`wg agency init` materializes primitives into `.wg/agency/`:
 ```
-.workgraph/agency/
+.wg/agency/
 ├── primitives/
 │   ├── components/*.yaml    (one YAML file per role component)
 │   ├── outcomes/*.yaml      (one YAML file per desired outcome)
@@ -81,7 +81,7 @@ The seeding pipeline runs three layers in sequence:
 
 After seeding, `agency_init` creates default + special agents and configures `auto_assign` and `auto_evaluate`.
 
-**Current gap in this project:** The local project (`.workgraph/agency/`) has 110 components, 32 outcomes, 46 tradeoffs — substantially fewer than the full CSV pool (338 + 98 + 201). The `import-manifest.yaml` is absent, meaning the CSV import was never run. This project was initialized before the CSV bundling feature was implemented.
+**Current gap in this project:** The local project (`.wg/agency/`) has 110 components, 32 outcomes, 46 tradeoffs — substantially fewer than the full CSV pool (338 + 98 + 201). The `import-manifest.yaml` is absent, meaning the CSV import was never run. This project was initialized before the CSV bundling feature was implemented.
 
 ---
 
@@ -238,8 +238,8 @@ content_hash: abc123...
            ▼
 ┌─────────────────────────────────┐
 │ Per-Project Store               │
-│ .workgraph/agency/primitives/   │  ← content-hash YAML files
-│ .workgraph/agency/cache/        │  ← composed roles + agents
+│ .wg/agency/primitives/   │  ← content-hash YAML files
+│ .wg/agency/cache/        │  ← composed roles + agents
 │ import-manifest.yaml            │  ← provenance tracking
 └─────────────────────────────────┘
 ```
@@ -262,7 +262,7 @@ No network calls at any step. Trust boundary is the `wg` binary.
 
 ## 7. Immediate Action for This Project
 
-This project's `.workgraph/agency/` has 110 components, 32 outcomes, and 46 tradeoffs but no `import-manifest.yaml`. The downstream task (`union-merge-agency`) should:
+This project's `.wg/agency/` has 110 components, 32 outcomes, and 46 tradeoffs but no `import-manifest.yaml`. The downstream task (`union-merge-agency`) should:
 
 1. Run `wg agency import` to import the embedded CSV (or the on-disk `agency/starter.csv`)
 2. This is safe: content-hash dedup ensures no existing entities are overwritten

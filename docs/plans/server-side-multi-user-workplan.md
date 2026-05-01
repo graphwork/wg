@@ -291,7 +291,7 @@ Create a `wg server init` command that automates server setup for multi-user dep
 
 1. Check/install prerequisites: tmux, ttyd (optional), caddy (optional)
 2. Create Unix group for the project (e.g., `wg-<project>`)
-3. Set directory permissions: `.workgraph/` owned by project group, 0770
+3. Set directory permissions: `.wg/` owned by project group, 0770
 4. Set file permissions: `graph.jsonl` 0660, `daemon.sock` 0660
 5. Generate per-user shell profile snippet: `export WG_USER="<name>"`
 6. Generate tmux launch command: `tmux new-session -A -s "${WG_USER}-wg" "wg tui"`

@@ -230,7 +230,7 @@ workgraph::messages::send_message(
 )?;
 ```
 
-This works because the `.workgraph/messages/` directory is accessible to any process on the machine. The poll leader doesn't need IPC to the target repo's daemon — it writes directly to the message file using the same `flock`-based `send_message()` that `wg msg send` uses.
+This works because the `.wg/messages/` directory is accessible to any process on the machine. The poll leader doesn't need IPC to the target repo's daemon — it writes directly to the message file using the same `flock`-based `send_message()` that `wg msg send` uses.
 
 For callback queries (button presses), the poll leader also writes to the message queue with the action ID in the body (e.g., `action:approve:fix-auth-bug`).
 
@@ -549,9 +549,9 @@ bot_token = "123456:ABC-DEF..."
 chat_id = "12345678"
 ```
 
-Per-repo `.workgraph/notify.toml` files may override routing rules (e.g., which event types trigger notifications) but **never** need to specify `bot_token` or `chat_id`. The service daemon resolves Telegram config by:
+Per-repo `.wg/notify.toml` files may override routing rules (e.g., which event types trigger notifications) but **never** need to specify `bot_token` or `chat_id`. The service daemon resolves Telegram config by:
 
-1. Check per-repo `.workgraph/notify.toml` for a `[telegram]` section.
+1. Check per-repo `.wg/notify.toml` for a `[telegram]` section.
 2. If absent, fall back to `~/.config/workgraph/notify.toml`.
 3. The `bot_token` and `chat_id` from whichever file is found are used.
 
@@ -573,7 +573,7 @@ let repo_name = project_dir
     .unwrap_or_else(|| "unknown".to_string());
 ```
 
-Users can override this with a `display_name` field in `.workgraph/config.toml` if their directory name isn't descriptive.
+Users can override this with a `display_name` field in `.wg/config.toml` if their directory name isn't descriptive.
 
 ---
 

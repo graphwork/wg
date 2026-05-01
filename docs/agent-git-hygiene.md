@@ -56,7 +56,7 @@ They belong to another agent. Leave them alone.
 Concurrent agents cause lock contention:
 - `.git/index.lock` — another git operation is running. Wait 2-3 seconds, retry.
 - `target/` file locks — `cargo build` uses file locks. Concurrent builds are safe but slow. Retry on failure.
-- `.workgraph/` locks — workgraph uses file locking internally. Retry after a brief wait.
+- `.wg/` locks — workgraph uses file locking internally. Retry after a brief wait.
 
 Don't panic on lock errors. Don't delete lock files. Just retry.
 

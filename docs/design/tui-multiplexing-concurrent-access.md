@@ -24,7 +24,7 @@
 │          │                 │                         │            │
 │          ▼                 ▼                         ▼            │
 │  ┌───────────────────────────────────────────────────────────┐   │
-│  │              .workgraph/graph.jsonl                        │   │
+│  │              .wg/graph.jsonl                        │   │
 │  │              (flock-serialized writes, atomic renames)     │   │
 │  └───────────────────────────────────────────────────────────┘   │
 │          │                 │                         │            │
@@ -54,7 +54,7 @@ Each TUI instance already has a two-tier refresh model:
 
 | Tier | Mechanism | Latency | Source |
 |------|-----------|---------|--------|
-| Fast | `notify` fs watcher on `.workgraph/` (recursive) | ~50ms (debounce) | `state.rs:3857-3883` |
+| Fast | `notify` fs watcher on `.wg/` (recursive) | ~50ms (debounce) | `state.rs:3857-3883` |
 | Slow | Periodic mtime comparison (1s tick) | ~1000ms | `state.rs:4086-4234` |
 
 When any TUI or CLI command writes to `graph.jsonl` (via `modify_graph()`), the atomic rename triggers an inotify `IN_MOVED_TO` event. Every other TUI instance's fs watcher fires within 50ms, sets `fs_change_pending`, and the next event loop iteration performs a targeted reload.
@@ -148,7 +148,7 @@ Each TUI instance maintains **ephemeral view state** that is independent of the 
 | Scroll positions (graph, HUD, logs) | In-memory | Independent |
 | Search query & results | In-memory | Independent |
 | Panel focus (graph vs. panel) | In-memory | Independent |
-| Chat history (per coordinator) | `.workgraph/chat/{id}/` | Shared — all users see same chat; see §4.3 |
+| Chat history (per coordinator) | `.wg/chat/{id}/` | Shared — all users see same chat; see §4.3 |
 | Active coordinator ID | In-memory | Independent selection, shared coordinators; see §5 |
 | Mouse/input mode | In-memory | Independent |
 | Filter/sort preferences | In-memory | Independent |
@@ -165,11 +165,11 @@ Rationale:
 - tmux already preserves session state across disconnects — the TUI stays running
 - Complexity of user-namespaced state files outweighs the benefit
 
-If persistence is ever needed (e.g., "remember my last-viewed task across TUI restarts"), use `~/.config/workgraph/tui-state.json` in the **user's home directory**, not in `.workgraph/`. This naturally namespaces by Unix user.
+If persistence is ever needed (e.g., "remember my last-viewed task across TUI restarts"), use `~/.config/workgraph/tui-state.json` in the **user's home directory**, not in `.wg/`. This naturally namespaces by Unix user.
 
 ### 4.3 Shared State: Chat
 
-Chat messages live in `.workgraph/chat/{coordinator_id}/inbox.jsonl` and `outbox.jsonl`. These are **shared across all TUI instances viewing the same coordinator**. This is the correct behavior — chat is a coordination channel, not a private view.
+Chat messages live in `.wg/chat/{coordinator_id}/inbox.jsonl` and `outbox.jsonl`. These are **shared across all TUI instances viewing the same coordinator**. This is the correct behavior — chat is a coordination channel, not a private view.
 
 To attribute chat messages to users, add a `user` field to chat messages:
 
@@ -188,7 +188,7 @@ The `user` field comes from the `WG_USER` environment variable (see §5.2).
 The TUI already supports multiple coordinators via a tab bar (`state.rs:2197`, `render.rs:1896`). Each coordinator:
 - Has a numeric ID (0, 1, 2, ...)
 - Runs as a separate process (Claude CLI or native LLM session)
-- Manages its own chat inbox/outbox at `.workgraph/chat/{id}/`
+- Manages its own chat inbox/outbox at `.wg/chat/{id}/`
 - Shares a single `coordinator-state.json` (tracks ticks, agents, pause state)
 
 The `CoordinatorConfig.max_coordinators` field (default: 16) limits concurrent coordinator processes.
@@ -310,7 +310,7 @@ If `WG_USER` is not set, fall back to:
 
 ### No Changes Needed (Works Today)
 
-- Multiple TUI instances on the same `.workgraph/` ✓
+- Multiple TUI instances on the same `.wg/` ✓
 - FS watcher propagation between instances (~50ms) ✓
 - `modify_graph()` serialization for migrated commands ✓
 - Per-instance view state (cursor, scroll, tabs) ✓
@@ -349,7 +349,7 @@ If `WG_USER` is not set, fall back to:
 
 ### ADR-1: Single Shared Workgraph (not per-user)
 
-**Decision:** All users operate on one `.workgraph/graph.jsonl`.
+**Decision:** All users operate on one `.wg/graph.jsonl`.
 **Rationale:** Simplest model, already works, matches "shared workspace" vision. Per-user workgraphs would require federation for basic task visibility.
 **Consequence:** Conflict resolution is via flock serialization. No access control (all users can modify all tasks).
 

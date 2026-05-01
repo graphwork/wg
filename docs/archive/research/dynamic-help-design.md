@@ -2,7 +2,7 @@
 
 **Task:** Design how `wg --help` and `wg` (no args) should use collected usage statistics to reorder subcommands.
 
-**Dependency:** [Usage Stats Research](./usage-stats-research.md) — recommends `.workgraph/stats.json` with JSON counters.
+**Dependency:** [Usage Stats Research](./usage-stats-research.md) — recommends `.wg/stats.json` with JSON counters.
 
 ---
 
@@ -143,7 +143,7 @@ Rationale:
 1. **Simplicity:** Decay adds complexity (timestamps per command, decay algorithm tuning)
 2. **User expectation:** Most CLI tools don't decay usage stats
 3. **Workflow stability:** A project's command profile is usually stable over its lifetime
-4. **Manual reset:** Users can delete `.workgraph/stats.json` to reset if desired
+4. **Manual reset:** Users can delete `.wg/stats.json` to reset if desired
 
 ### Future Consideration: Last-N Window
 
@@ -169,7 +169,7 @@ Sum the window for display ordering. Old weeks drop off. This is conceptually si
 
 ### Recommendation: Per-Repo Only (for MVP)
 
-**Use only per-repo stats stored in `.workgraph/stats.json`.**
+**Use only per-repo stats stored in `.wg/stats.json`.**
 
 Rationale:
 1. **Project personality:** Different projects genuinely have different command profiles
@@ -214,7 +214,7 @@ Two ways to disable dynamic ordering:
 wg config set help.ordering alphabetical
 ```
 
-Stored in `.workgraph/config.toml`:
+Stored in `.wg/config.toml`:
 
 ```toml
 [help]

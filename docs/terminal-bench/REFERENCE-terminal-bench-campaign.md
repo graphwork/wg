@@ -255,7 +255,7 @@ The native executor (agent loop) runs on the **host machine**. It calls OpenRout
   │   └─ Docker container (per task)
   │       ├─ Task environment (pre-installed packages, files, tests)
   │       ├─ wg binary (injected at task start, Condition B only)
-  │       └─ .workgraph/ (initialized at task start, Condition B only)
+  │       └─ .wg/ (initialized at task start, Condition B only)
   │
   ├─ Native executor (agent loop, runs on host)
   │   ├─ Calls OpenRouter API for LLM completions
@@ -288,7 +288,7 @@ docker run -v $(pwd)/target/release/wg:/usr/local/bin/wg:ro ...
 
 The adapter handles this automatically -- at task start for Condition B, it:
 1. Copies `wg` binary into the container
-2. Runs `wg init` to create `.workgraph/` directory
+2. Runs `wg init` to create `.wg/` directory
 3. Creates the root task from the Terminal Bench instruction
 4. Starts the agent loop with wg tools enabled
 
@@ -561,7 +561,7 @@ export ANTHROPIC_API_KEY=<key>
 # Model string: "claude-haiku-4-5-20251001"
 
 # Workgraph native executor config
-# In .workgraph/config.toml:
+# In .wg/config.toml:
 # [native_executor]
 # provider = "openai"
 # openai_base_url = "https://openrouter.ai/api/v1"

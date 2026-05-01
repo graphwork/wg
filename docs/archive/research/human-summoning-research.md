@@ -876,7 +876,7 @@ Certain tags automatically trigger notifications:
 Configuration:
 
 ```toml
-# .workgraph/config.toml
+# .wg/config.toml
 [notifications.triggers]
 "needs-approval" = ["slack:@reviewers", "email"]
 "urgent" = ["sms", "slack:@oncall"]
@@ -1659,7 +1659,7 @@ wg summon task-id --reason "reason"
 ### 6.5 Configuration Example
 
 ```toml
-# .workgraph/config.toml
+# .wg/config.toml
 
 [notifications]
 default_channels = ["desktop", "slack"]

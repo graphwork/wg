@@ -295,7 +295,7 @@ A systematic rename across the entire codebase:
 | `PerformanceRecord` | `RewardHistory` | `identity.rs` (field `avg_score` → `mean_reward`) |
 | `evaluate_loop_edges` | `reward_loop_edges` | `graph.rs` |
 
-The rename is thorough — it extends into YAML storage directories (`.workgraph/agency/` → `.workgraph/identity/`), doc references, and internal function names.
+The rename is thorough — it extends into YAML storage directories (`.wg/agency/` → `.wg/identity/`), doc references, and internal function names.
 
 **Assessment:** The terminology shift is considered. "Identity" is arguably more precise than "agency" (agents have an *identity*, not an *agency*). "Reward" is more precise than "evaluate" (the score is a reward signal, not a comprehensive evaluation). "Objective" is more precise than "motivation" (it defines the goal, not the internal drive). However, adopting these renames would touch every file and break all existing deployments.
 
@@ -648,7 +648,7 @@ wg veracity peers
 ## 12. Storage Layout (from nikete's design)
 
 ```
-.workgraph/
+.wg/
   veracity/
     outcomes/
       outcome-{id}.json              # recorded real-world outcomes

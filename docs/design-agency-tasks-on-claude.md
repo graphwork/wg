@@ -9,7 +9,7 @@ provider over them.
 ## 1. What does `executor=eval` actually do today?
 
 There is **no `executor=eval` handler**. The `"eval"` string is a label
-written into the agent registry (`.workgraph/service/registry.json`) and
+written into the agent registry (`.wg/service/registry.json`) and
 metadata.json, nothing more — there is no branch in `handler_for_model`,
 `plan_spawn`, or any executor switch that consumes it.
 

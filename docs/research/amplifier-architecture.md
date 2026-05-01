@@ -51,8 +51,8 @@ This direction is enabled by installing the **behavior** (`behaviors/workgraph.y
 
 Install Amplifier as a workgraph executor so the service daemon spawns full Amplifier sessions for each task:
 
-1. Install `executor/amplifier.toml` and `executor/amplifier-run.sh` into `.workgraph/executors/`
-2. Set `coordinator.executor = "amplifier"` in `.workgraph/config.toml`
+1. Install `executor/amplifier.toml` and `executor/amplifier-run.sh` into `.wg/executors/`
+2. Set `coordinator.executor = "amplifier"` in `.wg/config.toml`
 3. When `wg service start` dispatches a task, it spawns an Amplifier session instead of (or alongside) a Claude CLI session
 4. Each task gets the full Amplifier ecosystem — bundles, tools, recipes, multi-agent delegation
 
@@ -90,14 +90,14 @@ An Amplifier agent decomposes work into a workgraph, then workgraph spawns Ampli
 
 ## 3. The Executor Config Format (`amplifier.toml`)
 
-The executor config is a standard workgraph TOML file placed at `.workgraph/executors/amplifier.toml`. It has three sections:
+The executor config is a standard workgraph TOML file placed at `.wg/executors/amplifier.toml`. It has three sections:
 
 ### `[executor]` — Core Configuration
 
 ```toml
 [executor]
 type = "claude"                                    # See note below
-command = ".workgraph/executors/amplifier-run.sh"  # The wrapper script
+command = ".wg/executors/amplifier-run.sh"  # The wrapper script
 args = []                                          # Extra args (e.g. ["-B", "my-bundle"])
 working_dir = "{{working_dir}}"                    # Template variable
 timeout = 600                                      # Seconds (default 10 min)
@@ -250,7 +250,7 @@ A comprehensive reference loaded into every Amplifier agent that has the workgra
 - **Full CLI reference** — every `wg` command organized by category (task management, querying, analysis, service daemon)
 - **Task lifecycle** — Open → InProgress → Done/Failed, with retry and blocking semantics
 - **Decomposition patterns** — Fan-out/fan-in, pipeline, iterative
-- **Configuration reference** — `.workgraph/config.toml` format
+- **Configuration reference** — `.wg/config.toml` format
 
 ### Context: `context/wg-executor-protocol.md`
 
@@ -273,10 +273,10 @@ Key rules: always mark done/fail before exiting, log frequently, stay focused on
 ```
 
 1. Resolves the target directory (default: current directory)
-2. Validates that `.workgraph/` exists (fails with error if not — must `wg init` first)
-3. Creates `.workgraph/executors/` if it doesn't exist
-4. Copies `amplifier.toml` to `.workgraph/executors/amplifier.toml`
-5. Copies `amplifier-run.sh` to `.workgraph/executors/amplifier-run.sh`
+2. Validates that `.wg/` exists (fails with error if not — must `wg init` first)
+3. Creates `.wg/executors/` if it doesn't exist
+4. Copies `amplifier.toml` to `.wg/executors/amplifier.toml`
+5. Copies `amplifier-run.sh` to `.wg/executors/amplifier-run.sh`
 6. Makes the wrapper script executable (`chmod +x`)
 7. Prints instructions for setting as default executor
 
@@ -326,7 +326,7 @@ Several bugs were discovered and fixed during development (commit `fbd612a`):
 - **TOML validity**: Parses `amplifier.toml`, checks required fields (`type`, `command`, `args`, `working_dir`, `prompt_template`)
 - **Template variables**: Verifies `{{task_id}}`, `{{task_title}}`, `{{task_description}}`, `{{task_context}}` present in template
 - **Install script**: Tests installation into valid workgraph project, verifies files match source
-- **Install validation**: Rejects directories without `.workgraph/`
+- **Install validation**: Rejects directories without `.wg/`
 - **Wrapper script**: Tests flag forwarding (`--model`, `--bundle`) and prompt passing via stdin→positional-arg bridge
 - **Bundle structure**: Verifies all expected files exist, bundle.md has YAML frontmatter, agent has meta frontmatter
 - **E2E lifecycle** (slow): Creates a project, installs executor, adds a trivial task, spawns Amplifier session, polls for completion (120s timeout), verifies artifact creation

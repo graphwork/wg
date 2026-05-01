@@ -12,14 +12,14 @@ The `wg init` command (`src/commands/init.rs:19`) orchestrates project initializ
 
 ### Init sequence
 
-1. **Create `.workgraph/` directory** and `graph.jsonl`
+1. **Create `.wg/` directory** and `graph.jsonl`
 2. **Call `agency_init::run()`** which:
    a. **Seed hardcoded starters** via `agency::seed_starters()` — 8 role components + 4 outcomes + 4 tradeoffs defined as Rust literals in `src/agency/starters.rs`
    b. **Auto-import bundled CSV** via `try_csv_import()` (`agency_init.rs:252`):
       - Checks for `<project_root>/agency/starter.csv`
       - Skips if `import-manifest.yaml` already exists
       - Runs `agency_import::run()` which parses the CSV and writes YAML primitives
-      - Writes a provenance manifest at `.workgraph/agency/import-manifest.yaml`
+      - Writes a provenance manifest at `.wg/agency/import-manifest.yaml`
    c. **Create default agent** (Programmer + Careful)
    d. **Create 4 special agents** (Assigner, Evaluator, Evolver, Creator)
    e. **Enable auto_assign + auto_evaluate** in config, set haiku model defaults
@@ -61,7 +61,7 @@ type,name,description,quality,domain_specificity,domain,origin_instance_id,paren
 - Auto-detects format by column count (≥9 = Agency, else Legacy 7-column)
 - Normalizes type names: accepts both old (`skill`/`outcome`/`tradeoff`) and new formats
 - Content-hash deduplication: each primitive's ID is derived from its content, so reimporting is idempotent
-- Writes YAML files to `.workgraph/agency/primitives/{components,outcomes,tradeoffs}/`
+- Writes YAML files to `.wg/agency/primitives/{components,outcomes,tradeoffs}/`
 - Supports `--dry-run` and `--tag` for provenance
 - Writes `import-manifest.yaml` with SHA-256 of CSV for change detection
 
@@ -88,7 +88,7 @@ The command at `src/commands/agency_pull.rs` implements **YAML-to-YAML federatio
 
 | Aspect | `wg agency pull` (current) | CSV import (`wg agency import`) |
 |--------|---------------------------|--------------------------------|
-| **Source** | Another `.workgraph/agency/` directory (local path or named remote) | A CSV file |
+| **Source** | Another `.wg/agency/` directory (local path or named remote) | A CSV file |
 | **Format** | YAML entity files | 9-column CSV |
 | **Resolution** | Named remotes in `federation.yaml`, or filesystem path | Direct file path |
 | **Merge** | Performance data merge, evaluation dedup, force overwrite option | Content-hash dedup (idempotent write) |
@@ -100,7 +100,7 @@ The command at `src/commands/agency_pull.rs` implements **YAML-to-YAML federatio
 ```yaml
 remotes:
   upstream:
-    path: "/path/to/other/.workgraph/agency"
+    path: "/path/to/other/.wg/agency"
     description: "Agency bureau upstream"
     last_sync: "2026-03-27T00:00:00Z"
 ```
@@ -357,7 +357,7 @@ This is a minimal change: the existing `try_csv_import()` already handles the ma
 | `src/federation.rs` | YAML federation is a separate system; not involved in CSV import |
 | `src/commands/agency_pull.rs` | YAML-to-YAML federation pull; not involved in CSV bureau pull |
 | `agency/starter.csv` | Already bundled; no format changes needed |
-| `.workgraph/agency/import-manifest.yaml` | Existing manifest format is sufficient (source field will show URL) |
+| `.wg/agency/import-manifest.yaml` | Existing manifest format is sufficient (source field will show URL) |
 
 ---
 

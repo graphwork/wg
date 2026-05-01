@@ -32,7 +32,7 @@ The provenance system (designed in `docs/design/provenance-system.md`, core impl
 
 ### 2.1 Operation Log — Full History
 
-The append-only operation log (`OperationEntry { timestamp, op, task_id, actor, detail }` in `.workgraph/log/operations.jsonl`) captures every graph mutation. With the provenance design fully implemented, this covers:
+The append-only operation log (`OperationEntry { timestamp, op, task_id, actor, detail }` in `.wg/log/operations.jsonl`) captures every graph mutation. With the provenance design fully implemented, this covers:
 
 - Task creation with full initial fields
 - Every state transition (claim, done, fail, abandon, retry, pause, resume)
@@ -45,7 +45,7 @@ The append-only operation log (`OperationEntry { timestamp, op, task_id, actor, 
 
 ### 2.2 Agent Conversation Archive
 
-Agent prompts and outputs are archived to `.workgraph/log/agents/<task-id>/<timestamp>/`. The provenance design extends this to:
+Agent prompts and outputs are archived to `.wg/log/agents/<task-id>/<timestamp>/`. The provenance design extends this to:
 
 - Archive prompts at spawn time (not just at completion)
 - Archive output on dead-agent detection
@@ -128,7 +128,7 @@ struct OutcomeRecord {
 }
 ```
 
-**Where this lives:** Outcome specs could be a new field on `Task` (alongside `deliverables`). Outcome records would go in `.workgraph/outcomes/<task-id>.json`, with a new `wg outcome record <task-id> --metric <name> --value <float>` command.
+**Where this lives:** Outcome specs could be a new field on `Task` (alongside `deliverables`). Outcome records would go in `.wg/outcomes/<task-id>.json`, with a new `wg outcome record <task-id> --metric <name> --value <float>` command.
 
 ### 3.2 Public/Private Task Classification
 
@@ -438,7 +438,7 @@ These features are useful independently of any exchange.
 
 1. **Outcome spec field on Task** — Add `outcome_spec: Option<OutcomeSpec>` to the Task struct. Small change to `graph.rs`.
 
-2. **`wg outcome record` command** — Record measured outcomes against tasks. Store in `.workgraph/outcomes/`. Update provenance log with outcome events.
+2. **`wg outcome record` command** — Record measured outcomes against tasks. Store in `.wg/outcomes/`. Update provenance log with outcome events.
 
 3. **Visibility field on Task** — Add `visibility: Visibility` with `{Private, PublicPrompt, Public}`. Default `Private`. Small change to `graph.rs`.
 

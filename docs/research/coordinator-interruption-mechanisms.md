@@ -16,7 +16,7 @@ The coordinator runs as a **persistent Claude CLI subprocess** managed by `Coord
 1. **Spawn**: `CoordinatorAgent::spawn()` launches `claude --input-format stream-json --output-format stream-json` as a child process.
 2. **Management thread**: A dedicated `agent_thread_main()` thread owns the `Child` process. It reads chat requests from an `mpsc::Sender<ChatRequest>` channel.
 3. **Message flow**: TUI → `wg chat` (background command) → IPC `UserChat` → daemon main loop → `CoordinatorAgent::send_message()` → `mpsc` channel → agent thread → write to `stdin` as stream-json.
-4. **Response flow**: Agent thread spawns a `stdout_reader` thread that parses stream-json events. `collect_response()` buffers text/tool_use/tool_result fragments and writes progressive text to `.workgraph/chat/<N>/.streaming` for TUI display.
+4. **Response flow**: Agent thread spawns a `stdout_reader` thread that parses stream-json events. `collect_response()` buffers text/tool_use/tool_result fragments and writes progressive text to `.wg/chat/<N>/.streaming` for TUI display.
 5. **Shutdown**: `CoordinatorAgent::shutdown()` drops the `mpsc::Sender`, the agent thread detects the disconnect, calls `child.kill()` + `child.wait()`.
 6. **Crash recovery**: On process exit, the thread auto-restarts with context injection (rate-limited: max 3 restarts per 10 minutes).
 
@@ -160,7 +160,7 @@ This is essentially **Mechanism 1 wrapped in an IPC command**, which is the righ
 **Mechanism:** Combine process-level SIGINT with a sentinel file that the `collect_response()` loop checks.
 
 **Implementation:**
-- When user requests interrupt, write a sentinel file (`.workgraph/chat/<N>/.interrupt`)
+- When user requests interrupt, write a sentinel file (`.wg/chat/<N>/.interrupt`)
 - Send `SIGINT` to the Claude CLI subprocess
 - `collect_response()` checks for the sentinel file on each token and exits early if found
 - Clear sentinel after interruption

@@ -243,7 +243,7 @@ task description. This keeps task descriptions readable and allows the data to
 be larger than what fits in a wg task description.
 
 ```
-.workgraph/evolve-runs/{run_id}/
+.wg/evolve-runs/{run_id}/
   ├── mutation-slice.json
   ├── crossover-slice.json
   ├── gap-analysis-slice.json
@@ -294,7 +294,7 @@ fn create_analyzer_task(
 ) -> Result<String> {
     let task_id = format!(".evolve-analyze-{}-{}", slice.strategy.label(), run_id);
     let data_path = format!(
-        ".workgraph/evolve-runs/{}/{}-slice.json",
+        ".wg/evolve-runs/{}/{}-slice.json",
         run_id,
         slice.strategy.label()
     );
@@ -325,7 +325,7 @@ The file contains pre-filtered evaluations, roles, and tradeoffs relevant to you
 4. Write your output as a JSON artifact
 
 ### Output Format
-Write a JSON file to `.workgraph/evolve-runs/{run_id}/{strategy}-proposals.json`:
+Write a JSON file to `.wg/evolve-runs/{run_id}/{strategy}-proposals.json`:
 
 ```json
 {{
@@ -545,7 +545,7 @@ After sorting by priority descending:
 
 ### 3.7 Synthesizer Output
 
-Written to `.workgraph/evolve-runs/{run_id}/synthesis-result.json`:
+Written to `.wg/evolve-runs/{run_id}/synthesis-result.json`:
 
 ```json
 {
@@ -602,13 +602,13 @@ This is a single pass: partition → analyze → synthesize → apply → done.
 The `.evolve-apply` task:
 - Reads `synthesis-result.json`
 - Calls existing `apply_operation()` for each operation
-- Records results in `.workgraph/evolve-runs/{run_id}/apply-results.json`
+- Records results in `.wg/evolve-runs/{run_id}/apply-results.json`
 - Is a **Rust code task** (not LLM) — it calls the existing apply functions
 
 The `.evolve-evaluate` task:
 - Compares pre-evolution performance snapshot with post-evolution state
 - Records which operations were applied vs skipped (deferred, no-op, error)
-- Writes `.workgraph/evolve-runs/{run_id}/evolution-report.json`
+- Writes `.wg/evolve-runs/{run_id}/evolution-report.json`
 - Is an **LLM task** (model: Sonnet) that reads the apply results and produces
   a human-readable assessment
 
@@ -666,7 +666,7 @@ Before the partition task runs, it saves a performance snapshot:
 }
 ```
 
-Stored in `.workgraph/evolve-runs/{run_id}/snapshot-iter-{N}.json`.
+Stored in `.wg/evolve-runs/{run_id}/snapshot-iter-{N}.json`.
 The evaluate task compares consecutive snapshots.
 
 ---
@@ -729,10 +729,10 @@ human approval.
 
 ### 5.4 Evolution History
 
-Each run creates a persistent record in `.workgraph/evolve-runs/{run_id}/`:
+Each run creates a persistent record in `.wg/evolve-runs/{run_id}/`:
 
 ```
-.workgraph/evolve-runs/
+.wg/evolve-runs/
   └── run-20260313-144800/
       ├── config.json           # Run parameters (strategy, budget, model, cycle config)
       ├── snapshot-iter-0.json   # Pre-evolution performance snapshot

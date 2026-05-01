@@ -363,7 +363,7 @@ Extend `wg check` and `wg loops`:
 For processes that repeat on a schedule (not condition-based loops):
 
 ```toml
-# .workgraph/templates/sprint-review.toml
+# .wg/templates/sprint-review.toml
 [template]
 id = "sprint-review"
 schedule = "0 10 * * 1"  # Every Monday at 10am

@@ -83,7 +83,7 @@ Self-hosting validation finds **Phase 1, 4, and 5 fully complete**. Phase 2 (Coo
 #### Phase 4: Executor Independence
 - **Native executor**: `src/executor/native/` — client.rs (20K), agent.rs (9.7K), bundle.rs (13.8K)
 - **Tool system**: `src/executor/native/tools/` — bash.rs, file.rs, wg.rs (20.7K)
-- **Bundles**: `.workgraph/bundles/{bare,research,implementer}.toml` — all created
+- **Bundles**: `.wg/bundles/{bare,research,implementer}.toml` — all created
 - **Exec mode mapping**: bare→wg-only, research→read+wg, implementer→all tools
 - **Registry integration**: Native executor registered alongside claude/shell/amplifier
 

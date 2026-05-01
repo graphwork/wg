@@ -152,7 +152,7 @@ fan out from T2.
 
 **Scope**: One graph edit.
 
-**Files**: `.workgraph/graph.jsonl`
+**Files**: `.wg/graph.jsonl`
 
 Clear `verify` on `run-5-task-smoke` via `wg edit` (or direct JSONL patch
 using the standard JSONL-append semantics). Post-condition:

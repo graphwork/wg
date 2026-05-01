@@ -268,14 +268,14 @@ This maps closely to Claude Code's tool set, so prompts are portable.
 Bundles define what tools and context an agent gets. This replaces the current ad-hoc `--allowedTools` flags:
 
 ```toml
-# .workgraph/bundles/research.toml
+# .wg/bundles/research.toml
 name = "research"
 description = "Read-only research agent"
 tools = ["read_file", "glob", "grep", "web_fetch", "wg_show", "wg_list", "wg_log", "wg_done"]
 context_scope = "graph"
 system_prompt_suffix = "You are a research agent. Report findings."
 
-# .workgraph/bundles/implementer.toml
+# .wg/bundles/implementer.toml
 name = "implementer"
 description = "Full implementation agent"
 tools = ["*"]
@@ -316,7 +316,7 @@ wg chat "create a task for implementing JWT auth"
 # 2. Daemon injects message into coordinator agent's stdin (stream-json)
 # 3. Coordinator agent processes, calls tools (wg add, etc.)
 # 4. Coordinator agent produces a text response
-# 5. Response is written to .workgraph/chat/response-{id}.txt
+# 5. Response is written to .wg/chat/response-{id}.txt
 # 6. wg chat reads response and displays it
 
 # For TUI:
@@ -340,7 +340,7 @@ IpcRequest::ChatResponse {
 #### File-Based Response Channel
 
 ```
-.workgraph/chat/
+.wg/chat/
 ├── inbox.jsonl           # User messages to coordinator
 ├── outbox.jsonl          # Coordinator responses to user
 └── .cursor               # Last-read response ID

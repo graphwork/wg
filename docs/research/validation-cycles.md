@@ -99,7 +99,7 @@ In a cycle like `write → review → revise → write`, each iteration should p
 1. **Logs** — Each iteration's log entries are preserved with timestamps and iteration numbers. Agents can access them via `wg log <task-id> --list` and `wg context`.
 2. **Artifacts** — Files registered via `wg artifact` persist across iterations. However, their content changes as agents modify them.
 3. **Git history** — If agents commit, the git log provides diffs between iterations.
-4. **Output capture** — `.workgraph/output/{task-id}/` captures git diff, artifacts, and logs after completion (`capture_task_output()` in `src/commands/done.rs:200-208`).
+4. **Output capture** — `.wg/output/{task-id}/` captures git diff, artifacts, and logs after completion (`capture_task_output()` in `src/commands/done.rs:200-208`).
 
 ### What's NOT preserved
 

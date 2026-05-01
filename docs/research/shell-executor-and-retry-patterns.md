@@ -162,7 +162,7 @@ Shell executors have access to all `wg` commands via bash. The wrapper script se
 - **Cycle failure restart** (`src/graph.rs:1800-1810`): Appends restart entry. Does not clear existing logs.
 
 **Agent output archival** (`src/commands/log.rs:138-168`):
-- On `wg done` (and `wg fail` in some paths), the agent's `prompt.txt` and `output.log` are copied to `.workgraph/log/agents/<task-id>/<ISO-timestamp>/`
+- On `wg done` (and `wg fail` in some paths), the agent's `prompt.txt` and `output.log` are copied to `.wg/log/agents/<task-id>/<ISO-timestamp>/`
 - Each attempt gets its own timestamped directory
 - Previous attempt context is surfaced to retry agents via `build_previous_attempt_context()` (`src/commands/spawn/context.rs:631-714`)
 
@@ -242,7 +242,7 @@ When the checker agent completes and the cycle evaluates:
 
 2. **Create a workflow function for "exec + check" pattern** (Priority: Medium, Effort: Small)
    - A `wg func` template that creates: shell task → checker task → back-edge cycle
-   - Could live in `.workgraph/functions/exec-check-loop.toml`
+   - Could live in `.wg/functions/exec-check-loop.toml`
 
 3. **Improve shell executor output visibility** (Priority: Low, Effort: Medium)
    - Currently stdout/stderr go to output.log. Consider also saving to a structured format or making the output available as an artifact automatically.

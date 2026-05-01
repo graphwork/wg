@@ -7,8 +7,8 @@
 
 | File | Path | Purpose |
 |------|------|---------|
-| Global config | `~/.workgraph/config.toml` | User-wide defaults |
-| Local config | `.workgraph/config.toml` | Project-specific overrides |
+| Global config | `~/.wg/config.toml` | User-wide defaults |
+| Local config | `.wg/config.toml` | Project-specific overrides |
 | Matrix credentials | `~/.config/workgraph/matrix.toml` | Sensitive Matrix login (separate to avoid committing secrets) |
 
 **Merge rule:** `Config::load_merged()` deep-merges global + local, with local values winning. `ConfigSource` tracks provenance (Global/Local/Default) for `wg config --list`.
@@ -236,7 +236,7 @@ Already exists at `src/commands/setup.rs`. Interactive wizard that:
 5. Offers to auto-discover and register models from API response
 6. Asks about agency (auto_assign, auto_evaluate)
 7. Asks about max_agents
-8. Writes to global config (`~/.workgraph/config.toml`)
+8. Writes to global config (`~/.wg/config.toml`)
 9. Configures `~/.claude/CLAUDE.md` with workgraph directives
 10. Also configures project-level `CLAUDE.md`
 
@@ -276,7 +276,7 @@ Non-interactive mode via `--provider` flag with `--api-key-file`, `--api-key-env
 | `git` installed | `which git` | Required for worktree isolation |
 | `tmux` installed | `which tmux` | Required for `wg server` |
 | Local inference server | HTTP check `localhost:11434/8000/8080` | Required if executor=local |
-| `.workgraph/` initialized | `dir.exists()` | Required for most operations |
+| `.wg/` initialized | `dir.exists()` | Required for most operations |
 
 ## 8. Config Health Check / Validation
 

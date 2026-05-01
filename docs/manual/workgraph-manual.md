@@ -24,12 +24,12 @@ The following terms have precise meanings throughout this manual. They are defin
 | *convergence* | An agent-driven signal (`wg done --converged`) indicating that a cycle's iterative work has reached a stable state. Adds a `"converged"` tag to the cycle header (regardless of which member the agent completes). When the header carries this tag, the cycle does not iterate—even if iterations remain and guards are satisfied. Cleared on retry. |
 | *trace* | The operations log (`operations.jsonl`) recording every mutation to the graph. The project's organizational memory—queryable via `wg trace`, exportable with visibility filtering, and importable from peers. |
 | *trace export* | A filtered, shareable snapshot of the trace. Visibility filtering controls what is included: _internal_ exports everything, _public_ sanitizes, _peer_ provides richer detail for trusted peers. Produced by `wg trace export --visibility <zone>`. |
-| *function* | A parameterized workflow template extracted from completed traces via `wg func extract`. Captures task structure, dependencies, and structural cycles. Applied via `wg func apply` to create new task graphs. Stored as YAML in `.workgraph/functions/`. |
+| *function* | A parameterized workflow template extracted from completed traces via `wg func extract`. Captures task structure, dependencies, and structural cycles. Applied via `wg func apply` to create new task graphs. Stored as YAML in `.wg/functions/`. |
 | *replay* | Re-execution of previously completed or failed work. `wg replay` creates an immutable snapshot, then selectively resets tasks based on criteria. Supports `--plan-only` for previewing. |
 | *role* | An agency entity defining _what_ an agent does. Contains a description, skills, and a desired outcome. Identified by a content-hash of its identity-defining fields. |
 | *motivation (tradeoff)* | An agency entity defining _why_ an agent acts the way it does. Contains a description, acceptable trade-offs, and unacceptable trade-offs. Identified by a content-hash of its identity-defining fields. Called _tradeoff_ in the CLI (`wg tradeoff`); the older name _motivation_ is accepted as an alias. |
 | *agent* | The unified identity in the agency system—a named pairing of a role and a motivation. Identified by a content-hash of `(role_id, motivation_id)`. |
-| *agency* | The collective system of roles, motivations, and agents. Also refers to the storage directory (`.workgraph/agency/`). |
+| *agency* | The collective system of roles, motivations, and agents. Also refers to the storage directory (`.wg/agency/`). |
 | *content-hash ID* | A SHA-256 hash of an entity's identity-defining fields. Deterministic, deduplicating, and immutable. Displayed as 8-character hex prefixes. |
 | *capability* | A flat string tag on an agent used for task-to-agent matching at dispatch time. Distinct from role skills: capabilities are for _routing_, skills are for _prompt injection_. |
 | *skill* | A capability reference attached to a role. Four types: _Name_, _File_, _Url_, _Inline_. Resolved at dispatch time and injected into the prompt. |
@@ -55,7 +55,7 @@ The following terms have precise meanings throughout this manual. They are defin
 | *map/reduce pattern* | An emergent workflow: fan-out (one task completes, enabling parallel children) and fan-in (parallel tasks must all complete before a single aggregator). Arises from dependency edges, not a built-in primitive. |
 | *triage* | An LLM-based assessment of a dead agent's output, classifying the result as _done_, _continue_, or _restart_. |
 | *wrapper script* | The `run.sh` generated for each spawned agent. Runs the executor, captures output, and handles post-exit fallback logic. |
-| *federation* | The system for sharing agency entities across workgraph projects. Operations: _scan_ (discover), _pull_ (import), _push_ (export). Named remotes stored in `.workgraph/federation.yaml`. Content-hash IDs make deduplication automatic. |
+| *federation* | The system for sharing agency entities across workgraph projects. Operations: _scan_ (discover), _pull_ (import), _push_ (export). Named remotes stored in `.wg/federation.yaml`. Content-hash IDs make deduplication automatic. |
 | *remote* | A named reference to another workgraph project's agency store, used for federation. Managed via `wg agency remote add/list/remove`. |
 | *provider* | The LLM provider backing a task or agent: `anthropic`, `openai`, `openrouter`, or `local`. Set per-task via `--provider` on `wg add`/`wg edit`, or per-agent via `wg config`. The coordinator resolves providers through the same priority chain as models. |
 | *exec-mode* | Controls the execution weight of an agent dispatched for a task. Four values: _full_ (default—complete tool access), _light_ (read-only tools), _bare_ (only `wg` CLI), _shell_ (no LLM—runs the task's `exec` field directly). Set via `--exec-mode` on `wg add`/`wg edit`. |
@@ -569,7 +569,7 @@ A dependency chain with a back-edge creating a structural cycle, as described ab
 
 ### Functions: Reusable Patterns
 
-When a workflow pattern proves useful—a review cycle that consistently produces good results, a map/reduce pipeline tuned for a particular domain—it can be extracted from a completed trace into a reusable template called a *function*. The `wg func extract` command takes a completed task and its subgraph, captures the task structure, dependencies, structural cycles, and guards, and parameterizes the variable parts: feature names, file paths, descriptions, and thresholds become named input variables. The result is stored as YAML in `.workgraph/functions/`.
+When a workflow pattern proves useful—a review cycle that consistently produces good results, a map/reduce pipeline tuned for a particular domain—it can be extracted from a completed trace into a reusable template called a *function*. The `wg func extract` command takes a completed task and its subgraph, captures the task structure, dependencies, structural cycles, and guards, and parameterizes the variable parts: feature names, file paths, descriptions, and thresholds become named input variables. The result is stored as YAML in `.wg/functions/`.
 
 Applying a function with `wg func apply` reverses the process. It takes a function name and a set of input values, substitutes them into the template, and creates concrete tasks in the graph with proper dependency wiring. The original pattern’s structure is preserved—its fan-out topology, its cycle bounds, its guard conditions—but applied to new work. Functions can also be shared across projects: the `--from` flag accepts a peer name or file path, enabling teams to import proven workflows from one another.
 
@@ -645,7 +645,7 @@ The graph is stored as JSONL—one JSON object per line, one node per object. A 
 
 JSONL has three virtues for this purpose. It is human-readable—you can inspect and edit it with any text editor. It is version-control-friendly—adding or modifying a task changes one line, producing clean diffs. And it supports atomic writes with file locking—concurrent processes cannot corrupt the graph because every write acquires an exclusive lock, rewrites the file, and releases.
 
-The graph file lives at `.workgraph/graph.jsonl` and is the canonical state of the project. There is no database, no server dependency. Everything reads from and writes to this file. The service daemon, when running, holds no state beyond what the file contains—it can be killed and restarted without loss.
+The graph file lives at `.wg/graph.jsonl` and is the canonical state of the project. There is no database, no server dependency. Everything reads from and writes to this file. The service daemon, when running, holds no state beyond what the file contains—it can be killed and restarted without loss.
 
 Alongside the graph file, the operations log (`operations.jsonl`) records every mutation: task creation, status changes, dependency additions, cycle iterations, evaluations. This log is the project’s trace—its organizational memory. The `wg trace` command queries it. `wg trace export` produces a filtered, shareable snapshot with visibility controls: an `internal` export includes everything, a `public` export sanitizes (omitting agent output and logs), and a `peer` export provides richer detail for trusted collaborators. `wg trace import` ingests a peer’s export, enabling cross-boundary knowledge transfer. The graph file tells you where the project *is*. The operations log tells you how it got there.
 
@@ -854,7 +854,7 @@ Because identity is content-hashed, lineage is unfalsifiable. The parent entity 
 
 An agency built in one project is not confined to that project. The federation system lets you share roles, motivations, and agents across workgraph projects—transferring proven identities from one context into another, complete with their performance histories and lineage chains.
 
-Federation operates through named *remotes*: references to another project’s agency store, managed via `wg agency remote add`, `wg agency remote list`, and `wg agency remote remove`. Remotes are stored in `.workgraph/federation.yaml`. Once a remote is configured, three operations become available.
+Federation operates through named *remotes*: references to another project’s agency store, managed via `wg agency remote add`, `wg agency remote list`, and `wg agency remote remove`. Remotes are stored in `.wg/federation.yaml`. Once a remote is configured, three operations become available.
 
 **Scanning.** `wg agency scan <remote>` lists the roles, motivations, and agents in a remote store without modifying anything. This is reconnaissance—you see what exists before deciding what to import.
 
@@ -903,9 +903,9 @@ This section walks through the full lifecycle of work: from the moment the daemo
 
 The service daemon is a background process that hosts the coordinator, listens on a Unix socket for commands, and manages agent lifecycle. It is started with `wg service start` and stopped with `wg service stop`. Between those two moments it runs a loop: accept connections, process IPC requests, and periodically run the coordinator tick.
 
-The daemon writes its PID and socket path to `.workgraph/service/state.json`—a lockfile of sorts. When you run `wg service status`, the CLI reads this file, checks whether the PID is alive, and reports the result. If the daemon crashes and leaves a stale state file, the next `wg service start` detects the dead PID, cleans up, and starts fresh. If you want to be forceful about it, `wg service start --force` kills any existing daemon before launching a new one.
+The daemon writes its PID and socket path to `.wg/service/state.json`—a lockfile of sorts. When you run `wg service status`, the CLI reads this file, checks whether the PID is alive, and reports the result. If the daemon crashes and leaves a stale state file, the next `wg service start` detects the dead PID, cleans up, and starts fresh. If you want to be forceful about it, `wg service start --force` kills any existing daemon before launching a new one.
 
-All daemon activity is logged to `.workgraph/service/daemon.log`, a timestamped file with automatic rotation at 10 MB. The log captures every coordinator tick, every spawn, every dead agent detection, every IPC request. When something goes wrong, the answer is almost always in this file.
+All daemon activity is logged to `.wg/service/daemon.log`, a timestamped file with automatic rotation at 10 MB. The log captures every coordinator tick, every spawn, every dead agent detection, every IPC request. When something goes wrong, the answer is almost always in this file.
 
 One detail matters more than it might seem: agents spawned by the daemon are *detached*. The spawn code calls `setsid()` to place each agent in its own session and process group. This means agents survive daemon restarts. You can stop the daemon, reconfigure it, start it again, and every running agent continues undisturbed. The daemon does not own its agents—it launches them and watches them from a distance.
 
@@ -995,7 +995,7 @@ For tasks that are part of a structural cycle, the rendered prompt carries addit
 
 **Fork the detached process.** The wrapper script is launched via `bash run.sh` with stdin, stdout, and stderr redirected. The `setsid()` call places the agent in its own session. The coordinator records the PID in the agent registry.
 
-**Register in the agent registry.** The agent registry (`.workgraph/agents/registry.json`) tracks every spawned agent: ID, PID, task, executor, start time, heartbeat, status. The coordinator uses this registry to monitor agents across ticks.
+**Register in the agent registry.** The agent registry (`.wg/agents/registry.json`) tracks every spawned agent: ID, PID, task, executor, start time, heartbeat, status. The coordinator uses this registry to monitor agents across ticks.
 
 ```
 Ready task
@@ -1095,7 +1095,7 @@ This three-way classification turns agent death from a binary event (restart or 
 
 ## IPC Protocol
 
-The daemon listens on a Unix socket (`.workgraph/service/daemon.sock`) for JSON-line commands. Every CLI command that modifies the graph—`wg add`, `wg done`, `wg fail`, `wg retry`—automatically sends a `graph_changed` message to wake the coordinator for an immediate tick.
+The daemon listens on a Unix socket (`.wg/service/daemon.sock`) for JSON-line commands. Every CLI command that modifies the graph—`wg add`, `wg done`, `wg fail`, `wg retry`—automatically sends a `graph_changed` message to wake the coordinator for an immediate tick.
 
 The full set of IPC commands:
 
@@ -1223,7 +1223,7 @@ These capabilities—watch, trace, export, import—form a layered system. The o
 
 ## Custom Executors
 
-Executors are defined as TOML files in `.workgraph/executors/`. Each specifies a command, arguments, environment variables, a prompt template, a working directory, and an optional timeout. The default `claude` executor pipes a prompt file into the Claude CLI with `--print` and `--output-format stream-json`. The default `shell` executor runs a bash command from the task's `exec` field.
+Executors are defined as TOML files in `.wg/executors/`. Each specifies a command, arguments, environment variables, a prompt template, a working directory, and an optional timeout. The default `claude` executor pipes a prompt file into the Claude CLI with `--print` and `--output-format stream-json`. The default `shell` executor runs a bash command from the task's `exec` field.
 
 Custom executors enable integration with any tool. An executor for a different LLM provider, a code execution sandbox, a notification system—any process that can be launched from a shell command can serve as an executor. The prompt template supports the same `{{task_id}}`, `{{task_title}}`, `{{task_description}}`, `{{task_context}}`, and `{{task_identity}}` variables as the built-in executors.
 
@@ -1347,7 +1347,7 @@ Evolution is triggered manually by running `wg evolve run`. This is a deliberate
 
 ### The evolver agent
 
-The evolver is itself an LLM agent. It receives a comprehensive performance summary: every role and motivation with their scores, dimension breakdowns, generation numbers, lineage, and the synergy matrix. It also receives strategy-specific guidance documents from `.workgraph/agency/evolver-skills/`—prose procedures for each type of evolutionary operation.
+The evolver is itself an LLM agent. It receives a comprehensive performance summary: every role and motivation with their scores, dimension breakdowns, generation numbers, lineage, and the synergy matrix. It also receives strategy-specific guidance documents from `.wg/agency/evolver-skills/`—prose procedures for each type of evolutionary operation.
 
 The evolver can have its own agency identity—a role and motivation that shape how it approaches improvement. A cautious evolver motivation that rejects aggressive changes will produce different proposals than an experimental one. The evolver’s identity is configured in `config.toml` and injected into its prompt, just like any other agent. Two additional configuration options—`creator_agent` and `creator_model` (set via `wg config --creator-agent` and `wg config --creator-model`)—control the provenance metadata recorded on entities the evolver creates. When set, newly created roles, motivations, and agents record these values, providing a traceable link between evolutionary output and the identity and model that produced it.
 
@@ -1383,7 +1383,7 @@ When `wg evolve run` executes, the following sequence runs:
 
 5.  Operations are applied sequentially. Budget limits are enforced—if the evolver proposes more operations than the budget allows, only the first N are applied. After each operation, the local state is reloaded so subsequent operations can reference newly created entities.
 
-6.  A run report is saved to `.workgraph/agency/evolution_runs/` with the full transcript: what was proposed, what was applied, and why.
+6.  A run report is saved to `.wg/agency/evolution_runs/` with the full transcript: what was proposed, what was applied, and why.
 
 ### How modified entities are born
 
@@ -1473,7 +1473,7 @@ The sharing boundary is controlled by task visibility. Every task carries a `vis
 
 ### Functions: organizational routines
 
-When a workflow pattern proves effective—a plan-implement-validate cycle that consistently produces high evaluation scores—it can be extracted into a reusable template. `wg func extract` reads the completed task graph, captures the task structure, dependencies, structural cycles, and agent role hints, and writes a parameterized function to `.workgraph/functions/`. `wg func apply` creates a fresh task graph from that template with new inputs.
+When a workflow pattern proves effective—a plan-implement-validate cycle that consistently produces high evaluation scores—it can be extracted into a reusable template. `wg func extract` reads the completed task graph, captures the task structure, dependencies, structural cycles, and agent role hints, and writes a parameterized function to `.wg/functions/`. `wg func apply` creates a fresh task graph from that template with new inputs.
 
 These functions are the system’s organizational routines—the term Nelson and Winter (1982) used for the regular, predictable patterns of behavior that serve as an organization’s institutional memory. A routine extracted from a successful feature implementation captures not just what tasks to create, but what skills to require, what review loops to include, and what convergence patterns to expect. It is heritable (shareable across projects via the same YAML format), selectable (routines that produce good evaluation scores are retained; others are revised or abandoned), and mutable (a human or an LLM can edit the template to adapt it).
 

@@ -1,14 +1,14 @@
 # FS Watcher Multi-User Validation
 
 Validation results for the inotify-based file watcher used by the TUI to detect
-`.workgraph/` changes in real time across concurrent instances.
+`.wg/` changes in real time across concurrent instances.
 
 ## Architecture Summary
 
 - **Library**: `notify` v7 + `notify-debouncer-mini` v0.5
 - **Backend**: inotify (Linux), FSEvents (macOS)
 - **Debounce**: 50ms window via `notify-debouncer-mini`
-- **Watch scope**: Recursive on `.workgraph/` directory
+- **Watch scope**: Recursive on `.wg/` directory
 - **Signal mechanism**: `AtomicBool` flag (`fs_change_pending`), checked by `maybe_refresh()`
 - **Write pattern**: `save_graph_inner` writes to `.graph.tmp.<pid>`, fsyncs, then `rename()` (atomic)
 
@@ -54,13 +54,13 @@ Expected behavior: Each TUI's `maybe_refresh()` fires within one debounce window
 ## inotify Watch Capacity
 
 - Default `fs.inotify.max_user_watches`: 8192 (most distros) or higher
-- Each TUI recursive watch adds ~1 watch per subdirectory in `.workgraph/`
-- Typical `.workgraph/` has ~5-8 subdirectories (service, agency, agency/roles, etc.)
+- Each TUI recursive watch adds ~1 watch per subdirectory in `.wg/`
+- Typical `.wg/` has ~5-8 subdirectories (service, agency, agency/roles, etc.)
 - 7 TUIs x 8 watches = ~56 watches << 8192 limit
 - Test confirmed 10 concurrent recursive watchers on a 6-directory tree: no exhaustion
 
 **No tuning needed** for the documented 7-user target. Systems with very large
-`.workgraph/` trees (hundreds of subdirectories) or extremely low inotify limits
+`.wg/` trees (hundreds of subdirectories) or extremely low inotify limits
 could potentially be affected, but this is not a realistic scenario.
 
 ## Edge Cases and Notes

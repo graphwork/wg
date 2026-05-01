@@ -25,11 +25,11 @@
 **Current resolution order** (`resolve_openai_api_key()` at `openai_client.rs:490-515`):
 1. `OPENROUTER_API_KEY` env var
 2. `OPENAI_API_KEY` env var
-3. `[native_executor] api_key` in `.workgraph/config.toml`
+3. `[native_executor] api_key` in `.wg/config.toml`
 
 **The `.openrouter.key` file in the project root is NOT read by any code path.** To use it today, you must either:
 - Export it: `export OPENROUTER_API_KEY=$(cat .openrouter.key)`
-- Copy it into config: add `[native_executor]\napi_key = "sk-or-v1-..."` to `.workgraph/config.toml`
+- Copy it into config: add `[native_executor]\napi_key = "sk-or-v1-..."` to `.wg/config.toml`
 
 **`EndpointConfig.api_key` is stored but never consumed.** The endpoint config has an `api_key` field (`config.rs:294`), but no code reads it when making API calls. The native executor (`native_exec.rs:32-104`) reads from `[native_executor]` section, not `[llm_endpoints]`.
 
@@ -49,7 +49,7 @@ The TUI writes directly to `config.llm_endpoints.endpoints` and saves to disk (`
 There is **no** `--add-endpoint` or similar CLI flag in `wg config`. The `update()` function in `config_cmd.rs` has no endpoint-related parameters. You would need to add a new subcommand or flag.
 
 #### Via Direct TOML Editing (works today)
-Edit `.workgraph/config.toml`:
+Edit `.wg/config.toml`:
 ```toml
 [llm_endpoints]
 [[llm_endpoints.endpoints]]
@@ -162,7 +162,7 @@ wg config --set-model triage "anthropic/claude-haiku-4-latest" \
 export OPENROUTER_API_KEY=$(cat .openrouter.key)
 
 # 2. Configure native executor to use OpenRouter
-# Edit .workgraph/config.toml manually:
+# Edit .wg/config.toml manually:
 #   [native_executor]
 #   provider = "openrouter"
 #   api_base = "https://openrouter.ai/api"

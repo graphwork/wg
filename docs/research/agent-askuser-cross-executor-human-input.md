@@ -52,7 +52,7 @@ Agents run via `claude --print`, which is non-interactive. Key finding:
 
 **No agent in the workgraph logs has ever actually called `AskUserQuestion`.**
 
-I scanned all `.workgraph/agents/*/output.log` files (across dozens of agents) and found zero instances of `AskUserQuestion` appearing as a `tool_use` call. The tool is _listed_ in the init event (because Claude Code always advertises its full tool set), but agents operating under workgraph prompts don't attempt to use it — they follow the `wg` commands in the Required Workflow section instead.
+I scanned all `.wg/agents/*/output.log` files (across dozens of agents) and found zero instances of `AskUserQuestion` appearing as a `tool_use` call. The tool is _listed_ in the init event (because Claude Code always advertises its full tool set), but agents operating under workgraph prompts don't attempt to use it — they follow the `wg` commands in the Required Workflow section instead.
 
 This means the problem is **preemptive** rather than reactive: we're designing for a scenario that will become important as agents become more autonomous, rather than fixing a current bug.
 
@@ -124,9 +124,9 @@ wg ask <task-id> "What color should the button be?" --options "red,blue,green" [
 ```
 
 **Behavior:**
-1. Creates a `question` record in `.workgraph/tasks/<task-id>/questions/<uuid>.json`
+1. Creates a `question` record in `.wg/tasks/<task-id>/questions/<uuid>.json`
 2. Sends notification via `NotificationRouter` with `EventType::Approval` (or a new `EventType::Question`)
-3. **Blocks** (polls `.workgraph/tasks/<task-id>/answers/<uuid>.json`) until answered or timeout
+3. **Blocks** (polls `.wg/tasks/<task-id>/answers/<uuid>.json`) until answered or timeout
 4. Prints the answer to stdout and exits 0
 5. If timeout: exits 1 with "no answer received"
 

@@ -19,7 +19,7 @@ Workgraph's current capability system uses simple string tags (`-c coding -c tes
 ### 1. Role definitions as markdown files
 
 
-Roles are defined in markdown files stored in a designated directory (e.g., `.workgraph/roles/`). Each file contains:
+Roles are defined in markdown files stored in a designated directory (e.g., `.wg/roles/`). Each file contains:
 
 
 - **Objectives**: What the role aims to accomplish
@@ -30,7 +30,7 @@ Roles are defined in markdown files stored in a designated directory (e.g., `.wo
 
 
 ```
-.workgraph/
+.wg/
   roles/
     technical-writer.md
     code-reviewer.md
@@ -98,7 +98,7 @@ Evaluation criteria are declared per project or per task:
 
 
 ```yaml
-# .workgraph/evaluation/default.md
+# .wg/evaluation/default.md
 ## Success criteria
 - Output passes automated tests (if applicable)
 - Output approved by human reviewer (if task is verified)
@@ -141,7 +141,7 @@ The rules governing how roles are modified are themselves encoded in a markdown 
 
 
 ```
-.workgraph/skills/role-modifier.md
+.wg/skills/role-modifier.md
 ```
 
 
@@ -173,7 +173,7 @@ Because the modification logic is itself a skill, it can be:
 
 
 ```
-.workgraph/
+.wg/
   roles/
     technical-writer.md
     code-reviewer.md

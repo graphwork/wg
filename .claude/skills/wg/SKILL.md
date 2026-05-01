@@ -1,6 +1,6 @@
 ---
 name: wg
-description: Use this skill for task coordination with workgraph (wg). Triggers include "workgraph", "wg", task graphs, multi-step projects, tracking dependencies, coordinating agents, or when you see a .workgraph directory.
+description: Use this skill for task coordination with workgraph (wg). Triggers include "workgraph", "wg", task graphs, multi-step projects, tracking dependencies, coordinating agents, or when you see a .wg directory.
 ---
 
 # workgraph
@@ -664,7 +664,7 @@ wg service resume           # Resume dispatching
 | `wg config --show` | Show current config |
 | `wg config --list` | Show merged config with source annotations (global/local/default) |
 | `wg config --init` | Create default config |
-| `wg config --global --executor claude` | Write to global config (~/.workgraph/config.toml) |
+| `wg config --global --executor claude` | Write to global config (~/.wg/config.toml) |
 | `wg config --local --model opus` | Write to local config (default for writes) |
 | `wg config --executor claude` | Set executor |
 | `wg config --model opus` | Set default model |

@@ -13,13 +13,13 @@ There are **two separate model registries** in workgraph:
 ### A. Config-level registry (`config.toml` `[[model_registry]]`)
 
 **Source:** `src/config.rs:768-838` — `ModelRegistryEntry` struct
-**Storage:** `[[model_registry]]` array in `.workgraph/config.toml`
+**Storage:** `[[model_registry]]` array in `.wg/config.toml`
 
 This is the **tier-based** registry used for model routing, cost tracking, and
 dispatch role resolution. It maps short IDs (like "haiku", "sonnet") to full API
 model names with metadata.
 
-**Current state of the project config (`.workgraph/config.toml`):**
+**Current state of the project config (`.wg/config.toml`):**
 ```toml
 model_registry = []   # Empty — using built-in defaults only
 
@@ -56,10 +56,10 @@ prompt_caching = false
 descriptors = ["coding", "reasoning"]
 ```
 
-### B. YAML-file registry (`.workgraph/models.yaml`)
+### B. YAML-file registry (`.wg/models.yaml`)
 
 **Source:** `src/models.rs:1-250` — `ModelRegistry`/`ModelEntry` structs
-**Storage:** `.workgraph/models.yaml` (created by `wg models init`)
+**Storage:** `.wg/models.yaml` (created by `wg models init`)
 
 This is the **model catalog** used by `wg models list/search/remote/add` commands
 and for tool-use capability checking. Ships with **13+ built-in defaults** covering
@@ -98,13 +98,13 @@ wg models add "minimax/minimax-m2.5" \
   --capability tool_use
 ```
 
-This writes to `.workgraph/models.yaml`. The `tool_use` capability is important —
+This writes to `.wg/models.yaml`. The `tool_use` capability is important —
 the native executor checks it to decide whether to send tools in the request
 (`src/models.rs:79-81`, `src/commands/native_exec.rs:112-118`).
 
 ### Method 2: Via config.toml `[[model_registry]]` (for tier-based routing)
 
-Add to `.workgraph/config.toml`:
+Add to `.wg/config.toml`:
 ```toml
 [[model_registry]]
 id = "minimax-m2.5"
@@ -245,7 +245,7 @@ provider = "openrouter"  # Optional: explicit provider
 
 ### Current project config
 
-The current `.workgraph/config.toml` uses **direct model overrides** for every role
+The current `.wg/config.toml` uses **direct model overrides** for every role
 (haiku/sonnet/opus), bypassing the tier system entirely. This is step 1 in the
 resolution cascade, so tier config doesn't come into play. To use tier-based routing
 with OpenRouter models, you'd change from direct model names to tier references.
@@ -254,7 +254,7 @@ with OpenRouter models, you'd change from direct model names to tier references.
 
 ## 5. Current config.toml [llm_endpoints] and [models] setup
 
-### Endpoints (`.workgraph/config.toml:90-94`):
+### Endpoints (`.wg/config.toml:90-94`):
 ```toml
 [[llm_endpoints.endpoints]]
 name = "openrouter"
@@ -266,7 +266,7 @@ is_default = true
 **Yes, OpenRouter IS configured as an endpoint.** It's the default endpoint, using
 `OPENROUTER_API_KEY` env var for authentication.
 
-### Models routing (`.workgraph/config.toml:102-138`):
+### Models routing (`.wg/config.toml:102-138`):
 ```toml
 [models.default]
 provider = "anthropic"
@@ -460,7 +460,7 @@ This enables:
 
 ### Step 3: Register in config registry (for short alias support)
 
-Add to `.workgraph/config.toml`:
+Add to `.wg/config.toml`:
 ```toml
 [[model_registry]]
 id = "minimax-m2.5"

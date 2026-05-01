@@ -98,7 +98,7 @@ cd your-project
 wg init
 ```
 
-Creates `.workgraph/` with your task graph. Inherits global config; override per-project with `wg config --local`.
+Creates `.wg/` with your task graph. Inherits global config; override per-project with `wg config --local`.
 
 ### 3. Add some tasks
 
@@ -353,7 +353,7 @@ wg service stop --kill-agents  # stop daemon and all agents
 
 ### Configuration
 
-The service reads from `.workgraph/config.toml`:
+The service reads from `.wg/config.toml`:
 
 ```toml
 [dispatcher]           # legacy alias [coordinator] still accepted
@@ -414,8 +414,8 @@ wg config --max-coordinators 3
 
 # Inspect merged config (shows source: global, local, or default)
 wg config --list
-wg config --global          # show/set global config only (~/.workgraph/config.toml)
-wg config --local           # show/set project config only (.workgraph/config.toml)
+wg config --global          # show/set global config only (~/.wg/config.toml)
+wg config --local           # show/set project config only (.wg/config.toml)
 ```
 
 CLI flags on `wg service start` override config.toml:
@@ -616,7 +616,7 @@ The TUI has three main views plus a rich inspector panel:
 
 ### Troubleshooting
 
-**Daemon logs:** Check `.workgraph/service/daemon.log` for errors. The daemon logs with timestamps and rotates at 10 MB (keeps one backup at `daemon.log.1`).
+**Daemon logs:** Check `.wg/service/daemon.log` for errors. The daemon logs with timestamps and rotates at 10 MB (keeps one backup at `daemon.log.1`).
 
 ```bash
 # Recent errors are also shown in status
@@ -629,9 +629,9 @@ wg service status
 - **Agents not spawning** — Check `wg service status` for dispatcher state. Verify `max_agents` isn't already reached with `wg agents --alive`. Ensure there are tasks in `wg ready`.
 - **Agent marked dead prematurely** — Increase `heartbeat_timeout` in config.toml if agents do long-running work without heartbeating.
 - **Config changes not taking effect** — Run `wg service reload` after editing `config.toml`. CLI flag overrides on `wg service start` take precedence over the file.
-- **Daemon won't start** — Check if another daemon is already running. Look at `.workgraph/service/state.json` for stale PID info.
+- **Daemon won't start** — Check if another daemon is already running. Look at `.wg/service/state.json` for stale PID info.
 
-**State files:** The service stores runtime state in `.workgraph/service/`:
+**State files:** The service stores runtime state in `.wg/service/`:
 
 | File | Purpose |
 |------|---------|
@@ -704,7 +704,7 @@ wg evolve run --dry-run                    # preview without applying
 Share agency entities across projects:
 
 ```bash
-wg agency remote add partner /path/to/other/project/.workgraph/agency
+wg agency remote add partner /path/to/other/project/.wg/agency
 wg agency scan partner              # see what they have
 wg agency pull partner              # import their roles, tradeoffs, agents
 wg agency push partner              # export yours to them
@@ -1002,14 +1002,14 @@ wg replay --keep-done        # don't reset done tasks when replaying
 
 ## Storage
 
-Everything lives in `.workgraph/graph.jsonl`. One JSON object per line. Human-readable, git-friendly, easy to hack on.
+Everything lives in `.wg/graph.jsonl`. One JSON object per line. Human-readable, git-friendly, easy to hack on.
 
 ```jsonl
 {"kind":"task","id":"design-api","title":"Design the API","status":"done"}
 {"kind":"task","id":"build-backend","title":"Build the backend","status":"open","after":["design-api"],"model":"sonnet"}
 ```
 
-Configuration is in `.workgraph/config.toml`:
+Configuration is in `.wg/config.toml`:
 
 ```toml
 [agent]
@@ -1030,10 +1030,10 @@ name = "My Project"
 
 See [Service > Configuration](#configuration) for the full set of options including agency automation, FLIP, eval gates, model routing, and multi-coordinator settings.
 
-Agency data lives in `.workgraph/agency/`, with federation config and functions alongside:
+Agency data lives in `.wg/agency/`, with federation config and functions alongside:
 
 ```
-.workgraph/
+.wg/
   graph.jsonl              # Task graph (operations log / trace)
   config.toml              # Configuration
   federation.yaml          # Named remotes for agency federation

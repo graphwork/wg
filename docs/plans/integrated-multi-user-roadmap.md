@@ -713,7 +713,7 @@ Create wg server init command that automates multi-user server setup:
 
 1. Check/install prerequisites: tmux, ttyd (optional), caddy (optional)
 2. Create Unix group for project (e.g., wg-<project>)
-3. Set directory permissions: .workgraph/ owned by project group, 0770
+3. Set directory permissions: .wg/ owned by project group, 0770
 4. Set file permissions: graph.jsonl 0660, daemon.sock 0660
 5. Generate per-user shell profile snippet: export WG_USER=<name>
 6. Generate tmux launch command
@@ -966,15 +966,15 @@ wg add "wg peer scan command" \
   --id mu-f-peer-scan \
   --verify "cargo test test_peer_scan passes" \
   -d "## Description
-Walk directory tree looking for .workgraph/ directories. For each: report path, task count, service status. Offer wg peer add command to register.
+Walk directory tree looking for .wg/ directories. For each: report path, task count, service status. Offer wg peer add command to register.
 
 Pattern: identical to existing wg agency scan implementation. Default scan root: current directory. Optional argument: wg peer scan ~/projects.
 
 Files: src/commands/peer.rs.
 
 ## Validation
-- [ ] Integration test: create temp dirs with .workgraph/graph.jsonl, verify discovery
-- [ ] Edge case: nested .workgraph/ directories
+- [ ] Integration test: create temp dirs with .wg/graph.jsonl, verify discovery
+- [ ] Edge case: nested .wg/ directories
 - [ ] cargo build + cargo test pass"
 
 wg add "wg peer tasks CLI command" \

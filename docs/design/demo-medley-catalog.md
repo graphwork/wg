@@ -213,12 +213,12 @@ The medley below fills these gaps with 14 scenarios organized into 4 tiers.
 |-------|-------|
 | **Teaching purpose** | The ultimate proof of capability — workgraph coordinating its own development. Shows real software engineering, not toy tasks. |
 | **Duration** | 40–50s compressed |
-| **Graph pattern** | Real graph from `.workgraph/graph.jsonl` — whatever's current |
+| **Graph pattern** | Real graph from `.wg/graph.jsonl` — whatever's current |
 | **Graph setup** | Use the actual workgraph project's own graph. Filter to an interesting recent subgraph (e.g., the screencast work itself, or a recent feature branch). |
 | **Recording method** | **Live capture from real session.** Record `wg tui` during actual development. Or replay: extract a subgraph from history, recreate it in a demo project, and simulate the progression. |
 | **What viewer sees** | A real, complex task graph with 10+ tasks. Multiple agents working on Rust code. Tasks completing with real commit hashes in logs. The graph is visibly non-trivial — this isn't a toy. |
 | **Key moments** | (1) Scale — many tasks, real dependencies, (2) agent logs showing actual code commits, (3) the meta moment: "this screencast was coordinated by the tool it's demonstrating" |
-| **Existing asset?** | No, but raw material exists in the current `.workgraph/graph.jsonl`. Could extract and replay. |
+| **Existing asset?** | No, but raw material exists in the current `.wg/graph.jsonl`. Could extract and replay. |
 | **Freshness** | Semi-live. Capture during actual development sessions. New versions captured naturally as the project evolves. |
 
 ---

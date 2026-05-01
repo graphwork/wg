@@ -8,7 +8,7 @@
 ## 1. How Agents Are Registered and Tracked
 
 ### Registry File
-- **Path:** `.workgraph/service/registry.json`
+- **Path:** `.wg/service/registry.json`
 - **Source:** `src/service/registry.rs`
 
 ### Data Model (`AgentEntry` — `src/service/registry.rs:60`)
@@ -39,7 +39,7 @@ pub struct AgentRegistry {
 1. **Spawn** (`src/commands/spawn/execution.rs:282-330`):
    - `AgentRegistry::load_locked(dir)` — acquires file lock
    - Pre-allocates agent ID: `format!("agent-{}", locked_registry.next_agent_id)`
-   - Creates output directory at `.workgraph/agents/agent-N/`
+   - Creates output directory at `.wg/agents/agent-N/`
    - Optionally creates a git worktree for isolation
    - Launches the executor process (gets PID)
    - `register_agent_with_model(pid, task_id, executor, output_file, model)` — inserts entry
@@ -289,4 +289,4 @@ Coordinator tick              → sees ready task
 
 6. **ID counter**: Reaping agents does NOT reset `next_agent_id` — IDs remain monotonically increasing. This is correct behavior (prevents ID reuse confusion).
 
-7. **Zero-output state**: `ZeroOutputState` in `.workgraph/service/zero_output_state.json` tracks per-task respawn counts. Reaping doesn't need to touch this — it's keyed by task_id, not agent_id.
+7. **Zero-output state**: `ZeroOutputState` in `.wg/service/zero_output_state.json` tracks per-task respawn counts. Reaping doesn't need to touch this — it's keyed by task_id, not agent_id.

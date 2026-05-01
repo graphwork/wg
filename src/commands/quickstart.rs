@@ -7,7 +7,7 @@ const QUICKSTART_TEXT: &str = r###"
 
 GETTING STARTED
 ─────────────────────────────────────────
-  wg init                     # Create a .workgraph directory
+  wg init                     # Create a .wg directory
   wg setup                    # Interactive config wizard (5 routes: claude-cli, openrouter, codex-cli, local, nex-custom)
   wg setup --route claude-cli --yes   # Non-interactive: pick a route and accept defaults
   wg agency init              # Bootstrap roles, tradeoffs, and a default agent
@@ -492,7 +492,7 @@ EXECUTORS & MODELS
   Set a default model for all agents:
 
   wg service start --model claude:sonnet-4-6                # CLI override
-  # Or in .workgraph/config.toml under [dispatcher]: model = "claude:sonnet-4-6"
+  # Or in .wg/config.toml under [dispatcher]: model = "claude:sonnet-4-6"
 
   Per-task model selection (overrides the default):
 
@@ -1031,8 +1031,8 @@ fn json_output() -> serde_json::Value {
         "configuration": {
             "show": "wg config --show",
             "list": "wg config --list (merged config with source annotations)",
-            "global": "wg config --global (target ~/.workgraph/config.toml)",
-            "local": "wg config --local (target .workgraph/config.toml)",
+            "global": "wg config --global (target ~/.wg/config.toml)",
+            "local": "wg config --local (target .wg/config.toml)",
             "creator_agent": "wg config --creator-agent <hash>"
         },
         "context_scopes": {

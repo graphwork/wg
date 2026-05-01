@@ -55,7 +55,7 @@ Lineage: parent_ids[], generation, created_by
 ### Storage Layout
 
 ```
-.workgraph/agency/
+.wg/agency/
 ├── roles/{sha256}.yaml
 ├── motivations/{sha256}.yaml
 ├── agents/{sha256}.yaml

@@ -12,7 +12,7 @@ Two categories of data are captured:
 ## Directory Structure
 
 ```
-.workgraph/
+.wg/
 ├── log/
 │   ├── operations.jsonl          # Current (unrotated) operation log
 │   ├── 20260218T153045.123456Z.jsonl.zst  # Rotated, zstd-compressed
@@ -70,8 +70,8 @@ Each line in `operations.jsonl` is a JSON object:
 
 When a task completes (`wg done`) or fails (`wg fail`), the system automatically archives the agent's working files:
 
-- **Source**: `.workgraph/agents/<agent-id>/prompt.txt` and `output.log`
-- **Destination**: `.workgraph/log/agents/<task-id>/<ISO-timestamp>/`
+- **Source**: `.wg/agents/<agent-id>/prompt.txt` and `output.log`
+- **Destination**: `.wg/log/agents/<task-id>/<ISO-timestamp>/`
 - The output file is renamed from `output.log` to `output.txt` in the archive
 
 Each retry gets its own timestamped subdirectory, so the full history of attempts is preserved even if a task fails and is retried multiple times.
@@ -83,7 +83,7 @@ The operation log uses size-based rotation with zstd compression:
 1. Before each append, the system checks if `operations.jsonl` exceeds the rotation threshold
 2. If so, the file is compressed with zstd (level 3) and renamed to `<UTC-timestamp>.jsonl.zst`
 3. A fresh empty `operations.jsonl` is created
-4. The threshold defaults to **10 MB** and is configurable in `.workgraph/config.toml`:
+4. The threshold defaults to **10 MB** and is configurable in `.wg/config.toml`:
 
 ```toml
 [log]
@@ -96,10 +96,10 @@ rotation_threshold = 10485760  # bytes (default: 10 MB)
 
 ```bash
 # Decompress and view
-zstd -d .workgraph/log/20260218T153045.123456Z.jsonl.zst --stdout | less
+zstd -d .wg/log/20260218T153045.123456Z.jsonl.zst --stdout | less
 
 # Or use zstdcat
-zstdcat .workgraph/log/20260218T153045.123456Z.jsonl.zst | head
+zstdcat .wg/log/20260218T153045.123456Z.jsonl.zst | head
 ```
 
 ### Concurrent Write Safety
@@ -170,5 +170,5 @@ The operation log is append-only and never automatically deleted. Rotated files 
 
 - Use `wg archive` to move completed tasks out of the active graph (their operation log entries remain)
 - Use `wg gc` to remove failed/abandoned tasks from the graph (their operation log entries remain)
-- Manually delete old `.jsonl.zst` files from `.workgraph/log/` if space is a concern
-- Agent archives under `.workgraph/log/agents/` can be pruned manually for old tasks
+- Manually delete old `.jsonl.zst` files from `.wg/log/` if space is a concern
+- Agent archives under `.wg/log/agents/` can be pruned manually for old tasks

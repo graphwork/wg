@@ -49,7 +49,7 @@ Three timestamps are tracked on each task:
 - When blocked_by edges were added or removed
 - When task was assigned to an agent (only the current value is stored)
 
-### 1.3 Agent Output Directory (`.workgraph/agents/agent-{N}/`)
+### 1.3 Agent Output Directory (`.wg/agents/agent-{N}/`)
 
 Each spawned agent gets a directory containing:
 
@@ -62,7 +62,7 @@ Each spawned agent gets a directory containing:
 
 **Note:** Older agents (before agent-27) only have `metadata.json` and `output.log` — the `run.sh`/`prompt.txt` pattern was introduced later.
 
-### 1.4 Task Output Capture (`.workgraph/output/{task-id}/`)
+### 1.4 Task Output Capture (`.wg/output/{task-id}/`)
 
 Created by `capture_task_output()` (called from `wg done` and `wg fail`):
 
@@ -77,7 +77,7 @@ Created by `capture_task_output()` (called from `wg done` and `wg fail`):
 - Only captures diff at the moment of done/fail — intermediate states are lost
 - No capture of which files the agent read (only what it changed)
 
-### 1.5 Daemon Log (`.workgraph/service/daemon.log`)
+### 1.5 Daemon Log (`.wg/service/daemon.log`)
 
 Unstructured text log with entries like:
 ```
@@ -93,7 +93,7 @@ Records: daemon start/stop, coordinator tick summaries, agent spawn events, dead
 
 **Not structured** — plain text, no JSON, not machine-parseable without regex.
 
-### 1.6 Evaluation Records (`.workgraph/agency/evaluations/*.json`)
+### 1.6 Evaluation Records (`.wg/agency/evaluations/*.json`)
 
 Per-task evaluation files containing:
 ```json
@@ -124,7 +124,7 @@ Per-task evaluation files containing:
 | `service/coordinator-state.json` | Tick count, agents_alive, tasks_ready, config |
 | `service/registry.json` | All agents ever registered, with PID, task_id, executor, heartbeat, status |
 
-### 1.8 Archive (`.workgraph/archive.jsonl`)
+### 1.8 Archive (`.wg/archive.jsonl`)
 
 Same format as `graph.jsonl` — archived tasks retain their full structure including log entries, artifacts, timestamps, and all fields. Tasks are moved here by `wg archive` (done tasks only).
 
@@ -232,7 +232,7 @@ To replay a workflow, you need:
 
 ### 4.1 Append-Only Event Log
 
-Introduce a single append-only event log (`.workgraph/events.jsonl`) that records every state-changing operation:
+Introduce a single append-only event log (`.wg/events.jsonl`) that records every state-changing operation:
 
 ```jsonl
 {"ts":"...","event":"task.created","task_id":"build-widget","actor":"cli","data":{"title":"Build widget","blocked_by":["design"],"skills":["rust"]}}
@@ -253,7 +253,7 @@ Introduce a single append-only event log (`.workgraph/events.jsonl`) that record
 
 ### 4.2 Prompt Archive
 
-Store all LLM prompts in a content-addressed store (`.workgraph/prompts/{sha256}.txt`):
+Store all LLM prompts in a content-addressed store (`.wg/prompts/{sha256}.txt`):
 - Agent task prompts (already saved as `prompt.txt` — just also hash and index them)
 - Evolve prompts
 - Evaluate prompts
@@ -268,7 +268,7 @@ Periodically (or on explicit request), snapshot the entire graph state:
 - Before/after `wg evolve` (capture agency state transitions)
 - On `wg snapshot` command (manual checkpointing)
 
-Store as `.workgraph/snapshots/{timestamp}.jsonl`.
+Store as `.wg/snapshots/{timestamp}.jsonl`.
 
 ### 4.4 Structured Daemon Log
 
@@ -298,7 +298,7 @@ This unifies with the event log architecture and makes daemon activity machine-p
 - **Backward compatible**: Existing graph.jsonl format unchanged. Event log is additive.
 - **Performance**: Append-only writes are fast. No read overhead on hot paths.
 - **Storage**: Prompts are large but compressible. Content-addressing deduplicates identical prompts (e.g., assignment prompts share a common template).
-- **Privacy**: Prompts may contain sensitive code. The event log and prompt store should follow the same access model as the rest of `.workgraph/`.
+- **Privacy**: Prompts may contain sensitive code. The event log and prompt store should follow the same access model as the rest of `.wg/`.
 - **Rotation**: Event log and prompt store need rotation/compaction for long-running projects (see the `impl-log-rotation` task).
 
 ---

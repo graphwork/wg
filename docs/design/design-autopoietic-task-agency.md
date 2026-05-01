@@ -14,7 +14,7 @@ WorkGraph is built on autopoetic principles — tasks should have agency, can sp
 This document assumes familiarity with:
 - The `CycleConfig` / `loop_iteration` mechanism in `src/graph.rs`
 - The `restart_on_failure` / `max_failure_restarts` failure restart design (`docs/design-cycle-failure-restart.md`)
-- The FLIP evaluation design (`.workgraph/research/flip-evaluation-design.md`)
+- The FLIP evaluation design (`.wg/research/flip-evaluation-design.md`)
 - The `EvaluatorInput` / `EvaluatorDecision` types in `src/agency/prompt.rs`
 
 ---

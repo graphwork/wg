@@ -23,7 +23,7 @@
 - Log entries are the primary record of iteration boundaries
 
 **Agent archives** (`src/commands/log.rs:127-168`):
-- On task completion, `archive_agent()` copies agent `prompt.txt` + `output.log` to `.workgraph/log/agents/<task-id>/<ISO-timestamp>/`
+- On task completion, `archive_agent()` copies agent `prompt.txt` + `output.log` to `.wg/log/agents/<task-id>/<ISO-timestamp>/`
 - Each retry/iteration gets its own timestamped subdirectory
 - `find_latest_archive()` in the TUI (`src/tui/viz_viewer/state.rs:12620-12643`) retrieves only the **most recent** archive
 - CLI: `wg log agent <task-id>` lists all archived attempts (`src/commands/log.rs:174-250`)
@@ -33,7 +33,7 @@
 | Data | Preserved? | Notes |
 |------|-----------|-------|
 | Log entries | Yes | Accumulated, never cleared. Iteration boundaries detectable via "Re-activated" messages |
-| Agent prompt/output archives | Yes | One timestamped dir per iteration in `.workgraph/log/agents/<task-id>/` |
+| Agent prompt/output archives | Yes | One timestamped dir per iteration in `.wg/log/agents/<task-id>/` |
 | Artifacts list | Yes | `task.artifacts: Vec<String>` survives reset |
 | `started_at`, `completed_at` | No | Cleared on reset (`src/graph.rs:1569-1570`) |
 | `assigned` | No | Cleared on reset (`src/graph.rs:1568`) |
@@ -102,10 +102,10 @@ When the user presses Enter on a past iteration, replace the Output/Prompt secti
     Iteration 0              done          51m ago
 
 ── Output (Iteration 2) ──
-  [archived agent output from .workgraph/log/agents/my-cycle-task/2026-04-02T10:15:00Z/output.txt]
+  [archived agent output from .wg/log/agents/my-cycle-task/2026-04-02T10:15:00Z/output.txt]
 
 ── Prompt (Iteration 2) ──
-  [archived prompt from .workgraph/log/agents/my-cycle-task/2026-04-02T10:15:00Z/prompt.txt]
+  [archived prompt from .wg/log/agents/my-cycle-task/2026-04-02T10:15:00Z/prompt.txt]
 ```
 
 ### Alternative: Keybinding approach (simpler)
@@ -224,7 +224,7 @@ A self-loop occurs when a task's `after` list contains its own ID. The `CycleAna
 #### Step 1: Add iteration browsing state (`src/tui/viz_viewer/state.rs`)
 - Add `viewing_iteration: Option<u32>` field to `VizApp` struct (~line 3340)
 - Add `iteration_archives: Vec<(String, PathBuf)>` to cache discovered archives (timestamp, path)
-- Add `fn load_iteration_archives(&mut self, task_id: &str)` — scans `.workgraph/log/agents/<task-id>/` and builds the list
+- Add `fn load_iteration_archives(&mut self, task_id: &str)` — scans `.wg/log/agents/<task-id>/` and builds the list
 - Add `fn viewing_iteration_label(&self) -> Option<String>` — returns "Iteration N" or "Attempt N"
 
 #### Step 2: Add keybinding handlers (`src/tui/viz_viewer/event.rs`)

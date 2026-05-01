@@ -42,7 +42,7 @@ The native executor **works for simple tasks with Claude**. It has not been stre
    wg config --coordinator-executor native --model claude-sonnet-4-20250514
    wg service start
    ```
-   Watch the agent complete. Check `.workgraph/agents/*/output.log` for clean execution.
+   Watch the agent complete. Check `.wg/agents/*/output.log` for clean execution.
 
 2. **Smoke test with Minimax M2.7 via OpenRouter**
    ```bash
@@ -108,7 +108,7 @@ pub struct ResumeConfig {
 }
 ```
 
-Wire this through from the provider, which should expose `fn context_window(&self) -> usize`. For OpenRouter, the context window can be looked up from model metadata or configured per-model in `.workgraph/config.toml`.
+Wire this through from the provider, which should expose `fn context_window(&self) -> usize`. For OpenRouter, the context window can be looked up from model metadata or configured per-model in `.wg/config.toml`.
 
 Also add **in-loop context monitoring**: after each turn, estimate total context usage and inject a warning message to the agent when approaching 80%:
 

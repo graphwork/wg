@@ -11,7 +11,7 @@ Agents running terminal-bench (TB) tasks were falling back to litellm/harbor ins
 ### 1.1 Config → Coordinator → Agent Spawn → Model Call
 
 ```
-User config (.workgraph/config.toml)
+User config (.wg/config.toml)
   ├── coordinator.executor = "claude" | "amplifier" | "native" | "shell"
   ├── coordinator.model = "..."
   ├── models.task_agent.model = "..."
@@ -75,7 +75,7 @@ Defined in `resolve_model_and_provider()` at `execution.rs:1240`:
 |----------|--------|-------|
 | 1 (highest) | Task | `task.model` + `task.provider` |
 | 2 | Agent identity | `agent.preferred_model` + `agent.preferred_provider` |
-| 3 | Executor config | `executor.model` (from `.workgraph/executors/<name>.toml`) |
+| 3 | Executor config | `executor.model` (from `.wg/executors/<name>.toml`) |
 | 4 | Role config | `config.models.task_agent.model` + `.provider` |
 | 5 (lowest) | Coordinator | `coordinator.model` + `coordinator.provider` |
 
@@ -126,7 +126,7 @@ This path:
 **File:** `terminal-bench/run_full_a_prime_vs_f.py` and `terminal-bench/run_hard_benchmarks.py`
 
 These scripts:
-1. Create a temp `.workgraph/` directory per trial
+1. Create a temp `.wg/` directory per trial
 2. Write `config.toml` with `executor = "native"` and the benchmark model
 3. Add a task via `wg add`
 4. Start `wg service start`
@@ -203,7 +203,7 @@ Additionally, provider-specific env vars are set (`OPENROUTER_API_KEY`, etc.) at
 
 1. **CLI arguments**: `build_inner_command()` passes `--model`, `--provider`, etc. directly to the executor command line.
 2. **Environment variables**: The env vars above are set on the `Command` before `.spawn()`.
-3. **Config file**: The agent runs in the workgraph directory (or worktree), so it reads `.workgraph/config.toml` at startup.
+3. **Config file**: The agent runs in the workgraph directory (or worktree), so it reads `.wg/config.toml` at startup.
 
 **Potential gap**: If a parent wg service's env vars leak into a nested trial's subprocess (the bug fixed in fab4ae74), the env vars can override the trial's config.toml settings.
 
@@ -231,7 +231,7 @@ The fix in `fab4ae74` handles the immediate issue. To make this more robust:
 
 ### 4.3 For TB Isolation Per Problem
 
-For the downstream `tb-isolation-design` task: each TB problem should get its own isolated `.workgraph/` directory (which `run_full_a_prime_vs_f.py` already does via `tempfile.mkdtemp`). The key requirements are:
+For the downstream `tb-isolation-design` task: each TB problem should get its own isolated `.wg/` directory (which `run_full_a_prime_vs_f.py` already does via `tempfile.mkdtemp`). The key requirements are:
 - Clean env (no parent WG_* vars)
 - Own config.toml with the benchmark model
 - Own agent registry (no cross-contamination)

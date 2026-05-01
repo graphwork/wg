@@ -499,7 +499,7 @@ export function activate(context: vscode.ExtensionContext) {
 
     // File watcher for .workgraph changes
     const watcher = vscode.workspace.createFileSystemWatcher(
-        '**/.workgraph/**'
+        '**/.wg/**'
     );
     watcher.onDidChange(() => {
         taskProvider.refresh();

@@ -23,7 +23,7 @@ The system has three layers:
 └──────────────────────┬──────────────────────────────┘
                        │
 ┌──────────────────────▼──────────────────────────────┐
-│  Message Store (.workgraph/messages/{task-id}.jsonl) │
+│  Message Store (.wg/messages/{task-id}.jsonl) │
 │  - Append-only JSONL files                          │
 │  - One file per task                                │
 │  - Atomic append via O_APPEND                       │
@@ -63,7 +63,7 @@ pub struct Message {
 ### Storage Location
 
 ```
-.workgraph/messages/
+.wg/messages/
 ├── task-alpha.jsonl      # messages for task-alpha
 ├── task-beta.jsonl       # messages for task-beta
 └── .cursors/             # per-agent read cursors
@@ -118,7 +118,7 @@ wg msg send <task-id> "message text" --priority urgent
 echo "long context..." | wg msg send <task-id> --stdin
 ```
 
-Implementation: append a `Message` line to `.workgraph/messages/{task-id}.jsonl`.
+Implementation: append a `Message` line to `.wg/messages/{task-id}.jsonl`.
 
 The `id` field is assigned by reading the current file to find the highest existing ID
 and incrementing by 1. If the file doesn't exist, start at 1. This is safe because
@@ -175,9 +175,9 @@ wg msg poll <task-id> --agent agent-5 --json
 
 ### How `wg msg read` works
 
-1. Read cursor from `.workgraph/messages/.cursors/{agent-id}.{task-id}`
+1. Read cursor from `.wg/messages/.cursors/{agent-id}.{task-id}`
    (defaults to 0 if no cursor exists)
-2. Read messages from `.workgraph/messages/{task-id}.jsonl`
+2. Read messages from `.wg/messages/{task-id}.jsonl`
 3. Filter to messages with `id > cursor`
 4. Print them
 5. Update cursor to max message ID seen
@@ -223,7 +223,7 @@ to run a background polling loop that checks for new messages:
 #!/bin/bash
 TASK_ID='my-task'
 AGENT_ID='agent-5'
-OUTPUT_FILE='.workgraph/agents/agent-5/output.log'
+OUTPUT_FILE='.wg/agents/agent-5/output.log'
 
 # Background: poll for messages and write to a signal file
 poll_messages() {
@@ -267,7 +267,7 @@ To use this, the spawn flow changes:
 
 **Challenge**: The spawned process is detached via `setsid()` and the parent
 (coordinator) doesn't hold handles. Solutions:
-- **Named pipe (FIFO)**: Create `.workgraph/agents/{agent-id}/inbox.fifo`, launch
+- **Named pipe (FIFO)**: Create `.wg/agents/{agent-id}/inbox.fifo`, launch
   claude reading from this FIFO, write messages to it from any process.
 - **Stdin relay process**: A small relay daemon holds the pipe and accepts messages
   via a unix socket or FIFO.
@@ -318,7 +318,7 @@ This works with ALL executor types because it's agent-driven.
 
 When the coordinator spawns an agent, it should:
 
-1. Read any queued messages for the task from `.workgraph/messages/{task-id}.jsonl`
+1. Read any queued messages for the task from `.wg/messages/{task-id}.jsonl`
 2. Include them in the prompt context:
 
 ```
@@ -488,7 +488,7 @@ in v1. Named pipe + stream-json for real-time injection in v2.
 ### Directory structure
 
 ```
-.workgraph/
+.wg/
 ├── messages/
 │   ├── {task-id}.jsonl          # message queue per task
 │   └── .cursors/

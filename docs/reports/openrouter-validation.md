@@ -12,7 +12,7 @@
 | Test | Result | Notes |
 |------|--------|-------|
 | `wg config --set-provider default openrouter` | PASS | Parses and saves correctly |
-| `wg config --set-model default minimax/minimax-m2.5` | PASS | Persists to `.workgraph/config.toml` |
+| `wg config --set-model default minimax/minimax-m2.5` | PASS | Persists to `.wg/config.toml` |
 | Config read-back via `wg config --show` | PASS | Shows `default.provider = "openrouter"` and `default.model = "minimax/minimax-m2.5"` |
 | Provider routing: "openrouter" maps to `OpenAiClient` | PASS | `provider.rs:102` — match arm includes `"openrouter"` |
 | Provider routing: "local" maps to `OpenAiClient` | PASS | Same match arm covers `"local"` |

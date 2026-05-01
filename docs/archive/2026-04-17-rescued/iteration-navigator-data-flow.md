@@ -26,7 +26,7 @@ struct VizApp {
 
 ### Archive Storage Structure
 ```
-.workgraph/log/agents/{task_id}/
+.wg/log/agents/{task_id}/
 ├── 20241201_143022_agent123/     <- iteration_archives[0] (oldest)
 │   ├── prompt.txt
 │   └── output.txt

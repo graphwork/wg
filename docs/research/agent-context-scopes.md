@@ -131,7 +131,7 @@ pub context_scope: Option<String>,
 #### Per-role (medium priority):
 Roles can declare a default context scope in their YAML definition:
 ```yaml
-# .workgraph/agency/roles/<hash>.yaml
+# .wg/agency/roles/<hash>.yaml
 name: "Integrator"
 description: "Integrates outputs from multiple tasks"
 default_context_scope: "graph"
@@ -147,7 +147,7 @@ pub default_context_scope: Option<String>,
 
 #### Global default (lowest priority):
 ```toml
-# .workgraph/config.toml
+# .wg/config.toml
 [coordinator]
 default_context_scope = "task"
 ```
@@ -415,7 +415,7 @@ pub struct TemplateVars {
 }
 ```
 
-The monolithic template string in `default_config("claude")` is replaced with a call to `build_prompt()` that assembles sections based on scope. Custom executor configs (in `.workgraph/executors/`) can still use the old monolithic template approach — the scope-based assembly is only for the built-in defaults.
+The monolithic template string in `default_config("claude")` is replaced with a call to `build_prompt()` that assembles sections based on scope. Custom executor configs (in `.wg/executors/`) can still use the old monolithic template approach — the scope-based assembly is only for the built-in defaults.
 
 ---
 
@@ -662,7 +662,7 @@ full_context_token_budget = 8000
 ### 5.5 Backward Compatibility
 
 - Tasks without `context_scope` set default to `task`, which produces the same prompt as today (modulo the R1-R5 improvements that should be applied regardless).
-- Custom executor configs in `.workgraph/executors/` that define their own `prompt_template.template` are unaffected — scope-based assembly only applies to built-in defaults.
+- Custom executor configs in `.wg/executors/` that define their own `prompt_template.template` are unaffected — scope-based assembly only applies to built-in defaults.
 - The `context_scope` field on Task uses `skip_serializing_if = "Option::is_none"`, so existing graph.jsonl files are unaffected.
 
 ---

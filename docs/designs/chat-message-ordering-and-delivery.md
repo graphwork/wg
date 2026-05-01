@@ -546,7 +546,7 @@ Since messages are already in `self.chat.messages` (index-tracking approach), cl
 
 - Daemon IPC handling — no changes to `ipc.rs` or `service/mod.rs`
 - Coordinator agent message processing — no changes to `coordinator_agent.rs`
-- Inbox/outbox storage format — no changes to `.workgraph/chat/` structure
+- Inbox/outbox storage format — no changes to `.wg/chat/` structure
 - Chat CLI — no changes to `src/commands/chat.rs`
 - Markdown rendering — no changes to `render.rs` rendering logic (only `awaiting_response` → `awaiting_response()` accessor changes)
 - Persisted chat format — `PersistedChatMessage` struct is unchanged

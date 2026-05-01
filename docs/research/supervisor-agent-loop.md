@@ -244,7 +244,7 @@ supervisor::supervise_running_agents(dir, &graph_path, &mut supervision_state);
 **Configuration:**
 
 ```toml
-# .workgraph/config.toml
+# .wg/config.toml
 [supervisor]
 enabled = true
 check_interval = "2m"          # How often to check each agent

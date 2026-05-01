@@ -192,7 +192,7 @@ There's no mechanism to calibrate evaluators against known-good or known-bad exa
 
 ## Methodology
 
-- Read all 649 evaluation JSON files from `.workgraph/agency/evaluations/`
+- Read all 649 evaluation JSON files from `.wg/agency/evaluations/`
 - Computed statistical distributions across scores and dimensions
 - Identified all 250 tasks with multiple evaluations and calculated inter-rater spread
 - Deep-dived into 9 tasks with spread >0.5 to determine which evaluation was correct

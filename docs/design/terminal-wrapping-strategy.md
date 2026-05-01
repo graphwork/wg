@@ -24,7 +24,7 @@ This means:
 │                          SERVER (VPS / homelab)                     │
 │                                                                     │
 │  ┌──────────────────────────────────────────────────────────────┐   │
-│  │ .workgraph/graph.jsonl  (shared state, flock-serialized)     │   │
+│  │ .wg/graph.jsonl  (shared state, flock-serialized)     │   │
 │  └──────────────────────────┬───────────────────────────────────┘   │
 │                             │ fs watcher (50ms)                     │
 │  ┌──────────────────────────┴───────────────────────────────────┐   │
@@ -58,7 +58,7 @@ This means:
 2. Connection layer attaches to user's named tmux session: `tmux new-session -A -s $USER-wg`
 3. If tmux session is new, it starts `wg tui` inside it
 4. If tmux session already exists (reconnection), user picks up exactly where they left off
-5. All TUI instances share the same `.workgraph/graph.jsonl` — changes propagate via fs watcher
+5. All TUI instances share the same `.wg/graph.jsonl` — changes propagate via fs watcher
 
 ---
 

@@ -8,7 +8,7 @@
 
 The workgraph codebase has a working first-generation trace function system:
 
-**Core data model** (`src/function.rs`): `TraceFunction`, `TaskTemplate`, `FunctionInput`, `FunctionOutput`, `LoopEdgeTemplate`, `ExtractionSource`. Functions stored as YAML in `.workgraph/functions/<id>.yaml`. The `kind` field is always `"trace-function"` with `version: 1`.
+**Core data model** (`src/function.rs`): `TraceFunction`, `TaskTemplate`, `FunctionInput`, `FunctionOutput`, `LoopEdgeTemplate`, `ExtractionSource`. Functions stored as YAML in `.wg/functions/<id>.yaml`. The `kind` field is always `"trace-function"` with `version: 1`.
 
 **Extraction** (`src/commands/func_extract.rs`): `wg trace extract <task-id>` extracts a trace function from a completed (Done) task. Supports `--subgraph` to capture the full descendant subgraph, `--generalize` (stubbed, prints a warning), `--name`, `--output`, `--force`. Parameter detection is heuristic: scans task text for file paths, URLs, commands, and numbers.
 
@@ -20,7 +20,7 @@ The workgraph codebase has a working first-generation trace function system:
 
 **Trace export/import** (`src/commands/trace_export.rs`, `trace_import.rs`): Export produces a JSON bundle containing tasks, evaluations, and operations filtered by visibility level (internal/public/peer). Import namespaces tasks under `imported/<source>/`.
 
-**Replay** (`src/commands/replay.rs`): `wg replay` resets completed/failed tasks to Open, optionally filtered by `--failed-only`, `--below-score`, `--subgraph`, `--tasks`. Creates a snapshot in `.workgraph/runs/` before resetting.
+**Replay** (`src/commands/replay.rs`): `wg replay` resets completed/failed tasks to Open, optionally filtered by `--failed-only`, `--below-score`, `--subgraph`, `--tasks`. Creates a snapshot in `.wg/runs/` before resetting.
 
 **Provenance** (`src/provenance.rs`): Every state change (add_task, claim, done, fail, retry, edit, etc.) recorded in `operations.jsonl` with timestamp, actor, operation type, task_id, and detail.
 
@@ -352,7 +352,7 @@ STATIC_EXTRACT(task_id, graph):
   4. Detect parameters heuristically (file paths, URLs, commands, numbers)
   5. Build outputs from artifacts
   6. Validate (after references, no circular deps, no duplicate IDs)
-  7. Save to .workgraph/functions/<id>.yaml
+  7. Save to .wg/functions/<id>.yaml
 ```
 
 ### 4.2 Generative Extraction (Layer 2, Proposed)
@@ -377,7 +377,7 @@ MAKE_ADAPTIVE(function_id):
   1. Load function; REQUIRE: version >= 2
   2. Scan provenance for past instantiations of this function
   3. Build RunSummary for each past instantiation
-  4. Save summaries to .workgraph/functions/<id>.memory/
+  4. Save summaries to .wg/functions/<id>.memory/
   5. Add TraceMemoryConfig to function
   6. Append {{memory.run_summaries}} to planner template
   7. Bump version to 3; save
@@ -490,7 +490,7 @@ wg trace instantiate extract-function \
 1. Wire `--generalize` to LLM for generalization pass
 2. Add `visibility: FunctionVisibility` to `TraceFunction`
 3. Cycle extraction: capture `CycleConfig` into `LoopEdgeTemplate`
-4. Run tracking: record function_id + prefix → created task IDs in `.workgraph/functions/<id>.runs.jsonl`
+4. Run tracking: record function_id + prefix → created task IDs in `.wg/functions/<id>.runs.jsonl`
 5. Test coverage for edge cases
 
 **Files:** `function.rs`, `func_extract.rs`, `func_cmd.rs`, `func_apply.rs`
@@ -538,7 +538,7 @@ Notes on how the implementation diverges from or extends the spec above.
 
 ### 9.1 Trace Memory: Dual Storage Strategy
 
-The spec (§3.4) describes a per-run JSON directory at `.workgraph/functions/<id>.memory/`. The implementation adds a second, parallel strategy: `.workgraph/functions/<id>.runs.jsonl` (one JSON line per run summary). The JSONL strategy is what `trace_instantiate` and `trace_make_adaptive` actually use for reading/writing run history. The per-run JSON directory (`function_memory::memory_dir`, `save_run_summary`, `load_recent_summaries`) exists alongside it but is used by `build_run_summary` for spec-compliant individual run storage. Both strategies coexist; consumers should prefer the JSONL path for operational use.
+The spec (§3.4) describes a per-run JSON directory at `.wg/functions/<id>.memory/`. The implementation adds a second, parallel strategy: `.wg/functions/<id>.runs.jsonl` (one JSON line per run summary). The JSONL strategy is what `trace_instantiate` and `trace_make_adaptive` actually use for reading/writing run history. The per-run JSON directory (`function_memory::memory_dir`, `save_run_summary`, `load_recent_summaries`) exists alongside it but is used by `build_run_summary` for spec-compliant individual run storage. Both strategies coexist; consumers should prefer the JSONL path for operational use.
 
 ### 9.2 Generative Extraction: Trace Alignment Heuristic
 

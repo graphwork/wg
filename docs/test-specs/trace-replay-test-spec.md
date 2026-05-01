@@ -214,7 +214,7 @@ JSON output contains:
 
 **Description:** Tracing when no workgraph exists should return an error.
 
-**Setup:** Empty temp directory (no `.workgraph/`).
+**Setup:** Empty temp directory (no `.wg/`).
 
 **Expected outcome:** Error message contains "not initialized".
 

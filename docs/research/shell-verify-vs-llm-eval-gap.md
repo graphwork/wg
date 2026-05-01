@@ -23,7 +23,7 @@ two systems' completion-gate semantics and quantifies the verify-failure data.
   and writes `task.verify` when the agent has not set one.
 - **Stored**: `Task.verify: Option<String>`, `Task.verify_timeout: Option<String>`,
   `Task.verify_failures: u32` (`src/graph.rs:305,309,390`). Persisted to
-  `.workgraph/graph.jsonl`.
+  `.wg/graph.jsonl`.
 - **Executed**: `src/commands/done.rs:891-1216` is the main gate.
   - `run_verify_command_with_retry` (200-330) handles flock contention.
   - `run_verify_command` (486-712) actually shells out via `sh -c`.
@@ -107,7 +107,7 @@ Inputs assembled into the evaluator prompt
 | Outcome | resolved `desired_outcome` for the role |
 | Artifacts | `artifacts[]` plus a computed git diff over those paths from the commit at `started_at` to `HEAD` (`compute_artifact_diff`, line 45) — capped at 30 KB |
 | Log | full task `log[]` |
-| FLIP | optional pre-existing FLIP `intent_fidelity` score loaded from `.workgraph/agency/evaluations/` |
+| FLIP | optional pre-existing FLIP `intent_fidelity` score loaded from `.wg/agency/evaluations/` |
 | Verify task | optional sibling `.verify-<id>` status + log entries |
 | Downstream context | titles+descriptions of `task.before` (consumers) |
 | Child tasks | titles+descriptions of tasks where `after.contains(task_id)` (decomposition signal) |
@@ -141,7 +141,7 @@ Standard `EvalOutput`: `score: f64` (0..1), `dimensions: HashMap<String, f64>`,
 
 ### Artifacts produced
 
-- `.workgraph/agency/evaluations/eval-<task_id>-<ts>.yaml`
+- `.wg/agency/evaluations/eval-<task_id>-<ts>.yaml`
   (or `flip-<task_id>-<ts>.yaml`) — full `Evaluation` record
 - Performance-history updates inside `agency_dir`
 - Token usage written back onto the `.evaluate-<task_id>` task
@@ -251,7 +251,7 @@ needed.
 
 ## 4. Failure data — survey of recent verify failures
 
-Source: `.workgraph/graph.jsonl` (147 nodes, scanned 2026-04-22).
+Source: `.wg/graph.jsonl` (147 nodes, scanned 2026-04-22).
 15 tasks have a `verify` field set.
 
 ### Aggregate

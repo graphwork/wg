@@ -101,7 +101,7 @@ model/provider dispatch point in the workgraph codebase.
 |---|---|---|
 | Registry with defaults | `src/models.rs:93-226` | 13 models hardcoded: Anthropic (3), OpenAI (3), Google (2), DeepSeek (2), Meta (2), Qwen (1) |
 | Default provider | `src/models.rs:72-74` | `"openrouter"` — **hardcoded default provider for registry entries** |
-| Registry load path | `src/models.rs:230` | `.workgraph/models.yaml` |
+| Registry load path | `src/models.rs:230` | `.wg/models.yaml` |
 
 ### 1.13 TUI Config Editor
 
@@ -113,7 +113,7 @@ model/provider dispatch point in the workgraph codebase.
 
 ## 2. Current Configuration Surface
 
-### 2.1 Configurable Fields (in `.workgraph/config.toml`)
+### 2.1 Configurable Fields (in `.wg/config.toml`)
 
 | Config Key | Section | Default | User-Settable | How |
 |---|---|---|---|---|
@@ -147,7 +147,7 @@ model/provider dispatch point in the workgraph codebase.
 
 | Source | Scope | Set Via |
 |---|---|---|
-| `executor.model` | All tasks using that executor | `.workgraph/executors/<name>.toml` |
+| `executor.model` | All tasks using that executor | `.wg/executors/<name>.toml` |
 
 ### 2.4 Environment Variables
 
@@ -195,7 +195,7 @@ model/provider dispatch point in the workgraph codebase.
 
 ### 3.2 Already Abstracted
 
-1. **Executor registry**: `.workgraph/executors/<name>.toml` — supports custom executors with arbitrary commands. The `amplifier`, `native`, and `shell` executor types already provide non-claude paths.
+1. **Executor registry**: `.wg/executors/<name>.toml` — supports custom executors with arbitrary commands. The `amplifier`, `native`, and `shell` executor types already provide non-claude paths.
 
 2. **Native executor provider heuristic**: `src/commands/native_exec.rs:32-54` — supports `"anthropic"` and `"openai"` providers, plus custom `api_base`. The OpenAI-compatible client can hit any compatible API.
 

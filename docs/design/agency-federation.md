@@ -15,7 +15,7 @@ This document covers six capabilities, layered from simple to complex:
 | 2 | `wg agency push` | Copy local entities to another store |
 | 3 | `wg agency remote` | Named references to other agency stores |
 | 4 | `wg agency merge` | Combine multiple stores with dedup and performance merge |
-| 5 | Global agency store | `~/.workgraph/agency/` with inheritance |
+| 5 | Global agency store | `~/.wg/agency/` with inheritance |
 
 ## 2. Core Invariants
 
@@ -44,18 +44,18 @@ An **agency store** is any directory containing the standard layout:
 ```
 
 A store can be:
-- **Local project**: `.workgraph/agency/` in a workgraph project
-- **Global user**: `~/.workgraph/agency/`
-- **Bare store**: A standalone directory with just the agency subdirs (no `.workgraph/` parent needed)
+- **Local project**: `.wg/agency/` in a workgraph project
+- **Global user**: `~/.wg/agency/`
+- **Bare store**: A standalone directory with just the agency subdirs (no `.wg/` parent needed)
 - **Remote path**: Any accessible filesystem path
 
 ### 3.1 Store Resolution
 
 Given a store reference string, resolution order:
-1. If it's a named remote → look up path in `.workgraph/federation.yaml`
-2. If it starts with `~/` or `/` → treat as filesystem path, look for `agency/` or `.workgraph/agency/` subdirectory
+1. If it's a named remote → look up path in `.wg/federation.yaml`
+2. If it starts with `~/` or `/` → treat as filesystem path, look for `agency/` or `.wg/agency/` subdirectory
 3. If it's `.` or a relative path → resolve from CWD
-4. `--global` flag → `~/.workgraph/agency/`
+4. `--global` flag → `~/.wg/agency/`
 
 Git-remote-backed stores (e.g., `git@github.com:team/agency-repo`) are a future extension. The initial implementation covers local filesystem paths only. The store abstraction is designed as a trait so git/URL backends can be added later.
 
@@ -63,16 +63,16 @@ Git-remote-backed stores (e.g., `git@github.com:team/agency-repo`) are a future 
 
 ### 4.1 `wg agency scan <root-dir>`
 
-Recursively walks `<root-dir>` looking for directories matching `**/agency/roles/` or `**/.workgraph/agency/roles/`. Reports each discovered store with a summary.
+Recursively walks `<root-dir>` looking for directories matching `**/agency/roles/` or `**/.wg/agency/roles/`. Reports each discovered store with a summary.
 
 ```
 $ wg agency scan ~/projects
 Found 3 agency stores:
 
-  ~/projects/alpha/.workgraph/agency/
+  ~/projects/alpha/.wg/agency/
     Roles: 4  Motivations: 3  Agents: 6  Evaluations: 23
 
-  ~/projects/beta/.workgraph/agency/
+  ~/projects/beta/.wg/agency/
     Roles: 2  Motivations: 2  Agents: 3  Evaluations: 8
 
   ~/projects/shared-agency/
@@ -86,12 +86,12 @@ Found 3 agency stores:
 
 **Implementation notes:**
 - Skip `.git`, `node_modules`, `target`, and other common build directories
-- Detect bare stores (agency dirs without `.workgraph/` parent)
+- Detect bare stores (agency dirs without `.wg/` parent)
 - Report total unique entities across all found stores
 
 ### 4.2 `wg agency pull <source> [--entity <id>...] [--type role|motivation|agent]`
 
-Copies entities from `<source>` store into the local `.workgraph/agency/`.
+Copies entities from `<source>` store into the local `.wg/agency/`.
 
 **Behavior:**
 1. Resolve `<source>` to an agency store path (see §3.1)
@@ -105,7 +105,7 @@ Copies entities from `<source>` store into the local `.workgraph/agency/`.
 
 ```
 $ wg agency pull ~/other-project
-Pulled from ~/other-project/.workgraph/agency/:
+Pulled from ~/other-project/.wg/agency/:
   Roles:        +2 new, 1 updated, 3 skipped (identical)
   Motivations:  +1 new, 0 updated, 2 skipped
   Agents:       +3 new, 1 updated, 2 skipped
@@ -119,7 +119,7 @@ Pulled 1 role (81afa9b1 "analyst") from upstream
 - `--dry-run` — show what would be pulled without writing
 - `--no-performance` — skip merging performance data (copy definitions only)
 - `--no-evaluations` — skip copying evaluation JSON files
-- `--global` — pull into `~/.workgraph/agency/` instead of local project
+- `--global` — pull into `~/.wg/agency/` instead of local project
 - `--force` — overwrite local metadata instead of merging
 
 ### 4.3 `wg agency push <target> [--entity <id>...] [--type role|motivation|agent]`
@@ -138,17 +138,17 @@ Pushed to ~/shared-agency/:
 
 ### 4.4 `wg agency remote add|remove|list|show`
 
-Named references to agency stores, stored in `.workgraph/federation.yaml`.
+Named references to agency stores, stored in `.wg/federation.yaml`.
 
 ```yaml
-# .workgraph/federation.yaml
+# .wg/federation.yaml
 remotes:
   upstream:
     path: /home/erik/shared-agency
     description: "Team shared agency store"
     last_sync: "2026-02-19T22:00:00Z"
   alpha:
-    path: /home/erik/projects/alpha/.workgraph/agency
+    path: /home/erik/projects/alpha/.wg/agency
     description: "Alpha project agencies"
     last_sync: null
 ```
@@ -187,7 +187,7 @@ The merge operation is idempotent and commutative — the order of sources doesn
 
 ### 4.6 Global Agency Store
 
-`~/.workgraph/agency/` serves as a user-level store. It follows the same layout as project stores.
+`~/.wg/agency/` serves as a user-level store. It follows the same layout as project stores.
 
 **Inheritance model:**
 - When the agency system loads entities, it checks local project first, then global
@@ -286,7 +286,7 @@ When using `--entity` or `--type` filters:
 
 ## 8. Federation Config File
 
-`.workgraph/federation.yaml` stores remote definitions and sync metadata:
+`.wg/federation.yaml` stores remote definitions and sync metadata:
 
 ```yaml
 remotes:
@@ -297,7 +297,7 @@ remotes:
     auto_pull: <bool>        # Future: auto-pull on wg service start
 ```
 
-This file is separate from the main config to keep federation concerns isolated. It lives alongside `.workgraph/config.toml`.
+This file is separate from the main config to keep federation concerns isolated. It lives alongside `.wg/config.toml`.
 
 ## 9. Implementation Plan
 
@@ -318,7 +318,7 @@ This file is separate from the main config to keep federation concerns isolated.
 - `--dry-run`, `--no-performance`, `--force` flags
 
 ### Phase 4: Remotes (impl-agency-remote)
-- Parse/write `.workgraph/federation.yaml`
+- Parse/write `.wg/federation.yaml`
 - `wg agency remote add/remove/list/show` commands
 - Integration with pull/push (resolve remote names to paths)
 
@@ -328,7 +328,7 @@ This file is separate from the main config to keep federation concerns isolated.
 - Idempotency verification
 
 ### Phase 6: Global Store
-- `~/.workgraph/agency/` as secondary store
+- `~/.wg/agency/` as secondary store
 - `--global` flag on pull/push
 - Inheritance: load global, then overlay local
 - `--include-global` flag on list commands
@@ -385,4 +385,4 @@ All bugs identified in the initial review have been fixed:
 
 The core federation system is **production-ready**. All previously reported bugs are fixed. The transfer engine, metadata merging (performance union with dedup, lineage preference), referential integrity enforcement, remote management, and evaluation transfer all work correctly with comprehensive test coverage.
 
-**Remaining work** is limited to Layer 5 (Global Agency Store): the `~/.workgraph/agency/` inheritance model where local entities shadow global ones. This is an additive feature that doesn't affect existing functionality.
+**Remaining work** is limited to Layer 5 (Global Agency Store): the `~/.wg/agency/` inheritance model where local entities shadow global ones. This is an additive feature that doesn't affect existing functionality.

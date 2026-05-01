@@ -18,8 +18,8 @@
 | Aspect | Details |
 |--------|---------|
 | Data model | `ChatMessage { role: ChatRole, text: String, full_text: Option<String>, attachments: Vec<String> }` |
-| Storage (IPC) | `src/chat.rs` — JSONL files in `.workgraph/chat/` (`inbox.jsonl` for user→coordinator, `outbox.jsonl` for coordinator→user) |
-| Storage (display) | In-memory `Vec<ChatMessage>`, persisted to `.workgraph/chat-history.json` |
+| Storage (IPC) | `src/chat.rs` — JSONL files in `.wg/chat/` (`inbox.jsonl` for user→coordinator, `outbox.jsonl` for coordinator→user) |
+| Storage (display) | In-memory `Vec<ChatMessage>`, persisted to `.wg/chat-history.json` |
 | Polling | `poll_chat_messages()` reads `outbox.jsonl` since cursor; called on refresh tick |
 | Sending | `send_chat_message()` → `wg chat <text>` background command |
 | Scroll model | Lines-from-bottom (0 = fully scrolled down) |
@@ -36,7 +36,7 @@
 | Aspect | Details |
 |--------|---------|
 | Data model | `MessageEntry { sender, display_label, body, timestamp, is_urgent, direction: MessageDirection, delivery_status }` |
-| Storage | `src/messages.rs` — JSONL files in `.workgraph/messages/{task-id}.jsonl` with read cursors in `.cursors/` |
+| Storage | `src/messages.rs` — JSONL files in `.wg/messages/{task-id}.jsonl` with read cursors in `.cursors/` |
 | Loading | `load_messages_panel()` calls `workgraph::messages::list_messages()` — full reload per task |
 | Sending | `wg msg send <task-id> <text> --from tui` background command |
 | Scroll model | Lines-from-top (0 = fully scrolled to top) |

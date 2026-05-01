@@ -39,12 +39,12 @@ The overview section is **accurate and current** with respect to CLI commands, w
 **CLI verification:** All four scopes confirmed via `wg add --help --context-scope`
 
 ### ✅ File Structure
-**Manual states:** Graph in `.workgraph/graph.jsonl`, agency entities in YAML, config in TOML  
+**Manual states:** Graph in `.wg/graph.jsonl`, agency entities in YAML, config in TOML  
 **Directory verification:** 
-- `.workgraph/graph.jsonl` exists (3.3MB)
-- `.workgraph/agency/` directory exists with proper structure
-- `.workgraph/config.toml` exists
-- Agency primitives in `.workgraph/agency/primitives/` (components/, outcomes/, tradeoffs/)
+- `.wg/graph.jsonl` exists (3.3MB)
+- `.wg/agency/` directory exists with proper structure
+- `.wg/config.toml` exists
+- Agency primitives in `.wg/agency/primitives/` (components/, outcomes/, tradeoffs/)
 
 ## Workflow and Concept Accuracy
 
@@ -66,7 +66,7 @@ The overview section is **accurate and current** with respect to CLI commands, w
 
 ### ✅ Service Architecture  
 - **Manual concept:** Optional daemon, coordinator scheduling, multi-session support
-- **Implementation match:** `.workgraph/service/` directory exists for daemon state
+- **Implementation match:** `.wg/service/` directory exists for daemon state
 
 ## Workflows Tested
 

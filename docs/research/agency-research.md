@@ -130,7 +130,7 @@ The `primitives/` directory contains 11 CSV files — `starter.csv` (current) pl
 
 ### Does Agency already use WorkGraph?
 
-**No .workgraph/ directory exists** in the Agency repo. Agency does not use WorkGraph internally for its own task management.
+**No .wg/ directory exists** in the Agency repo. Agency does not use WorkGraph internally for its own task management.
 
 However, **Agency explicitly supports WorkGraph as an integration target**:
 
@@ -146,8 +146,8 @@ The current integration is **shell-script-based HTTP**, operating outside of Wor
 1. `agency-assign-workgraph` script:
    - Lists all open WorkGraph tasks (`wg list --status open --json`)
    - Sends them as a batch to Agency's `POST /projects/{project_id}/assign`
-   - Stores rendered prompts in `.workgraph/agency-prompts/{task_id}.prompt`
-   - Stores `agency_task_id` mappings in `.workgraph/agency-prompts/{task_id}.task_id`
+   - Stores rendered prompts in `.wg/agency-prompts/{task_id}.prompt`
+   - Stores `agency_task_id` mappings in `.wg/agency-prompts/{task_id}.task_id`
    - Sets the Agency executor on each task (`wg exec <task> --set "agency-wg-executor.sh"`)
 
 2. `agency-wg-executor.sh` script:
@@ -162,7 +162,7 @@ The current integration is **shell-script-based HTTP**, operating outside of Wor
 | Concept | Agency | WorkGraph |
 |---------|--------|-----------|
 | **Agent composition** | role components + desired outcomes + trade-off configs, composed via embedding similarity | role + tradeoff pair, bound to tasks via `wg assign` |
-| **Primitives** | Stored in SQLite with embeddings, quality scores, content hashes | Stored in `.workgraph/agency/` as YAML/JSON files |
+| **Primitives** | Stored in SQLite with embeddings, quality scores, content hashes | Stored in `.wg/agency/` as YAML/JSON files |
 | **Assignment** | Semantic similarity matching (embedding vector search) | LLM-based or forced assignment |
 | **Evaluation** | Structured: evaluator prompt → evaluation text → score submission via JWT-protected API | Four-dimensional scoring + FLIP (fidelity via latent intent probing) |
 | **Evolution** | Random perturbation mutation + LLM variation + selection of best variant | Uses performance data to create/retire roles and tradeoffs |
@@ -192,7 +192,7 @@ The current integration is **shell-script-based HTTP**, operating outside of Wor
 
 **A. Primitive synchronization**
 - Agency's `primitives/starter.csv` contains 272 primitives with quality scores, domain tags, and content hashes
-- WorkGraph's agency system stores primitives locally in `.workgraph/agency/`
+- WorkGraph's agency system stores primitives locally in `.wg/agency/`
 - Content hashes are used by both systems — potential for deduplication/sync
 
 **B. Assignment enrichment**
@@ -324,7 +324,7 @@ agentbureau/agency/
 
 2. **WorkGraph is already a first-class integration target.** Dedicated docs, translator scripts, and token type exist. The `translators/workgraph/` directory contains working shell scripts.
 
-3. **Agency does NOT use WorkGraph internally.** No `.workgraph/` directory. Agency manages its own tasks through its SQLite database.
+3. **Agency does NOT use WorkGraph internally.** No `.wg/` directory. Agency manages its own tasks through its SQLite database.
 
 4. **The two repos share deeply overlapping concepts** (roles, tradeoffs, desired outcomes, agents, evaluation, evolution) but implement them independently in different languages with different data models.
 

@@ -208,7 +208,7 @@ content-type: application/json
 
 **API key resolution** (priority order):
 1. `ANTHROPIC_API_KEY` environment variable
-2. `.workgraph/config.toml` field: `[native_executor] api_key = "..."`
+2. `.wg/config.toml` field: `[native_executor] api_key = "..."`
 3. `~/.config/anthropic/api_key` file (single line)
 
 **Model resolution**: Same hierarchy as existing executors — `task.model > executor.model > coordinator.model > "claude-sonnet-4-20250514"`
@@ -494,10 +494,10 @@ Currently, many `wg` commands in `src/commands/` are structured as CLI entry poi
 
 ### Bundle Configuration Format
 
-Bundles define tool allowlists and context for the native executor. Stored as TOML in `.workgraph/bundles/`:
+Bundles define tool allowlists and context for the native executor. Stored as TOML in `.wg/bundles/`:
 
 ```toml
-# .workgraph/bundles/research.toml
+# .wg/bundles/research.toml
 [bundle]
 name = "research"
 description = "Read-only research and analysis"
@@ -518,14 +518,14 @@ You are a research agent. Your job is to investigate, analyze, and report findin
 You cannot modify files or create tasks — only read and observe.
 """
 
-# .workgraph/bundles/implementer.toml
+# .wg/bundles/implementer.toml
 [bundle]
 name = "implementer"
 description = "Full implementation agent with all tools"
 tools = ["*"]    # wildcard: all registered tools
 context_scope = "full"
 
-# .workgraph/bundles/bare.toml
+# .wg/bundles/bare.toml
 [bundle]
 name = "bare"
 description = "Minimal agent with wg tools only"
@@ -542,7 +542,7 @@ tools = [
 ]
 context_scope = "task"
 
-# .workgraph/bundles/shell.toml
+# .wg/bundles/shell.toml
 [bundle]
 name = "shell"
 description = "Agent with bash access and wg tools"
@@ -616,7 +616,7 @@ This extends the existing `exec_mode` system without breaking it. The `exec_mode
 
 ## Configuration
 
-### Executor Registration (`.workgraph/executors/native.toml`)
+### Executor Registration (`.wg/executors/native.toml`)
 
 ```toml
 [executor]
@@ -730,7 +730,7 @@ New required dependencies: `regex` (for grep tool), `async-trait` (for Tool trai
 
 ### Phase 4d: Bundle System + Integration
 - `src/executor/native/bundle.rs` — Bundle loading, tool filtering
-- Default bundle configs in `.workgraph/bundles/`
+- Default bundle configs in `.wg/bundles/`
 - Native executor registration in `ExecutorRegistry`
 - Spawn path in `spawn_agent_inner`
 - End-to-end test: coordinator dispatches a task to native executor, agent completes it

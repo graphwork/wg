@@ -232,7 +232,7 @@ pub fn check_parallel_file_overlap(graph: &WorkGraph) -> Vec<FileOverlap> {
 
 ### High Impact, High Effort
 
-7. **Full `wg lint` command** — A comprehensive graph linter that checks all structural validation rules, with configurable severity levels and `.workgraph/lint.toml` configuration.
+7. **Full `wg lint` command** — A comprehensive graph linter that checks all structural validation rules, with configurable severity levels and `.wg/lint.toml` configuration.
 
 8. **Runtime conflict detection** — Monitor artifact declarations in real-time and warn/block when parallel tasks claim the same files.
 

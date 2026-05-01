@@ -588,7 +588,7 @@ No changes. The registry records agents by `agent_id` with `task_id` pointing to
 
 ### Agent archive (`wg log agent`)
 
-No changes. The existing agent archive system (`src/commands/log.rs:128-168`) already stores per-attempt conversation logs in `.workgraph/log/agents/{task-id}/{timestamp}/`. The iterate system complements this by surfacing that history in a structured format.
+No changes. The existing agent archive system (`src/commands/log.rs:128-168`) already stores per-attempt conversation logs in `.wg/log/agents/{task-id}/{timestamp}/`. The iterate system complements this by surfacing that history in a structured format.
 
 ### Provenance
 

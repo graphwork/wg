@@ -194,7 +194,7 @@ Verify: Mark a task done without validation logs — confirm warning appears. Ma
 
 | Metric | Current Baseline | Target | How to Measure |
 |--------|-----------------|--------|----------------|
-| % of task logs containing "validat" | ~15% (estimated from research) | >60% | `grep -ri "validat" .workgraph/tasks/*/log* \| wc -l` vs total tasks |
+| % of task logs containing "validat" | ~15% (estimated from research) | >60% | `grep -ri "validat" .wg/tasks/*/log* \| wc -l` vs total tasks |
 | % of code tasks with build/test in logs | ~60% | >90% | Search task logs for "cargo test", "cargo build", "test pass" |
 | Evaluation dimension: validation_discipline | N/A (doesn't exist yet) | Mean >0.7 | Parse evaluation JSON for new dimension |
 
@@ -202,7 +202,7 @@ Verify: Mark a task done without validation logs — confirm warning appears. Ma
 
 | Metric | Current Baseline | Target | How to Measure |
 |--------|-----------------|--------|----------------|
-| Evaluation score spread (multi-eval tasks) | 9 tasks with spread >0.5 | <3 tasks with spread >0.5 | Analyze `.workgraph/agency/evaluations/` |
+| Evaluation score spread (multi-eval tasks) | 9 tasks with spread >0.5 | <3 tasks with spread >0.5 | Analyze `.wg/agency/evaluations/` |
 | False positive rate (high score on bad work) | ~4 confirmed cases | 0 | Manual audit of high-scoring evaluations |
 | Mean evaluation score | 0.857 | 0.80-0.85 (slight decrease = more honest) | Statistical analysis of evaluation JSONs |
 | Downstream task failures from bad upstream | Unknown (not tracked) | Tracked and decreasing | Add tracking in coordinator |

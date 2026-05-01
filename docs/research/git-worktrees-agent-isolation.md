@@ -173,15 +173,15 @@ WG_AGENT_ID=agent-XXXX                   # agent identifier
 WG_BRANCH=wg/agent-XXXX/task-id          # agent's branch
 
 # Optional: project-type-specific overrides
-# These could be set by a .workgraph/worktree-setup.sh hook
+# These could be set by a .wg/worktree-setup.sh hook
 CARGO_TARGET_DIR="$WG_WORKTREE_PATH/.wg-target"
 ```
 
-Projects can provide a `.workgraph/worktree-setup.sh` script for custom build isolation:
+Projects can provide a `.wg/worktree-setup.sh` script for custom build isolation:
 
 ```bash
 #!/bin/bash
-# .workgraph/worktree-setup.sh — run after worktree creation
+# .wg/worktree-setup.sh — run after worktree creation
 # $1 = worktree path, $2 = project root
 
 WORKTREE="$1"
@@ -236,7 +236,7 @@ coordinator claims task
 #!/bin/bash
 TASK_ID='implement-foo'
 AGENT_ID='agent-7500'
-OUTPUT_FILE='/path/to/.workgraph/agents/agent-7500/output.log'
+OUTPUT_FILE='/path/to/.wg/agents/agent-7500/output.log'
 PROJECT_ROOT='/home/user/myproject'
 
 # --- Worktree Setup ---
@@ -255,8 +255,8 @@ fi
 ln -s "$PROJECT_ROOT/.workgraph" "$WG_WORKTREE_PATH/.workgraph"
 
 # Run project-specific build setup if it exists
-if [ -x "$PROJECT_ROOT/.workgraph/worktree-setup.sh" ]; then
-    source "$PROJECT_ROOT/.workgraph/worktree-setup.sh" "$WG_WORKTREE_PATH" "$PROJECT_ROOT"
+if [ -x "$PROJECT_ROOT/.wg/worktree-setup.sh" ]; then
+    source "$PROJECT_ROOT/.wg/worktree-setup.sh" "$WG_WORKTREE_PATH" "$PROJECT_ROOT"
 fi
 
 # Export env vars for the agent
@@ -476,10 +476,10 @@ The best merge strategy is avoiding conflicts in the first place:
 
 **Should it be shared or per-worktree?** Shared, via symlink.
 
-- `.workgraph/` contains task state, agent registry, config — all agents must see the same data
-- Symlink from worktree to main repo's `.workgraph/` is the simplest solution
+- `.wg/` contains task state, agent registry, config — all agents must see the same data
+- Symlink from worktree to main repo's `.wg/` is the simplest solution
 - Fallback: `WG_DIR` env var pointing to absolute path (requires minor CLI change)
-- Since `.workgraph/` is in `.gitignore`, it doesn't appear in the worktree's git status
+- Since `.wg/` is in `.gitignore`, it doesn't appear in the worktree's git status
 
 ### Submodules
 

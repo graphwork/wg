@@ -24,7 +24,7 @@ This registry is used by `effective_registry()` → `registry_lookup()` for comp
 
 ### 1.2 Models YAML Registry (`models.yaml` / `ModelRegistry`)
 
-**Location:** `src/models.rs:46–72` (`ModelEntry` struct), loaded from `.workgraph/models.yaml`
+**Location:** `src/models.rs:46–72` (`ModelEntry` struct), loaded from `.wg/models.yaml`
 
 The `ModelRegistry` (separate from `Config::model_registry`) has `ModelEntry.context_window: u64` with hardcoded defaults for 13 models (`src/models.rs:123–273`):
 - Claude opus/sonnet: 1,000,000

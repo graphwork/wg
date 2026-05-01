@@ -66,7 +66,7 @@ Three normative bindings: JSON-RPC 2.0, gRPC, and HTTP/REST — all functionally
 
 | Aspect | A2A Agent Card | Workgraph Agency |
 |--------|---------------|-----------------|
-| **Discovery** | `.well-known/agent.json` on HTTP | `.workgraph/agency/{roles,tradeoffs,agents}/*.yaml` |
+| **Discovery** | `.well-known/agent.json` on HTTP | `.wg/agency/{roles,tradeoffs,agents}/*.yaml` |
 | **Identity** | Name, description, URL, provider | Role + Tradeoff = Agent (content-hash ID) |
 | **Capabilities** | Skills list, supported content types | Capabilities list, skills, trust level |
 | **Security** | OAuth/OIDC/mTLS/API keys | Executor-level (claude CLI, matrix, etc.) |
@@ -182,7 +182,7 @@ MCP (Model Context Protocol) and A2A are **complementary, not competing:**
 
 **Implementation sketch for `a2a` executor:**
 
-1. **Agent Card registry**: `wg config --a2a-agents` or `.workgraph/a2a-agents.yaml` mapping agent names to card URLs
+1. **Agent Card registry**: `wg config --a2a-agents` or `.wg/a2a-agents.yaml` mapping agent names to card URLs
 2. **Discovery**: Fetch `.well-known/agent.json`, cache capabilities
 3. **Task dispatch**: `sendMessage` with task description as text Part, optional file Parts for inputs
 4. **Status tracking**: `subscribeToTask` (SSE) or polling `getTask` — map A2A states to workgraph states

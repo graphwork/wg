@@ -222,7 +222,7 @@ This requires no new infrastructure — just agent cooperation. But it's unrelia
 ### Config
 
 ```toml
-# In .workgraph/config.toml
+# In .wg/config.toml
 [coordinator]
 reserved_priority_slots = 1  # default: 1 when max_agents >= 4, 0 otherwise
 ```

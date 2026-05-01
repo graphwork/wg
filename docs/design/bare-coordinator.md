@@ -128,12 +128,12 @@ Compaction is **journal-based** in the bare coordinator model. Rather than an ad
 
 1. A **first-class task** in the graph
 2. Triggered by **journal events** (context exhaustion signals)
-3. Produces a **structured artifact** (`.workgraph/compactor/context.md`)
+3. Produces a **structured artifact** (`.wg/compactor/context.md`)
 4. Evaluated by **automated checks**
 
 ### 2.1 Compaction Journal
 
-The compactor maintains a **journal** of its operations in `.workgraph/compactor/state.json`:
+The compactor maintains a **journal** of its operations in `.wg/compactor/state.json`:
 
 ```rust
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
@@ -183,7 +183,7 @@ The coordinator agent's prompt includes:
 - Compactor state (journal)
 
 **Compaction task output:**
-- `.workgraph/compactor/context.md` — 3-layer summary:
+- `.wg/compactor/context.md` — 3-layer summary:
   1. **Rolling Narrative** (~2000 tokens): What happened this era
   2. **Persistent Facts** (~500 tokens): Key decisions, user preferences, project state
   3. **Evaluation Digest** (~500 tokens): Evaluation scores and verdicts
@@ -205,7 +205,7 @@ description: |
   - Previous context (if any)
   
   ## Output
-  - .workgraph/compactor/context.md (Rolling Narrative + Persistent Facts + Evaluation Digest)
+  - .wg/compactor/context.md (Rolling Narrative + Persistent Facts + Evaluation Digest)
 ```
 
 ### 2.4 Compaction as Graph Task (Not Inline)
@@ -296,7 +296,7 @@ When a new coordinator era spawns, it follows the resume protocol:
 ```
 Era N+1 Spawn
 │
-├─ Daemon loads context.md from .workgraph/compactor/
+├─ Daemon loads context.md from .wg/compactor/
 │
 ├─ Daemon checks for pending inbox messages since Era N ended
 │
@@ -352,7 +352,7 @@ Continue your work on this project.
 For the bare coordinator, context injection follows this path:
 
 ```
-.compact-N (Done) → .workgraph/compactor/context.md
+.compact-N (Done) → .wg/compactor/context.md
                                     │
                                     ▼ (daemon reads on era N+1 spawn)
                             Coordinator Era N+1 prompt
@@ -386,7 +386,7 @@ The bare coordinator deprecates the **special-entity coordinator** approach — 
 Move the hardcoded system prompt from `build_system_prompt()` into the agency system:
 
 ```yaml
-# .workgraph/agency/roles/coordinator.yaml
+# .wg/agency/roles/coordinator.yaml
 name: coordinator
 description: "Persistent coordinator agent that manages the task graph"
 system_prompt: |
@@ -396,7 +396,7 @@ default_bundle: coordinator
 ```
 
 ```toml
-# .workgraph/bundles/coordinator.toml
+# .wg/bundles/coordinator.toml
 [bundle]
 name = "coordinator"
 description = "Coordinator agent — inspect + create, no implement"
@@ -471,7 +471,7 @@ These invariants MUST hold for the bare coordinator design to be correct:
 
 **"Compaction always produces a valid context.md before the next era starts."**
 
-- `context.md` MUST exist in `.workgraph/compactor/` before Era N+1 spawns
+- `context.md` MUST exist in `.wg/compactor/` before Era N+1 spawns
 - If compaction fails, the daemon MUST fall back to crash-recovery context (not proceed without any context)
 - `context.md` MUST be non-empty and parseable
 

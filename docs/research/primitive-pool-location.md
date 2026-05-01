@@ -43,7 +43,7 @@ The code path is in `src/commands/agency_init.rs`, function `run()`. Seeding hap
 
 **Source:** `src/agency/starters.rs`
 
-Writes YAML files to `.workgraph/agency/` from Rust-embedded definitions:
+Writes YAML files to `.wg/agency/` from Rust-embedded definitions:
 
 | Category | Count | Examples |
 |----------|-------|---------|
@@ -63,9 +63,9 @@ Writes YAML files to `.workgraph/agency/` from Rust-embedded definitions:
 
 Conditions:
 1. `agency/starter.csv` exists at `<project_root>/agency/starter.csv`
-2. No import manifest exists yet at `.workgraph/agency/import-manifest.yaml`
+2. No import manifest exists yet at `.wg/agency/import-manifest.yaml`
 
-When both conditions are met, calls `agency_import::run()` which parses the CSV and writes YAML primitives to `.workgraph/agency/primitives/`. Content-hash deduplication ensures no duplicates with the hardcoded starters.
+When both conditions are met, calls `agency_import::run()` which parses the CSV and writes YAML primitives to `.wg/agency/primitives/`. Content-hash deduplication ensures no duplicates with the hardcoded starters.
 
 After import, writes `import-manifest.yaml` with SHA-256 content hash to prevent re-import on subsequent `wg agency init` runs.
 
@@ -108,12 +108,12 @@ The seeding pipeline is:
 |------|--------|---------|
 | `agency/starter.csv` | CSV (9 columns) | Full upstream pool: 637 primitives |
 | `src/agency/starters.rs` | Rust source | Hardcoded starters: ~62 entities (primitives + compositions) |
-| `.workgraph/agency/primitives/components/*.yaml` | YAML | Imported component files (runtime) |
-| `.workgraph/agency/primitives/outcomes/*.yaml` | YAML | Imported outcome files (runtime) |
-| `.workgraph/agency/primitives/tradeoffs/*.yaml` | YAML | Imported tradeoff files (runtime) |
-| `.workgraph/agency/cache/roles/*.yaml` | YAML | Composed role cache entries (runtime) |
-| `.workgraph/agency/cache/agents/*.yaml` | YAML | Composed agent cache entries (runtime) |
-| `.workgraph/agency/import-manifest.yaml` | YAML | Import provenance tracking (runtime) |
+| `.wg/agency/primitives/components/*.yaml` | YAML | Imported component files (runtime) |
+| `.wg/agency/primitives/outcomes/*.yaml` | YAML | Imported outcome files (runtime) |
+| `.wg/agency/primitives/tradeoffs/*.yaml` | YAML | Imported tradeoff files (runtime) |
+| `.wg/agency/cache/roles/*.yaml` | YAML | Composed role cache entries (runtime) |
+| `.wg/agency/cache/agents/*.yaml` | YAML | Composed agent cache entries (runtime) |
+| `.wg/agency/import-manifest.yaml` | YAML | Import provenance tracking (runtime) |
 
 ### Code paths for seeding
 

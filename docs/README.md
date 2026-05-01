@@ -159,7 +159,7 @@ The interactive wizard walks you through:
 - **Agency**: Whether to auto-assign agents and auto-evaluate completed work
 - **Max agents**: Number of parallel agents the coordinator can spawn
 
-This creates `~/.workgraph/config.toml`:
+This creates `~/.wg/config.toml`:
 
 ```toml
 [coordinator]
@@ -176,7 +176,7 @@ auto_assign = true
 auto_evaluate = true
 ```
 
-Project-local `.workgraph/config.toml` overrides global settings. Use `wg config --global` or `wg config --local` to adjust individual values, and `wg config --list` to see the merged configuration with source indicators.
+Project-local `.wg/config.toml` overrides global settings. Use `wg config --global` or `wg config --local` to adjust individual values, and `wg config --list` to see the merged configuration with source indicators.
 
 ### Initialize a New Project
 
@@ -184,7 +184,7 @@ Project-local `.workgraph/config.toml` overrides global settings. Use `wg config
 wg init
 ```
 
-Creates `.workgraph/graph.jsonl` in the current directory.
+Creates `.wg/graph.jsonl` in the current directory.
 
 ### Add Tasks
 
@@ -247,7 +247,7 @@ wg forecast
 
 ## Storage Format
 
-All data is stored in `.workgraph/graph.jsonl` - a newline-delimited JSON file with one node per line. This format is:
+All data is stored in `.wg/graph.jsonl` - a newline-delimited JSON file with one node per line. This format is:
 
 - Human-readable and editable
 - Version control friendly (line-based diffs)
@@ -260,7 +260,7 @@ Example content:
 {"kind":"task","id":"impl-api","title":"Implement API","status":"open","after":["design-api"]}
 ```
 
-Configuration is stored in `.workgraph/config.toml`:
+Configuration is stored in `.wg/config.toml`:
 
 ```toml
 [agent]

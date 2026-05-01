@@ -14,12 +14,12 @@ Chat data is stored in two independent layers:
 
 | Layer | Location | Format | Purpose |
 |-------|----------|--------|---------|
-| **IPC layer** | `.workgraph/chat/{coordinator_id}/inbox.jsonl` | JSONL (ChatMessage) | User → coordinator messages |
-| **IPC layer** | `.workgraph/chat/{coordinator_id}/outbox.jsonl` | JSONL (ChatMessage) | Coordinator → user responses |
-| **IPC layer** | `.workgraph/chat/{coordinator_id}/chat.log` | Plaintext | Grep-friendly full log |
-| **TUI layer** | `.workgraph/chat-history.json` | JSON array | Display persistence across TUI restarts |
+| **IPC layer** | `.wg/chat/{coordinator_id}/inbox.jsonl` | JSONL (ChatMessage) | User → coordinator messages |
+| **IPC layer** | `.wg/chat/{coordinator_id}/outbox.jsonl` | JSONL (ChatMessage) | Coordinator → user responses |
+| **IPC layer** | `.wg/chat/{coordinator_id}/chat.log` | Plaintext | Grep-friendly full log |
+| **TUI layer** | `.wg/chat-history.json` | JSON array | Display persistence across TUI restarts |
 
-Each coordinator gets its own subdirectory under `.workgraph/chat/`. The IPC layer is the **source of truth** — inbox/outbox JSONL files with `flock`-based concurrency, cursor files for read tracking, and coordinator cursors for consumption tracking.
+Each coordinator gets its own subdirectory under `.wg/chat/`. The IPC layer is the **source of truth** — inbox/outbox JSONL files with `flock`-based concurrency, cursor files for read tracking, and coordinator cursors for consumption tracking.
 
 ### 1.2 Key Data Structures
 
@@ -60,7 +60,7 @@ struct ChatMessage {
 
 ### 1.4 Compaction System
 
-The compactor produces `.workgraph/compactor/context.md` via LLM summarization of graph state. It's injected into coordinator context on each user message via `build_coordinator_context()`. This is a **project-level** summary, not a **conversation-level** summary.
+The compactor produces `.wg/compactor/context.md` via LLM summarization of graph state. It's injected into coordinator context on each user message via `build_coordinator_context()`. This is a **project-level** summary, not a **conversation-level** summary.
 
 ### 1.5 Crash Recovery
 
@@ -245,7 +245,7 @@ This is a Phase 3 feature (see implementation plan below).
 
 Parallel to the existing `.compact-0` cycle for project context, add a per-coordinator conversation compactor:
 
-**Storage:** `.workgraph/chat/{coordinator_id}/context-summary.md`
+**Storage:** `.wg/chat/{coordinator_id}/context-summary.md`
 
 **Trigger:** When `inbox.jsonl` + `outbox.jsonl` exceed a threshold (default: 100 messages or 50K tokens), the compactor runs and produces a rolling summary.
 

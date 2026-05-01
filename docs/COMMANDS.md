@@ -1141,7 +1141,7 @@ Supports two modes:
 | `--recursive` | Alias for `--subgraph` |
 | `--generalize` | Use LLM to generalize descriptions (calls executor) |
 | `--generative` | Multi-trace mode: compare multiple traces to produce a version 2 (generative) function |
-| `--output <PATH>` | Write to specific path instead of `.workgraph/functions/` |
+| `--output <PATH>` | Write to specific path instead of `.wg/functions/` |
 | `--force` | Overwrite existing function with same name |
 | `--include-evaluations` | Include coordinator-generated evaluation and assignment tasks (`evaluate-*`, `assign-*`) that are normally filtered out |
 
@@ -1212,7 +1212,7 @@ Bootstrap the `extract-function` meta-function — a built-in version 2 (generat
 wg func bootstrap [OPTIONS]
 ```
 
-Creates `.workgraph/functions/extract-function.yaml` with a planning node, structural constraints, and a static fallback (analyze → draft → validate → export).
+Creates `.wg/functions/extract-function.yaml` with a planning node, structural constraints, and a static fallback (analyze → draft → validate → export).
 
 **Options:**
 | Option | Description |
@@ -1577,7 +1577,7 @@ wg agency pull <SOURCE> [OPTIONS]
 | `--no-performance` | Skip merging performance data (copy definitions only) |
 | `--no-evaluations` | Skip copying evaluation JSON files |
 | `--force` | Overwrite local metadata instead of merging |
-| `--global` | Pull into `~/.workgraph/agency/` instead of local project |
+| `--global` | Pull into `~/.wg/agency/` instead of local project |
 
 **Example:**
 ```bash
@@ -1610,7 +1610,7 @@ wg agency push <TARGET> [OPTIONS]
 | `--no-performance` | Skip merging performance data (copy definitions only) |
 | `--no-evaluations` | Skip copying evaluation JSON files |
 | `--force` | Overwrite target metadata instead of merging |
-| `--global` | Push from `~/.workgraph/agency/` instead of local project |
+| `--global` | Push from `~/.wg/agency/` instead of local project |
 
 **Example:**
 ```bash
@@ -2047,7 +2047,7 @@ wg evolve apply <SYNTHESIS_FILE> [OPTIONS]
 
 **Example:**
 ```bash
-wg evolve apply .workgraph/agency/synthesis-result.json
+wg evolve apply .wg/agency/synthesis-result.json
 # Apply the synthesized evolution operations
 
 wg evolve apply synthesis-result.json -o results.json
@@ -2311,7 +2311,7 @@ wg dead-agents --purge [--delete-dirs]           # purge dead/done/failed agents
 | `--remove` | Remove dead agents from the registry entirely |
 | `--processes` | Check if agent processes are still running at the OS level |
 | `--purge` | Purge dead/done/failed agents from registry (and optionally delete dirs) |
-| `--delete-dirs` | Also delete agent work directories (`.workgraph/agents/<id>/`) when purging |
+| `--delete-dirs` | Also delete agent work directories (`.wg/agents/<id>/`) when purging |
 | `--threshold <MINUTES>` | Override heartbeat timeout threshold in minutes |
 
 **Examples:**
@@ -2392,7 +2392,7 @@ wg peer add <NAME> <PATH> [-d <DESCRIPTION>]
 
 **Arguments:**
 - `NAME` — Peer name (used as shorthand reference)
-- `PATH` — Path to the peer project (containing `.workgraph/`)
+- `PATH` — Path to the peer project (containing `.wg/`)
 
 **Options:**
 | Option | Description |
@@ -2465,7 +2465,7 @@ wg service start [OPTIONS]
 | Option | Description |
 |--------|-------------|
 | `--port <PORT>` | Port for HTTP API (optional) |
-| `--socket <PATH>` | Unix socket path (default: `.workgraph/service/daemon.sock`) |
+| `--socket <PATH>` | Unix socket path (default: `.wg/service/daemon.sock`) |
 | `--max-agents <N>` | Max parallel agents (overrides config) |
 | `--executor <NAME>` | Executor for spawned agents (overrides config) |
 | `--interval <SECS>` | Background poll interval in seconds (overrides config) |
@@ -2991,7 +2991,7 @@ wg chat <SUBCOMMAND>
 | `--history` | Show chat history |
 | `--clear` | Clear chat history |
 | `--timeout <TIMEOUT>` | Timeout in seconds waiting for response (default: 120) |
-| `--attachment <ATTACHMENT>` | Attach a file (copied to `.workgraph/attachments/`) |
+| `--attachment <ATTACHMENT>` | Attach a file (copied to `.wg/attachments/`) |
 | `--coordinator <ID>` | Target a specific chat (default: 0) — legacy flag; the canonical form is `wg chat send <id>` |
 | `--history-depth <N>` | Show only the last N messages (with `--history`) or load only the last N messages in interactive mode |
 | `--no-history` | Start with no history loaded. History is still persisted — this only affects the initial display |
@@ -3077,7 +3077,7 @@ wg model add <ALIAS> --provider <PROVIDER> [OPTIONS]
 | `--context-window <N>` | Context window in tokens |
 | `--cost-in <N>` | Cost per million input tokens (USD) |
 | `--cost-out <N>` | Cost per million output tokens (USD) |
-| `--global` | Write to global config (`~/.workgraph/config.toml`) |
+| `--global` | Write to global config (`~/.wg/config.toml`) |
 
 #### `wg model remove`
 
@@ -3180,8 +3180,8 @@ wg key set <PROVIDER> [OPTIONS]
 |--------|-------------|
 | `--env <VAR>` | Reference an environment variable by name |
 | `--file <PATH>` | Path to a file containing the key |
-| `--value <VALUE>` | Store key value directly (written to `~/.workgraph/keys/<provider>.key`, NOT to config) |
-| `--global` | Apply to global config (`~/.workgraph/config.toml`) |
+| `--value <VALUE>` | Store key value directly (written to `~/.wg/keys/<provider>.key`, NOT to config) |
+| `--global` | Apply to global config (`~/.wg/config.toml`) |
 
 #### `wg key check`
 
@@ -3456,12 +3456,12 @@ Initialize a new workgraph in the current directory.
 wg init
 ```
 
-Creates `.workgraph/` directory with `graph.jsonl`.
+Creates `.wg/` directory with `graph.jsonl`.
 
 **Example:**
 ```bash
 cd my-project && wg init
-# Creates .workgraph/ directory ready for task management
+# Creates .wg/ directory ready for task management
 ```
 
 ---
@@ -3476,7 +3476,7 @@ wg which
 
 **Example output:**
 ```
-/home/erik/workgraph/.workgraph (resolver step: walk-up)
+/home/erik/workgraph/.wg (resolver step: walk-up)
 ```
 
 ---
@@ -3567,7 +3567,7 @@ Reap dead/done/failed agents from the registry.
 wg reap [--dry-run]
 ```
 
-Garbage-collects agent records from `.workgraph/service/registry.json`. Compare to `wg dead-agents --purge`, which is the more granular surface.
+Garbage-collects agent records from `.wg/service/registry.json`. Compare to `wg dead-agents --purge`, which is the more granular surface.
 
 ### `wg cleanup`
 
@@ -3805,7 +3805,7 @@ With no options (or `--show`), displays current configuration.
 |--------|-------------|
 | `--show` | Display current configuration |
 | `--init` | Create default config file |
-| `--global` | Target global config (`~/.workgraph/config.toml`) instead of local |
+| `--global` | Target global config (`~/.wg/config.toml`) instead of local |
 | `--local` | Explicitly target local config (default for writes) |
 | `--list` | Show merged config with source annotations (global/local/default) |
 | `--executor <NAME>` | Set executor (claude, amplifier, shell, or custom config name) |
@@ -3847,7 +3847,7 @@ With no options (or `--show`), displays current configuration.
 | `--tui-counters <LIST>` | TUI time counters (comma-separated: `uptime`, `cumulative`, `active`, `session`) |
 | `--retry-context-tokens <N>` | Max tokens of previous-attempt context to inject on retry (default: 2000, 0 = disabled) |
 | `--viz-edge-color <STYLE>` | Viz edge color style: `gray` (default), `white`, or `mixed` |
-| `--install-global` | Install project config as global default (`~/.workgraph/config.toml`) |
+| `--install-global` | Install project config as global default (`~/.wg/config.toml`) |
 | `--force` | Skip confirmation when overwriting existing global config |
 | `--homeserver <URL>` | Set Matrix homeserver URL |
 | `--username <USER>` | Set Matrix username |
@@ -4111,7 +4111,7 @@ wg compact
 **Example:**
 ```bash
 wg compact
-# Distills current graph state into .workgraph/context.md for context preservation
+# Distills current graph state into .wg/context.md for context preservation
 ```
 
 ---
@@ -4393,7 +4393,7 @@ All commands support these options:
 
 | Option | Description |
 |--------|-------------|
-| `--dir <PATH>` | Workgraph directory (default: .workgraph) |
+| `--dir <PATH>` | Workgraph directory (default: .wg) |
 | `--json` | Output as JSON for machine consumption |
 | `-h, --help` | Show help (use `--help-all` for full command list) |
 | `--help-all` | Show all commands in help output (including less common ones) |

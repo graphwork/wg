@@ -28,7 +28,7 @@ While research tools generate output files, there's no clear indication of where
 ### File System Location
 Research outputs are stored in:
 ```
-/home/erik/workgraph/.workgraph/nex-sessions/tool-outputs/
+/home/erik/workgraph/.wg/nex-sessions/tool-outputs/
 ```
 
 However, these files contain only the synthesized content without source metadata.
@@ -36,7 +36,7 @@ However, these files contain only the synthesized content without source metadat
 ### Conversation Data Location
 The conversation data is likely stored in:
 ```
-/home/erik/workgraph/.workgraph/nex-sessions/
+/home/erik/workgraph/.wg/nex-sessions/
 ```
 
 But there's no environment variable or documented method to discover this location.

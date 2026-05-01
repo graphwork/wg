@@ -101,7 +101,7 @@ let role_prompt_addendum = if let Some(role_name) = role {
 };
 ```
 
-`load_agency_role()` (nex.rs:599-629) scans `.workgraph/agency/primitives/components/*.yaml` for YAML files whose `name` field matches the role name (case-insensitive substring). It returns the `content` field as a prompt addendum.
+`load_agency_role()` (nex.rs:599-629) scans `.wg/agency/primitives/components/*.yaml` for YAML files whose `name` field matches the role name (case-insensitive substring). It returns the `content` field as a prompt addendum.
 
 ### How It Works
 1. User runs `wg nex --role programmer`
@@ -118,7 +118,7 @@ Yes — `--role` is a viable injection point. You could create a component YAML 
 
 ## 5. Agency Primitives Components
 
-The `.workgraph/agency/primitives/components/` directory contains **hundreds of YAML files** (content-hash-named). These are agency role components with skills, desired outcomes, and trade-off configurations.
+The `.wg/agency/primitives/components/` directory contains **hundreds of YAML files** (content-hash-named). These are agency role components with skills, desired outcomes, and trade-off configurations.
 
 There is **no specific "wg-aware" skill component** in the current store. The existing components are domain-specific (programmer, reviewer, architect, etc.) and assume wg awareness comes from the prompt/executor, not from the agency system.
 
@@ -178,7 +178,7 @@ chmod +x /usr/local/bin/wg
 cd $TRIAL_WORKDIR && wg init
 
 # Write config
-echo "$CONFIG_TOML" > .workgraph/config.toml
+echo "$CONFIG_TOML" > .wg/config.toml
 ```
 This is what the adapter already does for all conditions.
 
@@ -209,7 +209,7 @@ Tiered by model capability:
 ### Minimum Viable Package
 For a containerized agent to effectively use wg:
 1. **wg binary on PATH** — `/usr/local/bin/wg`
-2. **`wg init` run** — creates `.workgraph/` directory
+2. **`wg init` run** — creates `.wg/` directory
 3. **`config.toml` written** — configures coordinator, model, context scope
 4. **Env vars set** — `WG_TASK_ID`, `WG_AGENT_ID` at minimum
 5. **Essential guide in prompt** — the tiered guide from `build_essential_guide()`

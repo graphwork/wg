@@ -9,9 +9,9 @@ The 0:Chat tab displays coordinator conversation history as a continuous stream 
 ### 1. What the 0:Chat tab shows currently
 
 **Data Source:** 
-- Primary: `.workgraph/chat/{coordinator_id}/chat-history-{coordinator_id}.jsonl`
+- Primary: `.wg/chat/{coordinator_id}/chat-history-{coordinator_id}.jsonl`
 - Real-time: `inbox.jsonl` and `outbox.jsonl` merged into unified display
-- Fallback: Legacy `.workgraph/chat-history.json` for backward compatibility
+- Fallback: Legacy `.wg/chat-history.json` for backward compatibility
 
 **Content:**
 - Message roles: User, Coordinator, System, SentMessage
@@ -27,7 +27,7 @@ The 0:Chat tab displays coordinator conversation history as a continuous stream 
 ### 2. How coordinator chat relates to tasks
 
 **Relationship:** One continuous chat stream per coordinator, **not segmented by tasks**
-- Each coordinator has isolated chat channel: `.workgraph/chat/{coordinator_id}/`
+- Each coordinator has isolated chat channel: `.wg/chat/{coordinator_id}/`
 - Chat is conversation-oriented, not task-oriented
 - Multiple coordinators can exist simultaneously with separate chat histories
 - Chat-to-coordinator visual link: cyan highlight on coordinator task lines when Chat tab is active

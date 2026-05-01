@@ -344,7 +344,7 @@ histories and lineage chains.
 
 Federation operates through named _remotes_: references to another project's agency
 store, managed via `wg agency remote add`, `wg agency remote list`, and
-`wg agency remote remove`. Remotes are stored in `.workgraph/federation.yaml`. Once a
+`wg agency remote remove`. Remotes are stored in `.wg/federation.yaml`. Once a
 remote is configured, three operations become available.
 
 *Scanning.* `wg agency scan <remote>` lists the roles, motivations, and agents in a

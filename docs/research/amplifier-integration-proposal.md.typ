@@ -172,7 +172,7 @@ Consider what wg needs to package per executor: - A TOML config
 (command, args, env, prompt template) - Optionally a wrapper script
 
 This is 1-2 files. wg’s current model — drop files in
-`.workgraph/executors/` — is the right level of abstraction. Bundles add
+`.wg/executors/` — is the right level of abstraction. Bundles add
 namespace resolution, version management, include graphs, and a registry
 — machinery that makes sense when you have dozens of composable
 behaviors, but is over-engineering for a few executor configs.
@@ -181,7 +181,7 @@ Where bundles become interesting is if wg wanted to package
 #strong[entire project templates] (executor config + agency roles + task
 templates + skills). But that’s a different feature from executor
 packaging, and simpler solutions exist (e.g.,
-`wg init --template <git-url>` that clones a `.workgraph/` skeleton).
+`wg init --template <git-url>` that clones a `.wg/` skeleton).
 
 === Verdict
 <verdict-2>

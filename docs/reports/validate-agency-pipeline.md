@@ -105,7 +105,7 @@ Of the 20 lowest-scoring tasks, 10 primary tasks have corresponding `.verify-fli
 
 ### Evolution Runs
 
-Two evolution runs found in `.workgraph/agency/evolution_runs/`:
+Two evolution runs found in `.wg/agency/evolution_runs/`:
 
 **Run 1: `evo-2026-03-04-a`** (2026-03-04T23:25:27Z)
 - Input: 831 evaluations, 17 roles, 18 tradeoffs
@@ -132,9 +132,9 @@ Two evolution runs found in `.workgraph/agency/evolution_runs/`:
 - `src/agency/evolver.rs`: Full trigger system with threshold-based and reactive triggers
 - Safe strategies: mutation, gap-analysis, retirement, motivation-tuning
 - Budget cap: 5 operations per cycle
-- Evolver state file: **not present** (`.workgraph/agency/evolver_state.json` does not exist — runs were likely manual `wg evolve` invocations rather than auto-triggered)
-- Coordinator evolution skill document exists at `.workgraph/agency/evolver-skills/coordinator-evolution.md`
-- Evolved amendments file exists (`.workgraph/agency/coordinator-prompt/evolved-amendments.md`) but is currently empty
+- Evolver state file: **not present** (`.wg/agency/evolver_state.json` does not exist — runs were likely manual `wg evolve` invocations rather than auto-triggered)
+- Coordinator evolution skill document exists at `.wg/agency/evolver-skills/coordinator-evolution.md`
+- Evolved amendments file exists (`.wg/agency/coordinator-prompt/evolved-amendments.md`) but is currently empty
 
 ### Assessment
 
@@ -155,7 +155,7 @@ Full implementation in `src/service/compactor.rs`:
 
 ### Runtime Status
 
-- **No compactor directory exists** (`.workgraph/compactor/` absent)
+- **No compactor directory exists** (`.wg/compactor/` absent)
 - **No `context.md` has been generated**
 - **No `state.json` exists**
 

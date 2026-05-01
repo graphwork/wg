@@ -116,7 +116,7 @@ Each level can specify actors and routing rules. Unspecified values inherit from
 | Scope | Where defined | What it controls |
 |-------|--------------|-----------------|
 | **Global** | `~/.config/workgraph/notify.toml` | Default actors, channels, and routing for all projects |
-| **Project** | `.workgraph/notify.toml` | Per-project overrides — different actors, channels, or routing rules |
+| **Project** | `.wg/notify.toml` | Per-project overrides — different actors, channels, or routing rules |
 | **Subgraph** | Task tags or explicit `notify` field on root task of a subgraph | Weakly connected components that should notify a different actor |
 | **Task** | `notify` field on individual task | Single-task override (rare, for special cases like "notify the CEO when deploy completes") |
 
@@ -170,7 +170,7 @@ The new schema extends the current `notify.toml` with actor definitions and scop
 
 ```toml
 # ~/.config/workgraph/notify.toml
-# (or .workgraph/notify.toml for project-level)
+# (or .wg/notify.toml for project-level)
 
 # ─── Channel defaults ───────────────────────────────────────────────
 # These provide default credentials for channel types.
@@ -615,14 +615,14 @@ approval = ["owner"]
 urgent = ["owner"]
 ```
 
-**Project Alpha config:** `.workgraph/notify.toml` (in project-alpha repo)
+**Project Alpha config:** `.wg/notify.toml` (in project-alpha repo)
 
 ```toml
 # Uses global config — telegram is Alice's first channel preference
 # No overrides needed
 ```
 
-**Project Beta config:** `.workgraph/notify.toml` (in project-beta repo)
+**Project Beta config:** `.wg/notify.toml` (in project-beta repo)
 
 ```toml
 # Override Alice's channel preference for this project
@@ -721,7 +721,7 @@ wg add "Dashboard components" --after frontend-redesign
 
 **Scenario:** A project uses Telegram for day-to-day notifications, a webhook for CI/CD integration, and PagerDuty (via webhook) for production incidents.
 
-**Config:** `.workgraph/notify.toml`
+**Config:** `.wg/notify.toml`
 
 ```toml
 [actors.team]

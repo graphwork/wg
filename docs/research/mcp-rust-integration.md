@@ -215,7 +215,7 @@ Currently, the native executor has a static `ToolRegistry` built at startup (`To
 
 ### Key Components
 
-#### 1. MCP Server Configuration (`~/.workgraph/mcp_servers.toml` or per-project)
+#### 1. MCP Server Configuration (`~/.wg/mcp_servers.toml` or per-project)
 
 ```toml
 [servers.filesystem]

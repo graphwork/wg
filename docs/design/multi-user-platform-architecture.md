@@ -53,7 +53,7 @@ The MVP (v0.1) requires ~2 weeks of focused work: completing the `modify_graph()
 │   │  │ Agent Spawner │  │ Presence      │  │ Alert Monitor  │  │        │
 │   │  └──────────────┘  └───────────────┘  └────────────────┘  │        │
 │   │                                                             │        │
-│   │  IPC: Unix socket (.workgraph/service/daemon.sock)         │        │
+│   │  IPC: Unix socket (.wg/service/daemon.sock)         │        │
 │   └────────────────────────────────────────────────────────────┘        │
 ├─────────────────────────────────────────────────────────────────────────┤
 │                         SYNC LAYER                                      │
@@ -69,11 +69,11 @@ The MVP (v0.1) requires ~2 weeks of focused work: completing the `modify_graph()
 ├─────────────────────────────────────────────────────────────────────────┤
 │                         GRAPH LAYER                                     │
 │                                                                         │
-│   .workgraph/graph.jsonl   (shared state, single file, JSONL)           │
-│   .workgraph/operations.jsonl  (provenance log, append-only)            │
-│   .workgraph/service/     (daemon state, agent registry)                │
-│   .workgraph/chat/        (coordinator chat, per-ID)                    │
-│   .workgraph/agency/      (roles, tradeoffs, agents)                    │
+│   .wg/graph.jsonl   (shared state, single file, JSONL)           │
+│   .wg/operations.jsonl  (provenance log, append-only)            │
+│   .wg/service/     (daemon state, agent registry)                │
+│   .wg/chat/        (coordinator chat, per-ID)                    │
+│   .wg/agency/      (roles, tradeoffs, agents)                    │
 │                                                                         │
 │   Primitives:                                                           │
 │     modify_graph()  ─── exclusive flock, read-modify-write, atomic      │
@@ -386,7 +386,7 @@ Components that serve multiple subsystems:
 
 ```
 Single user → single TUI → single coordinator → agents
-All state in .workgraph/, no contention, no identity
+All state in .wg/, no contention, no identity
 ```
 
 ### Step 1: Harden Foundations (v0.1 prerequisite)
@@ -440,7 +440,7 @@ Every step is backward-compatible:
 
 | Capability | Location | Multi-User Status |
 |------------|----------|------------------|
-| Multiple TUI instances on same `.workgraph/` | `src/tui/` | Works today |
+| Multiple TUI instances on same `.wg/` | `src/tui/` | Works today |
 | fs watcher with 50ms debounce | `state.rs:3857` | Works today |
 | `modify_graph()` flock serialization | `parser.rs:267` | Works for migrated commands |
 | Atomic read consistency (rename) | `parser.rs` | Works today |
@@ -539,7 +539,7 @@ Layer 1: Transport Authentication
   └── Scope: who can connect to the server
 
 Layer 2: Operating System Permissions
-  ├── .workgraph/ directory: owned by project group
+  ├── .wg/ directory: owned by project group
   ├── daemon.sock: 0660 (group-readable)
   ├── graph.jsonl: 0640 (group-readable)
   └── Scope: who can access the workgraph on the machine
@@ -571,7 +571,7 @@ Layer 4: Write Protection
 
 ### ADR-S1: Single Shared Workgraph per Project
 
-**Decision:** All users in a project operate on one `.workgraph/graph.jsonl`.
+**Decision:** All users in a project operate on one `.wg/graph.jsonl`.
 **Sources:** TUI Concurrency ADR-1, Federation §6.
 **Rationale:** Simplest model. Already works. Federation provides cross-project visibility without merging graphs. Per-user workgraphs would require federation for basic task visibility within a team.
 **Consequence:** No per-user access control within a project. Acceptable for small teams.

@@ -61,7 +61,7 @@ A workgraph task graph is a stigmergic medium. Agents do not communicate with ea
 
 | Stigmergy Concept | Workgraph Equivalent |
 | --- | --- |
-| **Shared environment** | The task graph (`.workgraph/graph.jsonl`) |
+| **Shared environment** | The task graph (`.wg/graph.jsonl`) |
 | **Sematectonic trace** | A completed task’s artifacts—the code, docs, or other work product left behind *is* the stimulus for downstream tasks |
 | **Marker-based trace** | Task status changes (`Open`→`Done`, `Failed`), dependency edges, evaluation scores |
 | **Pheromone decay** | Stale assignment detection (dead agent checks), task expiration |
@@ -438,13 +438,13 @@ Workgraph’s memory architecture comprises three distinct layers:
       - Volatile: overwritten by each state transition
 
     Layer 2: EPISODIC MEMORY (agent archives)
-      - .workgraph/log/agents///
+      - .wg/log/agents///
       - Full prompt.txt and output.txt per agent run
       - Records *how* each task was worked on
       - Multiple episodes per task (retries create new timestamps)
 
     Layer 3: PROCEDURAL MEMORY (provenance log)
-      - .workgraph/log/operations.jsonl
+      - .wg/log/operations.jsonl
       - Every graph mutation: add, claim, done, fail, edit, retry,
         replay, restore
       - Records *what happened* to the graph as a whole
@@ -769,7 +769,7 @@ Cybernetics (from Greek *kybernetes* “steersman”) is the study of regulatory
 
 | Stigmergy Concept | Workgraph Equivalent |
 | --- | --- |
-| **Shared environment** | The task graph (`.workgraph/graph.jsonl`) |
+| **Shared environment** | The task graph (`.wg/graph.jsonl`) |
 | **Sematectonic trace** | A completed task’s artifacts—the code, docs, or other work product left behind *is* the stimulus for downstream tasks |
 | **Marker-based trace** | Task status changes (`Open`→`Done`, `Failed`), dependency edges, evaluation scores |
 | **Pheromone decay** | Stale assignment detection (dead agent checks), task expiration |
@@ -821,7 +821,7 @@ The `evolve` mechanism is precisely how the system increases its requisite varie
 
 | Stigmergy Concept | Workgraph Equivalent |
 | --- | --- |
-| **Shared environment** | The task graph (`.workgraph/graph.jsonl`) |
+| **Shared environment** | The task graph (`.wg/graph.jsonl`) |
 | **Sematectonic trace** | A completed task’s artifacts—the code, docs, or other work product left behind *is* the stimulus for downstream tasks |
 | **Marker-based trace** | Task status changes (`Open`→`Done`, `Failed`), dependency edges, evaluation scores |
 | **Pheromone decay** | Stale assignment detection (dead agent checks), task expiration |
@@ -833,7 +833,7 @@ The `evolve` mechanism is precisely how the system increases its requisite varie
 
 | Stigmergy Concept | Workgraph Equivalent |
 | --- | --- |
-| **Shared environment** | The task graph (`.workgraph/graph.jsonl`) |
+| **Shared environment** | The task graph (`.wg/graph.jsonl`) |
 | **Sematectonic trace** | A completed task’s artifacts—the code, docs, or other work product left behind *is* the stimulus for downstream tasks |
 | **Marker-based trace** | Task status changes (`Open`→`Done`, `Failed`), dependency edges, evaluation scores |
 | **Pheromone decay** | Stale assignment detection (dead agent checks), task expiration |
@@ -855,7 +855,7 @@ Stafford Beer’s Viable System Model (VSM) describes the organizational structu
 
 | Stigmergy Concept | Workgraph Equivalent |
 | --- | --- |
-| **Shared environment** | The task graph (`.workgraph/graph.jsonl`) |
+| **Shared environment** | The task graph (`.wg/graph.jsonl`) |
 | **Sematectonic trace** | A completed task’s artifacts—the code, docs, or other work product left behind *is* the stimulus for downstream tasks |
 | **Marker-based trace** | Task status changes (`Open`→`Done`, `Failed`), dependency edges, evaluation scores |
 | **Pheromone decay** | Stale assignment detection (dead agent checks), task expiration |
@@ -869,7 +869,7 @@ The critical homeostatic balance is the **S3-S4 homeostat**: S3 wants stability 
 
 | Stigmergy Concept | Workgraph Equivalent |
 | --- | --- |
-| **Shared environment** | The task graph (`.workgraph/graph.jsonl`) |
+| **Shared environment** | The task graph (`.wg/graph.jsonl`) |
 | **Sematectonic trace** | A completed task’s artifacts—the code, docs, or other work product left behind *is* the stimulus for downstream tasks |
 | **Marker-based trace** | Task status changes (`Open`→`Done`, `Failed`), dependency edges, evaluation scores |
 | **Pheromone decay** | Stale assignment detection (dead agent checks), task expiration |
@@ -899,7 +899,7 @@ Two core information asymmetries:
 
 | Stigmergy Concept | Workgraph Equivalent |
 | --- | --- |
-| **Shared environment** | The task graph (`.workgraph/graph.jsonl`) |
+| **Shared environment** | The task graph (`.wg/graph.jsonl`) |
 | **Sematectonic trace** | A completed task’s artifacts—the code, docs, or other work product left behind *is* the stimulus for downstream tasks |
 | **Marker-based trace** | Task status changes (`Open`→`Done`, `Failed`), dependency edges, evaluation scores |
 | **Pheromone decay** | Stale assignment detection (dead agent checks), task expiration |
@@ -915,7 +915,7 @@ This mapping is unusually precise because workgraph literally has primitives cal
 
 | Stigmergy Concept | Workgraph Equivalent |
 | --- | --- |
-| **Shared environment** | The task graph (`.workgraph/graph.jsonl`) |
+| **Shared environment** | The task graph (`.wg/graph.jsonl`) |
 | **Sematectonic trace** | A completed task’s artifacts—the code, docs, or other work product left behind *is* the stimulus for downstream tasks |
 | **Marker-based trace** | Task status changes (`Open`→`Done`, `Failed`), dependency edges, evaluation scores |
 | **Pheromone decay** | Stale assignment detection (dead agent checks), task expiration |
@@ -945,7 +945,7 @@ Agency theory suggests specific design principles for workgraph:
 
 | Stigmergy Concept | Workgraph Equivalent |
 | --- | --- |
-| **Shared environment** | The task graph (`.workgraph/graph.jsonl`) |
+| **Shared environment** | The task graph (`.wg/graph.jsonl`) |
 | **Sematectonic trace** | A completed task’s artifacts—the code, docs, or other work product left behind *is* the stimulus for downstream tasks |
 | **Marker-based trace** | Task status changes (`Open`→`Done`, `Failed`), dependency edges, evaluation scores |
 | **Pheromone decay** | Stale assignment detection (dead agent checks), task expiration |
@@ -963,7 +963,7 @@ Coined by Jonny LeRoy and Matt Simons (2010): if org structure shapes system arc
 
 | Stigmergy Concept | Workgraph Equivalent |
 | --- | --- |
-| **Shared environment** | The task graph (`.workgraph/graph.jsonl`) |
+| **Shared environment** | The task graph (`.wg/graph.jsonl`) |
 | **Sematectonic trace** | A completed task’s artifacts—the code, docs, or other work product left behind *is* the stimulus for downstream tasks |
 | **Marker-based trace** | Task status changes (`Open`→`Done`, `Failed`), dependency edges, evaluation scores |
 | **Pheromone decay** | Stale assignment detection (dead agent checks), task expiration |
@@ -999,7 +999,7 @@ Team Topologies (Skelton & Pais, 2019) provides a practical framework for organi
 
 | Stigmergy Concept | Workgraph Equivalent |
 | --- | --- |
-| **Shared environment** | The task graph (`.workgraph/graph.jsonl`) |
+| **Shared environment** | The task graph (`.wg/graph.jsonl`) |
 | **Sematectonic trace** | A completed task’s artifacts—the code, docs, or other work product left behind *is* the stimulus for downstream tasks |
 | **Marker-based trace** | Task status changes (`Open`→`Done`, `Failed`), dependency edges, evaluation scores |
 | **Pheromone decay** | Stale assignment detection (dead agent checks), task expiration |

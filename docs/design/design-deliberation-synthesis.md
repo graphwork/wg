@@ -379,16 +379,16 @@ The preliminary Layered Coordination Model proposed in §6 offers one path towar
 The existing architecture centers on a single `.coordinator` task:
 
 - **Task lifecycle:** The daemon's `run_daemon` calls `ensure_coordinator_task()` on startup, creating a single `.coordinator` task with `Status::InProgress`, unlimited cycle iterations (`max_iterations: 0`), and the `coordinator-loop` tag.
-- **IPC mechanism:** The daemon binds a Unix domain socket at `.workgraph/service/daemon.sock`. Clients send JSON-encoded `IpcRequest` variants; the server responds with `IpcResponse`. Chat uses `IpcRequest::UserChat { message, request_id, attachments }`.
-- **Chat data flow:** User messages flow through `UserChat` IPC → `.workgraph/chat/inbox.jsonl` → Claude CLI subprocess (stdin) → stdout parsed by reader thread → `.workgraph/chat/outbox.jsonl` → TUI cursor-based polling. Each turn increments `loop_iteration` on the `.coordinator` task.
+- **IPC mechanism:** The daemon binds a Unix domain socket at `.wg/service/daemon.sock`. Clients send JSON-encoded `IpcRequest` variants; the server responds with `IpcResponse`. Chat uses `IpcRequest::UserChat { message, request_id, attachments }`.
+- **Chat data flow:** User messages flow through `UserChat` IPC → `.wg/chat/inbox.jsonl` → Claude CLI subprocess (stdin) → stdout parsed by reader thread → `.wg/chat/outbox.jsonl` → TUI cursor-based polling. Each turn increments `loop_iteration` on the `.coordinator` task.
 
 **Key files:**
-- `.workgraph/chat/inbox.jsonl` — user messages
-- `.workgraph/chat/outbox.jsonl` — coordinator responses
-- `.workgraph/chat/.cursor` — TUI read position
-- `.workgraph/chat/.coordinator-cursor` — daemon read position
-- `.workgraph/service/daemon.sock` — Unix socket
-- `.workgraph/service/coordinator-state.json` — tick stats
+- `.wg/chat/inbox.jsonl` — user messages
+- `.wg/chat/outbox.jsonl` — coordinator responses
+- `.wg/chat/.cursor` — TUI read position
+- `.wg/chat/.coordinator-cursor` — daemon read position
+- `.wg/service/daemon.sock` — Unix socket
+- `.wg/service/coordinator-state.json` — tick stats
 
 ### B.2 Proposed Multi-Coordinator Graph Structure
 
@@ -400,8 +400,8 @@ Each coordinator gets its own task and chat channel:
 Each coordinator is an independent root in the graph. Tasks created by a coordinator do NOT have a dependency on their coordinator — coordinators observe and dispatch, they don't block work.
 
 **Chat channel isolation** uses per-coordinator subdirectories:
-- `.workgraph/chat/0/inbox.jsonl` + `outbox.jsonl` + cursors
-- `.workgraph/chat/1/inbox.jsonl` + `outbox.jsonl` + cursors
+- `.wg/chat/0/inbox.jsonl` + `outbox.jsonl` + cursors
+- `.wg/chat/1/inbox.jsonl` + `outbox.jsonl` + cursors
 
 **IPC extension:** The `UserChat` request gains an optional `coordinator_id: Option<u32>` field (default 0).
 

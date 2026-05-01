@@ -19,7 +19,7 @@ The original table grouped `.assign-*` / `.evaluate-*` / `.place-*` / `.compact-
 | **`.flip-*`** | **nothing at all** — pure in-context reasoning | Fidelity check against latent intent. Sees task + artifacts in its prompt, returns a score. No tools needed. Failure mode shrinks to "wrong score" (recoverable via re-eval) instead of "hallucinated code on disk." |
 | **`.assign-*`** | `wg` read-only (`list`, `show`, `context`, `status`, `ready`) — **no FS, no shell** | Job is to pick an agent for a task. Only needs to see the graph. Never needs to touch code. |
 | **`.place-*`** | `wg` read-only (same subset as `.assign-*`) | Decides dependency edges / graph structure. Observability only. |
-| **`.compact-*`** | read access to `.workgraph/context.md` + write to that one file | Narrow by design: reads distilled graph state, writes a new summary. Not full FS access. |
+| **`.compact-*`** | read access to `.wg/context.md` + write to that one file | Narrow by design: reads distilled graph state, writes a new summary. Not full FS access. |
 | **`.evaluate-*`** | **full agent — all tools including `wg` mutation** | *This is the escalation/repair path.* Evaluators may need to `wg fail` a broken task, open a triage task with `wg add`, or launch a repair agent. Gating this tool set would break the automatic-repair loop. |
 | **Regular tasks** (`full`, `shell` exec modes) | full, with `write_file` and `edit_file` cwd-sandboxed | Where real implementation happens. Sandbox landed in commit `699376da`. |
 
@@ -50,7 +50,7 @@ Cleanest: tool-allowlist per task-type at registration time. When spawning an ag
 Two tools need finer-grained handling:
 
 - **`wg` tool**: currently exposes all wg subcommands. For assign/place/compact we want a read-only subset. Either (a) introduce a second tool `wg_read` with only read-side commands, or (b) give the existing `wg` tool a mode parameter set at registration time.
-- **`write_file`**: already cwd-sandboxed (commit `699376da`). For `.compact-*` we additionally want to restrict writes to `.workgraph/context.md` specifically. Can layer on a "write-whitelist" check inside the tool.
+- **`write_file`**: already cwd-sandboxed (commit `699376da`). For `.compact-*` we additionally want to restrict writes to `.wg/context.md` specifically. Can layer on a "write-whitelist" check inside the tool.
 
 ### Implementation shape
 
@@ -84,7 +84,7 @@ Rough size: ~100-150 lines including a new `ToolRegistry::for_task_type()` const
 1. *Do `.assign-*` / `.evaluate-*` actually need `bash` or `write_file` today?* — After discussion: assign does not, evaluate does. See revised categorization above.
 2. *What is the actual prompt/payload passed to an `.assign-*` or `.evaluate-*` agent today?* — Assignment prompt inspected at `src/commands/service/assignment.rs:131`. Performance scores (`avg_score`, `task_count`) are rendered into the agent catalog — the LLM assigner sees them and is instructed to prefer higher-scoring agents.
 3. *Is the structured-result path actually used?* — Yes, for assignment; the LLM returns JSON that the coordinator applies to the graph.
-4. *How does `.compact-*` operate?* — Reads graph state, writes `.workgraph/context.md`. Narrow scope per revised table.
+4. *How does `.compact-*` operate?* — Reads graph state, writes `.wg/context.md`. Narrow scope per revised table.
 5. *Does the agency system have existing assumptions about tool sets?* — Roles have `default_exec_mode` (bare/light/full/shell). The exec-mode system is a partial answer but doesn't distinguish task-type-category (meta vs. regular).
 
 ---

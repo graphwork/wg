@@ -7,10 +7,10 @@ wg profile set openrouter
 ```
 
 This single command:
-1. Sets `profile = "openrouter"` in `.workgraph/config.toml`
+1. Sets `profile = "openrouter"` in `.wg/config.toml`
 2. Loads the benchmark registry, ranks all registered OpenRouter models by popularity + benchmarks
 3. Writes the top-ranked model for each tier (fast/standard/premium) into `[tiers]`
-4. Saves full ranked lists to `.workgraph/profile_ranked_tiers.json` for fallback/escalation
+4. Saves full ranked lists to `.wg/profile_ranked_tiers.json` for fallback/escalation
 
 After running it, every dispatch role (triage, evaluator, task_agent, etc.) that hasn't been explicitly overridden via `[models]` will resolve through the tier system to an OpenRouter model.
 
@@ -160,7 +160,7 @@ wg profile list --json
 
 ## How It Works Internally
 
-### Config File Structure (`.workgraph/config.toml`)
+### Config File Structure (`.wg/config.toml`)
 
 ```toml
 profile = "openrouter"           # Active profile name
@@ -183,10 +183,10 @@ model = "openrouter:qwen/qwen-turbo"
 ### Dynamic Profile Auto-Configuration (`src/commands/profile_cmd.rs:67-92`)
 
 When you run `wg profile set openrouter`:
-1. Loads `BenchmarkRegistry` from `.workgraph/` (populated by `wg models fetch` or `--registry-add`)
+1. Loads `BenchmarkRegistry` from `.wg/` (populated by `wg models fetch` or `--registry-add`)
 2. Calls `rank_models_for_profile()` — scores models by popularity × benchmarks
 3. Writes the #1 ranked model per tier into `config.tiers`
-4. Saves full ranked lists to `.workgraph/profile_ranked_tiers.json`
+4. Saves full ranked lists to `.wg/profile_ranked_tiers.json`
 
 The ranked lists enable **model escalation**: if a task fails with one model, the coordinator tries the next-ranked model in the same tier, then escalates to higher tiers. This is controlled by `max_tier_escalation_depth` in coordinator config.
 
@@ -209,5 +209,5 @@ For the `openrouter` dynamic profile, `resolve_profile_tiers()` returns `None` (
 | `src/config.rs` | Config model, `DispatchRole`, `resolve_model_for_role()` |
 | `src/commands/config_cmd.rs` | `wg config --set-model/--tiers/--models` |
 | `src/model_benchmarks.rs` | Benchmark registry, model ranking algorithm |
-| `.workgraph/config.toml` | Persisted configuration |
-| `.workgraph/profile_ranked_tiers.json` | Cached ranked model lists for escalation |
+| `.wg/config.toml` | Persisted configuration |
+| `.wg/profile_ranked_tiers.json` | Cached ranked model lists for escalation |

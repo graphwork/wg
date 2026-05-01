@@ -54,7 +54,7 @@ IpcResponse::error("Coordinator agent not available")
 ### 2.1 Directory Structure
 
 ```
-.workgraph/chat/
+.wg/chat/
 ├── inbox.jsonl      # User → coordinator messages
 ├── outbox.jsonl     # Coordinator → user responses
 └── .cursor          # CLI/TUI read cursor (last-read outbox message ID)
@@ -418,7 +418,7 @@ This is intentionally minimal for Phase 1. The goal is to wire the full path (CL
 The coordinator maintains its own cursor on the inbox, separate from the CLI/TUI cursor on the outbox:
 
 ```
-.workgraph/chat/
+.wg/chat/
 ├── inbox.jsonl
 ├── outbox.jsonl
 ├── .cursor              # CLI/TUI cursor on outbox (last-read outbox msg ID)

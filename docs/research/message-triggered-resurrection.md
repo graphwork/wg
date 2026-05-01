@@ -25,7 +25,7 @@
 ## 2. Detection Flow: How the Coordinator Detects Unread Messages on Completed Tasks
 
 ### Current message system
-Messages are stored in `.workgraph/messages/{task-id}.jsonl`. Each message has a monotonic ID, timestamp, sender, body, and delivery status (Sent → Delivered → Read → Acknowledged). Read cursors per agent are in `.workgraph/messages/.cursors/{agent-id}.{task-id}`.
+Messages are stored in `.wg/messages/{task-id}.jsonl`. Each message has a monotonic ID, timestamp, sender, body, and delivery status (Sent → Delivered → Read → Acknowledged). Read cursors per agent are in `.wg/messages/.cursors/{agent-id}.{task-id}`.
 
 ### Proposed detection mechanism
 The coordinator poll loop (`src/commands/service/coordinator.rs`) already runs on each tick. Add a check:
@@ -53,7 +53,7 @@ Done → [message arrives] → InProgress → Done (again)
 **Detailed sequence:**
 
 1. Task is `Done`. Agent exited. `session_id` stored in stream.jsonl Init event (or agent registry).
-2. New message arrives at `.workgraph/messages/{task-id}.jsonl`.
+2. New message arrives at `.wg/messages/{task-id}.jsonl`.
 3. Coordinator detects unread message on Done task (next poll tick).
 4. Coordinator sets task status to `InProgress`, sets `assigned` to new agent ID.
 5. Coordinator spawns agent with `claude --resume <session-id> -p "New message: <body>"`.

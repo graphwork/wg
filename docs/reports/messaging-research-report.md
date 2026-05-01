@@ -4,7 +4,7 @@
 
 ### Storage Model
 
-Messages are stored as **JSONL files** in `.workgraph/messages/{task-id}.jsonl`, one file per task. Read cursors live in `.workgraph/messages/.cursors/{agent-id}.{task-id}`.
+Messages are stored as **JSONL files** in `.wg/messages/{task-id}.jsonl`, one file per task. Read cursors live in `.wg/messages/.cursors/{agent-id}.{task-id}`.
 
 **Source:** `src/messages.rs:1-4`
 
@@ -301,7 +301,7 @@ The design doc mentions the coordinator auto-sending messages when:
 User/Coordinator → wg msg send <task-id> "text"
                         │
                         ▼
-              .workgraph/messages/{task-id}.jsonl  (append JSONL line)
+              .wg/messages/{task-id}.jsonl  (append JSONL line)
                         │
                         ▼  [at spawn time]
               build_scope_context() reads format_queued_messages()
@@ -318,13 +318,13 @@ User/Agent/Coordinator → wg msg send <task-id> "text"
      OR                  IPC SendMessage { task_id, body, ... }
                               │
                               ▼
-                   .workgraph/messages/{task-id}.jsonl  (persistent storage)
+                   .wg/messages/{task-id}.jsonl  (persistent storage)
                               │
                               ▼  [via deliver_message()]
                    MessageAdapter::deliver()
                               │
                               ▼
-                   .workgraph/agents/{agent-id}/pending_messages.txt  (notification file)
+                   .wg/agents/{agent-id}/pending_messages.txt  (notification file)
                               │
                               ▼  [wrapper script poll_messages() every 10s]
                    pending_messages.txt → output.log  (moved atomically)
@@ -341,11 +341,11 @@ User/Agent/Coordinator → wg msg send <task-id> "text"
 ### Post-Completion
 
 ```
-Messages persist in .workgraph/messages/{task-id}.jsonl
+Messages persist in .wg/messages/{task-id}.jsonl
   - wg msg list still works
   - wg msg send still works (by design)
   - No cleanup mechanism exists (wg msg gc not implemented)
-  - Cursor files persist in .workgraph/messages/.cursors/
+  - Cursor files persist in .wg/messages/.cursors/
 ```
 
 ---

@@ -231,7 +231,7 @@ The rotating file logger with panic hook is appropriate for a daemon. 10MB rotat
 `commands/agent.rs` implements a WAKE/CHECK/WORK/SLEEP agent loop that is completely independent of the coordinator/service daemon. It:
 - Operates on "actors" (graph-level entities with capabilities), not "agents" (registry-level process entries)
 - Claims and executes tasks directly (in-process `sh -c`), not via wrapper scripts
-- Has its own persistent state (`.workgraph/agents/{actor-id}.json`)
+- Has its own persistent state (`.wg/agents/{actor-id}.json`)
 - Uses skill matching for task selection
 
 This is essentially a standalone predecessor to the coordinator system. Its continued existence alongside the service daemon creates confusion about which system to use.

@@ -47,7 +47,7 @@ Yes. The user reads "evaluating" as "this parent task is currently undergoing th
 ### Where eval data is rendered in 1:Detail
 **`src/tui/viz_viewer/state.rs:7462-7602`** (inside `load_hud_detail`):
 
-1. Reads `.workgraph/agency/evaluations/`.
+1. Reads `.wg/agency/evaluations/`.
 2. Filters files starting with `eval-{task.id}-` (line 7465).
 3. Sorts by reverse filename (effectively reverse timestamp, line 7473).
 4. Renders only the **first** entry (line 7474, `eval_files.first()`), as either `── Evaluation ──` or `── Evaluation (FLIP) ──` depending on `source` field.

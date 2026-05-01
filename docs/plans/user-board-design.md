@@ -63,8 +63,8 @@ Examples: `.user-erik-0`, `.user-alice-0`, `.user-erik-1` (after first archive).
 
 **Resolution:** Reuse existing message infrastructure entirely.
 
-- **Message storage:** `.workgraph/messages/.user-{handle}-{N}.jsonl` — standard JSONL message file with flock-based append.
-- **Read cursors:** `.workgraph/messages/.cursors/{agent-id}.{.user-handle-N}` — standard cursor files.
+- **Message storage:** `.wg/messages/.user-{handle}-{N}.jsonl` — standard JSONL message file with flock-based append.
+- **Read cursors:** `.wg/messages/.cursors/{agent-id}.{.user-handle-N}` — standard cursor files.
 - **Task log:** Embedded in the task's `log` field in `graph.jsonl`.
 
 **Compaction:** User boards get independent compaction via the existing compactor. When a board accumulates enough messages (threshold configurable via `wg config --user-board-compact-threshold N`, default 100), the compactor summarizes old messages into a context note, same as coordinator compaction. This is a **phase 2** feature — initial implementation stores messages without compaction.
@@ -163,7 +163,7 @@ fn resolve_user_board_alias(graph: &WorkGraph, id: &str) -> String {
 - Clicking a user board tab switches the message area to show that board's messages.
 - The `[+]` button opens a text prompt for creating a new user board (like coordinator `[+]`).
 - Left/Right arrow keys cycle between user board tabs when user board tab bar is focused.
-- Messages are loaded from `.workgraph/messages/.user-{handle}-{N}.jsonl` via the same polling mechanism used for coordinator chat (`poll_chat_messages` pattern).
+- Messages are loaded from `.wg/messages/.user-{handle}-{N}.jsonl` via the same polling mechanism used for coordinator chat (`poll_chat_messages` pattern).
 
 **Chat input routing:**
 - When a user board tab is active, typed messages go to `wg msg send .user-{handle}-{N} "..."`.
@@ -199,7 +199,7 @@ fn resolve_user_board_alias(graph: &WorkGraph, id: &str) -> String {
 The user handle is currently `$USER` / `WG_USER` — a local convention with no verification. The extension point for cryptographic identity:
 
 1. **Key generation:** `wg identity init` generates an Ed25519 keypair, stores private key in `~/.config/workgraph/identity.key` (user-local, never in repo).
-2. **Public key hash:** The SHA-256 hash of the public key becomes the user's **verified identity**. Stored in `.workgraph/identities/{hash}.pub`.
+2. **Public key hash:** The SHA-256 hash of the public key becomes the user's **verified identity**. Stored in `.wg/identities/{hash}.pub`.
 3. **Message signing:** Each message gets an optional `signature` field (Ed25519 over `{timestamp}:{body}`). Unsigned messages are still valid but marked as unverified.
 4. **Board binding:** A user board's `agent` field (currently None) would hold the identity hash, proving board ownership.
 5. **Federation:** Identity hashes are globally unique — the same user across federated graphs is recognized by key, not by handle.

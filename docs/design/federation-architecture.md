@@ -34,7 +34,7 @@ This document designs the federation model for workgraph: the ability for indepe
 | Task visibility field (internal/public/peer) | **Complete** | `src/graph.rs:303` |
 | TUI filesystem watcher (50ms-1s refresh) | **Complete** | `src/tui/viz_viewer/state.rs` |
 | TUI coordinator tab system | **Complete** | `src/tui/viz_viewer/render.rs` |
-| TUI screen dump IPC (`.workgraph/service/tui.sock`) | **Complete** | `src/tui/viz_viewer/screen_dump.rs` |
+| TUI screen dump IPC (`.wg/service/tui.sock`) | **Complete** | `src/tui/viz_viewer/screen_dump.rs` |
 
 ### 1.2 Gap Analysis
 
@@ -63,7 +63,7 @@ Three discovery mechanisms, layered from simplest to most automated:
   │     └── federation.yaml peers: section                       │
   │                                                              │
   │  Layer 1: Filesystem scan (wg peer scan)       [new: v0.1]   │
-  │     └── Walk ~/ looking for .workgraph/ dirs                 │
+  │     └── Walk ~/ looking for .wg/ dirs                 │
   │                                                              │
   │  Layer 2: Service announcement                 [future: v0.3]│
   │     └── Running services broadcast presence                  │
@@ -73,10 +73,10 @@ Three discovery mechanisms, layered from simplest to most automated:
 
 **Layer 0 (exists):** Manual `wg peer add <name> <path>`. This is sufficient for the common case: a user with 2-5 projects on the same machine, or a small team on a shared VPS. No changes needed.
 
-**Layer 1 (v0.1):** `wg peer scan [<root-dir>]` -- walks a directory tree looking for `.workgraph/` directories, analogous to `wg agency scan`. Reports found workgraphs with task counts and service status. The user can then `wg peer add` any discovered instances. This mirrors the existing `wg agency scan` pattern.
+**Layer 1 (v0.1):** `wg peer scan [<root-dir>]` -- walks a directory tree looking for `.wg/` directories, analogous to `wg agency scan`. Reports found workgraphs with task counts and service status. The user can then `wg peer add` any discovered instances. This mirrors the existing `wg agency scan` pattern.
 
 **Layer 2 (future):** For multi-machine scenarios, services could announce themselves via:
-- **Local registry file:** `~/.workgraph/peers.yaml` as a user-global peer directory
+- **Local registry file:** `~/.wg/peers.yaml` as a user-global peer directory
 - **mDNS/DNS-SD:** Announce `_workgraph._tcp` on the local network
 - **Central registry:** An HTTP endpoint listing known workgraph instances
 
@@ -94,7 +94,7 @@ peer reference string
        └── Relative path?                  ──yes──>  resolve from CWD
                                                       │
                                                       ▼
-                                              <path>/.workgraph/
+                                              <path>/.wg/
                                                       │
                                               ┌───────┴────────┐
                                               │ state.json?    │
@@ -320,7 +320,7 @@ Federation state is refreshed on a **configurable poll interval** separate from 
 Federation doesn't require a global identity system. Each workgraph instance has a **local name** and an **owner**:
 
 ```yaml
-# .workgraph/config.toml (new fields)
+# .wg/config.toml (new fields)
 [federation]
 # Human-readable name for this workgraph instance
 name = "workgraph-tool"
@@ -518,7 +518,7 @@ The `◆` marker indicates a cross-repo dependency. Color indicates status (gree
 
 ### 8.2 Security by Layer
 
-**Same user, same machine (v0.1):** Unix permissions are sufficient. The user owns all `.workgraph/` directories and sockets. No additional auth needed.
+**Same user, same machine (v0.1):** Unix permissions are sufficient. The user owns all `.wg/` directories and sockets. No additional auth needed.
 
 **Shared VPS, multiple users (v0.2):** Create a `workgraph` Unix group. Set socket permissions to `0660` and graph file permissions to `0640` for group members. Visibility filtering ensures `internal` tasks are never exposed even if the file is readable.
 
@@ -584,7 +584,7 @@ A user with 3 workgraph projects can:
     User's machine
     ┌────────────────────────────────────────────────────────┐
     │                                                        │
-    │  Project A (.workgraph/)     Project B (.workgraph/)   │
+    │  Project A (.wg/)     Project B (.wg/)   │
     │  ┌──────────────┐           ┌──────────────┐          │
     │  │ graph.jsonl   │           │ graph.jsonl   │          │
     │  │ daemon.sock   │◄─────────│ daemon.sock   │          │
@@ -637,7 +637,7 @@ A user with 3 workgraph projects can:
 3. Token-based authentication
 4. `wg peer add` accepts URLs (`wg://host:port`)
 5. SSH tunnel helper (`wg peer tunnel <name>`)
-6. User-global peer registry (`~/.workgraph/peers.yaml`)
+6. User-global peer registry (`~/.wg/peers.yaml`)
 
 ### Phase 0.4: Advanced Federation
 

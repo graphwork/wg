@@ -17,7 +17,7 @@ The workgraph native executor's `OpenAiClient` is well-positioned to work with l
 
 **Configuration for workgraph:**
 ```toml
-# .workgraph/config.toml
+# .wg/config.toml
 [native_executor]
 provider = "openai"
 api_base = "http://localhost:11434"
@@ -38,7 +38,7 @@ Set `OPENAI_API_KEY=ollama` (any non-empty string) as Ollama ignores it but the 
 
 **Configuration for workgraph:**
 ```toml
-# .workgraph/config.toml
+# .wg/config.toml
 [native_executor]
 provider = "openai"
 api_base = "http://localhost:8000"
@@ -158,7 +158,7 @@ ollama serve
 ```
 
 ```toml
-# .workgraph/config.toml
+# .wg/config.toml
 [native_executor]
 provider = "openai"
 api_base = "http://localhost:11434"
@@ -186,7 +186,7 @@ vllm serve Qwen/Qwen3-32B \
 ```
 
 ```toml
-# .workgraph/config.toml
+# .wg/config.toml
 [native_executor]
 provider = "openai"
 api_base = "http://localhost:8000"

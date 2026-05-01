@@ -443,7 +443,7 @@ wg config-task .compact-0 --spiral
   - `status: Done`
   - `title: "[iter 0] compact-0"`
   - `tags: ["spiral-archive"]`
-  - `artifacts: [".workgraph/compactor/context.md"]` (moved from live task)
+  - `artifacts: [".wg/compactor/context.md"]` (moved from live task)
   - `token_usage: { input: 15000, output: 2000, cost: 0.05 }` (preserved!)
   - `session_id: "sess-abc123"` (preserved!)
   - `log: [entries from iteration 0 only]`
@@ -453,7 +453,7 @@ wg config-task .compact-0 --spiral
 **Iteration 1 completes**:
 - Archival creates `.compact-0~1`:
   - `token_usage: { input: 18000, output: 2500, cost: 0.06 }`
-  - `artifacts: [".workgraph/compactor/context.md"]` (version from iter 1)
+  - `artifacts: [".wg/compactor/context.md"]` (version from iter 1)
 - `.flip-.compact-0~1` → score: 0.81
 
 **Observable convergence history**:

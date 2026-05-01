@@ -5351,7 +5351,11 @@ model = "claude:haiku"
     #[test]
     fn test_global_config_path() {
         let path = Config::global_config_path().unwrap();
-        assert!(path.ends_with(".workgraph/config.toml"));
+        let s = path.to_string_lossy();
+        assert!(
+            s.ends_with(".wg/config.toml") || s.ends_with(".workgraph/config.toml"),
+            "expected canonical .wg/config.toml or legacy fallback, got {s}"
+        );
     }
 
     #[test]

@@ -57,7 +57,7 @@ This panel shows messages **sorted by their JSONL file order** (which is inserti
 
 Messages are **pull-based**, not push-based. The flow is:
 
-1. **Send**: `wg msg send task-id "body"` → appends to `.workgraph/messages/{task-id}.jsonl` with `status: "sent"` and an ISO 8601 timestamp (`src/messages.rs:87-162`)
+1. **Send**: `wg msg send task-id "body"` → appends to `.wg/messages/{task-id}.jsonl` with `status: "sent"` and an ISO 8601 timestamp (`src/messages.rs:87-162`)
 2. **Read**: Agent runs `wg msg read task-id --agent $WG_AGENT_ID` → returns messages with `id > cursor`, advances cursor, marks messages as `status: "read"` (`src/messages.rs:394-409`)
 3. **Acknowledge**: Agent runs `wg msg send task-id "reply..."` — this is a convention (the agent sending a reply is treated as acknowledgment), not a system-level status change
 
@@ -74,7 +74,7 @@ For **both executor types**, message reading is entirely agent-initiated:
 
 - `Message.timestamp` (ISO 8601) — when the message was **sent** (`src/messages.rs:45`)
 - `Message.status` — lifecycle: `sent → delivered → read → acknowledged` (`src/messages.rs:14-26`)
-- **Cursor files** (`.workgraph/messages/.cursors/{agent-id}.{task-id}`) — last-read message ID, but **no timestamp of when the read occurred**
+- **Cursor files** (`.wg/messages/.cursors/{agent-id}.{task-id}`) — last-read message ID, but **no timestamp of when the read occurred**
 
 ### What's Missing
 
@@ -249,12 +249,12 @@ For the **Messages tab**, messages are already displayed in chronological order.
 ### Storage
 | Path | Purpose |
 |------|---------|
-| `.workgraph/messages/{task-id}.jsonl` | Per-task message queue |
-| `.workgraph/messages/.cursors/{agent}.{task}` | Read cursor per agent per task |
-| `.workgraph/chat/{coordinator-id}/inbox.jsonl` | User→coordinator messages |
-| `.workgraph/chat/{coordinator-id}/outbox.jsonl` | Coordinator→user responses |
-| `.workgraph/service/agents/{agent-id}/stream.jsonl` | Agent stream events |
-| `.workgraph/service/agents/{agent-id}/raw_stream.jsonl` | Claude CLI raw output |
+| `.wg/messages/{task-id}.jsonl` | Per-task message queue |
+| `.wg/messages/.cursors/{agent}.{task}` | Read cursor per agent per task |
+| `.wg/chat/{coordinator-id}/inbox.jsonl` | User→coordinator messages |
+| `.wg/chat/{coordinator-id}/outbox.jsonl` | Coordinator→user responses |
+| `.wg/service/agents/{agent-id}/stream.jsonl` | Agent stream events |
+| `.wg/service/agents/{agent-id}/raw_stream.jsonl` | Claude CLI raw output |
 
 ---
 
@@ -265,7 +265,7 @@ User types in Chat tab
   → TUI sends via IPC to coordinator daemon
     → Coordinator agent receives via stdin injection
       → Coordinator runs `wg msg send <task> "message"` (Bash tool)
-        → Message appended to .workgraph/messages/<task>.jsonl (status: sent)
+        → Message appended to .wg/messages/<task>.jsonl (status: sent)
           → Agent runs `wg msg read <task>` at some future point (Bash tool)
             → Messages returned, cursor advanced, status → read
               → Agent processes message, optionally replies with `wg msg send`

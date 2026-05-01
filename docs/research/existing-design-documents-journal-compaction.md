@@ -22,8 +22,8 @@ Three compaction-related systems exist in the codebase, but none implements true
 | `src/service/chat_compactor.rs` | Per-coordinator chat compaction | Produces `context-summary.md` from inbox/outbox |
 | `src/commands/service/coordinator_agent.rs` | Coordinator subprocess management | Tracks `accumulated_tokens` from Claude CLI stream-json |
 | `src/commands/service/mod.rs` | Daemon compaction orchestration | Cycle-driven + token-threshold gating (broken: resets on restart) |
-| `.workgraph/docs/coordinator-compaction.md` | Research: coordinator context management | Documents gaps and 4 design strategies |
-| `.workgraph/docs/compaction-frequency-analysis.md` | Research: compaction frequency | Threshold never fires due to restart bug |
+| `.wg/docs/coordinator-compaction.md` | Research: coordinator context management | Documents gaps and 4 design strategies |
+| `.wg/docs/compaction-frequency-analysis.md` | Research: compaction frequency | Threshold never fires due to restart bug |
 | `docs/research/compaction-regimes.md` | Cross-provider compaction research | Anthropic auto-compact beta, API token counting |
 
 ---
@@ -131,14 +131,14 @@ Context:
 - Native executor uses journal-based compaction: summarizes old entries into a 
   Compaction marker, on resume finds latest marker and injects summary + recent N messages
 - Coordinator currently spawns .compact-* tasks which compact the graph state summary 
-  (.workgraph/compactor/context.md), NOT the coordinator's own LLM conversation history
+  (.wg/compactor/context.md), NOT the coordinator's own LLM conversation history
 - accumulated_tokens IS tracked but used only to trigger .compact-* tasks, not self-compaction
 - API limit note: with prompt caching, input_tokens is near-zero (cached), 
   cache_creation is where new content accumulates — must account for this
 ```
 
 ### 4.2 Output Status
-The task at `.workgraph/output/design-journal-based-2/` contains only `conversation.jsonl` (97KB of agent work logs) — **no design document was produced**. The agent created 10+ subtasks but did not synthesize them.
+The task at `.wg/output/design-journal-based-2/` contains only `conversation.jsonl` (97KB of agent work logs) — **no design document was produced**. The agent created 10+ subtasks but did not synthesize them.
 
 ---
 
@@ -178,8 +178,8 @@ The downstream task `design-bare-coordinator-architecture-document` should consi
 | `src/commands/service/coordinator_agent.rs` | 680-710 | Token accumulation from stream-json |
 | `src/commands/service/mod.rs` | 1639-1800 | `run_graph_compaction()` — current cycle-driven trigger |
 | `src/service/compactor.rs` | 1-77 | Graph compactor state and structure |
-| `.workgraph/docs/coordinator-compaction.md` | Full | Gap analysis and 4 design strategies |
-| `.workgraph/docs/compaction-frequency-analysis.md` | Full | Threshold bug analysis |
+| `.wg/docs/coordinator-compaction.md` | Full | Gap analysis and 4 design strategies |
+| `.wg/docs/compaction-frequency-analysis.md` | Full | Threshold bug analysis |
 | `docs/research/compaction-regimes.md` | 1-56 | API-level auto-compaction (Anthropic beta) |
 
 ---
@@ -190,6 +190,6 @@ This research document itself serves as the output. The downstream `design-bare-
 
 1. Read `src/executor/native/resume.rs:188-223` for the compact_messages pattern
 2. Read `src/executor/native/journal.rs:76-86` for the Compaction entry type
-3. Read `.workgraph/docs/coordinator-compaction.md` for gap analysis
+3. Read `.wg/docs/coordinator-compaction.md` for gap analysis
 4. Read `src/commands/service/mod.rs:1639-1800` for current trigger mechanism
 5. Fix the `accumulated_tokens` persistence bug as a prerequisite

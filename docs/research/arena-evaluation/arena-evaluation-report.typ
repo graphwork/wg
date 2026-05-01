@@ -142,7 +142,7 @@ The recommended architecture runs both in parallel:
 + Coordinator post-completion hook triggers FLIP evaluation automatically
 + FLIP: extract instruction $x$ from task title + description; extract response $y$ from logs + artifacts; run backward inference through small model; compute F1
 + Build `Evaluation` with `source: "flip"`, `evaluator: "flip:<model>"`, dimensions including `instruction_adherence`, `precision`, `recall`, and `notes` containing the inferred instruction
-+ `record_evaluation()` saves to `.workgraph/agency/evaluations/` and updates `PerformanceRecord` on agent, role, and motivation
++ `record_evaluation()` saves to `.wg/agency/evaluations/` and updates `PerformanceRecord` on agent, role, and motivation
 
 == Implementation: evaluate.rs Changes
 
@@ -152,7 +152,7 @@ Add an `--method flip` flag to `wg evaluate run`. The FLIP path constructs the b
 
 == Current System
 
-Model resolution follows a static hierarchy (`spawn.rs:209--213`): `task.model` > `executor.model` > `coordinator.model` > default. The model registry (`src/models.rs`, `.workgraph/models.yaml`) catalogs models with cost, tier (frontier/mid/budget), capabilities, and context window metadata, but the coordinator does not query it when spawning.
+Model resolution follows a static hierarchy (`spawn.rs:209--213`): `task.model` > `executor.model` > `coordinator.model` > default. The model registry (`src/models.rs`, `.wg/models.yaml`) catalogs models with cost, tier (frontier/mid/budget), capabilities, and context window metadata, but the coordinator does not query it when spawning.
 
 == Arena for Model Selection
 
@@ -192,7 +192,7 @@ For cost efficiency, don't run the full task. Ask each candidate model to produc
 
 == Win-Rate Tracking
 
-Store arena results in `.workgraph/arena-stats.yaml` keyed by model ID, tracking `tasks_entered`, `wins`, and `avg_flip_score`. This data feeds into automatic model recommendation --- over time, the system learns which model tier works for which task types.
+Store arena results in `.wg/arena-stats.yaml` keyed by model ID, tracking `tasks_entered`, `wins`, and `avg_flip_score`. This data feeds into automatic model recommendation --- over time, the system learns which model tier works for which task types.
 
 == Recommended Approach
 
@@ -337,7 +337,7 @@ Downstream consumers (`evolve.rs`, `stats`, `show`) can filter or weight by sour
 + Add `wg arena-select <task-id>` command in `src/commands/arena.rs`
 + Support `--candidates N`, `--models list`, `--tier filter`, `--dry-run`
 + Use probe strategy (plan-only, first 500 tokens) for cost efficiency
-+ Store win-rate stats in `.workgraph/arena-stats.yaml`
++ Store win-rate stats in `.wg/arena-stats.yaml`
 + Integrate with model registry for candidate filtering by tier and capability
 
 *Files:* `src/commands/arena.rs` (new, \u{007E}200 lines), `models.rs` (minor registry queries).

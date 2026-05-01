@@ -170,7 +170,7 @@ pub fn run_show(
 ```
 
 Logic:
-1. Read all evaluation files from `.workgraph/agency/evaluations/`.
+1. Read all evaluation files from `.wg/agency/evaluations/`.
 2. Deserialize each as `Evaluation`.
 3. Apply filters:
    - `--task`: prefix match on `evaluation.task_id`
@@ -424,7 +424,7 @@ Logic:
    - `"internal"`: Include all tasks in scope (no filtering).
    - `"public"`: Include only tasks with `visibility == "public"`. Strip agent output, log entries, and agent assignment from exported tasks.
    - `"peer"`: Include tasks with `visibility == "public"` OR `visibility == "peer"`. Include evaluations and agent lineage but strip raw agent logs/output.
-5. **Load evaluations:** Read all evaluation files from `.workgraph/agency/evaluations/`. Filter to only evaluations whose `task_id` matches an included task.
+5. **Load evaluations:** Read all evaluation files from `.wg/agency/evaluations/`. Filter to only evaluations whose `task_id` matches an included task.
    - For `"public"` exports: exclude evaluations entirely.
    - For `"peer"` exports: include evaluations but strip `notes` field (may contain internal detail).
    - For `"internal"` exports: include everything.
@@ -515,13 +515,13 @@ Logic:
    - Add tag `imported` and tag `source:<source>` to each task.
    - Set `visibility: "internal"` on imported tasks (they're now local context).
    - **Do NOT** add imported tasks to the main graph's dependency structure — they exist as reference, not as blocking/blocked relationships.
-   - Store imported tasks in `.workgraph/imports/<source>/tasks.yaml` (separate from the main graph file to prevent accidental modification).
+   - Store imported tasks in `.wg/imports/<source>/tasks.yaml` (separate from the main graph file to prevent accidental modification).
 5. **Import evaluations:**
-   - Write evaluation files to `.workgraph/agency/evaluations/` with an `imported-` prefix on filenames.
+   - Write evaluation files to `.wg/agency/evaluations/` with an `imported-` prefix on filenames.
    - Set `source` field to `"import:<original-source>"` (e.g. if original source was `"outcome:sharpe"`, imported version becomes `"import:outcome:sharpe"`).
    - **Do NOT** propagate imported evaluations to local agent/role/motivation performance records. These are reference data, not performance signals for local agents.
 6. **Import operations:**
-   - Append to a separate import log: `.workgraph/imports/<source>/operations.jsonl`.
+   - Append to a separate import log: `.wg/imports/<source>/operations.jsonl`.
    - Do not mix with the local provenance log.
 7. **Dry run:** If `--dry-run`, print summary of what would be imported (task count, evaluation count, operation count) without writing anything.
 8. Record provenance: `provenance::record(dir, "trace_import", None, Some("user"), detail)` where detail includes source, file path, and counts.
@@ -624,7 +624,7 @@ pub fn run(
 
 Logic:
 
-1. **Source:** Use the provenance operation log (`.workgraph/log/operations.jsonl`) as the event source. The operation log already records all state-changing operations with timestamps, task IDs, and detail payloads.
+1. **Source:** Use the provenance operation log (`.wg/log/operations.jsonl`) as the event source. The operation log already records all state-changing operations with timestamps, task IDs, and detail payloads.
 
 2. **Historical replay:** If `--replay N`, read the last N operations from the log, convert each to a `WatchEvent`, apply filters, and emit them.
 

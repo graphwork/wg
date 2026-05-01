@@ -96,7 +96,7 @@ User specifies model via:
 
 There are **two separate model registry systems**:
 
-1. **`ModelRegistry`** (`src/models.rs`) — Used by `wg models` subcommand. Stores models in `.workgraph/models.yaml`. Has 12 hardcoded defaults with pricing, context window, capabilities, tier. Primarily used for the `wg models list/search/add` CLI.
+1. **`ModelRegistry`** (`src/models.rs`) — Used by `wg models` subcommand. Stores models in `.wg/models.yaml`. Has 12 hardcoded defaults with pricing, context window, capabilities, tier. Primarily used for the `wg models list/search/add` CLI.
 
 2. **`ModelRegistryEntry` + `Config.model_registry`** (`src/config.rs`) — Used by the coordinator for dispatch routing. Stored in `config.toml` as `[[model_registry]]` entries. Has 3 built-in Anthropic entries (haiku/sonnet/opus). Used by `resolve_model_for_role()` and `wg model list`.
 
@@ -156,7 +156,7 @@ Model discovery is **already partially implemented**:
 ### Implemented (`src/commands/models.rs`)
 - `wg models search <query>` — Search remote models by query string
 - `wg models list-remote` — List all remote models
-- Caching in `.workgraph/model_cache.json` with 1-hour TTL
+- Caching in `.wg/model_cache.json` with 1-hour TTL
 - `--tools-only` filter for tool-supporting models
 - `--no-cache` to force refresh
 - JSON output mode

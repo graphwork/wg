@@ -24,7 +24,7 @@ Each phase lists: *what it ships*, *what changes for users*, *validation*.
 
 ### Phase 1: Handler-PID lock (foundation)
 
-**Ships:** `.workgraph/chat/<uuid>/.handler.pid` acquire/release/takeover
+**Ships:** `.wg/chat/<uuid>/.handler.pid` acquire/release/takeover
 logic in `chat_sessions.rs`. New functions:
 
 - `SessionLock::acquire(dir, kind) -> Result<SessionLock>` — O_EXCL
@@ -189,7 +189,7 @@ format for coordinators. Scripts that hardcode `.coordinator-0` keep
 working via alias resolution.
 
 **Validation:**
-- Migration runs cleanly on an existing `.workgraph/graph.jsonl` with
+- Migration runs cleanly on an existing `.wg/graph.jsonl` with
   `.coordinator-0` + `.coordinator-1` — both get renamed + aliased.
 - `wg show .coordinator-0` still resolves post-migration.
 - New `wg tui` session create-coordinator flow produces `.chat-<uuid>`.

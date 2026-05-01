@@ -13,7 +13,7 @@ When the coordinator spawns an agent (via `spawn_agent_inner` in `src/commands/s
 | `{{task_description}}` | Task field | Free-text description from `wg add -d` |
 | `{{task_context}}` | `build_task_context()` in spawn.rs | Artifacts + last 5 log entries from each direct dependency |
 | `{{task_loop_info}}` | Cycle config on task | Iteration number, max iterations, `--converged` instructions |
-| `{{working_dir}}` | Parent of `.workgraph/` dir | Sets the `cwd` for the agent process |
+| `{{working_dir}}` | Parent of `.wg/` dir | Sets the `cwd` for the agent process |
 | `{{model}}` | Model hierarchy resolution | Not directly visible to the agent in the prompt |
 
 The prompt template itself (lines 372-444 of executor.rs) then wraps these variables in a structured format with sections: Task Assignment header, Your Task, Context from Dependencies, Required Workflow (log/artifact/done/fail commands), Graph Patterns reference, Reusable Workflow Functions, and a critical warning about using `wg` CLI instead of built-in tools.

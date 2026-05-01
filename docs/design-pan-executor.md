@@ -131,7 +131,7 @@ web_search tool
   └── SearXNGBackend (self-hosted, URL required)
 ```
 
-Configured via `WG_SEARCH_BACKEND` + `WG_SEARCH_API_KEY` env vars or `.workgraph/config.toml`.
+Configured via `WG_SEARCH_BACKEND` + `WG_SEARCH_API_KEY` env vars or `.wg/config.toml`.
 
 **Alternative approach:** Use an MCP server for web search (e.g., `@anthropic/mcp-server-brave-search`) instead of building native backends. This would make web search a configuration concern rather than a code concern. See Section 4.
 
@@ -178,7 +178,7 @@ Agent startup
 ### Configuration
 
 ```toml
-# .workgraph/mcp_servers.toml (or per-project)
+# .wg/mcp_servers.toml (or per-project)
 [servers.brave-search]
 command = "npx"
 args = ["-y", "@anthropic/mcp-server-brave-search"]

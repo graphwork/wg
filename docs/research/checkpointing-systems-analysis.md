@@ -124,7 +124,7 @@ This IS a checkpoint, just triggered by death rather than proactively. The quest
 
 **Key insight: file changes persist regardless of agent death.**
 
-When an LLM agent runs `cargo build`, edits files, writes tests — all of that survives agent death. The agent's working directory in `.workgraph/agents/<agent-id>/` contains its output log, and the project repo contains all file changes.
+When an LLM agent runs `cargo build`, edits files, writes tests — all of that survives agent death. The agent's working directory in `.wg/agents/<agent-id>/` contains its output log, and the project repo contains all file changes.
 
 **What's actually lost when an agent dies:**
 1. The LLM's context window (conversation history, reasoning chain)

@@ -159,14 +159,14 @@ Leverage the existing auto-evaluate pattern in the coordinator. When a task comp
 
 2. In the coordinator tick (same phase as `build_auto_evaluate_tasks()`), add `build_auto_doc_sync_tasks()`:
    - For each task that just reached `Done` status
-   - Check `.workgraph/output/{task-id}/changes.patch` for non-doc file changes
+   - Check `.wg/output/{task-id}/changes.patch` for non-doc file changes
    - If changes exist and no `update-docs-{task-id}` task already exists:
      - Create task `update-docs-{task-id}` with description:
        ```
        Review changes from task {task-id} ("{title}") and update documentation.
 
        Consult docs/MANIFEST.md for the mapping of features → doc locations.
-       Read .workgraph/output/{task-id}/changes.patch to understand what changed.
+       Read .wg/output/{task-id}/changes.patch to understand what changed.
        Update all relevant doc locations listed in the manifest.
        If no doc updates are needed, mark this task done with a note explaining why.
        ```

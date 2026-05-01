@@ -141,7 +141,7 @@ placement, model routing, and identity gaps.
 
 **How it runs:** The coordinator's Phase 2 processes Open `.assign-*` tasks inline: it calls `run_lightweight_assignment()` (`src/commands/service/assignment.rs:200`) which builds a prompt with the agent catalog, task details, and assignment criteria, then makes a single LLM API call via `run_lightweight_llm_call()` with `DispatchRole::Assigner`. If the exec command is present, it can also be spawned as an inline task (`spawn_assign_inline`, `src/commands/service/coordinator.rs:2244`).
 
-**Output:** Sets `task.agent`, `task.exec_mode`, `task.context_scope` on the source task. Records a `TaskAssignmentRecord` in `.workgraph/agency/assignments/`. Marks `.assign-*` as Done with a description summarizing the assignment.
+**Output:** Sets `task.agent`, `task.exec_mode`, `task.context_scope` on the source task. Records a `TaskAssignmentRecord` in `.wg/agency/assignments/`. Marks `.assign-*` as Done with a description summarizing the assignment.
 
 **Identity:** Uses `config.agency.assigner_agent` if configured. Otherwise runs bare.
 
@@ -171,7 +171,7 @@ placement, model routing, and identity gaps.
 
 **How it runs:** As an inline task with exec command `wg evaluate run <task-id> --flip`. The coordinator spawns it via `spawn_eval_inline()` (`src/commands/service/coordinator.rs:2061`). The `run_flip()` function (`src/commands/evaluate.rs:580`) executes both phases sequentially.
 
-**Output:** An `Evaluation` record with `source: "flip"` saved to `.workgraph/agency/evaluations/`. Dimensions: `semantic_match`, `requirement_coverage`, `specificity_match`, `hallucination_rate`.
+**Output:** An `Evaluation` record with `source: "flip"` saved to `.wg/agency/evaluations/`. Dimensions: `semantic_match`, `requirement_coverage`, `specificity_match`, `hallucination_rate`.
 
 **Dependency chain:** `.flip-<id>` depends on `<id>` (source task). `.evaluate-<id>` depends on `.flip-<id>` (when FLIP is enabled), so eval incorporates the FLIP score.
 
@@ -183,7 +183,7 @@ placement, model routing, and identity gaps.
 
 **How it runs:** Inline via `spawn_eval_inline()`. Exec command: `wg evaluate run <task-id>`. The `run()` function (`src/commands/evaluate.rs:103`) loads the task's agent identity, artifacts, git diff, downstream tasks, and FLIP/verify-flip data, then calls the LLM.
 
-**Output:** `Evaluation` record saved to `.workgraph/agency/evaluations/`. Updates agent/role/tradeoff performance records via `record_evaluation_with_inference()`. Can trigger the **eval gate** (`check_eval_gate`, `src/commands/evaluate.rs:1320`) which fails the source task if the score is below `eval_gate_threshold`.
+**Output:** `Evaluation` record saved to `.wg/agency/evaluations/`. Updates agent/role/tradeoff performance records via `record_evaluation_with_inference()`. Can trigger the **eval gate** (`check_eval_gate`, `src/commands/evaluate.rs:1320`) which fails the source task if the score is below `eval_gate_threshold`.
 
 **Dependency chain:** Depends on `.flip-<id>` (if FLIP enabled) or directly on `<id>`. When FLIP verification triggers, `.evaluate-<id>` also gains a dep on `.verify-flip-<id>`.
 

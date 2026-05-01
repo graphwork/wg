@@ -41,7 +41,7 @@ Task agents are spawned through:
 **`src/commands/spawn/execution.rs:29-530`** — `fn spawn_agent_inner()`
 
 This function:
-1. Loads executor config from the registry: `ExecutorRegistry::new(dir).load_config(executor_name)` (line 142-143), which reads `.workgraph/executors/<name>.toml`
+1. Loads executor config from the registry: `ExecutorRegistry::new(dir).load_config(executor_name)` (line 142-143), which reads `.wg/executors/<name>.toml`
 2. Applies template variables: `executor_config.apply_templates(&vars)` (line 210), producing `ExecutorSettings` with a resolved `command` field
 3. Resolves model through a proper cascade (line 152-157):
    ```
@@ -116,7 +116,7 @@ pub struct ExecutorSettings {
 | **Model** | Passed through from `daemon_cfg.model` | 4-level cascade: task > agent > executor > coordinator |
 | **Provider** | **Ignored** — `DaemonConfig.provider` exists but is never passed to spawn | 5-level cascade: task > registry > agent > role > coordinator |
 | **Endpoint** | **Ignored** — no endpoint resolution at all | 6-level cascade with URL and API key resolution |
-| **Executor config** | **Never loaded** — no `.workgraph/executors/` lookup | Loaded via `ExecutorRegistry` |
+| **Executor config** | **Never loaded** — no `.wg/executors/` lookup | Loaded via `ExecutorRegistry` |
 | **API key** | **None** — relies on Claude CLI's own auth | Resolved from endpoint config, passed as env var |
 | **Environment vars** | Only removes `CLAUDECODE` and `CLAUDE_CODE_ENTRYPOINT` | Sets `WG_TASK_ID`, `WG_AGENT_ID`, `WG_EXECUTOR_TYPE`, `WG_MODEL`, `WG_ENDPOINT`, `WG_LLM_PROVIDER`, `WG_ENDPOINT_URL`, `WG_API_KEY` |
 

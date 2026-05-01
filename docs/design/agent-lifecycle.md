@@ -37,7 +37,7 @@ This means every mechanism that stops an agent produces a **checkpoint**, and ev
 | **Amplifier** | Bundle-level session continuity | Delegated to sub-executor checkpoints | Bundle context injection |
 | **Shell / Custom** | No session resume (always fresh) | No auto-checkpoint (explicit `wg checkpoint` only) | Checkpoint injected into task context template |
 
-**The native executor is the primary target.** It manages its own conversation history in `.workgraph/agents/<id>/conversation.json`, making session resume a first-class capability without depending on any external service. The resume pipeline's fallback path (checkpoint injection) works for ALL executors, including shell and custom ones that have no session concept.
+**The native executor is the primary target.** It manages its own conversation history in `.wg/agents/<id>/conversation.json`, making session resume a first-class capability without depending on any external service. The resume pipeline's fallback path (checkpoint injection) works for ALL executors, including shell and custom ones that have no session concept.
 
 ## Lifecycle States
 
@@ -113,7 +113,7 @@ Session resume requires each executor to persist enough state to reconstruct con
 | Executor | Persistence Mechanism | Action Required |
 |----------|----------------------|-----------------|
 | **Claude CLI** | Server-side sessions via `session_id` | Already implemented: `--resume` support exists in `execution.rs:385-390`. Ensure session IDs are stored on Task struct. |
-| **Native** | Conversation history in `.workgraph/agents/<id>/conversation.json` | Already persisted by the native executor. Resume = replay stored messages to the API. |
+| **Native** | Conversation history in `.wg/agents/<id>/conversation.json` | Already persisted by the native executor. Resume = replay stored messages to the API. |
 | **Amplifier** | Delegated to sub-executor | Passes session context through bundle protocol. |
 | **Shell / Custom** | None (stateless) | Checkpoint injection is the only resume path. |
 
@@ -161,7 +161,7 @@ Works with any executor — timer fallback is always available.
 }
 ```
 
-**Storage:** `.workgraph/agents/<agent-id>/checkpoints/<timestamp>.json`. Auto-prune to last 5 per task.
+**Storage:** `.wg/agents/<agent-id>/checkpoints/<timestamp>.json`. Auto-prune to last 5 per task.
 
 ### Integration with triage "continue"
 
@@ -324,7 +324,7 @@ The liveness detection system (Phases 1-3) feeds INTO this lifecycle:
 ### Phase 4: Session Persistence + `wg wait` (foundation)
 - Define executor-agnostic `SessionResume` trait with per-executor implementations:
   - Claude CLI: `--resume <session_id>` (server-side context)
-  - Native executor: conversation history replay from `.workgraph/agents/<id>/conversation.json`
+  - Native executor: conversation history replay from `.wg/agents/<id>/conversation.json`
   - Amplifier: delegate to sub-executor session mechanism
   - Shell/Custom: no-op (always falls back to checkpoint injection)
 - Store `session_id` on Task struct and populate from executor-specific sources (Claude: stream.jsonl Init events, Native: conversation file path)

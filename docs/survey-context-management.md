@@ -155,7 +155,7 @@ There is no:
 | Task description | ~200-2000 chars | Unbounded | ❌ No |
 | Dependency context | ~50 chars/dep | Bounded by graph | ✅ Effectively |
 
-**Worst case**: A role with 5 evolver-generated skills (observed in `.workgraph/agency/evolver-skills/`, each 5-7KB) adds **~35KB** to every prompt using that role. With URL-fetched skills pointing to external docs, there is **no upper bound**.
+**Worst case**: A role with 5 evolver-generated skills (observed in `.wg/agency/evolver-skills/`, each 5-7KB) adds **~35KB** to every prompt using that role. With URL-fetched skills pointing to external docs, there is **no upper bound**.
 
 ---
 
@@ -303,7 +303,7 @@ When a task has an `identity` (role + motivation), the rendered prompt block is:
 
 ### 6.3 Context Bloat from Skills
 
-Observed in `.workgraph/agency/evolver-skills/`:
+Observed in `.wg/agency/evolver-skills/`:
 - `gap-analysis.md`: 6.7KB
 - `motivation-tuning.md`: 7.2KB
 - `retirement.md`: 5.6KB
@@ -372,7 +372,7 @@ Role matching scores by keyword overlap (30%), skill overlap (40%), tag matching
 
 7. **Dependency summaries**: When building task context, include a one-line summary of each dependency task (title or first line of description) alongside artifact paths. This gives agents understanding of *what* upstream tasks accomplished.
 
-8. **Skill caching**: Cache resolved URL/file skills with a TTL. Avoid re-fetching on every spawn. Store in `.workgraph/cache/skills/`.
+8. **Skill caching**: Cache resolved URL/file skills with a TTL. Avoid re-fetching on every spawn. Store in `.wg/cache/skills/`.
 
 9. **Context-aware trajectory scoring**: Replace binary context bonus (+5) with a graduated score based on:
    - Number of inputs satisfied (not just any/none)

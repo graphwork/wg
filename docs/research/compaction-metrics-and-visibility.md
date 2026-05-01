@@ -19,7 +19,7 @@ The old `should_compact()` function (`src/service/compactor.rs:73`) checked tick
    - Implemented at `src/commands/service/mod.rs:1386–1394`.
 
 2. **Token threshold gate** (`src/commands/service/mod.rs:1392–1404`):  
-   - Reads `accumulated_tokens` from `CoordinatorState` (persisted at `.workgraph/service/coordinator-state.json`).  
+   - Reads `accumulated_tokens` from `CoordinatorState` (persisted at `.wg/service/coordinator-state.json`).  
    - Compares against `config.effective_compaction_threshold()` (`src/config.rs:2276`).  
    - Threshold = `compaction_threshold_ratio × model.context_window` (default: 80% of coordinator model's context window).  
    - Falls back to hardcoded `compaction_token_threshold` if model lookup fails.
@@ -46,15 +46,15 @@ This is reset to `0` after every successful compaction (`src/commands/service/mo
 
 | Metric | Where stored | Accessible from |
 |--------|-------------|-----------------|
-| `accumulated_tokens` | `.workgraph/service/coordinator-state.json` | `CoordinatorState::accumulated_tokens` |
+| `accumulated_tokens` | `.wg/service/coordinator-state.json` | `CoordinatorState::accumulated_tokens` |
 | Compaction threshold | `config.effective_compaction_threshold()` | Computed from model registry |
 | Progress % | Derived: `(accumulated / threshold) × 100` | Rendered in `wg service status` and TUI status bar |
-| `compaction_count` | `.workgraph/compactor/state.json` | `CompactorState::compaction_count` |
-| `last_compaction` timestamp | `.workgraph/compactor/state.json` | `CompactorState::last_compaction` |
-| `.compact-0` task status | `.workgraph/graph.jsonl` | Task `status` field |
-| `.compact-0` task log | `.workgraph/graph.jsonl` | Task `log` entries |
-| `.compact-0` `started_at` / `completed_at` | `.workgraph/graph.jsonl` | Task timestamps |
-| `.compact-0` `loop_iteration` | `.workgraph/graph.jsonl` | Task `loop_iteration` counter |
+| `compaction_count` | `.wg/compactor/state.json` | `CompactorState::compaction_count` |
+| `last_compaction` timestamp | `.wg/compactor/state.json` | `CompactorState::last_compaction` |
+| `.compact-0` task status | `.wg/graph.jsonl` | Task `status` field |
+| `.compact-0` task log | `.wg/graph.jsonl` | Task `log` entries |
+| `.compact-0` `started_at` / `completed_at` | `.wg/graph.jsonl` | Task timestamps |
+| `.compact-0` `loop_iteration` | `.wg/graph.jsonl` | Task `loop_iteration` counter |
 | Compaction error count | In-memory only | `compaction_error_count` var in daemon |
 
 ### Data we don't have (would need to add)
@@ -88,17 +88,17 @@ This is reset to `0` after every successful compaction (`src/commands/service/mo
 2. **Coordinator marks done** → `.coordinator-0` transitions Done → `.compact-0` becomes graph-ready (cycle reactivation)
 3. **Daemon poll fires** → `run_graph_compaction()` checks gates → marks `.compact-0` InProgress
 4. **Single LLM call** → `run_lightweight_llm_call(config, DispatchRole::Compactor, prompt, 120s)`
-5. **Success** → writes `.workgraph/compactor/context.md`, marks `.compact-0` Done, resets `accumulated_tokens=0`
+5. **Success** → writes `.wg/compactor/context.md`, marks `.compact-0` Done, resets `accumulated_tokens=0`
 6. **Failure** → reverts `.compact-0` to Open (for retry), increments `compaction_error_count`
 
 ### State tracking files
 
 | File | Contents |
 |------|----------|
-| `.workgraph/service/coordinator-state.json` | `accumulated_tokens`, `ticks`, `enabled`, `max_agents` |
-| `.workgraph/compactor/state.json` | `last_compaction`, `compaction_count`, `last_ops_count` |
-| `.workgraph/graph.jsonl` | `.compact-0` task: `status`, `started_at`, `completed_at`, `loop_iteration`, `log[]` |
-| `.workgraph/compactor/context.md` | Output: Rolling Narrative + Persistent Facts + Evaluation Digest |
+| `.wg/service/coordinator-state.json` | `accumulated_tokens`, `ticks`, `enabled`, `max_agents` |
+| `.wg/compactor/state.json` | `last_compaction`, `compaction_count`, `last_ops_count` |
+| `.wg/graph.jsonl` | `.compact-0` task: `status`, `started_at`, `completed_at`, `loop_iteration`, `log[]` |
+| `.wg/compactor/context.md` | Output: Rolling Narrative + Persistent Facts + Evaluation Digest |
 
 ---
 

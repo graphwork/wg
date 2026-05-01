@@ -20,11 +20,11 @@ The graph directory is resolved first, **then** config is loaded:
 | step | what is read | from |
 |------|-------------|------|
 | graph-dir resolution | `--dir` → `WG_DIR` → walk-up from cwd for `.wg`/`.workgraph` → `~/.wg`/`~/.workgraph` → default `./.wg` | `src/main.rs:55-102` |
-| global config | `~/.workgraph/config.toml` (note: **hardcoded `.workgraph`**, not `.wg`) | `src/config.rs:3669-3677` (`Config::global_dir`) |
+| global config | `~/.wg/config.toml` (note: **hardcoded `.workgraph`**, not `.wg`) | `src/config.rs:3669-3677` (`Config::global_dir`) |
 | project config | `<workgraph_dir>/config.toml` (whichever name resolved above) | `src/config.rs:3749-3754` (`Config::load_merged`) |
 | matrix creds | `~/.config/workgraph/matrix.toml` (separate file, not merged into Config) | `src/config.rs:3367-3370` |
 
-**Stale alert:** `Config::global_dir()` joins `.workgraph` literally; `resolve_workgraph_dir()` in `main.rs:53` prefers `.wg`. On Erik's system the two are hardlinked and that masks the inconsistency. New users running `wg init --global` get `~/.wg/config.toml` (per `main.rs:710-712`) — but `Config::load_global()` will then try to read `~/.workgraph/config.toml` and silently get `None`. **Fix candidate:** make `Config::global_dir()` use the same resolver order as `main.rs::resolve_workgraph_dir`.
+**Stale alert:** `Config::global_dir()` joins `.workgraph` literally; `resolve_workgraph_dir()` in `main.rs:53` prefers `.wg`. On Erik's system the two are hardlinked and that masks the inconsistency. New users running `wg init --global` get `~/.wg/config.toml` (per `main.rs:710-712`) — but `Config::load_global()` will then try to read `~/.wg/config.toml` and silently get `None`. **Fix candidate:** make `Config::global_dir()` use the same resolver order as `main.rs::resolve_workgraph_dir`.
 
 ### Per-key precedence
 
@@ -34,7 +34,7 @@ For any single setting, resolution flows top-down (highest precedence first):
 2. **CLI flag** for one-shot overrides — e.g. `wg add ... --model claude:opus`, `wg service start --max-agents 4`. Most wg subcommands accept `--model`/`--endpoint`/etc. (see `src/cli.rs`).
 3. **Tag routing** — `[[tag_routing]]` rules match `task.tags` and provide a model+executor when `task.model` is unset (`src/config.rs:1388-1395`).
 4. **Project-local config** — `<workgraph_dir>/config.toml`.
-5. **Global config** — `~/.workgraph/config.toml` (deep-merged: project keys override globally; for `[[llm_endpoints.endpoints]]` see special opt-in below).
+5. **Global config** — `~/.wg/config.toml` (deep-merged: project keys override globally; for `[[llm_endpoints.endpoints]]` see special opt-in below).
 6. **Profile defaults** — when `profile = "anthropic"` (etc.) is set, that profile supplies tier defaults (`src/config.rs:2078-2092`).
 7. **Hardcoded defaults** — `default_*()` functions and `Default for *Config` impls (`src/config.rs:184-…`, scattered).
 8. **Built-in registry** — `Config::builtin_registry()` provides Anthropic Claude entries when `[[model_registry]]` is empty (`src/config.rs:1964-2053`).
@@ -150,7 +150,7 @@ A large block. Only the keys most likely to matter to set are listed; full schem
 |-----|------|---------|-------|-------|
 | `auto_evaluate` | `:2433` | `true` | B | post-task evaluation |
 | `auto_assign` | `:2437` | `true` | B | auto-assign agent identity |
-| `assigner_agent`, `evaluator_agent`, `evolver_agent`, `creator_agent`, `placer_agent` | `:2441-2458` | `None` | B (per project; identity hashes are content-addressable) | content-hash refs into `.workgraph/agency/` |
+| `assigner_agent`, `evaluator_agent`, `evolver_agent`, `creator_agent`, `placer_agent` | `:2441-2458` | `None` | B (per project; identity hashes are content-addressable) | content-hash refs into `.wg/agency/` |
 | `auto_place` | `:2464` | `false` | B | placement during assignment |
 | `auto_create` | `:2469` | `false` | B | auto-invoke creator agent |
 | `auto_create_threshold` | `:2474` | `20` | B | |
@@ -283,7 +283,7 @@ Stored at `~/.config/workgraph/matrix.toml`, NOT in main config (`src/config.rs:
 | 149-162 | `[[model_registry]]` qwen3-coder-30b | `endpoint = "lambda01"` | Stale endpoint name (no `[[llm_endpoints.endpoints]]` named `lambda01` in the same file). Either add the endpoint or drop the registry entry. |
 | 191 | `[mcp]` | empty | OK — empty section is harmless but produces a non-default output on `wg config show`. Drop the line. |
 
-### Confirmed staleness in current local `.workgraph/config.toml` (this repo)
+### Confirmed staleness in current local `.wg/config.toml` (this repo)
 
 | line | key | current value | issue |
 |-----|-----|---------------|-------|
@@ -312,7 +312,7 @@ Items listed as **deprecated** above. The big ones:
 
 ---
 
-## 4. Minimal global config — `~/.wg/config.toml` (or `~/.workgraph/config.toml`)
+## 4. Minimal global config — `~/.wg/config.toml` (or `~/.wg/config.toml`)
 
 For a "I use claude CLI for everything, opus is my workhorse" user, this is the entire config:
 
@@ -504,7 +504,7 @@ If `wg show <task>` or `wg config show` displays a value you didn't set, the cas
 2. **CLI flag** — `wg add ... --model X`, `wg service start --max-agents N`.
 3. **Tag routing** — `[[tag_routing]]` rules with matching tag.
 4. **Project `<workgraph_dir>/config.toml`**.
-5. **Global `~/.workgraph/config.toml`** (deep-merged).
+5. **Global `~/.wg/config.toml`** (deep-merged).
 6. **Profile defaults** — when `profile = "..."` is set.
 7. **Hardcoded `default_*()` functions** (`src/config.rs`).
 8. **Built-in registry** — `Config::builtin_registry()` (Anthropic Claude haiku/sonnet/opus baked in).

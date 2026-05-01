@@ -157,7 +157,7 @@ All spawn paths correctly propagate OpenRouter-related configuration.
 
 ## 6. Models Registry
 
-**Files:** `src/models.rs`, `.workgraph/models.yaml`
+**Files:** `src/models.rs`, `.wg/models.yaml`
 
 ### Status: ✅ Working (with design note)
 
@@ -221,7 +221,7 @@ test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fin
 ## Architecture Diagram
 
 ```
-User Config (.workgraph/config.toml)
+User Config (.wg/config.toml)
   ├── [llm_endpoints]         → EndpointsConfig
   │     └── EndpointConfig    → name, provider, url, api_key, api_key_file
   ├── [models]                → ModelRoutingConfig

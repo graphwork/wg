@@ -52,7 +52,7 @@ TB Trial Runner (Python)
   |  For each TB task definition:
   |    1. wg add "TB: <task-name>" --verify "<harbor-verifier-cmd>" \
   |         -d "<task instruction from harbor>"
-  |    2. Configure .workgraph/config.toml:
+  |    2. Configure .wg/config.toml:
   |         [agency] auto_assign=true, auto_evaluate=true, flip_enabled=true
   |         [coordinator] verify_mode="separate"
   |
@@ -81,7 +81,7 @@ Agent calls wg done -> triggers:
   |
   v
 Results Collection Task (--after all trial tasks)
-  - Reads evaluations from .workgraph/agency/evaluations/
+  - Reads evaluations from .wg/agency/evaluations/
   - Compares FLIP scores against Harbor's external verifier results
   - Produces correlation analysis: FLIP vs ground truth
 ```
@@ -257,7 +257,7 @@ wg add "Collect trial results" \
     --id "collect-results" \
     --after "tb-chess,tb-povray,tb-regex" \
     -d "## Description
-Read .workgraph/agency/evaluations/ for all completed trial tasks.
+Read .wg/agency/evaluations/ for all completed trial tasks.
 Compare FLIP scores against harbor verifier outcomes.
 Produce correlation table and false-PASS analysis.
 

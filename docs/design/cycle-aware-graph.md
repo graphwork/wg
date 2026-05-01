@@ -495,7 +495,7 @@ impl<'de> Deserialize<'de> for Task {
 }
 ```
 
-**Key constraint:** Old `.workgraph/` directories with `loops_to` edges must continue to work during the transition. The serde layer reads old format; the `wg migrate-loops` command converts in place; the new code writes the new format.
+**Key constraint:** Old `.wg/` directories with `loops_to` edges must continue to work during the transition. The serde layer reads old format; the `wg migrate-loops` command converts in place; the new code writes the new format.
 
 ---
 

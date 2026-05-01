@@ -86,7 +86,7 @@ mcp/
 └── registry.rs     — merges MCP tools into ToolRegistry
 ```
 
-Config in `.workgraph/config.toml`:
+Config in `.wg/config.toml`:
 
 ```toml
 [[mcp.servers]]

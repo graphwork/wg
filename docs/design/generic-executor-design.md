@@ -581,7 +581,7 @@ wg add "Research: look up API docs" --model deepseek/deepseek-chat-v3-0324
 | Startup time | Instant (in-process) | ~3-5s (Python process, module loading) |
 | Provider support | Anthropic native + any OpenAI-compatible | Same, plus Azure, Gemini, Ollama native |
 | Tool system | Rust-native ToolRegistry (in-process) | Python Tool protocol (subprocess) |
-| Bundle system | TOML files in .workgraph/bundles/ | Markdown+YAML, git-based composition |
+| Bundle system | TOML files in .wg/bundles/ | Markdown+YAML, git-based composition |
 | Context management | Vec<Message> in memory | Python ContextManager with persistence |
 | Agent delegation | Workgraph graph (native) | Amplifier sub-sessions |
 | Session resume | Not supported (single-shot) | Supported via session persistence |

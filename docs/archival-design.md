@@ -17,7 +17,7 @@ We have **five separate archival mechanisms** today, each with its own format, l
 
 ## 2. Current state map
 
-### 2.1 `.workgraph/archive.jsonl` — task archive *(graph-shaped, partial overlay exists)*
+### 2.1 `.wg/archive.jsonl` — task archive *(graph-shaped, partial overlay exists)*
 
 **What it is.** A separate JSONL file written by `wg archive`. Each line is a serialized `Node::Task` — same schema as `graph.jsonl`, but living in a sibling file. Done/Abandoned tasks with no active downstream dependents are eligible.
 
@@ -52,11 +52,11 @@ We have **five separate archival mechanisms** today, each with its own format, l
 - No link from the archived task in `archive.jsonl` to the archived ref. A user looking at a 6-month-old `archive search` hit cannot get to the original branch tip without git-spelunking.
 - Not in scope of any wg query surface.
 
-### 2.3 `.workgraph/log/` — agent logs + operations *(file-shaped, write-once, no archival)*
+### 2.3 `.wg/log/` — agent logs + operations *(file-shaped, write-once, no archival)*
 
 **What it is.**
-- `.workgraph/log/agents/<agent-id>/` — per-agent log directories. 110 such dirs currently. Written by spawn paths, never trimmed.
-- `.workgraph/log/operations.jsonl` — append-only provenance: `{op: "archive"|"add_task"|...|, task_id, timestamp, user, detail}`. Rotation threshold is configurable in `Config::log.rotation_threshold` but no one calls "rotate".
+- `.wg/log/agents/<agent-id>/` — per-agent log directories. 110 such dirs currently. Written by spawn paths, never trimmed.
+- `.wg/log/operations.jsonl` — append-only provenance: `{op: "archive"|"add_task"|...|, task_id, timestamp, user, detail}`. Rotation threshold is configurable in `Config::log.rotation_threshold` but no one calls "rotate".
 
 **Who writes it.** `workgraph::provenance::record(...)` — called by `wg archive`, `wg gc`, `wg done`, etc.
 
@@ -67,9 +67,9 @@ We have **five separate archival mechanisms** today, each with its own format, l
 - Effectively unmanaged: agent log dirs accumulate forever.
 - This is the right place to *find* "what was archived when, by whom" — but only by grep.
 
-### 2.4 `.workgraph/chat/coordinator-N/archive/` — chat scrollback *(file-shaped, retention-managed)*
+### 2.4 `.wg/chat/coordinator-N/archive/` — chat scrollback *(file-shaped, retention-managed)*
 
-**What it is.** Rotated chat history. The active inbox/outbox is `.workgraph/chat/coordinator-N/{inbox,outbox}.jsonl`; rotation moves them under `archive/` with a `YYYYMMDD-HHMMSS` timestamp suffix. (`src/chat.rs:1200-1310`)
+**What it is.** Rotated chat history. The active inbox/outbox is `.wg/chat/coordinator-N/{inbox,outbox}.jsonl`; rotation moves them under `archive/` with a `YYYYMMDD-HHMMSS` timestamp suffix. (`src/chat.rs:1200-1310`)
 
 **Who writes it.** `chat::rotate_to_archive(...)` triggered by size thresholds in the chat module.
 
@@ -89,7 +89,7 @@ We have **five separate archival mechanisms** today, each with its own format, l
 - Idempotent.
 - The integration test `tests/integration_retire_compact_archive.rs` enforces that creating a new chat does NOT auto-create these tasks.
 
-**The English noun "archive" in this code path is unrelated to `.workgraph/archive.jsonl`.** Calling them out separately because the names collide and confuse search.
+**The English noun "archive" in this code path is unrelated to `.wg/archive.jsonl`.** Calling them out separately because the names collide and confuse search.
 
 ### 2.6 Adjacent commands that are NOT archival
 
@@ -110,7 +110,7 @@ Three options:
 |--------|------|------|
 | **A. Separate `archive.jsonl`** *(current)* | Active reads stay fast. Format is identical so re-import is trivial. Already implemented + tested. | Two read paths. Need overlay layer. |
 | **B. Single `graph.jsonl` with `archived: bool`** | One file, one read path. Simple overlay (just a filter). | Active reads degrade as the file grows — `load_graph` rescans the whole thing. Today's hot path is "list ready tasks", which would re-scan thousands of done entries. |
-| **C. SQLite single source of truth** | Indexes, time queries, joins across live + archived for free. | Big migration. Loses the human-readable, git-friendly invariant — the explicit selling point in CLAUDE.md ("`.workgraph/graph.jsonl` ... human-readable, git-friendly"). |
+| **C. SQLite single source of truth** | Indexes, time queries, joins across live + archived for free. | Big migration. Loses the human-readable, git-friendly invariant — the explicit selling point in CLAUDE.md ("`.wg/graph.jsonl` ... human-readable, git-friendly"). |
 
 **Recommendation: A (status quo) plus a thin overlay reader.** The hot path stays fast. The overlay is opt-in, like `--archive` already is for `graph-export`. C is a much bigger conversation and would erase a value-prop the project chose deliberately. Revisit C only if archive grows beyond ~100k tasks and we measure a real problem.
 

@@ -19,7 +19,7 @@ wg endpoints add openrouter \
   --default
 ```
 
-This stores the endpoint in `.workgraph/config.toml`. Alternatively, set the key via environment variable:
+This stores the endpoint in `.wg/config.toml`. Alternatively, set the key via environment variable:
 
 ```bash
 export OPENROUTER_API_KEY="sk-or-v1-..."
@@ -59,7 +59,7 @@ This hits the OpenRouter `/models` API to confirm connectivity and authenticatio
 
 ### config.toml endpoint format
 
-Endpoints live under `[[llm_endpoints.endpoints]]` in `.workgraph/config.toml`:
+Endpoints live under `[[llm_endpoints.endpoints]]` in `.wg/config.toml`:
 
 ```toml
 [[llm_endpoints.endpoints]]
@@ -102,7 +102,7 @@ wg endpoints test openrouter
 wg endpoints remove openrouter
 ```
 
-Use `--global` on `add`, `remove`, or `set-default` to target the global config (`~/.workgraph/config.toml`) instead of the project-local one.
+Use `--global` on `add`, `remove`, or `set-default` to target the global config (`~/.wg/config.toml`) instead of the project-local one.
 
 ### Environment variables
 

@@ -52,7 +52,7 @@ a per-task timeout adds the top-priority layer.
 **Already implemented.** The shell executor wrapper script (`execution.rs:985`) redirects
 stdout+stderr to `output.log` in the agent output directory:
 ```
-.workgraph/log/agents/<task-id>/<timestamp>/output.log
+.wg/log/agents/<task-id>/<timestamp>/output.log
 ```
 
 On completion/failure, the wrapper calls `wg done`/`wg fail` based on exit code.
@@ -242,7 +242,7 @@ Logs are **append-only** across all reset paths:
 
 On `wg done` or `wg fail`, agent output is archived to:
 ```
-.workgraph/log/agents/<task-id>/<ISO-timestamp>/
+.wg/log/agents/<task-id>/<ISO-timestamp>/
   ├── output.log      # stdout+stderr
   ├── prompt.txt       # prompt sent to agent
   └── stream.jsonl     # streaming events (Claude agents only)
@@ -393,7 +393,7 @@ Iteration 0:
   coordinator spawns: bash -c "cd renders && ./run_batch.sh --quality high --frames 1-100"
   ... 4 hours later ...
   wrapper: exit 0 → wg done run-povray-render-batch
-  output.log archived to .workgraph/log/agents/run-povray-render-batch/<ts>/
+  output.log archived to .wg/log/agents/run-povray-render-batch/<ts>/
 
   coordinator detects verify-render-batch-quality is ready (dep done)
   coordinator spawns Claude agent with full task context
@@ -455,7 +455,7 @@ Iteration 1:
 
 | File | Change |
 |------|--------|
-| `.workgraph/functions/exec-check-loop.toml` | New template file |
+| `.wg/functions/exec-check-loop.toml` | New template file |
 
 Convenience only. The two-command pattern works fine without it.
 

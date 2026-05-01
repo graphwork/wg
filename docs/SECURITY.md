@@ -33,7 +33,7 @@ export GITGUARDIAN_API_KEY=your_api_key_here
 
 The `.gitguardian.yml` file configures secret detection rules:
 
-- **Paths scanned**: All files except those in `.workgraph/`, `target/`, etc.
+- **Paths scanned**: All files except those in `.wg/`, `target/`, etc.
 - **File size limit**: 1MB per file
 - **Output format**: Human-readable text
 - **False positives**: Can be configured in the `secrets-ignore` section

@@ -49,7 +49,7 @@ AgentLoop (agent.rs)
     ↓
 ConversationManager (NEW: conversation.rs)
     ├── Journal (NEW: journal.rs)
-    │     └── Appends JournalEntry records to .workgraph/output/<task-id>/conversation.jsonl
+    │     └── Appends JournalEntry records to .wg/output/<task-id>/conversation.jsonl
     ├── ContextBudget (NEW: context_budget.rs)
     │     └── Tracks token usage, triggers compaction when approaching limits
     └── ResumeLoader (NEW: resume.rs)
@@ -247,10 +247,10 @@ pub enum EndReason {
 ### File Location
 
 ```
-.workgraph/output/<task-id>/conversation.jsonl
+.wg/output/<task-id>/conversation.jsonl
 ```
 
-This follows the existing pattern where agent output goes to `.workgraph/output/<task-id>/` (currently `agent.ndjson` and `stream.jsonl` live at `.workgraph/agents/<agent-id>/`). Using the task-id directory means:
+This follows the existing pattern where agent output goes to `.wg/output/<task-id>/` (currently `agent.ndjson` and `stream.jsonl` live at `.wg/agents/<agent-id>/`). Using the task-id directory means:
 - Multiple agent runs for the same task (retries, resumes) append to the same journal
 - The journal survives agent identity changes (new agent picking up a failed task)
 - Output is colocated with other task artifacts
@@ -608,7 +608,7 @@ The key insight: **the existing architecture is 80% right.** The `Provider` trai
 
 A native executor agent runs task `fix-login-bug`. The model is `openai/gpt-4o` via OpenRouter. The agent reads a file, edits it, and runs a test.
 
-### Journal File: `.workgraph/output/fix-login-bug/conversation.jsonl`
+### Journal File: `.wg/output/fix-login-bug/conversation.jsonl`
 
 Each line below is a single JSON object. Formatted here for readability with `// comments` (not present in actual file).
 

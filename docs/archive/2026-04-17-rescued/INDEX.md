@@ -50,7 +50,7 @@ next ~14 days (until git's unreachable-object GC fires).
   **Most directly relevant to current work.** 269-line analysis of
   native-executor security vulnerabilities (command injection, FS
   access, SSRF, resource exhaustion) with a phased hardening
-  roadmap and a proposed `.workgraph/security.toml` configuration
+  roadmap and a proposed `.wg/security.toml` configuration
   schema.
 
 - [security-remediation-design.md](security-remediation-design.md) —

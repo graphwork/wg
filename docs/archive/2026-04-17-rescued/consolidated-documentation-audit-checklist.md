@@ -46,7 +46,7 @@ Consolidated findings from comprehensive documentation audit covering:
 **❓ Verification Needed:**
 - GitHub repository URL: `https://github.com/graphwork/workgraph`
 - OpenAI integration syntax examples
-- Global config path: `~/.workgraph/config.toml`
+- Global config path: `~/.wg/config.toml`
 
 #### CLAUDE.md
 **Status:** ⭐⭐⭐⭐⭐ Fully Current and Accurate (100% current)  

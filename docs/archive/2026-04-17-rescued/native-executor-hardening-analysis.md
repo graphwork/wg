@@ -219,7 +219,7 @@ pub trait ParameterSanitizer {
 
 ## Configuration Framework
 
-Proposed security configuration in `.workgraph/security.toml`:
+Proposed security configuration in `.wg/security.toml`:
 
 ```toml
 [command_execution]

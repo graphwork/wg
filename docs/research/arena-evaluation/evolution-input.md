@@ -6,7 +6,7 @@ How FLIP-style arena evaluation (Wang et al., 2025, arXiv:2602.13551) can feed i
 
 The evolution system (`src/commands/evolve.rs`) operates as an LLM-driven optimization loop over the agency's roles and motivations:
 
-1. **Load state**: All roles, motivations, and evaluations from `.workgraph/agency/`
+1. **Load state**: All roles, motivations, and evaluations from `.wg/agency/`
 2. **Build performance summary**: `build_performance_summary()` aggregates per-role and per-motivation scores, dimension breakdowns, and a synergy matrix (role × motivation pairings)
 3. **Invoke evolver LLM**: A Claude instance receives the performance summary plus strategy-specific skill documents and returns structured JSON operations
 4. **Apply operations**: `create_role`, `modify_role`, `retire_role`, `create_motivation`, `modify_motivation`, `retire_motivation`

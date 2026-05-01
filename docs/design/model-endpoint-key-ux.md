@@ -97,7 +97,7 @@ wg endpoint test <name>
 | `--api-key-file` | string | (none) | Path to file containing API key |
 | `--key-env` | string | (none) | **NEW:** Env var name to read key from (e.g. `OPENROUTER_API_KEY`) |
 | `--default` | bool | false | Set as default endpoint |
-| `--global` | bool | false | Write to `~/.workgraph/config.toml` |
+| `--global` | bool | false | Write to `~/.wg/config.toml` |
 
 **New: `--key-env` flag.** Stores the env var name in a new `api_key_env` field on `EndpointConfig`. Resolution priority becomes:
 
@@ -273,14 +273,14 @@ wg key list                     # Show key status for all providers
 |------|------|-------------|
 | `--env` | string | Reference an environment variable by name |
 | `--file` | string | Path to a file containing the key |
-| `--value` | string | Store key directly (writes to `api_key_file` in `~/.workgraph/keys/<provider>.key`, NOT to config) |
+| `--value` | string | Store key directly (writes to `api_key_file` in `~/.wg/keys/<provider>.key`, NOT to config) |
 | `--global` | bool | Apply to global config |
 
 **Behavior by flag:**
 
 - `--env VAR_NAME` → Sets `api_key_env = "VAR_NAME"` on the provider's endpoint config
 - `--file /path/to/key` → Sets `api_key_file = "/path/to/key"` on the provider's endpoint config
-- `--value sk-xxx` → Writes key to `~/.workgraph/keys/<provider>.key` (chmod 600) and sets `api_key_file` pointing there. **Never writes the key value into config.toml.**
+- `--value sk-xxx` → Writes key to `~/.wg/keys/<provider>.key` (chmod 600) and sets `api_key_file` pointing there. **Never writes the key value into config.toml.**
 
 If no endpoint exists for the provider, one is auto-created.
 
@@ -293,8 +293,8 @@ $ wg key set anthropic --file ~/.secrets/anthropic.key
 Set API key for 'anthropic': using key file ~/.secrets/anthropic.key
 
 $ wg key set openrouter --value sk-or-v1-abc123...
-Stored key securely in ~/.workgraph/keys/openrouter.key (mode 600)
-Set API key for 'openrouter': using key file ~/.workgraph/keys/openrouter.key
+Stored key securely in ~/.wg/keys/openrouter.key (mode 600)
+Set API key for 'openrouter': using key file ~/.wg/keys/openrouter.key
 ```
 
 #### `wg key check [provider]`
@@ -305,12 +305,12 @@ Validates key availability and (where API supports it) checks credit/usage statu
 $ wg key check
 API Key Status:
   anthropic       ✓ (from env: ANTHROPIC_API_KEY)
-  openrouter      ✓ (from file: ~/.workgraph/keys/openrouter.key)
+  openrouter      ✓ (from file: ~/.wg/keys/openrouter.key)
   openai          ✗ not configured
 
 $ wg key check openrouter
 Provider: openrouter
-  Key source: file (~/.workgraph/keys/openrouter.key)
+  Key source: file (~/.wg/keys/openrouter.key)
   Key status: ✓ valid
   Credits:    $12.34 remaining
   Rate limit: 200 req/min
@@ -329,7 +329,7 @@ Shows key configuration status for all endpoints, without revealing key values:
 ```
   PROVIDER       SOURCE                              STATUS
   anthropic      env: ANTHROPIC_API_KEY               ✓ present
-  openrouter     file: ~/.workgraph/keys/openrouter   ✓ present
+  openrouter     file: ~/.wg/keys/openrouter   ✓ present
   openai         (not configured)                     ✗ missing
 ```
 
@@ -372,7 +372,7 @@ The existing `ConfigPanelState` with its sections (Endpoints, ApiKeys, ModelTier
 ┌─ API Keys ────────────────────────────────────────────────┐
 │                                                           │
 │  anthropic       env: ANTHROPIC_API_KEY           [✓]     │
-│  openrouter      file: ~/.workgraph/keys/openro…  [✓]     │
+│  openrouter      file: ~/.wg/keys/openro…  [✓]     │
 │  openai          (not configured)                 [✗]     │
 │                                                           │
 │  [Enter] Edit source    [c] Check key (live)              │
@@ -498,7 +498,7 @@ The coordinator interprets natural language requests and maps them to `wg` CLI c
 name = "openrouter"
 provider = "openrouter"
 url = "https://openrouter.ai/api/v1"
-api_key_file = "~/.workgraph/keys/openrouter.key"
+api_key_file = "~/.wg/keys/openrouter.key"
 
 # After (new optional field):
 [[llm_endpoints.endpoints]]
@@ -564,7 +564,7 @@ These structures are already well-designed. The new CLI commands wrap existing c
 
 ### Threat Model
 
-1. **Accidental commit** — `.workgraph/config.toml` is tracked by git; keys in this file get committed
+1. **Accidental commit** — `.wg/config.toml` is tracked by git; keys in this file get committed
 2. **Log exposure** — keys appearing in command output, logs, or error messages
 3. **Process exposure** — keys visible in `/proc/<pid>/cmdline`
 
@@ -572,9 +572,9 @@ These structures are already well-designed. The new CLI commands wrap existing c
 
 #### Layer 1: Never store keys inline in config.toml (default)
 
-`wg key set --value <key>` writes to `~/.workgraph/keys/<provider>.key` with mode `0600`, then sets `api_key_file` pointing there. The key value itself never appears in any `.workgraph/` file.
+`wg key set --value <key>` writes to `~/.wg/keys/<provider>.key` with mode `0600`, then sets `api_key_file` pointing there. The key value itself never appears in any `.wg/` file.
 
-`~/.workgraph/keys/` is in the user's home directory, not the project directory, so it's never in a git repo.
+`~/.wg/keys/` is in the user's home directory, not the project directory, so it's never in a git repo.
 
 #### Layer 2: Key file location hierarchy
 
@@ -582,12 +582,12 @@ These structures are already well-designed. The new CLI commands wrap existing c
 |--------|-----------------|----------|-----------------|
 | `--env VAR` | Process environment | None | CI/CD, containers |
 | `--file <path>` | User-specified file | User's responsibility | Advanced users |
-| `--value <key>` | `~/.workgraph/keys/<provider>.key` | None (home dir) | Interactive use |
+| `--value <key>` | `~/.wg/keys/<provider>.key` | None (home dir) | Interactive use |
 | `--api-key <key>` | `api_key` field in config.toml | **HIGH** | Emergency only, deprecated warning |
 
 #### Layer 3: .gitignore enforcement
 
-`wg init` adds `keys/` to `.workgraph/.gitignore` (defense in depth — keys are stored in `~/.workgraph/keys/`, not project `.workgraph/keys/`, but belt-and-suspenders).
+`wg init` adds `keys/` to `.wg/.gitignore` (defense in depth — keys are stored in `~/.wg/keys/`, not project `.wg/keys/`, but belt-and-suspenders).
 
 #### Layer 4: Key masking in output
 
@@ -615,7 +615,7 @@ A future iteration could integrate with OS keyrings (macOS Keychain, GNOME Keyri
 
 ```bash
 $ wg init
-Created .workgraph/ directory.
+Created .wg/ directory.
 # User has ANTHROPIC_API_KEY already set
 
 $ wg service start
@@ -633,13 +633,13 @@ Added endpoint 'openrouter' [openrouter] (set as default)
 
 # Step 2: Set the API key
 $ wg key set openrouter --value sk-or-v1-abc123def456
-Stored key securely in ~/.workgraph/keys/openrouter.key (mode 600)
-Set API key for 'openrouter': using key file ~/.workgraph/keys/openrouter.key
+Stored key securely in ~/.wg/keys/openrouter.key (mode 600)
+Set API key for 'openrouter': using key file ~/.wg/keys/openrouter.key
 
 # Step 3: Validate
 $ wg key check openrouter
 Provider: openrouter
-  Key source: file (~/.workgraph/keys/openrouter.key)
+  Key source: file (~/.wg/keys/openrouter.key)
   Key status: ✓ valid
   Credits:    $12.34 remaining
 
@@ -710,7 +710,7 @@ Welcome to workgraph setup!
     Local (Ollama/vLLM)
 
 ? Enter your API key: sk-or-v1-abc123def456
-  Stored securely in ~/.workgraph/keys/openrouter.key
+  Stored securely in ~/.wg/keys/openrouter.key
 
 ? Testing connection... ✓ Connected (12.34 credits)
 
@@ -768,10 +768,10 @@ None needed. The only schema change is the additive `api_key_env` field with `#[
 
 ### `implement-wg-key` scope:
 - Add `wg key` command family (set, check, list)
-- `wg key set --value` writes to `~/.workgraph/keys/<provider>.key`
+- `wg key set --value` writes to `~/.wg/keys/<provider>.key`
 - `wg key set --env` sets `api_key_env` on endpoint
 - `wg key set --file` sets `api_key_file` on endpoint
 - `wg key check` validates keys across all/specific providers
 - `wg key list` shows key status summary
-- Ensure `~/.workgraph/keys/` directory is created with mode 700
+- Ensure `~/.wg/keys/` directory is created with mode 700
 - Deprecation warning when inline `api_key` is detected

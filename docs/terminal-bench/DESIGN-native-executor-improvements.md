@@ -269,7 +269,7 @@ A cheap model call with the last N turns:
 
 ### Where to store
 
-`.workgraph/agents/<agent-id>/session-summary.md`
+`.wg/agents/<agent-id>/session-summary.md`
 
 ### How to use on resume
 

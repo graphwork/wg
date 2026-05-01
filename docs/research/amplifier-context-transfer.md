@@ -34,9 +34,9 @@ The prompt is built in `spawn_agent_inner()` (`spawn.rs:123-457`). The sequence:
 1. **Load graph** and validate task status (must be Open or Blocked)
 2. **Build context** via `build_task_context()` — iterates `blocked_by`, collects artifacts and last 5 log entries from done dependencies
 3. **Create TemplateVars** from the task, context string, and workgraph directory (`executor.rs:34-57`)
-4. **Resolve agent identity** — if the task has an `agent` field, look up the Agent/Role/Motivation in `.workgraph/agency/` and render an identity prompt
+4. **Resolve agent identity** — if the task has an `agent` field, look up the Agent/Role/Motivation in `.wg/agency/` and render an identity prompt
 5. **Resolve skills preamble** — if `.claude/skills/using-superpowers/SKILL.md` exists, include it
-6. **Load executor config** — either from `.workgraph/executors/<name>.toml` or the built-in default
+6. **Load executor config** — either from `.wg/executors/<name>.toml` or the built-in default
 7. **Apply templates** — replace all `{{variables}}` in the config (command, args, env, prompt template, working dir)
 8. **Write prompt.txt** to the agent's output directory
 9. **Generate wrapper script** (`run.sh`) that pipes prompt.txt into the executor and auto-marks done/failed
@@ -183,7 +183,7 @@ The correct path is:
 
 2. **Standardize the executor prompt interface** beyond `type = "claude"`. The current `Stdio::null()` for non-claude types forces amplifier to use `type = "claude"` as a hack. Adding a `stdin_mode = "pipe"` option or making stdin piping the default for all executor types with a prompt_template would eliminate this workaround.
 
-3. **Keep the protocol document approach** from amplifier's bundle. The `wg-executor-protocol.md` pattern — a standalone document defining the agent↔wg interaction contract — is cleaner than embedding it inline in the default prompt template. wg could ship a similar file at `.workgraph/context/executor-protocol.md` that any executor config can reference via `{{include:executor-protocol.md}}`.
+3. **Keep the protocol document approach** from amplifier's bundle. The `wg-executor-protocol.md` pattern — a standalone document defining the agent↔wg interaction contract — is cleaner than embedding it inline in the default prompt template. wg could ship a similar file at `.wg/context/executor-protocol.md` that any executor config can reference via `{{include:executor-protocol.md}}`.
 
 4. **Don't adopt amplifier's behavior/agent model into wg**. wg already has the agency system (roles, motivations, agents). Amplifier has its own behavior/agent YAML format. These should remain separate — each system manages identity in its own way, and the bridge is the prompt template where `{{task_identity}}` renders wg's agency data while amplifier adds its own behavior context.
 

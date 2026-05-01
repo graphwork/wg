@@ -171,11 +171,11 @@ These wrap existing functionality. Tests: each tool in isolation.
 ### Phase 3 + 4: shipped 2026-04-18
 
 **Phase 3 (I/O surface):** `wg nex --chat-id N [--role coordinator]
-[--resume]` reads user turns from `.workgraph/chat/N/inbox.jsonl`,
-streams tokens to `.workgraph/chat/N/.streaming`, and appends
-finalized replies to `.workgraph/chat/N/outbox.jsonl` — same paths,
+[--resume]` reads user turns from `.wg/chat/N/inbox.jsonl`,
+streams tokens to `.wg/chat/N/.streaming`, and appends
+finalized replies to `.wg/chat/N/outbox.jsonl` — same paths,
 same `ChatMessage` format, same streaming dotfile the TUI tails.
-Journal is pinned to `.workgraph/chat/N/conversation.jsonl` so
+Journal is pinned to `.wg/chat/N/conversation.jsonl` so
 `--resume` picks up the right session deterministically.
 
 See `src/executor/native/chat_surface.rs` (adapter over `crate::chat`)

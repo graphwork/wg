@@ -205,7 +205,7 @@ pub struct ChatMessage {
 
 **Data flow**:
 - Send: `wg chat "message"` (or `wg msg send coordinator "message"` before `wg chat` exists)
-- Receive: Poll `.workgraph/chat/outbox.jsonl` (or `wg msg poll coordinator`) on refresh tick
+- Receive: Poll `.wg/chat/outbox.jsonl` (or `wg msg poll coordinator`) on refresh tick
 - Until Phase 2, chat panel can still display messages sent/received via the message queue
 
 ### 4. Agent Monitor Panel (Right Tab: "Agents")
@@ -659,7 +659,7 @@ The current `Tab` key serves double duty: single press toggles trace, double-tap
 
 1. **Should the right panel border overlap with the graph area?** Current HUD uses `Block::default().borders(Borders::ALL)` which consumes space. The graph panel currently has no border. Using shared borders would save 1 column.
 
-2. **Should chat messages persist across TUI sessions?** If chat reads from `.workgraph/chat/outbox.jsonl`, messages persist naturally. But the scroll position and "last read" state would need saving.
+2. **Should chat messages persist across TUI sessions?** If chat reads from `.wg/chat/outbox.jsonl`, messages persist naturally. But the scroll position and "last read" state would need saving.
 
 3. **Should task form support multiline description editing?** A full text editor is complex. Initial implementation could use single-line title only, with description added via `wg edit` after creation. Or a simple multiline textarea with Enter for newlines and Ctrl-Enter to submit.
 

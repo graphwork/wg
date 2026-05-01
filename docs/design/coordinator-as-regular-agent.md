@@ -149,7 +149,7 @@ This is a minimal extension. The task is visible in the graph, has logs, has art
 
 **Output (written as artifact)**:
 
-A structured session summary written to `.workgraph/coordinator/era-{N}-summary.md`:
+A structured session summary written to `.wg/coordinator/era-{N}-summary.md`:
 
 ```markdown
 ## Session Summary (Era N)
@@ -208,7 +208,7 @@ fn handle_coordinator_exit(dir: &Path, era: u32, exit_reason: &str) -> Result<()
     let compact_id = format!("coordinator-compact-era-{}", era);
 
     // Save era metadata as artifact
-    let meta_path = format!(".workgraph/coordinator/era-{}-meta.json", era);
+    let meta_path = format!(".wg/coordinator/era-{}-meta.json", era);
     save_era_metadata(dir, era, exit_reason, &meta_path)?;
 
     // Create compaction task
@@ -216,12 +216,12 @@ fn handle_coordinator_exit(dir: &Path, era: u32, exit_reason: &str) -> Result<()
         "Summarize coordinator Era {} and produce seed context for Era {}.\n\n\
          Read the era artifacts and produce a session summary.\n\n\
          Input artifacts:\n\
-         - .workgraph/coordinator/era-{}-meta.json\n\
-         - .workgraph/chat/inbox.jsonl (messages during this era)\n\
-         - .workgraph/chat/outbox.jsonl (responses during this era)\n\
-         - .workgraph/agents/<coordinator-agent-id>/output.log\n\n\
-         Output: .workgraph/coordinator/era-{}-summary.md\n\n\
-         Previous summary: .workgraph/coordinator/era-{}-summary.md",
+         - .wg/coordinator/era-{}-meta.json\n\
+         - .wg/chat/inbox.jsonl (messages during this era)\n\
+         - .wg/chat/outbox.jsonl (responses during this era)\n\
+         - .wg/agents/<coordinator-agent-id>/output.log\n\n\
+         Output: .wg/coordinator/era-{}-summary.md\n\n\
+         Previous summary: .wg/coordinator/era-{}-summary.md",
         era, era + 1, era, era, era.saturating_sub(1)
     ))?;
 
@@ -239,7 +239,7 @@ fn handle_coordinator_exit(dir: &Path, era: u32, exit_reason: &str) -> Result<()
 Eras are tracked in a simple metadata file:
 
 ```
-.workgraph/coordinator/
+.wg/coordinator/
 ├── current-era.txt          # Just the number: "3"
 ├── era-1-summary.md         # Compacted summary from Era 1
 ├── era-1-meta.json          # Metadata: start/end times, tokens, exit reason
@@ -439,13 +439,13 @@ Instead of receiving messages via stream-json stdin injection, the coordinator a
 ```
 System prompt tells the agent:
 "You are a persistent coordinator. Check for new messages by reading
-.workgraph/chat/inbox.jsonl. When you find unread messages (ID > your
+.wg/chat/inbox.jsonl. When you find unread messages (ID > your
 last-read cursor), process them and write responses to
-.workgraph/chat/outbox.jsonl. Between messages, check graph state and
+.wg/chat/outbox.jsonl. Between messages, check graph state and
 perform any needed coordination."
 
 The agent's tool loop:
-1. read_file(".workgraph/chat/inbox.jsonl") → check for new messages
+1. read_file(".wg/chat/inbox.jsonl") → check for new messages
 2. If new messages: process each, call wg tools, write response
 3. If no new messages: check graph state, monitor agents
 4. Sleep briefly (agent decides timing, or daemon injects a "check now" signal)
@@ -456,7 +456,7 @@ The agent's tool loop:
 
 Option A: **Agent polls in a loop.** The coordinator agent is instructed to periodically read the inbox. This works but is wasteful — the agent burns tokens reading "no new messages" over and over.
 
-Option B: **Daemon injects a wake-up message.** When a chat message arrives, the daemon writes a special signal file (`.workgraph/chat/.wake`) that the agent checks cheaply. Or the daemon sends a message to the coordinator task's message queue (`wg msg send coordinator "new chat message"`).
+Option B: **Daemon injects a wake-up message.** When a chat message arrives, the daemon writes a special signal file (`.wg/chat/.wake`) that the agent checks cheaply. Or the daemon sends a message to the coordinator task's message queue (`wg msg send coordinator "new chat message"`).
 
 Option C: **Agent runs in single-turn mode, daemon re-invokes.** The coordinator agent processes one batch of messages and exits. The daemon re-invokes it when new messages arrive or on a timer. Each invocation is a single turn with the compacted context.
 
@@ -552,7 +552,7 @@ The coordinator agent's prompt includes: "When you estimate your context is appr
 Move the hardcoded system prompt from `build_system_prompt()` into the agency system:
 
 ```yaml
-# .workgraph/agency/roles/coordinator.yaml
+# .wg/agency/roles/coordinator.yaml
 name: coordinator
 description: "Persistent coordinator agent that manages the task graph"
 system_prompt: |
@@ -563,7 +563,7 @@ default_bundle: coordinator
 ```
 
 ```toml
-# .workgraph/bundles/coordinator.toml
+# .wg/bundles/coordinator.toml
 [bundle]
 name = "coordinator"
 description = "Coordinator agent — inspect + create, no implement"
@@ -630,8 +630,8 @@ context_scope = "graph"
 | File | Purpose |
 |------|---------|
 | `src/commands/service/compaction.rs` | Compaction task creation and era management |
-| `.workgraph/agency/roles/coordinator.yaml` | Coordinator role definition |
-| `.workgraph/bundles/coordinator.toml` | Coordinator tool bundle |
+| `.wg/agency/roles/coordinator.yaml` | Coordinator role definition |
+| `.wg/bundles/coordinator.toml` | Coordinator tool bundle |
 
 ### Net Effect
 

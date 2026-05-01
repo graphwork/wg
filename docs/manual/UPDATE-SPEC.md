@@ -107,7 +107,7 @@ These features were implemented in the most recent commits and are not yet docum
    - `wg agency scan <path>` discovers what roles, motivations, and agents exist in another project's agency store.
    - `wg agency pull <remote>` imports entities (roles, motivations, agents, and their evaluations) from a remote store into the local project.
    - `wg agency push <remote>` exports local entities to a remote store.
-   - Named remotes are stored in `.workgraph/federation.yaml` and managed via `wg agency remote add/list/remove`.
+   - Named remotes are stored in `.wg/federation.yaml` and managed via `wg agency remote add/list/remove`.
    - Performance records are merged during transfer: evaluations are deduplicated by task ID + timestamp, and average scores are recalculated.
    - Content-hash IDs make federation natural: the same entity has the same ID everywhere, so deduplication is automatic.
    - Mention that lineage is preserved across federation — you can trace an entity's ancestry even when it was pulled from another project.
@@ -196,9 +196,9 @@ The glossary has 30 terms covering: task, status, dependency, blocked_by, blocks
 | **convergence** | An agent-driven signal (`wg done --converged`) indicating that a loop's iterative work has reached a stable state. When the source task carries the `"converged"` tag, loop edges do not fire — even if iterations remain and guard conditions are met. Cleared on retry. |
 | **trace** | The operations log recording every mutation to the graph. The project's organizational memory, queryable via `wg trace`, exportable with visibility filtering via `wg trace export`, and importable from peers via `wg trace import`. |
 | **trace export** | A filtered, shareable snapshot of the trace. Visibility filtering controls what is included: `internal` exports everything, `public` sanitizes (no agent output, no logs), `peer` provides richer detail for trusted peers. The interchange format for cross-boundary sharing. |
-| **trace function** | A parameterized workflow template extracted from completed traces via `wg trace extract`. Captures task structure, dependencies, loop edges, and input parameters. Instantiated via `wg trace instantiate` to create new task graphs following the same pattern. Stored as YAML in `.workgraph/functions/`. |
-| **federation** | The system for sharing agency entities across workgraph projects. Operations: _scan_ (discover entities in a remote store), _pull_ (import from remote to local), _push_ (export from local to remote). Named remotes are stored in `.workgraph/federation.yaml`. Performance records are merged during transfer with deduplication. |
-| **remote** | A named reference to another workgraph project's agency store. Managed via `wg agency remote add/list/remove`. Stored in `.workgraph/federation.yaml`. |
+| **trace function** | A parameterized workflow template extracted from completed traces via `wg trace extract`. Captures task structure, dependencies, loop edges, and input parameters. Instantiated via `wg trace instantiate` to create new task graphs following the same pattern. Stored as YAML in `.wg/functions/`. |
+| **federation** | The system for sharing agency entities across workgraph projects. Operations: _scan_ (discover entities in a remote store), _pull_ (import from remote to local), _push_ (export from local to remote). Named remotes are stored in `.wg/federation.yaml`. Performance records are merged during transfer with deduplication. |
+| **remote** | A named reference to another workgraph project's agency store. Managed via `wg agency remote add/list/remove`. Stored in `.wg/federation.yaml`. |
 | **evaluation source** | A freeform string tag on each evaluation identifying its origin. Default: `"llm"` (internal auto-evaluator). External sources use structured tags: `"outcome:sharpe"`, `"ci:test-suite"`, `"vx:peer-id"`. The evolver reads all sources. |
 | **watch** | A real-time event stream (`wg watch --json`) that emits typed events (task.created, task.completed, agent.spawned, etc.) as the graph mutates. Enables external adapters to observe and react without polling. |
 | **adapter** | An external tool that translates between an external system's vocabulary and workgraph's ingestion points. The generic pattern: observe (via `wg watch`) → translate → ingest (via `wg` CLI) → react. |
@@ -296,7 +296,7 @@ The glossary has 30 terms covering: task, status, dependency, blocked_by, blocks
    Share agency entities across projects:
 
    ```bash
-   wg agency remote add partner /path/to/other/project/.workgraph/agency
+   wg agency remote add partner /path/to/other/project/.wg/agency
    wg agency scan partner              # see what they have
    wg agency pull partner              # import their roles, motivations, agents
    wg agency push partner              # export yours to them
@@ -338,9 +338,9 @@ The glossary has 30 terms covering: task, status, dependency, blocked_by, blocks
 ### Missing or Outdated
 
 1. **No mention of `Evaluation.source` field.** The evaluation flow section doesn't mention the source field.
-2. **No mention of federation.** `wg agency scan`, `wg agency pull`, `wg agency push`, `wg agency remote`, and the `.workgraph/federation.yaml` config are not documented.
+2. **No mention of federation.** `wg agency scan`, `wg agency pull`, `wg agency push`, `wg agency remote`, and the `.wg/federation.yaml` config are not documented.
 3. **No mention of `wg agency merge`.** Merge semantics for performance records during federation.
-4. **Storage layout incomplete.** Missing `.workgraph/federation.yaml` and `.workgraph/functions/` directories.
+4. **Storage layout incomplete.** Missing `.wg/federation.yaml` and `.wg/functions/` directories.
 
 ### Specific Additions Needed
 
@@ -375,12 +375,12 @@ The glossary has 30 terms covering: task, status, dependency, blocked_by, blocks
    ### Named remotes
 
    ```bash
-   wg agency remote add partner /path/to/other/.workgraph/agency
+   wg agency remote add partner /path/to/other/.wg/agency
    wg agency remote list
    wg agency remote remove partner
    ```
 
-   Remotes are stored in `.workgraph/federation.yaml`.
+   Remotes are stored in `.wg/federation.yaml`.
 
    ### Scanning
 
@@ -415,7 +415,7 @@ The glossary has 30 terms covering: task, status, dependency, blocked_by, blocks
 
 3. **Update storage layout** to include federation.yaml:
    ```
-   .workgraph/
+   .wg/
    ├── federation.yaml              # Named remotes for federation
    ├── agency/
    │   ├── roles/

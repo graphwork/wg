@@ -756,7 +756,7 @@ Rationale:
 | `ExportedTask.after` | `"after"` | `"after"` or `"blocked_by"` (alias) |
 | `ExportedTask.before` | `"before"` | `"before"` or `"blocks"` (alias) |
 
-**Old `.workgraph/graph.jsonl` files** with `"blocked_by"` and `"blocks"` keys will deserialize correctly via aliases. New writes will use `"after"` and `"before"`.
+**Old `.wg/graph.jsonl` files** with `"blocked_by"` and `"blocks"` keys will deserialize correctly via aliases. New writes will use `"after"` and `"before"`.
 
 ### CLI
 

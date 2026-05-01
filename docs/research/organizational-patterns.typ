@@ -151,7 +151,7 @@ the graph’s state stimulates their actions.
   inset: 6pt,
   [Stigmergy Concept], [Workgraph Equivalent],
   [#strong[Shared environment]],
-  [The task graph (`.workgraph/graph.jsonl`)],
+  [The task graph (`.wg/graph.jsonl`)],
   [#strong[Sematectonic trace]],
   [A completed task’s artifacts—the code, docs, or other work product
   left behind #emph[is] the stimulus for downstream tasks],
@@ -792,13 +792,13 @@ Layer 1: OPERATIVE MEMORY (the task graph)
   - Volatile: overwritten by each state transition
 
 Layer 2: EPISODIC MEMORY (agent archives)
-  - .workgraph/log/agents/<task-id>/<timestamp>/
+  - .wg/log/agents/<task-id>/<timestamp>/
   - Full prompt.txt and output.txt per agent run
   - Records *how* each task was worked on
   - Multiple episodes per task (retries create new timestamps)
 
 Layer 3: PROCEDURAL MEMORY (provenance log)
-  - .workgraph/log/operations.jsonl
+  - .wg/log/operations.jsonl
   - Every graph mutation: add, claim, done, fail, edit, retry,
     replay, restore
   - Records *what happened* to the graph as a whole

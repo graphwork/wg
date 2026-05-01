@@ -33,15 +33,15 @@ Reset to 0 after successful compaction.
 
 | Metric | Source | Location |
 |--------|--------|----------|
-| `accumulated_tokens` | `CoordinatorState.accumulated_tokens` | `.workgraph/service/coordinator-state.json` |
+| `accumulated_tokens` | `CoordinatorState.accumulated_tokens` | `.wg/service/coordinator-state.json` |
 | `threshold` | `config.effective_compaction_threshold()` | Computed from config + model registry |
 | `percent` | `accumulated / threshold * 100` | Derived |
-| `last_compaction` | `CompactorState.last_compaction` | `.workgraph/compactor/state.json` |
-| `compaction_count` | `CompactorState.compaction_count` | `.workgraph/compactor/state.json` |
+| `last_compaction` | `CompactorState.last_compaction` | `.wg/compactor/state.json` |
+| `compaction_count` | `CompactorState.compaction_count` | `.wg/compactor/state.json` |
 | `loop_iteration` | `.compact-0.loop_iteration` | `graph.jsonl` |
 | Current state | `.compact-0.status` | `graph.jsonl` (Open/InProgress/Done) |
 | Compaction duration | `.compact-0.started_at` + `.compact-0.completed_at` | `graph.jsonl` (already set, just need to subtract) |
-| Context.md size | `wc -c .workgraph/compactor/context.md` | Filesystem |
+| Context.md size | `wc -c .wg/compactor/context.md` | Filesystem |
 
 **File refs**: `src/service/compactor.rs:36-65` (CompactorState), `src/commands/service/mod.rs:308-340` (CoordinatorState), `src/commands/status.rs:409-433` (gather_compaction_info already pulls all of this)
 

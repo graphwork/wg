@@ -30,7 +30,7 @@ wg config --model sonnet
 wg config --coordinator-executor claude
 
 # Patch coordinator model to sonnet (fast responses)
-sed -i '/^\[coordinator\]/a model = "sonnet"' .workgraph/config.toml
+sed -i '/^\[coordinator\]/a model = "sonnet"' .wg/config.toml
 
 # Patch CLAUDE.md so the coordinator accepts creative tasks
 cat >> CLAUDE.md << 'PATCH'

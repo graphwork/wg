@@ -24,7 +24,7 @@ All liveness features depend on data flowing from the daemon to TUI instances. T
 | Data Source | Location | How TUI Reads It |
 |-------------|----------|-------------------|
 | Task counts / graph stats | `graph.jsonl` | `load_graph()` on fs watcher trigger (already works) |
-| Agent list + status | `.workgraph/service/registry.json` | Poll on timer (already done in `reload_agents()`) |
+| Agent list + status | `.wg/service/registry.json` | Poll on timer (already done in `reload_agents()`) |
 | Coordinator state | `coordinator-state.json` | Poll on timer (already done in `reload_coordinator_state()`) |
 | Provenance log (events) | `operations.jsonl` | Tail file on fs watcher trigger (new) |
 | Daemon log (coord ticks) | `daemon.log` | Already read for CoordLog tab |

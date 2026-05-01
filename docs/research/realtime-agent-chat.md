@@ -60,7 +60,7 @@ The inspector already uses `pulldown-cmark` + `syntect` for markdown rendering
 
 #### Storage
 
-Messages are stored as JSONL in `.workgraph/messages/{task-id}.jsonl`
+Messages are stored as JSONL in `.wg/messages/{task-id}.jsonl`
 (`src/messages.rs:68-69`). Each message has:
 - `id`: Monotonic counter per task
 - `timestamp`: RFC 3339
@@ -69,7 +69,7 @@ Messages are stored as JSONL in `.workgraph/messages/{task-id}.jsonl`
 - `priority`: "normal" or "urgent"
 - `status`: Sent -> Delivered -> Read -> Acknowledged
 
-Read cursors are stored in `.workgraph/messages/.cursors/{agent-id}.{task-id}`
+Read cursors are stored in `.wg/messages/.cursors/{agent-id}.{task-id}`
 — a plain file containing the last-read message ID.
 
 #### Message Delivery

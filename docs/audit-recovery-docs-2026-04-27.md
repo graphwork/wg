@@ -4,7 +4,7 @@
 **Task:** `audit-recovery-outage`
 **Scope:** Every text surface a fresh worker agent sees, examined for whether a worker hitting today's outage scenarios (credit exhaustion, mass-failure batch retry, openrouter→claude:opus migration, stale `coordinator-state-N.json` `model_override`) could self-recover.
 
-**Outage TL;DR:** the chat agent (Claude with project memory) puzzled out the recovery path — `wg recover --filter "error~credit" --set-model claude:opus --set-endpoint <name> --keep-agency`, then manual edit of `.workgraph/service/coordinator-state-N.json` to clear the stale `model_override`, then `wg endpoints remove openrouter --global`. None of that workflow is written down where a worker (especially a non-Claude or non-memory-having worker) could find it.
+**Outage TL;DR:** the chat agent (Claude with project memory) puzzled out the recovery path — `wg recover --filter "error~credit" --set-model claude:opus --set-endpoint <name> --keep-agency`, then manual edit of `.wg/service/coordinator-state-N.json` to clear the stale `model_override`, then `wg endpoints remove openrouter --global`. None of that workflow is written down where a worker (especially a non-Claude or non-memory-having worker) could find it.
 
 ---
 
@@ -23,11 +23,11 @@
 | S9 | `wg service --help` | ~20 lines | CLI |
 | S10 | `wg config --help` | ~120 flags | CLI |
 | S11 | `wg agents --help` | ~15 lines | CLI |
-| S12 | `.workgraph/` README / template files | **does not exist** (no README, no template, only `.gitignore`) | filesystem |
+| S12 | `.wg/` README / template files | **does not exist** (no README, no template, only `.gitignore`) | filesystem |
 | S13 | `AGENT.md` / `AGENTS.md` at repo root | **do not exist** | filesystem |
 | S14 | `RECOVERY.md` anywhere | **does not exist** | filesystem |
 
-Note on `.wg/` vs `.workgraph/`: in the audited worktree only `.workgraph/` exists. The task description's recovery path of `.wg/service/coordinator-state-N.json` is itself stale-or-aspirational — the canonical location is `.workgraph/service/coordinator-state-N.json`. Today's "both exist with stale duplicates" symptom presumably lives at the user's main checkout from a prior layout. **The directory split is itself an undocumented gap (G6).**
+Note on `.wg/` vs `.wg/`: in the audited worktree only `.wg/` exists. The task description's recovery path of `.wg/service/coordinator-state-N.json` is itself stale-or-aspirational — the canonical location is `.wg/service/coordinator-state-N.json`. Today's "both exist with stale duplicates" symptom presumably lives at the user's main checkout from a prior layout. **The directory split is itself an undocumented gap (G6).**
 
 ---
 
@@ -35,7 +35,7 @@ Note on `.wg/` vs `.workgraph/`: in the audited worktree only `.workgraph/` exis
 
 Legend: ✓ = explicitly documented in a way a worker can act on; ~ = partial / oblique mention; ✗ = not present.
 
-| Surface | G1 `wg recover` mentioned outside its own help? | G2 `--keep-agency` / `--set-model` / `--set-endpoint` / `--filter` example invocations? | G3 Model-precedence chain (incl. `coordinator-state.model_override` rung) | G4 Stale `coordinator-state-N.json` `model_override` trap (existence + path + clear procedure) | G5 `wg endpoints remove` framed as a recovery step + global-vs-local `is_default` merge semantics | G6 `.wg/` vs `.workgraph/` canonical-directory + migration |
+| Surface | G1 `wg recover` mentioned outside its own help? | G2 `--keep-agency` / `--set-model` / `--set-endpoint` / `--filter` example invocations? | G3 Model-precedence chain (incl. `coordinator-state.model_override` rung) | G4 Stale `coordinator-state-N.json` `model_override` trap (existence + path + clear procedure) | G5 `wg endpoints remove` framed as a recovery step + global-vs-local `is_default` merge semantics | G6 `.wg/` vs `.wg/` canonical-directory + migration |
 |---|---|---|---|---|---|---|
 | S1 `wg quickstart` | ✗ | ✗ | ~ partial (line 427: `task --model > executor model > coordinator model > default` — does NOT mention `coordinator-state.model_override` rung) | ✗ | ~ partial (endpoints CRUD shown 449–461; no recovery framing, no `is_default` merge note) | ✗ |
 | S2 `~/.claude/skills/wg/SKILL.md` (worker bootstrap) | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ |
@@ -55,7 +55,7 @@ Legend: ✓ = explicitly documented in a way a worker can act on; ~ = partial / 
 - **G3** (model precedence chain): **partially documented in three places**, but **none of the existing chains include the `coordinator-state.model_override` rung that bit us today.** That rung is invisible — coordinator-state lives in `service/` state files and is set by IPC, but it silently overrides config and CLI choice at chat-agent spawn time (`src/commands/service/coordinator_agent.rs:727`).
 - **G4** (stale `model_override` trap): **✗ everywhere.** No surface mentions the file path, the trap, or how to clear it. Today's recovery required reading source.
 - **G5** (`wg endpoints remove` as recovery + `is_default` merge): merge semantics covered well in AGENT-SERVICE.md §"Endpoint inheritance"; **the recovery framing — "if a global `is_default = true` openrouter endpoint is poisoning new chats, run `wg endpoints remove openrouter --global`" — is not written down anywhere a worker would find at task time.**
-- **G6** (`.wg/` vs `.workgraph/`): **✗ everywhere.** No surface acknowledges that two directories may coexist or which is canonical. The agent guide says "worktrees are created under `.wg-worktrees/`" (a third name), which compounds the confusion.
+- **G6** (`.wg/` vs `.wg/`): **✗ everywhere.** No surface acknowledges that two directories may coexist or which is canonical. The agent guide says "worktrees are created under `.wg-worktrees/`" (a third name), which compounds the confusion.
 
 ---
 
@@ -94,7 +94,7 @@ RECOVERY (after credit exhaustion, mass-failure, or wrong-model routing)
 
   Stale model selection in chat agents:
     Each running chat agent has a state file at:
-      .workgraph/service/coordinator-state-<N>.json
+      .wg/service/coordinator-state-<N>.json
     Field `model_override` (set by `wg service set-executor`) overrides
     config and CLI. If a chat keeps spawning with the wrong model after
     you reset config, edit that file (set `"model_override": null`) and
@@ -141,18 +141,18 @@ Model resolution (highest wins):
   1. task.model               (per-task: `wg add --model`, `wg edit --model`)
   2. chat coordinator-state.model_override
                               (chat agents only — set by `wg service set-executor`,
-                               persisted in .workgraph/service/coordinator-state-<N>.json)
+                               persisted in .wg/service/coordinator-state-<N>.json)
   3. agent.preferred_model    (when an agent identity is assigned)
   4. dispatcher.model         ([dispatcher] / legacy [coordinator] in config.toml)
   5. agent.model              ([agent] in config.toml)
   6. handler default          (no model flag passed; handler uses its own default)
 ```
 
-### Priority 4 — Document `.wg/` vs `.workgraph/` canonical-directory rule
+### Priority 4 — Document `.wg/` vs `.wg/` canonical-directory rule
 
 **Why fourth (lower than recovery itself):** This is a layout cleanup, not a runbook. But every recovery procedure references a path, and pointing a worker at the wrong path wastes the recovery budget. Add a one-liner to `CLAUDE.md` and `wg quickstart`:
 
-> Canonical project state lives in `.workgraph/`. Agent worktrees live in `.wg-worktrees/`. There is no `.wg/` directory; if you find one, it is leftover from a prior layout and can be removed (verify with `wg config --merged`).
+> Canonical project state lives in `.wg/`. Agent worktrees live in `.wg-worktrees/`. There is no `.wg/` directory; if you find one, it is leftover from a prior layout and can be removed (verify with `wg config --merged`).
 
 If `.wg/` is in fact a planned new layout, the answer is the inverse — but either way, write it down. **This is the one item that needs a human decision before doc updates ship; everything else above is uncontroversial.**
 
@@ -160,7 +160,7 @@ If `.wg/` is in fact a planned new layout, the answer is the inverse — but eit
 
 Add a one-line `long_about` to `wg endpoints remove`:
 
-> Use during recovery when a stale global endpoint (e.g., `is_default = true` openrouter after credit exhaustion) is poisoning all local projects. Run with `--global` to scrub from `~/.workgraph/config.toml`. See `docs/AGENT-SERVICE.md` §"Endpoint inheritance" for merge semantics.
+> Use during recovery when a stale global endpoint (e.g., `is_default = true` openrouter after credit exhaustion) is poisoning all local projects. Run with `--global` to scrub from `~/.wg/config.toml`. See `docs/AGENT-SERVICE.md` §"Endpoint inheritance" for merge semantics.
 
 ---
 
@@ -174,7 +174,7 @@ Add a one-line `long_about` to `wg endpoints remove`:
 | `docs/AGENT-GUIDE.md` §7b | **Operational** — sits next to Compact/Sweep/Checkpoint | A 5–10 line `### Recover` subsection that points at `RECOVERY.md` and `wg recover --help`. Do not duplicate the runbook. |
 | **NEW** `docs/RECOVERY.md` | **Depth** — the single source of truth | The full runbook: every failure mode, every command, every state-file path, every config-precedence rung. Quickstart and AGENT-GUIDE.md link here. `wg recover --help`'s `long_about` ends with "see docs/RECOVERY.md for the full runbook." |
 | `~/.claude/skills/wg/SKILL.md` | **Bootstrap** — injected into every Claude Code worker | One paragraph + link to `RECOVERY.md`. Mirrors the quickstart section but tighter. |
-| `CLAUDE.md` (repo root) | **Project-specific** — the directory canonicalization note (P4) only | Single line on `.workgraph/` canonicality. |
+| `CLAUDE.md` (repo root) | **Project-specific** — the directory canonicalization note (P4) only | Single line on `.wg/` canonicality. |
 
 **Why this split:**
 - **A new `RECOVERY.md` is justified** because (a) the topic crosses ≥3 commands (`recover`, `service`, `endpoints`, `config`) and ≥2 state surfaces (config files + `coordinator-state-N.json`), and (b) recovery procedures are read under stress and need to be findable by name (`grep RECOVERY` works; trying to remember which doc had the credit-exhaustion runbook does not).
@@ -196,7 +196,7 @@ Files to edit (file-scoped; no overlap):
   - docs/AGENT-SERVICE.md §Model hierarchy (rewrite per P3 canonical chain)
   - docs/RECOVERY.md (new file — full runbook)
   - ~/.claude/skills/wg/SKILL.md (one paragraph + link)
-  - CLAUDE.md (one-liner on .workgraph/ canonicality)
+  - CLAUDE.md (one-liner on .wg/ canonicality)
 P4 — confirm with user whether .wg/ is leftover or planned new layout BEFORE editing.
 
 ## Validation

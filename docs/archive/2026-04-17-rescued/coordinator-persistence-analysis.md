@@ -152,7 +152,7 @@ To verify the fix works:
 - `src/service/coordinator_cycle.rs` - Coordinator task validation
 
 ### State Files
-- `.workgraph/service/coordinator-state-N.json` - Per-coordinator runtime state
-- `.workgraph/service/registry.json` - Agent registry tracking coordinator agents
-- `.workgraph/graph.jsonl` - Task graph containing coordinator tasks
-- `.workgraph/tui-state.json` - TUI session state (active coordinator, tabs)
+- `.wg/service/coordinator-state-N.json` - Per-coordinator runtime state
+- `.wg/service/registry.json` - Agent registry tracking coordinator agents
+- `.wg/graph.jsonl` - Task graph containing coordinator tasks
+- `.wg/tui-state.json` - TUI session state (active coordinator, tabs)

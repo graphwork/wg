@@ -18,7 +18,7 @@ This design extends workgraph's existing model registry (`ModelRegistryEntry` in
 
 ## 2. Model Registry Schema
 
-### 2.1 New file: `.workgraph/model_benchmarks.json`
+### 2.1 New file: `.wg/model_benchmarks.json`
 
 This file stores benchmark and popularity data fetched from external APIs. It is separate from `config.toml` (user-configured model routing) and `models.yaml` (static catalog) to keep concerns clean. It is machine-managed and should not be hand-edited.
 
@@ -391,7 +391,7 @@ The alias table is small (10-20 entries) and updated as part of the fetch cycle 
 ## 8. File Layout Summary
 
 ```
-.workgraph/
+.wg/
 ├── config.toml                    # User-configured model routing (existing)
 ├── models.yaml                    # Static model catalog (existing, deprecated path)
 ├── model_benchmarks.json          # Benchmark + fitness registry (new, machine-managed)

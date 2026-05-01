@@ -170,7 +170,7 @@ keys = ["Down", "Down", "t"]
 
 ### 2. Graph Snapshot on Trace (Track B prerequisite)
 
-When `wg tui --trace <path>` starts, automatically copy `.workgraph/graph.jsonl` to `<path>.snap.jsonl`. This captures the graph state at the moment the trace begins, ensuring replay starts from identical state.
+When `wg tui --trace <path>` starts, automatically copy `.wg/graph.jsonl` to `<path>.snap.jsonl`. This captures the graph state at the moment the trace begins, ensuring replay starts from identical state.
 
 **Implementation:** In `src/tui/viz_viewer/mod.rs`, after opening the EventTracer, copy the graph file. ~20 lines of code.
 
@@ -212,7 +212,7 @@ Key design choice: The player reconstructs `crossterm::Event` values that are fe
 New subcommand: `wg screencast replay <trace.jsonl> [--output recording.cast] [--graph snapshot.jsonl]`
 
 Implementation:
-1. Load graph snapshot into a new `.workgraph/` in a temp directory
+1. Load graph snapshot into a new `.wg/` in a temp directory
 2. Create a `VizApp` from the loaded graph state
 3. Create a ratatui `Terminal<TestBackend>` with dimensions from trace metadata
 4. Create an asciinema `.cast` writer (header + frame stream)

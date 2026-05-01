@@ -95,7 +95,7 @@ The revised table from that doc:
 |---|---|
 | `.flip-*` | nothing — pure in-context reasoning |
 | `.assign-*`, `.place-*` | `wg` read-only subset |
-| `.compact-*` | read + write `.workgraph/context.md` only |
+| `.compact-*` | read + write `.wg/context.md` only |
 | `.evaluate-*` | full agent (escalation/repair path) |
 | Regular tasks | full, cwd-sandboxed writes |
 
@@ -147,7 +147,7 @@ Ordered by dependency + risk.
    - Unit tests for each category
 
 4. **Dispatched smoke test** (Gates 3 + 4)
-   - Coordinate with a fresh `.workgraph/` in a scratch dir
+   - Coordinate with a fresh `.wg/` in a scratch dir
    - Dispatch a known-good simple task
    - Watch every phase
    - Then a non-trivial task

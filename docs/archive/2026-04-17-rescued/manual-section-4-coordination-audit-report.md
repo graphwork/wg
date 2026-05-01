@@ -222,10 +222,10 @@ The manual documents comprehensive IPC commands table. All major IPC commands ar
 - ✅ `docs/manual/04-coordination.typ` exists (large file)
 
 ### Related Service Files Referenced
-- ✅ `.workgraph/service/state.json` (line 11)
-- ✅ `.workgraph/service/daemon.log` (line 13)
-- ✅ `.workgraph/service/daemon.sock` (line 215)
-- ✅ `.workgraph/agents/registry.json` (line 115)
+- ✅ `.wg/service/state.json` (line 11)
+- ✅ `.wg/service/daemon.log` (line 13)
+- ✅ `.wg/service/daemon.sock` (line 215)
+- ✅ `.wg/agents/registry.json` (line 115)
 
 ## Conclusion
 

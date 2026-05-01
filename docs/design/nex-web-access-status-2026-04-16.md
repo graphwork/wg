@@ -20,7 +20,7 @@
 - Model resolution from config (not hardcoded Claude fallback)
 
 ### web_fetch improvements
-- File artifact architecture: pages saved to `.workgraph/nex-sessions/fetched-pages/NNNNN-<slug>.md`
+- File artifact architecture: pages saved to `.wg/nex-sessions/fetched-pages/NNNNN-<slug>.md`
 - Returns metadata + 20-line preview + bash hints + summarize guidance for large pages
 - PDF support via `pdftotext` (Content-Type detection, binary handling)
 - Two-tier: rquest primary, headless Chrome fallback
@@ -109,7 +109,7 @@ deep_research(question="What is the full publication timeline of Vincenza Colonn
 ### 2. Persistent disk cache for web search
 **Why:** Eliminates repeat queries across sessions. Same query next week returns instantly. At research scale, this alone could cut 10K queries to 2K.
 
-**Shape:** SQLite database at `~/.workgraph/web-cache.db` with columns `(query_normalized, response, backend, timestamp)`. TTL configurable (default 7 days for search results, 30 days for fetched pages). Replace the in-memory LRU in web_search.rs.
+**Shape:** SQLite database at `~/.wg/web-cache.db` with columns `(query_normalized, response, backend, timestamp)`. TTL configurable (default 7 days for search results, 30 days for fetched pages). Replace the in-memory LRU in web_search.rs.
 
 **Implementation:** ~150 lines. `rusqlite` crate (already battle-tested, single-file DB). Check cache before fan-out, write after successful search.
 
@@ -153,7 +153,7 @@ searxng_url = "http://localhost:8888"
 - Role-driven tool loading beyond simple --role flag (deeper agency integration)
 
 ### Config
-- `~/.workgraph/config.toml` as global config (resolver already supports it)
+- `~/.wg/config.toml` as global config (resolver already supports it)
 - Brave API key works from config or env var ✓
 - SearXNG URL needs config support (field exists: `searxng_url`)
 

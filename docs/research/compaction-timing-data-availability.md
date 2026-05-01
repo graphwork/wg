@@ -4,7 +4,7 @@
 
 ### CompactorState (`src/service/compactor.rs:37-43`)
 
-The primary store is `CompactorState`, persisted at `.workgraph/compactor/state.json`:
+The primary store is `CompactorState`, persisted at `.wg/compactor/state.json`:
 
 ```rust
 pub struct CompactorState {
@@ -20,7 +20,7 @@ pub struct CompactorState {
 
 ### CoordinatorState (`src/commands/service/mod.rs:254-284`)
 
-The `CoordinatorState` at `.workgraph/service/coordinator-state.json` tracks:
+The `CoordinatorState` at `.wg/service/coordinator-state.json` tracks:
 
 ```rust
 pub struct CoordinatorState {
@@ -86,12 +86,12 @@ This sets `task.ready_after` on the **config owner** task only (line 1401). The 
 
 | Data point | Location | Field |
 |---|---|---|
-| Last compaction timestamp | `.workgraph/compactor/state.json` | `CompactorState.last_compaction` |
+| Last compaction timestamp | `.wg/compactor/state.json` | `CompactorState.last_compaction` |
 | Cycle delay string | `.compact-0` task in graph | `task.cycle_config.delay` |
 | `ready_after` timestamp (when next iteration is dispatchable) | `.compact-0` task in graph | `task.ready_after` |
 | Current loop iteration | `.compact-0` task in graph | `task.loop_iteration` |
 | Task status | `.compact-0` task in graph | `task.status` |
-| Accumulated tokens since last compaction | `.workgraph/service/coordinator-state.json` | `CoordinatorState.accumulated_tokens` |
+| Accumulated tokens since last compaction | `.wg/service/coordinator-state.json` | `CoordinatorState.accumulated_tokens` |
 | Token threshold for compaction trigger | Config (computed) | `Config::effective_compaction_threshold()` |
 | Compaction progress percentage | `wg status` output | Computed: `accumulated_tokens / threshold * 100` |
 
@@ -203,7 +203,7 @@ The `StatusBar` struct includes:
 ## Summary: Data Sources for Timing
 
 ### Exists and is sufficient
-- `CompactorState.last_compaction` — last compaction timestamp (`.workgraph/compactor/state.json`)
+- `CompactorState.last_compaction` — last compaction timestamp (`.wg/compactor/state.json`)
 - `CycleConfig.delay` — cycle delay duration (on cycle header task in graph)
 - `Task.ready_after` — when a delayed cycle task becomes dispatchable (on task in graph)
 - `CoordinatorState.accumulated_tokens` / `Config::effective_compaction_threshold()` — token progress

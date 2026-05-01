@@ -11,9 +11,9 @@ Each workgraph instance is isolated to a single repository. In practice, project
 | Capability | Status | Location |
 |------------|--------|----------|
 | Agency federation (roles/motivations/agents) | **Complete** | `src/federation.rs`, `src/commands/agency_{scan,pull,push,remote,merge}.rs` |
-| Federation config (`.workgraph/federation.yaml`) | **Complete** | Named remotes for agency stores |
-| Unix socket IPC | **Complete** | `.workgraph/service/daemon.sock`, JSON-RPC protocol |
-| Trace function extract/instantiate | **Complete** | `src/commands/trace_{extract,instantiate}.rs`, `.workgraph/functions/` |
+| Federation config (`.wg/federation.yaml`) | **Complete** | Named remotes for agency stores |
+| Unix socket IPC | **Complete** | `.wg/service/daemon.sock`, JSON-RPC protocol |
+| Trace function extract/instantiate | **Complete** | `src/commands/trace_{extract,instantiate}.rs`, `.wg/functions/` |
 | Global `--dir` flag | **Complete** | Override workgraph directory for any command |
 | Content-addressed agency entities | **Complete** | SHA-256 hashing in `src/agency.rs` |
 | Task IDs | **Slug-based** | NOT content-addressed; generated from first 3 words of title |
@@ -34,7 +34,7 @@ Each workgraph instance is isolated to a single repository. In practice, project
 
 ### 2.1 Current State
 
-`.workgraph/federation.yaml` currently only stores agency remotes:
+`.wg/federation.yaml` currently only stores agency remotes:
 
 ```yaml
 remotes:
@@ -61,7 +61,7 @@ peers:
   workgraph:
     path: /home/erik/workgraph
     description: "The workgraph tool itself"
-    # socket auto-discovered from <path>/.workgraph/service/state.json
+    # socket auto-discovered from <path>/.wg/service/state.json
   grants:
     path: /home/erik/grants/agentic-orgs
     description: "Agentic orgs grant project"
@@ -70,12 +70,12 @@ peers:
 ### 2.3 Peer Resolution
 
 Given a peer reference string, resolution order:
-1. Named peer in `federation.yaml` → look up `path`, derive `.workgraph/` directory
-2. Absolute path (`~/workgraph` or `/home/erik/workgraph`) → find `.workgraph/` subdirectory
+1. Named peer in `federation.yaml` → look up `path`, derive `.wg/` directory
+2. Absolute path (`~/workgraph` or `/home/erik/workgraph`) → find `.wg/` subdirectory
 3. Relative path → resolve from CWD
 
 Socket discovery for a peer:
-1. Read `<peer_path>/.workgraph/service/state.json` → get `socket_path`
+1. Read `<peer_path>/.wg/service/state.json` → get `socket_path`
 2. Check if service is alive (`is_process_alive(pid)`)
 3. If alive → use IPC for real-time operations
 4. If not alive → fall back to direct file access (load graph.jsonl)
@@ -142,7 +142,7 @@ wg add "Fix the trace system" --into workgraph:
 
 When `wg add --repo <peer>` is invoked:
 
-1. **Resolve peer** to a `.workgraph/` directory path (via federation.yaml or direct path)
+1. **Resolve peer** to a `.wg/` directory path (via federation.yaml or direct path)
 2. **Check if peer service is running** (state.json + PID check)
 3. **If running**: Send task creation via a new `AddTask` IPC request to the peer's socket
 4. **If not running**: Directly modify the peer's `graph.jsonl` (acquire file lock, add task, save)
@@ -319,7 +319,7 @@ This requires the completing service to know about its dependents. Two approache
 
 ### 5.1 Current State
 
-Trace functions are stored in `.workgraph/functions/<id>.yaml`. The extract command creates them from completed tasks; the instantiate command creates tasks from templates. Both operate within a single repo only.
+Trace functions are stored in `.wg/functions/<id>.yaml`. The extract command creates them from completed tasks; the instantiate command creates tasks from templates. Both operate within a single repo only.
 
 ### 5.2 Cross-Repo Extract
 
@@ -334,11 +334,11 @@ This already works. No changes needed for basic file-based sharing.
 
 ### 5.3 Cross-Repo Instantiate
 
-`wg trace instantiate` currently loads functions from the local `.workgraph/functions/` directory. Extend it to accept a file path or a `peer:function-id` reference:
+`wg trace instantiate` currently loads functions from the local `.wg/functions/` directory. Extend it to accept a file path or a `peer:function-id` reference:
 
 ```bash
 # Instantiate from a file path (works across repos)
-wg trace instantiate --from ~/workgraph/.workgraph/functions/build-feature.yaml --input feature_name=auth
+wg trace instantiate --from ~/workgraph/.wg/functions/build-feature.yaml --input feature_name=auth
 
 # Instantiate from a peer's function library
 wg trace instantiate --from workgraph:build-feature --input feature_name=auth
@@ -348,9 +348,9 @@ wg trace instantiate --from workgraph:build-feature --input feature_name=auth
 
 Add `--from <source>` to `wg trace instantiate`:
 
-1. If source contains `:` → parse as `peer:function-id`, resolve peer, load function from peer's `.workgraph/functions/`
+1. If source contains `:` → parse as `peer:function-id`, resolve peer, load function from peer's `.wg/functions/`
 2. If source ends in `.yaml` → treat as a file path, load directly
-3. Otherwise → existing behavior (search local `.workgraph/functions/`)
+3. Otherwise → existing behavior (search local `.wg/functions/`)
 
 ### 5.5 Function Registry in Federation
 
@@ -377,7 +377,7 @@ Peer functions:
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                        Repo A (.workgraph/)                     │
+│                        Repo A (.wg/)                     │
 │                                                                 │
 │  graph.jsonl                    service/daemon.sock              │
 │  ├── task: use-new-trace        ├── Agents, Status, Spawn, ...  │
@@ -393,7 +393,7 @@ Peer functions:
                   │ IPC (QueryTask) or direct file read
                   ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│                        Repo B (~workgraph/.workgraph/)          │
+│                        Repo B (~workgraph/.wg/)          │
 │                                                                 │
 │  graph.jsonl                    service/daemon.sock              │
 │  ├── task: impl-trace (done) ───▶ responds to QueryTask         │

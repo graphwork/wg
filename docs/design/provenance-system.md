@@ -4,7 +4,7 @@ Based on: `docs/research/logging-gaps.md`
 
 ## Status Quo
 
-`src/provenance.rs` already provides an append-only JSONL operation log with zstd-compressed rotation. Three commands (`add`, `done`, `fail`) call `provenance::record()`. The remaining nine graph-mutating commands do not. Agent prompts and outputs are archived to `.workgraph/log/agents/<task-id>/<timestamp>/` on task completion. The infrastructure is sound; the gaps are coverage and completeness.
+`src/provenance.rs` already provides an append-only JSONL operation log with zstd-compressed rotation. Three commands (`add`, `done`, `fail`) call `provenance::record()`. The remaining nine graph-mutating commands do not. Agent prompts and outputs are archived to `.wg/log/agents/<task-id>/<timestamp>/` on task completion. The infrastructure is sound; the gaps are coverage and completeness.
 
 This design extends what exists rather than replacing it.
 
@@ -14,7 +14,7 @@ This design extends what exists rather than replacing it.
 
 ### Current State
 
-`OperationEntry { timestamp, op, task_id, actor, detail }` written to `.workgraph/log/operations.jsonl`. Only `add`, `done`, `fail` record entries.
+`OperationEntry { timestamp, op, task_id, actor, detail }` written to `.wg/log/operations.jsonl`. Only `add`, `done`, `fail` record entries.
 
 ### Change: Instrument All Mutations
 
@@ -62,7 +62,7 @@ Estimated touch: 9 command files, ~5-10 lines each. Purely additive changes.
 
 ### Current State
 
-`archive_agent()` (in `commands/log.rs`) already copies `prompt.txt` and `output.log` from `.workgraph/agents/<agent-id>/` to `.workgraph/log/agents/<task-id>/<timestamp>/` when `wg done` or `wg fail` runs. This archive is permanent and survives agent directory cleanup.
+`archive_agent()` (in `commands/log.rs`) already copies `prompt.txt` and `output.log` from `.wg/agents/<agent-id>/` to `.wg/log/agents/<task-id>/<timestamp>/` when `wg done` or `wg fail` runs. This archive is permanent and survives agent directory cleanup.
 
 ### Problem
 
@@ -70,7 +70,7 @@ If an agent is killed (OOM, timeout, daemon restart) without calling `done`/`fai
 
 ### Change: Archive on Spawn + Append on Completion
 
-1. **At spawn time** (`spawn_agent_inner`): immediately archive `prompt.txt` to `.workgraph/log/agents/<task-id>/<timestamp>/prompt.txt`. This ensures the prompt is preserved even if the agent dies without completing.
+1. **At spawn time** (`spawn_agent_inner`): immediately archive `prompt.txt` to `.wg/log/agents/<task-id>/<timestamp>/prompt.txt`. This ensures the prompt is preserved even if the agent dies without completing.
 
 2. **At completion** (`done`/`fail`): archive `output.log` → `output.txt` to the same timestamped directory (existing behavior, no change).
 
@@ -79,7 +79,7 @@ If an agent is killed (OOM, timeout, daemon restart) without calling `done`/`fai
 ### Storage Layout (unchanged)
 
 ```
-.workgraph/log/agents/
+.wg/log/agents/
   <task-id>/
     <ISO-timestamp>/         # one directory per execution attempt
       prompt.txt             # full prompt sent to agent
@@ -257,7 +257,7 @@ For a project with 1000 tasks, each going through a typical lifecycle (add → c
 
 **Total: ~16 MB uncompressed, ~4 MB after rotation compression on the operation log.**
 
-For comparison, `.workgraph/graph.jsonl` for 1000 tasks is already ~2-5 MB. The provenance system roughly triples the storage footprint, which is very manageable. Agent prompts and outputs dominate — and they're already being archived today.
+For comparison, `.wg/graph.jsonl` for 1000 tasks is already ~2-5 MB. The provenance system roughly triples the storage footprint, which is very manageable. Agent prompts and outputs dominate — and they're already being archived today.
 
 ---
 

@@ -100,7 +100,7 @@ No API key needed for local models.
 │  Priority: inline → key file → env var → provider fallback  │
 │                                                             │
 │  openrouter: from env OPENROUTER_API_KEY                    │
-│  anthropic:  from file ~/.workgraph/keys/anthropic.key      │
+│  anthropic:  from file ~/.wg/keys/anthropic.key      │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -272,7 +272,7 @@ wg endpoints add openrouter --provider openrouter --global
 | `--api-key <key>` | API key (prefer --api-key-file for security) |
 | `--api-key-file <path>` | Path to a file containing the API key |
 | `--default` | Set as the default endpoint |
-| `--global` | Write to global config (~/.workgraph/config.toml) |
+| `--global` | Write to global config (~/.wg/config.toml) |
 
 **Default URLs by provider:**
 | Provider | Default URL |
@@ -487,8 +487,8 @@ wg endpoints add openrouter --provider openrouter --api-key sk-or-v1-your-key
 
 | File | Contains Keys? | In Git? |
 |------|---------------|---------|
-| `.workgraph/config.toml` | May contain `api_key_file` paths | Yes (should be) |
-| `~/.workgraph/config.toml` | May contain `api_key_file` paths | No (home dir) |
+| `.wg/config.toml` | May contain `api_key_file` paths | Yes (should be) |
+| `~/.wg/config.toml` | May contain `api_key_file` paths | No (home dir) |
 | `~/.secrets/*.key` | Yes (actual key values) | No (home dir) |
 | Environment variables | Yes (at runtime) | No |
 
@@ -630,7 +630,7 @@ Bot:  ✓ Added mistral/mistral-large to registry (mid tier, $2.00/$6.00 per MTo
 
 ## Config File Reference
 
-All model/endpoint/key configuration lives in `.workgraph/config.toml` (project-level) or `~/.workgraph/config.toml` (global). Project-level settings override global.
+All model/endpoint/key configuration lives in `.wg/config.toml` (project-level) or `~/.wg/config.toml` (global). Project-level settings override global.
 
 ### Endpoints
 

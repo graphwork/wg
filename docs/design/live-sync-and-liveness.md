@@ -39,12 +39,12 @@ The current infrastructure is stronger than it appears:
 
 | Component | Location | What It Does |
 |-----------|----------|--------------|
-| **fs watcher** | `state.rs:3857` | `notify_debouncer_mini` watches `.workgraph/` recursively, 50ms debounce |
+| **fs watcher** | `state.rs:3857` | `notify_debouncer_mini` watches `.wg/` recursively, 50ms debounce |
 | **mtime polling** | `state.rs:3887` | 1-second fallback when fs watcher unavailable |
 | **flock serialization** | `parser.rs` | `modify_graph()` holds exclusive flock across load→modify→save |
 | **atomic rename** | `parser.rs` | temp-file-rename ensures readers never see partial writes |
 | **IPC GraphChanged** | `ipc.rs:54` | CLI commands notify daemon, triggering immediate coordinator tick |
-| **screen dump IPC** | `screen_dump.rs` | Unix socket at `.workgraph/service/tui.sock`, per-frame snapshot |
+| **screen dump IPC** | `screen_dump.rs` | Unix socket at `.wg/service/tui.sock`, per-frame snapshot |
 | **provenance log** | `provenance.rs` | `operations.jsonl` records every mutation with timestamp, actor, detail |
 | **notification router** | `notify/mod.rs` | Multi-channel dispatch (Telegram, Slack, Matrix, email, webhook) |
 | **firehose panel** | `state.rs:1541` | Merged real-time stream of all agent output |
@@ -113,7 +113,7 @@ For non-colocated users (separate machines), the graph needs to sync over a netw
 
 #### Tier 1: Manual Git Sync (works today)
 
-Users commit and push/pull `.workgraph/graph.jsonl` like any other file. JSONL format means conflicts are isolated to individual lines (tasks). This works for infrequent, non-overlapping changes.
+Users commit and push/pull `.wg/graph.jsonl` like any other file. JSONL format means conflicts are isolated to individual lines (tasks). This works for infrequent, non-overlapping changes.
 
 **No code changes required.** Document this as a supported workflow.
 
@@ -122,7 +122,7 @@ Users commit and push/pull `.workgraph/graph.jsonl` like any other file. JSONL f
 Register a custom merge driver in `.gitattributes`:
 
 ```
-.workgraph/graph.jsonl merge=workgraph-jsonl
+.wg/graph.jsonl merge=workgraph-jsonl
 ```
 
 The merge driver (`wg merge-driver`) resolves conflicts using domain knowledge:
@@ -139,7 +139,7 @@ The merge driver (`wg merge-driver`) resolves conflicts using domain knowledge:
 
 **Implementation cost:** Medium. ~300-500 lines of Rust for the merge driver. Requires adding a `last_modified` timestamp to graph nodes (or using the provenance log).
 
-**Latency:** Bounded by git push/pull frequency. A `wg sync` command could automate: `git add .workgraph/ && git commit -m "wg sync" && git pull --rebase && git push`.
+**Latency:** Bounded by git push/pull frequency. A `wg sync` command could automate: `git add .wg/ && git commit -m "wg sync" && git pull --rebase && git push`.
 
 #### Tier 3: Operation-Log CRDT (Future)
 
@@ -319,7 +319,7 @@ Sent on:
 
 **Notification filtering:** Each user configures their interest level:
 ```toml
-# .workgraph/config.toml
+# .wg/config.toml
 [notify.tui]
 show = ["task_failed", "verification_failed", "agent_stuck", "message_received"]
 suppress = ["task_completed"]  # too noisy for large graphs
@@ -415,7 +415,7 @@ This is the **drill-down chain**: Dashboard → Agent → Task → Logs. Each le
 **Alert routing:**
 
 ```toml
-# .workgraph/config.toml
+# .wg/config.toml
 [alerts]
 # TUI toasts for everything
 tui = ["warning", "error", "critical"]

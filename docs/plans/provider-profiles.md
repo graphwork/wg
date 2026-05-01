@@ -340,7 +340,7 @@ individual tiers: `tiers.premium = "openrouter:anthropic/claude-opus-4"`.
 ### 5.1 Stored in config.toml
 
 ```toml
-# .workgraph/config.toml
+# .wg/config.toml
 
 # Provider profile: "anthropic" (default), "openrouter", "openai"
 profile = "openrouter"
@@ -364,7 +364,7 @@ Dynamic profiles cache their resolved tier mappings to avoid re-computing on
 every model resolution call:
 
 ```
-.workgraph/service/profile_cache.json
+.wg/service/profile_cache.json
 ```
 
 ```json

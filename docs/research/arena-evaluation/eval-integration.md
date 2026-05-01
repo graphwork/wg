@@ -9,11 +9,11 @@ Analysis of how FLIP (Wang et al., 2025, arXiv:2602.13551) integrates with workg
 `wg evaluate <task-id>` (evaluate.rs:36) uses LLM-as-Judge:
 
 1. **Gate**: Task must be `Done` or `Failed` (line 54).
-2. **Context assembly**: Loads the task's agent, role, and motivation from `.workgraph/agency/`. Builds an `EvaluatorInput` struct (agency.rs:369) containing task title, description, skills, verify criteria, agent identity, artifacts, and log entries.
+2. **Context assembly**: Loads the task's agent, role, and motivation from `.wg/agency/`. Builds an `EvaluatorInput` struct (agency.rs:369) containing task title, description, skills, verify criteria, agent identity, artifacts, and log entries.
 3. **Prompt rendering**: `render_evaluator_prompt()` (agency.rs:398) produces a self-contained prompt instructing the LLM to return JSON `{score, dimensions, notes}`.
 4. **LLM call**: Spawns `claude --print --model <model>` with the prompt (evaluate.rs:188). Model defaults to `config.agency.evaluator_model`, falling back to the task's model.
 5. **Parse + record**: Extracts JSON from output, constructs an `Evaluation` struct (agency.rs:204) with `source: "llm"`, and calls `record_evaluation()` (agency.rs:1203) which:
-   - Saves eval JSON to `.workgraph/agency/evaluations/`
+   - Saves eval JSON to `.wg/agency/evaluations/`
    - Updates `PerformanceRecord` on the agent, role, and motivation (appends `EvaluationRef`, recalculates `avg_score`)
 
 There is also `wg evaluate record` (evaluate.rs:327) for externally-sourced evaluations — accepts score, source string, and optional dimensions. This is the natural entry point for FLIP scores.
@@ -114,7 +114,7 @@ The `Evaluation.source` field (agency.rs:227) already supports this differentiat
 
 4. Record evaluation
    └─ record_evaluation() (agency.rs:1203)
-       ├─ Save to .workgraph/agency/evaluations/
+       ├─ Save to .wg/agency/evaluations/
        ├─ Update agent PerformanceRecord
        ├─ Update role PerformanceRecord
        └─ Update motivation PerformanceRecord

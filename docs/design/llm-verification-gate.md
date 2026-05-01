@@ -292,7 +292,7 @@ LLM verification costs money; the design bounds spend on five axes.
 
 3. **Result cache.** Keyed by
    `sha256(task_id || "|" || artifact_diff_hash)`, stored alongside
-   the evaluation YAML in `.workgraph/agency/evaluations/`. If a retry
+   the evaluation YAML in `.wg/agency/evaluations/`. If a retry
    re-enters `PendingValidation` with an identical diff hash, the
    cached gate record is reused with a `cache_hit: true` flag. Agents
    rarely resubmit byte-identical work, so hits will be rare, but the
@@ -440,7 +440,7 @@ gate_confidence_threshold = 0.7          # Confidence floor for auto approve/rej
 
 ### Evaluation record additions
 
-`Evaluation` (the yaml artifact in `.workgraph/agency/evaluations/`)
+`Evaluation` (the yaml artifact in `.wg/agency/evaluations/`)
 gains an optional `gate` section:
 
 ```yaml

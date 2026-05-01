@@ -12,11 +12,11 @@ task.model > executor.model > coordinator.model (CLI --model) > default
 
 **Per-task override:** `wg add "title" --model sonnet` sets `task.model` on the Task struct (`src/graph.rs`). Highest priority.
 
-**Executor-level default:** Each executor config (`.workgraph/executors/<name>.toml`) can specify a `model` field (`src/service/executor.rs:256-259`). Useful for giving the `amplifier` executor a different default than `claude`.
+**Executor-level default:** Each executor config (`.wg/executors/<name>.toml`) can specify a `model` field (`src/service/executor.rs:256-259`). Useful for giving the `amplifier` executor a different default than `claude`.
 
 **Coordinator default:** `wg config coordinator.model <model>` or `wg service start --model <model>`. Stored in `CoordinatorConfig.model` (`src/config.rs:225`). Applied to all spawned agents unless overridden above.
 
-**Model registry:** `wg models list/add/default` manages `.workgraph/models.yaml` (`src/models.rs`). The registry catalogs models with cost, tier (frontier/mid/budget), capabilities, and context window metadata. Currently informational — the coordinator doesn't query it when spawning. The `default_model` field exists but isn't wired into the spawn hierarchy.
+**Model registry:** `wg models list/add/default` manages `.wg/models.yaml` (`src/models.rs`). The registry catalogs models with cost, tier (frontier/mid/budget), capabilities, and context window metadata. Currently informational — the coordinator doesn't query it when spawning. The `default_model` field exists but isn't wired into the spawn hierarchy.
 
 **Key gap:** Model selection is entirely static. The user (or config) picks a model before seeing results. There's no mechanism to compare model outputs on the same task and pick the best one.
 
@@ -108,7 +108,7 @@ The existing `task.model` field takes priority in the spawn hierarchy. Arena sho
 Arena results should feed back into the registry or a separate stats file:
 
 ```yaml
-# .workgraph/arena-stats.yaml
+# .wg/arena-stats.yaml
 win_rates:
   anthropic/claude-sonnet-4-6:
     tasks_entered: 42
