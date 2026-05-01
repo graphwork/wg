@@ -65,6 +65,22 @@ pub struct Deployment {
     /// ID of the wg task created to drive scheduling (when `schedule` is set).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub schedule_task_id: Option<String>,
+
+    /// Per-deployment override for the rendered page title. Wins over
+    /// `[project].title` / `[project].name` in `<workgraph_dir>/config.toml`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+
+    /// Per-deployment override for the rendered page byline. Wins over
+    /// `[project].byline` in `<workgraph_dir>/config.toml`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub byline: Option<String>,
+
+    /// Path to a markdown file rendered as the page abstract. Resolved
+    /// relative to the workgraph dir (typical value: `about.md`). When
+    /// unset, the renderer falls back to `<workgraph_dir>/about.md`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub abstract_path: Option<String>,
 }
 
 impl Deployment {
@@ -84,6 +100,9 @@ impl Deployment {
             last_status: None,
             last_error: None,
             schedule_task_id: None,
+            title: None,
+            byline: None,
+            abstract_path: None,
         }
     }
 }
@@ -159,6 +178,9 @@ pub fn run_add(
     ssh_config_host: Option<&str>,
     rsync_flags: Option<&str>,
     mkpath: bool,
+    title: Option<&str>,
+    byline: Option<&str>,
+    abstract_path: Option<&str>,
 ) -> Result<()> {
     if name.is_empty() {
         bail!("Deployment name must not be empty.");
@@ -217,6 +239,9 @@ pub fn run_add(
     dep.ssh_key = ssh_key.map(|s| s.to_string());
     dep.ssh_config_host = ssh_config_host.map(|s| s.to_string());
     dep.rsync_flags = resolved_flags;
+    dep.title = title.map(|s| s.to_string());
+    dep.byline = byline.map(|s| s.to_string());
+    dep.abstract_path = abstract_path.map(|s| s.to_string());
 
     if let Some(expr) = schedule {
         let task_id = ensure_cron_task(workgraph_dir, name, expr)?;
@@ -470,14 +495,32 @@ fn execute_run(workgraph_dir: &Path, dep: &Deployment, dry_run: bool) -> Result<
         let show_all = !dep.public_only;
         let include_chat = dep.include_chat;
         let all_chats = include_chat && !dep.public_only;
-        workgraph::html::run(
+
+        // Resolve the project-metadata cascade for this deployment.
+        // Per-deployment fields win over the project-level cascade
+        // (config.toml [project] + about.md).
+        let project_meta = resolve_deployment_meta(workgraph_dir, dep);
+
+        let graph_path = workgraph_dir.join("graph.jsonl");
+        if !graph_path.exists() {
+            anyhow::bail!(
+                "Workgraph not initialized at {}. Run `wg init` first.",
+                workgraph_dir.display()
+            );
+        }
+        let graph = workgraph::parser::load_graph(&graph_path)
+            .with_context(|| "failed to load graph for html publish")?;
+        workgraph::html::render_site(
+            &graph,
             workgraph_dir,
             &out_dir,
-            show_all,
-            dep.since.as_deref(),
-            include_chat,
-            all_chats,
-            false, // json
+            workgraph::html::RenderOptions {
+                show_all,
+                since: dep.since.clone(),
+                include_chat,
+                all_chats,
+                project_meta: Some(project_meta),
+            },
         )
         .with_context(|| "wg html generation failed")?;
     }
@@ -518,6 +561,73 @@ fn execute_run(workgraph_dir: &Path, dep: &Deployment, dry_run: bool) -> Result<
     }
     println!("[publish] OK");
     Ok(())
+}
+
+/// Resolve the project-metadata cascade for a deployment:
+///   1. per-deployment override (`title` / `byline` / `abstract_path`)
+///   2. project-level (`<workgraph_dir>/config.toml [project]` →
+///      `<workgraph_dir>/about.md`)
+///   3. defaults (title = workgraph_dir name, byline + abstract empty)
+///
+/// Reads no abstract from disk if `abstract_path` is empty AND the
+/// project-level cascade also has nothing — the default abstract is empty.
+pub fn resolve_deployment_meta(
+    workgraph_dir: &Path,
+    dep: &Deployment,
+) -> workgraph::html::ProjectMeta {
+    // Project-level cascade (config + about.md). Provides the base layer.
+    let mut meta = workgraph::html::resolve_project_meta(workgraph_dir);
+
+    // Per-deployment overrides win over the project-level cascade.
+    if let Some(t) = dep.title.as_ref().filter(|s| !s.trim().is_empty()) {
+        meta.title = Some(t.clone());
+    }
+    if let Some(b) = dep.byline.as_ref().filter(|s| !s.trim().is_empty()) {
+        meta.byline = Some(b.clone());
+    }
+    if let Some(p) = dep.abstract_path.as_ref().filter(|s| !s.trim().is_empty()) {
+        let path = if Path::new(p).is_absolute() {
+            std::path::PathBuf::from(p)
+        } else {
+            workgraph_dir.join(p)
+        };
+        if let Ok(body) = std::fs::read_to_string(&path) {
+            let trimmed = body.trim();
+            if !trimmed.is_empty() {
+                meta.abstract_md = Some(body);
+            }
+        }
+    }
+
+    // Default title = directory name when neither override nor project
+    // config supplied one. Empty deployment + empty project = "Workgraph"
+    // is handled in the renderer (the project-header is omitted entirely).
+    if meta.title.is_none() {
+        if let Some(name) = workgraph_dir
+            .file_name()
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_string())
+        {
+            // Only use the directory-name default when SOMETHING else is
+            // set (byline or abstract). Otherwise the "is_empty" check
+            // collapses the header back to the minimal Workgraph form.
+            if meta
+                .byline
+                .as_deref()
+                .map(|s| !s.trim().is_empty())
+                .unwrap_or(false)
+                || meta
+                    .abstract_md
+                    .as_deref()
+                    .map(|s| !s.trim().is_empty())
+                    .unwrap_or(false)
+            {
+                meta.title = Some(name);
+            }
+        }
+    }
+
+    meta
 }
 
 fn append_global_log(line: &str) {
@@ -647,6 +757,9 @@ mod tests {
             None, // ssh_config_host
             None, // rsync_flags
             false, // mkpath
+            None, // title
+            None, // byline
+            None, // abstract_path
         )
     }
 
@@ -899,6 +1012,9 @@ mod tests {
             None,
             None,
             true, // mkpath
+            None, // title
+            None, // byline
+            None, // abstract_path
         )
         .unwrap();
         let cfg = load_config(tmp.path()).unwrap();
@@ -934,6 +1050,9 @@ mod tests {
             None,
             Some("-avzP"),
             false,
+            None, // title
+            None, // byline
+            None, // abstract_path
         )
         .unwrap();
         let cfg = load_config(tmp.path()).unwrap();
@@ -964,6 +1083,9 @@ mod tests {
             None,
             Some("-avz --delete --mkpath -P"),
             false,
+            None, // title
+            None, // byline
+            None, // abstract_path
         )
         .unwrap();
         let cfg = load_config(tmp.path()).unwrap();
@@ -1000,6 +1122,9 @@ mod tests {
             None,
             Some("-avzP"),
             true, // mkpath
+            None, // title
+            None, // byline
+            None, // abstract_path
         )
         .unwrap_err();
         let msg = err.to_string();
@@ -1080,6 +1205,9 @@ mod tests {
             None,
             None,
             true, // mkpath
+            None, // title
+            None, // byline
+            None, // abstract_path
         )
         .unwrap();
         run_run(tmp.path(), "freshpath", false)
@@ -1103,5 +1231,182 @@ mod tests {
             parse_rsync_flags_str("-a  --delete   --mkpath"),
             vec!["-a".to_string(), "--delete".to_string(), "--mkpath".to_string()]
         );
+    }
+
+    // ── Project metadata (title / byline / abstract) ──────────────────
+
+    #[test]
+    fn publish_add_persists_title_byline_abstract() {
+        let tmp = fresh_dir();
+        run_add(
+            tmp.path(),
+            "branded",
+            "u@h:/p/",
+            None,
+            None,
+            false,
+            false,
+            None,
+            None,
+            None,
+            None,
+            false,
+            Some("My Project"),
+            Some("a tagline"),
+            Some("about.md"),
+        )
+        .unwrap();
+        let cfg = load_config(tmp.path()).unwrap();
+        let d = &cfg.deployments[0];
+        assert_eq!(d.title.as_deref(), Some("My Project"));
+        assert_eq!(d.byline.as_deref(), Some("a tagline"));
+        assert_eq!(d.abstract_path.as_deref(), Some("about.md"));
+    }
+
+    #[test]
+    fn publish_meta_cascade_per_deployment_overrides_project_config() {
+        // Project-level config sets a title; per-deployment override wins.
+        let tmp = fresh_dir();
+        std::fs::write(
+            tmp.path().join("config.toml"),
+            b"[agency]\nauto_assign = false\nauto_evaluate = false\n\n\
+              [project]\ntitle = \"Project Title\"\nbyline = \"project byline\"\n",
+        )
+        .unwrap();
+        let mut dep = Deployment::new("d".to_string(), "u@h:/p/".to_string());
+        dep.title = Some("Deployment Title".to_string());
+        // No per-deployment byline → project-level value wins.
+        let meta = resolve_deployment_meta(tmp.path(), &dep);
+        assert_eq!(meta.title.as_deref(), Some("Deployment Title"));
+        assert_eq!(meta.byline.as_deref(), Some("project byline"));
+    }
+
+    #[test]
+    fn publish_meta_cascade_about_md_used_when_no_override() {
+        let tmp = fresh_dir();
+        std::fs::write(
+            tmp.path().join("about.md"),
+            b"# About\n\nA paragraph that becomes the abstract.\n",
+        )
+        .unwrap();
+        let dep = Deployment::new("d".to_string(), "u@h:/p/".to_string());
+        let meta = resolve_deployment_meta(tmp.path(), &dep);
+        let body = meta.abstract_md.expect("abstract should fall back to about.md");
+        assert!(body.contains("# About"));
+        assert!(body.contains("A paragraph that becomes the abstract."));
+    }
+
+    #[test]
+    fn publish_meta_cascade_abstract_path_overrides_about_md() {
+        let tmp = fresh_dir();
+        std::fs::write(tmp.path().join("about.md"), b"default about\n").unwrap();
+        std::fs::write(
+            tmp.path().join("custom-abstract.md"),
+            b"deployment-specific abstract\n",
+        )
+        .unwrap();
+        let mut dep = Deployment::new("d".to_string(), "u@h:/p/".to_string());
+        dep.abstract_path = Some("custom-abstract.md".to_string());
+        let meta = resolve_deployment_meta(tmp.path(), &dep);
+        let body = meta.abstract_md.expect("abstract should be set");
+        assert!(body.contains("deployment-specific"));
+        assert!(!body.contains("default about"));
+    }
+
+    #[test]
+    fn publish_meta_cascade_empty_when_nothing_configured() {
+        let tmp = fresh_dir();
+        let dep = Deployment::new("d".to_string(), "u@h:/p/".to_string());
+        let meta = resolve_deployment_meta(tmp.path(), &dep);
+        // When NOTHING is configured anywhere, ProjectMeta should be empty
+        // — that's the signal to the renderer to omit the project-header
+        // entirely (per spec: "If all three fields are empty: omit the
+        // header entirely").
+        assert!(meta.is_empty(), "expected empty meta, got: {:?}", meta);
+    }
+
+    #[test]
+    fn publish_meta_cascade_legacy_name_field_used_as_title_fallback() {
+        // The pre-task `[project].name` field had no formal semantics —
+        // we treat it as a fallback for `title` so existing config files
+        // with `name = "Foo"` automatically get a rendered header.
+        let tmp = fresh_dir();
+        std::fs::write(
+            tmp.path().join("config.toml"),
+            b"[agency]\nauto_assign = false\nauto_evaluate = false\n\n\
+              [project]\nname = \"Legacy Name\"\n",
+        )
+        .unwrap();
+        let dep = Deployment::new("d".to_string(), "u@h:/p/".to_string());
+        let meta = resolve_deployment_meta(tmp.path(), &dep);
+        assert_eq!(meta.title.as_deref(), Some("Legacy Name"));
+    }
+
+    #[test]
+    fn publish_run_renders_project_header_in_html() {
+        // Live: configure a deployment with title + byline + abstract;
+        // run rsync against a local dir; verify the rendered index.html
+        // contains all three.
+        let tmp = fresh_dir();
+        let dest = TempDir::new().unwrap();
+        let target = format!("{}/", dest.path().display());
+        run_add(
+            tmp.path(),
+            "branded",
+            &target,
+            None,
+            None,
+            false,
+            false,
+            None,
+            None,
+            None,
+            None,
+            false,
+            Some("Poietic Inc"),
+            Some("active work"),
+            None,
+        )
+        .unwrap();
+
+        // Drop an about.md — the renderer should pick it up and render
+        // it as markdown.
+        std::fs::write(
+            tmp.path().join("about.md"),
+            b"## Focus\n\n- compliance audit\n- haiku research\n",
+        )
+        .unwrap();
+
+        run_run(tmp.path(), "branded", false).unwrap();
+
+        let html = std::fs::read_to_string(dest.path().join("index.html"))
+            .expect("index.html should have been rsynced into the dest dir");
+        assert!(html.contains("class=\"project-header\""), "header CSS class missing");
+        assert!(html.contains("Poietic Inc"), "title missing from html");
+        assert!(html.contains("active work"), "byline missing from html");
+        // Markdown abstract should be rendered to HTML (h2 + ul + li).
+        assert!(html.contains("<h2>Focus</h2>"), "h2 missing — abstract not rendered as markdown");
+        assert!(html.contains("<li>compliance audit</li>"), "list item missing");
+    }
+
+    #[test]
+    fn publish_run_omits_project_header_when_meta_empty() {
+        // Live: a deployment with NO metadata + NO project config + NO
+        // about.md MUST NOT render an empty <header class="project-header">
+        // block — the page falls back to the existing minimal header.
+        let tmp = fresh_dir();
+        let dest = TempDir::new().unwrap();
+        let target = format!("{}/", dest.path().display());
+        run_add_default(tmp.path(), "minimal", &target, None, None, false, false).unwrap();
+        run_run(tmp.path(), "minimal", false).unwrap();
+
+        let html = std::fs::read_to_string(dest.path().join("index.html"))
+            .expect("index.html should have been rsynced");
+        assert!(
+            !html.contains("class=\"project-header\""),
+            "project-header must be omitted when no metadata is configured (got the empty block)"
+        );
+        // Sanity: the minimal "Workgraph" header is still present.
+        assert!(html.contains("class=\"page-header\""));
     }
 }

@@ -2691,6 +2691,22 @@ pub enum HtmlPublishCommands {
         /// keep the defaults plus extras. Mutually exclusive with --mkpath.
         #[arg(long = "rsync-flags", conflicts_with = "mkpath")]
         rsync_flags: Option<String>,
+
+        /// Title shown at the top of the rendered page. Wins over
+        /// `[project].title` / `[project].name` in `<workgraph_dir>/config.toml`.
+        #[arg(long = "title")]
+        title: Option<String>,
+
+        /// One-line byline / tagline shown under the title. Wins over
+        /// `[project].byline` in `<workgraph_dir>/config.toml`.
+        #[arg(long = "byline")]
+        byline: Option<String>,
+
+        /// Path to a markdown file rendered as the page abstract (relative
+        /// to `<workgraph_dir>` if not absolute). When unset, the renderer
+        /// falls back to `<workgraph_dir>/about.md`.
+        #[arg(long = "abstract")]
+        abstract_path: Option<String>,
     },
 
     /// List registered deployments

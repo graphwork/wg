@@ -3479,13 +3479,24 @@ impl Default for CoordinatorConfig {
 /// Project metadata
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ProjectConfig {
-    /// Project name
+    /// Project name (legacy field; new code prefers `title`)
     #[serde(default)]
     pub name: Option<String>,
 
     /// Project description
     #[serde(default)]
     pub description: Option<String>,
+
+    /// Display title shown at the top of `wg html` / `wg html publish`
+    /// rendered pages. Falls back to `name` (then to the workgraph
+    /// directory name) when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+
+    /// One-line byline / tagline shown under the title in `wg html`
+    /// rendered pages. Empty by default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub byline: Option<String>,
 
     /// Default skills for new actors
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

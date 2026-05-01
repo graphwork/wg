@@ -2907,6 +2907,9 @@ fn main() -> Result<()> {
                     ssh_config_host,
                     mkpath,
                     rsync_flags,
+                    title,
+                    byline,
+                    abstract_path,
                 } => commands::publish::run_add(
                     &workgraph_dir,
                     &name,
@@ -2920,6 +2923,9 @@ fn main() -> Result<()> {
                     ssh_config_host.as_deref(),
                     rsync_flags.as_deref(),
                     mkpath,
+                    title.as_deref(),
+                    byline.as_deref(),
+                    abstract_path.as_deref(),
                 ),
                 HtmlPublishCommands::List => {
                     commands::publish::run_list(&workgraph_dir, cli.json)

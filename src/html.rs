@@ -121,6 +121,84 @@ pub struct RenderOptions {
     /// transcripts are rendered; non-public chats show a hidden-marker line.
     /// Has no effect unless `include_chat = true`.
     pub all_chats: bool,
+    /// Project metadata rendered at the top of the index page (title /
+    /// byline / abstract). When `None`, the cascade is resolved from
+    /// `[project]` config + `<workgraph_dir>/about.md`. To skip metadata
+    /// entirely (back-compat path used in some tests), pass
+    /// `Some(ProjectMeta::default())`.
+    pub project_meta: Option<ProjectMeta>,
+}
+
+/// Resolved project metadata for the rendered page header.
+///
+/// Cascade (first hit wins per field):
+///   1. Per-deployment override (in `html-publish.toml`)
+///   2. Project-level fields in `<workgraph_dir>/config.toml [project]`
+///   3. `<workgraph_dir>/about.md` (abstract only)
+///   4. Defaults: title = directory name, byline = empty, abstract = empty
+///
+/// All three fields are `Option<String>` — when all are `None`/empty, the
+/// renderer omits the project-header entirely (no empty block).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ProjectMeta {
+    /// Page title (e.g. "Poietic Inc — Active Work"). When `None`, the
+    /// minimal "Workgraph" header is used.
+    pub title: Option<String>,
+    /// One-line byline / tagline shown under the title. Plain text.
+    pub byline: Option<String>,
+    /// Markdown body rendered as HTML below the byline. Long content is
+    /// collapsed behind a "show more" affordance in the rendered page.
+    pub abstract_md: Option<String>,
+}
+
+impl ProjectMeta {
+    /// True when nothing would be rendered — the renderer uses this to
+    /// decide whether to omit the project-header block entirely.
+    pub fn is_empty(&self) -> bool {
+        let blank = |s: &Option<String>| s.as_deref().map(|t| t.trim().is_empty()).unwrap_or(true);
+        blank(&self.title) && blank(&self.byline) && blank(&self.abstract_md)
+    }
+}
+
+/// Resolve project metadata from the project-level cascade only (no
+/// per-deployment overrides). Used by plain `wg html` and as the base
+/// layer that `wg html publish run` overlays per-deployment fields onto.
+///
+/// Reads:
+///   - `<workgraph_dir>/config.toml [project]` for `title` / `byline`
+///     (falls back to the legacy `name` field if `title` is unset).
+///   - `<workgraph_dir>/about.md` for the abstract.
+///
+/// Errors during read are treated as "field unset" — the caller still
+/// gets a usable `ProjectMeta`; nothing about HTML generation should fail
+/// because of a missing/malformed metadata source.
+pub fn resolve_project_meta(workgraph_dir: &Path) -> ProjectMeta {
+    let mut meta = ProjectMeta::default();
+
+    // Project-level config.
+    if let Ok(cfg) = crate::config::Config::load(workgraph_dir) {
+        if meta.title.is_none() {
+            meta.title = cfg.project.title.clone().or_else(|| cfg.project.name.clone());
+        }
+        if meta.byline.is_none() {
+            meta.byline = cfg.project.byline.clone();
+        }
+    }
+
+    // about.md fallback for the abstract.
+    if meta.abstract_md.is_none() {
+        let about = workgraph_dir.join("about.md");
+        if about.exists() {
+            if let Ok(body) = fs::read_to_string(&about) {
+                let trimmed = body.trim();
+                if !trimmed.is_empty() {
+                    meta.abstract_md = Some(body);
+                }
+            }
+        }
+    }
+
+    meta
 }
 
 /// Public render entry point. Builds the complete static site.
@@ -134,6 +212,12 @@ pub fn render_site(
     let since = opts.since.as_deref();
     let include_chat = opts.include_chat;
     let all_chats = opts.all_chats;
+    // Resolve project metadata. When the caller didn't pass anything,
+    // fall back to the project-level cascade (config + about.md).
+    let project_meta = opts
+        .project_meta
+        .clone()
+        .unwrap_or_else(|| resolve_project_meta(workgraph_dir));
     let since_cutoff: Option<DateTime<Utc>> = since
         .map(|s| parse_since(s).map(|d| Utc::now() - d))
         .transpose()?;
@@ -262,6 +346,7 @@ pub fn render_site(
         chat_transcripts_shown,
         chat_transcripts_hidden,
         has_agency_tasks,
+        &project_meta,
     );
     fs::write(out_dir.join("index.html"), &index_html).context("failed to write index.html")?;
 
@@ -304,6 +389,11 @@ pub fn run(
             since: since.map(|s| s.to_string()),
             include_chat,
             all_chats,
+            // None → render_site falls back to the project-level cascade
+            // (config.toml [project] + about.md). Plain `wg html` doesn't
+            // know about per-deployment overrides; those come from
+            // `wg html publish run`, which threads its own ProjectMeta in.
+            project_meta: None,
         },
     )?;
 
@@ -1588,6 +1678,7 @@ fn render_footer(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 fn render_index(
     graph: &WorkGraph,
     included: &[&Task],
@@ -1604,6 +1695,7 @@ fn render_index(
     chat_transcripts_shown: usize,
     chat_transcripts_hidden: usize,
     has_agency_tasks: bool,
+    project_meta: &ProjectMeta,
 ) -> String {
     let total_in_graph = graph.tasks().count();
     let total_shown = included.len();
@@ -1703,6 +1795,19 @@ fn render_index(
 
     let title_suffix = if show_all { "all tasks" } else { "public mirror" };
 
+    // Project-header block (above the dependency graph). Omitted entirely
+    // when no fields are set — we don't want a useless empty block sitting
+    // above the viz. The abstract is rendered as markdown and collapses
+    // behind a "show more" toggle when the body is taller than ~5 lines.
+    let project_header_html = render_project_header(project_meta);
+    // Browser title prefers the project title when set; otherwise falls
+    // back to the legacy "Workgraph — <suffix>" form so existing fixtures
+    // keep matching.
+    let browser_title = match project_meta.title.as_deref() {
+        Some(t) if !t.trim().is_empty() => format!("{} — Workgraph", t.trim()),
+        _ => format!("Workgraph — {}", title_suffix),
+    };
+
     // Agency toggle UI (button + body data attribute) — emitted only when
     // there are actual agency tasks in scope. Web equivalent of the TUI's
     // period-key behavior. Default is hidden ("false"); the bootstrap script
@@ -1744,7 +1849,7 @@ fn render_index(
          <head>\n\
          <meta charset=\"utf-8\" />\n\
          <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />\n\
-         <title>Workgraph — {title_suffix}</title>\n\
+         <title>{browser_title}</title>\n\
          <link rel=\"stylesheet\" href=\"style.css\" />\n\
          <script>\n\
          /* Theme bootstrap — runs before paint to avoid a flash. */\n\
@@ -1772,6 +1877,7 @@ fn render_index(
          <button id=\"theme-toggle\" class=\"theme-toggle\" type=\"button\">Light theme</button>\n\
          </div>\n\
          </header>\n\
+         {project_header_html}\
          <div class=\"page-layout\">\n\
          <main class=\"main-content\">\n\
          <section class=\"dag-section\">\n\
@@ -1796,7 +1902,7 @@ fn render_index(
          <script src=\"panel.js\"></script>\n\
          </body>\n\
          </html>\n",
-        title_suffix = title_suffix,
+        browser_title = escape_html(&browser_title),
         n = total_shown,
         viz = viz_html,
         legend_panel = legend_panel,
@@ -1810,7 +1916,56 @@ fn render_index(
         agency_toggle_btn = agency_toggle_btn,
         agency_bootstrap = agency_bootstrap,
         html_show_agency = html_show_agency,
+        project_header_html = project_header_html,
     )
+}
+
+/// Render the project-header block. Returns an empty string when
+/// `meta.is_empty()` so the page falls back to the existing minimal
+/// "Workgraph / N tasks shown" header.
+fn render_project_header(meta: &ProjectMeta) -> String {
+    if meta.is_empty() {
+        return String::new();
+    }
+
+    let mut out = String::new();
+    out.push_str("<header class=\"project-header\">\n");
+    if let Some(t) = meta.title.as_deref() {
+        let t = t.trim();
+        if !t.is_empty() {
+            out.push_str(&format!(
+                "<h1 class=\"project-title\">{}</h1>\n",
+                escape_html(t)
+            ));
+        }
+    }
+    if let Some(b) = meta.byline.as_deref() {
+        let b = b.trim();
+        if !b.is_empty() {
+            out.push_str(&format!(
+                "<p class=\"project-byline\">{}</p>\n",
+                escape_html(b)
+            ));
+        }
+    }
+    if let Some(a) = meta.abstract_md.as_deref() {
+        let a = a.trim();
+        if !a.is_empty() {
+            // Render markdown to HTML using the same renderer as the
+            // task description body (pulldown-cmark, no raw HTML).
+            // The wrapper carries `data-abstract-len` (line count) so
+            // the JS can decide whether to install the "show more"
+            // collapser without re-counting in CSS.
+            let line_count = a.lines().count();
+            let rendered = markdown_to_html(a);
+            out.push_str(&format!(
+                "<div class=\"project-abstract description-rendered\" data-abstract-lines=\"{}\">{}</div>\n",
+                line_count, rendered,
+            ));
+        }
+    }
+    out.push_str("</header>\n");
+    out
 }
 
 // ────────────────────────────────────────────────────────────────────────────

@@ -772,6 +772,15 @@ description = "Pins wg-publish-easy: end-to-end add/list/show/run/remove against
 timeout_seconds = 120
 
 [[scenario]]
+name = "publish_project_metadata_renders"
+script = "scenarios/publish_project_metadata_renders.sh"
+owners = [
+    "wg-html-publish-2",
+]
+description = "Pins wg-html-publish-2: project metadata (title / byline / abstract markdown) at the top of `wg html publish`-rendered pages. Walks the cascade: per-deployment --title/--byline/--abstract on `add` wins over project-level [project] config, which wins over the auto-discovered <wg_dir>/about.md, and when nothing is set anywhere the project-header block is OMITTED entirely (the page falls back to the existing minimal 'Workgraph / N tasks shown' header). Verifies the abstract is rendered as markdown (h2/ul/li from a markdown source). Skips when rsync is missing."
+timeout_seconds = 120
+
+[[scenario]]
 name = "wg_html_msg_indicator"
 script = "scenarios/wg_html_msg_indicator.sh"
 owners = [

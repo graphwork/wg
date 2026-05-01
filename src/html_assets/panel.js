@@ -170,6 +170,42 @@
 
     initAgencyToggle();
 
+    // ── Project-abstract collapser ────────────────────────────────────
+    //
+    // The project-header rendered above the dependency graph optionally
+    // contains a markdown abstract. When the body is taller than ~5
+    // lines we install a "show more / show less" toggle so the abstract
+    // doesn't dominate the page. The line count is rendered server-side
+    // into data-abstract-lines; we double-check by measuring after
+    // layout in case markdown produced taller content than line-count
+    // alone suggests.
+    function initProjectAbstract() {
+        var abstractEl = document.querySelector('.project-abstract');
+        if (!abstractEl) return;
+        // 5-line threshold by line count from server, or by measured
+        // height vs a 5-line target (whichever fires first).
+        var declaredLines = parseInt(abstractEl.getAttribute('data-abstract-lines') || '0', 10);
+        var lineHeightPx = parseFloat(getComputedStyle(abstractEl).lineHeight) || 22;
+        var collapsedHeight = lineHeightPx * 5.25;
+        var measured = abstractEl.scrollHeight;
+        if (declaredLines <= 5 && measured <= collapsedHeight + 4) return;
+
+        abstractEl.classList.add('is-collapsed');
+        var btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'project-abstract-toggle';
+        btn.textContent = 'Show more';
+        btn.setAttribute('aria-expanded', 'false');
+        abstractEl.parentNode.insertBefore(btn, abstractEl.nextSibling);
+        btn.addEventListener('click', function () {
+            var collapsed = abstractEl.classList.toggle('is-collapsed');
+            btn.textContent = collapsed ? 'Show more' : 'Show less';
+            btn.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+        });
+    }
+
+    initProjectAbstract();
+
     // ── Inspector panel resize (drag-to-resize, persisted) ─────────────
     //
     // Wide layout: panel is anchored to the right; left edge is a vertical
