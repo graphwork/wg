@@ -1063,3 +1063,170 @@ body.task-page {
         cursor: row-resize;
     }
 }
+
+/* ── Message indicator (parity with TUI envelope glyph) ─────────────────── */
+/* Status-aligned palette mirroring src/messages.rs::CoordinatorMessageStatus
+   color() (Unseen=DarkGray, Seen=Yellow, Replied=Green). The "unseen" tone
+   reads as a foreground text color rather than dim, so unread messages pop
+   against the row text — matching the TUI's bold envelope behavior. */
+:root {
+    --msg-unseen: var(--status-open);          /* yellow-ish — pending action */
+    --msg-seen: var(--fg-muted);               /* gray — neutral */
+    --msg-replied: var(--status-done);         /* green — done */
+    --msg-bg-unread: rgba(229, 229, 16, 0.08); /* faint highlight on row bg */
+}
+
+.msg-indicator {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 0.15em;
+    margin-left: 0.45em;
+    padding: 0 0.3em;
+    border-radius: 3px;
+    font-family: 'JetBrains Mono', ui-monospace, 'Cascadia Code', 'Source Code Pro', Menlo, Consolas, monospace;
+    font-size: 0.85em;
+    line-height: 1;
+    cursor: pointer;
+    user-select: none;
+    color: var(--msg-seen);
+    border: 1px solid transparent;
+    transition: background 120ms, border-color 120ms;
+}
+.msg-indicator:hover {
+    background: var(--selection-bg);
+    border-color: var(--border);
+    text-decoration: none;
+}
+.msg-indicator .msg-glyph { font-size: 1.05em; }
+.msg-indicator .msg-count { font-variant-numeric: tabular-nums; }
+
+.msg-indicator.msg-unseen {
+    color: var(--msg-unseen);
+    font-weight: 600;
+}
+.msg-indicator.msg-seen {
+    color: var(--msg-seen);
+}
+.msg-indicator.msg-replied {
+    color: var(--msg-replied);
+}
+.msg-indicator.has-unread-msg {
+    background: var(--msg-bg-unread);
+    border-color: rgba(229, 229, 16, 0.25);
+}
+
+/* Whole task-list row gets a subtle wash when there are unread messages so
+   the user can scan for activity without zeroing in on the indicator alone. */
+.task-list li.has-unread-msg {
+    background: var(--msg-bg-unread);
+    border-radius: 3px;
+}
+.task-list li.has-unread-msg > a {
+    /* Keep the link color readable over the wash. */
+    color: inherit;
+}
+
+/* ── Messages section (per-task page + inspector) ───────────────────────── */
+.messages-section {
+    margin-top: 1.5rem;
+}
+.messages-section h2 {
+    display: flex;
+    align-items: baseline;
+    gap: 0.5rem;
+    margin-bottom: 0.75rem;
+}
+.messages-section h2 .msg-glyph { font-size: 1.1em; }
+.messages-section.msg-unseen h2 .msg-glyph { color: var(--msg-unseen); }
+.messages-section.msg-seen   h2 .msg-glyph { color: var(--msg-seen); }
+.messages-section.msg-replied h2 .msg-glyph { color: var(--msg-replied); }
+.messages-section .messages-summary {
+    font-size: 0.85em;
+    color: var(--fg-muted);
+    font-weight: normal;
+}
+
+.messages-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+}
+
+.msg-row {
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 0.55rem 0.7rem;
+    background: var(--bg-elevated);
+}
+.msg-row.msg-incoming {
+    /* Pull eye toward incoming via a left accent stripe (the action items). */
+    border-left: 3px solid var(--msg-unseen);
+}
+.msg-row.msg-outgoing {
+    border-left: 3px solid var(--msg-replied);
+    opacity: 0.92;
+}
+.msg-row.msg-urgent {
+    border-color: var(--status-failed);
+    background: color-mix(in srgb, var(--status-failed) 6%, var(--bg-elevated));
+}
+
+.msg-head {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    align-items: baseline;
+    font-size: 0.82em;
+    color: var(--fg-muted);
+    margin-bottom: 0.35rem;
+}
+.msg-head .msg-id {
+    font-family: 'JetBrains Mono', ui-monospace, 'Cascadia Code', monospace;
+    color: var(--fg-dim);
+}
+.msg-head .msg-sender {
+    font-weight: 600;
+    color: var(--fg);
+}
+.msg-head .msg-status {
+    margin-left: auto;
+    font-style: italic;
+}
+
+.msg-body {
+    margin: 0;
+    padding: 0.4rem 0.55rem;
+    background: var(--bg-pre);
+    border-radius: 4px;
+    color: var(--fg);
+    font-family: 'JetBrains Mono', ui-monospace, 'Cascadia Code', monospace;
+    font-size: 0.88em;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+/* Inspector-side variant: tighter padding, smaller fonts. */
+.side-panel .messages-section {
+    margin-top: 1rem;
+}
+.side-panel .messages-section h2 {
+    font-size: 0.95rem;
+}
+.side-panel .msg-row {
+    padding: 0.45rem 0.55rem;
+}
+.side-panel .msg-body {
+    font-size: 0.82em;
+}
+/* Highlight pulse when the user clicks the indicator and we scroll to the
+   section. The animation runs once via a class added by panel.js. */
+.messages-section.msg-flash {
+    animation: msg-flash 1.4s ease-out;
+}
+@keyframes msg-flash {
+    0%   { background: var(--msg-bg-unread); }
+    100% { background: transparent; }
+}

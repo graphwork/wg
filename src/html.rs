@@ -36,6 +36,7 @@ use std::sync::OnceLock;
 use crate::chat::{self, ChatMessage};
 use crate::chat_id;
 use crate::graph::{Status, Task, WorkGraph};
+use crate::messages::{self as msg_queue, CoordinatorMessageStatus, Message, MessageStats};
 use crate::parser::load_graph;
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -187,12 +188,16 @@ pub fn render_site(
     // Eval scores per task.
     let evals = load_eval_scores(workgraph_dir);
 
+    // Per-task message bundles (only populated for tasks with at least one
+    // message). Drives the envelope indicator + messages section.
+    let task_messages = load_task_messages(workgraph_dir, &included);
+
     // Compute reachable upstream + downstream sets per task. Used by the JS
     // layer to highlight the "before" / "after" pattern of edges on click.
     let edge_reach = compute_edge_reachability(graph, &included_ids);
 
     // Build the inline JSON blobs.
-    let tasks_json = build_tasks_json(graph, &included, &evals, &included_ids);
+    let tasks_json = build_tasks_json(graph, &included, &evals, &task_messages, &included_ids);
     let edges_json = build_edges_json(&edge_reach);
     let cycles_json = build_cycles_json(&viz);
 
@@ -221,7 +226,20 @@ pub fn render_site(
             }
             ChatRender::None => None,
         };
-        let html = render_task_page(task, graph, &included_ids, eval, chat_block.as_deref());
+        let msg_bundle = task_messages.get(&task.id);
+        let messages_block = render_messages_section(msg_bundle);
+        let html = render_task_page(
+            task,
+            graph,
+            &included_ids,
+            eval,
+            chat_block.as_deref(),
+            if messages_block.is_empty() {
+                None
+            } else {
+                Some(messages_block.as_str())
+            },
+        );
         let path = tasks_dir.join(format!("{}.html", url_encode_id(&task.id)));
         fs::write(&path, html).with_context(|| format!("failed to write {}", path.display()))?;
         pages_written += 1;
@@ -237,6 +255,7 @@ pub fn render_site(
         &tasks_json,
         &edges_json,
         &cycles_json,
+        &task_messages,
         show_all,
         since,
         include_chat,
@@ -904,6 +923,259 @@ fn extend_through_status_decorator(line_chars: &[char], start_col: usize) -> usi
 }
 
 // ────────────────────────────────────────────────────────────────────────────
+// Message queue surfacing (parity with TUI envelope indicator)
+// ────────────────────────────────────────────────────────────────────────────
+
+/// Per-task message bundle surfaced into the HTML export. Mirrors the data the
+/// TUI uses to draw its envelope indicator (`✉`/`↩`/`✓`) and message panel.
+///
+/// Two perspectives co-exist (matching the TUI exactly):
+/// - `incoming` / `outgoing` are agent-perspective counts from
+///   `messages::MessageStats` — outgoing = sent BY the task's assigned agent,
+///   incoming = sent BY anyone else. This drives the count text.
+/// - `status` is the coordinator/user perspective from
+///   `messages::coordinator_message_status` — Unseen/Seen/Replied describes
+///   how the TUI cursor compares to the latest non-coordinator message. This
+///   drives the icon glyph and color.
+#[derive(Debug, Clone)]
+struct TaskMessages {
+    /// All messages on the task's queue, ordered by id.
+    messages: Vec<Message>,
+    /// Coordinator-perspective read state (`Unseen` / `Seen` / `Replied`).
+    /// `None` when the task has only coordinator-side messages (e.g. just
+    /// `wg msg send` from the CLI with no agent reply yet).
+    status: Option<CoordinatorMessageStatus>,
+    /// Count of messages NOT sent by the task's assigned agent (a.k.a.
+    /// "from the user's perspective, things sent IN to the task"). Mirrors
+    /// `MessageStats::incoming`.
+    incoming: usize,
+    /// Count of messages sent by the task's assigned agent. Mirrors
+    /// `MessageStats::outgoing`.
+    outgoing: usize,
+    /// True iff there are unread incoming messages relative to the assigned
+    /// agent's read cursor. Mirrors `MessageStats::has_unread`. Drives the
+    /// `has-unread-msg` CSS class.
+    has_unread: bool,
+}
+
+impl TaskMessages {
+    fn is_empty(&self) -> bool {
+        self.messages.is_empty()
+    }
+}
+
+/// Load the per-task message bundle, only emitting an entry for tasks that
+/// have at least one message. Filtering at this layer keeps the inline JSON
+/// size bounded by the actual queue activity, not the full task count.
+fn load_task_messages(workgraph_dir: &Path, included: &[&Task]) -> HashMap<String, TaskMessages> {
+    let mut out: HashMap<String, TaskMessages> = HashMap::new();
+    for task in included {
+        let messages = match msg_queue::list_messages(workgraph_dir, &task.id) {
+            Ok(m) if !m.is_empty() => m,
+            _ => continue,
+        };
+        let stats: MessageStats =
+            msg_queue::message_stats(workgraph_dir, &task.id, task.assigned.as_deref());
+        let status = msg_queue::coordinator_message_status(workgraph_dir, &task.id);
+        out.insert(
+            task.id.clone(),
+            TaskMessages {
+                messages,
+                status,
+                incoming: stats.incoming,
+                outgoing: stats.outgoing,
+                has_unread: stats.has_unread,
+            },
+        );
+    }
+    out
+}
+
+/// Stable lowercase identifier for the coordinator status (used as a CSS class
+/// suffix and a JSON value). Returns `"none"` when there is no incoming
+/// message — callers that don't want to render anything in that case should
+/// check `is_empty()` on the bundle first.
+fn msg_status_class(status: Option<&CoordinatorMessageStatus>) -> &'static str {
+    match status {
+        Some(CoordinatorMessageStatus::Unseen) => "unseen",
+        Some(CoordinatorMessageStatus::Seen) => "seen",
+        Some(CoordinatorMessageStatus::Replied) => "replied",
+        None => "none",
+    }
+}
+
+/// Single envelope glyph used in the HTML. Matches the TUI status icons:
+/// ✉ for unseen, ↩ for seen-but-not-replied, ✓ for replied. Falling back to
+/// ✉ when `status == None` keeps the visual signal even on outgoing-only
+/// queues (rare — `coordinator_message_status` returns `None` in that case).
+fn msg_status_icon(status: Option<&CoordinatorMessageStatus>) -> char {
+    match status {
+        Some(CoordinatorMessageStatus::Unseen) => '✉',
+        Some(CoordinatorMessageStatus::Seen) => '↩',
+        Some(CoordinatorMessageStatus::Replied) => '✓',
+        None => '✉',
+    }
+}
+
+/// Build the task-list-row indicator span. Returns the empty string when the
+/// task has no messages so callers can unconditionally interpolate the result.
+/// The element is clickable; panel.js uses the `data-msg-action="messages"`
+/// attribute to scroll the inspector to the Messages section after opening.
+fn render_msg_indicator_inline(bundle: Option<&TaskMessages>, task_id: &str) -> String {
+    let bundle = match bundle {
+        Some(b) if !b.is_empty() => b,
+        _ => return String::new(),
+    };
+    let status_cls = msg_status_class(bundle.status.as_ref());
+    let icon = msg_status_icon(bundle.status.as_ref());
+    let count_str = if bundle.outgoing > 0 {
+        format!("{}/{}", bundle.incoming, bundle.outgoing)
+    } else {
+        format!("{}", bundle.incoming)
+    };
+    let unread_cls = if bundle.has_unread {
+        " has-unread-msg"
+    } else {
+        ""
+    };
+    let title = match bundle.status.as_ref() {
+        Some(CoordinatorMessageStatus::Unseen) => {
+            format!("{} unread message(s) — click to open inspector", bundle.incoming)
+        }
+        Some(CoordinatorMessageStatus::Seen) => {
+            format!("{} message(s), all seen — click to open inspector", bundle.incoming)
+        }
+        Some(CoordinatorMessageStatus::Replied) => {
+            format!("{} message(s), replied — click to open inspector", bundle.incoming)
+        }
+        None => format!(
+            "{} message(s) — click to open inspector",
+            bundle.incoming + bundle.outgoing
+        ),
+    };
+    format!(
+        " <span class=\"msg-indicator msg-{cls}{unread_cls}\" \
+         data-task-id=\"{task}\" data-msg-action=\"messages\" \
+         title=\"{title}\" aria-label=\"{title}\">\
+         <span class=\"msg-glyph\">{icon}</span>\
+         <span class=\"msg-count\">{count}</span>\
+         </span>",
+        cls = status_cls,
+        unread_cls = unread_cls,
+        task = escape_html(task_id),
+        title = escape_html(&title),
+        icon = icon,
+        count = escape_html(&count_str),
+    )
+}
+
+/// Render the full Messages section used both in the per-task page and the
+/// inspector side panel. Empty bundles produce an empty string so callers can
+/// drop the section entirely. The DOM id `messages-section` is the scroll
+/// target for the indicator-click action.
+fn render_messages_section(bundle: Option<&TaskMessages>) -> String {
+    let bundle = match bundle {
+        Some(b) if !b.is_empty() => b,
+        _ => return String::new(),
+    };
+    let status_cls = msg_status_class(bundle.status.as_ref());
+    let summary = match bundle.status.as_ref() {
+        Some(CoordinatorMessageStatus::Unseen) => format!(
+            "{} message{} ({} unread)",
+            bundle.messages.len(),
+            if bundle.messages.len() == 1 { "" } else { "s" },
+            bundle.incoming,
+        ),
+        Some(CoordinatorMessageStatus::Seen) => format!(
+            "{} message{} (all seen)",
+            bundle.messages.len(),
+            if bundle.messages.len() == 1 { "" } else { "s" },
+        ),
+        Some(CoordinatorMessageStatus::Replied) => format!(
+            "{} message{} (replied)",
+            bundle.messages.len(),
+            if bundle.messages.len() == 1 { "" } else { "s" },
+        ),
+        None => format!(
+            "{} message{}",
+            bundle.messages.len(),
+            if bundle.messages.len() == 1 { "" } else { "s" },
+        ),
+    };
+    let icon = msg_status_icon(bundle.status.as_ref());
+    let mut s = String::new();
+    s.push_str(&format!(
+        "<section id=\"messages-section\" class=\"messages-section msg-{cls}\">\n\
+         <h2><span class=\"msg-glyph\">{icon}</span> Messages \
+         <span class=\"messages-summary\">{summary}</span></h2>\n",
+        cls = status_cls,
+        icon = icon,
+        summary = escape_html(&summary),
+    ));
+    s.push_str("<ol class=\"messages-list\">\n");
+    for msg in &bundle.messages {
+        let is_coordinator = matches!(msg.sender.as_str(), "tui" | "user" | "coordinator");
+        let role_cls = if is_coordinator {
+            "msg-outgoing"
+        } else {
+            "msg-incoming"
+        };
+        let priority_cls = if msg.priority == "urgent" {
+            " msg-urgent"
+        } else {
+            ""
+        };
+        s.push_str(&format!(
+            "<li class=\"msg-row {role} {status_row}{prio}\">\
+             <div class=\"msg-head\">\
+             <span class=\"msg-id\">#{id}</span>\
+             <span class=\"msg-sender\">{sender}</span>\
+             <span class=\"msg-ts\">{ts}</span>\
+             <span class=\"msg-status\">{status_label}</span>\
+             </div>\
+             <pre class=\"msg-body\">{body}</pre>\
+             </li>\n",
+            role = role_cls,
+            status_row = format!("msg-row-{}", msg.status),
+            prio = priority_cls,
+            id = msg.id,
+            sender = escape_html(&msg.sender),
+            ts = escape_html(&msg.timestamp),
+            status_label = escape_html(&msg.status.to_string()),
+            body = escape_html(&msg.body),
+        ));
+    }
+    s.push_str("</ol>\n</section>\n");
+    s
+}
+
+/// Serialize the bundle into the inline tasks JSON consumed by panel.js.
+fn task_messages_to_json(bundle: &TaskMessages) -> serde_json::Value {
+    let msgs: Vec<serde_json::Value> = bundle
+        .messages
+        .iter()
+        .map(|m| {
+            serde_json::json!({
+                "id": m.id,
+                "sender": m.sender,
+                "timestamp": m.timestamp,
+                "body": m.body,
+                "priority": m.priority,
+                "status": m.status.to_string(),
+            })
+        })
+        .collect();
+    serde_json::json!({
+        "status": msg_status_class(bundle.status.as_ref()),
+        "incoming": bundle.incoming,
+        "outgoing": bundle.outgoing,
+        "has_unread": bundle.has_unread,
+        "icon": msg_status_icon(bundle.status.as_ref()).to_string(),
+        "messages": msgs,
+    })
+}
+
+// ────────────────────────────────────────────────────────────────────────────
 // Eval scores
 // ────────────────────────────────────────────────────────────────────────────
 
@@ -1058,6 +1330,7 @@ fn task_to_json(
     task: &Task,
     graph: &WorkGraph,
     eval: Option<&EvalSummary>,
+    msgs: Option<&TaskMessages>,
     included_ids: &HashSet<&str>,
 ) -> serde_json::Value {
     let log_entries: Vec<serde_json::Value> = task
@@ -1142,6 +1415,9 @@ fn task_to_json(
             .into();
         obj["eval_dims"] = dims;
     }
+    if let Some(bundle) = msgs.filter(|b| !b.is_empty()) {
+        obj["msg"] = task_messages_to_json(bundle);
+    }
     obj
 }
 
@@ -1149,13 +1425,18 @@ fn build_tasks_json(
     graph: &WorkGraph,
     included: &[&Task],
     evals: &HashMap<String, EvalSummary>,
+    task_messages: &HashMap<String, TaskMessages>,
     included_ids: &HashSet<&str>,
 ) -> String {
     let map: serde_json::Map<String, serde_json::Value> = included
         .iter()
         .map(|t| {
             let eval = evals.get(&t.id);
-            (t.id.clone(), task_to_json(t, graph, eval, included_ids))
+            let msgs = task_messages.get(&t.id);
+            (
+                t.id.clone(),
+                task_to_json(t, graph, eval, msgs, included_ids),
+            )
         })
         .collect();
     let json_str = serde_json::to_string(&serde_json::Value::Object(map))
@@ -1316,6 +1597,7 @@ fn render_index(
     tasks_json: &str,
     edges_json: &str,
     cycles_json: &str,
+    task_messages: &HashMap<String, TaskMessages>,
     show_all: bool,
     since_label: Option<&str>,
     include_chat: bool,
@@ -1349,20 +1631,39 @@ fn render_index(
     list.push_str("<ul class=\"task-list\">\n");
     for t in &ordered {
         let agency = is_agency_task(&t.id);
-        let li_attrs = if agency {
-            " class=\"is-agency\" data-agency=\"true\""
+        let msg_bundle = task_messages.get(&t.id);
+        let has_msg = msg_bundle.map(|b| !b.is_empty()).unwrap_or(false);
+        let unread = msg_bundle.map(|b| b.has_unread).unwrap_or(false);
+        let mut li_classes: Vec<&str> = Vec::new();
+        if agency {
+            li_classes.push("is-agency");
+        }
+        if has_msg {
+            li_classes.push("has-msg");
+        }
+        if unread {
+            li_classes.push("has-unread-msg");
+        }
+        let li_attrs = if li_classes.is_empty() {
+            String::new()
+        } else if agency {
+            // Preserve the legacy `data-agency="true"` so existing CSS / tests
+            // that rely on the attribute keep working.
+            format!(" class=\"{}\" data-agency=\"true\"", li_classes.join(" "))
         } else {
-            ""
+            format!(" class=\"{}\"", li_classes.join(" "))
         };
+        let msg_inline = render_msg_indicator_inline(msg_bundle, &t.id);
         list.push_str(&format!(
             "  <li{li_attrs}><a href=\"{href}\" data-task-id=\"{id_attr}\"><span class=\"badge {cls}\">{status}</span> \
-             <code>{id}</code> — {title}</a></li>\n",
+             <code>{id}</code>{msg_inline} — {title}</a></li>\n",
             li_attrs = li_attrs,
             href = task_filename(&t.id),
             id_attr = escape_html(&t.id),
             cls = status_class(t.status),
             status = t.status,
             id = escape_html(&t.id),
+            msg_inline = msg_inline,
             title = escape_html(&t.title),
         ));
     }
@@ -1522,6 +1823,7 @@ fn render_task_page(
     included_ids: &HashSet<&str>,
     eval: Option<&EvalSummary>,
     chat_block: Option<&str>,
+    messages_block: Option<&str>,
 ) -> String {
     let title = escape_html(&task.title);
     let id = escape_html(&task.id);
@@ -1751,6 +2053,7 @@ fn render_task_page(
          <section><h2>Description</h2>{desc}</section>\n\
          <section><h2>Depends on</h2>{deps}</section>\n\
          <section><h2>Required by</h2>{revdeps}</section>\n\
+         {messages}\
          {chat}\
          <section><h2>Log</h2>{log}</section>\n\
          </main>\n\
@@ -1763,6 +2066,7 @@ fn render_task_page(
         desc = description_html,
         deps = deps_html,
         revdeps = dependents_html,
+        messages = messages_block.unwrap_or(""),
         chat = chat_block.unwrap_or(""),
         log = log_html,
         vis = escape_html(&task.visibility),
@@ -2121,7 +2425,7 @@ mod tests {
         task.description = Some("## Title\n\n- item\n".to_string());
         let graph = WorkGraph::new();
         let included: HashSet<&str> = std::iter::once("test-task").collect();
-        let json = task_to_json(&task, &graph, None, &included);
+        let json = task_to_json(&task, &graph, None, None, &included);
         let desc_html = json.get("description_html").and_then(|v| v.as_str());
         assert!(desc_html.is_some(), "description_html field missing");
         let html = desc_html.unwrap();
@@ -2237,6 +2541,312 @@ mod tests {
             ChatRender::Render(r) => assert_eq!(r, "coordinator-2"),
             other => panic!("expected Render for legacy id, got {other:?}"),
         }
+    }
+
+    // ────────────────────────────────────────────────────────────────────
+    // Message indicator surfacing (parity with TUI envelope)
+    // ────────────────────────────────────────────────────────────────────
+
+    fn make_msg(id: u64, sender: &str, body: &str) -> Message {
+        Message {
+            id,
+            timestamp: format!("2025-01-01T00:00:{:02}Z", id),
+            sender: sender.to_string(),
+            body: body.to_string(),
+            priority: "normal".to_string(),
+            status: msg_queue::DeliveryStatus::Sent,
+            read_at: None,
+        }
+    }
+
+    /// Build a TaskMessages with explicit agent-perspective counts. The
+    /// production code derives these from `MessageStats`, which depends on
+    /// the assigned-agent identity — too brittle to recompute in tests, so
+    /// just pass the values you want to assert on.
+    fn bundle_counts(
+        messages: Vec<Message>,
+        status: Option<CoordinatorMessageStatus>,
+        incoming: usize,
+        outgoing: usize,
+    ) -> TaskMessages {
+        let has_unread = matches!(status, Some(CoordinatorMessageStatus::Unseen)) && incoming > 0;
+        TaskMessages {
+            messages,
+            status,
+            incoming,
+            outgoing,
+            has_unread,
+        }
+    }
+
+    #[test]
+    fn msg_indicator_inline_empty_when_no_messages() {
+        let s = render_msg_indicator_inline(None, "task-x");
+        assert!(s.is_empty(), "expected empty for None bundle, got {s}");
+        let empty_bundle = bundle_counts(Vec::new(), None, 0, 0);
+        let s = render_msg_indicator_inline(Some(&empty_bundle), "task-x");
+        assert!(s.is_empty(), "expected empty for empty bundle, got {s}");
+    }
+
+    #[test]
+    fn msg_indicator_inline_unseen_carries_unread_class() {
+        let b = bundle_counts(
+            vec![make_msg(1, "user", "hi")],
+            Some(CoordinatorMessageStatus::Unseen),
+            1,
+            0,
+        );
+        let s = render_msg_indicator_inline(Some(&b), "task-x");
+        assert!(s.contains("msg-indicator"), "no msg-indicator class: {s}");
+        assert!(s.contains("msg-unseen"), "missing msg-unseen class: {s}");
+        assert!(
+            s.contains("has-unread-msg"),
+            "missing has-unread-msg class: {s}"
+        );
+        assert!(s.contains("✉"), "missing envelope glyph: {s}");
+        assert!(
+            s.contains("data-msg-action=\"messages\""),
+            "missing click action attribute: {s}"
+        );
+        assert!(
+            s.contains("data-task-id=\"task-x\""),
+            "missing data-task-id: {s}"
+        );
+    }
+
+    #[test]
+    fn msg_indicator_inline_seen_no_unread_class() {
+        let b = bundle_counts(
+            vec![make_msg(1, "user", "hi")],
+            Some(CoordinatorMessageStatus::Seen),
+            1,
+            0,
+        );
+        let s = render_msg_indicator_inline(Some(&b), "task-x");
+        assert!(s.contains("msg-seen"), "missing msg-seen class: {s}");
+        assert!(
+            !s.contains("has-unread-msg"),
+            "should NOT carry unread class when seen: {s}"
+        );
+        assert!(s.contains("↩"), "expected seen glyph ↩: {s}");
+    }
+
+    #[test]
+    fn msg_indicator_inline_replied_uses_check_glyph() {
+        // 1 incoming + 1 outgoing — the "agent replied" pattern.
+        let b = bundle_counts(
+            vec![
+                make_msg(1, "user", "hi"),
+                make_msg(2, "agent-x", "ack"),
+            ],
+            Some(CoordinatorMessageStatus::Replied),
+            1,
+            1,
+        );
+        let s = render_msg_indicator_inline(Some(&b), "task-x");
+        assert!(s.contains("msg-replied"), "missing msg-replied class: {s}");
+        assert!(s.contains("✓"), "expected replied glyph ✓: {s}");
+        // Count format `incoming/outgoing` when there are outgoing messages.
+        assert!(s.contains("1/1"), "expected count 1/1, got: {s}");
+    }
+
+    #[test]
+    fn msg_indicator_count_format_incoming_only() {
+        // Two incoming, zero outgoing → indicator shows "2", not "2/0".
+        let b = bundle_counts(
+            vec![
+                make_msg(1, "user", "a"),
+                make_msg(2, "user", "b"),
+            ],
+            Some(CoordinatorMessageStatus::Unseen),
+            2,
+            0,
+        );
+        let s = render_msg_indicator_inline(Some(&b), "task-x");
+        assert!(
+            s.contains("class=\"msg-count\">2<"),
+            "expected count 2 (no outgoing), got: {s}"
+        );
+        assert!(!s.contains("2/0"), "should not render 2/0 form: {s}");
+    }
+
+    #[test]
+    fn msg_indicator_escapes_task_id() {
+        let b = bundle_counts(
+            vec![make_msg(1, "user", "hi")],
+            Some(CoordinatorMessageStatus::Unseen),
+            1,
+            0,
+        );
+        // A task id with HTML-ish chars must not break out of attribute quotes.
+        let s = render_msg_indicator_inline(Some(&b), "weird\"<id>");
+        assert!(!s.contains("\"<id>"), "raw HTML chars leaked: {s}");
+        assert!(s.contains("&quot;"), "expected quote-escape: {s}");
+    }
+
+    #[test]
+    fn messages_section_empty_when_bundle_empty() {
+        assert!(render_messages_section(None).is_empty());
+        let b = bundle_counts(Vec::new(), None, 0, 0);
+        assert!(render_messages_section(Some(&b)).is_empty());
+    }
+
+    #[test]
+    fn messages_section_emits_each_message() {
+        let b = bundle_counts(
+            vec![
+                make_msg(1, "user", "first"),
+                make_msg(2, "agent-x", "reply"),
+            ],
+            Some(CoordinatorMessageStatus::Replied),
+            1,
+            1,
+        );
+        let s = render_messages_section(Some(&b));
+        assert!(
+            s.contains("id=\"messages-section\""),
+            "missing scroll-target id: {s}"
+        );
+        assert!(s.contains("class=\"messages-section msg-replied\""), "missing status class: {s}");
+        assert!(s.contains("first"), "missing first message body: {s}");
+        assert!(s.contains("reply"), "missing reply body: {s}");
+        // The msg-incoming / msg-outgoing CSS classes are coordinator-perspective
+        // (us vs them). Senders "user"/"tui"/"coordinator" are outgoing, others
+        // are incoming. Here `user` = outgoing, `agent-x` = incoming.
+        assert!(s.contains("msg-incoming"), "missing incoming class: {s}");
+        assert!(s.contains("msg-outgoing"), "missing outgoing class: {s}");
+        assert!(s.contains("#1"), "missing message id #1: {s}");
+        assert!(s.contains("#2"), "missing message id #2: {s}");
+    }
+
+    #[test]
+    fn messages_section_escapes_html_in_body() {
+        let b = bundle_counts(
+            vec![make_msg(1, "user", "<script>alert(1)</script>")],
+            Some(CoordinatorMessageStatus::Unseen),
+            1,
+            0,
+        );
+        let s = render_messages_section(Some(&b));
+        assert!(
+            !s.contains("<script>alert(1)</script>"),
+            "raw script tag leaked: {s}"
+        );
+        assert!(
+            s.contains("&lt;script&gt;"),
+            "expected escaped script tag: {s}"
+        );
+    }
+
+    #[test]
+    fn task_messages_to_json_round_trip() {
+        let b = bundle_counts(
+            vec![
+                make_msg(1, "user", "hi"),
+                make_msg(2, "agent-x", "yo"),
+            ],
+            Some(CoordinatorMessageStatus::Replied),
+            1,
+            1,
+        );
+        let v = task_messages_to_json(&b);
+        assert_eq!(v["status"], "replied");
+        assert_eq!(v["incoming"], 1);
+        assert_eq!(v["outgoing"], 1);
+        assert_eq!(v["has_unread"], false);
+        assert_eq!(v["icon"], "✓");
+        let arr = v["messages"].as_array().expect("messages array");
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr[0]["sender"], "user");
+        assert_eq!(arr[0]["body"], "hi");
+        assert_eq!(arr[0]["status"], "sent");
+    }
+
+    #[test]
+    fn task_to_json_embeds_msg_bundle_when_present() {
+        use crate::graph::WorkGraph;
+        let mut task = Task::default();
+        task.id = "test-task".to_string();
+        let graph = WorkGraph::new();
+        let included: HashSet<&str> = std::iter::once("test-task").collect();
+
+        // Without bundle → no msg field.
+        let json_no_msg = task_to_json(&task, &graph, None, None, &included);
+        assert!(json_no_msg.get("msg").is_none(), "msg field leaked when no bundle");
+
+        // With bundle → msg field present.
+        let b = bundle_counts(
+            vec![make_msg(1, "user", "hi")],
+            Some(CoordinatorMessageStatus::Unseen),
+            1,
+            0,
+        );
+        let json_msg = task_to_json(&task, &graph, None, Some(&b), &included);
+        let m = json_msg.get("msg").expect("msg field present");
+        assert_eq!(m["status"], "unseen");
+        assert_eq!(m["incoming"], 1);
+        assert_eq!(m["has_unread"], true);
+    }
+
+    #[test]
+    fn task_to_json_skips_msg_field_for_empty_bundle() {
+        use crate::graph::WorkGraph;
+        let mut task = Task::default();
+        task.id = "test-task".to_string();
+        let graph = WorkGraph::new();
+        let included: HashSet<&str> = std::iter::once("test-task").collect();
+        let empty = bundle_counts(Vec::new(), None, 0, 0);
+        let json = task_to_json(&task, &graph, None, Some(&empty), &included);
+        assert!(
+            json.get("msg").is_none(),
+            "empty bundle should not emit msg field"
+        );
+    }
+
+    /// End-to-end: send a message via the message queue, run the loader, and
+    /// verify the indicator shows up. Mirrors the live smoke flow:
+    ///   wg msg send <task> 'test'  →  wg html  →  indicator visible.
+    #[test]
+    fn load_task_messages_surfaces_after_msg_send() {
+        use crate::graph::{Node, WorkGraph};
+        use crate::messages::send_message;
+        use tempfile::TempDir;
+
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join(".workgraph");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let mut graph = WorkGraph::new();
+        let mut task = Task::default();
+        task.id = "smoke-task".to_string();
+        task.title = "Smoke task".to_string();
+        graph.add_node(Node::Task(task.clone()));
+
+        // Simulate `wg msg send smoke-task 'test'` — sender defaults to "user"
+        // when invoked from a non-task context.
+        send_message(&dir, "smoke-task", "test", "user", "normal").unwrap();
+
+        let task_ref = graph.get_task("smoke-task").unwrap();
+        let included: Vec<&Task> = vec![task_ref];
+        let map = load_task_messages(&dir, &included);
+
+        let bundle = map.get("smoke-task").expect("bundle for smoke-task");
+        assert_eq!(bundle.messages.len(), 1, "expected 1 message");
+        // No assigned agent → MessageStats counts everyone as incoming.
+        assert_eq!(bundle.incoming, 1);
+        assert_eq!(bundle.outgoing, 0);
+        // No assigned agent cursor → has_unread is true.
+        assert!(bundle.has_unread, "expected unread for fresh message");
+
+        let inline = render_msg_indicator_inline(Some(bundle), &task_ref.id);
+        assert!(
+            inline.contains("msg-indicator"),
+            "indicator missing after msg send: {inline}"
+        );
+        assert!(
+            inline.contains("has-unread-msg"),
+            "expected unread class for fresh user message: {inline}"
+        );
     }
 }
 

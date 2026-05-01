@@ -451,6 +451,74 @@
         document.body.removeAttribute('data-selected');
     }
 
+    // ── Messages section (parity with TUI envelope indicator) ───────────
+
+    /**
+     * Render the inspector-side Messages section. The section header is the
+     * scroll target (`#messages-section`) used by the indicator-click action.
+     * Returns '' when the bundle is empty so callers can interpolate
+     * unconditionally.
+     */
+    function renderMessagesPanelHtml(bundle) {
+        if (!bundle || !bundle.messages || !bundle.messages.length) return '';
+        var statusCls = bundle.status || 'none';
+        var icon = bundle.icon || '✉';
+        var summary;
+        if (statusCls === 'unseen') {
+            summary = bundle.messages.length + ' message' + (bundle.messages.length === 1 ? '' : 's')
+                + ' (' + bundle.incoming + ' unread)';
+        } else if (statusCls === 'seen') {
+            summary = bundle.messages.length + ' message' + (bundle.messages.length === 1 ? '' : 's')
+                + ' (all seen)';
+        } else if (statusCls === 'replied') {
+            summary = bundle.messages.length + ' message' + (bundle.messages.length === 1 ? '' : 's')
+                + ' (replied)';
+        } else {
+            summary = bundle.messages.length + ' message' + (bundle.messages.length === 1 ? '' : 's');
+        }
+        var h = '<section id="messages-section" class="messages-section msg-' + escapeHtml(statusCls) + '">';
+        h += '<h2><span class="msg-glyph">' + escapeHtml(icon) + '</span> Messages '
+             + '<span class="messages-summary">' + escapeHtml(summary) + '</span></h2>';
+        h += '<ol class="messages-list">';
+        for (var i = 0; i < bundle.messages.length; i++) {
+            var m = bundle.messages[i];
+            var role = (m.sender === 'tui' || m.sender === 'user' || m.sender === 'coordinator')
+                ? 'msg-outgoing' : 'msg-incoming';
+            var prio = (m.priority === 'urgent') ? ' msg-urgent' : '';
+            var ts = m.timestamp ? m.timestamp.slice(0, 19).replace('T', ' ') : '';
+            h += '<li class="msg-row ' + role + prio + '">';
+            h += '<div class="msg-head">';
+            h += '<span class="msg-id">#' + escapeHtml(String(m.id)) + '</span>';
+            h += '<span class="msg-sender">' + escapeHtml(m.sender || '') + '</span>';
+            h += '<span class="msg-ts">' + escapeHtml(ts) + '</span>';
+            h += '<span class="msg-status">' + escapeHtml(m.status || '') + '</span>';
+            h += '</div>';
+            h += '<pre class="msg-body">' + escapeHtml(m.body || '') + '</pre>';
+            h += '</li>';
+        }
+        h += '</ol></section>';
+        return h;
+    }
+
+    /**
+     * Scroll the just-rendered Messages section into view inside the panel
+     * and pulse it briefly so the user can find it. No-op if the section
+     * isn't present (task has no messages).
+     */
+    function scrollPanelToMessages() {
+        var section = panelContent.querySelector('#messages-section');
+        if (!section) return;
+        // scrollIntoView with block:'nearest' behaves well inside the panel's
+        // overflow-y:auto container.
+        try { section.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); }
+        catch (_) { section.scrollIntoView(); }
+        section.classList.remove('msg-flash');
+        // Force reflow so the animation re-runs on subsequent clicks.
+        // eslint-disable-next-line no-unused-expressions
+        void section.offsetWidth;
+        section.classList.add('msg-flash');
+    }
+
     // ── Side panel rendering ────────────────────────────────────────────
 
     function renderPanel(task) {
@@ -563,6 +631,10 @@
             h += '</details>';
         }
 
+        if (task.msg && task.msg.messages && task.msg.messages.length) {
+            h += renderMessagesPanelHtml(task.msg);
+        }
+
         if (task.log && task.log.length) {
             h += '<details><summary>Log (' + task.log.length + ' entr' + (task.log.length === 1 ? 'y' : 'ies') + ')</summary><ul class="panel-log">';
             for (var l = 0; l < task.log.length; l++) {
@@ -668,6 +740,17 @@
     document.body.addEventListener('click', function (ev) {
         var t = ev.target;
         while (t && t !== document.body) {
+            // Message indicator: open the task panel and scroll/pulse the
+            // Messages section. We intercept before the generic [data-task-id]
+            // path so the indicator doesn't get treated as a plain task link
+            // (which would only open the task without scrolling).
+            if (t.dataset && t.dataset.msgAction === 'messages' && t.dataset.taskId) {
+                ev.preventDefault();
+                ev.stopPropagation();
+                openTask(t.dataset.taskId);
+                scrollPanelToMessages();
+                return;
+            }
             if (t.dataset && t.dataset.taskId && !t.classList.contains('task-link')) {
                 if (t.tagName === 'A' && t.getAttribute('href') &&
                     !t.classList.contains('inline-task-link')) {

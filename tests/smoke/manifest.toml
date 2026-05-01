@@ -748,3 +748,12 @@ owners = [
 ]
 description = "Pins wg-publish-easy: end-to-end add/list/show/run/remove against a local rsync target, plus scheduled-deployment lifecycle (creates a `.publish-<name>` cron task on add, abandons it on remove). Verifies html builds, files are mirrored to the destination, and last_status=ok is recorded. Skips when rsync is missing."
 timeout_seconds = 120
+
+[[scenario]]
+name = "wg_html_msg_indicator"
+script = "scenarios/wg_html_msg_indicator.sh"
+owners = [
+    "wg-html-surface",
+]
+description = "Pins wg-html-surface: HTML export shows a message indicator on tasks with messages (parity with TUI envelope glyph). Verifies (1) .msg-indicator span on task-list rows that have messages, none on rows without; (2) status-class breakdown (msg-none/msg-unseen/msg-seen/msg-replied) maps to the same CoordinatorMessageStatus the TUI uses; (3) per-task page renders #messages-section with escaped bodies; (4) WG_TASKS JSON exposes msg bundle for messaged tasks only; (5) CSS provides theme-aware status colors + has-unread-msg row highlight; (6) panel.js gained renderMessagesPanelHtml + scrollPanelToMessages helpers + a data-msg-action click handler; (7) panel.js stays vanilla (no fetch / imports)."
+timeout_seconds = 60
