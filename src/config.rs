@@ -110,9 +110,12 @@ pub struct Config {
     #[serde(default)]
     pub chat: ChatConfig,
 
-    /// OpenRouter cost cap and monitoring configuration
-    #[serde(default)]
-    pub openrouter: OpenRouterConfig,
+    /// OpenRouter cost cap and monitoring configuration. Only emitted
+    /// when the user is on the openrouter route or has explicitly added
+    /// an openrouter endpoint — non-openrouter projects don't need a
+    /// cost-cap section sitting in their config.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub openrouter: Option<OpenRouterConfig>,
 
     /// Credential storage settings
     #[serde(default)]

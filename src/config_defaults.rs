@@ -11,7 +11,7 @@
 
 use crate::config::{
     Config, EndpointConfig, EndpointsConfig, ModelRegistryEntry, ModelRoutingConfig,
-    RoleModelConfig, Tier, TierConfig,
+    OpenRouterConfig, RoleModelConfig, Tier, TierConfig,
 };
 
 /// One of the five smooth setup routes. Each route returns a complete,
@@ -193,6 +193,12 @@ fn openrouter_config(params: &RouteParams) -> Config {
 
     // Model registry: 3 standard Claude models via OpenRouter.
     config.model_registry = openrouter_default_registry();
+
+    // Cost-cap / monitoring section. Only the openrouter route emits
+    // [openrouter] — claude-cli / codex-cli / local / nex-custom leave
+    // it None so the section never appears in their config.toml.
+    // Defaults are unchanged; the user can edit afterwards.
+    config.openrouter = Some(OpenRouterConfig::default());
 
     // Tiers fully populated. Stored in provider:model format so the
     // strict model-spec validator accepts them on reload.
@@ -989,6 +995,74 @@ mod tests {
         assert_eq!(SetupRoute::from_executor("nex"), SetupRoute::Openrouter);
         // Unknown -> claude-cli (sane default for new users)
         assert_eq!(SetupRoute::from_executor("unknown"), SetupRoute::ClaudeCli);
+    }
+
+    // ── [openrouter] section presence per route ─────────────────────
+
+    /// Serialize `config` to TOML and return true if `[openrouter]`
+    /// appears as a top-level section header.
+    fn toml_has_openrouter_section(config: &Config) -> bool {
+        let toml_str = toml::to_string_pretty(config).expect("serialize");
+        toml_str.lines().any(|l| l.trim() == "[openrouter]")
+    }
+
+    #[test]
+    fn test_route_openrouter_emits_openrouter_section() {
+        let config = config_for_route(SetupRoute::Openrouter, RouteParams::default());
+        assert!(
+            toml_has_openrouter_section(&config),
+            "openrouter route must emit [openrouter] so the cost-cap config is visible to the user"
+        );
+    }
+
+    #[test]
+    fn test_route_claude_cli_omits_openrouter_section() {
+        let config = config_for_route(SetupRoute::ClaudeCli, RouteParams::default());
+        assert!(
+            !toml_has_openrouter_section(&config),
+            "claude-cli route must NOT emit [openrouter] — no openrouter usage means no log spam"
+        );
+    }
+
+    #[test]
+    fn test_route_codex_cli_omits_openrouter_section() {
+        let config = config_for_route(SetupRoute::CodexCli, RouteParams::default());
+        assert!(
+            !toml_has_openrouter_section(&config),
+            "codex-cli route must NOT emit [openrouter]"
+        );
+    }
+
+    #[test]
+    fn test_route_local_omits_openrouter_section() {
+        let config = config_for_route(
+            SetupRoute::Local,
+            RouteParams {
+                model: Some("qwen3-coder".to_string()),
+                url: Some("http://localhost:11434/v1".to_string()),
+                ..Default::default()
+            },
+        );
+        assert!(
+            !toml_has_openrouter_section(&config),
+            "local route must NOT emit [openrouter]"
+        );
+    }
+
+    #[test]
+    fn test_route_nex_custom_omits_openrouter_section() {
+        let config = config_for_route(
+            SetupRoute::NexCustom,
+            RouteParams {
+                url: Some("https://my.endpoint.example/v1".to_string()),
+                model: Some("my-model".to_string()),
+                ..Default::default()
+            },
+        );
+        assert!(
+            !toml_has_openrouter_section(&config),
+            "nex-custom route must NOT emit [openrouter]"
+        );
     }
 
     #[test]

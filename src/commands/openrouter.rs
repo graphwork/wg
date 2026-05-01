@@ -45,32 +45,35 @@ fn run_status(dir: &Path, json: bool) -> Result<()> {
         println!("  Free Tier: {}", key_status.is_free_tier);
         println!("  Usage Percentage: {:.1}%", key_status.usage_percentage());
 
-        // Show warnings if approaching limits
-        if key_status.is_above_threshold(config.openrouter.warn_at_usage_percent as f64) {
+        // Show warnings if approaching limits. Falls back to defaults
+        // when the [openrouter] section is absent — the cost-cap defaults
+        // are still meaningful for a project that doesn't pin them.
+        let or_cfg = config.openrouter.clone().unwrap_or_default();
+        if key_status.is_above_threshold(or_cfg.warn_at_usage_percent as f64) {
             println!(
                 "\n⚠️  Warning: Usage above {}% threshold",
-                config.openrouter.warn_at_usage_percent
+                or_cfg.warn_at_usage_percent
             );
         }
 
         // Show cost cap configuration
         println!("\nCost Cap Configuration:");
-        if let Some(global) = config.openrouter.cost_cap_global_usd {
+        if let Some(global) = or_cfg.cost_cap_global_usd {
             println!("  Global Cap: ${:.2}", global);
         } else {
             println!("  Global Cap: Not set");
         }
-        if let Some(session) = config.openrouter.cost_cap_session_usd {
+        if let Some(session) = or_cfg.cost_cap_session_usd {
             println!("  Session Cap: ${:.2}", session);
         } else {
             println!("  Session Cap: Not set");
         }
-        if let Some(task) = config.openrouter.cost_cap_task_usd {
+        if let Some(task) = or_cfg.cost_cap_task_usd {
             println!("  Task Cap: ${:.2}", task);
         } else {
             println!("  Task Cap: Not set");
         }
-        println!("  Cap Behavior: {:?}", config.openrouter.cap_behavior);
+        println!("  Cap Behavior: {:?}", or_cfg.cap_behavior);
     }
 
     Ok(())

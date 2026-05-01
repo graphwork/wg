@@ -1735,7 +1735,11 @@ fn check_openrouter_cost_caps(
         fetch_openrouter_key_status_blocking, resolve_openai_api_key_from_dir,
     };
 
-    let openrouter_config = &config.openrouter;
+    // No [openrouter] section → no caps to enforce. The section is
+    // emitted only on the openrouter route or when explicitly added.
+    let Some(openrouter_config) = config.openrouter.as_ref() else {
+        return Ok(());
+    };
 
     // Early exit if no cost caps are configured
     if openrouter_config.cost_cap_global_usd.is_none()

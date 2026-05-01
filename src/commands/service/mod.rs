@@ -1825,16 +1825,51 @@ fn run_automatic_archival(dir: &Path, archival_error_count: &mut u64, logger: &D
     }
 }
 
+/// Daemon-side state for the model-registry refresh job: failure count
+/// and an optional cooldown window. After
+/// `REGISTRY_REFRESH_FAILURE_THRESHOLD` consecutive failures the daemon
+/// stops trying for `REGISTRY_REFRESH_COOLDOWN` so a missing API key
+/// doesn't pile 25+ identical errors into the daemon log per hour.
+#[derive(Default)]
+pub(crate) struct RegistryRefreshState {
+    /// Consecutive failure count. Resets on success.
+    pub error_count: u64,
+    /// When set, skip refresh attempts until this instant.
+    pub cooldown_until: Option<std::time::Instant>,
+}
+
+/// Number of consecutive failures that trips the circuit breaker.
+const REGISTRY_REFRESH_FAILURE_THRESHOLD: u64 = 5;
+/// How long the breaker stays open once tripped.
+const REGISTRY_REFRESH_COOLDOWN: std::time::Duration = std::time::Duration::from_secs(60 * 60);
+
 /// Run model registry refresh directly from the daemon without graph control tasks.
 ///
 /// Time-gated: only fires when at least `registry_refresh_interval` seconds
 /// have elapsed since the last successful refresh (stored in
 /// `model_benchmarks.json`'s `fetched_at` field). Set interval to 0 to disable.
-fn run_registry_refresh(dir: &Path, refresh_error_count: &mut u64, logger: &DaemonLogger) {
+///
+/// Circuit-breaker: after 5 consecutive failures the breaker opens for 1
+/// hour. Manual `wg config reload` or `wg openrouter status` (i.e. any
+/// path that re-resolves the API key successfully) implicitly clears the
+/// breaker on the next daemon restart; we deliberately keep the breaker
+/// state in-memory so a fresh daemon process always retries once before
+/// re-tripping.
+fn run_registry_refresh(dir: &Path, state: &mut RegistryRefreshState, logger: &DaemonLogger) {
     let config = workgraph::config::Config::load_or_default(dir);
     let interval = config.coordinator.registry_refresh_interval;
     if interval == 0 {
         return; // Disabled
+    }
+
+    // Circuit breaker: after a recent burst of failures, hold off and
+    // don't even attempt the fetch. The instant the cooldown expires we
+    // try once more — success clears the breaker, another failure
+    // starts a fresh cooldown.
+    if let Some(until) = state.cooldown_until
+        && std::time::Instant::now() < until
+    {
+        return;
     }
 
     // Time gate: check if enough time has elapsed since the last fetch.
@@ -1851,23 +1886,49 @@ fn run_registry_refresh(dir: &Path, refresh_error_count: &mut u64, logger: &Daem
     }
 
     // Run the actual refresh
-    match do_registry_refresh(dir) {
+    let outcome = do_registry_refresh(dir);
+    record_registry_refresh_outcome(state, outcome, logger);
+}
+
+/// Update circuit-breaker state from a refresh outcome and log
+/// transitions. Extracted so unit tests can drive the state machine
+/// without any IO or daemon plumbing.
+pub(crate) fn record_registry_refresh_outcome(
+    state: &mut RegistryRefreshState,
+    outcome: Result<String>,
+    logger: &DaemonLogger,
+) {
+    match outcome {
         Ok(summary) => {
-            if *refresh_error_count > 0 {
+            if state.error_count > 0 {
                 logger.info(&format!(
                     "Registry refresh recovered after {} consecutive error(s)",
-                    *refresh_error_count
+                    state.error_count
                 ));
             }
-            *refresh_error_count = 0;
+            state.error_count = 0;
+            state.cooldown_until = None;
             logger.info(&format!("Registry refresh complete: {}", summary));
         }
         Err(e) => {
-            *refresh_error_count += 1;
-            if *refresh_error_count == 1 || (*refresh_error_count).is_multiple_of(5) {
+            state.error_count += 1;
+            // Log the first error verbatim, then go quiet — we only
+            // surface the *threshold* event after that. This is the
+            // anti-spam guarantee the user asked for.
+            if state.error_count == 1 {
                 logger.error(&format!(
                     "Registry refresh error (#{} consecutive): {:#}",
-                    *refresh_error_count, e
+                    state.error_count, e
+                ));
+            } else if state.error_count == REGISTRY_REFRESH_FAILURE_THRESHOLD {
+                state.cooldown_until =
+                    Some(std::time::Instant::now() + REGISTRY_REFRESH_COOLDOWN);
+                logger.error(&format!(
+                    "Registry refresh: {} consecutive failures — cooling down for {} minutes. \
+                     Last error: {:#}",
+                    state.error_count,
+                    REGISTRY_REFRESH_COOLDOWN.as_secs() / 60,
+                    e
                 ));
             }
         }
@@ -2354,7 +2415,7 @@ pub fn run_daemon(
 
     // Restore error counts from persisted state so they survive daemon restarts
     let mut archival_error_count: u64 = 0;
-    let mut refresh_error_count: u64 = 0;
+    let mut registry_refresh_state = RegistryRefreshState::default();
 
     // Obtain the raw fd for poll()-based waiting. This lets the daemon
     // sleep until an IPC connection arrives OR a timeout expires, instead
@@ -2736,7 +2797,7 @@ pub fn run_daemon(
                     run_automatic_archival(&dir, &mut archival_error_count, &logger);
 
                     // Registry refresh runs directly in the daemon and is time-gated.
-                    run_registry_refresh(&dir, &mut refresh_error_count, &logger);
+                    run_registry_refresh(&dir, &mut registry_refresh_state, &logger);
 
                     // Re-arm the self-write quiet window after the tick: the
                     // archival / registry-refresh phases above can also write
@@ -4119,6 +4180,60 @@ pub fn send_request(_dir: &Path, _request: &IpcRequest) -> Result<IpcResponse> {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    /// 5 consecutive failures must trip the circuit breaker (sets
+    /// `cooldown_until`) so the daemon stops re-attempting the registry
+    /// refresh until the cooldown expires. Without this, a missing
+    /// OpenRouter API key fills the daemon log with 25+ identical errors.
+    #[test]
+    fn test_registry_refresh_breaker_trips_after_threshold() {
+        let tmp = TempDir::new().unwrap();
+        let logger = DaemonLogger::open(tmp.path()).unwrap();
+        let mut state = RegistryRefreshState::default();
+        for _ in 0..(REGISTRY_REFRESH_FAILURE_THRESHOLD - 1) {
+            record_registry_refresh_outcome(
+                &mut state,
+                Err(anyhow::anyhow!("no api key")),
+                &logger,
+            );
+        }
+        assert!(
+            state.cooldown_until.is_none(),
+            "breaker must not trip below threshold"
+        );
+        record_registry_refresh_outcome(
+            &mut state,
+            Err(anyhow::anyhow!("no api key")),
+            &logger,
+        );
+        assert_eq!(state.error_count, REGISTRY_REFRESH_FAILURE_THRESHOLD);
+        assert!(
+            state.cooldown_until.is_some(),
+            "breaker must trip at threshold"
+        );
+    }
+
+    /// A successful refresh after a streak of failures clears the
+    /// breaker — error count resets, cooldown is removed.
+    #[test]
+    fn test_registry_refresh_breaker_clears_on_success() {
+        let tmp = TempDir::new().unwrap();
+        let logger = DaemonLogger::open(tmp.path()).unwrap();
+        let mut state = RegistryRefreshState {
+            error_count: REGISTRY_REFRESH_FAILURE_THRESHOLD,
+            cooldown_until: Some(std::time::Instant::now() + std::time::Duration::from_secs(60)),
+        };
+        record_registry_refresh_outcome(
+            &mut state,
+            Ok("models: 1234 -> 1235".to_string()),
+            &logger,
+        );
+        assert_eq!(state.error_count, 0);
+        assert!(
+            state.cooldown_until.is_none(),
+            "breaker must clear on a successful refresh"
+        );
+    }
 
     #[test]
     fn test_default_socket_path() {

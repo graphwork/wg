@@ -638,6 +638,14 @@ pub(crate) fn migrate_one(path: &Path, dry_run: bool) -> Result<ConfigMigrateRes
     // 3. Fix known stale model strings (claude-sonnet-4 → -4-6, etc).
     fix_stale_model_strings(&mut doc, &mut rewritten);
 
+    // 4. Strip orphaned [openrouter] section when the project has no
+    //    openrouter usage. Default-only [openrouter] is just log spam:
+    //    the registry-refresh job will probe OpenRouter every poll if a
+    //    section is present, even on claude-cli / codex-cli projects
+    //    that have no API key. Idempotent — running again on a config
+    //    where it was already removed is a no-op.
+    drop_orphaned_openrouter(&mut doc, &mut removed);
+
     result.removed_keys = removed;
     result.renamed_keys = renamed;
     result.rewritten_values = rewritten;
@@ -708,6 +716,60 @@ fn drop_deprecated(doc: &mut toml::Value, removed: &mut Vec<String>) {
             table.remove(*section);
             removed.push(format!("{} (empty section)", section));
         }
+    }
+}
+
+/// Remove the `[openrouter]` section when nothing in the config actually
+/// uses OpenRouter. "Uses" means: a top-level model spec / tier / endpoint
+/// references the `openrouter:` provider prefix. If anything points at
+/// openrouter we leave the section alone — the cost-cap settings inside
+/// might be intentional.
+///
+/// This catches the common case where an old `wg init` (before the
+/// fix-remove-openrouter change) wrote a default `[openrouter]` block
+/// into a claude-cli or codex-cli project. The default block has no
+/// API key, so the daemon's registry-refresh job spins on auth errors.
+fn drop_orphaned_openrouter(doc: &mut toml::Value, removed: &mut Vec<String>) {
+    let table = match doc.as_table_mut() {
+        Some(t) => t,
+        None => return,
+    };
+    if !table.contains_key("openrouter") {
+        return;
+    }
+
+    // Scan for any string in the doc that mentions "openrouter" — model
+    // specs, tier values, endpoint provider/url, etc. The check has to
+    // skip the [openrouter] section itself, otherwise a default section
+    // would always look "in use".
+    let mut uses_openrouter = false;
+    for (k, v) in table.iter() {
+        if k == "openrouter" {
+            continue;
+        }
+        if value_mentions_openrouter(v) {
+            uses_openrouter = true;
+            break;
+        }
+    }
+    if uses_openrouter {
+        return;
+    }
+
+    table.remove("openrouter");
+    removed.push("openrouter (orphaned section — no openrouter usage in config)".to_string());
+}
+
+/// Recursive predicate: returns true if any string-leaf inside `v`
+/// mentions "openrouter" — model specs, endpoint provider names, URLs,
+/// etc. Used by [`drop_orphaned_openrouter`] to decide whether the
+/// section is still load-bearing.
+fn value_mentions_openrouter(v: &toml::Value) -> bool {
+    match v {
+        toml::Value::String(s) => s.contains("openrouter"),
+        toml::Value::Array(arr) => arr.iter().any(value_mentions_openrouter),
+        toml::Value::Table(t) => t.values().any(value_mentions_openrouter),
+        _ => false,
     }
 }
 
@@ -1107,6 +1169,110 @@ model = "local:qwen3-coder"
         let backup_body = std::fs::read_to_string(&backup).unwrap();
         // Backup is the pre-migration content — still the deprecated prefix.
         assert!(backup_body.contains("local:qwen3-coder"));
+    }
+
+    #[test]
+    fn drops_orphaned_openrouter_section_on_claude_cli_project() {
+        // A claude-cli project should never carry a default [openrouter]
+        // section. The registry-refresh job would otherwise probe
+        // OpenRouter every poll and fill the daemon log with auth errors.
+        let tmp = TempDir::new().unwrap();
+        let path = write_config(
+            tmp.path(),
+            r#"
+[agent]
+model = "claude:opus"
+
+[tiers]
+fast = "claude:haiku"
+standard = "claude:sonnet"
+premium = "claude:opus"
+
+[openrouter]
+cap_behavior = "escalate"
+key_status_check_interval_minutes = 5
+warn_at_usage_percent = 80
+cost_estimation_buffer = 1.2
+enable_cache_tracking = true
+track_session_costs = true
+persist_cost_history = false
+"#,
+        );
+        let r = migrate_one(&path, false).unwrap();
+        assert!(
+            r.removed_keys.iter().any(|k| k.starts_with("openrouter")),
+            "should remove orphaned [openrouter] section; got {:?}",
+            r.removed_keys,
+        );
+        let migrated = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            !migrated.lines().any(|l| l.trim() == "[openrouter]"),
+            "migrated config must not contain [openrouter]; got:\n{}",
+            migrated,
+        );
+        // claude config remains intact
+        assert!(migrated.contains("claude:opus"));
+    }
+
+    #[test]
+    fn keeps_openrouter_section_when_used() {
+        // If the project has an openrouter:* model anywhere, the
+        // [openrouter] section is load-bearing — leave it alone.
+        let tmp = TempDir::new().unwrap();
+        let path = write_config(
+            tmp.path(),
+            r#"
+[agent]
+model = "openrouter:anthropic/claude-opus-4-7"
+
+[tiers]
+premium = "openrouter:anthropic/claude-opus-4-7"
+
+[openrouter]
+cost_cap_global_usd = 5.0
+"#,
+        );
+        let r = migrate_one(&path, false).unwrap();
+        assert!(
+            !r.removed_keys.iter().any(|k| k.starts_with("openrouter")),
+            "must not remove [openrouter] when a model spec uses it; got {:?}",
+            r.removed_keys,
+        );
+        let migrated = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            migrated.lines().any(|l| l.trim() == "[openrouter]"),
+            "migrated config must keep [openrouter]; got:\n{}",
+            migrated,
+        );
+        assert!(migrated.contains("cost_cap_global_usd"));
+    }
+
+    #[test]
+    fn drop_orphaned_openrouter_is_idempotent() {
+        // Running migrate twice on a config that's already had its
+        // orphan section removed must be a no-op for the openrouter check.
+        let tmp = TempDir::new().unwrap();
+        let path = write_config(
+            tmp.path(),
+            r#"
+[agent]
+model = "claude:opus"
+
+[tiers]
+fast = "claude:haiku"
+standard = "claude:sonnet"
+premium = "claude:opus"
+"#,
+        );
+        let r = migrate_one(&path, false).unwrap();
+        assert!(
+            !r.removed_keys.iter().any(|k| k.starts_with("openrouter")),
+            "first pass on a config without [openrouter] should not report removing it; got {:?}",
+            r.removed_keys,
+        );
+        // Second pass is also a no-op
+        let r2 = migrate_one(&path, false).unwrap();
+        assert!(r2.is_noop(), "second pass should be a no-op; got {:?}", r2);
     }
 
     #[test]
