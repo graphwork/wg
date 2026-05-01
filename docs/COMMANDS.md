@@ -2176,6 +2176,14 @@ wg exec run-tests --actor claude
 wg exec run-tests --dry-run
 ```
 
+**Failure semantics:** `wg exec --shell` runs the task command and
+transitions `open → in-progress → done` (exit 0) or `→ failed` (non-zero).
+Shell tasks are exempt from the agency pipeline (no `.assign-*`, `.flip-*`,
+or `.evaluate-*` siblings) and from LLM evaluation. They never enter
+`failed-pending-eval` — that intermediate state applies only to LLM agent
+tasks (`full` / `light` / `bare` exec modes) where an evaluator can score
+the output and rescue the task.
+
 ---
 
 ### `wg trajectory`

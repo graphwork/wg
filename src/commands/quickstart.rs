@@ -166,7 +166,7 @@ DISCOVERING & ADDING WORK
   wg add "X" --exec-mode full    # Default: full agent with all tools
   wg add "X" --exec-mode light   # Read-only tools (research/review tasks)
   wg add "X" --exec-mode bare    # Only wg CLI (coordination-only tasks)
-  wg add "X" --exec-mode shell   # Shell command, no LLM (use with wg exec --set)
+  wg add "X" --exec-mode shell   # Shell command, no LLM (exit 0 = done, non-zero = failed; no eval rescue)
 
   Context scopes control how much context the dispatcher injects into the
   agent's prompt when dispatching a task:
@@ -202,10 +202,24 @@ TASK STATE COMMANDS
   wg requeue <task-id> --reason "..."  # Requeue in-progress task for triage
   wg reprioritize <task-id> <level>    # Change priority (critical, high, normal, low, idle)
 
-  failed-pending-eval is an intermediate status: the agent exited non-zero
-  with auto_evaluate=true, awaiting evaluator verdict before becoming
+  failed-pending-eval is an intermediate status that applies ONLY to LLM
+  agent tasks (full / light / bare exec modes): the agent exited non-zero
+  with auto_evaluate=true, awaiting an `.evaluate-X` verdict before becoming
   terminal failed. 'wg fail <id>' on a failed-pending-eval task forces
   the terminal status.
+
+  Shell tasks (--exec-mode shell or --exec '<cmd>') do NOT participate in
+  this rescue path: failure semantics are 'exit code 0 = done, non-zero =
+  failed (terminal)'. They are exempt from the agency pipeline so no
+  .assign-*, .flip-*, or .evaluate-* lifecycle tasks are scaffolded for
+  them. Cron / recurring shell tasks follow the same rule: each invocation
+  succeeds or fails terminally, with no rescue attempt.
+
+  KNOWN GAP (2026-05-01): coordinator-dispatched shell tasks that fail via
+  the agent wrapper (which calls 'wg fail --class agent-exit-nonzero') can
+  currently land in failed-pending-eval and stay there because no
+  .evaluate-X exists to resolve the rescue. 'wg exec --shell' is the
+  recommended path for now; tracked under 'fix-shell-pending-eval'.
 
   Wait conditions:
     --until "task:dep-a=done"   # Wait for another task to reach a status
@@ -349,6 +363,11 @@ SHELL EXECUTION
   wg exec --clear build-task                         # Remove the shell command
 
   Use with --exec-mode shell on task creation for fully automated steps.
+  Shell tasks are exempt from the agency pipeline (no .assign-*, .flip-*,
+  or .evaluate-* siblings) and from LLM evaluation. Failure is terminal:
+  exit 0 → done, non-zero → failed. 'wg exec --shell <task>' is the
+  preferred entrypoint — it transitions directly to failed without going
+  through failed-pending-eval.
 
 COMPACT, SWEEP & CHECKPOINT
 ─────────────────────────────────────────

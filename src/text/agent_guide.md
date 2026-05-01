@@ -214,11 +214,17 @@ A worker agent assigned to task `<task-id>` follows this sequence:
                                       #   conditions: task:X=done | timer:5m | message | human-input | file:path
    ```
 
-   **failed-pending-eval state** — when an agent exits without `wg done` and
-   `auto_evaluate=true` is configured, the task transitions to
+   **failed-pending-eval state** — when an LLM agent exits without `wg done`
+   and `auto_evaluate=true` is configured, the task transitions to
    `failed-pending-eval` instead of immediately Failed. The evaluator can
    rescue the task (transition to Done) or confirm Failed. `wg fail` on a
    `failed-pending-eval` task forces terminal Failed.
+
+   This rescue path applies to LLM agent tasks only (`full` / `light` /
+   `bare` exec modes). Shell tasks (`--exec-mode shell` / `--exec '<cmd>'`)
+   are exempt from the agency pipeline entirely: no `.assign-*`, `.flip-*`,
+   or `.evaluate-*` tasks are scaffolded for them, and failure semantics
+   are 'exit 0 = done, non-zero = failed (terminal)'.
 
 ### Anti-pattern: Explain-and-Bail
 
