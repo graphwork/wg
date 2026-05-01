@@ -64,6 +64,8 @@ struct TaskDetails {
     #[serde(skip_serializing_if = "Option::is_none")]
     completed_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    last_interaction_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     not_before: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     log: Vec<LogEntry>,
@@ -520,6 +522,7 @@ pub fn run(dir: &Path, id: &str, json: bool) -> Result<()> {
         created_at: task.created_at.clone(),
         started_at: task.started_at.clone(),
         completed_at: task.completed_at.clone(),
+        last_interaction_at: task.last_interaction_at.clone(),
         not_before: task.not_before.clone(),
         log: task.log.clone(),
         retry_count: task.retry_count,
@@ -1293,6 +1296,7 @@ mod tests {
             created_at: Some("2026-01-20T15:35:50+00:00".to_string()),
             started_at: Some("2026-01-20T16:30:00+00:00".to_string()),
             completed_at: None,
+            last_interaction_at: None,
             not_before: None,
             log: vec![],
             retry_count: 0,

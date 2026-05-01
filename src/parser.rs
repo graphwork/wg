@@ -1,4 +1,5 @@
-use crate::graph::{Node, WorkGraph};
+use crate::graph::{Node, Task, WorkGraph};
+use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -274,12 +275,43 @@ where
     let _lock = FileLock::acquire(&lock_path)?;
 
     let mut graph = load_graph_inner(path)?;
+    // Snapshot every task before the closure runs so we can detect which
+    // tasks changed substantively (anything other than `last_interaction_at`)
+    // and bump their interaction timestamp. This is the single helper that
+    // wraps mutation + timestamp-bump for every modify_graph caller.
+    let before: HashMap<String, Task> = graph
+        .tasks()
+        .map(|t| (t.id.clone(), t.clone()))
+        .collect();
     let modified = f(&mut graph);
     if modified {
+        bump_interaction_timestamps(&mut graph, &before);
         save_graph_inner(&graph, path)?;
     }
     Ok(graph)
     // Lock is automatically released when _lock goes out of scope
+}
+
+/// For every task whose persistent fields changed (other than
+/// `last_interaction_at` itself), set `last_interaction_at` to now.
+/// New tasks created in the closure are bumped if they don't already have
+/// an interaction timestamp set.
+fn bump_interaction_timestamps(graph: &mut WorkGraph, before: &HashMap<String, Task>) {
+    let now = chrono::Utc::now().to_rfc3339();
+    for task in graph.tasks_mut() {
+        match before.get(&task.id) {
+            None => {
+                if task.last_interaction_at.is_none() {
+                    task.last_interaction_at = Some(now.clone());
+                }
+            }
+            Some(prev) => {
+                if !task.substantively_eq(prev) {
+                    task.last_interaction_at = Some(now.clone());
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]

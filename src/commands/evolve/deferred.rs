@@ -109,6 +109,7 @@ pub(crate) fn defer_self_mutation(
         created_at: Some(Utc::now().to_rfc3339()),
         started_at: None,
         completed_at: None,
+        last_interaction_at: None,
         log: vec![],
         retry_count: 0,
         max_retries: None,

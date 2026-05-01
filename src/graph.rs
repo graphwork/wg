@@ -401,6 +401,13 @@ pub struct Task {
     /// Timestamp when the task status changed to Done (ISO 8601 / RFC 3339)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub completed_at: Option<String>,
+    /// Timestamp of the most recent substantive interaction with this task
+    /// (state change, log entry, message send/read, chat append, edit).
+    /// Heartbeats and other agent telemetry do NOT bump this field.
+    /// Read by the TUI to bubble actively-touched tasks within their status
+    /// group. Defaults to `created_at` for tasks predating this field.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_interaction_at: Option<String>,
     /// Progress log entries
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub log: Vec<LogEntry>,
@@ -631,6 +638,7 @@ impl Default for Task {
             created_at: None,
             started_at: None,
             completed_at: None,
+            last_interaction_at: None,
             log: vec![],
             retry_count: 0,
             max_retries: None,
@@ -690,6 +698,43 @@ impl Default for Task {
             last_cron_fire: None,
             next_cron_fire: None,
         }
+    }
+}
+
+impl Task {
+    /// Bump `last_interaction_at` to now (UTC, RFC 3339).
+    ///
+    /// Called by `modify_graph` for every task whose persistent fields change
+    /// in a substantive way (state, log, edits, etc.). Heartbeats and other
+    /// agent telemetry live in `service/registry.json` and never reach this
+    /// helper, so the field naturally excludes heartbeat noise.
+    pub fn touch(&mut self) {
+        self.last_interaction_at = Some(chrono::Utc::now().to_rfc3339());
+    }
+
+    /// Returns the timestamp the TUI should sort on. Falls back to
+    /// `created_at` and finally an empty string so two tasks with no timing
+    /// info compare equal (and tie-break by id).
+    pub fn interaction_sort_key(&self) -> &str {
+        self.last_interaction_at
+            .as_deref()
+            .or(self.created_at.as_deref())
+            .unwrap_or("")
+    }
+
+    /// Compare two tasks for the purposes of detecting whether the closure
+    /// passed to `modify_graph` made a *substantive* change. The comparison
+    /// ignores the interaction timestamp itself so the bump pass doesn't
+    /// trigger on the bump.
+    pub fn substantively_eq(&self, other: &Task) -> bool {
+        if std::ptr::eq(self, other) {
+            return true;
+        }
+        let mut a = self.clone();
+        let mut b = other.clone();
+        a.last_interaction_at = None;
+        b.last_interaction_at = None;
+        a == b
     }
 }
 
@@ -1188,6 +1233,8 @@ struct TaskHelper {
     #[serde(default)]
     completed_at: Option<String>,
     #[serde(default)]
+    last_interaction_at: Option<String>,
+    #[serde(default)]
     log: Vec<LogEntry>,
     #[serde(default)]
     retry_count: u32,
@@ -1343,9 +1390,15 @@ impl<'de> Deserialize<'de> for Task {
             exec: helper.exec,
             timeout: helper.timeout,
             not_before: helper.not_before,
-            created_at: helper.created_at,
+            created_at: helper.created_at.clone(),
             started_at: helper.started_at,
             completed_at: helper.completed_at,
+            // Migration: old tasks without `last_interaction_at` default to
+            // `created_at` (the original add time) so the field is always
+            // populated for tasks that have a creation timestamp.
+            last_interaction_at: helper
+                .last_interaction_at
+                .or_else(|| helper.created_at.clone()),
             log: helper.log,
             retry_count: helper.retry_count,
             max_retries: helper.max_retries,
@@ -1681,6 +1734,14 @@ impl WorkGraph {
     /// Iterate over all tasks in the graph, skipping resource nodes.
     pub fn tasks(&self) -> impl Iterator<Item = &Task> {
         self.nodes.values().filter_map(|n| match n {
+            Node::Task(t) => Some(t),
+            _ => None,
+        })
+    }
+
+    /// Mutably iterate over all tasks in the graph, skipping resource nodes.
+    pub fn tasks_mut(&mut self) -> impl Iterator<Item = &mut Task> {
+        self.nodes.values_mut().filter_map(|n| match n {
             Node::Task(t) => Some(t),
             _ => None,
         })

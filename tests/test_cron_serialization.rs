@@ -26,6 +26,7 @@ fn test_cron_task_serialization() {
         created_at: None,
         started_at: None,
         completed_at: None,
+        last_interaction_at: None,
         log: vec![],
         retry_count: 0,
         max_retries: None,

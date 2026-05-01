@@ -808,3 +808,14 @@ owners = [
 ]
 description = "Pins fix-chat-died: when the embedded chat agent's PTY child exits (codex/claude/nex), the 'Chat agent died' panel offers R (retry) / E (edit config) / X (dismiss). Pre-fix, vendor_pty_active in handle_key was true even after the pane died because chat_pty_mode stays set so the render path knows to draw the panel; the keystroke fell through to a missing pane and was silently consumed. Asserts R/E/X (and Shift+R) reach the death-panel recovery branch when chat_pty_mode + RightPanel focus are still set, and that a live chat (no death info) still receives keystrokes."
 timeout_seconds = 60
+
+[[scenario]]
+name = "last_interaction_at_bumps_on_mutation"
+script = "scenarios/last_interaction_at_bumps_on_mutation.sh"
+owners = [
+    "revert-redo-fix",
+    "fix-tui-graph",
+    "smoke-gate-is",
+]
+description = "Pins the data-side contract behind the TUI activity sort introduced in revert-redo-fix (the redo of the reverted fix-tui-graph). Every task carries `last_interaction_at`; `modify_graph` auto-bumps it on substantive mutations (status, log, edits) and leaves untouched siblings alone. Tasks predating the field default to `created_at` on read so the TUI sort never sees a None. Heartbeats live in `service/registry.json` and never reach `modify_graph`, so they are naturally excluded — the cure for the prior 'every event yanks the viewport' regression. No daemon, no LLM."
+timeout_seconds = 30

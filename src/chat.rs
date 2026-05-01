@@ -401,7 +401,36 @@ pub fn append_inbox_ref(
     request_id: &str,
 ) -> Result<u64> {
     let path = chat_dir_for_ref(workgraph_dir, session_ref).join("inbox.jsonl");
-    append_message(&path, "user", content, request_id, vec![], None)
+    let id = append_message(&path, "user", content, request_id, vec![], None)?;
+    bump_chat_interaction(workgraph_dir, session_ref);
+    Ok(id)
+}
+
+/// Best-effort bump of a chat-attached task's `last_interaction_at`. Resolves
+/// the chat ref against the graph (raw ref OR `.<ref>` for coordinator IDs)
+/// and touches the matching task. Failures are intentionally swallowed —
+/// chat operations must never fail because of the side-channel timestamp
+/// bump. Heartbeats and streaming-token writes intentionally bypass this.
+pub(crate) fn bump_chat_interaction(workgraph_dir: &Path, session_ref: &str) {
+    let graph_path = workgraph_dir.join("graph.jsonl");
+    let candidates = [
+        session_ref.to_string(),
+        format!(".{}", session_ref),
+        // Coordinator chats often pass `coordinator-N` even when the
+        // canonical task id is `.coordinator-N`. Cover both.
+        format!(".coordinator-{}", session_ref),
+    ];
+    let _ = crate::parser::modify_graph(&graph_path, |graph| {
+        for cand in &candidates {
+            if graph.get_task(cand).is_some() {
+                if let Some(t) = graph.get_task_mut(cand) {
+                    t.touch();
+                    return true;
+                }
+            }
+        }
+        false
+    });
 }
 
 /// Append an assistant/coordinator response to a session's outbox.
@@ -412,7 +441,9 @@ pub fn append_outbox_ref(
     request_id: &str,
 ) -> Result<u64> {
     let path = chat_dir_for_ref(workgraph_dir, session_ref).join("outbox.jsonl");
-    append_message(&path, "coordinator", content, request_id, vec![], None)
+    let id = append_message(&path, "coordinator", content, request_id, vec![], None)?;
+    bump_chat_interaction(workgraph_dir, session_ref);
+    Ok(id)
 }
 
 /// Append an assistant/coordinator response with an optional full
@@ -427,14 +458,16 @@ pub fn append_outbox_full_ref(
     request_id: &str,
 ) -> Result<u64> {
     let path = chat_dir_for_ref(workgraph_dir, session_ref).join("outbox.jsonl");
-    append_message(
+    let id = append_message(
         &path,
         "coordinator",
         content,
         request_id,
         vec![],
         full_response,
-    )
+    )?;
+    bump_chat_interaction(workgraph_dir, session_ref);
+    Ok(id)
 }
 
 /// Append a system-error message to a session's outbox.
@@ -449,7 +482,9 @@ pub fn append_error_ref(
     request_id: &str,
 ) -> Result<u64> {
     let path = chat_dir_for_ref(workgraph_dir, session_ref).join("outbox.jsonl");
-    append_message(&path, "system-error", content, request_id, vec![], None)
+    let id = append_message(&path, "system-error", content, request_id, vec![], None)?;
+    bump_chat_interaction(workgraph_dir, session_ref);
+    Ok(id)
 }
 
 /// Read inbox messages with id > cursor for a session.
@@ -517,7 +552,9 @@ pub fn append_inbox_for(
     request_id: &str,
 ) -> Result<u64> {
     let path = inbox_path_for(workgraph_dir, coordinator_id);
-    append_message(&path, "user", content, request_id, vec![], None)
+    let id = append_message(&path, "user", content, request_id, vec![], None)?;
+    bump_chat_interaction(workgraph_dir, &coordinator_id.to_string());
+    Ok(id)
 }
 
 /// Append a user message with attachments to a specific coordinator's inbox.
@@ -529,7 +566,9 @@ pub fn append_inbox_with_attachments_for(
     attachments: Vec<Attachment>,
 ) -> Result<u64> {
     let path = inbox_path_for(workgraph_dir, coordinator_id);
-    append_message(&path, "user", content, request_id, attachments, None)
+    let id = append_message(&path, "user", content, request_id, attachments, None)?;
+    bump_chat_interaction(workgraph_dir, &coordinator_id.to_string());
+    Ok(id)
 }
 
 /// Append a coordinator response to a specific coordinator's outbox.
@@ -540,7 +579,9 @@ pub fn append_outbox_for(
     request_id: &str,
 ) -> Result<u64> {
     let path = outbox_path_for(workgraph_dir, coordinator_id);
-    append_message(&path, "coordinator", content, request_id, vec![], None)
+    let id = append_message(&path, "coordinator", content, request_id, vec![], None)?;
+    bump_chat_interaction(workgraph_dir, &coordinator_id.to_string());
+    Ok(id)
 }
 
 /// Append a coordinator response with full response text to a specific coordinator's outbox.
@@ -552,14 +593,16 @@ pub fn append_outbox_full_for(
     request_id: &str,
 ) -> Result<u64> {
     let path = outbox_path_for(workgraph_dir, coordinator_id);
-    append_message(
+    let id = append_message(
         &path,
         "coordinator",
         content,
         request_id,
         vec![],
         full_response,
-    )
+    )?;
+    bump_chat_interaction(workgraph_dir, &coordinator_id.to_string());
+    Ok(id)
 }
 
 /// Append a system-error message to a specific coordinator's outbox.
@@ -570,7 +613,9 @@ pub fn append_error_for(
     request_id: &str,
 ) -> Result<u64> {
     let path = outbox_path_for(workgraph_dir, coordinator_id);
-    append_message(&path, "system-error", content, request_id, vec![], None)
+    let id = append_message(&path, "system-error", content, request_id, vec![], None)?;
+    bump_chat_interaction(workgraph_dir, &coordinator_id.to_string());
+    Ok(id)
 }
 
 /// Read all inbox messages for a specific coordinator.

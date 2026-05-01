@@ -5,7 +5,7 @@ use std::process::Command;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
-use std::time::{Instant, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::Result;
 use fuzzy_matcher::FuzzyMatcher;
@@ -5189,6 +5189,16 @@ pub struct VizApp {
     /// Current sort mode for task ordering in the graph view.
     pub sort_mode: SortMode,
 
+    // ── Sort debounce ──
+    /// Timestamp of the most recent `apply_sort_mode` call. Used to throttle
+    /// sort re-application when the graph file changes faster than the user
+    /// can read. Without this, every state-change event triggers a re-sort
+    /// which yanks tasks past the viewport.
+    pub last_sort_apply: Option<Instant>,
+    /// Set when a graph reload requested a sort but the debounce window had
+    /// not elapsed; flushed by `maybe_refresh` once the window passes.
+    pub pending_sort_apply: bool,
+
     // ── Smart-follow ──
     /// Whether the user was at/near the bottom of the viewport before the last refresh.
     /// Used to auto-scroll to bottom when new content appears.
@@ -5566,6 +5576,8 @@ impl VizApp {
             prev_agent_statuses: HashMap::new(),
             last_tab_press: None,
             sort_mode: SortMode::Chronological,
+            last_sort_apply: None,
+            pending_sort_apply: false,
             smart_follow_active: true,
             initial_load: true,
             splash_animations: HashMap::new(),
@@ -5796,10 +5808,10 @@ impl VizApp {
                 // Re-apply the current sort mode so task_order reflects the
                 // user's selected ordering (e.g. StatusGrouped) immediately,
                 // rather than staying in raw viz line order until the next
-                // manual sort-cycle.  This prevents new tasks from briefly
-                // appearing at their dependency position before jumping to
-                // their correct sorted position on the next refresh.
-                self.apply_sort_mode();
+                // manual sort-cycle. Routed through the debounce path so a
+                // burst of graph events doesn't trigger a re-sort per event
+                // (which yanked the viewport in the previous fix).
+                self.request_sort_apply();
 
                 // Preserve selection by task ID (not index) across refreshes.
                 // The task_order may have changed, so resolve the old ID to
@@ -7245,6 +7257,11 @@ impl VizApp {
     /// Check if the graph has changed on disk and refresh if needed.
     /// Returns `true` if any work was done (graph reloaded, service polled, etc.).
     pub fn maybe_refresh(&mut self) -> bool {
+        // Flush a deferred sort apply if the debounce window has elapsed.
+        // Run before consuming fs events so a burst of events doesn't keep
+        // pushing the flush forward indefinitely.
+        self.maybe_flush_sort_apply();
+
         // Check if the file watcher detected changes in .wg/.
         let fs_changed = self.fs_change_pending.swap(false, Ordering::Relaxed);
         // Drain messages_change_pending lazily — only when we actually plan to
@@ -7898,7 +7915,14 @@ impl VizApp {
 
     /// Apply the current sort mode to reorder `task_order`.
     /// Preserves the selected task ID across the reorder.
-    fn apply_sort_mode(&mut self) {
+    pub(crate) fn apply_sort_mode(&mut self) {
+        // Record the apply timestamp regardless of whether anything changed,
+        // so the debounce window resets on every legitimate flush. This must
+        // run even on empty graphs so a flush request after a reload that
+        // emptied the task list still clears `pending_sort_apply`.
+        self.last_sort_apply = Some(Instant::now());
+        self.pending_sort_apply = false;
+
         if self.task_order.is_empty() {
             return;
         }
@@ -7914,10 +7938,15 @@ impl VizApp {
             }
             SortMode::StatusGrouped => {
                 // Sort navigation order by status priority: in-progress first, then
-                // failed, open, blocked, and done last. Within each group, preserve
-                // the tree line order.
+                // failed, open, blocked, and done last. Within each group, sort
+                // by `last_interaction_at` descending (newest first) so an
+                // actively-touched task bubbles to the top of its group. Tie-
+                // break by task id so two tasks with identical timestamps
+                // (e.g. populated by the same modify_graph call) keep a
+                // deterministic order — the cure for the "viewport flips
+                // every event" failure mode of the previous fix.
                 let graph_path = self.workgraph_dir.join("graph.jsonl");
-                let status_map: HashMap<String, u8> = match load_graph(&graph_path) {
+                let task_meta: HashMap<String, (u8, String)> = match load_graph(&graph_path) {
                     Ok(g) => g
                         .tasks()
                         .map(|t| {
@@ -7929,22 +7958,26 @@ impl VizApp {
                                 Status::Done => 4,
                                 Status::Abandoned => 5,
                                 Status::Waiting | Status::PendingValidation => 3,
-                                Status::PendingEval | Status::FailedPendingEval => 0, // visible like in-progress
-                                Status::Incomplete => 1, // high priority like failed
+                                Status::PendingEval | Status::FailedPendingEval => 0,
+                                Status::Incomplete => 1,
                             };
-                            (t.id.clone(), priority)
+                            (
+                                t.id.clone(),
+                                (priority, t.interaction_sort_key().to_string()),
+                            )
                         })
                         .collect(),
                     Err(_) => HashMap::new(),
                 };
                 self.task_order.sort_by(|a, b| {
-                    let sa = status_map.get(a).copied().unwrap_or(99);
-                    let sb = status_map.get(b).copied().unwrap_or(99);
-                    sa.cmp(&sb).then_with(|| {
-                        let la = self.node_line_map.get(a).copied().unwrap_or(usize::MAX);
-                        let lb = self.node_line_map.get(b).copied().unwrap_or(usize::MAX);
-                        la.cmp(&lb)
-                    })
+                    let default_meta = (99u8, String::new());
+                    let ma = task_meta.get(a).unwrap_or(&default_meta);
+                    let mb = task_meta.get(b).unwrap_or(&default_meta);
+                    // Status group ascending, then activity descending, then
+                    // stable id tie-break.
+                    ma.0.cmp(&mb.0)
+                        .then_with(|| mb.1.cmp(&ma.1))
+                        .then_with(|| a.cmp(b))
                 });
             }
         }
@@ -7956,6 +7989,45 @@ impl VizApp {
                 .iter()
                 .position(|id| id == prev_id)
                 .or(Some(0));
+        }
+    }
+
+    /// Minimum interval between sort applications driven by graph reloads.
+    /// 200ms ≈ 5 events/sec, which keeps the visible task ordering stable
+    /// under a burst of mutations (compaction, agency pipeline, chat) while
+    /// still feeling responsive on a single user-initiated change.
+    pub(crate) const SORT_DEBOUNCE: Duration = Duration::from_millis(200);
+
+    /// Request a sort re-application; defer if the debounce window has not
+    /// yet elapsed since the last apply. Called from the graph-reload path.
+    /// User-initiated sort changes (e.g. cycling sort mode via keypress)
+    /// should call `apply_sort_mode` directly to bypass the debounce.
+    pub(crate) fn request_sort_apply(&mut self) {
+        let elapsed = self
+            .last_sort_apply
+            .map(|t| t.elapsed())
+            .unwrap_or(Self::SORT_DEBOUNCE);
+        if elapsed >= Self::SORT_DEBOUNCE {
+            self.apply_sort_mode();
+        } else {
+            self.pending_sort_apply = true;
+        }
+    }
+
+    /// If a sort flush was deferred and the debounce window has now elapsed,
+    /// apply it. Called from `maybe_refresh` on every TUI tick so that
+    /// pending flushes complete promptly even when no further graph events
+    /// arrive.
+    pub(crate) fn maybe_flush_sort_apply(&mut self) {
+        if !self.pending_sort_apply {
+            return;
+        }
+        let elapsed = self
+            .last_sort_apply
+            .map(|t| t.elapsed())
+            .unwrap_or(Self::SORT_DEBOUNCE);
+        if elapsed >= Self::SORT_DEBOUNCE {
+            self.apply_sort_mode();
         }
     }
 
@@ -10118,6 +10190,8 @@ impl VizApp {
             prev_agent_statuses: HashMap::new(),
             last_tab_press: None,
             sort_mode: SortMode::ReverseChronological,
+            last_sort_apply: None,
+            pending_sort_apply: false,
             smart_follow_active: true,
             initial_load: false,
             splash_animations: HashMap::new(),
@@ -27049,6 +27123,234 @@ mod message_indicator_refresh_tests {
             app.task_message_statuses.get("t1"),
             Some(&CoordinatorMessageStatus::Seen),
             "cursor advance must transition Unseen → Seen, not clear the indicator"
+        );
+    }
+}
+
+/// Tests for the `last_interaction_at` sort + render-debounce path
+/// (task `revert-redo-fix`). Locks the regression behind the bad ship of
+/// fix-tui-graph: status-grouped sort must be stable when timestamps tie,
+/// the apply path must throttle to ~5 events/sec under burst, and a
+/// graph-event burst must not trigger more than one re-sort within the
+/// debounce window.
+#[cfg(test)]
+mod activity_sort_debounce_tests {
+    use super::*;
+    use std::collections::{HashMap, HashSet};
+    use std::time::{Duration, Instant};
+    use workgraph::graph::{Node, Status, WorkGraph};
+    use workgraph::parser::save_graph;
+    use workgraph::test_helpers::make_task_with_status;
+
+    use crate::commands::viz::ascii::generate_ascii;
+    use crate::commands::viz::{LayoutMode, VizOutput};
+
+    fn render_viz(graph: &WorkGraph) -> VizOutput {
+        let tasks: Vec<_> = graph.tasks().collect();
+        let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
+        generate_ascii(
+            graph,
+            &tasks,
+            &task_ids,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            LayoutMode::Tree,
+            &HashSet::new(),
+            "gray",
+            &HashMap::new(),
+            &HashMap::new(),
+        )
+    }
+
+    fn build_app_with_graph(graph: &WorkGraph) -> (VizApp, tempfile::TempDir) {
+        let tmp = tempfile::tempdir().unwrap();
+        save_graph(graph, tmp.path().join("graph.jsonl")).unwrap();
+        let viz = render_viz(graph);
+        let mut app = VizApp::from_viz_output_for_test(&viz);
+        app.workgraph_dir = tmp.path().to_path_buf();
+        (app, tmp)
+    }
+
+    /// Two in-progress tasks with identical `last_interaction_at` must keep
+    /// a deterministic order across repeated sorts. Without an id-based
+    /// tie-break the sort order would depend on the previous order, and
+    /// any TUI re-sort could swap them — the visible "constant scrolling"
+    /// failure mode of the bad fix.
+    #[test]
+    fn status_grouped_sort_is_stable_when_timestamps_tie() {
+        let mut graph = WorkGraph::new();
+        let same_ts = "2026-05-01T12:00:00+00:00".to_string();
+        for id in &["zeta", "alpha", "mu"] {
+            let mut t = make_task_with_status(id, id, Status::InProgress);
+            t.last_interaction_at = Some(same_ts.clone());
+            t.created_at = Some(same_ts.clone());
+            graph.add_node(Node::Task(t));
+        }
+        let (mut app, _tmp) = build_app_with_graph(&graph);
+        app.sort_mode = SortMode::StatusGrouped;
+
+        // Apply twice from different starting orders — output must match.
+        app.apply_sort_mode();
+        let first = app.task_order.clone();
+
+        app.task_order.reverse();
+        app.last_sort_apply = None; // bypass debounce
+        app.apply_sort_mode();
+        let second = app.task_order.clone();
+
+        assert_eq!(
+            first, second,
+            "tie-breaker by id must give identical sort order across repeated applies"
+        );
+        // Stable id tie-break = ascending id order.
+        assert_eq!(first, vec!["alpha", "mu", "zeta"]);
+    }
+
+    /// More-recently-touched in-progress tasks must come first within the
+    /// status group. This proves the activity sort actually runs (regression
+    /// gate for "field exists but isn't read").
+    #[test]
+    fn status_grouped_sort_bubbles_recent_activity() {
+        let mut graph = WorkGraph::new();
+        let mut older = make_task_with_status("older", "older", Status::InProgress);
+        older.last_interaction_at = Some("2026-04-01T00:00:00+00:00".to_string());
+        let mut newer = make_task_with_status("newer", "newer", Status::InProgress);
+        newer.last_interaction_at = Some("2026-05-01T00:00:00+00:00".to_string());
+        graph.add_node(Node::Task(older));
+        graph.add_node(Node::Task(newer));
+
+        let (mut app, _tmp) = build_app_with_graph(&graph);
+        app.sort_mode = SortMode::StatusGrouped;
+        app.apply_sort_mode();
+        assert_eq!(
+            app.task_order,
+            vec!["newer".to_string(), "older".to_string()],
+            "newer last_interaction_at must come first within the in-progress group"
+        );
+    }
+
+    /// Status priority dominates: a stale in-progress task still sorts
+    /// before a freshly-touched done task.
+    #[test]
+    fn status_priority_dominates_activity_sort() {
+        let mut graph = WorkGraph::new();
+        let mut stale_in_progress =
+            make_task_with_status("stale", "stale", Status::InProgress);
+        stale_in_progress.last_interaction_at = Some("2026-01-01T00:00:00+00:00".to_string());
+        let mut fresh_done = make_task_with_status("done", "done", Status::Done);
+        fresh_done.last_interaction_at = Some("2026-05-01T00:00:00+00:00".to_string());
+        graph.add_node(Node::Task(stale_in_progress));
+        graph.add_node(Node::Task(fresh_done));
+
+        let (mut app, _tmp) = build_app_with_graph(&graph);
+        app.sort_mode = SortMode::StatusGrouped;
+        app.apply_sort_mode();
+        assert_eq!(
+            app.task_order,
+            vec!["stale".to_string(), "done".to_string()],
+            "in-progress (priority 0) must sort before done (priority 4) regardless of activity"
+        );
+    }
+
+    /// 100 successive `request_sort_apply` calls in rapid succession must
+    /// trigger at most one apply within the debounce window. This is the
+    /// core anti-yank guarantee from the task spec.
+    #[test]
+    fn request_sort_apply_throttles_burst_to_one_apply() {
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(make_task_with_status(
+            "a",
+            "a",
+            Status::InProgress,
+        )));
+        let (mut app, _tmp) = build_app_with_graph(&graph);
+        app.sort_mode = SortMode::StatusGrouped;
+
+        // Fire 100 requests back-to-back. Wall time should be << 200ms,
+        // so only the FIRST one should flip last_sort_apply.
+        let burst_start = Instant::now();
+        for _ in 0..100 {
+            app.request_sort_apply();
+        }
+        let burst_elapsed = burst_start.elapsed();
+        assert!(
+            burst_elapsed < Duration::from_millis(100),
+            "100 requests should run quickly enough that they all fall inside the debounce window (took {:?})",
+            burst_elapsed
+        );
+
+        // Only one apply should have happened — the rest are pending.
+        assert!(app.last_sort_apply.is_some(), "first request must apply");
+        assert!(
+            app.pending_sort_apply,
+            "subsequent requests during the debounce window must defer"
+        );
+    }
+
+    /// After the debounce window passes, the deferred apply flushes via
+    /// `maybe_flush_sort_apply`. Without this, a quiet period after a
+    /// burst would leave the sort pending forever.
+    #[test]
+    fn maybe_flush_sort_apply_runs_after_debounce_window() {
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(make_task_with_status(
+            "a",
+            "a",
+            Status::InProgress,
+        )));
+        let (mut app, _tmp) = build_app_with_graph(&graph);
+        app.sort_mode = SortMode::StatusGrouped;
+
+        // First apply records last_sort_apply.
+        app.request_sort_apply();
+        let first_apply = app.last_sort_apply.unwrap();
+
+        // Two more requests while inside the window: deferred.
+        app.request_sort_apply();
+        app.request_sort_apply();
+        assert!(app.pending_sort_apply);
+
+        // Pretend SORT_DEBOUNCE has passed by backdating last_sort_apply.
+        app.last_sort_apply = Some(first_apply - VizApp::SORT_DEBOUNCE - Duration::from_millis(10));
+
+        app.maybe_flush_sort_apply();
+        assert!(
+            !app.pending_sort_apply,
+            "flush after window expiry must clear pending_sort_apply"
+        );
+        assert!(
+            app.last_sort_apply.unwrap() > first_apply,
+            "flush must record a fresh last_sort_apply"
+        );
+    }
+
+    /// `cycle_sort_mode` (user keypress path) must bypass the debounce so
+    /// the first 's' tap reorders immediately, even if a graph reload just
+    /// fired.
+    #[test]
+    fn cycle_sort_mode_bypasses_debounce() {
+        let mut graph = WorkGraph::new();
+        graph.add_node(Node::Task(make_task_with_status(
+            "a",
+            "a",
+            Status::InProgress,
+        )));
+        let (mut app, _tmp) = build_app_with_graph(&graph);
+        app.sort_mode = SortMode::Chronological;
+
+        // Burst from the graph-watcher path leaves a pending flush.
+        for _ in 0..5 {
+            app.request_sort_apply();
+        }
+        assert!(app.pending_sort_apply);
+
+        // User now taps 's'. cycle_sort_mode should run apply immediately.
+        let _before = Instant::now();
+        app.cycle_sort_mode();
+        assert!(
+            !app.pending_sort_apply,
+            "user-driven cycle_sort_mode must clear the pending flag by applying directly"
         );
     }
 }
