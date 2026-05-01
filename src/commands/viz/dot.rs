@@ -20,7 +20,7 @@ pub(crate) fn generate_dot(
 
     // Print task nodes
     for task in tasks {
-        let style = match task.status {
+        let base_style = match task.status {
             Status::Done => "style=filled, fillcolor=lightgreen",
             Status::InProgress => "style=filled, fillcolor=lightyellow",
             Status::Blocked => "style=filled, fillcolor=lightcoral",
@@ -31,6 +31,12 @@ pub(crate) fn generate_dot(
             Status::PendingEval => "style=filled, fillcolor=chartreuse",
             Status::FailedPendingEval => "style=filled, fillcolor=darkorange",
             Status::Incomplete => "style=filled, fillcolor=orange",
+        };
+        // Paused: dashed border + soft blue-gray fill, distinct from open/abandoned/blocked.
+        let style: String = if task.paused {
+            "style=\"filled,dashed\", fillcolor=\"#c8d0e0\"".to_string()
+        } else {
+            base_style.to_string()
         };
 
         // Build label with hours estimate if available
@@ -47,7 +53,8 @@ pub(crate) fn generate_dot(
             .map(|a| format!(" {}", a.text))
             .unwrap_or_default();
 
-        let label = format!("{}\\n{}{}{}", task.id, task.title, hours_str, phase_str);
+        let pause_prefix = if task.paused { "⏸ " } else { "" };
+        let label = format!("{}{}\\n{}{}{}", pause_prefix, task.id, task.title, hours_str, phase_str);
 
         // Check if on critical path
         let node_style = if critical_path.contains(&task.id) {

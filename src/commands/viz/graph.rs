@@ -91,6 +91,8 @@ pub fn generate_graph_with_overrides(
             Status::Incomplete => "\x1b[38;5;208m",
         }
     };
+    // Paused tasks render in soft blue-gray distinct from open / abandoned / blocked.
+    let paused_color = if use_color { "\x1b[38;5;110m" } else { "" };
     let reset = if use_color { "\x1b[0m" } else { "" };
 
     let status_label = |status: &Status| -> &str {
@@ -256,7 +258,9 @@ pub fn generate_graph_with_overrides(
         };
         let width = line1.len().max(line2.len());
 
-        let color = if is_chat_agent && use_color {
+        let color = if task.paused && use_color {
+            paused_color
+        } else if is_chat_agent && use_color {
             if is_legacy_coord {
                 "\x1b[90m" // dark gray — muted for legacy .coordinator-N
             } else {
@@ -267,15 +271,25 @@ pub fn generate_graph_with_overrides(
         } else {
             status_color(&effective_status)
         };
-        let color_line1 = format!("{}{}{}", color, center_str(&line1, width), reset);
-        let color_line2 = format!("{}{}{}", color, center_str(&line2, width), reset);
+        // Prefix paused id line with ⏸ glyph for redundant signaling.
+        let display_line1 = if task.paused {
+            format!("⏸ {}", line1)
+        } else {
+            line1.clone()
+        };
+        let display_width = display_line1.chars().count().max(line2.chars().count());
+        let color_line1 = format!("{}{}{}", color, center_str(&display_line1, display_width), reset);
+        let color_line2 = format!("{}{}{}", color, center_str(&line2, display_width), reset);
 
         box_infos.insert(
             id,
             BoxInfo {
-                lines: vec![center_str(&line1, width), center_str(&line2, width)],
+                lines: vec![
+                    center_str(&display_line1, display_width),
+                    center_str(&line2, display_width),
+                ],
                 color_lines: vec![color_line1, color_line2],
-                width,
+                width: display_width,
             },
         );
     }

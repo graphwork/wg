@@ -29,6 +29,11 @@
     --status-pending-eval: rgb(140, 230, 80);
     --status-incomplete: rgb(255, 165, 0);
 
+    /* Paused: orthogonal modifier — soft blue-gray, distinct from open (yellow),
+       abandoned (purple), and blocked (gray). Mirrors ANSI 256-color 110 used
+       in the CLI / TUI ascii viz (src/commands/viz/ascii.rs). */
+    --status-paused: rgb(150, 165, 195);
+
     /* Chat agent color — TUI Color::Blue (render.rs:1034: Color::Blue => (36,114,200)) */
     --chat-task: rgb(36, 114, 200);
 
@@ -82,6 +87,7 @@
         --status-pending-validation: rgb(40, 110, 170);
         --status-pending-eval: rgb(80, 150, 40);
         --status-incomplete: rgb(200, 110, 0);
+        --status-paused: rgb(95, 110, 145);
         --chat-task: rgb(20, 90, 165);
 
         --edge-upstream: rgb(150, 40, 150);
@@ -115,6 +121,7 @@
     --status-pending-validation: rgb(40, 110, 170);
     --status-pending-eval: rgb(80, 150, 40);
     --status-incomplete: rgb(200, 110, 0);
+    --status-paused: rgb(95, 110, 145);
     --chat-task: rgb(20, 90, 165);
 
     --edge-upstream: rgb(150, 40, 150);
@@ -388,6 +395,16 @@ section { margin-bottom: 2rem; }
    Comes after status rules so it wins the cascade for chat task nodes in the viz. */
 .viz-pre .task-link.chat-agent { color: var(--chat-task); }
 
+/* Paused tasks: orthogonal modifier on top of any status. The CLI ascii viz
+   already prefixes ⏸ before the id; the .paused class re-colors the cluster
+   to the muted blue-gray --status-paused so the task reads as "on hold"
+   rather than as the underlying status color. Wins over chat-agent so a
+   paused chat agent still looks paused. */
+.viz-pre .task-link.paused {
+    color: var(--status-paused);
+    font-style: italic;
+}
+
 /* Status-decorator parens — `(in-progress · →44k ←6.6k …)`. Rendered with
    the foreground colour so the decorator stays readable but doesn't share
    the task id's status hue, which would dominate visually. The nested
@@ -560,6 +577,15 @@ body[data-selected] .viz-pre .edge.is-cycle {
 .badge.pending-validation    { color: var(--status-pending-validation); }
 .badge.pending-eval          { color: var(--status-pending-eval); }
 .badge.incomplete            { color: var(--status-incomplete); }
+.badge.paused                { color: var(--status-paused); }
+
+/* Index task list: paused tasks render their row label in italic muted color
+   so the visual cue is reinforced beyond the inline ⏸ paused badge. */
+.task-list li.paused > a > code,
+.task-list li.paused > a {
+    font-style: italic;
+    color: var(--status-paused);
+}
 
 /* ── Side panel (detail overlay) ────────────────────────────────────────── */
 

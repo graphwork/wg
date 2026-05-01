@@ -715,6 +715,11 @@ fn render_viz_html(
         .tasks()
         .map(|t| (t.id.as_str(), t.status))
         .collect();
+    let task_paused: HashSet<&str> = graph
+        .tasks()
+        .filter(|t| t.paused)
+        .map(|t| t.id.as_str())
+        .collect();
 
     // For each line, identify task-id occurrences. The viz typically renders a
     // single task on its own line, but a task id may appear multiple times
@@ -740,9 +745,9 @@ fn render_viz_html(
         // opens the same task as clicking the id.
         let line_chars: Vec<char> = line.chars().collect();
         let line_str: String = line_chars.iter().collect();
-        // (id_start, decorator_start, end, id, status). decorator_start == end
+        // (id_start, decorator_start, end, id, status, paused). decorator_start == end
         // means no `(status · ...)` decorator follows the id.
-        let mut task_ranges: Vec<(usize, usize, usize, &str, Status)> = Vec::new();
+        let mut task_ranges: Vec<(usize, usize, usize, &str, Status, bool)> = Vec::new();
         // Time-suffix ranges (e.g. " 5m", " 1d") that follow the parenthetical.
         // Rendered with the muted-foreground colour to demote them below the
         // active info inside the parens.
@@ -771,7 +776,7 @@ fn render_viz_html(
                         .map(|c| !is_id_char(c))
                         .unwrap_or(true);
                 if prev_ok && next_ok {
-                    let char_start = line[..byte_pos].chars().count();
+                    let mut char_start = line[..byte_pos].chars().count();
                     let id_end = char_start + id.chars().count();
                     // Extend the range across an immediately-following
                     // status decorator like "  (in-progress · ...)" so the
@@ -780,9 +785,21 @@ fn render_viz_html(
                     // colour the decorator white separately from the
                     // status-coloured id.
                     let char_end = extend_through_status_decorator(&line_chars, id_end);
-                    let decorator_start = if char_end > id_end { id_end } else { id_end };
                     let st = task_status.get(id).copied().unwrap_or(Status::Open);
-                    task_ranges.push((char_start, decorator_start, char_end, id, st));
+                    let paused = task_paused.contains(id);
+                    // For paused tasks the ASCII viz prepends "⏸ " before the id
+                    // (see src/commands/viz/ascii.rs). Include those two chars in
+                    // the task-link span so the glyph picks up the paused color
+                    // and the whole "⏸ id" cluster is clickable.
+                    if paused
+                        && char_start >= 2
+                        && line_chars.get(char_start - 1) == Some(&' ')
+                        && line_chars.get(char_start - 2) == Some(&'⏸')
+                    {
+                        char_start -= 2;
+                    }
+                    let decorator_start = if char_end > id_end { id_end } else { id_end };
+                    task_ranges.push((char_start, decorator_start, char_end, id, st, paused));
                     if let Some(time) = find_time_suffix_after(&line_chars, char_end) {
                         time_ranges.push(time);
                     }
@@ -793,7 +810,7 @@ fn render_viz_html(
 
         // Resolve overlaps: prefer earlier start, longer end. Sort and dedupe.
         task_ranges.sort_by(|a, b| (a.0, std::cmp::Reverse(a.2)).cmp(&(b.0, std::cmp::Reverse(b.2))));
-        let mut nonoverlapping: Vec<(usize, usize, usize, &str, Status)> = Vec::new();
+        let mut nonoverlapping: Vec<(usize, usize, usize, &str, Status, bool)> = Vec::new();
         for r in task_ranges {
             if let Some(last) = nonoverlapping.last() {
                 if r.0 < last.2 {
@@ -827,7 +844,7 @@ fn render_line(
     out: &mut String,
     line_idx: usize,
     line_chars: &[char],
-    task_ranges: &[(usize, usize, usize, &str, Status)],
+    task_ranges: &[(usize, usize, usize, &str, Status, bool)],
     time_ranges: &[(usize, usize)],
     edges_by_pos: &HashMap<(usize, usize), Vec<(String, String)>>,
     _line_str: &str,
@@ -838,18 +855,23 @@ fn render_line(
 
     while col < line_chars.len() {
         // Are we at the start of a task-link range?
-        if let Some(&(start, decorator_start, end, id, status)) = range_iter.peek() {
+        if let Some(&(start, decorator_start, end, id, status, paused)) = range_iter.peek() {
             if col == *start {
                 let s_class = status_class(*status);
                 let agency_cls = if is_agency_task(id) { " is-agency" } else { "" };
                 let chat_class = if chat_id::is_chat_task_id(id) { " chat-agent" } else { "" };
+                let paused_cls = if *paused { " paused" } else { "" };
                 out.push_str("<span class=\"task-link");
                 out.push_str(agency_cls);
                 out.push_str(chat_class);
+                out.push_str(paused_cls);
                 out.push_str("\" data-task-id=\"");
                 out.push_str(&escape_html(id));
                 out.push_str("\" data-status=\"");
                 out.push_str(s_class);
+                if *paused {
+                    out.push_str("\" data-paused=\"true");
+                }
                 out.push_str("\">");
                 // Id portion — coloured by status via [data-status].
                 let span_end = (*end).min(line_chars.len());
@@ -1615,6 +1637,11 @@ fn render_legend_panel() -> String {
             name = st,
         ));
     }
+    // Paused: orthogonal to status — render with the dedicated CSS var so the
+    // legend tracks dark/light themes alongside the rest of the palette.
+    s.push_str(
+        "  <li><span class=\"swatch\" style=\"background:var(--status-paused)\"></span>⏸ paused (open + paused flag — also applied as muted overlay on any status)</li>\n",
+    );
     s.push_str("</ul>\n</details>\n");
 
     // Click behaviors.
@@ -1736,6 +1763,9 @@ fn render_index(
         if unread {
             li_classes.push("has-unread-msg");
         }
+        if t.paused {
+            li_classes.push("paused");
+        }
         let li_attrs = if li_classes.is_empty() {
             String::new()
         } else if agency {
@@ -1746,14 +1776,20 @@ fn render_index(
             format!(" class=\"{}\"", li_classes.join(" "))
         };
         let msg_inline = render_msg_indicator_inline(msg_bundle, &t.id);
+        let pause_badge = if t.paused {
+            "<span class=\"badge paused\" title=\"paused\">⏸ paused</span> "
+        } else {
+            ""
+        };
         list.push_str(&format!(
-            "  <li{li_attrs}><a href=\"{href}\" data-task-id=\"{id_attr}\"><span class=\"badge {cls}\">{status}</span> \
+            "  <li{li_attrs}><a href=\"{href}\" data-task-id=\"{id_attr}\"><span class=\"badge {cls}\">{status}</span> {pause_badge}\
              <code>{id}</code>{msg_inline} — {title}</a></li>\n",
             li_attrs = li_attrs,
             href = task_filename(&t.id),
             id_attr = escape_html(&t.id),
             cls = status_class(t.status),
             status = t.status,
+            pause_badge = pause_badge,
             id = escape_html(&t.id),
             msg_inline = msg_inline,
             title = escape_html(&t.title),
@@ -2100,9 +2136,17 @@ fn render_task_page(
     };
 
     let mut meta_rows: Vec<(String, String)> = Vec::new();
+    let pause_badge_html = if task.paused {
+        " <span class=\"badge paused\" title=\"Task is paused — coordinator will not dispatch\">⏸ paused</span>"
+    } else {
+        ""
+    };
     meta_rows.push((
         "Status".into(),
-        format!("<span class=\"badge {}\">{}</span>", status_cls, status_str),
+        format!(
+            "<span class=\"badge {}\">{}</span>{}",
+            status_cls, status_str, pause_badge_html
+        ),
     ));
     if let Some(a) = &task.assigned {
         meta_rows.push(("Assigned".into(), format!("<code>{}</code>", escape_html(a))));
@@ -2466,8 +2510,8 @@ mod tests {
     fn chat_task_span_gets_chat_agent_class() {
         // render_line must emit class="task-link chat-agent" for .chat-N ids
         let mut out = String::new();
-        let ranges: Vec<(usize, usize, usize, &str, Status)> =
-            vec![(0, 7, 7, ".chat-1", Status::Open)];
+        let ranges: Vec<(usize, usize, usize, &str, Status, bool)> =
+            vec![(0, 7, 7, ".chat-1", Status::Open, false)];
         let line_chars: Vec<char> = ".chat-1".chars().collect();
         let edges: HashMap<(usize, usize), Vec<(String, String)>> = HashMap::new();
         render_line(&mut out, 0, &line_chars, &ranges, &[], &edges, ".chat-1");
@@ -2478,10 +2522,33 @@ mod tests {
     }
 
     #[test]
+    fn paused_task_span_gets_paused_class_and_data_attr() {
+        // render_line must emit class "task-link paused" and data-paused="true"
+        // for paused tasks, so the CSS .paused selector and any consumers of
+        // the data attribute can render them distinctly.
+        let mut out = String::new();
+        let line_chars: Vec<char> = "⏸ my-task".chars().collect();
+        // The viz line begins with "⏸ "; the task-link span covers chars 0..9
+        // (⏸, space, then "my-task"), with id starting at char 2.
+        let ranges: Vec<(usize, usize, usize, &str, Status, bool)> =
+            vec![(0, 9, 9, "my-task", Status::Open, true)];
+        let edges: HashMap<(usize, usize), Vec<(String, String)>> = HashMap::new();
+        render_line(&mut out, 0, &line_chars, &ranges, &[], &edges, "⏸ my-task");
+        assert!(
+            out.contains("task-link paused"),
+            "paused task span must include 'paused' class; got: {out}"
+        );
+        assert!(
+            out.contains("data-paused=\"true\""),
+            "paused task span must set data-paused=\"true\"; got: {out}"
+        );
+    }
+
+    #[test]
     fn regular_task_span_no_chat_agent_class() {
         let mut out = String::new();
-        let ranges: Vec<(usize, usize, usize, &str, Status)> =
-            vec![(0, 7, 7, "my-task", Status::Open)];
+        let ranges: Vec<(usize, usize, usize, &str, Status, bool)> =
+            vec![(0, 7, 7, "my-task", Status::Open, false)];
         let line_chars: Vec<char> = "my-task".chars().collect();
         let edges: HashMap<(usize, usize), Vec<(String, String)>> = HashMap::new();
         render_line(&mut out, 0, &line_chars, &ranges, &[], &edges, "my-task");
@@ -2505,8 +2572,8 @@ mod tests {
         let line_chars: Vec<char> = line.chars().collect();
         let id_chars = "verify-end-to".chars().count();
         let end = extend_through_status_decorator(&line_chars, id_chars);
-        let ranges: Vec<(usize, usize, usize, &str, Status)> =
-            vec![(0, id_chars, end, "verify-end-to", Status::Done)];
+        let ranges: Vec<(usize, usize, usize, &str, Status, bool)> =
+            vec![(0, id_chars, end, "verify-end-to", Status::Done, false)];
         let time = find_time_suffix_after(&line_chars, end).expect("time suffix");
         let edges: HashMap<(usize, usize), Vec<(String, String)>> = HashMap::new();
         render_line(&mut out, 0, &line_chars, &ranges, &[time], &edges, line);

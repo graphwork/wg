@@ -254,6 +254,10 @@ pub(crate) fn generate_ascii(
             Status::Incomplete => "\x1b[38;5;208m",                    // orange
         }
     };
+    // Paused tasks render in a soft blue-gray distinguishable from open (white),
+    // abandoned (gray), and blocked (gray) — paired with a leading ⏸ glyph for
+    // redundant signaling that survives NO_COLOR / dim terminals / colorblind viewers.
+    let paused_color = if use_color { "\x1b[38;5;110m" } else { "" }; // 256-color 110 = #87afd7 soft blue-gray
     let reset = if use_color { "\x1b[0m" } else { "" };
 
     let status_label = |status: &Status| -> &str {
@@ -299,8 +303,13 @@ pub(crate) fn generate_ascii(
             return format!("{}{}  ({}){}", dim, id, status, reset);
         }
 
-        // Chat agent tasks: cyan for current (.chat-N), dark gray for legacy (.coordinator-N)
-        let color = if is_chat_agent && use_color {
+        let is_paused = task.is_some_and(|t| t.paused);
+        // Chat agent tasks: cyan for current (.chat-N), dark gray for legacy (.coordinator-N).
+        // Paused tasks override the status color with a muted blue-gray so they read
+        // as "open but on hold" rather than as the underlying status's normal hue.
+        let color = if is_paused && use_color {
+            paused_color
+        } else if is_chat_agent && use_color {
             if is_legacy_coord {
                 "\x1b[90m" // dark gray — muted for legacy
             } else {
@@ -309,6 +318,8 @@ pub(crate) fn generate_ascii(
         } else {
             task.map(|t| status_color(&t.status)).unwrap_or("")
         };
+        // Pause glyph prefix for redundant (color + glyph) signaling.
+        let pause_glyph = if is_paused { "⏸ " } else { "" };
         let loop_info = if is_chat_agent {
             task.map(|t| format!(" [turn {}]", t.loop_iteration))
                 .unwrap_or_default()
@@ -457,8 +468,9 @@ pub(crate) fn generate_ascii(
             ("", "")
         };
         format!(
-            "{}{}{}  {}({}){}{}{}{}{}{}",
+            "{}{}{}{}  {}({}){}{}{}{}{}{}",
             color,
+            pause_glyph,
             id,
             reset,
             paren_color,
