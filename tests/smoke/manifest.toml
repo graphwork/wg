@@ -139,6 +139,17 @@ description = "redesign-new-chat 2026-04-30: the TUI new-chat dialog opens in a 
 timeout_seconds = 90
 
 [[scenario]]
+name = "launcher_focus_new_chat_on_launch"
+script = "scenarios/launcher_focus_new_chat_on_launch.sh"
+owners = [
+    "fix-new-chat-4",
+    "redesign-new-chat",
+    "smoke-gate-is",
+]
+description = "fix-new-chat-4 2026-05-01: clicking Launch on the new-chat dialog must focus the freshly-created chat tab and show a 'Booting <executor>...' placeholder until the PTY emits its first byte. Pre-fix, the post-handler force_refresh's sync_active_tabs_from_graph saw the new cid missing from active_tabs (race with daemon's graph.jsonl write being re-read) and auto-switched focus back to active_tabs[0] — the previous chat. Pins: (a) IPC success → launcher dismissed + active_coordinator_id = new cid in the same drain step; (b) graph-lag race tolerated — focus sticks on new cid even when graph reload hasn't picked it up; (c) IPC failure leaves focus untouched (negative control); (d) booting placeholder renders the chat label + executor name instead of falling through to the generic 'Press c to type' empty state."
+timeout_seconds = 90
+
+[[scenario]]
 name = "setup_routes_complete_configs"
 script = "scenarios/setup_routes_complete_configs.sh"
 owners = [

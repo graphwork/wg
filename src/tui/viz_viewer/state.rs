@@ -10496,8 +10496,22 @@ impl VizApp {
                         if let Ok(data) = serde_json::from_str::<serde_json::Value>(&result.output)
                         {
                             if let Some(cid) = data["coordinator_id"].as_u64() {
+                                let cid = cid as u32;
                                 self.force_refresh();
-                                self.switch_coordinator(cid as u32);
+                                // Eagerly record the new tab BEFORE
+                                // switching focus. Without this, a
+                                // subsequent `sync_active_tabs_from_graph`
+                                // — fired by the trailing force_refresh
+                                // below or any later refresh — sees
+                                // `active_coordinator_id` missing from
+                                // `active_tabs` and (pre-fix) flipped
+                                // focus back to `active_tabs[0]`, the
+                                // previous chat. fix-new-chat-4.
+                                if !self.active_tabs.contains(&cid) {
+                                    self.active_tabs.push(cid);
+                                }
+                                self.closed_tabs.remove(&cid);
+                                self.switch_coordinator(cid);
                                 self.right_panel_tab = RightPanelTab::Chat;
                                 self.push_toast(
                                     format!("Chat {} created", cid),
@@ -14465,10 +14479,24 @@ impl VizApp {
                 self.active_tabs.push(id);
             }
         }
-        // Drop tabs whose underlying tasks were abandoned/archived
-        self.active_tabs.retain(|id| current.contains_key(id));
-        // If the active coordinator was dropped, switch to first available tab
+        // Drop tabs whose underlying tasks were abandoned/archived,
+        // but keep the active coordinator's tab even if the graph
+        // hasn't reported it yet (fresh-create race — fix-new-chat-4).
+        // Without this carve-out, a launcher submission whose graph
+        // write hasn't been re-stat'd by the next refresh would lose
+        // the new tab, then trip the auto-switch fallback below and
+        // flip focus back to the previous chat.
+        let active_id = self.active_coordinator_id;
+        self.active_tabs
+            .retain(|id| current.contains_key(id) || *id == active_id);
+        // Auto-switch only when the active coordinator is genuinely
+        // gone from the graph (abandoned/archived externally — e.g.
+        // someone ran `wg abandon` from the CLI). A merely-stale
+        // `active_tabs` entry must NOT trigger this — the new chat
+        // we just created is the canonical example: graph hasn't
+        // caught up, but focus belongs on it.
         if !self.active_tabs.is_empty()
+            && !current.contains_key(&self.active_coordinator_id)
             && !self.active_tabs.contains(&self.active_coordinator_id)
         {
             let next = self.active_tabs[0];
@@ -23178,6 +23206,83 @@ mod tui_chat_tests {
             app.active_coordinator_id, 1,
             "active_coordinator_id must switch to the freshly-created chat"
         );
+    }
+
+    /// Regression lock for fix-new-chat-4: focus must stick on the
+    /// freshly-created chat even when the graph the TUI re-reads after
+    /// the IPC roundtrip has not yet caught up to the daemon's write.
+    ///
+    /// Pre-fix flow (the bug the user reported 2026-05-01):
+    ///   1. user clicks Launch → `launch_from_launcher` fires the IPC
+    ///   2. IPC returns `{coordinator_id: 1}` and `drain_commands`
+    ///      processes the result
+    ///   3. `force_refresh()` after `switch_coordinator(1)` re-runs
+    ///      `sync_active_tabs_from_graph`. If `graph.jsonl` still
+    ///      reports only the old chat (filesystem caching, stat
+    ///      granularity, or any other reason `current` doesn't include
+    ///      cid=1), the old auto-switch fallback fired
+    ///      `switch_coordinator(active_tabs[0])` — back to the previous
+    ///      chat. Focus visibly flips off the new tab.
+    ///
+    /// Post-fix: the new cid is added to `active_tabs` eagerly in the
+    /// `CreateCoordinator` handler, AND `sync_active_tabs_from_graph`
+    /// only auto-switches when the active coordinator is genuinely
+    /// gone from the graph (not just absent from `active_tabs`).
+    ///
+    /// This test deliberately leaves the simulated graph in the lagged
+    /// state — only the previous chat (cid=0) is in `graph.jsonl` —
+    /// because that's the worst-case race the fix must tolerate.
+    #[test]
+    fn drain_commands_create_coordinator_keeps_focus_on_new_chat_when_graph_lags() {
+        let tmp = TempDir::new().unwrap();
+        let (viz, wg_dir) = setup_workgraph_with_coordinators(&tmp, &[0]);
+
+        let mut app = build_test_app(&viz, &wg_dir);
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.cmd_tx = tx;
+        app.cmd_rx = rx;
+        app.active_coordinator_id = 0;
+        app.active_tabs = vec![0];
+        app.launcher = Some(LauncherState {
+            mode: LauncherMode::Default,
+            active_section: LauncherSection::Defaults,
+            name: String::new(),
+            presets: LauncherState::default_presets(),
+            default_selected: 0,
+            add_executor_idx: 0,
+            add_model: String::new(),
+            add_endpoint: String::new(),
+            creating: true,
+            last_error: None,
+        });
+        app.input_mode = InputMode::Launcher;
+
+        // IPC returns success for cid=1 — but graph.jsonl on disk
+        // still reports only cid=0 (the daemon's write hasn't been
+        // observed by the next stat / load_graph cycle yet).
+        app.cmd_tx
+            .send(CommandResult {
+                success: true,
+                output: r#"{"coordinator_id": 1}"#.to_string(),
+                effect: CommandEffect::CreateCoordinator,
+            })
+            .expect("cmd channel should accept send");
+
+        app.drain_commands();
+
+        assert_eq!(
+            app.active_coordinator_id, 1,
+            "active_coordinator_id must stay on the freshly-created \
+             chat (cid=1) even when sync_active_tabs_from_graph \
+             hasn't yet picked it up — fix-new-chat-4"
+        );
+        assert!(
+            app.active_tabs.contains(&1),
+            "active_tabs must include the newly-created chat eagerly \
+             so subsequent refreshes don't treat it as a stale id"
+        );
+        assert!(app.launcher.is_none());
+        assert_eq!(app.input_mode, InputMode::Normal);
     }
 
     /// Regression lock: when the IPC FAILS, the launcher must stay

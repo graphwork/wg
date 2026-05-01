@@ -3504,8 +3504,18 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
             draw_chat_agent_death_panel(frame, msg_area, &death_info);
             draw_chat_input(frame, app, input_area);
             return;
+        } else {
+            // Pane has not spawned yet (just-created chat, dimensions
+            // weren't ready, or auto-PTY deferred to next frame). Show a
+            // booting placeholder so the user immediately sees the new
+            // chat's name + which executor is starting up, instead of
+            // falling through to the generic "Chat with Agent" empty
+            // state. fix-new-chat-4 spec: "<name or model>\n\nBooting
+            // <executor>...".
+            draw_chat_booting_placeholder(frame, msg_area, app, cid);
+            draw_chat_input(frame, app, input_area);
+            return;
         }
-        // else: pane never spawned — fall through to normal renderer
 
         // Scroll mode banner: overlay a one-row hint at the top of msg_area.
         if matches!(&app.input_mode, InputMode::ScrollMode { task_id: tid } if *tid == task_id)
@@ -4237,6 +4247,68 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
 
     // Input area.
     draw_chat_input(frame, app, input_area);
+}
+
+/// Render the "Booting <executor>..." placeholder shown for a freshly-
+/// created chat tab whose PTY pane has not yet emitted any output.
+///
+/// fix-new-chat-4 spec: clicking Launch should immediately focus the
+/// new chat tab; the content area shows the chat's name and the
+/// executor that is starting up, replaced with live PTY content as
+/// soon as the handler emits its first byte.
+fn draw_chat_booting_placeholder(
+    frame: &mut Frame,
+    area: Rect,
+    app: &VizApp,
+    cid: u32,
+) {
+    use ratatui::text::Text;
+
+    let task_id = workgraph::chat_id::format_chat_task_id(cid);
+
+    // Friendly chat label: prefer the graph's canonical task id (which
+    // resolves to `.chat-N` for new chats and `.coordinator-N` for any
+    // legacy graphs), fall back to the synthesized `.chat-N` id for the
+    // race window where the graph has not yet been re-read.
+    let label = app
+        .cached_chat_tab_entries
+        .iter()
+        .find(|(id, _)| *id == cid)
+        .map(|(_, l)| l.clone())
+        .unwrap_or_else(|| task_id.clone());
+
+    // Executor label: prefer the pending-spawn record (set by
+    // `maybe_auto_enable_chat_pty` from the user's launcher choice), fall
+    // back to whatever the most recent spawn used, then to a generic
+    // "agent" string. Avoids re-reading config on every frame.
+    let executor = app
+        .pending_chat_pty_spawn
+        .as_ref()
+        .filter(|p| p.task_id == task_id)
+        .map(|p| p.executor.clone())
+        .or_else(|| {
+            app.chat_last_spawn_info
+                .get(&cid)
+                .map(|(e, _)| e.clone())
+        })
+        .unwrap_or_else(|| "agent".to_string());
+
+    let lines = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            format!("  Chat: {}", label),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            format!("  Booting {}... (this can take a few seconds)", executor),
+            Style::default().fg(Color::DarkGray),
+        )),
+    ];
+
+    frame.render_widget(Paragraph::new(Text::from(lines)), area);
 }
 
 /// Render the "chat agent died" error panel inside `area`.
@@ -13381,6 +13453,63 @@ mod tests {
             })
             .unwrap();
         terminal.backend().buffer().clone()
+    }
+
+    /// Regression lock for fix-new-chat-4: a freshly-launched chat tab
+    /// (chat_pty_mode set, but no `task_panes` entry yet — the PTY pane
+    /// hasn't spawned) must render the "Booting <executor>..."
+    /// placeholder, NOT the generic "Chat with Agent" empty state. The
+    /// placeholder is what the user sees between clicking Launch and
+    /// the handler emitting its first byte; it must surface the chat's
+    /// label so they know they're looking at the new tab they just
+    /// created.
+    #[test]
+    fn test_chat_booting_placeholder_renders_for_unspawned_pty_pane() {
+        let (mut app, _tmp) = build_app_for_tab_color_test(&[0]);
+        app.chat.coordinator_active = true;
+        app.chat_pty_mode = true;
+        // task_panes is empty → falls into the booting branch.
+        // chat_agent_death is empty → not the death branch.
+        // pending_chat_pty_spawn is None → consume returns false, no
+        //   accidental real spawn during the test.
+        // Seed chat_last_spawn_info so the executor label resolves
+        // without exercising the spawn machinery.
+        app.chat_last_spawn_info.insert(
+            0,
+            ("claude".to_string(), "claude --resume chat-0".to_string()),
+        );
+
+        let buf = render_chat_tab_to_buffer(&mut app);
+        let area = buf.area();
+        let mut text = String::new();
+        for y in 0..area.height {
+            for x in 0..area.width {
+                text.push_str(buf.cell((x, y)).unwrap().symbol());
+            }
+            text.push('\n');
+        }
+
+        assert!(
+            text.contains("Booting"),
+            "booting placeholder must render the word 'Booting'.\nBuffer:\n{}",
+            text
+        );
+        assert!(
+            text.contains("claude"),
+            "booting placeholder must surface the executor name 'claude'.\nBuffer:\n{}",
+            text
+        );
+        assert!(
+            text.contains("Chat:"),
+            "booting placeholder must label the chat ('Chat: <name>').\nBuffer:\n{}",
+            text
+        );
+        assert!(
+            !text.contains("Press 'c'"),
+            "booting placeholder must replace the 'Press c' empty state, \
+             not render alongside it.\nBuffer:\n{}",
+            text
+        );
     }
 
     #[test]
