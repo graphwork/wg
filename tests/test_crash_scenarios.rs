@@ -79,9 +79,9 @@ fn wg_ok(wg_dir: &Path, args: &[&str]) -> String {
 
 /// Helper: initialize a fresh workgraph in a temp directory,
 /// and configure a shell executor with the correct working_dir
-/// so that the wrapper script's bare `wg` commands can find `.workgraph`.
+/// so that the wrapper script's bare `wg` commands can find `.wg`.
 fn setup_workgraph(tmp_root: &Path) -> PathBuf {
-    let wg_dir = tmp_root.join(".workgraph");
+    let wg_dir = tmp_root.join(".wg");
     wg_ok(&wg_dir, &["init"]);
 
     // Get the directory containing the test-built wg binary.

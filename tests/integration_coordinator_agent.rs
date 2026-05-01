@@ -40,7 +40,7 @@ fn wg_binary() -> PathBuf {
 
 /// Derive a fake HOME from the wg_dir path so global config doesn't leak in.
 fn fake_home_for(wg_dir: &Path) -> PathBuf {
-    // wg_dir is typically <tmp>/.workgraph — use <tmp> as fake home
+    // wg_dir is typically <tmp>/.wg — use <tmp> as fake home
     wg_dir
         .parent()
         .map(|p| p.to_path_buf())
@@ -104,9 +104,9 @@ fn wg_ok_env(wg_dir: &Path, args: &[&str], env_vars: &[(&str, &str)]) -> String 
     stdout
 }
 
-/// Initialise a fresh workgraph in a temp directory and return the .workgraph path.
+/// Initialise a fresh workgraph in a temp directory and return the .wg path.
 fn init_workgraph(tmp: &TempDir) -> PathBuf {
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     wg_ok(&wg_dir, &["init", "--executor", "shell"]);
     wg_dir
 }

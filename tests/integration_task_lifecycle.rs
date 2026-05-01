@@ -65,7 +65,7 @@ fn make_task(id: &str, title: &str, status: Status) -> Task {
 }
 
 fn setup_workgraph(tmp: &TempDir, tasks: Vec<Task>) -> PathBuf {
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     std::fs::create_dir_all(&wg_dir).unwrap();
     let graph_path = wg_dir.join("graph.jsonl");
     let mut graph = WorkGraph::new();
@@ -198,7 +198,7 @@ fn test_abandon_cascades_to_in_progress_system_tasks() {
 #[test]
 fn test_retry_after_failure_with_eval_task() {
     let tmp = TempDir::new().unwrap();
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     wg_ok(&wg_dir, &["init"]);
 
     // Create and complete a task
@@ -281,7 +281,7 @@ fn test_retry_resets_state_for_redispatch() {
 #[test]
 fn test_supersession_via_abandon_flag() {
     let tmp = TempDir::new().unwrap();
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     wg_ok(&wg_dir, &["init"]);
 
     wg_ok(
@@ -403,7 +403,7 @@ fn test_no_zombie_system_tasks_after_abandon() {
 #[test]
 fn test_no_zombie_accumulation_across_multiple_abandons() {
     let tmp = TempDir::new().unwrap();
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     wg_ok(&wg_dir, &["init"]);
 
     // Create 3 tasks, each with system children
@@ -465,7 +465,7 @@ fn test_no_zombie_accumulation_across_multiple_abandons() {
 #[test]
 fn test_full_lifecycle_abandon_supersede_cascade() {
     let tmp = TempDir::new().unwrap();
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     wg_ok(&wg_dir, &["init"]);
 
     // Create original task

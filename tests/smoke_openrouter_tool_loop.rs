@@ -91,7 +91,7 @@ fn run_native_exec(
 fn smoke_native_tool_loop_openrouter() {
     let api_key = std::env::var("OPENROUTER_API_KEY").expect("OPENROUTER_API_KEY must be set");
     let tmp = TempDir::new().unwrap();
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     wg_ok(&wg_dir, &["init"]);
     wg_ok(&wg_dir, &["agency", "init"]);
     wg_ok(
@@ -196,7 +196,7 @@ fn smoke_native_tool_loop_openrouter() {
 fn smoke_native_tool_loop_terminates_reasonably() {
     let api_key = std::env::var("OPENROUTER_API_KEY").expect("OPENROUTER_API_KEY must be set");
     let tmp = TempDir::new().unwrap();
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     wg_ok(&wg_dir, &["init"]);
 
     let prompt = r#"Run `ls /tmp` via bash tool, then wg_done with task_id 'termination-test'."#;

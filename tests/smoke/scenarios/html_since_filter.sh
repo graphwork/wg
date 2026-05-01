@@ -47,7 +47,7 @@ if command -v date >/dev/null 2>&1; then
         || old_date="2020-01-01T00:00:00Z"
 fi
 
-graph_file=".workgraph/graph.jsonl"
+graph_file=".wg/graph.jsonl"
 [[ -f "$graph_file" ]] || graph_file=".wg/graph.jsonl"
 if [[ ! -f "$graph_file" ]]; then
     loud_fail "cannot find graph.jsonl under scratch dir"

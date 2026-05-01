@@ -1,7 +1,7 @@
 //! Model registry for workgraph.
 //!
 //! Provides a catalog of AI models with cost, capability, and tier metadata.
-//! The registry is loaded from `.workgraph/models.yaml` and ships with
+//! The registry is loaded from `.wg/models.yaml` and ships with
 //! sensible defaults covering popular models across providers and price tiers.
 
 use anyhow::{Context, Result};
@@ -281,7 +281,7 @@ impl ModelRegistry {
         }
     }
 
-    /// Load registry from .workgraph/models.yaml, creating defaults if missing
+    /// Load registry from .wg/models.yaml, creating defaults if missing
     pub fn load(workgraph_dir: &Path) -> Result<Self> {
         let path = workgraph_dir.join("models.yaml");
 
@@ -298,7 +298,7 @@ impl ModelRegistry {
         Ok(registry)
     }
 
-    /// Save registry to .workgraph/models.yaml
+    /// Save registry to .wg/models.yaml
     pub fn save(&self, workgraph_dir: &Path) -> Result<()> {
         let path = workgraph_dir.join("models.yaml");
 

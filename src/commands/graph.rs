@@ -370,7 +370,7 @@ mod tests {
     #[test]
     fn test_run_not_initialized() {
         let tmp = TempDir::new().unwrap();
-        let dir = tmp.path().join(".workgraph");
+        let dir = tmp.path().join(".wg");
         let result = run(&dir, false, None, None);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("not initialized"));
@@ -380,7 +380,7 @@ mod tests {
     fn test_run_basic_dot_structure() {
         // Verifies run succeeds and doesn't error - actual DOT output goes to stdout
         let tmp = TempDir::new().unwrap();
-        let dir = tmp.path().join(".workgraph");
+        let dir = tmp.path().join(".wg");
 
         let mut graph = WorkGraph::new();
         graph.add_node(Node::Task(make_task("t1", "First task")));
@@ -394,7 +394,7 @@ mod tests {
     #[test]
     fn test_run_with_edges() {
         let tmp = TempDir::new().unwrap();
-        let dir = tmp.path().join(".workgraph");
+        let dir = tmp.path().join(".wg");
 
         let mut graph = WorkGraph::new();
         let t1 = make_task("t1", "First");
@@ -411,7 +411,7 @@ mod tests {
     #[test]
     fn test_run_with_resources() {
         let tmp = TempDir::new().unwrap();
-        let dir = tmp.path().join(".workgraph");
+        let dir = tmp.path().join(".wg");
 
         let mut graph = WorkGraph::new();
         graph.add_node(Node::Task(make_task("t1", "Task")));
@@ -431,7 +431,7 @@ mod tests {
     #[test]
     fn test_run_with_date_filters() {
         let tmp = TempDir::new().unwrap();
-        let dir = tmp.path().join(".workgraph");
+        let dir = tmp.path().join(".wg");
 
         let mut graph = WorkGraph::new();
         let mut t1 = make_task("t1", "Old task");
@@ -452,7 +452,7 @@ mod tests {
     #[test]
     fn test_run_include_archive_no_archive_file() {
         let tmp = TempDir::new().unwrap();
-        let dir = tmp.path().join(".workgraph");
+        let dir = tmp.path().join(".wg");
 
         let mut graph = WorkGraph::new();
         graph.add_node(Node::Task(make_task("t1", "Task")));
@@ -466,7 +466,7 @@ mod tests {
     #[test]
     fn test_run_include_archive_with_file() {
         let tmp = TempDir::new().unwrap();
-        let dir = tmp.path().join(".workgraph");
+        let dir = tmp.path().join(".wg");
 
         let mut graph = WorkGraph::new();
         graph.add_node(Node::Task(make_task("t1", "Active")));
@@ -490,7 +490,7 @@ mod tests {
     #[test]
     fn test_run_invalid_date_errors() {
         let tmp = TempDir::new().unwrap();
-        let dir = tmp.path().join(".workgraph");
+        let dir = tmp.path().join(".wg");
 
         let mut graph = WorkGraph::new();
         graph.add_node(Node::Task(make_task("t1", "Task")));

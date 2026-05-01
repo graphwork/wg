@@ -576,7 +576,7 @@ pub(crate) fn build_full_graph_summary(graph: &workgraph::WorkGraph) -> String {
     parts.join("")
 }
 
-/// Read CLAUDE.md content from the project root (parent of .workgraph/).
+/// Read CLAUDE.md content from the project root (parent of .wg/).
 fn read_claude_md(workgraph_dir: &Path) -> String {
     let project_root = workgraph_dir
         .canonicalize()
@@ -594,7 +594,7 @@ fn read_claude_md(workgraph_dir: &Path) -> String {
 
 /// Read the workgraph usage guide for non-Claude models.
 ///
-/// Checks for a user-customizable guide at `.workgraph/wg-guide.md`. If that file
+/// Checks for a user-customizable guide at `.wg/wg-guide.md`. If that file
 /// exists, its content is used. Otherwise falls back to the built-in default guide
 /// embedded in the binary.
 #[allow(dead_code)]
@@ -641,7 +641,7 @@ pub(crate) fn classify_model_tier(model: &str) -> KnowledgeTier {
 /// Check if Telegram escalation is configured and available.
 ///
 /// Looks for a valid Telegram configuration in either the project-local
-/// `.workgraph/notify.toml` or global `~/.config/workgraph/notify.toml`.
+/// `.wg/notify.toml` or global `~/.config/workgraph/notify.toml`.
 /// Returns true if Telegram bot token and chat ID are configured.
 fn is_telegram_configured(workgraph_dir: &Path) -> bool {
     // Try project-local config first
@@ -927,7 +927,7 @@ fn extract_project_context(memory_md: &str) -> String {
 
     if memory_md.contains("graph.jsonl") {
         context.push_str(
-            "**Core files:** `.workgraph/graph.jsonl` (task storage), `src/` (implementation)\n",
+            "**Core files:** `.wg/graph.jsonl` (task storage), `src/` (implementation)\n",
         );
     }
 
@@ -2323,7 +2323,7 @@ mod tests {
     #[test]
     fn test_read_wg_guide_returns_default_when_no_file() {
         let tmp = tempfile::tempdir().unwrap();
-        let wg_dir = tmp.path().join(".workgraph");
+        let wg_dir = tmp.path().join(".wg");
         std::fs::create_dir_all(&wg_dir).unwrap();
 
         let guide = read_wg_guide(&wg_dir);
@@ -2333,7 +2333,7 @@ mod tests {
     #[test]
     fn test_read_wg_guide_reads_custom_file() {
         let tmp = tempfile::tempdir().unwrap();
-        let wg_dir = tmp.path().join(".workgraph");
+        let wg_dir = tmp.path().join(".wg");
         std::fs::create_dir_all(&wg_dir).unwrap();
 
         let custom_guide = "Custom wg guide for this project.";
@@ -2346,7 +2346,7 @@ mod tests {
     #[test]
     fn test_read_wg_guide_falls_back_on_empty_file() {
         let tmp = tempfile::tempdir().unwrap();
-        let wg_dir = tmp.path().join(".workgraph");
+        let wg_dir = tmp.path().join(".wg");
         std::fs::create_dir_all(&wg_dir).unwrap();
 
         std::fs::write(wg_dir.join("wg-guide.md"), "  \n  ").unwrap();

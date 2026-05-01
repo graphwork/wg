@@ -71,7 +71,7 @@ fn draw_tree_pane(frame: &mut Frame, fb: &mut FileBrowser, area: Rect) {
     };
 
     let block = Block::default()
-        .title(" .workgraph/ ")
+        .title(" .wg/ ")
         .borders(Borders::ALL)
         .border_style(Style::default().fg(border_color));
 
@@ -197,7 +197,7 @@ fn draw_status_bar(frame: &mut Frame, fb: &FileBrowser, area: Rect) {
                     let rel = p.strip_prefix(&fb.root).unwrap_or(&p);
                     format!(" {}/ │ Directory │ READ-ONLY", rel.display())
                 }
-                _ => " .workgraph/ │ READ-ONLY".to_string(),
+                _ => " .wg/ │ READ-ONLY".to_string(),
             }
         }
     };

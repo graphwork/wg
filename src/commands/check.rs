@@ -193,7 +193,7 @@ mod tests {
     #[test]
     fn test_check_ok_clean_graph() {
         let tmp = TempDir::new().unwrap();
-        let dir = tmp.path().join(".workgraph");
+        let dir = tmp.path().join(".wg");
 
         let mut graph = workgraph::graph::WorkGraph::new();
         graph.add_node(Node::Task(make_task("t1", "Task 1")));
@@ -207,7 +207,7 @@ mod tests {
     #[test]
     fn test_check_fails_on_orphan_refs() {
         let tmp = TempDir::new().unwrap();
-        let dir = tmp.path().join(".workgraph");
+        let dir = tmp.path().join(".wg");
 
         let mut graph = workgraph::graph::WorkGraph::new();
         let mut t1 = make_task("t1", "Task 1");
@@ -226,7 +226,7 @@ mod tests {
         // if the target doesn't exist. With valid nodes that have cycles,
         // the check should still succeed (cycles are just warnings).
         let tmp = TempDir::new().unwrap();
-        let dir = tmp.path().join(".workgraph");
+        let dir = tmp.path().join(".wg");
 
         let mut graph = workgraph::graph::WorkGraph::new();
         let mut t1 = make_task("t1", "Task 1");
@@ -249,7 +249,7 @@ mod tests {
     #[test]
     fn test_check_fails_when_not_initialized() {
         let tmp = TempDir::new().unwrap();
-        let dir = tmp.path().join(".workgraph");
+        let dir = tmp.path().join(".wg");
         // Don't create anything — dir doesn't even exist
 
         let result = run(&dir, false);
@@ -261,7 +261,7 @@ mod tests {
     #[test]
     fn test_check_warns_on_stale_assignments_but_no_error() {
         let tmp = TempDir::new().unwrap();
-        let dir = tmp.path().join(".workgraph");
+        let dir = tmp.path().join(".wg");
 
         let mut graph = workgraph::graph::WorkGraph::new();
         let mut t1 = make_task("t1", "Task 1");

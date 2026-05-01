@@ -881,7 +881,7 @@ The message_map entries gain an `actor` field for reply attribution:
 ```json
 {
   "4401": {
-    "project_dir": "/home/user/project-alpha/.workgraph",
+    "project_dir": "/home/user/project-alpha/.wg",
     "task_id": "fix-auth-bug",
     "event_type": "task_failed",
     "actor": "alice",

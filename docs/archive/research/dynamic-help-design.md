@@ -329,7 +329,7 @@ More commands (--help-all for full list):
   ... and 40 more
 
 Options:
-  -d, --dir <PATH>  Workgraph directory [default: .workgraph]
+  -d, --dir <PATH>  Workgraph directory [default: .wg]
   -h, --help        Print help (--help-all for all commands)
   -V, --version     Print version
 ```
@@ -352,7 +352,7 @@ Commands:
   ... and 40 more (--help-all)
 
 Options:
-  -d, --dir <PATH>  Workgraph directory [default: .workgraph]
+  -d, --dir <PATH>  Workgraph directory [default: .wg]
   -h, --help        Print help (--help-all for all commands)
   -V, --version     Print version
 ```
@@ -373,7 +373,7 @@ Commands:
   ...
 
 Options:
-  -d, --dir <PATH>  Workgraph directory [default: .workgraph]
+  -d, --dir <PATH>  Workgraph directory [default: .wg]
   -h, --help        Print help
   -V, --version     Print version
 ```

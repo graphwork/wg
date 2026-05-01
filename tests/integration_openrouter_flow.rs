@@ -74,7 +74,7 @@ fn integration_openrouter_resolve_key_file() {
 #[test]
 fn integration_openrouter_resolve_key_file_relative() {
     let tmp = TempDir::new().unwrap();
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     fs::create_dir_all(&wg_dir).unwrap();
     let secrets_dir = wg_dir.join("secrets");
     fs::create_dir_all(&secrets_dir).unwrap();

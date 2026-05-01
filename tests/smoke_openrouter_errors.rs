@@ -144,7 +144,7 @@ fn openrouter_client_configured_correctly() {
 #[test]
 fn cli_error_reported_clearly_no_panic_trace() {
     let tmp = TempDir::new().unwrap();
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     fs::create_dir_all(&wg_dir).unwrap();
 
     // Write config with invalid key
@@ -228,7 +228,7 @@ fn nonexistent_endpoint_fails_quickly() {
 #[test]
 fn model_validation_error_is_user_friendly() {
     let tmp = TempDir::new().unwrap();
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     fs::create_dir_all(&wg_dir).unwrap();
 
     // Write a model cache with some models
@@ -268,7 +268,7 @@ fn model_validation_error_is_user_friendly() {
 #[test]
 fn valid_model_passes_validation() {
     let tmp = TempDir::new().unwrap();
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     fs::create_dir_all(&wg_dir).unwrap();
 
     // Write a model cache
@@ -291,7 +291,7 @@ fn valid_model_passes_validation() {
 #[test]
 fn openrouter_auto_is_always_valid() {
     let tmp = TempDir::new().unwrap();
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     fs::create_dir_all(&wg_dir).unwrap();
 
     // Even without a cache, openrouter/auto should be valid

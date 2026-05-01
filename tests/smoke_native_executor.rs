@@ -249,7 +249,7 @@ fn smoke_native_streaming_agent() {
 
     // ── 1. Set up temp workgraph ─────────────────────────────────────────
     let tmp = TempDir::new().unwrap();
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
 
     wg_ok(&wg_dir, &["init"]);
     wg_ok(&wg_dir, &["agency", "init"]);

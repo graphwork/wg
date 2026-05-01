@@ -9,7 +9,7 @@ set -euo pipefail
 
 TASK_ID="${WG_TASK_ID:-${TASK_ID:-unknown}}"
 FIXTURES_DIR="${WG_FIXTURES_DIR:-tests/fixtures/executor}"
-WG_DIR="${WG_DIR:-.workgraph}"
+WG_DIR="${WG_DIR:-.wg}"
 
 # Check for fixture file
 FIXTURE_FILE="$FIXTURES_DIR/$TASK_ID.sh"

@@ -3,7 +3,7 @@
 #
 # Locks in the `wg setup --scope <global|local|both>` contract introduced by
 # improve-wg-setup (per docs/config-ux-design.md §4.1). Pre-existing setup
-# behavior was scope-ambiguous: it always wrote ~/.workgraph/config.toml
+# behavior was scope-ambiguous: it always wrote ~/.wg/config.toml
 # regardless of where the user was, and there was no way to ask for a
 # project-local config or for both at once.
 #
@@ -59,7 +59,7 @@ if ! grep -qE "Will NOT write \(built-in defaults\): [0-9]+ more" "$scratch/scop
 fi
 
 # Reset for the next case.
-rm -rf "$fake_home/.wg" "$fake_home/.workgraph" "$proj1"
+rm -rf "$fake_home/.wg" "$fake_home/.wg" "$proj1"
 
 # ── 2. --scope local writes only local ────────────────────────────────
 proj2="$scratch/proj2"
@@ -75,12 +75,12 @@ mkdir -p "$proj2"
 if [[ ! -f "$proj2/.wg/config.toml" ]]; then
     loud_fail "expected $proj2/.wg/config.toml after --scope local"
 fi
-if [[ -f "$fake_home/.wg/config.toml" ]] || [[ -f "$fake_home/.workgraph/config.toml" ]]; then
+if [[ -f "$fake_home/.wg/config.toml" ]] || [[ -f "$fake_home/.wg/config.toml" ]]; then
     loud_fail "--scope local must NOT write a global config; found global config under $fake_home"
 fi
 
 # Reset for the next case.
-rm -rf "$fake_home/.wg" "$fake_home/.workgraph" "$proj2"
+rm -rf "$fake_home/.wg" "$fake_home/.wg" "$proj2"
 
 # ── 3. --scope both writes both ──────────────────────────────────────
 proj3="$scratch/proj3"

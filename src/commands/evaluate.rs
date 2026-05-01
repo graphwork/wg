@@ -2358,7 +2358,7 @@ mod tests {
         // After an in-place rescue, the spawn helper should inject the
         // evaluator's notes into the next agent's previous_attempt_context.
         // We exercise this end-to-end by:
-        //   1. Writing an evaluation JSON to .workgraph/agency/evaluations/
+        //   1. Writing an evaluation JSON to .wg/agency/evaluations/
         //   2. Running check_eval_gate (which transitions task to Open and
         //      bumps rescue_count).
         //   3. Calling build_previous_attempt_context() and asserting the

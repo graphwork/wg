@@ -64,7 +64,7 @@ fn syntax_for_extension<'a>(assets: &'a SyntectAssets, ext: &str) -> Option<&'a 
 
 /// State for the file browser tab.
 pub struct FileBrowser {
-    /// Root directory being browsed (.workgraph path).
+    /// Root directory being browsed (.wg path).
     pub root: PathBuf,
     /// Tree state for tui-tree-widget (selection, expansion, scroll).
     pub tree_state: TreeState<String>,
@@ -83,7 +83,7 @@ pub struct FileBrowser {
 }
 
 impl FileBrowser {
-    /// Create a new file browser rooted at the given .workgraph directory.
+    /// Create a new file browser rooted at the given .wg directory.
     pub fn new(workgraph_dir: &Path) -> Self {
         let tree_items = build_tree(workgraph_dir);
         let mut tree_state = TreeState::default();

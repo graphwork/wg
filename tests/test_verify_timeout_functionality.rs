@@ -8,7 +8,7 @@ use workgraph::parser::load_graph;
 
 /// Helper to load a workgraph from a directory (mimics load_workgraph)
 fn load_workgraph(dir: &Path) -> Result<(WorkGraph, std::path::PathBuf)> {
-    let graph_path = dir.join(".workgraph").join("graph.jsonl");
+    let graph_path = dir.join(".wg").join("graph.jsonl");
     if !graph_path.exists() {
         anyhow::bail!("Workgraph not initialized. Run 'wg init' first.");
     }

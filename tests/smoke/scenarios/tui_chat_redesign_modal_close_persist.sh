@@ -65,7 +65,7 @@ cd "$scratch"
 
 # Unset any inherited WG_DIR from a parent agent invocation. Otherwise
 # `wg init` and `wg chat create` operate on the parent project's
-# .workgraph dir instead of our scratch dir, hitting the chat cap or
+# .wg dir instead of our scratch dir, hitting the chat cap or
 # corrupting the parent graph. (`unset -v` intentional, it is safe even
 # if the var is not set.)
 unset WG_DIR
@@ -82,14 +82,14 @@ if ! wg init --executor claude >init.log 2>&1; then
 fi
 
 graph_dir=""
-for cand in .wg .workgraph; do
+for cand in .wg .wg; do
     if [[ -d "$scratch/$cand" ]]; then
         graph_dir="$scratch/$cand"
         break
     fi
 done
 if [[ -z "$graph_dir" ]]; then
-    loud_fail "no .wg/ or .workgraph/ directory after init"
+    loud_fail "no .wg/ or .wg/ directory after init"
 fi
 
 # Start the dispatcher so `wg tui` has live state to display.

@@ -13557,7 +13557,7 @@ mod tests {
         graph.add_node(Node::Task(regular));
 
         let tmp = tempfile::tempdir().unwrap();
-        let wg_dir = tmp.path().join(".workgraph");
+        let wg_dir = tmp.path().join(".wg");
         std::fs::create_dir_all(&wg_dir).unwrap();
         save_graph(&graph, &wg_dir.join("graph.jsonl")).unwrap();
         // Unknown executor so auto-PTY doesn't fire during the test render.
@@ -13777,7 +13777,7 @@ mod tests {
         graph.add_node(Node::Task(task));
 
         let tmp = tempfile::tempdir().unwrap();
-        let wg_dir = tmp.path().join(".workgraph");
+        let wg_dir = tmp.path().join(".wg");
         std::fs::create_dir_all(&wg_dir).unwrap();
         save_graph(&graph, &wg_dir.join("graph.jsonl")).unwrap();
         std::fs::write(
@@ -16246,7 +16246,7 @@ mod tests {
         use crate::tui::viz_viewer::state::VizApp;
         use workgraph::parser::save_graph;
         let tmp = tempfile::tempdir().unwrap();
-        let wg_dir = tmp.path().join(".workgraph");
+        let wg_dir = tmp.path().join(".wg");
         std::fs::create_dir_all(&wg_dir).unwrap();
         save_graph(&WorkGraph::new(), &wg_dir.join("graph.jsonl")).unwrap();
         std::fs::write(

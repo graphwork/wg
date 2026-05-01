@@ -542,7 +542,7 @@ fn smoke_context_management_openrouter() {
         .expect("OPENROUTER_API_KEY must be set for this smoke test");
 
     let tmp = TempDir::new().unwrap();
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
 
     wg_ok(&wg_dir, &["init"]);
     wg_ok(&wg_dir, &["agency", "init"]);

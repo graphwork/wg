@@ -1,6 +1,6 @@
 //! Operation log with zstd-compressed rotation.
 //!
-//! Appends structured JSON operations to `.workgraph/log/operations.jsonl`.
+//! Appends structured JSON operations to `.wg/log/operations.jsonl`.
 //! When the file exceeds a configurable threshold (default 10 MB), the current
 //! file is compressed with zstd and renamed to `<UTC-timestamp>.jsonl.zst`,
 //! and a fresh `operations.jsonl` is started.
@@ -31,7 +31,7 @@ pub struct OperationEntry {
     pub detail: serde_json::Value,
 }
 
-/// Return the log directory: `.workgraph/log/`
+/// Return the log directory: `.wg/log/`
 pub fn log_dir(workgraph_dir: &Path) -> PathBuf {
     workgraph_dir.join("log")
 }
@@ -198,7 +198,7 @@ mod tests {
     #[test]
     fn test_append_creates_file_and_dir() {
         let tmp = TempDir::new().unwrap();
-        let dir = tmp.path().join(".workgraph");
+        let dir = tmp.path().join(".wg");
 
         let entry = make_entry("add_task", Some("t1"));
         append_operation(&dir, &entry, DEFAULT_ROTATION_THRESHOLD).unwrap();
@@ -213,7 +213,7 @@ mod tests {
     #[test]
     fn test_rotation_triggers_at_threshold() {
         let tmp = TempDir::new().unwrap();
-        let dir = tmp.path().join(".workgraph");
+        let dir = tmp.path().join(".wg");
 
         // Use a tiny threshold so rotation happens quickly.
         let threshold = 100u64;
@@ -241,7 +241,7 @@ mod tests {
     #[test]
     fn test_compressed_files_are_valid_zstd() {
         let tmp = TempDir::new().unwrap();
-        let dir = tmp.path().join(".workgraph");
+        let dir = tmp.path().join(".wg");
 
         let threshold = 50u64;
         for i in 0..20 {
@@ -279,7 +279,7 @@ mod tests {
     #[test]
     fn test_read_across_rotated_files() {
         let tmp = TempDir::new().unwrap();
-        let dir = tmp.path().join(".workgraph");
+        let dir = tmp.path().join(".wg");
 
         let threshold = 80u64;
         let total = 30;
@@ -308,7 +308,7 @@ mod tests {
     #[test]
     fn test_read_empty_log() {
         let tmp = TempDir::new().unwrap();
-        let dir = tmp.path().join(".workgraph");
+        let dir = tmp.path().join(".wg");
 
         let all = read_all_operations(&dir).unwrap();
         assert!(all.is_empty());
@@ -317,7 +317,7 @@ mod tests {
     #[test]
     fn test_read_only_current_no_rotated() {
         let tmp = TempDir::new().unwrap();
-        let dir = tmp.path().join(".workgraph");
+        let dir = tmp.path().join(".wg");
 
         // Write a few entries, no rotation.
         for i in 0..3 {
@@ -332,7 +332,7 @@ mod tests {
     #[test]
     fn test_record_includes_user_field() {
         let tmp = TempDir::new().unwrap();
-        let dir = tmp.path().join(".workgraph");
+        let dir = tmp.path().join(".wg");
 
         unsafe {
             let orig = std::env::var("WG_USER").ok();

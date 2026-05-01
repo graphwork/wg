@@ -138,7 +138,7 @@ fn create_bare_store_dirs(dir: &Path) {
 }
 
 fn create_project_store_dirs(dir: &Path) {
-    let agency = dir.join(".workgraph").join("agency");
+    let agency = dir.join(".wg").join("agency");
     std::fs::create_dir_all(agency.join("cache/roles")).unwrap();
     std::fs::create_dir_all(agency.join("primitives/tradeoffs")).unwrap();
     std::fs::create_dir_all(agency.join("cache/agents")).unwrap();
@@ -153,7 +153,7 @@ fn write_federation_config(wg_dir: &Path, config: &FederationConfig) {
 // 1. SCAN TESTS
 // ===========================================================================
 
-/// Scanning should find project stores with .workgraph/agency/roles/.
+/// Scanning should find project stores with .wg/agency/roles/.
 #[test]
 fn scan_finds_project_stores() {
     let tmp = TempDir::new().unwrap();
@@ -164,13 +164,13 @@ fn scan_finds_project_stores() {
     create_project_store_dirs(&proj_b);
 
     // Verify both project stores are individually valid
-    let store_a = LocalStore::new(proj_a.join(".workgraph").join("agency"));
-    let store_b = LocalStore::new(proj_b.join(".workgraph").join("agency"));
+    let store_a = LocalStore::new(proj_a.join(".wg").join("agency"));
+    let store_b = LocalStore::new(proj_b.join(".wg").join("agency"));
     assert!(store_a.is_valid());
     assert!(store_b.is_valid());
 }
 
-/// Scanning should find bare stores (agency/roles/ without .workgraph parent).
+/// Scanning should find bare stores (agency/roles/ without .wg parent).
 #[test]
 fn scan_finds_bare_stores() {
     let tmp = TempDir::new().unwrap();
@@ -199,7 +199,7 @@ fn resolve_store_finds_project() {
     let store = federation::resolve_store(tmp.path().to_str().unwrap()).unwrap();
     assert_eq!(
         store.store_path(),
-        tmp.path().join(".workgraph").join("agency")
+        tmp.path().join(".wg").join("agency")
     );
     assert!(store.is_valid());
 }
@@ -618,7 +618,7 @@ fn push_never_deletes_from_target() {
 #[test]
 fn remote_add_list_remove_lifecycle() {
     let tmp = TempDir::new().unwrap();
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     std::fs::create_dir_all(&wg_dir).unwrap();
 
     // Add
@@ -655,7 +655,7 @@ fn remote_add_list_remove_lifecycle() {
 #[test]
 fn remote_name_resolves_for_pull_push() {
     let tmp = TempDir::new().unwrap();
-    let wg_dir = tmp.path().join("project").join(".workgraph");
+    let wg_dir = tmp.path().join("project").join(".wg");
     std::fs::create_dir_all(&wg_dir).unwrap();
 
     let remote_store = setup_store(&tmp, "remote");
@@ -710,7 +710,7 @@ fn remote_show_entity_summary() {
 #[test]
 fn touch_remote_sync_updates_timestamp() {
     let tmp = TempDir::new().unwrap();
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     std::fs::create_dir_all(&wg_dir).unwrap();
 
     let mut config = FederationConfig::default();
@@ -1102,7 +1102,7 @@ fn transfer_from_empty_source_gives_empty_results() {
 #[test]
 fn federation_config_yaml_roundtrip() {
     let tmp = TempDir::new().unwrap();
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     std::fs::create_dir_all(&wg_dir).unwrap();
 
     let mut config = FederationConfig::default();
@@ -1145,7 +1145,7 @@ fn federation_config_yaml_roundtrip() {
 #[test]
 fn federation_config_missing_file_returns_default() {
     let tmp = TempDir::new().unwrap();
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     std::fs::create_dir_all(&wg_dir).unwrap();
 
     let config = federation::load_federation_config(&wg_dir).unwrap();
@@ -1373,27 +1373,27 @@ fn multiple_agents_shared_deps_added_once() {
 fn scan_max_depth_limits_discovery() {
     let tmp = TempDir::new().unwrap();
 
-    // Store at depth 1: root/shallow/.workgraph/agency/
+    // Store at depth 1: root/shallow/.wg/agency/
     let shallow = tmp.path().join("shallow");
     create_project_store_dirs(&shallow);
     // Add a role so it's not empty
-    let shallow_store = LocalStore::new(shallow.join(".workgraph").join("agency"));
+    let shallow_store = LocalStore::new(shallow.join(".wg").join("agency"));
     agency::init(shallow_store.store_path()).unwrap();
     shallow_store
         .save_role(&make_role("r-shallow", "shallow-role"))
         .unwrap();
 
-    // Store at depth 3: root/a/b/deep/.workgraph/agency/
+    // Store at depth 3: root/a/b/deep/.wg/agency/
     let deep = tmp.path().join("a").join("b").join("deep");
     create_project_store_dirs(&deep);
-    let deep_store = LocalStore::new(deep.join(".workgraph").join("agency"));
+    let deep_store = LocalStore::new(deep.join(".wg").join("agency"));
     agency::init(deep_store.store_path()).unwrap();
     deep_store
         .save_role(&make_role("r-deep", "deep-role"))
         .unwrap();
 
-    // With max_depth=3 (root/shallow/.workgraph = 2 levels), shallow is found
-    // but deep (root/a/b/deep/.workgraph = 4 levels) is not
+    // With max_depth=3 (root/shallow/.wg = 2 levels), shallow is found
+    // but deep (root/a/b/deep/.wg = 4 levels) is not
     // Verify via resolve: shallow store should be valid, deep should exist
     assert!(shallow_store.is_valid());
     assert!(deep_store.is_valid());
@@ -1562,7 +1562,7 @@ fn force_with_no_performance_keeps_target_perf() {
 #[test]
 fn multiple_remotes_coexist() {
     let tmp = TempDir::new().unwrap();
-    let wg_dir = tmp.path().join("project").join(".workgraph");
+    let wg_dir = tmp.path().join("project").join(".wg");
     std::fs::create_dir_all(&wg_dir).unwrap();
 
     let store_a = setup_store(&tmp, "team-a");
@@ -1606,7 +1606,7 @@ fn multiple_remotes_coexist() {
 #[test]
 fn remote_removal_isolates_others() {
     let tmp = TempDir::new().unwrap();
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     std::fs::create_dir_all(&wg_dir).unwrap();
 
     let mut config = FederationConfig::default();
@@ -1833,13 +1833,13 @@ fn scan_cli_finds_multiple_stores_json() {
     // Create two project stores with entities
     let proj_a = tmp.path().join("alpha");
     create_project_store_dirs(&proj_a);
-    let store_a = LocalStore::new(proj_a.join(".workgraph").join("agency"));
+    let store_a = LocalStore::new(proj_a.join(".wg").join("agency"));
     agency::init(store_a.store_path()).unwrap();
     store_a.save_role(&make_role("r1", "role-alpha")).unwrap();
 
     let proj_b = tmp.path().join("beta");
     create_project_store_dirs(&proj_b);
-    let store_b = LocalStore::new(proj_b.join(".workgraph").join("agency"));
+    let store_b = LocalStore::new(proj_b.join(".wg").join("agency"));
     agency::init(store_b.store_path()).unwrap();
     store_b.save_role(&make_role("r2", "role-beta")).unwrap();
     store_b
@@ -1865,7 +1865,7 @@ fn scan_mixed_bare_and_project_stores() {
     // Project store
     let proj = tmp.path().join("project");
     create_project_store_dirs(&proj);
-    let store_proj = LocalStore::new(proj.join(".workgraph").join("agency"));
+    let store_proj = LocalStore::new(proj.join(".wg").join("agency"));
     agency::init(store_proj.store_path()).unwrap();
     store_proj.save_role(&make_role("r1", "proj-role")).unwrap();
 

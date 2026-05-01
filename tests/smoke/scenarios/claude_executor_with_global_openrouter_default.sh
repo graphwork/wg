@@ -48,14 +48,14 @@ env HOME="$fake_home" XDG_CONFIG_HOME="$fake_home/.config" \
 
 # (a) Coordinator config must have executor=claude.
 config_path=""
-for cand in .wg .workgraph; do
+for cand in .wg .wg; do
     if [[ -f "$project/$cand/config.toml" ]]; then
         config_path="$project/$cand/config.toml"
         break
     fi
 done
 if [[ -z "$config_path" ]]; then
-    loud_fail "no config.toml under .wg/ or .workgraph/ after init"
+    loud_fail "no config.toml under .wg/ or .wg/ after init"
 fi
 if ! grep -qE 'executor\s*=\s*"claude"' "$config_path"; then
     loud_fail "config.toml does not declare executor=claude:\n$(cat "$config_path")"

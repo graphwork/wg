@@ -224,7 +224,7 @@ pub fn run_login(dir: &Path) -> Result<()> {
 
         if let Some(user_id) = client.user_id() {
             println!("Logged in as {}", user_id);
-            println!("Access token cached in .workgraph/matrix/");
+            println!("Access token cached in .wg/matrix/");
         }
 
         Ok(())

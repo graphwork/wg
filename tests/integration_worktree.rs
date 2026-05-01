@@ -255,7 +255,7 @@ fn test_cleanup_orphaned_worktrees_skips_live_agents() {
     std::fs::create_dir_all(&project).expect("Failed to create project dir");
     init_test_repo(&project);
 
-    let wg_dir = project.join(".workgraph");
+    let wg_dir = project.join(".wg");
     std::fs::create_dir_all(wg_dir.join("service")).expect("Failed to create service dir");
 
     let worktree_dir = create_test_worktree(&project, "agent-1");
@@ -298,7 +298,7 @@ fn test_cleanup_orphaned_worktrees_removes_dead_agents() {
     std::fs::create_dir_all(&project).expect("Failed to create project dir");
     init_test_repo(&project);
 
-    let wg_dir = project.join(".workgraph");
+    let wg_dir = project.join(".wg");
     std::fs::create_dir_all(wg_dir.join("service")).expect("Failed to create service dir");
 
     // Force the default branch to "main" so the merge-into-main retention check
@@ -380,7 +380,7 @@ fn test_cleanup_orphaned_worktrees_preserves_unfinished_work() {
     std::fs::create_dir_all(&project).expect("Failed to create project dir");
     init_test_repo(&project);
 
-    let wg_dir = project.join(".workgraph");
+    let wg_dir = project.join(".wg");
     std::fs::create_dir_all(wg_dir.join("service")).expect("Failed to create service dir");
 
     let worktree_dir = create_test_worktree(&project, "agent-crashed");

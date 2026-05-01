@@ -8028,7 +8028,7 @@ mod chat_tab_navigation_tests {
         graph.add_node(Node::Task(regular));
 
         let tmp = tempfile::tempdir().unwrap();
-        let wg_dir = tmp.path().join(".workgraph");
+        let wg_dir = tmp.path().join(".wg");
         std::fs::create_dir_all(&wg_dir).unwrap();
         let graph_path = wg_dir.join("graph.jsonl");
         save_graph(&graph, &graph_path).unwrap();
@@ -9513,7 +9513,7 @@ mod chat_open_tests {
         graph.add_node(Node::Task(regular));
 
         let tmp = tempfile::tempdir().unwrap();
-        let wg_dir = tmp.path().join(".workgraph");
+        let wg_dir = tmp.path().join(".wg");
         std::fs::create_dir_all(&wg_dir).unwrap();
         let graph_path = wg_dir.join("graph.jsonl");
         save_graph(&graph, &graph_path).unwrap();

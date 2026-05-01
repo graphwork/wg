@@ -26,22 +26,22 @@ trap 'rm -rf "$WORK" "$OUTDIR"' EXIT
 cd "$WORK"
 # `init --route claude-cli` is the offline-friendly path used by sibling html
 # scenarios — it never reaches the network.
-wg --dir .workgraph init --route claude-cli >/dev/null 2>&1 || true
+wg --dir .wg init --route claude-cli >/dev/null 2>&1 || true
 
-wg --dir .workgraph add 'task with msg'   --id msg-task-a -d 'a' >/dev/null
-wg --dir .workgraph add 'task without msg' --id msg-task-b -d 'b' >/dev/null
-wg --dir .workgraph add 'task with reply' --id msg-task-c -d 'c' >/dev/null
+wg --dir .wg add 'task with msg'   --id msg-task-a -d 'a' >/dev/null
+wg --dir .wg add 'task without msg' --id msg-task-b -d 'b' >/dev/null
+wg --dir .wg add 'task with reply' --id msg-task-c -d 'c' >/dev/null
 
 # Auto-detect logic in `wg msg send` rewrites `--from user` to `$WG_TASK_ID`
 # when present — strip it so the senders end up where we want.
 unset WG_TASK_ID
 
-wg --dir .workgraph msg send msg-task-a 'hello there'   >/dev/null
-wg --dir .workgraph msg send msg-task-a 'second one'    >/dev/null
-wg --dir .workgraph msg send msg-task-c 'inbound'         --from agent-x      >/dev/null
-wg --dir .workgraph msg send msg-task-c 'outbound reply'  --from coordinator  >/dev/null
+wg --dir .wg msg send msg-task-a 'hello there'   >/dev/null
+wg --dir .wg msg send msg-task-a 'second one'    >/dev/null
+wg --dir .wg msg send msg-task-c 'inbound'         --from agent-x      >/dev/null
+wg --dir .wg msg send msg-task-c 'outbound reply'  --from coordinator  >/dev/null
 
-wg --dir .workgraph html --out "$OUTDIR" --all >/dev/null 2>&1
+wg --dir .wg html --out "$OUTDIR" --all >/dev/null 2>&1
 
 INDEX="$OUTDIR/index.html"
 CSS="$OUTDIR/style.css"

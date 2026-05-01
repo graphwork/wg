@@ -2968,7 +2968,7 @@ mod tests {
         use tempfile::TempDir;
 
         let tmp = TempDir::new().unwrap();
-        let dir = tmp.path().join(".workgraph");
+        let dir = tmp.path().join(".wg");
         std::fs::create_dir_all(&dir).unwrap();
 
         let mut graph = WorkGraph::new();

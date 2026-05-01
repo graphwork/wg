@@ -64,7 +64,7 @@ fn resolve_skill_file_tilde_expansion() {
         }
     };
 
-    let test_file = home.join(".workgraph-test-tilde-skill.md");
+    let test_file = home.join(".wg-test-tilde-skill.md");
     std::fs::write(&test_file, "tilde resolved content").unwrap();
 
     // Clean up on panic via drop guard
@@ -76,9 +76,9 @@ fn resolve_skill_file_tilde_expansion() {
     }
     let _guard = Cleanup(test_file.clone());
 
-    let skill = ContentRef::File(PathBuf::from("~/.workgraph-test-tilde-skill.md"));
+    let skill = ContentRef::File(PathBuf::from("~/.wg-test-tilde-skill.md"));
     let resolved = agency::resolve_skill(&skill, Path::new("/tmp")).unwrap();
-    assert_eq!(resolved.name, ".workgraph-test-tilde-skill");
+    assert_eq!(resolved.name, ".wg-test-tilde-skill");
     assert_eq!(resolved.content, "tilde resolved content");
 }
 

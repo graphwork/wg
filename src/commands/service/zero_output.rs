@@ -332,7 +332,7 @@ pub fn sweep_zero_output_agents(dir: &Path) -> ZeroOutputSweepResult {
             );
         }
         // Archive the killed agent's output BEFORE the task is reset, so the
-        // attempt is preserved in `.workgraph/log/agents/<task-id>/<timestamp>/`
+        // attempt is preserved in `.wg/log/agents/<task-id>/<timestamp>/`
         // and visible in the TUI iteration switcher. Without this, in-progress
         // tasks that get respawned after a stream-hang lose the killed
         // attempt's logs from iteration history. Best-effort — non-fatal.

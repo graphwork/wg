@@ -799,7 +799,7 @@ pub fn run(
 /// Add a task to a remote peer workgraph.
 ///
 /// Dispatch order (per §3.2 of cross-repo design doc):
-/// 1. Resolve peer to a .workgraph directory
+/// 1. Resolve peer to a .wg directory
 /// 2. If peer service is running → send AddTask IPC request
 /// 3. If not running → directly modify the peer's graph.jsonl
 /// 4. Print the created task ID with peer prefix
@@ -855,7 +855,7 @@ pub fn run_remote(
         );
     }
 
-    // Resolve peer reference to a concrete .workgraph directory
+    // Resolve peer reference to a concrete .wg directory
     let resolved = resolve_peer(peer_ref, local_workgraph_dir)?;
 
     // Build origin string for provenance
@@ -2070,7 +2070,7 @@ tier = "standard"
     #[test]
     fn test_add_with_exec_sets_shell_mode() {
         let dir = tempfile::TempDir::new().unwrap();
-        let wg_dir = dir.path().join(".workgraph");
+        let wg_dir = dir.path().join(".wg");
         std::fs::create_dir_all(&wg_dir).unwrap();
         let graph_path = wg_dir.join("graph.jsonl");
         save_graph(&WorkGraph::new(), &graph_path).unwrap();
@@ -2136,7 +2136,7 @@ tier = "standard"
     #[test]
     fn test_add_with_exec_respects_explicit_exec_mode() {
         let dir = tempfile::TempDir::new().unwrap();
-        let wg_dir = dir.path().join(".workgraph");
+        let wg_dir = dir.path().join(".wg");
         std::fs::create_dir_all(&wg_dir).unwrap();
         let graph_path = wg_dir.join("graph.jsonl");
         save_graph(&WorkGraph::new(), &graph_path).unwrap();
@@ -2202,7 +2202,7 @@ tier = "standard"
     #[test]
     fn test_add_with_timeout() {
         let dir = tempfile::TempDir::new().unwrap();
-        let wg_dir = dir.path().join(".workgraph");
+        let wg_dir = dir.path().join(".wg");
         std::fs::create_dir_all(&wg_dir).unwrap();
         let graph_path = wg_dir.join("graph.jsonl");
         save_graph(&WorkGraph::new(), &graph_path).unwrap();

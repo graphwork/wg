@@ -78,10 +78,10 @@ fn is_ready(wg_dir: &Path, id: &str) -> bool {
     output.contains(id)
 }
 
-/// Set up a fresh workgraph and return the .workgraph dir path.
+/// Set up a fresh workgraph and return the .wg dir path.
 fn setup() -> (TempDir, std::path::PathBuf) {
     let tmp = TempDir::new().unwrap();
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     wg_ok(&wg_dir, &["init"]);
     (tmp, wg_dir)
 }

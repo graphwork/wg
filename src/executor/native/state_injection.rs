@@ -76,7 +76,7 @@ impl DependencySnapshot {
 
 /// Collects dynamic state changes and formats them as ephemeral injections.
 pub struct StateInjector {
-    /// Path to the `.workgraph/` directory.
+    /// Path to the `.wg/` directory.
     workgraph_dir: PathBuf,
     /// Task this agent is working on.
     task_id: String,

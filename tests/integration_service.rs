@@ -101,9 +101,9 @@ fn wg_ok(wg_dir: &Path, args: &[&str]) -> String {
 
 /// Helper: initialize a fresh workgraph in a temp directory,
 /// and configure a shell executor with the correct working_dir
-/// so that the wrapper script's bare `wg` commands can find `.workgraph`.
+/// so that the wrapper script's bare `wg` commands can find `.wg`.
 fn setup_workgraph(tmp_root: &Path) -> PathBuf {
-    let wg_dir = tmp_root.join(".workgraph");
+    let wg_dir = tmp_root.join(".wg");
     wg_ok(&wg_dir, &["init"]);
 
     // Get the directory containing the test-built wg binary.
@@ -118,11 +118,11 @@ fn setup_workgraph(tmp_root: &Path) -> PathBuf {
 
     // Create a shell executor config with working_dir set to the tmp root.
     // This ensures the wrapper script runs with cwd = tmp_root, so bare `wg`
-    // commands (which default to .workgraph in cwd) find the right workgraph.
+    // commands (which default to .wg in cwd) find the right workgraph.
     // PATH is overridden to ensure the test binary is found first.
     // Disable auto_assign and auto_evaluate so the coordinator doesn't
     // create blocking assignment/evaluation tasks that the shell executor
-    // can't handle.  Without this, a global ~/.workgraph/config.toml with
+    // can't handle.  Without this, a global ~/.wg/config.toml with
     // auto_assign = true would cause every test task to be blocked behind an
     // unexecutable assign-* task.
     let config_content = "[agency]\nauto_assign = false\nauto_evaluate = false\n";

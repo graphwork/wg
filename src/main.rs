@@ -32,18 +32,19 @@ use cli::*;
 /// 2. **`WG_DIR` environment variable.** Second-highest — lets users
 ///    script `wg` commands against a specific graph without a flag.
 /// 3. **Project discovery.** Walk up from `cwd` looking for a
-///    `.workgraph` directory. If found, use it. This matches how
-///    `git` finds `.git`, `cargo` finds `Cargo.toml`, etc.
-/// 4. **Global fallback `~/.workgraph`.** If the user has a global
+///    workgraph directory. Prefer `.wg` (canonical), fall back to the
+///    legacy `.workgraph` name. This matches how `git` finds `.git`,
+///    `cargo` finds `Cargo.toml`, etc.
+/// 4. **Global fallback `~/.wg`.** If the user has a global
 ///    workgraph directory in their home, use it. This makes `wg nex`
-///    usable from any directory without littering `.workgraph` dirs
+///    usable from any directory without littering workgraph dirs
 ///    across the filesystem. Primarily for REPL-style interactive
 ///    commands; project-scoped commands (`wg add`, `wg done`, etc.)
 ///    will still fail-on-missing when they try to load the graph.
-/// 5. **Default `./.workgraph` in current directory.** Backward-
-///    compatible final fallback. Same as the old pre-resolver
-///    behavior — will error cleanly downstream if the directory
-///    doesn't exist and a graph-reading command is run.
+///    Legacy `~/.workgraph` is also accepted for back-compat.
+/// 5. **Default `./.wg` in current directory.** Final fallback —
+///    will error cleanly downstream if the directory doesn't exist
+///    and a graph-reading command is run.
 ///
 /// The resolver does NOT create any directories — it only locates
 /// one. Auto-creation is the responsibility of individual commands
@@ -144,7 +145,7 @@ mod resolver_tests {
     #[test]
     fn explicit_cli_flag_wins_over_everything() {
         let tmp = TempDir::new().unwrap();
-        let explicit = tmp.path().join("explicit/.workgraph");
+        let explicit = tmp.path().join("explicit/.wg");
         let result = resolve_workgraph_dir(
             Some(explicit.clone()),
             Some(PathBuf::from("/should/not/be/used")),
@@ -157,7 +158,7 @@ mod resolver_tests {
     #[test]
     fn wg_dir_env_var_wins_over_discovery_and_global() {
         let tmp = TempDir::new().unwrap();
-        let env = tmp.path().join("from-env/.workgraph");
+        let env = tmp.path().join("from-env/.wg");
         let result = resolve_workgraph_dir(
             None,
             Some(env.clone()),
@@ -195,11 +196,11 @@ mod resolver_tests {
     fn project_discovery_finds_legacy_workgraph_in_cwd() {
         let tmp = TempDir::new().unwrap();
         let project = tmp.path().join("project");
-        let wg = project.join(".workgraph");
-        std::fs::create_dir_all(&wg).unwrap();
+        let legacy = project.join(".workgraph");
+        std::fs::create_dir_all(&legacy).unwrap();
         let result =
             resolve_workgraph_dir(None, None, Some(project), Some(tmp.path().to_path_buf()));
-        assert_eq!(result, wg);
+        assert_eq!(result, legacy);
     }
 
     #[test]
@@ -518,7 +519,7 @@ fn print_help(dir: &Path, show_all: bool, alphabetical: bool) {
     }
 
     println!("\nOptions:");
-    println!("  -d, --dir <PATH>    Workgraph directory [default: .workgraph]");
+    println!("  -d, --dir <PATH>    Workgraph directory [default: .wg]");
     println!("  -h, --help          Print help (--help-all for all commands)");
     println!("      --alphabetical  Sort commands alphabetically");
     println!("      --json          Output as JSON");
@@ -715,7 +716,7 @@ fn main() -> Result<()> {
         dirs::home_dir(),
     );
 
-    // Auto-create the global fallback `~/.workgraph` for REPL-style
+    // Auto-create the global fallback `~/.wg` for REPL-style
     // commands that should Just Work from any directory. Project-
     // scoped commands (wg add, wg list, etc.) still require an
     // existing workgraph dir and will error cleanly downstream if
@@ -728,7 +729,7 @@ fn main() -> Result<()> {
     if is_repl_style
         && !workgraph_dir.exists()
         && let Some(home) = dirs::home_dir()
-        && workgraph_dir == home.join(".workgraph")
+        && workgraph_dir == home.join(".wg")
     {
         if let Err(e) = std::fs::create_dir_all(&workgraph_dir) {
             eprintln!(

@@ -9,7 +9,7 @@
 //!   wg service stop [--force]                                        # Stop the service daemon
 //!   wg service status                                                # Show service + coordinator state
 //!
-//! The daemon respects coordinator config from .workgraph/config.toml:
+//! The daemon respects coordinator config from .wg/config.toml:
 //!   [coordinator]
 //!   max_agents = 4       # Maximum parallel agents
 //!   poll_interval = 5    # Background safety-net poll interval (seconds)
@@ -250,7 +250,7 @@ struct DaemonLoggerInner {
 }
 
 impl DaemonLogger {
-    /// Open (or create) the log file at `.workgraph/service/daemon.log`.
+    /// Open (or create) the log file at `.wg/service/daemon.log`.
     pub fn open(dir: &Path) -> Result<Self> {
         let service_dir = dir.join("service");
         if !service_dir.exists() {
@@ -417,7 +417,7 @@ fn short_hash(hash: &[u8; 32]) -> String {
     hex::encode(&hash[..6])
 }
 
-/// Default socket path (project-specific, inside .workgraph dir)
+/// Default socket path (project-specific, inside .wg dir)
 pub fn default_socket_path(dir: &Path) -> PathBuf {
     dir.join("service").join("daemon.sock")
 }
@@ -865,7 +865,7 @@ WantedBy=default.target
 
     println!("Created systemd user service: {}", service_path.display());
     println!();
-    println!("Settings are read from .workgraph/config.toml");
+    println!("Settings are read from .wg/config.toml");
     println!("To change settings: wg config --max-agents N --interval N");
     println!();
     println!("To enable and start:");

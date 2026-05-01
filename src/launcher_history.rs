@@ -1,6 +1,6 @@
 //! Persistent history of (executor, model, endpoint) combinations used.
 //!
-//! Append-only JSONL at `~/.workgraph/launcher-history.jsonl`.
+//! Append-only JSONL at `~/.wg/launcher-history.jsonl`.
 //! Dedup on read: query API returns distinct recent combos, newest first.
 
 use anyhow::Result;
@@ -55,7 +55,7 @@ impl HistoryEntry {
 
 /// Path to the launcher history JSONL. Tests can override via the
 /// `WG_LAUNCHER_HISTORY_PATH` env var so they don't pollute the real
-/// `~/.workgraph/launcher-history.jsonl`.
+/// `~/.wg/launcher-history.jsonl`.
 fn history_path() -> Result<PathBuf> {
     if let Ok(p) = std::env::var("WG_LAUNCHER_HISTORY_PATH")
         && !p.is_empty()

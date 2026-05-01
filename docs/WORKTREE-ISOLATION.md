@@ -82,8 +82,8 @@ Coordinator spawns Agent X for task-id "implement-foo"
   ├─ 1. Create worktree:
   │     git worktree add .wg-worktrees/agent-{id} -b wg/{agent-id}/{task-id}
   │
-  ├─ 2. Symlink .workgraph:
-  │     ln -s /absolute/path/to/.wg .wg-worktrees/agent-{id}/.workgraph
+  ├─ 2. Symlink .wg:
+  │     ln -s /absolute/path/to/.wg .wg-worktrees/agent-{id}/.wg
   │
   ├─ 3. Set working_dir to worktree path
   │     Agent runs inside .wg-worktrees/agent-{id}/
@@ -149,7 +149,7 @@ Benefits:
 │  1. git worktree add .wg-worktrees/{agent-id}          │
 │     -b wg/{agent-id}/{task-id} HEAD                    │
 │  2. ln -s {abs}/.wg                                    │
-│     .wg-worktrees/{agent-id}/.workgraph                │
+│     .wg-worktrees/{agent-id}/.wg                │
 │  3. Set working_dir = .wg-worktrees/{agent-id}         │
 │  4. Launch agent process in that directory              │
 └───────────────────────┬─────────────────────────────────┘
@@ -162,7 +162,7 @@ Benefits:
 │  - Edits files (no interference with other agents)      │
 │  - Runs cargo build (own target/ directory)             │
 │  - Can commit to its branch                             │
-│  - wg commands use symlinked .workgraph (shared state)  │
+│  - wg commands use symlinked .wg (shared state)  │
 └───────────────────────┬─────────────────────────────────┘
                         │
                         ▼
@@ -369,7 +369,7 @@ The wrapper script and agent need these additional env vars:
 | `WG_BRANCH` | `wg/agent-42/implement-foo` | Agent's branch name |
 | `WG_PROJECT_ROOT` | `/home/erik/workgraph` | Main repo root (for merge-back) |
 
-## 6. The `.workgraph` Shared State Problem
+## 6. The `.wg` Shared State Problem
 
 ### 6.1 The Problem
 
@@ -383,14 +383,14 @@ The wrapper script and agent need these additional env vars:
 
 All agents must read/write the same task state. If each worktree has its own `.wg/`, changes are invisible to other agents and the coordinator.
 
-### 6.2 Solution: Symlink `.workgraph`
+### 6.2 Solution: Symlink `.wg`
 
-**Recommended approach:** Symlink `.workgraph` in each worktree to the main repo's `.wg/`:
+**Recommended approach:** Symlink `.wg` in each worktree to the main repo's `.wg/`:
 
 ```bash
 # During worktree creation:
 ln -s /home/erik/workgraph/.wg \
-      /home/erik/workgraph/.wg-worktrees/agent-42/.workgraph
+      /home/erik/workgraph/.wg-worktrees/agent-42/.wg
 ```
 
 This means:
@@ -409,7 +409,7 @@ Instead of symlinks, set `WG_DIR` pointing to the absolute path:
 export WG_DIR=/home/erik/workgraph/.wg
 ```
 
-This requires the `wg` CLI to check `WG_DIR` before searching for `.workgraph` in the current directory. Minor code change in `src/main.rs` where `workgraph_dir` is resolved.
+This requires the `wg` CLI to check `WG_DIR` before searching for `.wg` in the current directory. Minor code change in `src/main.rs` where `workgraph_dir` is resolved.
 
 **Assessment:** The symlink approach is simpler and requires no code changes to `wg` itself. The `WG_DIR` approach is more explicit but requires a code change. **Recommend symlink for v1, add `WG_DIR` support as a follow-up.**
 
@@ -513,7 +513,7 @@ cleanup_on_fail = true       # remove worktree on task failure
    - `create_agent_worktree(dir, agent_id, task_id) -> Result<PathBuf>`
    - `cleanup_agent_worktree(dir, agent_id) -> Result<()>`
    - `merge_agent_worktree(dir, agent_id, task_id, strategy) -> Result<MergeResult>`
-   - Handles: git worktree add, .workgraph symlink, optional target/ copy
+   - Handles: git worktree add, .wg symlink, optional target/ copy
 
 2. **Modify `src/commands/spawn/execution.rs`**
    - In `spawn_agent_inner()`: call `create_agent_worktree()` when isolation enabled
@@ -569,7 +569,7 @@ cleanup_on_fail = true       # remove worktree on task failure
 | Git operations fail (corrupt repo) | High | Low | Git worktree is mature and well-tested; we only use basic operations |
 | Agent creates files outside worktree | Medium | Low | `wg artifact` paths are relative; agent runs in worktree dir |
 | Concurrent graph.jsonl writes | Medium | Medium | Existing problem; orthogonal fix (file locking) |
-| `.workgraph` symlink issues on some filesystems | Low | Low | Fall back to `WG_DIR` env var if symlink fails |
+| `.wg` symlink issues on some filesystems | Low | Low | Fall back to `WG_DIR` env var if symlink fails |
 
 ### 9.2 Rollback Plan
 
@@ -623,7 +623,7 @@ wg add "Update .gitignore and docs" --after all -d "Add .wg-worktrees/ to .gitig
 | Location | `.claude/worktrees/<name>` | `.wg-worktrees/<agent-id>` |
 | Branch | `worktree-<name>` | `wg/<agent-id>/<task-id>` |
 | Merge-back | Manual (user decides) | Automatic (squash merge on completion) |
-| Shared state | None (independent session) | `.workgraph` symlinked |
+| Shared state | None (independent session) | `.wg` symlinked |
 | Cleanup | User prompted on exit | Automatic on task done/fail |
 | Conflict handling | None (no auto-merge) | Auto-retry on conflict |
 

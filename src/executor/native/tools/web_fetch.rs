@@ -64,7 +64,7 @@ const PREVIEW_LINES: usize = 20;
 static FETCH_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 /// Register the web_fetch tool. `workgraph_dir` is the root of the
-/// `.workgraph/` directory — fetched pages go under
+/// `.wg/` directory — fetched pages go under
 /// `<workgraph_dir>/nex-sessions/fetched-pages/`.
 pub fn register_web_fetch_tool(registry: &mut super::ToolRegistry, workgraph_dir: PathBuf) {
     registry.register(Box::new(WebFetchTool {

@@ -50,8 +50,8 @@ fn init_git_repo(path: &Path) {
 fn setup_workgraph_project(path: &Path) {
     init_git_repo(path);
 
-    // Create .workgraph directory structure
-    let wg_dir = path.join(".workgraph");
+    // Create .wg directory structure
+    let wg_dir = path.join(".wg");
     fs::create_dir_all(&wg_dir).unwrap();
     fs::create_dir_all(wg_dir.join("service")).unwrap();
     fs::create_dir_all(wg_dir.join("agents")).unwrap();
@@ -153,8 +153,8 @@ fn remove_test_worktree(
     worktree_path: &Path,
     branch: &str,
 ) -> Result<(), String> {
-    // Remove .workgraph symlink if it exists
-    let symlink_path = worktree_path.join(".workgraph");
+    // Remove .wg symlink if it exists
+    let symlink_path = worktree_path.join(".wg");
     if symlink_path.exists() {
         let _ = fs::remove_file(&symlink_path);
     }
@@ -194,8 +194,8 @@ fn test_concurrent_cleanup_attempts() {
     let project = temp.path().join("project");
     setup_workgraph_project(&project);
 
-    let agents_dir = project.join(".workgraph").join("agents");
-    let service_dir = project.join(".workgraph").join("service");
+    let agents_dir = project.join(".wg").join("agents");
+    let service_dir = project.join(".wg").join("service");
     let _registry_path = create_mock_registry(&service_dir);
 
     // Create multiple agents with worktrees
@@ -300,7 +300,7 @@ fn test_metadata_access_race_conditions() {
     let project = temp.path().join("project");
     setup_workgraph_project(&project);
 
-    let agent_dir = project.join(".workgraph").join("agents").join("test-agent");
+    let agent_dir = project.join(".wg").join("agents").join("test-agent");
     let metadata_path = agent_dir.join("metadata.json");
     let worktree_path = project.join(".wg-worktrees").join("test-agent");
 
@@ -414,8 +414,8 @@ fn test_agent_death_cleanup_race() {
     let project = temp.path().join("project");
     setup_workgraph_project(&project);
 
-    let agents_dir = project.join(".workgraph").join("agents");
-    let service_dir = project.join(".workgraph").join("service");
+    let agents_dir = project.join(".wg").join("agents");
+    let service_dir = project.join(".wg").join("service");
     let registry_path = create_mock_registry(&service_dir);
 
     let num_agents = 5;
@@ -571,8 +571,8 @@ fn test_service_restart_coordinator_race() {
     let project = temp.path().join("project");
     setup_workgraph_project(&project);
 
-    let _agents_dir = project.join(".workgraph").join("agents");
-    let service_dir = project.join(".workgraph").join("service");
+    let _agents_dir = project.join(".wg").join("agents");
+    let service_dir = project.join(".wg").join("service");
     let _registry_path = create_mock_registry(&service_dir);
 
     // Create "orphaned" worktrees from previous service run

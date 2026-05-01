@@ -8,7 +8,7 @@ use std::path::PathBuf;
 #[command(disable_help_flag = true)]
 #[command(disable_help_subcommand = true)]
 pub struct Cli {
-    /// Path to the workgraph directory (default: .workgraph in current dir)
+    /// Path to the workgraph directory (default: .wg in current dir; legacy .workgraph accepted)
     #[arg(long, global = true)]
     pub dir: Option<PathBuf>,
 
@@ -46,7 +46,7 @@ pub enum Commands {
         /// usage from arbitrary directories without littering workgraph
         /// dirs everywhere. Resolver precedence: --dir > $WG_DIR >
         /// project discovery (`.wg` preferred, legacy `.workgraph` accepted) >
-        /// global (`~/.wg` preferred) > ./.wg
+        /// global (`~/.wg` preferred, legacy `~/.workgraph` accepted) > ./.wg
         #[arg(long)]
         global: bool,
 
@@ -1304,7 +1304,7 @@ pub enum Commands {
         #[arg(long)]
         timeout: Option<u64>,
 
-        /// Attach a file (copied to .workgraph/attachments/)
+        /// Attach a file (copied to .wg/attachments/)
         #[arg(long)]
         attachment: Vec<String>,
 
@@ -1507,7 +1507,7 @@ pub enum Commands {
 
     /// Manage agent definitions (identity: role + tradeoff pairings)
     #[command(
-        after_help = "This command manages agent identity entities stored in .workgraph/agency/.\nEach agent definition pairs a role with a tradeoff profile.\n\nSee also: 'wg agents' to list running agent processes (service workers)."
+        after_help = "This command manages agent identity entities stored in .wg/agency/.\nEach agent definition pairs a role with a tradeoff profile.\n\nSee also: 'wg agents' to list running agent processes (service workers)."
     )]
     Agent {
         #[command(subcommand)]
@@ -1573,7 +1573,7 @@ pub enum Commands {
         #[arg(long)]
         init: bool,
 
-        /// Target global config (~/.workgraph/config.toml) instead of local
+        /// Target global config (~/.wg/config.toml) instead of local
         #[arg(long, conflicts_with = "local")]
         global: bool,
 
@@ -1864,7 +1864,7 @@ pub enum Commands {
         #[arg(long, name = "check-key")]
         check_key: bool,
 
-        /// Install project config as global default (~/.workgraph/config.toml)
+        /// Install project config as global default (~/.wg/config.toml)
         #[arg(long, name = "install-global")]
         install_global: bool,
 
@@ -1915,7 +1915,7 @@ pub enum Commands {
         #[arg(long)]
         purge: bool,
 
-        /// Also delete agent work directories (.workgraph/agents/<id>/) when purging
+        /// Also delete agent work directories (.wg/agents/<id>/) when purging
         #[arg(long, requires = "purge")]
         delete_dirs: bool,
 
@@ -2324,7 +2324,7 @@ pub enum Commands {
         resume: Option<String>,
 
         /// Load an agency role/skill by name to augment the session.
-        /// Searches `.workgraph/agency/primitives/components/` for a
+        /// Searches `.wg/agency/primitives/components/` for a
         /// matching component and appends its content to the system
         /// prompt. Use "coordinator" to enable workgraph management
         /// tools (wg_add, wg_done) which are otherwise stripped in
@@ -2775,7 +2775,7 @@ pub enum EndpointsCommands {
         #[arg(long)]
         default: bool,
 
-        /// Target global config (~/.workgraph/config.toml)
+        /// Target global config (~/.wg/config.toml)
         #[arg(long)]
         global: bool,
     },
@@ -2813,7 +2813,7 @@ pub enum EndpointsCommands {
         #[arg(long)]
         default: bool,
 
-        /// Target global config (~/.workgraph/config.toml)
+        /// Target global config (~/.wg/config.toml)
         #[arg(long)]
         global: bool,
     },
@@ -2823,7 +2823,7 @@ pub enum EndpointsCommands {
         /// Endpoint name to remove
         name: String,
 
-        /// Target global config (~/.workgraph/config.toml)
+        /// Target global config (~/.wg/config.toml)
         #[arg(long)]
         global: bool,
     },
@@ -2833,7 +2833,7 @@ pub enum EndpointsCommands {
         /// Endpoint name to set as default
         name: String,
 
-        /// Target global config (~/.workgraph/config.toml)
+        /// Target global config (~/.wg/config.toml)
         #[arg(long)]
         global: bool,
     },
@@ -2987,7 +2987,7 @@ pub enum ModelCommands {
         #[arg(long)]
         cost_out: Option<f64>,
 
-        /// Write to global config (~/.workgraph/config.toml)
+        /// Write to global config (~/.wg/config.toml)
         #[arg(long)]
         global: bool,
     },
@@ -3145,11 +3145,11 @@ pub enum KeyCommands {
         #[arg(long)]
         file: Option<String>,
 
-        /// Store key value directly (written to ~/.workgraph/keys/<provider>.key, NOT to config)
+        /// Store key value directly (written to ~/.wg/keys/<provider>.key, NOT to config)
         #[arg(long)]
         value: Option<String>,
 
-        /// Apply to global config (~/.workgraph/config.toml)
+        /// Apply to global config (~/.wg/config.toml)
         #[arg(long)]
         global: bool,
     },
@@ -3735,7 +3735,7 @@ pub enum FuncCommands {
         #[arg(long)]
         generative: bool,
 
-        /// Write to specific path instead of .workgraph/functions/<name>.yaml
+        /// Write to specific path instead of .wg/functions/<name>.yaml
         #[arg(long)]
         output: Option<String>,
 
@@ -3962,7 +3962,7 @@ pub enum AgencyCommands {
         #[arg(long)]
         force: bool,
 
-        /// Pull into ~/.workgraph/agency/ instead of local project
+        /// Pull into ~/.wg/agency/ instead of local project
         #[arg(long)]
         global: bool,
     },
@@ -4080,7 +4080,7 @@ pub enum AgencyCommands {
         #[arg(long)]
         force: bool,
 
-        /// Push from ~/.workgraph/agency/ instead of local project
+        /// Push from ~/.wg/agency/ instead of local project
         #[arg(long)]
         global: bool,
     },
@@ -4331,7 +4331,7 @@ pub enum PeerCommands {
         /// Peer name (used as shorthand reference)
         name: String,
 
-        /// Path to the peer project (containing .workgraph/)
+        /// Path to the peer project (containing .wg/)
         path: String,
 
         /// Description of this peer
@@ -4711,7 +4711,7 @@ pub enum MigrateCommands {
         #[arg(long, conflicts_with = "local")]
         global: bool,
 
-        /// Migrate the local project config (.workgraph/config.toml).
+        /// Migrate the local project config (.wg/config.toml).
         #[arg(long, conflicts_with = "global")]
         local: bool,
 
@@ -4795,7 +4795,7 @@ pub enum ServiceCommands {
         #[arg(long)]
         port: Option<u16>,
 
-        /// Unix socket path (default: .workgraph/service/daemon.sock)
+        /// Unix socket path (default: .wg/service/daemon.sock)
         #[arg(long)]
         socket: Option<String>,
 

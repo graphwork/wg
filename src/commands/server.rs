@@ -74,7 +74,7 @@ pub fn run(dir: &Path, opts: &ServerInitOpts) -> Result<()> {
     let wg_dir = dir.display();
     println!("\n## Directory permissions\n");
     actions.push(Action {
-        description: format!("Set .workgraph/ group to '{}' with mode 0770", group),
+        description: format!("Set .wg/ group to '{}' with mode 0770", group),
         command: Some(format!(
             "sudo chgrp -R {group} {wg_dir} && sudo chmod -R g+rwX {wg_dir} && sudo chmod 0770 {wg_dir}"
         )),
@@ -215,7 +215,7 @@ pub fn run(dir: &Path, opts: &ServerInitOpts) -> Result<()> {
 }
 
 fn detect_project_name(dir: &Path) -> String {
-    // Walk up from .workgraph dir to the project root
+    // Walk up from .wg dir to the project root
     dir.parent()
         .and_then(|p| p.file_name())
         .and_then(|n| n.to_str())
@@ -353,7 +353,7 @@ mod tests {
     #[test]
     fn test_dry_run_prints_without_executing() {
         let tmp = TempDir::new().unwrap();
-        let wg_dir = tmp.path().join(".workgraph");
+        let wg_dir = tmp.path().join(".wg");
         std::fs::create_dir_all(&wg_dir).unwrap();
         // Create a graph.jsonl so the file permission action triggers
         std::fs::write(wg_dir.join("graph.jsonl"), "").unwrap();
@@ -375,7 +375,7 @@ mod tests {
     #[test]
     fn test_detect_project_name() {
         let tmp = TempDir::new().unwrap();
-        let wg_dir = tmp.path().join("my-project").join(".workgraph");
+        let wg_dir = tmp.path().join("my-project").join(".wg");
         std::fs::create_dir_all(&wg_dir).unwrap();
 
         let name = detect_project_name(&wg_dir);
@@ -384,7 +384,7 @@ mod tests {
 
     #[test]
     fn test_generate_shell_snippet_sets_wg_user() {
-        let dir = Path::new("/home/test/my-project/.workgraph");
+        let dir = Path::new("/home/test/my-project/.wg");
         let snippet = generate_shell_snippet("alice", dir);
         assert!(snippet.contains(r#"export WG_USER="alice""#));
     }
@@ -424,7 +424,7 @@ mod tests {
     #[test]
     fn test_dry_run_with_ttyd_and_caddy() {
         let tmp = TempDir::new().unwrap();
-        let wg_dir = tmp.path().join(".workgraph");
+        let wg_dir = tmp.path().join(".wg");
         std::fs::create_dir_all(&wg_dir).unwrap();
 
         let opts = ServerInitOpts {

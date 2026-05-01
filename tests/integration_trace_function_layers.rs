@@ -943,11 +943,11 @@ fn layer3_v3_yaml_round_trip() {
 
 #[test]
 fn layer3_memory_dir_path() {
-    let wg = Path::new("/tmp/.workgraph");
+    let wg = Path::new("/tmp/.wg");
     let dir = function_memory::memory_dir(wg, "deploy-prod");
     assert_eq!(
         dir.to_str().unwrap(),
-        "/tmp/.workgraph/functions/deploy-prod.memory"
+        "/tmp/.wg/functions/deploy-prod.memory"
     );
 }
 

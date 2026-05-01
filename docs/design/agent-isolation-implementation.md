@@ -54,7 +54,7 @@ pub struct WorktreeInfo {
 /// Create a worktree for an agent.
 ///
 /// 1. git worktree add .wg-worktrees/<agent-id> -b wg/<agent-id>/<task-id> HEAD
-/// 2. Symlink .workgraph into the worktree
+/// 2. Symlink .wg into the worktree
 /// 3. Run worktree-setup.sh if it exists
 pub fn create_worktree(
     project_root: &Path,
@@ -79,12 +79,12 @@ pub fn create_worktree(
         anyhow::bail!("git worktree add failed: {}", stderr.trim());
     }
 
-    // Symlink .workgraph so wg CLI works from the worktree
+    // Symlink .wg so wg CLI works from the worktree
     let symlink_target = workgraph_dir.canonicalize()
-        .context("Failed to canonicalize .workgraph path")?;
-    let symlink_path = worktree_dir.join(".workgraph");
+        .context("Failed to canonicalize .wg path")?;
+    let symlink_path = worktree_dir.join(".wg");
     std::os::unix::fs::symlink(&symlink_target, &symlink_path)
-        .context("Failed to symlink .workgraph into worktree")?;
+        .context("Failed to symlink .wg into worktree")?;
 
     // Run worktree-setup.sh if it exists
     let setup_script = workgraph_dir.join("worktree-setup.sh");
@@ -107,7 +107,7 @@ pub fn create_worktree(
 /// Remove a worktree and its branch. Force-removes to discard uncommitted changes.
 pub fn remove_worktree(project_root: &Path, worktree_path: &Path, branch: &str) -> Result<()> {
     // Remove the symlink first (git worktree remove won't remove it)
-    let symlink_path = worktree_path.join(".workgraph");
+    let symlink_path = worktree_path.join(".wg");
     if symlink_path.exists() {
         let _ = std::fs::remove_file(&symlink_path);
     }
@@ -200,7 +200,7 @@ The `worktree_info` is also stored in the agent metadata JSON so cleanup can fin
 
 ### How the agent knows it's in a worktree
 
-The agent doesn't need to know. It works in its cwd as usual. The `wg` CLI works because `.workgraph` is symlinked. The env vars exist for the wrapper script and any tooling that needs to reference the main repo.
+The agent doesn't need to know. It works in its cwd as usual. The `wg` CLI works because `.wg` is symlinked. The env vars exist for the wrapper script and any tooling that needs to reference the main repo.
 
 ### Config addition
 
@@ -275,8 +275,8 @@ COMMITEOF
     fi
 
     # Always clean up the worktree, regardless of task outcome
-    # Remove .workgraph symlink first
-    rm -f "$WG_WORKTREE_PATH/.workgraph" 2>/dev/null
+    # Remove .wg symlink first
+    rm -f "$WG_WORKTREE_PATH/.wg" 2>/dev/null
     git -C "$WG_PROJECT_ROOT" worktree remove --force "$WG_WORKTREE_PATH" 2>/dev/null
     git -C "$WG_PROJECT_ROOT" branch -D "$WG_BRANCH" 2>/dev/null
     echo "[wrapper] Cleaned up worktree at $WG_WORKTREE_PATH" >> "$OUTPUT_FILE"
@@ -573,13 +573,13 @@ mod tests {
         Command::new("git").args(["add", "."]).current_dir(&project).output().unwrap();
         Command::new("git").args(["commit", "-m", "init"]).current_dir(&project).output().unwrap();
 
-        let wg_dir = project.join(".workgraph");
+        let wg_dir = project.join(".wg");
         std::fs::create_dir_all(&wg_dir).unwrap();
 
         let info = create_worktree(&project, &wg_dir, "agent-1", "task-foo").unwrap();
         assert!(info.path.exists());
         assert_eq!(info.branch, "wg/agent-1/task-foo");
-        assert!(info.path.join(".workgraph").exists()); // symlink
+        assert!(info.path.join(".wg").exists()); // symlink
         assert!(info.path.join("file.txt").exists()); // source checked out
 
         // Cleanup

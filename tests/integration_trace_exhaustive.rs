@@ -87,7 +87,7 @@ fn make_task(id: &str, title: &str, status: Status) -> Task {
 }
 
 fn setup_workgraph(tmp: &TempDir, tasks: Vec<Task>) -> PathBuf {
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     fs::create_dir_all(&wg_dir).unwrap();
     let graph_path = wg_dir.join("graph.jsonl");
     let mut graph = WorkGraph::new();
@@ -1004,8 +1004,8 @@ fn test_trace_turn_count_multiple_runs_summed() {
 #[test]
 fn test_trace_uninitialized_workgraph() {
     let tmp = TempDir::new().unwrap();
-    // Point at an empty dir with no .workgraph
-    let fake_dir = tmp.path().join(".workgraph");
+    // Point at an empty dir with no .wg
+    let fake_dir = tmp.path().join(".wg");
     // Don't create it — it shouldn't exist
     let output = wg_cmd(&fake_dir, &["trace", "show", "t1"]);
     assert!(

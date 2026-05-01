@@ -72,7 +72,7 @@ fn wg_ok(wg_dir: &Path, args: &[&str]) -> String {
 }
 
 fn init_workgraph(tmp: &TempDir) -> PathBuf {
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     wg_ok(&wg_dir, &["init"]);
     wg_dir
 }
@@ -411,7 +411,7 @@ fn coordinator_spawn_with_provider() {
     );
 
     // Set a dummy API key so the native coordinator can initialize its client.
-    // Override HOME so the global ~/.workgraph/config.toml (which may set executor
+    // Override HOME so the global ~/.wg/config.toml (which may set executor
     // explicitly) doesn't interfere with auto-detection.
     let fake_home = TempDir::new().unwrap();
     let env = [
@@ -580,7 +580,7 @@ fn executor_registry_default_command_is_claude() {
     // Test that the executor registry returns "claude" as the default command
     // when no custom config file exists
     let tmp = TempDir::new().unwrap();
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     fs::create_dir_all(&wg_dir).unwrap();
 
     let registry = workgraph::service::executor::ExecutorRegistry::new(&wg_dir);
@@ -598,9 +598,9 @@ fn executor_registry_default_command_is_claude() {
 
 #[test]
 fn executor_registry_custom_toml_overrides_command() {
-    // Test that a custom .workgraph/executors/claude.toml overrides the default
+    // Test that a custom .wg/executors/claude.toml overrides the default
     let tmp = TempDir::new().unwrap();
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     let executors_dir = wg_dir.join("executors");
     fs::create_dir_all(&executors_dir).unwrap();
 

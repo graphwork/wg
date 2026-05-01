@@ -221,7 +221,7 @@ pub fn run(dir: &Path, dry_run: bool, reap_targets: bool, json: bool) -> Result<
     }
 
     // Archive each orphaned agent's output BEFORE unclaiming the task, so
-    // the attempt is preserved in `.workgraph/log/agents/<task-id>/<timestamp>/`
+    // the attempt is preserved in `.wg/log/agents/<task-id>/<timestamp>/`
     // and visible in the TUI iteration switcher. Without this, an in-progress
     // task that gets respawned via sweep loses prior attempts from the
     // iteration history. Best-effort — failures are non-fatal. Skip the
@@ -728,7 +728,7 @@ mod tests {
 
     /// Regression test for tui-cannot-view: when sweep unclaims an orphaned
     /// task, the now-dead agent's output.log must be archived to
-    /// `.workgraph/log/agents/<task-id>/<timestamp>/` so the TUI iteration
+    /// `.wg/log/agents/<task-id>/<timestamp>/` so the TUI iteration
     /// switcher can show that attempt.
     #[test]
     fn test_sweep_archives_orphaned_agent_for_iteration_history() {

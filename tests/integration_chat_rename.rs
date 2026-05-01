@@ -185,7 +185,7 @@ fn test_daemon_log_uses_dispatcher_terminology() {
 fn test_migration_chat_rename_renames_legacy_ids() {
     let tmp = TempDir::new().unwrap();
     let dir = tmp.path();
-    let workgraph_dir = dir.join(".workgraph");
+    let workgraph_dir = dir.join(".wg");
     std::fs::create_dir_all(&workgraph_dir).unwrap();
     let graph_path = workgraph_dir.join("graph.jsonl");
 

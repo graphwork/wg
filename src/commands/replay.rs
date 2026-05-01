@@ -252,7 +252,7 @@ pub fn run(dir: &Path, opts: &ReplayOptions, json: bool) -> Result<()> {
         println!("{}", serde_json::to_string_pretty(&output)?);
     } else {
         println!("Replay started: {}", run_id);
-        println!("  Snapshot saved to .workgraph/runs/{}/", run_id);
+        println!("  Snapshot saved to .wg/runs/{}/", run_id);
         if let Some(ref m) = opts.model {
             println!("  Model override: {}", m);
         }
@@ -360,7 +360,7 @@ mod tests {
 
     fn make_dir() -> (TempDir, std::path::PathBuf) {
         let tmp = TempDir::new().unwrap();
-        let dir = tmp.path().join(".workgraph");
+        let dir = tmp.path().join(".wg");
         (tmp, dir)
     }
 

@@ -71,11 +71,11 @@ fn wg_ok(wg_dir: &Path, args: &[&str]) -> String {
     stdout
 }
 
-/// Initialize a workgraph in a temp directory and return the .workgraph path.
+/// Initialize a workgraph in a temp directory and return the .wg path.
 fn init_wg() -> (TempDir, PathBuf) {
     let tmp = TempDir::new().unwrap();
     let project_root = tmp.path();
-    let wg_dir = project_root.join(".workgraph");
+    let wg_dir = project_root.join(".wg");
 
     // Initialize git repository (required for worktree creation)
     Command::new("git")

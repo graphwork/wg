@@ -37,7 +37,7 @@ Two-tier cleanup in `src/commands/service/worktree.rs`:
 
 ### Removal
 
-`remove_worktree()` (line 134): remove `.workgraph` symlink → remove `target/` → `git worktree remove --force` → `git branch -D`.
+`remove_worktree()` (line 134): remove `.wg` symlink → remove `target/` → `git worktree remove --force` → `git branch -D`.
 
 ## 2. Task Categories That Don't Need a Writable Worktree
 

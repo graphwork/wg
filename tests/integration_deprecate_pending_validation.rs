@@ -56,7 +56,7 @@ fn make_task(id: &str, status: Status) -> Task {
 }
 
 fn setup_workgraph(tmp: &TempDir, tasks: Vec<Task>) -> PathBuf {
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     std::fs::create_dir_all(&wg_dir).unwrap();
     let graph_path = wg_dir.join("graph.jsonl");
     let mut graph = WorkGraph::new();
@@ -213,7 +213,7 @@ fn test_no_routine_pending_validation_state() {
     // never in `PendingValidation`. We seed the graph directly with an
     // InProgress task and run `wg done`.
     let tmp = TempDir::new().unwrap();
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     std::fs::create_dir_all(&wg_dir).unwrap();
 
     let mut foo = make_task("foo", Status::InProgress);
@@ -345,7 +345,7 @@ fn test_rescue_count_field_persists() {
     use workgraph::parser::{load_graph, save_graph};
 
     let tmp = TempDir::new().unwrap();
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     std::fs::create_dir_all(&wg_dir).unwrap();
     let graph_path = wg_dir.join("graph.jsonl");
     let mut graph = WorkGraph::new();

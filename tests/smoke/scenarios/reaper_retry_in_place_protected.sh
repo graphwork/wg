@@ -53,11 +53,11 @@ wt_abs="$scratch/.wg-worktrees/agent-A"
 my_pid="$$"
 
 # Locate the workgraph directory `wg init` created. Tested fixture
-# layouts use `.wg` (newer init); fall back to `.workgraph` (older init).
+# layouts use `.wg` (newer init); fall back to `.wg` (older init).
 if [ -d .wg ]; then
     wg_dir=".wg"
-elif [ -d .workgraph ]; then
-    wg_dir=".workgraph"
+elif [ -d .wg ]; then
+    wg_dir=".wg"
 else
     loud_fail "could not find workgraph dir after init: $(ls -la)"
 fi

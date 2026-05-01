@@ -147,7 +147,7 @@ async fn run_first_session(wg_dir: &Path, task_id: &str, provider: MockProvider)
 #[tokio::test]
 async fn test_agent_resumes_from_journal() {
     let tmp = TempDir::new().unwrap();
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     setup_workgraph(&wg_dir);
 
     let task_id = "resume-basic";
@@ -265,7 +265,7 @@ async fn test_agent_resumes_from_journal() {
 #[tokio::test]
 async fn test_large_journal_compacted_on_resume() {
     let tmp = TempDir::new().unwrap();
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     setup_workgraph(&wg_dir);
 
     let task_id = "resume-compact";
@@ -377,7 +377,7 @@ async fn test_large_journal_compacted_on_resume() {
 #[tokio::test]
 async fn test_stale_tool_results_detected() {
     let tmp = TempDir::new().unwrap();
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     setup_workgraph(&wg_dir);
 
     let task_id = "resume-stale";
@@ -523,7 +523,7 @@ async fn test_stale_tool_results_detected() {
 #[tokio::test]
 async fn test_no_resume_flag_fresh_start() {
     let tmp = TempDir::new().unwrap();
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     setup_workgraph(&wg_dir);
 
     let task_id = "resume-disabled";
@@ -621,7 +621,7 @@ async fn test_no_resume_flag_fresh_start() {
 #[tokio::test]
 async fn test_kill_and_resume_integration() {
     let tmp = TempDir::new().unwrap();
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     setup_workgraph(&wg_dir);
 
     let task_id = "kill-resume";
@@ -736,7 +736,7 @@ async fn test_kill_and_resume_integration() {
 #[tokio::test]
 async fn test_resume_empty_journal() {
     let tmp = TempDir::new().unwrap();
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     setup_workgraph(&wg_dir);
 
     let task_id = "resume-empty";
@@ -781,7 +781,7 @@ async fn test_resume_empty_journal() {
 #[tokio::test]
 async fn test_resume_provider_agnostic() {
     let tmp = TempDir::new().unwrap();
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     setup_workgraph(&wg_dir);
 
     let task_id = "resume-agnostic";

@@ -361,7 +361,7 @@ struct App {
     /// The workgraph data
     graph: WorkGraph,
 
-    /// Path to .workgraph directory
+    /// Path to .wg directory
     workgraph_dir: PathBuf,
 
     /// Current view mode

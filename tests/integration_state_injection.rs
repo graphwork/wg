@@ -130,7 +130,7 @@ fn messages_contain_text(messages: &[Message], needle: &str) -> bool {
 #[tokio::test]
 async fn test_message_injection_appears_in_api_request() {
     let tmp = TempDir::new().unwrap();
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     setup_workgraph_with_task(&wg_dir, "inject-test", &[]);
 
     let task_id = "inject-test";
@@ -205,7 +205,7 @@ async fn test_message_injection_appears_in_api_request() {
 #[tokio::test]
 async fn test_graph_change_injection_appears_in_api_request() {
     let tmp = TempDir::new().unwrap();
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     setup_workgraph_with_task(&wg_dir, "graph-test", &[("dep-a", "in-progress")]);
 
     let task_id = "graph-test";
@@ -276,7 +276,7 @@ async fn test_graph_change_injection_appears_in_api_request() {
 #[tokio::test]
 async fn test_injections_are_ephemeral_not_in_journal() {
     let tmp = TempDir::new().unwrap();
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     setup_workgraph_with_task(&wg_dir, "ephemeral-test", &[]);
 
     let task_id = "ephemeral-test";
@@ -338,7 +338,7 @@ async fn test_injections_are_ephemeral_not_in_journal() {
 #[tokio::test]
 async fn test_message_injection_only_once() {
     let tmp = TempDir::new().unwrap();
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     setup_workgraph_with_task(&wg_dir, "once-test", &[]);
 
     let task_id = "once-test";
@@ -405,7 +405,7 @@ async fn test_message_injection_only_once() {
 #[tokio::test]
 async fn test_context_pressure_injection_in_api_request() {
     let tmp = TempDir::new().unwrap();
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     setup_workgraph_with_task(&wg_dir, "pressure-test", &[]);
 
     let task_id = "pressure-test";
@@ -499,7 +499,7 @@ async fn test_context_pressure_injection_in_api_request() {
 #[tokio::test]
 async fn test_graph_change_not_re_reported_integration() {
     let tmp = TempDir::new().unwrap();
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     setup_workgraph_with_task(&wg_dir, "staleness-test", &[("dep-a", "in-progress")]);
 
     let task_id = "staleness-test";
@@ -591,7 +591,7 @@ async fn test_graph_change_not_re_reported_integration() {
 #[tokio::test]
 async fn test_combined_injection_in_api_request() {
     let tmp = TempDir::new().unwrap();
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     setup_workgraph_with_task(&wg_dir, "combined-test", &[("dep-a", "in-progress")]);
 
     let task_id = "combined-test";
@@ -671,7 +671,7 @@ async fn test_ephemeral_across_multiple_turns_with_journal() {
     }
 
     let tmp = TempDir::new().unwrap();
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     setup_workgraph_with_task(&wg_dir, "multi-ephemeral", &[("dep-a", "in-progress")]);
 
     let task_id = "multi-ephemeral";

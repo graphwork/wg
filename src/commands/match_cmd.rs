@@ -24,7 +24,7 @@ pub fn run(dir: &Path, task_id: &str, json: bool) -> Result<()> {
 
     let required_skills: std::collections::HashSet<_> = task.skills.iter().collect();
 
-    // Load agents from .workgraph/agency/agents/
+    // Load agents from .wg/agency/agents/
     let agents_dir = dir.join("agency").join("cache/agents");
     let agents = agency::load_all_agents(&agents_dir).context("Failed to load agents")?;
 

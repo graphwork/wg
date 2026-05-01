@@ -3,7 +3,7 @@
 //! Distinct from the graph-level compactor (`compactor.rs`), this operates on
 //! the chat history (inbox + outbox) for a single coordinator.
 //!
-//! Produces `.workgraph/chat/<coordinator-id>/context-summary.md` with:
+//! Produces `.wg/chat/<coordinator-id>/context-summary.md` with:
 //! - Key decisions made (scaled to model context window)
 //! - Open threads / pending items (scaled to model context window)
 //! - User preferences expressed (scaled to model context window)
@@ -312,7 +312,7 @@ mod tests {
 
     fn setup() -> (TempDir, PathBuf) {
         let tmp = TempDir::new().unwrap();
-        let wg_dir = tmp.path().join(".workgraph");
+        let wg_dir = tmp.path().join(".wg");
         fs::create_dir_all(&wg_dir).unwrap();
         (tmp, wg_dir)
     }

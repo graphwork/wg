@@ -11,7 +11,7 @@ This document analyzes how worktrees are currently created, managed, and cleaned
 - Key steps:
   1. Create a new git branch named `wg/{agent_id}/{task_id}` from HEAD
   2. Create worktree directory at `.wg-worktrees/{agent_id}`
-  3. Symlink `.workgraph` into the worktree so CLI works from there
+  3. Symlink `.wg` into the worktree so CLI works from there
   4. Run `worktree-setup.sh` if it exists (best-effort)
 
 ### Key function: `create_worktree()`

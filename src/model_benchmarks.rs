@@ -1,7 +1,7 @@
 //! Model benchmark registry with fitness scoring.
 //!
 //! Stores benchmark data, pricing, and computed fitness scores fetched from
-//! the OpenRouter API. Lives in `.workgraph/model_benchmarks.json` as a
+//! the OpenRouter API. Lives in `.wg/model_benchmarks.json` as a
 //! machine-managed sidecar to the static `models.yaml` catalog.
 //!
 //! See `docs/plans/model-registry-and-update-trace.md` for the full design.
@@ -136,7 +136,7 @@ pub struct FitnessComponents {
 // ── Loading / Saving ────────────────────────────────────────────────────
 
 impl BenchmarkRegistry {
-    /// Load the benchmark registry from `.workgraph/model_benchmarks.json`.
+    /// Load the benchmark registry from `.wg/model_benchmarks.json`.
     /// Returns `None` if the file doesn't exist.
     pub fn load(workgraph_dir: &Path) -> Result<Option<Self>> {
         let path = workgraph_dir.join(BENCHMARKS_FILE);
@@ -150,7 +150,7 @@ impl BenchmarkRegistry {
         Ok(Some(registry))
     }
 
-    /// Save the benchmark registry to `.workgraph/model_benchmarks.json`.
+    /// Save the benchmark registry to `.wg/model_benchmarks.json`.
     pub fn save(&self, workgraph_dir: &Path) -> Result<()> {
         let path = workgraph_dir.join(BENCHMARKS_FILE);
         let content =

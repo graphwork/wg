@@ -1,7 +1,7 @@
 //! Tests for edit_file edge cases and failure scenarios.
 //!
 //! This test module reproduces and prevents common edit_file failures identified
-//! in the investigation report (.workgraph/reports/edit-tool-investigation.md).
+//! in the investigation report (.wg/reports/edit-tool-investigation.md).
 //!
 //! Key findings from investigation:
 //! - The edit_file tool requires EXACT byte-for-byte matching

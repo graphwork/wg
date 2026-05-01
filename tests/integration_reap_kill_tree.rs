@@ -70,9 +70,9 @@ fn make_task(id: &str, title: &str, status: Status) -> Task {
     }
 }
 
-/// Create the .workgraph directory with a graph and return its path.
+/// Create the .wg directory with a graph and return its path.
 fn setup_workgraph(tmp: &TempDir, tasks: Vec<Task>) -> PathBuf {
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     std::fs::create_dir_all(&wg_dir).unwrap();
     let graph_path = wg_dir.join("graph.jsonl");
     let mut graph = WorkGraph::new();

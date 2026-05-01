@@ -24,7 +24,7 @@ use workgraph::config::Config;
 
 fn bootstrap_agency() -> (TempDir, std::path::PathBuf) {
     let tmp = TempDir::new().unwrap();
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     std::fs::create_dir_all(&wg_dir).unwrap();
 
     let agency_dir = wg_dir.join("agency");

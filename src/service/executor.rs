@@ -1,7 +1,7 @@
 //! Executor configuration system for spawning agents.
 //!
 //! Provides configuration loading and template variable substitution for
-//! executor configs stored in `.workgraph/executors/<name>.toml`.
+//! executor configs stored in `.wg/executors/<name>.toml`.
 
 use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize};
@@ -718,7 +718,7 @@ back to `bash: wg add --subtask ...` or `bash: wg add --cron ...`.
 ### Channeled tool outputs
 
 When any tool returns more than ~2KB, the full output is saved to \
-`.workgraph/agents/<agent-id>/tool-outputs/NNNNN.log` and replaced in your \
+`.wg/agents/<agent-id>/tool-outputs/NNNNN.log` and replaced in your \
 conversation with a compact handle plus a short preview. The raw bytes are always \
 on disk — do NOT re-fetch from the original source. To read more from a channeled \
 output, use either `read_file` with `offset`/`limit` on the handle path, or `bash` \
@@ -742,7 +742,7 @@ for text slicing (`sed -n 'A,Bp'`, `grep -n`, `wc -l`, `head`, `tail`).
 ///
 /// Injected into the prompt when the executor is non-Claude (native) so that models
 /// without CLAUDE.md context understand wg basics. Users can override this by placing
-/// a custom guide at `.workgraph/wg-guide.md`.
+/// a custom guide at `.wg/wg-guide.md`.
 pub const DEFAULT_WG_GUIDE: &str = "\
 **Workgraph (wg)** is a task coordination graph for AI agents. You are an agent \
 working on one task in this graph. Other agents work on other tasks concurrently.
@@ -1151,7 +1151,7 @@ impl TemplateVars {
 
         let working_dir = workgraph_dir
             .and_then(|d| {
-                // Canonicalize to resolve relative paths like ".workgraph"
+                // Canonicalize to resolve relative paths like ".wg"
                 // whose parent() would be "" instead of the actual directory.
                 let abs = d.canonicalize().ok()?;
                 abs.parent().map(|p| p.to_string_lossy().to_string())
@@ -1264,7 +1264,7 @@ impl TemplateVars {
             }
         };
 
-        // Resolve skills from the role, using the project root (parent of .workgraph/)
+        // Resolve skills from the role, using the project root (parent of .wg/)
         let workgraph_root = wg_dir.parent().unwrap_or(wg_dir);
         let resolved_skills = agency::resolve_all_components(&role, workgraph_root, &agency_dir);
         let outcome = agency::resolve_outcome(&role.outcome_id, &agency_dir);
@@ -1279,7 +1279,7 @@ impl TemplateVars {
     /// still get the skill-invocation discipline.
     fn resolve_skills_preamble(workgraph_dir: Option<&Path>) -> String {
         let project_root = match workgraph_dir.and_then(|d| {
-            // Canonicalize to handle relative paths like ".workgraph"
+            // Canonicalize to handle relative paths like ".wg"
             d.canonicalize()
                 .ok()
                 .and_then(|abs| abs.parent().map(std::path::Path::to_path_buf))
@@ -1344,7 +1344,7 @@ impl TemplateVars {
     }
 }
 
-/// Configuration for an executor, loaded from `.workgraph/executors/<name>.toml`.
+/// Configuration for an executor, loaded from `.wg/executors/<name>.toml`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExecutorConfig {
     /// The executor configuration section.
@@ -1499,7 +1499,7 @@ impl ExecutorRegistry {
                     env: HashMap::new(),
                     // No default template — built-in executors use scope-based
                     // build_prompt() assembly. Custom configs in
-                    // .workgraph/executors/*.toml can still define a template
+                    // .wg/executors/*.toml can still define a template
                     // to override this behavior.
                     prompt_template: None,
                     working_dir: Some("{{working_dir}}".to_string()),
@@ -1802,7 +1802,7 @@ template = "Work on {{task_id}}"
     #[test]
     fn test_executor_registry_init() {
         let temp_dir = TempDir::new().unwrap();
-        let workgraph_dir = temp_dir.path().join(".workgraph");
+        let workgraph_dir = temp_dir.path().join(".wg");
         fs::create_dir_all(&workgraph_dir).unwrap();
 
         let registry = ExecutorRegistry::new(&workgraph_dir);
@@ -1833,7 +1833,7 @@ template = "Work on {{task_id}}"
     #[test]
     fn test_template_vars_identity_resolved_from_agency() {
         let temp_dir = TempDir::new().unwrap();
-        let wg_dir = temp_dir.path().join(".workgraph");
+        let wg_dir = temp_dir.path().join(".wg");
         let roles_dir = wg_dir.join("agency").join("cache/roles");
         let motivations_dir = wg_dir.join("agency").join("primitives/tradeoffs");
         let agents_dir = wg_dir.join("agency").join("cache/agents");
@@ -1894,7 +1894,7 @@ template = "Work on {{task_id}}"
     #[test]
     fn test_template_vars_identity_missing_agent_fallback() {
         let temp_dir = TempDir::new().unwrap();
-        let wg_dir = temp_dir.path().join(".workgraph");
+        let wg_dir = temp_dir.path().join(".wg");
         let agents_dir = wg_dir.join("agency").join("cache/agents");
         fs::create_dir_all(&agents_dir).unwrap();
 
@@ -1922,7 +1922,7 @@ template = "Work on {{task_id}}"
     #[test]
     fn test_load_by_name_missing_config_file() {
         let temp_dir = TempDir::new().unwrap();
-        let wg_dir = temp_dir.path().join(".workgraph");
+        let wg_dir = temp_dir.path().join(".wg");
         fs::create_dir_all(wg_dir.join("executors")).unwrap();
 
         let result = ExecutorConfig::load_by_name(&wg_dir, "nonexistent");
@@ -1938,8 +1938,8 @@ template = "Work on {{task_id}}"
     #[test]
     fn test_load_by_name_missing_executors_directory() {
         let temp_dir = TempDir::new().unwrap();
-        // .workgraph exists but executors/ subdirectory does not
-        let wg_dir = temp_dir.path().join(".workgraph");
+        // .wg exists but executors/ subdirectory does not
+        let wg_dir = temp_dir.path().join(".wg");
         fs::create_dir_all(&wg_dir).unwrap();
 
         let result = ExecutorConfig::load_by_name(&wg_dir, "claude");
@@ -2100,13 +2100,13 @@ template = "Work on {{task_id}}"
     #[test]
     fn test_template_vars_working_dir_with_real_path() {
         let temp_dir = TempDir::new().unwrap();
-        let wg_dir = temp_dir.path().join(".workgraph");
+        let wg_dir = temp_dir.path().join(".wg");
         fs::create_dir_all(&wg_dir).unwrap();
 
         let task = make_test_task("task-1", "Test");
         let vars = TemplateVars::from_task(&task, None, Some(&wg_dir));
 
-        // working_dir should be the canonical parent of .workgraph
+        // working_dir should be the canonical parent of .wg
         let expected = temp_dir.path().canonicalize().unwrap();
         assert_eq!(vars.working_dir, expected.to_string_lossy().to_string());
     }
@@ -2164,7 +2164,7 @@ args = ["--custom-flag"]
     #[test]
     fn test_registry_init_idempotent() {
         let temp_dir = TempDir::new().unwrap();
-        let wg_dir = temp_dir.path().join(".workgraph");
+        let wg_dir = temp_dir.path().join(".wg");
         fs::create_dir_all(&wg_dir).unwrap();
 
         let registry = ExecutorRegistry::new(&wg_dir);
@@ -2334,7 +2334,7 @@ args = ["--custom-flag"]
     #[test]
     fn test_identity_agent_exists_but_role_missing() {
         let temp_dir = TempDir::new().unwrap();
-        let wg_dir = temp_dir.path().join(".workgraph");
+        let wg_dir = temp_dir.path().join(".wg");
         let roles_dir = wg_dir.join("agency").join("cache/roles");
         let motivations_dir = wg_dir.join("agency").join("primitives/tradeoffs");
         let agents_dir = wg_dir.join("agency").join("cache/agents");
@@ -2375,7 +2375,7 @@ args = ["--custom-flag"]
     #[test]
     fn test_skills_preamble_empty_when_no_skill_file() {
         let temp_dir = TempDir::new().unwrap();
-        let wg_dir = temp_dir.path().join(".workgraph");
+        let wg_dir = temp_dir.path().join(".wg");
         fs::create_dir_all(&wg_dir).unwrap();
 
         let task = make_test_task("task-1", "Test");
@@ -2386,7 +2386,7 @@ args = ["--custom-flag"]
     #[test]
     fn test_skills_preamble_loaded_when_skill_file_exists() {
         let temp_dir = TempDir::new().unwrap();
-        let wg_dir = temp_dir.path().join(".workgraph");
+        let wg_dir = temp_dir.path().join(".wg");
         fs::create_dir_all(&wg_dir).unwrap();
 
         // Create the skill file at project_root/.claude/skills/using-superpowers/SKILL.md
@@ -2414,7 +2414,7 @@ args = ["--custom-flag"]
     #[test]
     fn test_skills_preamble_strips_yaml_frontmatter() {
         let temp_dir = TempDir::new().unwrap();
-        let wg_dir = temp_dir.path().join(".workgraph");
+        let wg_dir = temp_dir.path().join(".wg");
         fs::create_dir_all(&wg_dir).unwrap();
 
         let skill_dir = temp_dir

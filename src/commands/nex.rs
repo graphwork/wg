@@ -179,7 +179,7 @@ pub fn run(
     // Load role/skill content from the agency primitives directory.
     // "coordinator" is a special-case role handled above (restores
     // wg tools). Other role names are looked up by fuzzy match
-    // against component names in .workgraph/agency/primitives/components/.
+    // against component names in .wg/agency/primitives/components/.
     let role_prompt_addendum = if let Some(role_name) = role {
         if is_coordinator {
             // Full coordinator prompt (~290 lines) — matches what the
@@ -379,7 +379,7 @@ pub fn run(
     // `chat/<ref>/conversation.jsonl` for persistence + auto-resume.
     // Eval mode skips the chat surface even though it's autonomous:
     // the benchmarked repo shouldn't get inbox.jsonl/outbox.jsonl/
-    // .streaming files written into its `.workgraph/chat/<alias>/`
+    // .streaming files written into its `.wg/chat/<alias>/`
     // directory (no attacher will ever read them, and some graders
     // diff the working tree). Explicit chat bindings still win.
     let mount_chat_surface = chat_ref.is_some() || chat_id.is_some() || (autonomous && !eval_mode);
@@ -656,7 +656,7 @@ fn record_nex_invocation(effective_model: &str, endpoint: Option<&str>, eval_mod
 }
 
 /// Load an agency role/skill component by name. Scans all YAML files
-/// in `.workgraph/agency/primitives/components/` for one whose `name`
+/// in `.wg/agency/primitives/components/` for one whose `name`
 /// field matches (case-insensitive substring match). Returns the
 /// `content` field as a string, or None if no match found.
 fn load_agency_role(workgraph_dir: &Path, role_name: &str) -> Option<String> {

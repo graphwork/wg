@@ -204,7 +204,7 @@ mod tests {
     use workgraph::agency::LocalStore;
 
     fn setup_workgraph_dir(tmp: &TempDir) -> std::path::PathBuf {
-        let wg_dir = tmp.path().join(".workgraph");
+        let wg_dir = tmp.path().join(".wg");
         std::fs::create_dir_all(&wg_dir).unwrap();
         wg_dir
     }

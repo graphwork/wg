@@ -16,12 +16,12 @@ OUTDIR=$(mktemp -d)
 trap 'rm -rf "$WORK" "$OUTDIR"' EXIT
 
 cd "$WORK"
-wg --dir .workgraph init --route claude-cli 2>/dev/null \
-    || wg --dir .workgraph init -m claude:opus 2>/dev/null \
+wg --dir .wg init --route claude-cli 2>/dev/null \
+    || wg --dir .wg init -m claude:opus 2>/dev/null \
     || true
 
 # Regular task with markdown description.
-wg --dir .workgraph add 'regular task' --id reg-smoke-html \
+wg --dir .wg add 'regular task' --id reg-smoke-html \
     -d '## Header
 
 - item one
@@ -33,12 +33,12 @@ fn main() {}
 
 # Chat task — .chat-N prefix marks it as a chat agent.
 # Inject a .chat-1 task directly into graph.jsonl (wg add doesn't create .chat-N ids).
-cat >> .workgraph/graph.jsonl <<'JSON'
+cat >> .wg/graph.jsonl <<'JSON'
 {"kind":"task","id":".chat-1","title":"Chat agent","status":"open","after":[],"tags":["chat-loop"],"visibility":"internal","created_at":"2026-01-01T00:00:00Z"}
 JSON
 
 # Render.
-wg --dir .workgraph html --out "$OUTDIR" 2>&1
+wg --dir .wg html --out "$OUTDIR" 2>&1
 
 INDEX="$OUTDIR/index.html"
 CSS="$OUTDIR/style.css"

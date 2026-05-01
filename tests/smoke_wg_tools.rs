@@ -24,7 +24,7 @@ use workgraph::parser::{load_graph, save_graph};
 /// Returns the path to the graph.jsonl file.
 fn setup_workgraph(dir: &Path) -> PathBuf {
     // Match the pattern from integration_native_executor.rs:
-    // graph.jsonl is created directly in dir, not in .workgraph subdirectory
+    // graph.jsonl is created directly in dir, not in .wg subdirectory
     let graph_path = dir.join("graph.jsonl");
     let graph = WorkGraph::new();
     save_graph(&graph, &graph_path).unwrap();
@@ -52,7 +52,7 @@ fn smoke_wg_tools_live() {
 
     let tmp = TempDir::new().unwrap();
     let wg_dir = tmp.path();
-    // setup_workgraph creates .workgraph/graph.jsonl
+    // setup_workgraph creates .wg/graph.jsonl
     let graph_path = setup_workgraph(wg_dir);
 
     let mut graph = WorkGraph::new();

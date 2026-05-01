@@ -52,9 +52,9 @@ fn init_git_repo(path: &Path) {
 fn setup_workgraph_project(path: &Path) {
     init_git_repo(path);
 
-    // Create .workgraph directory structure
-    let wg_dir = path.join(".workgraph");
-    fs::create_dir_all(&wg_dir).expect("Failed to create .workgraph dir");
+    // Create .wg directory structure
+    let wg_dir = path.join(".wg");
+    fs::create_dir_all(&wg_dir).expect("Failed to create .wg dir");
     fs::create_dir_all(wg_dir.join("service")).expect("Failed to create service dir");
     fs::create_dir_all(wg_dir.join("agents")).expect("Failed to create agents dir");
 
@@ -200,9 +200,9 @@ fn setup_previous_service_scenario(
         )
         .expect("Failed to write work file");
 
-        // Create .workgraph symlink (as agents would)
-        let wg_symlink = worktree_path.join(".workgraph");
-        let wg_target = project_root.join(".workgraph");
+        // Create .wg symlink (as agents would)
+        let wg_symlink = worktree_path.join(".wg");
+        let wg_target = project_root.join(".wg");
 
         // Create symlink on Unix systems
         #[cfg(unix)]
@@ -214,14 +214,14 @@ fn setup_previous_service_scenario(
         #[cfg(windows)]
         {
             fs::write(&wg_symlink, wg_target.to_string_lossy().as_bytes())
-                .expect("Failed to create .workgraph marker file");
+                .expect("Failed to create .wg marker file");
         }
 
         orphans.push((agent_id, task_id, worktree_path));
     }
 
     // Create registry with dead agents (simulating previous run aftermath)
-    let service_dir = project_root.join(".workgraph").join("service");
+    let service_dir = project_root.join(".wg").join("service");
     let dead_agents: Vec<(&str, u32, bool)> = orphans
         .iter()
         .map(|(agent_id, _, _)| (agent_id.as_str(), 12345, false)) // All dead
@@ -235,7 +235,7 @@ fn setup_previous_service_scenario(
 
 /// Simulate the orphan detection logic that would run during service startup
 fn detect_orphaned_worktrees(project_root: &Path) -> Result<Vec<String>, String> {
-    let service_dir = project_root.join(".workgraph").join("service");
+    let service_dir = project_root.join(".wg").join("service");
     let registry =
         AgentRegistry::load(&service_dir).map_err(|e| format!("Failed to load registry: {}", e))?;
 
@@ -274,11 +274,11 @@ fn simulate_cleanup_operations(project_root: &Path, agent_id: &str) -> Result<()
         return Ok(()); // Already cleaned
     }
 
-    // Remove .workgraph symlink/marker
-    let wg_marker = worktree_path.join(".workgraph");
+    // Remove .wg symlink/marker
+    let wg_marker = worktree_path.join(".wg");
     if wg_marker.exists() {
         fs::remove_file(&wg_marker)
-            .map_err(|e| format!("Failed to remove .workgraph marker: {}", e))?;
+            .map_err(|e| format!("Failed to remove .wg marker: {}", e))?;
     }
 
     // Remove target directory
@@ -341,7 +341,7 @@ fn test_service_restart_orphaned_cleanup() {
     for (agent_id, _, worktree_path) in &orphan_info {
         if worktree_path.exists() {
             assert!(
-                !worktree_path.join(".workgraph").exists(),
+                !worktree_path.join(".wg").exists(),
                 "Symlink should be removed from {}",
                 agent_id
             );
@@ -361,8 +361,8 @@ fn test_multiple_orphaned_agents_cleanup() {
     let project = temp.path().join("project");
     setup_workgraph_project(&project);
 
-    let service_dir = project.join(".workgraph").join("service");
-    let agents_dir = project.join(".workgraph").join("agents");
+    let service_dir = project.join(".wg").join("service");
+    let agents_dir = project.join(".wg").join("agents");
 
     // Create mixed scenario: some alive agents, some dead with worktrees
     let num_dead_with_worktrees = 5;
@@ -444,7 +444,7 @@ fn test_multiple_orphaned_agents_cleanup() {
     for (agent_id, _, worktree_path) in &dead_worktrees {
         if worktree_path.exists() {
             assert!(
-                !worktree_path.join(".workgraph").exists(),
+                !worktree_path.join(".wg").exists(),
                 "Dead agent {} symlink should be removed",
                 agent_id
             );
@@ -534,7 +534,7 @@ fn test_startup_coordinator_cleanup_integration() {
                 // Check if there's still anything to clean up
                 let worktree_path = project_clone.join(WORKTREES_DIR).join(agent_id);
                 if worktree_path.exists() {
-                    let has_symlink = worktree_path.join(".workgraph").exists();
+                    let has_symlink = worktree_path.join(".wg").exists();
                     let has_target = worktree_path.join("target").exists();
 
                     if has_symlink || has_target {
@@ -591,7 +591,7 @@ fn test_startup_coordinator_cleanup_integration() {
     for (_, _, worktree_path) in &orphan_info {
         if worktree_path.exists() {
             assert!(
-                !worktree_path.join(".workgraph").exists(),
+                !worktree_path.join(".wg").exists(),
                 "Worktree symlinks should be cleaned up after integration"
             );
 
@@ -636,7 +636,7 @@ fn test_large_scale_orphaned_cleanup() {
         }
 
         // All worktrees get agent metadata
-        let agents_dir = project.join(".workgraph").join("agents");
+        let agents_dir = project.join(".wg").join("agents");
         let agent_dir = agents_dir.join(agent_id);
         let task_id = format!("task-{}", i);
         create_agent_metadata(&agent_dir, agent_id, &task_id, worktree_path);
@@ -699,7 +699,7 @@ fn test_large_scale_orphaned_cleanup() {
         // Verify cleanup artifacts
         if worktree_path.exists() {
             assert!(
-                !worktree_path.join(".workgraph").exists(),
+                !worktree_path.join(".wg").exists(),
                 "Agent {} symlink should be removed",
                 agent_id
             );

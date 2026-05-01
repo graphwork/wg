@@ -13,7 +13,7 @@
 //! 3. Writes metadata on both tasks:
 //!    - target.log: "superseded by R (rescue from eval <eval-id>)"
 //!    - R.log:     "supersedes target (created from eval <eval-id>)"
-//! 4. Appends an `op: "rescue"` entry to `.workgraph/log/operations.jsonl`.
+//! 4. Appends an `op: "rescue"` entry to `.wg/log/operations.jsonl`.
 //! 5. Emits a dim stderr line for interactive visibility.
 //!
 //! Design invariants:

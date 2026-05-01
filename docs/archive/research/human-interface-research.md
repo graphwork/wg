@@ -497,7 +497,7 @@ export function activate(context: vscode.ExtensionContext) {
     statusBar.command = 'workgraph.ready';
     updateStatusBar(statusBar);
 
-    // File watcher for .workgraph changes
+    // File watcher for .wg changes
     const watcher = vscode.workspace.createFileSystemWatcher(
         '**/.wg/**'
     );

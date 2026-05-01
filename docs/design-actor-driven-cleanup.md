@@ -43,7 +43,7 @@ Gate 3 uses the same `is_terminal()` check — `Incomplete` and `PendingValidati
 
 - **`prune_stale_worktrees()`** (`worktree.rs:862-979`): Age-based pruning for worktrees of dead agents. Currently `#[allow(dead_code)]` — not wired into the coordinator.
 - **`CleanupQueue` / `CleanupWorker`** (`worktree.rs:1198-1463`): Thread-safe priority queue for async cleanup jobs. Also `#[allow(dead_code)]` — infrastructure exists but is not yet active.
-- **`remove_worktree()`** (`worktree.rs:134-255`): Shared removal machinery. Removes `.workgraph` symlink → `target/` dir → `git worktree remove --force` → `git branch -D`. Includes metrics, retry logic, and force-cleanup fallback.
+- **`remove_worktree()`** (`worktree.rs:134-255`): Shared removal machinery. Removes `.wg` symlink → `target/` dir → `git worktree remove --force` → `git branch -D`. Includes metrics, retry logic, and force-cleanup fallback.
 - **`recover_commits()`** (`worktree.rs:442-468`): Before removing a dead agent's worktree, checks for unmerged commits and creates `recover/<branch>` branches.
 
 ### Summary: What each path checks

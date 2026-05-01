@@ -138,14 +138,14 @@ if ! run_wg init --route codex-cli --no-agency >old_init.log 2>&1; then
 fi
 
 wg_dir=""
-for cand in .wg .workgraph; do
+for cand in .wg .wg; do
     if [[ -d "$old_project/$cand" ]]; then
         wg_dir="$old_project/$cand"
         break
     fi
 done
 if [[ -z "$wg_dir" ]]; then
-    loud_fail "no .wg/.workgraph after wg init for old config test"
+    loud_fail "no .wg/.wg after wg init for old config test"
 fi
 
 # Overwrite with stale model strings to simulate a pre-fix config.

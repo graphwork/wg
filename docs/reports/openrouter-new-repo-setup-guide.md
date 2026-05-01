@@ -159,7 +159,7 @@ This creates:
 - `.wg/graph.jsonl` — empty task graph
 - `.wg/.gitignore` — excludes `agents/`, `service/`, credentials
 - `.wg/agency/` — seeded roles, tradeoffs, and default agents (unless `--no-agency`)
-- Adds `.workgraph` to the repo-level `.gitignore`
+- Adds `.wg` to the repo-level `.gitignore`
 
 **`wg init` does NOT create a local `config.toml`** — it inherits the global config from `~/.wg/config.toml`. This is intentional: global config sets the provider/executor/model, and projects inherit it.
 

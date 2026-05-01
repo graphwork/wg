@@ -7,7 +7,7 @@
 //! 4. Non-interactive CLI mode end-to-end
 //!
 //! All tests use temporary directories as fake HOME so the real user's
-//! `~/.workgraph/config.toml` is never read or modified.
+//! `~/.wg/config.toml` is never read or modified.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -35,7 +35,7 @@ fn wg_binary() -> PathBuf {
     path
 }
 
-/// Run `wg setup` with a fake HOME and custom .workgraph dir, capturing output.
+/// Run `wg setup` with a fake HOME and custom .wg dir, capturing output.
 fn wg_setup_cmd(fake_home: &Path, wg_dir: &Path, extra_args: &[&str]) -> std::process::Output {
     let mut cmd = Command::new(wg_binary());
     cmd.arg("--dir").arg(wg_dir);
@@ -54,11 +54,11 @@ fn wg_setup_cmd(fake_home: &Path, wg_dir: &Path, extra_args: &[&str]) -> std::pr
 }
 
 /// Set up a temporary directory structure with a fake HOME and an initialized
-/// .workgraph graph. Returns (fake_home_path, wg_dir_path).
+/// .wg graph. Returns (fake_home_path, wg_dir_path).
 fn setup_env(tmp: &TempDir) -> (PathBuf, PathBuf) {
     let fake_home = tmp.path().join("fakehome");
     let project = tmp.path().join("project");
-    let wg_dir = project.join(".workgraph");
+    let wg_dir = project.join(".wg");
     fs::create_dir_all(&fake_home).unwrap();
     fs::create_dir_all(&wg_dir).unwrap();
 
@@ -69,16 +69,16 @@ fn setup_env(tmp: &TempDir) -> (PathBuf, PathBuf) {
     (fake_home, wg_dir)
 }
 
-/// Write a global config at fake_home/.workgraph/config.toml.
+/// Write a global config at fake_home/.wg/config.toml.
 fn write_global_config(fake_home: &Path, content: &str) {
-    let global_dir = fake_home.join(".workgraph");
+    let global_dir = fake_home.join(".wg");
     fs::create_dir_all(&global_dir).unwrap();
     fs::write(global_dir.join("config.toml"), content).unwrap();
 }
 
-/// Read and parse global config from fake_home/.workgraph/config.toml.
+/// Read and parse global config from fake_home/.wg/config.toml.
 fn load_global_config(fake_home: &Path) -> Config {
-    let path = fake_home.join(".workgraph/config.toml");
+    let path = fake_home.join(".wg/config.toml");
     let content = fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("Failed to read config at {:?}: {}", path, e));
     toml::from_str(&content)
@@ -116,7 +116,7 @@ fn fresh_setup_creates_valid_config() {
     );
 
     // Config file should exist
-    let config_path = fake_home.join(".workgraph/config.toml");
+    let config_path = fake_home.join(".wg/config.toml");
     assert!(
         config_path.exists(),
         "config.toml should be created at {:?}",

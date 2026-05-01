@@ -759,7 +759,7 @@ fn substitution_task_template_all_fields() {
 #[test]
 fn extract_single_done_task_produces_valid_function() {
     let tmp = TempDir::new().unwrap();
-    let dir = tmp.path().join(".workgraph");
+    let dir = tmp.path().join(".wg");
 
     let mut graph = WorkGraph::new();
     let mut task = make_task("impl-config", "Implement config");
@@ -792,7 +792,7 @@ fn extract_single_done_task_produces_valid_function() {
 #[test]
 fn extract_from_subgraph_captures_all_tasks_and_dependencies() {
     let tmp = TempDir::new().unwrap();
-    let dir = tmp.path().join(".workgraph");
+    let dir = tmp.path().join(".wg");
 
     let mut graph = WorkGraph::new();
     graph.add_node(Node::Task(Task {
@@ -850,7 +850,7 @@ fn extract_from_subgraph_captures_all_tasks_and_dependencies() {
 #[test]
 fn extract_from_non_done_task_errors() {
     let tmp = TempDir::new().unwrap();
-    let dir = tmp.path().join(".workgraph");
+    let dir = tmp.path().join(".wg");
 
     let mut graph = WorkGraph::new();
     graph.add_node(Node::Task(Task {
@@ -876,7 +876,7 @@ fn extract_from_non_done_task_errors() {
 #[test]
 fn extract_detects_file_paths_and_commands() {
     let tmp = TempDir::new().unwrap();
-    let dir = tmp.path().join(".workgraph");
+    let dir = tmp.path().join(".wg");
 
     let mut graph = WorkGraph::new();
     graph.add_node(Node::Task(Task {
@@ -1353,7 +1353,7 @@ fn apply_adds_skill_and_role_tags() {
 #[test]
 fn round_trip_extract_then_instantiate_preserves_structure() {
     let tmp = TempDir::new().unwrap();
-    let dir = tmp.path().join(".workgraph");
+    let dir = tmp.path().join(".wg");
 
     // Step 1: Create a workflow graph
     let mut graph = WorkGraph::new();
@@ -1488,7 +1488,7 @@ fn round_trip_extract_then_instantiate_preserves_structure() {
 #[test]
 fn round_trip_multiple_instantiations_different_prefixes() {
     let tmp = TempDir::new().unwrap();
-    let dir = tmp.path().join(".workgraph");
+    let dir = tmp.path().join(".wg");
 
     let mut graph = WorkGraph::new();
     graph.add_node(Node::Task(make_task("tmpl", "Template task")));
@@ -1587,7 +1587,7 @@ fn validate_function_valid_passes() {
 #[test]
 fn extract_filters_evaluate_tasks_from_subgraph() {
     let tmp = TempDir::new().unwrap();
-    let dir = tmp.path().join(".workgraph");
+    let dir = tmp.path().join(".wg");
 
     let mut graph = WorkGraph::new();
     graph.add_node(Node::Task(Task {
@@ -1663,7 +1663,7 @@ fn extract_filters_evaluate_tasks_from_subgraph() {
 #[test]
 fn extract_include_evaluations_keeps_all_tasks() {
     let tmp = TempDir::new().unwrap();
-    let dir = tmp.path().join(".workgraph");
+    let dir = tmp.path().join(".wg");
 
     let mut graph = WorkGraph::new();
     graph.add_node(Node::Task(Task {
@@ -1718,7 +1718,7 @@ fn extract_include_evaluations_keeps_all_tasks() {
 #[test]
 fn extract_does_not_detect_random_numbers_as_params() {
     let tmp = TempDir::new().unwrap();
-    let dir = tmp.path().join(".workgraph");
+    let dir = tmp.path().join(".wg");
 
     let mut graph = WorkGraph::new();
     graph.add_node(Node::Task(Task {
@@ -1763,7 +1763,7 @@ fn extract_does_not_detect_random_numbers_as_params() {
 #[test]
 fn extract_detects_contextual_numbers_as_params() {
     let tmp = TempDir::new().unwrap();
-    let dir = tmp.path().join(".workgraph");
+    let dir = tmp.path().join(".wg");
 
     let mut graph = WorkGraph::new();
     graph.add_node(Node::Task(Task {
@@ -1808,7 +1808,7 @@ fn extract_detects_contextual_numbers_as_params() {
 #[test]
 fn func_list_succeeds_on_empty() {
     let tmp = TempDir::new().unwrap();
-    let dir = tmp.path().join(".workgraph");
+    let dir = tmp.path().join(".wg");
     setup_workgraph(&dir);
 
     // wg func list should succeed even with no functions
@@ -1823,7 +1823,7 @@ fn func_list_succeeds_on_empty() {
 #[test]
 fn func_show_on_existing_function() {
     let tmp = TempDir::new().unwrap();
-    let dir = tmp.path().join(".workgraph");
+    let dir = tmp.path().join(".wg");
     setup_workgraph(&dir);
     setup_function(&dir, &sample_function());
 
@@ -1835,7 +1835,7 @@ fn func_show_on_existing_function() {
 #[test]
 fn func_show_not_found_errors() {
     let tmp = TempDir::new().unwrap();
-    let dir = tmp.path().join(".workgraph");
+    let dir = tmp.path().join(".wg");
     setup_workgraph(&dir);
 
     let output = wg_cmd(&dir, &["func", "show", "nonexistent"]);
@@ -1848,7 +1848,7 @@ fn func_show_not_found_errors() {
 #[test]
 fn func_extract_creates_function() {
     let tmp = TempDir::new().unwrap();
-    let dir = tmp.path().join(".workgraph");
+    let dir = tmp.path().join(".wg");
 
     let mut graph = WorkGraph::new();
     graph.add_node(Node::Task(Task {
@@ -1918,7 +1918,7 @@ fn func_bootstrap_creates_meta_function() {
 #[test]
 fn trace_extract_alias_works_with_deprecation_warning() {
     let tmp = TempDir::new().unwrap();
-    let dir = tmp.path().join(".workgraph");
+    let dir = tmp.path().join(".wg");
 
     let mut graph = WorkGraph::new();
     graph.add_node(Node::Task(Task {

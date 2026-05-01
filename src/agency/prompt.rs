@@ -24,7 +24,7 @@ fn expand_tilde(path: &Path) -> PathBuf {
 /// - `Url`: fetches the URL content (requires `matrix-lite` feature for reqwest).
 /// - `Inline`: returns the content directly.
 ///
-/// `workgraph_root` is the project root directory (parent of `.workgraph/`).
+/// `workgraph_root` is the project root directory (parent of `.wg/`).
 pub fn resolve_skill(skill: &ContentRef, workgraph_root: &Path) -> Result<ResolvedSkill, String> {
     match skill {
         ContentRef::Name(name) => {
@@ -130,7 +130,7 @@ fn is_content_ref_id(id: &str) -> bool {
 /// primitives store when available. Falls back to `ContentRef` resolution for IDs
 /// that are content refs (inline:, file:///, http(s)://) or not found in the store.
 ///
-/// `agency_dir` is the `.workgraph/agency/` directory containing `primitives/components/`.
+/// `agency_dir` is the `.wg/agency/` directory containing `primitives/components/`.
 pub fn resolve_all_components(
     role: &Role,
     workgraph_root: &Path,
@@ -1917,7 +1917,7 @@ mod tests {
         use super::super::starters::seed_starters;
 
         let dir = TempDir::new().unwrap();
-        let agency_dir = dir.path().join(".workgraph/agency");
+        let agency_dir = dir.path().join(".wg/agency");
         seed_starters(&agency_dir).unwrap();
 
         // Pick any seeded role (they all have hash-based component_ids/outcome_id)

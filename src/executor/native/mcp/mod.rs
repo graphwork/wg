@@ -3,7 +3,7 @@
 //! Lets WGNEX talk to the ecosystem of MCP servers (filesystem,
 //! github, sentry, linear, sequential-thinking, browser, fetch,
 //! sqlite, memory, …) without each integration needing a hand-rolled
-//! Rust wrapper. Servers declared in `.workgraph/config.toml` are
+//! Rust wrapper. Servers declared in `.wg/config.toml` are
 //! spawned at agent-init time, their tools discovered via
 //! `tools/list`, and each one surfaced into the `ToolRegistry` as an
 //! `McpTool` namespaced `<server>__<tool>`. From the agent's

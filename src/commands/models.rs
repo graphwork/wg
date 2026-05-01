@@ -136,7 +136,7 @@ use workgraph::executor::native::openai_client::{
     self, OpenRouterModel, fetch_openrouter_models_blocking,
 };
 
-/// Cache of remote model data, stored in `.workgraph/model_cache.json`.
+/// Cache of remote model data, stored in `.wg/model_cache.json`.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 struct ModelCache {
     /// ISO 8601 timestamp of when the cache was last updated.

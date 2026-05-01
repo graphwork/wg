@@ -1,9 +1,9 @@
 //! Trace memory for adaptive trace functions (Layer 3).
 //!
 //! Two storage strategies:
-//! - **JSONL** (append-only): `.workgraph/functions/<func_id>.runs.jsonl` — used by
+//! - **JSONL** (append-only): `.wg/functions/<func_id>.runs.jsonl` — used by
 //!   `append_run_summary` / `load_run_summaries` for streaming writes.
-//! - **Per-run JSON** (spec §3.4): `.workgraph/functions/<func_id>.memory/<timestamp>.json`
+//! - **Per-run JSON** (spec §3.4): `.wg/functions/<func_id>.memory/<timestamp>.json`
 //!   — used by `save_run_summary` / `load_recent_summaries` for individual run files.
 //!
 //! Both formats are supported. The per-run JSON approach (`save_run_summary` /
@@ -27,14 +27,14 @@ use std::path::{Path, PathBuf};
 // Per-run JSON storage (spec §3.4 / §4.3)
 // ---------------------------------------------------------------------------
 
-/// Return the memory directory for a function: `.workgraph/functions/<func_id>.memory/`
+/// Return the memory directory for a function: `.wg/functions/<func_id>.memory/`
 pub fn memory_dir(workgraph_dir: &Path, func_id: &str) -> PathBuf {
     workgraph_dir
         .join(FUNCTIONS_DIR)
         .join(format!("{}.memory", func_id))
 }
 
-/// Save a run summary as JSON to `.workgraph/functions/<func_id>.memory/<timestamp>.json`.
+/// Save a run summary as JSON to `.wg/functions/<func_id>.memory/<timestamp>.json`.
 ///
 /// The timestamp is derived from `summary.applied_at`, sanitized for use as a filename
 /// (colons replaced with dashes).
@@ -1174,11 +1174,11 @@ mod tests {
 
     #[test]
     fn memory_dir_path() {
-        let wg = Path::new("/tmp/.workgraph");
+        let wg = Path::new("/tmp/.wg");
         let dir = memory_dir(wg, "deploy-prod");
         assert_eq!(
             dir,
-            PathBuf::from("/tmp/.workgraph/functions/deploy-prod.memory")
+            PathBuf::from("/tmp/.wg/functions/deploy-prod.memory")
         );
     }
 }

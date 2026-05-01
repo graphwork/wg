@@ -55,9 +55,9 @@ fn wg_ok(wg_dir: &Path, args: &[&str]) -> String {
     stdout
 }
 
-/// Set up a .workgraph dir with a graph and agency directories.
+/// Set up a .wg dir with a graph and agency directories.
 fn setup_agency(tmp: &TempDir) -> PathBuf {
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     fs::create_dir_all(wg_dir.join("agency/cache/roles")).unwrap();
     fs::create_dir_all(wg_dir.join("agency/cache/agents")).unwrap();
     fs::create_dir_all(wg_dir.join("agency/primitives/tradeoffs")).unwrap();

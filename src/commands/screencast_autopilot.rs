@@ -31,7 +31,7 @@ pub struct AutopilotConfig {
 impl Default for AutopilotConfig {
     fn default() -> Self {
         Self {
-            workgraph_dir: PathBuf::from(".workgraph"),
+            workgraph_dir: PathBuf::from(".wg"),
             output: PathBuf::from("screencast.cast"),
             cols: 80,
             rows: 24,
@@ -572,7 +572,7 @@ pub fn run(workgraph_dir: &Path, output: &Path, cols: u16, rows: u16, duration: 
     let wg_dir =
         std::fs::canonicalize(workgraph_dir).unwrap_or_else(|_| workgraph_dir.to_path_buf());
 
-    // The project root is one level up from .workgraph
+    // The project root is one level up from .wg
     let project_dir = wg_dir.parent().unwrap_or(&wg_dir);
 
     let session_name = format!("wg-autopilot-{}", std::process::id());

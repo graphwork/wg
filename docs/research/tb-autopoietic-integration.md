@@ -217,7 +217,7 @@ The coordinator handles:
 # Create condition-specific configs by setting agency knobs differently
 # Condition A: no agency pipeline
 # Condition D: full pipeline with auto_assign + flip_enabled
-# Run each condition as a separate wg instance (separate .workgraph dirs)
+# Run each condition as a separate wg instance (separate .wg dirs)
 # OR use coordinator namespacing (separate coordinators per condition)
 ```
 
@@ -381,7 +381,7 @@ For evolution to be meaningful with TB data:
 | Eval JSON failures | **High** | Evaluator returns prose instead of JSON | Use native API with JSON mode; improve retry prompts |
 | Eval timeouts | **High** | Claude CLI call hits 300s timeout | Configure native API provider; increase timeout |
 | Harbor verifier integration | **Medium** | Need to capture harbor verifier results alongside FLIP | Post-trial comparison script; harbor API or file-based results |
-| Config propagation | **Medium** | Per-trial config needs isolation | Separate .workgraph dirs per condition |
+| Config propagation | **Medium** | Per-trial config needs isolation | Separate .wg dirs per condition |
 | Worktree isolation vs Docker | **Low** | Git worktrees don't help if work happens in Docker | Each trial task gets its own container; worktree is just for wg state |
 
 ---

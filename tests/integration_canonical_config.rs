@@ -54,7 +54,7 @@ fn wg_ok(wg_dir: &Path, home: &Path, args: &[&str]) -> String {
 }
 
 fn fresh_workgraph(tmp: &TempDir) -> PathBuf {
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     fs::create_dir_all(&wg_dir).unwrap();
     let graph = WorkGraph::new();
     save_graph(&graph, &wg_dir.join("graph.jsonl")).unwrap();
@@ -77,7 +77,7 @@ fn defaults_no_user_config_run_claude_opus() {
 
     // Sanity — no config file written yet.
     assert!(!home.join(".wg/config.toml").exists());
-    assert!(!home.join(".workgraph/config.toml").exists());
+    assert!(!home.join(".wg/config.toml").exists());
     assert!(!wg_dir.join("config.toml").exists());
 
     let out = wg_ok(&wg_dir, &home, &["config", "--merged"]);

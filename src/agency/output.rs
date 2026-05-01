@@ -42,7 +42,7 @@ pub fn capture_task_output(
 fn capture_git_diff(output_dir: &Path, task: &crate::graph::Task) {
     let patch_path = output_dir.join("changes.patch");
 
-    // Find the project root by walking up from the .workgraph dir
+    // Find the project root by walking up from the .wg dir
     let project_root = output_dir.ancestors().find(|p| p.join(".git").exists());
 
     let project_root = match project_root {

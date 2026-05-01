@@ -357,9 +357,9 @@ pub fn init(dir: &Path, scope: Option<ConfigScope>) -> Result<()> {
             println!("Global configuration already exists at {}", path.display());
         }
     } else if Config::init(dir)? {
-        println!("Created default configuration at .workgraph/config.toml");
+        println!("Created default configuration at .wg/config.toml");
     } else {
-        println!("Configuration already exists at .workgraph/config.toml");
+        println!("Configuration already exists at .wg/config.toml");
     }
     Ok(())
 }
@@ -1915,7 +1915,7 @@ pub fn check_key(dir: &Path, json: bool) -> Result<()> {
                 eprintln!("Configure a key via:");
                 eprintln!("  - wg endpoints add (recommended)");
                 eprintln!("  - Set OPENROUTER_API_KEY or OPENAI_API_KEY environment variable");
-                eprintln!("  - Add [native_executor] api_key to .workgraph/config.toml");
+                eprintln!("  - Add [native_executor] api_key to .wg/config.toml");
             }
             std::process::exit(1);
         }
@@ -2025,7 +2025,7 @@ fn mask_token(token: &str) -> String {
 
 /// Install the current project's config as the global default.
 ///
-/// Copies `.workgraph/config.toml` → `~/.workgraph/config.toml`.
+/// Copies `.wg/config.toml` → `~/.wg/config.toml`.
 /// If the global config already exists and `--force` is not set, shows a diff
 /// summary and asks for confirmation on stdin.
 pub fn install_global(workgraph_dir: &Path, force: bool) -> Result<()> {
@@ -3100,7 +3100,7 @@ mod tests {
 
         // Point to a nested global path that doesn't exist yet
         let global_base = TempDir::new().unwrap();
-        let global_dir = global_base.path().join("nested").join(".workgraph");
+        let global_dir = global_base.path().join("nested").join(".wg");
         let global_path = global_dir.join("config.toml");
 
         let result = install_global_to(project_dir.path(), &global_path, &global_dir, true);

@@ -78,7 +78,7 @@ pub fn enumerate_chat_supervisors_from_graph(graph: &WorkGraph) -> Vec<ChatSuper
     out
 }
 
-/// Convenience: enumerate from disk (loads the graph from `.workgraph/graph.jsonl`).
+/// Convenience: enumerate from disk (loads the graph from `.wg/graph.jsonl`).
 /// Returns an empty vec if the graph file is missing or unreadable.
 pub fn enumerate_chat_supervisors_for_boot(dir: &std::path::Path) -> Vec<ChatSupervisorBootSpec> {
     let gp = dir.join("graph.jsonl");

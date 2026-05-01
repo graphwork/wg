@@ -8,7 +8,7 @@
 //! - E2EE key verification handling
 //! - Command parsing and message listener for interactive control
 //!
-//! State is stored in `.workgraph/matrix/` for session reuse.
+//! State is stored in `.wg/matrix/` for session reuse.
 
 pub use crate::matrix_commands as commands;
 pub mod listener;
@@ -34,7 +34,7 @@ use tokio::sync::mpsc;
 
 use crate::config::MatrixConfig;
 
-/// State directory name within .workgraph
+/// State directory name within .wg
 const MATRIX_STATE_DIR: &str = "matrix";
 
 /// Incoming Matrix message from a room
@@ -69,7 +69,7 @@ impl MatrixClient {
     /// Create a new Matrix client
     ///
     /// # Arguments
-    /// * `workgraph_dir` - Path to the .workgraph directory
+    /// * `workgraph_dir` - Path to the .wg directory
     /// * `config` - Matrix configuration with credentials
     ///
     /// This will:

@@ -408,7 +408,7 @@ Peer functions:
 ### Phase 1: Federation Config & Peer Management
 - Extend `federation.yaml` with `peers` section
 - Add `wg peer add|remove|list|show|status` commands
-- Peer resolution utility (name → path → .workgraph dir)
+- Peer resolution utility (name → path → .wg dir)
 - ~200 lines new code in `src/commands/peer.rs` + federation.yaml parsing
 
 ### Phase 2: Cross-Repo Task Dispatch

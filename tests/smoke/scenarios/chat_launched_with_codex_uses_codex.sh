@@ -63,16 +63,16 @@ if ! run_wg chat create --executor codex --model codex:gpt-5 \
     loud_fail "wg chat create failed: $(tail -10 create.log)"
 fi
 
-# Find the workgraph dir (`.wg` preferred, `.workgraph` legacy).
+# Find the workgraph dir (`.wg` preferred, `.wg` legacy).
 graph_dir=""
-for cand in .wg .workgraph; do
+for cand in .wg .wg; do
     if [[ -d "$project/$cand" ]]; then
         graph_dir="$project/$cand"
         break
     fi
 done
 if [[ -z "$graph_dir" ]]; then
-    loud_fail "no .wg/ or .workgraph/ after wg init"
+    loud_fail "no .wg/ or .wg/ after wg init"
 fi
 
 # Step 1: per-chat overrides land in CoordinatorState. This is the

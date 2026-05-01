@@ -1,7 +1,7 @@
 //! TUI screen dump server: provides an IPC mechanism for external agents to
 //! read the current TUI screen contents as structured plain text.
 //!
-//! The server listens on a Unix domain socket at `.workgraph/service/tui.sock`.
+//! The server listens on a Unix domain socket at `.wg/service/tui.sock`.
 //! After each frame render, the event loop updates a shared buffer.  Clients
 //! connect, send a JSON request, and receive a JSON response containing the
 //! current screen text plus metadata (dimensions, active tab, selected task,

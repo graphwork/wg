@@ -85,7 +85,7 @@ fn make_task(id: &str, title: &str) -> Task {
 }
 
 fn setup_workgraph(tmp: &TempDir, tasks: Vec<Task>) -> PathBuf {
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     fs::create_dir_all(&wg_dir).unwrap();
     let graph_path = wg_dir.join("graph.jsonl");
     let mut graph = WorkGraph::new();
@@ -422,7 +422,7 @@ fn why_blocked_labels_phantom_deps() {
     task.after = vec!["phantom-blocker".to_string()];
     graph.add_node(Node::Task(task));
 
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     fs::create_dir_all(&wg_dir).unwrap();
     save_graph(&graph, &wg_dir.join("graph.jsonl")).unwrap();
 
@@ -443,7 +443,7 @@ fn why_blocked_json_includes_phantom_field() {
     task.after = vec!["phantom-blocker".to_string()];
     graph.add_node(Node::Task(task));
 
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     fs::create_dir_all(&wg_dir).unwrap();
     save_graph(&graph, &wg_dir.join("graph.jsonl")).unwrap();
 
@@ -468,7 +468,7 @@ fn check_reports_phantom_edges() {
     task.after = vec!["nonexistent".to_string()];
     graph.add_node(Node::Task(task));
 
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     fs::create_dir_all(&wg_dir).unwrap();
     save_graph(&graph, &wg_dir.join("graph.jsonl")).unwrap();
 

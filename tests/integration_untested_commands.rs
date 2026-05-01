@@ -70,7 +70,7 @@ fn wg_fail(wg_dir: &Path, args: &[&str]) -> String {
 }
 
 fn setup_workgraph(tmp: &TempDir) -> PathBuf {
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     fs::create_dir_all(&wg_dir).unwrap();
     let graph_path = wg_dir.join("graph.jsonl");
     let graph = WorkGraph::new();
@@ -79,7 +79,7 @@ fn setup_workgraph(tmp: &TempDir) -> PathBuf {
 }
 
 fn setup_workgraph_with_tasks(tmp: &TempDir, tasks: Vec<Task>) -> PathBuf {
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     fs::create_dir_all(&wg_dir).unwrap();
     let graph_path = wg_dir.join("graph.jsonl");
     let mut graph = WorkGraph::new();
@@ -1015,7 +1015,7 @@ fn test_agency_pull_push_roundtrip() {
     let tmp = TempDir::new().unwrap();
 
     // Project A: has a role
-    let proj_a_dir = tmp.path().join("project-a").join(".workgraph");
+    let proj_a_dir = tmp.path().join("project-a").join(".wg");
     fs::create_dir_all(&proj_a_dir).unwrap();
     save_graph(&WorkGraph::new(), proj_a_dir.join("graph.jsonl")).unwrap();
     wg_ok(&proj_a_dir, &["agency", "init"]);
@@ -1041,7 +1041,7 @@ lineage:
     );
 
     // Project B: initially empty
-    let proj_b_dir = tmp.path().join("project-b").join(".workgraph");
+    let proj_b_dir = tmp.path().join("project-b").join(".wg");
     fs::create_dir_all(&proj_b_dir).unwrap();
     save_graph(&WorkGraph::new(), proj_b_dir.join("graph.jsonl")).unwrap();
     wg_ok(&proj_b_dir, &["agency", "init"]);
@@ -1087,7 +1087,7 @@ fn test_resources_no_resources() {
 #[test]
 fn test_resources_basic_utilization() {
     let tmp = TempDir::new().unwrap();
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     fs::create_dir_all(&wg_dir).unwrap();
 
     let mut graph = WorkGraph::new();
@@ -1143,7 +1143,7 @@ fn test_resources_basic_utilization() {
 #[test]
 fn test_resources_over_budget_alert() {
     let tmp = TempDir::new().unwrap();
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     fs::create_dir_all(&wg_dir).unwrap();
 
     let mut graph = WorkGraph::new();
@@ -1182,7 +1182,7 @@ fn test_resources_over_budget_alert() {
 #[test]
 fn test_resources_json_output() {
     let tmp = TempDir::new().unwrap();
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     fs::create_dir_all(&wg_dir).unwrap();
 
     let mut graph = WorkGraph::new();

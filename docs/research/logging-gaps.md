@@ -81,7 +81,7 @@ Created by `capture_task_output()` (called from `wg done` and `wg fail`):
 
 Unstructured text log with entries like:
 ```
-2026-02-03T01:00:31.743Z [INFO] Daemon starting (PID 2173242, socket /tmp/wg-.workgraph.sock)
+2026-02-03T01:00:31.743Z [INFO] Daemon starting (PID 2173242, socket /tmp/wg-.wg.sock)
 2026-02-03T01:00:31.744Z [INFO] Coordinator config: poll_interval=60s, max_agents=3, executor=claude, model=default
 [coordinator] Cleaned up 1 dead agent(s): ["agent-60"]
 [coordinator] Spawning agent for: document-service-setup - Document service setup and management

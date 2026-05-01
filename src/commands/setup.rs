@@ -1,6 +1,6 @@
 //! Interactive configuration wizard for first-time workgraph setup.
 //!
-//! Creates/updates ~/.workgraph/config.toml via guided prompts using dialoguer.
+//! Creates/updates ~/.wg/config.toml via guided prompts using dialoguer.
 
 use anyhow::{Context, Result, bail};
 use dialoguer::{Confirm, Input, Select};
@@ -2008,9 +2008,9 @@ pub struct DetectionResult {
     pub openrouter_key: bool,
     /// Whether OPENAI_API_KEY is set.
     pub openai_key: bool,
-    /// Whether `.workgraph/config.toml` exists in current directory.
+    /// Whether `.wg/config.toml` exists in current directory.
     pub local_config: bool,
-    /// Whether `~/.workgraph/config.toml` exists.
+    /// Whether `~/.wg/config.toml` exists.
     pub global_config: bool,
 }
 
@@ -2070,7 +2070,7 @@ pub fn detect_environment() -> DetectionResult {
         openai_key: std::env::var("OPENAI_API_KEY")
             .map(|v| !v.trim().is_empty())
             .unwrap_or(false),
-        local_config: std::path::Path::new(".workgraph/config.toml").exists(),
+        local_config: std::path::Path::new(".wg/config.toml").exists(),
         global_config,
     }
 }
@@ -2136,7 +2136,7 @@ pub fn format_detection_summary(det: &DetectionResult) -> String {
         lines.push("  · No global config yet — we'll create one for you.".to_string());
     }
     if det.local_config {
-        lines.push("  ✓ Project config found (.workgraph/config.toml).".to_string());
+        lines.push("  ✓ Project config found (.wg/config.toml).".to_string());
     }
 
     lines.join("\n")

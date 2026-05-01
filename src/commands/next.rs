@@ -32,7 +32,7 @@ struct NextTaskResult {
 pub fn run(dir: &Path, agent_id: &str, json: bool) -> Result<()> {
     let (graph, _path) = super::load_workgraph(dir)?;
 
-    // Load agent from .workgraph/agency/agents/
+    // Load agent from .wg/agency/agents/
     let agents_dir = dir.join("agency").join("cache/agents");
     let agent = agency::find_agent_by_prefix(&agents_dir, agent_id)
         .map_err(|e| anyhow::anyhow!("Agent '{}' not found: {}", agent_id, e))?;

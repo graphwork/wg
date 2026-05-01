@@ -66,7 +66,7 @@ fn make_task(id: &str, status: Status) -> Task {
 }
 
 fn setup_workgraph(tmp: &TempDir, tasks: Vec<Task>) -> PathBuf {
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     std::fs::create_dir_all(&wg_dir).unwrap();
     let graph_path = wg_dir.join("graph.jsonl");
     let mut graph = WorkGraph::new();
@@ -301,7 +301,7 @@ fn test_auto_evaluate_false_skips_failed_pending_eval() {
 #[test]
 fn test_explicit_wg_fail_on_failed_pending_eval_forces_terminal_failed() {
     let tmp = TempDir::new().unwrap();
-    let config_path = tmp.path().join(".workgraph/config.toml");
+    let config_path = tmp.path().join(".wg/config.toml");
 
     // Put task directly into FailedPendingEval
     let mut task = make_task("t1", Status::FailedPendingEval);

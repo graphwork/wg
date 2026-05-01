@@ -23,12 +23,12 @@ OUTDIR=$(mktemp -d)
 trap 'rm -rf "$WORK" "$OUTDIR"' EXIT
 
 cd "$WORK"
-wg --dir .workgraph init --route claude-cli >/dev/null 2>&1 || true
+wg --dir .wg init --route claude-cli >/dev/null 2>&1 || true
 
-wg --dir .workgraph add 'task one' --id resize-task-a -d 'a' >/dev/null
-wg --dir .workgraph add 'task two' --id resize-task-b --after resize-task-a -d 'b' >/dev/null
+wg --dir .wg add 'task one' --id resize-task-a -d 'a' >/dev/null
+wg --dir .wg add 'task two' --id resize-task-b --after resize-task-a -d 'b' >/dev/null
 
-wg --dir .workgraph html --out "$OUTDIR" >/dev/null 2>&1
+wg --dir .wg html --out "$OUTDIR" >/dev/null 2>&1
 
 INDEX="$OUTDIR/index.html"
 CSS="$OUTDIR/style.css"

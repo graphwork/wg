@@ -39,7 +39,7 @@ if ! wg init --executor shell >init.log 2>&1; then
     loud_fail "wg init --executor shell failed: $(tail -5 init.log)"
 fi
 
-wg_dir=$(graph_dir_in "$scratch") || loud_fail "no .wg/.workgraph dir under $scratch"
+wg_dir=$(graph_dir_in "$scratch") || loud_fail "no .wg/.wg dir under $scratch"
 graph_path="$wg_dir/graph.jsonl"
 
 # Append three chat-loop tasks directly to graph.jsonl. We use python to

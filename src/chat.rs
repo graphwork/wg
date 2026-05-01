@@ -1,6 +1,6 @@
 //! Chat inbox/outbox storage for user↔coordinator communication.
 //!
-//! Messages are stored as JSONL files in `.workgraph/chat/{coordinator_id}/`:
+//! Messages are stored as JSONL files in `.wg/chat/{coordinator_id}/`:
 //! - `inbox.jsonl`  — user → coordinator messages
 //! - `outbox.jsonl` — coordinator → user responses
 //! - `.cursor`      — CLI/TUI read cursor (last-read outbox message ID)
@@ -27,7 +27,7 @@ use crate::config::Config;
 /// A file attachment on a chat message.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Attachment {
-    /// Path relative to the workgraph root (e.g. ".workgraph/attachments/20260303-143022-a1b2c3.png")
+    /// Path relative to the workgraph root (e.g. ".wg/attachments/20260303-143022-a1b2c3.png")
     pub path: String,
     /// MIME type (e.g. "image/png")
     pub mime_type: String,
@@ -1051,7 +1051,7 @@ pub fn validate_attachment(path: &Path) -> Result<(String, u64)> {
     Ok(("application/octet-stream".to_string(), size))
 }
 
-/// Copy a file into `.workgraph/attachments/` with a content-addressed name.
+/// Copy a file into `.wg/attachments/` with a content-addressed name.
 /// Returns the `Attachment` with the relative path.
 pub fn store_attachment(workgraph_dir: &Path, source: &Path) -> Result<Attachment> {
     let (mime_type, size_bytes) = validate_attachment(source)?;
@@ -1081,7 +1081,7 @@ pub fn store_attachment(workgraph_dir: &Path, source: &Path) -> Result<Attachmen
     }
 
     // Return path relative to workgraph dir's parent (project root).
-    let relative = format!(".workgraph/attachments/{}", filename);
+    let relative = format!(".wg/attachments/{}", filename);
 
     Ok(Attachment {
         path: relative,
@@ -1756,7 +1756,7 @@ mod tests {
 
     fn setup() -> (TempDir, PathBuf) {
         let tmp = TempDir::new().unwrap();
-        let wg_dir = tmp.path().join(".workgraph");
+        let wg_dir = tmp.path().join(".wg");
         fs::create_dir_all(&wg_dir).unwrap();
         (tmp, wg_dir)
     }
@@ -2077,8 +2077,8 @@ mod tests {
     #[test]
     fn test_directory_created_on_first_write() {
         let tmp = TempDir::new().unwrap();
-        let wg_dir = tmp.path().join(".workgraph");
-        // Don't pre-create .workgraph — append should handle it
+        let wg_dir = tmp.path().join(".wg");
+        // Don't pre-create .wg — append should handle it
         fs::create_dir_all(&wg_dir).unwrap();
 
         // chat/ directory doesn't exist yet

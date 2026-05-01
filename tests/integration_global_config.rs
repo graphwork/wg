@@ -6,7 +6,7 @@
 //! consumers (service daemon config, evaluate config) pick up merged values.
 //!
 //! All tests use temporary directories as fake HOME / local workgraph, so
-//! the real user's `~/.workgraph/config.toml` is never read or modified.
+//! the real user's `~/.wg/config.toml` is never read or modified.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -19,10 +19,10 @@ use workgraph::config::{Config, ConfigSource};
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Create a fake HOME with `~/.workgraph/` directory and optionally write a
-/// global config.toml there.  Returns the `.workgraph` dir inside fake HOME.
+/// Create a fake HOME with `~/.wg/` directory and optionally write a
+/// global config.toml there.  Returns the `.wg` dir inside fake HOME.
 fn setup_global_dir(tmp: &TempDir, global_toml: Option<&str>) -> PathBuf {
-    let global_dir = tmp.path().join("fakehome").join(".workgraph");
+    let global_dir = tmp.path().join("fakehome").join(".wg");
     fs::create_dir_all(&global_dir).unwrap();
     if let Some(content) = global_toml {
         fs::write(global_dir.join("config.toml"), content).unwrap();
@@ -30,10 +30,10 @@ fn setup_global_dir(tmp: &TempDir, global_toml: Option<&str>) -> PathBuf {
     global_dir
 }
 
-/// Create a local .workgraph directory and optionally write a config.toml
-/// inside it.  Returns the .workgraph directory path.
+/// Create a local .wg directory and optionally write a config.toml
+/// inside it.  Returns the .wg directory path.
 fn setup_local_dir(tmp: &TempDir, local_toml: Option<&str>) -> PathBuf {
-    let wg_dir = tmp.path().join("project").join(".workgraph");
+    let wg_dir = tmp.path().join("project").join(".wg");
     fs::create_dir_all(&wg_dir).unwrap();
     if let Some(content) = local_toml {
         fs::write(wg_dir.join("config.toml"), content).unwrap();
@@ -113,7 +113,7 @@ fn record_sources(
 }
 
 // ===========================================================================
-// 1. Global config creation at ~/.workgraph/config.toml
+// 1. Global config creation at ~/.wg/config.toml
 // ===========================================================================
 
 #[test]
@@ -732,7 +732,7 @@ fn config_source_display_variants() {
 #[test]
 fn load_with_sources_uses_real_api() {
     // Test Config::load_with_sources against a local-only temp dir.
-    // This uses the real API which also reads ~/.workgraph/config.toml
+    // This uses the real API which also reads ~/.wg/config.toml
     // (the user's real global config, if any), so we just verify it doesn't
     // error and returns sensible structure.
     let tmp = TempDir::new().unwrap();

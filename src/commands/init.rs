@@ -3,7 +3,7 @@ use std::fs;
 use std::path::Path;
 use workgraph::config_defaults::{config_for_route, RouteParams, SetupRoute};
 
-/// Default content for .workgraph/.gitignore
+/// Default content for .wg/.gitignore
 const GITIGNORE_CONTENT: &str = r#"# Workgraph gitignore
 # Agent output logs (can be large)
 agents/
@@ -283,7 +283,7 @@ fn write_repo_gitignore(dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Write `.workgraph/executors/*.example` template files.
+/// Write `.wg/executors/*.example` template files.
 fn write_executor_templates(dir: &Path) -> Result<()> {
     let executors_dir = dir.join("executors");
     fs::create_dir_all(&executors_dir).context("Failed to create executors directory")?;
@@ -339,7 +339,7 @@ pub fn run(
         anyhow::bail!("Workgraph already initialized at {}", dir.display());
     }
     // Refuse if the sibling legacy dir exists — we'd silently shadow it.
-    // e.g. user asks for `.wg` but `.workgraph` already exists next to it.
+    // e.g. user asks for `.wg` but `.wg` already exists next to it.
     if let Some(parent) = dir.parent()
         && let Some(target_name) = dir.file_name().and_then(|n| n.to_str())
     {
@@ -360,8 +360,8 @@ pub fn run(
 
     fs::create_dir_all(dir).context("Failed to create workgraph directory")?;
 
-    // Add the dir name (`.wg` for new projects, `.workgraph` for legacy init
-    // targets) to repo-level .gitignore.
+    // Add the dir name (`.wg` for new projects, `.workgraph` for legacy
+    // init targets) to repo-level .gitignore.
     let dir_basename = dir
         .file_name()
         .and_then(|n| n.to_str())
@@ -582,7 +582,7 @@ mod tests {
     #[test]
     fn test_creates_workgraph_directory() {
         let tmp = TempDir::new().unwrap();
-        let wg_dir = tmp.path().join(".workgraph");
+        let wg_dir = tmp.path().join(".wg");
 
         run(&wg_dir, false, Some("shell"), None, None).unwrap();
 
@@ -593,7 +593,7 @@ mod tests {
     #[test]
     fn test_creates_graph_jsonl() {
         let tmp = TempDir::new().unwrap();
-        let wg_dir = tmp.path().join(".workgraph");
+        let wg_dir = tmp.path().join(".wg");
 
         run(&wg_dir, false, Some("shell"), None, None).unwrap();
 
@@ -606,7 +606,7 @@ mod tests {
     #[test]
     fn test_creates_inner_gitignore() {
         let tmp = TempDir::new().unwrap();
-        let wg_dir = tmp.path().join(".workgraph");
+        let wg_dir = tmp.path().join(".wg");
 
         run(&wg_dir, false, Some("shell"), None, None).unwrap();
 
@@ -622,14 +622,14 @@ mod tests {
     #[test]
     fn test_creates_repo_level_gitignore_when_missing() {
         let tmp = TempDir::new().unwrap();
-        let wg_dir = tmp.path().join(".workgraph");
+        let wg_dir = tmp.path().join(".wg");
 
         run(&wg_dir, false, Some("shell"), None, None).unwrap();
 
         let repo_gitignore = tmp.path().join(".gitignore");
         assert!(repo_gitignore.exists());
         let contents = fs::read_to_string(&repo_gitignore).unwrap();
-        assert!(contents.contains(".workgraph"));
+        assert!(contents.contains(".wg"));
     }
 
     #[test]
@@ -638,35 +638,35 @@ mod tests {
         let repo_gitignore = tmp.path().join(".gitignore");
         fs::write(&repo_gitignore, "node_modules/\n").unwrap();
 
-        let wg_dir = tmp.path().join(".workgraph");
+        let wg_dir = tmp.path().join(".wg");
         run(&wg_dir, false, Some("shell"), None, None).unwrap();
 
         let contents = fs::read_to_string(&repo_gitignore).unwrap();
         assert!(contents.contains("node_modules/"));
-        assert!(contents.contains(".workgraph"));
+        assert!(contents.contains(".wg"));
     }
 
     #[test]
     fn test_does_not_duplicate_repo_gitignore_entry() {
         let tmp = TempDir::new().unwrap();
         let repo_gitignore = tmp.path().join(".gitignore");
-        fs::write(&repo_gitignore, ".workgraph\n").unwrap();
+        fs::write(&repo_gitignore, ".wg\n").unwrap();
 
-        let wg_dir = tmp.path().join(".workgraph");
+        let wg_dir = tmp.path().join(".wg");
         run(&wg_dir, false, Some("shell"), None, None).unwrap();
 
         let contents = fs::read_to_string(&repo_gitignore).unwrap();
         assert_eq!(
-            contents.matches(".workgraph").count(),
+            contents.matches(".wg").count(),
             1,
-            "should not duplicate .workgraph entry"
+            "should not duplicate .wg entry"
         );
     }
 
     #[test]
     fn test_full_agency_init() {
         let tmp = TempDir::new().unwrap();
-        let wg_dir = tmp.path().join(".workgraph");
+        let wg_dir = tmp.path().join(".wg");
 
         run(&wg_dir, false, Some("shell"), None, None).unwrap();
 
@@ -707,7 +707,7 @@ mod tests {
     #[test]
     fn test_no_agency_flag() {
         let tmp = TempDir::new().unwrap();
-        let wg_dir = tmp.path().join(".workgraph");
+        let wg_dir = tmp.path().join(".wg");
 
         run(&wg_dir, true, Some("shell"), None, None).unwrap();
 
@@ -726,7 +726,7 @@ mod tests {
     #[test]
     fn test_fails_if_already_initialized() {
         let tmp = TempDir::new().unwrap();
-        let wg_dir = tmp.path().join(".workgraph");
+        let wg_dir = tmp.path().join(".wg");
 
         run(&wg_dir, false, Some("shell"), None, None).unwrap();
         let result = run(&wg_dir, false, Some("shell"), None, None);

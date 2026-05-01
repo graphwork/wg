@@ -155,7 +155,7 @@ mod tests {
     #[test]
     fn test_cycles_no_cycles() {
         let tmp = TempDir::new().unwrap();
-        let dir = tmp.path().join(".workgraph");
+        let dir = tmp.path().join(".wg");
         let mut graph = WorkGraph::new();
         let t1 = make_task("t1", "Task 1");
         let mut t2 = make_task("t2", "Task 2");
@@ -170,7 +170,7 @@ mod tests {
     #[test]
     fn test_cycles_detects_simple_cycle() {
         let tmp = TempDir::new().unwrap();
-        let dir = tmp.path().join(".workgraph");
+        let dir = tmp.path().join(".wg");
         let mut graph = WorkGraph::new();
         let mut t1 = make_task("t1", "Task 1");
         t1.after = vec!["t2".to_string()];

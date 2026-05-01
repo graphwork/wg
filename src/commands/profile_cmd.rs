@@ -7,7 +7,7 @@ use workgraph::model_benchmarks::{self, BenchmarkRegistry, RankedTiers};
 use workgraph::profile;
 use workgraph::profile::named as named_profile;
 
-/// File name for the cached ranked tiers (inside .workgraph/).
+/// File name for the cached ranked tiers (inside .wg/).
 /// Note: `profile::load_ranked_tiers()` provides the public read path;
 /// this constant is kept here only for `save_ranked_tiers`.
 const RANKED_TIERS_FILE: &str = "profile_ranked_tiers.json";
@@ -173,7 +173,7 @@ fn print_tier_selection(
     }
 }
 
-/// Save ranked tiers to `.workgraph/profile_ranked_tiers.json`.
+/// Save ranked tiers to `.wg/profile_ranked_tiers.json`.
 fn save_ranked_tiers(dir: &Path, ranked: &RankedTiers) -> Result<()> {
     let path = dir.join(RANKED_TIERS_FILE);
     let content =

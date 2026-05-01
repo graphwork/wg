@@ -78,17 +78,17 @@ if ! grep -q '<p class="project-byline">override byline</p>' "$dest/index.html";
 fi
 
 # (3) Project-level cascade: config.toml [project] + about.md
-# Find the workgraph dir (.wg or .workgraph) so we can append to config.toml
+# Find the workgraph dir (.wg or .wg) so we can append to config.toml
 # and write about.md.
 wg_dir=""
-for candidate in .wg .workgraph; do
+for candidate in .wg .wg; do
     if [[ -d "$scratch/$candidate" ]]; then
         wg_dir="$scratch/$candidate"
         break
     fi
 done
 if [[ -z "$wg_dir" ]]; then
-    loud_fail "could not find workgraph dir under $scratch (.wg or .workgraph)"
+    loud_fail "could not find workgraph dir under $scratch (.wg or .wg)"
 fi
 
 # Replace the empty [project] block with one that has title + byline.

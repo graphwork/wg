@@ -14,25 +14,25 @@
 #      backend (no XHR/fetch usages in panel.js).
 set -euo pipefail
 
-# Build a small graph in a temp .workgraph so we exercise edge attribution
-# deterministically (the host's .workgraph may or may not have a clean
+# Build a small graph in a temp .wg so we exercise edge attribution
+# deterministically (the host's .wg may or may not have a clean
 # parent→child it shows in the truncated viz output).
 WORK=$(mktemp -d)
 OUTDIR=$(mktemp -d)
 trap 'rm -rf "$WORK" "$OUTDIR"' EXIT
 
 cd "$WORK"
-wg --dir .workgraph init --executor claude --model claude:opus 2>/dev/null \
-    || wg --dir .workgraph init >/dev/null 2>&1 \
+wg --dir .wg init --executor claude --model claude:opus 2>/dev/null \
+    || wg --dir .wg init >/dev/null 2>&1 \
     || true
 
 # Two tasks with a single --after edge gives us a guaranteed connector glyph.
-wg --dir .workgraph add 'parent task' --id parent-v2t -d 'parent for smoke'    >/dev/null
-wg --dir .workgraph add 'child task'  --id child-v2t  --after parent-v2t \
+wg --dir .wg add 'parent task' --id parent-v2t -d 'parent for smoke'    >/dev/null
+wg --dir .wg add 'child task'  --id child-v2t  --after parent-v2t \
     -d 'child for smoke'                                                       >/dev/null
 
 # Render with all defaults — the spec says no flags = all tasks.
-wg --dir .workgraph html --out "$OUTDIR" 2>&1
+wg --dir .wg html --out "$OUTDIR" 2>&1
 
 INDEX="$OUTDIR/index.html"
 [ -f "$INDEX" ]                || { echo "FAIL: index.html not created";    exit 1; }

@@ -43,8 +43,8 @@ wg init -m local:test -e http://127.0.0.1:1 >init.log 2>&1 \
 
 if [ -d .wg ]; then
     wg_dir=".wg"
-elif [ -d .workgraph ]; then
-    wg_dir=".workgraph"
+elif [ -d .wg ]; then
+    wg_dir=".wg"
 else
     loud_fail "could not find workgraph dir after init"
 fi

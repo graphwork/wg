@@ -20,20 +20,20 @@ scratch=$(make_scratch)
 cd "$scratch"
 
 # Init to discover the canonical graph dir. We don't care which executor —
-# any will produce a `.wg` (or `.workgraph`) layout.
+# any will produce a `.wg` (or `.wg`) layout.
 if ! wg init -x shell >init.log 2>&1; then
     loud_fail "wg init failed during smoke setup: $(tail -5 init.log)"
 fi
 
 graph_dir=""
-for cand in .wg .workgraph; do
+for cand in .wg .wg; do
     if [[ -f "$scratch/$cand/graph.jsonl" ]]; then
         graph_dir="$scratch/$cand"
         break
     fi
 done
 if [[ -z "$graph_dir" ]]; then
-    loud_fail "could not locate graph.jsonl under .wg/ or .workgraph/ after init"
+    loud_fail "could not locate graph.jsonl under .wg/ or .wg/ after init"
 fi
 
 # Append synthetic rows with int / string / map priority shapes. Using the

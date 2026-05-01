@@ -1075,7 +1075,7 @@ mod tests {
         fs::create_dir_all(&project).unwrap();
         init_git_repo(&project);
 
-        let wg_dir = project.join(".workgraph");
+        let wg_dir = project.join(".wg");
         fs::create_dir_all(&wg_dir).unwrap();
 
         let mut task = make_task("retry-here", "test", Status::Failed);
@@ -1242,7 +1242,7 @@ mod tests {
         fs::create_dir_all(&project).unwrap();
         init_git_repo(&project);
 
-        let wg_dir = project.join(".workgraph");
+        let wg_dir = project.join(".wg");
         fs::create_dir_all(&wg_dir).unwrap();
 
         let mut task = make_task("retry-fresh", "test", Status::Failed);

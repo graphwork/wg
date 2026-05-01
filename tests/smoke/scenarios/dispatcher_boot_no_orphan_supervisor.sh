@@ -6,7 +6,7 @@
 #
 # We boot a fresh project, start the dispatcher with --no-coordinator-agent
 # (so we are testing scaffold behaviour, not LLM behaviour), let it settle,
-# then read .workgraph/service/registry.json and assert no agent entry has
+# then read .wg/service/registry.json and assert no agent entry has
 # status=orphan / role=supervisor for a non-existent task.
 
 set -u

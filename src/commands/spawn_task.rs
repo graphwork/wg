@@ -442,7 +442,7 @@ mod tests {
     fn coordinator_task_gets_coordinator_role() {
         with_env(Some("native"), None, || {
             let dir = tempfile::tempdir().unwrap();
-            std::fs::create_dir_all(dir.path().join(".workgraph")).unwrap();
+            std::fs::create_dir_all(dir.path().join(".wg")).unwrap();
             let task = mktask(".coordinator-0");
             let spec = resolve_handler(dir.path(), &task, None).unwrap();
             match spec {

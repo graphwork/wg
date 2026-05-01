@@ -70,7 +70,7 @@ fn wg_ok(wg_dir: &Path, args: &[&str]) -> String {
 }
 
 fn setup_workgraph(tmp: &TempDir) -> PathBuf {
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     fs::create_dir_all(&wg_dir).unwrap();
     fs::create_dir_all(wg_dir.join("service")).unwrap();
     let graph_path = wg_dir.join("graph.jsonl");

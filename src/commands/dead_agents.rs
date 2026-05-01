@@ -134,7 +134,7 @@ pub fn run_cleanup(
     let mut errors = Vec::new();
 
     // Archive each dead agent's output BEFORE resetting the task, so the
-    // attempt is preserved in `.workgraph/log/agents/<task-id>/<timestamp>/`
+    // attempt is preserved in `.wg/log/agents/<task-id>/<timestamp>/`
     // and visible in the TUI iteration switcher. Without this, an in-progress
     // task that gets respawned via heartbeat-timeout loses prior attempts
     // from the iteration history. Best-effort — failures are non-fatal.
@@ -357,7 +357,7 @@ pub fn run_purge(dir: &Path, delete_dirs: bool, json: bool) -> Result<PurgeResul
                 }
             );
             for id in &result.dirs_deleted {
-                println!("  .workgraph/agents/{}/", id);
+                println!("  .wg/agents/{}/", id);
             }
         }
 
@@ -676,9 +676,9 @@ mod tests {
 
     /// Regression test for tui-cannot-view: when a stream-hung agent is
     /// unclaimed via heartbeat-timeout, its output.log must be archived to
-    /// `.workgraph/log/agents/<task-id>/<timestamp>/` so the TUI iteration
+    /// `.wg/log/agents/<task-id>/<timestamp>/` so the TUI iteration
     /// switcher can show it. Before this fix the prior attempt's logs were
-    /// orphaned in `.workgraph/agents/<id>/` and invisible in the TUI.
+    /// orphaned in `.wg/agents/<id>/` and invisible in the TUI.
     #[test]
     fn test_cleanup_archives_dead_agent_output_for_iteration_history() {
         let temp_dir = setup_with_agent_and_task();

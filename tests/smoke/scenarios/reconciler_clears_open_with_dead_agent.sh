@@ -64,7 +64,7 @@ if ! wg reset ready-task --yes >>reset.log 2>&1; then
     loud_fail "wg reset failed during fixture build: $(tail -5 reset.log)"
 fi
 
-graph_dir=$(graph_dir_in "$scratch") || loud_fail "no .workgraph dir to edit"
+graph_dir=$(graph_dir_in "$scratch") || loud_fail "no .wg dir to edit"
 graph_path="$graph_dir/graph.jsonl"
 
 # Stamp a stale `assigned` on the (already-Open) task without flipping

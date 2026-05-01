@@ -1,7 +1,7 @@
 //! Agent Registry
 //!
 //! Manages the registry of running agents.
-//! Lives at `.workgraph/service/registry.json`
+//! Lives at `.wg/service/registry.json`
 //!
 //! Features:
 //! - Store agent info: id, pid, task_id, executor type, started_at, last_heartbeat, status, output_file
@@ -14,7 +14,7 @@
 //! When multiple locks must be held, acquire them in this order to prevent deadlocks:
 //!
 //! 1. **Graph lock** (`graph.lock`) — acquired per-call by `load_graph()`/`save_graph()`
-//! 2. **Registry lock** (`.workgraph/service/.registry.lock`) — held via `LockedRegistry`
+//! 2. **Registry lock** (`.wg/service/.registry.lock`) — held via `LockedRegistry`
 //!
 //! The graph lock is acquired and released within each `load_graph()`/`save_graph()` call,
 //! so it is safe to hold the registry lock while calling graph operations. Never acquire
@@ -1107,7 +1107,7 @@ mod tests {
             12345,
             "implement-feature",
             "claude",
-            ".workgraph/agents/agent-1/output.log",
+            ".wg/agents/agent-1/output.log",
         );
 
         let json = serde_json::to_string_pretty(&registry).unwrap();
@@ -1134,7 +1134,7 @@ mod tests {
                     "started_at": "2026-01-27T10:00:00Z",
                     "last_heartbeat": "2026-01-27T10:12:00Z",
                     "status": "working",
-                    "output_file": ".workgraph/agents/agent-1/output.log"
+                    "output_file": ".wg/agents/agent-1/output.log"
                 }
             },
             "next_agent_id": 8

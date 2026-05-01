@@ -33,7 +33,7 @@ fn make_task(id: &str, title: &str, status: Status) -> Task {
 
 /// Create a workgraph directory with an initialized graph file.
 fn setup_workgraph(tmp: &TempDir) -> (std::path::PathBuf, std::path::PathBuf) {
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     fs::create_dir_all(&wg_dir).unwrap();
     fs::create_dir_all(wg_dir.join("service")).unwrap();
     let graph_path = wg_dir.join("graph.jsonl");
@@ -1277,7 +1277,7 @@ mod llm_tests {
     /// config with working_dir and PATH so the wrapper script's bare `wg`
     /// commands find the test binary and the workgraph.
     fn setup_llm_workgraph(tmp_root: &Path) -> PathBuf {
-        let wg_dir = tmp_root.join(".workgraph");
+        let wg_dir = tmp_root.join(".wg");
         wg_ok(&wg_dir, &["init"]);
 
         let wg_bin_dir = wg_binary().parent().unwrap().to_string_lossy().to_string();

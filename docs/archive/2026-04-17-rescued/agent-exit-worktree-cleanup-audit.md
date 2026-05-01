@@ -17,7 +17,7 @@ This audit examines the worktree cleanup mechanisms when agents exit normally or
 
 **Cleanup Process:**
 1. Recover any uncommitted commits to `recover/<agent-id>/<task-id>` branch
-2. Remove `.workgraph` symlink 
+2. Remove `.wg` symlink 
 3. Remove isolated cargo `target/` directory
 4. Force-remove worktree with `git worktree remove --force`
 5. Delete agent branch with `git branch -D`
@@ -99,7 +99,7 @@ This audit examines the worktree cleanup mechanisms when agents exit normally or
 
 ### 4. Resource Leaks
 - **Recovery branch accumulation**: No automatic pruning of recovery branches
-- **Symlink persistence**: Race conditions could leave dangling `.workgraph` symlinks  
+- **Symlink persistence**: Race conditions could leave dangling `.wg` symlinks  
 - **Target directory cleanup**: Large cargo artifacts not immediately reclaimed
 
 ## Verification Results

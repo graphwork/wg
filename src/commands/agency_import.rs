@@ -647,7 +647,7 @@ mod tests {
     #[test]
     fn test_agency_import_parses_csv() {
         let tmp = tempfile::tempdir().unwrap();
-        let wg_dir = tmp.path().join(".workgraph");
+        let wg_dir = tmp.path().join(".wg");
         std::fs::create_dir_all(&wg_dir).unwrap();
 
         let csv_path = write_fixture_csv(tmp.path());
@@ -670,7 +670,7 @@ mod tests {
     #[test]
     fn test_agency_import_dry_run_no_files() {
         let tmp = tempfile::tempdir().unwrap();
-        let wg_dir = tmp.path().join(".workgraph");
+        let wg_dir = tmp.path().join(".wg");
         std::fs::create_dir_all(&wg_dir).unwrap();
 
         let csv_path = write_fixture_csv(tmp.path());
@@ -687,7 +687,7 @@ mod tests {
     #[test]
     fn test_agency_import_idempotent() {
         let tmp = tempfile::tempdir().unwrap();
-        let wg_dir = tmp.path().join(".workgraph");
+        let wg_dir = tmp.path().join(".wg");
         std::fs::create_dir_all(&wg_dir).unwrap();
 
         let csv_path = write_fixture_csv(tmp.path());
@@ -706,7 +706,7 @@ mod tests {
     #[test]
     fn test_agency_import_content_hash_stability() {
         let tmp = tempfile::tempdir().unwrap();
-        let wg_dir = tmp.path().join(".workgraph");
+        let wg_dir = tmp.path().join(".wg");
         std::fs::create_dir_all(&wg_dir).unwrap();
 
         let csv_path = write_fixture_csv(tmp.path());
@@ -721,7 +721,7 @@ mod tests {
 
         // Import again into a fresh dir
         let tmp2 = tempfile::tempdir().unwrap();
-        let wg_dir2 = tmp2.path().join(".workgraph");
+        let wg_dir2 = tmp2.path().join(".wg");
         std::fs::create_dir_all(&wg_dir2).unwrap();
         run(&wg_dir2, csv_path.to_str().unwrap(), false, None).unwrap();
 
@@ -740,7 +740,7 @@ mod tests {
     #[test]
     fn test_agency_import_9col_format() {
         let tmp = tempfile::tempdir().unwrap();
-        let wg_dir = tmp.path().join(".workgraph");
+        let wg_dir = tmp.path().join(".wg");
         std::fs::create_dir_all(&wg_dir).unwrap();
 
         let csv_path = write_agency_format_csv(tmp.path());
@@ -766,7 +766,7 @@ mod tests {
     #[test]
     fn test_agency_import_9col_metadata_preserved() {
         let tmp = tempfile::tempdir().unwrap();
-        let wg_dir = tmp.path().join(".workgraph");
+        let wg_dir = tmp.path().join(".wg");
         std::fs::create_dir_all(&wg_dir).unwrap();
 
         let csv_path = write_agency_format_csv(tmp.path());
@@ -816,7 +816,7 @@ mod tests {
     #[test]
     fn test_agency_import_9col_quality_maps_to_score() {
         let tmp = tempfile::tempdir().unwrap();
-        let wg_dir = tmp.path().join(".workgraph");
+        let wg_dir = tmp.path().join(".wg");
         std::fs::create_dir_all(&wg_dir).unwrap();
 
         let csv_path = write_agency_format_csv(tmp.path());
@@ -834,7 +834,7 @@ mod tests {
     #[test]
     fn test_agency_import_9col_domain_maps_to_tags() {
         let tmp = tempfile::tempdir().unwrap();
-        let wg_dir = tmp.path().join(".workgraph");
+        let wg_dir = tmp.path().join(".wg");
         std::fs::create_dir_all(&wg_dir).unwrap();
 
         let csv_path = write_agency_format_csv(tmp.path());
@@ -861,7 +861,7 @@ mod tests {
     #[test]
     fn test_agency_import_9col_tradeoff_uses_description() {
         let tmp = tempfile::tempdir().unwrap();
-        let wg_dir = tmp.path().join(".workgraph");
+        let wg_dir = tmp.path().join(".wg");
         std::fs::create_dir_all(&wg_dir).unwrap();
 
         let csv_path = write_agency_format_csv(tmp.path());
@@ -890,7 +890,7 @@ mod tests {
     #[test]
     fn test_agency_import_9col_parent_content_hash_in_lineage() {
         let tmp = tempfile::tempdir().unwrap();
-        let wg_dir = tmp.path().join(".workgraph");
+        let wg_dir = tmp.path().join(".wg");
         std::fs::create_dir_all(&wg_dir).unwrap();
 
         let csv_path = write_agency_format_csv(tmp.path());
@@ -946,7 +946,7 @@ mod tests {
     #[test]
     fn test_import_writes_manifest() {
         let tmp = tempfile::tempdir().unwrap();
-        let wg_dir = tmp.path().join(".workgraph");
+        let wg_dir = tmp.path().join(".wg");
         std::fs::create_dir_all(&wg_dir).unwrap();
 
         let csv_path = write_agency_format_csv(tmp.path());
@@ -971,7 +971,7 @@ mod tests {
     #[test]
     fn test_import_dry_run_no_manifest() {
         let tmp = tempfile::tempdir().unwrap();
-        let wg_dir = tmp.path().join(".workgraph");
+        let wg_dir = tmp.path().join(".wg");
         std::fs::create_dir_all(&wg_dir).unwrap();
 
         let csv_path = write_agency_format_csv(tmp.path());
@@ -984,7 +984,7 @@ mod tests {
     #[test]
     fn test_reimport_updates_manifest() {
         let tmp = tempfile::tempdir().unwrap();
-        let wg_dir = tmp.path().join(".workgraph");
+        let wg_dir = tmp.path().join(".wg");
         std::fs::create_dir_all(&wg_dir).unwrap();
 
         let csv_path = write_agency_format_csv(tmp.path());
@@ -1012,7 +1012,7 @@ mod tests {
     #[test]
     fn test_agency_pull_run_from_bytes() {
         let tmp = tempfile::tempdir().unwrap();
-        let wg_dir = tmp.path().join(".workgraph");
+        let wg_dir = tmp.path().join(".wg");
         std::fs::create_dir_all(&wg_dir).unwrap();
 
         let csv = b"type,name,description,quality,domain_specificity,domain,origin_instance_id,parent_content_hash,scope\n\
@@ -1032,7 +1032,7 @@ mod tests {
     #[test]
     fn test_agency_pull_read_manifest_missing() {
         let tmp = tempfile::tempdir().unwrap();
-        let wg_dir = tmp.path().join(".workgraph");
+        let wg_dir = tmp.path().join(".wg");
         std::fs::create_dir_all(&wg_dir).unwrap();
 
         let result = read_manifest(&wg_dir).unwrap();
@@ -1042,7 +1042,7 @@ mod tests {
     #[test]
     fn test_agency_pull_read_manifest_exists() {
         let tmp = tempfile::tempdir().unwrap();
-        let wg_dir = tmp.path().join(".workgraph");
+        let wg_dir = tmp.path().join(".wg");
         std::fs::create_dir_all(&wg_dir).unwrap();
 
         let csv_path = write_agency_format_csv(tmp.path());
@@ -1056,7 +1056,7 @@ mod tests {
     #[test]
     fn test_agency_pull_change_detection_same_hash() {
         let tmp = tempfile::tempdir().unwrap();
-        let wg_dir = tmp.path().join(".workgraph");
+        let wg_dir = tmp.path().join(".wg");
         std::fs::create_dir_all(&wg_dir).unwrap();
 
         let csv = b"type,name,description,quality,domain_specificity,domain,origin_instance_id,parent_content_hash,scope\n\
@@ -1074,7 +1074,7 @@ mod tests {
     #[test]
     fn test_agency_pull_change_detection_different_hash() {
         let tmp = tempfile::tempdir().unwrap();
-        let wg_dir = tmp.path().join(".workgraph");
+        let wg_dir = tmp.path().join(".wg");
         std::fs::create_dir_all(&wg_dir).unwrap();
 
         let csv1 = b"type,name,description,quality,domain_specificity,domain,origin_instance_id,parent_content_hash,scope\n\
@@ -1096,7 +1096,7 @@ mod tests {
     #[test]
     fn test_agency_pull_import_from_local_via_run_import() {
         let tmp = tempfile::tempdir().unwrap();
-        let wg_dir = tmp.path().join(".workgraph");
+        let wg_dir = tmp.path().join(".wg");
         std::fs::create_dir_all(&wg_dir).unwrap();
 
         let csv_path = write_agency_format_csv(tmp.path());
@@ -1119,7 +1119,7 @@ mod tests {
     #[test]
     fn test_agency_pull_error_multiple_sources() {
         let tmp = tempfile::tempdir().unwrap();
-        let wg_dir = tmp.path().join(".workgraph");
+        let wg_dir = tmp.path().join(".wg");
         std::fs::create_dir_all(&wg_dir).unwrap();
 
         let opts = ImportOptions {
@@ -1139,7 +1139,7 @@ mod tests {
     #[test]
     fn test_agency_pull_error_no_source() {
         let tmp = tempfile::tempdir().unwrap();
-        let wg_dir = tmp.path().join(".workgraph");
+        let wg_dir = tmp.path().join(".wg");
         std::fs::create_dir_all(&wg_dir).unwrap();
 
         let opts = ImportOptions {
@@ -1159,7 +1159,7 @@ mod tests {
     #[test]
     fn test_agency_pull_upstream_no_config() {
         let tmp = tempfile::tempdir().unwrap();
-        let wg_dir = tmp.path().join(".workgraph");
+        let wg_dir = tmp.path().join(".wg");
         std::fs::create_dir_all(&wg_dir).unwrap();
 
         let opts = ImportOptions {
@@ -1184,7 +1184,7 @@ mod tests {
     #[test]
     fn test_agency_pull_url_network_error_graceful() {
         let tmp = tempfile::tempdir().unwrap();
-        let wg_dir = tmp.path().join(".workgraph");
+        let wg_dir = tmp.path().join(".wg");
         std::fs::create_dir_all(&wg_dir).unwrap();
 
         // Use a URL that will fail to connect (invalid host)
@@ -1210,7 +1210,7 @@ mod tests {
     #[test]
     fn test_agency_pull_run_from_bytes_dry_run() {
         let tmp = tempfile::tempdir().unwrap();
-        let wg_dir = tmp.path().join(".workgraph");
+        let wg_dir = tmp.path().join(".wg");
         std::fs::create_dir_all(&wg_dir).unwrap();
 
         let csv = b"type,name,description,quality,domain_specificity,domain,origin_instance_id,parent_content_hash,scope\n\
@@ -1228,7 +1228,7 @@ mod tests {
     #[test]
     fn test_agency_pull_run_from_bytes_with_tag() {
         let tmp = tempfile::tempdir().unwrap();
-        let wg_dir = tmp.path().join(".workgraph");
+        let wg_dir = tmp.path().join(".wg");
         std::fs::create_dir_all(&wg_dir).unwrap();
 
         let csv = b"type,name,description,quality,domain_specificity,domain,origin_instance_id,parent_content_hash,scope\n\
@@ -1248,7 +1248,7 @@ mod tests {
     #[test]
     fn test_agency_pull_additive_merge() {
         let tmp = tempfile::tempdir().unwrap();
-        let wg_dir = tmp.path().join(".workgraph");
+        let wg_dir = tmp.path().join(".wg");
         std::fs::create_dir_all(&wg_dir).unwrap();
 
         let csv1 = b"type,name,description,quality,domain_specificity,domain,origin_instance_id,parent_content_hash,scope\n\

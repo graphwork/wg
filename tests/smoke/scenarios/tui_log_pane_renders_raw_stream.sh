@@ -49,14 +49,14 @@ if ! wg init -x claude >init.log 2>&1; then
 fi
 
 graph_dir=""
-for cand in .wg .workgraph; do
+for cand in .wg .wg; do
     if [[ -f "$scratch/$cand/graph.jsonl" ]]; then
         graph_dir="$scratch/$cand"
         break
     fi
 done
 if [[ -z "$graph_dir" ]]; then
-    loud_fail "could not locate graph.jsonl under .wg/ or .workgraph/ after init"
+    loud_fail "could not locate graph.jsonl under .wg/ or .wg/ after init"
 fi
 
 if ! wg add "Live agent task" --id smoke-live >add.log 2>&1; then

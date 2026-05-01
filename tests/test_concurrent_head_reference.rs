@@ -112,7 +112,7 @@ fn test_concurrent_worktree_creation_head_reference() {
     std::fs::create_dir_all(&project).unwrap();
     init_git_repo(&project);
 
-    let wg_dir = project.join(".workgraph");
+    let wg_dir = project.join(".wg");
     std::fs::create_dir_all(&wg_dir).unwrap();
 
     let project_arc = Arc::new(project);
@@ -202,7 +202,7 @@ fn test_head_reference_under_rapid_agent_turnover() {
     std::fs::create_dir_all(&project).unwrap();
     init_git_repo(&project);
 
-    let wg_dir = project.join(".workgraph");
+    let wg_dir = project.join(".wg");
     std::fs::create_dir_all(&wg_dir).unwrap();
 
     // Simulate rapid create/destroy cycles
@@ -252,7 +252,7 @@ fn test_worktree_creation_with_git_operations_in_progress() {
     std::fs::create_dir_all(&project).unwrap();
     init_git_repo(&project);
 
-    let wg_dir = project.join(".workgraph");
+    let wg_dir = project.join(".wg");
     std::fs::create_dir_all(&wg_dir).unwrap();
 
     let project_arc = Arc::new(project);

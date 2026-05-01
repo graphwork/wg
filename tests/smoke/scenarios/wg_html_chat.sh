@@ -35,7 +35,7 @@ fi
 # inbox/outbox JSONL) we also create directly.
 graph_file=""
 chat_root=""
-for cand in ".workgraph" ".wg"; do
+for cand in ".wg" ".wg"; do
     if [[ -f "$cand/graph.jsonl" ]]; then
         graph_file="$cand/graph.jsonl"
         chat_root="$cand/chat"
@@ -43,7 +43,7 @@ for cand in ".workgraph" ".wg"; do
     fi
 done
 if [[ -z "$graph_file" ]]; then
-    loud_fail "neither .workgraph/graph.jsonl nor .wg/graph.jsonl exists after wg init"
+    loud_fail "neither .wg/graph.jsonl nor .wg/graph.jsonl exists after wg init"
 fi
 mkdir -p "$chat_root"
 

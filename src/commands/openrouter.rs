@@ -81,7 +81,7 @@ fn run_status(dir: &Path, json: bool) -> Result<()> {
 
 /// Show session cost summary.
 fn run_session(dir: &Path, json: bool) -> Result<()> {
-    let service_dir = dir.join(".workgraph/service");
+    let service_dir = dir.join(".wg/service");
 
     // Load coordinator state
     let coord_state = CoordinatorState::load_for(&service_dir, 0).unwrap_or_default();
@@ -135,7 +135,7 @@ fn run_set_limit(
     task: Option<f64>,
 ) -> Result<()> {
     println!("Note: Cost cap configuration is currently managed via config.toml");
-    println!("Add the following to your .workgraph/config.toml file:");
+    println!("Add the following to your .wg/config.toml file:");
     println!();
     println!("[openrouter]");
 

@@ -171,7 +171,7 @@ async fn test_nex_interactive_single_turn() {
 #[tokio::test]
 async fn test_nex_interactive_tool_calling() {
     let tmp = TempDir::new().unwrap();
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     std::fs::create_dir_all(&wg_dir).unwrap();
 
     let call_count = Arc::new(AtomicUsize::new(0));
@@ -625,7 +625,7 @@ async fn test_nex_two_message_roundtrip() {
 #[tokio::test]
 async fn test_nex_two_message_roundtrip_with_tool_use() {
     let tmp = TempDir::new().unwrap();
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     std::fs::create_dir_all(&wg_dir).unwrap();
 
     let call_count = Arc::new(AtomicUsize::new(0));

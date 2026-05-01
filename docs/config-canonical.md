@@ -19,12 +19,12 @@ The graph directory is resolved first, **then** config is loaded:
 
 | step | what is read | from |
 |------|-------------|------|
-| graph-dir resolution | `--dir` → `WG_DIR` → walk-up from cwd for `.wg`/`.workgraph` → `~/.wg`/`~/.workgraph` → default `./.wg` | `src/main.rs:55-102` |
-| global config | `~/.wg/config.toml` (note: **hardcoded `.workgraph`**, not `.wg`) | `src/config.rs:3669-3677` (`Config::global_dir`) |
+| graph-dir resolution | `--dir` → `WG_DIR` → walk-up from cwd for `.wg`/`.wg` → `~/.wg`/`~/.wg` → default `./.wg` | `src/main.rs:55-102` |
+| global config | `~/.wg/config.toml` (note: **hardcoded `.wg`**, not `.wg`) | `src/config.rs:3669-3677` (`Config::global_dir`) |
 | project config | `<workgraph_dir>/config.toml` (whichever name resolved above) | `src/config.rs:3749-3754` (`Config::load_merged`) |
 | matrix creds | `~/.config/workgraph/matrix.toml` (separate file, not merged into Config) | `src/config.rs:3367-3370` |
 
-**Stale alert:** `Config::global_dir()` joins `.workgraph` literally; `resolve_workgraph_dir()` in `main.rs:53` prefers `.wg`. On Erik's system the two are hardlinked and that masks the inconsistency. New users running `wg init --global` get `~/.wg/config.toml` (per `main.rs:710-712`) — but `Config::load_global()` will then try to read `~/.wg/config.toml` and silently get `None`. **Fix candidate:** make `Config::global_dir()` use the same resolver order as `main.rs::resolve_workgraph_dir`.
+**Stale alert:** `Config::global_dir()` joins `.wg` literally; `resolve_workgraph_dir()` in `main.rs:53` prefers `.wg`. On Erik's system the two are hardlinked and that masks the inconsistency. New users running `wg init --global` get `~/.wg/config.toml` (per `main.rs:710-712`) — but `Config::load_global()` will then try to read `~/.wg/config.toml` and silently get `None`. **Fix candidate:** make `Config::global_dir()` use the same resolver order as `main.rs::resolve_workgraph_dir`.
 
 ### Per-key precedence
 
@@ -304,7 +304,7 @@ Items listed as **deprecated** above. The big ones:
 
 ### Naming inconsistencies worth tracking
 
-- **`global_dir()` returns `~/.workgraph`** even though `wg init --global` writes `~/.wg/config.toml`. Currently masked by hardlinks; will silently break for new users.
+- **`global_dir()` returns `~/.wg`** even though `wg init --global` writes `~/.wg/config.toml`. Currently masked by hardlinks; will silently break for new users.
 - **`coordinator_agent`/`max_coordinators`** in the schema vs **`chat_agent`/`max_chats`** that the user wrote in local config. One of:
     - add `serde(alias = "chat_agent")` so the rename works,
     - or document the canonical name and drop the legacy attempt from the project file.
@@ -490,7 +490,7 @@ Because we don't break compatibility:
 
 1. **Unknown-key warnings.** Add an opt-in lint command (`wg config lint` or `wg config check`) that walks the merged config and warns about keys serde silently dropped. Easy because we already have raw `toml::Value` available. Without `deny_unknown_fields` (which would be too aggressive — would break `flip_*` extension keys etc.), a positive allowlist of known keys per section is the only way to catch `chat_agent` typos.
 2. **Add a `[serde(alias = "chat_agent")]` on `coordinator_agent`** and `[serde(alias = "max_chats")]` on `max_coordinators`. Two lines of change. Local config keeps working; future renames don't silently drop.
-3. **Fix `Config::global_dir()` to use the same resolver order as `main.rs`** — try `~/.wg` first, fall back to `~/.workgraph` for legacy. Avoids the silent-divergence bug for new users.
+3. **Fix `Config::global_dir()` to use the same resolver order as `main.rs`** — try `~/.wg` first, fall back to `~/.wg` for legacy. Avoids the silent-divergence bug for new users.
 4. **`wg config trim`** — read merged config, compare against built-in defaults, write back only the differences (with comments preserved if possible). Equivalent to "manually clean my config." First-time users running `wg config init <route>` already get this cleanly; existing users are stuck with whatever their config has accumulated.
 5. **Stale-default sweep**: replace `openrouter:anthropic/claude-sonnet-4` references in `[models.default]` and `[tiers]` with `claude:opus` (or whatever the user's actual default is). The route generators in `src/config_defaults.rs:199-201` still write `claude-sonnet-4`; if Anthropic has moved to `claude-sonnet-4-6` on OpenRouter that's a one-line fix in `openrouter_default_registry()`.
 

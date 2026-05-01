@@ -105,7 +105,7 @@ pub struct AgentLoop {
     journal_path: Option<PathBuf>,
     /// Task ID for journal metadata.
     task_id: Option<String>,
-    /// Workgraph directory root (the `.workgraph` dir). Set alongside
+    /// Workgraph directory root (the `.wg` dir). Set alongside
     /// task_id to enable the workgraph inbox in interactive mode.
     workgraph_dir: Option<PathBuf>,
     /// Agent identifier used for inbox cursor tracking.
@@ -185,7 +185,7 @@ pub struct AgentLoop {
 /// tag correctly.
 struct ChatSurfaceState {
     reader: super::chat_surface::ChatInboxReader,
-    /// Workgraph root dir (`.workgraph/...`), needed for
+    /// Workgraph root dir (`.wg/...`), needed for
     /// `chat::append_outbox_ref` which expects the root, not the
     /// per-chat dir.
     workgraph_dir: PathBuf,
@@ -766,7 +766,7 @@ impl AgentLoop {
     }
 
     /// Set the session summary file path.
-    /// This is typically `.workgraph/agents/<agent-id>/session-summary.md`.
+    /// This is typically `.wg/agents/<agent-id>/session-summary.md`.
     pub fn with_session_summary_path(mut self, path: PathBuf) -> Self {
         self.session_summary_path = Some(path);
         self
@@ -1217,9 +1217,9 @@ impl AgentLoop {
         let mut editor = DefaultEditor::new().context("failed to initialize rustyline editor")?;
         // Persistent history file — survives sessions.
         let history_path = if let Some(home) = std::env::var_os("HOME") {
-            std::path::PathBuf::from(home).join(".workgraph-nex-history")
+            std::path::PathBuf::from(home).join(".wg-nex-history")
         } else {
-            std::path::PathBuf::from(".workgraph-nex-history")
+            std::path::PathBuf::from(".wg-nex-history")
         };
         if !self.autonomous {
             let _ = editor.load_history(&history_path);

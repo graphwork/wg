@@ -97,7 +97,7 @@ fn wg_ok(wg_dir: &Path, args: &[&str]) -> String {
 }
 
 fn init_workgraph(tmp: &TempDir) -> PathBuf {
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     wg_ok(&wg_dir, &["init"]);
     wg_dir
 }
@@ -453,11 +453,11 @@ mod per_provider_key_resolution {
         ]
     }
 
-    /// Create a `.workgraph/` dir with an empty graph and the provided config
+    /// Create a `.wg/` dir with an empty graph and the provided config
     /// (or default config when `config_toml` is empty). Skips `wg init`
     /// entirely so we can write whatever endpoints + model spec we want.
     fn make_wg_dir(tmp: &TempDir, config_toml: &str) -> PathBuf {
-        let wg_dir = tmp.path().join(".workgraph");
+        let wg_dir = tmp.path().join(".wg");
         std::fs::create_dir_all(&wg_dir).unwrap();
         std::fs::write(wg_dir.join("graph.jsonl"), "").unwrap();
         if !config_toml.is_empty() {
@@ -734,7 +734,7 @@ mod credential_wire_contract {
     }
 
     fn make_wg_dir(tmp: &TempDir, config_toml: &str) -> std::path::PathBuf {
-        let wg_dir = tmp.path().join(".workgraph");
+        let wg_dir = tmp.path().join(".wg");
         std::fs::create_dir_all(&wg_dir).unwrap();
         std::fs::write(wg_dir.join("graph.jsonl"), "").unwrap();
         if !config_toml.is_empty() {
@@ -1138,7 +1138,7 @@ async fn native_coordinator_agent_loop_simple_text() {
     use workgraph::executor::native::tools::ToolRegistry;
 
     let tmp = TempDir::new().unwrap();
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     fs::create_dir_all(&wg_dir).unwrap();
     let graph_path = wg_dir.join("graph.jsonl");
     let graph = workgraph::graph::WorkGraph::new();
@@ -1169,7 +1169,7 @@ async fn native_coordinator_agent_loop_with_tool_call() {
     use workgraph::executor::native::tools::ToolRegistry;
 
     let tmp = TempDir::new().unwrap();
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     fs::create_dir_all(&wg_dir).unwrap();
     let graph_path = wg_dir.join("graph.jsonl");
     let graph = workgraph::graph::WorkGraph::new();
@@ -1211,7 +1211,7 @@ async fn native_coordinator_journal_with_openrouter_model() {
     use workgraph::executor::native::tools::ToolRegistry;
 
     let tmp = TempDir::new().unwrap();
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     fs::create_dir_all(&wg_dir).unwrap();
     let graph_path = wg_dir.join("graph.jsonl");
     let graph = workgraph::graph::WorkGraph::new();

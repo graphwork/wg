@@ -21,7 +21,7 @@ fn make_task(id: &str) -> Task {
 }
 
 fn setup_workgraph(dir: &Path, tasks: Vec<Task>) -> PathBuf {
-    let wg_dir = dir.join(".workgraph");
+    let wg_dir = dir.join(".wg");
     fs::create_dir_all(&wg_dir).unwrap();
     let graph_path = wg_dir.join("graph.jsonl");
     let mut graph = WorkGraph::new();

@@ -108,7 +108,7 @@ mod llm_autopoiesis {
     /// config with working_dir and PATH so the wrapper script's bare `wg`
     /// commands find the test binary and the workgraph.
     fn setup_llm_workgraph(tmp_root: &Path) -> PathBuf {
-        let wg_dir = tmp_root.join(".workgraph");
+        let wg_dir = tmp_root.join(".wg");
         wg_ok(&wg_dir, &["init"]);
 
         let wg_bin_dir = wg_binary().parent().unwrap().to_string_lossy().to_string();
@@ -405,7 +405,7 @@ Begin working on the task now.
             &[
                 "artifact",
                 "upstream-ctx",
-                ".workgraph/artifacts/upstream-data.md",
+                ".wg/artifacts/upstream-data.md",
             ],
         );
 
@@ -646,7 +646,7 @@ Begin working on the task now.
         .unwrap();
         wg_ok(
             &wg_dir,
-            &["artifact", "survey-a", ".workgraph/artifacts/survey-a.md"],
+            &["artifact", "survey-a", ".wg/artifacts/survey-a.md"],
         );
 
         // Create survey-b with artifact
@@ -663,7 +663,7 @@ Begin working on the task now.
         .unwrap();
         wg_ok(
             &wg_dir,
-            &["artifact", "survey-b", ".workgraph/artifacts/survey-b.md"],
+            &["artifact", "survey-b", ".wg/artifacts/survey-b.md"],
         );
 
         // Create synthesis task depending on both surveys

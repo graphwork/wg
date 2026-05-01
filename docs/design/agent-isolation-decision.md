@@ -106,7 +106,7 @@ The smallest change that eliminates agent interference:
    - `git worktree add .wg-worktrees/<agent-id> -b wg/<agent-id>/<task-id> HEAD`
    - Agent cwd set to worktree path
    - `git worktree remove --force` on completion/failure
-2. **`.workgraph` symlink**: So `wg` CLI works from worktree
+2. **`.wg` symlink**: So `wg` CLI works from worktree
 3. **Env vars**: `WG_WORKTREE_PATH`, `WG_BRANCH`, `WG_PROJECT_ROOT`
 4. **Opt-in config**: `worktree_isolation = true` in workgraph config (default off initially)
 5. **Basic cleanup**: On service restart, prune stale worktrees
@@ -162,6 +162,6 @@ While the decision is clearly worktrees, two ideas from the GitButler research a
 | **Merge strategy** | Squash merge (phase 2) |
 | **Build isolation** | Per-worktree via env vars + setup hook (phase 2) |
 | **Rollout** | Opt-in config flag, phased adoption |
-| **First phase scope** | Worktree create/remove lifecycle, .workgraph symlink, env vars |
+| **First phase scope** | Worktree create/remove lifecycle, .wg symlink, env vars |
 
 **We are building git worktree isolation as the agent isolation mechanism for workgraph.** Phase 1 delivers the core lifecycle (create, run, cleanup) behind an opt-in config flag. Phase 2 adds merge-back and build optimization. Phase 3 hardens operations. GitButler is not part of the plan.

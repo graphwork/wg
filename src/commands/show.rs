@@ -1697,7 +1697,7 @@ mod tests {
             .unwrap();
 
         // Set up a graph with a task
-        let wg_dir = project.join(".workgraph");
+        let wg_dir = project.join(".wg");
         std::fs::create_dir_all(&wg_dir).unwrap();
         let mut graph = WorkGraph::new();
         let mut t = make_task("retried-task", "test");

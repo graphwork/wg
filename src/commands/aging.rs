@@ -408,7 +408,7 @@ mod tests {
 
     fn setup_test_graph() -> (TempDir, std::path::PathBuf) {
         let tmp = TempDir::new().unwrap();
-        let workgraph_dir = tmp.path().join(".workgraph");
+        let workgraph_dir = tmp.path().join(".wg");
         std::fs::create_dir_all(&workgraph_dir).unwrap();
         let graph_file = workgraph_dir.join("graph.jsonl");
         (tmp, graph_file)
@@ -655,7 +655,7 @@ mod tests {
     #[test]
     fn test_run_no_workgraph_initialized() {
         let tmp = TempDir::new().unwrap();
-        let workgraph_dir = tmp.path().join(".workgraph");
+        let workgraph_dir = tmp.path().join(".wg");
         // Don't create the directory
 
         let result = run(&workgraph_dir, false);

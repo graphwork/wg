@@ -561,7 +561,7 @@ cat nikete/.wg/config.toml upstream/.wg/config.toml > merged-config.toml
 ```bash
 # The VX adapter is a separate tool, not a wg fork
 cargo install wg-vx-adapter  # hypothetical
-wg-vx config set workgraph_dir /path/to/upstream/.workgraph
+wg-vx config set workgraph_dir /path/to/upstream/.wg
 ```
 
 ### 6.2 Migration Guarantees

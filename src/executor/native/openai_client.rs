@@ -1429,11 +1429,11 @@ impl OpenAiClient {
         match &self.endpoint_name {
             Some(name) => format!(
                 " To configure: set `api_key = \"...\"` (or `api_key_file`) under \
-                 [[llm_endpoints.endpoints]] block named '{}' in .workgraph/config.toml.",
+                 [[llm_endpoints.endpoints]] block named '{}' in .wg/config.toml.",
                 name
             ),
             None => " To configure: add an `[[llm_endpoints.endpoints]]` entry with `api_key = \"...\"` \
-                     to .workgraph/config.toml (run `wg endpoints add` for a wizard)."
+                     to .wg/config.toml (run `wg endpoints add` for a wizard)."
                 .to_string(),
         }
     }
@@ -1484,7 +1484,7 @@ impl super::provider::Provider for OpenAiClient {
 /// 2. Environment variables (OPENROUTER_API_KEY, OPENAI_API_KEY)
 /// 3. `[native_executor]` api_key (legacy path)
 fn resolve_openai_api_key() -> Result<String> {
-    let workgraph_dir = std::path::Path::new(".workgraph");
+    let workgraph_dir = std::path::Path::new(".wg");
     resolve_openai_api_key_from_dir(workgraph_dir)
 }
 

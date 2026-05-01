@@ -885,7 +885,7 @@ mod tests {
     #[test]
     #[serial]
     fn test_no_evaluation_when_no_assigner_configured() {
-        // Isolate from global config (~/.workgraph/config.toml) which may
+        // Isolate from global config (~/.wg/config.toml) which may
         // set assigner_agent — that value leaks through config merge when
         // the local config omits it (skip_serializing_if on Option::None).
         let saved_home = std::env::var("HOME").ok();

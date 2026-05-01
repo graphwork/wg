@@ -132,7 +132,7 @@ fn setup_workgraph(dir: &Path) {
 #[tokio::test]
 async fn test_journal_created_on_agent_run() {
     let tmp = TempDir::new().unwrap();
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     setup_workgraph(&wg_dir);
 
     let task_id = "test-journal-task";
@@ -232,7 +232,7 @@ async fn test_journal_created_on_agent_run() {
 #[tokio::test]
 async fn test_journal_entries_provider_agnostic_format() {
     let tmp = TempDir::new().unwrap();
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     setup_workgraph(&wg_dir);
 
     let task_id = "format-test";
@@ -296,7 +296,7 @@ async fn test_journal_entries_provider_agnostic_format() {
 #[tokio::test]
 async fn test_journal_with_tool_calls() {
     let tmp = TempDir::new().unwrap();
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     setup_workgraph(&wg_dir);
 
     // Create a file for the read_file tool to read
@@ -404,7 +404,7 @@ async fn test_journal_with_tool_calls() {
 #[tokio::test]
 async fn test_journal_survives_crash() {
     let tmp = TempDir::new().unwrap();
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     setup_workgraph(&wg_dir);
 
     let task_id = "crash-test";
@@ -489,7 +489,7 @@ async fn test_journal_survives_crash() {
 #[tokio::test]
 async fn test_agent_without_journal() {
     let tmp = TempDir::new().unwrap();
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     setup_workgraph(&wg_dir);
 
     let provider = MockProvider::simple_text("No journal.");
@@ -515,7 +515,7 @@ async fn test_agent_without_journal() {
 #[tokio::test]
 async fn test_journal_max_turns_end_reason() {
     let tmp = TempDir::new().unwrap();
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     setup_workgraph(&wg_dir);
 
     let task_id = "max-turns-test";

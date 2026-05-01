@@ -362,7 +362,7 @@ mod tests {
     #[test]
     fn test_agency_init_creates_agent_and_config() {
         let tmp = tempfile::tempdir().unwrap();
-        let wg_dir = tmp.path().join(".workgraph");
+        let wg_dir = tmp.path().join(".wg");
         std::fs::create_dir_all(&wg_dir).unwrap();
 
         // Run init
@@ -455,7 +455,7 @@ mod tests {
     #[test]
     fn test_agency_init_idempotent() {
         let tmp = tempfile::tempdir().unwrap();
-        let wg_dir = tmp.path().join(".workgraph");
+        let wg_dir = tmp.path().join(".wg");
         std::fs::create_dir_all(&wg_dir).unwrap();
 
         // Run init twice
@@ -504,7 +504,7 @@ trade_off_config,Test Tradeoff,Tradeoff description,70,0,,inst-4,,task
     fn test_agency_init_auto_imports_csv() {
         let tmp = tempfile::tempdir().unwrap();
         let project_root = tmp.path();
-        let wg_dir = project_root.join(".workgraph");
+        let wg_dir = project_root.join(".wg");
         std::fs::create_dir_all(&wg_dir).unwrap();
 
         // Place a bundled CSV at project_root/agency/starter.csv
@@ -543,7 +543,7 @@ trade_off_config,Test Tradeoff,Tradeoff description,70,0,,inst-4,,task
     fn test_agency_init_skips_reimport_when_manifest_exists() {
         let tmp = tempfile::tempdir().unwrap();
         let project_root = tmp.path();
-        let wg_dir = project_root.join(".workgraph");
+        let wg_dir = project_root.join(".wg");
         std::fs::create_dir_all(&wg_dir).unwrap();
 
         write_test_csv(project_root);
@@ -569,7 +569,7 @@ trade_off_config,Test Tradeoff,Tradeoff description,70,0,,inst-4,,task
     fn test_agency_init_imports_embedded_csv_without_on_disk_file() {
         // Even without an on-disk CSV, the embedded CSV should be imported
         let tmp = tempfile::tempdir().unwrap();
-        let wg_dir = tmp.path().join(".workgraph");
+        let wg_dir = tmp.path().join(".wg");
         std::fs::create_dir_all(&wg_dir).unwrap();
 
         run(&wg_dir).unwrap();
@@ -611,7 +611,7 @@ trade_off_config,Test Tradeoff,Tradeoff description,70,0,,inst-4,,task
     fn test_import_manifest_has_correct_content_hash() {
         let tmp = tempfile::tempdir().unwrap();
         let project_root = tmp.path();
-        let wg_dir = project_root.join(".workgraph");
+        let wg_dir = project_root.join(".wg");
         std::fs::create_dir_all(&wg_dir).unwrap();
 
         let csv_path = write_test_csv(project_root);
@@ -633,7 +633,7 @@ trade_off_config,Test Tradeoff,Tradeoff description,70,0,,inst-4,,task
     #[test]
     fn test_init_config_does_not_shadow_global_endpoints() {
         let tmp = tempfile::tempdir().unwrap();
-        let wg_dir = tmp.path().join(".workgraph");
+        let wg_dir = tmp.path().join(".wg");
         std::fs::create_dir_all(&wg_dir).unwrap();
         // Create empty graph so load works
         std::fs::write(wg_dir.join("graph.jsonl"), "").unwrap();
@@ -662,7 +662,7 @@ trade_off_config,Test Tradeoff,Tradeoff description,70,0,,inst-4,,task
     fn test_upstream_pull_no_url_is_noop() {
         // When no upstream_url is configured, try_upstream_pull should be a silent no-op
         let tmp = tempfile::tempdir().unwrap();
-        let wg_dir = tmp.path().join(".workgraph");
+        let wg_dir = tmp.path().join(".wg");
         std::fs::create_dir_all(&wg_dir).unwrap();
 
         // No config at all — should not panic or error
@@ -673,7 +673,7 @@ trade_off_config,Test Tradeoff,Tradeoff description,70,0,,inst-4,,task
     fn test_upstream_pull_bad_url_does_not_fail() {
         // When upstream_url is set but unreachable, init should still succeed
         let tmp = tempfile::tempdir().unwrap();
-        let wg_dir = tmp.path().join(".workgraph");
+        let wg_dir = tmp.path().join(".wg");
         std::fs::create_dir_all(&wg_dir).unwrap();
 
         // Write a config with a bogus upstream URL

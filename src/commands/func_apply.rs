@@ -15,7 +15,7 @@ use super::graph_path;
 /// Resolution order (per §5.4 of cross-repo design doc):
 /// 1. If source contains `:` → parse as `peer:function-id`, resolve peer, load from peer's functions dir
 /// 2. If source ends in `.yaml` or `.yml` → treat as a file path, load directly
-/// 3. Otherwise → existing behavior (search local `.workgraph/functions/`)
+/// 3. Otherwise → existing behavior (search local `.wg/functions/`)
 fn resolve_function_source(
     source: &str,
     function_id: &str,
@@ -1455,14 +1455,14 @@ mod tests {
         let tmp = TempDir::new().unwrap();
 
         // Set up "local" workgraph
-        let local_dir = tmp.path().join("local").join(".workgraph");
+        let local_dir = tmp.path().join("local").join(".wg");
         std::fs::create_dir_all(&local_dir).unwrap();
         let graph = WorkGraph::new();
         save_graph(&graph, local_dir.join("graph.jsonl")).unwrap();
 
         // Set up "peer" workgraph with a function
         let peer_project = tmp.path().join("peer-project");
-        let peer_wg_dir = peer_project.join(".workgraph");
+        let peer_wg_dir = peer_project.join(".wg");
         std::fs::create_dir_all(&peer_wg_dir).unwrap();
         let peer_func_dir = peer_wg_dir.join("functions");
         function::save_function(&sample_function(), &peer_func_dir).unwrap();
@@ -1505,14 +1505,14 @@ mod tests {
         let tmp = TempDir::new().unwrap();
 
         // Set up local workgraph
-        let local_dir = tmp.path().join("local").join(".workgraph");
+        let local_dir = tmp.path().join("local").join(".wg");
         std::fs::create_dir_all(&local_dir).unwrap();
         let graph = WorkGraph::new();
         save_graph(&graph, local_dir.join("graph.jsonl")).unwrap();
 
         // Set up peer workgraph with a function
         let peer_project = tmp.path().join("peer-project");
-        let peer_wg_dir = peer_project.join(".workgraph");
+        let peer_wg_dir = peer_project.join(".wg");
         std::fs::create_dir_all(&peer_wg_dir).unwrap();
         let peer_func_dir = peer_wg_dir.join("functions");
         function::save_function(&sample_function(), &peer_func_dir).unwrap();

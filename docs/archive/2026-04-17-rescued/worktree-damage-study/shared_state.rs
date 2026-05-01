@@ -34,7 +34,7 @@ pub fn setup_shared_paths(worktree_root: &Path, shared_paths: &[String]) -> Resu
     let worktree_root = worktree_root.canonicalize()?;
     
     // Create the shared directory if it doesn't exist
-    let shared_dir = worktree_root.join(".workgraph").join("shared");
+    let shared_dir = worktree_root.join(".wg").join("shared");
     fs::create_dir_all(&shared_dir)?;
     
     for path_str in shared_paths {
@@ -97,7 +97,7 @@ pub fn setup_shared_paths(worktree_root: &Path, shared_paths: &[String]) -> Resu
 
 /// Get the shared target directory path
 pub fn get_shared_target_dir(repo_root: &Path) -> PathBuf {
-    repo_root.join(".workgraph").join("shared-target")
+    repo_root.join(".wg").join("shared-target")
 }
 
 /// Set up environment variables for worktree agents

@@ -1,6 +1,6 @@
 //! Manage agent definitions (identity: role + tradeoff pairings)
 //!
-//! Agent definitions are identity entities stored in .workgraph/agency/.
+//! Agent definitions are identity entities stored in .wg/agency/.
 //! Each agent pairs a role with a tradeoff profile to define its behavior.
 //!
 //! See also: `wg agents` for listing running agent processes (service workers).

@@ -21,7 +21,7 @@ pub fn make_task_with_status(id: &str, title: &str, status: Status) -> Task {
     }
 }
 
-/// Create a `.workgraph` directory structure at `dir`, populate it with the
+/// Create a `.wg` directory structure at `dir`, populate it with the
 /// given tasks, and return the path to the graph file.
 pub fn setup_workgraph(dir: &Path, tasks: Vec<Task>) -> PathBuf {
     std::fs::create_dir_all(dir).unwrap();

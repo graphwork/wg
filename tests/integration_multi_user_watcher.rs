@@ -1,7 +1,7 @@
 //! Integration tests validating the file-system watcher for multi-user scenarios.
 //!
 //! The workgraph TUI uses `notify-debouncer-mini` (50ms debounce, inotify on Linux)
-//! to detect `.workgraph/` changes in real time.  These tests verify:
+//! to detect `.wg/` changes in real time.  These tests verify:
 //!
 //! 1. **Multiple watchers** — N independent watchers all receive all M events from
 //!    atomic rename writes (the pattern `save_graph_inner` uses).
@@ -222,7 +222,7 @@ fn test_multi_user_watcher_inotify_capacity() {
     let dir = TempDir::new().expect("create temp dir");
     let watch_dir = dir.path().to_path_buf();
 
-    // Create a modest directory tree simulating .workgraph/ structure.
+    // Create a modest directory tree simulating .wg/ structure.
     for subdir in &[
         "service",
         "agency",

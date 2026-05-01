@@ -176,7 +176,7 @@ fn wg_cmd(wg_dir: &Path, args: &[&str]) -> std::process::Output {
 }
 
 fn wg_init(tmp_root: &Path) -> PathBuf {
-    let wg_dir = tmp_root.join(".workgraph");
+    let wg_dir = tmp_root.join(".wg");
     let out = wg_cmd(&wg_dir, &["init", "--executor", "shell", "--no-agency"]);
     assert!(
         out.status.success(),

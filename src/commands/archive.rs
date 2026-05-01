@@ -681,7 +681,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let wg_dir = dir.path();
 
-        // Create .workgraph directory structure
+        // Create .wg directory structure
         std::fs::create_dir_all(wg_dir).unwrap();
         let graph_file = wg_dir.join("graph.jsonl");
 
@@ -713,7 +713,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let wg_dir = dir.path();
 
-        // Create .workgraph directory structure
+        // Create .wg directory structure
         std::fs::create_dir_all(wg_dir).unwrap();
         let graph_file = wg_dir.join("graph.jsonl");
 
@@ -749,7 +749,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let wg_dir = dir.path();
 
-        // Create .workgraph directory structure
+        // Create .wg directory structure
         std::fs::create_dir_all(wg_dir).unwrap();
         let graph_file = wg_dir.join("graph.jsonl");
         let arch_path = wg_dir.join("archive.jsonl");
@@ -776,7 +776,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let wg_dir = dir.path();
 
-        // Create .workgraph directory structure
+        // Create .wg directory structure
         std::fs::create_dir_all(wg_dir).unwrap();
         let graph_file = wg_dir.join("graph.jsonl");
         let arch_path = wg_dir.join("archive.jsonl");

@@ -32,7 +32,7 @@ fn make_task(id: &str, title: &str, status: Status) -> Task {
 }
 
 fn setup_workgraph(tmp: &TempDir) -> (PathBuf, PathBuf) {
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     fs::create_dir_all(&wg_dir).unwrap();
     fs::create_dir_all(wg_dir.join("service")).unwrap();
     let graph_path = wg_dir.join("graph.jsonl");
@@ -493,7 +493,7 @@ fn test_mock_executor_script_no_fixture_completes_task() {
         .arg(&mock_script)
         .env("WG_TASK_ID", "no-such-task")
         .env("WG_FIXTURES_DIR", fixture_dir.to_str().unwrap())
-        .env("WG_DIR", tmp.path().join(".workgraph").to_str().unwrap())
+        .env("WG_DIR", tmp.path().join(".wg").to_str().unwrap())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()

@@ -22,8 +22,8 @@ fi
 
 # Assert: wg config --merged shows codex agent model
 # (needs a workgraph dir to exist for wg config --merged)
-mkdir -p "$scratch/proj/.workgraph"
-merged=$(WG_DIR="$scratch/proj/.workgraph" wg --dir "$scratch/proj/.workgraph" config --show 2>&1)
+mkdir -p "$scratch/proj/.wg"
+merged=$(WG_DIR="$scratch/proj/.wg" wg --dir "$scratch/proj/.wg" config --show 2>&1)
 if ! echo "$merged" | grep -q "codex:gpt-5.5"; then
     loud_fail "wg config --merged should reflect codex:gpt-5.5 after 'wg profile use codex': $merged"
 fi

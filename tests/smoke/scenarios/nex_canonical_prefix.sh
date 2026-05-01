@@ -32,12 +32,12 @@ cd "$proj1"
 init_out=$(wg init -m nex:qwen3-coder -e https://example.com/v1 --no-agency 2>&1) || \
     loud_fail "wg init -m nex:qwen3-coder -e https://example.com/v1 failed: $init_out"
 
-if [[ ! -f .wg/config.toml && ! -f .workgraph/config.toml ]]; then
+if [[ ! -f .wg/config.toml && ! -f .wg/config.toml ]]; then
     loud_fail "wg init did not write a config.toml: $init_out"
 fi
 
 cfg_path=".wg/config.toml"
-[[ -f .workgraph/config.toml ]] && cfg_path=".workgraph/config.toml"
+[[ -f .wg/config.toml ]] && cfg_path=".wg/config.toml"
 
 if ! grep -q 'model = "nex:qwen3-coder"' "$cfg_path"; then
     loud_fail "config.toml should contain 'model = \"nex:qwen3-coder\"' — got:\n$(cat "$cfg_path")"

@@ -379,7 +379,7 @@ fn test_seed_starters_and_round_trip() {
 #[test]
 fn test_full_agency_lifecycle_new_design() {
     let tmp = TempDir::new().unwrap();
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     let agency_dir = wg_dir.join("agency");
 
     // ---------------------------------------------------------------
@@ -991,7 +991,7 @@ performance:
 #[test]
 fn test_output_capture_standalone() {
     let tmp = TempDir::new().unwrap();
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     std::fs::create_dir_all(&wg_dir).unwrap();
 
     let mut task = make_task(

@@ -266,7 +266,7 @@ mod tests {
 
     fn make_dir() -> (TempDir, std::path::PathBuf) {
         let tmp = TempDir::new().unwrap();
-        let dir = tmp.path().join(".workgraph");
+        let dir = tmp.path().join(".wg");
         (tmp, dir)
     }
 

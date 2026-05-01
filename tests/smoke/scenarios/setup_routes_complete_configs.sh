@@ -18,7 +18,7 @@
 #   4. `wg setup --route nex-custom --yes` (without --url) refuses with a
 #      helpful message rather than silently producing a half-set config.
 #
-# It runs entirely against a fake $HOME so the real ~/.workgraph/config.toml
+# It runs entirely against a fake $HOME so the real ~/.wg/config.toml
 # is never touched. No daemon, no LLM, no network — pure CLI exercise of the
 # config-defaults wiring.
 
@@ -40,16 +40,16 @@ unset WG_DIR ANTHROPIC_API_KEY OPENROUTER_API_KEY OPENAI_API_KEY 2>/dev/null || 
 if ! wg setup --route claude-cli --yes >"$scratch/setup1.log" 2>&1; then
     loud_fail "wg setup --route claude-cli --yes failed: $(tail -10 "$scratch/setup1.log")"
 fi
-# Modern global dir is `~/.wg/`; legacy `~/.workgraph/` is still accepted on
+# Modern global dir is `~/.wg/`; legacy `~/.wg/` is still accepted on
 # read but new writes go to `.wg`. Resolve whichever one the binary chose.
 if [[ -f "$fake_home/.wg/config.toml" ]]; then
     cfg1="$fake_home/.wg/config.toml"
     cfg1_dir="$fake_home/.wg"
-elif [[ -f "$fake_home/.workgraph/config.toml" ]]; then
-    cfg1="$fake_home/.workgraph/config.toml"
-    cfg1_dir="$fake_home/.workgraph"
+elif [[ -f "$fake_home/.wg/config.toml" ]]; then
+    cfg1="$fake_home/.wg/config.toml"
+    cfg1_dir="$fake_home/.wg"
 else
-    loud_fail "expected $fake_home/.wg/config.toml (or legacy .workgraph) to exist after wg setup --route claude-cli --yes"
+    loud_fail "expected $fake_home/.wg/config.toml (or legacy .wg) to exist after wg setup --route claude-cli --yes"
 fi
 for tier in fast standard premium; do
     if ! grep -qE "^${tier} = " "$cfg1"; then
@@ -83,7 +83,7 @@ done
 if ! wg config reset --route openrouter --yes >"$scratch/reset1.log" 2>&1; then
     loud_fail "wg config reset --route openrouter --yes failed: $(tail -10 "$scratch/reset1.log")"
 fi
-# Backup file should exist (modern .wg or legacy .workgraph dir)
+# Backup file should exist (modern .wg or legacy .wg dir)
 if ! ls "$cfg1_dir" | grep -qE '^config\.toml\.bak-'; then
     loud_fail "wg config reset did not create a backup file. Files: $(ls "$cfg1_dir")"
 fi

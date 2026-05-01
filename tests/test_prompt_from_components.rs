@@ -19,7 +19,7 @@ use workgraph::config::Config;
 /// Seed an agency dir and return it along with the TempDir handle.
 fn setup_agency() -> (TempDir, std::path::PathBuf) {
     let tmp = TempDir::new().unwrap();
-    let agency_dir = tmp.path().join(".workgraph/agency");
+    let agency_dir = tmp.path().join(".wg/agency");
     seed_starters(&agency_dir).unwrap();
     (tmp, agency_dir)
 }

@@ -82,7 +82,7 @@ fn create_worktree(project_root: &Path, agent_id: &str, task_id: &str) -> (PathB
 }
 
 fn setup_graph(project_root: &Path, task_id: &str) -> PathBuf {
-    let wg_dir = project_root.join(".workgraph");
+    let wg_dir = project_root.join(".wg");
     fs::create_dir_all(&wg_dir).unwrap();
     let graph_path = wg_dir.join("graph.jsonl");
 

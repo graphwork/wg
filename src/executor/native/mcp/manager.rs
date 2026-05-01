@@ -15,7 +15,7 @@ use super::McpTool;
 use super::client::McpClient;
 use super::supervisor::connect_initial;
 
-/// Per-server config entry, mirrored in `.workgraph/config.toml`:
+/// Per-server config entry, mirrored in `.wg/config.toml`:
 ///
 /// ```toml
 /// [[mcp.servers]]

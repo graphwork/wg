@@ -1756,7 +1756,7 @@ mod tests {
     #[test]
     fn test_extract_single_done_task() {
         let tmp = TempDir::new().unwrap();
-        let dir = tmp.path().join(".workgraph");
+        let dir = tmp.path().join(".wg");
 
         let mut graph = WorkGraph::new();
         let mut task = make_task("impl-config", "Implement config");
@@ -1790,7 +1790,7 @@ mod tests {
     #[test]
     fn test_extract_rejects_non_done_task() {
         let tmp = TempDir::new().unwrap();
-        let dir = tmp.path().join(".workgraph");
+        let dir = tmp.path().join(".wg");
 
         let mut graph = WorkGraph::new();
         graph.add_node(Node::Task(Task {
@@ -1809,7 +1809,7 @@ mod tests {
     #[test]
     fn test_extract_with_subgraph() {
         let tmp = TempDir::new().unwrap();
-        let dir = tmp.path().join(".workgraph");
+        let dir = tmp.path().join(".wg");
 
         let mut graph = WorkGraph::new();
         let root = Task {
@@ -1872,7 +1872,7 @@ mod tests {
     #[test]
     fn test_extract_force_overwrite() {
         let tmp = TempDir::new().unwrap();
-        let dir = tmp.path().join(".workgraph");
+        let dir = tmp.path().join(".wg");
 
         let mut graph = WorkGraph::new();
         graph.add_node(Node::Task(make_task("t1", "Task 1")));
@@ -1922,7 +1922,7 @@ mod tests {
     #[test]
     fn test_extract_custom_output_path() {
         let tmp = TempDir::new().unwrap();
-        let dir = tmp.path().join(".workgraph");
+        let dir = tmp.path().join(".wg");
         let out_path = tmp.path().join("custom").join("output.yaml");
 
         let mut graph = WorkGraph::new();
@@ -1946,7 +1946,7 @@ mod tests {
     #[test]
     fn test_extract_generalize_warns() {
         let tmp = TempDir::new().unwrap();
-        let dir = tmp.path().join(".workgraph");
+        let dir = tmp.path().join(".wg");
 
         let mut graph = WorkGraph::new();
         graph.add_node(Node::Task(make_task("t1", "Task 1")));
@@ -2284,7 +2284,7 @@ mod tests {
     #[test]
     fn test_generative_requires_two_tasks() {
         let tmp = TempDir::new().unwrap();
-        let dir = tmp.path().join(".workgraph");
+        let dir = tmp.path().join(".wg");
         let mut graph = WorkGraph::new();
         graph.add_node(Node::Task(make_task("t1", "Task 1")));
         setup_graph(&dir, &graph);
@@ -2297,7 +2297,7 @@ mod tests {
     #[test]
     fn test_generative_identical_traces_fallback() {
         let tmp = TempDir::new().unwrap();
-        let dir = tmp.path().join(".workgraph");
+        let dir = tmp.path().join(".wg");
 
         let mut graph = WorkGraph::new();
         // Two root tasks with identical child structure
@@ -2358,7 +2358,7 @@ mod tests {
     #[test]
     fn test_generative_different_traces() {
         let tmp = TempDir::new().unwrap();
-        let dir = tmp.path().join(".workgraph");
+        let dir = tmp.path().join(".wg");
 
         let mut graph = WorkGraph::new();
         // Trace 1: 2 tasks
@@ -2479,7 +2479,7 @@ mod tests {
     #[test]
     fn test_extract_subgraph_filters_coordinator_noise() {
         let tmp = TempDir::new().unwrap();
-        let dir = tmp.path().join(".workgraph");
+        let dir = tmp.path().join(".wg");
 
         let mut graph = WorkGraph::new();
         let root = Task {

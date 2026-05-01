@@ -30,7 +30,7 @@ fn generate_request_id() -> String {
     format!("chat-{}-{}{:05}", millis, pid, nanos_suffix)
 }
 
-/// Process --attachment flags: validate each file, copy to .workgraph/attachments/,
+/// Process --attachment flags: validate each file, copy to .wg/attachments/,
 /// and return the list of Attachment structs.
 fn process_attachments(dir: &Path, paths: &[String]) -> Result<Vec<Attachment>> {
     let mut attachments = Vec::new();
@@ -495,7 +495,7 @@ mod tests {
 
     fn setup() -> (TempDir, std::path::PathBuf) {
         let tmp = TempDir::new().unwrap();
-        let wg_dir = tmp.path().join(".workgraph");
+        let wg_dir = tmp.path().join(".wg");
         fs::create_dir_all(&wg_dir).unwrap();
         (tmp, wg_dir)
     }

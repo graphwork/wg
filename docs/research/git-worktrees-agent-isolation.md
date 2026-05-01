@@ -251,8 +251,8 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
-# Symlink shared .workgraph so wg CLI works from worktree
-ln -s "$PROJECT_ROOT/.workgraph" "$WG_WORKTREE_PATH/.workgraph"
+# Symlink shared .wg so wg CLI works from worktree
+ln -s "$PROJECT_ROOT/.wg" "$WG_WORKTREE_PATH/.wg"
 
 # Run project-specific build setup if it exists
 if [ -x "$PROJECT_ROOT/.wg/worktree-setup.sh" ]; then
@@ -332,7 +332,7 @@ exit $EXIT_CODE
 ### Key Design Decisions in the Sketch
 
 1. **Worktree created BEFORE agent starts** — agent's cwd is set to the worktree
-2. **`.workgraph` symlinked** — all wg CLI commands work transparently
+2. **`.wg` symlinked** — all wg CLI commands work transparently
 3. **Merge happens in wrapper AFTER agent exits** — agent doesn't need to merge
 4. **Squash merge by default** — clean one-commit-per-task history
 5. **Conflict = auto-fail for retry** — coordinator re-dispatches from updated HEAD
@@ -472,7 +472,7 @@ The best merge strategy is avoiding conflicts in the first place:
 - `wg worktree clean` command removes all worktrees not associated with running agents
 - `.wg-worktrees/` should be in `.gitignore` so it doesn't pollute status
 
-### The `.workgraph` Directory
+### The `.wg` Directory
 
 **Should it be shared or per-worktree?** Shared, via symlink.
 
@@ -514,7 +514,7 @@ The best merge strategy is avoiding conflicts in the first place:
 ### Agent Creates Files Outside Worktree
 
 - Agent runs in worktree cwd — relative paths resolve inside worktree
-- `wg` commands use the symlinked `.workgraph` — artifacts are recorded relative to project root
+- `wg` commands use the symlinked `.wg` — artifacts are recorded relative to project root
 - Risk: agent uses absolute paths from task description pointing to main repo
 - Mitigation: agent prompt should not include absolute paths; use relative paths only
 
@@ -573,7 +573,7 @@ Potentially:
 | Isolation mechanism | Git worktrees (native, no dependencies) |
 | Worktree location | `.wg-worktrees/<agent-id>/` inside repo, added to `.gitignore` |
 | Branch naming | `wg/<agent-id>/<task-id>` |
-| Shared state | Symlink `.workgraph` from worktree to main repo |
+| Shared state | Symlink `.wg` from worktree to main repo |
 | Build isolation | Generic `worktree-setup.sh` hook, per-language env vars |
 | Merge strategy | Squash merge by default, configurable |
 | Conflict handling | Abort + auto-retry (re-dispatch from updated HEAD) |

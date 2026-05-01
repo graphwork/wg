@@ -769,7 +769,7 @@ mod tests {
     #[test]
     fn test_migrate_full_cycle() {
         let tmp = tempfile::tempdir().unwrap();
-        let wg_dir = tmp.path().join(".workgraph");
+        let wg_dir = tmp.path().join(".wg");
         let agency_dir = wg_dir.join("agency");
 
         // Create old-format directories
@@ -889,7 +889,7 @@ lineage:
     #[test]
     fn test_migrate_role_without_skills() {
         let tmp = tempfile::tempdir().unwrap();
-        let wg_dir = tmp.path().join(".workgraph");
+        let wg_dir = tmp.path().join(".wg");
         let agency_dir = wg_dir.join("agency");
 
         // Write old role without skills (evolved role)
@@ -948,7 +948,7 @@ lineage:
     #[test]
     fn test_migrate_dry_run() {
         let tmp = tempfile::tempdir().unwrap();
-        let wg_dir = tmp.path().join(".workgraph");
+        let wg_dir = tmp.path().join(".wg");
         let agency_dir = wg_dir.join("agency");
 
         write_yaml(
@@ -977,7 +977,7 @@ lineage:
     #[test]
     fn test_migrate_nothing_to_migrate() {
         let tmp = tempfile::tempdir().unwrap();
-        let wg_dir = tmp.path().join(".workgraph");
+        let wg_dir = tmp.path().join(".wg");
         fs::create_dir_all(&wg_dir).unwrap();
 
         // No old directories at all
@@ -987,7 +987,7 @@ lineage:
     #[test]
     fn test_deterministic_hashes() {
         let tmp = tempfile::tempdir().unwrap();
-        let wg_dir = tmp.path().join(".workgraph");
+        let wg_dir = tmp.path().join(".wg");
         let agency_dir = wg_dir.join("agency");
 
         write_yaml(

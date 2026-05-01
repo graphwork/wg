@@ -53,7 +53,7 @@ impl MatrixListener {
     /// Create a new Matrix listener
     ///
     /// # Arguments
-    /// * `workgraph_dir` - Path to the .workgraph directory
+    /// * `workgraph_dir` - Path to the .wg directory
     /// * `matrix_config` - Matrix credentials and settings
     /// * `listener_config` - Listener-specific configuration
     pub async fn new(

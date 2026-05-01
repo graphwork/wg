@@ -69,7 +69,7 @@ fn make_task(id: &str, title: &str, status: Status) -> Task {
 }
 
 fn setup_workgraph(tmp: &TempDir, tasks: Vec<Task>) -> PathBuf {
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     fs::create_dir_all(&wg_dir).unwrap();
     let graph_path = wg_dir.join("graph.jsonl");
     let mut graph = WorkGraph::new();
@@ -480,7 +480,7 @@ fn exec_set_and_clear_command() {
 #[test]
 fn exec_dry_run_includes_dependency_context() {
     let tmp = TempDir::new().unwrap();
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     fs::create_dir_all(&wg_dir).unwrap();
     let graph_path = wg_dir.join("graph.jsonl");
 
@@ -523,7 +523,7 @@ fn exec_dry_run_includes_dependency_context() {
 #[test]
 fn exec_no_workgraph_initialized_errors() {
     let tmp = TempDir::new().unwrap();
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     // Don't create the directory or graph file
 
     let output = wg_cmd(&wg_dir, &["exec", "any-task", "--dry-run"]);

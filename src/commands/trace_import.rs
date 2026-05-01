@@ -317,7 +317,7 @@ mod tests {
     #[test]
     fn test_dry_run_does_not_write_files() {
         let tmp = TempDir::new().unwrap();
-        let wg_dir = tmp.path().join(".workgraph");
+        let wg_dir = tmp.path().join(".wg");
         std::fs::create_dir_all(&wg_dir).unwrap();
 
         // Write a valid export file

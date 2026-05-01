@@ -133,7 +133,7 @@ fn setup_workgraph(dir: &Path) {
 #[tokio::test]
 async fn test_server_error_500_recovered_gracefully() {
     let tmp = TempDir::new().unwrap();
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     setup_workgraph(&wg_dir);
 
     let provider = ErrorInjectingProvider::new(vec![
@@ -200,7 +200,7 @@ async fn test_server_error_500_recovered_gracefully() {
 #[tokio::test]
 async fn test_rate_limit_429_recovered_gracefully() {
     let tmp = TempDir::new().unwrap();
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     setup_workgraph(&wg_dir);
 
     let provider = ErrorInjectingProvider::new(vec![
@@ -262,7 +262,7 @@ async fn test_rate_limit_429_recovered_gracefully() {
 #[tokio::test]
 async fn test_auth_error_401_fails_immediately() {
     let tmp = TempDir::new().unwrap();
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     setup_workgraph(&wg_dir);
 
     let provider = ErrorInjectingProvider::new(vec![MockAction::Error(Box::new(|| {
@@ -301,7 +301,7 @@ async fn test_auth_error_401_fails_immediately() {
 #[tokio::test]
 async fn test_consecutive_server_errors_eventually_fail() {
     let tmp = TempDir::new().unwrap();
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     setup_workgraph(&wg_dir);
 
     // 4 consecutive 500 errors — should exceed the limit of 3
@@ -361,7 +361,7 @@ async fn test_consecutive_server_errors_eventually_fail() {
 #[tokio::test]
 async fn test_server_error_counter_resets_on_success() {
     let tmp = TempDir::new().unwrap();
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     setup_workgraph(&wg_dir);
 
     // Pattern: error → success → error → success → done
@@ -414,7 +414,7 @@ async fn test_server_error_counter_resets_on_success() {
 #[tokio::test]
 async fn test_timeout_error_recovered_gracefully() {
     let tmp = TempDir::new().unwrap();
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     setup_workgraph(&wg_dir);
 
     let provider = ErrorInjectingProvider::new(vec![
@@ -465,7 +465,7 @@ async fn test_timeout_error_recovered_gracefully() {
 #[tokio::test]
 async fn test_model_conversation_never_contains_raw_errors() {
     let tmp = TempDir::new().unwrap();
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     setup_workgraph(&wg_dir);
 
     // Mix of errors and successes
@@ -540,7 +540,7 @@ async fn test_model_conversation_never_contains_raw_errors() {
 #[tokio::test]
 async fn test_json_parse_error_in_tool_args_no_crash() {
     let tmp = TempDir::new().unwrap();
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     setup_workgraph(&wg_dir);
 
     // Model returns a tool call with malformed JSON arguments

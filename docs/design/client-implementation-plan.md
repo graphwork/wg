@@ -190,7 +190,7 @@
   - `wg-connect.sh`: determines `WG_USER` from SSH user / ttyd auth / env var, then runs `tmux new-session -A -s "${WG_USER:-$USER}-wg" "wg tui"`
   - Ensures consistent session naming across all platforms
   - Handles first-run: if `wg` binary not found, prints setup instructions
-  - Optional: creates `~/.workgraph-user` config for per-user coordinator settings
+  - Optional: creates `~/.wg-user` config for per-user coordinator settings
   - Used by: ttyd launch command, SSH `ForceCommand`, mosh connection command
 - **Files:** `scripts/wg-connect.sh`, referenced in all platform guides
 - **Dependencies:** None

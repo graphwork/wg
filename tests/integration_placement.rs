@@ -41,10 +41,10 @@ fn make_task(id: &str, title: &str) -> Task {
     }
 }
 
-/// Set up a temp dir with a `.workgraph/` directory containing a graph.
+/// Set up a temp dir with a `.wg/` directory containing a graph.
 fn setup_graph(tasks: &[(&str, &str)]) -> TempDir {
     let tmp = TempDir::new().unwrap();
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     fs::create_dir_all(&wg_dir).unwrap();
 
     let mut graph = WorkGraph::new();
@@ -119,7 +119,7 @@ fn test_placement_edit_applied_to_graph() {
         ("dep-a", "Dependency A"),
         ("dep-b", "Dependency B"),
     ]);
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
 
     let output_dir = tmp.path().join("agent-output");
     fs::create_dir_all(&output_dir).unwrap();
@@ -170,7 +170,7 @@ fn test_placement_edit_applied_to_graph() {
 #[test]
 fn test_placement_noop_no_changes() {
     let tmp = setup_graph(&[("my-task", "My Task")]);
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
 
     // Capture graph state before
     let graph_before = load_graph(&wg_dir.join("graph.jsonl")).unwrap();
@@ -211,7 +211,7 @@ fn test_placement_noop_no_changes() {
 #[test]
 fn test_placement_unparseable_fails() {
     let tmp = setup_graph(&[("my-task", "My Task")]);
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
 
     let output_dir = tmp.path().join("agent-output");
     fs::create_dir_all(&output_dir).unwrap();
@@ -236,7 +236,7 @@ fn test_placement_unparseable_fails() {
 #[test]
 fn test_placement_empty_output_fails() {
     let tmp = setup_graph(&[("my-task", "My Task")]);
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
 
     // Create stream with NO assistant output (simulating agent crash/death)
     let output_dir = tmp.path().join("agent-output");
@@ -271,7 +271,7 @@ fn test_placement_empty_output_fails() {
 #[test]
 fn test_placement_multiline_last_line_command() {
     let tmp = setup_graph(&[("my-task", "My Task"), ("prereq", "Prerequisite")]);
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
 
     let output_dir = tmp.path().join("agent-output");
     fs::create_dir_all(&output_dir).unwrap();
@@ -312,7 +312,7 @@ fn test_placement_multiline_last_line_command() {
 #[test]
 fn test_placement_wrong_task_id_fails() {
     let tmp = setup_graph(&[("my-task", "My Task"), ("other-task", "Other Task")]);
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
 
     let output_dir = tmp.path().join("agent-output");
     fs::create_dir_all(&output_dir).unwrap();
@@ -334,7 +334,7 @@ fn test_placement_comma_separated_deps() {
         ("dep-2", "Dep 2"),
         ("dep-3", "Dep 3"),
     ]);
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
 
     let output_dir = tmp.path().join("agent-output");
     fs::create_dir_all(&output_dir).unwrap();
@@ -367,7 +367,7 @@ fn test_placement_comma_separated_deps() {
 #[test]
 fn test_placement_backtick_wrapped_command() {
     let tmp = setup_graph(&[("my-task", "My Task"), ("foundation", "Foundation")]);
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
 
     let output_dir = tmp.path().join("agent-output");
     fs::create_dir_all(&output_dir).unwrap();
@@ -398,7 +398,7 @@ fn test_placement_backtick_wrapped_command() {
 #[test]
 fn test_placement_noop_case_insensitive() {
     let tmp = setup_graph(&[("my-task", "My Task")]);
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
 
     let output_dir = tmp.path().join("agent-output");
     fs::create_dir_all(&output_dir).unwrap();
@@ -420,7 +420,7 @@ fn test_placement_noop_case_insensitive() {
 #[test]
 fn test_placement_trailing_whitespace() {
     let tmp = setup_graph(&[("my-task", "My Task"), ("dep", "Dep")]);
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
 
     let output_dir = tmp.path().join("agent-output");
     fs::create_dir_all(&output_dir).unwrap();
@@ -448,7 +448,7 @@ fn test_placement_trailing_whitespace() {
 #[test]
 fn test_placement_blocked_by_alias() {
     let tmp = setup_graph(&[("my-task", "My Task"), ("blocker", "Blocker")]);
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
 
     let output_dir = tmp.path().join("agent-output");
     fs::create_dir_all(&output_dir).unwrap();
@@ -477,7 +477,7 @@ fn test_placement_blocked_by_alias() {
 #[test]
 fn test_placement_edit_no_edges_fails() {
     let tmp = setup_graph(&[("my-task", "My Task")]);
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
 
     let output_dir = tmp.path().join("agent-output");
     fs::create_dir_all(&output_dir).unwrap();

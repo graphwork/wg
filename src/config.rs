@@ -1,6 +1,6 @@
 //! Project configuration for workgraph
 //!
-//! Configuration is stored in `.workgraph/config.toml` and controls
+//! Configuration is stored in `.wg/config.toml` and controls
 //! agent behavior, executor settings, and project defaults.
 //!
 //! Sensitive credentials (like Matrix login) are stored separately in
@@ -241,7 +241,7 @@ pub struct NativeExecutorConfig {
 /// Tool permission configuration. First cut is a simple denylist;
 /// room to grow to per-path / pattern matching without schema churn.
 ///
-/// Example `.workgraph/config.toml`:
+/// Example `.wg/config.toml`:
 /// ```toml
 /// [native_executor.permissions]
 /// deny_tools = ["bash", "write_file", "wg_done"]
@@ -3053,7 +3053,7 @@ pub struct CoordinatorConfig {
 
     /// Archive tasks completed/abandoned more than this many days ago.
     /// The archive cycle (.archive-0) runs periodically and moves old
-    /// done/abandoned tasks to .workgraph/archive.jsonl. Default: 7 days.
+    /// done/abandoned tasks to .wg/archive.jsonl. Default: 7 days.
     /// Set to 0 to disable automatic archival.
     #[serde(default = "default_archive_retention_days")]
     pub archive_retention_days: u64,
@@ -3897,7 +3897,7 @@ impl Config {
         Ok(Self::global_dir()?.join("config.toml"))
     }
 
-    /// Load global configuration from ~/.workgraph/config.toml.
+    /// Load global configuration from ~/.wg/config.toml.
     /// Returns None if the file doesn't exist, Err on parse failure.
     pub fn load_global() -> anyhow::Result<Option<Self>> {
         let global_path = Self::global_config_path()?;
@@ -4048,7 +4048,7 @@ impl Config {
     /// 2. Environment variables (provider-specific, e.g. OPENROUTER_API_KEY)
     /// 3. `[native_executor]` api_key in config.toml (legacy path)
     ///
-    /// `workgraph_dir` is the `.workgraph/` directory, used for resolving
+    /// `workgraph_dir` is the `.wg/` directory, used for resolving
     /// relative api_key_file paths and reading native_executor config.
     pub fn resolve_api_key_for_provider(
         &self,
@@ -4096,7 +4096,7 @@ impl Config {
             "No API key found for provider '{}'. Configure a key via:\n  \
              - wg endpoints add (recommended)\n  \
              - Set {} environment variable\n  \
-             - Add [native_executor] api_key to .workgraph/config.toml",
+             - Add [native_executor] api_key to .wg/config.toml",
             provider,
             EndpointConfig::env_var_names_for_provider(provider)
                 .first()
@@ -4104,7 +4104,7 @@ impl Config {
         ))
     }
 
-    /// Load configuration from .workgraph/config.toml (local only).
+    /// Load configuration from .wg/config.toml (local only).
     /// Returns default config if file doesn't exist.
     pub fn load(workgraph_dir: &Path) -> anyhow::Result<Self> {
         let config_path = workgraph_dir.join("config.toml");
@@ -4200,7 +4200,7 @@ impl Config {
         }
     }
 
-    /// Save configuration to .workgraph/config.toml
+    /// Save configuration to .wg/config.toml
     pub fn save(&self, workgraph_dir: &Path) -> anyhow::Result<()> {
         let config_path = workgraph_dir.join("config.toml");
 
@@ -4313,8 +4313,8 @@ impl Config {
         Ok(summary)
     }
 
-    /// Save configuration to the global path (~/.workgraph/config.toml).
-    /// Creates the ~/.workgraph/ directory if needed.
+    /// Save configuration to the global path (~/.wg/config.toml).
+    /// Creates the ~/.wg/ directory if needed.
     pub fn save_global(&self) -> anyhow::Result<()> {
         let global_dir = Self::global_dir()?;
         fs::create_dir_all(&global_dir).map_err(|e| {
@@ -5320,7 +5320,7 @@ model = "claude:haiku"
 "#;
         fs::write(temp_dir.path().join("config.toml"), local_toml).unwrap();
 
-        // This test depends on whether ~/.workgraph/config.toml exists on the
+        // This test depends on whether ~/.wg/config.toml exists on the
         // machine, but the merge should work either way.  If the global config
         // uses old format, the merge may fail — that's OK in that scenario.
         match Config::load_merged(temp_dir.path()) {
@@ -8118,7 +8118,7 @@ fetch_max_chars = 8000
 
     /// Legacy `search_backend` field: no longer declared on the struct,
     /// but existing user configs may still have it set (the project's
-    /// .workgraph/config.toml and tests have shipped with it for a
+    /// .wg/config.toml and tests have shipped with it for a
     /// while). serde silently ignores unknown fields by default, so
     /// deserialization must succeed.
     #[test]

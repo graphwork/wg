@@ -986,7 +986,7 @@ const COORDINATOR_PROMPT_FILES: &[&str] = &[
 
 /// Build the system prompt for the coordinator agent by composing from files.
 ///
-/// Reads from `.workgraph/agency/coordinator-prompt/` and concatenates the
+/// Reads from `.wg/agency/coordinator-prompt/` and concatenates the
 /// component files in order. Falls back to the hardcoded prompt if the
 /// directory doesn't exist or no files are found.
 ///
@@ -1279,7 +1279,7 @@ mod tests {
         let dir = tmp.path();
 
         // Create a minimal graph
-        std::fs::create_dir_all(dir.join(".workgraph")).unwrap();
+        std::fs::create_dir_all(dir.join(".wg")).unwrap();
         let graph_file = dir.join("graph.md");
         std::fs::write(
             &graph_file,

@@ -1,7 +1,7 @@
 //! Git worktree isolation for spawned agents.
 //!
 //! When worktree isolation is enabled, each agent gets its own git worktree
-//! at `.wg-worktrees/<agent-id>/`, branched from HEAD. The `.workgraph/`
+//! at `.wg-worktrees/<agent-id>/`, branched from HEAD. The `.wg/`
 //! directory is symlinked into the worktree so the `wg` CLI works normally.
 
 use anyhow::{Context, Result};
@@ -24,7 +24,7 @@ pub struct WorktreeInfo {
 /// 1. Error out if a worktree/branch with the same name already exists — worktrees
 ///    are sacred and must only be removed by explicit user action (`wg worktree archive`)
 /// 2. `git worktree add .wg-worktrees/<agent-id> -b wg/<agent-id>/<task-id> HEAD`
-/// 3. Symlink `.workgraph` into the worktree
+/// 3. Symlink `.wg` into the worktree
 /// 4. Run `worktree-setup.sh` if it exists (best-effort)
 pub fn create_worktree(
     project_root: &Path,
@@ -62,13 +62,13 @@ pub fn create_worktree(
         anyhow::bail!("git worktree add failed: {}", stderr.trim());
     }
 
-    // Symlink .workgraph so wg CLI works from the worktree
+    // Symlink .wg so wg CLI works from the worktree
     let symlink_target = workgraph_dir
         .canonicalize()
-        .context("Failed to canonicalize .workgraph path")?;
-    let symlink_path = worktree_dir.join(".workgraph");
+        .context("Failed to canonicalize .wg path")?;
+    let symlink_path = worktree_dir.join(".wg");
     std::os::unix::fs::symlink(&symlink_target, &symlink_path)
-        .context("Failed to symlink .workgraph into worktree")?;
+        .context("Failed to symlink .wg into worktree")?;
 
     // Run worktree-setup.sh if it exists
     let setup_script = workgraph_dir.join("worktree-setup.sh");
@@ -143,7 +143,7 @@ pub fn find_worktree_for_task(
 /// Remove a worktree and its branch. Force-removes to discard uncommitted changes.
 pub fn remove_worktree(project_root: &Path, worktree_path: &Path, branch: &str) -> Result<()> {
     // Remove the symlink first (git worktree remove won't remove it)
-    let symlink_path = worktree_path.join(".workgraph");
+    let symlink_path = worktree_path.join(".wg");
     if symlink_path.exists() {
         let _ = std::fs::remove_file(&symlink_path);
     }
@@ -215,13 +215,13 @@ mod tests {
         std::fs::create_dir_all(&project).unwrap();
         init_git_repo(&project);
 
-        let wg_dir = project.join(".workgraph");
+        let wg_dir = project.join(".wg");
         std::fs::create_dir_all(&wg_dir).unwrap();
 
         let info = create_worktree(&project, &wg_dir, "agent-1", "task-foo").unwrap();
         assert!(info.path.exists());
         assert_eq!(info.branch, "wg/agent-1/task-foo");
-        assert!(info.path.join(".workgraph").exists()); // symlink
+        assert!(info.path.join(".wg").exists()); // symlink
         assert!(info.path.join("file.txt").exists()); // source checked out
 
         // Cleanup
@@ -272,7 +272,7 @@ mod tests {
         std::fs::create_dir_all(&project).unwrap();
         init_git_repo(&project);
 
-        let wg_dir = project.join(".workgraph");
+        let wg_dir = project.join(".wg");
         std::fs::create_dir_all(&wg_dir).unwrap();
 
         let info = create_worktree(&project, &wg_dir, "agent-collide", "task-one").unwrap();
@@ -301,7 +301,7 @@ mod tests {
         std::fs::create_dir_all(&project).unwrap();
         init_git_repo(&project);
 
-        let wg_dir = project.join(".workgraph");
+        let wg_dir = project.join(".wg");
         std::fs::create_dir_all(&wg_dir).unwrap();
 
         let info = create_worktree(&project, &wg_dir, "agent-1", "task-foo").unwrap();
@@ -317,13 +317,13 @@ mod tests {
         std::fs::create_dir_all(&project).unwrap();
         init_git_repo(&project);
 
-        let wg_dir = project.join(".workgraph");
+        let wg_dir = project.join(".wg");
         std::fs::create_dir_all(&wg_dir).unwrap();
         // Write a marker file so we can verify the symlink target
         std::fs::write(wg_dir.join("marker"), "test").unwrap();
 
         let info = create_worktree(&project, &wg_dir, "agent-2", "task-bar").unwrap();
-        let symlink = info.path.join(".workgraph");
+        let symlink = info.path.join(".wg");
         assert!(symlink.is_symlink());
         // The marker file should be readable through the symlink
         assert_eq!(

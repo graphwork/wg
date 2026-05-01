@@ -45,9 +45,9 @@ fn run_wg_in_isolation(fake_home: &Path, args: &[&str]) -> std::process::Output 
 
 fn load_global_config(fake_home: &Path) -> Config {
     // Mirrors Config::global_dir resolution: prefer modern `~/.wg`, fall
-    // back to legacy `~/.workgraph` if only that exists.
+    // back to legacy `~/.wg` if only that exists.
     let modern = fake_home.join(".wg/config.toml");
-    let legacy = fake_home.join(".workgraph/config.toml");
+    let legacy = fake_home.join(".wg/config.toml");
     let path = if modern.exists() {
         modern
     } else if legacy.exists() {
@@ -289,9 +289,9 @@ fn test_setup_dry_run_does_not_write() {
     assert!(output.status.success());
 
     // No global config should have been created — under either the modern
-    // `.wg` or legacy `.workgraph` global dir.
+    // `.wg` or legacy `.wg` global dir.
     let modern = fake_home.join(".wg/config.toml");
-    let legacy = fake_home.join(".workgraph/config.toml");
+    let legacy = fake_home.join(".wg/config.toml");
     assert!(
         !modern.exists() && !legacy.exists(),
         "dry-run must not create global config (neither {} nor {} should exist)",
@@ -406,7 +406,7 @@ fn test_init_with_executor_only_populates_tiers() {
 fn test_config_reset_keep_keys_preserves_endpoints() {
     let tmp = TempDir::new().unwrap();
     let fake_home = tmp.path().join("home");
-    let global_dir = fake_home.join(".workgraph");
+    let global_dir = fake_home.join(".wg");
     fs::create_dir_all(&global_dir).unwrap();
 
     // Pre-populate a global config with an openrouter endpoint
@@ -470,7 +470,7 @@ is_default = true
 fn test_config_reset_creates_backup() {
     let tmp = TempDir::new().unwrap();
     let fake_home = tmp.path().join("home");
-    let global_dir = fake_home.join(".workgraph");
+    let global_dir = fake_home.join(".wg");
     fs::create_dir_all(&global_dir).unwrap();
 
     let pre = r#"
@@ -529,7 +529,7 @@ model = "claude:opus"
 fn test_config_reset_dry_run_does_not_write() {
     let tmp = TempDir::new().unwrap();
     let fake_home = tmp.path().join("home");
-    let global_dir = fake_home.join(".workgraph");
+    let global_dir = fake_home.join(".wg");
     fs::create_dir_all(&global_dir).unwrap();
 
     let pre = r#"

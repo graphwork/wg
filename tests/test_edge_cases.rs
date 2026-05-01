@@ -52,9 +52,9 @@ fn init_git_repo(path: &Path) {
 fn setup_workgraph_project(path: &Path) {
     init_git_repo(path);
 
-    // Create .workgraph directory structure
-    let wg_dir = path.join(".workgraph");
-    fs::create_dir_all(&wg_dir).expect("Failed to create .workgraph dir");
+    // Create .wg directory structure
+    let wg_dir = path.join(".wg");
+    fs::create_dir_all(&wg_dir).expect("Failed to create .wg dir");
     fs::create_dir_all(wg_dir.join("service")).expect("Failed to create service dir");
     fs::create_dir_all(wg_dir.join("agents")).expect("Failed to create agents dir");
 
@@ -140,11 +140,11 @@ fn simulate_cleanup_with_error_handling(
         return Ok(()); // Already cleaned
     }
 
-    // Try to clean up .workgraph symlink
-    let wg_marker = worktree_path.join(".workgraph");
+    // Try to clean up .wg symlink
+    let wg_marker = worktree_path.join(".wg");
     if wg_marker.exists() {
         fs::remove_file(&wg_marker)
-            .map_err(|e| format!("Failed to remove .workgraph marker: {}", e))?;
+            .map_err(|e| format!("Failed to remove .wg marker: {}", e))?;
     }
 
     // Try to clean up target directory
@@ -186,7 +186,7 @@ fn test_edge_cases_malformed_metadata() {
     let project = temp.path().join("project");
     setup_workgraph_project(&project);
 
-    let agents_dir = project.join(".workgraph").join("agents");
+    let agents_dir = project.join(".wg").join("agents");
 
     // Test case 1: Invalid JSON
     let agent1_dir = agents_dir.join("agent-invalid-json");
@@ -267,7 +267,7 @@ fn test_edge_cases_missing_metadata_file() {
     let project = temp.path().join("project");
     setup_workgraph_project(&project);
 
-    let agents_dir = project.join(".workgraph").join("agents");
+    let agents_dir = project.join(".wg").join("agents");
     let agent_dir = agents_dir.join("agent-no-metadata");
     fs::create_dir_all(&agent_dir).unwrap();
     // Don't create metadata.json
@@ -289,7 +289,7 @@ fn test_edge_cases_missing_worktree() {
     let project = temp.path().join("project");
     setup_workgraph_project(&project);
 
-    let agents_dir = project.join(".workgraph").join("agents");
+    let agents_dir = project.join(".wg").join("agents");
     let agent_id = "agent-missing-worktree";
     let agent_dir = agents_dir.join(agent_id);
     fs::create_dir_all(&agent_dir).unwrap();
@@ -406,7 +406,7 @@ fn test_permission_denied_metadata_access() {
     let project = temp.path().join("project");
     setup_workgraph_project(&project);
 
-    let agents_dir = project.join(".workgraph").join("agents");
+    let agents_dir = project.join(".wg").join("agents");
     let agent_dir = agents_dir.join("agent-no-read");
     fs::create_dir_all(&agent_dir).unwrap();
 
@@ -526,7 +526,7 @@ fn test_dangling_worktree_references() {
 
 #[test]
 fn test_symlink_cleanup_edge_cases() {
-    // Test cleanup of .workgraph symlinks in various edge case scenarios
+    // Test cleanup of .wg symlinks in various edge case scenarios
     let temp = TempDir::new().unwrap();
     let project = temp.path().join("project");
     setup_workgraph_project(&project);
@@ -534,9 +534,9 @@ fn test_symlink_cleanup_edge_cases() {
     let agent_id = "agent-symlink-test";
     let worktree_path = create_test_worktree(&project, agent_id, "task").unwrap();
 
-    // Create .workgraph symlink pointing to project .workgraph
-    let wg_symlink = worktree_path.join(".workgraph");
-    let wg_target = project.join(".workgraph");
+    // Create .wg symlink pointing to project .wg
+    let wg_symlink = worktree_path.join(".wg");
+    let wg_target = project.join(".wg");
 
     // Test case 1: Valid symlink
     #[cfg(unix)]
@@ -735,7 +735,7 @@ fn test_comprehensive_edge_case_integration() {
     let project = temp.path().join("project");
     setup_workgraph_project(&project);
 
-    let agents_dir = project.join(".workgraph").join("agents");
+    let agents_dir = project.join(".wg").join("agents");
 
     // Scenario: Multiple agents with different edge cases
     let edge_case_agents = vec![
@@ -816,7 +816,7 @@ fn test_comprehensive_edge_case_integration() {
                 // Create problematic symlinks
                 #[cfg(unix)]
                 {
-                    let bad_symlink = worktree_path.join(".workgraph");
+                    let bad_symlink = worktree_path.join(".wg");
                     std::os::unix::fs::symlink("/nonexistent", &bad_symlink).unwrap();
                 }
 
@@ -862,8 +862,8 @@ fn test_comprehensive_edge_case_integration() {
 
     // Verify system is still in a consistent state
     assert!(
-        project.join(".workgraph").exists(),
-        "Project .workgraph should still exist"
+        project.join(".wg").exists(),
+        "Project .wg should still exist"
     );
     assert!(
         project.join(".git").exists(),

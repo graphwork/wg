@@ -77,7 +77,7 @@ fn make_task(id: &str, title: &str) -> Task {
 }
 
 fn setup_workgraph(tmp: &TempDir, tasks: Vec<Task>) -> PathBuf {
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     fs::create_dir_all(&wg_dir).unwrap();
     let graph_path = wg_dir.join("graph.jsonl");
     let mut graph = WorkGraph::new();
@@ -632,7 +632,7 @@ fn test_shell_retry_loop_continues_below_max() {
 #[test]
 fn test_shell_retry_loop_cli_fail_triggers_restart() {
     let tmp = TempDir::new().unwrap();
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
 
     // Set up via wg init + add
     wg_ok(&wg_dir, &["init", "--executor", "shell"]);
@@ -702,7 +702,7 @@ fn test_shell_retry_loop_cli_fail_triggers_restart() {
 #[test]
 fn test_shell_retry_loop_cli_done_converged() {
     let tmp = TempDir::new().unwrap();
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     wg_ok(&wg_dir, &["init", "--executor", "shell"]);
 
     // Create shell task + checker in a cycle

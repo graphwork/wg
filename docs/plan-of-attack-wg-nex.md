@@ -273,7 +273,7 @@ For Condition A eval-mode, only Layer 1 is strictly needed (and even that only f
 | Harbor adapter | `terminal-bench/wg/adapter.py` |
 | Existing Python runner | `terminal-bench/run_pilot_qwen3_local_10.py` |
 | Smoke harness script | `scripts/eval-harness-smoke.sh` |
-| Lambda01 endpoint config | `.workgraph.1/config.toml` (llm_endpoints section) |
+| Lambda01 endpoint config | `.wg.1/config.toml` (llm_endpoints section) |
 | Task definitions | `terminal-bench/wg/tasks.py` |
 | Task setup files | `terminal-bench/tasks/` |
 | Tiered guide system | `src/commands/spawn/context.rs:644-664` |

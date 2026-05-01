@@ -43,7 +43,7 @@ pub fn run_fanout(
         None => Strategy::all_individual(),
     };
 
-    // Create run directory under .workgraph/evolve-runs/
+    // Create run directory under .wg/evolve-runs/
     let run_dir = dir.join(format!("evolve-runs/{}", run_id));
     fs::create_dir_all(&run_dir)
         .with_context(|| format!("Failed to create run directory: {}", run_dir.display()))?;
@@ -119,23 +119,23 @@ pub fn run_fanout(
             "## Evolver Partition ({run_id})\n\n\
              ### Iteration 0 (Pre-completed)\n\
              Partitioned {n_evals} evaluations into {n_slices} strategy slices.\n\
-             Pre-evolution snapshot: `.workgraph/evolve-runs/{run_id}/snapshot-iter-0.json`\n\n\
+             Pre-evolution snapshot: `.wg/evolve-runs/{run_id}/snapshot-iter-0.json`\n\n\
              ### On Re-Iteration\n\
              When this task re-opens after a cycle reset:\n\
-             1. Read self-assessment from `.workgraph/evolve-runs/{run_id}/self-assessment-latest.json`\n\
-             2. Load current agency data (roles, tradeoffs, evaluations from `.workgraph/agency/`)\n\
+             1. Read self-assessment from `.wg/evolve-runs/{run_id}/self-assessment-latest.json`\n\
+             2. Load current agency data (roles, tradeoffs, evaluations from `.wg/agency/`)\n\
              3. Re-partition evaluations, prioritizing strategies the self-assessment identified as high-impact\n\
-             4. Update slice files in `.workgraph/evolve-runs/{run_id}/` (`<strategy>-slice.json`)\n\
-             5. Save new snapshot: `.workgraph/evolve-runs/{run_id}/snapshot-iter-<N>.json` (N = loop_iteration)\n\
+             4. Update slice files in `.wg/evolve-runs/{run_id}/` (`<strategy>-slice.json`)\n\
+             5. Save new snapshot: `.wg/evolve-runs/{run_id}/snapshot-iter-<N>.json` (N = loop_iteration)\n\
              6. If the self-assessment recommends new strategies, create additional analyzer tasks with `wg add`\n\n\
-             Run dir: .workgraph/evolve-runs/{run_id}",
+             Run dir: .wg/evolve-runs/{run_id}",
             run_id = run_id,
             n_evals = evaluations.len(),
             n_slices = slices.len(),
         )
     } else {
         format!(
-            "Partitioned {} evaluations into {} strategy slices.\nRun dir: .workgraph/evolve-runs/{}",
+            "Partitioned {} evaluations into {} strategy slices.\nRun dir: .wg/evolve-runs/{}",
             evaluations.len(),
             slices.len(),
             run_id
@@ -202,7 +202,7 @@ pub fn run_fanout(
     let synthesize_description = format!(
         r#"## Evolver Synthesizer
 
-Read all analyzer proposals from `.workgraph/evolve-runs/{run_id}/` and produce a unified operation set.
+Read all analyzer proposals from `.wg/evolve-runs/{run_id}/` and produce a unified operation set.
 
 ### Input Files
 {input_files}
@@ -216,7 +216,7 @@ Read all analyzer proposals from `.workgraph/evolve-runs/{run_id}/` and produce 
 6. Write unified result
 
 ### Output
-Write to `.workgraph/evolve-runs/{run_id}/synthesis-result.json`:
+Write to `.wg/evolve-runs/{run_id}/synthesis-result.json`:
 
 ```json
 {{
@@ -279,13 +279,13 @@ Write to `.workgraph/evolve-runs/{run_id}/synthesis-result.json`:
 Apply the synthesized evolution operations.
 
 ### Input
-Read from: `.workgraph/evolve-runs/{run_id}/synthesis-result.json`
+Read from: `.wg/evolve-runs/{run_id}/synthesis-result.json`
 
 ### Instructions
 1. Read the synthesis result
 2. For each operation, call the appropriate apply function
 3. Handle deferred operations (self-mutation safety)
-4. Write results to `.workgraph/evolve-runs/{run_id}/apply-results.json`
+4. Write results to `.wg/evolve-runs/{run_id}/apply-results.json`
 
 ## Validation
 - All accepted operations are attempted
@@ -319,9 +319,9 @@ Read from: `.workgraph/evolve-runs/{run_id}/synthesis-result.json`
             "## Evolver Evaluate ({run_id})\n\n\
              Evaluate the impact of this evolution iteration and determine convergence.\n\n\
              ### Input\n\
-             - Pre-evolution snapshot: `.workgraph/evolve-runs/{run_id}/snapshot-iter-<N>.json` (N = loop_iteration)\n\
-             - Apply results: `.workgraph/evolve-runs/{run_id}/apply-results.json`\n\
-             - Current agency data: `.workgraph/agency/`\n\n\
+             - Pre-evolution snapshot: `.wg/evolve-runs/{run_id}/snapshot-iter-<N>.json` (N = loop_iteration)\n\
+             - Apply results: `.wg/evolve-runs/{run_id}/apply-results.json`\n\
+             - Current agency data: `.wg/agency/`\n\n\
              ### Instructions\n\
              1. Determine current iteration from `wg show {evaluate_id}` → `loop_iteration`\n\
              2. Load pre-iteration snapshot (`snapshot-iter-<loop_iteration>.json`)\n\
@@ -330,7 +330,7 @@ Read from: `.workgraph/evolve-runs/{run_id}/synthesis-result.json`
                 - Compare pre/post evaluation scores\n\
                 - Classify as improved, degraded, or neutral\n\
              5. Compute overall score delta (average absolute change across all modified entities)\n\
-             6. Write self-assessment to `.workgraph/evolve-runs/{run_id}/self-assessment-latest.json`:\n\
+             6. Write self-assessment to `.wg/evolve-runs/{run_id}/self-assessment-latest.json`:\n\
                 ```json\n\
                 {{\n\
                   \"iteration\": <N>,\n\
@@ -369,14 +369,14 @@ Read from: `.workgraph/evolve-runs/{run_id}/synthesis-result.json`
 Evaluate the results of the evolution run.
 
 ### Input
-- Pre-evolution snapshot: `.workgraph/evolve-runs/{run_id}/snapshot-iter-0.json`
-- Apply results: `.workgraph/evolve-runs/{run_id}/apply-results.json`
+- Pre-evolution snapshot: `.wg/evolve-runs/{run_id}/snapshot-iter-0.json`
+- Apply results: `.wg/evolve-runs/{run_id}/apply-results.json`
 
 ### Instructions
 1. Compare pre-evolution performance snapshot with current state
 2. Document which operations were applied vs skipped
 3. Assess overall impact
-4. Write evolution report to `.workgraph/evolve-runs/{run_id}/evolution-report.json`
+4. Write evolution report to `.wg/evolve-runs/{run_id}/evolution-report.json`
 
 ## Validation
 - Report covers all applied operations
@@ -683,7 +683,7 @@ mod tests {
 
     fn setup_test_env() -> (TempDir, std::path::PathBuf) {
         let tmp = TempDir::new().unwrap();
-        let wg_dir = tmp.path().join(".workgraph");
+        let wg_dir = tmp.path().join(".wg");
         fs::create_dir_all(&wg_dir).unwrap();
         let graph_path = wg_dir.join("graph.jsonl");
         let graph = WorkGraph::new();

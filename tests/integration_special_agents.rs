@@ -11,7 +11,7 @@ use workgraph::config::Config;
 /// Helper: run agency init on a fresh temp directory and return the workgraph dir path.
 fn init_fresh() -> (TempDir, std::path::PathBuf) {
     let tmp = TempDir::new().unwrap();
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     std::fs::create_dir_all(&wg_dir).unwrap();
 
     // Use the same init pathway as `wg agency init`
@@ -348,7 +348,7 @@ fn test_config_keys_set_to_valid_hashes() {
 #[test]
 fn test_init_idempotent_no_duplicates() {
     let tmp = TempDir::new().unwrap();
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     std::fs::create_dir_all(&wg_dir).unwrap();
     let agency_dir = wg_dir.join("agency");
 

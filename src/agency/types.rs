@@ -698,7 +698,7 @@ fn default_assignment_source() -> AssignmentSource {
 
 /// Persisted alongside each task assignment.
 ///
-/// Stored in `.workgraph/agency/assignments/<task_id>.yaml`.
+/// Stored in `.wg/agency/assignments/<task_id>.yaml`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskAssignmentRecord {
     pub task_id: String,

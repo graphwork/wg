@@ -1,7 +1,7 @@
 //! Parse `notify.toml` configuration for notification routing.
 //!
 //! The config file lives at `~/.config/workgraph/notify.toml` (or the project's
-//! `.workgraph/notify.toml`). See `docs/research/human-in-the-loop-channels.md`
+//! `.wg/notify.toml`). See `docs/research/human-in-the-loop-channels.md`
 //! for the full schema.
 
 use std::collections::HashMap;
@@ -107,10 +107,10 @@ impl NotifyConfig {
         Ok(None)
     }
 
-    /// Load from project-local `.workgraph/notify.toml`, falling back to global.
+    /// Load from project-local `.wg/notify.toml`, falling back to global.
     pub fn load(project_root: Option<&Path>) -> Result<Option<Self>> {
         if let Some(root) = project_root {
-            let local = root.join(".workgraph").join("notify.toml");
+            let local = root.join(".wg").join("notify.toml");
             if local.exists() {
                 return Ok(Some(Self::load_from(&local)?));
             }

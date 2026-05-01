@@ -6,8 +6,8 @@
 //!
 //! Design constraints:
 //! - `wg chat create`, `send`, `list`, `show` MUST work when the service
-//!   daemon is down — they operate directly on `.workgraph/graph.jsonl`
-//!   and `.workgraph/chat/<uuid>/`.
+//!   daemon is down — they operate directly on `.wg/graph.jsonl`
+//!   and `.wg/chat/<uuid>/`.
 //! - `wg chat resume` and `wg chat stop` require the daemon (the handler
 //!   process is owned by the supervisor); they error clearly when down.
 //! - When the daemon IS running, `create` / `delete` / `archive` go

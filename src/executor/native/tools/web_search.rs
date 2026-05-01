@@ -246,7 +246,7 @@ impl Backend {
 
 // ─── Persistent disk cache ──────────────────────────────────────────────
 //
-// File-per-query cache at `~/.workgraph/web-cache/<sha256>.txt`, shared
+// File-per-query cache at `~/.wg/web-cache/<sha256>.txt`, shared
 // across sessions and projects. Repeat queries within `CACHE_TTL` return
 // the stored response without hitting any backend — at research scale
 // this cuts an order of magnitude off query volume.
@@ -275,7 +275,7 @@ fn cache_root() -> PathBuf {
     }
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join(".workgraph")
+        .join(".wg")
         .join("web-cache")
 }
 
@@ -496,7 +496,7 @@ impl Tool for WebSearchTool {
 
         // Cache short-circuit. The biggest politeness win — repeat
         // queries within `CACHE_TTL` cost zero backend requests and
-        // persist across sessions via SQLite at `~/.workgraph/web-cache.db`.
+        // persist across sessions via SQLite at `~/.wg/web-cache.db`.
         if let Some(cached) = cache_get(&cache_key) {
             return ToolOutput::success(truncate_for_tool(&cached, "web_search"));
         }

@@ -36,7 +36,7 @@ pub struct EvolutionRecord {
     pub task_id: Option<String>,
 }
 
-/// Persistent evolver state, stored in `.workgraph/agency/evolver_state.json`.
+/// Persistent evolver state, stored in `.wg/agency/evolver_state.json`.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct EvolverState {
     /// Total evaluations processed up to the last evolution cycle.

@@ -67,7 +67,7 @@ fn wg_ok(wg_dir: &Path, args: &[&str]) -> String {
 #[test]
 fn smoke_test_full_lifecycle() {
     let tmp = TempDir::new().unwrap();
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
 
     // ── 1. wg init ──────────────────────────────────────────────────────
     let output = wg_ok(&wg_dir, &["init"]);
@@ -76,7 +76,7 @@ fn smoke_test_full_lifecycle() {
         "init should confirm initialization, got: {}",
         output
     );
-    assert!(wg_dir.exists(), ".workgraph directory should exist");
+    assert!(wg_dir.exists(), ".wg directory should exist");
     assert!(
         wg_dir.join("graph.jsonl").exists(),
         "graph.jsonl should be created"
@@ -243,7 +243,7 @@ fn smoke_test_full_lifecycle() {
 #[test]
 fn smoke_test_dependency_chain() {
     let tmp = TempDir::new().unwrap();
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
 
     wg_ok(&wg_dir, &["init"]);
 
@@ -307,7 +307,7 @@ fn smoke_test_dependency_chain() {
 #[test]
 fn smoke_test_fail_retry_lifecycle() {
     let tmp = TempDir::new().unwrap();
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
 
     wg_ok(&wg_dir, &["init"]);
     wg_ok(

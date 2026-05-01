@@ -135,7 +135,7 @@ pub fn run_status(json: bool) -> Result<()> {
                 println!("Telegram: not configured");
                 println!("\nAdd a [telegram] section to your notify.toml:");
                 println!("  ~/.config/workgraph/notify.toml");
-                println!("  or .workgraph/notify.toml");
+                println!("  or .wg/notify.toml");
                 println!();
                 println!("  [telegram]");
                 println!("  bot_token = \"123456:ABC-DEF...\"");

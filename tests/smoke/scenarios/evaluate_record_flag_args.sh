@@ -45,14 +45,14 @@ if ! wg evaluate record \
 fi
 
 eval_dir=""
-for cand in .wg/agency/evaluations .workgraph/agency/evaluations; do
+for cand in .wg/agency/evaluations .wg/agency/evaluations; do
     if [[ -d "$scratch/$cand" ]]; then
         eval_dir="$scratch/$cand"
         break
     fi
 done
 if [[ -z "$eval_dir" ]]; then
-    loud_fail "no evaluations dir under .wg/ or .workgraph/ after record"
+    loud_fail "no evaluations dir under .wg/ or .wg/ after record"
 fi
 
 if ! ls "$eval_dir"/eval-smoke-record-target-*.json >/dev/null 2>&1; then

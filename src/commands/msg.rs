@@ -264,7 +264,7 @@ mod tests {
     #[test]
     fn test_send_message() {
         let tmp = TempDir::new().unwrap();
-        let dir = tmp.path().join(".workgraph");
+        let dir = tmp.path().join(".wg");
         setup_graph(&dir);
 
         run_send(&dir, "task-1", Some("Hello world"), "user", "normal", false).unwrap();
@@ -277,7 +277,7 @@ mod tests {
     #[test]
     fn test_send_to_nonexistent_task() {
         let tmp = TempDir::new().unwrap();
-        let dir = tmp.path().join(".workgraph");
+        let dir = tmp.path().join(".wg");
         setup_graph(&dir);
 
         let result = run_send(&dir, "nonexistent", Some("Hello"), "user", "normal", false);
@@ -288,7 +288,7 @@ mod tests {
     #[test]
     fn test_send_empty_body_fails() {
         let tmp = TempDir::new().unwrap();
-        let dir = tmp.path().join(".workgraph");
+        let dir = tmp.path().join(".wg");
         setup_graph(&dir);
 
         let result = run_send(&dir, "task-1", Some(""), "user", "normal", false);
@@ -299,7 +299,7 @@ mod tests {
     #[test]
     fn test_list_messages() {
         let tmp = TempDir::new().unwrap();
-        let dir = tmp.path().join(".workgraph");
+        let dir = tmp.path().join(".wg");
         setup_graph(&dir);
 
         run_send(&dir, "task-1", Some("First"), "user", "normal", false).unwrap();
@@ -324,7 +324,7 @@ mod tests {
     #[test]
     fn test_read_and_poll() {
         let tmp = TempDir::new().unwrap();
-        let dir = tmp.path().join(".workgraph");
+        let dir = tmp.path().join(".wg");
         setup_graph(&dir);
 
         run_send(&dir, "task-1", Some("Message"), "user", "normal", false).unwrap();

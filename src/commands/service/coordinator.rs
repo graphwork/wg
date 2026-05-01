@@ -6528,7 +6528,7 @@ mod tests {
         // Full integration test: record_spawn_failure increments counter
         // and auto-fails after threshold
         let dir = tempdir().unwrap();
-        let wg_dir = dir.path().join(".workgraph");
+        let wg_dir = dir.path().join(".wg");
         std::fs::create_dir_all(&wg_dir).unwrap();
         let gp = wg_dir.join("graph.jsonl");
 
@@ -6610,7 +6610,7 @@ mod tests {
     fn test_spawn_circuit_breaker_reset_on_edit() {
         // Verify that editing a task resets spawn_failures
         let dir = tempdir().unwrap();
-        let wg_dir = dir.path().join(".workgraph");
+        let wg_dir = dir.path().join(".wg");
         std::fs::create_dir_all(&wg_dir).unwrap();
         let gp = wg_dir.join("graph.jsonl");
 

@@ -80,7 +80,7 @@ merge_strategy = "squash"   # "merge", "squash", or "rebase"
 
 The coordinator creates a worktree per agent at spawn time:
 1. `git worktree add .wg-worktrees/<agent-id> -b wg/<agent-id>/<task-id> HEAD`
-2. Symlinks `.workgraph` into the worktree (shared task state)
+2. Symlinks `.wg` into the worktree (shared task state)
 3. Agent runs inside `.wg-worktrees/<agent-id>/`
 4. On completion: squash-merges branch back to main, removes worktree
 
@@ -90,7 +90,7 @@ The coordinator creates a worktree per agent at spawn time:
 .wg-worktrees/           # in .gitignore
 ├── agent-42/             # full working tree for agent-42
 │   ├── .git              # file pointing to .git/worktrees/agent-42
-│   ├── .workgraph -> /abs/path/.workgraph   # symlink (shared state)
+│   ├── .wg -> /abs/path/.wg   # symlink (shared state)
 │   └── src/              # independent file copy
 └── agent-43/             # another agent's worktree
 ```

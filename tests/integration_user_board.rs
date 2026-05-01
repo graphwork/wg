@@ -409,7 +409,7 @@ fn test_user_board_persists_across_restarts() {
     assert_eq!(board.status, Status::InProgress);
     assert!(board.tags.contains(&"user-board".to_string()));
 
-    // Messages persist (stored in separate .workgraph/messages/ files)
+    // Messages persist (stored in separate .wg/messages/ files)
     let msgs = workgraph::messages::list_messages(dir, &board_id).unwrap();
     assert_eq!(msgs.len(), 2);
     assert_eq!(msgs[0].body, "Message 1");

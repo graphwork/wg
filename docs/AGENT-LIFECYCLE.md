@@ -283,7 +283,7 @@ fn create_agent_worktree(agent_id: &str, task_id: &str) -> Result<WorktreeInfo> 
     let target_dir = format!("{}/.wg-target", worktree_dir);
     fs::create_dir_all(&target_dir)?;
     
-    // Create .workgraph symlink for agent access
+    // Create .wg symlink for agent access
     create_workgraph_symlink(&worktree_dir)?;
     
     Ok(WorktreeInfo { worktree_dir, branch, target_dir })
@@ -300,7 +300,7 @@ fn create_agent_worktree(agent_id: &str, task_id: &str) -> Result<WorktreeInfo> 
    - Preserve any work-in-progress for manual inspection
 
 2. **Symlink Removal**:
-   - Remove `.workgraph` symlink pointing to service directory
+   - Remove `.wg` symlink pointing to service directory
    - Clean up any dangling filesystem links
 
 3. **Target Directory Cleanup**:
@@ -346,7 +346,7 @@ fn cleanup_dead_agent_worktree(agent: &Agent) -> Result<()> {
     // 1. Recover uncommitted work
     recover_commits(&worktree_path, &agent.id)?;
     
-    // 2. Remove .workgraph symlink
+    // 2. Remove .wg symlink
     remove_workgraph_symlink(&worktree_path)?;
     
     // 3. Clean up isolated target directory
@@ -536,7 +536,7 @@ info!("Cleaned up worktree for dead agent {}: {}",
 - ✅ **Registry Consistency**: Dual safety mechanisms prevent permanent task claiming
 - ✅ **Commit Recovery**: Uncommitted work preserved in recovery branches
 - ✅ **Target Directory Isolation**: Independent cargo builds prevent conflicts
-- ✅ **Symlink Management**: `.workgraph` symlinks properly cleaned up
+- ✅ **Symlink Management**: `.wg` symlinks properly cleaned up
 
 **4. Error Recovery**
 - ✅ **Malformed Metadata**: Invalid `metadata.json` handled gracefully (logged, skipped)

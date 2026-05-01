@@ -1758,7 +1758,7 @@ fn check_openrouter_cost_caps(
         }
     };
 
-    let service_dir = workgraph_dir.join(".workgraph/service");
+    let service_dir = workgraph_dir.join(".wg/service");
 
     // Load current coordinator state for session cost tracking
     let mut coordinator_state = CoordinatorState::load_for(&service_dir, 0).unwrap_or_default();

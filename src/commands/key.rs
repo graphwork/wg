@@ -12,7 +12,7 @@ use workgraph::config::{Config, EndpointConfig};
 /// Exactly one of `env`, `file`, or `value` must be provided.
 /// - `--env VAR_NAME` → sets `api_key_env` on the endpoint
 /// - `--file /path/to/key` → sets `api_key_file` on the endpoint
-/// - `--value sk-xxx` → writes to `~/.workgraph/keys/<provider>.key` and sets `api_key_file`
+/// - `--value sk-xxx` → writes to `~/.wg/keys/<provider>.key` and sets `api_key_file`
 pub fn run_set(
     workgraph_dir: &Path,
     provider: &str,
@@ -45,10 +45,10 @@ pub fn run_set(
         } else if let Some(file_path) = file {
             (None, Some(file_path.to_string()))
         } else if let Some(key_value) = value {
-            // Write to ~/.workgraph/keys/<provider>.key
+            // Write to ~/.wg/keys/<provider>.key
             let keys_dir = dirs::home_dir()
                 .ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?
-                .join(".workgraph")
+                .join(".wg")
                 .join("keys");
             fs::create_dir_all(&keys_dir)?;
             // Set directory permissions to 700
@@ -105,7 +105,7 @@ pub fn run_set(
     } else if let Some(file_path) = file {
         format!("using key file {}", file_path)
     } else {
-        let keys_dir = dirs::home_dir().unwrap().join(".workgraph").join("keys");
+        let keys_dir = dirs::home_dir().unwrap().join(".wg").join("keys");
         format!(
             "using key file {}",
             keys_dir.join(format!("{}.key", provider)).display()
@@ -494,7 +494,7 @@ mod tests {
     fn key_set_value_writes_to_keys_dir() {
         let tmp = setup_dir();
 
-        // We can't easily test --value because it writes to ~/.workgraph/keys/
+        // We can't easily test --value because it writes to ~/.wg/keys/
         // which would modify the real home directory. Instead test the auto-create behavior.
         // The function creates the endpoint if it doesn't exist.
         run_set(

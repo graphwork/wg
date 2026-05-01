@@ -50,7 +50,7 @@ pub fn run(
                 .unwrap_or_else(|| "sonnet".to_string())
         });
 
-    // Resolve the working directory (parent of .workgraph/)
+    // Resolve the working directory (parent of .wg/)
     let working_dir = workgraph_dir
         .canonicalize()
         .ok()
@@ -129,7 +129,7 @@ pub fn run(
     // Create and run the agent loop
     let journal_path = journal::journal_path(workgraph_dir, task_id);
 
-    // Resolve session summary path: .workgraph/agents/<agent-id>/session-summary.md
+    // Resolve session summary path: .wg/agents/<agent-id>/session-summary.md
     let session_summary_path = std::env::var("WG_AGENT_ID").ok().map(|agent_id| {
         workgraph_dir
             .join("agents")

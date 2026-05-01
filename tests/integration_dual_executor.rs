@@ -331,7 +331,7 @@ fn verify_journal_format(j_path: &Path) {
 #[tokio::test]
 async fn scenario_1_openrouter_end_to_end() {
     let tmp = TempDir::new().unwrap();
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     setup_workgraph(&wg_dir);
 
     let task_id = "dual-openrouter-e2e";
@@ -401,7 +401,7 @@ async fn scenario_1_openrouter_end_to_end() {
 #[tokio::test]
 async fn scenario_2_anthropic_end_to_end() {
     let tmp = TempDir::new().unwrap();
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     setup_workgraph(&wg_dir);
 
     let task_id = "dual-anthropic-e2e";
@@ -475,7 +475,7 @@ async fn scenario_2_anthropic_end_to_end() {
 #[tokio::test]
 async fn scenario_3_journal_format_identical_across_providers() {
     let tmp = TempDir::new().unwrap();
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     setup_workgraph(&wg_dir);
 
     // Run the same task flow through OpenRouter provider
@@ -594,7 +594,7 @@ async fn scenario_3_journal_format_identical_across_providers() {
 #[tokio::test]
 async fn scenario_4_kill_and_resume_openrouter() {
     let tmp = TempDir::new().unwrap();
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     setup_workgraph(&wg_dir);
 
     let task_id = "dual-kill-openrouter";
@@ -711,7 +711,7 @@ async fn scenario_4_kill_and_resume_openrouter() {
 #[tokio::test]
 async fn scenario_5_kill_and_resume_anthropic() {
     let tmp = TempDir::new().unwrap();
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     setup_workgraph(&wg_dir);
 
     let task_id = "dual-kill-anthropic";
@@ -838,7 +838,7 @@ async fn scenario_5_kill_and_resume_anthropic() {
 #[tokio::test]
 async fn scenario_6_compaction_on_resume() {
     let tmp = TempDir::new().unwrap();
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     setup_workgraph(&wg_dir);
 
     let task_id = "dual-compaction";
@@ -1018,7 +1018,7 @@ async fn scenario_6_compaction_on_resume() {
 #[tokio::test]
 async fn cross_provider_resume_openrouter_to_anthropic() {
     let tmp = TempDir::new().unwrap();
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     setup_workgraph(&wg_dir);
 
     let task_id = "dual-cross-or-an";
@@ -1106,7 +1106,7 @@ async fn cross_provider_resume_openrouter_to_anthropic() {
 #[tokio::test]
 async fn cross_provider_resume_anthropic_to_openrouter() {
     let tmp = TempDir::new().unwrap();
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     setup_workgraph(&wg_dir);
 
     let task_id = "dual-cross-an-or";

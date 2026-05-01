@@ -308,7 +308,7 @@ mod tests {
     use workgraph::graph::{Status, Task, WorkGraph};
 
     fn write_graph(dir: &Path, tasks: Vec<Task>) {
-        let workgraph_dir = dir.join(".workgraph");
+        let workgraph_dir = dir.join(".wg");
         std::fs::create_dir_all(&workgraph_dir).unwrap();
         let graph_path = workgraph_dir.join("graph.jsonl");
         let mut graph = WorkGraph::new();
@@ -338,10 +338,10 @@ mod tests {
         };
         write_graph(dir, vec![coord, dependent]);
 
-        run_chat_rename(&dir.join(".workgraph"), false, true).unwrap();
+        run_chat_rename(&dir.join(".wg"), false, true).unwrap();
 
         let graph =
-            workgraph::parser::load_graph(&dir.join(".workgraph").join("graph.jsonl")).unwrap();
+            workgraph::parser::load_graph(&dir.join(".wg").join("graph.jsonl")).unwrap();
 
         // .chat-3 exists with renamed title and tag
         let migrated = graph.get_task(".chat-3").expect("chat-3 should exist");
@@ -371,11 +371,11 @@ mod tests {
         };
         write_graph(dir, vec![coord]);
 
-        run_chat_rename(&dir.join(".workgraph"), false, true).unwrap();
-        run_chat_rename(&dir.join(".workgraph"), false, true).unwrap();
+        run_chat_rename(&dir.join(".wg"), false, true).unwrap();
+        run_chat_rename(&dir.join(".wg"), false, true).unwrap();
 
         let graph =
-            workgraph::parser::load_graph(&dir.join(".workgraph").join("graph.jsonl")).unwrap();
+            workgraph::parser::load_graph(&dir.join(".wg").join("graph.jsonl")).unwrap();
         assert!(graph.get_task(".chat-0").is_some());
         assert!(graph.get_task(".coordinator-0").is_none());
     }
@@ -411,10 +411,10 @@ mod tests {
         };
         write_graph(dir, vec![chat, compact, archive, blocked]);
 
-        run_retire_compact_archive(&dir.join(".workgraph"), false, true).unwrap();
+        run_retire_compact_archive(&dir.join(".wg"), false, true).unwrap();
 
         let graph =
-            workgraph::parser::load_graph(&dir.join(".workgraph").join("graph.jsonl")).unwrap();
+            workgraph::parser::load_graph(&dir.join(".wg").join("graph.jsonl")).unwrap();
         assert_eq!(
             graph.get_task(".compact-0").unwrap().status,
             Status::Abandoned
@@ -440,11 +440,11 @@ mod tests {
         };
         write_graph(dir, vec![compact]);
 
-        run_retire_compact_archive(&dir.join(".workgraph"), false, true).unwrap();
-        run_retire_compact_archive(&dir.join(".workgraph"), false, true).unwrap();
+        run_retire_compact_archive(&dir.join(".wg"), false, true).unwrap();
+        run_retire_compact_archive(&dir.join(".wg"), false, true).unwrap();
 
         let graph =
-            workgraph::parser::load_graph(&dir.join(".workgraph").join("graph.jsonl")).unwrap();
+            workgraph::parser::load_graph(&dir.join(".wg").join("graph.jsonl")).unwrap();
         assert_eq!(
             graph.get_task(".compact-0").unwrap().status,
             Status::Abandoned
@@ -464,10 +464,10 @@ mod tests {
         };
         write_graph(dir, vec![coord]);
 
-        run_chat_rename(&dir.join(".workgraph"), true, true).unwrap();
+        run_chat_rename(&dir.join(".wg"), true, true).unwrap();
 
         let graph =
-            workgraph::parser::load_graph(&dir.join(".workgraph").join("graph.jsonl")).unwrap();
+            workgraph::parser::load_graph(&dir.join(".wg").join("graph.jsonl")).unwrap();
         // Legacy id still present, no chat- yet
         assert!(graph.get_task(".coordinator-1").is_some());
         assert!(graph.get_task(".chat-1").is_none());

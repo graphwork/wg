@@ -1758,7 +1758,7 @@ pub struct ChatState {
     pub deferred_user_indices: Vec<usize>,
     /// Whether the service coordinator is currently active.
     pub coordinator_active: bool,
-    /// Pending attachments for the next message (file paths, already stored in .workgraph/attachments/).
+    /// Pending attachments for the next message (file paths, already stored in .wg/attachments/).
     pub pending_attachments: Vec<PendingAttachment>,
     /// Total rendered lines (set each frame by renderer, for scrollbar dragging).
     pub total_rendered_lines: usize,
@@ -1875,7 +1875,7 @@ impl Default for ChatState {
 pub struct PendingAttachment {
     /// Display filename (e.g. "screenshot.png").
     pub filename: String,
-    /// Relative path to the stored copy (e.g. ".workgraph/attachments/20260303-...png").
+    /// Relative path to the stored copy (e.g. ".wg/attachments/20260303-...png").
     pub stored_path: String,
     /// MIME type.
     pub mime_type: String,
@@ -5312,11 +5312,11 @@ pub struct VizApp {
     refresh_interval: std::time::Duration,
 
     // ── File system watcher (for real-time streaming) ──
-    /// Flag set by the background file watcher when `.workgraph/` content changes.
+    /// Flag set by the background file watcher when `.wg/` content changes.
     /// Checked and cleared by `maybe_refresh()` to trigger immediate panel reloads.
     pub fs_change_pending: Arc<AtomicBool>,
     /// Flag set by the background file watcher when a file under
-    /// `.workgraph/messages/` (excluding `.cursors/`) changes. Drives a viz
+    /// `.wg/messages/` (excluding `.cursors/`) changes. Drives a viz
     /// reload so per-task message indicators and the right-panel Msg tab
     /// indicator update promptly after `wg msg send` — graph.jsonl is not
     /// touched by message writes, so the graph-mtime check alone misses them.
@@ -7186,7 +7186,7 @@ impl VizApp {
         self.enforce_animation_cap();
     }
 
-    /// Start a background file watcher on the `.workgraph/` directory.
+    /// Start a background file watcher on the `.wg/` directory.
     /// Sets `fs_change_pending` flag when any file changes, which triggers
     /// immediate panel reloads in `maybe_refresh()`. Also sets
     /// `messages_change_pending` when a message file (under `messages/`,
@@ -7245,7 +7245,7 @@ impl VizApp {
     /// Check if the graph has changed on disk and refresh if needed.
     /// Returns `true` if any work was done (graph reloaded, service polled, etc.).
     pub fn maybe_refresh(&mut self) -> bool {
-        // Check if the file watcher detected changes in .workgraph/.
+        // Check if the file watcher detected changes in .wg/.
         let fs_changed = self.fs_change_pending.swap(false, Ordering::Relaxed);
         // Drain messages_change_pending lazily — only when we actually plan to
         // consume it — so a chat-streaming early-return doesn't drop a pending
@@ -10464,11 +10464,11 @@ impl VizApp {
     /// Execute a wg command in a background thread.
     pub fn exec_command(&self, args: Vec<String>, effect: CommandEffect) {
         let tx = self.cmd_tx.clone();
-        // self.workgraph_dir is the `.workgraph` directory itself (e.g.
-        // /project/.workgraph). The `wg` binary expects to run from the
-        // project root so it can find `.workgraph` as a child — running
-        // from *inside* `.workgraph` causes it to look for the non-existent
-        // `.workgraph/.workgraph`. Use the parent directory as the CWD.
+        // self.workgraph_dir is the `.wg` directory itself (e.g.
+        // /project/.wg). The `wg` binary expects to run from the
+        // project root so it can find `.wg` as a child — running
+        // from *inside* `.wg` causes it to look for the non-existent
+        // `.wg/.wg`. Use the parent directory as the CWD.
         let project_root = self
             .workgraph_dir
             .parent()
@@ -12993,7 +12993,7 @@ impl VizApp {
     }
 
     /// Attempt to attach a file at the given path to the pending chat message.
-    /// Validates and copies to .workgraph/attachments/.
+    /// Validates and copies to .wg/attachments/.
     pub fn attach_file(&mut self, path_str: &str) {
         let source = std::path::Path::new(path_str.trim());
         match workgraph::chat::store_attachment(&self.workgraph_dir, source) {
@@ -17149,7 +17149,7 @@ pub(super) fn is_box_drawing(c: char) -> bool {
 
 /// Find the most recent archived agent file for a task.
 ///
-/// Looks in `.workgraph/log/agents/<task-id>/` for timestamped subdirectories
+/// Looks in `.wg/log/agents/<task-id>/` for timestamped subdirectories
 /// and returns the path to `filename` in the most recent one (if it exists).
 fn find_latest_archive(
     workgraph_dir: &std::path::Path,
@@ -22451,7 +22451,7 @@ mod tui_chat_tests {
         let regular = make_task_with_status("test-task", "Test Task", Status::InProgress);
         graph.add_node(Node::Task(regular));
 
-        let wg_dir = tmp.path().join(".workgraph");
+        let wg_dir = tmp.path().join(".wg");
         std::fs::create_dir_all(&wg_dir).unwrap();
         let graph_path = wg_dir.join("graph.jsonl");
         save_graph(&graph, &graph_path).unwrap();
@@ -23186,7 +23186,7 @@ mod tui_chat_tests {
     #[test]
     fn tui_state_persistence_round_trip() {
         let tmp = TempDir::new().unwrap();
-        let wg_dir = tmp.path().join(".workgraph");
+        let wg_dir = tmp.path().join(".wg");
         std::fs::create_dir_all(&wg_dir).unwrap();
 
         save_tui_state(
@@ -23208,7 +23208,7 @@ mod tui_chat_tests {
     #[test]
     fn tui_state_no_file_returns_none() {
         let tmp = TempDir::new().unwrap();
-        let wg_dir = tmp.path().join(".workgraph");
+        let wg_dir = tmp.path().join(".wg");
         std::fs::create_dir_all(&wg_dir).unwrap();
 
         let loaded = load_tui_state(&wg_dir);
@@ -24072,7 +24072,7 @@ mod tui_chat_tests {
         let regular = make_task_with_status("test-task", "Test Task", Status::InProgress);
         graph.add_node(Node::Task(regular));
 
-        let wg_dir = tmp.path().join(".workgraph");
+        let wg_dir = tmp.path().join(".wg");
         std::fs::create_dir_all(&wg_dir).unwrap();
         save_graph(&graph, &wg_dir.join("graph.jsonl")).unwrap();
 
@@ -24141,7 +24141,7 @@ mod tui_chat_tests {
             graph.add_node(Node::Task(task));
         }
 
-        let wg_dir = tmp.path().join(".workgraph");
+        let wg_dir = tmp.path().join(".wg");
         std::fs::create_dir_all(&wg_dir).unwrap();
         save_graph(&graph, &wg_dir.join("graph.jsonl")).unwrap();
 
@@ -24328,7 +24328,7 @@ mod tui_chat_tests {
         let regular = make_task_with_status("fix-new-chat-3", "Fix something", Status::Abandoned);
         graph.add_node(Node::Task(regular));
 
-        let wg_dir = tmp.path().join(".workgraph");
+        let wg_dir = tmp.path().join(".wg");
         std::fs::create_dir_all(&wg_dir).unwrap();
         save_graph(&graph, &wg_dir.join("graph.jsonl")).unwrap();
 

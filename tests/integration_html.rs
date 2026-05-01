@@ -2,7 +2,7 @@
 //!
 //! These exercise the static-site renderer directly (via `commands::html::render_site`)
 //! against synthetic graphs in tempdirs. The CLI smoke is covered by running
-//! the actual binary against the real `.workgraph/` graph in this repo
+//! the actual binary against the real `.wg/` graph in this repo
 //! during validation.
 
 use std::collections::HashSet;

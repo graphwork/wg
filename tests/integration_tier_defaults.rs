@@ -55,7 +55,7 @@ fn wg_ok(wg_dir: &Path, args: &[&str]) -> String {
 }
 
 fn setup_workgraph(tmp: &TempDir) -> PathBuf {
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     fs::create_dir_all(&wg_dir).unwrap();
     let graph = workgraph::graph::WorkGraph::new();
     workgraph::parser::save_graph(&graph, &wg_dir.join("graph.jsonl")).unwrap();

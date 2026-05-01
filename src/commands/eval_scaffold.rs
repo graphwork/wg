@@ -286,7 +286,7 @@ pub fn scaffold_full_pipeline(
         desc.push_str(&format!(
             "Evaluate the completed task '{}'.\n\n\
              Run `wg evaluate run {}` to produce a structured evaluation.\n\
-             This reads the task output from `.workgraph/output/{}/` and \
+             This reads the task output from `.wg/output/{}/` and \
              the task definition via `wg show {}`.",
             task_id, task_id, task_id, task_id,
         ));
@@ -506,7 +506,7 @@ pub fn scaffold_eval_task(
     desc.push_str(&format!(
         "Evaluate the completed task '{}'.\n\n\
          Run `wg evaluate run {}` to produce a structured evaluation.\n\
-         This reads the task output from `.workgraph/output/{}/` and \
+         This reads the task output from `.wg/output/{}/` and \
          the task definition via `wg show {}`.",
         task_id, task_id, task_id, task_id,
     ));

@@ -38,7 +38,7 @@ fn wg_binary() -> PathBuf {
 }
 
 fn wg_cmd(wg_dir: &Path, args: &[&str]) -> std::process::Output {
-    // Use a fake HOME so the user's real ~/.workgraph/config.toml
+    // Use a fake HOME so the user's real ~/.wg/config.toml
     // does not bleed into the test.
     let fake_home = wg_dir.parent().unwrap_or(wg_dir).join("fakehome");
     fs::create_dir_all(&fake_home).unwrap_or_default();
@@ -69,7 +69,7 @@ fn wg_ok(wg_dir: &Path, args: &[&str]) -> String {
 }
 
 fn setup_workgraph(tmp: &TempDir) -> PathBuf {
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     fs::create_dir_all(&wg_dir).unwrap();
     let graph_path = wg_dir.join("graph.jsonl");
     let graph = WorkGraph::new();
@@ -433,7 +433,7 @@ fn api_key_file_loading_end_to_end() {
 #[test]
 fn api_key_file_relative_to_workgraph_dir() {
     let tmp = TempDir::new().unwrap();
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     fs::create_dir_all(&wg_dir).unwrap();
     let key_file = wg_dir.join("secrets").join("or.key");
     fs::create_dir_all(key_file.parent().unwrap()).unwrap();
@@ -772,7 +772,7 @@ fn cli_set_endpoint_for_role() {
 #[test]
 fn config_toml_roundtrip_with_endpoints() {
     let tmp = TempDir::new().unwrap();
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     fs::create_dir_all(&wg_dir).unwrap();
 
     let mut config = Config::default();
@@ -1126,7 +1126,7 @@ fn create_provider_ext_validates_openrouter_model() {
     use workgraph::executor::native::provider::create_provider_ext;
 
     let tmp = TempDir::new().unwrap();
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     fs::create_dir_all(&wg_dir).unwrap();
 
     // Write a config

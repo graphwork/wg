@@ -2,7 +2,7 @@
 //!
 //! Bundles define what tools and context an agent gets when running with the
 //! native executor. They map to exec_mode tiers (bare/light/full) and can be
-//! loaded from `.workgraph/bundles/*.toml` files.
+//! loaded from `.wg/bundles/*.toml` files.
 
 use std::path::Path;
 

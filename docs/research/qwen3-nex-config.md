@@ -45,7 +45,7 @@ curl http://localhost:11434/v1/chat/completions \
 
 ### 3. Ollama alternate port (11435) — NOT RUNNING
 
-Configured in `.workgraph.1/config.toml` as `local-model` endpoint.
+Configured in `.wg.1/config.toml` as `local-model` endpoint.
 Start with: `bash terminal-bench/start-local-model.sh`
 Would serve `qwen3-coder:30b-a3b-q8_0` (same architecture as SGLang model).
 
@@ -124,7 +124,7 @@ should take priority over the default endpoint's URL.
 
 ## Config Entries
 
-### Already configured (in .workgraph.1/config.toml):
+### Already configured (in .wg.1/config.toml):
 
 ```toml
 [[llm_endpoints.endpoints]]

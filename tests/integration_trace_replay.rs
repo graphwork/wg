@@ -73,7 +73,7 @@ fn make_task(id: &str, title: &str, status: Status) -> Task {
 }
 
 fn setup_workgraph(tmp: &TempDir, tasks: Vec<Task>) -> PathBuf {
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     fs::create_dir_all(&wg_dir).unwrap();
     let graph_path = wg_dir.join("graph.jsonl");
     let mut graph = WorkGraph::new();
@@ -171,7 +171,7 @@ fn test_replay_failed_only_resets_and_preserves() {
         &["replay", "--failed-only", "--model", "different-model"],
     );
 
-    // 6. Verify snapshot was created in .workgraph/runs/
+    // 6. Verify snapshot was created in .wg/runs/
     let runs_dir = wg_dir.join("runs");
     assert!(
         runs_dir.exists(),

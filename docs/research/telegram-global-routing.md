@@ -63,14 +63,14 @@ The first `wg service` daemon to start acquires an exclusive file lock on `~/.co
 {
   "version": 1,
   "getUpdates_offset": 123456789,
-  "last_active_project": "/home/user/project-alpha/.workgraph",
+  "last_active_project": "/home/user/project-alpha/.wg",
   "projects": {
-    "/home/user/project-alpha/.workgraph": {
+    "/home/user/project-alpha/.wg": {
       "repo_name": "project-alpha",
       "last_activity": "2026-03-11T14:30:00Z",
       "pid": 12345
     },
-    "/home/user/project-beta/.workgraph": {
+    "/home/user/project-beta/.wg": {
       "repo_name": "project-beta",
       "last_activity": "2026-03-11T14:25:00Z",
       "pid": 12346
@@ -78,23 +78,23 @@ The first `wg service` daemon to start acquires an exclusive file lock on `~/.co
   },
   "message_map": {
     "4401": {
-      "project_dir": "/home/user/project-alpha/.workgraph",
+      "project_dir": "/home/user/project-alpha/.wg",
       "task_id": "fix-auth-bug",
       "event_type": "task_failed",
       "timestamp": "2026-03-11T14:30:00Z"
     },
     "4402": {
-      "project_dir": "/home/user/project-beta/.workgraph",
+      "project_dir": "/home/user/project-beta/.wg",
       "task_id": "deploy-staging",
       "event_type": "approval",
       "timestamp": "2026-03-11T14:25:00Z"
     }
   },
   "pending_replies": {
-    "fix-auth-bug:/home/user/project-alpha/.workgraph": {
+    "fix-auth-bug:/home/user/project-alpha/.wg": {
       "telegram_message_id": 4403,
       "task_id": "fix-auth-bug",
-      "project_dir": "/home/user/project-alpha/.workgraph",
+      "project_dir": "/home/user/project-alpha/.wg",
       "question": "Which auth provider should I use?",
       "asked_at": "2026-03-11T14:31:00Z",
       "timeout_seconds": 3600
@@ -109,8 +109,8 @@ The first `wg service` daemon to start acquires an exclusive file lock on `~/.co
 |-------|------|-------------|
 | `version` | `u32` | Schema version for forward-compat. Currently `1`. |
 | `getUpdates_offset` | `i64` | Telegram offset for `getUpdates` continuity across leader transitions. |
-| `last_active_project` | `String` | Absolute path to `.workgraph` dir of the most-recently-active project. Used for freestanding message routing. |
-| `projects` | `Map<String, ProjectEntry>` | Registered projects keyed by `.workgraph` dir path. |
+| `last_active_project` | `String` | Absolute path to `.wg` dir of the most-recently-active project. Used for freestanding message routing. |
+| `projects` | `Map<String, ProjectEntry>` | Registered projects keyed by `.wg` dir path. |
 | `projects[].repo_name` | `String` | Short display name derived from repo directory (e.g., `project-alpha`). |
 | `projects[].last_activity` | `String` | ISO 8601 timestamp of last outbound notification from this project. |
 | `projects[].pid` | `u32` | PID of the service daemon for this project. Used to detect stale entries (check if PID is alive). |
@@ -222,7 +222,7 @@ When the poll leader determines the target `(project_dir, task_id)`, it delivers
 ```rust
 // Poll leader delivers inbound message to the target project
 workgraph::messages::send_message(
-    &project_dir,           // e.g., "/home/user/project-alpha/.workgraph"
+    &project_dir,           // e.g., "/home/user/project-alpha/.wg"
     &task_id,               // e.g., "fix-auth-bug"
     &update.text,           // message body
     "telegram:username",    // sender (prefixed with channel)
@@ -406,7 +406,7 @@ Telegram API          Poll Leader Daemon          Routing State       Target Pro
      │                       │                         │                    │
      │                       │  5. send_message(       │                    │
      │                       │     project-alpha/      │                    │
-     │                       │     .workgraph,         │                    │
+     │                       │     .wg,         │                    │
      │                       │     "fix-auth",         │                    │
      │                       │     "Try OAuth2",       │                    │
      │                       │     "telegram:user")    │                    │
@@ -567,7 +567,7 @@ Each repo registers itself in the routing state's `projects` map when its servic
 
 ```rust
 let repo_name = project_dir
-    .parent()  // .workgraph → project root
+    .parent()  // .wg → project root
     .and_then(|p| p.file_name())
     .map(|n| n.to_string_lossy().to_string())
     .unwrap_or_else(|| "unknown".to_string());

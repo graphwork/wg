@@ -4,7 +4,7 @@
 //! up from the conversation journal rather than starting from scratch.
 //!
 //! Protocol:
-//! 1. Check for existing journal at `.workgraph/output/<task-id>/conversation.jsonl`
+//! 1. Check for existing journal at `.wg/output/<task-id>/conversation.jsonl`
 //! 2. Load entries, reconstruct message history
 //! 3. If journal exceeds budget, compact older turns (summarize)
 //! 4. Detect stale tool results (files changed since journal was written)

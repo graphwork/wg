@@ -434,7 +434,7 @@ pub(crate) fn build_evolver_prompt(
     // Coordinator prompt evolution section
     out.push_str("### Coordinator Prompt Evolution\n\n");
     out.push_str(
-        "The coordinator agent's prompt is composed from files in `.workgraph/agency/coordinator-prompt/`. \
+        "The coordinator agent's prompt is composed from files in `.wg/agency/coordinator-prompt/`. \
          You can modify the mutable files to improve coordinator behavior based on evaluation data.\n\n",
     );
     out.push_str("- **modify_coordinator_prompt**: Modify a coordinator prompt file. Requires: target_id (\"evolved-amendments\" or \"common-patterns\"), new_content (full file content).\n\n");
@@ -496,7 +496,7 @@ pub(crate) fn build_analyzer_prompt(
     // Input data
     out.push_str("## Input Data\n\n");
     out.push_str(&format!(
-        "Read your data slice from: `.workgraph/evolve-runs/{}/{}-slice.json`\n\n",
+        "Read your data slice from: `.wg/evolve-runs/{}/{}-slice.json`\n\n",
         run_id,
         strategy.label()
     ));
@@ -528,7 +528,7 @@ pub(crate) fn build_analyzer_prompt(
     // Output format
     out.push_str("## Required Output Format\n\n");
     out.push_str(&format!(
-        "Write a JSON file to `.workgraph/evolve-runs/{}/{}-proposals.json`:\n\n",
+        "Write a JSON file to `.wg/evolve-runs/{}/{}-proposals.json`:\n\n",
         run_id,
         strategy.label()
     ));

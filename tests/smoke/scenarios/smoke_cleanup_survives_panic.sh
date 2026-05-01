@@ -62,7 +62,7 @@ WG_SMOKE_ROOT="$sub_root" WG_SMOKE_SCENARIO="leakchild" \
         ( wg service start --max-agents 0 --no-chat-agent >daemon.log 2>&1 ) &
         wrap_pid=$!
         wg_dir=""
-        for cand in .wg .workgraph; do
+        for cand in .wg .wg; do
             if [[ -d "$scratch/$cand" ]]; then
                 wg_dir="$scratch/$cand"
                 break

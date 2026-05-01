@@ -832,12 +832,12 @@ mod tests {
     fn list_peers_filters_internal_functions() {
         let tmp = TempDir::new().unwrap();
         let local_dir = tmp.path().join("local");
-        let local_wg = local_dir.join(".workgraph");
+        let local_wg = local_dir.join(".wg");
         std::fs::create_dir_all(local_wg.join("functions")).unwrap();
 
         // Set up peer project with an internal function (should be hidden)
         let peer_project = tmp.path().join("peer-project");
-        let peer_wg = peer_project.join(".workgraph");
+        let peer_wg = peer_project.join(".wg");
         std::fs::create_dir_all(&peer_wg).unwrap();
         let peer_func_dir = peer_wg.join("functions");
 
@@ -874,12 +874,12 @@ mod tests {
     fn list_include_peers_with_peer_functions() {
         let tmp = TempDir::new().unwrap();
         let local_dir = tmp.path().join("local");
-        let local_wg = local_dir.join(".workgraph");
+        let local_wg = local_dir.join(".wg");
         std::fs::create_dir_all(local_wg.join("functions")).unwrap();
 
         // Set up peer project with a peer-visible function
         let peer_project = tmp.path().join("peer-project");
-        let peer_wg = peer_project.join(".workgraph");
+        let peer_wg = peer_project.join(".wg");
         std::fs::create_dir_all(&peer_wg).unwrap();
         let peer_func_dir = peer_wg.join("functions");
         let mut func = sample_function();
@@ -917,7 +917,7 @@ mod tests {
     #[test]
     fn list_include_peers_with_inaccessible_peer() {
         let tmp = TempDir::new().unwrap();
-        let local_wg = tmp.path().join(".workgraph");
+        let local_wg = tmp.path().join(".wg");
         std::fs::create_dir_all(local_wg.join("functions")).unwrap();
 
         // Add a local function
@@ -944,7 +944,7 @@ mod tests {
     #[test]
     fn list_include_peers_json_includes_source() {
         let tmp = TempDir::new().unwrap();
-        let local_wg = tmp.path().join("local").join(".workgraph");
+        let local_wg = tmp.path().join("local").join(".wg");
         std::fs::create_dir_all(local_wg.join("functions")).unwrap();
 
         // Local function
@@ -952,7 +952,7 @@ mod tests {
 
         // Peer with peer-visible function
         let peer_project = tmp.path().join("peer");
-        let peer_wg = peer_project.join(".workgraph");
+        let peer_wg = peer_project.join(".wg");
         std::fs::create_dir_all(&peer_wg).unwrap();
         let mut peer_func = sample_function();
         peer_func.id = "peer-func".to_string();

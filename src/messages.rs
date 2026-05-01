@@ -1,7 +1,7 @@
 //! Message queue storage for inter-agent and user-to-agent communication.
 //!
-//! Messages are stored as JSONL files in `.workgraph/messages/{task-id}.jsonl`.
-//! Read cursors are stored in `.workgraph/messages/.cursors/{agent-id}.{task-id}`.
+//! Messages are stored as JSONL files in `.wg/messages/{task-id}.jsonl`.
+//! Read cursors are stored in `.wg/messages/.cursors/{agent-id}.{task-id}`.
 
 use anyhow::{Context, Result};
 use chrono::Utc;
@@ -85,7 +85,7 @@ fn cursor_file(workgraph_dir: &Path, agent_id: &str, task_id: &str) -> PathBuf {
 
 /// Send a message to a task's queue.
 ///
-/// Appends a new message to `.workgraph/messages/{task-id}.jsonl`.
+/// Appends a new message to `.wg/messages/{task-id}.jsonl`.
 /// Uses file locking (flock) to safely assign the next message ID.
 /// Returns the assigned message ID.
 pub fn send_message(
@@ -766,7 +766,7 @@ mod tests {
 
     fn setup() -> (TempDir, PathBuf) {
         let tmp = TempDir::new().unwrap();
-        let wg_dir = tmp.path().join(".workgraph");
+        let wg_dir = tmp.path().join(".wg");
         fs::create_dir_all(&wg_dir).unwrap();
         (tmp, wg_dir)
     }

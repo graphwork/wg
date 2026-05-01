@@ -87,7 +87,7 @@ fn make_task(id: &str, title: &str, status: Status) -> Task {
 }
 
 fn setup_workgraph(tmp: &TempDir, tasks: Vec<Task>) -> PathBuf {
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     fs::create_dir_all(&wg_dir).unwrap();
     let graph_path = wg_dir.join("graph.jsonl");
     let mut graph = WorkGraph::new();
@@ -1041,7 +1041,7 @@ fn test_restore_then_diff_shows_no_changes() {
 #[test]
 fn test_snapshot_without_graph_jsonl() {
     let tmp = TempDir::new().unwrap();
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     fs::create_dir_all(&wg_dir).unwrap();
 
     // Create a valid graph first, then snapshot manually without graph.jsonl
@@ -1089,7 +1089,7 @@ fn test_snapshot_without_graph_jsonl() {
 #[test]
 fn test_run_id_above_999() {
     let tmp = TempDir::new().unwrap();
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     let runs = wg_dir.join("runs");
 
     // Create run-999 directory
@@ -1377,7 +1377,7 @@ fn test_multiple_replay_cycles_preserve_all_archives() {
 #[test]
 fn test_next_run_id_with_non_numeric_suffix() {
     let tmp = TempDir::new().unwrap();
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     let runs = wg_dir.join("runs");
 
     // Create directories: run-001, run-abc, run-003

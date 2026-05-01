@@ -19,11 +19,11 @@ use workgraph::parser::{load_graph, save_graph};
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Set up a minimal workgraph directory at `<tmp>/<name>/.workgraph/`
+/// Set up a minimal workgraph directory at `<tmp>/<name>/.wg/`
 /// with an empty graph.jsonl.
 fn setup_project(tmp: &TempDir, name: &str) -> std::path::PathBuf {
     let project = tmp.path().join(name);
-    let wg_dir = project.join(".workgraph");
+    let wg_dir = project.join(".wg");
     std::fs::create_dir_all(&wg_dir).unwrap();
     let graph_path = wg_dir.join("graph.jsonl");
     let graph = WorkGraph::new();
@@ -108,7 +108,7 @@ fn resolve_named_peer() {
     let local = setup_project(&tmp, "local");
     let remote = setup_project(&tmp, "remote");
 
-    let local_wg = local.join(".workgraph");
+    let local_wg = local.join(".wg");
     register_peer(
         &local_wg,
         "remote",
@@ -117,7 +117,7 @@ fn resolve_named_peer() {
     );
 
     let resolved = resolve_peer("remote", &local_wg).unwrap();
-    assert_eq!(resolved.workgraph_dir, remote.join(".workgraph"));
+    assert_eq!(resolved.workgraph_dir, remote.join(".wg"));
     assert_eq!(resolved.project_path, remote.canonicalize().unwrap());
 }
 
@@ -127,13 +127,13 @@ fn resolve_peer_by_absolute_path() {
     let local = setup_project(&tmp, "local");
     let remote = setup_project(&tmp, "remote");
 
-    let local_wg = local.join(".workgraph");
+    let local_wg = local.join(".wg");
 
     // No named peer — resolve by absolute path
     let resolved = resolve_peer(remote.to_str().unwrap(), &local_wg).unwrap();
     assert_eq!(
         resolved.workgraph_dir,
-        remote.join(".workgraph").canonicalize().unwrap()
+        remote.join(".wg").canonicalize().unwrap()
     );
 }
 
@@ -141,7 +141,7 @@ fn resolve_peer_by_absolute_path() {
 fn resolve_nonexistent_peer_fails() {
     let tmp = TempDir::new().unwrap();
     let local = setup_project(&tmp, "local");
-    let local_wg = local.join(".workgraph");
+    let local_wg = local.join(".wg");
 
     let result = resolve_peer("nonexistent", &local_wg);
     assert!(result.is_err());
@@ -151,15 +151,15 @@ fn resolve_nonexistent_peer_fails() {
 fn resolve_path_without_workgraph_dir_fails() {
     let tmp = TempDir::new().unwrap();
     let local = setup_project(&tmp, "local");
-    let local_wg = local.join(".workgraph");
+    let local_wg = local.join(".wg");
 
-    // Create a path that exists but has no .workgraph/
+    // Create a path that exists but has no .wg/
     let bare_dir = tmp.path().join("bare");
     std::fs::create_dir_all(&bare_dir).unwrap();
 
     let result = resolve_peer(bare_dir.to_str().unwrap(), &local_wg);
     assert!(result.is_err());
-    assert!(result.unwrap_err().to_string().contains(".workgraph"));
+    assert!(result.unwrap_err().to_string().contains(".wg"));
 }
 
 // ---------------------------------------------------------------------------
@@ -170,7 +170,7 @@ fn resolve_path_without_workgraph_dir_fails() {
 fn peer_service_not_running_when_no_state_json() {
     let tmp = TempDir::new().unwrap();
     let project = setup_project(&tmp, "project");
-    let wg_dir = project.join(".workgraph");
+    let wg_dir = project.join(".wg");
 
     let status = check_peer_service(&wg_dir);
     assert!(!status.running);
@@ -182,7 +182,7 @@ fn peer_service_not_running_when_no_state_json() {
 fn peer_service_not_running_with_stale_state() {
     let tmp = TempDir::new().unwrap();
     let project = setup_project(&tmp, "project");
-    let wg_dir = project.join(".workgraph");
+    let wg_dir = project.join(".wg");
 
     // Create a state.json with a PID that doesn't exist
     let service_dir = wg_dir.join("service");
@@ -208,8 +208,8 @@ fn direct_add_task_to_peer_graph() {
     let local = setup_project(&tmp, "local");
     let remote = setup_project(&tmp, "remote");
 
-    let local_wg = local.join(".workgraph");
-    let remote_wg = remote.join(".workgraph");
+    let local_wg = local.join(".wg");
+    let remote_wg = remote.join(".wg");
     register_peer(&local_wg, "remote", remote.to_str().unwrap(), None);
 
     // Directly add a task to the remote's graph
@@ -243,7 +243,7 @@ fn direct_add_task_to_peer_graph() {
 fn direct_add_task_with_after() {
     let tmp = TempDir::new().unwrap();
     let remote = setup_project(&tmp, "remote");
-    let remote_wg = remote.join(".workgraph");
+    let remote_wg = remote.join(".wg");
     let graph_path = remote_wg.join("graph.jsonl");
 
     use workgraph::graph::{Node, Status, Task};
@@ -294,7 +294,7 @@ fn direct_add_task_with_after() {
 #[test]
 fn federation_config_peers_roundtrip() {
     let tmp = TempDir::new().unwrap();
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     std::fs::create_dir_all(&wg_dir).unwrap();
 
     let mut config = FederationConfig::default();
@@ -329,7 +329,7 @@ fn federation_config_peers_roundtrip() {
 #[test]
 fn federation_config_peers_coexist_with_remotes() {
     let tmp = TempDir::new().unwrap();
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     std::fs::create_dir_all(&wg_dir).unwrap();
 
     let mut config = FederationConfig::default();
@@ -368,7 +368,7 @@ fn cli_add_with_repo_flag_direct_fallback() {
     let local = setup_project(&tmp, "local");
     let remote = setup_project(&tmp, "remote");
 
-    let local_wg = local.join(".workgraph");
+    let local_wg = local.join(".wg");
     register_peer(&local_wg, "remote", remote.to_str().unwrap(), None);
 
     // Use the binary to add a task to the remote peer
@@ -402,7 +402,7 @@ fn cli_add_with_repo_flag_direct_fallback() {
     );
 
     // Verify the task was created in the remote graph
-    let remote_graph = load_graph(remote.join(".workgraph").join("graph.jsonl")).unwrap();
+    let remote_graph = load_graph(remote.join(".wg").join("graph.jsonl")).unwrap();
     let tasks: Vec<_> = remote_graph.tasks().collect();
     assert_eq!(tasks.len(), 1, "Expected 1 task in remote graph");
     assert_eq!(tasks[0].title, "Cross-repo test task");
@@ -420,7 +420,7 @@ fn cli_add_with_repo_flag_by_path() {
     let local = setup_project(&tmp, "local");
     let remote = setup_project(&tmp, "remote");
 
-    let local_wg = local.join(".workgraph");
+    let local_wg = local.join(".wg");
 
     // Use absolute path instead of named peer
     let output = Command::new(env!("CARGO_BIN_EXE_wg"))
@@ -446,7 +446,7 @@ fn cli_add_with_repo_flag_by_path() {
     );
 
     // Verify the task was created in the remote graph
-    let remote_graph = load_graph(remote.join(".workgraph").join("graph.jsonl")).unwrap();
+    let remote_graph = load_graph(remote.join(".wg").join("graph.jsonl")).unwrap();
     let tasks: Vec<_> = remote_graph.tasks().collect();
     assert_eq!(tasks.len(), 1);
     assert_eq!(tasks[0].title, "Path-based remote task");
@@ -458,7 +458,7 @@ fn cli_add_with_repo_flag_nonexistent_peer_fails() {
 
     let tmp = TempDir::new().unwrap();
     let local = setup_project(&tmp, "local");
-    let local_wg = local.join(".workgraph");
+    let local_wg = local.join(".wg");
 
     let output = Command::new(env!("CARGO_BIN_EXE_wg"))
         .args([
@@ -478,7 +478,7 @@ fn cli_add_with_repo_flag_nonexistent_peer_fails() {
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains(".workgraph") || stderr.contains("not found"),
+        stderr.contains(".wg") || stderr.contains("not found"),
         "Expected meaningful error message, got: {}",
         stderr
     );
@@ -492,7 +492,7 @@ fn cli_add_with_repo_and_task_options() {
     let local = setup_project(&tmp, "local");
     let remote = setup_project(&tmp, "remote");
 
-    let local_wg = local.join(".workgraph");
+    let local_wg = local.join(".wg");
     register_peer(&local_wg, "remote", remote.to_str().unwrap(), None);
 
     let output = Command::new(env!("CARGO_BIN_EXE_wg"))
@@ -532,7 +532,7 @@ fn cli_add_with_repo_and_task_options() {
     );
 
     // Verify all fields were set correctly
-    let remote_graph = load_graph(remote.join(".workgraph").join("graph.jsonl")).unwrap();
+    let remote_graph = load_graph(remote.join(".wg").join("graph.jsonl")).unwrap();
     let task = remote_graph.get_task("custom-id").unwrap();
     assert_eq!(task.title, "Task with options");
     assert_eq!(task.description.as_deref(), Some("Detailed description"));
@@ -549,7 +549,7 @@ fn cli_add_without_repo_flag_adds_locally() {
 
     let tmp = TempDir::new().unwrap();
     let local = setup_project(&tmp, "local");
-    let local_wg = local.join(".workgraph");
+    let local_wg = local.join(".wg");
 
     let output = Command::new(env!("CARGO_BIN_EXE_wg"))
         .args(["--dir", local_wg.to_str().unwrap(), "add", "Local task"])
@@ -586,8 +586,8 @@ fn cross_repo_dep_ready_when_remote_task_done() {
     let local = setup_project(&tmp, "local");
     let remote = setup_project(&tmp, "remote");
 
-    let local_wg = local.join(".workgraph");
-    let remote_wg = remote.join(".workgraph");
+    let local_wg = local.join(".wg");
+    let remote_wg = remote.join(".wg");
 
     // Configure peer
     register_peer(&local_wg, "upstream", remote.to_str().unwrap(), None);
@@ -629,8 +629,8 @@ fn cross_repo_dep_blocked_when_remote_task_open() {
     let local = setup_project(&tmp, "local");
     let remote = setup_project(&tmp, "remote");
 
-    let local_wg = local.join(".workgraph");
-    let remote_wg = remote.join(".workgraph");
+    let local_wg = local.join(".wg");
+    let remote_wg = remote.join(".wg");
 
     register_peer(&local_wg, "upstream", remote.to_str().unwrap(), None);
 
@@ -668,7 +668,7 @@ fn cross_repo_dep_blocked_when_peer_unknown() {
 
     let tmp = TempDir::new().unwrap();
     let local = setup_project(&tmp, "local");
-    let local_wg = local.join(".workgraph");
+    let local_wg = local.join(".wg");
 
     // No peer configured — task should stay blocked
     let local_graph_path = local_wg.join("graph.jsonl");
@@ -695,8 +695,8 @@ fn cross_repo_dep_mixed_with_local_deps() {
     let local = setup_project(&tmp, "local");
     let remote = setup_project(&tmp, "remote");
 
-    let local_wg = local.join(".workgraph");
-    let remote_wg = remote.join(".workgraph");
+    let local_wg = local.join(".wg");
+    let remote_wg = remote.join(".wg");
 
     register_peer(&local_wg, "upstream", remote.to_str().unwrap(), None);
 
@@ -747,8 +747,8 @@ fn cross_repo_dep_mixed_one_not_done() {
     let local = setup_project(&tmp, "local");
     let remote = setup_project(&tmp, "remote");
 
-    let local_wg = local.join(".workgraph");
-    let remote_wg = remote.join(".workgraph");
+    let local_wg = local.join(".wg");
+    let remote_wg = remote.join(".wg");
 
     register_peer(&local_wg, "upstream", remote.to_str().unwrap(), None);
 
@@ -798,7 +798,7 @@ fn cli_add_with_cross_repo_after() {
 
     let tmp = TempDir::new().unwrap();
     let local = setup_project(&tmp, "local");
-    let local_wg = local.join(".workgraph");
+    let local_wg = local.join(".wg");
 
     // Add a task with a cross-repo after reference
     let output = Command::new(env!("CARGO_BIN_EXE_wg"))
@@ -843,8 +843,8 @@ fn resolve_remote_task_status_direct_access() {
     let local = setup_project(&tmp, "local");
     let remote = setup_project(&tmp, "remote");
 
-    let local_wg = local.join(".workgraph");
-    let remote_wg = remote.join(".workgraph");
+    let local_wg = local.join(".wg");
+    let remote_wg = remote.join(".wg");
     register_peer(&local_wg, "myremote", remote.to_str().unwrap(), None);
 
     // Add a done task to remote
@@ -869,7 +869,7 @@ fn resolve_remote_task_status_peer_not_found() {
 
     let tmp = TempDir::new().unwrap();
     let local = setup_project(&tmp, "local");
-    let local_wg = local.join(".workgraph");
+    let local_wg = local.join(".wg");
 
     let result = resolve_remote_task_status("nonexistent", "any-task", &local_wg);
     assert_eq!(result.status, workgraph::graph::Status::Open);
@@ -978,8 +978,8 @@ fn end_to_end_cross_repo_all_four_subsystems() {
     // ── Step 1: Set up two workgraph instances ──────────────────────────
     let project_a = setup_project(&tmp, "project-a");
     let project_b = setup_project(&tmp, "project-b");
-    let wg_a = project_a.join(".workgraph");
-    let wg_b = project_b.join(".workgraph");
+    let wg_a = project_a.join(".wg");
+    let wg_b = project_b.join(".wg");
 
     // ── Step 2: Register each as a peer of the other ───────────────────
     register_peer(
@@ -1186,8 +1186,8 @@ fn end_to_end_cross_repo_mixed_local_and_remote_deps() {
     let tmp = TempDir::new().unwrap();
     let project_a = setup_project(&tmp, "project-a");
     let project_b = setup_project(&tmp, "project-b");
-    let wg_a = project_a.join(".workgraph");
-    let wg_b = project_b.join(".workgraph");
+    let wg_a = project_a.join(".wg");
+    let wg_b = project_b.join(".wg");
 
     register_peer(&wg_a, "project-b", project_b.to_str().unwrap(), None);
 
@@ -1265,8 +1265,8 @@ fn end_to_end_function_list_includes_peers() {
     let tmp = TempDir::new().unwrap();
     let project_a = setup_project(&tmp, "project-a");
     let project_b = setup_project(&tmp, "project-b");
-    let wg_a = project_a.join(".workgraph");
-    let wg_b = project_b.join(".workgraph");
+    let wg_a = project_a.join(".wg");
+    let wg_b = project_b.join(".wg");
 
     register_peer(&wg_a, "project-b", project_b.to_str().unwrap(), None);
 
@@ -1330,8 +1330,8 @@ fn end_to_end_dispatch_and_query_roundtrip() {
     let tmp = TempDir::new().unwrap();
     let project_a = setup_project(&tmp, "project-a");
     let project_b = setup_project(&tmp, "project-b");
-    let wg_a = project_a.join(".workgraph");
-    let wg_b = project_b.join(".workgraph");
+    let wg_a = project_a.join(".wg");
+    let wg_b = project_b.join(".wg");
 
     register_peer(&wg_a, "project-b", project_b.to_str().unwrap(), None);
 

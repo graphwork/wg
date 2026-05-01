@@ -42,7 +42,7 @@ fi
 
 config_path=".wg/config.toml"
 if [[ ! -f "$config_path" ]]; then
-    config_path=".workgraph/config.toml"
+    config_path=".wg/config.toml"
 fi
 if ! grep -A1 'models\.evaluator' "$config_path" 2>/dev/null \
         | grep -q 'codex:'; then

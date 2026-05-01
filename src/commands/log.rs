@@ -124,15 +124,15 @@ pub fn run_list(dir: &Path, id: &str, json: bool) -> Result<()> {
     Ok(())
 }
 
-/// Archive directory for agent conversations: .workgraph/log/agents/<task-id>/
+/// Archive directory for agent conversations: .wg/log/agents/<task-id>/
 fn agent_archive_dir(dir: &Path, task_id: &str) -> PathBuf {
     dir.join("log").join("agents").join(task_id)
 }
 
 /// Archive an agent's prompt.txt and output.log for a completed task.
 ///
-/// Copies from .workgraph/agents/<agent-id>/{prompt.txt,output.log}
-/// to .workgraph/log/agents/<task-id>/<ISO-timestamp>/{prompt.txt,output.txt}
+/// Copies from .wg/agents/<agent-id>/{prompt.txt,output.log}
+/// to .wg/log/agents/<task-id>/<ISO-timestamp>/{prompt.txt,output.txt}
 ///
 /// Each retry gets its own timestamped directory, preserving full history.
 pub fn archive_agent(dir: &Path, task_id: &str, agent_id: &str) -> Result<PathBuf> {
@@ -349,7 +349,7 @@ mod tests {
     #[test]
     fn test_log_add_creates_entry_with_timestamp_and_message() {
         let tmp = TempDir::new().unwrap();
-        let dir = tmp.path().join(".workgraph");
+        let dir = tmp.path().join(".wg");
 
         let mut graph = WorkGraph::new();
         graph.add_node(Node::Task(make_task("t1", "Task 1")));
@@ -371,7 +371,7 @@ mod tests {
     #[test]
     fn test_log_add_with_actor() {
         let tmp = TempDir::new().unwrap();
-        let dir = tmp.path().join(".workgraph");
+        let dir = tmp.path().join(".wg");
 
         let mut graph = WorkGraph::new();
         graph.add_node(Node::Task(make_task("t1", "Task 1")));
@@ -389,7 +389,7 @@ mod tests {
     #[test]
     fn test_log_add_multiple_entries() {
         let tmp = TempDir::new().unwrap();
-        let dir = tmp.path().join(".workgraph");
+        let dir = tmp.path().join(".wg");
 
         let mut graph = WorkGraph::new();
         graph.add_node(Node::Task(make_task("t1", "Task 1")));
@@ -409,7 +409,7 @@ mod tests {
     #[test]
     fn test_log_add_empty_message() {
         let tmp = TempDir::new().unwrap();
-        let dir = tmp.path().join(".workgraph");
+        let dir = tmp.path().join(".wg");
 
         let mut graph = WorkGraph::new();
         graph.add_node(Node::Task(make_task("t1", "Task 1")));
@@ -427,7 +427,7 @@ mod tests {
     #[test]
     fn test_log_add_task_not_found() {
         let tmp = TempDir::new().unwrap();
-        let dir = tmp.path().join(".workgraph");
+        let dir = tmp.path().join(".wg");
 
         let mut graph = WorkGraph::new();
         graph.add_node(Node::Task(make_task("t1", "Task 1")));
@@ -441,7 +441,7 @@ mod tests {
     #[test]
     fn test_log_list_shows_entries() {
         let tmp = TempDir::new().unwrap();
-        let dir = tmp.path().join(".workgraph");
+        let dir = tmp.path().join(".wg");
 
         let mut graph = WorkGraph::new();
         graph.add_node(Node::Task(make_task("t1", "Task 1")));
@@ -458,7 +458,7 @@ mod tests {
     #[test]
     fn test_log_list_empty_log() {
         let tmp = TempDir::new().unwrap();
-        let dir = tmp.path().join(".workgraph");
+        let dir = tmp.path().join(".wg");
 
         let mut graph = WorkGraph::new();
         graph.add_node(Node::Task(make_task("t1", "Task 1")));
@@ -472,7 +472,7 @@ mod tests {
     #[test]
     fn test_log_list_json_output() {
         let tmp = TempDir::new().unwrap();
-        let dir = tmp.path().join(".workgraph");
+        let dir = tmp.path().join(".wg");
 
         let mut graph = WorkGraph::new();
         graph.add_node(Node::Task(make_task("t1", "Task 1")));
@@ -488,7 +488,7 @@ mod tests {
     #[test]
     fn test_log_list_json_format_is_valid() {
         let tmp = TempDir::new().unwrap();
-        let dir = tmp.path().join(".workgraph");
+        let dir = tmp.path().join(".wg");
 
         let mut graph = WorkGraph::new();
         graph.add_node(Node::Task(make_task("t1", "Task 1")));
@@ -509,7 +509,7 @@ mod tests {
     #[test]
     fn test_log_list_task_not_found() {
         let tmp = TempDir::new().unwrap();
-        let dir = tmp.path().join(".workgraph");
+        let dir = tmp.path().join(".wg");
 
         let mut graph = WorkGraph::new();
         graph.add_node(Node::Task(make_task("t1", "Task 1")));
@@ -523,7 +523,7 @@ mod tests {
     #[test]
     fn test_log_add_surfaces_unread_messages() {
         let tmp = TempDir::new().unwrap();
-        let dir = tmp.path().join(".workgraph");
+        let dir = tmp.path().join(".wg");
 
         let mut graph = WorkGraph::new();
         graph.add_node(Node::Task(make_task("t1", "Task 1")));
@@ -547,7 +547,7 @@ mod tests {
     #[test]
     fn test_log_add_no_messages_when_no_agent_id() {
         let tmp = TempDir::new().unwrap();
-        let dir = tmp.path().join(".workgraph");
+        let dir = tmp.path().join(".wg");
 
         let mut graph = WorkGraph::new();
         graph.add_node(Node::Task(make_task("t1", "Task 1")));
@@ -571,7 +571,7 @@ mod tests {
     #[test]
     fn test_log_add_no_repeat_messages() {
         let tmp = TempDir::new().unwrap();
-        let dir = tmp.path().join(".workgraph");
+        let dir = tmp.path().join(".wg");
 
         let mut graph = WorkGraph::new();
         graph.add_node(Node::Task(make_task("t1", "Task 1")));
@@ -600,7 +600,7 @@ mod tests {
     #[test]
     fn test_log_fails_when_not_initialized() {
         let tmp = TempDir::new().unwrap();
-        let dir = tmp.path().join(".workgraph");
+        let dir = tmp.path().join(".wg");
 
         let result = run_add(&dir, "t1", "message", None, None);
         assert!(result.is_err());
@@ -614,7 +614,7 @@ mod tests {
     #[test]
     fn test_archive_agent_copies_prompt_and_output() {
         let tmp = TempDir::new().unwrap();
-        let dir = tmp.path().join(".workgraph");
+        let dir = tmp.path().join(".wg");
         fs::create_dir_all(&dir).unwrap();
 
         // Create fake agent directory with prompt and output
@@ -640,7 +640,7 @@ mod tests {
             "Test output content"
         );
 
-        // Verify archive path structure: .workgraph/log/agents/<task-id>/<timestamp>/
+        // Verify archive path structure: .wg/log/agents/<task-id>/<timestamp>/
         let log_agents_dir = dir.join("log").join("agents").join("task-1");
         assert!(log_agents_dir.exists());
         let entries: Vec<_> = fs::read_dir(&log_agents_dir)
@@ -653,7 +653,7 @@ mod tests {
     #[test]
     fn test_archive_agent_missing_agent_dir_fails() {
         let tmp = TempDir::new().unwrap();
-        let dir = tmp.path().join(".workgraph");
+        let dir = tmp.path().join(".wg");
         fs::create_dir_all(&dir).unwrap();
 
         let result = archive_agent(&dir, "task-1", "agent-nonexistent");
@@ -664,7 +664,7 @@ mod tests {
     #[test]
     fn test_archive_agent_without_prompt() {
         let tmp = TempDir::new().unwrap();
-        let dir = tmp.path().join(".workgraph");
+        let dir = tmp.path().join(".wg");
         fs::create_dir_all(&dir).unwrap();
 
         // Agent dir with only output (shell executor may not have prompt)
@@ -683,7 +683,7 @@ mod tests {
     #[test]
     fn test_archive_agent_multiple_retries_get_separate_dirs() {
         let tmp = TempDir::new().unwrap();
-        let dir = tmp.path().join(".workgraph");
+        let dir = tmp.path().join(".wg");
         fs::create_dir_all(&dir).unwrap();
 
         // First attempt
@@ -719,7 +719,7 @@ mod tests {
     #[test]
     fn test_run_agent_no_archives() {
         let tmp = TempDir::new().unwrap();
-        let dir = tmp.path().join(".workgraph");
+        let dir = tmp.path().join(".wg");
         fs::create_dir_all(&dir).unwrap();
 
         // No archives exist — should print message and succeed
@@ -730,7 +730,7 @@ mod tests {
     #[test]
     fn test_run_agent_with_archives() {
         let tmp = TempDir::new().unwrap();
-        let dir = tmp.path().join(".workgraph");
+        let dir = tmp.path().join(".wg");
         fs::create_dir_all(&dir).unwrap();
 
         // Create an archive
@@ -749,7 +749,7 @@ mod tests {
     #[test]
     fn test_run_agent_json_output() {
         let tmp = TempDir::new().unwrap();
-        let dir = tmp.path().join(".workgraph");
+        let dir = tmp.path().join(".wg");
         fs::create_dir_all(&dir).unwrap();
 
         // Create an archive
@@ -767,7 +767,7 @@ mod tests {
     #[test]
     fn test_run_agent_no_archives_json() {
         let tmp = TempDir::new().unwrap();
-        let dir = tmp.path().join(".workgraph");
+        let dir = tmp.path().join(".wg");
         fs::create_dir_all(&dir).unwrap();
 
         let result = run_agent(&dir, "task-1", true);

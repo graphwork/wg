@@ -260,7 +260,7 @@ In `main.rs`, immediately after parsing:
 ```rust
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    let workgraph_dir = cli.dir.unwrap_or_else(|| PathBuf::from(".workgraph"));
+    let workgraph_dir = cli.dir.unwrap_or_else(|| PathBuf::from(".wg"));
 
     // Track usage (fire-and-forget, ignore errors)
     let _ = increment_usage(&workgraph_dir, cli.command.name());
@@ -271,7 +271,7 @@ fn main() -> Result<()> {
 
 The increment should:
 - Not block on errors
-- Handle missing .workgraph gracefully (skip if not initialized)
+- Handle missing .wg gracefully (skip if not initialized)
 - Be fast enough to not add perceptible latency
 
 ### Future Enhancements (Not for MVP)

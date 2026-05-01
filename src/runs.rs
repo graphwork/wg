@@ -1,7 +1,7 @@
 //! Run snapshot and restore logic for `wg replay`.
 //!
 //! Each replay creates a "run" — a point-in-time snapshot of the graph state
-//! stored under `.workgraph/runs/<run-id>/`. Run IDs are auto-incrementing
+//! stored under `.wg/runs/<run-id>/`. Run IDs are auto-incrementing
 //! (`run-001`, `run-002`, …).
 
 use anyhow::{Context, Result};
@@ -58,7 +58,7 @@ pub fn next_run_id(workgraph_dir: &Path) -> String {
 
 /// Take a snapshot of the current graph state.
 ///
-/// Copies `graph.jsonl` and `config.toml` into `.workgraph/runs/<run-id>/`.
+/// Copies `graph.jsonl` and `config.toml` into `.wg/runs/<run-id>/`.
 /// Writes `meta.json` with run metadata.
 pub fn snapshot(workgraph_dir: &Path, run_id: &str, meta: &RunMeta) -> Result<PathBuf> {
     let dest = run_dir(workgraph_dir, run_id);
@@ -147,7 +147,7 @@ mod tests {
     #[test]
     fn test_next_run_id_empty() {
         let tmp = TempDir::new().unwrap();
-        let dir = tmp.path().join(".workgraph");
+        let dir = tmp.path().join(".wg");
         fs::create_dir_all(&dir).unwrap();
         assert_eq!(next_run_id(&dir), "run-001");
     }
@@ -155,7 +155,7 @@ mod tests {
     #[test]
     fn test_next_run_id_increments() {
         let tmp = TempDir::new().unwrap();
-        let dir = tmp.path().join(".workgraph");
+        let dir = tmp.path().join(".wg");
         let runs = dir.join("runs");
         fs::create_dir_all(runs.join("run-001")).unwrap();
         fs::create_dir_all(runs.join("run-003")).unwrap();
@@ -165,7 +165,7 @@ mod tests {
     #[test]
     fn test_snapshot_and_load() {
         let tmp = TempDir::new().unwrap();
-        let dir = tmp.path().join(".workgraph");
+        let dir = tmp.path().join(".wg");
         setup_wg(&dir);
 
         let meta = RunMeta {
@@ -191,7 +191,7 @@ mod tests {
     #[test]
     fn test_list_runs() {
         let tmp = TempDir::new().unwrap();
-        let dir = tmp.path().join(".workgraph");
+        let dir = tmp.path().join(".wg");
         let runs = dir.join("runs");
         fs::create_dir_all(runs.join("run-001")).unwrap();
         fs::create_dir_all(runs.join("run-002")).unwrap();
@@ -204,7 +204,7 @@ mod tests {
     #[test]
     fn test_restore_graph() {
         let tmp = TempDir::new().unwrap();
-        let dir = tmp.path().join(".workgraph");
+        let dir = tmp.path().join(".wg");
         setup_wg(&dir);
 
         let meta = RunMeta {

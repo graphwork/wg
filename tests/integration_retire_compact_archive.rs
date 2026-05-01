@@ -13,7 +13,7 @@ use workgraph::graph::{Node, Status, Task, WorkGraph};
 use workgraph::parser::{load_graph, save_graph};
 
 fn workgraph_dir(tmp: &TempDir) -> std::path::PathBuf {
-    let dir = tmp.path().join(".workgraph");
+    let dir = tmp.path().join(".wg");
     std::fs::create_dir_all(&dir).unwrap();
     dir
 }
@@ -24,7 +24,7 @@ fn write_graph(dir: &Path, graph: &WorkGraph) {
 
 #[test]
 fn test_create_chat_does_not_create_compact_companion() {
-    // Spin up an empty .workgraph dir, invoke the dispatcher's create-chat IPC
+    // Spin up an empty .wg dir, invoke the dispatcher's create-chat IPC
     // helper directly via a CLI-equivalent path. We avoid running a real daemon
     // by exercising the wg binary in dry-mode via its public migration helper:
     // instead, we drive `handle_create_coordinator` through the `wg` CLI.

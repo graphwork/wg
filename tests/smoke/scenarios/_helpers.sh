@@ -152,14 +152,14 @@ register_wg_daemon() {
     printf '%s %s\n' "$1" "$2" >>"$WG_SMOKE_DAEMONS_FILE"
 }
 
-# ── Find .wg or .workgraph under a scratch dir ──────────────────────
+# ── Find .wg or .wg under a scratch dir ──────────────────────
 graph_dir_in() {
     local scratch="$1"
     if [[ -d "$scratch/.wg" ]]; then
         echo "$scratch/.wg"; return 0
     fi
-    if [[ -d "$scratch/.workgraph" ]]; then
-        echo "$scratch/.workgraph"; return 0
+    if [[ -d "$scratch/.wg" ]]; then
+        echo "$scratch/.wg"; return 0
     fi
     return 1
 }
@@ -200,7 +200,7 @@ start_wg_daemon() {
     local scratch="$1"; shift
     local wg_dir
     if ! wg_dir=$(graph_dir_in "$scratch"); then
-        loud_fail "no .wg/.workgraph dir under $scratch — run 'wg init' before start_wg_daemon"
+        loud_fail "no .wg/.wg dir under $scratch — run 'wg init' before start_wg_daemon"
     fi
     local wrap_log="$scratch/daemon.log"
     # Pass --dir explicitly so the daemon binds to the scratch fixture

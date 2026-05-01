@@ -9,9 +9,9 @@ use tempfile::TempDir;
 use workgraph::graph::{FailureClass, Node, Status, Task, WorkGraph};
 use workgraph::parser::{load_graph, save_graph};
 
-/// Initialize a workgraph for CLI invocation (creates .workgraph/graph.jsonl).
+/// Initialize a workgraph for CLI invocation (creates .wg/graph.jsonl).
 fn setup_wg(project_dir: &std::path::Path, tasks: Vec<Task>) -> std::path::PathBuf {
-    let wg_dir = project_dir.join(".workgraph");
+    let wg_dir = project_dir.join(".wg");
     fs::create_dir_all(&wg_dir).unwrap();
     let mut g = WorkGraph::new();
     for t in tasks {

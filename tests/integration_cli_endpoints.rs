@@ -34,8 +34,8 @@ fn wg_binary() -> PathBuf {
 
 fn wg_cmd(wg_dir: &Path, args: &[&str]) -> std::process::Output {
     // Use a fake HOME derived from the wg_dir path so that the user's real
-    // ~/.workgraph/config.toml does not bleed into the test (the fake home
-    // has no .workgraph/ subdir, so global config is empty).
+    // ~/.wg/config.toml does not bleed into the test (the fake home
+    // has no .wg/ subdir, so global config is empty).
     let fake_home = wg_dir.parent().and_then(|p| p.parent()).unwrap_or(wg_dir);
     Command::new(wg_binary())
         .arg("--dir")
@@ -78,7 +78,7 @@ fn wg_fail(wg_dir: &Path, args: &[&str]) -> (String, String) {
 }
 
 fn setup_workgraph(tmp: &TempDir) -> PathBuf {
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     fs::create_dir_all(&wg_dir).unwrap();
     let graph_path = wg_dir.join("graph.jsonl");
     let graph = WorkGraph::new();

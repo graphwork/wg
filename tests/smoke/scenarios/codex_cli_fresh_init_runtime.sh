@@ -15,9 +15,9 @@
 # created sibling service/ + bogus graph paths.
 #
 # Fix: `descend_into_wg_subdir_if_project_root` — when WG_DIR (or --dir)
-# points at a directory that contains a `.wg` or `.workgraph` child,
+# points at a directory that contains a `.wg` or `.wg` child,
 # descend into it. Skips descent when the path basename is already
-# `.wg`/`.workgraph` or when the path itself contains `graph.jsonl` (so
+# `.wg`/`.wg` or when the path itself contains `graph.jsonl` (so
 # legacy users who already set WG_DIR=<wg_dir> directly are unaffected).
 #
 # This smoke replicates the user's verbatim repro:

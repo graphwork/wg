@@ -794,10 +794,10 @@ fn test_assignment_pipeline_with_mixed_tasks() {
 #[test]
 fn test_assigned_agent_appears_in_rendered_prompt() {
     let tmp = TempDir::new().unwrap();
-    let wg_dir = tmp.path().join(".workgraph");
+    let wg_dir = tmp.path().join(".wg");
     fs::create_dir_all(&wg_dir).unwrap();
 
-    // Set up agency in .workgraph
+    // Set up agency in .wg
     let agency_dir = wg_dir.join("agency");
     agency::init(&agency_dir).unwrap();
 
@@ -1061,7 +1061,7 @@ mod llm_tests {
     /// config with working_dir and PATH so the wrapper script's bare `wg`
     /// commands find the test binary and the workgraph.
     fn setup_llm_workgraph(tmp_root: &Path) -> PathBuf {
-        let wg_dir = tmp_root.join(".workgraph");
+        let wg_dir = tmp_root.join(".wg");
         wg_ok(&wg_dir, &["init"]);
 
         let wg_bin_dir = wg_binary().parent().unwrap().to_string_lossy().to_string();

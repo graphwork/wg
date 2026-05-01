@@ -22,14 +22,14 @@ pub struct PushOptions<'a> {
 fn local_store(workgraph_dir: &Path, global: bool) -> Result<LocalStore> {
     let path = if global {
         let home = dirs::home_dir().context("Cannot determine home directory")?;
-        home.join(".workgraph").join("agency")
+        home.join(".wg").join("agency")
     } else {
         workgraph_dir.join("agency")
     };
     if !LocalStore::new(&path).is_valid() {
         if global {
             anyhow::bail!(
-                "No global agency store found at ~/.workgraph/agency/. Run 'wg agency init' first."
+                "No global agency store found at ~/.wg/agency/. Run 'wg agency init' first."
             );
         } else {
             anyhow::bail!("No local agency store found. Run 'wg agency init' first.");
@@ -200,7 +200,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
 
         // Set up a workgraph dir as source
-        let wg_dir = tmp.path().join("project").join(".workgraph");
+        let wg_dir = tmp.path().join("project").join(".wg");
         std::fs::create_dir_all(&wg_dir).unwrap();
         let agency_dir = wg_dir.join("agency");
         agency::init(&agency_dir).unwrap();
@@ -227,7 +227,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
 
         // Set up workgraph dir as source
-        let wg_dir = tmp.path().join("project").join(".workgraph");
+        let wg_dir = tmp.path().join("project").join(".wg");
         std::fs::create_dir_all(&wg_dir).unwrap();
         let agency_dir = wg_dir.join("agency");
         agency::init(&agency_dir).unwrap();
@@ -261,7 +261,7 @@ mod tests {
     #[test]
     fn push_invalid_type_errors() {
         let tmp = TempDir::new().unwrap();
-        let wg_dir = tmp.path().join("project").join(".workgraph");
+        let wg_dir = tmp.path().join("project").join(".wg");
         std::fs::create_dir_all(&wg_dir).unwrap();
         let agency_dir = wg_dir.join("agency");
         agency::init(&agency_dir).unwrap();
@@ -289,7 +289,7 @@ mod tests {
     #[test]
     fn push_no_local_store_errors() {
         let tmp = TempDir::new().unwrap();
-        let wg_dir = tmp.path().join("empty").join(".workgraph");
+        let wg_dir = tmp.path().join("empty").join(".wg");
         std::fs::create_dir_all(&wg_dir).unwrap();
         // Don't init agency — no roles/ dir
 
@@ -309,7 +309,7 @@ mod tests {
     #[test]
     fn push_dry_run_does_not_write() {
         let tmp = TempDir::new().unwrap();
-        let wg_dir = tmp.path().join("project").join(".workgraph");
+        let wg_dir = tmp.path().join("project").join(".wg");
         std::fs::create_dir_all(&wg_dir).unwrap();
         let agency_dir = wg_dir.join("agency");
         agency::init(&agency_dir).unwrap();
@@ -335,7 +335,7 @@ mod tests {
     #[test]
     fn push_type_filter_roles_only() {
         let tmp = TempDir::new().unwrap();
-        let wg_dir = tmp.path().join("project").join(".workgraph");
+        let wg_dir = tmp.path().join("project").join(".wg");
         std::fs::create_dir_all(&wg_dir).unwrap();
         let agency_dir = wg_dir.join("agency");
         agency::init(&agency_dir).unwrap();
@@ -363,7 +363,7 @@ mod tests {
     #[test]
     fn push_agent_auto_pushes_dependencies() {
         let tmp = TempDir::new().unwrap();
-        let wg_dir = tmp.path().join("project").join(".workgraph");
+        let wg_dir = tmp.path().join("project").join(".wg");
         std::fs::create_dir_all(&wg_dir).unwrap();
         let agency_dir = wg_dir.join("agency");
         agency::init(&agency_dir).unwrap();

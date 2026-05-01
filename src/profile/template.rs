@@ -128,10 +128,10 @@ pub fn get_profile(name: &str) -> Option<Profile> {
     builtin_profiles().into_iter().find(|p| p.name == name)
 }
 
-/// File name for the cached ranked tiers (inside .workgraph/).
+/// File name for the cached ranked tiers (inside .wg/).
 const RANKED_TIERS_FILE: &str = "profile_ranked_tiers.json";
 
-/// Load ranked tiers from `.workgraph/profile_ranked_tiers.json`.
+/// Load ranked tiers from `.wg/profile_ranked_tiers.json`.
 pub fn load_ranked_tiers(dir: &Path) -> Result<Option<RankedTiers>> {
     let path = dir.join(RANKED_TIERS_FILE);
     if !path.exists() {

@@ -31,8 +31,8 @@ struct DiscoveredStore {
 /// Scan a directory tree for agency stores.
 ///
 /// Looks for directories matching:
-///   - `<dir>/.workgraph/agency/roles/`  (project store)
-///   - `<dir>/agency/roles/`             (bare store — only if no `.workgraph` parent)
+///   - `<dir>/.wg/agency/roles/`  (project store)
+///   - `<dir>/agency/roles/`             (bare store — only if no `.wg` parent)
 ///
 /// Returns the list of discovered store root paths (the `agency/` dir).
 fn find_agency_stores(root: &Path, max_depth: usize) -> Vec<(PathBuf, bool)> {
@@ -61,8 +61,8 @@ fn find_agency_stores(root: &Path, max_depth: usize) -> Vec<(PathBuf, bool)> {
         let dir = entry.path();
         let dir_name = entry.file_name().to_string_lossy();
 
-        // Check for project store: .workgraph/agency/ exists and is a valid store
-        if dir_name == ".workgraph" {
+        // Check for project store: .wg/agency/ exists and is a valid store
+        if dir_name == ".wg" {
             let agency_dir = dir.join("agency");
             if LocalStore::new(&agency_dir).is_valid() {
                 if let Ok(canonical) = agency_dir.canonicalize() {
@@ -73,14 +73,14 @@ fn find_agency_stores(root: &Path, max_depth: usize) -> Vec<(PathBuf, bool)> {
             continue;
         }
 
-        // Check for bare store: agency/ exists and is a valid store, but parent is NOT .workgraph
+        // Check for bare store: agency/ exists and is a valid store, but parent is NOT .wg
         if dir_name == "agency" && LocalStore::new(dir).is_valid() {
-            // Skip if parent is .workgraph (already handled above)
+            // Skip if parent is .wg (already handled above)
             if dir
                 .parent()
                 .and_then(|p| p.file_name())
                 .map(|n| n.to_string_lossy())
-                == Some(".workgraph".into())
+                == Some(".wg".into())
             {
                 continue;
             }
@@ -184,7 +184,7 @@ mod tests {
     use tempfile::TempDir;
 
     fn create_project_store(dir: &Path) {
-        let agency = dir.join(".workgraph").join("agency");
+        let agency = dir.join(".wg").join("agency");
         std::fs::create_dir_all(agency.join("cache/roles")).unwrap();
         std::fs::create_dir_all(agency.join("primitives/tradeoffs")).unwrap();
         std::fs::create_dir_all(agency.join("cache/agents")).unwrap();
@@ -216,7 +216,7 @@ mod tests {
         create_project_store(&project);
         write_dummy_role(
             &project
-                .join(".workgraph")
+                .join(".wg")
                 .join("agency")
                 .join("cache/roles"),
             "abc123",
@@ -250,7 +250,7 @@ mod tests {
         let proj_a = tmp.path().join("alpha");
         create_project_store(&proj_a);
         write_dummy_role(
-            &proj_a.join(".workgraph").join("agency").join("cache/roles"),
+            &proj_a.join(".wg").join("agency").join("cache/roles"),
             "role1",
         );
 
@@ -290,7 +290,7 @@ mod tests {
     fn scan_respects_max_depth() {
         let tmp = TempDir::new().unwrap();
 
-        // Store at depth 3: root / a / b / project / .workgraph/agency/roles
+        // Store at depth 3: root / a / b / project / .wg/agency/roles
         let deep = tmp.path().join("a").join("b").join("project");
         create_project_store(&deep);
 

@@ -98,7 +98,7 @@ fn make_skip_script(dir: &Path, name: &str, reason: &str) -> PathBuf {
 }
 
 fn init_with_task(tmp: &Path, task_id: &str) -> PathBuf {
-    let wg_dir = tmp.join(".workgraph");
+    let wg_dir = tmp.join(".wg");
     let init = wg_cmd_with_env(&wg_dir, &["init", "--executor", "shell"], &[]);
     assert!(
         init.status.success(),

@@ -70,7 +70,7 @@ fn make_task(id: &str, title: &str, status: Status) -> Task {
 
 fn setup_wg(tasks: Vec<Task>) -> (TempDir, PathBuf) {
     let dir = TempDir::new().unwrap();
-    let wg_dir = dir.path().join(".workgraph");
+    let wg_dir = dir.path().join(".wg");
     fs::create_dir_all(&wg_dir).unwrap();
     let graph_path = wg_dir.join("graph.jsonl");
     let mut graph = WorkGraph::new();
@@ -90,7 +90,7 @@ fn ops_with_op<'a>(entries: &'a [OperationEntry], op: &str) -> Vec<&'a Operation
 #[test]
 fn add_produces_operation_log_entry() {
     let dir = TempDir::new().unwrap();
-    let wg_dir = dir.path().join(".workgraph");
+    let wg_dir = dir.path().join(".wg");
     fs::create_dir_all(&wg_dir).unwrap();
     fs::write(wg_dir.join("graph.jsonl"), "").unwrap();
 
@@ -110,7 +110,7 @@ fn add_produces_operation_log_entry() {
 #[test]
 fn edit_produces_operation_log_entry() {
     let dir = TempDir::new().unwrap();
-    let wg_dir = dir.path().join(".workgraph");
+    let wg_dir = dir.path().join(".wg");
     fs::create_dir_all(&wg_dir).unwrap();
     fs::write(wg_dir.join("graph.jsonl"), "").unwrap();
 
@@ -275,7 +275,7 @@ fn gc_produces_operation_log_entry() {
 #[test]
 fn full_lifecycle_produces_ordered_operations() {
     let dir = TempDir::new().unwrap();
-    let wg_dir = dir.path().join(".workgraph");
+    let wg_dir = dir.path().join(".wg");
     fs::create_dir_all(&wg_dir).unwrap();
     fs::write(wg_dir.join("graph.jsonl"), "").unwrap();
 
@@ -308,7 +308,7 @@ fn full_lifecycle_produces_ordered_operations() {
 #[test]
 fn fail_retry_done_lifecycle() {
     let dir = TempDir::new().unwrap();
-    let wg_dir = dir.path().join(".workgraph");
+    let wg_dir = dir.path().join(".wg");
     fs::create_dir_all(&wg_dir).unwrap();
     fs::write(wg_dir.join("graph.jsonl"), "").unwrap();
 
@@ -336,7 +336,7 @@ fn fail_retry_done_lifecycle() {
 #[test]
 fn agent_archive_on_done_preserves_files() {
     let dir = TempDir::new().unwrap();
-    let wg_dir = dir.path().join(".workgraph");
+    let wg_dir = dir.path().join(".wg");
     fs::create_dir_all(&wg_dir).unwrap();
 
     // Create a task with an assigned agent
@@ -384,7 +384,7 @@ fn agent_archive_on_done_preserves_files() {
 #[test]
 fn agent_archive_on_fail_preserves_files() {
     let dir = TempDir::new().unwrap();
-    let wg_dir = dir.path().join(".workgraph");
+    let wg_dir = dir.path().join(".wg");
     fs::create_dir_all(&wg_dir).unwrap();
 
     let mut task = make_task("t1", "Failing task", Status::InProgress);
@@ -420,7 +420,7 @@ fn agent_archive_on_fail_preserves_files() {
 #[test]
 fn rotation_triggers_under_high_volume() {
     let dir = TempDir::new().unwrap();
-    let wg_dir = dir.path().join(".workgraph");
+    let wg_dir = dir.path().join(".wg");
 
     // Use a tiny threshold to force rotation
     let threshold = 100u64;
@@ -462,7 +462,7 @@ fn rotation_triggers_under_high_volume() {
 #[test]
 fn rotated_zstd_files_can_be_read_back() {
     let dir = TempDir::new().unwrap();
-    let wg_dir = dir.path().join(".workgraph");
+    let wg_dir = dir.path().join(".wg");
     let threshold = 80u64;
 
     // Write entries that will trigger multiple rotations
@@ -510,7 +510,7 @@ fn concurrent_writes_to_operation_log() {
     use std::thread;
 
     let dir = TempDir::new().unwrap();
-    let wg_dir = Arc::new(dir.path().join(".workgraph"));
+    let wg_dir = Arc::new(dir.path().join(".wg"));
 
     // Create the log directory upfront
     fs::create_dir_all(provenance::log_dir(&wg_dir)).unwrap();
@@ -565,7 +565,7 @@ fn concurrent_writes_to_operation_log() {
 fn operation_log_survives_many_small_writes() {
     // Simulates what would happen with many rapid operations—no partial writes
     let dir = TempDir::new().unwrap();
-    let wg_dir = dir.path().join(".workgraph");
+    let wg_dir = dir.path().join(".wg");
 
     for i in 0..200 {
         provenance::record(
@@ -713,7 +713,7 @@ fn check_coherency(wg_dir: &Path) -> Vec<String> {
 #[test]
 fn coherency_after_full_lifecycle() {
     let dir = TempDir::new().unwrap();
-    let wg_dir = dir.path().join(".workgraph");
+    let wg_dir = dir.path().join(".wg");
     fs::create_dir_all(&wg_dir).unwrap();
     fs::write(wg_dir.join("graph.jsonl"), "").unwrap();
 
@@ -741,7 +741,7 @@ fn coherency_after_full_lifecycle() {
 #[test]
 fn coherency_detects_missing_add_entry() {
     let dir = TempDir::new().unwrap();
-    let wg_dir = dir.path().join(".workgraph");
+    let wg_dir = dir.path().join(".wg");
     fs::create_dir_all(&wg_dir).unwrap();
 
     // Create graph with a task but no operation log entry for it
@@ -763,7 +763,7 @@ fn coherency_detects_missing_add_entry() {
 #[test]
 fn coherency_detects_done_without_done_entry() {
     let dir = TempDir::new().unwrap();
-    let wg_dir = dir.path().join(".workgraph");
+    let wg_dir = dir.path().join(".wg");
     fs::create_dir_all(&wg_dir).unwrap();
 
     // Create graph with a done task but only an add entry (no done entry)
@@ -796,7 +796,7 @@ fn coherency_detects_done_without_done_entry() {
 #[test]
 fn coherency_after_archive_and_gc() {
     let dir = TempDir::new().unwrap();
-    let wg_dir = dir.path().join(".workgraph");
+    let wg_dir = dir.path().join(".wg");
     fs::create_dir_all(&wg_dir).unwrap();
     fs::write(wg_dir.join("graph.jsonl"), "").unwrap();
 
@@ -854,7 +854,7 @@ fn coherency_after_archive_and_gc() {
 #[test]
 fn wg_log_operations_shows_entries() {
     let dir = TempDir::new().unwrap();
-    let wg_dir = dir.path().join(".workgraph");
+    let wg_dir = dir.path().join(".wg");
     fs::create_dir_all(&wg_dir).unwrap();
     fs::write(wg_dir.join("graph.jsonl"), "").unwrap();
 
@@ -872,7 +872,7 @@ fn wg_log_operations_shows_entries() {
 #[test]
 fn wg_log_operations_json() {
     let dir = TempDir::new().unwrap();
-    let wg_dir = dir.path().join(".workgraph");
+    let wg_dir = dir.path().join(".wg");
     fs::create_dir_all(&wg_dir).unwrap();
     fs::write(wg_dir.join("graph.jsonl"), "").unwrap();
 
@@ -890,7 +890,7 @@ fn wg_log_operations_json() {
 #[test]
 fn empty_operation_log_is_readable() {
     let dir = TempDir::new().unwrap();
-    let wg_dir = dir.path().join(".workgraph");
+    let wg_dir = dir.path().join(".wg");
     // Don't create any log directory
     let entries = provenance::read_all_operations(&wg_dir).unwrap();
     assert!(entries.is_empty());
@@ -899,7 +899,7 @@ fn empty_operation_log_is_readable() {
 #[test]
 fn edit_no_change_does_not_produce_log_entry() {
     let dir = TempDir::new().unwrap();
-    let wg_dir = dir.path().join(".workgraph");
+    let wg_dir = dir.path().join(".wg");
     fs::create_dir_all(&wg_dir).unwrap();
     fs::write(wg_dir.join("graph.jsonl"), "").unwrap();
 
@@ -920,7 +920,7 @@ fn edit_no_change_does_not_produce_log_entry() {
 #[test]
 fn multiple_tasks_archive_produces_multiple_entries() {
     let dir = TempDir::new().unwrap();
-    let wg_dir = dir.path().join(".workgraph");
+    let wg_dir = dir.path().join(".wg");
     fs::create_dir_all(&wg_dir).unwrap();
     fs::write(wg_dir.join("graph.jsonl"), "").unwrap();
 

@@ -897,11 +897,19 @@ fn run_llm_verify_evaluation(
         verify_cmd
     );
 
-    // Find the workgraph directory (where .workgraph folder is located)
+    // Find the workgraph directory (.wg/, or legacy .workgraph/)
     let workgraph_dir = project_root
         .ancestors()
-        .find(|p| p.join(".workgraph").exists())
-        .unwrap_or(project_root);
+        .find(|p| p.join(".wg").exists() || p.join(".wg").exists())
+        .map(|p| {
+            if p.join(".wg").exists() {
+                p.join(".wg")
+            } else {
+                p.join(".wg")
+            }
+        })
+        .unwrap_or_else(|| project_root.to_path_buf());
+    let workgraph_dir = workgraph_dir.as_path();
 
     // Run evaluation on the task
     match evaluate::run(workgraph_dir, &task.id, None, false, false) {
@@ -1124,17 +1132,19 @@ fn run_verify_command(
 /// Returns `true` if the path emitted by `git status --porcelain` refers to a
 /// workgraph-internal directory that should never trigger a hygiene warning.
 ///
-/// Matches `.wg/`, `.wg-worktrees/`, `.workgraph/`, and numbered worktree dirs
-/// like `.workgraph.1/`. These are workgraph's own data — agents should never
-/// commit them, but they are *expected* to sit untracked in the working tree
-/// (see project memory: "stale `.workgraph.N/` dirs + agency YAMLs sit
-/// untracked"), so flagging them in `wg done` only produces noise.
+/// Matches `.wg/`, `.wg-worktrees/`, legacy `.workgraph/`, and numbered
+/// worktree dirs like `.workgraph.1/` and `.wg.1/`. These are workgraph's
+/// own data — agents should never commit them, but they are *expected* to
+/// sit untracked in the working tree (see project memory: "stale
+/// `.workgraph.N/` dirs + agency YAMLs sit untracked"), so flagging them
+/// in `wg done` only produces noise.
 fn is_hygiene_ignored_path(path: &str) -> bool {
     let p = path.trim_start_matches("./");
     let head = p.split('/').next().unwrap_or(p);
     head == ".wg"
         || head == ".wg-worktrees"
         || head == ".workgraph"
+        || head.starts_with(".wg.")
         || head.starts_with(".workgraph.")
 }
 
@@ -1174,7 +1184,7 @@ fn filter_hygiene_porcelain(status: &str) -> Vec<&str> {
 /// Skipped entirely for chat-loop tasks — a chat agent is a conversation
 /// endpoint, not a code agent, and should never be lectured about
 /// uncommitted state (see chat-agent-loops bug B). Workgraph-internal
-/// paths (`.wg/`, `.workgraph.*/`, etc.) are filtered from the warning
+/// paths (`.wg/`, `.wg.*/`, etc.) are filtered from the warning
 /// even when the check does run.
 fn check_agent_git_hygiene(dir: &Path, task_id: &str, tags: &[String]) {
     if tags.iter().any(|t| workgraph::chat_id::is_chat_loop_tag(t)) {
@@ -3631,7 +3641,7 @@ mod tests {
         task.verify = Some("exit 1".to_string());
         setup_workgraph(dir_path, vec![task]);
 
-        // Write config with lower threshold (dir_path is the .workgraph dir in tests)
+        // Write config with lower threshold (dir_path is the .wg dir in tests)
         let config_path = dir_path.join("config.toml");
         std::fs::write(&config_path, "[coordinator]\nmax_verify_failures = 2\n").unwrap();
 
@@ -4399,9 +4409,9 @@ mod tests {
 
         git(&["checkout", "main"]);
 
-        // Untracked file mimics stray .workgraph.* / .wg/ dirs that trigger the
+        // Untracked file mimics stray .wg.* / .wg/ dirs that trigger the
         // "nothing added to commit but untracked files present" wording.
-        std::fs::write(project_root.join(".workgraph.junk"), "junk\n").unwrap();
+        std::fs::write(project_root.join(".wg.junk"), "junk\n").unwrap();
 
         let wt = WorktreeInfo {
             worktree_path: project_root.to_string_lossy().to_string(),
@@ -4438,9 +4448,12 @@ mod tests {
         assert!(is_hygiene_ignored_path(".wg/lockfile"));
         assert!(is_hygiene_ignored_path(".wg-worktrees/"));
         assert!(is_hygiene_ignored_path(".wg-worktrees/agent-228/foo"));
+        // Legacy `.workgraph/` and numbered worktree dirs.
         assert!(is_hygiene_ignored_path(".workgraph/"));
         assert!(is_hygiene_ignored_path(".workgraph.1/"));
         assert!(is_hygiene_ignored_path(".workgraph.42/graph.jsonl"));
+        assert!(is_hygiene_ignored_path(".wg.1/"));
+        assert!(is_hygiene_ignored_path(".wg.42/graph.jsonl"));
         // Real source paths must NOT be treated as ignored.
         assert!(!is_hygiene_ignored_path("src/foo.rs"));
         assert!(!is_hygiene_ignored_path("README.md"));
@@ -4484,7 +4497,7 @@ mod tests {
     #[test]
     fn test_filter_hygiene_porcelain_returns_empty_when_only_ignored() {
         // The user's repro: only the workgraph-internal noise is present.
-        let raw = "?? .wg/\n?? .workgraph.1/\n";
+        let raw = "?? .wg/\n?? .wg.1/\n";
         let kept = filter_hygiene_porcelain(raw);
         assert!(
             kept.is_empty(),
