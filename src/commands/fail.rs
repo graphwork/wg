@@ -63,10 +63,22 @@ fn run_inner(
 
     let path = super::graph_path(dir);
 
+    // Shell tasks (exec set or exec_mode="shell") have no .evaluate-* scaffold
+    // (suppressed in eval_scaffold), so the rescue path can never resolve.
+    // Route them straight to terminal Failed.
+    let is_shell = workgraph::parser::load_graph(&path)
+        .ok()
+        .and_then(|g| {
+            g.get_task(id)
+                .map(super::eval_scaffold::is_shell_task)
+        })
+        .unwrap_or(false);
+
     // If this is an AgentExitNonzero failure AND auto_evaluate is on, route to
     // FailedPendingEval instead of terminal Failed so the evaluator can rescue
     // the task when the output is actually acceptable.
     let use_failed_pending_eval = !eval_reject
+        && !is_shell
         && class == Some(FailureClass::AgentExitNonzero)
         && Config::load_or_default(dir).agency.auto_evaluate;
 

@@ -183,6 +183,73 @@ fn test_agent_exit_nonzero_with_auto_evaluate_enters_failed_pending_eval() {
 }
 
 #[test]
+fn test_shell_task_skips_failed_pending_eval() {
+    // Shell tasks (exec set or exec_mode="shell") have no .evaluate-* scaffold,
+    // so the FailedPendingEval rescue path can never resolve. wg fail with
+    // --class agent-exit-nonzero must route directly to terminal Failed for
+    // shell tasks regardless of agency.auto_evaluate.
+    let tmp = TempDir::new().unwrap();
+    let mut task = make_task("shell-1", Status::InProgress);
+    task.assigned = Some("test-agent".to_string());
+    task.exec = Some("exit 1".to_string());
+    let wg_dir = setup_workgraph(&tmp, vec![task]);
+
+    // Enable auto_evaluate (default would otherwise route to FailedPendingEval)
+    let config_path = wg_dir.join("config.toml");
+    std::fs::write(&config_path, "[agency]\nauto_evaluate = true\n").unwrap();
+
+    let out = wg_cmd(
+        &wg_dir,
+        &[
+            "fail",
+            "shell-1",
+            "--class",
+            "agent-exit-nonzero",
+            "--reason",
+            "Agent exited with code 1",
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "wg fail failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
+    let task = graph.get_task("shell-1").unwrap();
+    assert_eq!(
+        task.status,
+        Status::Failed,
+        "shell tasks must skip FailedPendingEval (no .evaluate-* scaffolded for them); got {:?}",
+        task.status
+    );
+}
+
+#[test]
+fn test_shell_task_via_exec_mode_skips_failed_pending_eval() {
+    // Same bypass, but task uses exec_mode="shell" without `exec` set.
+    let tmp = TempDir::new().unwrap();
+    let mut task = make_task("shell-2", Status::InProgress);
+    task.assigned = Some("test-agent".to_string());
+    task.exec_mode = Some("shell".to_string());
+    let wg_dir = setup_workgraph(&tmp, vec![task]);
+
+    let config_path = wg_dir.join("config.toml");
+    std::fs::write(&config_path, "[agency]\nauto_evaluate = true\n").unwrap();
+
+    let out = wg_cmd(&wg_dir, &["fail", "shell-2", "--class", "agent-exit-nonzero"]);
+    assert!(out.status.success(), "wg fail failed");
+
+    let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();
+    let task = graph.get_task("shell-2").unwrap();
+    assert_eq!(
+        task.status,
+        Status::Failed,
+        "shell tasks (exec_mode=shell) must skip FailedPendingEval"
+    );
+}
+
+#[test]
 fn test_other_failure_class_skips_failed_pending_eval() {
     let tmp = TempDir::new().unwrap();
     let mut task = make_task("t1", Status::InProgress);
