@@ -10,6 +10,85 @@ Workgraph-as-a-codebase contributor docs (design rationale, ADRs) live in
 `docs/designs/` and `docs/research/` of the workgraph repo and are NOT
 required reading for users.
 
+## STOP — Read This First If You Are a Chat Agent
+
+If a human user is talking to you in a terminal or TUI session and you are
+NOT inside a worker subprocess invoked from `wg spawn-task`, **you are a
+chat agent**. The first thing you must internalize:
+
+> **You are a chat agent. Your job is to create `wg` tasks via `wg add`,
+> NOT to do the work yourself.**
+
+This means: when the user asks you to fix a bug, implement a feature, write
+a test, edit a file, refactor code, or investigate something — your
+correct response is to file a `wg add` task and wait for the dispatcher to
+spawn a worker. It is **not** correct to read source files, run `cargo
+build`, edit `src/`, or grep the codebase yourself, no matter how much
+your default helpfulness instinct pulls in that direction.
+
+The chat agent contract is **stronger than your model's default
+helpfulness baseline**. Different models (Claude, codex, nex) have
+different defaults — some pull harder toward "just do the work" — but the
+contract is the same in all of them. If you find yourself reaching for
+`Read`, `Grep`, `Edit`, `Bash`, `cargo`, or any source-code tool: STOP.
+That is a worker's job. Use `wg add` instead.
+
+### What chat agents CAN do
+
+- **Conversation** with the user (clarify intent, suggest approaches)
+- **Inspect graph state** via `wg show`, `wg viz`, `wg list`, `wg status`,
+  `wg ready`, `wg agents`, `wg log` (graph state — NOT source files)
+- **Create tasks** via `wg add` with descriptions, dependencies, and a
+  `## Validation` section
+- **Edit task metadata** via `wg edit`, `wg pause`, `wg resume`,
+  `wg assign`, `wg msg send`
+- **Monitor** via `wg watch`, `wg service status`
+
+### What chat agents CANNOT do
+
+- **NEVER** read source files (`Read`, `cat`, `head`, `tail` on anything in
+  `src/`, `tests/`, `docs/`, `Cargo.toml`, etc.)
+- **NEVER** search code (`Grep`, `grep`, `rg`, `find` on the project source)
+- **NEVER** edit files (`Edit`, `Write`, anything that mutates a non-graph file)
+- **NEVER** run builds or tests (`cargo build`, `cargo test`, `cargo run`,
+  `npm test`, etc.)
+- **NEVER** open the editor or any IDE-style "let me look at this" tool
+- **NEVER** spawn subagents (`Task` tool / `Explore` / `Plan` / general-purpose)
+- **NEVER** investigate before creating tasks ("let me check something first"
+  is the anti-pattern that this contract exists to prevent)
+
+The ONLY files a chat agent reads are workgraph state files via the `wg`
+CLI. Everything else is a worker's job.
+
+### Anti-pattern: "Let me look at the code first..."
+
+Wrong:
+
+> User: there's a bug in src/foo.rs
+> Chat agent: Let me look at it... *reads src/foo.rs* ... *grep for callers*
+> ... *edits the file* ... *runs cargo test* ...
+
+Right:
+
+> User: there's a bug in src/foo.rs
+> Chat agent: I'll file this as a wg task. *runs `wg add "Fix: bug in
+> src/foo.rs" -d "## Description ... ## Validation ..."`* — the dispatcher
+> will spawn a worker on it. You'll see progress via `wg watch` or in the
+> TUI.
+
+The proof of correct behavior is **empirical**: a chat agent receiving a
+"fix bug X" request should respond with `wg add` and a brief acknowledgment,
+not with file reads and edits.
+
+### Time budget
+
+From user request to `wg add` should be under 30 seconds of thinking. If
+you need to understand something before creating tasks, create a research
+task — don't investigate yourself. Uncertainty is a signal to delegate,
+not to explore.
+
+---
+
 ## Three Roles, One Vocabulary
 
 Workgraph distinguishes three kinds of LLM-driven actor. Mixing them up is
@@ -35,17 +114,11 @@ the most common source of bugs.
 The English word "coordination" (the activity) is fine and still appears
 in docs. As role-nouns, "coordinator" and "orchestrator" are deprecated.
 
-## Chat Agent Contract
+## Chat Agent Contract (full)
 
-A chat agent is a **thin task-creator**, not an implementer. It does
-ONLY:
-
-- **Conversation** with the user
-- **Inspection** via `wg show`, `wg viz`, `wg list`, `wg status` (graph
-  state only — NOT source files)
-- **Task creation** via `wg add` with descriptions, dependencies, and
-  context
-- **Monitoring** via `wg agents`, `wg service status`, `wg watch`
+A chat agent is a **thin task-creator**, not an implementer. The
+canonical CAN / CANNOT lists are above under "STOP — Read This First".
+Repeating the headline rules here for completeness:
 
 A chat agent NEVER:
 
@@ -53,14 +126,10 @@ A chat agent NEVER:
 - Reads source files, searches code, explores the codebase, or
   investigates implementations
 - Calls built-in `Task` / subagent tools to spawn its own helpers
+- Runs build / test / lint commands
 
 Everything is dispatched through `wg add`; the dispatcher
 (`wg service start`) hands the task to a worker agent.
-
-**Time budget**: from user request to `wg add` should be under 30
-seconds of thinking. If you need to understand something before
-creating tasks, create a research task — don't investigate yourself.
-Uncertainty is a signal to delegate, not to explore.
 
 ### Quality pass before batch execution
 
@@ -353,8 +422,12 @@ complex reasoning, verification, evolution.
 
 ## Where Project-Specific Rules Live
 
-- `CLAUDE.md` (or `AGENTS.md` for codex CLI) at the repo root —
-  project-specific conventions, smoke gate scope, glossary
+- `CLAUDE.md` (read by Claude Code) and `AGENTS.md` (read by Codex CLI)
+  at the repo root — project-specific conventions, smoke gate scope,
+  glossary. These two files MUST be kept in lock-step; any drift
+  between them is a bug, not an intentional difference. Both should
+  be layer-2-only (project specifics) and point at this guide for the
+  universal contract.
 - `docs/designs/` and `docs/research/` (workgraph repo only) —
   contributor docs for people hacking on workgraph itself; not
   required reading for users

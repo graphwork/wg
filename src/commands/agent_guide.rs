@@ -65,4 +65,103 @@ mod tests {
     fn guide_text_documents_paused_task_convention() {
         assert!(AGENT_GUIDE_TEXT.contains("Paused-task") || AGENT_GUIDE_TEXT.contains("paused"));
     }
+
+    /// Regression lock for fix-agents-md: the guide must lead with a loud
+    /// chat-agent role banner so that codex chat agents (whose
+    /// "be helpful, do the work" baseline is stronger than their
+    /// instruction-following) see the role contract before anything else.
+    #[test]
+    fn guide_text_leads_with_chat_agent_stop_banner() {
+        // The "STOP" banner must appear in the first ~1000 bytes — i.e.
+        // before "Three Roles" or any other heading. This guards against
+        // a future refactor that buries it.
+        let head = &AGENT_GUIDE_TEXT[..AGENT_GUIDE_TEXT.len().min(1500)];
+        assert!(
+            head.contains("STOP"),
+            "agent guide must lead with a STOP banner for chat agents; head was:\n{}",
+            head
+        );
+        assert!(
+            head.contains("chat agent"),
+            "agent guide head must name the chat-agent role explicitly"
+        );
+    }
+
+    #[test]
+    fn guide_text_lists_chat_agent_anti_patterns() {
+        // Concrete forbidden actions — the things codex chat agents have
+        // been observed doing instead of dispatching via wg add.
+        assert!(
+            AGENT_GUIDE_TEXT.contains("DO NOT write code")
+                || AGENT_GUIDE_TEXT.contains("DO NOT edit files")
+                || AGENT_GUIDE_TEXT.contains("CANNOT do"),
+            "agent guide must explicitly forbid chat-agent code-touching actions"
+        );
+        assert!(
+            AGENT_GUIDE_TEXT.contains("cargo build") || AGENT_GUIDE_TEXT.contains("cargo test"),
+            "agent guide must call out cargo as a forbidden chat-agent action"
+        );
+    }
+
+    #[test]
+    fn guide_text_lists_chat_agent_allow_list() {
+        // Allowed wg commands — chat agents need to know what they CAN do.
+        for cmd in ["wg add", "wg show", "wg list", "wg edit"] {
+            assert!(
+                AGENT_GUIDE_TEXT.contains(cmd),
+                "agent guide must list allowed command `{}` in the chat-agent surface",
+                cmd
+            );
+        }
+    }
+
+    /// Regression lock: AGENTS.md and CLAUDE.md must stay in lock-step.
+    /// Pre-fix, AGENTS.md had inline universal-role-contract content while
+    /// CLAUDE.md was layer-2-only — codex chat agents (which read AGENTS.md)
+    /// saw a softer / older contract than claude chat agents.
+    #[test]
+    fn agents_md_and_claude_md_are_layer2_parity() {
+        let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let agents_md = std::fs::read_to_string(manifest_dir.join("AGENTS.md"))
+            .expect("AGENTS.md must exist at repo root");
+        let claude_md = std::fs::read_to_string(manifest_dir.join("CLAUDE.md"))
+            .expect("CLAUDE.md must exist at repo root");
+
+        // Both must point at the bundled agent-guide as the source of truth.
+        for (name, body) in [("AGENTS.md", &agents_md), ("CLAUDE.md", &claude_md)] {
+            assert!(
+                body.contains("wg agent-guide"),
+                "{} must point at `wg agent-guide` for the universal role contract",
+                name
+            );
+            assert!(
+                body.contains("layer-2"),
+                "{} must declare itself as the layer-2 (project-specific) guide",
+                name
+            );
+            // No inline universal-role-contract content. The pre-fix
+            // AGENTS.md had a "Chat agent role" section with the contract
+            // inlined — that's exactly what we removed.
+            assert!(
+                !body.contains("### Chat agent role"),
+                "{} must not duplicate the chat-agent contract inline (use `wg agent-guide`)",
+                name
+            );
+            assert!(
+                !body.contains("### Smoke gate"),
+                "{} must not duplicate the smoke-gate contract inline (use `wg agent-guide`)",
+                name
+            );
+        }
+
+        // Both must reference each other so future edits stay in lockstep.
+        assert!(
+            agents_md.contains("CLAUDE.md"),
+            "AGENTS.md must cross-reference CLAUDE.md (lockstep invariant)"
+        );
+        assert!(
+            claude_md.contains("AGENTS.md"),
+            "CLAUDE.md must cross-reference AGENTS.md (lockstep invariant)"
+        );
+    }
 }

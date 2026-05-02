@@ -238,6 +238,50 @@ fn build_handler_system_prompt(workgraph_dir: &Path, chat_ref: &str, role: Optio
     }
 }
 
+/// Codex-specific addendum prepended to the first-turn system prompt for
+/// chat sessions. Codex's "be helpful, do the work" baseline is stronger
+/// than its instruction-following, so we lead with an extra-loud reminder
+/// that the chat agent is a thin task-creator, not an implementer. This is
+/// the asymmetry-fix counterpart to the codex bypass-flag handling
+/// elsewhere — different handler, different treatment.
+const CODEX_CHAT_ADDENDUM: &str = "\
+# STOP — You Are A Chat Agent, Not An Implementer
+
+You are running as a workgraph chat agent. Before you do anything else,
+read this:
+
+- Your job is to ORCHESTRATE work, not to receive it. The user is talking
+  to you to file `wg add` tasks; the dispatcher then spawns workers.
+- DO NOT write code. DO NOT edit files. DO NOT run `cargo build` /
+  `cargo test`. DO NOT grep, find, cat, or read source files. DO NOT
+  open the editor. DO NOT investigate the codebase.
+- For ANY code-touching request — bug fix, feature, refactor, test,
+  doc edit — your correct response is `wg add \"...\" -d \"## Description \
+... ## Validation ...\"` plus a brief acknowledgment to the user. The \
+worker that the dispatcher spawns will do the work.
+- Allowed commands: `wg add`, `wg edit`, `wg show`, `wg list`, `wg log`,
+  `wg msg send`, `wg pause`, `wg resume`, `wg assign`, `wg agents`,
+  `wg status`, `wg ready`, `wg watch`, `wg viz`. These read graph state
+  or create tasks. They do NOT touch source.
+- Forbidden: any tool that reads or writes a file under `src/`,
+  `tests/`, `docs/`, `Cargo.*`, `package.json`, etc. Any shell command
+  that runs the build / test / lint / format / migration. Any subagent
+  spawn (`Task` / `Explore` / `Plan` / general-purpose).
+
+Codex's default helpfulness baseline pulls toward \"just do it.\" The
+chat-agent contract is stronger than that baseline. If you find yourself
+reaching for a code tool: STOP, write a `wg add` instead.
+
+Empirical proof of correct behavior: when the user says \"fix bug Y in
+src/foo.rs\" you respond with `wg add ...` and a one-sentence
+acknowledgment, NOT with `Read src/foo.rs` or `cargo test`.
+
+The full universal contract follows in the system prompt below.
+
+---
+
+";
+
 /// First turn: include the full system prompt + graph context so
 /// codex understands its role. Subsequent turns use
 /// `assemble_followup_prompt` which is much shorter because session
@@ -250,6 +294,13 @@ fn assemble_first_turn_prompt(
 ) -> String {
     let mut out = String::new();
     out.push_str("# System\n");
+    // Chat sessions get the codex-specific anti-implementer addendum
+    // prepended. Worker / non-chat sessions don't (they're SUPPOSED to
+    // implement). Detect chat by the presence of a coordinator_id, since
+    // that's set when the chat_ref starts with "coordinator-" / ".chat-".
+    if coordinator_id.is_some() {
+        out.push_str(CODEX_CHAT_ADDENDUM);
+    }
     out.push_str(system_prompt);
     out.push_str("\n\n");
 
@@ -529,5 +580,82 @@ impl HandlerLogger {
     }
     fn error(&self, msg: &str) {
         self.log("ERROR", msg);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn empty_workgraph() -> TempDir {
+        let dir = TempDir::new().expect("tempdir");
+        // No graph file means build_coordinator_context returns Ok("") and
+        // we skip the context block — keeps the test focused on the
+        // system-prompt addendum.
+        dir
+    }
+
+    #[test]
+    fn first_turn_chat_prompt_includes_codex_addendum() {
+        let dir = empty_workgraph();
+        let prompt = assemble_first_turn_prompt(
+            dir.path(),
+            Some(1), // chat session — coordinator_id is set
+            "BASE_SYSTEM_PROMPT_PLACEHOLDER",
+            "fix bug Y in src/foo.rs",
+        );
+        assert!(
+            prompt.contains("STOP — You Are A Chat Agent"),
+            "chat-session first turn must include the codex anti-implementer addendum, got:\n{}",
+            prompt
+        );
+        assert!(
+            prompt.contains("DO NOT write code"),
+            "addendum must explicitly forbid writing code"
+        );
+        assert!(
+            prompt.contains("BASE_SYSTEM_PROMPT_PLACEHOLDER"),
+            "addendum must precede (not replace) the universal system prompt"
+        );
+        // Addendum comes before the universal contract.
+        let addendum_idx = prompt.find("STOP — You Are A Chat Agent").unwrap();
+        let base_idx = prompt.find("BASE_SYSTEM_PROMPT_PLACEHOLDER").unwrap();
+        assert!(
+            addendum_idx < base_idx,
+            "addendum must appear before the universal system prompt"
+        );
+    }
+
+    #[test]
+    fn first_turn_non_chat_prompt_omits_codex_addendum() {
+        let dir = empty_workgraph();
+        let prompt = assemble_first_turn_prompt(
+            dir.path(),
+            None, // no coordinator_id => not a chat session
+            "BASE_SYSTEM_PROMPT_PLACEHOLDER",
+            "do the thing",
+        );
+        assert!(
+            !prompt.contains("STOP — You Are A Chat Agent"),
+            "non-chat sessions must NOT receive the chat-agent addendum (workers SHOULD implement)"
+        );
+        assert!(
+            prompt.contains("BASE_SYSTEM_PROMPT_PLACEHOLDER"),
+            "non-chat sessions still get the base system prompt"
+        );
+    }
+
+    #[test]
+    fn followup_turn_omits_addendum() {
+        // Codex resumes its session server-side, so follow-up turns do
+        // not replay the system prompt at all. The addendum landed on the
+        // first turn and is preserved by codex's session state.
+        let dir = empty_workgraph();
+        let prompt = assemble_followup_prompt(dir.path(), Some(1), "another request");
+        assert!(
+            !prompt.contains("STOP — You Are A Chat Agent"),
+            "follow-up turns must not re-inject the addendum (codex session resume preserves it)"
+        );
     }
 }
