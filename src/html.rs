@@ -288,6 +288,16 @@ pub fn render_site(
     // Write static assets.
     fs::write(out_dir.join("style.css"), STYLE_CSS).context("failed to write style.css")?;
     fs::write(out_dir.join("panel.js"), PANEL_JS).context("failed to write panel.js")?;
+    // Self-host the JetBrains Mono Regular subset (ASCII + box-drawing +
+    // arrows + geometric symbols) so the viz <pre> renders with consistent
+    // monospace metrics on every platform — including Android Firefox,
+    // whose generic `monospace` (Droid/Noto Sans Mono) lacks complete
+    // box-drawing coverage and triggers per-glyph fallback that breaks
+    // long-edge alignment. SIL OFL 1.1 attribution shipped beside it.
+    fs::write(out_dir.join("JetBrainsMono-viz.woff2"), FONT_WOFF2)
+        .context("failed to write JetBrainsMono-viz.woff2")?;
+    fs::write(out_dir.join("JetBrainsMono-OFL.txt"), FONT_LICENSE)
+        .context("failed to write JetBrainsMono-OFL.txt")?;
 
     // Per-task pages (deep-link targets — work with file:// URLs).
     let mut pages_written = 0usize;
@@ -453,6 +463,22 @@ pub fn run(
 
 const STYLE_CSS: &str = include_str!("html_assets/style.css");
 const PANEL_JS: &str = include_str!("html_assets/panel.js");
+/// JetBrains Mono Regular, subsetted to ASCII (U+0020-007E), Latin-1
+/// supplement, general punctuation (U+2010-2027), arrows (U+2190-21FF),
+/// box-drawing (U+2500-257F), block elements (U+2580-259F), geometric
+/// shapes (U+25A0-25FF), and miscellaneous symbols (U+2600-26FF). 9.2KB
+/// WOFF2. SIL OFL 1.1 — see html_assets/JetBrainsMono-OFL.txt.
+///
+/// Bundled because Android Firefox's `monospace` generic (typically
+/// Droid Sans Mono / Noto Sans Mono on stock Android) lacks complete
+/// box-drawing glyph coverage. Without a self-hosted font that DOES
+/// have the glyphs, Firefox does per-character font fallback on `─`,
+/// `│`, `┐`, `┘`, etc., and the resulting glyphs come from a font with
+/// different advance-width metrics — long connector runs visually drift
+/// out of column with corner / arrow glyphs they're supposed to land on.
+const FONT_WOFF2: &[u8] = include_bytes!("html_assets/JetBrainsMono-viz.woff2");
+/// SIL Open Font License 1.1 attribution for JetBrainsMono-viz.woff2.
+const FONT_LICENSE: &str = include_str!("html_assets/JetBrainsMono-OFL.txt");
 
 // ────────────────────────────────────────────────────────────────────────────
 // Status helpers

@@ -525,6 +525,15 @@ description = "Regression for fix-wg-html-box-drawing-alignment: the `wg html` v
 timeout_seconds = 30
 
 [[scenario]]
+name = "wg_html_font_bundle"
+script = "scenarios/wg_html_font_bundle.sh"
+owners = [
+    "fix-android-firefox-wg-html-font-fallback",
+]
+description = "Regression for fix-android-firefox-wg-html-font-fallback: `wg html` must bundle the JetBrains Mono Regular subset (~9KB WOFF2) and reference it via @font-face from the LOCAL file (not Google Fonts CDN), so the viz <pre> renders box-drawing glyphs (`─ │ ┐ ┘ ├ └ ┤ ┬ ┴ ┼`) with stable monospace metrics on every platform. Bug shape: Android Firefox's `monospace` generic resolves to Droid Sans Mono / Noto Sans Mono, which lacks complete box-drawing coverage — without a self-hosted webfont declaring `unicode-range: U+2500-257F`, Firefox does per-glyph fallback for `─`/`│`/`┐`/`┘` from a different (proportional-metrics) font and long connector runs visually drift out of column. Pins (1) WOFF2 binary emitted with intact wOF2 magic bytes and reasonable size (4KB-200KB), (2) SIL OFL 1.1 license file co-bundled, (3) @font-face references the local JetBrainsMono-viz.woff2 (offline-capable; rejects Google Fonts URLs), (4) unicode-range covers U+2500-257F, (5) .viz-pre font stack lists 'JetBrains Mono' first AND includes Android-friendly fallbacks ('Roboto Mono' / 'Noto Sans Mono') as a safety net, (6) text-size-adjust: 100% (with -webkit- prefix) disables Android mobile text-inflation. No daemon, no LLM."
+timeout_seconds = 30
+
+[[scenario]]
 name = "wg_html_chat"
 script = "scenarios/wg_html_chat.sh"
 owners = [

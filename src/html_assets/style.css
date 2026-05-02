@@ -1,4 +1,38 @@
 /* ───────────────────────────────────────────────────────────────────────────
+   Self-hosted JetBrains Mono (subset) — guarantees the .viz-pre <pre>
+   block renders box-drawing glyphs (`─ │ ┐ ┘ ├ └ ┤ ┬ ┴ ┼`), arrows
+   (`← → ↑ ↓`), and double-line connectors (`═ ║ ╗ ╝`) on a stable
+   monospace cell grid on every browser/platform. The bug shape this
+   defends against is Android Firefox: its `monospace` generic resolves
+   to Droid Sans Mono / Noto Sans Mono, which lacks complete box-drawing
+   coverage, so per-glyph fallback pulls connectors from a different
+   font with different advance-width metrics — long runs of `─` then
+   visually drift out of column with the corner / arrow glyphs they
+   should land on. Self-hosting (not Google Fonts) keeps the page
+   offline-capable.
+
+   `unicode-range` keeps the @font-face request scoped: text outside the
+   declared ranges (CJK, etc.) is not blocked on this font and uses the
+   normal cascade. SIL OFL 1.1 — see JetBrainsMono-OFL.txt.
+   ─────────────────────────────────────────────────────────────────────────── */
+@font-face {
+    font-family: 'JetBrains Mono';
+    font-style: normal;
+    font-weight: 400;
+    font-display: swap;
+    src: url('JetBrainsMono-viz.woff2') format('woff2');
+    unicode-range:
+        U+0000-007F,    /* ASCII */
+        U+00A0-00FF,    /* Latin-1 supplement */
+        U+2010-2027,    /* General punctuation (en-dash, ellipsis...) */
+        U+2190-21FF,    /* Arrows */
+        U+2500-257F,    /* Box drawing */
+        U+2580-259F,    /* Block elements */
+        U+25A0-25FF,    /* Geometric shapes */
+        U+2600-26FF;    /* Miscellaneous symbols */
+}
+
+/* ───────────────────────────────────────────────────────────────────────────
    Workgraph HTML viewer — TUI-parity stylesheet.
 
    The color palette mirrors the TUI exactly:
@@ -357,7 +391,26 @@ section { margin-bottom: 2rem; }
 }
 
 .viz-pre {
-    font-family: 'JetBrains Mono', ui-monospace, 'Cascadia Code', 'Source Code Pro', Menlo, Consolas, monospace;
+    /* Font stack rationale (order matters — first match with all required
+       glyphs wins per character):
+       1. 'JetBrains Mono'       — self-hosted via @font-face above.
+                                    Guarantees box-drawing on EVERY platform.
+       2. ui-monospace           — Apple system monospace (SF Mono).
+       3. 'Cascadia Code'        — Windows 11 default, full box-drawing.
+       4. 'Source Code Pro'      — Adobe, common on dev machines.
+       5. 'Roboto Mono'          — present on most Android builds, has full
+                                    box-drawing — Android Firefox safety net
+                                    in case @font-face fails to load.
+       6. 'Noto Sans Mono'       — newer Android default, box-drawing OK.
+       7. 'Droid Sans Mono'      — older Android default; lacks box-drawing
+                                    (kept for general char fallback only).
+       8. Menlo, Consolas        — macOS / Windows classics.
+       9. monospace              — generic.
+       Note that even if (1) loads, the cascade still applies per-glyph for
+       characters outside the @font-face unicode-range, so the rest of the
+       chain still matters. */
+    font-family: 'JetBrains Mono', ui-monospace, 'Cascadia Code', 'Source Code Pro',
+        'Roboto Mono', 'Noto Sans Mono', 'Droid Sans Mono', Menlo, Consolas, monospace;
     font-size: 13px;
     line-height: 1.4;
     color: var(--fg);
@@ -377,6 +430,22 @@ section { margin-bottom: 2rem; }
     font-synthesis: none;
     font-variant-numeric: tabular-nums;
     text-rendering: geometricPrecision;
+    /* Mobile hardening — Android Firefox / Chrome auto-enlarge text in
+       <pre> blocks via "text inflation" or "text autosizer" heuristics
+       that adjust per-element font size based on content width, which
+       desynchronizes box-drawing advance widths from surrounding glyphs
+       (the fallback font and the primary font are scaled by different
+       amounts). Pinning text-size-adjust to 100% disables the heuristic
+       so every cell shares a single computed font size. The -webkit-
+       prefix covers Chrome / WebKit-derived Android browsers; the
+       unprefixed form covers Firefox once it ships the standard. */
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+    /* Mobile font smoothing — prevent subpixel-AA fallback path from
+       producing slightly different metrics for box-drawing glyphs vs
+       ASCII glyphs. Forces grayscale AA which is metric-stable. */
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
     /* Some webfonts ship slightly narrower box-drawing metrics; ensuring a
        fixed advance via font-variant-east-asian: full-width is wrong (it
        affects CJK), so we lean on a strict cell grid here and let the

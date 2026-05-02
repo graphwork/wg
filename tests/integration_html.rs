@@ -1382,3 +1382,142 @@ fn css_pins_terminal_cell_invariants_on_viz_pre() {
 // The viz capture path subprocesses to `wg viz --json` and depends on a
 // real graph.jsonl on disk, which is exactly what the smoke gate provides
 // (the workgraph repo's own .wg dir has plenty of long-edge cases).
+
+#[test]
+fn bundles_jetbrains_mono_webfont_for_box_drawing_alignment() {
+    // Pins fix-android-firefox-wg-html-font-fallback: the static-asset
+    // pipeline must self-host the JetBrains Mono Regular subset so the
+    // viz <pre> renders box-drawing glyphs (`─ │ ┐ ┘ ├ └ ┤ ┬ ┴ ┼`) on a
+    // stable monospace cell grid on EVERY platform — including Android
+    // Firefox, whose `monospace` generic resolves to Droid Sans Mono /
+    // Noto Sans Mono and falls back per-character for `─`/`│`/`┐`/`┘`
+    // out of a different (proportional-metrics) font.
+    //
+    // What this test pins:
+    //   1. The WOFF2 file is emitted alongside style.css / panel.js.
+    //   2. The WOFF2 magic bytes (`wOF2`) are intact — the include_bytes!
+    //      pipeline did not corrupt the binary.
+    //   3. style.css declares an `@font-face` rule that points to the
+    //      local WOFF2 file (NOT a Google Fonts URL — keeping the page
+    //      offline-capable).
+    //   4. The @font-face declares a `unicode-range` covering the
+    //      box-drawing block (U+2500–257F).
+    //   5. The .viz-pre font-family stack still lists 'JetBrains Mono'
+    //      first, AND lists Android-friendly fallbacks ('Roboto Mono',
+    //      'Noto Sans Mono') as a safety net if @font-face fails to load.
+    //   6. The .viz-pre block declares `text-size-adjust: 100%` (with
+    //      -webkit- prefix) so mobile auto-text-inflation does not
+    //      desynchronize advance widths between the primary and fallback
+    //      fonts.
+    //   7. The OFL.txt attribution file is co-bundled (SIL OFL 1.1
+    //      requires the license travel with the font binary).
+
+    let dir = TempDir::new().unwrap();
+    let t = make_task("alpha", "alpha", "public");
+    let graph = build_graph(vec![t]);
+    html::render_site(&graph, dir.path(), dir.path(), html::RenderOptions::default()).unwrap();
+
+    // (1) WOFF2 file present and non-empty.
+    let woff2_path = dir.path().join("JetBrainsMono-viz.woff2");
+    let woff2 = fs::read(&woff2_path).expect("JetBrainsMono-viz.woff2 not emitted");
+    assert!(
+        woff2.len() > 1024,
+        "WOFF2 unexpectedly small ({} bytes) — include_bytes! pipeline broken",
+        woff2.len()
+    );
+
+    // (2) WOFF2 magic bytes intact.
+    assert_eq!(
+        &woff2[..4],
+        b"wOF2",
+        "WOFF2 magic bytes corrupted — got {:02x?}, expected 'wOF2'",
+        &woff2[..4]
+    );
+
+    // (7) License file co-bundled (SIL OFL 1.1 requirement).
+    let license = fs::read_to_string(dir.path().join("JetBrainsMono-OFL.txt"))
+        .expect("JetBrainsMono-OFL.txt not emitted — OFL 1.1 attribution required");
+    assert!(
+        license.contains("SIL Open Font License"),
+        "OFL.txt missing the license header — wrong file?"
+    );
+
+    let css = fs::read_to_string(dir.path().join("style.css")).unwrap();
+
+    // (3) @font-face references the LOCAL file, not a remote CDN.
+    assert!(
+        css.contains("@font-face"),
+        "style.css missing @font-face declaration"
+    );
+    assert!(
+        css.contains("url('JetBrainsMono-viz.woff2')")
+            || css.contains("url(\"JetBrainsMono-viz.woff2\")")
+            || css.contains("url(JetBrainsMono-viz.woff2)"),
+        "@font-face must reference local 'JetBrainsMono-viz.woff2' (offline-capable)"
+    );
+    assert!(
+        !css.contains("fonts.googleapis.com") && !css.contains("fonts.gstatic.com"),
+        "style.css must NOT pull from Google Fonts — page must be offline-capable"
+    );
+    assert!(
+        css.contains("format('woff2')") || css.contains("format(\"woff2\")"),
+        "@font-face src must declare format('woff2')"
+    );
+
+    // (4) unicode-range covers box-drawing block.
+    assert!(
+        css.contains("U+2500-257F") || css.contains("U+2500-25FF"),
+        "@font-face unicode-range must include U+2500-257F (box-drawing)"
+    );
+
+    // (5) Font stack: JetBrains Mono first + Android-friendly fallbacks.
+    let viz_pre_start = css.find(".viz-pre {").expect("missing .viz-pre block");
+    let viz_pre_end =
+        viz_pre_start + css[viz_pre_start..].find('}').expect("unterminated .viz-pre block");
+    let viz_pre_block = &css[viz_pre_start..viz_pre_end];
+
+    let font_family_start = viz_pre_block
+        .find("font-family:")
+        .expect(".viz-pre missing font-family declaration");
+    let font_family_end = font_family_start
+        + viz_pre_block[font_family_start..]
+            .find(';')
+            .expect("unterminated font-family");
+    let font_family = &viz_pre_block[font_family_start..font_family_end];
+
+    assert!(
+        font_family.contains("'JetBrains Mono'"),
+        ".viz-pre font-family must list 'JetBrains Mono' first: got {:?}",
+        font_family
+    );
+    // Order check: 'JetBrains Mono' must come before 'monospace' generic.
+    let jbm_idx = font_family.find("'JetBrains Mono'").unwrap();
+    let generic_idx = font_family
+        .rfind("monospace")
+        .expect("font stack must end in generic 'monospace'");
+    assert!(
+        jbm_idx < generic_idx,
+        "'JetBrains Mono' must precede generic 'monospace' in the stack"
+    );
+    // Android safety-net fonts: at least one of 'Roboto Mono' or 'Noto Sans Mono'
+    // must be in the stack to defend against the @font-face load failing.
+    assert!(
+        font_family.contains("'Roboto Mono'") || font_family.contains("'Noto Sans Mono'"),
+        ".viz-pre font-family must include an Android-friendly fallback \
+         ('Roboto Mono' or 'Noto Sans Mono'): got {:?}",
+        font_family
+    );
+
+    // (6) Mobile text-size-adjust hardening — defends against Android
+    // browsers' text inflation heuristic that desynchronizes advance widths.
+    assert!(
+        viz_pre_block.contains("text-size-adjust: 100%"),
+        ".viz-pre must declare 'text-size-adjust: 100%' to disable mobile \
+         text inflation (which breaks box-drawing alignment on Android)"
+    );
+    assert!(
+        viz_pre_block.contains("-webkit-text-size-adjust: 100%"),
+        ".viz-pre must declare '-webkit-text-size-adjust: 100%' for \
+         Chrome/WebKit-derived Android browsers"
+    );
+}
