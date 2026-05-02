@@ -840,6 +840,28 @@ description = "Pins the data-side contract behind the TUI activity sort introduc
 timeout_seconds = 30
 
 [[scenario]]
+name = "tui_perf_message_stats_pair_folds"
+script = "scenarios/tui_perf_message_stats_pair_folds.sh"
+owners = [
+    "fix-tui-perf",
+    "fix-tui-perf-2",
+    "diagnose-tui-scales",
+]
+description = "Pins fix-tui-perf-2 fix 1 (bench E from diagnose-tui-scales): `message_stats_pair_cached` over a 1000-task fixture must outperform the standalone `message_stats` + `coordinator_message_status` baseline by at least 1.5× and re-scans of unmodified files must be cache hits. A regression here would re-introduce the diagnose hot path #1 (each fs-change tick double-reading every messages/<task>.jsonl)."
+timeout_seconds = 180
+
+[[scenario]]
+name = "tui_perf_token_usage_cached"
+script = "scenarios/tui_perf_token_usage_cached.sh"
+owners = [
+    "fix-tui-perf",
+    "fix-tui-perf-2",
+    "diagnose-tui-scales",
+]
+description = "Pins fix-tui-perf-2 fix 2: `parse_token_usage_live_cached` must hit the (path, mtime) cache on unchanged files, turning a no-op refresh into a metadata syscall instead of a full JSONL re-parse. Regression would re-introduce the per-fs-event walk of every active agent's output.log identified as the second half of diagnose hot path #1."
+timeout_seconds = 180
+
+[[scenario]]
 name = "publish_wcc_releases_paused_subgraph"
 script = "scenarios/publish_wcc_releases_paused_subgraph.sh"
 owners = [

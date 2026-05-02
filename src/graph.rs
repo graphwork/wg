@@ -1029,6 +1029,56 @@ pub fn parse_token_usage_live(output_log_path: &std::path::Path) -> Option<Token
     }
 }
 
+/// Process-wide cache for `parse_token_usage_live`, keyed by output-log path
+/// + mtime. The TUI's `live_token_usage` and `agency_token_usage` maps
+/// previously walked + parsed every active agent's `output.log` (and every
+/// archived `log/agents/<task>/<run>/output.txt`) on every fs-change tick.
+/// `output.log` is appended to many times per second by streaming agents,
+/// but the parse result only changes when the file mtime advances — so
+/// memoizing on (path, mtime) is exact, not approximate.
+type TokenUsageCacheKey = (std::path::PathBuf, Option<std::time::SystemTime>);
+
+fn token_usage_cache()
+-> &'static std::sync::Mutex<std::collections::HashMap<TokenUsageCacheKey, Option<TokenUsage>>> {
+    static CACHE: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<TokenUsageCacheKey, Option<TokenUsage>>>,
+    > = std::sync::OnceLock::new();
+    CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+/// Cached counterpart of `parse_token_usage_live`. Returns the memoized value
+/// when the file mtime is unchanged; otherwise reparses and updates the cache.
+///
+/// Used by the TUI render path (live + agency token usage maps) where the
+/// same output logs are scanned 5-50 times per second under active load.
+pub fn parse_token_usage_live_cached(output_log_path: &std::path::Path) -> Option<TokenUsage> {
+    let mtime = std::fs::metadata(output_log_path)
+        .and_then(|m| m.modified())
+        .ok();
+    if mtime.is_none() {
+        // File doesn't exist — caller treats this as "no usage", and we
+        // intentionally don't cache absent files (they may appear later).
+        return None;
+    }
+    let key: TokenUsageCacheKey = (output_log_path.to_path_buf(), mtime);
+
+    if let Ok(cache) = token_usage_cache().lock()
+        && let Some(hit) = cache.get(&key)
+    {
+        return hit.clone();
+    }
+
+    let value = parse_token_usage_live(output_log_path);
+
+    if let Ok(mut cache) = token_usage_cache().lock() {
+        if cache.len() > 8192 {
+            cache.clear();
+        }
+        cache.insert(key, value.clone());
+    }
+    value
+}
+
 /// Parse token usage from `__WG_TOKENS__:` lines in an output log.
 ///
 /// Eval agents (`.evaluate-*`, `.flip-*`) emit `__WG_TOKENS__:{json}` to stderr

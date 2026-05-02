@@ -6,9 +6,12 @@
 use anyhow::{Context, Result};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::time::SystemTime;
 
 /// Delivery status of a message through its lifecycle.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -710,6 +713,196 @@ pub fn coordinator_message_status(
     } else {
         Some(CoordinatorMessageStatus::Unseen)
     }
+}
+
+/// Compute message_stats and coordinator_message_status in a single pass over
+/// the message file. The TUI viz pipeline calls both per task on every refresh,
+/// and each one independently parsed the same JSONL file — folding to one
+/// read halves the per-task disk I/O during the heavy `generate_viz_output`
+/// pass (see fix-tui-perf-2 / diagnose-tui-scales hot path #1).
+///
+/// Returns `None` for the coordinator status component when there are no
+/// incoming messages (matches the standalone function's behavior).
+pub fn message_stats_pair(
+    workgraph_dir: &Path,
+    task_id: &str,
+    assigned_agent: Option<&str>,
+) -> (MessageStats, Option<CoordinatorMessageStatus>) {
+    let messages = match list_messages(workgraph_dir, task_id) {
+        Ok(msgs) => msgs,
+        Err(_) => return (MessageStats::default(), None),
+    };
+
+    if messages.is_empty() {
+        return (MessageStats::default(), None);
+    }
+
+    // ---- message_stats half ----
+    let mut incoming = 0usize;
+    let mut outgoing = 0usize;
+    let mut last_incoming_id_agent: u64 = 0;
+    let mut last_outgoing_id_agent: u64 = 0;
+
+    // ---- coordinator_message_status half ----
+    let is_coordinator_sender = |sender: &str| matches!(sender, "tui" | "user" | "coordinator");
+    let mut coord_last_incoming_id: u64 = 0;
+    let mut coord_last_outgoing_after_incoming_id: u64 = 0;
+
+    for msg in &messages {
+        // message_stats partitioning: relative to the assigned agent.
+        let is_from_agent = assigned_agent.map(|a| msg.sender == a).unwrap_or(false);
+        if is_from_agent {
+            outgoing += 1;
+            last_outgoing_id_agent = msg.id;
+        } else {
+            incoming += 1;
+            last_incoming_id_agent = msg.id;
+        }
+
+        // coordinator_message_status partitioning: tui/user/coordinator vs others.
+        if is_coordinator_sender(&msg.sender) {
+            if coord_last_incoming_id > 0 && msg.id > coord_last_incoming_id {
+                coord_last_outgoing_after_incoming_id = msg.id;
+            }
+        } else {
+            coord_last_incoming_id = msg.id;
+            coord_last_outgoing_after_incoming_id = 0;
+        }
+    }
+
+    let max_id = messages.last().map(|m| m.id).unwrap_or(0);
+    let has_unread = if let Some(agent_id) = assigned_agent {
+        let cursor = read_cursor(workgraph_dir, agent_id, task_id).unwrap_or(0);
+        cursor < max_id
+    } else {
+        true
+    };
+    let responded =
+        last_outgoing_id_agent > 0 && last_outgoing_id_agent > last_incoming_id_agent;
+
+    let stats = MessageStats {
+        incoming,
+        outgoing,
+        has_unread,
+        responded,
+    };
+
+    let coord_status = if coord_last_incoming_id == 0 {
+        None
+    } else if coord_last_outgoing_after_incoming_id > coord_last_incoming_id {
+        Some(CoordinatorMessageStatus::Replied)
+    } else {
+        let tui_cursor = read_cursor(workgraph_dir, "tui", task_id).unwrap_or(0);
+        if tui_cursor >= coord_last_incoming_id {
+            Some(CoordinatorMessageStatus::Seen)
+        } else {
+            Some(CoordinatorMessageStatus::Unseen)
+        }
+    };
+
+    (stats, coord_status)
+}
+
+/// Public helper to expose the underlying message-file path for cache keying.
+/// Used by viz_viewer / viz/mod.rs to invalidate cached `message_stats_pair`
+/// results based on file mtime without re-implementing the path conventions.
+pub fn message_file_path(workgraph_dir: &Path, task_id: &str) -> PathBuf {
+    message_file(workgraph_dir, task_id)
+}
+
+/// Process-wide cache for `message_stats_pair` results.
+///
+/// Cache key components:
+///   - message file path
+///   - message file mtime (invalidates when a new message lands)
+///   - assigned-agent id (`MessageStats` partitions by agent — a reassign
+///     with identical mtime would still need recomputation)
+///   - assigned-agent cursor mtime (`has_unread` reads the agent cursor —
+///     `wg msg read` advances it without touching the message file mtime)
+///   - "tui" cursor mtime (`coordinator_message_status` reads the tui
+///     cursor — opening the Messages tab advances it without touching
+///     the message file mtime)
+///
+/// Each metadata syscall is microseconds; together they let the cache hit
+/// the steady-state common case (no incoming messages, no cursor advance)
+/// while still invalidating the moment something the result depends on
+/// changes.
+type MessageCacheKey = (
+    PathBuf,
+    Option<SystemTime>,
+    Option<String>,
+    Option<SystemTime>, // assigned-agent cursor mtime
+    Option<SystemTime>, // tui cursor mtime
+);
+type MessageCacheValue = (MessageStats, Option<CoordinatorMessageStatus>);
+
+fn message_cache() -> &'static Mutex<HashMap<MessageCacheKey, MessageCacheValue>> {
+    static CACHE: std::sync::OnceLock<Mutex<HashMap<MessageCacheKey, MessageCacheValue>>> =
+        std::sync::OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn cursor_mtime(workgraph_dir: &Path, agent_id: &str, task_id: &str) -> Option<SystemTime> {
+    let path = cursor_file(workgraph_dir, agent_id, task_id);
+    std::fs::metadata(&path).and_then(|m| m.modified()).ok()
+}
+
+/// Cached counterpart of `message_stats_pair`. Returns memoized values when
+/// the message file + relevant cursor files are unchanged; otherwise
+/// recomputes and updates the cache.
+pub fn message_stats_pair_cached(
+    workgraph_dir: &Path,
+    task_id: &str,
+    assigned_agent: Option<&str>,
+) -> MessageCacheValue {
+    let path = message_file(workgraph_dir, task_id);
+    let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+    let agent_cursor = assigned_agent
+        .map(|a| cursor_mtime(workgraph_dir, a, task_id))
+        .unwrap_or(None);
+    let tui_cursor = cursor_mtime(workgraph_dir, "tui", task_id);
+    let key: MessageCacheKey = (
+        path,
+        mtime,
+        assigned_agent.map(String::from),
+        agent_cursor,
+        tui_cursor,
+    );
+
+    if let Ok(cache) = message_cache().lock()
+        && let Some(hit) = cache.get(&key)
+    {
+        return hit.clone();
+    }
+
+    let value = message_stats_pair(workgraph_dir, task_id, assigned_agent);
+
+    if let Ok(mut cache) = message_cache().lock() {
+        // Bound cache size to avoid unbounded growth in long-running TUI
+        // sessions (large graphs + assignment churn could accumulate stale
+        // keys over hours). The cap is generous: typical projects have a
+        // few hundred tasks and reassignments are rare.
+        if cache.len() > 4096 {
+            cache.clear();
+        }
+        cache.insert(key, value.clone());
+    }
+    value
+}
+
+/// Cached counterpart of `coordinator_message_status`. Reuses the same
+/// underlying cache as `message_stats_pair_cached` — both computations share
+/// a single read of the message file, so the second-half result is already
+/// available whether the caller needs both or just the coordinator status.
+pub fn coordinator_message_status_cached(
+    workgraph_dir: &Path,
+    task_id: &str,
+) -> Option<CoordinatorMessageStatus> {
+    // We pass `None` for the assigned agent — the coordinator status doesn't
+    // depend on the agent partitioning. This keeps coordinator-only callers
+    // sharing the cache with stats-pair callers when the same task happens to
+    // have no assigned agent on this refresh.
+    message_stats_pair_cached(workgraph_dir, task_id, None).1
 }
 
 /// Create the appropriate message adapter for a given executor type.

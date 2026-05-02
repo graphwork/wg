@@ -15,7 +15,9 @@ use ratatui::layout::Rect;
 
 use crate::commands::viz::{VizOptions, VizOutput};
 use workgraph::config::Config;
-use workgraph::graph::{CycleAnalysis, Status, TokenUsage, format_tokens, parse_token_usage_live};
+use workgraph::graph::{
+    CycleAnalysis, Status, TokenUsage, format_tokens, parse_token_usage_live_cached,
+};
 use workgraph::models::load_model_choices;
 use workgraph::parser::load_graph;
 use workgraph::{AgentRegistry, AgentStatus};
@@ -3147,6 +3149,7 @@ impl HistoryBrowserState {
 }
 
 /// Live JSONL stream state for a single agent.
+#[derive(Default, Clone)]
 pub struct AgentStreamInfo {
     /// File position (byte offset) — resume reading from here.
     pub file_offset: u64,
@@ -3156,6 +3159,186 @@ pub struct AgentStreamInfo {
     pub latest_snippet: Option<String>,
     /// Whether the latest event was a tool use (vs text).
     pub latest_is_tool: bool,
+}
+
+impl AgentStreamInfo {
+    /// Parse one JSONL line from an agent's output.log and update self.
+    /// Extracted from `update_agent_streams` so per-agent tail threads can
+    /// call it off the main render thread (fix-tui-perf-2 fix 6).
+    fn process_jsonl_line(&mut self, line: &str) {
+        let line = line.trim();
+        if line.is_empty() || !line.starts_with('{') {
+            return;
+        }
+        let val: serde_json::Value = match serde_json::from_str(line) {
+            Ok(v) => v,
+            Err(_) => return,
+        };
+
+        let msg_type = val.get("type").and_then(|v| v.as_str()).unwrap_or("");
+
+        match msg_type {
+            "assistant" => {
+                self.message_count += 1;
+                if let Some(content) = val
+                    .get("message")
+                    .and_then(|m| m.get("content"))
+                    .and_then(|c| c.as_array())
+                {
+                    for block in content {
+                        let block_type =
+                            block.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                        match block_type {
+                            "text" => {
+                                if let Some(text) = block.get("text").and_then(|v| v.as_str()) {
+                                    let trimmed = text.trim();
+                                    if !trimmed.is_empty() {
+                                        let snippet = trimmed.lines().last().unwrap_or(trimmed);
+                                        let snippet = if snippet.len() > 120 {
+                                            format!(
+                                                "{}…",
+                                                &snippet[..snippet.floor_char_boundary(120)]
+                                            )
+                                        } else {
+                                            snippet.to_string()
+                                        };
+                                        self.latest_snippet = Some(snippet);
+                                        self.latest_is_tool = false;
+                                    }
+                                }
+                            }
+                            "tool_use" => {
+                                let name =
+                                    block.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+                                let detail = match name {
+                                    "Bash" => block
+                                        .get("input")
+                                        .and_then(|i| i.get("command"))
+                                        .and_then(|v| v.as_str())
+                                        .map(|c| {
+                                            let c = c.trim();
+                                            if c.len() > 80 {
+                                                format!(
+                                                    "{name}: {}…",
+                                                    &c[..c.floor_char_boundary(80)]
+                                                )
+                                            } else {
+                                                format!("{name}: {c}")
+                                            }
+                                        }),
+                                    "Read" | "Write" | "Edit" => block
+                                        .get("input")
+                                        .and_then(|i| i.get("file_path"))
+                                        .and_then(|v| v.as_str())
+                                        .map(|p| format!("{name}: {p}")),
+                                    "Grep" => block
+                                        .get("input")
+                                        .and_then(|i| i.get("pattern"))
+                                        .and_then(|v| v.as_str())
+                                        .map(|p| format!("{name}: {p}")),
+                                    "Glob" => block
+                                        .get("input")
+                                        .and_then(|i| i.get("pattern"))
+                                        .and_then(|v| v.as_str())
+                                        .map(|p| format!("{name}: {p}")),
+                                    _ => None,
+                                };
+                                self.latest_snippet =
+                                    Some(detail.unwrap_or_else(|| name.to_string()));
+                                self.latest_is_tool = true;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            "turn" => {
+                self.message_count += 1;
+                if let Some(content) = val.get("content").and_then(|c| c.as_array()) {
+                    for block in content {
+                        let block_type =
+                            block.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                        match block_type {
+                            "text" => {
+                                if let Some(text) = block.get("text").and_then(|v| v.as_str()) {
+                                    let trimmed = text.trim();
+                                    if !trimmed.is_empty() {
+                                        let snippet = trimmed.lines().last().unwrap_or(trimmed);
+                                        let snippet = if snippet.len() > 120 {
+                                            format!(
+                                                "{}…",
+                                                &snippet[..snippet.floor_char_boundary(120)]
+                                            )
+                                        } else {
+                                            snippet.to_string()
+                                        };
+                                        self.latest_snippet = Some(snippet);
+                                        self.latest_is_tool = false;
+                                    }
+                                }
+                            }
+                            "tool_use" => {
+                                let name =
+                                    block.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+                                self.latest_snippet = Some(name.to_string());
+                                self.latest_is_tool = true;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            "tool_call" => {
+                let name = val.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+                let detail = match name {
+                    "Bash" | "bash" => val
+                        .get("input")
+                        .and_then(|i| i.get("command"))
+                        .and_then(|v| v.as_str())
+                        .map(|c| {
+                            let c = c.trim();
+                            if c.len() > 80 {
+                                format!("{name}: {}…", &c[..c.floor_char_boundary(80)])
+                            } else {
+                                format!("{name}: {c}")
+                            }
+                        }),
+                    "Read" | "Write" | "Edit" => val
+                        .get("input")
+                        .and_then(|i| i.get("file_path"))
+                        .and_then(|v| v.as_str())
+                        .map(|p| format!("{name}: {p}")),
+                    "Grep" | "Glob" => val
+                        .get("input")
+                        .and_then(|i| i.get("pattern"))
+                        .and_then(|v| v.as_str())
+                        .map(|p| format!("{name}: {p}")),
+                    _ => None,
+                };
+                self.latest_snippet = Some(detail.unwrap_or_else(|| name.to_string()));
+                self.latest_is_tool = true;
+            }
+            "user" | "result" => {
+                self.message_count += 1;
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Per-agent tail-thread handle. Holds the shared `AgentStreamInfo` updated
+/// from a background thread that incrementally reads the agent's output.log,
+/// plus a stop flag for clean shutdown when the agent goes inactive.
+///
+/// Spawned once per active agent in `update_agent_streams`. Replaces the
+/// previous main-thread JSONL parsing loop (diagnose-tui-scales hot path #4 —
+/// update_agent_streams ran serialized with the chat-PTY render).
+pub struct AgentTailHandle {
+    pub info: std::sync::Arc<std::sync::Mutex<AgentStreamInfo>>,
+    pub stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Joined when the handle is dropped (best-effort; the thread observes
+    /// `stop` and exits within `TAIL_POLL_INTERVAL`).
+    pub _handle: std::thread::JoinHandle<()>,
 }
 
 /// A single phase in the agency lifecycle (assignment, execution, or evaluation).
@@ -5097,8 +5280,17 @@ pub struct VizApp {
 
     // ── Agent monitor state ──
     pub agent_monitor: AgentMonitorState,
-    /// Per-agent JSONL stream state for live activity feed.
+    /// Per-agent JSONL stream state for live activity feed. Snapshot copy
+    /// of the data maintained by `agent_stream_tails` background threads;
+    /// refreshed by `update_agent_streams` (a cheap clone per active agent
+    /// instead of a full re-read of every output.log on the main thread).
     pub agent_streams: HashMap<String, AgentStreamInfo>,
+    /// Per-agent background tail threads that incrementally parse each
+    /// active agent's output.log. Spawned lazily when an agent first goes
+    /// Working; reaped (stop flag set, info dropped) when the agent's
+    /// status leaves Working. Decouples agent-stream parsing from the main
+    /// render loop (fix-tui-perf-2 fix 6 / diagnose hot path #4).
+    pub agent_stream_tails: HashMap<String, AgentTailHandle>,
 
     // ── Service health indicator ──
     pub service_health: ServiceHealthState,
@@ -5142,6 +5334,26 @@ pub struct VizApp {
     /// Cached coordinator message status per task ID (TUI-perspective read state).
     /// Refreshed each graph reload. Used to color the Messages tab header.
     pub task_message_statuses: HashMap<String, workgraph::messages::CoordinatorMessageStatus>,
+
+    /// Cached per-task (status-priority, interaction-sort-key) tuple used by
+    /// `apply_sort_mode` for the StatusGrouped path. Populated in
+    /// `load_stats_from_graph` (which already has the graph in hand) so the
+    /// sort path does NOT need to re-deserialize graph.jsonl on every event.
+    /// Eliminates the second full graph load identified as diagnose hot
+    /// path #2 (state.rs:7815-7835 in the diagnose's snapshot).
+    pub sort_status_map: HashMap<String, (u8, String)>,
+
+    /// Timestamp of the most recent heavy graph-reload tick (the
+    /// load_viz_from_graph + load_stats_from_graph + per-tab reload
+    /// pipeline driven by an fs-watcher event). Throttle window is
+    /// [`HEAVY_REFRESH_THROTTLE`]. Without this throttle, 8 simultaneously
+    /// active agents writing output.log at sub-100ms cadence would fire
+    /// the fs-watcher's 5ms debounce 20-50 times/sec, and each tick
+    /// re-deserialized the multi-MB graph.jsonl (diagnose hot path:
+    /// 60-87% sustained CPU, chat-input lag 200-300ms). Cap the heavy
+    /// pipeline at ~5 fps so fs-event burstiness no longer scales the
+    /// visible CPU cost or starves the chat-PTY render.
+    pub last_heavy_refresh_at: Option<Instant>,
 
     // ── Config panel state (panel 5) ──
     pub config_panel: ConfigPanelState,
@@ -5547,6 +5759,7 @@ impl VizApp {
             chat_last_spawn_info: HashMap::new(),
             agent_monitor: AgentMonitorState::default(),
             agent_streams: HashMap::new(),
+            agent_stream_tails: HashMap::new(),
             service_health: ServiceHealthState::default(),
             last_service_badge_area: Rect::default(),
             vitals: VitalsState::default(),
@@ -5562,6 +5775,8 @@ impl VizApp {
             messages_panel: MessagesPanelState::default(),
             message_drafts: HashMap::new(),
             task_message_statuses: HashMap::new(),
+            sort_status_map: HashMap::new(),
+            last_heavy_refresh_at: None,
             config_panel: ConfigPanelState::default(),
             settings_panel: SettingsPanelState::default(),
             archive_browser: ArchiveBrowserState::default(),
@@ -6888,7 +7103,9 @@ impl VizApp {
         };
         let mut task_token_map: HashMap<String, TokenUsage> = HashMap::new();
 
-        // Build a map of agent_id -> live token usage for in-progress agents
+        // Build a map of agent_id -> live token usage for in-progress agents.
+        // Uses the (path, mtime)-keyed cache so a no-op refresh is one
+        // metadata syscall per agent instead of a full JSONL parse.
         let mut live_agent_usage: HashMap<String, TokenUsage> = HashMap::new();
         if let Ok(registry) = AgentRegistry::load(&self.workgraph_dir) {
             for (id, agent) in &registry.agents {
@@ -6896,7 +7113,7 @@ impl VizApp {
                     continue;
                 }
                 let path = std::path::Path::new(&agent.output_file);
-                if let Some(usage) = parse_token_usage_live(path) {
+                if let Some(usage) = parse_token_usage_live_cached(path) {
                     live_agent_usage.insert(id.clone(), usage);
                 }
             }
@@ -7185,12 +7402,43 @@ impl VizApp {
             self.cycle_timing = entries;
         }
 
-        // Refresh coordinator message statuses for all tasks.
+        // Refresh coordinator message statuses for all tasks. Uses the cached
+        // single-pass reader so this O(N-tasks) loop is free on no-op refreshes
+        // and avoids the second JSONL parse the standalone function would do.
         self.task_message_statuses = graph
             .tasks()
             .filter_map(|t| {
-                workgraph::messages::coordinator_message_status(&self.workgraph_dir, &t.id)
-                    .map(|s| (t.id.clone(), s))
+                workgraph::messages::coordinator_message_status_cached(
+                    &self.workgraph_dir,
+                    &t.id,
+                )
+                .map(|s| (t.id.clone(), s))
+            })
+            .collect();
+
+        // Build the StatusGrouped sort key map from the in-memory graph so
+        // `apply_sort_mode` does not need to re-load graph.jsonl from disk
+        // on every event. Mirrors the priority assignment in
+        // apply_sort_mode's StatusGrouped branch — kept identical so a
+        // refactor to consolidate the two would be a no-op.
+        self.sort_status_map = graph
+            .tasks()
+            .map(|t| {
+                let priority = match t.status {
+                    Status::InProgress => 0,
+                    Status::Failed => 1,
+                    Status::Open => 2,
+                    Status::Blocked => 3,
+                    Status::Done => 4,
+                    Status::Abandoned => 5,
+                    Status::Waiting | Status::PendingValidation => 3,
+                    Status::PendingEval | Status::FailedPendingEval => 0,
+                    Status::Incomplete => 1,
+                };
+                (
+                    t.id.clone(),
+                    (priority, t.interaction_sort_key().to_string()),
+                )
             })
             .collect();
 
@@ -7296,8 +7544,39 @@ impl VizApp {
             let current_mtime = std::fs::metadata(self.workgraph_dir.join("graph.jsonl"))
                 .and_then(|m| m.modified())
                 .ok();
-            if current_mtime != self.last_graph_mtime {
+            // Heavy-reload throttle (fix-tui-perf-2 fix 4 / fix 5a):
+            // - When graph.jsonl is mutating faster than `HEAVY_REFRESH_THROTTLE`,
+            //   defer the heavy reload pipeline to the next tick. The
+            //   `fs_change_pending` flag is set back to `true` so the next
+            //   `is_refresh_due` returns `true` and we re-enter this branch
+            //   once the throttle window elapses.
+            // - This caps the visible CPU cost of graph mutations at ~5fps,
+            //   independent of fs-event burstiness.
+            // - It also decouples the embedded chat-PTY render from graph
+            //   render: when the user is typing into the chat tab, the
+            //   redraw is driven by `chat_pty_has_new_bytes()` (PTY echo)
+            //   on the main loop's poll, not by graph state, so deferring
+            //   the heavy graph pipeline keeps keystroke-echo latency at
+            //   PTY speed instead of graph speed.
+            let graph_mutated = current_mtime != self.last_graph_mtime;
+            let throttle_open = self
+                .last_heavy_refresh_at
+                .map(|t| t.elapsed() >= Self::HEAVY_REFRESH_THROTTLE)
+                .unwrap_or(true);
+            if graph_mutated && !throttle_open {
+                // Re-arm fs_change_pending so we re-check next iteration.
+                // The mtime is intentionally left at its old value so the
+                // graph_mutated test still fires on the next tick (otherwise
+                // a transient mtime read could lose the pending mutation).
+                self.fs_change_pending.store(true, Ordering::Relaxed);
+                if messages_changed {
+                    self.messages_change_pending.store(true, Ordering::Relaxed);
+                }
+                return false;
+            }
+            if graph_mutated {
                 self.last_graph_mtime = current_mtime;
+                self.last_heavy_refresh_at = Some(Instant::now());
                 // Full viz reload on every graph mutation — this catches
                 // transient states (assigning, evaluating) that would
                 // otherwise be missed by the 1-second slow-path tick.
@@ -7945,34 +8224,47 @@ impl VizApp {
                 // (e.g. populated by the same modify_graph call) keep a
                 // deterministic order — the cure for the "viewport flips
                 // every event" failure mode of the previous fix.
-                let graph_path = self.workgraph_dir.join("graph.jsonl");
-                let task_meta: HashMap<String, (u8, String)> = match load_graph(&graph_path) {
-                    Ok(g) => g
-                        .tasks()
-                        .map(|t| {
-                            let priority = match t.status {
-                                Status::InProgress => 0,
-                                Status::Failed => 1,
-                                Status::Open => 2,
-                                Status::Blocked => 3,
-                                Status::Done => 4,
-                                Status::Abandoned => 5,
-                                Status::Waiting | Status::PendingValidation => 3,
-                                Status::PendingEval | Status::FailedPendingEval => 0,
-                                Status::Incomplete => 1,
-                            };
-                            (
-                                t.id.clone(),
-                                (priority, t.interaction_sort_key().to_string()),
-                            )
-                        })
-                        .collect(),
-                    Err(_) => HashMap::new(),
-                };
+                //
+                // Reads the (priority, sort_key) map cached by
+                // `load_stats_from_graph`. The previous implementation
+                // re-loaded graph.jsonl here on every refresh, which under
+                // 8/8-busy load deserialized the 3+MB JSONL file at the
+                // 5ms-debounced fs-watcher cadence (diagnose hot path #2).
+                //
+                // Bootstrap fallback: if the cache hasn't been populated
+                // yet (first sort before the first stats refresh, or a
+                // test fixture that bypassed load_stats_from_graph), do
+                // the load_graph here as a one-shot. Subsequent sorts
+                // hit the cache populated by the next stats refresh.
+                if self.sort_status_map.is_empty() {
+                    let graph_path = self.workgraph_dir.join("graph.jsonl");
+                    if let Ok(g) = load_graph(&graph_path) {
+                        self.sort_status_map = g
+                            .tasks()
+                            .map(|t| {
+                                let priority = match t.status {
+                                    Status::InProgress => 0,
+                                    Status::Failed => 1,
+                                    Status::Open => 2,
+                                    Status::Blocked => 3,
+                                    Status::Done => 4,
+                                    Status::Abandoned => 5,
+                                    Status::Waiting | Status::PendingValidation => 3,
+                                    Status::PendingEval | Status::FailedPendingEval => 0,
+                                    Status::Incomplete => 1,
+                                };
+                                (
+                                    t.id.clone(),
+                                    (priority, t.interaction_sort_key().to_string()),
+                                )
+                            })
+                            .collect();
+                    }
+                }
                 self.task_order.sort_by(|a, b| {
                     let default_meta = (99u8, String::new());
-                    let ma = task_meta.get(a).unwrap_or(&default_meta);
-                    let mb = task_meta.get(b).unwrap_or(&default_meta);
+                    let ma = self.sort_status_map.get(a).unwrap_or(&default_meta);
+                    let mb = self.sort_status_map.get(b).unwrap_or(&default_meta);
                     // Status group ascending, then activity descending, then
                     // stable id tie-break.
                     ma.0.cmp(&mb.0)
@@ -7997,6 +8289,13 @@ impl VizApp {
     /// under a burst of mutations (compaction, agency pipeline, chat) while
     /// still feeling responsive on a single user-initiated change.
     pub(crate) const SORT_DEBOUNCE: Duration = Duration::from_millis(200);
+
+    /// Minimum interval between heavy graph-reload pipelines triggered by an
+    /// fs-watcher event. Mirrors `SORT_DEBOUNCE` (200ms / ~5fps). Without
+    /// this cap, 8 active agents whose output.log writes drive the 5ms
+    /// debouncer would re-run the full pipeline 20-50 times per second
+    /// even though the user can only see ~5 of those redraws.
+    pub(crate) const HEAVY_REFRESH_THROTTLE: Duration = Duration::from_millis(200);
 
     /// Request a sort re-application; defer if the debounce window has not
     /// yet elapsed since the last apply. Called from the graph-reload path.
@@ -8625,7 +8924,7 @@ impl VizApp {
                 t.token_usage.clone().or_else(|| {
                     let agent_id = t.assigned.as_deref()?;
                     let log_path = agents_dir.join(agent_id).join("output.log");
-                    parse_token_usage_live(&log_path)
+                    parse_token_usage_live_cached(&log_path)
                 })
             };
 
@@ -10169,6 +10468,7 @@ impl VizApp {
             chat_last_spawn_info: HashMap::new(),
             agent_monitor: AgentMonitorState::default(),
             agent_streams: HashMap::new(),
+            agent_stream_tails: HashMap::new(),
             service_health: ServiceHealthState::default(),
             last_service_badge_area: Rect::default(),
             vitals: VitalsState::default(),
@@ -10184,6 +10484,8 @@ impl VizApp {
             messages_panel: MessagesPanelState::default(),
             message_drafts: HashMap::new(),
             task_message_statuses: HashMap::new(),
+            sort_status_map: HashMap::new(),
+            last_heavy_refresh_at: None,
             cmd_rx: mpsc::channel().1,
             cmd_tx: mpsc::channel().0,
             toasts: Vec::new(),
@@ -11046,13 +11348,26 @@ impl VizApp {
     }
 
     /// Update live JSONL stream state for all active (Working) agents.
-    /// Reads new lines from each agent's output.log since the last known offset.
+    ///
+    /// Per-agent tail threads (spawned lazily here) do the actual incremental
+    /// reading + parsing of each agent's `output.log` off the main render
+    /// thread (fix-tui-perf-2 fix 6 / diagnose-tui-scales hot path #4). This
+    /// function only:
+    ///   - reaps tail threads for agents no longer Working,
+    ///   - spawns new tail threads for newly-Working agents,
+    ///   - copies a snapshot from each shared `Arc<Mutex<AgentStreamInfo>>`
+    ///     into `self.agent_streams` so the renderer reads stable values.
+    ///
+    /// The previous implementation opened, seeked, read, and JSON-parsed
+    /// every active agent's output.log on every fs-watcher tick, on the
+    /// same thread that drove `terminal.draw()` and chat-PTY keystroke
+    /// forwarding — that serialization is the chat-input-lag the diagnose
+    /// reported.
     pub fn update_agent_streams(&mut self) {
-        use std::io::{Read, Seek, SeekFrom};
+        use std::collections::HashSet;
 
         let agents_dir = self.workgraph_dir.join("agents");
-        // Collect active agent IDs.
-        let active_ids: Vec<String> = self
+        let active_ids: HashSet<String> = self
             .agent_monitor
             .agents
             .iter()
@@ -11060,225 +11375,99 @@ impl VizApp {
             .map(|a| a.agent_id.clone())
             .collect();
 
-        // Remove stale entries for agents no longer active.
-        self.agent_streams.retain(|id, _| active_ids.contains(id));
+        // Reap tail threads for agents no longer Working. Setting `stop`
+        // signals the thread to exit on its next poll; dropping the handle
+        // releases the shared info Arc so memory clears as soon as the
+        // renderer's snapshot is also dropped.
+        let stale: Vec<String> = self
+            .agent_stream_tails
+            .keys()
+            .filter(|id| !active_ids.contains(id.as_str()))
+            .cloned()
+            .collect();
+        for id in stale {
+            if let Some(tail) = self.agent_stream_tails.remove(&id) {
+                tail.stop
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+                // Don't join — let the tail exit on its own poll cycle so
+                // we don't block the render thread for up to TAIL_POLL_INTERVAL.
+            }
+            self.agent_streams.remove(&id);
+        }
 
+        // Spawn tails for newly active agents.
         for agent_id in &active_ids {
+            if self.agent_stream_tails.contains_key(agent_id) {
+                continue;
+            }
             let log_path = agents_dir.join(agent_id).join("output.log");
-            if !log_path.exists() {
-                continue;
+            self.agent_stream_tails
+                .insert(agent_id.clone(), Self::spawn_agent_tail(log_path));
+        }
+
+        // Refresh the renderer-visible snapshot from each tail's shared info.
+        // A clone is cheap (a few Strings + ints); the lock is held briefly.
+        for (agent_id, tail) in &self.agent_stream_tails {
+            if let Ok(info) = tail.info.lock() {
+                self.agent_streams.insert(agent_id.clone(), info.clone());
             }
+        }
+    }
 
-            let info = self
-                .agent_streams
-                .entry(agent_id.clone())
-                .or_insert_with(|| AgentStreamInfo {
-                    file_offset: 0,
-                    message_count: 0,
-                    latest_snippet: None,
-                    latest_is_tool: false,
-                });
+    /// Polling cadence for per-agent tail threads. 100ms keeps the activity
+    /// feed feeling live without spinning a thread tightly. The latest
+    /// snippet is also displayed in the right panel which redraws on the
+    /// next user keypress / fs-event regardless of poll interval.
+    pub(crate) const TAIL_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
-            // Open file and seek to last known position.
-            let mut file = match std::fs::File::open(&log_path) {
-                Ok(f) => f,
-                Err(_) => continue,
-            };
+    /// Spawn a background thread that incrementally tails an agent's
+    /// output.log into a shared `AgentStreamInfo`. Used by
+    /// `update_agent_streams` (fix-tui-perf-2 fix 6).
+    fn spawn_agent_tail(log_path: std::path::PathBuf) -> AgentTailHandle {
+        use std::io::{Read, Seek, SeekFrom};
 
-            let file_len = file.metadata().map(|m| m.len()).unwrap_or(0);
-            if file_len <= info.file_offset {
-                continue; // No new data.
-            }
+        let info = std::sync::Arc::new(std::sync::Mutex::new(AgentStreamInfo::default()));
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let info_w = std::sync::Arc::clone(&info);
+        let stop_w = std::sync::Arc::clone(&stop);
 
-            if file.seek(SeekFrom::Start(info.file_offset)).is_err() {
-                continue;
-            }
-
-            let mut new_data = String::new();
-            if file.read_to_string(&mut new_data).is_err() {
-                continue;
-            }
-
-            info.file_offset = file_len;
-
-            // Parse each new JSONL line.
-            for line in new_data.lines() {
-                let line = line.trim();
-                if line.is_empty() || !line.starts_with('{') {
-                    continue;
-                }
-                let val: serde_json::Value = match serde_json::from_str(line) {
-                    Ok(v) => v,
-                    Err(_) => continue,
-                };
-
-                let msg_type = val.get("type").and_then(|v| v.as_str()).unwrap_or("");
-
-                match msg_type {
-                    "assistant" => {
-                        info.message_count += 1;
-                        // Extract content from message.content array.
-                        if let Some(content) = val
-                            .get("message")
-                            .and_then(|m| m.get("content"))
-                            .and_then(|c| c.as_array())
-                        {
-                            // Process content blocks — last text or tool_use wins.
-                            for block in content {
-                                let block_type =
-                                    block.get("type").and_then(|v| v.as_str()).unwrap_or("");
-                                match block_type {
-                                    "text" => {
-                                        if let Some(text) =
-                                            block.get("text").and_then(|v| v.as_str())
-                                        {
-                                            let trimmed = text.trim();
-                                            if !trimmed.is_empty() {
-                                                // Take the last non-empty line as snippet.
-                                                let snippet =
-                                                    trimmed.lines().last().unwrap_or(trimmed);
-                                                let snippet = if snippet.len() > 120 {
-                                                    format!(
-                                                        "{}…",
-                                                        &snippet
-                                                            [..snippet.floor_char_boundary(120)]
-                                                    )
-                                                } else {
-                                                    snippet.to_string()
-                                                };
-                                                info.latest_snippet = Some(snippet);
-                                                info.latest_is_tool = false;
-                                            }
+        let handle = std::thread::spawn(move || {
+            let mut file_offset: u64 = 0;
+            while !stop_w.load(std::sync::atomic::Ordering::Relaxed) {
+                let metadata = std::fs::metadata(&log_path).ok();
+                if let Some(meta) = metadata {
+                    let len = meta.len();
+                    if len > file_offset {
+                        if let Ok(mut file) = std::fs::File::open(&log_path) {
+                            if file.seek(SeekFrom::Start(file_offset)).is_ok() {
+                                let mut new_data = String::new();
+                                if file.read_to_string(&mut new_data).is_ok() {
+                                    file_offset = len;
+                                    if let Ok(mut info) = info_w.lock() {
+                                        info.file_offset = file_offset;
+                                        for line in new_data.lines() {
+                                            info.process_jsonl_line(line);
                                         }
                                     }
-                                    "tool_use" => {
-                                        let name = block
-                                            .get("name")
-                                            .and_then(|v| v.as_str())
-                                            .unwrap_or("?");
-                                        // For Bash/Edit/Write, show a brief input summary.
-                                        let detail = match name {
-                                            "Bash" => block
-                                                .get("input")
-                                                .and_then(|i| i.get("command"))
-                                                .and_then(|v| v.as_str())
-                                                .map(|c| {
-                                                    let c = c.trim();
-                                                    if c.len() > 80 {
-                                                        format!(
-                                                            "{name}: {}…",
-                                                            &c[..c.floor_char_boundary(80)]
-                                                        )
-                                                    } else {
-                                                        format!("{name}: {c}")
-                                                    }
-                                                }),
-                                            "Read" | "Write" | "Edit" => block
-                                                .get("input")
-                                                .and_then(|i| i.get("file_path"))
-                                                .and_then(|v| v.as_str())
-                                                .map(|p| format!("{name}: {p}")),
-                                            "Grep" => block
-                                                .get("input")
-                                                .and_then(|i| i.get("pattern"))
-                                                .and_then(|v| v.as_str())
-                                                .map(|p| format!("{name}: {p}")),
-                                            "Glob" => block
-                                                .get("input")
-                                                .and_then(|i| i.get("pattern"))
-                                                .and_then(|v| v.as_str())
-                                                .map(|p| format!("{name}: {p}")),
-                                            _ => None,
-                                        };
-                                        info.latest_snippet =
-                                            Some(detail.unwrap_or_else(|| name.to_string()));
-                                        info.latest_is_tool = true;
-                                    }
-                                    _ => {}
                                 }
                             }
                         }
-                    }
-                    "turn" => {
-                        // Native executor format
-                        info.message_count += 1;
-                        if let Some(content) = val.get("content").and_then(|c| c.as_array()) {
-                            for block in content {
-                                let block_type =
-                                    block.get("type").and_then(|v| v.as_str()).unwrap_or("");
-                                match block_type {
-                                    "text" => {
-                                        if let Some(text) =
-                                            block.get("text").and_then(|v| v.as_str())
-                                        {
-                                            let trimmed = text.trim();
-                                            if !trimmed.is_empty() {
-                                                let snippet =
-                                                    trimmed.lines().last().unwrap_or(trimmed);
-                                                let snippet = if snippet.len() > 120 {
-                                                    format!(
-                                                        "{}…",
-                                                        &snippet
-                                                            [..snippet.floor_char_boundary(120)]
-                                                    )
-                                                } else {
-                                                    snippet.to_string()
-                                                };
-                                                info.latest_snippet = Some(snippet);
-                                                info.latest_is_tool = false;
-                                            }
-                                        }
-                                    }
-                                    "tool_use" => {
-                                        let name = block
-                                            .get("name")
-                                            .and_then(|v| v.as_str())
-                                            .unwrap_or("?");
-                                        info.latest_snippet = Some(name.to_string());
-                                        info.latest_is_tool = true;
-                                    }
-                                    _ => {}
-                                }
-                            }
+                    } else if len < file_offset {
+                        // File was rotated / truncated — restart from 0.
+                        file_offset = 0;
+                        if let Ok(mut info) = info_w.lock() {
+                            *info = AgentStreamInfo::default();
                         }
                     }
-                    "tool_call" => {
-                        // Native executor tool call log
-                        let name = val.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-                        let detail = match name {
-                            "Bash" | "bash" => val
-                                .get("input")
-                                .and_then(|i| i.get("command"))
-                                .and_then(|v| v.as_str())
-                                .map(|c| {
-                                    let c = c.trim();
-                                    if c.len() > 80 {
-                                        format!("{name}: {}…", &c[..c.floor_char_boundary(80)])
-                                    } else {
-                                        format!("{name}: {c}")
-                                    }
-                                }),
-                            "Read" | "Write" | "Edit" => val
-                                .get("input")
-                                .and_then(|i| i.get("file_path"))
-                                .and_then(|v| v.as_str())
-                                .map(|p| format!("{name}: {p}")),
-                            "Grep" | "Glob" => val
-                                .get("input")
-                                .and_then(|i| i.get("pattern"))
-                                .and_then(|v| v.as_str())
-                                .map(|p| format!("{name}: {p}")),
-                            _ => None,
-                        };
-                        info.latest_snippet = Some(detail.unwrap_or_else(|| name.to_string()));
-                        info.latest_is_tool = true;
-                    }
-                    "user" | "result" => {
-                        info.message_count += 1;
-                    }
-                    _ => {}
                 }
+                std::thread::sleep(Self::TAIL_POLL_INTERVAL);
             }
+        });
+
+        AgentTailHandle {
+            info,
+            stop,
+            _handle: handle,
         }
     }
 
@@ -11749,7 +11938,7 @@ impl VizApp {
                 .or_else(|| {
                     let agent_id = t.assigned.as_deref()?;
                     let log_path = agents_dir.join(agent_id).join("output.log");
-                    parse_token_usage_live(&log_path)
+                    parse_token_usage_live_cached(&log_path)
                 })
                 .or_else(|| {
                     // Fall back to archived output
@@ -11766,7 +11955,7 @@ impl VizApp {
                     for entry in entries {
                         let candidate = entry.path().join("output.txt");
                         if candidate.exists()
-                            && let Some(u) = parse_token_usage_live(&candidate)
+                            && let Some(u) = parse_token_usage_live_cached(&candidate)
                         {
                             return Some(u);
                         }

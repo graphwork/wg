@@ -5,7 +5,8 @@ mod graph;
 use anyhow::Result;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use workgraph::graph::{Status, Task, TokenUsage, WorkGraph, parse_token_usage_live};
+use workgraph::graph::{Status, Task, TokenUsage, WorkGraph, parse_token_usage_live_cached};
+use workgraph::messages::message_stats_pair_cached;
 
 // Re-export public API
 pub use graph::{generate_graph, generate_graph_with_overrides};
@@ -642,6 +643,11 @@ pub fn generate_viz_output_from_graph(
 
     // Enrich tasks with live token usage from agent output logs when not persisted.
     // Includes InProgress, Done, and Failed tasks — any with an assigned agent.
+    //
+    // `parse_token_usage_live_cached` memoizes by (path, mtime) so repeated
+    // refreshes of the same active agent's log are O(1) lookups instead of
+    // re-reading + re-parsing the (often multi-MB) JSONL output (fix-tui-perf-2,
+    // diagnose hot path #1).
     let agents_dir = dir.join("agents");
     let live_token_usage: HashMap<String, TokenUsage> = tasks_to_show
         .iter()
@@ -651,7 +657,7 @@ pub fn generate_viz_output_from_graph(
             // Try live agent dir first
             let usage = t.assigned.as_deref().and_then(|agent_id| {
                 let log_path = agents_dir.join(agent_id).join("output.log");
-                parse_token_usage_live(&log_path)
+                parse_token_usage_live_cached(&log_path)
             });
             if let Some(u) = usage {
                 return Some((t.id.clone(), u));
@@ -670,7 +676,7 @@ pub fn generate_viz_output_from_graph(
             for entry in entries {
                 let candidate = entry.path().join("output.txt");
                 if candidate.exists()
-                    && let Some(u) = parse_token_usage_live(&candidate)
+                    && let Some(u) = parse_token_usage_live_cached(&candidate)
                 {
                     return Some((t.id.clone(), u));
                 }
@@ -696,7 +702,7 @@ pub fn generate_viz_output_from_graph(
                 // Try live agent dir first
                 let agent_id = task.assigned.as_deref()?;
                 let log_path = agents_dir.join(agent_id).join("output.log");
-                parse_token_usage_live(&log_path)
+                parse_token_usage_live_cached(&log_path)
             })
             .or_else(|| {
                 // Fall back to archived output for cleaned-up agents
@@ -713,7 +719,7 @@ pub fn generate_viz_output_from_graph(
                 for entry in entries {
                     let candidate = entry.path().join("output.txt");
                     if candidate.exists()
-                        && let Some(usage) = parse_token_usage_live(&candidate)
+                        && let Some(usage) = parse_token_usage_live_cached(&candidate)
                     {
                         return Some(usage);
                     }
@@ -732,28 +738,22 @@ pub fn generate_viz_output_from_graph(
         }
     }
 
-    // Compute per-task message stats (in/out counts, read status).
-    let message_stats: HashMap<String, workgraph::messages::MessageStats> = tasks_to_show
-        .iter()
-        .filter_map(|t| {
-            let stats = workgraph::messages::message_stats(dir, &t.id, t.assigned.as_deref());
-            if stats.incoming > 0 || stats.outgoing > 0 {
-                Some((t.id.clone(), stats))
-            } else {
-                None
-            }
-        })
-        .collect();
-
-    // Compute per-task coordinator message status (TUI-perspective read state).
-    let coordinator_status: HashMap<String, workgraph::messages::CoordinatorMessageStatus> =
-        tasks_to_show
-            .iter()
-            .filter_map(|t| {
-                workgraph::messages::coordinator_message_status(dir, &t.id)
-                    .map(|s| (t.id.clone(), s))
-            })
-            .collect();
+    // Compute per-task message stats AND coordinator status in a single pass
+    // over each task's `messages/<task>.jsonl` file. The combined function
+    // halves disk-I/O vs the previous double-read pattern, and the (path,
+    // mtime, assigned_agent) cache makes a no-op refresh free.
+    let mut message_stats: HashMap<String, workgraph::messages::MessageStats> = HashMap::new();
+    let mut coordinator_status: HashMap<String, workgraph::messages::CoordinatorMessageStatus> =
+        HashMap::new();
+    for t in &tasks_to_show {
+        let (stats, coord) = message_stats_pair_cached(dir, &t.id, t.assigned.as_deref());
+        if stats.incoming > 0 || stats.outgoing > 0 {
+            message_stats.insert(t.id.clone(), stats);
+        }
+        if let Some(c) = coord {
+            coordinator_status.insert(t.id.clone(), c);
+        }
+    }
 
     // Generate output
     let output = match options.format {
