@@ -363,12 +363,55 @@ section { margin-bottom: 2rem; }
     color: var(--fg);
     margin: 0;
     white-space: pre;
+    /* Terminal-cell invariants: every glyph (ASCII letters, spaces, and
+       Unicode box-drawing connectors `─ │ ┐ ┘ ├ └ ←`) must occupy exactly
+       one fixed-width cell. Without these declarations the browser's text
+       layout enables typography features that perturb advance width on
+       a per-character basis, so long runs of `─` drift out of column with
+       the corner / arrow glyphs they're supposed to land on. Inherits via
+       `.viz-pre *` so the per-character `<span class="edge">` wrappers
+       stay on the same grid as the surrounding plain text. */
+    font-variant-ligatures: none;
+    font-feature-settings: "liga" 0, "calt" 0, "clig" 0, "dlig" 0, "hlig" 0;
+    font-kerning: none;
+    font-synthesis: none;
+    font-variant-numeric: tabular-nums;
+    text-rendering: geometricPrecision;
+    /* Some webfonts ship slightly narrower box-drawing metrics; ensuring a
+       fixed advance via font-variant-east-asian: full-width is wrong (it
+       affects CJK), so we lean on a strict cell grid here and let the
+       fallback chain pick up box-drawing glyphs that share the primary
+       font's advance width. */
+}
+
+/* All descendants of .viz-pre — task-link / decorator / time-suffix /
+   edge spans — must share the same monospace metric grid. Inheritance of
+   font-* properties is normal, but explicitly resetting these on the
+   children defends against parent rules that flip ligatures back on for
+   a subtree (e.g. global typography presets). */
+.viz-pre * {
+    font-family: inherit;
+    font-variant-ligatures: none;
+    font-feature-settings: "liga" 0, "calt" 0, "clig" 0, "dlig" 0, "hlig" 0;
+    font-kerning: none;
+    font-synthesis: none;
 }
 
 /* Default edge connector color (tree connectors + arcs).
    Matches TUI 'gray' edge color (\x1b[90m → ratatui DarkGray ≈ rgb(118,118,118)). */
 .viz-pre .edge {
     color: var(--edge-default);
+    /* The per-character edge wrapper is a no-layout span: it must not
+       introduce padding, margin, border, or a box-shadow that pushes
+       neighbouring `─` cells out of column. Forcing display: inline
+       (the default for <span>) plus zero box metrics keeps long
+       connector runs aligned with `wg viz` terminal output. */
+    display: inline;
+    padding: 0;
+    margin: 0;
+    border: 0;
+    letter-spacing: 0;
+    word-spacing: 0;
 }
 
 /* Task-id labels. The base label color = the task's status color. */

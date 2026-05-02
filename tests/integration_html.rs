@@ -1283,3 +1283,102 @@ fn agency_toggle_omitted_when_no_agency_tasks_present() {
         "agency toggle should be omitted when no agency tasks exist"
     );
 }
+
+// ─── Box-drawing glyph alignment regression (fix-wg-html-box-drawing-alignment) ──
+
+#[test]
+fn css_pins_terminal_cell_invariants_on_viz_pre() {
+    // Pins fix-wg-html-box-drawing-alignment: the static-asset CSS shipped
+    // with `wg html` must declare the typography-stabilizing rules that
+    // keep Unicode box-drawing glyphs (`─ │ ┐ ┘ ├ └ ←`) on the same fixed
+    // monospace cell grid as ASCII characters and spaces in the browser.
+    //
+    // Without these rules, JetBrains Mono's programming ligatures (`->`,
+    // `==`, `--`, etc.) and stylistic alternates can perturb the advance
+    // width of individual cells, which makes long runs of `─` drift out
+    // of column with their target corner glyph.
+
+    let dir = TempDir::new().unwrap();
+    let t = make_task("alpha", "alpha", "public");
+    let graph = build_graph(vec![t]);
+    html::render_site(&graph, dir.path(), dir.path(), html::RenderOptions::default()).unwrap();
+
+    let css = fs::read_to_string(dir.path().join("style.css")).unwrap();
+
+    // The .viz-pre block must disable ligatures, kerning, and font-synthesis.
+    let viz_pre_block_start = css.find(".viz-pre {").expect("missing .viz-pre block");
+    let viz_pre_block_end = viz_pre_block_start
+        + css[viz_pre_block_start..]
+            .find('}')
+            .expect("unterminated .viz-pre block");
+    let viz_pre_block = &css[viz_pre_block_start..viz_pre_block_end];
+
+    for needle in &[
+        "font-variant-ligatures: none",
+        "font-feature-settings:",
+        "\"liga\" 0",
+        "\"calt\" 0",
+        "font-kerning: none",
+        "font-synthesis: none",
+    ] {
+        assert!(
+            viz_pre_block.contains(needle),
+            ".viz-pre block missing `{}` — terminal-cell rendering regressed",
+            needle
+        );
+    }
+
+    // The descendant rule (`.viz-pre *`) must also reset these — defends
+    // against a parent typography preset flipping ligatures back on for
+    // edge / task-link spans.
+    let star_block_start = css
+        .find(".viz-pre * {")
+        .expect("missing .viz-pre * block — descendants must inherit cell invariants");
+    let star_block_end = star_block_start
+        + css[star_block_start..]
+            .find('}')
+            .expect("unterminated .viz-pre * block");
+    let star_block = &css[star_block_start..star_block_end];
+    for needle in &[
+        "font-variant-ligatures: none",
+        "font-feature-settings:",
+        "font-kerning: none",
+    ] {
+        assert!(
+            star_block.contains(needle),
+            ".viz-pre * block missing `{}`",
+            needle
+        );
+    }
+
+    // Edge-span box metrics: zero padding/margin/border so a per-character
+    // wrapper does not push the next cell out of column.
+    let edge_block_start = css
+        .find(".viz-pre .edge {")
+        .expect("missing .viz-pre .edge block");
+    let edge_block_end = edge_block_start
+        + css[edge_block_start..]
+            .find('}')
+            .expect("unterminated .viz-pre .edge block");
+    let edge_block = &css[edge_block_start..edge_block_end];
+    for needle in &[
+        "padding: 0",
+        "margin: 0",
+        "border: 0",
+        "letter-spacing: 0",
+        "word-spacing: 0",
+    ] {
+        assert!(
+            edge_block.contains(needle),
+            ".viz-pre .edge block missing `{}` — span wrappers must be zero-box",
+            needle
+        );
+    }
+}
+
+// NOTE: A second test that exercises the actual rendered viz (long `─`
+// runs surviving tag-stripping byte-for-byte, edge-span wrapping density)
+// lives in the smoke scenario `tests/smoke/scenarios/wg_html_box_drawing_alignment.sh`.
+// The viz capture path subprocesses to `wg viz --json` and depends on a
+// real graph.jsonl on disk, which is exactly what the smoke gate provides
+// (the workgraph repo's own .wg dir has plenty of long-edge cases).

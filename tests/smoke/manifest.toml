@@ -516,6 +516,15 @@ description = "Regression for wg-html-redesign + wg-html-v2: `wg html` (no flags
 timeout_seconds = 60
 
 [[scenario]]
+name = "wg_html_box_drawing_alignment"
+script = "scenarios/wg_html_box_drawing_alignment.sh"
+owners = [
+    "fix-wg-html-box-drawing-alignment",
+]
+description = "Regression for fix-wg-html-box-drawing-alignment: the `wg html` viz must preserve terminal-cell alignment for Unicode box-drawing connector glyphs (`─ │ ┐ ┘ ├ └ ←`). Pins (1) style.css declares typography-stabilizing rules on `.viz-pre`, `.viz-pre *`, and `.viz-pre .edge` (no ligatures, no kerning, no synthesis, zero-box edge spans), (2) long `─` runs survive HTML emission byte-for-byte after tag-stripping with the HTML parser, (3) every `─` cell on a connector line is wrapped in exactly one `<span class=\"edge\" data-edges=\"from>to\">─</span>` so the wg-html-v2 selection-highlight contract still works. Loud-SKIPs (exit 77) when the current graph has no long-edge cases (a freshly-cloned / minimal graph)."
+timeout_seconds = 30
+
+[[scenario]]
 name = "wg_html_chat"
 script = "scenarios/wg_html_chat.sh"
 owners = [
