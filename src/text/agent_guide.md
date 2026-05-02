@@ -155,6 +155,31 @@ external resolution. Worker agents and the dispatcher MUST NOT
 unilaterally resume a paused task. Use `wg resume` only when the
 blocker is genuinely cleared.
 
+### Releasing a paused batch: use `wg publish --wcc`
+
+When you build a fan-out + synthesis batch as paused drafts (`wg add
+--paused`) and then need to release the whole batch, **do not loop
+`wg publish` over each task**. Use `--wcc`:
+
+```bash
+wg publish <any-task-in-the-batch> --wcc
+```
+
+`--wcc` releases every task in the weakly-connected component of the
+named task — the entire batch, including upstream setup, sibling
+fan-out tasks, and the synthesis node — in topological order so each
+task being unpaused already has all of its `after` deps unpaused.
+Default `wg publish` only releases the named task plus its downstream
+subgraph, which is why a leaf-publish on a paused fan-out previously
+left every sibling stuck.
+
+Compose:
+
+- `wg publish <task>`         — task + downstream subgraph (default)
+- `wg publish <task> --only`  — single task only
+- `wg publish <task> --wcc`   — entire weakly-connected component
+- `--wcc` and `--only` are mutually exclusive
+
 ## For All Agents (Chat AND Worker)
 
 CRITICAL — Do NOT use built-in `TaskCreate` / `TaskUpdate` /

@@ -838,3 +838,12 @@ owners = [
 ]
 description = "Pins the data-side contract behind the TUI activity sort introduced in revert-redo-fix (the redo of the reverted fix-tui-graph). Every task carries `last_interaction_at`; `modify_graph` auto-bumps it on substantive mutations (status, log, edits) and leaves untouched siblings alone. Tasks predating the field default to `created_at` on read so the TUI sort never sees a None. Heartbeats live in `service/registry.json` and never reach `modify_graph`, so they are naturally excluded — the cure for the prior 'every event yanks the viewport' regression. No daemon, no LLM."
 timeout_seconds = 30
+
+[[scenario]]
+name = "publish_wcc_releases_paused_subgraph"
+script = "scenarios/publish_wcc_releases_paused_subgraph.sh"
+owners = [
+    "wg-publish-wcc",
+]
+description = "Pins wg-publish-wcc: `wg publish <task> --wcc` releases every task in the weakly-connected component of <task> in topological order (deps first). Asserts (1) leaf-publish on a 5-node paused linear chain unpauses every node, (2) diamond A→B; A→C; B→D; C→D — `publish d --wcc` releases all four, (3) `--wcc` and `--only` are mutually exclusive at parse time, and (4) per-task 'Task published' log timestamps are monotonically non-decreasing in dep→dependent order. Pre-task this required N invocations of `wg publish` for an N-task batch and agents were writing for-loops; the release shape addresses that ergonomic gap."
+timeout_seconds = 30

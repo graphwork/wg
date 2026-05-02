@@ -728,8 +728,14 @@ pub enum Commands {
         #[arg(value_name = "TASK")]
         id: String,
         /// Only publish this single task (skip subgraph propagation)
-        #[arg(long)]
+        #[arg(long, conflicts_with = "wcc")]
         only: bool,
+        /// Publish every task in the weakly-connected component of TASK
+        /// (treats the dependency graph as undirected and unpauses the
+        /// whole component in topological order). Use this to release a
+        /// fan-out + synthesis batch with one command.
+        #[arg(long)]
+        wcc: bool,
     },
 
     /// Park a task and exit — sets status to Waiting until condition is met
