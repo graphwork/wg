@@ -499,13 +499,16 @@ fn task_in_window(task: &Task, cutoff: DateTime<Utc>) -> bool {
     })
 }
 
-/// Status color — RGB triples mirror the TUI palette in
-/// `tui::viz_viewer::state::flash_color_for_status` (state.rs:271).
+/// Status color — RGB triples mirror the TUI palette. In-progress uses
+/// `Color::Yellow` (the actual rendered badge color in the TUI task list,
+/// see `render.rs` `Status::InProgress => Color::Yellow` and the
+/// `indexed_color_to_rgb` mapping `Color::Yellow => (229, 229, 16)`).
+/// Other entries follow `tui::viz_viewer::state::flash_color_for_status`.
 fn status_color(status: Status) -> &'static str {
     match status {
         Status::Done => "rgb(80,220,100)",
         Status::Failed => "rgb(220,60,60)",
-        Status::InProgress => "rgb(60,200,220)",
+        Status::InProgress => "rgb(229,229,16)",
         Status::Open => "rgb(200,200,80)",
         Status::Blocked => "rgb(180,120,60)",
         Status::Abandoned => "rgb(140,100,160)",

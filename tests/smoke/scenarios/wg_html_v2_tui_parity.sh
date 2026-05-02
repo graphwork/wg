@@ -60,17 +60,18 @@ grep -q 'data-task-id="child-v2t"' "$INDEX" \
     || { echo "FAIL: child task-link missing";  exit 1; }
 
 # (3) TUI palette in CSS — exact RGB triples from state.rs:271 / render.rs:1500.
+# InProgress overrides the cyan flash with TUI Color::Yellow (rgb(229,229,16))
+# to match what the TUI task list actually renders for active tasks.
 CSS="$OUTDIR/style.css"
 for needle in \
     'rgb(80, 220, 100)'   `# Done`           \
     'rgb(220, 60, 60)'    `# Failed`         \
-    'rgb(60, 200, 220)'   `# InProgress`     \
+    'rgb(229, 229, 16)'   `# InProgress = Color::Yellow (render.rs)`   \
     'rgb(200, 200, 80)'   `# Open`           \
     'rgb(60, 160, 220)'   `# Waiting`        \
     'rgb(140, 230, 80)'   `# PendingEval`    \
     'rgb(188, 63, 188)'   `# upstream edge (magenta)` \
     'rgb(17, 168, 205)'   `# downstream edge (cyan)`  \
-    'rgb(229, 229, 16)'   `# cycle edge (yellow)`     \
 ; do
     grep -qF "$needle" "$CSS" \
         || { echo "FAIL: CSS missing TUI palette color '$needle'"; exit 1; }

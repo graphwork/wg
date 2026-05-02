@@ -245,7 +245,8 @@ fn dag_layout_renders_task_ids() {
     }
     // Status colors appear in the legend swatches.
     assert!(index.contains("rgb(80,220,100)"), "Done color missing");
-    assert!(index.contains("rgb(60,200,220)"), "InProgress color missing");
+    // In-progress = TUI Color::Yellow (render.rs `indexed_color_to_rgb`).
+    assert!(index.contains("rgb(229,229,16)"), "InProgress color missing");
     assert!(index.contains("rgb(200,200,80)"), "Open color missing");
 }
 
@@ -662,7 +663,10 @@ fn v2_css_carries_tui_palette() {
     // Spec: "Color values verified to match TUI palette (cite source file or
     // document the mapping)" — the CSS must contain the exact RGB triples
     // documented at src/tui/viz_viewer/state.rs:271 and the magenta/cyan
-    // edge highlight colors from render.rs:1500.
+    // edge highlight colors from render.rs:1500. In-progress is the
+    // exception: it uses the rendered-badge color (`Color::Yellow` =>
+    // rgb(229,229,16)) rather than the cyan flash, mirroring what the TUI
+    // task list actually displays.
     let dir = TempDir::new().unwrap();
     let graph = build_graph(vec![make_task("anything", "A", "public")]);
     html::render_site(
@@ -673,11 +677,12 @@ fn v2_css_carries_tui_palette() {
     ).unwrap();
 
     let css = fs::read_to_string(dir.path().join("style.css")).unwrap();
-    // Status colors (TUI flash_color_for_status, state.rs:271)
+    // Status colors (TUI flash_color_for_status, state.rs:271; in-progress
+    // overrides to TUI Color::Yellow to match the rendered badge).
     for needle in [
         "rgb(80, 220, 100)",  // done
         "rgb(220, 60, 60)",   // failed
-        "rgb(60, 200, 220)",  // in-progress
+        "rgb(229, 229, 16)",  // in-progress = Color::Yellow (render.rs)
         "rgb(200, 200, 80)",  // open
         "rgb(60, 160, 220)",  // waiting
         "rgb(140, 230, 80)",  // pending-eval

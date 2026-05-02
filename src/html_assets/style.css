@@ -51,10 +51,13 @@
    ─────────────────────────────────────────────────────────────────────────── */
 
 :root {
-    /* Status colors — TUI flash_color_for_status (state.rs:271) */
+    /* Status colors — TUI parity. In-progress uses the actual rendered
+       badge color (`Color::Yellow` in render.rs => rgb(229, 229, 16)),
+       not the cyan flash from flash_color_for_status. Other statuses
+       follow flash_color_for_status (state.rs:271). */
     --status-done: rgb(80, 220, 100);
     --status-failed: rgb(220, 60, 60);
-    --status-in-progress: rgb(60, 200, 220);
+    --status-in-progress: rgb(229, 229, 16);
     --status-open: rgb(200, 200, 80);
     --status-blocked: rgb(180, 120, 60);
     --status-abandoned: rgb(140, 100, 160);
@@ -113,7 +116,7 @@
            Matches TUI light-theme intent: "actually styled, not just inverted dark". */
         --status-done: rgb(40, 160, 70);
         --status-failed: rgb(180, 40, 40);
-        --status-in-progress: rgb(20, 130, 160);
+        --status-in-progress: rgb(180, 140, 0);
         --status-open: rgb(140, 110, 30);
         --status-blocked: rgb(140, 90, 30);
         --status-abandoned: rgb(100, 70, 130);
@@ -147,7 +150,7 @@
 
     --status-done: rgb(40, 160, 70);
     --status-failed: rgb(180, 40, 40);
-    --status-in-progress: rgb(20, 130, 160);
+    --status-in-progress: rgb(180, 140, 0);
     --status-open: rgb(140, 110, 30);
     --status-blocked: rgb(140, 90, 30);
     --status-abandoned: rgb(100, 70, 130);
