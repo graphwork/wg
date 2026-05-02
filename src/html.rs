@@ -562,16 +562,52 @@ fn task_filename(id: &str) -> String {
     format!("tasks/{}.html", url_encode_id(id))
 }
 
-/// Convert markdown text to an HTML string using pulldown-cmark.
-/// Raw HTML in the input is not passed through (safe by default).
+/// Convert markdown text to an HTML string using pulldown-cmark, then
+/// run the result through `ammonia` to strip dangerous tags and
+/// attributes (XSS hardening for the `wg html` static site).
+///
+/// Why post-process instead of relying on pulldown-cmark alone:
+/// pulldown-cmark passes raw inline HTML through verbatim, so a
+/// description containing `<script>alert(1)</script>` ends up in the
+/// rendered page and executes when the page is opened. The
+/// `description-rendered` block on each task page injects this output
+/// raw into the DOM, so any unsanitized HTML is live.
+///
+/// Sanitizer policy (ammonia defaults plus explicit guarantees):
+///   - `<script>`, `<iframe>`, `<object>`, `<embed>`, `<style>` → stripped
+///   - `onclick`, `onload`, etc. event-handler attributes → stripped
+///   - `javascript:` (and other unsafe schemes) in `href`/`src` → stripped
+///   - Standard markdown tags (headings, lists, code, blockquote,
+///     tables via the gfm tables option, links, images) survive.
 fn markdown_to_html(text: &str) -> String {
     let opts = Options::ENABLE_STRIKETHROUGH
         | Options::ENABLE_TABLES
         | Options::ENABLE_TASKLISTS;
     let parser = MdParser::new_ext(text, opts);
-    let mut out = String::with_capacity(text.len() * 2);
-    md_html::push_html(&mut out, parser);
-    out
+    let mut raw = String::with_capacity(text.len() * 2);
+    md_html::push_html(&mut raw, parser);
+    sanitize_html(&raw)
+}
+
+/// HTML sanitizer used after markdown rendering. Pulled out so the
+/// XSS rules can be unit-tested directly against the same policy that
+/// the renderer uses.
+fn sanitize_html(html: &str) -> String {
+    ammonia::Builder::default()
+        // Belt-and-braces: ammonia's defaults already strip these,
+        // but enumerating them documents the policy and guards
+        // against an upstream default change.
+        .rm_tags(["script", "iframe", "object", "embed", "style"])
+        // Restrict link/image schemes. `mailto`, `tel`, etc. are
+        // useful in task descriptions but `javascript:` and `data:`
+        // are not — explicit allowlist beats blocklist.
+        .url_schemes(
+            ["http", "https", "mailto", "tel", "ftp", "ftps"]
+                .into_iter()
+                .collect(),
+        )
+        .clean(html)
+        .to_string()
 }
 
 // ────────────────────────────────────────────────────────────────────────────

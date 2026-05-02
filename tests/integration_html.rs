@@ -270,6 +270,119 @@ fn description_html_is_escaped() {
     );
 }
 
+/// Render `desc` as a public task description through `wg html` and
+/// return the contents of the per-task page. Used by the sanitizer
+/// regression suite below.
+fn render_description_page(desc: &str) -> String {
+    let mut t = make_task("xss-test", "Title", "public");
+    t.description = Some(desc.into());
+    let graph = build_graph(vec![t]);
+    let dir = TempDir::new().unwrap();
+    html::render_site(&graph, dir.path(), dir.path(), html::RenderOptions::default()).unwrap();
+    fs::read_to_string(dir.path().join("tasks/xss-test.html")).unwrap()
+}
+
+/// Extract the `<div id="desc-pretty" ...>...</div>` block — the
+/// sanitized markdown render — so we can assert against it without
+/// the raw `<pre id="desc-raw">` block (which contains
+/// HTML-entity-escaped copies of the same dangerous strings).
+fn pretty_block(page: &str) -> &str {
+    let start = page
+        .find("<div id=\"desc-pretty\"")
+        .expect("desc-pretty block missing");
+    let after = &page[start..];
+    let end = after.find("<pre id=\"desc-raw\"").unwrap_or(after.len());
+    &after[..end]
+}
+
+#[test]
+fn description_sanitizer_strips_iframe() {
+    let page = render_description_page("<iframe src=\"https://evil.example/\"></iframe>");
+    let pretty = pretty_block(&page);
+    assert!(
+        !pretty.contains("<iframe"),
+        "iframe leaked into pretty render: {pretty}"
+    );
+}
+
+#[test]
+fn description_sanitizer_strips_object_and_embed() {
+    let page = render_description_page(
+        "<object data=\"evil.swf\"></object><embed src=\"evil.swf\">",
+    );
+    let pretty = pretty_block(&page);
+    assert!(
+        !pretty.contains("<object"),
+        "<object> leaked into pretty render: {pretty}"
+    );
+    assert!(
+        !pretty.contains("<embed"),
+        "<embed> leaked into pretty render: {pretty}"
+    );
+}
+
+#[test]
+fn description_sanitizer_strips_javascript_url_in_markdown_link() {
+    // Markdown link with javascript: scheme. pulldown-cmark renders it
+    // as <a href="javascript:..."> — ammonia must drop the href.
+    let page = render_description_page("[click me](javascript:alert('pwn'))");
+    let pretty = pretty_block(&page);
+    assert!(
+        !pretty.contains("href=\"javascript:"),
+        "javascript: href survived sanitizer: {pretty}"
+    );
+    assert!(
+        !pretty.contains("javascript:alert"),
+        "javascript: payload survived sanitizer: {pretty}"
+    );
+}
+
+#[test]
+fn description_sanitizer_strips_javascript_url_in_raw_anchor() {
+    let page = render_description_page("<a href=\"javascript:alert(1)\">click</a>");
+    let pretty = pretty_block(&page);
+    assert!(
+        !pretty.contains("href=\"javascript:"),
+        "raw <a href=javascript:> survived sanitizer: {pretty}"
+    );
+}
+
+#[test]
+fn description_sanitizer_strips_onclick_handler() {
+    let page = render_description_page("<a href=\"https://x.test/\" onclick=\"alert(1)\">x</a>");
+    let pretty = pretty_block(&page);
+    assert!(
+        !pretty.contains("onclick"),
+        "onclick attribute survived sanitizer: {pretty}"
+    );
+}
+
+#[test]
+fn description_sanitizer_strips_onload_handler() {
+    let page = render_description_page("<img src=\"https://x.test/x.png\" onload=\"alert(1)\">");
+    let pretty = pretty_block(&page);
+    assert!(
+        !pretty.contains("onload"),
+        "onload attribute survived sanitizer: {pretty}"
+    );
+}
+
+#[test]
+fn description_sanitizer_preserves_safe_markdown() {
+    // Sanitizer must not break legitimate markdown rendering.
+    let page = render_description_page(
+        "## Heading\n\n**bold** and `code` and a [link](https://example.com/).",
+    );
+    let pretty = pretty_block(&page);
+    assert!(pretty.contains("<h2>"), "heading dropped: {pretty}");
+    assert!(pretty.contains("<strong>bold</strong>"), "bold dropped: {pretty}");
+    assert!(pretty.contains("<code>code</code>"), "code dropped: {pretty}");
+    assert!(
+        pretty.contains("href=\"https://example.com/\""),
+        "https link dropped: {pretty}"
+    );
+}
+
 #[test]
 fn dependency_on_internal_task_aggregates_as_count_no_id_leak() {
     // Public task `pub-a` depends on two internal tasks. The internal IDs must

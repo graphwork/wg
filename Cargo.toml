@@ -84,6 +84,7 @@ notify-debouncer-mini = "0.5"
 uuid = { version = "1", features = ["v4", "v5", "v7", "serde"] }
 tiktoken-rs = "0.7"
 pulldown-cmark = "0.13.1"
+ammonia = "4"
 hmac = "0.12.1"
 hex = "0.4.3"
 
