@@ -787,14 +787,14 @@ fn render_viz_html(
                     let char_end = extend_through_status_decorator(&line_chars, id_end);
                     let st = task_status.get(id).copied().unwrap_or(Status::Open);
                     let paused = task_paused.contains(id);
-                    // For paused tasks the ASCII viz prepends "⏸ " before the id
+                    // For paused tasks the ASCII viz prepends "‖ " before the id
                     // (see src/commands/viz/ascii.rs). Include those two chars in
                     // the task-link span so the glyph picks up the paused color
-                    // and the whole "⏸ id" cluster is clickable.
+                    // and the whole "‖ id" cluster is clickable.
                     if paused
                         && char_start >= 2
                         && line_chars.get(char_start - 1) == Some(&' ')
-                        && line_chars.get(char_start - 2) == Some(&'⏸')
+                        && line_chars.get(char_start - 2) == Some(&'‖')
                     {
                         char_start -= 2;
                     }
@@ -1640,7 +1640,7 @@ fn render_legend_panel() -> String {
     // Paused: orthogonal to status — render with the dedicated CSS var so the
     // legend tracks dark/light themes alongside the rest of the palette.
     s.push_str(
-        "  <li><span class=\"swatch\" style=\"background:var(--status-paused)\"></span>⏸ paused (open + paused flag — also applied as muted overlay on any status)</li>\n",
+        "  <li><span class=\"swatch\" style=\"background:var(--status-paused)\"></span>‖ paused (open + paused flag — also applied as muted overlay on any status)</li>\n",
     );
     s.push_str("</ul>\n</details>\n");
 
@@ -1777,7 +1777,7 @@ fn render_index(
         };
         let msg_inline = render_msg_indicator_inline(msg_bundle, &t.id);
         let pause_badge = if t.paused {
-            "<span class=\"badge paused\" title=\"paused\">⏸ paused</span> "
+            "<span class=\"badge paused\" title=\"paused\">‖ paused</span> "
         } else {
             ""
         };
@@ -2137,7 +2137,7 @@ fn render_task_page(
 
     let mut meta_rows: Vec<(String, String)> = Vec::new();
     let pause_badge_html = if task.paused {
-        " <span class=\"badge paused\" title=\"Task is paused — coordinator will not dispatch\">⏸ paused</span>"
+        " <span class=\"badge paused\" title=\"Task is paused — coordinator will not dispatch\">‖ paused</span>"
     } else {
         ""
     };
@@ -2527,13 +2527,13 @@ mod tests {
         // for paused tasks, so the CSS .paused selector and any consumers of
         // the data attribute can render them distinctly.
         let mut out = String::new();
-        let line_chars: Vec<char> = "⏸ my-task".chars().collect();
-        // The viz line begins with "⏸ "; the task-link span covers chars 0..9
-        // (⏸, space, then "my-task"), with id starting at char 2.
+        let line_chars: Vec<char> = "‖ my-task".chars().collect();
+        // The viz line begins with "‖ "; the task-link span covers chars 0..9
+        // (‖, space, then "my-task"), with id starting at char 2.
         let ranges: Vec<(usize, usize, usize, &str, Status, bool)> =
             vec![(0, 9, 9, "my-task", Status::Open, true)];
         let edges: HashMap<(usize, usize), Vec<(String, String)>> = HashMap::new();
-        render_line(&mut out, 0, &line_chars, &ranges, &[], &edges, "⏸ my-task");
+        render_line(&mut out, 0, &line_chars, &ranges, &[], &edges, "‖ my-task");
         assert!(
             out.contains("task-link paused"),
             "paused task span must include 'paused' class; got: {out}"

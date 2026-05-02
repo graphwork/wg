@@ -271,9 +271,11 @@ pub fn generate_graph_with_overrides(
         } else {
             status_color(&effective_status)
         };
-        // Prefix paused id line with ⏸ glyph for redundant signaling.
+        // Prefix paused id line with ‖ glyph for redundant signaling.
+        // U+2016 (DOUBLE VERTICAL LINE) is used instead of U+23F8 (PAUSE SYMBOL)
+        // to avoid emoji-presentation rendering on terminals with color-emoji fonts.
         let display_line1 = if task.paused {
-            format!("⏸ {}", line1)
+            format!("‖ {}", line1)
         } else {
             line1.clone()
         };

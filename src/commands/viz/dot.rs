@@ -53,7 +53,7 @@ pub(crate) fn generate_dot(
             .map(|a| format!(" {}", a.text))
             .unwrap_or_default();
 
-        let pause_prefix = if task.paused { "⏸ " } else { "" };
+        let pause_prefix = if task.paused { "‖ " } else { "" };
         let label = format!("{}{}\\n{}{}{}", pause_prefix, task.id, task.title, hours_str, phase_str);
 
         // Check if on critical path

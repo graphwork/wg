@@ -255,8 +255,10 @@ pub(crate) fn generate_ascii(
         }
     };
     // Paused tasks render in a soft blue-gray distinguishable from open (white),
-    // abandoned (gray), and blocked (gray) — paired with a leading ⏸ glyph for
+    // abandoned (gray), and blocked (gray) — paired with a leading ‖ glyph for
     // redundant signaling that survives NO_COLOR / dim terminals / colorblind viewers.
+    // U+2016 (DOUBLE VERTICAL LINE) is used instead of U+23F8 (PAUSE SYMBOL) to avoid
+    // emoji-presentation rendering on terminals with color-emoji fonts.
     let paused_color = if use_color { "\x1b[38;5;110m" } else { "" }; // 256-color 110 = #87afd7 soft blue-gray
     let reset = if use_color { "\x1b[0m" } else { "" };
 
@@ -319,7 +321,7 @@ pub(crate) fn generate_ascii(
             task.map(|t| status_color(&t.status)).unwrap_or("")
         };
         // Pause glyph prefix for redundant (color + glyph) signaling.
-        let pause_glyph = if is_paused { "⏸ " } else { "" };
+        let pause_glyph = if is_paused { "‖ " } else { "" };
         let loop_info = if is_chat_agent {
             task.map(|t| format!(" [turn {}]", t.loop_iteration))
                 .unwrap_or_default()

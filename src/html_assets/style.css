@@ -396,7 +396,7 @@ section { margin-bottom: 2rem; }
 .viz-pre .task-link.chat-agent { color: var(--chat-task); }
 
 /* Paused tasks: orthogonal modifier on top of any status. The CLI ascii viz
-   already prefixes ⏸ before the id; the .paused class re-colors the cluster
+   already prefixes ‖ before the id; the .paused class re-colors the cluster
    to the muted blue-gray --status-paused so the task reads as "on hold"
    rather than as the underlying status color. Wins over chat-agent so a
    paused chat agent still looks paused. */
@@ -580,7 +580,7 @@ body[data-selected] .viz-pre .edge.is-cycle {
 .badge.paused                { color: var(--status-paused); }
 
 /* Index task list: paused tasks render their row label in italic muted color
-   so the visual cue is reinforced beyond the inline ⏸ paused badge. */
+   so the visual cue is reinforced beyond the inline ‖ paused badge. */
 .task-list li.paused > a > code,
 .task-list li.paused > a {
     font-style: italic;
