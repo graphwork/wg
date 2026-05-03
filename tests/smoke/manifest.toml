@@ -56,6 +56,15 @@ description = "Pins implement-nex-chat path A: the TUI native/nex chat pane uses
 timeout_seconds = 120
 
 [[scenario]]
+name = "tui_nex_chat_post_restart_response"
+script = "scenarios/tui_nex_chat_post_restart_response.sh"
+owners = [
+    "fix-nex-tui",
+]
+description = "Pins fix-nex-tui: the TUI's PTY reader thread must advance bytes_processed only AFTER the vt100 parser has processed the chunk, otherwise the event loop's chat_pty_has_new_bytes/update_task_pane_byte_watermarks pair can race the watermark past a stale screen. Drives the canonical 13-step user flow against lambda01/qwen3-coder: create nex chat, two messages with rendered replies, kill TUI, relaunch, send a NEW message, assert the post-restart reply renders in the TUI's chat pane (the regression that blocked implement-generalize-chat)."
+timeout_seconds = 360
+
+[[scenario]]
 name = "nex_two_message_against_lambda01"
 script = "scenarios/nex_two_message_against_lambda01.sh"
 owners = [

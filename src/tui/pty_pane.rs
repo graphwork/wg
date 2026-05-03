@@ -266,7 +266,6 @@ impl PtyPane {
                             }
                             respond_to_queries(&buf[..n], &reader_responder, &reader_parser);
 
-                            reader_bytes.fetch_add(n as u64, Ordering::Relaxed);
                             window_bytes += n as u64;
                             let elapsed = window_start.elapsed().as_secs();
                             if elapsed >= GROWTH_RATE_WINDOW_SECS && window_bytes > 0 {
@@ -312,6 +311,23 @@ impl PtyPane {
                                 &mut sync_start_scrollback_count,
                                 pre_count,
                             );
+
+                            // INVARIANT — `bytes_processed` advances ONLY
+                            // after `parser.process` has fully ingested
+                            // the chunk. Reversing this order opens a
+                            // window where the TUI event loop's
+                            // `chat_pty_has_new_bytes()` /
+                            // `update_task_pane_byte_watermarks()` pair
+                            // races into the gap: it sees the new counter
+                            // value, fires a redraw against the pre-chunk
+                            // parser screen, then snapshots the watermark
+                            // to the new counter value. With no further
+                            // bytes arriving in the typical wg-nex
+                            // single-token-reply case, no further redraws
+                            // fire and the model's reply lives in the
+                            // parser but never reaches the rendered TUI
+                            // pane (fix-nex-tui).
+                            reader_bytes.fetch_add(n as u64, Ordering::Relaxed);
                         }
                         Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
                         Err(_) => break,
@@ -1646,6 +1662,84 @@ mod tests {
     fn shift_tab_via_tab_keycode_still_emits_csi_z() {
         let e = KeyEvent::new(KeyCode::Tab, KeyModifiers::SHIFT);
         assert_eq!(key_event_to_bytes(&e), b"\x1b[Z");
+    }
+
+    /// Pinning the reader-thread ordering invariant: when
+    /// `bytes_processed` advances, the vt100 parser MUST already
+    /// contain the bytes it just claimed credit for.
+    ///
+    /// fix-nex-tui regression: the original reader-thread loop did
+    /// `bytes_processed.fetch_add(n)` BEFORE `parser.process(buf)`.
+    /// The TUI's event loop reads `bytes_processed` to decide whether
+    /// fresh PTY bytes have arrived since the last frame
+    /// (`chat_pty_has_new_bytes()`), then snapshots the watermark
+    /// after a redraw (`update_task_pane_byte_watermarks()`). With
+    /// the old order, a watermark snapshot taken between the
+    /// counter advance and `parser.process` rendered the pre-chunk
+    /// screen and pinned the watermark to the new counter value —
+    /// every subsequent poll then saw `bytes_processed == watermark`
+    /// and skipped the redraw, so the model's reply lived in the
+    /// parser but never reached the user's screen.
+    ///
+    /// Symptom in the wild: `wg tui` -> nex chat against
+    /// lambda01/qwen3-coder, second message in a fresh chat (or any
+    /// message after a TUI restart) shows the user prompt but no
+    /// model response, despite the inner tmux session having the
+    /// reply (verified via `tmux capture-pane`).
+    ///
+    /// This test polls the counter on a tight loop and asserts the
+    /// parser screen is non-empty whenever the counter has advanced
+    /// past the prologue. With the regression, the test races with
+    /// the reader thread and catches the empty-screen-with-advanced-
+    /// counter window. With the fix in place, the counter never
+    /// outpaces the parser, so the assertion holds.
+    #[test]
+    fn bytes_processed_never_outpaces_parser() {
+        // `printf` per chunk + tiny sleeps maximize the chance of the
+        // test thread observing the counter mid-loop.
+        let pane = PtyPane::spawn(
+            "/bin/sh",
+            &[
+                "-c",
+                "for m in alpha bravo charlie delta echo foxtrot golf hotel; do \
+                 printf '%s\\r\\n' \"$m\"; sleep 0.01; done; sleep 30",
+            ],
+            &[],
+            10,
+            60,
+        )
+        .expect("spawn /bin/sh");
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut last_bytes = 0u64;
+        let mut violations: Vec<String> = Vec::new();
+        let mut advances = 0;
+        while std::time::Instant::now() < deadline {
+            let bytes = pane.bytes_processed();
+            if bytes > last_bytes && bytes >= 8 {
+                let p = pane.parser.lock().unwrap();
+                let contents = p.screen().contents();
+                if contents.trim().is_empty() {
+                    violations.push(format!(
+                        "bytes_processed={} but parser screen is empty",
+                        bytes
+                    ));
+                }
+                drop(p);
+                last_bytes = bytes;
+                advances += 1;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+
+        assert!(advances > 0, "reader thread never advanced bytes_processed");
+        assert!(
+            violations.is_empty(),
+            "byte-counter raced ahead of parser writes — \
+             reader thread must call `parser.process(buf)` BEFORE \
+             `reader_bytes.fetch_add(n)`:\n{}",
+            violations.join("\n"),
+        );
     }
 
     #[test]
