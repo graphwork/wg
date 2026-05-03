@@ -24,10 +24,11 @@ owners = [
     "fix-chat-dir-race",
     "fix-tui-supervisor-coexistence",
     "fix-supervisor-restart-backoff",
+    "re-implement-fix",
     "fix-nex-cursor-corruption",
     "smoke-gate-is",
 ]
-description = "End-to-end live nex chat against lambda01 + composition glue: 2 messages, 2 replies, 1 supervisor spawn, no chat-dir split-brain. Pins the .chat-N → chat-N alias mapping in spawn_task that prevents the daemon supervisor and IPC writers from disagreeing on which chat dir to use."
+description = "End-to-end live nex chat against lambda01 + composition glue: 2 messages, 2 replies, 1 supervisor spawn, no chat-dir split-brain. Pins the .chat-N → chat-N alias mapping in spawn_task that prevents the daemon supervisor and IPC writers from disagreeing on which chat dir to use. Also guards the supervisor restart-backoff: 3 normal handoff cycles in <1min must not trip the rate-limit pause."
 timeout_seconds = 300
 
 [[scenario]]

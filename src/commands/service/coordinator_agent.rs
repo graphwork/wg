@@ -55,6 +55,101 @@ const RESTART_WINDOW_SECS: u64 = 600;
 /// burns LLM tokens on idle chats.
 const CHAT_IDLE_THRESHOLD_SECS: u64 = 300;
 
+/// If a freshly-spawned child exits non-zero within this window AND a live
+/// session-lock holder is present at the moment of exit, classify it as
+/// session-lock contention rather than a genuine crash. Prevents normal
+/// TUI handoff cycles from burning the restart-rate budget.
+const SESSION_LOCK_CONTENTION_WINDOW: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Base back-off after a session-lock-contention exit. Long enough that the
+/// other handler has time to settle, short enough that a normal handoff
+/// resumes promptly.
+const LOCK_CONTENTION_BACKOFF_BASE_SECS: u64 = 10;
+
+/// Maximum back-off ceiling when contentions repeat. Keeps the series well
+/// below the 600s rate-limit pause so the user-facing pause character is
+/// noticeably shorter than a real "we are giving up" event.
+const LOCK_CONTENTION_BACKOFF_MAX_SECS: u64 = 60;
+
+/// Stop respawning after this many CONSECUTIVE session-lock contentions.
+/// At that point the other handler is clearly here to stay and the
+/// supervisor should bow out instead of looping forever. Counter resets
+/// on any non-contention exit.
+const MAX_CONSECUTIVE_LOCK_CONTENTIONS: u32 = 6;
+
+/// Classification of a coordinator child exit, used by the supervisor loop
+/// to decide whether the exit counts toward the rate-limit budget, against
+/// the contention back-off, or against neither.
+///
+/// Pulled out of the inline supervisor loop so the policy is unit-testable
+/// without spawning a real subprocess. See the regression tests at the
+/// bottom of this file for the cycles each branch is meant to handle.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum ChildExitKind {
+    /// Child exited successfully (status 0). Healthy lifecycle event —
+    /// e.g. user `/quit`, max-turns, cooperative TUI handoff. Does NOT
+    /// count toward the restart rate-limit.
+    Clean,
+    /// Child exited fast (<1s) AND a live session-lock holder is present.
+    /// We almost certainly lost a startup race against a TUI handler or
+    /// an inline `wg nex` invocation. Routed through a separate, shorter
+    /// back-off counter; never trips the 10-min pause.
+    SessionLockContention,
+    /// Genuine non-zero exit: long-running crash, startup failure with
+    /// no contention signal, or wait() error. Counts toward the rate-limit.
+    Crash,
+}
+
+/// Classify a coordinator child exit. Pure function — extracted so the
+/// supervisor loop's policy is unit-testable. See module-level tests.
+///
+/// `success` — `exit_status.success()` (treat wait() errors as `false`).
+/// `elapsed_since_spawn` — wall-clock duration the child ran.
+/// `lock_holder_alive` — whether a live session-lock holder was observed
+/// for the chat dir at the moment of exit.
+pub(crate) fn classify_child_exit(
+    success: bool,
+    elapsed_since_spawn: std::time::Duration,
+    lock_holder_alive: bool,
+) -> ChildExitKind {
+    if success {
+        ChildExitKind::Clean
+    } else if elapsed_since_spawn < SESSION_LOCK_CONTENTION_WINDOW && lock_holder_alive {
+        ChildExitKind::SessionLockContention
+    } else {
+        ChildExitKind::Crash
+    }
+}
+
+/// Back-off duration for the Nth consecutive session-lock contention.
+/// Linear ramp from the base (10s) up to the ceiling (60s). Stays well
+/// under the 600s rate-limit pause for any plausible `count`.
+pub(crate) fn lock_contention_backoff(count: u32) -> std::time::Duration {
+    let n = count.max(1) as u64;
+    let secs = LOCK_CONTENTION_BACKOFF_BASE_SECS
+        .saturating_mul(n)
+        .min(LOCK_CONTENTION_BACKOFF_MAX_SECS);
+    std::time::Duration::from_secs(secs)
+}
+
+/// How long the supervisor must sleep before its next spawn given the
+/// current restart-timestamp window, or `None` if the budget has room.
+/// Pure helper extracted from the supervisor loop so the rate-limit
+/// behavior is testable in isolation.
+pub(crate) fn rate_limit_wait(
+    timestamps: &VecDeque<std::time::Instant>,
+    now: std::time::Instant,
+    window: std::time::Duration,
+    max: usize,
+) -> Option<std::time::Duration> {
+    if timestamps.len() < max {
+        return None;
+    }
+    timestamps
+        .front()
+        .map(|oldest| window.saturating_sub(now.duration_since(*oldest)))
+}
+
 /// Resolve the chat-supervisor's `coordinator_id` to a concrete task id
 /// present in the live graph. Prefers the new `.chat-N` prefix, falls back
 /// to the legacy `.coordinator-N` prefix for graphs that haven't been
@@ -628,11 +723,17 @@ fn subprocess_coordinator_loop(
     };
 
     let mut restart_timestamps: VecDeque<std::time::Instant> = VecDeque::new();
+    // Separate counter for session-lock contention exits. Reset on any
+    // non-contention exit so a single non-contention iteration always
+    // restores the supervisor to its base state.
+    let mut lock_contention_count: u32 = 0;
 
     loop {
         // Rate-limit restarts in a sliding window, same policy as the
-        // Claude CLI path above. Prevents a wedged model or a repeated
-        // startup-time crash from burning the daemon.
+        // Claude CLI path above. Only GENUINE crashes push timestamps
+        // here (see classify_child_exit below); clean exits and
+        // session-lock contention have their own paths so normal TUI
+        // handoff cycles never trip this pause.
         let now = std::time::Instant::now();
         let window = std::time::Duration::from_secs(RESTART_WINDOW_SECS);
         while let Some(front) = restart_timestamps.front() {
@@ -642,20 +743,18 @@ fn subprocess_coordinator_loop(
                 break;
             }
         }
-        if restart_timestamps.len() >= MAX_RESTARTS_PER_WINDOW {
-            let oldest = restart_timestamps.front().copied();
-            if let Some(oldest_time) = oldest {
-                let wait_time = window.saturating_sub(now.duration_since(oldest_time));
-                logger.error(&format!(
-                    "Coordinator-{}: {} restarts in last {} minutes, pausing for {}s",
-                    coordinator_id,
-                    MAX_RESTARTS_PER_WINDOW,
-                    RESTART_WINDOW_SECS / 60,
-                    wait_time.as_secs()
-                ));
-                std::thread::sleep(wait_time);
-                restart_timestamps.clear();
-            }
+        if let Some(wait_time) =
+            rate_limit_wait(&restart_timestamps, now, window, MAX_RESTARTS_PER_WINDOW)
+        {
+            logger.error(&format!(
+                "Coordinator-{}: {} crashes in last {} minutes, pausing for {}s",
+                coordinator_id,
+                MAX_RESTARTS_PER_WINDOW,
+                RESTART_WINDOW_SECS / 60,
+                wait_time.as_secs()
+            ));
+            std::thread::sleep(wait_time);
+            restart_timestamps.clear();
         }
 
         // Register the coordinator's chat session. Installs BOTH
@@ -873,6 +972,7 @@ fn subprocess_coordinator_loop(
             nex_stderr_log_path,
         ));
         let _ = chat_alias; // silence unused — retained for register_coordinator_session above
+        let spawn_time = std::time::Instant::now();
         let mut child: Child = match cmd.spawn() {
             Ok(c) => c,
             Err(e) => {
@@ -889,7 +989,11 @@ fn subprocess_coordinator_loop(
         let child_pid = child.id();
         *pid.lock().unwrap_or_else(|e| e.into_inner()) = child_pid;
         *alive.lock().unwrap_or_else(|e| e.into_inner()) = true;
-        restart_timestamps.push_back(std::time::Instant::now());
+        // NOTE: we used to push `restart_timestamps` here on every spawn,
+        // which conflated "child was born" with "child crashed". Three
+        // normal TUI handoff cycles would trip the rate-limit. The push
+        // now lives in the post-wait classification block below — only
+        // GENUINE crashes count.
         logger.info(&format!(
             "Coordinator-{}: nex subprocess running (pid {})",
             coordinator_id, child_pid
@@ -940,14 +1044,29 @@ fn subprocess_coordinator_loop(
             .ok();
 
         let exit_status = child.wait();
+        let elapsed = spawn_time.elapsed();
         *alive.lock().unwrap_or_else(|e| e.into_inner()) = false;
         *pid.lock().unwrap_or_else(|e| e.into_inner()) = 0;
 
-        match exit_status {
-            Ok(status) if status.success() => {
+        let success = matches!(&exit_status, Ok(s) if s.success());
+        // Read the live session-lock holder right at exit time. If the
+        // child crashed *because* it lost a startup race against another
+        // handler, the winning holder will still be present here. We
+        // squash any IO error to "no holder" so a transient stat() fail
+        // doesn't pretend a contention happened.
+        let lock_holder_alive = workgraph::session_lock::read_holder(&chat_dir)
+            .ok()
+            .flatten()
+            .map(|h| h.alive)
+            .unwrap_or(false);
+        let kind = classify_child_exit(success, elapsed, lock_holder_alive);
+
+        match kind {
+            ChildExitKind::Clean => {
+                lock_contention_count = 0;
                 logger.info(&format!(
-                    "Coordinator-{}: nex subprocess exited cleanly ({})",
-                    coordinator_id, status
+                    "Coordinator-{}: nex subprocess exited cleanly ({:?})",
+                    coordinator_id, exit_status
                 ));
                 // Idle-respawn rule (parent task bullet a): if there's no
                 // unread inbox AND no recent consumer (TUI/CLI cursor older
@@ -973,17 +1092,42 @@ fn subprocess_coordinator_loop(
                 // the whole restart budget on clean exits.
                 std::thread::sleep(std::time::Duration::from_secs(2));
             }
-            Ok(status) => {
-                logger.error(&format!(
-                    "Coordinator-{}: nex subprocess exited {} — will restart",
-                    coordinator_id, status
+            ChildExitKind::SessionLockContention => {
+                lock_contention_count = lock_contention_count.saturating_add(1);
+                let backoff = lock_contention_backoff(lock_contention_count);
+                if lock_contention_count >= MAX_CONSECUTIVE_LOCK_CONTENTIONS {
+                    logger.error(&format!(
+                        "Coordinator-{}: {} consecutive session-lock contentions — \
+                         another handler owns this chat. Exiting supervisor (no respawn).",
+                        coordinator_id, lock_contention_count
+                    ));
+                    return;
+                }
+                logger.info(&format!(
+                    "Coordinator-{}: nex subprocess exited {:?} after {:?} with a live \
+                     session-lock holder — treating as cooperative-handoff race \
+                     (count={}, backoff={}s, NOT a rate-limit event).",
+                    coordinator_id,
+                    exit_status,
+                    elapsed,
+                    lock_contention_count,
+                    backoff.as_secs(),
                 ));
+                std::thread::sleep(backoff);
             }
-            Err(e) => {
-                logger.error(&format!(
-                    "Coordinator-{}: wait() failed on nex subprocess: {} — will restart",
-                    coordinator_id, e
-                ));
+            ChildExitKind::Crash => {
+                lock_contention_count = 0;
+                restart_timestamps.push_back(std::time::Instant::now());
+                match &exit_status {
+                    Ok(status) => logger.error(&format!(
+                        "Coordinator-{}: nex subprocess exited {} — will restart",
+                        coordinator_id, status
+                    )),
+                    Err(e) => logger.error(&format!(
+                        "Coordinator-{}: wait() failed on nex subprocess: {} — will restart",
+                        coordinator_id, e
+                    )),
+                }
             }
         }
     }
@@ -1579,6 +1723,170 @@ mod tests {
         // Supervisor's orphan-exit calls remove_for; verify the file is gone.
         super::super::CoordinatorState::remove_for(dir, 5);
         assert!(super::super::CoordinatorState::load_for(dir, 5).is_none());
+    }
+
+    /// Bug-fix regression test for `re-implement-fix`.
+    ///
+    /// The supervisor used to push `restart_timestamps` on EVERY spawn,
+    /// regardless of why the child exited. Three normal TUI handoff cycles
+    /// (write sentinel → cooperative release → respawn) would trip the
+    /// 3-restarts-per-10-minute pause. The fix moves the count from "spawn"
+    /// to "crash classification", and routes session-lock contention exits
+    /// through a separate, shorter back-off counter.
+    ///
+    /// This test drives `classify_child_exit` directly so we don't need a
+    /// real subprocess.
+    #[test]
+    fn test_classify_child_exit_session_lock_contention() {
+        use std::time::Duration;
+        // status=1 within ~1s of spawn AND a live session-lock holder is
+        // present → cooperative-handoff race, NOT a genuine crash.
+        assert_eq!(
+            classify_child_exit(false, Duration::from_millis(500), true),
+            ChildExitKind::SessionLockContention,
+        );
+    }
+
+    #[test]
+    fn test_classify_child_exit_clean_success() {
+        use std::time::Duration;
+        assert_eq!(
+            classify_child_exit(true, Duration::from_secs(60), false),
+            ChildExitKind::Clean,
+        );
+        // Clean even if a lock holder happens to be present (TUI handoff).
+        assert_eq!(
+            classify_child_exit(true, Duration::from_millis(100), true),
+            ChildExitKind::Clean,
+        );
+    }
+
+    #[test]
+    fn test_classify_child_exit_crash_when_no_lock_holder() {
+        use std::time::Duration;
+        // status=1 fast but NO live lock holder → genuine crash.
+        assert_eq!(
+            classify_child_exit(false, Duration::from_millis(500), false),
+            ChildExitKind::Crash,
+        );
+    }
+
+    #[test]
+    fn test_classify_child_exit_crash_when_long_running() {
+        use std::time::Duration;
+        // status=1 after running >1s → not a startup race, even if a lock
+        // holder is present (the lock holder appeared after our child died).
+        assert_eq!(
+            classify_child_exit(false, Duration::from_secs(60), true),
+            ChildExitKind::Crash,
+        );
+    }
+
+    /// The bug: 3 normal TUI handoff cycles in <1 minute would push 3
+    /// timestamps and trip the 600s rate-limit. With the fix, clean exits
+    /// MUST NOT push to `restart_timestamps`, so the rate-limit stays clear.
+    #[test]
+    fn test_three_clean_exits_do_not_trip_rate_limit() {
+        use std::time::Duration;
+        let mut timestamps: VecDeque<std::time::Instant> = VecDeque::new();
+        let now = std::time::Instant::now();
+
+        // Simulate three clean TUI handoff cycles.
+        for _ in 0..3 {
+            let elapsed = Duration::from_millis(200);
+            let cls = classify_child_exit(true, elapsed, true);
+            assert_eq!(cls, ChildExitKind::Clean);
+            // Only Crash pushes to restart_timestamps in the supervisor loop.
+            if cls == ChildExitKind::Crash {
+                timestamps.push_back(now);
+            }
+        }
+
+        let wait = rate_limit_wait(
+            &timestamps,
+            now,
+            Duration::from_secs(RESTART_WINDOW_SECS),
+            MAX_RESTARTS_PER_WINDOW,
+        );
+        assert!(
+            wait.is_none(),
+            "three clean exits must not trip the rate-limit, but got wait={:?}",
+            wait
+        );
+    }
+
+    /// Three rapid session-lock contentions also must not trip the
+    /// 600s rate-limit — they back off through their own counter.
+    #[test]
+    fn test_three_lock_contentions_do_not_trip_rate_limit() {
+        use std::time::Duration;
+        let mut timestamps: VecDeque<std::time::Instant> = VecDeque::new();
+        let now = std::time::Instant::now();
+        let mut lock_contention_count: u32 = 0;
+
+        for _ in 0..3 {
+            let cls = classify_child_exit(false, Duration::from_millis(300), true);
+            assert_eq!(cls, ChildExitKind::SessionLockContention);
+            match cls {
+                ChildExitKind::Crash => timestamps.push_back(now),
+                ChildExitKind::SessionLockContention => {
+                    lock_contention_count += 1;
+                }
+                _ => {}
+            }
+        }
+
+        // Lock contentions should accumulate in the dedicated counter,
+        // not in restart_timestamps.
+        assert_eq!(lock_contention_count, 3);
+        let wait = rate_limit_wait(
+            &timestamps,
+            now,
+            Duration::from_secs(RESTART_WINDOW_SECS),
+            MAX_RESTARTS_PER_WINDOW,
+        );
+        assert!(wait.is_none());
+
+        // The contention back-off itself must be ≥10s, NOT 600s.
+        let backoff = lock_contention_backoff(lock_contention_count);
+        assert!(
+            backoff >= Duration::from_secs(10),
+            "lock-contention backoff must be ≥10s, got {:?}",
+            backoff
+        );
+        assert!(
+            backoff < Duration::from_secs(600),
+            "lock-contention backoff must be <600s (the rate-limit pause), got {:?}",
+            backoff
+        );
+    }
+
+    /// Three actual crashes (no lock holder) DO push timestamps and DO trip
+    /// the rate-limit on the fourth iteration. This guards against the
+    /// converse regression: don't accidentally turn off the rate-limit.
+    #[test]
+    fn test_three_crashes_do_trip_rate_limit() {
+        use std::time::Duration;
+        let mut timestamps: VecDeque<std::time::Instant> = VecDeque::new();
+        let now = std::time::Instant::now();
+
+        for _ in 0..MAX_RESTARTS_PER_WINDOW {
+            let cls = classify_child_exit(false, Duration::from_millis(50), false);
+            assert_eq!(cls, ChildExitKind::Crash);
+            timestamps.push_back(now);
+        }
+
+        let wait = rate_limit_wait(
+            &timestamps,
+            now,
+            Duration::from_secs(RESTART_WINDOW_SECS),
+            MAX_RESTARTS_PER_WINDOW,
+        );
+        assert!(
+            wait.is_some(),
+            "{} crashes must trip the rate-limit",
+            MAX_RESTARTS_PER_WINDOW
+        );
     }
 
     #[test]
