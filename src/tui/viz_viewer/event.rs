@@ -16,6 +16,13 @@ use super::render;
 /// keyboard shortcuts (`=`, `\`).
 const MIN_DRAG_PERCENT: i32 = 10;
 
+fn is_safe_launcher_field_char(c: char) -> bool {
+    !(c.is_control()
+        || ('\u{2580}'..='\u{259F}').contains(&c)
+        || c == '\u{2028}'
+        || c == '\u{2029}')
+}
+
 use super::state::{
     ChoiceDialogAction, ChoiceDialogState, CommandEffect, ConfigEditKind, ConfirmAction,
     ControlPanelFocus, FocusedPanel, InputMode, InspectorSubFocus, NavEntry, ResponsiveBreakpoint,
@@ -804,7 +811,10 @@ fn handle_paste(app: &mut VizApp, text: &str) {
             // (the leak fix above is the real PTY guard; this is just
             // UX so the paste lands somewhere visible to the user).
             use super::state::{AddNewField, LauncherSection};
-            let clean: String = text.chars().filter(|c| *c != '\n' && *c != '\r').collect();
+            let clean: String = text
+                .chars()
+                .filter(|c| is_safe_launcher_field_char(*c))
+                .collect();
             if let Some(launcher) = app.launcher.as_mut() {
                 match launcher.active_section {
                     LauncherSection::Name => {
@@ -822,8 +832,7 @@ fn handle_paste(app: &mut VizApp, text: &str) {
                     // Defaults radio + AddNew Executor radio have no
                     // text field; drop the paste rather than silently
                     // mangle the selection.
-                    LauncherSection::Defaults
-                    | LauncherSection::AddNew(AddNewField::Executor) => {}
+                    LauncherSection::Defaults | LauncherSection::AddNew(AddNewField::Executor) => {}
                 }
             }
         }
@@ -1053,7 +1062,10 @@ fn handle_exit_prompt_input(app: &mut VizApp, code: KeyCode) {
 
 /// Advance per-chat index; if the user has decided about every chat,
 /// reset `per_chat_idx` to `None` to signal "ready to apply".
-fn advance_per_chat_or_finish(s: &mut crate::tui::viz_viewer::state::ExitPromptState, total: usize) {
+fn advance_per_chat_or_finish(
+    s: &mut crate::tui::viz_viewer::state::ExitPromptState,
+    total: usize,
+) {
     let next = s.per_chat_idx.map(|i| i + 1).unwrap_or(0);
     if next >= total {
         s.per_chat_idx = None;
@@ -1537,7 +1549,9 @@ fn handle_launcher_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModifier
             KeyCode::Enter => {
                 app.launch_from_launcher();
             }
-            KeyCode::Char(c) if !modifiers.contains(KeyModifiers::CONTROL) => {
+            KeyCode::Char(c)
+                if !modifiers.contains(KeyModifiers::CONTROL) && is_safe_launcher_field_char(c) =>
+            {
                 launcher.add_model.push(c);
             }
             KeyCode::Backspace => {
@@ -1549,7 +1563,9 @@ fn handle_launcher_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModifier
             KeyCode::Enter => {
                 app.launch_from_launcher();
             }
-            KeyCode::Char(c) if !modifiers.contains(KeyModifiers::CONTROL) => {
+            KeyCode::Char(c)
+                if !modifiers.contains(KeyModifiers::CONTROL) && is_safe_launcher_field_char(c) =>
+            {
                 launcher.add_endpoint.push(c);
             }
             KeyCode::Backspace => {
@@ -1561,7 +1577,9 @@ fn handle_launcher_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModifier
             KeyCode::Enter => {
                 app.launch_from_launcher();
             }
-            KeyCode::Char(c) if !modifiers.contains(KeyModifiers::CONTROL) => {
+            KeyCode::Char(c)
+                if !modifiers.contains(KeyModifiers::CONTROL) && is_safe_launcher_field_char(c) =>
+            {
                 launcher.name.push(c);
             }
             KeyCode::Backspace => {
@@ -1959,9 +1977,8 @@ fn handle_normal_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
     // "Press R/E/X" (uppercase), so users naturally try shift+letter,
     // which crossterm delivers as `Char('R')` + SHIFT. Reject CONTROL /
     // ALT / META so we don't shadow other bindings (Ctrl+R, Alt+E, etc.).
-    let death_panel_modifier_ok = !modifiers.intersects(
-        KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::META,
-    );
+    let death_panel_modifier_ok =
+        !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::META);
     if app.right_panel_tab == RightPanelTab::Chat
         && app
             .chat_agent_death
@@ -3162,9 +3179,7 @@ fn handle_right_panel_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifie
             }
         }
         // Chat tab: '~' or '`' opens coordinator picker (switch-to list)
-        KeyCode::Char('~') | KeyCode::Char('`')
-            if app.right_panel_tab == RightPanelTab::Chat =>
-        {
+        KeyCode::Char('~') | KeyCode::Char('`') if app.right_panel_tab == RightPanelTab::Chat => {
             app.open_coordinator_picker();
         }
         // Chat tab: '+' opens the coordinator launcher pane (add new)
@@ -4193,10 +4208,10 @@ fn handle_mouse(app: &mut VizApp, kind: MouseEventKind, row: u16, column: u16) {
                 // so mouse precision isn't required.
                 app.focused_panel = FocusedPanel::RightPanel;
                 let total = app.iteration_archives.len() + 1;
-                let prev_hit = app.iter_nav_prev_zone.width > 0
-                    && app.iter_nav_prev_zone.contains(pos);
-                let next_hit = app.iter_nav_next_zone.width > 0
-                    && app.iter_nav_next_zone.contains(pos);
+                let prev_hit =
+                    app.iter_nav_prev_zone.width > 0 && app.iter_nav_prev_zone.contains(pos);
+                let next_hit =
+                    app.iter_nav_next_zone.width > 0 && app.iter_nav_next_zone.contains(pos);
                 if prev_hit && app.iter_can_go_prev() && app.iteration_prev() {
                     handle_iteration_change(app);
                     let msg = match app.viewing_iteration {
@@ -5101,10 +5116,8 @@ fn handle_config_edit_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModif
                     }
                     KeyCode::Enter => {
                         if let Some(item) = picker.selected_item() {
-                            let idx_in_choices = _choices
-                                .iter()
-                                .position(|c| c == &item.0)
-                                .unwrap_or(0);
+                            let idx_in_choices =
+                                _choices.iter().position(|c| c == &item.0).unwrap_or(0);
                             app.config_panel.choice_index = idx_in_choices;
                         }
                         app.config_panel.choice_picker = None;
@@ -5114,8 +5127,7 @@ fn handle_config_edit_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModif
                     KeyCode::Up | KeyCode::Char('k') => {
                         picker.prev();
                         if let Some(item) = picker.selected_item() {
-                            if let Some(idx_in_choices) =
-                                _choices.iter().position(|c| c == &item.0)
+                            if let Some(idx_in_choices) = _choices.iter().position(|c| c == &item.0)
                             {
                                 app.config_panel.choice_index = idx_in_choices;
                             }
@@ -5124,8 +5136,7 @@ fn handle_config_edit_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModif
                     KeyCode::Down | KeyCode::Char('j') => {
                         picker.next();
                         if let Some(item) = picker.selected_item() {
-                            if let Some(idx_in_choices) =
-                                _choices.iter().position(|c| c == &item.0)
+                            if let Some(idx_in_choices) = _choices.iter().position(|c| c == &item.0)
                             {
                                 app.config_panel.choice_index = idx_in_choices;
                             }
@@ -5134,8 +5145,7 @@ fn handle_config_edit_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModif
                     KeyCode::Left | KeyCode::Char('h') => {
                         picker.prev();
                         if let Some(item) = picker.selected_item() {
-                            if let Some(idx_in_choices) =
-                                _choices.iter().position(|c| c == &item.0)
+                            if let Some(idx_in_choices) = _choices.iter().position(|c| c == &item.0)
                             {
                                 app.config_panel.choice_index = idx_in_choices;
                             }
@@ -5144,8 +5154,7 @@ fn handle_config_edit_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModif
                     KeyCode::Right | KeyCode::Char('l') => {
                         picker.next();
                         if let Some(item) = picker.selected_item() {
-                            if let Some(idx_in_choices) =
-                                _choices.iter().position(|c| c == &item.0)
+                            if let Some(idx_in_choices) = _choices.iter().position(|c| c == &item.0)
                             {
                                 app.config_panel.choice_index = idx_in_choices;
                             }
@@ -5154,8 +5163,7 @@ fn handle_config_edit_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModif
                     KeyCode::Char(c) if !modifiers.contains(KeyModifiers::CONTROL) => {
                         picker.type_char(c);
                         if let Some(item) = picker.selected_item() {
-                            if let Some(idx_in_choices) =
-                                _choices.iter().position(|c| c == &item.0)
+                            if let Some(idx_in_choices) = _choices.iter().position(|c| c == &item.0)
                             {
                                 app.config_panel.choice_index = idx_in_choices;
                             }
@@ -5164,8 +5172,7 @@ fn handle_config_edit_input(app: &mut VizApp, code: KeyCode, modifiers: KeyModif
                     KeyCode::Backspace => {
                         picker.backspace();
                         if let Some(item) = picker.selected_item() {
-                            if let Some(idx_in_choices) =
-                                _choices.iter().position(|c| c == &item.0)
+                            if let Some(idx_in_choices) = _choices.iter().position(|c| c == &item.0)
                             {
                                 app.config_panel.choice_index = idx_in_choices;
                             }
@@ -7673,7 +7680,6 @@ mod scrollbar_tests {
             "Clicking on the chat input area with text should enter ChatInput mode"
         );
     }
-
 }
 
 #[cfg(test)]
@@ -8038,11 +8044,7 @@ mod chat_tab_navigation_tests {
         // test (which would set `chat_pty_forwards_stdin = true` and
         // swallow all subsequent keystrokes).
         let config_path = wg_dir.join("config.toml");
-        std::fs::write(
-            &config_path,
-            "[coordinator]\nexecutor = \"shell\"\n",
-        )
-        .unwrap();
+        std::fs::write(&config_path, "[coordinator]\nexecutor = \"shell\"\n").unwrap();
 
         let tasks: Vec<_> = graph.tasks().collect();
         let task_ids: HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
@@ -8342,7 +8344,10 @@ mod chat_tab_navigation_tests {
         app.right_panel_tab = RightPanelTab::Chat;
         switch_chat_tab_to_index(&mut app, 1); // active = cid 4
         assert_eq!(app.active_coordinator_id, 4);
-        assert!(app.active_tabs.contains(&4), "tab 4 should be in active_tabs before close");
+        assert!(
+            app.active_tabs.contains(&4),
+            "tab 4 should be in active_tabs before close"
+        );
 
         // Close the tab — must NOT modify the graph task
         app.close_tab(4);
@@ -8354,7 +8359,8 @@ mod chat_tab_navigation_tests {
         // The underlying task still exists in the graph with its original status.
         let graph_path = app.workgraph_dir.join("graph.jsonl");
         let graph = workgraph::parser::load_graph(&graph_path).unwrap();
-        let task = graph.get_task(".coordinator-4")
+        let task = graph
+            .get_task(".coordinator-4")
             .expect("close_tab must NOT abandon/delete the graph task");
         assert_eq!(
             task.status,
@@ -8451,12 +8457,14 @@ mod chat_tab_navigation_tests {
         // Trigger bulk abandon.
         super::handle_key(&mut app, KeyCode::Char('d'), KeyModifiers::NONE);
         // Manager closes.
-        assert!(app.chat_manager.is_none(), "manager must close after abandon");
+        assert!(
+            app.chat_manager.is_none(),
+            "manager must close after abandon"
+        );
         assert_eq!(app.input_mode, InputMode::Normal);
 
         // Expect 3 DeleteCoordinator IPC subprocess results in any order.
-        let mut received: std::collections::HashSet<u32> =
-            std::collections::HashSet::new();
+        let mut received: std::collections::HashSet<u32> = std::collections::HashSet::new();
         for _ in 0..3 {
             let r = app
                 .cmd_rx
@@ -8703,7 +8711,10 @@ mod chat_tab_navigation_tests {
         let task_id = workgraph::chat_id::format_chat_task_id(app.active_coordinator_id);
         let Ok(pane) = crate::tui::pty_pane::PtyPane::spawn_in(
             "/bin/sh",
-            &["-c", "for i in $(seq 1 60); do echo line $i; done; sleep 60"],
+            &[
+                "-c",
+                "for i in $(seq 1 60); do echo line $i; done; sleep 60",
+            ],
             &[],
             None,
             24,
@@ -8782,7 +8793,10 @@ mod chat_tab_navigation_tests {
         let task_id = workgraph::chat_id::format_chat_task_id(app.active_coordinator_id);
         let Ok(pane) = crate::tui::pty_pane::PtyPane::spawn_in(
             "/bin/sh",
-            &["-c", "for i in $(seq 1 60); do echo line $i; done; sleep 60"],
+            &[
+                "-c",
+                "for i in $(seq 1 60); do echo line $i; done; sleep 60",
+            ],
             &[],
             None,
             24,
@@ -8844,7 +8858,10 @@ mod chat_tab_navigation_tests {
 
         super::handle_key(&mut app, KeyCode::Char('w'), KeyModifiers::CONTROL);
 
-        assert_eq!(app.active_tabs, tabs_before, "Ctrl+W off Chat tab must not change tabs");
+        assert_eq!(
+            app.active_tabs, tabs_before,
+            "Ctrl+W off Chat tab must not change tabs"
+        );
         assert!(!matches!(app.input_mode, InputMode::ChoiceDialog(_)));
     }
 
@@ -8858,7 +8875,10 @@ mod chat_tab_navigation_tests {
         app.close_tab(0);
 
         assert!(app.active_tabs.is_empty(), "active_tabs must be empty");
-        assert_eq!(app.active_coordinator_id, 0, "active coordinator resets to 0");
+        assert_eq!(
+            app.active_coordinator_id, 0,
+            "active coordinator resets to 0"
+        );
         // Must not have panicked — no crash
     }
 
@@ -8890,8 +8910,16 @@ mod chat_tab_navigation_tests {
         app.input_mode = InputMode::Normal;
         // Seed two fake matches so next_match() has something to cycle through.
         app.fuzzy_matches = vec![
-            FuzzyLineMatch { line_idx: 0, score: 100, char_positions: vec![] },
-            FuzzyLineMatch { line_idx: 1, score: 90, char_positions: vec![] },
+            FuzzyLineMatch {
+                line_idx: 0,
+                score: 100,
+                char_positions: vec![],
+            },
+            FuzzyLineMatch {
+                line_idx: 1,
+                score: 90,
+                char_positions: vec![],
+            },
         ];
         app.current_match = Some(0);
         super::handle_key(&mut app, KeyCode::Char('n'), KeyModifiers::NONE);
@@ -9114,8 +9142,7 @@ mod chat_tab_navigation_tests {
         }
         // Move to the Name section so typed characters land in
         // `launcher.name` — a field whose content we can inspect.
-        app.launcher.as_mut().unwrap().active_section =
-            super::super::state::LauncherSection::Name;
+        app.launcher.as_mut().unwrap().active_section = super::super::state::LauncherSection::Name;
 
         super::handle_key(&mut app, KeyCode::Char('x'), KeyModifiers::NONE);
         super::handle_key(&mut app, KeyCode::Char('y'), KeyModifiers::NONE);
@@ -9225,8 +9252,7 @@ mod chat_tab_navigation_tests {
             return;
         }
         // Move to Name so the paste lands somewhere we can inspect.
-        app.launcher.as_mut().unwrap().active_section =
-            super::super::state::LauncherSection::Name;
+        app.launcher.as_mut().unwrap().active_section = super::super::state::LauncherSection::Name;
 
         super::dispatch_event(&mut app, Event::Paste("my-chat".to_string()));
 
@@ -9285,6 +9311,84 @@ mod chat_tab_navigation_tests {
             "Paste while in Add-new Endpoint field must populate \
              add_endpoint (fix-paste-events)."
         );
+    }
+
+    #[test]
+    fn launcher_paste_filters_rendered_cursor_glyph_from_endpoint() {
+        use crossterm::event::Event;
+        let (mut app, _tmp) = build_app_with_chats(&[0]);
+
+        app.open_launcher();
+        if app.launcher.is_none() {
+            return;
+        }
+        {
+            let launcher = app.launcher.as_mut().unwrap();
+            launcher.enter_add_new();
+            launcher.active_section = super::super::state::LauncherSection::AddNew(
+                super::super::state::AddNewField::Endpoint,
+            );
+        }
+
+        let url = "https://lambda01.tail334fe6.ts.net:30000";
+        super::dispatch_event(&mut app, Event::Paste(format!("{url}\u{2588}")));
+
+        let launcher = app
+            .launcher
+            .as_ref()
+            .expect("launcher should still be open after paste");
+        assert_eq!(
+            launcher.add_endpoint, url,
+            "Launcher paste must reject the rendered cursor block before it \
+             can corrupt add_endpoint."
+        );
+    }
+
+    #[test]
+    fn launcher_char_input_filters_block_elements_from_add_new_fields() {
+        let (mut app, _tmp) = build_app_with_chats(&[0]);
+
+        app.open_launcher();
+        if app.launcher.is_none() {
+            return;
+        }
+        {
+            let launcher = app.launcher.as_mut().unwrap();
+            launcher.enter_add_new();
+            launcher.active_section = super::super::state::LauncherSection::AddNew(
+                super::super::state::AddNewField::Endpoint,
+            );
+        }
+
+        for c in "https://example.com:30000\u{2588}".chars() {
+            super::handle_key(&mut app, KeyCode::Char(c), KeyModifiers::NONE);
+        }
+
+        {
+            let launcher = app.launcher.as_mut().unwrap();
+            assert_eq!(launcher.add_endpoint, "https://example.com:30000");
+            launcher.active_section = super::super::state::LauncherSection::AddNew(
+                super::super::state::AddNewField::Model,
+            );
+        }
+        super::handle_key(&mut app, KeyCode::Char('\u{2596}'), KeyModifiers::NONE);
+        super::handle_key(&mut app, KeyCode::Char('m'), KeyModifiers::NONE);
+
+        {
+            let launcher = app.launcher.as_mut().unwrap();
+            assert_eq!(launcher.add_model, "m");
+            launcher.active_section = super::super::state::LauncherSection::AddNew(
+                super::super::state::AddNewField::Name,
+            );
+        }
+        super::handle_key(&mut app, KeyCode::Char('\u{259f}'), KeyModifiers::NONE);
+        super::handle_key(&mut app, KeyCode::Char('n'), KeyModifiers::NONE);
+
+        let launcher = app
+            .launcher
+            .as_ref()
+            .expect("launcher should still be open after typing");
+        assert_eq!(launcher.name, "n");
     }
 
     /// Negative control for `fix-paste-events`: when input_mode IS
