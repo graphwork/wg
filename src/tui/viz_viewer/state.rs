@@ -11040,6 +11040,10 @@ impl VizApp {
                         // is being abandoned, so we don't want a
                         // dangling session reattaching on next launch.
                         let task_id = workgraph::chat_id::format_chat_task_id(cid);
+                        let chat_ref = format!("chat-{}", cid);
+                        let chat_dir =
+                            workgraph::chat::chat_dir_for_ref(&self.workgraph_dir, &chat_ref);
+                        workgraph::session_lock::clear_tui_driver_sentinel(&chat_dir);
                         if let Some(mut pane) = self.task_panes.remove(&task_id) {
                             pane.kill_underlying_session();
                         } else {
@@ -11084,6 +11088,10 @@ impl VizApp {
                         // path (`wg chat archive`) does its own cleanup
                         // in chat_cmd::run_archive.
                         let task_id = workgraph::chat_id::format_chat_task_id(cid);
+                        let chat_ref = format!("chat-{}", cid);
+                        let chat_dir =
+                            workgraph::chat::chat_dir_for_ref(&self.workgraph_dir, &chat_ref);
+                        workgraph::session_lock::clear_tui_driver_sentinel(&chat_dir);
                         if let Some(mut pane) = self.task_panes.remove(&task_id) {
                             pane.kill_underlying_session();
                         } else {
@@ -13693,65 +13701,23 @@ impl VizApp {
         // sure the dir exists; claude/codex will error otherwise.
         let _ = std::fs::create_dir_all(&chat_dir);
 
-        // Forced takeover: if any handler holds this coordinator's
-        // session lock (usually the daemon's own `wg nex --chat` agent
-        // spawned via `wg service start`), we want it gone. The user
-        // opened `wg tui` to drive chat themselves — the daemon's
-        // autonomous-dispatch handler is in the way. Soft release via
-        // the release-marker can stall indefinitely if the holder is
-        // stuck in a retry loop (broken endpoint, slow LLM turn, etc.)
-        // because the marker is only checked at turn boundaries.
-        //
-        // Policy: request release first (gentler, gives the holder a
-        // chance to flush cleanly), wait briefly, then SIGTERM if
-        // still alive. The TUI session owns the chat surface; this is
-        // the `wg tui` contract now.
-        if observer_mode
-            && let Ok(Some(holder)) = workgraph::session_lock::read_holder(&chat_dir)
-            && holder.alive
+        // Claim the chat surface for this TUI before asking any current
+        // handler to release. The supervisor checks this sentinel before
+        // every respawn, so it defers instead of racing the TUI's PTY
+        // handler back to the session lock.
+        if let Err(e) =
+            workgraph::session_lock::write_tui_driver_sentinel(&chat_dir, std::process::id())
         {
-            let _ = workgraph::session_lock::request_release(&chat_dir);
-            // 300ms grace for clean exit.
-            let mut released = false;
-            for _ in 0..3 {
-                std::thread::sleep(std::time::Duration::from_millis(100));
-                let still_held = workgraph::session_lock::read_holder(&chat_dir)
-                    .ok()
-                    .flatten()
-                    .is_some_and(|info| info.alive);
-                if !still_held {
-                    released = true;
-                    break;
-                }
-            }
-            if !released {
-                // Stuck holder — force quit. Safe because:
-                //   - the marker is already written so the handler
-                //     won't spawn a replacement;
-                //   - we own the lock file path, re-acquiring works;
-                //   - any in-flight work this handler was doing is
-                //     recoverable from outbox on next open.
-                unsafe {
-                    libc::kill(holder.pid as libc::pid_t, libc::SIGTERM);
-                }
-                eprintln!(
-                    "[tui] forced takeover: SIGTERM'd stuck handler pid={} for {}",
-                    holder.pid, chat_ref
-                );
-                // Short wait for the process to exit + lock file to clear.
-                for _ in 0..10 {
-                    std::thread::sleep(std::time::Duration::from_millis(100));
-                    let still_held = workgraph::session_lock::read_holder(&chat_dir)
-                        .ok()
-                        .flatten()
-                        .is_some_and(|info| info.alive);
-                    if !still_held {
-                        break;
-                    }
-                }
-            }
+            eprintln!("[tui] failed to write TUI driver sentinel: {}", e);
         }
-        // Re-check lock state after takeover.
+        if observer_mode {
+            let _ = workgraph::session_lock::request_release(&chat_dir);
+            let _ = workgraph::session_lock::wait_for_release(
+                &chat_dir,
+                std::time::Duration::from_secs(5),
+            );
+        }
+        // Re-check lock state after cooperative handoff.
         let observer_mode = workgraph::session_lock::read_holder(&chat_dir)
             .ok()
             .flatten()
@@ -14064,6 +14030,16 @@ impl VizApp {
                 true
             }
             Err(e) => {
+                if let Some(cid) = pending
+                    .task_id
+                    .strip_prefix(".chat-")
+                    .and_then(|s| s.parse::<u32>().ok())
+                {
+                    let chat_ref = format!("chat-{}", cid);
+                    let chat_dir =
+                        workgraph::chat::chat_dir_for_ref(&self.workgraph_dir, &chat_ref);
+                    workgraph::session_lock::clear_tui_driver_sentinel(&chat_dir);
+                }
                 eprintln!(
                     "[tui] auto-enable chat PTY for executor '{}' failed ({}): \
                      falling back to file-tailing. \
@@ -14734,6 +14710,9 @@ impl VizApp {
             // disposed; fall back to direct kill-by-name otherwise (e.g.
             // for chats spawned under a prior TUI process).
             let task_id = workgraph::chat_id::format_chat_task_id(cid);
+            let chat_ref = format!("chat-{}", cid);
+            let chat_dir = workgraph::chat::chat_dir_for_ref(&self.workgraph_dir, &chat_ref);
+            workgraph::session_lock::clear_tui_driver_sentinel(&chat_dir);
             if let Some(mut pane) = self.task_panes.remove(&task_id) {
                 pane.kill_underlying_session();
             } else {
@@ -14760,6 +14739,9 @@ impl VizApp {
                 continue;
             }
             let task_id = workgraph::chat_id::format_chat_task_id(*cid);
+            let chat_ref = format!("chat-{}", cid);
+            let chat_dir = workgraph::chat::chat_dir_for_ref(&self.workgraph_dir, &chat_ref);
+            workgraph::session_lock::clear_tui_driver_sentinel(&chat_dir);
             if let Some(mut pane) = self.task_panes.remove(&task_id) {
                 pane.kill_underlying_session();
             } else {

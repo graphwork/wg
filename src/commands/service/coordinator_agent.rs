@@ -80,6 +80,13 @@ pub(crate) fn resolve_chat_task_id(
     }
 }
 
+pub(crate) fn tui_driver_deferral_pid(chat_dir: &Path) -> Option<u32> {
+    workgraph::session_lock::read_tui_driver_sentinel(chat_dir)
+        .ok()
+        .flatten()
+        .and_then(|info| info.alive.then_some(info.pid))
+}
+
 // ---------------------------------------------------------------------------
 // Event log: bounded ring buffer for inter-interaction event tracking
 // ---------------------------------------------------------------------------
@@ -741,6 +748,16 @@ fn subprocess_coordinator_loop(
                 }
             }
         };
+        let chat_ref = format!("chat-{}", coordinator_id);
+        let chat_dir = workgraph::chat::chat_dir_for_ref(dir, &chat_ref);
+        if let Some(tui_pid) = tui_driver_deferral_pid(&chat_dir) {
+            logger.info(&format!(
+                "Coordinator-{}: TUI sentinel alive (pid={}) — deferring respawn 5s",
+                coordinator_id, tui_pid
+            ));
+            std::thread::sleep(std::time::Duration::from_secs(5));
+            continue;
+        }
         // Hot-swap support: re-read CoordinatorState each iteration
         // so `wg service set-executor <cid> ...` takes effect on the
         // next supervisor restart. Explicit overrides beat the
@@ -1562,5 +1579,29 @@ mod tests {
         // Supervisor's orphan-exit calls remove_for; verify the file is gone.
         super::super::CoordinatorState::remove_for(dir, 5);
         assert!(super::super::CoordinatorState::load_for(dir, 5).is_none());
+    }
+
+    #[test]
+    fn test_tui_sentinel_defers_supervisor_respawn_only_while_alive() {
+        let tmp = TempDir::new().unwrap();
+        let chat_dir = tmp.path().join("chat");
+        workgraph::session_lock::write_tui_driver_sentinel(&chat_dir, std::process::id())
+            .unwrap();
+
+        assert_eq!(
+            tui_driver_deferral_pid(&chat_dir),
+            Some(std::process::id())
+        );
+
+        workgraph::session_lock::clear_tui_driver_sentinel(&chat_dir);
+        assert_eq!(tui_driver_deferral_pid(&chat_dir), None);
+
+        std::fs::create_dir_all(&chat_dir).unwrap();
+        std::fs::write(
+            workgraph::session_lock::tui_driver_sentinel_path(&chat_dir),
+            "999999\n2020-01-01T00:00:00Z\n",
+        )
+        .unwrap();
+        assert_eq!(tui_driver_deferral_pid(&chat_dir), None);
     }
 }

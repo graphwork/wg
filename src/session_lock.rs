@@ -37,6 +37,7 @@ use anyhow::{Context, Result, anyhow};
 
 const LOCK_FILENAME: &str = ".handler.pid";
 const RELEASE_MARKER: &str = ".handler.release-requested";
+const TUI_DRIVER_SENTINEL: &str = ".tui-driven";
 
 /// What kind of handler owns the lock. Used for diagnostics — when
 /// you see the lock file, you know what kind of thing is running.
@@ -86,6 +87,16 @@ pub struct LockInfo {
     pub kind: Option<HandlerKind>,
     /// Whether the holder process is still alive (via `kill(pid, 0)`
     /// on Unix). If `false`, the lock is stale and safe to take.
+    pub alive: bool,
+}
+
+/// Snapshot of the TUI process that has claimed this chat session.
+#[derive(Clone, Debug)]
+pub struct TuiDriverInfo {
+    pub pid: u32,
+    pub written_at: String,
+    /// Whether the TUI process is still alive. Stale sentinels are
+    /// ignored by readers, matching stale lock recovery semantics.
     pub alive: bool,
 }
 
@@ -279,6 +290,67 @@ pub fn clear_release_marker(chat_dir: &Path) {
     }
 }
 
+/// Path of the TUI ownership sentinel for a chat session.
+pub fn tui_driver_sentinel_path(chat_dir: &Path) -> PathBuf {
+    chat_dir.join(TUI_DRIVER_SENTINEL)
+}
+
+/// Mark a chat session as currently driven by a live `wg tui` process.
+pub fn write_tui_driver_sentinel(chat_dir: &Path, pid: u32) -> Result<()> {
+    std::fs::create_dir_all(chat_dir)
+        .with_context(|| format!("create chat dir {:?}", chat_dir))?;
+    let path = tui_driver_sentinel_path(chat_dir);
+    let contents = format!("{}\n{}\n", pid, chrono::Utc::now().to_rfc3339());
+    std::fs::write(&path, contents).with_context(|| format!("write TUI sentinel {:?}", path))?;
+    Ok(())
+}
+
+/// Read the TUI ownership sentinel, if present.
+pub fn read_tui_driver_sentinel(chat_dir: &Path) -> Result<Option<TuiDriverInfo>> {
+    let path = tui_driver_sentinel_path(chat_dir);
+    let mut f = match OpenOptions::new().read(true).open(&path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(anyhow!("open TUI sentinel {:?}: {}", path, e)),
+    };
+    let mut buf = String::new();
+    f.read_to_string(&mut buf)
+        .with_context(|| format!("read TUI sentinel {:?}", path))?;
+
+    let mut lines = buf.lines();
+    let pid_line = match lines.next() {
+        Some(s) => s,
+        None => return Ok(None),
+    };
+    let pid: u32 = match pid_line.trim().parse() {
+        Ok(n) => n,
+        Err(_) => return Ok(None),
+    };
+    let written_at = lines.next().unwrap_or("").to_string();
+    let alive = pid_is_alive(pid);
+    Ok(Some(TuiDriverInfo {
+        pid,
+        written_at,
+        alive,
+    }))
+}
+
+/// Clear the TUI ownership sentinel. Idempotent.
+pub fn clear_tui_driver_sentinel(chat_dir: &Path) {
+    let path = tui_driver_sentinel_path(chat_dir);
+    if path.exists() {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+/// True when a live `wg tui` process currently owns the chat surface.
+pub fn tui_driver_sentinel_alive(chat_dir: &Path) -> bool {
+    read_tui_driver_sentinel(chat_dir)
+        .ok()
+        .flatten()
+        .is_some_and(|info| info.alive)
+}
+
 /// Wait for the lock at `chat_dir` to become free. Polls every
 /// `poll_interval` up to `timeout`. Returns `Ok(())` once the lock
 /// is gone, `Err` on timeout.
@@ -435,5 +507,36 @@ mod tests {
         let _lock = SessionLock::acquire(dir.path(), HandlerKind::ChatNex).unwrap();
         let r = wait_for_release(dir.path(), Duration::from_millis(100));
         assert!(r.is_err());
+    }
+
+    #[test]
+    fn tui_driver_sentinel_round_trip() {
+        let dir = tempdir().unwrap();
+        write_tui_driver_sentinel(dir.path(), std::process::id()).unwrap();
+
+        let info = read_tui_driver_sentinel(dir.path()).unwrap().unwrap();
+        assert_eq!(info.pid, std::process::id());
+        assert!(info.alive);
+        assert!(tui_driver_sentinel_alive(dir.path()));
+
+        clear_tui_driver_sentinel(dir.path());
+        assert!(read_tui_driver_sentinel(dir.path()).unwrap().is_none());
+        assert!(!tui_driver_sentinel_alive(dir.path()));
+    }
+
+    #[test]
+    fn stale_tui_driver_sentinel_is_not_alive() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path()).unwrap();
+        std::fs::write(
+            tui_driver_sentinel_path(dir.path()),
+            "999999\n2020-01-01T00:00:00Z\n",
+        )
+        .unwrap();
+
+        let info = read_tui_driver_sentinel(dir.path()).unwrap().unwrap();
+        assert_eq!(info.pid, 999999);
+        assert!(!info.alive);
+        assert!(!tui_driver_sentinel_alive(dir.path()));
     }
 }
