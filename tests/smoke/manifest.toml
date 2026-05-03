@@ -32,6 +32,21 @@ description = "End-to-end live nex chat against lambda01 + composition glue: 2 m
 timeout_seconds = 300
 
 [[scenario]]
+name = "tui_nex_chat_end_to_end"
+script = "scenarios/tui_nex_chat_end_to_end.sh"
+owners = [
+    "fix-nex-cursor-corruption",
+    "fix-supervisor-restart-backoff",
+    "fix-tui-supervisor-coexistence",
+    "fix-chat-dir-race",
+    "integrate-nex-chat-end-to-end",
+    "smoke-tui-nex-end-to-end",
+    "design-nex-chat",
+]
+description = "Simulated-human end-to-end smoke: TUI new-chat dialog → nex chat against live endpoint → message+reply → close+reopen → resume."
+timeout_seconds = 240
+
+[[scenario]]
 name = "nex_two_message_against_lambda01"
 script = "scenarios/nex_two_message_against_lambda01.sh"
 owners = [
