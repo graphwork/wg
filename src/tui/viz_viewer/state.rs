@@ -1328,6 +1328,31 @@ pub fn build_codex_chat_pty_args(
     args
 }
 
+/// Build the argv for the TUI's interactive `wg nex` PTY chat pane.
+///
+/// The TUI/native path intentionally mirrors a user-launched nex REPL:
+/// `wg nex -m <model> -e <endpoint>`. Do not pass `--chat`, `--role`, or
+/// `--resume` here; those switch nex away from the normal rustyline stdin
+/// path or create a divergent session shape from the working CLI invocation.
+pub fn build_nex_chat_pty_args(chat_model: Option<&str>, endpoint: Option<&str>) -> Vec<String> {
+    let mut args = vec!["nex".to_string()];
+    if let Some(m) = chat_model.filter(|m| !m.is_empty()) {
+        let spec = workgraph::config::parse_model_spec(m);
+        let model = if spec.model_id.is_empty() {
+            m.to_string()
+        } else {
+            spec.model_id
+        };
+        args.push("-m".to_string());
+        args.push(model);
+    }
+    if let Some(ep) = endpoint.filter(|ep| !ep.is_empty()) {
+        args.push("-e".to_string());
+        args.push(ep.to_string());
+    }
+    args
+}
+
 pub fn filter_models_for_executor(
     all_models: &[(String, String)],
     executor: &str,
@@ -13655,6 +13680,12 @@ impl VizApp {
             &config,
             self.active_coordinator_id,
         );
+        let chat_endpoint =
+            crate::commands::service::CoordinatorState::load_for(
+                &self.workgraph_dir,
+                self.active_coordinator_id,
+            )
+            .and_then(|s| s.endpoint_override);
 
         // Task ID (`.chat-N`, with dot) is what `wg spawn-task`
         // needs to look the task up in the graph and what our
@@ -13728,22 +13759,16 @@ impl VizApp {
             match executor.as_str() {
                 "native" => {
                     // Spawn `wg nex` as a real PTY child, same as
-                    // claude/codex. Uses `--resume` (not `--chat`) so
-                    // nex reads from stdin via rustyline instead of
-                    // inbox.jsonl — keystrokes flow through the PTY.
+                    // claude/codex. Keep the argv identical to the
+                    // working CLI shape (`wg nex -m ... -e ...`) so
+                    // nex stays on rustyline stdin and tmux owns
+                    // persistence/resume for the pane.
                     let _ = workgraph::chat_sessions::ensure_session(
                         &self.workgraph_dir,
                         &chat_ref,
                         workgraph::chat_sessions::SessionKind::Coordinator,
                         Some(format!("chat {}", self.active_coordinator_id)),
                     );
-                    let mut args = vec![
-                        "nex".to_string(),
-                        "--role".to_string(),
-                        "coordinator".to_string(),
-                        "--resume".to_string(),
-                        chat_ref.clone(),
-                    ];
                     // Per-chat model override wins; otherwise use
                     // config.coordinator.model, then config.agent.model.
                     let model = chat_model.clone().unwrap_or_else(|| {
@@ -13753,20 +13778,15 @@ impl VizApp {
                             .clone()
                             .unwrap_or_else(|| config.agent.model.clone())
                     });
-                    if !model.is_empty() {
-                        args.push("-m".to_string());
-                        args.push(model);
-                    }
-                    if let Some(ep) = config
-                        .llm_endpoints
-                        .endpoints
-                        .iter()
-                        .find(|e| e.is_default)
-                        .and_then(|e| e.url.clone())
-                    {
-                        args.push("-e".to_string());
-                        args.push(ep);
-                    }
+                    let endpoint = chat_endpoint.clone().or_else(|| {
+                        config
+                            .llm_endpoints
+                            .endpoints
+                            .iter()
+                            .find(|e| e.is_default)
+                            .and_then(|e| e.url.clone())
+                    });
+                    let args = build_nex_chat_pty_args(Some(&model), endpoint.as_deref());
                     let project_root = self
                         .workgraph_dir
                         .parent()
@@ -26268,6 +26288,111 @@ mod build_codex_chat_pty_args_tests {
             "codex resume --last args MUST include --no-alt-screen; got: {:?}",
             args
         );
+    }
+}
+
+#[cfg(test)]
+mod build_nex_chat_pty_args_tests {
+    use super::{build_nex_chat_pty_args, VizApp};
+    use crate::commands::service::CoordinatorState;
+
+    #[test]
+    fn mirrors_working_cli_shape() {
+        let args = build_nex_chat_pty_args(
+            Some("nex:qwen3-coder-30b"),
+            Some("https://lambda01.tail334fe6.ts.net:30000"),
+        );
+
+        assert_eq!(
+            args,
+            vec![
+                "nex",
+                "-m",
+                "qwen3-coder-30b",
+                "-e",
+                "https://lambda01.tail334fe6.ts.net:30000"
+            ]
+        );
+    }
+
+    #[test]
+    fn does_not_use_chat_or_resume_mode() {
+        let args = build_nex_chat_pty_args(Some("qwen3-coder-30b"), Some("http://127.0.0.1:8088"));
+
+        for forbidden in ["--chat", "--role", "--resume", "coordinator"] {
+            assert!(
+                !args.iter().any(|a| a == forbidden),
+                "TUI nex PTY args must stay on the interactive stdin path; got {:?}",
+                args
+            );
+        }
+    }
+
+    #[test]
+    fn native_chat_pty_spawn_uses_cli_shape_and_endpoint_override() {
+        let project = tempfile::tempdir().unwrap();
+        let wg_dir = project.path().join(".wg");
+        std::fs::create_dir_all(&wg_dir).unwrap();
+        std::fs::write(wg_dir.join("graph.jsonl"), "").unwrap();
+        std::fs::write(
+            wg_dir.join("config.toml"),
+            r#"
+[coordinator]
+executor = "native"
+model = "nex:default-model"
+
+[[llm_endpoints.endpoints]]
+name = "default"
+url = "https://default.example:30000"
+is_default = true
+"#,
+        )
+        .unwrap();
+        CoordinatorState {
+            executor_override: Some("native".to_string()),
+            model_override: Some("nex:qwen3-coder-30b".to_string()),
+            endpoint_override: Some("https://lambda01.tail334fe6.ts.net:30000".to_string()),
+            ..CoordinatorState::default()
+        }
+        .save_for(&wg_dir, 0);
+
+        let mut app = VizApp::new(
+            wg_dir.clone(),
+            crate::commands::viz::VizOptions::default(),
+            Some(true),
+            None,
+            false,
+        );
+        app.pending_chat_pty_spawn = None;
+        app.task_panes.clear();
+        app.maybe_auto_enable_chat_pty();
+
+        let pending = app
+            .pending_chat_pty_spawn
+            .as_ref()
+            .expect("native chat should queue a PTY spawn");
+        assert_eq!(pending.executor, "native");
+        assert_eq!(
+            pending.args,
+            vec![
+                "nex",
+                "-m",
+                "qwen3-coder-30b",
+                "-e",
+                "https://lambda01.tail334fe6.ts.net:30000"
+            ]
+        );
+        assert_eq!(
+            pending.cwd.as_deref(),
+            Some(project.path()),
+            "nex chat PTY should spawn from the project root"
+        );
+        if crate::tui::pty_pane::tmux_available() {
+            assert!(
+                pending.tmux_session.as_deref().is_some_and(|s| s.contains("chat-0")),
+                "tmux-capable environments should use the persistent wg-chat session path"
+            );
+        }
     }
 }
 

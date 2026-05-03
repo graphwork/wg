@@ -47,6 +47,15 @@ description = "Simulated-human end-to-end smoke: TUI new-chat dialog → nex cha
 timeout_seconds = 240
 
 [[scenario]]
+name = "nex_chat_in_tui_via_tmux"
+script = "scenarios/nex_chat_in_tui_via_tmux.sh"
+owners = [
+    "implement-nex-chat",
+]
+description = "Pins implement-nex-chat path A: the TUI native/nex chat pane uses the tmux-wrapped PTY path while the inner argv mirrors the working CLI shape `wg nex -m <model> -e <endpoint>` and does not pass `--chat`, `--role`, or `--resume`."
+timeout_seconds = 120
+
+[[scenario]]
 name = "nex_two_message_against_lambda01"
 script = "scenarios/nex_two_message_against_lambda01.sh"
 owners = [
