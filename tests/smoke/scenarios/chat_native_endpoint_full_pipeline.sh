@@ -98,8 +98,8 @@ echo "$dryrun_out" | grep -qF "\"task.endpoint" \
     || echo "$dryrun_out" | grep -qF "task.endpoint" \
     || loud_fail "Fix C regression: provenance log line did not record task.endpoint.\n$dryrun_out"
 
-echo "$dryrun_out" | grep -qF "wg nex --chat .chat-0" \
-    || loud_fail "Fix C: dry-run preview missing 'wg nex --chat .chat-0'.\n$dryrun_out"
+echo "$dryrun_out" | grep -qF "wg nex --chat chat-0" \
+    || loud_fail "Fix C: dry-run preview missing 'wg nex --chat chat-0'.\n$dryrun_out"
 
 echo "$dryrun_out" | grep -qF "-e $ENDPOINT" \
     || loud_fail "Fix C regression: dry-run preview missing '-e $ENDPOINT'.\n$dryrun_out"

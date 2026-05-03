@@ -17,6 +17,20 @@
 # introduced the regression and the task that fixed it.
 
 [[scenario]]
+name = "integrate_nex_chat_end_to_end"
+script = "scenarios/integrate_nex_chat_end_to_end.sh"
+owners = [
+    "integrate-nex-chat-end-to-end",
+    "fix-chat-dir-race",
+    "fix-tui-supervisor-coexistence",
+    "fix-supervisor-restart-backoff",
+    "fix-nex-cursor-corruption",
+    "smoke-gate-is",
+]
+description = "End-to-end live nex chat against lambda01 + composition glue: 2 messages, 2 replies, 1 supervisor spawn, no chat-dir split-brain. Pins the .chat-N → chat-N alias mapping in spawn_task that prevents the daemon supervisor and IPC writers from disagreeing on which chat dir to use."
+timeout_seconds = 300
+
+[[scenario]]
 name = "nex_two_message_against_lambda01"
 script = "scenarios/nex_two_message_against_lambda01.sh"
 owners = [

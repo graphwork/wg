@@ -169,14 +169,17 @@ pub fn resolve_handler(
     let config = workgraph::config::Config::load_or_default(workgraph_dir);
 
     // chat_ref convention: task id IS the chat alias, until Phase 5
-    // migration swaps to `.chat-<uuid>`. Exception: `.coordinator-N`
-    // task ids map to the existing `coordinator-N` chat alias the
-    // daemon registers via `register_coordinator_session` — so IPC
-    // writers (`wg chat --coordinator N`) and the handler land on
-    // the SAME underlying chat dir. Without this, the handler would
-    // use a fresh `chat/.coordinator-N/` dir that no other code
-    // writes to, and the coordinator's inbox would appear empty.
-    let chat_ref = if let Some(n) = task.id.strip_prefix(".coordinator-") {
+    // migration swaps to `.chat-<uuid>`. Exceptions: `.chat-N` and
+    // `.coordinator-N` task ids map to the registered `chat-N` /
+    // `coordinator-N` aliases (see `register_coordinator_session`,
+    // which installs both). Without these strips, the handler would
+    // resolve `.chat-N` / `.coordinator-N` literally, fall back to a
+    // fresh `chat/.chat-N/` dir that no IPC writer touches, and the
+    // chat's inbox would appear empty (split-brain with the UUID dir
+    // the registered alias resolves to).
+    let chat_ref = if let Some(n) = task.id.strip_prefix(".chat-") {
+        format!("chat-{}", n)
+    } else if let Some(n) = task.id.strip_prefix(".coordinator-") {
         format!("coordinator-{}", n)
     } else {
         task.id.clone()
@@ -513,6 +516,32 @@ mod tests {
             match spec {
                 HandlerSpec::Native { resume, .. } => assert!(!resume),
                 _ => panic!(),
+            }
+        });
+    }
+
+    /// Composition glue regression: `.chat-N` task ids must resolve to
+    /// the registered `chat-N` alias, not the literal `.chat-N` directory.
+    /// Without this, `wg spawn-task .chat-N` → `wg nex --chat .chat-N`
+    /// → `chat_dir_for_ref(".chat-N")` falls back to `chat/.chat-N/`,
+    /// which no IPC writer touches — split-brain with the UUID dir the
+    /// registered alias resolves to. Surfaced by integrate-nex-chat-end-to-end.
+    #[test]
+    #[serial]
+    fn dot_chat_id_strips_leading_dot_for_chat_ref() {
+        with_env(Some("native"), None, || {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::create_dir_all(dir.path().join(".wg")).unwrap();
+            let task = mktask(".chat-7");
+            let spec = resolve_handler(dir.path(), &task, None).unwrap();
+            match spec {
+                HandlerSpec::Native { chat_ref, .. } => {
+                    assert_eq!(
+                        chat_ref, "chat-7",
+                        ".chat-N task id must map to the registered `chat-N` alias"
+                    );
+                }
+                _ => panic!("expected Native handler"),
             }
         });
     }
