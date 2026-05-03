@@ -332,6 +332,10 @@ pub fn register_coordinator_session(workgraph_dir: &Path, n: u32) -> Result<Stri
         )?
     };
 
+    let chat_dir = chat_dir_for_uuid(workgraph_dir, &uuid);
+    fs::create_dir_all(&chat_dir)
+        .with_context(|| format!("create chat session dir {:?}", chat_dir))?;
+
     // Register all three aliases. Swallow "already points to same session"
     // errors (steady-state on restart); propagate unexpected errors.
     let numeric_alias = n.to_string();
@@ -823,6 +827,42 @@ mod tests {
         // And the alias still resolves via the registry.
         assert_eq!(resolve_ref(wg, "0").unwrap(), uuid);
         assert_eq!(resolve_ref(wg, "coordinator-0").unwrap(), uuid);
+    }
+
+    #[test]
+    fn register_coordinator_session_creates_missing_uuid_chat_dir() {
+        let dir = tempdir().unwrap();
+        let wg = dir.path();
+        let uuid = Uuid::now_v7().to_string();
+
+        let mut reg = Registry::default();
+        reg.sessions.insert(
+            uuid.clone(),
+            SessionMeta {
+                kind: SessionKind::Coordinator,
+                created: Utc::now().to_rfc3339(),
+                aliases: vec!["chat-7".to_string(), "coordinator-7".to_string()],
+                label: Some("chat 7".to_string()),
+                forked_from: None,
+                archived_at: None,
+            },
+        );
+        save(wg, &reg).unwrap();
+
+        let chat_dir = chat_dir_for_uuid(wg, &uuid);
+        assert!(
+            !chat_dir.exists(),
+            "fixture should simulate supervisor registration before dispatch_boot creates chat dir"
+        );
+
+        let registered = register_coordinator_session(wg, 7).unwrap();
+
+        assert_eq!(registered, uuid);
+        assert!(
+            chat_dir.is_dir(),
+            "register_coordinator_session must defensively create the UUID chat dir"
+        );
+        assert_eq!(resolve_ref(wg, "7").unwrap(), registered);
     }
 
     #[test]
