@@ -3,7 +3,7 @@ use std::sync::mpsc;
 
 use anyhow::Result;
 use crossterm::event::{
-    self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
+    self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
 };
 use ratatui::DefaultTerminal;
 use ratatui::layout::Position;
@@ -522,6 +522,14 @@ fn handle_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
                     && modifiers.contains(KeyModifiers::CONTROL));
             if is_exit {
                 app.input_mode = InputMode::Normal;
+            } else if matches!(code, KeyCode::Char('c'))
+                && modifiers.contains(KeyModifiers::CONTROL)
+            {
+                if let Some(pane) = app.task_panes.get_mut(&task_id) {
+                    let _ = pane.interrupt_foreground();
+                    app.bump_active_chat_pty_interaction(false);
+                }
+                app.input_mode = InputMode::Normal;
             } else {
                 let page = (app.last_right_content_area.height as usize).max(10);
                 let half = (page / 2).max(5);
@@ -637,8 +645,12 @@ fn handle_key(app: &mut VizApp, code: KeyCode, modifiers: KeyModifiers) {
         if !is_toggle {
             let task_id = workgraph::chat_id::format_chat_task_id(app.active_coordinator_id);
             if let Some(pane) = app.task_panes.get_mut(&task_id) {
-                let key_event = crossterm::event::KeyEvent::new(code, modifiers);
-                let _ = pane.send_key(key_event);
+                if matches!(code, KeyCode::Char('c')) && modifiers.contains(KeyModifiers::CONTROL) {
+                    let _ = pane.interrupt_foreground();
+                } else {
+                    let key_event = crossterm::event::KeyEvent::new(code, modifiers);
+                    let _ = pane.send_key(key_event);
+                }
             }
             app.bump_active_chat_pty_interaction(matches!(code, KeyCode::Enter));
             // Always consume the key — we are nominally in PTY focus, so

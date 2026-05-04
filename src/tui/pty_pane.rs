@@ -749,6 +749,25 @@ impl PtyPane {
         Ok(())
     }
 
+    /// Interrupt the foreground program in the embedded terminal.
+    ///
+    /// Raw PTY panes get the normal terminal ETX byte (`^C`). For
+    /// tmux-wrapped chat panes, drive tmux itself so the interrupt reaches the
+    /// pane inside the persistent session, not merely the outer attach client.
+    pub fn interrupt_foreground(&mut self) -> Result<()> {
+        self.exit_tmux_copy_mode();
+        if let Some(session) = self.tmux_session.clone() {
+            let _ = std::process::Command::new("tmux")
+                .args(["send-keys", "-t", &session, "C-c"])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+            self.auto_follow = true;
+            return Ok(());
+        }
+        self.send_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL))
+    }
+
     /// Forward arbitrary text (e.g. pasted content) to the child's
     /// stdin verbatim, no key-event encoding.
     pub fn send_text(&mut self, text: &str) -> Result<()> {

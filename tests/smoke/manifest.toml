@@ -922,6 +922,15 @@ description = "fix-scroll-via: scrolling a tmux-wrapped chat must drive tmux's o
 timeout_seconds = 30
 
 [[scenario]]
+name = "tui_chat_ctrl_c_interrupts_hung_subprocess"
+script = "scenarios/tui_chat_ctrl_c_interrupts_hung_subprocess.sh"
+owners = [
+    "fix-tui-chat-2",
+]
+description = "Pins fix-tui-chat-2: a real wg tui chat tab running inside tmux starts a custom bash chat, launches a hanging foreground subprocess, enters chat scroll mode via Ctrl+], then presses Ctrl+C. Ctrl+C must still reach the focused tmux-wrapped chat pane, interrupt the hung subprocess, and leave bash usable for the next command. Skips when tmux is missing."
+timeout_seconds = 45
+
+[[scenario]]
 name = "wg_html_chat_color_and_markdown"
 script = "scenarios/wg_html_chat_color_and_markdown.sh"
 owners = [
