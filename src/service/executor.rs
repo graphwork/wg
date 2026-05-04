@@ -265,6 +265,36 @@ Add POST /auth/token endpoint.
 - [ ] cargo test passes with no regressions'
 ```
 
+### User-visible behavior fixes require live human-flow validation
+For any task that fixes a **user-visible behavior** (anything a human notices in the TUI, a browser, terminal output, or another interactive surface), the `## Validation` section MUST require a live or scripted simulation of the *actual* human flow, not only CLI / unit / library paths. A passing CLI test does not prove the TUI keystroke handler, the browser click handler, or the terminal-render path actually works — the CLI path is often already correct while the user-facing caller is the broken one.
+
+Wrong vs right examples:
+- TUI typing should bump `last_interaction_at`. \
+  Wrong: `wg msg send <chat>` then assert mtime advanced (CLI path only). \
+  Right: drive `wg tui` via tmux + `tmux send-keys`, read `last_interaction_at` from the chat file (see `tests/smoke/scenarios/tui_chat_pty_last_interaction.sh`).
+- Web button submit fails. \
+  Wrong: POST the form endpoint directly. \
+  Right: drive the click via a headless browser.
+- Editor cancellation key misbehaves. \
+  Wrong: call `cancel()` in a unit test. \
+  Right: feed keystrokes through the real keymap dispatcher.
+
+For user-visible fixes, write the `## Validation` section in this shape:
+```bash
+wg add 'Fix: <user-visible bug>' --after {{task_id}} \
+  -d '## Description
+<what the user sees, where>
+
+## Validation
+- [ ] Reproducer is a live or scripted simulation of the real human flow
+      (TUI via tmux/PTY, browser via headless driver, terminal via expect),
+      not only a CLI / unit substitute
+- [ ] Reproducer fails on main and passes after the fix
+- [ ] Scenario added to tests/smoke/scenarios/ and listed in owners of
+      tests/smoke/manifest.toml so the smoke gate catches future regressions
+- [ ] cargo build + cargo test pass with no regressions'
+```
+
 ### Guardrails
 - You can create up to **{{max_child_tasks}}** subtasks per session (configurable via `wg config`)
 - Task chains have a maximum depth of **{{max_task_depth}}** levels
@@ -508,6 +538,32 @@ pub fn build_decomposition_guidance(
          - [ ] Failing test written first: test_auth_rejects_expired_token\n\
          - [ ] Implementation makes the test pass\n\
          - [ ] cargo test passes with no regressions'\n\
+         ```",
+    ));
+
+    parts.push(format!(
+        "\n### User-visible behavior fixes require live human-flow validation\n\
+         For tasks that fix a **user-visible behavior** (TUI, browser, terminal, or any interactive surface), \
+         the `## Validation` section MUST require a live or scripted simulation of the *actual* human flow, \
+         not only CLI / unit / library paths. A passing CLI test does not prove the TUI keystroke handler, \
+         the browser click handler, or the terminal-render path actually works — the CLI path is often \
+         already correct while the user-facing caller is the broken one.\n\n\
+         Example contrast (TUI typing should bump `last_interaction_at`):\n\
+         - Wrong (CLI-only): `wg msg send <chat>` then assert mtime advanced.\n\
+         - Right (human flow): drive `wg tui` via tmux + `tmux send-keys`, read `last_interaction_at` \
+         from the chat file (see `tests/smoke/scenarios/tui_chat_pty_last_interaction.sh`).\n\n\
+         For user-visible fixes, write the `## Validation` section in this shape:\n\
+         ```bash\n\
+         wg add 'Fix: <user-visible bug>' --after {task_id} \\\n  \
+         -d '## Description\n<what the user sees, where>\n\n\
+         ## Validation\n\
+         - [ ] Reproducer is a live or scripted simulation of the real human flow\n  \
+                 (TUI via tmux/PTY, browser via headless driver, terminal via expect),\n  \
+                 not only a CLI / unit substitute\n\
+         - [ ] Reproducer fails on main and passes after the fix\n\
+         - [ ] Scenario added to tests/smoke/scenarios/ and listed in owners of\n  \
+                 tests/smoke/manifest.toml so the smoke gate catches future regressions\n\
+         - [ ] cargo build + cargo test pass with no regressions'\n\
          ```",
     ));
 
@@ -793,6 +849,14 @@ wg add \"Implement feature\" -d \"## Validation
 - [ ] cargo test test_feature passes
 - [ ] feature works end-to-end\"
 ```
+
+For **user-visible behavior fixes** (TUI, browser, terminal — anything a human notices), \
+the `## Validation` section MUST require a live or scripted simulation of the *actual* human flow, \
+not only CLI / unit / library paths. A passing CLI test does not prove the TUI keystroke handler \
+or browser click handler works — the CLI path is often already correct while the user-facing caller \
+is the broken one. Drive the real surface (e.g., `wg tui` via tmux + `tmux send-keys`, headless browser, \
+`expect`) and add a scenario under `tests/smoke/scenarios/` listed in `tests/smoke/manifest.toml` \
+`owners` so the smoke gate catches future regressions.
 
 ### When to Decompose vs Implement Directly
 - **Implement directly** if the task is small, well-scoped, and touches ≤ 2-3 files

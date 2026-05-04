@@ -57,6 +57,33 @@ InProgress → wg done → PendingValidation → wg approve → Done
 - After `max_rejections` (default: 3), `wg reject` transitions the task to Failed instead of Open
 - The legacy `--verify <CRITERIA>` flag is no longer accepted (errors at runtime). Put criteria under `## Validation` in the description.
 
+#### User-visible behavior fixes require live human-flow validation
+
+For any task that fixes a **user-visible behavior** — anything a human notices in the TUI, a browser, terminal output, or another interactive surface — the `## Validation` section MUST require a live or scripted simulation of the *actual* human flow, not only CLI / unit / library paths. A passing CLI test does not prove the TUI keystroke handler, the browser click handler, or the terminal-render path actually works; the CLI path is often already correct while the user-facing caller is the broken one. The `fix-chat-tasks` regression shipped green for exactly this reason: the test exercised `wg msg send` instead of the actual TUI keystroke flow. The bug was only caught when `fix-last-interaction` added a tmux/PTY scenario that drove the real `wg tui` session.
+
+Wrong vs right:
+
+| Bug | Wrong (CLI/unit only) | Right (human flow) |
+|---|---|---|
+| Typing in TUI doesn't update `last_interaction_at` | `wg msg send <chat>`, assert chat-file mtime advanced | `wg tui` in tmux, drive keystrokes via `tmux send-keys`, read `last_interaction_at` from the chat file (`tests/smoke/scenarios/tui_chat_pty_last_interaction.sh`) |
+| Web button submit fails | POST the form endpoint directly | Headless browser drives the real click handler |
+| Editor cancellation key misbehaves | Call `cancel()` in a unit test | Feed keystrokes through the real keymap dispatcher and observe view state |
+
+For a user-visible fix, the `## Validation` section should look like:
+
+```markdown
+## Validation
+- [ ] Reproducer is a live or scripted simulation of the real human flow
+      (TUI via tmux/PTY, browser via headless driver, terminal via `expect`),
+      not only a CLI / unit substitute
+- [ ] Reproducer fails on `main` and passes after the fix
+- [ ] Scenario added to `tests/smoke/scenarios/` and listed in `owners` of
+      `tests/smoke/manifest.toml` so the smoke gate catches future regressions
+- [ ] cargo build + cargo test pass with no regressions
+```
+
+If you are tempted to validate a user-visible fix with only a CLI or unit test "because it exercises the same code", stop. Add the human-flow simulation.
+
 ### Retry workflow
 
 Failed, incomplete, *and hung in-progress* tasks can be retried with a single command:

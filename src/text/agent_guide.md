@@ -218,6 +218,57 @@ wg add "Implement feature X" --after <dep> \
 Research / design tasks should specify what artifacts to produce and
 how to verify completeness instead of test criteria.
 
+### User-visible behavior fixes require live human-flow validation
+
+For any task that fixes a **user-visible behavior** — anything a human
+notices in the TUI, a browser, terminal output, or another interactive
+surface — the `## Validation` section MUST require a live or scripted
+simulation of the *actual* human flow, not only CLI / unit / library
+paths.
+
+Why: it is easy to write a fix that exercises the implementer's
+*assumed* code path while leaving the real user-facing path broken.
+A passing CLI test does not prove the TUI keystroke handler, the
+browser click handler, or the terminal-render path actually works.
+
+Wrong vs right:
+
+- Bug: typing in the TUI does not update `last_interaction_at`.
+  - Wrong (CLI-only): call `wg msg send <chat>` and assert that the
+    chat file mtime advanced. The CLI path may already be correct
+    while the TUI keystroke handler is the broken caller.
+  - Right (human flow): start `wg tui` inside tmux, drive keystrokes
+    via `tmux send-keys`, then read `last_interaction_at` from the
+    chat file. This is exactly what the
+    `tests/smoke/scenarios/tui_chat_pty_last_interaction.sh` scenario
+    does.
+
+- Bug: a button in a web app fails to submit.
+  - Wrong: POST directly to the form endpoint.
+  - Right: drive the click via a headless browser so the real event
+    handler runs.
+
+- Bug: a cancellation key in an editor view does the wrong thing.
+  - Wrong: call the `cancel()` function in a unit test.
+  - Right: feed keystrokes through the real keymap dispatcher and
+    observe the resulting view state.
+
+Validation checklist for user-visible fixes:
+
+- [ ] Reproducer is a live or scripted simulation of the real human
+      flow (TUI via tmux/PTY, browser via headless driver, terminal
+      via `expect` or equivalent), not only a CLI / unit substitute
+- [ ] The reproducer fails on `main` and passes after the fix
+- [ ] A scenario is added to `tests/smoke/scenarios/` and listed in
+      `owners` of `tests/smoke/manifest.toml` so future regressions
+      are caught by the smoke gate (the manifest is grow-only)
+
+If you are tempted to validate a user-visible fix with only a CLI or
+unit test "because it exercises the same code", stop. The
+`fix-chat-tasks` regression shipped green for exactly this reason: the
+CLI path was already correct and the TUI caller was the broken one.
+Add the human-flow simulation.
+
 ## Cycles (Workgraph Is Not a DAG)
 
 Workgraph is a directed graph that supports cycles. For repeating

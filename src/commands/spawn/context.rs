@@ -774,6 +774,38 @@ Every **code task** description MUST include:
 
 The agency evaluator (auto_evaluate + FLIP) reads the `## Validation` section and scores the agent's output against it.
 
+### User-visible behavior fixes require live human-flow validation
+
+For any task that fixes a **user-visible behavior** (anything a human notices in the TUI, a browser, terminal output, or another interactive surface), the `## Validation` section MUST require a live or scripted simulation of the *actual* human flow, not only CLI / unit / library paths. A passing CLI test does not prove the TUI keystroke handler, the browser click handler, or the terminal-render path actually works — the CLI path is often already correct while the user-facing caller is the broken one (this is exactly how `fix-chat-tasks` shipped green and `fix-last-interaction` had to follow up).
+
+Wrong vs right:
+
+- Bug: typing in the TUI does not update `last_interaction_at`.
+  - Wrong (CLI-only): call `wg msg send <chat>` and assert the chat file mtime advanced.
+  - Right (human flow): start `wg tui` in tmux, drive keystrokes via `tmux send-keys`, read `last_interaction_at` from the chat file (see `tests/smoke/scenarios/tui_chat_pty_last_interaction.sh`).
+- Bug: a button in a web app fails to submit.
+  - Wrong: POST directly to the form endpoint.
+  - Right: drive the click via a headless browser.
+- Bug: a cancellation key in an editor view does the wrong thing.
+  - Wrong: call `cancel()` in a unit test.
+  - Right: feed keystrokes through the real keymap dispatcher and observe view state.
+
+Validation checklist for user-visible fixes:
+
+```markdown
+## Validation
+- [ ] Reproducer is a live or scripted simulation of the real human flow
+      (TUI via tmux/PTY, browser via headless driver, terminal via `expect`
+      or equivalent), not only a CLI / unit substitute
+- [ ] The reproducer fails on `main` and passes after the fix
+- [ ] A scenario is added to `tests/smoke/scenarios/` and listed in `owners`
+      of `tests/smoke/manifest.toml` so future regressions are caught by the
+      smoke gate (the manifest is grow-only)
+- [ ] cargo build + cargo test pass with no regressions
+```
+
+If you are tempted to validate a user-visible fix with only a CLI or unit test "because it exercises the same code", stop. Add the human-flow simulation.
+
 ## Core Commands
 
 | Command | Purpose |

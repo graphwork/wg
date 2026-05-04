@@ -70,6 +70,16 @@ You MUST use these commands to track your work:
      wg log test-task-123 "Validated: cargo build + cargo test pass"
      ```
 
+3a. **Smoke gate (HARD GATE on `wg done`)**:
+   `wg done` automatically runs every scenario in `tests/smoke/manifest.toml` whose `owners = [...]` list contains your task id. If any scenario FAILs, `wg done` refuses with the broken scenario name and the task stays in-progress.
+   - You CANNOT bypass this gate as an agent. `--skip-smoke` is refused for agents unless a human explicitly exports `WG_SMOKE_AGENT_OVERRIDE=1`.
+   - If a scenario emits SKIP (loud banner, exit 77 — endpoint unreachable, missing credential), the gate does not block, but the SKIP is surfaced — verify the gap is acceptable for your change.
+   - If you fixed a regression that should have been caught earlier, **add a permanent scenario** to `tests/smoke/manifest.toml` listing your task id in `owners`. The manifest is grow-only.
+   - Local dry run before `wg done`:
+     ```bash
+     wg done test-task-123 --full-smoke    # runs every scenario, not just owned
+     ```
+
 4. **Commit and push** if you modified files:
    - Run `cargo build` and `cargo test` BEFORE committing — never commit broken code
    - Stage ONLY your files (never `git add -A`) and commit with a descriptive message:
@@ -191,34 +201,42 @@ Choose the pattern that best fits your task:
 #### Pipeline (sequential steps)
 When work must proceed in order (e.g., parse -> transform -> write):
 ```bash
-wg add 'Step 1: Parse input' --after test-task-123 --verify 'cargo test test_parse'
-wg add 'Step 2: Transform data' --after step-1-parse-input --verify 'cargo test test_transform'
-wg add 'Step 3: Write output' --after step-2-transform-data --verify 'cargo test test_write'
+wg add 'Step 1: Parse input' --after test-task-123 -d '## Validation
+- [ ] cargo test test_parse passes'
+wg add 'Step 2: Transform data' --after step-1-parse-input -d '## Validation
+- [ ] cargo test test_transform passes'
+wg add 'Step 3: Write output' --after step-2-transform-data -d '## Validation
+- [ ] cargo test test_write passes'
 ```
-Each step depends on the previous. Use `--verify` on each for automatic validation.
+Each step depends on the previous. Include a `## Validation` section for acceptance criteria.
 #### Fan-out-merge (parallel work + integration)
 When work has independent parts that converge (e.g., implement N modules):
 ```bash
-wg add 'Part A: Module X' --after test-task-123 --verify 'cargo test test_module_x'
-wg add 'Part B: Module Y' --after test-task-123 --verify 'cargo test test_module_y'
-wg add 'Part C: Module Z' --after test-task-123 --verify 'cargo test test_module_z'
+wg add 'Part A: Module X' --after test-task-123 -d '## Validation
+- [ ] cargo test test_module_x passes'
+wg add 'Part B: Module Y' --after test-task-123 -d '## Validation
+- [ ] cargo test test_module_y passes'
+wg add 'Part C: Module Z' --after test-task-123 -d '## Validation
+- [ ] cargo test test_module_z passes'
 wg add 'Integrate modules' --after part-a-module-x,part-b-module-y,part-c-module-z \
-  --verify 'cargo test test_integration'
+  -d '## Validation
+- [ ] cargo test test_integration passes'
 ```
 **CRITICAL:** The integration task (`--after` all parts) merges the work. Never leave parallel tasks unmerged.
 #### Iterate-until-pass (refinement loop)
 When work requires multiple passes (e.g., optimize -> benchmark -> optimize):
 ```bash
 wg add 'Refine implementation' --after test-task-123 --max-iterations 3 \
-  --verify 'cargo test && cargo bench | grep -q "target met"'
+  -d '## Validation
+- [ ] cargo test passes
+- [ ] benchmark target met'
 ```
 Use `wg done --converged` when the work meets criteria. Use `wg fail` if a pass doesn't work so the cycle restarts.
 
 ### Include validation criteria in subtasks
-Every code subtask description MUST include a `## Validation` section with concrete acceptance criteria. Use `--verify` to attach machine-checkable criteria:
+Every code subtask description MUST include a `## Validation` section with concrete acceptance criteria. The agency evaluator reads this section and scores the agent's output against it:
 ```bash
 wg add 'Implement auth endpoint' --after test-task-123 \
-  --verify 'cargo test test_auth_ passes; endpoint returns 401 for bad tokens' \
   -d '## Description
 Add POST /auth/token endpoint.
 
@@ -226,6 +244,29 @@ Add POST /auth/token endpoint.
 - [ ] Failing test written first: test_auth_rejects_expired_token
 - [ ] Implementation makes the test pass
 - [ ] cargo test passes with no regressions'
+```
+
+### User-visible behavior fixes require live human-flow validation
+For tasks that fix a **user-visible behavior** (TUI, browser, terminal, or any interactive surface), the `## Validation` section MUST require a live or scripted simulation of the *actual* human flow, not only CLI / unit / library paths. A passing CLI test does not prove the TUI keystroke handler, the browser click handler, or the terminal-render path actually works — the CLI path is often already correct while the user-facing caller is the broken one.
+
+Example contrast (TUI typing should bump `last_interaction_at`):
+- Wrong (CLI-only): `wg msg send <chat>` then assert mtime advanced.
+- Right (human flow): drive `wg tui` via tmux + `tmux send-keys`, read `last_interaction_at` from the chat file (see `tests/smoke/scenarios/tui_chat_pty_last_interaction.sh`).
+
+For user-visible fixes, write the `## Validation` section in this shape:
+```bash
+wg add 'Fix: <user-visible bug>' --after test-task-123 \
+  -d '## Description
+<what the user sees, where>
+
+## Validation
+- [ ] Reproducer is a live or scripted simulation of the real human flow
+  (TUI via tmux/PTY, browser via headless driver, terminal via expect),
+  not only a CLI / unit substitute
+- [ ] Reproducer fails on main and passes after the fix
+- [ ] Scenario added to tests/smoke/scenarios/ and listed in owners of
+  tests/smoke/manifest.toml so the smoke gate catches future regressions
+- [ ] cargo build + cargo test pass with no regressions'
 ```
 
 ### Guardrails
