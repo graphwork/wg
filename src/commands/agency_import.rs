@@ -218,7 +218,7 @@ pub fn run_from_bytes_with(
         let ParsedCsvColumns {
             quality_score,
             domain_tags,
-            metadata,
+            mut metadata,
             parent_ids,
             generation,
             created_by,
@@ -226,6 +226,10 @@ pub fn run_from_bytes_with(
             CsvFormat::Agency => parse_agency_columns(&record),
             CsvFormat::Legacy => parse_legacy_columns(&record),
         };
+        // Track original CSV row position so re-export can emit rows in
+        // input order (required for byte-exact roundtrip with upstream
+        // starter.csv, which is not in alphabetical order).
+        metadata.insert("agency_csv_row_idx".to_string(), row_idx.to_string());
         let quality = quality_score
             .map(|score| (score * 100.0).round().clamp(0.0, 100.0) as u8)
             .unwrap_or(100);
@@ -807,7 +811,10 @@ fn parse_agency_columns(record: &csv::StringRecord) -> ParsedCsvColumns {
         .map(|s| s.trim().to_string())
         .unwrap_or_default();
 
-    // domain (col5): comma-separated tags
+    // domain (col5): comma-separated tags. Preserve raw text for byte-exact CSV
+    // roundtrip — upstream emits e.g. "software, management" with a space, while
+    // a re-join of the parsed tags would emit "software,management".
+    let domain_raw = record.get(5).map(str::to_string);
     let domain_tags: Vec<String> = record
         .get(5)
         .map(|s| {
@@ -873,8 +880,14 @@ fn parse_agency_columns(record: &csv::StringRecord) -> ParsedCsvColumns {
     {
         metadata.insert("parent_content_hash".to_string(), pch.clone());
     }
-    if !parent_ids_raw.is_empty() {
-        metadata.insert("parent_ids".to_string(), parent_ids_raw.to_string());
+    // Always insert parent_ids (even empty string) so re-export can emit the
+    // exact original text rather than synthesising a JSON array from
+    // lineage.parent_ids (which the importer fills from parent_content_hash).
+    metadata.insert("parent_ids".to_string(), parent_ids_raw.to_string());
+    // Preserve raw domain text so re-export can emit "software, management"
+    // verbatim instead of `domain_tags.join(",")` flattening to "software,management".
+    if let Some(raw) = domain_raw {
+        metadata.insert("domain_raw".to_string(), raw);
     }
 
     ParsedCsvColumns {

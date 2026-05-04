@@ -21,8 +21,9 @@ name = "agency_csv_roundtrip"
 script = "scenarios/agency_csv_roundtrip.sh"
 owners = [
     "impl-agency-csv-roundtrip",
+    "fix-agency-csv",
 ]
-description = "Pins Agency's 12-column starter CSV import/export contract: `wg agency import --format agency-csv` followed by `wg agency export --format agency-csv` must byte-equal the fixture, including domain comma cells and parent_ids JSON arrays."
+description = "Pins Agency's 12-column starter CSV import/export contract: `wg agency import --format agency-csv` followed by `wg agency export --format agency-csv` must byte-equal the fixture, including CRLF terminators, multi-domain space-after-comma (`software, management`), parent_ids JSON arrays, and the empty-parent_ids-when-only-parent_content_hash-set roundtrip."
 timeout_seconds = 30
 
 [[scenario]]

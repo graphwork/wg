@@ -67,6 +67,11 @@ struct AgencyCsvRow {
     type_name: &'static str,
     name: String,
     id: String,
+    /// Original row index within the source CSV (set by `wg agency import`).
+    /// Sorted to the front so re-export preserves input order; primitives
+    /// without an index (e.g., locally-created via `wg agency init` or
+    /// evolution) sort after, by (type_rank, name, id).
+    csv_row_idx: Option<u64>,
     fields: [String; 12],
 }
 
@@ -99,11 +104,21 @@ pub fn run_export(workgraph_dir: &Path, opts: &ExportOptions<'_>) -> Result<()> 
     }
 
     rows.sort_by(|a, b| {
-        (a.type_rank, a.name.as_str(), a.id.as_str()).cmp(&(
-            b.type_rank,
-            b.name.as_str(),
-            b.id.as_str(),
-        ))
+        // Imported rows (with `agency_csv_row_idx`) sort by their original
+        // CSV position so re-export preserves input order — required for a
+        // byte-equal roundtrip with sources like upstream starter.csv that
+        // are not alphabetised. Locally-created primitives (no row index)
+        // sort after, by (type_rank, name, id).
+        match (a.csv_row_idx, b.csv_row_idx) {
+            (Some(ai), Some(bi)) => ai.cmp(&bi),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => (a.type_rank, a.name.as_str(), a.id.as_str()).cmp(&(
+                b.type_rank,
+                b.name.as_str(),
+                b.id.as_str(),
+            )),
+        }
     });
 
     let csv_bytes = write_agency_csv(&rows)?;
@@ -152,8 +167,10 @@ fn include_metadata(
 fn write_agency_csv(rows: &[AgencyCsvRow]) -> Result<Vec<u8>> {
     let mut output = Vec::new();
     {
+        // CRLF terminator matches both upstream agentbureau/agency starter.csv
+        // and RFC 4180. Required for byte-exact CSV roundtrip with upstream.
         let mut writer = csv::WriterBuilder::new()
-            .terminator(csv::Terminator::Any(b'\n'))
+            .terminator(csv::Terminator::CRLF)
             .quote_style(csv::QuoteStyle::Necessary)
             .from_writer(&mut output);
         writer.write_record(AGENCY_CSV_HEADERS)?;
@@ -166,7 +183,12 @@ fn write_agency_csv(rows: &[AgencyCsvRow]) -> Result<Vec<u8>> {
     Ok(output)
 }
 
+fn csv_row_idx(metadata: &std::collections::HashMap<String, String>) -> Option<u64> {
+    metadata.get("agency_csv_row_idx")?.parse::<u64>().ok()
+}
+
 fn row_from_component(component: RoleComponent) -> Result<AgencyCsvRow> {
+    let csv_row_idx = csv_row_idx(&component.metadata);
     let fields = agency_csv_fields(
         "role_component",
         &component.name,
@@ -187,11 +209,13 @@ fn row_from_component(component: RoleComponent) -> Result<AgencyCsvRow> {
         type_name: "role_component",
         name: component.name,
         id: component.id,
+        csv_row_idx,
         fields,
     })
 }
 
 fn row_from_outcome(outcome: DesiredOutcome) -> Result<AgencyCsvRow> {
+    let csv_row_idx = csv_row_idx(&outcome.metadata);
     let fields = agency_csv_fields(
         "desired_outcome",
         &outcome.name,
@@ -212,11 +236,13 @@ fn row_from_outcome(outcome: DesiredOutcome) -> Result<AgencyCsvRow> {
         type_name: "desired_outcome",
         name: outcome.name,
         id: outcome.id,
+        csv_row_idx,
         fields,
     })
 }
 
 fn row_from_tradeoff(tradeoff: TradeoffConfig) -> Result<AgencyCsvRow> {
+    let csv_row_idx = csv_row_idx(&tradeoff.metadata);
     let fields = agency_csv_fields(
         "trade_off_config",
         &tradeoff.name,
@@ -237,6 +263,7 @@ fn row_from_tradeoff(tradeoff: TradeoffConfig) -> Result<AgencyCsvRow> {
         type_name: "trade_off_config",
         name: tradeoff.name,
         id: tradeoff.id,
+        csv_row_idx,
         fields,
     })
 }
@@ -263,15 +290,29 @@ fn agency_csv_fields(
             quality_from_score(performance.avg_score)
         }
     });
-    let parent_ids = metadata
-        .get("parent_ids")
-        .cloned()
-        .unwrap_or_else(|| parent_ids_json(&lineage.parent_ids));
-    let domain_values = if domain.is_empty() {
-        domain_tags
-    } else {
-        domain
-    };
+    // For roundtrip with imported CSV: prefer the raw text captured at import
+    // time. Fall back to deriving from lineage for primitives that originated
+    // inside wg (no metadata.parent_ids key). Note that the importer copies
+    // parent_content_hash into lineage.parent_ids; we filter it out here so
+    // upstream rows whose only "parent" is parent_content_hash re-export with
+    // an empty parent_ids field rather than a synthesised JSON array.
+    let parent_ids = metadata.get("parent_ids").cloned().unwrap_or_else(|| {
+        let derived: Vec<String> = lineage
+            .parent_ids
+            .iter()
+            .filter(|id| Some(id.as_str()) != parent_content_hash)
+            .cloned()
+            .collect();
+        parent_ids_json(&derived)
+    });
+    let domain_str = metadata.get("domain_raw").cloned().unwrap_or_else(|| {
+        let domain_values = if domain.is_empty() {
+            domain_tags
+        } else {
+            domain
+        };
+        domain_values.join(",")
+    });
 
     Ok([
         type_name.to_string(),
@@ -282,7 +323,7 @@ fn agency_csv_fields(
             .get("domain_specificity")
             .cloned()
             .unwrap_or_else(|| domain_specificity_value.to_string()),
-        domain_values.join(","),
+        domain_str,
         metadata
             .get("origin_instance_id")
             .cloned()
@@ -399,6 +440,118 @@ mod tests {
         self, AgencyStore, Agent, Lineage, PerformanceRecord, Role, TradeoffConfig,
     };
     use workgraph::graph::TrustLevel;
+
+    /// Byte-equal CSV roundtrip on a synthetic fixture covering the three
+    /// classes of drift that previously broke roundtripping the upstream
+    /// agentbureau/agency starter.csv:
+    ///   1. CRLF line terminators
+    ///   2. Multi-domain space-after-comma ("software, management")
+    ///   3. parent_content_hash set with empty parent_ids
+    ///
+    /// Repro for the upstream byte-equal test (out-of-process):
+    ///   curl -sL .../agentbureau/agency/main/primitives/starter.csv > u.csv
+    ///   mkdir -p .wg/agency
+    ///   wg --dir .wg agency import --format agency-csv u.csv
+    ///   wg --dir .wg agency export --format agency-csv reexport.csv
+    ///   cmp u.csv reexport.csv  # matching rows are byte-equal
+    /// Note: full byte-equal with upstream additionally requires the dedup
+    /// fixes tracked in `investigate-agency-import` (some primitives in
+    /// upstream share descriptions and only differ by `scope`, which the
+    /// content-hash filename collapses).
+    #[test]
+    fn agency_csv_roundtrip_byte_equal_synthetic() {
+        use std::io::Write;
+        // Synthetic fixture covering all three drift classes.
+        // Use CRLF terminators throughout; csv::QuoteStyle::Necessary on the
+        // export side means fields are only quoted when they contain commas
+        // or quotes, matching the input.
+        let csv = b"\
+type,name,description,quality,domain_specificity,domain,origin_instance_id,parent_content_hash,scope,parent_ids,generation,created_by\r\n\
+role_component,verify-distribution-channel-currency,After each release verify that every distribution channel referenced in documentation points to the current release version,100,45,software,upstream-1,5028f239d7f7080f,task,,0,human\r\n\
+role_component,write-session-handoff-context,Write a timestamped handoff file at session end,100,50,\"software, management\",upstream-1,,task,,0,human\r\n\
+role_component,classify-claims-by-type,\"Extract and classify claims from source material by type: fact, opinion, or theory\",100,40,\"research,analysis\",upstream-1,,task,,0,human\r\n\
+trade_off_config,prefer-depth,When depth and breadth conflict prefer deeper analysis,80,low,research,upstream-1,pch-depth,task,\"[\"\"pch-depth\"\"]\",1,human\r\n\
+desired_outcome,verification-summary,Return a summary with total claim count,90,50,analysis,upstream-1,,task,,0,human\r\n\
+";
+
+        let tmp = TempDir::new().unwrap();
+        let wg_dir = tmp.path().join(".wg");
+        std::fs::create_dir_all(&wg_dir).unwrap();
+
+        let csv_path = wg_dir.parent().unwrap().join("upstream.csv");
+        let mut f = std::fs::File::create(&csv_path).unwrap();
+        f.write_all(csv).unwrap();
+        drop(f);
+
+        super::super::agency_import::run(&wg_dir, csv_path.to_str().unwrap(), false, None).unwrap();
+
+        let out_path = wg_dir.parent().unwrap().join("reexport.csv");
+        run_export(
+            &wg_dir,
+            &ExportOptions {
+                output: out_path.to_str().unwrap(),
+                format: "agency-csv",
+                filter: None,
+                global: false,
+            },
+        )
+        .unwrap();
+
+        let exported = std::fs::read(&out_path).unwrap();
+        if exported != csv {
+            // Pretty-print the byte-level diff so test failures are debuggable.
+            let exp_str = String::from_utf8_lossy(csv).replace("\r\n", "\\r\\n\n");
+            let got_str = String::from_utf8_lossy(&exported).replace("\r\n", "\\r\\n\n");
+            panic!(
+                "CSV roundtrip drifted ({} vs {} bytes).\n--- expected ---\n{}\n--- got ---\n{}",
+                csv.len(),
+                exported.len(),
+                exp_str,
+                got_str,
+            );
+        }
+    }
+
+    /// Repro for the third drift class in isolation: when the upstream row has
+    /// `parent_content_hash` set but `parent_ids` empty, the importer used to
+    /// copy `parent_content_hash` into `lineage.parent_ids`, and the exporter
+    /// would then synthesise `parent_ids = ["<hash>"]` — diverging from the
+    /// empty cell in the source.
+    #[test]
+    fn agency_csv_export_does_not_synthesise_parent_ids_from_parent_content_hash() {
+        let tmp = TempDir::new().unwrap();
+        let wg_dir = tmp.path().join(".wg");
+        std::fs::create_dir_all(&wg_dir).unwrap();
+
+        let csv = b"\
+type,name,description,quality,domain_specificity,domain,origin_instance_id,parent_content_hash,scope,parent_ids,generation,created_by\r\n\
+role_component,verify-install-path,Run install command from documentation in clean environment,100,50,software,upstream-1,5028f239d7f7080f,task,,0,human\r\n\
+";
+        let csv_path = tmp.path().join("input.csv");
+        std::fs::write(&csv_path, csv).unwrap();
+        super::super::agency_import::run(&wg_dir, csv_path.to_str().unwrap(), false, None).unwrap();
+
+        let out_path = tmp.path().join("export.csv");
+        run_export(
+            &wg_dir,
+            &ExportOptions {
+                output: out_path.to_str().unwrap(),
+                format: "agency-csv",
+                filter: None,
+                global: false,
+            },
+        )
+        .unwrap();
+
+        let exported = std::fs::read_to_string(&out_path).unwrap();
+        assert!(
+            !exported.contains("[\"5028f239d7f7080f\"]"),
+            "export must not synthesise parent_ids from parent_content_hash:\n{}",
+            exported
+        );
+        // The exact roundtripped row should match (CRLF + empty parent_ids cell).
+        assert_eq!(exported.as_bytes(), csv, "byte-equal roundtrip");
+    }
 
     fn setup_store(tmp: &TempDir, name: &str) -> LocalStore {
         let path = tmp.path().join(name).join("agency");
