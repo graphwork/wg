@@ -256,6 +256,9 @@ fn build_assign_subgraph(dir: &Path) {
             model: None,
             provider: None,
             endpoint: None,
+            command_argv: vec![],
+            working_dir: None,
+            executor_preset_name: None,
             verify: None,
             verify_timeout: None,
             agent: None,
@@ -1180,6 +1183,7 @@ Begin working on the task now.
             title: "Assign agent for: Implement a Rust parser".to_string(),
             description: Some(assign_desc),
             status: Status::Open,
+            priority: PRIORITY_DEFAULT,
             assigned: None,
             estimate: None,
             before: vec!["rust-feature".to_string()],
@@ -1205,6 +1209,9 @@ Begin working on the task now.
             model: None,
             provider: None,
             endpoint: None,
+            command_argv: vec![],
+            working_dir: None,
+            executor_preset_name: None,
             verify: None,
             verify_timeout: None,
             agent: None,
@@ -1215,6 +1222,7 @@ Begin working on the task now.
             paused: false,
             visibility: "internal".to_string(),
             cycle_config: None,
+            ..Task::default()
         };
 
         // Wire up: assign-rust-feature blocks rust-feature

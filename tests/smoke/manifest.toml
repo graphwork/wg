@@ -83,6 +83,15 @@ description = "Pins implement-generalize-chat: arbitrary command lines such as `
 timeout_seconds = 30
 
 [[scenario]]
+name = "chat_last_interaction_sort"
+script = "scenarios/chat_last_interaction_sort.sh"
+owners = [
+    "fix-chat-tasks",
+]
+description = "Pins fix-chat-tasks: sending to an older .chat-N updates last_interaction_at, wg show displays it, and activity sorting puts the recently active chat first without live LLM credentials."
+timeout_seconds = 30
+
+[[scenario]]
 name = "preset_shortcuts_still_work"
 script = "scenarios/preset_shortcuts_still_work.sh"
 owners = [

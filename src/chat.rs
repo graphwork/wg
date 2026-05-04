@@ -413,13 +413,20 @@ pub fn append_inbox_ref(
 /// bump. Heartbeats and streaming-token writes intentionally bypass this.
 pub(crate) fn bump_chat_interaction(workgraph_dir: &Path, session_ref: &str) {
     let graph_path = workgraph_dir.join("graph.jsonl");
-    let candidates = [
-        session_ref.to_string(),
-        format!(".{}", session_ref),
-        // Coordinator chats often pass `coordinator-N` even when the
-        // canonical task id is `.coordinator-N`. Cover both.
-        format!(".coordinator-{}", session_ref),
-    ];
+    let trimmed = session_ref.trim_start_matches('.');
+    let mut candidates = vec![session_ref.to_string(), format!(".{}", trimmed)];
+    if let Some(n) = trimmed.strip_prefix("chat-") {
+        candidates.push(format!(".chat-{}", n));
+        candidates.push(format!(".coordinator-{}", n));
+    } else if let Some(n) = trimmed.strip_prefix("coordinator-") {
+        candidates.push(format!(".chat-{}", n));
+        candidates.push(format!(".coordinator-{}", n));
+    } else if trimmed.chars().all(|c| c.is_ascii_digit()) {
+        candidates.push(format!(".chat-{}", trimmed));
+        candidates.push(format!(".coordinator-{}", trimmed));
+    }
+    candidates.sort();
+    candidates.dedup();
     let _ = crate::parser::modify_graph(&graph_path, |graph| {
         for cand in &candidates {
             if graph.get_task(cand).is_some() {
@@ -904,9 +911,7 @@ pub fn chat_occupies_cap_slot(
         let age = now.signed_duration_since(dt.with_timezone(&chrono::Utc));
         // Negative age (clock skew) → treat as fresh; positive age within
         // threshold → fresh.
-        if age.num_seconds() < 0
-            || (age.num_seconds() as u64) < idle_threshold.as_secs()
-        {
+        if age.num_seconds() < 0 || (age.num_seconds() as u64) < idle_threshold.as_secs() {
             return true;
         }
     }
@@ -944,7 +949,11 @@ pub fn count_live_chats(
 ) -> usize {
     graph
         .tasks()
-        .filter(|t| t.tags.iter().any(|tag| crate::chat_id::is_chat_loop_tag(tag)))
+        .filter(|t| {
+            t.tags
+                .iter()
+                .any(|tag| crate::chat_id::is_chat_loop_tag(tag))
+        })
         .filter(|t| {
             !matches!(
                 t.status,
@@ -3783,8 +3792,7 @@ mod tests {
     #[test]
     fn test_chat_occupies_cap_slot_zombie_does_not_count() {
         let (_tmp, wg_dir) = setup();
-        let old =
-            (chrono::Utc::now() - chrono::Duration::seconds(3600)).to_rfc3339();
+        let old = (chrono::Utc::now() - chrono::Duration::seconds(3600)).to_rfc3339();
         // Created an hour ago, no cursor, no inbox → zombie.
         assert!(!chat_occupies_cap_slot(
             &wg_dir,
@@ -3801,8 +3809,7 @@ mod tests {
     fn test_chat_occupies_cap_slot_pending_inbox_counts() {
         let (_tmp, wg_dir) = setup();
         append_inbox_for(&wg_dir, 0, "hi", "req-1").unwrap();
-        let old =
-            (chrono::Utc::now() - chrono::Duration::seconds(3600)).to_rfc3339();
+        let old = (chrono::Utc::now() - chrono::Duration::seconds(3600)).to_rfc3339();
         assert!(chat_occupies_cap_slot(
             &wg_dir,
             0,
@@ -3817,8 +3824,7 @@ mod tests {
     #[test]
     fn test_chat_occupies_cap_slot_recent_cursor_counts() {
         let (_tmp, wg_dir) = setup();
-        let old =
-            (chrono::Utc::now() - chrono::Duration::seconds(3600)).to_rfc3339();
+        let old = (chrono::Utc::now() - chrono::Duration::seconds(3600)).to_rfc3339();
         write_cursor_for(&wg_dir, 0, 0).unwrap();
         assert!(chat_occupies_cap_slot(
             &wg_dir,
@@ -3874,8 +3880,7 @@ mod tests {
     #[test]
     fn test_count_live_chats_excludes_zombie_supervisor() {
         let (_tmp, wg_dir) = setup();
-        let old =
-            (chrono::Utc::now() - chrono::Duration::seconds(3600)).to_rfc3339();
+        let old = (chrono::Utc::now() - chrono::Duration::seconds(3600)).to_rfc3339();
         let now = chrono::Utc::now().to_rfc3339();
         let mut g = WorkGraph::new();
         // Two zombies: old, no cursor, no inbox.
@@ -3950,8 +3955,7 @@ mod tests {
     #[test]
     fn test_count_live_chats_includes_old_chat_with_recent_cursor() {
         let (_tmp, wg_dir) = setup();
-        let old =
-            (chrono::Utc::now() - chrono::Duration::seconds(3600)).to_rfc3339();
+        let old = (chrono::Utc::now() - chrono::Duration::seconds(3600)).to_rfc3339();
         let mut g = WorkGraph::new();
         g.add_node(Node::Task(chat_task(
             ".chat-0",
@@ -3970,8 +3974,7 @@ mod tests {
     #[test]
     fn test_count_live_chats_excludes_old_chat_with_stale_cursor() {
         let (_tmp, wg_dir) = setup();
-        let old =
-            (chrono::Utc::now() - chrono::Duration::seconds(3600)).to_rfc3339();
+        let old = (chrono::Utc::now() - chrono::Duration::seconds(3600)).to_rfc3339();
         let mut g = WorkGraph::new();
         g.add_node(Node::Task(chat_task(
             ".chat-0",
@@ -3991,8 +3994,7 @@ mod tests {
     #[test]
     fn test_count_live_chats_mixed_graph() {
         let (_tmp, wg_dir) = setup();
-        let old =
-            (chrono::Utc::now() - chrono::Duration::seconds(3600)).to_rfc3339();
+        let old = (chrono::Utc::now() - chrono::Duration::seconds(3600)).to_rfc3339();
         let now = chrono::Utc::now().to_rfc3339();
         let mut g = WorkGraph::new();
         // Archived — excluded.

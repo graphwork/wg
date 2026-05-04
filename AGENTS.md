@@ -10,7 +10,7 @@ wg agent-guide
 ```
 
 Run `wg agent-guide` at session start (or read its output from a previous
-session) to get the universal role contract: chat-vs-dispatcher-vs-worker
+session) to get the universal role contract: chat agent vs dispatcher vs worker
 distinction, `## Validation` requirement, smoke-gate, cycle handling, git
 hygiene, worktree isolation, "no built-in Task tool" rules, etc.
 

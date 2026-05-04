@@ -949,6 +949,22 @@ fn test_show_json_minimal_task() {
     assert!(parsed.get("assigned").is_none() || parsed["assigned"].is_null());
 }
 
+#[test]
+fn test_show_text_includes_last_interaction() {
+    let tmp = TempDir::new().unwrap();
+    let mut task = make_task("li1", "Activity timestamp", Status::Open);
+    task.created_at = Some("2026-04-30T00:00:00+00:00".to_string());
+    task.last_interaction_at = Some("2026-05-01T12:00:00+00:00".to_string());
+    let wg_dir = setup_workgraph(&tmp, vec![task]);
+
+    let output = wg_ok(&wg_dir, &["show", "li1"]);
+    assert!(
+        output.contains("Last interaction: 2026-05-01T12:00:00+00:00"),
+        "wg show must surface last_interaction_at in text output, got:\n{}",
+        output
+    );
+}
+
 // ── wg ready --json ─────────────────────────────────────────────────
 
 #[test]

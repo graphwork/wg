@@ -167,7 +167,21 @@ pub fn send_message(
 
     // Lock is released when file is dropped
 
+    touch_task_interaction(workgraph_dir, task_id);
+
     Ok(next_id)
+}
+
+fn touch_task_interaction(workgraph_dir: &Path, task_id: &str) {
+    let graph_path = workgraph_dir.join("graph.jsonl");
+    let _ = crate::parser::modify_graph(&graph_path, |graph| {
+        if let Some(task) = graph.get_task_mut(task_id) {
+            task.touch();
+            true
+        } else {
+            false
+        }
+    });
 }
 
 /// Count the number of messages for a task (without parsing them).
@@ -777,8 +791,7 @@ pub fn message_stats_pair(
     } else {
         true
     };
-    let responded =
-        last_outgoing_id_agent > 0 && last_outgoing_id_agent > last_incoming_id_agent;
+    let responded = last_outgoing_id_agent > 0 && last_outgoing_id_agent > last_incoming_id_agent;
 
     let stats = MessageStats {
         incoming,

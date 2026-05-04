@@ -7,9 +7,10 @@
 //! their `created_at` timestamp.
 
 use std::io::Write;
-use tempfile::NamedTempFile;
+use tempfile::{NamedTempFile, tempdir};
 use workgraph::graph::{Node, Status, Task, WorkGraph};
 use workgraph::parser::{load_graph, modify_graph, save_graph};
+use workgraph::{chat, messages};
 
 fn make_task(id: &str, title: &str) -> Task {
     Task {
@@ -228,6 +229,53 @@ fn substantively_eq_ignores_interaction_field() {
     assert!(
         a.substantively_eq(&b),
         "tasks differing only in last_interaction_at must compare substantively-equal"
+    );
+}
+
+#[test]
+fn chat_append_bumps_modern_chat_task() {
+    let tmp = tempdir().unwrap();
+    let graph_path = tmp.path().join("graph.jsonl");
+    let mut graph = WorkGraph::default();
+    let mut chat_task = make_task(".chat-0", "Chat 0");
+    chat_task.status = Status::InProgress;
+    chat_task.last_interaction_at = Some("2026-04-30T00:00:00+00:00".to_string());
+    graph.add_node(Node::Task(chat_task));
+    save_graph(&graph, &graph_path).unwrap();
+
+    std::thread::sleep(std::time::Duration::from_millis(20));
+
+    chat::append_inbox_for(tmp.path(), 0, "recent chat activity", "req-1").unwrap();
+
+    let post = load_graph(&graph_path).unwrap();
+    let task = post.get_task(".chat-0").unwrap();
+    assert_ne!(
+        task.last_interaction_at.as_deref(),
+        Some("2026-04-30T00:00:00+00:00"),
+        "chat appends through numeric aliases must touch the canonical .chat-N task"
+    );
+}
+
+#[test]
+fn task_message_send_bumps_last_interaction_at() {
+    let tmp = tempdir().unwrap();
+    let graph_path = tmp.path().join("graph.jsonl");
+    let mut graph = WorkGraph::default();
+    let mut task = make_task("task-a", "Task A");
+    task.last_interaction_at = Some("2026-04-30T00:00:00+00:00".to_string());
+    graph.add_node(Node::Task(task));
+    save_graph(&graph, &graph_path).unwrap();
+
+    std::thread::sleep(std::time::Duration::from_millis(20));
+
+    messages::send_message(tmp.path(), "task-a", "hello", "user", "normal").unwrap();
+
+    let post = load_graph(&graph_path).unwrap();
+    let task = post.get_task("task-a").unwrap();
+    assert_ne!(
+        task.last_interaction_at.as_deref(),
+        Some("2026-04-30T00:00:00+00:00"),
+        "wg msg send must touch the target task so recent messages affect TUI ordering"
     );
 }
 

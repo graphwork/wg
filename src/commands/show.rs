@@ -5,8 +5,8 @@ use std::collections::HashMap;
 use std::path::Path;
 use workgraph::config::Config;
 use workgraph::graph::{
-    CycleConfig, FailureClass, LogEntry, LoopGuard, PRIORITY_DEFAULT, Priority, Status, Task, TokenUsage, format_tokens,
-    parse_token_usage_live,
+    CycleConfig, FailureClass, LogEntry, LoopGuard, PRIORITY_DEFAULT, Priority, Status, Task,
+    TokenUsage, format_tokens, parse_token_usage_live,
 };
 use workgraph::query::build_reverse_index;
 use workgraph::service::AgentRegistry;
@@ -371,10 +371,9 @@ fn gather_worktree_state(dir: &Path, task_id: &str) -> Option<WorktreeStateInfo>
     // ahead and uncommitted/staged tracked files has work that has NOT landed.
     // Reporting `Merged to main: true` in that case is the lie that hid the
     // wg-done-silent bug (see docs/codex-handler-merge-bug.md).
-    let merged_to_main = crate::commands::service::worktree::is_branch_merged(
-        project_root,
-        &branch,
-    ) && uncommitted_files == 0;
+    let merged_to_main =
+        crate::commands::service::worktree::is_branch_merged(project_root, &branch)
+            && uncommitted_files == 0;
 
     Some(WorktreeStateInfo {
         path: path.to_string_lossy().into_owned(),
@@ -708,7 +707,8 @@ fn print_human_readable(details: &TaskDetails) {
         println!("rescued: true  (↻ agent exited without wg done; eval approved output)");
     }
     if details.status == Status::FailedPendingEval {
-        println!("status: failed pending evaluation  (awaiting rescue eval from .evaluate-{} — score ≥ {:.2} required to rescue)",
+        println!(
+            "status: failed pending evaluation  (awaiting rescue eval from .evaluate-{} — score ≥ {:.2} required to rescue)",
             details.id,
             0.7_f64, // shown as human hint; actual threshold from config
         );
@@ -729,7 +729,9 @@ fn print_human_readable(details: &TaskDetails) {
         println!("failure_class: {}", class);
         use FailureClass::*;
         let hint = match class {
-            ApiError400Document => "fix the input (malformed/encrypted PDF or document) before retry — do not auto-retry",
+            ApiError400Document => {
+                "fix the input (malformed/encrypted PDF or document) before retry — do not auto-retry"
+            }
             ApiError429RateLimit => "rate limit — back off and retry",
             ApiError5xxTransient => "transient upstream error — retry is safe",
             AgentHardTimeout => "agent exceeded hard timeout — split task or raise timeout",
@@ -905,6 +907,9 @@ fn print_human_readable(details: &TaskDetails) {
     }
     if let Some(ref completed) = details.completed_at {
         println!("Completed: {}", completed);
+    }
+    if let Some(ref last_interaction) = details.last_interaction_at {
+        println!("Last interaction: {}", last_interaction);
     }
     if let Some(ref not_before) = details.not_before {
         println!("Not before: {}{}", not_before, format_countdown(not_before));
@@ -1430,8 +1435,8 @@ mod tests {
                 output_file: "output.log".to_string(),
                 model: Some("openrouter/minimax".to_string()),
                 completed_at: None,
-            worktree_path: None,
-        },
+                worktree_path: None,
+            },
         );
         registry.save(temp_dir.path()).unwrap();
 
@@ -1756,10 +1761,7 @@ mod tests {
             "should detect at least one uncommitted file: {:?}",
             state.uncommitted_files
         );
-        assert!(
-            !state.merged_to_main,
-            "branch is not merged into main"
-        );
+        assert!(!state.merged_to_main, "branch is not merged into main");
         assert!(state.path.contains(".wg-worktrees"));
 
         // Tasks without a worktree return None

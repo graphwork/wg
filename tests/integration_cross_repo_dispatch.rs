@@ -506,7 +506,7 @@ fn cli_add_with_repo_and_task_options() {
             "--id",
             "custom-id",
             "-d",
-            "Detailed description",
+            "Detailed description\n\n## Validation\n- [ ] cargo test",
             "--tag",
             "urgent",
             "--skill",
@@ -515,8 +515,6 @@ fn cli_add_with_repo_and_task_options() {
             "output.rs",
             "--model",
             "claude:opus",
-            "--verify",
-            "cargo test",
         ])
         .output()
         .expect("Failed to execute wg");
@@ -535,12 +533,15 @@ fn cli_add_with_repo_and_task_options() {
     let remote_graph = load_graph(remote.join(".wg").join("graph.jsonl")).unwrap();
     let task = remote_graph.get_task("custom-id").unwrap();
     assert_eq!(task.title, "Task with options");
-    assert_eq!(task.description.as_deref(), Some("Detailed description"));
+    assert_eq!(
+        task.description.as_deref(),
+        Some("Detailed description\n\n## Validation\n- [ ] cargo test")
+    );
     assert!(task.tags.contains(&"urgent".to_string()));
     assert!(task.skills.contains(&"rust".to_string()));
     assert!(task.deliverables.contains(&"output.rs".to_string()));
     assert_eq!(task.model.as_deref(), Some("claude:opus"));
-    assert_eq!(task.verify.as_deref(), Some("cargo test"));
+    assert_eq!(task.verify.as_deref(), None);
 }
 
 #[test]

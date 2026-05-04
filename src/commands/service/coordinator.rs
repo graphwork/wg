@@ -3984,16 +3984,16 @@ fn spawn_agents_for_ready_tasks(
             let task_id = task.id.clone();
             let title = task.title.clone();
             eprintln!(
-                "[coordinator] Spawning shell task inline for: {} - {}",
+                "[dispatcher] Spawning shell task inline for: {} - {}",
                 task_id, title,
             );
             match spawn_shell_inline(dir, &task_id) {
                 Ok((agent_id, pid)) => {
-                    eprintln!("[coordinator] Spawned shell {} (PID {})", agent_id, pid);
+                    eprintln!("[dispatcher] Spawned shell {} (PID {})", agent_id, pid);
                     spawned += 1;
                 }
                 Err(e) => {
-                    eprintln!("[coordinator] Failed to spawn shell for {}: {}", task_id, e);
+                    eprintln!("[dispatcher] Failed to spawn shell for {}: {}", task_id, e);
                     record_spawn_failure(
                         &gp,
                         &task_id,

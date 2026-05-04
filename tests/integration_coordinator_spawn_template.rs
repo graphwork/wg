@@ -73,7 +73,7 @@ fn wg_ok(wg_dir: &Path, args: &[&str]) -> String {
 
 fn init_workgraph(tmp: &TempDir) -> PathBuf {
     let wg_dir = tmp.path().join(".wg");
-    wg_ok(&wg_dir, &["init"]);
+    wg_ok(&wg_dir, &["init", "--route", "claude-cli"]);
     wg_dir
 }
 
@@ -125,6 +125,8 @@ fn wait_for_coordinator_agent(wg_dir: &Path) {
         }
         if let Ok(content) = fs::read_to_string(&log_path)
             && (content.contains("Claude CLI started")
+                || content.contains("claude-handler ready")
+                || content.contains("nex subprocess running")
                 || content.contains("Coordinator agent spawned successfully")
                 || content.contains("Native coordinator: initialized"))
         {
@@ -197,6 +199,8 @@ impl<'a> DaemonGuard<'a> {
 
         let mut args = vec!["service", "start", "--interval", "600", "--max-agents", "0"];
         args.extend_from_slice(extra_args);
+
+        wg_ok(wg_dir, &["chat", "create", "--name", "default", "--json"]);
 
         let output = wg_cmd_env(wg_dir, &args, env_vars);
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();
@@ -424,17 +428,17 @@ fn coordinator_spawn_with_provider() {
     ];
     let guard = DaemonGuard::start(&wg_dir, &env, &[]);
 
-    // When provider is openrouter, the coordinator should use the native path
-    // (direct API calls) instead of spawning the Claude CLI. Verify via daemon log.
+    // When provider is openrouter, the supervisor should route through the
+    // native/nex path instead of spawning the Claude CLI. Verify via daemon log.
     let log = read_daemon_log(&wg_dir);
     assert!(
-        log.contains("Native coordinator: initialized"),
-        "Expected native coordinator to be used for openrouter provider.\nDaemon log:\n{}",
+        log.contains("SpawnPlan executor=native") || log.contains("wg nex"),
+        "Expected native/nex supervisor to be used for openrouter provider.\nDaemon log:\n{}",
         log
     );
     assert!(
-        log.contains("provider=openrouter"),
-        "Expected provider=openrouter in native coordinator log.\nDaemon log:\n{}",
+        log.contains("model=openrouter:minimax-m2.5"),
+        "Expected openrouter model in native supervisor log.\nDaemon log:\n{}",
         log
     );
 

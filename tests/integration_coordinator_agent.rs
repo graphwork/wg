@@ -114,8 +114,9 @@ fn init_workgraph(tmp: &TempDir) -> PathBuf {
 /// Write config.toml to enable the coordinator agent.
 fn enable_coordinator_agent(wg_dir: &Path) {
     let config_path = wg_dir.join("config.toml");
-    let config = "[coordinator]\ncoordinator_agent = true\n";
+    let config = "[dispatcher]\ncoordinator_agent = true\nregistry_refresh_interval = 0\n";
     fs::write(&config_path, config).unwrap();
+    wg_ok(wg_dir, &["chat", "create", "--name", "default", "--json"]);
 }
 
 /// Stop the daemon, ignoring errors (best-effort cleanup).
@@ -158,6 +159,8 @@ fn wait_for_coordinator_agent(wg_dir: &Path) {
         }
         if let Ok(content) = fs::read_to_string(&log_path)
             && (content.contains("Claude CLI started")
+                || content.contains("claude-handler ready")
+                || content.contains("nex subprocess running")
                 || content.contains("Coordinator agent spawned successfully"))
         {
             return;
@@ -503,23 +506,21 @@ fn coordinator_agent_cursor_tracking() {
     let mock = MockClaude::new();
     let guard = CoordinatorDaemonGuard::start(&wg_dir, &mock);
 
-    // Send first message
     guard.chat_ok("cursor test one", 15);
-    let cursor1 = workgraph::chat::read_coordinator_cursor(&wg_dir).unwrap();
+    let responses1 = workgraph::chat::read_outbox_since_for(&wg_dir, 0, 0).unwrap();
     assert!(
-        cursor1 >= 1,
-        "Coordinator cursor should be >= 1 after first message, got {}",
-        cursor1
+        responses1.len() >= 1,
+        "Coordinator should write at least one response after first message, got {}",
+        responses1.len()
     );
 
-    // Send second message
     guard.chat_ok("cursor test two", 15);
-    let cursor2 = workgraph::chat::read_coordinator_cursor(&wg_dir).unwrap();
+    let responses2 = workgraph::chat::read_outbox_since_for(&wg_dir, 0, 0).unwrap();
     assert!(
-        cursor2 > cursor1,
-        "Coordinator cursor should advance: {} -> {}",
-        cursor1,
-        cursor2
+        responses2.len() > responses1.len(),
+        "Coordinator should append a new response without reprocessing old messages: {} -> {}",
+        responses1.len(),
+        responses2.len()
     );
 }
 
@@ -585,7 +586,7 @@ fn coordinator_agent_crash_recovery() {
     let _trigger_stdout = String::from_utf8_lossy(&trigger_output.stdout).to_string();
 
     // Step 4: Wait for the daemon to restart the agent.
-    // Look for a second "Claude CLI started" in the daemon log.
+    // Look for a second handler startup marker in the daemon log.
     let log_path = wg_dir.join("service").join("daemon.log");
     let start = Instant::now();
     loop {
@@ -597,7 +598,10 @@ fn coordinator_agent_crash_recovery() {
             );
         }
         if let Ok(content) = fs::read_to_string(&log_path) {
-            let starts: Vec<_> = content.match_indices("Claude CLI started").collect();
+            let starts: Vec<_> = content
+                .match_indices("claude-handler ready")
+                .chain(content.match_indices("nex subprocess running"))
+                .collect();
             if starts.len() >= 2 {
                 break;
             }
