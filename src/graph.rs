@@ -1,3 +1,4 @@
+use crate::config::{Config, ModelRegistryEntry};
 use chrono::{Duration, Utc};
 use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -900,67 +901,244 @@ impl TokenUsage {
     }
 }
 
-/// Parse token usage data from a Claude CLI output.log file.
+/// Parse token usage data from a Claude/Codex/native output log file.
 ///
 /// Reads the file from the end, looking for the last JSON line with `"type":"result"`.
 /// Returns `None` if the file doesn't exist, is empty, or has no result line.
 ///
-/// Supports both Claude CLI format (`"usage": {...}`, `"total_cost_usd": X`)
-/// and native executor format (`"total_usage": {...}`).
+/// Supports Claude CLI format (`"usage": {...}`, `"total_cost_usd": X`),
+/// native executor format (`"total_usage": {...}`), and Codex CLI
+/// `exec --json` `turn.completed` usage events.
 pub fn parse_token_usage(output_log_path: &std::path::Path) -> Option<TokenUsage> {
     let content = std::fs::read_to_string(output_log_path).ok()?;
+    let model_spec = infer_agent_model_spec(output_log_path);
+    let model_pricing = infer_model_pricing(output_log_path, model_spec.as_deref());
 
-    // Find the last line that parses as JSON with type=result
+    // Prefer the final result object when present.
     for line in content.lines().rev() {
         let line = line.trim();
         if line.is_empty() || !line.starts_with('{') {
             continue;
         }
-        let val: serde_json::Value = serde_json::from_str(line).ok()?;
-        if val.get("type").and_then(|v| v.as_str()) != Some("result") {
+        let val: serde_json::Value = match serde_json::from_str(line) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        if val.get("type").and_then(|v| v.as_str()) == Some("result") {
+            if let Some(usage) = extract_result_token_usage(&val) {
+                return Some(usage);
+            }
+        }
+    }
+
+    // Codex `exec --json` has no Claude-style `result` usage object;
+    // aggregate completed turns instead.
+    let mut codex_total = TokenUsage {
+        cost_usd: 0.0,
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_read_input_tokens: 0,
+        cache_creation_input_tokens: 0,
+    };
+    let mut found_codex = false;
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty()
+            || !line.starts_with('{')
+            || !line.contains("\"type\":\"turn.completed\"")
+        {
             continue;
         }
-
-        let cost_usd = val
-            .get("total_cost_usd")
-            .and_then(|v| v.as_f64())
-            .unwrap_or(0.0);
-        // Claude CLI uses "usage", native executor uses "total_usage"
-        let usage = val.get("usage").or_else(|| val.get("total_usage"));
-
-        let input_tokens = usage
-            .and_then(|u| u.get("input_tokens"))
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0);
-        let output_tokens = usage
-            .and_then(|u| u.get("output_tokens"))
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0);
-        let cache_read = usage
-            .and_then(|u| {
-                u.get("cache_read_input_tokens")
-                    .or_else(|| u.get("cacheReadInputTokens"))
-            })
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0);
-        let cache_creation = usage
-            .and_then(|u| {
-                u.get("cache_creation_input_tokens")
-                    .or_else(|| u.get("cacheCreationInputTokens"))
-            })
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0);
-
-        return Some(TokenUsage {
-            cost_usd,
-            input_tokens,
-            output_tokens,
-            cache_read_input_tokens: cache_read,
-            cache_creation_input_tokens: cache_creation,
-        });
+        let val: serde_json::Value = match serde_json::from_str(line) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        if val.get("type").and_then(|v| v.as_str()) == Some("turn.completed") {
+            if let Some(usage) =
+                extract_codex_token_usage(&val, model_spec.as_deref(), model_pricing.as_ref())
+            {
+                found_codex = true;
+                codex_total.accumulate(&usage);
+            }
+        }
+    }
+    if found_codex {
+        return Some(codex_total);
     }
 
     None
+}
+
+fn extract_result_token_usage(val: &serde_json::Value) -> Option<TokenUsage> {
+    let cost_usd = val
+        .get("total_cost_usd")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
+    // Claude CLI uses "usage", native executor uses "total_usage".
+    let usage = val.get("usage").or_else(|| val.get("total_usage"))?;
+
+    Some(TokenUsage {
+        cost_usd,
+        input_tokens: usage_u64(usage, &["input_tokens", "inputTokens"]),
+        output_tokens: usage_u64(usage, &["output_tokens", "outputTokens"]),
+        cache_read_input_tokens: usage_u64(
+            usage,
+            &["cache_read_input_tokens", "cacheReadInputTokens"],
+        ),
+        cache_creation_input_tokens: usage_u64(
+            usage,
+            &["cache_creation_input_tokens", "cacheCreationInputTokens"],
+        ),
+    })
+}
+
+fn extract_codex_token_usage(
+    val: &serde_json::Value,
+    model_spec: Option<&str>,
+    pricing: Option<&ModelRegistryEntry>,
+) -> Option<TokenUsage> {
+    let usage = val.get("usage")?;
+    let total_input_tokens = usage_u64(usage, &["input_tokens", "inputTokens"]);
+    let cached_input_tokens = usage_u64(
+        usage,
+        &[
+            "cached_input_tokens",
+            "cachedInputTokens",
+            "cache_read_input_tokens",
+            "cacheReadInputTokens",
+        ],
+    );
+    let input_tokens = total_input_tokens.saturating_sub(cached_input_tokens);
+    let output_tokens = usage_u64(usage, &["output_tokens", "outputTokens"])
+        + usage_u64(usage, &["reasoning_output_tokens", "reasoningOutputTokens"]);
+
+    if input_tokens == 0 && output_tokens == 0 && cached_input_tokens == 0 {
+        return None;
+    }
+
+    let cost_usd = val
+        .get("total_cost_usd")
+        .or_else(|| val.get("cost_usd"))
+        .and_then(|v| v.as_f64())
+        .unwrap_or_else(|| {
+            estimate_model_cost_usd(
+                model_spec,
+                pricing,
+                input_tokens,
+                output_tokens,
+                cached_input_tokens,
+            )
+        });
+
+    Some(TokenUsage {
+        cost_usd,
+        input_tokens,
+        output_tokens,
+        cache_read_input_tokens: cached_input_tokens,
+        cache_creation_input_tokens: 0,
+    })
+}
+
+fn usage_u64(usage: &serde_json::Value, keys: &[&str]) -> u64 {
+    keys.iter()
+        .find_map(|key| usage.get(*key).and_then(|v| v.as_u64()))
+        .unwrap_or(0)
+}
+
+fn infer_agent_model_spec(output_log_path: &std::path::Path) -> Option<String> {
+    let agent_dir = output_log_path.parent()?;
+    let metadata_path = agent_dir.join("metadata.json");
+    if let Ok(metadata_content) = std::fs::read_to_string(metadata_path)
+        && let Ok(metadata) = serde_json::from_str::<serde_json::Value>(&metadata_content)
+        && let Some(model) = metadata.get("model").and_then(|v| v.as_str())
+    {
+        let executor = metadata.get("executor").and_then(|v| v.as_str());
+        return if model.contains(':') {
+            Some(model.to_string())
+        } else {
+            executor.map(|e| format!("{}:{}", e, model))
+        };
+    }
+
+    let agent_id = agent_dir.file_name().and_then(|name| name.to_str())?;
+    let workgraph_dir = infer_workgraph_dir(output_log_path)?;
+    let graph = crate::parser::load_graph(&workgraph_dir.join("graph.jsonl")).ok()?;
+    graph
+        .tasks()
+        .find(|task| task.assigned.as_deref() == Some(agent_id))
+        .and_then(|task| task.model.clone())
+}
+
+fn estimate_model_cost_usd(
+    model_spec: Option<&str>,
+    pricing: Option<&ModelRegistryEntry>,
+    input_tokens: u64,
+    output_tokens: u64,
+    cached_input_tokens: u64,
+) -> f64 {
+    let (input_per_mtok, output_per_mtok, cache_read_discount) = if let Some(entry) = pricing {
+        (
+            entry.cost_per_input_mtok,
+            entry.cost_per_output_mtok,
+            if entry.prompt_caching {
+                entry.cache_read_discount
+            } else {
+                0.0
+            },
+        )
+    } else {
+        let Some(model_spec) = model_spec else {
+            return 0.0;
+        };
+        let Some((input, output)) = fallback_model_pricing_mtok(model_spec) else {
+            return 0.0;
+        };
+        (input, output, 0.0)
+    };
+
+    (input_tokens as f64 / 1_000_000.0) * input_per_mtok
+        + (output_tokens as f64 / 1_000_000.0) * output_per_mtok
+        + (cached_input_tokens as f64 / 1_000_000.0) * input_per_mtok * cache_read_discount
+}
+
+fn fallback_model_pricing_mtok(model_spec: &str) -> Option<(f64, f64)> {
+    match model_spec {
+        "codex:gpt-5.5" | "gpt-5.5" => Some((5.0, 30.0)),
+        "codex:gpt-5.4" | "gpt-5.4" => Some((2.5, 15.0)),
+        "claude:opus" | "opus" => Some((15.0, 75.0)),
+        _ => None,
+    }
+}
+
+fn infer_workgraph_dir(output_log_path: &std::path::Path) -> Option<std::path::PathBuf> {
+    output_log_path
+        .ancestors()
+        .find(|path| {
+            path.file_name().and_then(|name| name.to_str()) == Some(".wg")
+                && path.join("graph.jsonl").exists()
+        })
+        .map(std::path::Path::to_path_buf)
+}
+
+fn infer_model_pricing(
+    output_log_path: &std::path::Path,
+    model_spec: Option<&str>,
+) -> Option<ModelRegistryEntry> {
+    let workgraph_dir = infer_workgraph_dir(output_log_path)?;
+    let config = Config::load_or_default(&workgraph_dir);
+    let model_spec = model_spec?;
+    let model_without_provider = model_spec
+        .split_once(':')
+        .map(|(_, model)| model)
+        .unwrap_or(model_spec);
+
+    config.effective_registry().into_iter().find(|entry| {
+        entry.id == model_spec
+            || entry.id == model_without_provider
+            || entry.model == model_spec
+            || entry.model == model_without_provider
+            || format!("{}:{}", entry.provider, entry.model) == model_spec
+    })
 }
 
 /// Parse token usage from an agent output.log, including mid-run data.
@@ -969,6 +1147,7 @@ pub fn parse_token_usage(output_log_path: &std::path::Path) -> Option<TokenUsage
 /// sums up per-turn usage from either:
 /// - Claude CLI format: `type=assistant` with `message.usage`
 /// - Native executor format: `type=turn` with top-level `usage`
+/// - Codex CLI format: `type=turn.completed` with top-level `usage`
 ///
 /// Returns `None` if the file doesn't exist or has no usable data.
 pub fn parse_token_usage_live(output_log_path: &std::path::Path) -> Option<TokenUsage> {
@@ -979,11 +1158,14 @@ pub fn parse_token_usage_live(output_log_path: &std::path::Path) -> Option<Token
 
     // Fall back: sum per-turn usage from assistant/turn messages
     let content = std::fs::read_to_string(output_log_path).ok()?;
+    let model_spec = infer_agent_model_spec(output_log_path);
+    let model_pricing = infer_model_pricing(output_log_path, model_spec.as_deref());
 
     let mut total_input = 0u64;
     let mut total_output = 0u64;
     let mut total_cache_read = 0u64;
     let mut total_cache_creation = 0u64;
+    let mut total_cost = 0.0f64;
     let mut found_any = false;
 
     for line in content.lines() {
@@ -991,8 +1173,11 @@ pub fn parse_token_usage_live(output_log_path: &std::path::Path) -> Option<Token
         if line.is_empty() || !line.starts_with('{') {
             continue;
         }
-        // Quick check before full parse — match Claude CLI "assistant" or native "turn"
-        if !line.contains("\"type\":\"assistant\"") && !line.contains("\"type\":\"turn\"") {
+        // Quick check before full parse — match Claude CLI, native, or Codex usage events.
+        if !line.contains("\"type\":\"assistant\"")
+            && !line.contains("\"type\":\"turn\"")
+            && !line.contains("\"type\":\"turn.completed\"")
+        {
             continue;
         }
         let val: serde_json::Value = match serde_json::from_str(line) {
@@ -1003,9 +1188,23 @@ pub fn parse_token_usage_live(output_log_path: &std::path::Path) -> Option<Token
 
         // Claude CLI: usage nested under message.usage
         // Native executor: usage at top level
+        // Codex CLI: usage at top level, with cached_input_tokens
         let usage = match event_type {
             Some("assistant") => val.get("message").and_then(|m| m.get("usage")),
             Some("turn") => val.get("usage"),
+            Some("turn.completed") => {
+                if let Some(codex_usage) =
+                    extract_codex_token_usage(&val, model_spec.as_deref(), model_pricing.as_ref())
+                {
+                    found_any = true;
+                    total_input += codex_usage.input_tokens;
+                    total_output += codex_usage.output_tokens;
+                    total_cache_read += codex_usage.cache_read_input_tokens;
+                    total_cache_creation += codex_usage.cache_creation_input_tokens;
+                    total_cost += codex_usage.cost_usd;
+                }
+                continue;
+            }
             _ => continue,
         };
         if let Some(usage) = usage {
@@ -1033,7 +1232,7 @@ pub fn parse_token_usage_live(output_log_path: &std::path::Path) -> Option<Token
 
     if found_any {
         Some(TokenUsage {
-            cost_usd: 0.0, // Per-turn messages don't include cumulative cost
+            cost_usd: total_cost, // Claude/native per-turn messages don't include cumulative cost
             input_tokens: total_input,
             output_tokens: total_output,
             cache_read_input_tokens: total_cache_read,
@@ -3229,6 +3428,141 @@ mod tests {
         // Should use the result line, not sum of turns
         assert_eq!(usage.input_tokens, 500);
         assert_eq!(usage.output_tokens, 100);
+    }
+
+    #[test]
+    fn test_parse_token_usage_codex_turn_completed_result() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("output.log");
+        std::fs::write(
+            dir.path().join("metadata.json"),
+            r#"{"agent_id":"agent-test","executor":"codex","model":"gpt-5.5","task_id":"t"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            &log_path,
+            r#"{"type":"thread.started","thread_id":"019deb5c"}
+{"type":"turn.started"}
+{"type":"turn.completed","usage":{"input_tokens":289947,"cached_input_tokens":210560,"output_tokens":2408,"reasoning_output_tokens":873}}
+"#,
+        )
+        .unwrap();
+
+        let usage = parse_token_usage(&log_path).unwrap();
+        assert_eq!(usage.input_tokens, 79387);
+        assert_eq!(usage.cache_read_input_tokens, 210560);
+        assert_eq!(usage.output_tokens, 3281);
+        assert!(usage.cost_usd > 0.0);
+        assert!(
+            (usage.cost_usd - 0.495365).abs() < 0.000001,
+            "expected gpt-5.5 pricing ($5/$30 per MTok) with cached input tracked separately, got {}",
+            usage.cost_usd
+        );
+    }
+
+    #[test]
+    fn test_parse_token_usage_live_codex_turn_completed_accumulates() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("output.log");
+        std::fs::write(
+            dir.path().join("metadata.json"),
+            r#"{"agent_id":"agent-test","executor":"codex","model":"gpt-5.5","task_id":"t"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            &log_path,
+            r#"{"type":"turn.completed","usage":{"input_tokens":1000,"cached_input_tokens":400,"output_tokens":20,"reasoning_output_tokens":5}}
+{"type":"turn.completed","usage":{"input_tokens":2000,"cached_input_tokens":1000,"output_tokens":30}}
+"#,
+        )
+        .unwrap();
+
+        let usage = parse_token_usage_live(&log_path).unwrap();
+        assert_eq!(usage.input_tokens, 1600);
+        assert_eq!(usage.cache_read_input_tokens, 1400);
+        assert_eq!(usage.output_tokens, 55);
+        assert!(usage.cost_usd > 0.0);
+    }
+
+    #[test]
+    fn test_parse_token_usage_codex_uses_registry_pricing() {
+        let dir = tempfile::tempdir().unwrap();
+        let wg_dir = dir.path().join(".wg");
+        let agent_dir = wg_dir.join("agents").join("agent-test");
+        std::fs::create_dir_all(&agent_dir).unwrap();
+        std::fs::write(wg_dir.join("graph.jsonl"), "").unwrap();
+        std::fs::write(
+            wg_dir.join("config.toml"),
+            r#"
+[[model_registry]]
+id = "custom-codex"
+provider = "codex"
+model = "custom-codex"
+tier = "standard"
+cost_per_input_mtok = 7.0
+cost_per_output_mtok = 11.0
+prompt_caching = true
+cache_read_discount = 0.5
+"#,
+        )
+        .unwrap();
+
+        let log_path = agent_dir.join("output.log");
+        std::fs::write(
+            agent_dir.join("metadata.json"),
+            r#"{"agent_id":"agent-test","executor":"codex","model":"custom-codex","task_id":"t"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            &log_path,
+            r#"{"type":"turn.completed","usage":{"input_tokens":1000,"cached_input_tokens":250,"output_tokens":10}}
+"#,
+        )
+        .unwrap();
+
+        let usage = parse_token_usage(&log_path).unwrap();
+        assert_eq!(usage.input_tokens, 750);
+        assert_eq!(usage.cache_read_input_tokens, 250);
+        assert_eq!(usage.output_tokens, 10);
+        assert!(
+            (usage.cost_usd - 0.006235).abs() < 0.000001,
+            "expected registry pricing to override fallback, got {}",
+            usage.cost_usd
+        );
+    }
+
+    #[test]
+    fn test_parse_token_usage_codex_infers_model_from_assigned_task() {
+        let dir = tempfile::tempdir().unwrap();
+        let wg_dir = dir.path().join(".wg");
+        let agent_dir = wg_dir.join("agents").join("agent-live-codex");
+        std::fs::create_dir_all(&agent_dir).unwrap();
+        std::fs::write(wg_dir.join("config.toml"), "").unwrap();
+
+        let mut graph = WorkGraph::new();
+        let mut task = make_task("codex-task", "Codex task");
+        task.assigned = Some("agent-live-codex".to_string());
+        task.model = Some("codex:gpt-5.5".to_string());
+        graph.add_node(Node::Task(task));
+        crate::parser::save_graph(&graph, &wg_dir.join("graph.jsonl")).unwrap();
+
+        let log_path = agent_dir.join("output.log");
+        std::fs::write(
+            &log_path,
+            r#"{"type":"turn.completed","usage":{"input_tokens":14815,"cached_input_tokens":12160,"output_tokens":7,"reasoning_output_tokens":0}}
+"#,
+        )
+        .unwrap();
+
+        let usage = parse_token_usage(&log_path).unwrap();
+        assert_eq!(usage.input_tokens, 2655);
+        assert_eq!(usage.cache_read_input_tokens, 12160);
+        assert_eq!(usage.output_tokens, 7);
+        assert!(
+            (usage.cost_usd - 0.013485).abs() < 0.000001,
+            "expected task model fallback to price codex usage, got {}",
+            usage.cost_usd
+        );
     }
 
     #[test]

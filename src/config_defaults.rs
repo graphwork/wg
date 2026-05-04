@@ -494,6 +494,8 @@ fn codex_default_registry() -> Vec<ModelRegistryEntry> {
             tier: Tier::Standard,
             context_window: 1_000_000,
             max_output_tokens: 128_000,
+            cost_per_input_mtok: 2.5,
+            cost_per_output_mtok: 15.0,
             ..Default::default()
         },
         ModelRegistryEntry {
@@ -501,6 +503,10 @@ fn codex_default_registry() -> Vec<ModelRegistryEntry> {
             provider: "codex".to_string(),
             model: "gpt-5.5".to_string(),
             tier: Tier::Premium,
+            context_window: 1_000_000,
+            max_output_tokens: 128_000,
+            cost_per_input_mtok: 5.0,
+            cost_per_output_mtok: 30.0,
             ..Default::default()
         },
     ]

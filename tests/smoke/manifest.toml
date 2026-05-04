@@ -953,3 +953,12 @@ owners = [
 ]
 description = "Pins wg-publish-wcc: `wg publish <task> --wcc` releases every task in the weakly-connected component of <task> in topological order (deps first). Asserts (1) leaf-publish on a 5-node paused linear chain unpauses every node, (2) diamond A→B; A→C; B→D; C→D — `publish d --wcc` releases all four, (3) `--wcc` and `--only` are mutually exclusive at parse time, and (4) per-task 'Task published' log timestamps are monotonically non-decreasing in dep→dependent order. Pre-task this required N invocations of `wg publish` for an N-task batch and agents were writing for-loops; the release shape addresses that ergonomic gap."
 timeout_seconds = 30
+
+[[scenario]]
+name = "codex_token_usage_capture"
+script = "scenarios/codex_token_usage_capture.sh"
+owners = [
+    "fix-codex-agent-2",
+]
+description = "Pins fix-codex-agent-2: Codex `exec --json` `turn.completed` usage events with input_tokens/cached_input_tokens/output_tokens/reasoning_output_tokens must populate Workgraph token usage and estimated cost, while Claude assistant-message and native turn parsing still regressions-test cleanly. No live LLM call required."
+timeout_seconds = 180
