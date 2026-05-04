@@ -1,4 +1,5 @@
 mod agency_bridge;
+pub mod composition_rules;
 pub mod constraint_fidelity;
 mod eval;
 pub mod evolver;

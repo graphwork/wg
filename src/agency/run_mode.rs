@@ -80,14 +80,40 @@ fn scope_matches(primitive_scope: Option<&str>, required_scope: &str) -> bool {
     }
 }
 
+/// Read the effective scope of a `RoleComponent`, preferring the typed
+/// `scope` field and falling back to `metadata["scope"]` for primitives
+/// authored before the typed field landed.
+pub fn component_scope(c: &super::types::RoleComponent) -> Option<&str> {
+    c.scope
+        .as_deref()
+        .or_else(|| c.metadata.get("scope").map(|s| s.as_str()))
+}
+
+/// Read the effective scope of a `DesiredOutcome` (typed field, then metadata).
+pub fn outcome_scope(o: &super::types::DesiredOutcome) -> Option<&str> {
+    o.scope
+        .as_deref()
+        .or_else(|| o.metadata.get("scope").map(|s| s.as_str()))
+}
+
+/// Read the effective scope of a `TradeoffConfig` (typed field, then metadata).
+pub fn tradeoff_scope(t: &super::types::TradeoffConfig) -> Option<&str> {
+    t.scope
+        .as_deref()
+        .or_else(|| t.metadata.get("scope").map(|s| s.as_str()))
+}
+
 /// Filter components by scope, with fallback to unfiltered if no matches.
+///
+/// Reads scope via [`component_scope`] so both the typed field and the
+/// legacy `metadata["scope"]` entry are honoured.
 pub fn filter_components_by_scope(
     components: &[super::types::RoleComponent],
     required_scope: &str,
 ) -> Vec<super::types::RoleComponent> {
     let filtered: Vec<_> = components
         .iter()
-        .filter(|c| scope_matches(c.metadata.get("scope").map(|s| s.as_str()), required_scope))
+        .filter(|c| scope_matches(component_scope(c), required_scope))
         .cloned()
         .collect();
 
@@ -97,6 +123,21 @@ pub fn filter_components_by_scope(
     } else {
         filtered
     }
+}
+
+/// Strict scope filter — does NOT fall back to unfiltered when no primitives
+/// match the required scope. Used by the composer when we need to bias
+/// selection toward scope-tagged primitives without leaking off-scope ones
+/// in. Untagged components still match (backward-compat).
+pub fn filter_components_by_required_scope(
+    components: &[super::types::RoleComponent],
+    required_scope: &str,
+) -> Vec<super::types::RoleComponent> {
+    components
+        .iter()
+        .filter(|c| scope_matches(component_scope(c), required_scope))
+        .cloned()
+        .collect()
 }
 
 // ---------------------------------------------------------------------------

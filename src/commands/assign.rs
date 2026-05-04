@@ -1,10 +1,108 @@
 use anyhow::{Context, Result};
 use std::path::Path;
 use workgraph::agency;
+use workgraph::agency::composition_rules::{
+    CompositionRulesOverlay, default_overlay_path, load_composition_rules,
+};
 use workgraph::config::Config;
 use workgraph::parser::{load_graph, modify_graph};
 
 use super::graph_path;
+
+/// Load the composition-rules overlay from `~/.agency/composition-rules.csv`
+/// (re-reading on every assignment so edits take effect without daemon
+/// restart). Empty overlay when the file is absent or malformed.
+fn load_overlay() -> CompositionRulesOverlay {
+    let Some(path) = default_overlay_path() else {
+        return CompositionRulesOverlay::default();
+    };
+    match load_composition_rules(&path) {
+        Ok(o) => o,
+        Err(e) => {
+            eprintln!(
+                "Warning: failed to read composition rules from {}: {}",
+                path.display(),
+                e
+            );
+            CompositionRulesOverlay::default()
+        }
+    }
+}
+
+/// Bucket an `agency::Agent`'s role into a composition-rules `agent_type`
+/// using the role's well-known name (Assigner / Evaluator / Evolver /
+/// Agent Creator) or the role's typed scope on its components.
+fn agent_type_for_role(role_name: &str) -> &'static str {
+    match role_name {
+        "Assigner" => "assigner",
+        "Evaluator" => "evaluator",
+        "Evolver" => "evolver",
+        "Agent Creator" | "AgentCreator" => "agent_creator",
+        _ => "task",
+    }
+}
+
+/// Apply composition-rules caps to filter an agent pool down to those whose
+/// role component count is within the cap for the agent's `agent_type`.
+///
+/// If no rule applies (or the cap is `None`), every agent passes through.
+/// If applying the cap would empty the pool, the unfiltered pool is
+/// returned with a warning printed — the caller still needs *some* agent
+/// to assign, and silently failing assignment is worse than violating a
+/// (possibly stale) cap.
+fn apply_caps(
+    overlay: &CompositionRulesOverlay,
+    agents: &[agency::Agent],
+    roles_dir: &Path,
+) -> Vec<agency::Agent> {
+    let mut filtered: Vec<agency::Agent> = Vec::with_capacity(agents.len());
+    let mut dropped = Vec::new();
+
+    for agent in agents {
+        let role = match agency::find_role_by_prefix(roles_dir, &agent.role_id) {
+            Ok(r) => r,
+            Err(_) => {
+                // Role missing — keep the agent; cap doesn't apply.
+                filtered.push(agent.clone());
+                continue;
+            }
+        };
+        let agent_type = agent_type_for_role(&role.name);
+        let Some(rule) = overlay.rule_for(agent_type) else {
+            filtered.push(agent.clone());
+            continue;
+        };
+        if rule.role_components_within_cap(role.component_ids.len()) {
+            filtered.push(agent.clone());
+        } else {
+            dropped.push(format!(
+                "{} (role '{}' has {} components > cap {})",
+                agency::short_hash(&agent.id),
+                role.name,
+                role.component_ids.len(),
+                rule.max_role_components.unwrap_or(0),
+            ));
+        }
+    }
+
+    if filtered.is_empty() && !agents.is_empty() {
+        eprintln!(
+            "Warning: composition-rules cap would block every candidate agent ({} dropped: {}). \
+             Falling back to unfiltered pool.",
+            dropped.len(),
+            dropped.join(", ")
+        );
+        return agents.to_vec();
+    }
+    if !dropped.is_empty() {
+        eprintln!(
+            "[assign] composition-rules cap dropped {} agent(s): {}",
+            dropped.len(),
+            dropped.join(", ")
+        );
+    }
+    filtered
+}
 
 /// Record an evaluation against the assigner special agent's performance.
 ///
@@ -177,6 +275,12 @@ fn run_auto_assign(dir: &Path, path: &Path, task_id: &str) -> Result<()> {
              Use 'wg agent create' to create agents first."
         );
     }
+
+    // Apply composition-rules caps from ~/.agency/composition-rules.csv
+    // (re-read on every assignment so edits take effect without restart).
+    let overlay = load_overlay();
+    let roles_dir = agency_dir.join("cache/roles");
+    let all_agents = apply_caps(&overlay, &all_agents, &roles_dir);
 
     // Select the agent with the highest performance score, defaulting to the first agent
     let selected_agent = all_agents

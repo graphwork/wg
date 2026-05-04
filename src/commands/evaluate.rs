@@ -7,7 +7,7 @@ use workgraph::agency::{
     self, Evaluation, EvaluatorInput, FlipComparisonInput, FlipInferenceInput, eval_source,
     load_all_evaluations_or_warn, load_role, load_tradeoff, record_evaluation,
     record_evaluation_with_inference, render_evaluator_prompt, render_flip_comparison_prompt,
-    render_flip_inference_prompt, render_identity_prompt_rich, resolve_all_components,
+    render_flip_inference_prompt, render_identity_prompt_rich, resolve_all_components_for_scope,
     resolve_outcome,
 };
 use workgraph::config::Config;
@@ -285,7 +285,17 @@ pub fn run(
             let eval_tradeoff_path = tradeoffs_dir.join(format!("{}.yaml", eval_agent.tradeoff_id));
             let eval_tradeoff = load_tradeoff(&eval_tradeoff_path).ok()?;
             let workgraph_root = dir;
-            let resolved_skills = resolve_all_components(&eval_role, workgraph_root, &agency_dir);
+            // Bias composer toward `meta:evaluator`-scoped components when
+            // composing the evaluator's own identity. Untagged components
+            // still flow through (backward-compat); off-scope ones are
+            // dropped so a bundled role doesn't pull in assigner/evolver
+            // skills it shouldn't show as evaluator capabilities.
+            let resolved_skills = resolve_all_components_for_scope(
+                &eval_role,
+                workgraph_root,
+                &agency_dir,
+                Some("meta:evaluator"),
+            );
             let outcome = resolve_outcome(&eval_role.outcome_id, &agency_dir);
             Some(render_identity_prompt_rich(
                 &eval_role,

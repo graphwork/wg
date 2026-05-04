@@ -284,55 +284,70 @@ pub fn starter_tradeoffs() -> Vec<TradeoffConfig> {
 
 /// Return the role components for the assigner special agent.
 pub fn assigner_components() -> Vec<RoleComponent> {
-    vec![
-        build_component(
-            "task-to-component-matching",
-            "Evaluate closeness of fit between a task description and each candidate role component.",
-            ComponentCategory::Novel,
-            ContentRef::Name("task-to-component-matching".into()),
-        ),
-        build_component(
-            "task-to-outcome-matching",
-            "Evaluate closeness of fit between task requirements and a desired outcome specification.",
-            ComponentCategory::Novel,
-            ContentRef::Name("task-to-outcome-matching".into()),
-        ),
-        build_component(
-            "task-to-tradeoff-matching",
-            "Evaluate whether a task's constraints are compatible with a candidate trade-off configuration.",
-            ComponentCategory::Novel,
-            ContentRef::Name("task-to-tradeoff-matching".into()),
-        ),
-        build_component(
-            "historical-performance-weighting",
-            "Use past evaluation data on agents and primitives to weight match scores. A role component with strong performance in analogous tasks receives higher match weight.",
-            ComponentCategory::Novel,
-            ContentRef::Name("historical-performance-weighting".into()),
-        ),
-        build_component(
-            "composition-cache-search",
-            "Query the composition cache for pre-composed agents, rank by fit score, return best match. Used in performance mode.",
-            ComponentCategory::Novel,
-            ContentRef::Name("composition-cache-search".into()),
-        ),
-        build_component(
-            "primitive-first-composition",
-            "Assemble novel agent configurations from the primitive store without cache bias; record the composition rationale for retrospective analysis. Used in learning mode.",
-            ComponentCategory::Novel,
-            ContentRef::Name("primitive-first-composition".into()),
-        ),
-        build_component(
-            "task-clarification",
-            "When a task is missing one or more well-formed criteria (what it is, how to know when done, how to evaluate quality), request clarification before assigning.",
-            ComponentCategory::Novel,
-            ContentRef::Name("task-clarification".into()),
-        ),
-    ]
+    tag_scope(
+        vec![
+            build_component(
+                "task-to-component-matching",
+                "Evaluate closeness of fit between a task description and each candidate role component.",
+                ComponentCategory::Novel,
+                ContentRef::Name("task-to-component-matching".into()),
+            ),
+            build_component(
+                "task-to-outcome-matching",
+                "Evaluate closeness of fit between task requirements and a desired outcome specification.",
+                ComponentCategory::Novel,
+                ContentRef::Name("task-to-outcome-matching".into()),
+            ),
+            build_component(
+                "task-to-tradeoff-matching",
+                "Evaluate whether a task's constraints are compatible with a candidate trade-off configuration.",
+                ComponentCategory::Novel,
+                ContentRef::Name("task-to-tradeoff-matching".into()),
+            ),
+            build_component(
+                "historical-performance-weighting",
+                "Use past evaluation data on agents and primitives to weight match scores. A role component with strong performance in analogous tasks receives higher match weight.",
+                ComponentCategory::Novel,
+                ContentRef::Name("historical-performance-weighting".into()),
+            ),
+            build_component(
+                "composition-cache-search",
+                "Query the composition cache for pre-composed agents, rank by fit score, return best match. Used in performance mode.",
+                ComponentCategory::Novel,
+                ContentRef::Name("composition-cache-search".into()),
+            ),
+            build_component(
+                "primitive-first-composition",
+                "Assemble novel agent configurations from the primitive store without cache bias; record the composition rationale for retrospective analysis. Used in learning mode.",
+                ComponentCategory::Novel,
+                ContentRef::Name("primitive-first-composition".into()),
+            ),
+            build_component(
+                "task-clarification",
+                "When a task is missing one or more well-formed criteria (what it is, how to know when done, how to evaluate quality), request clarification before assigning.",
+                ComponentCategory::Novel,
+                ContentRef::Name("task-clarification".into()),
+            ),
+        ],
+        "meta:assigner",
+    )
+}
+
+/// Tag every component in `components` with the given scope, leaving other
+/// fields (and the content-derived hash ID) untouched.
+fn tag_scope(components: Vec<RoleComponent>, scope: &str) -> Vec<RoleComponent> {
+    components
+        .into_iter()
+        .map(|mut c| {
+            c.scope = Some(scope.to_string());
+            c
+        })
+        .collect()
 }
 
 /// Return the role components for the evaluator special agent.
 pub fn evaluator_components() -> Vec<RoleComponent> {
-    vec![
+    tag_scope(vec![
         build_component(
             "cardinal-scale-grading",
             "Produce a numerical score (0.0–1.0) with calibrated confidence. The primary grading modality.",
@@ -369,12 +384,12 @@ pub fn evaluator_components() -> Vec<RoleComponent> {
             ComponentCategory::Novel,
             ContentRef::Name("grade-transparency".into()),
         ),
-    ]
+    ], "meta:evaluator")
 }
 
 /// Return the role components for the evolver special agent.
 pub fn evolver_components() -> Vec<RoleComponent> {
-    vec![
+    tag_scope(vec![
         build_component(
             "wording-mutation",
             "Change the wording of a role component while preserving its general meaning. Tests whether articulation precision affects performance.",
@@ -423,12 +438,12 @@ pub fn evolver_components() -> Vec<RoleComponent> {
             ComponentCategory::Novel,
             ContentRef::Name("retirement-identification".into()),
         ),
-    ]
+    ], "meta:evolver")
 }
 
 /// Return the role components for the agent creator special agent.
 pub fn creator_components() -> Vec<RoleComponent> {
-    vec![
+    tag_scope(vec![
         build_component(
             "research-literature-search",
             "Search academic and practitioner literature for documented effective role structures, workflows, or task execution patterns. Target: role components and desired outcomes that have empirical grounding.",
@@ -465,12 +480,15 @@ pub fn creator_components() -> Vec<RoleComponent> {
             ComponentCategory::Novel,
             ContentRef::Name("primitive-candidate-specification".into()),
         ),
-    ]
+    ], "meta:agent_creator")
 }
 
 /// Return the desired outcomes for special agents.
+///
+/// Each outcome is tagged with the agency v1.2.4 scope of the special agent
+/// it serves so the composer can bias selection at runtime.
 pub fn special_agent_outcomes() -> Vec<DesiredOutcome> {
-    vec![
+    let mut outcomes = vec![
         build_outcome(
             "Optimal agent-task assignment",
             "The closest available agent configuration for the task, with a confidence score, a match rationale, and a flag if the task was underspecified.",
@@ -508,12 +526,21 @@ pub fn special_agent_outcomes() -> Vec<DesiredOutcome> {
                 "Absorptive capacity assessment provided".into(),
             ],
         ),
-    ]
+    ];
+    // Tag in declaration order: assigner, evaluator, evolver, agent_creator.
+    let scopes = ["meta:assigner", "meta:evaluator", "meta:evolver", "meta:agent_creator"];
+    for (o, scope) in outcomes.iter_mut().zip(scopes.iter()) {
+        o.scope = Some((*scope).to_string());
+    }
+    outcomes
 }
 
 /// Return the trade-off configurations for special agents.
+///
+/// Each tradeoff is tagged with the scope of the special agent it serves
+/// (`meta:assigner`, `meta:evaluator`, …) so the composer can bias selection.
 pub fn special_agent_tradeoffs() -> Vec<TradeoffConfig> {
-    vec![
+    let mut tradeoffs = vec![
         // Assigner tradeoffs
         build_tradeoff(
             "Assigner Balanced",
@@ -602,7 +629,21 @@ pub fn special_agent_tradeoffs() -> Vec<TradeoffConfig> {
                 "Importing without checking existing store overlap".into(),
             ],
         ),
-    ]
+    ];
+    // Tag in declaration order: 1 Assigner, 1 Evaluator, 1 Evolver, then 4 Creator variants.
+    let scopes = [
+        "meta:assigner",
+        "meta:evaluator",
+        "meta:evolver",
+        "meta:agent_creator",
+        "meta:agent_creator",
+        "meta:agent_creator",
+        "meta:agent_creator",
+    ];
+    for (t, scope) in tradeoffs.iter_mut().zip(scopes.iter()) {
+        t.scope = Some((*scope).to_string());
+    }
+    tradeoffs
 }
 
 /// Return the roles for special agents, composed from their specific components and outcomes.
