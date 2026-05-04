@@ -11,7 +11,10 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 
-use crate::config::{CLAUDE_HAIKU_MODEL_ID, Config, DispatchRole, ModelRegistryEntry, parse_model_spec};
+use crate::config::{
+    CLAUDE_HAIKU_MODEL_ID, CLAUDE_OPUS_MODEL_ID, CLAUDE_SONNET_MODEL_ID, Config, DispatchRole,
+    ModelRegistryEntry, parse_model_spec,
+};
 use crate::dispatch::{ExecutorKind, handler_for_model};
 use crate::graph::TokenUsage;
 
@@ -65,6 +68,35 @@ pub struct AgencyDispatch {
     pub model_id: String,
 }
 
+/// Convert provider/model Claude IDs into the bare aliases accepted by the
+/// Claude CLI. OpenRouter and registry entries use IDs like
+/// `anthropic/claude-haiku-4-5`, but the CLI expects `haiku`, `sonnet`, or
+/// `opus`.
+fn claude_cli_alias_for_model(model_id: &str) -> Option<&'static str> {
+    let lower = model_id.to_ascii_lowercase();
+    let claude_part = lower.strip_prefix("anthropic/").unwrap_or(lower.as_str());
+
+    if !claude_part.starts_with("claude") {
+        return None;
+    }
+
+    if claude_part.contains("haiku") {
+        Some(CLAUDE_HAIKU_MODEL_ID)
+    } else if claude_part.contains("sonnet") {
+        Some(CLAUDE_SONNET_MODEL_ID)
+    } else if claude_part.contains("opus") {
+        Some(CLAUDE_OPUS_MODEL_ID)
+    } else {
+        None
+    }
+}
+
+fn normalize_claude_cli_model(model_id: &str) -> String {
+    claude_cli_alias_for_model(model_id)
+        .unwrap_or(model_id)
+        .to_string()
+}
+
 /// Resolve which handler+model an agency one-shot role should dispatch to.
 ///
 /// Contract (matches CLAUDE.md "explicit overrides win, cascade does not"):
@@ -88,13 +120,18 @@ pub fn resolve_agency_dispatch(config: &Config, role: DispatchRole) -> AgencyDis
         .and_then(|c| c.model.clone())
         .unwrap_or_else(|| CLAUDE_HAIKU_MODEL_ID.to_string());
 
-    let handler = handler_for_model(&raw_spec);
     let spec = parse_model_spec(&raw_spec);
+    let claude_cli_alias = claude_cli_alias_for_model(&spec.model_id);
+    let handler = if claude_cli_alias.is_some() {
+        ExecutorKind::Claude
+    } else {
+        handler_for_model(&raw_spec)
+    };
 
     AgencyDispatch {
         handler,
         raw_spec,
-        model_id: spec.model_id,
+        model_id: claude_cli_alias.unwrap_or(&spec.model_id).to_string(),
     }
 }
 
@@ -218,6 +255,8 @@ fn estimate_cost(entry: &ModelRegistryEntry, usage: &TokenUsage) -> f64 {
 
 fn call_claude_cli(model: &str, prompt: &str, timeout_secs: u64) -> Result<LlmCallResult> {
     use std::io::Write as _;
+
+    let model = normalize_claude_cli_model(model);
 
     // Pipe the prompt via stdin instead of passing it as a CLI argument.
     // Eval prompts can be very large (30KB+ with diffs, logs, artifacts) and
@@ -851,19 +890,115 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_agency_dispatch_native_override_routes_to_native() {
-        // openrouter:* / local:* / oai-compat:* explicit overrides keep the
-        // existing native HTTP dispatch path — they're real HTTP providers,
-        // not CLI handlers.
+    fn test_resolve_agency_dispatch_anthropic_slash_model_routes_to_claude_cli() {
+        // Regression for fix-evaluator-role: registry/OpenRouter model IDs
+        // like `anthropic/claude-haiku-4-5` are Claude models, but the
+        // Claude CLI only accepts the bare family alias.
         let mut config = Config::default();
         config
             .models
-            .set_model(DispatchRole::Assigner, "openrouter:anthropic/claude-sonnet-4-6");
+            .set_model(DispatchRole::Evaluator, "anthropic/claude-haiku-4-5");
+
+        let dispatch = resolve_agency_dispatch(&config, DispatchRole::Evaluator);
+        assert_eq!(
+            dispatch.handler,
+            ExecutorKind::Claude,
+            "slash-form Claude evaluator model must bypass native/OpenRouter"
+        );
+        assert_eq!(dispatch.raw_spec, "anthropic/claude-haiku-4-5");
+        assert_eq!(dispatch.model_id, "haiku");
+    }
+
+    #[test]
+    fn test_resolve_agency_dispatch_openrouter_claude_model_bypasses_openrouter() {
+        // Even when the model is written with an OpenRouter prefix, agency
+        // one-shot roles should not detour through OpenRouter just to call a
+        // Claude-family model.
+        let mut config = Config::default();
+        config.models.set_model(
+            DispatchRole::Evaluator,
+            "openrouter:anthropic/claude-sonnet-4-6",
+        );
+
+        let dispatch = resolve_agency_dispatch(&config, DispatchRole::Evaluator);
+        assert_eq!(dispatch.handler, ExecutorKind::Claude);
+        assert_eq!(dispatch.raw_spec, "openrouter:anthropic/claude-sonnet-4-6");
+        assert_eq!(dispatch.model_id, "sonnet");
+    }
+
+    #[test]
+    fn test_resolve_agency_dispatch_anthropic_slash_model_for_all_agency_roles() {
+        // Audit coverage: evaluator, assigner, and both FLIP phases share the
+        // same one-shot dispatch path.
+        for (role, model, expected_alias) in [
+            (
+                DispatchRole::Evaluator,
+                "anthropic/claude-haiku-4-5",
+                "haiku",
+            ),
+            (
+                DispatchRole::FlipInference,
+                "anthropic/claude-sonnet-4-6",
+                "sonnet",
+            ),
+            (
+                DispatchRole::FlipComparison,
+                "anthropic/claude-opus-4-7",
+                "opus",
+            ),
+            (
+                DispatchRole::Assigner,
+                "anthropic/claude-3.5-haiku",
+                "haiku",
+            ),
+        ] {
+            let mut config = Config::default();
+            config.models.set_model(role, model);
+            let dispatch = resolve_agency_dispatch(&config, role);
+            assert_eq!(
+                dispatch.handler,
+                ExecutorKind::Claude,
+                "role {:?} should route Claude-family slash models to Claude CLI",
+                role
+            );
+            assert_eq!(dispatch.model_id, expected_alias, "role {:?}", role);
+        }
+    }
+
+    #[test]
+    fn test_claude_cli_model_normalization() {
+        assert_eq!(
+            normalize_claude_cli_model("anthropic/claude-haiku-4-5"),
+            "haiku"
+        );
+        assert_eq!(
+            normalize_claude_cli_model("anthropic/claude-sonnet-4-6"),
+            "sonnet"
+        );
+        assert_eq!(
+            normalize_claude_cli_model("anthropic/claude-opus-4-7"),
+            "opus"
+        );
+        assert_eq!(normalize_claude_cli_model("haiku"), "haiku");
+        assert_eq!(
+            normalize_claude_cli_model("qwen/qwen3-coder"),
+            "qwen/qwen3-coder"
+        );
+    }
+
+    #[test]
+    fn test_resolve_agency_dispatch_native_override_routes_to_native() {
+        // openrouter:* / local:* / oai-compat:* explicit overrides for
+        // non-Claude models keep the existing native HTTP dispatch path.
+        let mut config = Config::default();
+        config
+            .models
+            .set_model(DispatchRole::Assigner, "openrouter:qwen/qwen3-coder");
 
         let dispatch = resolve_agency_dispatch(&config, DispatchRole::Assigner);
         assert_eq!(dispatch.handler, ExecutorKind::Native);
-        assert_eq!(dispatch.raw_spec, "openrouter:anthropic/claude-sonnet-4-6");
-        assert_eq!(dispatch.model_id, "anthropic/claude-sonnet-4-6");
+        assert_eq!(dispatch.raw_spec, "openrouter:qwen/qwen3-coder");
+        assert_eq!(dispatch.model_id, "qwen/qwen3-coder");
     }
 
     #[test]

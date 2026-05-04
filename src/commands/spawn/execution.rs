@@ -1423,6 +1423,11 @@ fi
 # still alive, so it can react to conflicts. This wrapper only handles the
 # cleanup marker for the coordinator sweep.
 if [ -n "$WG_WORKTREE_PATH" ] && [ -n "$WG_BRANCH" ] && [ -n "$WG_PROJECT_ROOT" ]; then
+    CURRENT_DIR_REAL=$(pwd -P 2>/dev/null || pwd)
+    WORKTREE_PATH_REAL=$(cd "$WG_WORKTREE_PATH" 2>/dev/null && pwd -P || printf '%s' "$WG_WORKTREE_PATH")
+    if [ "$CURRENT_DIR_REAL" != "$WORKTREE_PATH_REAL" ]; then
+        echo "[wrapper] WARNING: Skipping worktree cleanup because current directory '$CURRENT_DIR_REAL' does not match WG_WORKTREE_PATH '$WORKTREE_PATH_REAL' — possible inherited parent agent environment" >> "$OUTPUT_FILE"
+    else
     if [ ! -e "$WG_WORKTREE_PATH/.git" ]; then
         echo "[wrapper] WARNING: Worktree .git pointer missing at $WG_WORKTREE_PATH — possible worktree escape detected" >> "$OUTPUT_FILE"
     fi
@@ -1444,6 +1449,7 @@ if [ -n "$WG_WORKTREE_PATH" ] && [ -n "$WG_BRANCH" ] && [ -n "$WG_PROJECT_ROOT" 
         rm -rf "$WG_WORKTREE_PATH/target" 2>/dev/null \
             && echo "[wrapper] Reaped target/ from $WG_WORKTREE_PATH" >> "$OUTPUT_FILE" \
             || echo "[wrapper] WARNING: failed to reap target/ from $WG_WORKTREE_PATH" >> "$OUTPUT_FILE"
+    fi
     fi
 fi
 

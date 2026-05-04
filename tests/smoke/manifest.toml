@@ -462,6 +462,16 @@ description = "Agency MUST honor explicit `[models.assigner]` / `[models.evaluat
 timeout_seconds = 60
 
 [[scenario]]
+name = "evaluator_claude_slash_model_bypasses_openrouter"
+script = "scenarios/evaluator_claude_slash_model_bypasses_openrouter.sh"
+owners = [
+    "fix-evaluator-role",
+    "smoke-gate-is",
+]
+description = "Evaluator one-shot roles configured with Claude registry/OpenRouter IDs such as `anthropic/claude-haiku-4-5` must call the Claude CLI directly as `--model haiku`, without first trying native OpenRouter and without passing the slash-form model to the CLI. Regression for fix-evaluator-role: no OpenRouter key caused a native OpenRouter failure, then the Claude CLI fallback failed because it received `anthropic/claude-haiku-4-5` instead of `haiku`."
+timeout_seconds = 60
+
+[[scenario]]
 name = "dispatcher_kick_bypasses_settling_delay"
 script = "scenarios/dispatcher_kick_bypasses_settling_delay.sh"
 owners = [

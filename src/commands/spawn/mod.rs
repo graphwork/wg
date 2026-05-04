@@ -873,6 +873,14 @@ mod tests {
             script.contains("touch \"$WG_WORKTREE_PATH/.wg-cleanup-pending\""),
             "Marker must be written inside the worktree, guarded by WG_WORKTREE_PATH"
         );
+        assert!(
+            script.contains("CURRENT_DIR_REAL=$(pwd -P"),
+            "Wrapper must verify it is running inside WG_WORKTREE_PATH before cleanup"
+        );
+        assert!(
+            script.contains("Skipping worktree cleanup"),
+            "Wrapper must skip cleanup when WG_WORKTREE_PATH was inherited from a parent agent"
+        );
     }
 
     #[test]

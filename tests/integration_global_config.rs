@@ -408,7 +408,7 @@ fn global_write_does_not_affect_local() {
         &tmp,
         Some(
             r#"
-[coordinator]
+[dispatcher]
 max_agents = 2
 "#,
         ),
