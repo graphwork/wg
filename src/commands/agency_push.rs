@@ -2,7 +2,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 
-use workgraph::agency::{AgencyStore, LocalStore};
+use workgraph::agency::{AgencyStore, DesiredOutcome, LocalStore, RoleComponent, TradeoffConfig};
 use workgraph::federation::{self, EntityFilter, TransferOptions};
 
 /// Options for the push command.
@@ -16,6 +16,14 @@ pub struct PushOptions<'a> {
     pub entity_ids: &'a [String],
     pub entity_type: Option<&'a str>,
     pub json: bool,
+}
+
+/// Options for `wg agency export`.
+pub struct ExportOptions<'a> {
+    pub output: &'a str,
+    pub format: &'a str,
+    pub filter: Option<&'a str>,
+    pub global: bool,
 }
 
 /// Get the local (source) store for push.
@@ -36,6 +44,238 @@ fn local_store(workgraph_dir: &Path, global: bool) -> Result<LocalStore> {
         }
     }
     Ok(LocalStore::new(&path))
+}
+
+const AGENCY_CSV_HEADERS: [&str; 12] = [
+    "type",
+    "name",
+    "description",
+    "quality",
+    "domain_specificity",
+    "domain",
+    "origin_instance_id",
+    "parent_content_hash",
+    "scope",
+    "parent_ids",
+    "generation",
+    "created_by",
+];
+
+#[derive(Debug, Clone)]
+struct AgencyCsvRow {
+    type_rank: u8,
+    type_name: &'static str,
+    name: String,
+    id: String,
+    fields: [String; 12],
+}
+
+pub fn run_export(workgraph_dir: &Path, opts: &ExportOptions<'_>) -> Result<()> {
+    if opts.format != "agency-csv" {
+        anyhow::bail!(
+            "Unsupported agency export format '{}'. Use: agency-csv",
+            opts.format
+        );
+    }
+
+    let source = local_store(workgraph_dir, opts.global)?;
+    let origin_filter = parse_origin_filter(opts.filter)?;
+
+    let mut rows = Vec::new();
+    for component in source.load_components()? {
+        if include_metadata(&component.metadata, origin_filter.as_deref()) {
+            rows.push(row_from_component(component)?);
+        }
+    }
+    for outcome in source.load_outcomes()? {
+        if include_metadata(&outcome.metadata, origin_filter.as_deref()) {
+            rows.push(row_from_outcome(outcome)?);
+        }
+    }
+    for tradeoff in source.load_tradeoffs()? {
+        if include_metadata(&tradeoff.metadata, origin_filter.as_deref()) {
+            rows.push(row_from_tradeoff(tradeoff)?);
+        }
+    }
+
+    rows.sort_by(|a, b| {
+        (a.type_rank, a.name.as_str(), a.id.as_str()).cmp(&(
+            b.type_rank,
+            b.name.as_str(),
+            b.id.as_str(),
+        ))
+    });
+
+    let csv_bytes = write_agency_csv(&rows)?;
+    if opts.output == "-" {
+        print!(
+            "{}",
+            String::from_utf8(csv_bytes).context("CSV output was not UTF-8")?
+        );
+    } else {
+        std::fs::write(opts.output, csv_bytes)
+            .with_context(|| format!("Failed to write '{}'", opts.output))?;
+    }
+
+    Ok(())
+}
+
+fn parse_origin_filter(filter: Option<&str>) -> Result<Option<String>> {
+    match filter {
+        None => Ok(None),
+        Some(raw) if raw.trim().is_empty() => Ok(None),
+        Some(raw) => {
+            let Some(value) = raw.strip_prefix("origin_instance_id=") else {
+                anyhow::bail!(
+                    "Unsupported agency export filter '{}'. Use origin_instance_id=<value>",
+                    raw
+                );
+            };
+            Ok(Some(value.to_string()))
+        }
+    }
+}
+
+fn include_metadata(
+    metadata: &std::collections::HashMap<String, String>,
+    origin_filter: Option<&str>,
+) -> bool {
+    origin_filter
+        .map(|origin| {
+            metadata
+                .get("origin_instance_id")
+                .is_some_and(|value| value == origin)
+        })
+        .unwrap_or(true)
+}
+
+fn write_agency_csv(rows: &[AgencyCsvRow]) -> Result<Vec<u8>> {
+    let mut output = Vec::new();
+    {
+        let mut writer = csv::WriterBuilder::new()
+            .terminator(csv::Terminator::Any(b'\n'))
+            .quote_style(csv::QuoteStyle::Necessary)
+            .from_writer(&mut output);
+        writer.write_record(AGENCY_CSV_HEADERS)?;
+        for row in rows {
+            debug_assert_eq!(row.fields[0], row.type_name);
+            writer.write_record(&row.fields)?;
+        }
+        writer.flush()?;
+    }
+    Ok(output)
+}
+
+fn row_from_component(component: RoleComponent) -> Result<AgencyCsvRow> {
+    let fields = agency_csv_fields(
+        "role_component",
+        &component.name,
+        &component.description,
+        &component.performance,
+        &component.lineage,
+        &component.domain_tags,
+        &component.metadata,
+    )?;
+    Ok(AgencyCsvRow {
+        type_rank: 0,
+        type_name: "role_component",
+        name: component.name,
+        id: component.id,
+        fields,
+    })
+}
+
+fn row_from_outcome(outcome: DesiredOutcome) -> Result<AgencyCsvRow> {
+    let fields = agency_csv_fields(
+        "desired_outcome",
+        &outcome.name,
+        &outcome.description,
+        &outcome.performance,
+        &outcome.lineage,
+        &outcome.domain_tags,
+        &outcome.metadata,
+    )?;
+    Ok(AgencyCsvRow {
+        type_rank: 1,
+        type_name: "desired_outcome",
+        name: outcome.name,
+        id: outcome.id,
+        fields,
+    })
+}
+
+fn row_from_tradeoff(tradeoff: TradeoffConfig) -> Result<AgencyCsvRow> {
+    let fields = agency_csv_fields(
+        "trade_off_config",
+        &tradeoff.name,
+        &tradeoff.description,
+        &tradeoff.performance,
+        &tradeoff.lineage,
+        &tradeoff.domain_tags,
+        &tradeoff.metadata,
+    )?;
+    Ok(AgencyCsvRow {
+        type_rank: 2,
+        type_name: "trade_off_config",
+        name: tradeoff.name,
+        id: tradeoff.id,
+        fields,
+    })
+}
+
+fn agency_csv_fields(
+    type_name: &str,
+    name: &str,
+    description: &str,
+    performance: &workgraph::agency::PerformanceRecord,
+    lineage: &workgraph::agency::Lineage,
+    domain_tags: &[String],
+    metadata: &std::collections::HashMap<String, String>,
+) -> Result<[String; 12]> {
+    let quality = metadata
+        .get("agency_quality")
+        .cloned()
+        .unwrap_or_else(|| quality_from_score(performance.avg_score));
+    let parent_ids = metadata
+        .get("parent_ids")
+        .cloned()
+        .unwrap_or_else(|| parent_ids_json(&lineage.parent_ids));
+
+    Ok([
+        type_name.to_string(),
+        name.to_string(),
+        description.to_string(),
+        quality,
+        metadata
+            .get("domain_specificity")
+            .cloned()
+            .unwrap_or_default(),
+        domain_tags.join(","),
+        metadata
+            .get("origin_instance_id")
+            .cloned()
+            .unwrap_or_default(),
+        metadata
+            .get("parent_content_hash")
+            .cloned()
+            .unwrap_or_default(),
+        metadata.get("scope").cloned().unwrap_or_default(),
+        parent_ids,
+        lineage.generation.to_string(),
+        lineage.created_by.clone(),
+    ])
+}
+
+fn quality_from_score(score: Option<f64>) -> String {
+    ((score.unwrap_or(1.0) * 100.0).round() as u32).to_string()
+}
+
+fn parent_ids_json(parent_ids: &[String]) -> String {
+    if parent_ids.is_empty() {
+        String::new()
+    } else {
+        serde_json::to_string(parent_ids).unwrap_or_default()
+    }
 }
 
 pub fn run(workgraph_dir: &Path, opts: &PushOptions<'_>) -> Result<()> {
@@ -278,12 +518,10 @@ mod tests {
             },
         );
         assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("Unknown entity type")
-        );
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Unknown entity type"));
     }
 
     #[test]
@@ -298,12 +536,10 @@ mod tests {
 
         let result = run(&wg_dir, &default_opts(target_path.to_str().unwrap()));
         assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("No local agency store")
-        );
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("No local agency store"));
     }
 
     #[test]

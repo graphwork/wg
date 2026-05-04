@@ -17,6 +17,15 @@
 # introduced the regression and the task that fixed it.
 
 [[scenario]]
+name = "agency_csv_roundtrip"
+script = "scenarios/agency_csv_roundtrip.sh"
+owners = [
+    "impl-agency-csv-roundtrip",
+]
+description = "Pins Agency's 12-column starter CSV import/export contract: `wg agency import --format agency-csv` followed by `wg agency export --format agency-csv` must byte-equal the fixture, including domain comma cells and parent_ids JSON arrays."
+timeout_seconds = 30
+
+[[scenario]]
 name = "dev_check_branch_and_binary_freshness"
 script = "scenarios/dev_check_branch_and_binary_freshness.sh"
 owners = [

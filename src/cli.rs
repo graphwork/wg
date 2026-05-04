@@ -4035,6 +4035,10 @@ pub enum AgencyCommands {
         /// Path to the CSV file to import (omit when using --url or --upstream)
         csv_path: Option<String>,
 
+        /// Import format (agency-csv; default auto-detects compatible CSV files)
+        #[arg(long)]
+        format: Option<String>,
+
         /// Fetch CSV from a remote URL instead of local file
         #[arg(long)]
         url: Option<String>,
@@ -4058,6 +4062,24 @@ pub enum AgencyCommands {
         /// Only check if upstream has changed (exit 0 = changed, exit 1 = same)
         #[arg(long)]
         check: bool,
+    },
+
+    /// Export local primitives as Agency CSV
+    Export {
+        /// Output CSV path, or '-' for stdout
+        output: String,
+
+        /// Export format (agency-csv)
+        #[arg(long, default_value = "agency-csv")]
+        format: String,
+
+        /// Filter rows, currently origin_instance_id=<value>
+        #[arg(long)]
+        filter: Option<String>,
+
+        /// Export from ~/.wg/agency/ instead of local project
+        #[arg(long)]
+        global: bool,
     },
 
     /// Push local entities to another agency store

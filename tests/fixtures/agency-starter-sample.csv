@@ -1,0 +1,7 @@
+type,name,description,quality,domain_specificity,domain,origin_instance_id,parent_content_hash,scope,parent_ids,generation,created_by
+role_component,Absorb External Patterns,Recognise and import known-good primitives from other Agency instances,80,high,federation,agency-starter,pch-absorb,task,"[""pch-absorb"",""root-alpha""]",2,import
+role_component,Identify Gaps,Identify gaps and errors in provided content,85,high,"analysis,review",agency-starter,pch-gaps,task,"[""pch-gaps"",""root-beta""]",1,human
+role_component,Scope Agency Work,Route agency work to the right task scope,75,medium,meta,agency-starter,,meta:assigner,"[""scope-root""]",3,agent_creator
+desired_outcome,Accurate Analysis,Analysis is thorough and identifies all issues,90,medium,analysis,agency-starter,,task,[],0,evolver
+trade_off_config,Prefer Depth,Prefer deeper analysis of fewer items over shallow coverage of many,70,low,"analysis,research",agency-starter,pch-depth,task,"[""pch-depth""]",1,human
+trade_off_config,Prefer Reliability,Prefer tested reliable changes over speculative shortcuts,100,general,engineering,agency-starter,,task,[],0,import

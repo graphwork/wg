@@ -24,6 +24,8 @@ pub struct ImportCounts {
 pub struct ImportManifest {
     pub source: String,
     pub version: String,
+    #[serde(default)]
+    pub schema: Option<String>,
     pub imported_at: String,
     pub counts: ManifestCounts,
     pub content_hash: String,
@@ -58,6 +60,7 @@ pub fn write_manifest(
     let manifest = ImportManifest {
         source: source.to_string(),
         version: format!("v{}", env!("CARGO_PKG_VERSION")),
+        schema: Some("agency-12col-v1".to_string()),
         imported_at: chrono::Utc::now().to_rfc3339(),
         counts: ManifestCounts {
             role_components: counts.role_components,
@@ -77,10 +80,21 @@ pub struct ImportOptions {
     pub csv_path: Option<String>,
     pub url: Option<String>,
     pub upstream: bool,
+    pub format: Option<String>,
     pub dry_run: bool,
     pub tag: Option<String>,
     pub force: bool,
     pub check: bool,
+}
+
+#[derive(Debug, Clone)]
+struct ParsedCsvColumns {
+    quality_score: Option<f64>,
+    domain_tags: Vec<String>,
+    metadata: HashMap<String, String>,
+    parent_ids: Vec<String>,
+    generation: u32,
+    created_by: Option<String>,
 }
 
 /// Fetch CSV content from a remote URL.
@@ -150,22 +164,24 @@ pub fn run_from_bytes(
         let name = record.get(1).unwrap_or("").trim().to_string();
         let description = record.get(2).unwrap_or("").trim().to_string();
 
-        let (quality_score, domain_tags, metadata, parent_content_hash) = match format {
+        let ParsedCsvColumns {
+            quality_score,
+            domain_tags,
+            metadata,
+            parent_ids,
+            generation,
+            created_by,
+        } = match format {
             CsvFormat::Agency => parse_agency_columns(&record),
             CsvFormat::Legacy => parse_legacy_columns(&record),
         };
 
-        let mut parent_ids = vec![];
-        if let Some(ref pch) = parent_content_hash
-            && !pch.is_empty()
-        {
-            parent_ids.push(pch.clone());
-        }
-
         let lineage = Lineage {
             parent_ids,
-            generation: 0,
-            created_by: format!("{}-v{}", provenance_tag, env!("CARGO_PKG_VERSION")),
+            generation,
+            created_by: created_by
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or_else(|| format!("{}-v{}", provenance_tag, env!("CARGO_PKG_VERSION"))),
             created_at: chrono::Utc::now(),
         };
 
@@ -338,6 +354,15 @@ pub fn run_from_bytes(
 
 /// Unified entry point for `wg agency import` supporting local file, URL, and upstream modes.
 pub fn run_import(workgraph_dir: &Path, opts: ImportOptions) -> Result<ImportCounts> {
+    if let Some(format) = opts.format.as_deref()
+        && !matches!(format, "agency-csv" | "auto")
+    {
+        anyhow::bail!(
+            "Unsupported agency import format '{}'. Use: agency-csv",
+            format
+        );
+    }
+
     // Determine the CSV source
     let source_count =
         opts.csv_path.is_some() as u8 + opts.url.is_some() as u8 + opts.upstream as u8;
@@ -442,7 +467,8 @@ pub fn run_import(workgraph_dir: &Path, opts: ImportOptions) -> Result<ImportCou
 enum CsvFormat {
     /// Old 7-column format: type,name,description,col4,col5,domain_tags,quality_score
     Legacy,
-    /// Agency 9-column format: type,name,description,quality,domain_specificity,domain,origin_instance_id,parent_content_hash,scope
+    /// Agency CSV format: the 9-column starter subset or the 12-column upstream
+    /// starter schema ending in parent_ids,generation,created_by.
     Agency,
 }
 
@@ -469,7 +495,7 @@ fn detect_format(headers: &csv::StringRecord) -> CsvFormat {
 /// **Legacy (7 columns):** type,name,description,col4,col5,domain_tags,quality_score
 ///   - type: skill | outcome | tradeoff
 ///
-/// **Agency (9 columns):** type,name,description,quality,domain_specificity,domain,origin_instance_id,parent_content_hash,scope
+/// **Agency CSV (9 or 12 columns):** type,name,description,quality,domain_specificity,domain,origin_instance_id,parent_content_hash,scope[,parent_ids,generation,created_by]
 ///   - type: role_component | desired_outcome | trade_off_config
 ///
 /// Both formats are auto-detected. Legacy type names (skill/outcome/tradeoff) are also
@@ -485,23 +511,15 @@ pub fn run(
     run_from_bytes(workgraph_dir, csv_path, &csv_bytes, dry_run, tag)
 }
 
-/// Parse columns from Agency's 9-column CSV format.
+/// Parse columns from Agency's 9- or 12-column CSV format.
 ///
 /// Columns: type(0), name(1), description(2), quality(3), domain_specificity(4),
-///          domain(5), origin_instance_id(6), parent_content_hash(7), scope(8)
-fn parse_agency_columns(
-    record: &csv::StringRecord,
-) -> (
-    Option<f64>,
-    Vec<String>,
-    HashMap<String, String>,
-    Option<String>,
-) {
+///          domain(5), origin_instance_id(6), parent_content_hash(7), scope(8),
+///          parent_ids(9), generation(10), created_by(11)
+fn parse_agency_columns(record: &csv::StringRecord) -> ParsedCsvColumns {
     // quality (col3): integer 0-100, map to avg_score as 0.0-1.0
-    let quality_score: Option<f64> = record.get(3).and_then(|s| {
-        let s = s.trim();
-        s.parse::<f64>().ok().map(|v| v / 100.0)
-    });
+    let quality_raw = record.get(3).map(|s| s.trim()).unwrap_or("");
+    let quality_score: Option<f64> = quality_raw.parse::<f64>().ok().map(|v| v / 100.0);
 
     // domain_specificity (col4): store as metadata
     let domain_specificity = record
@@ -535,7 +553,32 @@ fn parse_agency_columns(
         .map(|s| s.trim().to_string())
         .unwrap_or_default();
 
+    let parent_ids_raw = record.get(9).map(|s| s.trim()).unwrap_or("");
+    let mut parent_ids = Vec::new();
+    if let Some(ref pch) = parent_content_hash
+        && !pch.is_empty()
+    {
+        parent_ids.push(pch.clone());
+    }
+    for parent_id in parse_parent_ids_column(parent_ids_raw) {
+        if !parent_ids.contains(&parent_id) {
+            parent_ids.push(parent_id);
+        }
+    }
+
+    let generation = record
+        .get(10)
+        .and_then(|s| s.trim().parse::<u32>().ok())
+        .unwrap_or(0);
+    let created_by = record
+        .get(11)
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
     let mut metadata = HashMap::new();
+    if !quality_raw.is_empty() {
+        metadata.insert("agency_quality".to_string(), quality_raw.to_string());
+    }
     if !scope.is_empty() {
         metadata.insert("scope".to_string(), scope);
     }
@@ -550,21 +593,41 @@ fn parse_agency_columns(
     {
         metadata.insert("parent_content_hash".to_string(), pch.clone());
     }
+    if !parent_ids_raw.is_empty() {
+        metadata.insert("parent_ids".to_string(), parent_ids_raw.to_string());
+    }
 
-    (quality_score, domain_tags, metadata, parent_content_hash)
+    ParsedCsvColumns {
+        quality_score,
+        domain_tags,
+        metadata,
+        parent_ids,
+        generation,
+        created_by,
+    }
+}
+
+fn parse_parent_ids_column(raw: &str) -> Vec<String> {
+    if raw.is_empty() {
+        return Vec::new();
+    }
+    if let Ok(ids) = serde_json::from_str::<Vec<String>>(raw) {
+        return ids
+            .into_iter()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+    }
+    raw.split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
 }
 
 /// Parse columns from the legacy 7-column CSV format.
 ///
 /// Columns: type(0), name(1), description(2), col4(3), col5(4), domain_tags(5), quality_score(6)
-fn parse_legacy_columns(
-    record: &csv::StringRecord,
-) -> (
-    Option<f64>,
-    Vec<String>,
-    HashMap<String, String>,
-    Option<String>,
-) {
+fn parse_legacy_columns(record: &csv::StringRecord) -> ParsedCsvColumns {
     let quality_score: Option<f64> = record.get(6).and_then(|s| s.trim().parse().ok());
 
     let domain_tags: Vec<String> = record
@@ -577,7 +640,14 @@ fn parse_legacy_columns(
         })
         .unwrap_or_default();
 
-    (quality_score, domain_tags, HashMap::new(), None)
+    ParsedCsvColumns {
+        quality_score,
+        domain_tags,
+        metadata: HashMap::new(),
+        parent_ids: Vec::new(),
+        generation: 0,
+        created_by: None,
+    }
 }
 
 #[cfg(test)]
@@ -1105,6 +1175,7 @@ mod tests {
             csv_path: Some(csv_path.to_str().unwrap().to_string()),
             url: None,
             upstream: false,
+            format: None,
             dry_run: false,
             tag: None,
             force: false,
@@ -1126,6 +1197,7 @@ mod tests {
             csv_path: Some("file.csv".to_string()),
             url: Some("http://example.com/file.csv".to_string()),
             upstream: false,
+            format: None,
             dry_run: false,
             tag: None,
             force: false,
@@ -1146,6 +1218,7 @@ mod tests {
             csv_path: None,
             url: None,
             upstream: false,
+            format: None,
             dry_run: false,
             tag: None,
             force: false,
@@ -1166,6 +1239,7 @@ mod tests {
             csv_path: None,
             url: None,
             upstream: true,
+            format: None,
             dry_run: false,
             tag: None,
             force: false,
@@ -1192,6 +1266,7 @@ mod tests {
             csv_path: None,
             url: Some("http://192.0.2.1:1/nonexistent.csv".to_string()),
             upstream: false,
+            format: None,
             dry_run: false,
             tag: None,
             force: false,

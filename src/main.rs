@@ -2002,6 +2002,7 @@ fn main() -> Result<()> {
             }
             AgencyCommands::Import {
                 csv_path,
+                format,
                 url,
                 upstream,
                 dry_run,
@@ -2013,6 +2014,7 @@ fn main() -> Result<()> {
                     csv_path,
                     url,
                     upstream,
+                    format,
                     dry_run,
                     tag,
                     force,
@@ -2020,6 +2022,20 @@ fn main() -> Result<()> {
                 };
                 commands::agency_import::run_import(&workgraph_dir, opts).map(|_| ())
             }
+            AgencyCommands::Export {
+                output,
+                format,
+                filter,
+                global,
+            } => commands::agency_push::run_export(
+                &workgraph_dir,
+                &commands::agency_push::ExportOptions {
+                    output: &output,
+                    format: &format,
+                    filter: filter.as_deref(),
+                    global,
+                },
+            ),
             AgencyCommands::Push {
                 target,
                 entity_ids,

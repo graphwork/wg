@@ -267,6 +267,7 @@ fn try_upstream_pull(workgraph_dir: &Path) {
         csv_path: None,
         url: Some(url),
         upstream: false,
+        format: Some("agency-csv".to_string()),
         dry_run: false,
         tag: Some("upstream-bureau".to_string()),
         force: false,
