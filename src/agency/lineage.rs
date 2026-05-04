@@ -24,7 +24,7 @@ pub fn role_ancestry(role_id: &str, roles_dir: &Path) -> Result<Vec<AncestryNode
                 id: role.id.clone(),
                 name: role.name.clone(),
                 generation: role.lineage.generation,
-                created_by: role.lineage.created_by.clone(),
+                created_by: role.lineage.created_by.to_string(),
                 created_at: role.lineage.created_at,
                 parent_ids: role.lineage.parent_ids.clone(),
             });
@@ -58,7 +58,7 @@ pub fn component_ancestry(
                 id: c.id.clone(),
                 name: c.name.clone(),
                 generation: c.lineage.generation,
-                created_by: c.lineage.created_by.clone(),
+                created_by: c.lineage.created_by.to_string(),
                 created_at: c.lineage.created_at,
                 parent_ids: c.lineage.parent_ids.clone(),
             });
@@ -92,7 +92,7 @@ pub fn outcome_ancestry(
                 id: o.id.clone(),
                 name: o.name.clone(),
                 generation: o.lineage.generation,
-                created_by: o.lineage.created_by.clone(),
+                created_by: o.lineage.created_by.to_string(),
                 created_at: o.lineage.created_at,
                 parent_ids: o.lineage.parent_ids.clone(),
             });
@@ -126,7 +126,7 @@ pub fn tradeoff_ancestry(
                 id: t.id.clone(),
                 name: t.name.clone(),
                 generation: t.lineage.generation,
-                created_by: t.lineage.created_by.clone(),
+                created_by: t.lineage.created_by.to_string(),
                 created_at: t.lineage.created_at,
                 parent_ids: t.lineage.parent_ids.clone(),
             });

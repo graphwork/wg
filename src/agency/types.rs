@@ -1,5 +1,5 @@
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -127,14 +127,105 @@ pub struct Lineage {
     pub parent_ids: Vec<String>,
     #[serde(default)]
     pub generation: u32,
-    #[serde(default = "default_created_by")]
+    #[serde(
+        default = "default_created_by",
+        deserialize_with = "deserialize_created_by_string",
+        serialize_with = "serialize_created_by_string"
+    )]
     pub created_by: String,
     #[serde(default = "Utc::now")]
     pub created_at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reframing_potential: Option<f64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CreatedBy {
+    Human,
+    Import,
+    Evolver,
+    AgentCreator,
+}
+
+impl Default for CreatedBy {
+    fn default() -> Self {
+        Self::Human
+    }
+}
+
+impl std::fmt::Display for CreatedBy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            CreatedBy::Human => "human",
+            CreatedBy::Import => "import",
+            CreatedBy::Evolver => "evolver",
+            CreatedBy::AgentCreator => "agent_creator",
+        })
+    }
+}
+
+impl CreatedBy {
+    pub fn contains(&self, needle: &str) -> bool {
+        self.to_string().contains(needle)
+    }
+}
+
+impl From<&str> for CreatedBy {
+    fn from(value: &str) -> Self {
+        match value {
+            "human" => CreatedBy::Human,
+            "import" => CreatedBy::Import,
+            "evolver" => CreatedBy::Evolver,
+            "agent_creator" => CreatedBy::AgentCreator,
+            legacy if legacy.starts_with("evolver-") => CreatedBy::Evolver,
+            legacy if legacy.starts_with("agent_creator-") => CreatedBy::AgentCreator,
+            _ => CreatedBy::Import,
+        }
+    }
+}
+
+impl From<String> for CreatedBy {
+    fn from(value: String) -> Self {
+        CreatedBy::from(value.as_str())
+    }
+}
+
+impl Serialize for CreatedBy {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
+impl<'de> Deserialize<'de> for CreatedBy {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Ok(CreatedBy::from(value))
+    }
 }
 
 fn default_created_by() -> String {
-    "human".to_string()
+    CreatedBy::Human.to_string()
+}
+
+fn deserialize_created_by_string<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = String::deserialize(deserializer)?;
+    Ok(CreatedBy::from(value).to_string())
+}
+
+fn serialize_created_by_string<S>(value: &str, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    serializer.serialize_str(&CreatedBy::from(value).to_string())
 }
 
 impl Default for Lineage {
@@ -142,35 +233,88 @@ impl Default for Lineage {
         Lineage {
             parent_ids: Vec::new(),
             generation: 0,
-            created_by: "human".to_string(),
+            created_by: default_created_by(),
             created_at: Utc::now(),
+            reframing_potential: None,
         }
     }
 }
 
 impl Lineage {
     /// Create lineage for a mutation (single parent).
-    pub fn mutation(parent_id: &str, parent_generation: u32, run_id: &str) -> Self {
+    pub fn mutation(parent_id: &str, parent_generation: u32, _run_id: &str) -> Self {
         Lineage {
             parent_ids: vec![parent_id.to_string()],
             generation: parent_generation.saturating_add(1),
-            created_by: format!("evolver-{}", run_id),
+            created_by: CreatedBy::Evolver.to_string(),
             created_at: Utc::now(),
+            reframing_potential: None,
         }
     }
 
     /// Create lineage for a crossover (two parents).
-    pub fn crossover(parent_ids: &[&str], max_parent_generation: u32, run_id: &str) -> Self {
+    pub fn crossover(parent_ids: &[&str], max_parent_generation: u32, _run_id: &str) -> Self {
         Lineage {
             parent_ids: parent_ids
                 .iter()
                 .map(std::string::ToString::to_string)
                 .collect(),
             generation: max_parent_generation.saturating_add(1),
-            created_by: format!("evolver-{}", run_id),
+            created_by: CreatedBy::Evolver.to_string(),
             created_at: Utc::now(),
+            reframing_potential: None,
         }
     }
+}
+
+fn default_quality() -> u8 {
+    100
+}
+
+fn is_default_quality(value: &u8) -> bool {
+    *value == default_quality()
+}
+
+fn is_default_u8(value: &u8) -> bool {
+    *value == 0
+}
+
+fn de_u8_from_int_or_string<'de, D>(deserializer: D) -> Result<u8, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    struct U8Visitor;
+
+    impl serde::de::Visitor<'_> for U8Visitor {
+        type Value = u8;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("a u8 integer or decimal string")
+        }
+
+        fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
+        where
+            E: serde::de::Error,
+        {
+            u8::try_from(value).map_err(E::custom)
+        }
+
+        fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E>
+        where
+            E: serde::de::Error,
+        {
+            u8::try_from(value).map_err(E::custom)
+        }
+
+        fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+        where
+            E: serde::de::Error,
+        {
+            value.parse::<u8>().map_err(E::custom)
+        }
+    }
+
+    deserializer.deserialize_any(U8Visitor)
 }
 
 // ---------------------------------------------------------------------------
@@ -185,6 +329,26 @@ pub struct RoleComponent {
     pub id: String,
     pub name: String,
     pub description: String,
+    #[serde(
+        default = "default_quality",
+        deserialize_with = "de_u8_from_int_or_string",
+        skip_serializing_if = "is_default_quality"
+    )]
+    pub quality: u8,
+    #[serde(
+        default,
+        deserialize_with = "de_u8_from_int_or_string",
+        skip_serializing_if = "is_default_u8"
+    )]
+    pub domain_specificity: u8,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub domain: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin_instance_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_content_hash: Option<String>,
     pub category: ComponentCategory,
     pub content: ContentRef,
     pub performance: PerformanceRecord,
@@ -210,6 +374,26 @@ pub struct DesiredOutcome {
     pub id: String,
     pub name: String,
     pub description: String,
+    #[serde(
+        default = "default_quality",
+        deserialize_with = "de_u8_from_int_or_string",
+        skip_serializing_if = "is_default_quality"
+    )]
+    pub quality: u8,
+    #[serde(
+        default,
+        deserialize_with = "de_u8_from_int_or_string",
+        skip_serializing_if = "is_default_u8"
+    )]
+    pub domain_specificity: u8,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub domain: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin_instance_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_content_hash: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub success_criteria: Vec<String>,
     pub performance: PerformanceRecord,
@@ -241,6 +425,26 @@ pub struct TradeoffConfig {
     pub id: String,
     pub name: String,
     pub description: String,
+    #[serde(
+        default = "default_quality",
+        deserialize_with = "de_u8_from_int_or_string",
+        skip_serializing_if = "is_default_quality"
+    )]
+    pub quality: u8,
+    #[serde(
+        default,
+        deserialize_with = "de_u8_from_int_or_string",
+        skip_serializing_if = "is_default_u8"
+    )]
+    pub domain_specificity: u8,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub domain: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin_instance_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_content_hash: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub acceptable_tradeoffs: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

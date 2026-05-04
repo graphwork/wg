@@ -185,6 +185,7 @@ fn apply_role_with_direct_hashes(
             generation: 0,
             created_by: format!("evolver-{}", run_id),
             created_at: chrono::Utc::now(),
+            reframing_potential: None,
         }
     } else {
         // modify_role — may be crossover with comma-separated parent IDs
@@ -212,6 +213,7 @@ fn apply_role_with_direct_hashes(
                 format!("evolver-{}", run_id)
             },
             created_at: chrono::Utc::now(),
+            reframing_potential: None,
         }
     };
 
@@ -268,6 +270,12 @@ fn apply_create_role_from_skill_names(
                 id: comp_id.clone(),
                 name: skill_name.to_string(),
                 description: skill_name.to_string(),
+                quality: 100,
+                domain_specificity: 0,
+                domain: vec![],
+                scope: None,
+                origin_instance_id: None,
+                parent_content_hash: None,
                 category: ComponentCategory::Translated,
                 content: ContentRef::Name(skill_name.to_string()),
                 performance: PerformanceRecord::default(),
@@ -276,6 +284,7 @@ fn apply_create_role_from_skill_names(
                     generation: 0,
                     created_by: format!("evolver-{}", run_id),
                     created_at: chrono::Utc::now(),
+                    reframing_potential: None,
                 },
                 access_control: AccessControl::default(),
                 domain_tags: vec![],
@@ -316,6 +325,7 @@ fn apply_create_role_from_skill_names(
             generation: 0,
             created_by: format!("evolver-{}", run_id),
             created_at: chrono::Utc::now(),
+            reframing_potential: None,
         },
         default_context_scope: None,
         default_exec_mode: None,

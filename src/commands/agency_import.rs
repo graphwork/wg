@@ -175,6 +175,17 @@ pub fn run_from_bytes(
             CsvFormat::Agency => parse_agency_columns(&record),
             CsvFormat::Legacy => parse_legacy_columns(&record),
         };
+        let quality = quality_score
+            .map(|score| (score * 100.0).round().clamp(0.0, 100.0) as u8)
+            .unwrap_or(100);
+        let domain_specificity = metadata
+            .get("domain_specificity")
+            .and_then(|value| value.parse::<u8>().ok())
+            .unwrap_or(0);
+        let domain = domain_tags.clone();
+        let scope = metadata.get("scope").cloned();
+        let origin_instance_id = metadata.get("origin_instance_id").cloned();
+        let parent_content_hash = metadata.get("parent_content_hash").cloned();
 
         let lineage = Lineage {
             parent_ids,
@@ -183,6 +194,7 @@ pub fn run_from_bytes(
                 .filter(|s| !s.trim().is_empty())
                 .unwrap_or_else(|| format!("{}-v{}", provenance_tag, env!("CARGO_PKG_VERSION"))),
             created_at: chrono::Utc::now(),
+            reframing_potential: None,
         };
 
         let access_control = AccessControl {
@@ -216,6 +228,12 @@ pub fn run_from_bytes(
                         id: id.clone(),
                         name,
                         description,
+                        quality,
+                        domain_specificity,
+                        domain,
+                        scope,
+                        origin_instance_id,
+                        parent_content_hash,
                         category,
                         content,
                         performance,
@@ -253,6 +271,12 @@ pub fn run_from_bytes(
                         id: id.clone(),
                         name,
                         description,
+                        quality,
+                        domain_specificity,
+                        domain,
+                        scope,
+                        origin_instance_id,
+                        parent_content_hash,
                         success_criteria,
                         performance,
                         lineage,
@@ -298,6 +322,12 @@ pub fn run_from_bytes(
                         id: id.clone(),
                         name,
                         description,
+                        quality,
+                        domain_specificity,
+                        domain,
+                        scope,
+                        origin_instance_id,
+                        parent_content_hash,
                         acceptable_tradeoffs: acceptable,
                         unacceptable_tradeoffs: unacceptable,
                         performance,
@@ -1311,13 +1341,14 @@ mod tests {
 
         run_from_bytes(&wg_dir, "test://tagged.csv", csv, false, Some("custom-tag")).unwrap();
 
-        // Verify component was saved with custom tag provenance
+        // Verify component was saved with agency-compatible import provenance.
         let components_dir = wg_dir.join("agency/primitives/components");
         let entries: Vec<_> = std::fs::read_dir(&components_dir).unwrap().collect();
         assert_eq!(entries.len(), 1);
         let component: RoleComponent =
             agency::load_component(&entries[0].as_ref().unwrap().path()).unwrap();
-        assert!(component.lineage.created_by.starts_with("custom-tag"));
+        assert_eq!(component.lineage.created_by, "import");
+        assert_eq!(component.access_control.owner, "custom-tag");
     }
 
     #[test]
