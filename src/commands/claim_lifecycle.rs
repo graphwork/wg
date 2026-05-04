@@ -45,7 +45,11 @@ pub enum Direction {
 ///
 /// Cycle-safe: `visited` guarantees we never revisit, so a back-edge
 /// in the graph cannot cause infinite recursion.
-pub fn compute_closure(graph: &WorkGraph, seeds: &[String], direction: Direction) -> HashSet<String> {
+pub fn compute_closure(
+    graph: &WorkGraph,
+    seeds: &[String],
+    direction: Direction,
+) -> HashSet<String> {
     let mut visited: HashSet<String> = HashSet::new();
     let mut stack: Vec<String> = seeds
         .iter()
@@ -88,8 +92,7 @@ pub fn compute_closure(graph: &WorkGraph, seeds: &[String], direction: Direction
 pub fn is_claim_stale(registry: &AgentRegistry, agent_id: &str) -> bool {
     match registry.get_agent(agent_id) {
         Some(agent) => {
-            agent.status == AgentStatus::Dead
-                || (agent.is_alive() && !is_process_alive(agent.pid))
+            agent.status == AgentStatus::Dead || (agent.is_alive() && !is_process_alive(agent.pid))
         }
         None => true,
     }
@@ -308,9 +311,14 @@ mod tests {
         assert_eq!(report.cleared, vec!["downstream".to_string()]);
         let down = g.get_task("downstream").unwrap();
         assert!(down.assigned.is_none(), "downstream claim must be cleared");
-        assert!(down.started_at.is_none(), "downstream started_at must be cleared");
         assert!(
-            down.log.iter().any(|e| e.message.contains("stale-claim cleared via retry of upstream")),
+            down.started_at.is_none(),
+            "downstream started_at must be cleared"
+        );
+        assert!(
+            down.log.iter().any(|e| e
+                .message
+                .contains("stale-claim cleared via retry of upstream")),
             "log entry should describe the cause: {:?}",
             down.log
         );
@@ -351,8 +359,14 @@ mod tests {
 
         let mut g = load_graph(&dir.path().join("graph.jsonl")).unwrap();
         let report = clear_stale_downstream_claims(&mut g, &reg, "upstream", "upstream");
-        assert!(report.cleared.is_empty(), "live-agent claim must be preserved");
-        assert_eq!(g.get_task("downstream").unwrap().assigned, Some("agent-alive-1".to_string()));
+        assert!(
+            report.cleared.is_empty(),
+            "live-agent claim must be preserved"
+        );
+        assert_eq!(
+            g.get_task("downstream").unwrap().assigned,
+            Some("agent-alive-1".to_string())
+        );
     }
 
     #[test]
@@ -370,7 +384,10 @@ mod tests {
         let mut g = load_graph(&dir.path().join("graph.jsonl")).unwrap();
         let report = clear_stale_downstream_claims(&mut g, &reg, "upstream", "upstream");
         assert!(report.cleared.is_empty());
-        assert_eq!(g.get_task("downstream").unwrap().assigned, Some("agent-dead-1".to_string()));
+        assert_eq!(
+            g.get_task("downstream").unwrap().assigned,
+            Some("agent-dead-1".to_string())
+        );
     }
 
     #[test]

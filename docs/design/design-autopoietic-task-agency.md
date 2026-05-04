@@ -9,7 +9,7 @@
 
 ## Context
 
-WorkGraph is built on autopoetic principles — tasks should have agency, can spawn dependents at any graph point, and complete independently. The native graph iteration design (`.flip-design-native-graph`) introduced task retry mechanics. This document expands the autopoetic vision into a concrete design covering five areas.
+workgraph is built on autopoetic principles — tasks should have agency, can spawn dependents at any graph point, and complete independently. The native graph iteration design (`.flip-design-native-graph`) introduced task retry mechanics. This document expands the autopoetic vision into a concrete design covering five areas.
 
 This document assumes familiarity with:
 - The `CycleConfig` / `loop_iteration` mechanism in `src/graph.rs`

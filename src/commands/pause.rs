@@ -12,7 +12,7 @@ use workgraph::parser::load_graph;
 pub fn run(dir: &Path, id: &str) -> Result<()> {
     let path = super::graph_path(dir);
     if !path.exists() {
-        anyhow::bail!("Workgraph not initialized. Run 'wg init' first.");
+        anyhow::bail!("workgraph not initialized. Run 'wg init' first.");
     }
 
     // Use modify_graph for atomic load-modify-save under a single exclusive

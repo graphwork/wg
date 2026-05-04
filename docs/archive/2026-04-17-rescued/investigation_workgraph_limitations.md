@@ -1,4 +1,4 @@
-# Investigation of Workgraph Research Tool Limitations
+# Investigation of workgraph Research Tool Limitations
 
 ## Overview
 

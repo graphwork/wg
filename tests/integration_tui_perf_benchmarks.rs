@@ -23,9 +23,7 @@ use std::time::{Duration, Instant};
 use tempfile::TempDir;
 
 use workgraph::graph::{Node, Status, Task, WorkGraph, parse_token_usage_live_cached};
-use workgraph::messages::{
-    coordinator_message_status, message_stats, message_stats_pair_cached,
-};
+use workgraph::messages::{coordinator_message_status, message_stats, message_stats_pair_cached};
 
 /// Build a synthetic graph with `n` tasks. Roughly half are InProgress,
 /// quarter Done, quarter Open. Each task gets a unique id and dependency on

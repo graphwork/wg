@@ -421,7 +421,12 @@ mod tests {
         assert_eq!(deduped[1].executor, "claude");
     }
 
-    fn make_entry(ts: &str, exec: &str, model: Option<&str>, endpoint: Option<&str>) -> HistoryEntry {
+    fn make_entry(
+        ts: &str,
+        exec: &str,
+        model: Option<&str>,
+        endpoint: Option<&str>,
+    ) -> HistoryEntry {
         HistoryEntry {
             timestamp: ts.to_string(),
             executor: exec.to_string(),
@@ -437,10 +442,25 @@ mod tests {
         // Same (executor, model, endpoint) tuple appears multiple times;
         // dedup_newest_first should collapse to one entry, keeping newest.
         let entries = vec![
-            make_entry("2026-01-01T00:00:00Z", "native", Some("qwen3"), Some("http://lambda01")),
-            make_entry("2026-01-02T00:00:00Z", "native", Some("qwen3"), Some("http://lambda01")),
+            make_entry(
+                "2026-01-01T00:00:00Z",
+                "native",
+                Some("qwen3"),
+                Some("http://lambda01"),
+            ),
+            make_entry(
+                "2026-01-02T00:00:00Z",
+                "native",
+                Some("qwen3"),
+                Some("http://lambda01"),
+            ),
             make_entry("2026-01-03T00:00:00Z", "claude", Some("opus"), None),
-            make_entry("2026-01-04T00:00:00Z", "native", Some("qwen3"), Some("http://lambda01")),
+            make_entry(
+                "2026-01-04T00:00:00Z",
+                "native",
+                Some("qwen3"),
+                Some("http://lambda01"),
+            ),
         ];
         let deduped = dedup_newest_first(entries);
         assert_eq!(deduped.len(), 2, "two distinct tuples expected");
@@ -463,16 +483,17 @@ mod tests {
             ));
         }
         // Mix in another tuple, which should be unaffected.
-        entries.insert(3, make_entry("2026-02-01T00:00:00Z", "claude", Some("opus"), None));
+        entries.insert(
+            3,
+            make_entry("2026-02-01T00:00:00Z", "claude", Some("opus"), None),
+        );
 
         let pruned = prune_by_tuple(entries, 3);
         // 3 native + 1 claude = 4 entries kept.
         assert_eq!(pruned.len(), 4);
 
-        let native_kept: Vec<&HistoryEntry> = pruned
-            .iter()
-            .filter(|e| e.executor == "native")
-            .collect();
+        let native_kept: Vec<&HistoryEntry> =
+            pruned.iter().filter(|e| e.executor == "native").collect();
         assert_eq!(native_kept.len(), 3, "native tuple capped to 3");
         // Newest 3 by timestamp: dates 04, 05, 06.
         let timestamps: Vec<&str> = native_kept.iter().map(|e| e.timestamp.as_str()).collect();
@@ -484,10 +505,8 @@ mod tests {
         assert!(!timestamps.contains(&"2026-01-03T00:00:00Z"));
 
         // Claude tuple untouched.
-        let claude_kept: Vec<&HistoryEntry> = pruned
-            .iter()
-            .filter(|e| e.executor == "claude")
-            .collect();
+        let claude_kept: Vec<&HistoryEntry> =
+            pruned.iter().filter(|e| e.executor == "claude").collect();
         assert_eq!(claude_kept.len(), 1);
     }
 

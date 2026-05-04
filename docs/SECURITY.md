@@ -71,7 +71,7 @@ For structured configuration with secrets:
 
 3. **Ensure exclusion**: The real config files are in `.gitignore`
 
-#### Workgraph Notification Configuration
+#### workgraph Notification Configuration
 
 The `notify.toml` file contains notification secrets and is automatically excluded from git:
 

@@ -68,10 +68,7 @@ fn run_inner(
     // Route them straight to terminal Failed.
     let is_shell = workgraph::parser::load_graph(&path)
         .ok()
-        .and_then(|g| {
-            g.get_task(id)
-                .map(super::eval_scaffold::is_shell_task)
-        })
+        .and_then(|g| g.get_task(id).map(super::eval_scaffold::is_shell_task))
         .unwrap_or(false);
 
     // If this is an AgentExitNonzero failure AND auto_evaluate is on, route to

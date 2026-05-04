@@ -258,7 +258,7 @@ The maximum number of concurrent coordinators is configured via `wg config --max
 
 ## Peer Communication
 
-Workgraph projects can communicate across repository boundaries through the *peer* system. `wg peer add <name> <path>` registers another workgraph instance as a named peer. Tasks can be created in a peer's graph via `wg add "title" --repo <peer-name>`, enabling cross-repo task dispatch without leaving the local CLI.
+workgraph projects can communicate across repository boundaries through the *peer* system. `wg peer add <name> <path>` registers another workgraph instance as a named peer. Tasks can be created in a peer's graph via `wg add "title" --repo <peer-name>`, enabling cross-repo task dispatch without leaving the local CLI.
 
 `wg peer list` shows all configured peers with their service status (whether the peer's daemon is running). `wg peer status` performs a quick health check across all peers. This is distinct from agency federation (which shares identities and evaluations)—peer communication shares *work* across project boundaries.
 

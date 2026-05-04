@@ -1,4 +1,4 @@
-# Arena-Based Context Selection for Workgraph
+# Arena-Based Context Selection for workgraph
 
 How FLIP backward-inference scoring (Wang et al., 2025, arXiv:2602.13551) can drive empirical selection of prompts, contexts, and agent configurations in workgraph.
 

@@ -242,7 +242,8 @@ pub fn run_retire_compact_archive(dir: &Path, dry_run: bool, json: bool) -> Resu
                     .get_task(tid)
                     .map(|t| t.status == workgraph::graph::Status::Abandoned)
                     .unwrap_or(false);
-                if is_target && !already_abandoned
+                if is_target
+                    && !already_abandoned
                     && let Some(t) = graph.get_task_mut(tid)
                 {
                     t.status = workgraph::graph::Status::Abandoned;
@@ -340,8 +341,7 @@ mod tests {
 
         run_chat_rename(&dir.join(".wg"), false, true).unwrap();
 
-        let graph =
-            workgraph::parser::load_graph(&dir.join(".wg").join("graph.jsonl")).unwrap();
+        let graph = workgraph::parser::load_graph(&dir.join(".wg").join("graph.jsonl")).unwrap();
 
         // .chat-3 exists with renamed title and tag
         let migrated = graph.get_task(".chat-3").expect("chat-3 should exist");
@@ -374,8 +374,7 @@ mod tests {
         run_chat_rename(&dir.join(".wg"), false, true).unwrap();
         run_chat_rename(&dir.join(".wg"), false, true).unwrap();
 
-        let graph =
-            workgraph::parser::load_graph(&dir.join(".wg").join("graph.jsonl")).unwrap();
+        let graph = workgraph::parser::load_graph(&dir.join(".wg").join("graph.jsonl")).unwrap();
         assert!(graph.get_task(".chat-0").is_some());
         assert!(graph.get_task(".coordinator-0").is_none());
     }
@@ -413,8 +412,7 @@ mod tests {
 
         run_retire_compact_archive(&dir.join(".wg"), false, true).unwrap();
 
-        let graph =
-            workgraph::parser::load_graph(&dir.join(".wg").join("graph.jsonl")).unwrap();
+        let graph = workgraph::parser::load_graph(&dir.join(".wg").join("graph.jsonl")).unwrap();
         assert_eq!(
             graph.get_task(".compact-0").unwrap().status,
             Status::Abandoned
@@ -423,7 +421,10 @@ mod tests {
             graph.get_task(".archive-0").unwrap().status,
             Status::Abandoned
         );
-        assert_eq!(graph.get_task(".chat-0").unwrap().status, Status::InProgress);
+        assert_eq!(
+            graph.get_task(".chat-0").unwrap().status,
+            Status::InProgress
+        );
         let real = graph.get_task("real-task").unwrap();
         assert_eq!(real.after, vec!["real-prereq".to_string()]);
     }
@@ -443,8 +444,7 @@ mod tests {
         run_retire_compact_archive(&dir.join(".wg"), false, true).unwrap();
         run_retire_compact_archive(&dir.join(".wg"), false, true).unwrap();
 
-        let graph =
-            workgraph::parser::load_graph(&dir.join(".wg").join("graph.jsonl")).unwrap();
+        let graph = workgraph::parser::load_graph(&dir.join(".wg").join("graph.jsonl")).unwrap();
         assert_eq!(
             graph.get_task(".compact-0").unwrap().status,
             Status::Abandoned
@@ -466,8 +466,7 @@ mod tests {
 
         run_chat_rename(&dir.join(".wg"), true, true).unwrap();
 
-        let graph =
-            workgraph::parser::load_graph(&dir.join(".wg").join("graph.jsonl")).unwrap();
+        let graph = workgraph::parser::load_graph(&dir.join(".wg").join("graph.jsonl")).unwrap();
         // Legacy id still present, no chat- yet
         assert!(graph.get_task(".coordinator-1").is_some());
         assert!(graph.get_task(".chat-1").is_none());
@@ -658,7 +657,12 @@ pub(crate) fn migrate_one(path: &Path, dry_run: bool) -> Result<ConfigMigrateRes
     let now = chrono::Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
     let backup = path.with_extension(format!("toml.pre-migrate.{}", now));
     std::fs::copy(path, &backup).map_err(|e| {
-        anyhow::anyhow!("failed to back up {} → {}: {}", path.display(), backup.display(), e)
+        anyhow::anyhow!(
+            "failed to back up {} → {}: {}",
+            path.display(),
+            backup.display(),
+            e
+        )
     })?;
     result.backup_path = Some(backup);
 
@@ -798,10 +802,7 @@ fn rename_legacy_fields(doc: &mut toml::Value, renamed: &mut Vec<(String, String
             if disp.contains_key(*old) && !disp.contains_key(*new) {
                 if let Some(v) = disp.remove(*old) {
                     disp.insert(new.to_string(), v);
-                    renamed.push((
-                        format!("dispatcher.{}", old),
-                        format!("dispatcher.{}", new),
-                    ));
+                    renamed.push((format!("dispatcher.{}", old), format!("dispatcher.{}", new)));
                 }
             }
         }
@@ -825,18 +826,9 @@ const STALE_MODEL_REWRITES: &[(&str, &str)] = &[
         "openrouter:anthropic/claude-opus-4",
         "openrouter:anthropic/claude-opus-4-7",
     ),
-    (
-        "anthropic/claude-sonnet-4",
-        "anthropic/claude-sonnet-4-6",
-    ),
-    (
-        "anthropic/claude-haiku-4",
-        "anthropic/claude-haiku-4-5",
-    ),
-    (
-        "anthropic/claude-opus-4",
-        "anthropic/claude-opus-4-7",
-    ),
+    ("anthropic/claude-sonnet-4", "anthropic/claude-sonnet-4-6"),
+    ("anthropic/claude-haiku-4", "anthropic/claude-haiku-4-5"),
+    ("anthropic/claude-opus-4", "anthropic/claude-opus-4-7"),
     // Codex / OpenAI model rewrites (2026-04-28):
     // o1-pro deprecated 2026-10-23; gpt-5.4 is the new balanced default.
     ("codex:o1-pro", "codex:gpt-5.4"),
@@ -849,10 +841,7 @@ const STALE_MODEL_REWRITES: &[(&str, &str)] = &[
     ("codex:gpt-5.4-pro", "codex:gpt-5.5"),
 ];
 
-fn fix_stale_model_strings(
-    doc: &mut toml::Value,
-    rewritten: &mut Vec<(String, String, String)>,
-) {
+fn fix_stale_model_strings(doc: &mut toml::Value, rewritten: &mut Vec<(String, String, String)>) {
     walk_strings(doc, "", &mut |path, s| {
         for (old, new) in STALE_MODEL_REWRITES {
             // Match exact full string only (not substring) so e.g.
@@ -1039,7 +1028,11 @@ premium = "claude:opus"
 "#,
         );
         let r = migrate_one(&path, false).unwrap();
-        assert!(r.is_noop(), "canonical config should be a no-op; got {:?}", r);
+        assert!(
+            r.is_noop(),
+            "canonical config should be a no-op; got {:?}",
+            r
+        );
     }
 
     #[test]
@@ -1066,10 +1059,22 @@ premium = "codex:o1-pro"
             r.rewritten_values,
         );
         let migrated = std::fs::read_to_string(&path).unwrap();
-        assert!(migrated.contains("codex:gpt-5.4"), "migrated should contain codex:gpt-5.4");
-        assert!(!migrated.contains("\"codex:o1-pro\""), "migrated should not contain codex:o1-pro");
-        assert!(!migrated.contains("\"codex:gpt-5-mini\""), "migrated should not contain codex:gpt-5-mini");
-        assert!(!migrated.contains("\"codex:gpt-5\""), "migrated should not contain bare codex:gpt-5");
+        assert!(
+            migrated.contains("codex:gpt-5.4"),
+            "migrated should contain codex:gpt-5.4"
+        );
+        assert!(
+            !migrated.contains("\"codex:o1-pro\""),
+            "migrated should not contain codex:o1-pro"
+        );
+        assert!(
+            !migrated.contains("\"codex:gpt-5-mini\""),
+            "migrated should not contain codex:gpt-5-mini"
+        );
+        assert!(
+            !migrated.contains("\"codex:gpt-5\""),
+            "migrated should not contain bare codex:gpt-5"
+        );
     }
 
     #[test]

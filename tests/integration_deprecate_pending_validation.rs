@@ -225,12 +225,7 @@ fn test_no_routine_pending_validation_state() {
 
     let out = wg_cmd(
         &wg_dir,
-        &[
-            "done",
-            "foo",
-            "--ignore-unmerged-worktree",
-            "--skip-smoke",
-        ],
+        &["done", "foo", "--ignore-unmerged-worktree", "--skip-smoke"],
     );
     assert!(
         out.status.success(),

@@ -1,4 +1,4 @@
-# Workgraph Universal Role Contract
+# workgraph Universal Role Contract
 
 This document is the canonical, project-independent contract for how agents
 behave inside ANY workgraph project. It is bundled into the `wg` binary and
@@ -6,7 +6,7 @@ emitted by `wg agent-guide`. It applies regardless of which repository you
 are running in.
 
 Project-specific rules live in that project's `CLAUDE.md` / `AGENTS.md`.
-Workgraph-as-a-codebase contributor docs (design rationale, ADRs) live in
+workgraph-as-a-codebase contributor docs (design rationale, ADRs) live in
 `docs/designs/` and `docs/research/` of the workgraph repo and are NOT
 required reading for users.
 
@@ -91,7 +91,7 @@ not to explore.
 
 ## Three Roles, One Vocabulary
 
-Workgraph distinguishes three kinds of LLM-driven actor. Mixing them up is
+workgraph distinguishes three kinds of LLM-driven actor. Mixing them up is
 the most common source of bugs.
 
 - **dispatcher** — the daemon launched by `wg service start`. Polls the
@@ -269,9 +269,9 @@ unit test "because it exercises the same code", stop. The
 CLI path was already correct and the TUI caller was the broken one.
 Add the human-flow simulation.
 
-## Cycles (Workgraph Is Not a DAG)
+## Cycles (workgraph Is Not a DAG)
 
-Workgraph is a directed graph that supports cycles. For repeating
+workgraph is a directed graph that supports cycles. For repeating
 workflows (cleanup → commit → verify, write → review → revise, etc.)
 create ONE cycle with `--max-iterations` instead of duplicating tasks
 for each pass. Use `wg done --converged` to stop the cycle when the
@@ -444,7 +444,7 @@ NEVER use the `EnterWorktree` or `ExitWorktree` tools. Using them will:
 3. Cause ALL commits to go to the wrong branch
 4. Result in work being LOST — the merge-back will find no commits
 
-If you see those tools available, ignore them. Workgraph already
+If you see those tools available, ignore them. workgraph already
 provides full git isolation.
 
 ### Prior WIP from a previous attempt

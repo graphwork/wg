@@ -1,4 +1,4 @@
-# Design: Liveness Detection for Workgraph Agents
+# Design: Liveness Detection for workgraph Agents
 
 **Status:** Committee consensus (Researchers A-E)
 **Date:** 2026-03-04

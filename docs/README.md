@@ -1,6 +1,6 @@
-# Workgraph Documentation
+# workgraph Documentation
 
-Workgraph (`wg`) is a task coordination system designed for both humans and AI agents. It provides a dependency-aware task graph that enables parallel work coordination, progress tracking, and project analysis.
+workgraph (`wg`) is a task coordination system designed for both humans and AI agents. It provides a dependency-aware task graph that enables parallel work coordination, progress tracking, and project analysis.
 
 ## Table of Contents
 
@@ -299,7 +299,7 @@ wg ready --json | jq -r '.[].id'
 
 ### Peer Workgraphs
 
-Workgraph instances in separate repositories can communicate via the peer system. Register peers with `wg peer add <name> <path>` and create cross-repo tasks with `wg add "Task" --repo <peer>`. See the [Command Reference](./COMMANDS.md) for details.
+workgraph instances in separate repositories can communicate via the peer system. Register peers with `wg peer add <name> <path>` and create cross-repo tasks with `wg add "Task" --repo <peer>`. See the [Command Reference](./COMMANDS.md) for details.
 
 ## See Also
 

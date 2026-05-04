@@ -1,4 +1,4 @@
-# External Information Flows in Workgraph
+# External Information Flows in workgraph
 ## And Where VX Plugs In
 
 **Date:** 2026-02-20
@@ -23,7 +23,7 @@ VX is one instance of a generic problem: **how do external information sources p
 
 ## 1. Generic External Information Flows
 
-Workgraph needs to ingest external information at every level — not just evaluation scores. The pattern is the same regardless of the source:
+workgraph needs to ingest external information at every level — not just evaluation scores. The pattern is the same regardless of the source:
 
 ```
 External Source          Adapter            Ingestion Point         Consumer

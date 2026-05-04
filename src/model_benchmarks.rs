@@ -2590,7 +2590,8 @@ mod tests {
     #[test]
     fn test_apply_curated_benchmarks_prefix_match() {
         // "anthropic/claude-opus-4" prefix should match the full opus model ID
-        let mut registry = make_test_registry(vec![make_test_model(OPENROUTER_OPUS_ID, "budget", None)]);
+        let mut registry =
+            make_test_registry(vec![make_test_model(OPENROUTER_OPUS_ID, "budget", None)]);
         let applied = apply_curated_benchmarks(&mut registry);
         assert_eq!(applied, 1);
 

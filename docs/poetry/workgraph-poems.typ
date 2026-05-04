@@ -5,7 +5,7 @@
 
 #set document(
   title: "Forty-Eight Voices — later, a Hundred",
-  author: "The Workgraph Poet",
+  author: "The workgraph Poet",
 )
 
 #set page(
@@ -56,7 +56,7 @@
     #v(0.8cm)
 
     #text(size: 9.5pt, fill: luma(80))[
-      _The Workgraph Poet_ \
+      _The workgraph Poet_ \
       100 iterations · February 14 · 15:14–17:30 EST
     ]
 

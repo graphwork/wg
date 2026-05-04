@@ -1,4 +1,4 @@
-# Pan-Executor Architecture: Workgraph as a Self-Sufficient Execution Universe
+# Pan-Executor Architecture: workgraph as a Self-Sufficient Execution Universe
 
 ## Status
 
@@ -12,7 +12,7 @@ Last updated: 2026-03-04
 
 ### Executor landscape
 
-Workgraph has **four executor types**, all sharing a fire-and-forget subprocess model:
+workgraph has **four executor types**, all sharing a fire-and-forget subprocess model:
 
 | Executor | Runtime | Model Access | Tool Provision | Streaming | Status |
 |---|---|---|---|---|---|
@@ -45,7 +45,7 @@ The native executor (`src/executor/native/`) is the most strategically important
 
 **Tools (12 total):**
 - File I/O: `bash`, `read_file`, `write_file`, `list_files`
-- Workgraph: `wg_log`, `wg_artifact`, `wg_done`, `wg_fail`, `wg_show`, `wg_add`, `wg_msg_send`, `wg_msg_read`
+- workgraph: `wg_log`, `wg_artifact`, `wg_done`, `wg_fail`, `wg_show`, `wg_add`, `wg_msg_send`, `wg_msg_read`
 
 **Agent loop:** Standard tool-use loop with turn limiting, usage tracking, NDJSON logging via `StreamWriter`.
 
@@ -278,15 +278,15 @@ api_base = "http://localhost:8000"
 
 A2A (v0.3, under Linux Foundation) defines HTTP-based agent-to-agent communication with tasks, messages, artifacts, and streaming. However:
 
-- **Impedance mismatch:** A2A tasks are flat RPCs between two agents. Workgraph tasks are graph nodes with dependencies, cycles, and verification. Wrapping workgraph in A2A would strip away its core value.
-- **Ephemeral agents:** Workgraph agents are short-lived subprocesses, not HTTP servers. Implementing A2A would require a persistent HTTP layer.
+- **Impedance mismatch:** A2A tasks are flat RPCs between two agents. workgraph tasks are graph nodes with dependencies, cycles, and verification. Wrapping workgraph in A2A would strip away its core value.
+- **Ephemeral agents:** workgraph agents are short-lived subprocesses, not HTTP servers. Implementing A2A would require a persistent HTTP layer.
 - **Pre-1.0 spec:** Still evolving rapidly.
 
 **Future path:** When A2A reaches 1.0+ with ecosystem traction, add an `a2a` executor type alongside `claude`/`matrix`/`email`/`shell`. The coordinator would discover an A2A agent via its card, send the task description, poll/stream for completion, and record artifacts — structurally identical to the existing fire-and-forget model.
 
 **State mapping** (for future reference):
 
-| A2A State | Workgraph Status |
+| A2A State | workgraph Status |
 |-----------|-----------------|
 | submitted/working | InProgress |
 | input_required | Blocked (+ HITL notification) |
@@ -298,7 +298,7 @@ A2A (v0.3, under Linux Foundation) defines HTTP-based agent-to-agent communicati
 
 **Recommendation: Adopt now (as MCP client).**
 
-MCP and A2A are complementary: MCP provides tools/context to a single agent; A2A provides inter-agent communication. Workgraph should consume MCP (for tool extensibility) but not expose agents as MCP servers.
+MCP and A2A are complementary: MCP provides tools/context to a single agent; A2A provides inter-agent communication. workgraph should consume MCP (for tool extensibility) but not expose agents as MCP servers.
 
 See Section 4 for full integration plan.
 

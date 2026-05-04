@@ -215,10 +215,7 @@ mod tests {
         let project = tmp.path().join("myproject");
         create_project_store(&project);
         write_dummy_role(
-            &project
-                .join(".wg")
-                .join("agency")
-                .join("cache/roles"),
+            &project.join(".wg").join("agency").join("cache/roles"),
             "abc123",
         );
 

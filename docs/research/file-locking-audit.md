@@ -1,4 +1,4 @@
-# File Locking Audit: Workgraph Concurrent Access
+# File Locking Audit: workgraph Concurrent Access
 
 **Date:** 2026-02-18
 **Scope:** Correctness of file locking under 5x agent parallelism
@@ -7,7 +7,7 @@
 
 ## Executive Summary
 
-Workgraph uses `flock(2)` advisory locking around `graph.jsonl` reads and writes, plus atomic write-rename for crash safety. These mechanisms **prevent corruption and partial reads**, but do **not prevent lost updates** due to a classic TOCTOU (time-of-check-time-of-use) gap. Under 5x parallelism, every `wg` command that mutates the graph (done, fail, log, artifact, claim) follows a load→modify→save pattern where the lock is held separately for the load and the save, not across the entire read-modify-write cycle. This means concurrent writes **will silently overwrite each other**.
+workgraph uses `flock(2)` advisory locking around `graph.jsonl` reads and writes, plus atomic write-rename for crash safety. These mechanisms **prevent corruption and partial reads**, but do **not prevent lost updates** due to a classic TOCTOU (time-of-check-time-of-use) gap. Under 5x parallelism, every `wg` command that mutates the graph (done, fail, log, artifact, claim) follows a load→modify→save pattern where the lock is held separately for the load and the save, not across the entire read-modify-write cycle. This means concurrent writes **will silently overwrite each other**.
 
 **Severity: HIGH** — Lost updates are virtually guaranteed under normal 5-agent operation. The most likely symptom is log entries, status changes, or artifact registrations silently vanishing.
 

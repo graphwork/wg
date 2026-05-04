@@ -293,7 +293,7 @@ For each model x condition:
 ### The Story
 
 1. **The thesis**: Memory makes computation universal (link to your paper)
-2. **The construction**: Workgraph as external stigmergic memory for LLMs
+2. **The construction**: workgraph as external stigmergic memory for LLMs
 3. **The experiment**: Terminal Bench, two conditions, same model
 4. **The result**: [X]% improvement with workgraph on Minimax M2.7
 5. **The implication**: The bottleneck isn't the model. It's the memory architecture. You can make a $0 open model outperform a $200/month subscription by giving it the right external memory system.
@@ -332,7 +332,7 @@ With workgraph orchestrating the work (eating your own dogfood), phases 1-3 can 
 |------|:-----------:|------------|
 | Primary model tool calling is unreliable | 30% | Fall back to alternative model via OpenRouter |
 | Terminal Bench tasks exceed 32K context in single session | 40% | This is actually GOOD -- it proves the need for external memory. Condition A fails, Condition B (with resume/journal) succeeds. |
-| Workgraph overhead costs more tokens than it saves | 15% | Measure and report honestly. Even if token count is higher, pass rate improvement is the primary metric. |
+| workgraph overhead costs more tokens than it saves | 15% | Measure and report honestly. Even if token count is higher, pass rate improvement is the primary metric. |
 | Results are marginal (< 5% improvement) | 20% | Focus on hard tasks only (where context limits matter). Report by difficulty tier. The improvement should be largest on the hardest tasks. |
 | OpenRouter rate limits or downtime | 20% | Run during off-peak hours, or fall back to alternative model on OpenRouter. |
 

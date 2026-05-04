@@ -18,7 +18,7 @@ const CLAUDE_MD_MARKER: &str = "<!-- workgraph-managed -->";
 
 /// The workgraph directives block appended to agent guides.
 const CLAUDE_MD_DIRECTIVES: &str = r#"<!-- workgraph-managed -->
-# Workgraph (project-specific guide)
+# workgraph (project-specific guide)
 
 This file is the **layer-2** project guide for agents working in this
 workgraph project. It is NOT the universal chat-agent / worker-agent
@@ -2740,7 +2740,7 @@ mod tests {
         // Original content preserved
         assert!(content.contains("# My Existing Config"));
         assert!(content.contains("Some custom rules here."));
-        // Workgraph directives appended
+        // workgraph directives appended
         assert!(content.contains(CLAUDE_MD_MARKER));
         assert!(content.contains("wg agent-guide"));
     }

@@ -105,10 +105,7 @@ fn compute_artifact_diff(artifacts: &[String], started_at: Option<&str>) -> Opti
 /// Heuristic: look at the coordinator chat inbox for messages sent shortly
 /// before the task's `created_at` timestamp. Falls back to scanning the
 /// task's own log entries for context clues.
-fn find_originating_user_message(
-    dir: &Path,
-    task: &workgraph::graph::Task,
-) -> Option<String> {
+fn find_originating_user_message(dir: &Path, task: &workgraph::graph::Task) -> Option<String> {
     let created_at = task.created_at.as_deref()?;
     let created_ts: chrono::DateTime<chrono::Utc> = created_at.parse().ok()?;
 
@@ -126,8 +123,7 @@ fn find_originating_user_message(
                 }
                 if let Ok(contents) = std::fs::read_to_string(&inbox_path) {
                     for line in contents.lines() {
-                        if let Ok(msg) =
-                            serde_json::from_str::<workgraph::chat::ChatMessage>(line)
+                        if let Ok(msg) = serde_json::from_str::<workgraph::chat::ChatMessage>(line)
                         {
                             if msg.role != "user" {
                                 continue;
@@ -136,9 +132,7 @@ fn find_originating_user_message(
                                 msg.timestamp.parse::<chrono::DateTime<chrono::Utc>>()
                             {
                                 // Message must be before (or within 60s of) task creation
-                                let delta = created_ts
-                                    .signed_duration_since(msg_ts)
-                                    .num_seconds();
+                                let delta = created_ts.signed_duration_since(msg_ts).num_seconds();
                                 if delta >= -60 && delta <= 600 {
                                     // Within 10 min window before creation
                                     if best_message
@@ -146,8 +140,7 @@ fn find_originating_user_message(
                                         .map(|(ts, _)| msg_ts > *ts)
                                         .unwrap_or(true)
                                     {
-                                        best_message =
-                                            Some((msg_ts, msg.content.clone()));
+                                        best_message = Some((msg_ts, msg.content.clone()));
                                     }
                                 }
                             }
@@ -166,8 +159,7 @@ fn find_originating_user_message(
     // The coordinator sometimes logs the user request that triggered task creation.
     for entry in &task.log {
         if entry.actor.as_deref() == Some("coordinator")
-            && (entry.message.contains("user request")
-                || entry.message.contains("User:"))
+            && (entry.message.contains("user request") || entry.message.contains("User:"))
         {
             return Some(entry.message.clone());
         }
@@ -186,7 +178,7 @@ pub fn run(
 ) -> Result<()> {
     let path = super::graph_path(dir);
     if !path.exists() {
-        bail!("Workgraph not initialized. Run `wg init` first.");
+        bail!("workgraph not initialized. Run `wg init` first.");
     }
 
     let graph = load_graph(&path)?;
@@ -364,10 +356,12 @@ pub fn run(
     // Step 3.9: Run constraint-fidelity lint on the task description (deterministic, no LLM).
     let cf_result = if let Some(desc) = task.description.as_deref() {
         let user_message = find_originating_user_message(dir, task);
-        Some(workgraph::agency::constraint_fidelity::lint_task_description(
-            desc,
-            user_message.as_deref(),
-        ))
+        Some(
+            workgraph::agency::constraint_fidelity::lint_task_description(
+                desc,
+                user_message.as_deref(),
+            ),
+        )
     } else {
         None
     };
@@ -562,7 +556,11 @@ pub fn run(
                 println!("  intent_fidelity:        {:.2}", f);
             }
             if let Some(cf) = evaluation.dimensions.get("constraint_fidelity") {
-                let flag = if *cf < 0.5 { " \x1b[33m⚠ unanchored constraints\x1b[0m" } else { "" };
+                let flag = if *cf < 0.5 {
+                    " \x1b[33m⚠ unanchored constraints\x1b[0m"
+                } else {
+                    ""
+                };
                 println!("  constraint_fidelity:    {:.2}{}", cf, flag);
             }
             // Individual quality dimensions
@@ -767,7 +765,7 @@ pub fn run_flip(
 ) -> Result<()> {
     let path = super::graph_path(dir);
     if !path.exists() {
-        bail!("Workgraph not initialized. Run `wg init` first.");
+        bail!("workgraph not initialized. Run `wg init` first.");
     }
 
     let graph = load_graph(&path)?;
@@ -1215,7 +1213,7 @@ pub fn run_record(
 
     let path = super::graph_path(dir);
     if !path.exists() {
-        bail!("Workgraph not initialized. Run `wg init` first.");
+        bail!("workgraph not initialized. Run `wg init` first.");
     }
 
     let graph = load_graph(&path)?;
@@ -1659,11 +1657,7 @@ fn check_eval_gate(
             "Eval rescue {}/{}: score {:.2} below threshold {:.2}. \
              Re-iterating in place (same agent identity, same worktree). \
              Evaluator notes: {}",
-            next_count,
-            max_rescues,
-            evaluation.score,
-            threshold,
-            evaluation.notes
+            next_count, max_rescues, evaluation.score, threshold, evaluation.notes
         );
         let mutated = workgraph::parser::modify_graph(&path, |graph| {
             if let Some(task) = graph.get_task_mut(task_id) {
@@ -1806,7 +1800,7 @@ pub fn apply_gate_decision(
 ) -> Result<GateAction> {
     let path = super::graph_path(dir);
     if !path.exists() {
-        bail!("Workgraph not initialized. Run `wg init` first.");
+        bail!("workgraph not initialized. Run `wg init` first.");
     }
 
     // Snapshot prerequisites and always bump gate_attempts so the caller
@@ -2297,10 +2291,7 @@ mod tests {
             Some(agent_hash),
             "agent identity hash MUST be preserved across in-place rescue"
         );
-        assert_eq!(
-            task.rescue_count, 1,
-            "rescue_count should increment by 1"
-        );
+        assert_eq!(task.rescue_count, 1, "rescue_count should increment by 1");
 
         // No new task created — only the original t1 in the graph.
         let task_count = graph.tasks().count();
@@ -2392,7 +2383,10 @@ mod tests {
         .unwrap();
 
         let config = cfg_with_eval_gate(0.7, 3);
-        let eval = mk_failing_eval(0.30, "EVALUATOR_NOTE_FOR_TEST: implementation skipped tests");
+        let eval = mk_failing_eval(
+            0.30,
+            "EVALUATOR_NOTE_FOR_TEST: implementation skipped tests",
+        );
         let rejected = check_eval_gate(
             dir_path,
             "t1",

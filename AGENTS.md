@@ -1,5 +1,5 @@
 <!-- workgraph-managed -->
-# Workgraph (project-specific guide)
+# workgraph (project-specific guide)
 
 This file is the **layer-2** project guide for agents working *on the
 workgraph codebase itself*. It is NOT the universal chat-agent / worker-agent

@@ -1,4 +1,4 @@
-# Human Summoning Mechanisms for Workgraph
+# Human Summoning Mechanisms for workgraph
 
 This document researches mechanisms for "summoning" humans into the workgraph system when agents or tasks need human input - approval, review, expertise, or decisions.
 
@@ -30,7 +30,7 @@ use notify_rust::Notification;
 
 fn summon_human(task_id: &str, message: &str) -> Result<(), Box<dyn std::error::Error>> {
     Notification::new()
-        .summary(&format!("Workgraph: Task needs attention"))
+        .summary(&format!("workgraph: Task needs attention"))
         .body(&format!("{}\n\nTask: {}", message, task_id))
         .icon("dialog-information")
         .urgency(notify_rust::Urgency::Normal)
@@ -173,7 +173,7 @@ fn send_summons_email(
     let email = Message::builder()
         .from(config.from_address.parse()?)
         .to(to.parse()?)
-        .subject(format!("[Workgraph] Attention needed: {}", task.title))
+        .subject(format!("[workgraph] Attention needed: {}", task.title))
         .header(ContentType::TEXT_PLAIN)
         .body(format!(
             r#"A task needs your attention.
@@ -185,7 +185,7 @@ Reason: {}
 View task: workgraph://task/{}
 
 ---
-Workgraph Notification System
+workgraph Notification System
 "#,
             task.title, task.id, reason, task.id
         ))?;
@@ -310,7 +310,7 @@ async fn send_sms(
 async fn summon_via_sms(config: &TwilioConfig, actor: &Actor, task: &Task) {
     if let Some(phone) = &actor.phone {
         let msg = format!(
-            "Workgraph: Task '{}' needs your attention. Reply YES to claim or NO to skip.",
+            "workgraph: Task '{}' needs your attention. Reply YES to claim or NO to skip.",
             task.title
         );
         send_sms(config, phone, &msg).await.ok();
@@ -380,7 +380,7 @@ async fn call_human(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <Response>
     <Say voice="alice">
-        Attention. This is Workgraph calling about task: {}.
+        Attention. This is workgraph calling about task: {}.
         This task requires your immediate attention.
         Press 1 to claim this task.
         Press 2 to snooze for 30 minutes.
@@ -594,7 +594,7 @@ async fn notify_discord(
                     {"name": "Task ID", "value": task.id, "inline": true},
                     {"name": "Status", "value": format!("{:?}", task.status), "inline": true}
                 ],
-                "footer": {"text": "Workgraph Notification"}
+                "footer": {"text": "workgraph Notification"}
             }]
         }))
         .send()
@@ -1058,7 +1058,7 @@ fn acknowledge_command(task_id: &str, response: AckResponse) -> Result<()> {
 
 5. Human receives SMS, opens Slack, clicks "Claim"
 
-6. Workgraph updates:
+6. workgraph updates:
    - Task acknowledged
    - Escalation stopped
    - Human marked as actively reviewing
@@ -1170,7 +1170,7 @@ For phone calls, Twilio's TwiML allows gathering DTMF tones:
 <?xml version="1.0" encoding="UTF-8"?>
 <Response>
     <Say voice="alice">
-        This is Workgraph calling about task: Approve budget for Q3 marketing.
+        This is workgraph calling about task: Approve budget for Q3 marketing.
         The agent requests your approval.
     </Say>
     <Gather numDigits="1" action="/voice-response/task-123">
@@ -1577,7 +1577,7 @@ Imagine:
 ```
 *Phone rings*
 
-"This is Workgraph. Task 'Deploy to production' requires your approval.
+"This is workgraph. Task 'Deploy to production' requires your approval.
 The deployment includes 3 database migrations and updates to the payment
 system. Press 1 to approve. Press 2 to reject. Press 3 to schedule a
 review call."

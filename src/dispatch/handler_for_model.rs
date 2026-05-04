@@ -3,7 +3,7 @@
 //!
 //! ## Why this module exists
 //!
-//! Workgraph has historically exposed six overlapping user-facing concepts —
+//! workgraph has historically exposed six overlapping user-facing concepts —
 //! executor, provider, endpoint, route, handler, model — that reduce to
 //! exactly two real axes:
 //!
@@ -105,20 +105,14 @@ mod tests {
     fn test_nex_prefix_routes_to_native() {
         // `nex:` is the canonical prefix for the in-process nex handler
         // (matches the `wg nex` subcommand name).
-        assert_eq!(
-            handler_for_model("nex:qwen3-coder"),
-            ExecutorKind::Native
-        );
+        assert_eq!(handler_for_model("nex:qwen3-coder"), ExecutorKind::Native);
     }
 
     #[test]
     fn test_local_prefix_routes_to_native() {
         // `local:` is the deprecated alias for `nex:` — still routes to
         // the same handler for one release with a stderr warning.
-        assert_eq!(
-            handler_for_model("local:qwen3-coder"),
-            ExecutorKind::Native
-        );
+        assert_eq!(handler_for_model("local:qwen3-coder"), ExecutorKind::Native);
     }
 
     #[test]
@@ -133,10 +127,7 @@ mod tests {
     fn test_oai_compat_prefix_routes_to_native() {
         // `oai-compat:` is the deprecated alias for `nex:` — still routes
         // to the same handler for one release with a stderr warning.
-        assert_eq!(
-            handler_for_model("oai-compat:gpt-5"),
-            ExecutorKind::Native
-        );
+        assert_eq!(handler_for_model("oai-compat:gpt-5"), ExecutorKind::Native);
         // "openai" is the legacy alias.
         assert_eq!(handler_for_model("openai:gpt-5"), ExecutorKind::Native);
     }

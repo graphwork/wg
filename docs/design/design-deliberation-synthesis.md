@@ -1,4 +1,4 @@
-# Unified Synthesis: Design Tensions in Workgraph's Coordination Model
+# Unified Synthesis: Design Tensions in workgraph's Coordination Model
 
 ## A Cross-Cutting Analysis of 10 Research Perspectives
 
@@ -107,7 +107,7 @@ Cross-references: R4§9 (preliminary position: three-tier architecture), R9§6 (
 Three researchers provide theoretical frameworks that illuminate the design:
 
 - **R5** applies Maturana & Varela's autopoiesis theory, Beth Dempster's autopoietic-sympoietic distinction, and homeostasis theory. Key insight: "The coordinator provides just enough top-down structure to prevent the sympoietic agent swarm from losing coherence, while the stigmergic graph medium provides just enough bottom-up flexibility to prevent the top-down structure from becoming rigid."
-- **R10** applies Grassé's stigmergy (sematectonic and marker-based), Crowston's FLOSS stigmergy work, and Heylighen's universal coordination framework. Key insight: "Workgraph is a predominantly stigmergic system with strategically placed non-stigmergic escape hatches."
+- **R10** applies Grassé's stigmergy (sematectonic and marker-based), Crowston's FLOSS stigmergy work, and Heylighen's universal coordination framework. Key insight: "workgraph is a predominantly stigmergic system with strategically placed non-stigmergic escape hatches."
 - **R7** applies blackboard systems, contract net protocol, and FIPA-ACL speech act theory. Key insight: "The question isn't 'why can't they all be conversations?' but 'when is conversation valuable enough to justify its cost?'"
 
 Cross-references: R5§9 (sympoietic with autopoietic mechanisms), R10§10 (stigmergic with escape hatches), R7§9 (the graph IS the conversation).
@@ -116,7 +116,7 @@ Cross-references: R5§9 (sympoietic with autopoietic mechanisms), R10§10 (stigm
 
 Five researchers draw on specific external systems for comparison:
 
-| System | Used by | Lesson for Workgraph |
+| System | Used by | Lesson for workgraph |
 |--------|---------|---------------------|
 | Erlang/OTP | R1, R2, R3 | Same type, different behaviour; call vs cast; permanent vs temporary |
 | Kubernetes | R1, R3, R6, R8 | Uniform metadata, specialized Kind; controller-as-workload |
@@ -335,7 +335,7 @@ Design rules:
 
 The ten research perspectives, while differing on specifics, converge on a shared understanding of workgraph's fundamental nature:
 
-1. **Workgraph is a stigmergic system with strategic non-stigmergic escape hatches** (R10, validated by R5, R7). The graph is the primary coordination medium, and this should be deepened, not replaced.
+1. **workgraph is a stigmergic system with strategic non-stigmergic escape hatches** (R10, validated by R5, R7). The graph is the primary coordination medium, and this should be deepened, not replaced.
 
 2. **The coordinator-task distinction is real and should be made explicit** (all 10 researchers). Whether through a TaskKind field (R1), a NodeKind enum (R6), or simply "acknowledged asymmetry" (R1, R5), the fiction that coordinators are just tasks should be retired in favor of honest typing.
 
@@ -347,7 +347,7 @@ The ten research perspectives, while differing on specifics, converge on a share
 
 6. **Self-organization should be bounded by immutable organizational invariants** (R5). The evolution loop is workgraph's most distinctive feature. It should be deepened (resource-aware self-regulation, environmental sensing) while maintaining the safety boundaries that prevent the system from modifying its own control logic without human approval.
 
-7. **Workgraph occupies a genuinely novel position in the orchestration landscape** (R8). Structural cycles, graph-as-data, terminal-unblocks-all, and seed tasks are distinctive innovations. The system should resist the temptation to become a general-purpose workflow engine and instead deepen its strengths in AI agent coordination.
+7. **workgraph occupies a genuinely novel position in the orchestration landscape** (R8). Structural cycles, graph-as-data, terminal-unblocks-all, and seed tasks are distinctive innovations. The system should resist the temptation to become a general-purpose workflow engine and instead deepen its strengths in AI agent coordination.
 
 The preliminary Layered Coordination Model proposed in §6 offers one path toward resolving these tensions. It is not the only path — the deliberation phase that follows will stress-test these proposals against the expertise of each researcher. But it provides a shared vocabulary and structural framework for that discussion.
 

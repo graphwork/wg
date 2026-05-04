@@ -914,7 +914,7 @@ fn test_crash_scenarios_infrastructure() {
     // Test basic temp directory setup
     let tmp = tempfile::tempdir().unwrap();
     let wg_dir = setup_workgraph(tmp.path());
-    assert!(wg_dir.exists(), "Workgraph directory should be created");
+    assert!(wg_dir.exists(), "workgraph directory should be created");
     assert!(
         wg_dir.join("config.toml").exists(),
         "Config should be created"

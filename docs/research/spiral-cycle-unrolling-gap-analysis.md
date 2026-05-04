@@ -8,7 +8,7 @@
 
 ## Executive Summary
 
-Workgraph cycles reset task state **in-place**, reusing the same task IDs across iterations. This means per-iteration artifacts (evaluations, FLIP scores, agent logs, token usage, session IDs, validation results) are either **overwritten** or **orphaned** — they exist in external storage but lose their iteration provenance. The "spiral" concept proposes that each cycle iteration materializes as unique tasks, preserving full per-iteration history while the cycle definition remains the structural template.
+workgraph cycles reset task state **in-place**, reusing the same task IDs across iterations. This means per-iteration artifacts (evaluations, FLIP scores, agent logs, token usage, session IDs, validation results) are either **overwritten** or **orphaned** — they exist in external storage but lose their iteration provenance. The "spiral" concept proposes that each cycle iteration materializes as unique tasks, preserving full per-iteration history while the cycle definition remains the structural template.
 
 **Key finding**: There is no existing spiral implementation, design doc, or partial code. The gap is significant but well-bounded. The closest existing mechanism is `wg replay` + the runs snapshot system, which archives full graph state before resetting tasks — a coarser version of per-iteration preservation.
 

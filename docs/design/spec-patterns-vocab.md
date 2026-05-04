@@ -1,4 +1,4 @@
-# Spec: Canonical Pattern Vocabulary for Workgraph Agents
+# Spec: Canonical Pattern Vocabulary for workgraph Agents
 
 **Date:** 2026-02-21
 **Status:** Active

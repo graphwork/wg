@@ -4,7 +4,7 @@ use anyhow::Result;
 ///
 /// This text is project-independent: it describes how agents behave in ANY
 /// workgraph project. Project-specific rules live in that project's
-/// `CLAUDE.md` / `AGENTS.md`. Workgraph contributor docs live in
+/// `CLAUDE.md` / `AGENTS.md`. workgraph contributor docs live in
 /// `docs/designs/` and `docs/research/` of the workgraph source repo.
 pub const AGENT_GUIDE_TEXT: &str = include_str!("../text/agent_guide.md");
 

@@ -66,10 +66,7 @@ pub fn run_list(dir: &Path, archived: bool, all: bool, json: bool) -> Result<()>
                 .find(|a| a.starts_with("coordinator-"))
                 .cloned()
                 .unwrap_or_else(|| uuid[..8].to_string());
-            let label = meta
-                .label
-                .as_deref()
-                .unwrap_or("");
+            let label = meta.label.as_deref().unwrap_or("");
             let status = if meta.archived_at.is_some() {
                 " [archived]"
             } else {
@@ -107,7 +104,10 @@ pub fn run_archive(dir: &Path, name: &str, json: bool) -> Result<()> {
         );
     } else {
         println!("Archived coordinator session '{}'.", reference);
-        println!("Chat history preserved in .archive/. Use `wg coordinator restore {}` to bring it back.", name);
+        println!(
+            "Chat history preserved in .archive/. Use `wg coordinator restore {}` to bring it back.",
+            name
+        );
     }
 
     Ok(())

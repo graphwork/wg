@@ -8,7 +8,7 @@
   to wake up instantly when you send something. And then this agent itself is kind of like a
   hidden task in the system. it's sort of the mayor from Gastown. Don't call it that though.
   Probably best to call it the coordinator. Yeah, so it's going to be helping us to place
-  things in the work graph. And then another change I want to make is I want to be able to
+  things in the workgraph. And then another change I want to make is I want to be able to
   use the TUI to add to message, to add nodes to the graph, to edit dependencies, to do
   everything basically. I want a kind of like tracker type system based on as few commands
   incantations as possible, mostly verbally driven via interface with this long running

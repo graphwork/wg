@@ -2,7 +2,7 @@
 
 ## Problem
 
-Workgraph is **not** a DAG (directed acyclic graph). It explicitly supports cycles via loop edges (`loops_to`, back-edges, iteration guards). Despite this, the codebase and documentation refer to the graph as a "DAG" in numerous places — including the core struct's own doc comment. This causes AI agents and contributors to incorrectly describe workgraph as a DAG, which misrepresents a fundamental design property.
+workgraph is **not** a DAG (directed acyclic graph). It explicitly supports cycles via loop edges (`loops_to`, back-edges, iteration guards). Despite this, the codebase and documentation refer to the graph as a "DAG" in numerous places — including the core struct's own doc comment. This causes AI agents and contributors to incorrectly describe workgraph as a DAG, which misrepresents a fundamental design property.
 
 The correct term is **directed graph** or **task graph**. The `after` edges form the forward dependency structure, and `loops_to` edges create deliberate cycles for iterative workflows (write-review-revise, polling, retries, sprint cycles).
 
@@ -16,9 +16,9 @@ Every instance of "DAG," "directed acyclic graph," or "acyclic" used to describe
 
 1. **`src/graph.rs:411`** — Doc comment on the `WorkGraph` struct:
    ```rust
-   /// The work graph: a DAG of tasks and resources with embedded dependency edges.
+   /// The workgraph: a DAG of tasks and resources with embedded dependency edges.
    ```
-   Fix: Remove "DAG" — call it a "directed task graph" or just "work graph."
+   Fix: Remove "DAG" — call it a "directed task graph" or just "workgraph."
 
 2. **`docs/README.md:81`** — Main documentation hedges but still leads with DAG:
    > "Tasks form a directed graph through `after` relationships. While typically a DAG (directed acyclic graph), cycles are permitted for iterative/recurring work patterns."
@@ -26,7 +26,7 @@ Every instance of "DAG," "directed acyclic graph," or "acyclic" used to describe
    Fix: Don't frame it as "typically a DAG with exceptions." State plainly that it's a directed graph that supports cycles via loop edges. The `after` edges are always forward (acyclic), but `loops_to` edges create intentional cycles. This is a feature, not an exception.
 
 3. **`docs/research/cyclic-processes.md:11`** — Research document states:
-   > "Workgraph currently assumes a DAG (Directed Acyclic Graph) for task dependencies."
+   > "workgraph currently assumes a DAG (Directed Acyclic Graph) for task dependencies."
 
    Fix: This was written before loop edges were implemented. Update the opening to reflect that cycles are now supported, or add a note at the top that this is a historical research document and cycles have since been implemented.
 

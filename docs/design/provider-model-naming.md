@@ -6,7 +6,7 @@
 
 ## Problem Statement
 
-Workgraph currently requires up to three separate values to route a model request:
+workgraph currently requires up to three separate values to route a model request:
 
 1. **`provider`** — which LLM backend (anthropic, openrouter, openai, local)
 2. **`model`** — the model identifier (opus, minimax/minimax-m2.5, deepseek/deepseek-v3.2)

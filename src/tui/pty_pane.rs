@@ -1015,13 +1015,7 @@ pub fn sync_chat_session_settings(prefix: &str) {
 /// is gone. Used by tests + smoke scenarios.
 pub fn tmux_pane_in_mode(session: &str) -> Option<bool> {
     let out = std::process::Command::new("tmux")
-        .args([
-            "display-message",
-            "-p",
-            "-t",
-            session,
-            "#{pane_in_mode}",
-        ])
+        .args(["display-message", "-p", "-t", session, "#{pane_in_mode}"])
         .output()
         .ok()?;
     if !out.status.success() {
@@ -1246,11 +1240,7 @@ fn compute_query_replies(chunk: &[u8], cursor_position: (u16, u16)) -> Vec<u8> {
         // nothing useful (root cause of the codex chat-tab regression).
         if tail.starts_with(b"\x1b[6n") {
             let (row, col) = cursor_position;
-            let resp = format!(
-                "\x1b[{};{}R",
-                row.saturating_add(1),
-                col.saturating_add(1)
-            );
+            let resp = format!("\x1b[{};{}R", row.saturating_add(1), col.saturating_add(1));
             reply.extend_from_slice(resp.as_bytes());
             i += 4;
             continue;
@@ -1328,8 +1318,7 @@ fn parser_after_dropping_recent_scrollback(
     drop_recent_k: usize,
 ) -> vt100::Parser {
     let (rows, cols) = parser.screen().size();
-    let lines =
-        snapshot_logical_lines_skipping_recent_scrollback(parser, drop_recent_k, false);
+    let lines = snapshot_logical_lines_skipping_recent_scrollback(parser, drop_recent_k, false);
     let mut fresh = vt100::Parser::new(rows, cols, DEFAULT_SCROLLBACK_LINES);
     let n = lines.len();
     for (i, line) in lines.iter().enumerate() {
@@ -1812,8 +1801,8 @@ sleep 5
             let contents = p.screen().contents();
             if contents.contains("CODEX_RESP_MARKER:") && contents.contains(":END") {
                 // Decode the base64 between the markers.
-                let start = contents.find("CODEX_RESP_MARKER:").unwrap()
-                    + "CODEX_RESP_MARKER:".len();
+                let start =
+                    contents.find("CODEX_RESP_MARKER:").unwrap() + "CODEX_RESP_MARKER:".len();
                 let rest = &contents[start..];
                 let end = rest.find(":END").expect("END marker present");
                 // The base64 may have been wrapped across PTY rows by the
@@ -1826,12 +1815,16 @@ sleep 5
                 // DA1, CPR, kitty, and OSC 10. (DA1 was already supported
                 // pre-fix; the other three are the new handlers.)
                 assert!(
-                    decoded.windows(b"\x1b[?65;1;6c".len()).any(|w| w == b"\x1b[?65;1;6c"),
+                    decoded
+                        .windows(b"\x1b[?65;1;6c".len())
+                        .any(|w| w == b"\x1b[?65;1;6c"),
                     "expected DA1 reply in PTY responses, got: {:?}",
                     decoded
                 );
                 assert!(
-                    decoded.windows(b"\x1b[1;1R".len()).any(|w| w == b"\x1b[1;1R"),
+                    decoded
+                        .windows(b"\x1b[1;1R".len())
+                        .any(|w| w == b"\x1b[1;1R"),
                     "expected CPR reply in PTY responses (the bytes wg writes back \
                      to the child via the master writer must round-trip through the \
                      PTY slave stdin), got: {:?}",
@@ -1843,7 +1836,9 @@ sleep 5
                     decoded
                 );
                 assert!(
-                    decoded.windows(b"\x1b]10;rgb:".len()).any(|w| w == b"\x1b]10;rgb:"),
+                    decoded
+                        .windows(b"\x1b]10;rgb:".len())
+                        .any(|w| w == b"\x1b]10;rgb:"),
                     "expected OSC 10 fg-color reply in PTY responses, got: {:?}",
                     decoded
                 );
@@ -2178,7 +2173,11 @@ sleep 5
     /// inside a single bordered pane.
     #[test]
     fn rendered_pty_output_does_not_double_lines() {
-        let lines = ["stocktake-assets", "content-review-poietic-life", "wg-visual-language-study"];
+        let lines = [
+            "stocktake-assets",
+            "content-review-poietic-life",
+            "wg-visual-language-study",
+        ];
 
         // Parser sized exactly to the rendering area — same as how
         // `pane.resize(area.height, area.width)` clamps things in
@@ -2454,10 +2453,7 @@ sleep 5
     /// including the live screen.  Walks from max offset to offset=1;
     /// at each step, row 0 of the visible window is a unique scrollback row
     /// (oldest-first order).  Returns each row as a trimmed string line.
-    fn collect_scrollback_only_naive(
-        parser: &Arc<Mutex<vt100::Parser>>,
-        cols: u16,
-    ) -> Vec<String> {
+    fn collect_scrollback_only_naive(parser: &Arc<Mutex<vt100::Parser>>, cols: u16) -> Vec<String> {
         let max = test_scrollback_count(parser);
         let mut rows_out = Vec::new();
         for offset in (1..=max).rev() {
@@ -2557,8 +2553,7 @@ sleep 5
         }
         let parser = Arc::new(Mutex::new(p));
         let naive = collect_scrollback_only_naive(&parser, cols).join("\n");
-        let any_dup = (0..30u32)
-            .any(|i| naive.matches(&format!("marker-{:04}", i)).count() > 1);
+        let any_dup = (0..30u32).any(|i| naive.matches(&format!("marker-{:04}", i)).count() > 1);
         assert!(
             any_dup,
             "naive set_size + child reprint must produce scrollback duplicates \
@@ -2599,7 +2594,9 @@ sleep 5
                 n <= 1,
                 "after re-feed reflow, marker {} appeared {} times \
                  (expected ≤1). Rows:\n{}",
-                marker, n, full
+                marker,
+                n,
+                full
             );
         }
         // And the most recent markers are present at all.
@@ -2608,7 +2605,8 @@ sleep 5
             assert!(
                 full.contains(&marker),
                 "marker {} should still be present after reflow. Rows:\n{}",
-                marker, full
+                marker,
+                full
             );
         }
     }
@@ -2720,7 +2718,9 @@ sleep 5
                 n <= 2,
                 "after reflow + child repaint, marker {} appeared {} times \
                  (expected ≤2 — one re-fed copy, at most one repaint copy). Rows:\n{}",
-                marker, n, full
+                marker,
+                n,
+                full
             );
         }
     }
@@ -2734,8 +2734,8 @@ sleep 5
         // 30 unique markers, then sleep so the child does not exit before we
         // have a chance to drive the resize sequence.
         let script = "for i in $(seq 0 29); do printf 'pane-marker-%04d\\n' $i; done; sleep 5";
-        let mut pane = PtyPane::spawn("/bin/sh", &["-c", script], &[], 10, 80)
-            .expect("spawn /bin/sh script");
+        let mut pane =
+            PtyPane::spawn("/bin/sh", &["-c", script], &[], 10, 80).expect("spawn /bin/sh script");
 
         // Wait for the child output to land in the parser. /bin/sh emits the
         // 30 lines synchronously; 200 ms is generous on any platform.
@@ -2758,7 +2758,9 @@ sleep 5
                 n <= 1,
                 "after PtyPane::resize burst, marker {} appeared {} times \
                  (expected ≤1). Rows:\n{}",
-                marker, n, full
+                marker,
+                n,
+                full
             );
         }
         pane.kill();
@@ -2790,7 +2792,9 @@ sleep 5
                 "after a burst of resizes, marker {} appeared {} times — \
                  reflow must not compound duplicates across consecutive resizes. \
                  Rows:\n{}",
-                marker, n, full
+                marker,
+                n,
+                full
             );
         }
     }
@@ -3077,20 +3081,26 @@ sleep 5
         );
         // Must contain Primary DA reply.
         assert!(
-            reply.windows(b"\x1b[?65;1;6c".len()).any(|w| w == b"\x1b[?65;1;6c"),
+            reply
+                .windows(b"\x1b[?65;1;6c".len())
+                .any(|w| w == b"\x1b[?65;1;6c"),
             "codex DA1 query must be answered, got: {:?}",
             reply
         );
         // Must contain OSC 10 fg reply.
         assert!(
-            reply.windows(b"\x1b]10;rgb:".len()).any(|w| w == b"\x1b]10;rgb:"),
+            reply
+                .windows(b"\x1b]10;rgb:".len())
+                .any(|w| w == b"\x1b]10;rgb:"),
             "codex OSC 10 fg query must be answered, got: {:?}",
             reply
         );
         // Mode-set bytes (\x1b[?2004h, \x1b[>7u, \x1b[?1004h) are not
         // queries — they should not produce replies.
         assert!(
-            !reply.windows(b"\x1b[?2004".len()).any(|w| w == b"\x1b[?2004"),
+            !reply
+                .windows(b"\x1b[?2004".len())
+                .any(|w| w == b"\x1b[?2004"),
             "mode-set bytes must not be echoed as replies, got: {:?}",
             reply
         );
@@ -3392,7 +3402,8 @@ sleep 5
             post > pre,
             "non-sync content scrolling off the top must accumulate normally in \
              scrollback (the fast-path skips trim work); pre={}, post={}",
-            pre, post
+            pre,
+            post
         );
 
         let joined: Vec<String> = {
@@ -3650,9 +3661,8 @@ sleep 5
             marker = marker.display()
         );
         {
-            let _pane =
-                PtyPane::spawn_via_tmux(&session, "sh", &["-c", &cmd], &[], None, 24, 80)
-                    .expect("first spawn ok");
+            let _pane = PtyPane::spawn_via_tmux(&session, "sh", &["-c", &cmd], &[], None, 24, 80)
+                .expect("first spawn ok");
         }
         // Wait for the inner shell to write the marker.
         let mut found = false;
@@ -3673,9 +3683,8 @@ sleep 5
         // would overwrite our marker contents below.
         std::fs::write(&marker, b"reattach").unwrap();
         {
-            let _pane =
-                PtyPane::spawn_via_tmux(&session, "sh", &["-c", &cmd], &[], None, 24, 80)
-                    .expect("second spawn ok (reattach)");
+            let _pane = PtyPane::spawn_via_tmux(&session, "sh", &["-c", &cmd], &[], None, 24, 80)
+                .expect("second spawn ok (reattach)");
         }
         std::thread::sleep(std::time::Duration::from_millis(150));
         let after = std::fs::read_to_string(&marker).unwrap();
@@ -4010,15 +4019,7 @@ sleep 5
         // Don't actually need tmux to test the validation guard.
         let bad = ["", "with space", "has:colon", "has.dot"];
         for name in bad {
-            let r = PtyPane::spawn_via_tmux(
-                name,
-                "sh",
-                &["-c", "true"],
-                &[],
-                None,
-                24,
-                80,
-            );
+            let r = PtyPane::spawn_via_tmux(name, "sh", &["-c", "true"], &[], None, 24, 80);
             assert!(
                 r.is_err(),
                 "spawn_via_tmux must reject invalid session name {:?}",
@@ -4139,10 +4140,7 @@ sleep 5
         sync_chat_session_settings("wg-chat-test-");
         let after_second = read_tmux_status_option(&session);
 
-        assert_eq!(
-            after_first, "off",
-            "first sync should produce status off"
-        );
+        assert_eq!(after_first, "off", "first sync should produce status off");
         assert_eq!(
             after_first, after_second,
             "second sync must produce identical observable state (idempotency)"

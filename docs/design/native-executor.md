@@ -425,7 +425,7 @@ pub struct BashTool {
 Executes via `tokio::process::Command::new("bash").arg("-c").arg(command)`.
 Captures stdout + stderr. Kills on timeout via SIGTERM, then SIGKILL after 5s.
 
-### Workgraph Tools (`tools/wg.rs`)
+### workgraph Tools (`tools/wg.rs`)
 
 These call workgraph library functions directly — **no subprocess, no CLI parsing overhead**.
 
@@ -723,7 +723,7 @@ New required dependencies: `regex` (for grep tool), `async-trait` (for Tool trai
 - `src/executor/native/tools/bash.rs` — Shell execution with timeout
 - Unit tests for each tool
 
-### Phase 4c: Workgraph Tools
+### Phase 4c: workgraph Tools
 - `src/executor/native/tools/wg.rs` — In-process wg operations
 - Extract library functions where commands currently do everything inline
 - Integration test: native agent creates a task, logs progress, marks done

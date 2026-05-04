@@ -53,7 +53,7 @@ The Bash tool (44.8% of all calls) is used for:
 
 ### Already covered (native tools exist)
 1. **File I/O:** `read_file`, `write_file`, `edit_file`, `glob`, `grep` — covers Read, Write, Edit, Glob, Grep
-2. **Workgraph core:** `wg_show`, `wg_list`, `wg_add`, `wg_done`, `wg_fail`, `wg_log`, `wg_artifact`
+2. **workgraph core:** `wg_show`, `wg_list`, `wg_add`, `wg_done`, `wg_fail`, `wg_log`, `wg_artifact`
 3. **Shell execution:** `bash` — covers all cargo, git, and misc commands
 
 ### Missing tools (prioritized by impact)

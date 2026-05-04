@@ -217,7 +217,7 @@ Models are assigned to workgraph tiers based on **output pricing** relative to
 the median, mapping the benchmark registry's three-tier classification
 (frontier/mid/budget) to workgraph's three tiers (premium/standard/fast):
 
-| Benchmark Tier | Workgraph Tier | Pricing Range (current) |
+| Benchmark Tier | workgraph Tier | Pricing Range (current) |
 |---------------|----------------|------------------------|
 | `budget` | `fast` | $0.02 – $0.95/Mtok output |
 | `mid` | `standard` | $0.97 – $3.40/Mtok output |

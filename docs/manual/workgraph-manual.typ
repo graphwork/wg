@@ -1,9 +1,9 @@
-// Workgraph Manual
+// workgraph Manual
 // A conceptual guide to task coordination for humans and AI agents
 
 #set document(
-  title: "Workgraph: A Manual",
-  author: "The Workgraph Project",
+  title: "workgraph: A Manual",
+  author: "The workgraph Project",
 )
 
 #set text(font: "New Computer Modern", size: 11pt)
@@ -14,7 +14,7 @@
 #page(numbering: none)[
   #v(4fr)
   #align(center)[
-    #text(size: 32pt, weight: "bold")[Workgraph]
+    #text(size: 32pt, weight: "bold")[workgraph]
     #v(8pt)
     #text(size: 16pt)[A Manual]
     #v(24pt)

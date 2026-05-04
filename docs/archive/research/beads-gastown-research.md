@@ -326,7 +326,7 @@ Based on community feedback and experience reports:
 
 ---
 
-## 8. Opportunities for Workgraph
+## 8. Opportunities for workgraph
 
 Based on this analysis, workgraph could address several limitations:
 

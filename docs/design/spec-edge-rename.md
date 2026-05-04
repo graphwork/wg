@@ -102,7 +102,7 @@ after: Vec<String>,
 | 345 | `blocks: helper.blocks,` | `before: helper.before,` |
 | 346 | `blocked_by: helper.blocked_by,` | `after: helper.after,` |
 
-### 2.4 WorkGraph doc comment (line 427–431)
+### 2.4 workgraph doc comment (line 427–431)
 
 ```
 // Old: "Tasks depend on other tasks via `blocked_by`/`blocks` edges."

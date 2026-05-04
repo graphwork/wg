@@ -7,6 +7,9 @@ fn test_dispatcher_config_roundtrip() {
     eprintln!("{}", toml_str);
 
     let reload: workgraph::config::Config = toml::from_str(&toml_str).unwrap();
-    eprintln!("=== RELOADED max_agents = {} ===", reload.coordinator.max_agents);
+    eprintln!(
+        "=== RELOADED max_agents = {} ===",
+        reload.coordinator.max_agents
+    );
     assert_eq!(reload.coordinator.max_agents, 42);
 }

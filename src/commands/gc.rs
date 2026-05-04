@@ -53,7 +53,7 @@ fn is_old_enough(task: &workgraph::graph::Task, min_age: &chrono::Duration) -> b
 pub fn run(dir: &Path, dry_run: bool, include_done: bool, older: Option<&str>) -> Result<()> {
     let path = graph_path(dir);
     if !path.exists() {
-        anyhow::bail!("Workgraph not initialized. Run 'wg init' first.");
+        anyhow::bail!("workgraph not initialized. Run 'wg init' first.");
     }
 
     // Parse --older duration if provided

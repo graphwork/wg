@@ -2,7 +2,7 @@
 
 ## Purpose
 
-This document is the knowledge base for the Terminal Bench validation campaign. Workgraph agents executing tasks in this campaign should read this for context. It captures research, architectural analysis, competitive intelligence, and strategic decisions made during planning.
+This document is the knowledge base for the Terminal Bench validation campaign. workgraph agents executing tasks in this campaign should read this for context. It captures research, architectural analysis, competitive intelligence, and strategic decisions made during planning.
 
 ---
 
@@ -56,7 +56,7 @@ tb run \
 2. Direct Python integration (full logging + API access)
 3. MCP server (exposes tmux session)
 
-**Prompt injection**: Agents receive the task instruction as their prompt. Custom system prompts are injected by the agent harness BEFORE the task instruction. This is where ForgeCode puts identity, planning rules, tool descriptions, and skills. This is where Workgraph puts the wg CLI instructions, graph context, and scope-based prompt assembly.
+**Prompt injection**: Agents receive the task instruction as their prompt. Custom system prompts are injected by the agent harness BEFORE the task instruction. This is where ForgeCode puts identity, planning rules, tool descriptions, and skills. This is where workgraph puts the wg CLI instructions, graph context, and scope-based prompt assembly.
 
 ---
 
@@ -96,9 +96,9 @@ Philosophy: "Analytical reasoning about *what to do* must not be conflated with 
 
 **Key result**: With identical Gemini 3.1 Pro weights, ForgeCode scored 78.4% vs Google's own agent at 68.5%. **10-point delta from scaffold alone.**
 
-### ForgeCode vs Workgraph: Architectural Comparison
+### ForgeCode vs workgraph: Architectural Comparison
 
-| Dimension | ForgeCode | Workgraph |
+| Dimension | ForgeCode | workgraph |
 |-----------|-----------|-----------|
 | Planning | Enforced `todo_write` (flat checklist) | Task graph with dependencies, cycles, verification gates |
 | Agent decomposition | 3 fixed agents (Muse/Forge/Sage) | Arbitrary agent types via agency system, composable from primitives |
@@ -112,15 +112,15 @@ Philosophy: "Analytical reasoning about *what to do* must not be conflated with 
 | Language | Rust | Rust |
 | License | Apache 2.0 | (Erik's project) |
 
-### What Workgraph Can Do That ForgeCode Cannot
+### What workgraph Can Do That ForgeCode Cannot
 
-1. **Persistent external memory**: ForgeCode's todo_write is in-context. Workgraph's task log survives context exhaustion.
-2. **Dependency-driven execution**: ForgeCode's agents follow a fixed sequence. Workgraph's coordinator dispatches based on graph topology -- ready tasks spawn automatically.
-3. **Cycles**: ForgeCode has no iteration concept. Workgraph supports structural cycles with convergence detection.
-4. **Cross-agent artifact sharing**: ForgeCode's agents share conversational context. Workgraph agents share typed artifacts through the graph, discoverable by any future agent.
-5. **Agent resume**: If a ForgeCode agent dies, it starts over. Workgraph agents resume from journal with stale-state detection.
-6. **Verification gates**: ForgeCode's verification is a prompt. Workgraph's `--verify` runs an actual command and blocks downstream until it passes.
-7. **Arbitrary decomposition depth**: ForgeCode has 3 agents. Workgraph can spawn N agents for N subtasks, each with their own subtasks.
+1. **Persistent external memory**: ForgeCode's todo_write is in-context. workgraph's task log survives context exhaustion.
+2. **Dependency-driven execution**: ForgeCode's agents follow a fixed sequence. workgraph's coordinator dispatches based on graph topology -- ready tasks spawn automatically.
+3. **Cycles**: ForgeCode has no iteration concept. workgraph supports structural cycles with convergence detection.
+4. **Cross-agent artifact sharing**: ForgeCode's agents share conversational context. workgraph agents share typed artifacts through the graph, discoverable by any future agent.
+5. **Agent resume**: If a ForgeCode agent dies, it starts over. workgraph agents resume from journal with stale-state detection.
+6. **Verification gates**: ForgeCode's verification is a prompt. workgraph's `--verify` runs an actual command and blocks downstream until it passes.
+7. **Arbitrary decomposition depth**: ForgeCode has 3 agents. workgraph can spawn N agents for N subtasks, each with their own subtasks.
 
 ---
 
@@ -179,7 +179,7 @@ Philosophy: "Analytical reasoning about *what to do* must not be conflated with 
 - System prompt: minimal (tool descriptions + task instruction)
 - This is what everyone else has
 
-**Condition B: Agent + Workgraph (Treatment)**
+**Condition B: Agent + workgraph (Treatment)**
 - Native executor with full wg tool access
 - Tools: everything in Condition A + wg_show, wg_list, wg_add, wg_done, wg_fail, wg_log, wg_artifact
 - Journal/resume enabled (survives context exhaustion)
@@ -225,8 +225,8 @@ Calibration: **Claude Haiku** via native executor (Anthropic API)
 ### Expected Results
 
 - **Easy tasks**: Both conditions similar. Single session suffices.
-- **Medium tasks**: Workgraph helps. Decomposition, logging, artifact sharing improve reliability.
-- **Hard tasks**: Workgraph's thesis. Bare agent hits context wall. Graph agent decomposes, checkpoints, resumes. This is where the gap opens.
+- **Medium tasks**: workgraph helps. Decomposition, logging, artifact sharing improve reliability.
+- **Hard tasks**: workgraph's thesis. Bare agent hits context wall. Graph agent decomposes, checkpoints, resumes. This is where the gap opens.
 
 ---
 
@@ -240,7 +240,7 @@ Terminal Bench gives each agent:
 
 The agent harness wraps the task instruction with its own system prompt. This is where scaffold engineering happens. ForgeCode injects identity, planning rules, tool schemas, skills, and non-interactive mode directives.
 
-For Workgraph:
+For workgraph:
 - **Condition A system prompt**: Minimal. "You are a coding agent. Complete the following task. You have access to bash and file tools."
 - **Condition B system prompt**: The scope-based prompt assembly from `src/service/executor.rs`. This includes the REQUIRED_WORKFLOW_SECTION (wg CLI commands, message handling, validation, completion gates), the GRAPH_PATTERNS_SECTION (cycle awareness, golden rule), and task-specific context.
 
@@ -268,7 +268,7 @@ The native executor (agent loop) runs on the **host machine**. It calls OpenRout
 
 **Host requirements**: Docker, Harbor, `wg` binary. CPU/RAM are not the bottleneck -- API latency is.
 
-### Installing Workgraph in Containers
+### Installing workgraph in Containers
 
 The `wg` binary is a single statically-linked Rust binary (~15-20MB). Zero runtime dependencies -- no Python, no Node.js, no package manager needed inside the container.
 
@@ -372,7 +372,7 @@ submissions/terminal-bench/2.0/<agent>__<model>/
 **Step 3: Create metadata.yaml**
 ```yaml
 agent_url: https://github.com/erikg/workgraph
-agent_display_name: "Workgraph Native"
+agent_display_name: "workgraph Native"
 agent_org_display_name: "Erik Garrison"
 
 models:
@@ -477,7 +477,7 @@ Current top entries on Terminal Bench 2.0:
 | 39 | Claude Code | Claude Opus 4.6 | 58.0% |
 | Last | (worst) | -- | 3.1% |
 
-**Our target**: Beat Claude Code's 58% with an open model. If Workgraph + Minimax M2.7 scores above 58%, we've shown that a model with the right memory architecture beats a frontier model with a basic scaffold. That alone is newsworthy.
+**Our target**: Beat Claude Code's 58% with an open model. If workgraph + Minimax M2.7 scores above 58%, we've shown that a model with the right memory architecture beats a frontier model with a basic scaffold. That alone is newsworthy.
 
 **Dream target**: Approach or beat ForgeCode's 78-82% range. If we do that with Minimax M2.7, it's paradigm-shifting.
 
@@ -560,7 +560,7 @@ export OPENROUTER_API_KEY=<key>
 export ANTHROPIC_API_KEY=<key>
 # Model string: "claude-haiku-4-5-20251001"
 
-# Workgraph native executor config
+# workgraph native executor config
 # In .wg/config.toml:
 # [native_executor]
 # provider = "openai"
@@ -603,13 +603,13 @@ cargo test -- --ignored test_openrouter       # OpenRouter tests only
 
 1. **ForgeCode proved scaffold > model** (10-point delta, same weights). We're proving memory > scaffold.
 
-2. **Enforced planning was ForgeCode's biggest win** (+28 points). Workgraph's task graph is enforced planning on steroids -- with dependencies, verification, and persistence.
+2. **Enforced planning was ForgeCode's biggest win** (+28 points). workgraph's task graph is enforced planning on steroids -- with dependencies, verification, and persistence.
 
 3. **The hard tasks are where workgraph wins.** Easy tasks don't need external memory. Hard tasks exceed context limits. That's where the graph provides value.
 
 4. **Context exhaustion is a feature, not a bug.** When Condition A agents hit context limits and fail, Condition B agents resume from journal. The failure IS the proof.
 
-5. **The system prompt is the scaffold.** Terminal Bench tasks come as plain instructions. The system prompt wrapper is where all the agent engineering lives. Workgraph's scope-based prompt assembly IS the competitive advantage.
+5. **The system prompt is the scaffold.** Terminal Bench tasks come as plain instructions. The system prompt wrapper is where all the agent engineering lives. workgraph's scope-based prompt assembly IS the competitive advantage.
 
 6. **Token cost doesn't matter if pass rate improves.** Even if Condition B uses more tokens per task (because of wg tool calls, graph context), higher pass rate is the primary metric.
 
@@ -624,20 +624,20 @@ cargo test -- --ignored test_openrouter       # OpenRouter tests only
 This campaign is not just a benchmark run. It's a **constructive proof of a theoretical result**:
 
 - **The paper** (arXiv:2412.17794): Universality requires (1) stable evolution of thought and (2) reliable access to history of thought. Memory makes computation universal.
-- **The construction** (Workgraph): A stigmergic task graph that provides externalized memory to bounded LLM agents. The graph is CRISPR for LLMs -- a chronological log that agents read back to act on their full computational history.
+- **The construction** (workgraph): A stigmergic task graph that provides externalized memory to bounded LLM agents. The graph is CRISPR for LLMs -- a chronological log that agents read back to act on their full computational history.
 - **The proof** (Terminal Bench): Show that agents with external memory (workgraph) outperform agents without it, same model, same tools. The delta IS the value of memory.
 
 ### Why This Is Different From ForgeCode's Approach
 
 ForgeCode optimized the scaffold: enforced planning, progressive thinking, schema tricks, subagent parallelization. All within a single session. All within the context window.
 
-Workgraph optimizes the **memory architecture**: persistent state that survives context exhaustion, dependency-driven execution, stigmergic coordination through shared graph state, crash recovery via journal/resume.
+workgraph optimizes the **memory architecture**: persistent state that survives context exhaustion, dependency-driven execution, stigmergic coordination through shared graph state, crash recovery via journal/resume.
 
 ForgeCode proved scaffold > model (10-point delta). We're proving memory > scaffold. If a $0 open model with the right memory architecture beats expensive frontier models with sophisticated scaffolds, that's a fundamental result about the nature of intelligence -- not just an engineering win.
 
 ### The Self-Bootstrapping Argument
 
-Workgraph was built by workgraph. 216K lines of Rust, 103K lines of design docs, 1,057 commits, 75 days, 1 person. The system orchestrated the agents that wrote the system. This is the ultimate proof-of-concept, but it's self-referential. Terminal Bench makes it legible to the outside world by providing an independent, third-party evaluation.
+workgraph was built by workgraph. 216K lines of Rust, 103K lines of design docs, 1,057 commits, 75 days, 1 person. The system orchestrated the agents that wrote the system. This is the ultimate proof-of-concept, but it's self-referential. Terminal Bench makes it legible to the outside world by providing an independent, third-party evaluation.
 
 ### Deadline
 
@@ -647,7 +647,7 @@ Workgraph was built by workgraph. 216K lines of Rust, 103K lines of design docs,
 
 ## 12. Links Index
 
-### Workgraph
+### workgraph
 - Paper: https://arxiv.org/abs/2412.17794
 - Blog: http://thinks.lol/2025/01/memory-makes-computation-universal/
 - Repository: https://github.com/erikg/workgraph

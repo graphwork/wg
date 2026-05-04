@@ -175,9 +175,7 @@ mod tests {
 
     #[test]
     fn test_classifier_generic_exit() {
-        let f = write_stream(
-            r#"{"type":"result","subtype":"success","result":"done"}"#,
-        );
+        let f = write_stream(r#"{"type":"result","subtype":"success","result":"done"}"#);
         assert_eq!(
             classify_from_raw_stream(f.path(), 1),
             FailureClass::AgentExitNonzero
@@ -196,9 +194,7 @@ mod tests {
     #[test]
     fn test_classifier_truncated_jsonl() {
         // Last line is partial JSON — should fall back, not panic
-        let f = write_stream(
-            r#"{"type":"result","api_error_status":400,"mes"#,
-        );
+        let f = write_stream(r#"{"type":"result","api_error_status":400,"mes"#);
         // Still extracts the status code from partial JSON
         assert_eq!(
             classify_from_raw_stream(f.path(), 1),

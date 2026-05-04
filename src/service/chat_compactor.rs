@@ -161,10 +161,7 @@ pub fn run_chat_compaction(workgraph_dir: &Path, coordinator_id: u32) -> Result<
         if output_path.exists() {
             return Ok(output_path);
         }
-        anyhow::bail!(
-            "No chat messages to compact for chat {}",
-            coordinator_id
-        );
+        anyhow::bail!("No chat messages to compact for chat {}", coordinator_id);
     }
 
     // Interleave by timestamp

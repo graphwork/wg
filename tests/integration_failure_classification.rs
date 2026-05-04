@@ -128,7 +128,10 @@ fn test_wg_fail_with_class_persists() {
             "Could not process PDF",
         ],
     );
-    assert_eq!(code, 0, "wg fail should exit 0. stdout={stdout} stderr={stderr}");
+    assert_eq!(
+        code, 0,
+        "wg fail should exit 0. stdout={stdout} stderr={stderr}"
+    );
 
     let graph = load_graph(&wg_dir.join("graph.jsonl")).unwrap();
     let task = graph.get_task("t1").unwrap();
@@ -166,7 +169,10 @@ fn test_wg_show_renders_failure_class() {
     assert_eq!(code, 0);
 
     let (stdout, stderr, code) = run_wg(project, &["show", "t1"]);
-    assert_eq!(code, 0, "wg show should exit 0. stdout={stdout} stderr={stderr}");
+    assert_eq!(
+        code, 0,
+        "wg show should exit 0. stdout={stdout} stderr={stderr}"
+    );
     assert!(
         stdout.contains("api-error-400-document"),
         "wg show should contain failure_class. Got: {stdout}"
@@ -192,8 +198,13 @@ fn test_classify_failure_subcommand_pdf_400() {
 
     // Run classify-failure without a real workgraph dir (it doesn't need one)
     let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_wg"));
-    cmd.current_dir(tmp.path())
-        .args(["classify-failure", "--raw-stream", &raw_stream.to_string_lossy(), "--exit-code", "1"]);
+    cmd.current_dir(tmp.path()).args([
+        "classify-failure",
+        "--raw-stream",
+        &raw_stream.to_string_lossy(),
+        "--exit-code",
+        "1",
+    ]);
     let output = cmd.output().expect("Failed to run wg binary");
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
     assert_eq!(

@@ -128,7 +128,8 @@ mod tests {
     fn config_overrides_specifies_env_key() {
         let got = config_overrides("https://x");
         assert!(
-            got.iter().any(|s| s.ends_with(r#"env_key="OPENAI_API_KEY""#)),
+            got.iter()
+                .any(|s| s.ends_with(r#"env_key="OPENAI_API_KEY""#)),
             "expected env_key=OPENAI_API_KEY override, got: {:?}",
             got
         );

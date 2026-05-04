@@ -181,7 +181,7 @@ When reviewers disagree (e.g., UX wants larger fonts, Code wants smaller bundles
 A deliberation phase (agents debating proposals) was considered and rejected:
 - **Cost**: Each deliberation round costs an additional LLM call per agent, with marginal value.
 - **Convergence risk**: Agent debates can cycle without converging (each agent optimizes for its own perspective).
-- **Workgraph alignment**: The scatter-gather pattern with quantitative synthesis is already workgraph's strongest multi-agent pattern (per the organizational patterns doc). Adding deliberation introduces agent-to-agent coupling that fights the stigmergic model.
+- **workgraph alignment**: The scatter-gather pattern with quantitative synthesis is already workgraph's strongest multi-agent pattern (per the organizational patterns doc). Adding deliberation introduces agent-to-agent coupling that fights the stigmergic model.
 
 If future iterations reveal that the quantitative approach misses important nuance, a lightweight deliberation step could be added: each reviewer reads the draft action plan and posts a single `wg msg` with objections. The synthesizer incorporates these before finalizing. This is **not included in v1**.
 

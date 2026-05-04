@@ -455,9 +455,15 @@ fn test_orphan_chat_dir_not_resurrected() {
     );
 
     // Verify the orphan detection helper agrees
-    assert!(workgraph::chat_sessions::is_orphan_chat_dir(wg, "coordinator-4"));
+    assert!(workgraph::chat_sessions::is_orphan_chat_dir(
+        wg,
+        "coordinator-4"
+    ));
     assert!(workgraph::chat_sessions::is_orphan_chat_dir(wg, "7"));
-    assert!(!workgraph::chat_sessions::is_orphan_chat_dir(wg, "coordinator-0"));
+    assert!(!workgraph::chat_sessions::is_orphan_chat_dir(
+        wg,
+        "coordinator-0"
+    ));
 }
 
 /// Test that archived coordinators don't appear in list_coordinator_ids
@@ -532,5 +538,8 @@ fn test_archive_survives_restart() {
     // Restore brings it back
     workgraph::chat_sessions::restore_session(wg, "coordinator-3").unwrap();
     let ids = workgraph::chat::list_coordinator_ids(wg);
-    assert!(ids.contains(&3), "Restored coordinator should be visible again");
+    assert!(
+        ids.contains(&3),
+        "Restored coordinator should be visible again"
+    );
 }

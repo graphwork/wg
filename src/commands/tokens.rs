@@ -14,7 +14,7 @@ pub fn run(dir: &Path, task_id: &str, json: &str) -> Result<()> {
 
     let path = super::graph_path(dir);
     if !path.exists() {
-        anyhow::bail!("Workgraph not initialized. Run 'wg init' first.");
+        anyhow::bail!("workgraph not initialized. Run 'wg init' first.");
     }
 
     let mut error: Option<anyhow::Error> = None;

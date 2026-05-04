@@ -439,7 +439,7 @@ wg evolve run --single-shot                       # force legacy single-shot mod
 | `wg agency init` | Seed agency with starter roles and tradeoffs |
 | `wg agency stats [--min-evals <N>] [--by-model] [--by-task-type]` | Show agency performance analytics |
 | `wg agency create [--model <MODEL>] [--dry-run]` | Invoke the creator agent to discover and add new primitives |
-| `wg agency import [CSV_PATH] [--url <URL>] [--upstream] [--dry-run] [--tag <TAG>] [--force] [--check]` | Import Agency starter.csv primitives into WorkGraph |
+| `wg agency import [CSV_PATH] [--url <URL>] [--upstream] [--dry-run] [--tag <TAG>] [--force] [--check]` | Import Agency starter.csv primitives into workgraph |
 | `wg agency migrate [--dry-run]` | Migrate old-format agency store to primitive+cache format |
 | `wg agency deferred` | List pending deferred evolver operations (alias for `wg evolve review list`) |
 | `wg agency approve <id>` | Approve a deferred operation (alias for `wg evolve review approve`) |

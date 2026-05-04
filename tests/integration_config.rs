@@ -106,7 +106,7 @@ fn config_show_default() {
     let wg_dir = setup_workgraph(&tmp);
 
     let output = wg_ok(&wg_dir, &["config", "--show"]);
-    assert!(output.contains("Workgraph Configuration"));
+    assert!(output.contains("workgraph Configuration"));
     assert!(output.contains("[agent]"));
     assert!(output.contains("[dispatcher]"));
     assert!(output.contains("executor"));
@@ -136,7 +136,7 @@ fn config_show_after_init() {
     // Init then show
     wg_ok(&wg_dir, &["config", "--init"]);
     let output = wg_ok(&wg_dir, &["config", "--show"]);
-    assert!(output.contains("Workgraph Configuration"));
+    assert!(output.contains("workgraph Configuration"));
     assert!(output.contains("executor"));
 }
 
@@ -232,7 +232,7 @@ fn config_list_shows_merged() {
     let wg_dir = setup_workgraph(&tmp);
 
     let output = wg_ok(&wg_dir, &["config", "--list"]);
-    assert!(output.contains("Workgraph Configuration (merged)"));
+    assert!(output.contains("workgraph Configuration (merged)"));
     // Should show source annotations
     assert!(
         output.contains("default") || output.contains("local") || output.contains("global"),
@@ -298,5 +298,5 @@ fn config_no_flags_shows_config() {
 
     // Bare `wg config` should behave like `wg config --show`
     let output = wg_ok(&wg_dir, &["config"]);
-    assert!(output.contains("Workgraph Configuration"));
+    assert!(output.contains("workgraph Configuration"));
 }

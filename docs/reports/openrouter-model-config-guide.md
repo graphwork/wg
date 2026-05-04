@@ -421,7 +421,7 @@ provider = "openrouter"
 
 ### Prerequisites
 - OpenRouter API key set: `export OPENROUTER_API_KEY="sk-or-v1-..."`
-- Workgraph initialized: `wg init`
+- workgraph initialized: `wg init`
 
 ### Step 1: Verify endpoint exists
 

@@ -6,7 +6,7 @@
 
 ## 1. Executive Summary
 
-Workgraph is a functional self-organizing system: it dispatches its own tasks, evaluates its own output, evolves its own agent prompts, and recovers from failures without human intervention in the common case. The core loop (spec -> implement -> evaluate -> evolve) runs end-to-end. Key gaps remain in compactor runtime (code exists but no artifacts yet), firehose observability (in-progress), and the evolver has not yet auto-triggered — its runs were manual invocations rather than coordinator-initiated cycles.
+workgraph is a functional self-organizing system: it dispatches its own tasks, evaluates its own output, evolves its own agent prompts, and recovers from failures without human intervention in the common case. The core loop (spec -> implement -> evaluate -> evolve) runs end-to-end. Key gaps remain in compactor runtime (code exists but no artifacts yet), firehose observability (in-progress), and the evolver has not yet auto-triggered — its runs were manual invocations rather than coordinator-initiated cycles.
 
 ## 2. Per-Subsystem Maturity Scores
 

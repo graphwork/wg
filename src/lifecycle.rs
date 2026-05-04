@@ -39,11 +39,10 @@ pub fn migrate_pending_validation_tasks(graph: &mut WorkGraph) -> Vec<String> {
                 timestamp: Utc::now().to_rfc3339(),
                 actor: None,
                 user: Some(current_user()),
-                message:
-                    "Migrated PendingValidation → Done (deprecate-pending-validation): \
+                message: "Migrated PendingValidation → Done (deprecate-pending-validation): \
                      agency `.evaluate-*` is now the dependency-unblock gate. \
                      To force re-spawn instead, run `wg reject <task>`."
-                        .to_string(),
+                    .to_string(),
             });
             migrated.push(task_id);
         }
@@ -95,7 +94,10 @@ mod tests {
         let first = migrate_pending_validation_tasks(&mut graph);
         assert_eq!(first.len(), 1);
         let second = migrate_pending_validation_tasks(&mut graph);
-        assert!(second.is_empty(), "no PendingValidation tasks left to migrate");
+        assert!(
+            second.is_empty(),
+            "no PendingValidation tasks left to migrate"
+        );
     }
 
     #[test]
@@ -106,7 +108,10 @@ mod tests {
         graph.add_node(Node::Task(t));
 
         let migrated = migrate_pending_validation_tasks(&mut graph);
-        assert!(migrated.is_empty(), "human-review tasks must not be migrated");
+        assert!(
+            migrated.is_empty(),
+            "human-review tasks must not be migrated"
+        );
         assert_eq!(
             graph.get_task("opt-in").unwrap().status,
             Status::PendingValidation

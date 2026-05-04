@@ -2,7 +2,9 @@ use chrono::Utc;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::IsTerminal;
 use unicode_width::UnicodeWidthChar;
-use workgraph::graph::{PRIORITY_DEFAULT, Status, Task, TokenUsage, WorkGraph, format_token_display};
+use workgraph::graph::{
+    PRIORITY_DEFAULT, Status, Task, TokenUsage, WorkGraph, format_token_display,
+};
 use workgraph::messages::{CoordinatorMessageStatus, MessageStats};
 
 use super::{LayoutMode, VizOutput};

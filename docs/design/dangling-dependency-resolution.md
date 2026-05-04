@@ -29,7 +29,7 @@ We can't reject non-existent dependencies at creation time because:
 | **Terraform** | Plan phase validates all references before apply. Unknown refs are hard errors. |
 | **Nix** | Lazy evaluation — references are resolved when needed. Missing refs error at evaluation time, not definition time. |
 
-**Key insight:** Most systems either (a) require all refs to exist at definition time, or (b) use language-level references that can't dangle. Workgraph's string-based IDs with support for forward refs is unusual and requires a hybrid approach.
+**Key insight:** Most systems either (a) require all refs to exist at definition time, or (b) use language-level references that can't dangle. workgraph's string-based IDs with support for forward refs is unusual and requires a hybrid approach.
 
 ## Recommended Approach: Layered Detection + Surfacing
 

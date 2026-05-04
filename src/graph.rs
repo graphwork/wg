@@ -1769,7 +1769,7 @@ pub struct Resource {
     pub unit: Option<String>,
 }
 
-/// A node in the work graph (task or resource)
+/// A node in the workgraph (task or resource)
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 #[allow(clippy::large_enum_variant)]
@@ -1811,7 +1811,7 @@ pub struct CycleAnalysis {
 }
 
 impl CycleAnalysis {
-    /// Compute cycle analysis from a WorkGraph's after edges.
+    /// Compute cycle analysis from a `WorkGraph`'s after edges.
     pub fn from_graph(graph: &WorkGraph) -> Self {
         use crate::cycle::NamedGraph;
 
@@ -1900,7 +1900,7 @@ impl CycleAnalysis {
     }
 }
 
-/// The work graph: a directed task graph with dependency edges and optional loop edges.
+/// The workgraph: a directed task graph with dependency edges and optional loop edges.
 ///
 /// Tasks depend on other tasks via `after`/`blocks` edges. Resources are
 /// consumed by tasks via `requires` edges. The graph is persisted as JSONL

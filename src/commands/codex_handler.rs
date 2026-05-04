@@ -510,11 +510,15 @@ fn run_codex_turn(
 
     // Read any remaining stderr before waiting (prevents pipe deadlock on
     // large error output, though session-not-found errors are small).
-    let stderr_output = child.stderr.take().map(|stderr| {
-        let mut buf = String::new();
-        let _ = std::io::Read::read_to_string(&mut BufReader::new(stderr), &mut buf);
-        buf
-    }).unwrap_or_default();
+    let stderr_output = child
+        .stderr
+        .take()
+        .map(|stderr| {
+            let mut buf = String::new();
+            let _ = std::io::Read::read_to_string(&mut BufReader::new(stderr), &mut buf);
+            buf
+        })
+        .unwrap_or_default();
 
     let status = child.wait().context("codex wait")?;
     if !status.success() {

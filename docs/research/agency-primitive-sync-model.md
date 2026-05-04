@@ -222,7 +222,7 @@ content_hash: abc123...
            │ Manual copy + git commit + code review
            ▼
 ┌─────────────────────────────────┐
-│ Workgraph Repo                  │
+│ workgraph Repo                  │
 │ agency/starter.csv              │  ← git-tracked, reviewable
 │                                 │
 │ include_bytes!() in binary      │  ← embedded at compile time

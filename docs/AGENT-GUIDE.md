@@ -1,4 +1,4 @@
-# Workgraph Agent Guide
+# workgraph Agent Guide
 
 How spawned agents should think about task graphs: recognizing patterns, building structures, staffing work, and staying in control.
 

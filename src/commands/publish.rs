@@ -154,8 +154,7 @@ pub fn load_config(workgraph_dir: &Path) -> Result<PublishConfig> {
 pub fn save_config(workgraph_dir: &Path, cfg: &PublishConfig) -> Result<()> {
     let path = publish_config_path(workgraph_dir);
     let raw = toml::to_string_pretty(cfg).context("failed to serialize publish config")?;
-    std::fs::write(&path, raw)
-        .with_context(|| format!("failed to write {}", path.display()))?;
+    std::fs::write(&path, raw).with_context(|| format!("failed to write {}", path.display()))?;
     Ok(())
 }
 
@@ -504,7 +503,7 @@ fn execute_run(workgraph_dir: &Path, dep: &Deployment, dry_run: bool) -> Result<
         let graph_path = workgraph_dir.join("graph.jsonl");
         if !graph_path.exists() {
             anyhow::bail!(
-                "Workgraph not initialized at {}. Run `wg init` first.",
+                "workgraph not initialized at {}. Run `wg init` first.",
                 workgraph_dir.display()
             );
         }
@@ -526,10 +525,7 @@ fn execute_run(workgraph_dir: &Path, dep: &Deployment, dry_run: bool) -> Result<
     }
 
     let mut cmd = Command::new("rsync");
-    let flags = dep
-        .rsync_flags
-        .clone()
-        .unwrap_or_else(default_rsync_flags);
+    let flags = dep.rsync_flags.clone().unwrap_or_else(default_rsync_flags);
     cmd.args(&flags);
 
     if let Some(key) = &dep.ssh_key {
@@ -600,7 +596,7 @@ pub fn resolve_deployment_meta(
     }
 
     // Default title = directory name when neither override nor project
-    // config supplied one. Empty deployment + empty project = "Workgraph"
+    // config supplied one. Empty deployment + empty project = "workgraph"
     // is handled in the renderer (the project-header is omitted entirely).
     if meta.title.is_none() {
         if let Some(name) = workgraph_dir
@@ -610,7 +606,7 @@ pub fn resolve_deployment_meta(
         {
             // Only use the directory-name default when SOMETHING else is
             // set (byline or abstract). Otherwise the "is_empty" check
-            // collapses the header back to the minimal Workgraph form.
+            // collapses the header back to the minimal workgraph form.
             if meta
                 .byline
                 .as_deref()
@@ -752,14 +748,14 @@ mod tests {
             since,
             public_only,
             include_chat,
-            None, // out_dir
-            None, // ssh_key
-            None, // ssh_config_host
-            None, // rsync_flags
+            None,  // out_dir
+            None,  // ssh_key
+            None,  // ssh_config_host
+            None,  // rsync_flags
             false, // mkpath
-            None, // title
-            None, // byline
-            None, // abstract_path
+            None,  // title
+            None,  // byline
+            None,  // abstract_path
         )
     }
 
@@ -791,7 +787,10 @@ mod tests {
             "no opt-in must leave rsync_flags=None so the existing default is preserved"
         );
         // Compatibility default: NO --mkpath. Older rsync still works.
-        assert_eq!(default_rsync_flags(), vec!["-avz".to_string(), "--delete".to_string()]);
+        assert_eq!(
+            default_rsync_flags(),
+            vec!["-avz".to_string(), "--delete".to_string()]
+        );
     }
 
     #[test]
@@ -859,8 +858,7 @@ mod tests {
         assert_eq!(d.schedule.as_deref(), Some("*/15 * * * *"));
         assert_eq!(d.schedule_task_id.as_deref(), Some(".html-publish-site"));
 
-        let graph =
-            workgraph::parser::load_graph(&tmp.path().join("graph.jsonl")).unwrap();
+        let graph = workgraph::parser::load_graph(&tmp.path().join("graph.jsonl")).unwrap();
         assert!(
             graph.tasks().any(|t| t.id == ".html-publish-site"),
             "expected scheduled task .html-publish-site to exist"
@@ -884,8 +882,7 @@ mod tests {
         let cfg = load_config(tmp.path()).unwrap();
         assert!(cfg.deployments.is_empty());
 
-        let graph =
-            workgraph::parser::load_graph(&tmp.path().join("graph.jsonl")).unwrap();
+        let graph = workgraph::parser::load_graph(&tmp.path().join("graph.jsonl")).unwrap();
         let task = graph
             .tasks()
             .find(|t| t.id == ".html-publish-site")
@@ -932,11 +929,7 @@ mod tests {
         run_run(tmp.path(), "local", false).expect("publish run should succeed");
 
         let cfg = load_config(tmp.path()).unwrap();
-        let d = cfg
-            .deployments
-            .iter()
-            .find(|d| d.name == "local")
-            .unwrap();
+        let d = cfg.deployments.iter().find(|d| d.name == "local").unwrap();
         assert_eq!(d.last_status.as_deref(), Some("ok"));
         assert!(d.last_run_at.is_some());
         assert!(
@@ -962,11 +955,7 @@ mod tests {
 
         let err = run_run(tmp.path(), "broken", false);
         let cfg = load_config(tmp.path()).unwrap();
-        let d = cfg
-            .deployments
-            .iter()
-            .find(|d| d.name == "broken")
-            .unwrap();
+        let d = cfg.deployments.iter().find(|d| d.name == "broken").unwrap();
         assert!(d.last_run_at.is_some());
         if err.is_err() {
             assert_eq!(d.last_status.as_deref(), Some("fail"));
@@ -1229,7 +1218,11 @@ mod tests {
         assert_eq!(parse_rsync_flags_str(""), Vec::<String>::new());
         assert_eq!(
             parse_rsync_flags_str("-a  --delete   --mkpath"),
-            vec!["-a".to_string(), "--delete".to_string(), "--mkpath".to_string()]
+            vec![
+                "-a".to_string(),
+                "--delete".to_string(),
+                "--mkpath".to_string()
+            ]
         );
     }
 
@@ -1291,7 +1284,9 @@ mod tests {
         .unwrap();
         let dep = Deployment::new("d".to_string(), "u@h:/p/".to_string());
         let meta = resolve_deployment_meta(tmp.path(), &dep);
-        let body = meta.abstract_md.expect("abstract should fall back to about.md");
+        let body = meta
+            .abstract_md
+            .expect("abstract should fall back to about.md");
         assert!(body.contains("# About"));
         assert!(body.contains("A paragraph that becomes the abstract."));
     }
@@ -1381,12 +1376,21 @@ mod tests {
 
         let html = std::fs::read_to_string(dest.path().join("index.html"))
             .expect("index.html should have been rsynced into the dest dir");
-        assert!(html.contains("class=\"project-header\""), "header CSS class missing");
+        assert!(
+            html.contains("class=\"project-header\""),
+            "header CSS class missing"
+        );
         assert!(html.contains("Poietic Inc"), "title missing from html");
         assert!(html.contains("active work"), "byline missing from html");
         // Markdown abstract should be rendered to HTML (h2 + ul + li).
-        assert!(html.contains("<h2>Focus</h2>"), "h2 missing — abstract not rendered as markdown");
-        assert!(html.contains("<li>compliance audit</li>"), "list item missing");
+        assert!(
+            html.contains("<h2>Focus</h2>"),
+            "h2 missing — abstract not rendered as markdown"
+        );
+        assert!(
+            html.contains("<li>compliance audit</li>"),
+            "list item missing"
+        );
     }
 
     #[test]
@@ -1406,7 +1410,7 @@ mod tests {
             !html.contains("class=\"project-header\""),
             "project-header must be omitted when no metadata is configured (got the empty block)"
         );
-        // Sanity: the minimal "Workgraph" header is still present.
+        // Sanity: the minimal "workgraph" header is still present.
         assert!(html.contains("class=\"page-header\""));
     }
 }

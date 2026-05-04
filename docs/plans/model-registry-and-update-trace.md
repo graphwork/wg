@@ -152,7 +152,7 @@ reliability = min(provider_count / 5, 1.0) * 50
 
 | Component | Weight | Why |
 |-----------|--------|-----|
-| **Quality** | 70% | Workgraph agents must produce correct code. A cheap model that fails tasks wastes more money than an expensive model that succeeds. Agent sessions run thousands of tokens, so the per-token cost is dwarfed by the cost of wasted agent time on failures + retries. |
+| **Quality** | 70% | workgraph agents must produce correct code. A cheap model that fails tasks wastes more money than an expensive model that succeeds. Agent sessions run thousands of tokens, so the per-token cost is dwarfed by the cost of wasted agent time on failures + retries. |
 | **Value** | 20% | Cost matters at scale — running 10 parallel agents on frontier models adds up. But only after quality is assured. The `value` component rewards models that punch above their price point (e.g., DeepSeek, Qwen). |
 | **Reliability** | 10% | Multiple providers = less downtime. High request count = battle-tested. But this is a hygiene factor, not a differentiator. |
 
@@ -178,7 +178,7 @@ reliability = min(provider_count / 5, 1.0) * 50
 
 ---
 
-## 4. Update Trace Design (Workgraph Cycle)
+## 4. Update Trace Design (workgraph Cycle)
 
 The update trace is a daemon-managed cycle task — visible in the graph as `.registry-refresh-0`, following the same pattern as `.compact-0` and `.archive-0`. This keeps all recurring work visible without requiring an external cron.
 

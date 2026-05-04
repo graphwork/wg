@@ -124,7 +124,7 @@ Behaviors are thin bundles (`.yaml`) that compose a set of related config. Examp
 bundle:
   name: workgraph
   version: 1.0.0
-  description: "Workgraph integration behavior"
+  description: "workgraph integration behavior"
 
 context:
   include:
@@ -292,7 +292,7 @@ The amplifier repo has a local change: `.amplifier/modules/provider-openai` subm
 
 | Bundle | Purpose |
 |--------|---------|
-| `amplifier-bundle-workgraph` | Workgraph integration (bi-directional) |
+| `amplifier-bundle-workgraph` | workgraph integration (bi-directional) |
 
 ### 4.3 Community Assessment
 
@@ -308,7 +308,7 @@ Amplifier is Microsoft Research/MADE:Explorations — early preview, not accepti
 
 When workgraph dispatches a task via the Amplifier executor:
 
-1. Workgraph renders a prompt template with task context (ID, title, description, dependency artifacts)
+1. workgraph renders a prompt template with task context (ID, title, description, dependency artifacts)
 2. `amplifier-run.sh` wrapper reads prompt from stdin
 3. Runs `amplifier run --mode single --output-format json --bundle workgraph "$PROMPT"`
 4. Amplifier loads the workgraph bundle (foundation + workgraph behavior + hook-shell)
@@ -359,8 +359,8 @@ At minimum:
 |-------------------|---------------|
 | Bundle composition | Replace with workgraph's own config |
 | @mention expansion | Not needed for task execution |
-| Agent delegation (sub-sessions) | Workgraph already has this natively |
-| Session persistence/resume | Workgraph agents are single-shot |
+| Agent delegation (sub-sessions) | workgraph already has this natively |
+| Session persistence/resume | workgraph agents are single-shot |
 | Recipe system | Not used in executor context |
 | Hook system | Replace with workgraph's own logging |
 | Approval UI | Not needed for automated execution |
@@ -433,12 +433,12 @@ The tool-use format in Chat Completions is well-documented and stable:
 
 ### 6.4 What NOT to Build
 
-- **Bundle composition system** — Workgraph's config is sufficient
+- **Bundle composition system** — workgraph's config is sufficient
 - **@mention expansion** — Not needed; task context comes from wg templates
 - **Provider abstraction layer** — Just use OpenAI-compatible API everywhere
 - **Session persistence** — Agents are single-shot; logs go through `wg log`
-- **Hook system** — Workgraph has its own event/logging system
-- **Agent delegation** — Workgraph IS the delegation system
+- **Hook system** — workgraph has its own event/logging system
+- **Agent delegation** — workgraph IS the delegation system
 
 ### 6.5 Migration Path
 
@@ -461,7 +461,7 @@ The tool-use format in Chat Completions is well-documented and stable:
 | `~/amplifier-app-cli/amplifier_app_cli/main.py` | CLI entry point |
 | `~/amplifier-module-provider-openai/amplifier_module_provider_openai/__init__.py` | OpenAI provider (2000+ lines) |
 | `~/amplifier-module-provider-openai/amplifier_module_provider_openai/_constants.py` | Provider defaults |
-| `~/amplifier-bundle-workgraph/bundle.md` | Workgraph bundle definition |
+| `~/amplifier-bundle-workgraph/bundle.md` | workgraph bundle definition |
 | `~/amplifier-bundle-workgraph/executor/amplifier.toml` | Executor config for workgraph |
 | `~/amplifier-bundle-workgraph/executor/amplifier-run.sh` | Wrapper script |
 | `~/amplifier-bundle-workgraph/DESIGN.md` | Setup improvements design |

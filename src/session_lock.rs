@@ -297,8 +297,7 @@ pub fn tui_driver_sentinel_path(chat_dir: &Path) -> PathBuf {
 
 /// Mark a chat session as currently driven by a live `wg tui` process.
 pub fn write_tui_driver_sentinel(chat_dir: &Path, pid: u32) -> Result<()> {
-    std::fs::create_dir_all(chat_dir)
-        .with_context(|| format!("create chat dir {:?}", chat_dir))?;
+    std::fs::create_dir_all(chat_dir).with_context(|| format!("create chat dir {:?}", chat_dir))?;
     let path = tui_driver_sentinel_path(chat_dir);
     let contents = format!("{}\n{}\n", pid, chrono::Utc::now().to_rfc3339());
     std::fs::write(&path, contents).with_context(|| format!("write TUI sentinel {:?}", path))?;

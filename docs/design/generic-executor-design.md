@@ -48,7 +48,7 @@ The native executor already has a complete tool system (`src/executor/native/too
 - `Tool` trait with `name()`, `definition()`, `execute()`
 - File tools: `read_file`, `write_file`, `edit_file`, `glob`, `grep`
 - Bash tool: shell execution with timeout
-- Workgraph tools: `wg_show`, `wg_list`, `wg_add`, `wg_done`, `wg_fail`, `wg_log`, `wg_artifact`
+- workgraph tools: `wg_show`, `wg_list`, `wg_add`, `wg_done`, `wg_fail`, `wg_log`, `wg_artifact`
 
 **Decision**: No changes to the tool system. The `Provider` trait handles translating tool definitions and results between the internal format and the wire format. Tool definitions are stored in the Anthropic format internally (what we already have), and the `OpenAIProvider` converts them on the fly.
 
@@ -583,7 +583,7 @@ wg add "Research: look up API docs" --model deepseek/deepseek-chat-v3-0324
 | Tool system | Rust-native ToolRegistry (in-process) | Python Tool protocol (subprocess) |
 | Bundle system | TOML files in .wg/bundles/ | Markdown+YAML, git-based composition |
 | Context management | Vec<Message> in memory | Python ContextManager with persistence |
-| Agent delegation | Workgraph graph (native) | Amplifier sub-sessions |
+| Agent delegation | workgraph graph (native) | Amplifier sub-sessions |
 | Session resume | Not supported (single-shot) | Supported via session persistence |
 | Streaming | Supported (Anthropic SSE) | Supported (orchestrator-driven) |
 | Extended thinking | Supported (Anthropic native only) | Supported (provider module) |

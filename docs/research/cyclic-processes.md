@@ -8,9 +8,9 @@
 
 ## Executive Summary
 
-> **Note:** This research document was written before loop edges were implemented. Workgraph now supports cycles via `loops_to` edges with iteration guards and max counts. The analysis below remains useful as background for the design decisions made.
+> **Note:** This research document was written before loop edges were implemented. workgraph now supports cycles via `loops_to` edges with iteration guards and max counts. The analysis below remains useful as background for the design decisions made.
 
-Workgraph models task dependencies as a directed graph. Many real workflows are cyclic: sprint cycles, review-revise loops, CI/CD pipelines, monitoring→alert→fix→verify, recurring standups. This report surveys how other systems handle cycles, reviews formal approaches, and proposes extensions for workgraph.
+workgraph models task dependencies as a directed graph. Many real workflows are cyclic: sprint cycles, review-revise loops, CI/CD pipelines, monitoring→alert→fix→verify, recurring standups. This report surveys how other systems handle cycles, reviews formal approaches, and proposes extensions for workgraph.
 
 **Key finding**: The three patterns that emerge across all systems are:
 
@@ -28,7 +28,7 @@ The recommended minimal change for workgraph: add a `loop` edge type with a guar
 2. [Formal Graph Theory Approaches](#2-formal-graph-theory-approaches)
 3. [Task Status in Cycles](#3-task-status-in-cycles)
 4. [Preventing Infinite Loops](#4-preventing-infinite-loops)
-5. [Minimal Design for Workgraph](#5-minimal-design-for-workgraph)
+5. [Minimal Design for workgraph](#5-minimal-design-for-workgraph)
 6. [Appendix: Comparative Tables](#6-appendix-comparative-tables)
 
 ---
@@ -125,7 +125,7 @@ The recommended minimal change for workgraph: add a `loop` edge type with a guar
 
 3. **Sequence Flow Cycles**: Explicit back-edges using XOR gateways as while-loop conditions
 
-**Key insight for workgraph**: BPMN distinguishes between **structured loops** (well-nested, with clear entry/exit) and **arbitrary cycles** (spaghetti back-edges). Workgraph should follow this — structured loops are safe and analyzable; arbitrary cycles need explicit opt-in.
+**Key insight for workgraph**: BPMN distinguishes between **structured loops** (well-nested, with clear entry/exit) and **arbitrary cycles** (spaghetti back-edges). workgraph should follow this — structured loops are safe and analyzable; arbitrary cycles need explicit opt-in.
 
 ### 1.7 Cylc
 
@@ -215,7 +215,7 @@ The simplest extension: classify edges using DFS into **tree edges**, **forward 
 - **Circuit breakers**: After N failures, the retry stream is cut
 - **TTL/hop count**: Events carry a counter decremented on each cycle traversal
 
-**Assessment**: Complementary to the graph model. Workgraph's service daemon already handles task lifecycle events — adding explicit retry/revision events with backpressure gives safe cycle execution without changing the graph representation.
+**Assessment**: Complementary to the graph model. workgraph's service daemon already handles task lifecycle events — adding explicit retry/revision events with backpressure gives safe cycle execution without changing the graph representation.
 
 ---
 
@@ -241,11 +241,11 @@ Every system answers this differently:
 
 **B) Mutable status, re-activation** (n8n, BPMN, Step Functions): The same task transitions back from Done to an active state. Simpler model but muddier history.
 
-### 3.2 Recommendation for Workgraph
+### 3.2 Recommendation for workgraph
 
 **Hybrid approach**: Use **both** philosophies depending on the use case.
 
-**For retry/revision loops** (short cycles, same work unit): Allow `Done → Open` re-activation on the same task. Workgraph already supports `Failed → Open` via `wg retry` and `PendingReview → Open` via `wg reject`. Extending this to `Done → Open` via a loop edge is natural.
+**For retry/revision loops** (short cycles, same work unit): Allow `Done → Open` re-activation on the same task. workgraph already supports `Failed → Open` via `wg retry` and `PendingReview → Open` via `wg reject`. Extending this to `Done → Open` via a loop edge is natural.
 
 **For recurring processes** (sprint cycles, periodic reviews): Create **new task instances** from a template. `sprint-review[2026-W07]` is a distinct task from `sprint-review[2026-W08]`. Keep the template as a definition, instantiate per cycle.
 
@@ -279,7 +279,7 @@ For workgraph, condition-based triggers are the most natural fit for inline cycl
 | **Backpressure** | Reactive systems | Bounded queues prevent runaway |
 | **SCC-based restart** | n8n | Entire cycle restarts from entry, bounded by input |
 
-### 4.2 Recommendation for Workgraph
+### 4.2 Recommendation for workgraph
 
 Use **defense in depth** — multiple layers:
 
@@ -296,7 +296,7 @@ Use **defense in depth** — multiple layers:
 
 ---
 
-## 5. Minimal Design for Workgraph
+## 5. Minimal Design for workgraph
 
 ### 5.1 Design Principles
 

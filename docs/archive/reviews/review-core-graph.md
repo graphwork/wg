@@ -10,7 +10,7 @@
 
 ### What it does
 
-Defines the core data types for the work graph: `Task`, `Actor`, `Resource`, and the `WorkGraph` container. This is the foundational module — 48 files across the codebase depend on it.
+Defines the core data types for the workgraph: `Task`, `Actor`, `Resource`, and the `WorkGraph` container. This is the foundational module — 48 files across the codebase depend on it.
 
 ### Key types
 

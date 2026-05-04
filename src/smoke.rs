@@ -72,9 +72,7 @@ impl Manifest {
     /// file does not exist (smoke gate is a no-op when no manifest is defined).
     pub fn load_from(path: &Path) -> Result<Self> {
         if !path.exists() {
-            return Ok(Manifest {
-                scenarios: vec![],
-            });
+            return Ok(Manifest { scenarios: vec![] });
         }
         let text = std::fs::read_to_string(path)
             .with_context(|| format!("failed to read smoke manifest at {}", path.display()))?;
@@ -111,11 +109,7 @@ impl Manifest {
     pub fn resolve_path(dir: &Path) -> PathBuf {
         if let Ok(env_path) = std::env::var("WG_SMOKE_MANIFEST") {
             let p = PathBuf::from(&env_path);
-            return if p.is_absolute() {
-                p
-            } else {
-                dir.join(p)
-            };
+            return if p.is_absolute() { p } else { dir.join(p) };
         }
         let local = dir.join(DEFAULT_MANIFEST_PATH);
         if local.exists() {
@@ -669,9 +663,7 @@ script = "b.sh"
         };
         let r2 = ScenarioResult {
             name: "b".into(),
-            outcome: ScenarioOutcome::Skip {
-                reason: "x".into(),
-            },
+            outcome: ScenarioOutcome::Skip { reason: "x".into() },
         };
         let r3 = ScenarioResult {
             name: "c".into(),

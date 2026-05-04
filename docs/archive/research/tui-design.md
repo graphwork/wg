@@ -1,4 +1,4 @@
-# TUI Design for Workgraph
+# TUI Design for workgraph
 
 This document outlines the design for a terminal user interface (TUI) for workgraph using ratatui.
 
@@ -461,7 +461,7 @@ Recommendation: **Option A** - keeps everything in one binary, easier to install
 ### 7.1 Task List View
 
 ```
-┌─ Workgraph ─────────────────────────────────────────────────────┐
+┌─ workgraph ─────────────────────────────────────────────────────┐
 │                                                                 │
 │  Tasks                                                   [?help]│
 │  ──────                                                         │
@@ -485,7 +485,7 @@ Recommendation: **Option A** - keeps everything in one binary, easier to install
 ### 7.2 Task Detail Modal
 
 ```
-┌─ Workgraph ─────────────────────────────────────────────────────┐
+┌─ workgraph ─────────────────────────────────────────────────────┐
 │                                                                 │
 │  Tasks                                                          │
 │  ──────                                                         │
@@ -518,7 +518,7 @@ Recommendation: **Option A** - keeps everything in one binary, easier to install
 ### 7.3 Ready Queue View
 
 ```
-┌─ Workgraph ─────────────────────────────────────────────────────┐
+┌─ workgraph ─────────────────────────────────────────────────────┐
 │                                                                 │
 │  Ready Queue                                             [?help]│
 │  ───────────                                                    │
@@ -547,7 +547,7 @@ Recommendation: **Option A** - keeps everything in one binary, easier to install
 ### 7.4 Graph View
 
 ```
-┌─ Workgraph ─────────────────────────────────────────────────────┐
+┌─ workgraph ─────────────────────────────────────────────────────┐
 │                                                                 │
 │  Dependency Graph: api-impl                              [?help]│
 │  ──────────────────────────                                     │
@@ -577,7 +577,7 @@ Recommendation: **Option A** - keeps everything in one binary, easier to install
 ### 7.5 Add Task Modal
 
 ```
-┌─ Workgraph ─────────────────────────────────────────────────────┐
+┌─ workgraph ─────────────────────────────────────────────────────┐
 │                                                                 │
 │  Tasks                                                          │
 │  ──────                                                         │
@@ -606,7 +606,7 @@ Recommendation: **Option A** - keeps everything in one binary, easier to install
 ### 7.6 Help Overlay
 
 ```
-┌─ Workgraph ─────────────────────────────────────────────────────┐
+┌─ workgraph ─────────────────────────────────────────────────────┐
 │ ┌─ Help ──────────────────────────────────────────────────────┐ │
 │ │                                                             │ │
 │ │  Navigation                    Actions                      │ │

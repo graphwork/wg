@@ -402,11 +402,7 @@ Begin working on the task now.
         .unwrap();
         wg_ok(
             &wg_dir,
-            &[
-                "artifact",
-                "upstream-ctx",
-                ".wg/artifacts/upstream-data.md",
-            ],
+            &["artifact", "upstream-ctx", ".wg/artifacts/upstream-data.md"],
         );
 
         // Create downstream task that depends on upstream

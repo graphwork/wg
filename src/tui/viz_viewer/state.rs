@@ -3478,7 +3478,7 @@ pub enum LogViewMode {
     /// Pretty-printed full transcript: every event rendered with its own
     /// formatter, NOT a JSON dump.
     RawPretty,
-    /// Workgraph-level log entries only: `wg log` writes, dispatcher
+    /// workgraph-level log entries only: `wg log` writes, dispatcher
     /// status updates, and task lifecycle transitions sourced from the
     /// task's `log` field on the graph. NO LLM stream content.
     WgLog,
@@ -18063,7 +18063,7 @@ mod hud_tests {
     use crate::commands::viz::{LayoutMode, VizOutput};
 
     /// Build a chain graph a -> b -> c plus standalone d, with rich metadata on task a.
-    /// Returns (VizOutput, WorkGraph, TempDir) — keep TempDir alive while using the app.
+    /// Returns (`VizOutput`, `WorkGraph`, `TempDir`) — keep `TempDir` alive while using the app.
     fn build_chain_plus_isolated() -> (VizOutput, WorkGraph, tempfile::TempDir) {
         let mut graph = WorkGraph::new();
         let mut a = make_task_with_status("a", "Task Alpha", Status::Done);
@@ -18506,7 +18506,7 @@ mod hud_tests {
     }
 
     /// Build a graph where parent task `b` has a child meta-task `.evaluate-b`
-    /// running. Returns (VizOutput, WorkGraph, TempDir).
+    /// running. Returns (`VizOutput`, `WorkGraph`, `TempDir`).
     fn build_with_evaluate_meta() -> (VizOutput, WorkGraph, tempfile::TempDir) {
         let mut graph = WorkGraph::new();
         let a = make_task_with_status("a", "Task Alpha", Status::Done);

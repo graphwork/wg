@@ -1,4 +1,4 @@
-# Workgraph Architectural Issues
+# workgraph Architectural Issues
 
 ## The Core Question
 
@@ -91,7 +91,7 @@ Task {
 
 ## Issue 4: Execution Model
 
-**Current state**: Workgraph tracks tasks. Something external (me, Claude Code) actually does the work.
+**Current state**: workgraph tracks tasks. Something external (me, Claude Code) actually does the work.
 
 **What's missing**:
 - No standard way to "execute" a task
@@ -104,9 +104,9 @@ Task {
 - How do agents get permissions/tools they need?
 
 **Options**:
-1. **Coordination only**: Workgraph tracks state, external system does work
+1. **Coordination only**: workgraph tracks state, external system does work
 2. **Execution included**: `wg run <id>` spawns an agent with the right context
-3. **Hybrid**: Workgraph provides context, agent decides how to execute
+3. **Hybrid**: workgraph provides context, agent decides how to execute
 
 **Proposed model** (hybrid):
 ```

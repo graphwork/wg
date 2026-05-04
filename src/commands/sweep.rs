@@ -75,9 +75,10 @@ pub fn find_orphaned_tasks(dir: &Path) -> Result<Vec<OrphanedTask>> {
                 // Skip long-lived loop tasks (chat/compact) that intentionally
                 // sit InProgress between user messages or compaction cycles
                 // without an inline agent.
-                let is_loop_task = task.tags.iter().any(|t| {
-                    workgraph::chat_id::is_chat_loop_tag(t) || t == "compact-loop"
-                });
+                let is_loop_task = task
+                    .tags
+                    .iter()
+                    .any(|t| workgraph::chat_id::is_chat_loop_tag(t) || t == "compact-loop");
                 if !is_loop_task {
                     orphaned.push(OrphanedTask {
                         task_id: task.id.clone(),
@@ -404,8 +405,7 @@ pub fn reconcile_orphaned_tasks(dir: &Path, graph_path: &Path) -> Result<usize> 
                         // first user message arrives.
                         task.status == Status::InProgress
                             && !task.tags.iter().any(|t| {
-                                workgraph::chat_id::is_chat_loop_tag(t)
-                                    || t == "compact-loop"
+                                workgraph::chat_id::is_chat_loop_tag(t) || t == "compact-loop"
                             })
                     }
                 };
@@ -539,8 +539,8 @@ mod tests {
                 completed_at: Some(Utc::now().to_rfc3339()),
                 output_file: "/tmp/output.log".to_string(),
                 model: None,
-            worktree_path: None,
-        },
+                worktree_path: None,
+            },
         );
 
         // alive-agent-1 is NOT in registry (simulates purged agent)
@@ -818,7 +818,9 @@ mod tests {
             "lazy reconciler must wipe the stale claim so dispatcher can pick it up"
         );
         assert!(
-            task.log.iter().any(|e| e.message.contains("Reconciliation")),
+            task.log
+                .iter()
+                .any(|e| e.message.contains("Reconciliation")),
             "log entry should record reconciler action: {:?}",
             task.log.iter().map(|e| &e.message).collect::<Vec<_>>()
         );
@@ -911,13 +913,11 @@ mod tests {
 
         let mut graph = WorkGraph::new();
         // chat-loop (new tag): must be skipped
-        let mut chat_new =
-            make_task(".chat-7", "Chat 7", Status::InProgress);
+        let mut chat_new = make_task(".chat-7", "Chat 7", Status::InProgress);
         chat_new.tags = vec![workgraph::chat_id::CHAT_LOOP_TAG.to_string()];
         graph.add_node(Node::Task(chat_new));
         // coordinator-loop (legacy tag): must be skipped via is_chat_loop_tag
-        let mut chat_legacy =
-            make_task(".coordinator-3", "Coordinator 3", Status::InProgress);
+        let mut chat_legacy = make_task(".coordinator-3", "Coordinator 3", Status::InProgress);
         chat_legacy.tags = vec!["coordinator-loop".to_string()];
         graph.add_node(Node::Task(chat_legacy));
         // compact-loop: must be skipped
@@ -934,7 +934,10 @@ mod tests {
         AgentRegistry::new().save(dir).unwrap();
 
         let recovered = reconcile_orphaned_tasks(dir, &gpath).unwrap();
-        assert_eq!(recovered, 1, "only the untagged plain task should be recovered");
+        assert_eq!(
+            recovered, 1,
+            "only the untagged plain task should be recovered"
+        );
 
         let g2 = workgraph::parser::load_graph(&gpath).unwrap();
         assert_eq!(
@@ -972,8 +975,7 @@ mod tests {
         let gpath = dir.join("graph.jsonl");
 
         let mut graph = WorkGraph::new();
-        let mut chat_new =
-            make_task(".chat-9", "Chat 9", Status::InProgress);
+        let mut chat_new = make_task(".chat-9", "Chat 9", Status::InProgress);
         chat_new.tags = vec![workgraph::chat_id::CHAT_LOOP_TAG.to_string()];
         graph.add_node(Node::Task(chat_new));
         let mut compact = make_task(".compact-0", "Compact", Status::InProgress);

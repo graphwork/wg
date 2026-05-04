@@ -1,4 +1,4 @@
-= Amplifier × Workgraph Integration Proposal
+= Amplifier × workgraph Integration Proposal
 <amplifier-workgraph-integration-proposal>
 #strong[Date]: 2026-02-18 #strong[Author]: analyst agent (synthesized
 from three research documents) #strong[Status]: Draft for decision

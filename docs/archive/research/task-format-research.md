@@ -13,7 +13,7 @@ This document analyzes existing lightweight workflow and task management file fo
    - [Plain Markdown Task Lists](#plain-markdown-task-lists)
    - [JSONL/NDJSON](#jsonlndjson)
 3. [Comparison Table](#comparison-table)
-4. [Recommendations for Workgraph](#recommendations-for-workgraph)
+4. [Recommendations for workgraph](#recommendations-for-workgraph)
 5. [Sources](#sources)
 
 ---
@@ -485,7 +485,7 @@ SORT due ASC
 
 ---
 
-## Recommendations for Workgraph
+## Recommendations for workgraph
 
 Based on this analysis, here are recommendations for workgraph's format design:
 

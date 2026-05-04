@@ -336,14 +336,11 @@ fn blocker_satisfied_for_dependent(
     dependent_is_system: bool,
 ) -> bool {
     let blocker = graph.get_task(blocker_id);
-    let blocker_dep_satisfied = blocker.map(|t| t.status.is_dep_satisfied()).unwrap_or(false);
+    let blocker_dep_satisfied = blocker
+        .map(|t| t.status.is_dep_satisfied())
+        .unwrap_or(false);
     let blocker_pending_eval = blocker
-        .map(|t| {
-            matches!(
-                t.status,
-                Status::PendingEval | Status::FailedPendingEval
-            )
-        })
+        .map(|t| matches!(t.status, Status::PendingEval | Status::FailedPendingEval))
         .unwrap_or(false);
 
     if !blocker_dep_satisfied {
@@ -420,12 +417,7 @@ pub fn is_blocker_satisfied_with_eval_gate(
         if !(dependent_is_system
             && graph
                 .get_task(blocker_id)
-                .map(|t| {
-                    matches!(
-                        t.status,
-                        Status::PendingEval | Status::FailedPendingEval
-                    )
-                })
+                .map(|t| matches!(t.status, Status::PendingEval | Status::FailedPendingEval))
                 .unwrap_or(false))
         {
             return false;
@@ -493,15 +485,11 @@ pub fn ready_tasks_cycle_aware<'a>(
             let dependent_is_system = task.id.starts_with('.');
             task.after.iter().all(|blocker_id| {
                 let blocker = graph.get_task(blocker_id);
-                let blocker_dep_satisfied =
-                    blocker.map(|t| t.status.is_dep_satisfied()).unwrap_or(false);
+                let blocker_dep_satisfied = blocker
+                    .map(|t| t.status.is_dep_satisfied())
+                    .unwrap_or(false);
                 let blocker_pending_eval = blocker
-                    .map(|t| {
-                        matches!(
-                            t.status,
-                            Status::PendingEval | Status::FailedPendingEval
-                        )
-                    })
+                    .map(|t| matches!(t.status, Status::PendingEval | Status::FailedPendingEval))
                     .unwrap_or(false);
                 if blocker_dep_satisfied {
                     // Eval gate: even when blocker satisfies the dep, wait for
@@ -630,10 +618,7 @@ pub fn ready_tasks_with_peers_cycle_aware<'a>(
                     && graph
                         .get_task(blocker_id)
                         .map(|t| {
-                            matches!(
-                                t.status,
-                                Status::PendingEval | Status::FailedPendingEval
-                            )
+                            matches!(t.status, Status::PendingEval | Status::FailedPendingEval)
                         })
                         .unwrap_or(false)
                 {

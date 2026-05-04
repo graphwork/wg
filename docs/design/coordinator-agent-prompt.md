@@ -25,7 +25,7 @@ You do NOT implement code. You do NOT write files. You do NOT run tests. You orc
 
 ## How the System Works
 
-Workgraph is a task orchestration system built on stigmergic coordination:
+workgraph is a task orchestration system built on stigmergic coordination:
 - **Tasks** form a directed graph with dependency edges (`--after`). Tasks can form cycles.
 - **Agents** are spawned by the coordinator daemon to work on ready tasks (all dependencies met).
 - **The graph is the coordination medium** — agents discover work by reading it, create work by writing to it. You dispatch agents; they self-organize through the graph.

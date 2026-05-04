@@ -396,11 +396,7 @@ impl AgentRegistry {
     /// This is the primitive that lets the target-dir reaper protect
     /// `wg retry`-in-place worktrees: agent-806 may be running inside
     /// `agent-772/`, and only this lookup catches that.
-    pub fn is_worktree_occupied(
-        &self,
-        worktree_path: &Path,
-        heartbeat_timeout_secs: u64,
-    ) -> bool {
+    pub fn is_worktree_occupied(&self, worktree_path: &Path, heartbeat_timeout_secs: u64) -> bool {
         let target_canon = worktree_path.canonicalize().ok();
         let target_lex = worktree_path.to_string_lossy().to_string();
         for agent in self.agents.values() {
@@ -1258,7 +1254,11 @@ mod tests {
         let path = std::path::PathBuf::from("/tmp/wt/agent-1");
         assert!(registry.set_worktree_path("agent-1", &path));
         assert_eq!(
-            registry.get_agent("agent-1").unwrap().worktree_path.as_deref(),
+            registry
+                .get_agent("agent-1")
+                .unwrap()
+                .worktree_path
+                .as_deref(),
             Some("/tmp/wt/agent-1")
         );
         assert!(!registry.set_worktree_path("agent-missing", &path));
@@ -1285,10 +1285,7 @@ mod tests {
         );
 
         // Mark agent-2 dead too — now the worktree is unoccupied.
-        registry
-            .get_agent_mut("agent-2")
-            .unwrap()
-            .status = AgentStatus::Dead;
+        registry.get_agent_mut("agent-2").unwrap().status = AgentStatus::Dead;
         assert!(
             !registry.is_worktree_occupied(&path, 300),
             "no live agent → worktree is not occupied"

@@ -14,7 +14,7 @@
 
 ### Session TTL
 - Claude session persistence is server-side. Exact TTL is not publicly documented but empirical evidence suggests sessions survive for **hours to days** (not weeks).
-- **Current blocker**: Workgraph spawns agents with `--no-session-persistence` (see `src/commands/spawn/execution.rs:401,437,466`). This flag **must be removed** (or made configurable) to enable `--resume` for resurrection.
+- **Current blocker**: workgraph spawns agents with `--no-session-persistence` (see `src/commands/spawn/execution.rs:401,437,466`). This flag **must be removed** (or made configurable) to enable `--resume` for resurrection.
 - Sessions created with `--no-session-persistence` are ephemeral and **cannot** be resumed.
 
 ### Context preservation

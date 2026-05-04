@@ -635,14 +635,13 @@ fn record_nex_invocation(effective_model: &str, endpoint: Option<&str>, eval_mod
     if eval_mode {
         return;
     }
-    let _ = workgraph::launcher_history::record_use(
-        &workgraph::launcher_history::HistoryEntry::new(
+    let _ =
+        workgraph::launcher_history::record_use(&workgraph::launcher_history::HistoryEntry::new(
             "native",
             Some(effective_model),
             endpoint,
             "cli",
-        ),
-    );
+        ));
 }
 
 /// Load an agency role/skill component by name. Scans all YAML files

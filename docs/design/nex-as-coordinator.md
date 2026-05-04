@@ -31,7 +31,7 @@ chat "feels different."
 
 ## Why
 
-Workgraph currently has two parallel agent runtimes:
+workgraph currently has two parallel agent runtimes:
 
 - **Coordinator daemon** (`wg service start`) — a long-running background
   process with a deterministic tick loop. Checks the graph, identifies

@@ -260,7 +260,7 @@ Y → B → A → B   (B is entered from Y)
 
 **Decision: Reject irreducible cycles in v1.**
 
-Workgraph's use cases (review-revise, CI retry, monitor-fix-verify) are all naturally reducible — they have a clear starting point. Irreducible cycles would indicate a modeling error.
+workgraph's use cases (review-revise, CI retry, monitor-fix-verify) are all naturally reducible — they have a clear starting point. Irreducible cycles would indicate a modeling error.
 
 When an irreducible cycle is detected:
 - `wg check` reports it as a warning.
@@ -872,6 +872,6 @@ pub fn evaluate_cycle_iteration(
 | Header identification | Entry-node heuristic | Dominator-based, explicit annotation, DFS-based | Works for common cases, no extra computation |
 | Metadata location | CycleConfig on header task | Per-edge, separate cycle store | Header-centric is intuitive, aligns with --converged |
 | Iteration trigger | All-Done | Source completion, any completion, back-edge | Clean semantics, handles parallel execution |
-| Irreducible cycles | Reject in v1 | Pick one header, allow multiple headers | Workgraph use cases are reducible |
+| Irreducible cycles | Reject in v1 | Pick one header, allow multiple headers | workgraph use cases are reducible |
 | Migration | 4-phase incremental | Big bang, permanent dual-model | Low risk, allows evaluation at each phase |
 | Convergence | Tag on header | Tag on completing task, separate flag | Header is the stable cycle identifier |

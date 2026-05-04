@@ -129,7 +129,7 @@ This helps agents self-manage before hitting limits, but does not trigger compac
 
 ### Claude Code Compaction
 
-Claude Code (the CLI tool) implements its own compaction mechanism independent of the API beta. Workgraph exposes this as a visible `.compact-0` cycle task (coordinator → compact → coordinator loop). This is separate from and complementary to the API-level `compact-2026-01-12` beta feature.
+Claude Code (the CLI tool) implements its own compaction mechanism independent of the API beta. workgraph exposes this as a visible `.compact-0` cycle task (coordinator → compact → coordinator loop). This is separate from and complementary to the API-level `compact-2026-01-12` beta feature.
 
 ---
 
@@ -342,11 +342,11 @@ No provider currently returns a "you are at X% of context capacity" field in the
 
 ---
 
-## Recommendation for Workgraph
+## Recommendation for workgraph
 
 ### Current State
 
-Workgraph already implements client-side compaction gating:
+workgraph already implements client-side compaction gating:
 - `config.compaction_token_threshold` (default: 100,000 tokens)
 - Coordinator tracks token usage from LLM responses and triggers compaction when accumulated tokens exceed threshold
 - Compaction runs as a visible `.compact-0` cycle task
@@ -363,12 +363,12 @@ Workgraph already implements client-side compaction gating:
 
 3. **Anthropic's beta compaction is promising but limited.** Only supports Opus 4.6 and Sonnet 4.6 (no Haiku). It produces proper summaries (not deletions), but the workgraph compaction system is more sophisticated: it produces structured `context.md` artifacts that are injected into subsequent coordinator context, which the API-level compaction cannot replicate.
 
-4. **Workgraph needs cross-provider portability.** The system must work the same whether using Claude, OpenAI, or any OpenRouter-proxied model.
+4. **workgraph needs cross-provider portability.** The system must work the same whether using Claude, OpenAI, or any OpenRouter-proxied model.
 
 #### Recommended Architecture
 
 ```
-Tier 1 (Primary): Workgraph client-side compaction
+Tier 1 (Primary): workgraph client-side compaction
   - Token threshold gating (already implemented, config.compaction_token_threshold)
   - Produces structured context.md artifacts
   - Works with all providers

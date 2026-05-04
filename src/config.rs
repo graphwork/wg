@@ -1893,7 +1893,11 @@ pub fn deprecated_executor_warnings_for_toml(content: &str) -> Vec<String> {
     };
     let mut out = Vec::new();
     let surfaces: &[(&str, &[&str], &[&str])] = &[
-        ("agent.executor", &["agent", "executor"], &["agent", "model"]),
+        (
+            "agent.executor",
+            &["agent", "executor"],
+            &["agent", "model"],
+        ),
         (
             "coordinator.executor",
             &["coordinator", "executor"],
@@ -1978,11 +1982,7 @@ pub fn deprecated_model_prefix_warnings_for_toml(content: &str) -> Vec<String> {
     out
 }
 
-fn walk_strings_readonly<'a>(
-    val: &'a toml::Value,
-    path: &str,
-    f: &mut dyn FnMut(&str, &'a str),
-) {
+fn walk_strings_readonly<'a>(val: &'a toml::Value, path: &str, f: &mut dyn FnMut(&str, &'a str)) {
     match val {
         toml::Value::String(s) => f(path, s.as_str()),
         toml::Value::Array(arr) => {
@@ -2454,9 +2454,7 @@ impl Config {
         //    (metacognition, compactors, etc.) always resolve via their tier so they stay
         //    on cheap models even when the project sets a high-capability agent.model.
         let skip_tier = self.agent_model_is_local && role == DispatchRole::TaskAgent;
-        if !skip_tier
-            && let Some(mut resolved) = self.resolve_tier(role.default_tier())
-        {
+        if !skip_tier && let Some(mut resolved) = self.resolve_tier(role.default_tier()) {
             // Allow role/default provider to override registry provider
             if let Some(p) = resolve_provider(role) {
                 resolved.provider = Some(p);
@@ -2894,7 +2892,10 @@ pub struct AgentConfig {
     /// prefix. Kept for one release with a deprecation warning when set
     /// explicitly in config.toml. Skipped on serialize when it holds the
     /// default value, so freshly-written configs no longer carry the key.
-    #[serde(default = "default_executor", skip_serializing_if = "is_default_executor")]
+    #[serde(
+        default = "default_executor",
+        skip_serializing_if = "is_default_executor"
+    )]
     pub executor: String,
 
     /// Model to use (e.g., "opus-4-5", "sonnet", "haiku")
@@ -3801,6 +3802,72 @@ fn strip_global_only_model_roles(
     }
 }
 
+fn toml_has_path(value: &toml::Value, path: &[&str]) -> bool {
+    let mut current = value;
+    for key in path {
+        match current.get(*key) {
+            Some(next) => current = next,
+            None => return false,
+        }
+    }
+    true
+}
+
+fn restore_local_profile_overrides(
+    config: &mut Config,
+    local_val: &toml::Value,
+) -> anyhow::Result<()> {
+    let local_config: Config = local_val
+        .clone()
+        .try_into()
+        .map_err(|e| anyhow::anyhow!("Failed to deserialize local config overlay: {}", e))?;
+
+    if toml_has_path(local_val, &["agent", "model"]) {
+        config.agent.model = local_config.agent.model;
+    }
+    if toml_has_path(local_val, &["dispatcher", "model"]) {
+        config.coordinator.model = local_config.coordinator.model;
+    }
+
+    if toml_has_path(local_val, &["tiers", "fast"]) {
+        config.tiers.fast = local_config.tiers.fast;
+    }
+    if toml_has_path(local_val, &["tiers", "standard"]) {
+        config.tiers.standard = local_config.tiers.standard;
+    }
+    if toml_has_path(local_val, &["tiers", "premium"]) {
+        config.tiers.premium = local_config.tiers.premium;
+    }
+
+    if toml_has_path(local_val, &["models", "default"]) {
+        config.models.default = local_config.models.default;
+    }
+    if toml_has_path(local_val, &["models", "evaluator"]) {
+        config.models.evaluator = local_config.models.evaluator;
+    }
+    if toml_has_path(local_val, &["models", "assigner"]) {
+        config.models.assigner = local_config.models.assigner;
+    }
+    if toml_has_path(local_val, &["models", "flip_inference"]) {
+        config.models.flip_inference = local_config.models.flip_inference;
+    }
+    if toml_has_path(local_val, &["models", "flip_comparison"]) {
+        config.models.flip_comparison = local_config.models.flip_comparison;
+    }
+    if toml_has_path(local_val, &["models", "creator"]) {
+        config.models.creator = local_config.models.creator;
+    }
+    if toml_has_path(local_val, &["models", "evolver"]) {
+        config.models.evolver = local_config.models.evolver;
+    }
+
+    if toml_has_path(local_val, &["llm_endpoints", "endpoints"]) {
+        config.llm_endpoints.endpoints = local_config.llm_endpoints.endpoints;
+    }
+
+    Ok(())
+}
+
 /// A deprecated config key found in raw TOML, with a human-readable replacement
 /// suggestion the daemon can log on startup.
 ///
@@ -4019,14 +4086,15 @@ impl Config {
             .map_err(|e| anyhow::anyhow!("Failed to deserialize merged config: {}", e))?;
         config.agent_model_is_local = agent_model_is_local;
 
-        // Apply active named profile overlay (global-dir layer, on top of global+local merge).
-        // Failure to load the profile is non-fatal — we log and continue with base config.
-        // Project-local config already won in the merge above, so any profile key that was
-        // also set in local config will already be in `config`; the overlay only affects keys
-        // NOT present in local config.
+        // Apply active named profile overlay (global-dir layer), then restore
+        // any local keys in the profile allowlist. Profiles are convenient
+        // user defaults; project-local config remains authoritative.
         if let Ok(Some(profile_name)) = crate::profile::named::active() {
             match crate::profile::named::load(&profile_name) {
-                Ok(prof) => crate::profile::named::overlay_onto(&mut config, &prof),
+                Ok(prof) => {
+                    crate::profile::named::overlay_onto(&mut config, &prof);
+                    restore_local_profile_overrides(&mut config, &local_val)?;
+                }
                 Err(e) => {
                     eprintln!(
                         "warning: active profile '{}' could not be loaded: {}",
@@ -4174,7 +4242,8 @@ impl Config {
                 c.compaction_token_threshold
             ));
         }
-        if (c.compaction_threshold_ratio - default_compaction_threshold_ratio()).abs() > f64::EPSILON
+        if (c.compaction_threshold_ratio - default_compaction_threshold_ratio()).abs()
+            > f64::EPSILON
         {
             out.push(format!(
                 "config key `coordinator.compaction_threshold_ratio = {}` is deprecated and ignored \
@@ -7086,7 +7155,11 @@ fast = "local:qwen3-coder"
         // Two model strings with deprecated `local:` prefix → two warnings.
         assert_eq!(warnings.len(), 2, "got: {:?}", warnings);
         for w in &warnings {
-            assert!(w.contains("local:"), "warning must mention local: — got {}", w);
+            assert!(
+                w.contains("local:"),
+                "warning must mention local: — got {}",
+                w
+            );
             assert!(w.contains("nex:"), "warning must suggest nex: — got {}", w);
             assert!(
                 w.contains("wg migrate config"),
@@ -7122,7 +7195,11 @@ fast = "claude:haiku"
 standard = "openrouter:anthropic/claude-sonnet-4-6"
 "#;
         let warnings = deprecated_model_prefix_warnings_for_toml(toml);
-        assert!(warnings.is_empty(), "no warnings expected; got {:?}", warnings);
+        assert!(
+            warnings.is_empty(),
+            "no warnings expected; got {:?}",
+            warnings
+        );
     }
 
     #[test]
@@ -8095,10 +8172,7 @@ delegate_model = "haiku"
             1200
         );
         assert_eq!(config.native_executor.delegate.delegate_max_turns, 15);
-        assert_eq!(
-            config.native_executor.delegate.delegate_model,
-            "haiku"
-        );
+        assert_eq!(config.native_executor.delegate.delegate_model, "haiku");
     }
 
     #[test]
@@ -8142,10 +8216,7 @@ fetch_max_chars = 16000
         assert!(summary.iter().any(|s| s.contains("http://lambda01:8089")));
         assert!(summary.iter().any(|s| s.contains("nex:qwen3-coder")));
         // Model gets the nex: prefix (canonical, matches `wg nex`).
-        assert_eq!(
-            config.coordinator.model.as_deref(),
-            Some("nex:qwen3-coder")
-        );
+        assert_eq!(config.coordinator.model.as_deref(), Some("nex:qwen3-coder"));
         assert_eq!(config.agent.model, "nex:qwen3-coder");
         // Endpoint entry is default.
         let default_ep = config
@@ -8399,9 +8470,21 @@ executor = "native"
             warnings
         );
         let msg = &warnings[0];
-        assert!(msg.contains("Deprecated"), "expected 'Deprecated' in {}", msg);
-        assert!(msg.contains("[coordinator]"), "expected legacy name in {}", msg);
-        assert!(msg.contains("[dispatcher]"), "expected canonical name in {}", msg);
+        assert!(
+            msg.contains("Deprecated"),
+            "expected 'Deprecated' in {}",
+            msg
+        );
+        assert!(
+            msg.contains("[coordinator]"),
+            "expected legacy name in {}",
+            msg
+        );
+        assert!(
+            msg.contains("[dispatcher]"),
+            "expected canonical name in {}",
+            msg
+        );
         assert!(
             msg.contains("/tmp/global.toml"),
             "expected file path in {}",

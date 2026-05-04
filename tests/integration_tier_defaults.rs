@@ -186,16 +186,10 @@ fn test_no_tier_escalation_flag() {
 
     wg_ok(
         &wg_dir,
-        &[
-            "add",
-            "Test task",
-            "--no-place",
-            "--no-tier-escalation",
-        ],
+        &["add", "Test task", "--no-place", "--no-tier-escalation"],
     );
 
-    let graph =
-        workgraph::parser::load_graph(&wg_dir.join("graph.jsonl")).unwrap();
+    let graph = workgraph::parser::load_graph(&wg_dir.join("graph.jsonl")).unwrap();
     let task = graph.get_task("test-task").unwrap();
     assert!(
         task.no_tier_escalation,

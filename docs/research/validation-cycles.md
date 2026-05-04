@@ -10,7 +10,7 @@
 
 ### How Cycles Work
 
-Workgraph cycles are **structural loops** in the task dependency graph. A cycle is a set of tasks connected by `after` edges that form a strongly connected component (SCC), detected via Tarjan's algorithm (`src/cycle.rs`). One task in the cycle is designated the **cycle header** — it carries `CycleConfig` and controls iteration behavior.
+workgraph cycles are **structural loops** in the task dependency graph. A cycle is a set of tasks connected by `after` edges that form a strongly connected component (SCC), detected via Tarjan's algorithm (`src/cycle.rs`). One task in the cycle is designated the **cycle header** — it carries `CycleConfig` and controls iteration behavior.
 
 **Creating a cycle:**
 ```bash

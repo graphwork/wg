@@ -1,6 +1,6 @@
 #set document(
-  title: "Organizational Patterns & Formal Models for Workgraph",
-  author: "The Workgraph Project",
+  title: "Organizational Patterns & Formal Models for workgraph",
+  author: "The workgraph Project",
 )
 
 #set text(font: "New Computer Modern", size: 11pt)
@@ -15,7 +15,7 @@
     #v(4pt)
     #text(size: 28pt, weight: "bold")[& Formal Models]
     #v(12pt)
-    #text(size: 16pt)[for Workgraph]
+    #text(size: 16pt)[for workgraph]
     #v(24pt)
     #text(size: 12pt, style: "italic")[
       A mathematics of organizations mapped onto task graph primitives
@@ -37,7 +37,7 @@
 
 = Executive Summary
 <executive-summary>
-Workgraph’s primitives—tasks, dependency edges, roles, motivations,
+workgraph’s primitives—tasks, dependency edges, roles, motivations,
 agents, a coordinator, evaluations, and an evolve loop—are not
 arbitrary design choices. They map precisely onto well-established
 concepts from organizational theory, cybernetics, workflow science, and
@@ -139,7 +139,7 @@ There are two fundamental types:
 )
 ]
 
-== Workgraph is a Stigmergic System
+== workgraph is a Stigmergic System
 <workgraph-is-a-stigmergic-system>
 A workgraph task graph is a stigmergic medium. Agents do not communicate
 with each other directly—they read and write to the shared graph, and
@@ -149,7 +149,7 @@ the graph’s state stimulates their actions.
   columns: 2,
   align: (col, row) => (auto,auto,).at(col),
   inset: 6pt,
-  [Stigmergy Concept], [Workgraph Equivalent],
+  [Stigmergy Concept], [workgraph Equivalent],
   [#strong[Shared environment]],
   [The task graph (`.wg/graph.jsonl`)],
   [#strong[Sematectonic trace]],
@@ -192,7 +192,7 @@ centrally planned systems because adding agents does not increase
 communication overhead—the coordination cost is absorbed by the shared
 medium.
 
-== Implications for Workgraph Users
+== Implications for workgraph Users
 <implications-for-workgraph-users>
 - #strong[The task graph is your communication channel.] Write
   descriptive task titles, clear descriptions, and meaningful log
@@ -228,7 +228,7 @@ can and cannot express.
   columns: 4,
   align: (col, row) => (auto,auto,auto,auto,).at(col),
   inset: 6pt,
-  [Pattern], [ID], [Workgraph Expression], [Example],
+  [Pattern], [ID], [workgraph Expression], [Example],
   [#strong[Sequence]],
   [WCP1],
   [`B.after = [A]`],
@@ -262,7 +262,7 @@ These five patterns—the basic directed-graph patterns—are the bread and butt
   columns: 3,
   align: (col, row) => (auto,auto,auto,).at(col),
   inset: 6pt,
-  [Pattern], [ID], [Workgraph Expression],
+  [Pattern], [ID], [workgraph Expression],
   [#strong[Arbitrary Cycles]],
   [WCP10],
   [`after` edges forming a cycle, detected by Tarjan's SCC algorithm, with `CycleConfig` on the cycle header (`--max-iterations`, optional guard and delay)],
@@ -319,7 +319,7 @@ is distributed to agents. Several map directly:
   columns: 2,
   align: (col, row) => (auto,auto,).at(col),
   inset: 6pt,
-  [Resource Pattern], [Workgraph Equivalent],
+  [Resource Pattern], [workgraph Equivalent],
   [#strong[Role-Based Distribution] (WRP2)],
   [Tasks matched to agents by role],
   [#strong[Capability-Based Distribution] (WRP8)],
@@ -381,7 +381,7 @@ different fields:
 )
 ]
 
-== Fork-Join in Workgraph
+== Fork-Join in workgraph
 <fork-join-in-workgraph>
 Fork-Join is the natural topology of `after` graphs:
 
@@ -404,7 +404,7 @@ is workgraph’s most fundamental parallel pattern. Every fan-out from a
 single task is a fork; every convergence point with multiple
 `after` entries is a join.
 
-== MapReduce in Workgraph
+== MapReduce in workgraph
 <mapreduce-in-workgraph>
 MapReduce adds data-parallel semantics to fork-join. In workgraph, this
 is expressed as:
@@ -423,7 +423,7 @@ description specifies which map outputs it consumes.
 This is workgraph’s most common pattern for parallelizable research,
 analysis, and implementation tasks.
 
-== Scatter-Gather in Workgraph
+== Scatter-Gather in workgraph
 <scatter-gather-in-workgraph>
 Scatter-Gather differs from fork-join in two ways: recipients may be
 heterogeneous (different roles), and the aggregator may not require all
@@ -464,7 +464,7 @@ This maps directly to manufacturing and operations concepts:
   columns: 2,
   align: (col, row) => (auto,auto,).at(col),
   inset: 6pt,
-  [Manufacturing Concept], [Workgraph Expression],
+  [Manufacturing Concept], [workgraph Expression],
   [#strong[Assembly line]],
   [A chain of tasks with sequential `after` edges, each assigned to
   a different specialized role],
@@ -504,7 +504,7 @@ These two patterns are complementary, not competing:
   [#strong[When to use]],
   [Work requires sequential specialized transformation],
   [Work is decomposable into independent parallel units],
-  [#strong[Workgraph shape]],
+  [#strong[workgraph shape]],
   [Long chain],
   [Wide diamond],
 )
@@ -629,7 +629,7 @@ execute (cycle repeats)
   columns: 2,
   align: (col, row) => (auto,auto,).at(col),
   inset: 6pt,
-  [Autopoietic Property], [Workgraph Manifestation],
+  [Autopoietic Property], [workgraph Manifestation],
   [#strong[Self-production]],
   [The evolve step produces new agent definitions (modified roles,
   motivations) that are themselves the components that execute the next
@@ -781,9 +781,9 @@ The provenance log connects to the organizational memory literature:
   through replay and trace-as-functions (Section 8), gets encoded into
   reusable routines.
 
-== The Three Layers of Memory in Workgraph
+== The Three Layers of Memory in workgraph
 <three-layers-of-memory>
-Workgraph's memory architecture comprises three distinct layers:
+workgraph's memory architecture comprises three distinct layers:
 
 ```
 Layer 1: OPERATIVE MEMORY (the task graph)
@@ -835,7 +835,7 @@ The existing discussion of single-loop vs. double-loop learning
   columns: 4,
   align: (col, row) => (auto,auto,auto,auto,).at(col),
   inset: 6pt,
-  [Learning Type], [Argyris & Schön], [Workgraph Mechanism],
+  [Learning Type], [Argyris & Schön], [workgraph Mechanism],
   [What Changes],
   [#strong[Single-loop]],
   [Adjust actions within existing framework],
@@ -1015,7 +1015,7 @@ serve as the "genes" of the organization:
   columns: 2,
   align: (col, row) => (auto,auto,).at(col),
   inset: 6pt,
-  [Nelson & Winter Concept], [Workgraph Equivalent],
+  [Nelson & Winter Concept], [workgraph Equivalent],
   [#strong[Routine]],
   [A successful workflow pattern: a task graph topology + role
   assignments that produced good outcomes (high evaluation scores)],
@@ -1099,7 +1099,7 @@ pipeline:
   columns: 3,
   align: (col, row) => (auto,auto,auto,).at(col),
   inset: 6pt,
-  [Phase], [March's Framework], [Workgraph Activity],
+  [Phase], [March's Framework], [workgraph Activity],
   [#strong[First execution]],
   [Exploration],
   [Create a new task graph, try a new workflow pattern, use untested
@@ -1145,7 +1145,7 @@ with two aspects:
   columns: 2,
   align: (col, row) => (auto,auto,).at(col),
   inset: 6pt,
-  [Feldman & Pentland], [Workgraph],
+  [Feldman & Pentland], [workgraph],
   [#strong[Ostensive aspect]],
   [The abstract workflow topology and role assignment strategy
   (extractable from trace)],
@@ -1158,7 +1158,7 @@ with two aspects:
 )
 ]
 
-Workgraph's trace captures the #strong[performative] aspect with high
+workgraph's trace captures the #strong[performative] aspect with high
 fidelity (every operation, every agent conversation). The
 #strong[ostensive] aspect emerges from comparing multiple performances:
 if three different projects all used a spec→fanout→validate pattern, the
@@ -1325,7 +1325,7 @@ to match the growing variety of disturbances (V).
   columns: 3,
   align: (col, row) => (auto,auto,auto,).at(col),
   inset: 6pt,
-  [Requisite Variety Violation], [Symptom in Workgraph], [Fix],
+  [Requisite Variety Violation], [Symptom in workgraph], [Fix],
   [Too few roles for task variety],
   [Low evaluation scores on certain task types],
   [`wg evolve --strategy gap-analysis`],
@@ -1345,7 +1345,7 @@ to match the growing variety of disturbances (V).
   columns: 3,
   align: (col, row) => (auto,auto,auto,).at(col),
   inset: 6pt,
-  [Learning Type], [Mechanism], [Workgraph Equivalent],
+  [Learning Type], [Mechanism], [workgraph Equivalent],
   [#strong[Single-loop]],
   [Adjust actions within existing framework to reduce error],
   [Evaluations adjust which agent is assigned to which task type. Same
@@ -1418,13 +1418,13 @@ The critical homeostatic balance is the #strong[S3-S4 homeostat]: S3
 wants stability and optimization of current operations; S4 wants
 exploration and adaptation. S5 mediates this tension.
 
-== Mapping to Workgraph
+== Mapping to workgraph
 <mapping-to-workgraph>
 #align(center)[#table(
   columns: 2,
   align: (col, row) => (auto,auto,).at(col),
   inset: 6pt,
-  [VSM System], [Workgraph Equivalent],
+  [VSM System], [workgraph Equivalent],
   [#strong[S1 (Operations)]],
   [#strong[Agents] executing tasks. Each agent (role + motivation) is a
   semi-autonomous operational unit.],
@@ -1454,7 +1454,7 @@ exploration and adaptation. S5 mediates this tension.
   under which all agents operate—what is acceptable, what is not, what
   the system’s identity and purpose are.],
   [#strong[Recursion]],
-  [Workgraph’s task nesting. A high-level task can contain subtasks,
+  [workgraph’s task nesting. A high-level task can contain subtasks,
   each potentially a mini-viable-system with its own agents and
   coordination.],
 )
@@ -1506,7 +1506,7 @@ Two core information asymmetries:
 Agency costs (Jensen & Meckling 1976) \= Monitoring costs + Bonding
 costs + Residual loss.
 
-== Workgraph as an Agency Relationship
+== workgraph as an Agency Relationship
 <workgraph-as-an-agency-relationship>
 This mapping is unusually precise because workgraph literally has
 primitives called "agents," "evaluations," and "motivations"—the
@@ -1516,7 +1516,7 @@ vocabulary of agency theory.
   columns: 2,
   align: (col, row) => (auto,auto,).at(col),
   inset: 6pt,
-  [Agency Theory Concept], [Workgraph Equivalent],
+  [Agency Theory Concept], [workgraph Equivalent],
   [#strong[Principal]],
   [The human operator who defines the task graph and configures the
   agency],
@@ -1602,13 +1602,13 @@ can drive desired system architecture]. Rather than accepting that your
 system mirrors your org chart, you restructure teams to produce the
 architecture you want.
 
-== Mapping to Workgraph
+== Mapping to workgraph
 <mapping-to-workgraph-1>
 #align(center)[#table(
   columns: 2,
   align: (col, row) => (auto,auto,).at(col),
   inset: 6pt,
-  [Conway’s Law Concept], [Workgraph Equivalent],
+  [Conway’s Law Concept], [workgraph Equivalent],
   [#strong[Organization structure]],
   [The set of roles and how they are assigned to agents],
   [#strong[Communication channels]],
@@ -1710,13 +1710,13 @@ load theory.
 )
 ]
 
-== Mapping to Workgraph Roles
+== Mapping to workgraph Roles
 <mapping-to-workgraph-roles>
 #align(center)[#table(
   columns: 2,
   align: (col, row) => (auto,auto,).at(col),
   inset: 6pt,
-  [Team Topologies Concept], [Workgraph Equivalent],
+  [Team Topologies Concept], [workgraph Equivalent],
   [#strong[Stream-aligned team]],
   [A role assigned to a stream of related tasks. The "default" role
   type.],
@@ -1749,7 +1749,7 @@ load theory.
 )
 ]
 
-== Practical Guidance for Workgraph Users
+== Practical Guidance for workgraph Users
 <practical-guidance-for-workgraph-users>
 + #strong[Most roles should be stream-aligned.] If you have a "build the
   feature" type of work, that’s stream-aligned. Don’t over-specialize.
@@ -1997,7 +1997,7 @@ designing a workgraph agency:
   columns: 3,
   align: (col, row) => (auto,auto,auto,).at(col),
   inset: 6pt,
-  [Situation], [Pattern], [Workgraph Expression],
+  [Situation], [Pattern], [workgraph Expression],
   [Sequential specialized stages],
   [Pipeline (Section 4)],
   [Serial `after` chain, different roles per stage],
@@ -2283,7 +2283,7 @@ In Luhmann's terms: each seed task is a #emph[communication] that stimulates fur
 )
 ]]
 
-== Theoretical Density of Workgraph Primitives
+== Theoretical Density of workgraph Primitives
 <theoretical-density-of-workgraph-primitives>
 #text(size: 7pt)[#align(center)[#table(
   columns: 3,

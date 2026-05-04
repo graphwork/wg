@@ -1,10 +1,10 @@
-# Arena-Based Model Selection for Workgraph
+# Arena-Based Model Selection for workgraph
 
 Research doc covering how FLIP-style arena evaluation (Wang et al., 2025; arXiv:2602.13551) can drive model selection in workgraph.
 
 ## 1. Current Model Selection
 
-Workgraph resolves which model runs a task through a fixed hierarchy (`src/commands/spawn.rs:209-213`):
+workgraph resolves which model runs a task through a fixed hierarchy (`src/commands/spawn.rs:209-213`):
 
 ```
 task.model > executor.model > coordinator.model (CLI --model) > default

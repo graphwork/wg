@@ -1,4 +1,4 @@
-# Cycle Detection Algorithms for Workgraph
+# Cycle Detection Algorithms for workgraph
 
 **Date:** 2026-02-21
 **Task:** research-cycle-detection
@@ -8,7 +8,7 @@
 
 ## Motivation
 
-Workgraph currently distinguishes two edge types:
+workgraph currently distinguishes two edge types:
 
 - **`blocked_by`**: regular dependency edges (must complete before I start)
 - **`loops_to`**: special back-edges that fire on completion, re-opening upstream tasks
@@ -193,7 +193,7 @@ algorithm HAVLAK_LOOP_NESTING(G, root):
 - Reduces space from v(2 + 5w) to v(1 + 4w) bits (where w is word size)
 - Presented an efficient transitive closure algorithm as an application
 
-**Relevance to workgraph:** Marginal improvement. Workgraph's task graphs are small (hundreds to low thousands of nodes). The space savings are irrelevant at this scale. Petgraph already implements an optimized Tarjan variant.
+**Relevance to workgraph:** Marginal improvement. workgraph's task graphs are small (hundreds to low thousands of nodes). The space savings are irrelevant at this scale. Petgraph already implements an optimized Tarjan variant.
 
 ### 2.3 Sreedhar, Gao & Lee — DJ-Graphs for Loop Identification (1996)
 
@@ -228,7 +228,7 @@ The problem of detecting cycles as edges are added to a graph (without recomputi
 **McCauley, Moseley et al. (2024):** "Incremental Topological Ordering and Cycle Detection with Predictions" — leverages ML predictions about graph structure to achieve O(mη) time where η is prediction error. Experiments show 36x cost reduction with even mildly accurate predictions.
 
 **Relevance to workgraph:**
-Highly relevant. Workgraph graphs change dynamically as tasks and dependencies are added/removed. Full recomputation (O(V+E) Tarjan) after every edge addition is cheap for small graphs but wasteful for large ones. However, given workgraph's current scale (typically <1000 tasks), the practical benefit of incremental algorithms is minimal — a full Tarjan pass takes microseconds. The incremental algorithms become important only at scale (>100K nodes).
+Highly relevant. workgraph graphs change dynamically as tasks and dependencies are added/removed. Full recomputation (O(V+E) Tarjan) after every edge addition is cheap for small graphs but wasteful for large ones. However, given workgraph's current scale (typically <1000 tasks), the practical benefit of incremental algorithms is minimal — a full Tarjan pass takes microseconds. The incremental algorithms become important only at scale (>100K nodes).
 
 **Recommendation:** Start with full recomputation (Tarjan). If profiling shows cycle detection is a bottleneck, the STOC 2024 algorithm provides a nearly-optimal incremental solution. For practical use, maintaining a topological sort and detecting violations on edge insertion is simpler and sufficient.
 
@@ -263,7 +263,7 @@ The compiler optimization literature defines loops differently from graph theory
 - The "loop body" is the set of tasks that re-execute each iteration
 - Nesting corresponds to inner loops (sub-cycles within a larger cycle)
 
-The key challenge is that natural loop detection requires dominators, which require a single entry point. Workgraph graphs can have multiple root tasks. Solutions: (1) add a virtual root node, (2) compute dominators per connected component, or (3) use SCC-based loop detection instead.
+The key challenge is that natural loop detection requires dominators, which require a single entry point. workgraph graphs can have multiple root tasks. Solutions: (1) add a virtual root node, (2) compute dominators per connected component, or (3) use SCC-based loop detection instead.
 
 ### 2.7 Petri Net Cycle Analysis
 
@@ -282,7 +282,7 @@ Petri nets model concurrent systems with places (states), transitions (events), 
 
 ---
 
-## 3. Application to Workgraph
+## 3. Application to workgraph
 
 ### 3.1 Current Model
 
@@ -402,7 +402,7 @@ Both A and B are entry points. There is no single header.
 2. **Pick one:** Arbitrarily choose a header (e.g., the one with the lowest ID). May not match user intent.
 3. **Allow multiple headers:** Each entry point can independently trigger the loop. More complex iteration tracking.
 
-**Recommendation:** For v1, reject irreducible loops. Workgraph's use cases (review-revise, CI retry, monitor-fix-verify) are all reducible — they have a clear starting point. If irreducible loops are needed later, option 3 can be added.
+**Recommendation:** For v1, reject irreducible loops. workgraph's use cases (review-revise, CI retry, monitor-fix-verify) are all reducible — they have a clear starting point. If irreducible loops are needed later, option 3 can be added.
 
 ### 3.7 Dynamic Graph Changes
 
@@ -827,7 +827,7 @@ The current `loops_to` system is well-designed and battle-tested. Replacing it w
 
 4. **Do NOT implement Havlak/Ramalingam unless needed.** SCC decomposition is sufficient for workgraph's use cases. Loop nesting forests add complexity that's only justified for deeply nested cycles (rare in task graphs).
 
-5. **Do NOT implement incremental cycle detection.** Workgraph's scale doesn't justify it. Full Tarjan on every mutation is microseconds for <1000 tasks.
+5. **Do NOT implement incremental cycle detection.** workgraph's scale doesn't justify it. Full Tarjan on every mutation is microseconds for <1000 tasks.
 
 ### Implementation Status (2026-02-21)
 

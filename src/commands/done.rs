@@ -2,7 +2,6 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use std::path::Path;
 use workgraph::agency::capture_task_output;
-use workgraph::smoke::{self, Manifest as SmokeManifest, ScenarioOutcome};
 use workgraph::config::{Config, CoordinatorConfig};
 use workgraph::graph::{
     LogEntry, Node, Status, create_user_board_task, evaluate_cycle_iteration, parse_token_usage,
@@ -12,6 +11,7 @@ use workgraph::graph::{Task, parse_delay};
 use workgraph::parser::modify_graph;
 use workgraph::query;
 use workgraph::service::registry::AgentRegistry;
+use workgraph::smoke::{self, Manifest as SmokeManifest, ScenarioOutcome};
 
 // Import evaluate module for LLM verification
 use crate::commands::evaluate;
@@ -1183,7 +1183,7 @@ fn filter_hygiene_porcelain(status: &str) -> Vec<&str> {
 ///
 /// Skipped entirely for chat-loop tasks — a chat agent is a conversation
 /// endpoint, not a code agent, and should never be lectured about
-/// uncommitted state (see chat-agent-loops bug B). Workgraph-internal
+/// uncommitted state (see chat-agent-loops bug B). workgraph-internal
 /// paths (`.wg/`, `.wg.*/`, etc.) are filtered from the warning
 /// even when the check does run.
 fn check_agent_git_hygiene(dir: &Path, task_id: &str, tags: &[String]) {
@@ -2229,10 +2229,9 @@ fn run_inner(
                 push_outcome,
             } => {
                 let suffix = match &push_outcome {
-                    PushOutcome::PushedAndDeleted => format!(
-                        " — pushed origin/main, deleted origin/{}",
-                        wt.branch
-                    ),
+                    PushOutcome::PushedAndDeleted => {
+                        format!(" — pushed origin/main, deleted origin/{}", wt.branch)
+                    }
                     PushOutcome::PushedNotDeleted { delete_error } => format!(
                         " — pushed origin/main, branch delete failed: {}",
                         delete_error
@@ -4147,12 +4146,7 @@ mod tests {
         git(&project_path, &["commit", "-m", "initial"]);
         git(
             &project_path,
-            &[
-                "remote",
-                "add",
-                "origin",
-                remote.path().to_str().unwrap(),
-            ],
+            &["remote", "add", "origin", remote.path().to_str().unwrap()],
         );
         git(&project_path, &["push", "-u", "origin", "main"]);
 
@@ -4185,13 +4179,11 @@ mod tests {
 
     #[test]
     fn test_done_pushes_main_and_deletes_branch_on_clean_merge() {
-        let (_remote, _project, project_path, branch) =
-            make_repo_with_remote("clean-merge");
+        let (_remote, _project, project_path, branch) = make_repo_with_remote("clean-merge");
         let wt = make_wt(&project_path, &branch);
 
         // Capture origin/main before the merge.
-        let (_, before_sha) =
-            git_capture(&project_path, &["rev-parse", "origin/main"]);
+        let (_, before_sha) = git_capture(&project_path, &["rev-parse", "origin/main"]);
         let before_sha = before_sha.trim().to_string();
 
         // Run the merge path.
@@ -4213,8 +4205,7 @@ mod tests {
         }
 
         // origin/main must have advanced.
-        let (_, after_sha) =
-            git_capture(&project_path, &["rev-parse", "origin/main"]);
+        let (_, after_sha) = git_capture(&project_path, &["rev-parse", "origin/main"]);
         let after_sha = after_sha.trim().to_string();
         assert_ne!(
             before_sha, after_sha,
@@ -4222,8 +4213,7 @@ mod tests {
         );
 
         // Local main HEAD == origin/main.
-        let (_, local_main) =
-            git_capture(&project_path, &["rev-parse", "main"]);
+        let (_, local_main) = git_capture(&project_path, &["rev-parse", "main"]);
         assert_eq!(
             local_main.trim(),
             after_sha,
@@ -4241,8 +4231,7 @@ mod tests {
 
     #[test]
     fn test_done_succeeds_when_remote_unavailable() {
-        let (remote, _project, project_path, branch) =
-            make_repo_with_remote("remote-unavailable");
+        let (remote, _project, project_path, branch) = make_repo_with_remote("remote-unavailable");
 
         // Point `origin` at an unreachable URL. We do this *after* the
         // initial setup so the project is in a realistic post-spawn state.
@@ -4288,10 +4277,7 @@ mod tests {
         }
 
         // Local main must still have the squash commit.
-        let (ok, log) = git_capture(
-            &project_path,
-            &["log", "main", "--oneline", "-1"],
-        );
+        let (ok, log) = git_capture(&project_path, &["log", "main", "--oneline", "-1"]);
         assert!(ok, "git log on main failed");
         assert!(
             log.contains("remote-unavailable"),

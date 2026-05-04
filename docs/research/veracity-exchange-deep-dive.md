@@ -1,10 +1,10 @@
-# Veracity Exchange × Workgraph: Deep Dive
+# Veracity Exchange × workgraph: Deep Dive
 
 **Last updated:** 2026-02-20 — revised based on nikete's actual design doc (`nikete/main:docs/design-veracity-exchange.md`) and `nikete/vx-adapter` branch code.
 
 ## Executive Summary
 
-Veracity Exchange is a system for scoring workflow sub-units against real-world outcomes and using those scores to build a peer trust network. Workgraph is a task coordination system with composable agent identities, provenance logging, and performance evaluation. This report analyzes how these systems integrate, based on nikete's actual design documents and code rather than speculation.
+Veracity Exchange is a system for scoring workflow sub-units against real-world outcomes and using those scores to build a peer trust network. workgraph is a task coordination system with composable agent identities, provenance logging, and performance evaluation. This report analyzes how these systems integrate, based on nikete's actual design documents and code rather than speculation.
 
 **Key findings from nikete's actual code and design:**
 

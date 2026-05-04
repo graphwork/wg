@@ -39,11 +39,7 @@ pub const TOOL_RESULT: Color = Color::Indexed(252); // light gray, dark-theme on
 
 /// Theme-aware tool result body color.
 pub fn tool_result_color(is_light: bool) -> Color {
-    if is_light {
-        Color::Reset
-    } else {
-        TOOL_RESULT
-    }
+    if is_light { Color::Reset } else { TOOL_RESULT }
 }
 
 /// Tool error / failure surface — jumps out so failures don't get lost in
@@ -113,7 +109,11 @@ mod tests {
     fn chat_task_gets_state_color() {
         let blue = Color::Blue;
         let result = chat_task_label_color(".chat-3", blue);
-        assert_eq!(result, Color::Blue, ".chat-N should pass through the state color");
+        assert_eq!(
+            result,
+            Color::Blue,
+            ".chat-N should pass through the state color"
+        );
     }
 
     #[test]
@@ -121,7 +121,8 @@ mod tests {
         let blue = Color::Blue;
         let result = chat_task_label_color(".coordinator-3", blue);
         assert_ne!(
-            result, Color::Blue,
+            result,
+            Color::Blue,
             ".coordinator-N should NOT use the accent/state color"
         );
         assert_eq!(

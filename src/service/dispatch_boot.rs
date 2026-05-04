@@ -52,7 +52,10 @@ pub fn enumerate_chat_supervisors_from_graph(graph: &WorkGraph) -> Vec<ChatSuper
         let Some(id) = crate::chat_id::parse_chat_task_id(&task.id) else {
             continue;
         };
-        if task.id.starts_with(crate::chat_id::LEGACY_COORDINATOR_PREFIX) {
+        if task
+            .id
+            .starts_with(crate::chat_id::LEGACY_COORDINATOR_PREFIX)
+        {
             legacy_ids.insert(id);
         } else {
             new_ids.insert(id);
@@ -164,7 +167,11 @@ mod tests {
     #[test]
     fn done_chat_task_is_excluded() {
         let mut g = WorkGraph::new();
-        g.add_node(Node::Task(chat_task(".chat-7", CHAT_LOOP_TAG, Status::Done)));
+        g.add_node(Node::Task(chat_task(
+            ".chat-7",
+            CHAT_LOOP_TAG,
+            Status::Done,
+        )));
         assert!(enumerate_chat_supervisors_from_graph(&g).is_empty());
     }
 

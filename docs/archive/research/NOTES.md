@@ -18,7 +18,7 @@ Excellent. I now have a comprehensive picture. Let me synthesize this into a res
 
 ---
 
-## Deep Research Synthesis: Workgraph — A Grammar of Organizational Work
+## Deep Research Synthesis: workgraph — A Grammar of Organizational Work
 
 ### The Gap You've Identified is Real
 
@@ -165,7 +165,7 @@ Then `wg verify` translates this to a Petri net representation and checks proper
 4. **Human+agent-native design** (beads is close but not general enough)
 5. **Cross-domain applicability** (not just coding tasks)
 
-The name "Workgraph" is apt. You're essentially proposing what relational algebra did for data: a formal foundation that enables both human reasoning and automated verification about organizational structures.
+The name "workgraph" is apt. You're essentially proposing what relational algebra did for data: a formal foundation that enables both human reasoning and automated verification about organizational structures.
 
 ---
 

@@ -1176,9 +1176,6 @@ mod tests {
     fn memory_dir_path() {
         let wg = Path::new("/tmp/.wg");
         let dir = memory_dir(wg, "deploy-prod");
-        assert_eq!(
-            dir,
-            PathBuf::from("/tmp/.wg/functions/deploy-prod.memory")
-        );
+        assert_eq!(dir, PathBuf::from("/tmp/.wg/functions/deploy-prod.memory"));
     }
 }

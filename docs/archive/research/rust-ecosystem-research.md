@@ -1,4 +1,4 @@
-# Rust Ecosystem Research for Workgraph System
+# Rust Ecosystem Research for workgraph System
 
 This document provides a comprehensive evaluation of the Rust ecosystem for building a workgraph system, covering graph libraries, JSON/JSONL handling, CLI frameworks, SQLite bindings, and file watching capabilities.
 
@@ -489,7 +489,7 @@ The most popular and feature-rich CLI parsing library in Rust.
 use clap::{Parser, Subcommand, Args};
 use std::path::PathBuf;
 
-/// Workgraph CLI - manage task dependency graphs
+/// workgraph CLI - manage task dependency graphs
 #[derive(Parser)]
 #[command(name = "wg")]
 #[command(version, about, long_about = None)]

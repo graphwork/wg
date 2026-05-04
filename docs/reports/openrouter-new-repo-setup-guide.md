@@ -1,4 +1,4 @@
-# How to Set Up a New Workgraph Repo with OpenRouter as the Default Executor
+# How to Set Up a New workgraph Repo with OpenRouter as the Default Executor
 
 **Task:** research-current-new
 **Date:** 2026-04-03
@@ -299,7 +299,7 @@ This is more steps but gives fine-grained control.
 ### 3. provider:model format is confusing for OpenRouter models
 **Issue:** OpenRouter models already have a slash (`anthropic/claude-sonnet-4`). Adding the workgraph provider prefix creates `openrouter:anthropic/claude-sonnet-4`. This looks like three levels of nesting and is confusing. Users might try `minimax/minimax-m2.7` without the `openrouter:` prefix, which would be treated as a bare model name and default to the `claude` executor.
 
-**Ideal:** Workgraph could auto-detect that a model containing `/` should be routed through OpenRouter (or the configured default endpoint) without requiring an explicit prefix.
+**Ideal:** workgraph could auto-detect that a model containing `/` should be routed through OpenRouter (or the configured default endpoint) without requiring an explicit prefix.
 
 ### 4. No `wg setup --local` for project-scoped config
 **Issue:** `wg setup` always writes to global config. There's no `--local` flag to run the wizard for a project-specific config.

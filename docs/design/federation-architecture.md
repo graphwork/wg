@@ -1,4 +1,4 @@
-# Federation & Cross-Workgraph Visibility Architecture
+# Federation & Cross-workgraph Visibility Architecture
 
 > Each user/team has their own workgraph endpoint. They can see other federated workgraphs. A network of collaborative workspaces.
 
@@ -279,7 +279,7 @@ This is the **single new IPC type** needed for federation visibility. `QueryTask
 
 ```
 ┌──────────────┐     QueryGraph IPC      ┌──────────────┐
-│  Workgraph A │ ◄──────────────────────► │  Workgraph B │
+│  workgraph A │ ◄──────────────────────► │  workgraph B │
 │  (observer)  │                          │  (observed)  │
 │              │     PeerGraphSnapshot    │              │
 │  TUI/CLI     │ ◄─────────────────────── │  Daemon      │
@@ -328,7 +328,7 @@ name = "workgraph-tool"
 owner = "erik"
 ```
 
-When Workgraph A queries Workgraph B, B's response includes its `name` and `owner` from config. No global ID authority; trust is established through peer configuration (you explicitly added this peer).
+When workgraph A queries workgraph B, B's response includes its `name` and `owner` from config. No global ID authority; trust is established through peer configuration (you explicitly added this peer).
 
 ### 5.2 For Cross-Repo Task Dispatch
 

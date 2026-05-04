@@ -105,7 +105,7 @@ pub struct AgentLoop {
     journal_path: Option<PathBuf>,
     /// Task ID for journal metadata.
     task_id: Option<String>,
-    /// Workgraph directory root (the `.wg` dir). Set alongside
+    /// workgraph directory root (the `.wg` dir). Set alongside
     /// task_id to enable the workgraph inbox in interactive mode.
     workgraph_dir: Option<PathBuf>,
     /// Agent identifier used for inbox cursor tracking.
@@ -185,7 +185,7 @@ pub struct AgentLoop {
 /// tag correctly.
 struct ChatSurfaceState {
     reader: super::chat_surface::ChatInboxReader,
-    /// Workgraph root dir (`.wg/...`), needed for
+    /// workgraph root dir (`.wg/...`), needed for
     /// `chat::append_outbox_ref` which expects the root, not the
     /// per-chat dir.
     workgraph_dir: PathBuf,

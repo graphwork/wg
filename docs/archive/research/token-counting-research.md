@@ -138,7 +138,7 @@ For role weight calculation in workgraph, consider what the token count is used 
 
 **Recommendation:** For role weight, ~10-15% accuracy is sufficient. The role definitions are markdown files of moderate size (typically <10K tokens), so even 20% error means ±2K tokens—well within the margins of modern context windows.
 
-## 4. Recommendation for Workgraph
+## 4. Recommendation for workgraph
 
 ### Pragmatic Choice: Simple Heuristic with Optional Calibration
 
@@ -205,7 +205,7 @@ wg config set role_weights.chars_per_token 3.5  # For Claude users
 Consider adding tiktoken-rs as an optional feature if:
 - Users request billing-grade accuracy
 - Role definitions become very large (>50K chars)
-- Workgraph adds support for precise context management
+- workgraph adds support for precise context management
 
 ```toml
 # Cargo.toml

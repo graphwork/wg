@@ -200,9 +200,7 @@ pub fn load_resume_data(
             hard_ceiling,
             messages.len(),
             final_estimated_tokens,
-            model
-                .map(|m| format!(" {}", m))
-                .unwrap_or_default(),
+            model.map(|m| format!(" {}", m)).unwrap_or_default(),
         );
     }
 
@@ -349,10 +347,7 @@ fn estimate_tokens_with_model(messages: &[Message], model: Option<&str>) -> usiz
                             super::tokenizer::count_tokens(thinking, m)
                         }
                         ContentBlock::ToolUse { input, name, .. } => {
-                            super::tokenizer::count_tokens(
-                                &format!("{} {}", name, input),
-                                m,
-                            )
+                            super::tokenizer::count_tokens(&format!("{} {}", name, input), m)
                         }
                         ContentBlock::ToolResult { content, .. } => {
                             super::tokenizer::count_tokens(content, m)
@@ -2227,7 +2222,11 @@ mod tests {
     /// Build a synthetic large journal: alternating user/assistant text
     /// messages, each ~`chars_per_msg` characters of "x". Returns the
     /// path to the on-disk journal.
-    fn make_large_journal(dir: &Path, num_messages: usize, chars_per_msg: usize) -> std::path::PathBuf {
+    fn make_large_journal(
+        dir: &Path,
+        num_messages: usize,
+        chars_per_msg: usize,
+    ) -> std::path::PathBuf {
         let path = dir.join("conversation.jsonl");
         let mut journal = Journal::open(&path).unwrap();
         journal
@@ -2240,7 +2239,11 @@ mod tests {
             })
             .unwrap();
         for i in 0..num_messages {
-            let role = if i % 2 == 0 { Role::User } else { Role::Assistant };
+            let role = if i % 2 == 0 {
+                Role::User
+            } else {
+                Role::Assistant
+            };
             journal
                 .append(JournalEntryKind::Message {
                     role,
@@ -2361,7 +2364,9 @@ mod tests {
             model: Some("qwen3-coder".to_string()),
             ..ResumeConfig::default()
         };
-        let data = load_resume_data(&path, tmp.path(), &config).unwrap().unwrap();
+        let data = load_resume_data(&path, tmp.path(), &config)
+            .unwrap()
+            .unwrap();
         assert!(!data.was_truncated, "small journal should not be truncated");
         assert_eq!(data.truncated_message_count, 0);
         assert_eq!(data.messages.len(), 4);

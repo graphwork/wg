@@ -125,7 +125,11 @@ fn config_init_global_writes_minimal_canonical() {
     //   [models.evaluator] model
     //   [models.assigner] model
     assert!(body.contains("[agent]"), "missing [agent]; got:\n{}", body);
-    assert!(body.contains("model = \"claude:opus\""), "missing claude:opus; got:\n{}", body);
+    assert!(
+        body.contains("model = \"claude:opus\""),
+        "missing claude:opus; got:\n{}",
+        body
+    );
     assert!(body.contains("[tiers]"));
     assert!(body.contains("fast = \"claude:haiku\""));
     assert!(body.contains("standard = \"claude:sonnet\""));
@@ -297,12 +301,13 @@ fn migrate_dry_run_does_not_modify() {
     let original = "[agent]\nexecutor = \"claude\"\n";
     fs::write(wg_dir.join("config.toml"), original).unwrap();
 
-    wg_ok(&wg_dir, &home, &["migrate", "config", "--local", "--dry-run"]);
-    let after = fs::read_to_string(wg_dir.join("config.toml")).unwrap();
-    assert_eq!(
-        original, after,
-        "dry-run must not touch the config file"
+    wg_ok(
+        &wg_dir,
+        &home,
+        &["migrate", "config", "--local", "--dry-run"],
     );
+    let after = fs::read_to_string(wg_dir.join("config.toml")).unwrap();
+    assert_eq!(original, after, "dry-run must not touch the config file");
 }
 
 // ---------------------------------------------------------------------------
@@ -329,8 +334,7 @@ fn lint_reports_deprecated_keys() {
         stdout,
     );
     assert!(
-        stdout.to_lowercase().contains("deprecated")
-            || stdout.to_lowercase().contains("removed"),
+        stdout.to_lowercase().contains("deprecated") || stdout.to_lowercase().contains("removed"),
         "lint should label the finding as deprecated/removable; got:\n{}",
         stdout,
     );
@@ -482,6 +486,7 @@ fn quickstart_with_no_global_config_does_not_error() {
     assert!(
         out.status.success(),
         "quickstart with no global config should succeed.\nstdout: {}\nstderr: {}",
-        stdout, stderr,
+        stdout,
+        stderr,
     );
 }
