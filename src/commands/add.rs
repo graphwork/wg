@@ -2,7 +2,10 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use std::path::Path;
 use workgraph::cron::{calculate_next_fire, parse_cron_expression};
-use workgraph::graph::{CycleConfig, Estimate, Node, PRIORITY_CRITICAL, PRIORITY_DEFAULT, PRIORITY_HIGH, PRIORITY_IDLE, PRIORITY_LOW, PRIORITY_NORMAL, Priority, Status, Task, boost_priority, parse_delay};
+use workgraph::graph::{
+    CycleConfig, Estimate, Node, PRIORITY_CRITICAL, PRIORITY_DEFAULT, PRIORITY_HIGH, PRIORITY_IDLE,
+    PRIORITY_LOW, PRIORITY_NORMAL, Priority, Status, Task, boost_priority, parse_delay,
+};
 use workgraph::parser::modify_graph;
 
 use super::graph_path;
@@ -101,7 +104,10 @@ pub fn parse_priority(priority_str: Option<&str>) -> Priority {
                 "low" => PRIORITY_LOW,
                 "idle" => PRIORITY_IDLE,
                 _ => {
-                    eprintln!("Warning: Invalid priority '{}', using default ({})", s, PRIORITY_DEFAULT);
+                    eprintln!(
+                        "Warning: Invalid priority '{}', using default ({})",
+                        s, PRIORITY_DEFAULT
+                    );
                     PRIORITY_DEFAULT
                 }
             }
@@ -560,6 +566,9 @@ pub fn run(
         model: model.map(String::from),
         provider: provider.map(String::from),
         endpoint: None,
+        command_argv: vec![],
+        working_dir: None,
+        executor_preset_name: None,
         verify: verify.map(String::from),
         verify_timeout: verify_timeout.map(String::from),
         agent: None,
@@ -1032,6 +1041,9 @@ fn add_task_directly(
             model: model.map(String::from),
             provider: provider.map(String::from),
             endpoint: None,
+            command_argv: vec![],
+            working_dir: None,
+            executor_preset_name: None,
             verify: verify.map(String::from),
             verify_timeout: verify_timeout.map(String::from),
             agent: None,

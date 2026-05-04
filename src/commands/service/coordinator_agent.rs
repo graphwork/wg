@@ -463,13 +463,9 @@ impl CoordinatorAgent {
         if let Some(m) = model {
             chat_task.model = Some(m.to_string());
         }
-        let supervisor_plan = workgraph::dispatch::plan_spawn(
-            &chat_task,
-            &supervisor_config,
-            Some(executor),
-            model,
-        )
-        .context("plan_spawn for coordinator agent supervisor failed")?;
+        let supervisor_plan =
+            workgraph::dispatch::plan_spawn(&chat_task, &supervisor_config, Some(executor), model)
+                .context("plan_spawn for coordinator agent supervisor failed")?;
         // Post-Phase-7, ALL supported executors are backed by a
         // handler subprocess that reads the inbox directly:
         //   native → wg nex --chat
@@ -824,10 +820,14 @@ fn subprocess_coordinator_loop(
                     if let Some(t) = g.get_task(&rid) {
                         let is_archived = t.tags.iter().any(|x| x == "archived");
                         let is_done = matches!(t.status, workgraph::graph::Status::Done);
-                        let is_abandoned =
-                            matches!(t.status, workgraph::graph::Status::Abandoned);
-                        if is_archived || (is_done && !t.tags.iter().any(|x|
-                            workgraph::chat_id::is_chat_loop_tag(x))) || is_abandoned
+                        let is_abandoned = matches!(t.status, workgraph::graph::Status::Abandoned);
+                        if is_archived
+                            || (is_done
+                                && !t
+                                    .tags
+                                    .iter()
+                                    .any(|x| workgraph::chat_id::is_chat_loop_tag(x)))
+                            || is_abandoned
                         {
                             logger.info(&format!(
                                 "Coordinator-{}: chat task {} is archived/Done/Abandoned — exiting supervisor (no respawn).",
@@ -894,6 +894,14 @@ fn subprocess_coordinator_loop(
                 ..workgraph::graph::Task::default()
             },
         };
+        if !chat_task.command_argv.is_empty() && chat_task.executor_preset_name.is_none() {
+            logger.info(&format!(
+                "Coordinator-{}: {} is a custom command chat; TUI/tmux owns the pane spawn",
+                coordinator_id, task_id
+            ));
+            std::thread::sleep(std::time::Duration::from_secs(5));
+            continue;
+        }
         let plan = match workgraph::dispatch::plan_spawn(
             &chat_task,
             &supervisor_config,
@@ -1078,8 +1086,7 @@ fn subprocess_coordinator_loop(
                 // enumerate_chat_supervisors_for_boot. Without this gate the
                 // supervisor burns LLM tokens in a tight loop whenever no
                 // consumer is connected.
-                let idle_threshold =
-                    std::time::Duration::from_secs(CHAT_IDLE_THRESHOLD_SECS);
+                let idle_threshold = std::time::Duration::from_secs(CHAT_IDLE_THRESHOLD_SECS);
                 if chat::chat_session_is_idle(dir, coordinator_id, idle_threshold) {
                     logger.info(&format!(
                         "Coordinator-{}: idle (no consumer + empty inbox for {}s) — exiting supervisor (no respawn).",
@@ -1647,10 +1654,7 @@ mod tests {
             title: "Chat 7".to_string(),
             ..Default::default()
         }));
-        assert_eq!(
-            resolve_chat_task_id(&graph, 7),
-            Some(".chat-7".to_string())
-        );
+        assert_eq!(resolve_chat_task_id(&graph, 7), Some(".chat-7".to_string()));
     }
 
     #[test]
@@ -1683,10 +1687,7 @@ mod tests {
             title: "Coordinator 3".to_string(),
             ..Default::default()
         }));
-        assert_eq!(
-            resolve_chat_task_id(&graph, 3),
-            Some(".chat-3".to_string())
-        );
+        assert_eq!(resolve_chat_task_id(&graph, 3), Some(".chat-3".to_string()));
     }
 
     /// Stale `.coordinator-N` self-archive (parent task bullet 3): when neither
@@ -1893,13 +1894,9 @@ mod tests {
     fn test_tui_sentinel_defers_supervisor_respawn_only_while_alive() {
         let tmp = TempDir::new().unwrap();
         let chat_dir = tmp.path().join("chat");
-        workgraph::session_lock::write_tui_driver_sentinel(&chat_dir, std::process::id())
-            .unwrap();
+        workgraph::session_lock::write_tui_driver_sentinel(&chat_dir, std::process::id()).unwrap();
 
-        assert_eq!(
-            tui_driver_deferral_pid(&chat_dir),
-            Some(std::process::id())
-        );
+        assert_eq!(tui_driver_deferral_pid(&chat_dir), Some(std::process::id()));
 
         workgraph::session_lock::clear_tui_driver_sentinel(&chat_dir);
         assert_eq!(tui_driver_deferral_pid(&chat_dir), None);

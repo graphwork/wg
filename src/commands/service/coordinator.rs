@@ -562,10 +562,7 @@ fn evaluate_waiting_tasks(graph: &mut workgraph::graph::WorkGraph, dir: &Path) -
                     message: format!("Failed: {}", reason),
                 });
                 modified = true;
-                eprintln!(
-                    "[dispatcher] Waiting task '{}' failed: {}",
-                    task_id, reason
-                );
+                eprintln!("[dispatcher] Waiting task '{}' failed: {}", task_id, reason);
             }
             continue;
         }
@@ -1825,10 +1822,13 @@ fn build_auto_assign_tasks(
                     retry_count: 0,
                     max_retries: Some(1),
                     failure_reason: None,
-            failure_class: None,
+                    failure_class: None,
                     model: Some(creator_resolved.model),
                     provider: creator_resolved.provider,
                     endpoint: None,
+                    command_argv: vec![],
+                    working_dir: None,
+                    executor_preset_name: None,
                     verify: None,
                     verify_timeout: None,
                     agent: config.agency.creator_agent.clone(),
@@ -1858,8 +1858,8 @@ fn build_auto_assign_tasks(
                     max_rejections: None,
                     verify_failures: 0,
                     rescue_count: 0,
-            rescued: false,
-            meta_eval_attempts: 0,
+                    rescued: false,
+                    meta_eval_attempts: 0,
                     spawn_failures: 0,
                     dispatch_count: 0,
                     tier: None,
@@ -1988,10 +1988,7 @@ fn build_auto_evaluate_tasks(
             if t.after.len() == 1 {
                 let source_id = &t.after[0];
                 if let Some(source) = graph.get_task(source_id)
-                    && matches!(
-                        source.status,
-                        Status::Failed | Status::FailedPendingEval
-                    )
+                    && matches!(source.status, Status::Failed | Status::FailedPendingEval)
                 {
                     return Some((t.id.clone(), source_id.clone()));
                 }
@@ -2225,6 +2222,9 @@ fn build_flip_verification_tasks(
             model: Some(verification_model.clone()),
             provider: verification_resolved.provider.clone(),
             endpoint: None,
+            command_argv: vec![],
+            working_dir: None,
+            executor_preset_name: None,
             verify: source_verify_cmd,
             verify_timeout: None,
             agent: None,
@@ -2497,6 +2497,9 @@ fn build_separate_verify_tasks(
             model: Some(verification_model.clone()),
             provider: verification_resolved.provider.clone(),
             endpoint: None,
+            command_argv: vec![],
+            working_dir: None,
+            executor_preset_name: None,
             verify: None, // The verify agent runs the command manually, not via --verify gate
             verify_timeout: None,
             agent: None,
@@ -2695,10 +2698,13 @@ fn build_auto_evolve_task(
         retry_count: 0,
         max_retries: Some(1),
         failure_reason: None,
-            failure_class: None,
+        failure_class: None,
         model: Some(evolver_resolved.model),
         provider: evolver_resolved.provider,
         endpoint: None,
+        command_argv: vec![],
+        working_dir: None,
+        executor_preset_name: None,
         verify: None,
         verify_timeout: None,
         agent: config.agency.evolver_agent.clone(),
@@ -2728,8 +2734,8 @@ fn build_auto_evolve_task(
         max_rejections: None,
         verify_failures: 0,
         rescue_count: 0,
-            rescued: false,
-            meta_eval_attempts: 0,
+        rescued: false,
+        meta_eval_attempts: 0,
         spawn_failures: 0,
         dispatch_count: 0,
         tier: None,
@@ -2900,10 +2906,13 @@ fn build_auto_create_task(
         retry_count: 0,
         max_retries: Some(1),
         failure_reason: None,
-            failure_class: None,
+        failure_class: None,
         model: Some(creator_resolved.model),
         provider: creator_resolved.provider,
         endpoint: None,
+        command_argv: vec![],
+        working_dir: None,
+        executor_preset_name: None,
         verify: None,
         verify_timeout: None,
         agent: config.agency.creator_agent.clone(),
@@ -2933,8 +2942,8 @@ fn build_auto_create_task(
         max_rejections: None,
         verify_failures: 0,
         rescue_count: 0,
-            rescued: false,
-            meta_eval_attempts: 0,
+        rescued: false,
+        meta_eval_attempts: 0,
         spawn_failures: 0,
         dispatch_count: 0,
         tier: None,
@@ -3006,17 +3015,20 @@ fn write_inline_artifacts(
     );
     let _ = fs::write(
         output_dir.join("prompt.txt"),
-        format!("[inline {} task — no LLM prompt; runs: {}]", executor, task_id),
+        format!(
+            "[inline {} task — no LLM prompt; runs: {}]",
+            executor, task_id
+        ),
     );
-    let wrapper = format!("#!/bin/bash\n# Auto-generated inline {} wrapper\n{}", executor, script);
+    let wrapper = format!(
+        "#!/bin/bash\n# Auto-generated inline {} wrapper\n{}",
+        executor, script
+    );
     let _ = fs::write(output_dir.join("run.sh"), &wrapper);
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let _ = fs::set_permissions(
-            output_dir.join("run.sh"),
-            fs::Permissions::from_mode(0o755),
-        );
+        let _ = fs::set_permissions(output_dir.join("run.sh"), fs::Permissions::from_mode(0o755));
     }
 }
 
@@ -3221,8 +3233,7 @@ fn spawn_eval_inline(
     } else {
         DispatchRole::Evaluator
     };
-    let eval_dispatch =
-        workgraph::service::llm::resolve_agency_dispatch(&config, eval_role);
+    let eval_dispatch = workgraph::service::llm::resolve_agency_dispatch(&config, eval_role);
     let eval_executor = eval_dispatch.handler.as_str();
     let eval_recorded_model = eval_dispatch.raw_spec.as_str();
     write_inline_artifacts(
@@ -3409,10 +3420,8 @@ exit $EXIT_CODE"#,
     // Resolve once so the registry display matches what
     // run_lightweight_llm_call will actually invoke.
     let assign_config = Config::load_or_default(dir);
-    let assign_dispatch = workgraph::service::llm::resolve_agency_dispatch(
-        &assign_config,
-        DispatchRole::Assigner,
-    );
+    let assign_dispatch =
+        workgraph::service::llm::resolve_agency_dispatch(&assign_config, DispatchRole::Assigner);
     let assign_executor = assign_dispatch.handler.as_str();
     let assign_model = assign_dispatch.raw_spec.as_str();
     write_inline_artifacts(
@@ -3664,13 +3673,13 @@ fn sort_tasks_by_priority_with_features<'a>(
     // Sort by effective priority descending (higher number = higher priority),
     // then by dispatch_count ascending (CFS-like fair share: prefer less-dispatched tasks)
     task_priorities.sort_by(|(a_task, a_prio), (b_task, b_prio)| {
-        b_prio.cmp(a_prio).then(a_task.dispatch_count.cmp(&b_task.dispatch_count))
+        b_prio
+            .cmp(a_prio)
+            .then(a_task.dispatch_count.cmp(&b_task.dispatch_count))
     });
 
     // Idle gate: only include idle (priority 0) tasks when no higher-priority tasks are in the set
-    let has_normal_or_higher = task_priorities
-        .iter()
-        .any(|(_, p)| *p >= PRIORITY_NORMAL);
+    let has_normal_or_higher = task_priorities.iter().any(|(_, p)| *p >= PRIORITY_NORMAL);
     if has_normal_or_higher {
         task_priorities.retain(|(_, p)| *p != PRIORITY_IDLE);
     }
@@ -3980,17 +3989,11 @@ fn spawn_agents_for_ready_tasks(
             );
             match spawn_shell_inline(dir, &task_id) {
                 Ok((agent_id, pid)) => {
-                    eprintln!(
-                        "[coordinator] Spawned shell {} (PID {})",
-                        agent_id, pid
-                    );
+                    eprintln!("[coordinator] Spawned shell {} (PID {})", agent_id, pid);
                     spawned += 1;
                 }
                 Err(e) => {
-                    eprintln!(
-                        "[coordinator] Failed to spawn shell for {}: {}",
-                        task_id, e
-                    );
+                    eprintln!("[coordinator] Failed to spawn shell for {}: {}", task_id, e);
                     record_spawn_failure(
                         &gp,
                         &task_id,
@@ -4034,10 +4037,7 @@ fn spawn_agents_for_ready_tasks(
                 );
                 match spawn_assign_inline(dir, &task_id) {
                     Ok((agent_id, pid)) => {
-                        eprintln!(
-                            "[dispatcher] Spawned assignment {} (PID {})",
-                            agent_id, pid
-                        );
+                        eprintln!("[dispatcher] Spawned assignment {} (PID {})", agent_id, pid);
                         record_dispatch(&gp, &task_id);
                         spawned += 1;
                     }
@@ -4925,8 +4925,12 @@ mod tests {
     fn test_inline_eval_script_without_special_agent_skips_record() {
         // When there is no resolved special agent, the script must NOT
         // emit a `wg evaluate record` line at all (success or failure branch).
-        let script =
-            build_inline_eval_script("wg evaluate run my-source", "evaluate-my-source", "/tmp/out.log", None);
+        let script = build_inline_eval_script(
+            "wg evaluate run my-source",
+            "evaluate-my-source",
+            "/tmp/out.log",
+            None,
+        );
 
         assert!(
             !script.contains("wg evaluate record"),
@@ -6581,8 +6585,11 @@ mod tests {
         let g = load_graph(&gp).unwrap();
         let t = g.get_task("test-task").unwrap();
         assert_eq!(t.spawn_failures, 5);
-        assert_eq!(t.status, Status::Incomplete,
-            "Circuit breaker should mark task Incomplete (not Failed) — evaluator decides failure");
+        assert_eq!(
+            t.status,
+            Status::Incomplete,
+            "Circuit breaker should mark task Incomplete (not Failed) — evaluator decides failure"
+        );
 
         // No failure_reason set — circuit breaker logs evidence but doesn't auto-fail
         assert!(
@@ -6604,9 +6611,7 @@ mod tests {
             "Expected circuit breaker log entry"
         );
         assert!(
-            t.log
-                .iter()
-                .any(|e| e.message.contains("evaluator review")),
+            t.log.iter().any(|e| e.message.contains("evaluator review")),
             "Circuit breaker log should mention evaluator review"
         );
     }
@@ -6948,7 +6953,11 @@ mod tests {
         ];
 
         let sorted = sort_tasks_by_priority_with_features(&graph, tasks, &config);
-        assert_eq!(sorted.len(), 1, "Idle should be excluded when Normal is present");
+        assert_eq!(
+            sorted.len(),
+            1,
+            "Idle should be excluded when Normal is present"
+        );
         assert_eq!(sorted[0].id, "task-normal");
 
         // Case 2: Only Idle ready → Idle included
@@ -6958,7 +6967,11 @@ mod tests {
         let tasks2: Vec<&Task> = vec![graph2.get_task("task-idle").unwrap()];
 
         let sorted2 = sort_tasks_by_priority_with_features(&graph2, tasks2, &config);
-        assert_eq!(sorted2.len(), 1, "Idle should be dispatched when nothing else is ready");
+        assert_eq!(
+            sorted2.len(),
+            1,
+            "Idle should be dispatched when nothing else is ready"
+        );
         assert_eq!(sorted2[0].id, "task-idle");
 
         // Case 3: Idle + Low ready (no Normal+) → both included
@@ -6978,7 +6991,11 @@ mod tests {
         ];
 
         let sorted3 = sort_tasks_by_priority_with_features(&graph3, tasks3, &config);
-        assert_eq!(sorted3.len(), 2, "Idle included when only Low tasks present");
+        assert_eq!(
+            sorted3.len(),
+            2,
+            "Idle included when only Low tasks present"
+        );
         assert_eq!(sorted3[0].id, "task-low");
         assert_eq!(sorted3[1].id, "task-idle");
     }
@@ -7158,8 +7175,10 @@ mod tests {
             "chat-loop tagged tasks must be daemon-managed (bug A regression)"
         );
 
-        let chat_legacy =
-            task_with_tags(".coordinator-0", &[workgraph::chat_id::LEGACY_COORDINATOR_LOOP_TAG]);
+        let chat_legacy = task_with_tags(
+            ".coordinator-0",
+            &[workgraph::chat_id::LEGACY_COORDINATOR_LOOP_TAG],
+        );
         assert!(
             is_daemon_managed(&chat_legacy),
             "legacy coordinator-loop tag still daemon-managed"

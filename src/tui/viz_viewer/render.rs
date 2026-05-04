@@ -7,28 +7,23 @@ use ratatui::widgets::{
 use unicode_width::UnicodeWidthStr;
 
 use super::state::{
-    ActivityEventKind, ChoiceDialogState, ConfigEditKind, ConfigSection,
-    ConfirmAction, ControlPanelFocus, CoordinatorArrowHit, CoordinatorPlusHit, CoordinatorTabHit,
-    EndpointTestStatus, ExitPromptState,
-    FocusedPanel, InputMode, LayoutMode, ResponsiveBreakpoint, RightPanelTab, ServiceHealthLevel,
-    SettingsEditScope, SinglePanelView, SortMode, TabBarEntryKind, TaskFormField,
-    TaskFormState, TextPromptAction, ToastSeverity, VitalsStaleness, VizApp, WAVE_BOLT,
-    WAVE_NUM_BOLTS, extract_section_name, format_duration_compact, format_relative_time,
-    spinner_wave_pos, vitals_staleness_color,
+    ActivityEventKind, ChoiceDialogState, ConfigEditKind, ConfigSection, ConfirmAction,
+    ControlPanelFocus, CoordinatorArrowHit, CoordinatorPlusHit, CoordinatorTabHit,
+    EndpointTestStatus, ExitPromptState, FocusedPanel, InputMode, LayoutMode, ResponsiveBreakpoint,
+    RightPanelTab, ServiceHealthLevel, SettingsEditScope, SinglePanelView, SortMode,
+    TabBarEntryKind, TaskFormField, TaskFormState, TextPromptAction, ToastSeverity,
+    VitalsStaleness, VizApp, WAVE_BOLT, WAVE_NUM_BOLTS, extract_section_name,
+    format_duration_compact, format_relative_time, spinner_wave_pos, vitals_staleness_color,
 };
 use workgraph::AgentStatus;
 use workgraph::graph::{TokenUsage, format_tokens};
 
-use crate::tui::markdown::markdown_to_lines;
 use super::chat_palette::chat_task_label_color;
+use crate::tui::markdown::markdown_to_lines;
 
 /// Primary text foreground: white on dark terminals, terminal-default on light.
 fn text_primary(is_light: bool) -> Color {
-    if is_light {
-        Color::Reset
-    } else {
-        Color::White
-    }
+    if is_light { Color::Reset } else { Color::White }
 }
 
 /// Minimum terminal width for side-by-side right panel layout.
@@ -713,7 +708,12 @@ pub fn draw(frame: &mut Frame, app: &mut VizApp) {
 
     // Text prompt overlay
     if let InputMode::TextPrompt(ref action) = app.input_mode {
-        app.last_text_prompt_area = draw_text_prompt(frame, action, &mut app.text_prompt.editor, app.is_light_theme);
+        app.last_text_prompt_area = draw_text_prompt(
+            frame,
+            action,
+            &mut app.text_prompt.editor,
+            app.is_light_theme,
+        );
     } else {
         app.last_text_prompt_area = Rect::default();
     }
@@ -2633,7 +2633,10 @@ pub(super) fn render_detail_iteration_bar(
 
     let max_label_len = (center_w as usize).saturating_sub(2);
     let label_owned: String = if label.chars().count() > max_label_len && max_label_len > 0 {
-        let mut s: String = label.chars().take(max_label_len.saturating_sub(1)).collect();
+        let mut s: String = label
+            .chars()
+            .take(max_label_len.saturating_sub(1))
+            .collect();
         s.push('…');
         s
     } else {
@@ -3056,8 +3059,7 @@ pub(super) fn compute_chat_bar_layout(
         if offset >= n - 1 {
             // Fallback: pin to last entry.
             offset = n - 1;
-            let (end, show_left, show_right) =
-                try_offset(offset).unwrap_or((n, offset > 0, false));
+            let (end, show_left, show_right) = try_offset(offset).unwrap_or((n, offset > 0, false));
             return ChatBarLayout {
                 offset,
                 end,
@@ -3174,13 +3176,13 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
         for (cid, label) in coordinator_entries.iter() {
             let cid = *cid;
             let is_active = cid == app.active_coordinator_id;
-            let snapshot_for_cid = if is_active { Some(active_snapshot) } else { None };
-            let tab_state = infer_tab_state(
-                &app.workgraph_dir,
-                cid,
-                service_alive,
-                snapshot_for_cid,
-            );
+            let snapshot_for_cid = if is_active {
+                Some(active_snapshot)
+            } else {
+                None
+            };
+            let tab_state =
+                infer_tab_state(&app.workgraph_dir, cid, service_alive, snapshot_for_cid);
             let state_color = tab_state.color();
             let effective_color = chat_task_label_color(label, state_color);
             let global_idx = entries.len();
@@ -3233,12 +3235,8 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
         // need to grow if the active tab is to the right of the previous
         // window, or shrink if active is to the left.
         let widths: Vec<usize> = entries.iter().map(|e| e.content_width).collect();
-        let layout = compute_chat_bar_layout(
-            &widths,
-            active_idx,
-            max_width,
-            app.chat_tab_scroll_offset,
-        );
+        let layout =
+            compute_chat_bar_layout(&widths, active_idx, max_width, app.chat_tab_scroll_offset);
         // Persist any offset adjustments back to app state so that the next
         // frame stays consistent and `wg`'s scroll handlers see the same value.
         app.chat_tab_scroll_offset = layout.offset;
@@ -3341,10 +3339,7 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
                                 .add_modifier(Modifier::BOLD),
                         ));
                     } else {
-                        spans.push(Span::styled(
-                            " ●",
-                            Style::default().fg(Color::DarkGray),
-                        ));
+                        spans.push(Span::styled(" ●", Style::default().fg(Color::DarkGray)));
                     }
                     col += 2;
 
@@ -3491,9 +3486,7 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
         // that would otherwise echo wrap-mismatched content into vt100
         // scrollback (fix-pty-scrollback).
         // Skip auto-spawn when the agent just died — user must retry explicitly.
-        if !app.task_panes.contains_key(&task_id)
-            && !app.chat_agent_death.contains_key(&cid)
-        {
+        if !app.task_panes.contains_key(&task_id) && !app.chat_agent_death.contains_key(&cid) {
             app.consume_pending_chat_pty_spawn(msg_area.height, msg_area.width);
         }
 
@@ -3770,7 +3763,8 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
         let tool_name_style = Style::default()
             .fg(super::chat_palette::TOOL_CALL)
             .add_modifier(Modifier::BOLD);
-        let tool_content_style = Style::default().fg(super::chat_palette::tool_result_color(app.is_light_theme));
+        let tool_content_style =
+            Style::default().fg(super::chat_palette::tool_result_color(app.is_light_theme));
 
         let wrapped: Vec<Line> = if md_lines.is_empty() {
             vec![Line::from("")]
@@ -3944,10 +3938,7 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
             // Right-justify the annotations within content_width so they
             // sit at the trailing edge of the message column. Compute the
             // total visual width and pad the leading edge with spaces.
-            let annot_w: usize = annot_spans
-                .iter()
-                .map(|s| s.content.as_ref().width())
-                .sum();
+            let annot_w: usize = annot_spans.iter().map(|s| s.content.as_ref().width()).sum();
             let pad = content_width.saturating_sub(annot_w);
             let mut spans: Vec<Span> = Vec::with_capacity(annot_spans.len() + 1);
             spans.push(Span::raw(" ".repeat(pad)));
@@ -3999,8 +3990,7 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
         .map(|m| {
             matches!(
                 m.role,
-                super::state::ChatRole::Coordinator
-                    | super::state::ChatRole::SystemError
+                super::state::ChatRole::Coordinator | super::state::ChatRole::SystemError
             )
         })
         .unwrap_or(false);
@@ -4037,7 +4027,8 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
             let tool_name_style = Style::default()
                 .fg(super::chat_palette::TOOL_CALL)
                 .add_modifier(Modifier::BOLD);
-            let tool_content_style = Style::default().fg(super::chat_palette::tool_result_color(app.is_light_theme));
+            let tool_content_style =
+                Style::default().fg(super::chat_palette::tool_result_color(app.is_light_theme));
 
             let wrapped: Vec<Line> = if md_lines.is_empty() {
                 vec![Line::from("")]
@@ -4223,11 +4214,7 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
                 if cx < msg_area.x + msg_area.width {
                     let cell = &mut buf[(cx, y)];
                     cell.set_char(ch);
-                    cell.set_style(
-                        Style::default()
-                            .fg(Color::Black)
-                            .bg(Color::Yellow),
-                    );
+                    cell.set_style(Style::default().fg(Color::Black).bg(Color::Yellow));
                 }
             }
         }
@@ -4260,12 +4247,7 @@ fn draw_chat_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
 /// new chat tab; the content area shows the chat's name and the
 /// executor that is starting up, replaced with live PTY content as
 /// soon as the handler emits its first byte.
-fn draw_chat_booting_placeholder(
-    frame: &mut Frame,
-    area: Rect,
-    app: &VizApp,
-    cid: u32,
-) {
+fn draw_chat_booting_placeholder(frame: &mut Frame, area: Rect, app: &VizApp, cid: u32) {
     use ratatui::text::Text;
 
     let task_id = workgraph::chat_id::format_chat_task_id(cid);
@@ -4290,11 +4272,7 @@ fn draw_chat_booting_placeholder(
         .as_ref()
         .filter(|p| p.task_id == task_id)
         .map(|p| p.executor.clone())
-        .or_else(|| {
-            app.chat_last_spawn_info
-                .get(&cid)
-                .map(|(e, _)| e.clone())
-        })
+        .or_else(|| app.chat_last_spawn_info.get(&cid).map(|(e, _)| e.clone()))
         .unwrap_or_else(|| "agent".to_string());
 
     let lines = vec![
@@ -4883,8 +4861,7 @@ fn draw_log_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     app.log_pane.viewport_height = body_area.height as usize;
 
     use super::log_render::{
-        render_events_view, render_high_level_view, render_raw_pretty_view,
-        render_wg_log_view,
+        render_events_view, render_high_level_view, render_raw_pretty_view, render_wg_log_view,
     };
     use super::state::LogViewMode;
 
@@ -4897,10 +4874,9 @@ fn draw_log_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
         match app.log_pane.view_mode {
             LogViewMode::Events => render_events_view(&app.log_pane.stream_events),
             LogViewMode::HighLevel => render_high_level_view(&app.log_pane.stream_events),
-            LogViewMode::RawPretty => render_raw_pretty_view(
-                &app.log_pane.stream_events,
-                app.log_pane.summary_mode,
-            ),
+            LogViewMode::RawPretty => {
+                render_raw_pretty_view(&app.log_pane.stream_events, app.log_pane.summary_mode)
+            }
             LogViewMode::WgLog => unreachable!("handled above"),
         }
     } else {
@@ -4943,8 +4919,8 @@ fn draw_log_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
 
 /// Draw the Messages tab — wg msg traffic for the currently selected task.
 fn draw_messages_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
-    use ratatui::widgets::{Paragraph, Wrap};
     use super::state::MessageDirection;
+    use ratatui::widgets::{Paragraph, Wrap};
 
     if area.height == 0 || area.width == 0 {
         return;
@@ -5028,9 +5004,7 @@ fn draw_messages_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
                 // role, not for marking 'this is text'.
                 let (arrow, color) = match entry.direction {
                     MessageDirection::Incoming => ("←", Color::Cyan),
-                    MessageDirection::Outgoing => {
-                        ("→", super::chat_palette::SENT_MESSAGE_PREFIX)
-                    }
+                    MessageDirection::Outgoing => ("→", super::chat_palette::SENT_MESSAGE_PREFIX),
                 };
                 let urgent_marker = if entry.is_urgent { " [!]" } else { "" };
                 Line::from(vec![
@@ -5287,7 +5261,10 @@ fn build_coordinator_runtime_lines(app: &VizApp) -> Vec<Line<'static>> {
                     .add_modifier(Modifier::BOLD),
             ),
             Span::raw("· "),
-            Span::styled(executor, Style::default().fg(text_primary(app.is_light_theme))),
+            Span::styled(
+                executor,
+                Style::default().fg(text_primary(app.is_light_theme)),
+            ),
             Span::raw(" · "),
             Span::styled(model, Style::default().fg(text_primary(app.is_light_theme))),
         ]),
@@ -5490,7 +5467,10 @@ fn draw_dashboard_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
                     Style::default().fg(text_primary(app.is_light_theme)),
                 ),
                 Span::styled("  Ticks: ", Style::default().fg(Color::DarkGray)),
-                Span::styled(format!("{}", card.ticks), Style::default().fg(text_primary(app.is_light_theme))),
+                Span::styled(
+                    format!("{}", card.ticks),
+                    Style::default().fg(text_primary(app.is_light_theme)),
+                ),
             ]));
 
             // Model + tokens
@@ -5620,7 +5600,10 @@ fn draw_dashboard_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     let tc = &app.task_counts;
     lines.push(Line::from(vec![
         Span::styled("  Total: ", Style::default().fg(Color::DarkGray)),
-        Span::styled(format!("{}", tc.total), Style::default().fg(text_primary(app.is_light_theme))),
+        Span::styled(
+            format!("{}", tc.total),
+            Style::default().fg(text_primary(app.is_light_theme)),
+        ),
         Span::styled("  Done: ", Style::default().fg(Color::DarkGray)),
         Span::styled(format!("{}", tc.done), Style::default().fg(Color::Green)),
         Span::styled("  In-progress: ", Style::default().fg(Color::DarkGray)),
@@ -5631,7 +5614,10 @@ fn draw_dashboard_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     ]));
     lines.push(Line::from(vec![
         Span::styled("  Open: ", Style::default().fg(Color::DarkGray)),
-        Span::styled(format!("{}", tc.open), Style::default().fg(text_primary(app.is_light_theme))),
+        Span::styled(
+            format!("{}", tc.open),
+            Style::default().fg(text_primary(app.is_light_theme)),
+        ),
         Span::styled("  Failed: ", Style::default().fg(Color::DarkGray)),
         Span::styled(format!("{}", tc.failed), Style::default().fg(Color::Red)),
         Span::styled("  Blocked: ", Style::default().fg(Color::DarkGray)),
@@ -5655,7 +5641,10 @@ fn draw_dashboard_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
                 Style::default().fg(Color::Rgb(60, 60, 60)),
             ),
             Span::styled("] ", Style::default().fg(Color::DarkGray)),
-            Span::styled(format!("{}%", pct), Style::default().fg(text_primary(app.is_light_theme))),
+            Span::styled(
+                format!("{}%", pct),
+                Style::default().fg(text_primary(app.is_light_theme)),
+            ),
         ]));
     }
     lines.push(Line::from(""));
@@ -6529,12 +6518,7 @@ fn draw_exit_prompt(frame: &mut Frame, state: &ExitPromptState) -> Rect {
     if let Some(idx) = state.per_chat_idx {
         // Per-chat granular prompt.
         let chat_id = state.chats.get(idx).copied().unwrap_or(0);
-        let title = format!(
-            " Chat {} of {}: chat-{} ",
-            idx + 1,
-            n,
-            chat_id
-        );
+        let title = format!(" Chat {} of {}: chat-{} ", idx + 1, n, chat_id);
         let width: u16 = 60.min(size.width.saturating_sub(4));
         // 4 option lines + 2 description lines + 1 footer + borders
         let height: u16 = 9;
@@ -6554,11 +6538,8 @@ fn draw_exit_prompt(frame: &mut Frame, state: &ExitPromptState) -> Rect {
         frame.render_widget(block, area);
 
         let lines = vec![
-            Line::from(format!(
-                "What about chat-{}?",
-                chat_id
-            ))
-            .style(Style::default().add_modifier(Modifier::BOLD)),
+            Line::from(format!("What about chat-{}?", chat_id))
+                .style(Style::default().add_modifier(Modifier::BOLD)),
             Line::from(""),
             Line::from(vec![
                 Span::styled(
@@ -6588,10 +6569,7 @@ fn draw_exit_prompt(frame: &mut Frame, state: &ExitPromptState) -> Rect {
                 Span::raw("Back to main exit prompt"),
             ]),
             Line::from(vec![
-                Span::styled(
-                    " [Esc]",
-                    Style::default().fg(Color::DarkGray),
-                ),
+                Span::styled(" [Esc]", Style::default().fg(Color::DarkGray)),
                 Span::raw(" Cancel exit"),
             ]),
         ];
@@ -6673,10 +6651,7 @@ fn draw_exit_prompt(frame: &mut Frame, state: &ExitPromptState) -> Rect {
                 "Select per-chat ",
                 Style::default().add_modifier(Modifier::BOLD),
             ),
-            Span::styled(
-                "(decide one at a time)",
-                Style::default().fg(Color::Gray),
-            ),
+            Span::styled("(decide one at a time)", Style::default().fg(Color::Gray)),
         ]),
         Line::from(vec![
             Span::styled(" [Esc]", Style::default().fg(Color::DarkGray)),
@@ -6697,8 +6672,7 @@ fn draw_coordinator_picker(
 ) -> Rect {
     let size = frame.area();
     let width: u16 = 50.min(size.width.saturating_sub(4));
-    let height: u16 =
-        (3 + picker.entries.len() as u16 + 2).min(size.height.saturating_sub(2)); // border + entries + footer + border
+    let height: u16 = (3 + picker.entries.len() as u16 + 2).min(size.height.saturating_sub(2)); // border + entries + footer + border
     let x = (size.width.saturating_sub(width)) / 2;
     let y = (size.height.saturating_sub(height)) / 2;
     let area = Rect::new(x, y, width, height);
@@ -6776,10 +6750,7 @@ fn draw_coordinator_picker(
 /// Shows every chat-loop task in the graph with status, message count,
 /// and last-activity timestamp; supports multi-select (Space), select-all
 /// visible (a), clear (c), filter cycling (f), abandon (d/Enter).
-fn draw_chat_manager(
-    frame: &mut Frame,
-    mgr: &super::state::ChatManagerState,
-) -> Rect {
+fn draw_chat_manager(frame: &mut Frame, mgr: &super::state::ChatManagerState) -> Rect {
     let size = frame.area();
     let width: u16 = 76.min(size.width.saturating_sub(4));
     let visible = mgr.visible_indices();
@@ -6812,15 +6783,15 @@ fn draw_chat_manager(
 
     let mut lines: Vec<Line> = Vec::new();
     // Header row
-    lines.push(Line::from(vec![
-        Span::styled(
-            format!(" {:>3}  {:<14} {:<10} {:>5}  {:<20} {}",
-                "id", "task", "status", "msgs", "last activity", "title"),
-            Style::default()
-                .fg(Color::DarkGray)
-                .add_modifier(Modifier::BOLD),
+    lines.push(Line::from(vec![Span::styled(
+        format!(
+            " {:>3}  {:<14} {:<10} {:>5}  {:<20} {}",
+            "id", "task", "status", "msgs", "last activity", "title"
         ),
-    ]));
+        Style::default()
+            .fg(Color::DarkGray)
+            .add_modifier(Modifier::BOLD),
+    )]));
 
     if visible.is_empty() {
         lines.push(Line::from(Span::styled(
@@ -6916,9 +6887,7 @@ fn draw_chat_manager(
 }
 
 pub(crate) fn draw_launcher_pane(frame: &mut Frame, app: &mut VizApp, area: Rect) {
-    use super::state::{
-        ADD_NEW_EXECUTOR_CHOICES, AddNewField, LauncherMode, LauncherSection,
-    };
+    use super::state::{ADD_NEW_EXECUTOR_CHOICES, AddNewField, LauncherMode, LauncherSection};
 
     // Snapshot read-only data we need from the launcher so we can mutate
     // hit-area buffers on `app` without holding a long borrow.
@@ -6961,6 +6930,9 @@ pub(crate) fn draw_launcher_pane(frame: &mut Frame, app: &mut VizApp, area: Rect
 
     let w = area.width as usize;
     let mut lines: Vec<Line> = Vec::new();
+    let add_new_is_command = ADD_NEW_EXECUTOR_CHOICES
+        .get(add_executor_idx)
+        .is_some_and(|choice| choice.internal_executor == "command");
 
     let row_rect = |line_idx: usize| -> Rect {
         Rect {
@@ -6982,7 +6954,9 @@ pub(crate) fn draw_launcher_pane(frame: &mut Frame, app: &mut VizApp, area: Rect
     let title_color = if creating { Color::Yellow } else { Color::Cyan };
     lines.push(Line::from(Span::styled(
         title_text.to_string(),
-        Style::default().fg(title_color).add_modifier(Modifier::BOLD),
+        Style::default()
+            .fg(title_color)
+            .add_modifier(Modifier::BOLD),
     )));
     lines.push(Line::from(""));
 
@@ -6992,9 +6966,7 @@ pub(crate) fn draw_launcher_pane(frame: &mut Frame, app: &mut VizApp, area: Rect
         let truncated: String = err.chars().take(max_w).collect();
         lines.push(Line::from(Span::styled(
             format!("  ⚠ {}", truncated),
-            Style::default()
-                .fg(Color::Red)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
         )));
     }
 
@@ -7005,8 +6977,7 @@ pub(crate) fn draw_launcher_pane(frame: &mut Frame, app: &mut VizApp, area: Rect
             // body fits in (presets.len() + 1) lines + a trailing blank
             // before the action row.
             for (i, preset) in presets.iter().enumerate() {
-                let selected = active_section == LauncherSection::Defaults
-                    && i == default_selected;
+                let selected = active_section == LauncherSection::Defaults && i == default_selected;
                 let bullet = if selected { " \u{25c9} " } else { " \u{25cb} " };
                 let style = if selected {
                     Style::default()
@@ -7030,9 +7001,13 @@ pub(crate) fn draw_launcher_pane(frame: &mut Frame, app: &mut VizApp, area: Rect
             }
             // "+ Add new..." row uses index `presets.len()`.
             let add_idx = presets.len();
-            let add_selected = active_section == LauncherSection::Defaults
-                && default_selected == add_idx;
-            let add_bullet = if add_selected { " \u{25c9} " } else { " \u{25cb} " };
+            let add_selected =
+                active_section == LauncherSection::Defaults && default_selected == add_idx;
+            let add_bullet = if add_selected {
+                " \u{25c9} "
+            } else {
+                " \u{25cb} "
+            };
             let add_style = if add_selected {
                 Style::default()
                     .fg(Color::Yellow)
@@ -7050,8 +7025,7 @@ pub(crate) fn draw_launcher_pane(frame: &mut Frame, app: &mut VizApp, area: Rect
         }
         LauncherMode::AddNew => {
             // Executor radio (claude / codex / nex)
-            let exec_active =
-                active_section == LauncherSection::AddNew(AddNewField::Executor);
+            let exec_active = active_section == LauncherSection::AddNew(AddNewField::Executor);
             let exec_label_style = if exec_active {
                 Style::default()
                     .fg(Color::Yellow)
@@ -7060,8 +7034,12 @@ pub(crate) fn draw_launcher_pane(frame: &mut Frame, app: &mut VizApp, area: Rect
                 Style::default().fg(text_primary(is_light))
             };
             let mut spans: Vec<Span> = vec![Span::styled(
-                if exec_active { "  \u{25b8} Executor: " } else { "    Executor: " }
-                    .to_string(),
+                if exec_active {
+                    "  \u{25b8} Executor: "
+                } else {
+                    "    Executor: "
+                }
+                .to_string(),
                 exec_label_style,
             )];
             for (i, choice) in ADD_NEW_EXECUTOR_CHOICES.iter().enumerate() {
@@ -7105,9 +7083,8 @@ pub(crate) fn draw_launcher_pane(frame: &mut Frame, app: &mut VizApp, area: Rect
             }
             lines.push(Line::from(""));
 
-            // Model field (always shown, always required).
-            let model_active =
-                active_section == LauncherSection::AddNew(AddNewField::Model);
+            // Model/command field (always shown, always required).
+            let model_active = active_section == LauncherSection::AddNew(AddNewField::Model);
             let model_label_style = if model_active {
                 Style::default()
                     .fg(Color::Yellow)
@@ -7115,12 +7092,28 @@ pub(crate) fn draw_launcher_pane(frame: &mut Frame, app: &mut VizApp, area: Rect
             } else {
                 Style::default().fg(text_primary(is_light))
             };
-            let model_prefix = if model_active { "  \u{25b8} Model:    " } else { "    Model:    " };
+            let model_prefix = if add_new_is_command {
+                if model_active {
+                    "  \u{25b8} Command:  "
+                } else {
+                    "    Command:  "
+                }
+            } else if model_active {
+                "  \u{25b8} Model:    "
+            } else {
+                "    Model:    "
+            };
             let mut model_spans: Vec<Span> =
                 vec![Span::styled(model_prefix.to_string(), model_label_style)];
             if add_model.is_empty() {
                 model_spans.push(Span::styled(
-                    if model_active { "\u{2588}".to_string() } else { "(required)".to_string() },
+                    if model_active {
+                        "\u{2588}".to_string()
+                    } else if add_new_is_command {
+                        "(command line)".to_string()
+                    } else {
+                        "(required)".to_string()
+                    },
                     if model_active {
                         Style::default()
                             .fg(Color::Yellow)
@@ -7152,8 +7145,7 @@ pub(crate) fn draw_launcher_pane(frame: &mut Frame, app: &mut VizApp, area: Rect
 
             // Endpoint field (only when executor=nex).
             if show_endpoint {
-                let ep_active =
-                    active_section == LauncherSection::AddNew(AddNewField::Endpoint);
+                let ep_active = active_section == LauncherSection::AddNew(AddNewField::Endpoint);
                 let ep_label_style = if ep_active {
                     Style::default()
                         .fg(Color::Yellow)
@@ -7216,12 +7208,19 @@ pub(crate) fn draw_launcher_pane(frame: &mut Frame, app: &mut VizApp, area: Rect
     } else {
         Style::default().fg(text_primary(is_light))
     };
-    let name_prefix = if name_active { "  \u{25b8} Name:     " } else { "    Name:     " };
-    let mut name_spans: Vec<Span> =
-        vec![Span::styled(name_prefix.to_string(), name_label_style)];
+    let name_prefix = if name_active {
+        "  \u{25b8} Name:     "
+    } else {
+        "    Name:     "
+    };
+    let mut name_spans: Vec<Span> = vec![Span::styled(name_prefix.to_string(), name_label_style)];
     if name.is_empty() {
         name_spans.push(Span::styled(
-            if name_active { "\u{2588}".to_string() } else { "(optional)".to_string() },
+            if name_active {
+                "\u{2588}".to_string()
+            } else {
+                "(optional)".to_string()
+            },
             if name_active {
                 Style::default()
                     .fg(Color::Yellow)
@@ -7289,12 +7288,8 @@ pub(crate) fn draw_launcher_pane(frame: &mut Frame, app: &mut VizApp, area: Rect
     // Footer hint.
     lines.push(Line::from(""));
     let footer_hint = match mode {
-        LauncherMode::Default => {
-            "    Enter launch  ·  ↑↓ pick  ·  Tab name  ·  Esc cancel"
-        }
-        LauncherMode::AddNew => {
-            "    Enter launch  ·  Tab field  ·  ←→ executor  ·  Esc back"
-        }
+        LauncherMode::Default => "    Enter launch  ·  ↑↓ pick  ·  Tab name  ·  Esc cancel",
+        LauncherMode::AddNew => "    Enter launch  ·  Tab field  ·  ←→ executor  ·  Esc back",
     };
     lines.push(Line::from(Span::styled(
         footer_hint,
@@ -7430,7 +7425,10 @@ fn draw_task_form(frame: &mut Frame, form: &TaskFormState, is_light: bool) {
                     .add_modifier(Modifier::BOLD),
             )
         } else {
-            Span::styled(format!("  {}:", label), Style::default().fg(text_primary(is_light)))
+            Span::styled(
+                format!("  {}:", label),
+                Style::default().fg(text_primary(is_light)),
+            )
         }
     };
 
@@ -8204,7 +8202,10 @@ fn draw_status_bar(frame: &mut Frame, app: &VizApp, area: Rect) {
         ));
     }
 
-    spans.push(Span::styled(") ", Style::default().fg(text_primary(app.is_light_theme))));
+    spans.push(Span::styled(
+        ") ",
+        Style::default().fg(text_primary(app.is_light_theme)),
+    ));
 
     if c.archived > 0 {
         spans.push(Span::styled(
@@ -9223,7 +9224,10 @@ fn draw_service_control_panel(frame: &mut Frame, app: &VizApp) {
             ),
         ]));
         lines.push(Line::from(vec![
-            Span::styled("  Are you sure? ", Style::default().fg(text_primary(app.is_light_theme))),
+            Span::styled(
+                "  Are you sure? ",
+                Style::default().fg(text_primary(app.is_light_theme)),
+            ),
             Span::styled(
                 "[y]",
                 Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
@@ -9308,7 +9312,10 @@ fn draw_help_overlay(frame: &mut Frame, is_light: bool) {
     let binding = |key: &str, desc: &str| -> Line {
         Line::from(vec![
             Span::styled(format!("  {:<14}", key), Style::default().fg(Color::Yellow)),
-            Span::styled(desc.to_string(), Style::default().fg(text_primary(is_light))),
+            Span::styled(
+                desc.to_string(),
+                Style::default().fg(text_primary(is_light)),
+            ),
         ])
     };
 
@@ -9447,7 +9454,12 @@ fn draw_settings_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
     // Reserve last 3 rows for: scope/notice line, action bar, hints.
     let action_h: u16 = 4;
     let list_h = area.height.saturating_sub(action_h);
-    let list_area = Rect { x: area.x, y: area.y, width: area.width, height: list_h };
+    let list_area = Rect {
+        x: area.x,
+        y: area.y,
+        width: area.width,
+        height: list_h,
+    };
     let action_area = Rect {
         x: area.x,
         y: area.y + list_h,
@@ -9455,7 +9467,10 @@ fn draw_settings_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
         height: action_h,
     };
 
-    let selected = app.settings_panel.selected.min(entries.len().saturating_sub(1));
+    let selected = app
+        .settings_panel
+        .selected
+        .min(entries.len().saturating_sub(1));
 
     let mut lines: Vec<Line<'static>> = Vec::new();
     let mut row_to_entry_idx: Vec<Option<usize>> = Vec::new();
@@ -9497,7 +9512,10 @@ fn draw_settings_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
         let mut spans: Vec<Span<'static>> = Vec::new();
         spans.push(Span::styled(format!("  {:30}", e.key), key_style));
         spans.push(Span::raw(" "));
-        spans.push(Span::styled(format!("{:24}", truncate(&value_display, 24)), value_style));
+        spans.push(Span::styled(
+            format!("{:24}", truncate(&value_display, 24)),
+            value_style,
+        ));
         spans.push(Span::raw(" "));
         spans.push(Span::styled(
             format!("[{}]", src_label),
@@ -9509,16 +9527,16 @@ fn draw_settings_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
 
     // Inline edit dialog: replace selected row with input UI.
     if app.settings_panel.editing
-        && let Some(row) = row_to_entry_idx
-            .iter()
-            .position(|x| *x == Some(selected))
+        && let Some(row) = row_to_entry_idx.iter().position(|x| *x == Some(selected))
     {
         let key = entries[selected].key.clone();
         let buffer = app.settings_panel.edit_buffer.clone();
         lines[row] = Line::from(vec![
             Span::styled(
                 format!("  {:30}", key),
-                Style::default().add_modifier(Modifier::BOLD).fg(Color::Yellow),
+                Style::default()
+                    .add_modifier(Modifier::BOLD)
+                    .fg(Color::Yellow),
             ),
             Span::raw(" → "),
             Span::styled(
@@ -9542,14 +9560,9 @@ fn draw_settings_tab(frame: &mut Frame, app: &mut VizApp, area: Rect) {
         }
     }
     let scroll = app.settings_panel.scroll.min(lines.len().saturating_sub(1));
-    let visible: Vec<Line<'static>> = lines
-        .into_iter()
-        .skip(scroll)
-        .take(viewport_h)
-        .collect();
+    let visible: Vec<Line<'static>> = lines.into_iter().skip(scroll).take(viewport_h).collect();
 
-    let para = Paragraph::new(visible)
-        .block(Block::default().borders(Borders::NONE));
+    let para = Paragraph::new(visible).block(Block::default().borders(Borders::NONE));
     frame.render_widget(para, list_area);
 
     // Action bar: scope toggle + Run setup / Run lint buttons + notice.
@@ -9606,10 +9619,7 @@ fn draw_settings_actions(frame: &mut Frame, app: &VizApp, area: Rect) {
     let action_line = Line::from(spans);
 
     let notice_line = if let Some(err) = &app.settings_panel.last_error {
-        Line::from(Span::styled(
-            err.clone(),
-            Style::default().fg(Color::Red),
-        ))
+        Line::from(Span::styled(err.clone(), Style::default().fg(Color::Red)))
     } else if let Some(notice) = &app.settings_panel.notice {
         Line::from(Span::styled(
             notice.clone(),
@@ -9622,8 +9632,11 @@ fn draw_settings_actions(frame: &mut Frame, app: &VizApp, area: Rect) {
         ))
     };
 
-    let para = Paragraph::new(vec![action_line, notice_line])
-        .block(Block::default().borders(Borders::TOP).border_style(Style::default().fg(Color::DarkGray)));
+    let para = Paragraph::new(vec![action_line, notice_line]).block(
+        Block::default()
+            .borders(Borders::TOP)
+            .border_style(Style::default().fg(Color::DarkGray)),
+    );
     frame.render_widget(para, area);
 }
 
@@ -12832,10 +12845,15 @@ mod tests {
         app.settings_panel.edit_buffer = "claude:sonnet".to_string();
         app.commit_settings_edit();
 
-        assert_eq!(app.settings_panel.last_error, None,
-            "save should succeed, but got: {:?}", app.settings_panel.last_error);
-        assert!(!app.settings_panel.editing,
-            "editing flag should clear after a successful save");
+        assert_eq!(
+            app.settings_panel.last_error, None,
+            "save should succeed, but got: {:?}",
+            app.settings_panel.last_error
+        );
+        assert!(
+            !app.settings_panel.editing,
+            "editing flag should clear after a successful save"
+        );
 
         // Reload from disk independently of the panel state and confirm
         // the value made it through `config_cmd::set_setting_value`.
@@ -13312,7 +13330,12 @@ mod tests {
         let first_idx = grid
             .iter()
             .position(|row| row.trim_start().starts_with("↯ "))
-            .unwrap_or_else(|| panic!("agent response (`↯ ` prefix) not found in:\n{}", grid.join("\n")));
+            .unwrap_or_else(|| {
+                panic!(
+                    "agent response (`↯ ` prefix) not found in:\n{}",
+                    grid.join("\n")
+                )
+            });
 
         // The continuation lines must exist directly after.
         assert!(
@@ -13346,24 +13369,32 @@ mod tests {
         let expected_body_col = line1_col + prefix_w;
 
         assert_eq!(
-            line2_col, expected_body_col,
+            line2_col,
+            expected_body_col,
             "response continuation line 2 not aligned with line-1 body.\n\
              line1='{}' (col {})\nline2='{}' (col {})\nline3='{}' (col {})\n\
              expected body col: {}\n\nfull grid:\n{}",
-            grid[first_idx], line1_col,
-            grid[first_idx + 1], line2_col,
-            grid[first_idx + 2], line3_col,
+            grid[first_idx],
+            line1_col,
+            grid[first_idx + 1],
+            line2_col,
+            grid[first_idx + 2],
+            line3_col,
             expected_body_col,
             grid.join("\n")
         );
         assert_eq!(
-            line3_col, expected_body_col,
+            line3_col,
+            expected_body_col,
             "response continuation line 3 not aligned with line-1 body.\n\
              line1='{}' (col {})\nline2='{}' (col {})\nline3='{}' (col {})\n\
              expected body col: {}\n\nfull grid:\n{}",
-            grid[first_idx], line1_col,
-            grid[first_idx + 1], line2_col,
-            grid[first_idx + 2], line3_col,
+            grid[first_idx],
+            line1_col,
+            grid[first_idx + 1],
+            line2_col,
+            grid[first_idx + 2],
+            line3_col,
             expected_body_col,
             grid.join("\n")
         );
@@ -15717,11 +15748,7 @@ mod tests {
             r#"{"type":"assistant","message":{"content":[{"type":"text","text":"UNIQUE_STREAM_MARKER_ALPHA"}]}}"#,
             r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"echo hi"}}]}}"#,
         ];
-        std::fs::write(
-            agent_dir.join("raw_stream.jsonl"),
-            stream_lines.join("\n"),
-        )
-        .unwrap();
+        std::fs::write(agent_dir.join("raw_stream.jsonl"), stream_lines.join("\n")).unwrap();
         // output.log is empty — the only data source must be raw_stream.jsonl.
         std::fs::write(agent_dir.join("output.log"), "").unwrap();
 
@@ -15855,9 +15882,7 @@ mod tests {
         // containing markers.
         let rows_with_markers: usize = rendered
             .lines()
-            .filter(|line| {
-                (0..100).any(|i| line.contains(&format!("A{:03}", i)))
-            })
+            .filter(|line| (0..100).any(|i| line.contains(&format!("A{:03}", i))))
             .count();
         assert!(
             rows_with_markers >= 5,
@@ -16138,10 +16163,19 @@ mod tests {
         fn overflow_active_at_end_advances_offset() {
             let widths = vec![12usize; 16];
             let layout = compute_chat_bar_layout(&widths, Some(15), 80, 0);
-            assert!(layout.offset > 0, "offset must advance to keep active visible");
+            assert!(
+                layout.offset > 0,
+                "offset must advance to keep active visible"
+            );
             assert_eq!(layout.end, 16);
-            assert!(layout.show_left_arrow, "left arrow must show when offset > 0");
-            assert!(!layout.show_right_arrow, "right arrow must hide when end == n");
+            assert!(
+                layout.show_left_arrow,
+                "left arrow must show when offset > 0"
+            );
+            assert!(
+                !layout.show_right_arrow,
+                "right arrow must hide when end == n"
+            );
             assert!(15 >= layout.offset && 15 < layout.end);
         }
 
@@ -16161,7 +16195,10 @@ mod tests {
         fn shrinks_offset_when_active_to_the_left() {
             let widths = vec![12usize; 16];
             let layout = compute_chat_bar_layout(&widths, Some(2), 80, 10);
-            assert_eq!(layout.offset, 2, "offset must shrink to make active visible");
+            assert_eq!(
+                layout.offset, 2,
+                "offset must shrink to make active visible"
+            );
             assert!(2 >= layout.offset && 2 < layout.end);
         }
 
@@ -16229,8 +16266,16 @@ mod tests {
 
     #[test]
     fn test_text_primary_returns_correct_color_per_theme() {
-        assert_eq!(text_primary(false), Color::White, "dark theme: primary text must be White");
-        assert_eq!(text_primary(true), Color::Reset, "light theme: primary text must be Reset (terminal default)");
+        assert_eq!(
+            text_primary(false),
+            Color::White,
+            "dark theme: primary text must be White"
+        );
+        assert_eq!(
+            text_primary(true),
+            Color::Reset,
+            "light theme: primary text must be Reset (terminal default)"
+        );
     }
 
     #[test]
@@ -16238,7 +16283,10 @@ mod tests {
         use crate::tui::viz_viewer::state::VizApp;
         let (viz, _) = build_hud_test_graph();
         let app = VizApp::from_viz_output_for_test(&viz);
-        assert!(!app.is_light_theme, "default theme should be dark (is_light_theme = false)");
+        assert!(
+            !app.is_light_theme,
+            "default theme should be dark (is_light_theme = false)"
+        );
     }
 
     #[test]
@@ -16254,8 +16302,17 @@ mod tests {
             "[tui]\ncolor_theme = \"light\"\n",
         )
         .unwrap();
-        let app = VizApp::new(wg_dir, crate::commands::viz::VizOptions::default(), Some(false), None, true);
-        assert!(app.is_light_theme, "VizApp::new with color_theme='light' must set is_light_theme=true");
+        let app = VizApp::new(
+            wg_dir,
+            crate::commands::viz::VizOptions::default(),
+            Some(false),
+            None,
+            true,
+        );
+        assert!(
+            app.is_light_theme,
+            "VizApp::new with color_theme='light' must set is_light_theme=true"
+        );
     }
 
     /// Detail tab iteration nav: prev/next click segments must always be at
@@ -16440,8 +16497,7 @@ mod tests {
         let mut layout_opt = None;
         terminal
             .draw(|f| {
-                let layout =
-                    render_detail_iteration_bar(f, area, "iter 1/2", true, false);
+                let layout = render_detail_iteration_bar(f, area, "iter 1/2", true, false);
                 layout_opt = Some(layout);
             })
             .unwrap();

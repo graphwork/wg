@@ -433,6 +433,18 @@ pub struct Task {
     /// Named endpoint for this task (matches a name in [llm_endpoints])
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub endpoint: Option<String>,
+    /// Chat pane command argv. For chat-loop tasks this is the concrete
+    /// command that the TUI runs inside the persistent PTY/tmux pane.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub command_argv: Vec<String>,
+    /// Chat pane working directory. Relative paths are resolved by the
+    /// caller; chat creation stores an absolute project-root path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub working_dir: Option<String>,
+    /// Optional preset display name for command_argv values derived from
+    /// built-in chat shortcuts (`claude`, `codex`, `nex`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub executor_preset_name: Option<String>,
     /// Verification criteria - if set, task requires review before done
     #[serde(skip_serializing_if = "Option::is_none")]
     pub verify: Option<String>,
@@ -647,6 +659,9 @@ impl Default for Task {
             model: None,
             provider: None,
             endpoint: None,
+            command_argv: vec![],
+            working_dir: None,
+            executor_preset_name: None,
             verify: None,
             verify_timeout: None,
             agent: None,
@@ -1301,6 +1316,12 @@ struct TaskHelper {
     #[serde(default)]
     endpoint: Option<String>,
     #[serde(default)]
+    command_argv: Vec<String>,
+    #[serde(default)]
+    working_dir: Option<String>,
+    #[serde(default)]
+    executor_preset_name: Option<String>,
+    #[serde(default)]
     verify: Option<String>,
     #[serde(default)]
     verify_timeout: Option<String>,
@@ -1457,6 +1478,9 @@ impl<'de> Deserialize<'de> for Task {
             model: helper.model,
             provider: helper.provider,
             endpoint: helper.endpoint,
+            command_argv: helper.command_argv,
+            working_dir: helper.working_dir,
+            executor_preset_name: helper.executor_preset_name,
             verify: helper.verify,
             verify_timeout: helper.verify_timeout,
             agent,
@@ -2003,7 +2027,10 @@ fn reactivate_cycle(
     // worker, the worker calls `wg done`, repeat — burning tokens with no
     // user input. See task chat-agent-loops-2.
     if let Some(owner) = graph.get_task(config_owner_id)
-        && owner.tags.iter().any(|t| crate::chat_id::is_chat_loop_tag(t))
+        && owner
+            .tags
+            .iter()
+            .any(|t| crate::chat_id::is_chat_loop_tag(t))
     {
         return vec![];
     }
@@ -2302,7 +2329,10 @@ fn reactivate_cycle_on_failure(
     // (would re-Open a Failed chat task that the supervisor is about to
     // respawn anyway, racing the supervisor's own backoff).
     if let Some(owner) = graph.get_task(config_owner_id)
-        && owner.tags.iter().any(|t| crate::chat_id::is_chat_loop_tag(t))
+        && owner
+            .tags
+            .iter()
+            .any(|t| crate::chat_id::is_chat_loop_tag(t))
     {
         return vec![];
     }
@@ -3579,8 +3609,7 @@ mod tests {
     #[test]
     fn test_priority_serde_migration_from_named_enum() {
         // Old graph.jsonl entries with string-enum values must deserialize to u32
-        let json_critical =
-            r#"{"id":"t1","title":"T","status":"open","priority":"critical"}"#;
+        let json_critical = r#"{"id":"t1","title":"T","status":"open","priority":"critical"}"#;
         let task: Task = serde_json::from_str(json_critical).unwrap();
         assert_eq!(task.priority, PRIORITY_CRITICAL);
 

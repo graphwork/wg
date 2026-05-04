@@ -4134,14 +4134,15 @@ pub enum ChatCommands {
     /// Create a new chat agent task in the graph.
     /// Works with the service running or stopped — the supervisor picks
     /// up the new chat on next start.
+    #[command(alias = "new")]
     Create {
         /// Optional human-readable name (becomes part of the task title
         /// and addressable as a chat reference).
         #[arg(long)]
         name: Option<String>,
 
-        /// Per-chat executor override (e.g. "claude", "codex", "native").
-        #[arg(long)]
+        /// Preset executor shortcut (e.g. "claude", "codex", "nex").
+        #[arg(long = "exec", alias = "executor")]
         executor: Option<String>,
 
         /// Per-chat model override (e.g. "claude:opus", "openai:qwen3-coder-30b").
@@ -4154,6 +4155,10 @@ pub enum ChatCommands {
         /// server. Persists across daemon / TUI restarts.
         #[arg(long, short = 'e')]
         endpoint: Option<String>,
+
+        /// Arbitrary command line to run in a persistent chat pane.
+        #[arg(long, conflicts_with_all = ["executor", "model", "endpoint"])]
+        command: Option<String>,
     },
 
     /// List all chat agents with their runtime status.
@@ -4922,11 +4927,14 @@ pub enum ServiceCommands {
         #[arg(long)]
         model: Option<String>,
         /// Executor for this chat agent (e.g., "native", "claude")
-        #[arg(long)]
+        #[arg(long = "exec", alias = "executor")]
         executor: Option<String>,
         /// LLM endpoint URL for this chat (mirrors `wg nex -e <URL>`).
         #[arg(long, short = 'e')]
         endpoint: Option<String>,
+        /// Arbitrary command line to run in a persistent chat pane.
+        #[arg(long, conflicts_with_all = ["executor", "model", "endpoint"])]
+        command: Option<String>,
     },
 
     /// Hot-swap a chat agent's executor and/or model.

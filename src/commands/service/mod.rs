@@ -1921,8 +1921,7 @@ pub(crate) fn record_registry_refresh_outcome(
                     state.error_count, e
                 ));
             } else if state.error_count == REGISTRY_REFRESH_FAILURE_THRESHOLD {
-                state.cooldown_until =
-                    Some(std::time::Instant::now() + REGISTRY_REFRESH_COOLDOWN);
+                state.cooldown_until = Some(std::time::Instant::now() + REGISTRY_REFRESH_COOLDOWN);
                 logger.error(&format!(
                     "Registry refresh: {} consecutive failures — cooling down for {} minutes. \
                      Last error: {:#}",
@@ -2358,51 +2357,54 @@ pub fn run_daemon(
         }
     };
 
-    let _graph_watcher: Option<workgraph::service::graph_watcher::GraphWatcher> =
-        if config.coordinator.graph_watch_enabled && graph_pipe_write_fd >= 0 {
-            let debounce_ms = config.coordinator.graph_watch_debounce_ms;
-            let graph_file = super::graph_path(&dir);
-            let pipe_w = graph_pipe_write_fd;
-            match workgraph::service::graph_watcher::GraphWatcher::start(
-                &graph_file,
-                Duration::from_millis(debounce_ms),
-                move || {
-                    // Best-effort wake: write one byte. EAGAIN means the pipe
-                    // is already non-empty (a previous wake hasn't been drained
-                    // yet) which is fine — that wake is still pending.
-                    let byte: u8 = 1;
-                    unsafe {
-                        libc::write(pipe_w, std::ptr::from_ref(&byte).cast::<libc::c_void>(), 1);
-                    }
-                },
-            ) {
-                Ok(watcher) => {
-                    logger.info(&format!(
+    let _graph_watcher: Option<workgraph::service::graph_watcher::GraphWatcher> = if config
+        .coordinator
+        .graph_watch_enabled
+        && graph_pipe_write_fd >= 0
+    {
+        let debounce_ms = config.coordinator.graph_watch_debounce_ms;
+        let graph_file = super::graph_path(&dir);
+        let pipe_w = graph_pipe_write_fd;
+        match workgraph::service::graph_watcher::GraphWatcher::start(
+            &graph_file,
+            Duration::from_millis(debounce_ms),
+            move || {
+                // Best-effort wake: write one byte. EAGAIN means the pipe
+                // is already non-empty (a previous wake hasn't been drained
+                // yet) which is fine — that wake is still pending.
+                let byte: u8 = 1;
+                unsafe {
+                    libc::write(pipe_w, std::ptr::from_ref(&byte).cast::<libc::c_void>(), 1);
+                }
+            },
+        ) {
+            Ok(watcher) => {
+                logger.info(&format!(
                         "Graph watcher active on {} (debounce={}ms, primary trigger; safety_interval={}s)",
                         graph_file.display(),
                         debounce_ms,
                         daemon_cfg.poll_interval.as_secs(),
                     ));
-                    Some(watcher)
-                }
-                Err(e) => {
-                    logger.warn(&format!(
-                        "Graph watcher init failed ({}); falling back to safety-timer polling at {}s",
-                        e,
-                        daemon_cfg.poll_interval.as_secs(),
-                    ));
-                    None
-                }
+                Some(watcher)
             }
-        } else {
-            if !config.coordinator.graph_watch_enabled {
-                logger.info(&format!(
+            Err(e) => {
+                logger.warn(&format!(
+                    "Graph watcher init failed ({}); falling back to safety-timer polling at {}s",
+                    e,
+                    daemon_cfg.poll_interval.as_secs(),
+                ));
+                None
+            }
+        }
+    } else {
+        if !config.coordinator.graph_watch_enabled {
+            logger.info(&format!(
                     "Graph watcher disabled (coordinator.graph_watch_enabled = false); using safety-timer polling at {}s",
                     daemon_cfg.poll_interval.as_secs(),
                 ));
-            }
-            None
-        };
+        }
+        None
+    };
 
     // Urgent wake: when a UserChat IPC arrives, tick immediately without settling delay.
     // This flag bypasses both the settling delay and the paused state, because
@@ -3610,6 +3612,7 @@ pub fn run_create_coordinator(
     model: Option<&str>,
     executor: Option<&str>,
     endpoint: Option<&str>,
+    command: Option<&str>,
     json: bool,
 ) -> Result<()> {
     let response = send_request(
@@ -3619,6 +3622,7 @@ pub fn run_create_coordinator(
             model: model.map(|s| s.to_string()),
             executor: executor.map(|s| s.to_string()),
             endpoint: endpoint.map(|s| s.to_string()),
+            command: command.map(|s| s.to_string()),
         },
     )?;
 
@@ -3649,6 +3653,7 @@ pub fn run_create_coordinator(
     _model: Option<&str>,
     _executor: Option<&str>,
     _endpoint: Option<&str>,
+    _command: Option<&str>,
     _json: bool,
 ) -> Result<()> {
     anyhow::bail!("Service daemon is only supported on Unix systems")
@@ -3657,7 +3662,12 @@ pub fn run_create_coordinator(
 /// Delete a coordinator session via IPC
 #[cfg(unix)]
 pub fn run_delete_coordinator(dir: &Path, coordinator_id: u32, json: bool) -> Result<()> {
-    let response = send_request(dir, &IpcRequest::DeleteChat { chat_id: coordinator_id })?;
+    let response = send_request(
+        dir,
+        &IpcRequest::DeleteChat {
+            chat_id: coordinator_id,
+        },
+    )?;
 
     if !response.ok {
         let msg = response
@@ -3748,7 +3758,12 @@ pub fn run_set_coordinator_executor(
 /// Archive a coordinator session via IPC (mark as Done)
 #[cfg(unix)]
 pub fn run_archive_coordinator(dir: &Path, coordinator_id: u32, json: bool) -> Result<()> {
-    let response = send_request(dir, &IpcRequest::ArchiveChat { chat_id: coordinator_id })?;
+    let response = send_request(
+        dir,
+        &IpcRequest::ArchiveChat {
+            chat_id: coordinator_id,
+        },
+    )?;
 
     if !response.ok {
         let msg = response
@@ -3778,7 +3793,12 @@ pub fn run_archive_coordinator(_dir: &Path, _coordinator_id: u32, _json: bool) -
 /// Stop a coordinator session via IPC (kill agent, reset to Open)
 #[cfg(unix)]
 pub fn run_stop_coordinator(dir: &Path, coordinator_id: u32, json: bool) -> Result<()> {
-    let response = send_request(dir, &IpcRequest::StopChat { chat_id: coordinator_id })?;
+    let response = send_request(
+        dir,
+        &IpcRequest::StopChat {
+            chat_id: coordinator_id,
+        },
+    )?;
 
     if !response.ok {
         let msg = response
@@ -3913,10 +3933,7 @@ fn print_purge_summary(data: &serde_json::Value, include_active: bool) {
     let mut skipped_already: usize = 0;
     if let Some(arr) = data.get("skipped").and_then(|v| v.as_array()) {
         for entry in arr {
-            let reason = entry
-                .get("reason")
-                .and_then(|r| r.as_str())
-                .unwrap_or("");
+            let reason = entry.get("reason").and_then(|r| r.as_str()).unwrap_or("");
             if reason == "active" || reason == "caller chat" {
                 if let Some(id) = entry.get("chat_id").and_then(|v| v.as_u64()) {
                     skipped_active.push(workgraph::chat_id::format_chat_task_id(id as u32));
@@ -3968,8 +3985,7 @@ fn direct_purge_chats(
     let graph_path = crate::commands::graph_path(dir);
     let mut result = DirectPurgeResult::default();
     workgraph::parser::modify_graph(&graph_path, |graph| {
-        let mut chat_ids: std::collections::BTreeSet<u32> =
-            std::collections::BTreeSet::new();
+        let mut chat_ids: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
         for task in graph.tasks() {
             let has_chat_tag = task
                 .tags
@@ -4040,7 +4056,12 @@ fn direct_purge_chats(
 /// Interrupt a coordinator's current generation via IPC (sends SIGINT, does NOT kill).
 #[cfg(unix)]
 pub fn run_interrupt_coordinator(dir: &Path, coordinator_id: u32, json: bool) -> Result<()> {
-    let response = send_request(dir, &IpcRequest::InterruptChat { chat_id: coordinator_id })?;
+    let response = send_request(
+        dir,
+        &IpcRequest::InterruptChat {
+            chat_id: coordinator_id,
+        },
+    )?;
 
     if !response.ok {
         let msg = response
@@ -4201,11 +4222,7 @@ mod tests {
             state.cooldown_until.is_none(),
             "breaker must not trip below threshold"
         );
-        record_registry_refresh_outcome(
-            &mut state,
-            Err(anyhow::anyhow!("no api key")),
-            &logger,
-        );
+        record_registry_refresh_outcome(&mut state, Err(anyhow::anyhow!("no api key")), &logger);
         assert_eq!(state.error_count, REGISTRY_REFRESH_FAILURE_THRESHOLD);
         assert!(
             state.cooldown_until.is_some(),
@@ -5310,8 +5327,7 @@ mod tests {
         // .chat-6 and .chat-7 stay idle (no cursor file, no inbox traffic).
         workgraph::chat::write_cursor_for(dir, 5, 0).expect("write cursor");
 
-        let result =
-            direct_purge_chats(dir, false, None).expect("direct_purge_chats");
+        let result = direct_purge_chats(dir, false, None).expect("direct_purge_chats");
         assert_eq!(
             result.purged.iter().copied().collect::<Vec<_>>(),
             vec![6, 7],
@@ -5362,8 +5378,7 @@ mod tests {
         // .chat-5 is active (fresh cursor); --include-active overrides.
         workgraph::chat::write_cursor_for(dir, 5, 0).expect("write cursor");
 
-        let result =
-            direct_purge_chats(dir, true, None).expect("direct_purge_chats");
+        let result = direct_purge_chats(dir, true, None).expect("direct_purge_chats");
         assert_eq!(
             result.purged.iter().copied().collect::<Vec<_>>(),
             vec![5, 6],
@@ -5394,8 +5409,7 @@ mod tests {
         workgraph::parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
 
         // No on-disk activity for either chat; pass caller_chat_id=3 via env hint.
-        let result =
-            direct_purge_chats(dir, false, Some(3)).expect("direct_purge_chats");
+        let result = direct_purge_chats(dir, false, Some(3)).expect("direct_purge_chats");
         assert_eq!(result.purged, vec![4]);
         assert_eq!(result.skipped_active, vec![3]);
     }
@@ -5421,8 +5435,7 @@ mod tests {
         workgraph::parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
 
         // No cursor files, no inbox messages — all idle.
-        let result =
-            direct_purge_chats(dir, false, None).expect("direct_purge_chats");
+        let result = direct_purge_chats(dir, false, None).expect("direct_purge_chats");
         assert_eq!(
             result.purged.iter().copied().collect::<Vec<_>>(),
             vec![10, 11, 12]

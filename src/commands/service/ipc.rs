@@ -159,6 +159,9 @@ pub enum IpcRequest {
         /// pin a single chat to a specific server without touching global config.
         #[serde(default)]
         endpoint: Option<String>,
+        /// Arbitrary command line for a generic persistent chat pane.
+        #[serde(default)]
+        command: Option<String>,
     },
     /// Hot-swap a chat agent's executor and/or model. Persists
     /// the override in CoordinatorState, SIGTERMs the current
@@ -568,10 +571,11 @@ fn handle_request(
             model,
             executor,
             endpoint,
+            command,
         } => {
             logger.info(&format!(
-                "IPC CreateChat: name={:?}, model={:?}, executor={:?}, endpoint={:?}",
-                name, model, executor, endpoint
+                "IPC CreateChat: name={:?}, model={:?}, executor={:?}, endpoint={:?}, command={:?}",
+                name, model, executor, endpoint, command
             ));
             let (resp, new_chat_id) = handle_create_coordinator(
                 dir,
@@ -579,6 +583,7 @@ fn handle_request(
                 model.as_deref(),
                 executor.as_deref(),
                 endpoint.as_deref(),
+                command.as_deref(),
             );
             // Fix B (fix-nex-chat): eagerly enqueue the new chat for
             // supervisor spawn AND signal urgent_wake so the daemon's main
@@ -602,18 +607,10 @@ fn handle_request(
                 "IPC SetChatExecutor: chat_id={}, executor={:?}, model={:?}",
                 chat_id, executor, model
             ));
-            handle_set_coordinator_executor(
-                dir,
-                chat_id,
-                executor.as_deref(),
-                model.as_deref(),
-            )
+            handle_set_coordinator_executor(dir, chat_id, executor.as_deref(), model.as_deref())
         }
         IpcRequest::DeleteChat { chat_id } => {
-            logger.info(&format!(
-                "IPC DeleteChat: chat_id={}",
-                chat_id
-            ));
+            logger.info(&format!("IPC DeleteChat: chat_id={}", chat_id));
             let resp = handle_delete_coordinator(dir, chat_id);
             if resp.ok {
                 delete_coordinator_ids.push(chat_id);
@@ -621,10 +618,7 @@ fn handle_request(
             resp
         }
         IpcRequest::ArchiveChat { chat_id } => {
-            logger.info(&format!(
-                "IPC ArchiveChat: chat_id={}",
-                chat_id
-            ));
+            logger.info(&format!("IPC ArchiveChat: chat_id={}", chat_id));
             let resp = handle_archive_coordinator(dir, chat_id);
             if resp.ok {
                 delete_coordinator_ids.push(chat_id);
@@ -632,10 +626,7 @@ fn handle_request(
             resp
         }
         IpcRequest::StopChat { chat_id } => {
-            logger.info(&format!(
-                "IPC StopChat: chat_id={}",
-                chat_id
-            ));
+            logger.info(&format!("IPC StopChat: chat_id={}", chat_id));
             let resp = handle_stop_coordinator(dir, chat_id);
             if resp.ok {
                 delete_coordinator_ids.push(chat_id);
@@ -643,10 +634,7 @@ fn handle_request(
             resp
         }
         IpcRequest::InterruptChat { chat_id } => {
-            logger.info(&format!(
-                "IPC InterruptChat: chat_id={}",
-                chat_id
-            ));
+            logger.info(&format!("IPC InterruptChat: chat_id={}", chat_id));
             // No graph changes — just signal the daemon to send SIGINT to the
             // chat agent's Claude CLI subprocess. The actual interrupt happens
             // in the daemon loop where coordinator_agents is accessible.
@@ -1266,6 +1254,9 @@ fn handle_add_task(
         model: model.map(String::from),
         provider: None,
         endpoint: None,
+        command_argv: vec![],
+        working_dir: None,
+        executor_preset_name: None,
         verify: verify.map(String::from),
         verify_timeout: verify_timeout.map(String::from),
         agent: None,
@@ -1295,8 +1286,8 @@ fn handle_add_task(
         exec_mode: None,
         verify_failures: 0,
         rescue_count: 0,
-            rescued: false,
-            meta_eval_attempts: 0,
+        rescued: false,
+        meta_eval_attempts: 0,
         spawn_failures: 0,
         dispatch_count: 0,
         tier: None,
@@ -1499,18 +1490,21 @@ pub fn create_chat_in_graph(
     model: Option<&str>,
     executor: Option<&str>,
     endpoint: Option<&str>,
+    command: Option<&str>,
 ) -> Result<u32> {
+    if command.is_some() && (model.is_some() || executor.is_some() || endpoint.is_some()) {
+        anyhow::bail!(
+            "--command cannot be combined with --exec/--executor, --model, or --endpoint"
+        );
+    }
     let graph_path = crate::commands::graph_path(dir);
-    let mut graph = workgraph::parser::load_graph(&graph_path)
-        .with_context(|| "Failed to load graph")?;
+    let mut graph =
+        workgraph::parser::load_graph(&graph_path).with_context(|| "Failed to load graph")?;
 
     let config = workgraph::config::Config::load_or_default(dir);
     let max = config.coordinator.max_coordinators;
-    let alive = workgraph::chat::count_live_chats(
-        dir,
-        &graph,
-        workgraph::chat::CHAT_CAP_IDLE_THRESHOLD,
-    );
+    let alive =
+        workgraph::chat::count_live_chats(dir, &graph, workgraph::chat::CHAT_CAP_IDLE_THRESHOLD);
     if alive >= max {
         anyhow::bail!("Chat cap reached ({}/{})", alive, max);
     }
@@ -1522,13 +1516,26 @@ pub fn create_chat_in_graph(
         .map(|n| format!("Chat: {}", n))
         .unwrap_or_else(|| format!("Chat {}", next_id));
 
+    let project_root = workgraph::chat_command::project_root_for_workgraph_dir(dir);
+    let (command_argv, working_dir, executor_preset_name) = if let Some(command) = command {
+        (
+            workgraph::chat_command::argv_for_command_line(command),
+            Some(project_root.display().to_string()),
+            None,
+        )
+    } else {
+        let preset = workgraph::chat_command::preset_name_for_executor(executor, model);
+        (
+            workgraph::chat_command::argv_for_preset(&preset, model, endpoint, "wg"),
+            Some(project_root.display().to_string()),
+            Some(preset),
+        )
+    };
+
     let task = workgraph::graph::Task {
         id: workgraph::chat_id::format_chat_task_id(next_id),
         title,
-        description: Some(format!(
-            "Chat {} — persistent chat agent.",
-            next_id
-        )),
+        description: Some(format!("Chat {} — persistent chat agent.", next_id)),
         status: workgraph::graph::Status::InProgress,
         priority: PRIORITY_HIGH,
         tags: vec![workgraph::chat_id::CHAT_LOOP_TAG.to_string()],
@@ -1546,6 +1553,9 @@ pub fn create_chat_in_graph(
         // AND on respawn after handler crash.
         model: model.map(String::from),
         endpoint: endpoint.map(String::from),
+        command_argv,
+        working_dir,
+        executor_preset_name,
         created_at: Some(chrono::Utc::now().to_rfc3339()),
         started_at: Some(chrono::Utc::now().to_rfc3339()),
         log: vec![workgraph::graph::LogEntry {
@@ -1612,8 +1622,9 @@ fn handle_create_coordinator(
     model: Option<&str>,
     executor: Option<&str>,
     endpoint: Option<&str>,
+    command: Option<&str>,
 ) -> (IpcResponse, Option<u32>) {
-    match create_chat_in_graph(dir, name, model, executor, endpoint) {
+    match create_chat_in_graph(dir, name, model, executor, endpoint, command) {
         Ok(next_id) => (
             IpcResponse::success(serde_json::json!({
                 "coordinator_id": next_id,
@@ -2349,6 +2360,7 @@ poll_interval = 120
             model: None,
             executor: None,
             endpoint: None,
+            command: None,
         };
         let json = serde_json::to_string(&req).unwrap();
         // New canonical command name
@@ -2361,11 +2373,13 @@ poll_interval = 120
                 model,
                 executor,
                 endpoint,
+                command,
             } => {
                 assert_eq!(name, Some("Feature Work".to_string()));
                 assert_eq!(model, None);
                 assert_eq!(executor, None);
                 assert_eq!(endpoint, None);
+                assert_eq!(command, None);
             }
             _ => panic!("Wrong request type"),
         }
@@ -2376,6 +2390,7 @@ poll_interval = 120
             model: Some("openai:qwen3-coder-30b".to_string()),
             executor: Some("native".to_string()),
             endpoint: None,
+            command: None,
         };
         let json2 = serde_json::to_string(&req2).unwrap();
         let parsed2: IpcRequest = serde_json::from_str(&json2).unwrap();
@@ -2385,10 +2400,13 @@ poll_interval = 120
                 model,
                 executor,
                 endpoint,
+                command,
             } => {
                 assert_eq!(name, Some("Local Model".to_string()));
                 assert_eq!(model, Some("openai:qwen3-coder-30b".to_string()));
                 assert_eq!(executor, Some("native".to_string()));
+                assert_eq!(endpoint, None);
+                assert_eq!(command, None);
                 assert_eq!(endpoint, None);
             }
             _ => panic!("Wrong request type"),
@@ -2405,6 +2423,7 @@ poll_interval = 120
             model: Some("qwen3-coder".to_string()),
             executor: Some("native".to_string()),
             endpoint: Some("https://lambda01.tail334fe6.ts.net:30000".to_string()),
+            command: None,
         };
         let json = serde_json::to_string(&req).unwrap();
         assert!(
@@ -2416,13 +2435,13 @@ poll_interval = 120
         let parsed: IpcRequest = serde_json::from_str(&json).unwrap();
         match parsed {
             IpcRequest::CreateChat {
-                endpoint,
-                ..
+                endpoint, command, ..
             } => {
                 assert_eq!(
                     endpoint,
                     Some("https://lambda01.tail334fe6.ts.net:30000".to_string())
                 );
+                assert_eq!(command, None);
             }
             _ => panic!("Wrong request type"),
         }
@@ -2437,9 +2456,7 @@ poll_interval = 120
         let raw = r#"{"cmd":"create_chat","name":"Old Client","model":"opus","executor":"claude"}"#;
         let parsed: IpcRequest = serde_json::from_str(raw).unwrap();
         match parsed {
-            IpcRequest::CreateChat {
-                endpoint, name, ..
-            } => {
+            IpcRequest::CreateChat { endpoint, name, .. } => {
                 assert_eq!(name, Some("Old Client".to_string()));
                 assert_eq!(endpoint, None);
             }
@@ -2588,6 +2605,7 @@ poll_interval = 120
                 model: Some("nex:qwen3-coder".to_string()),
                 executor: Some("native".to_string()),
                 endpoint: Some("https://lambda01.example:30000".to_string()),
+                command: None,
             },
             &mut running,
             &mut wake_coordinator,
@@ -2664,6 +2682,7 @@ poll_interval = 120
                 model: None,
                 executor: None,
                 endpoint: None,
+                command: None,
             },
             &mut running,
             &mut wake_coordinator,
@@ -2677,10 +2696,7 @@ poll_interval = 120
         );
 
         assert!(!resp.ok, "create_chat must fail when cap is 0");
-        assert!(
-            !urgent_wake,
-            "urgent_wake must NOT be set on failed create"
-        );
+        assert!(!urgent_wake, "urgent_wake must NOT be set on failed create");
         assert!(
             pending_coordinator_ids.is_empty(),
             "pending_coordinator_ids must be empty on failed create"
@@ -3159,7 +3175,7 @@ poll_interval = 120
         workgraph::parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
 
         // Create chat agent labeled "alice"
-        let (resp, new_id) = handle_create_coordinator(dir, Some("alice"), None, None, None);
+        let (resp, new_id) = handle_create_coordinator(dir, Some("alice"), None, None, None, None);
         assert!(resp.ok, "create_chat should succeed");
         assert_eq!(new_id, Some(0), "first chat should be chat 0");
 
@@ -3172,14 +3188,12 @@ poll_interval = 120
         assert!(coord.tags.contains(&"chat-loop".to_string()));
 
         // Create chat labeled "bob"
-        let (resp, new_id) = handle_create_coordinator(dir, Some("bob"), None, None, None);
+        let (resp, new_id) = handle_create_coordinator(dir, Some("bob"), None, None, None, None);
         assert!(resp.ok, "create_chat for bob should succeed");
         assert_eq!(new_id, Some(1), "second chat should be chat 1");
 
         let graph = workgraph::parser::load_graph(&dir.join("graph.jsonl")).unwrap();
-        let coord = graph
-            .get_task(".chat-1")
-            .expect("second chat should exist");
+        let coord = graph.get_task(".chat-1").expect("second chat should exist");
         assert_eq!(coord.title, "Chat: bob");
 
         // Both chats should coexist
@@ -3197,8 +3211,8 @@ poll_interval = 120
         let graph = workgraph::graph::WorkGraph::new();
         workgraph::parser::save_graph(&graph, &dir.join("graph.jsonl")).unwrap();
 
-        let _ = handle_create_coordinator(dir, Some("alice"), None, None, None);
-        let _ = handle_create_coordinator(dir, Some("bob"), None, None, None);
+        let _ = handle_create_coordinator(dir, Some("alice"), None, None, None, None);
+        let _ = handle_create_coordinator(dir, Some("bob"), None, None, None, None);
 
         // Write per-coordinator state files
         let alice_state = CoordinatorState {
@@ -3358,7 +3372,11 @@ poll_interval = 120
         let skipped = data["skipped"].as_array().unwrap();
         // Two purged: chat-0 and coordinator-1. chat-2 is skipped (already archived).
         assert_eq!(purged.len(), 2, "expected 2 chats purged, got {:?}", purged);
-        assert_eq!(skipped.len(), 1, "chat-2 should be skipped (already archived)");
+        assert_eq!(
+            skipped.len(),
+            1,
+            "chat-2 should be skipped (already archived)"
+        );
 
         // Reload graph and verify state.
         let g = workgraph::parser::load_graph(&dir.join("graph.jsonl")).unwrap();
@@ -3368,7 +3386,9 @@ poll_interval = 120
         assert!(t0.tags.contains(&"archived".to_string()));
         assert!(!t0.tags.iter().any(|t| t == "chat-loop"));
 
-        let t1 = g.get_task(".coordinator-1").expect("coordinator-1 task still exists");
+        let t1 = g
+            .get_task(".coordinator-1")
+            .expect("coordinator-1 task still exists");
         assert_eq!(t1.status, workgraph::graph::Status::Done);
         assert!(t1.tags.contains(&"archived".to_string()));
         assert!(!t1.tags.iter().any(|t| t == "coordinator-loop"));
@@ -3429,9 +3449,17 @@ poll_interval = 120
             Some("nex:qwen3-coder"),
             Some("native"),
             Some("https://lambda01.tail334fe6.ts.net:30000"),
+            None,
         );
-        assert!(resp.ok, "create_chat with endpoint should succeed: {:?}", resp.error);
-        assert!(new_id.is_some(), "new chat_id should be returned for eager-spawn (Fix B)");
+        assert!(
+            resp.ok,
+            "create_chat with endpoint should succeed: {:?}",
+            resp.error
+        );
+        assert!(
+            new_id.is_some(),
+            "new chat_id should be returned for eager-spawn (Fix B)"
+        );
 
         let chat_id = resp
             .data
@@ -3478,8 +3506,7 @@ poll_interval = 120
         };
         original.save_for(dir, 7);
 
-        let loaded = super::CoordinatorState::load_for(dir, 7)
-            .expect("state file must exist");
+        let loaded = super::CoordinatorState::load_for(dir, 7).expect("state file must exist");
         assert_eq!(
             loaded.endpoint_override.as_deref(),
             Some("https://lambda01.example/30000"),
@@ -3521,8 +3548,8 @@ poll_interval = 120
 
         // Default max_coordinators is 4. We have 2 live + 2 archived =
         // 2/4 — creation must succeed (fresh chat 4 lands).
-        let new_id =
-            create_chat_in_graph(dir, Some("New One"), None, None, None).expect("cap not reached");
+        let new_id = create_chat_in_graph(dir, Some("New One"), None, None, None, None)
+            .expect("cap not reached");
         assert!(
             new_id >= 4,
             "new chat id should be at least 4 (after .chat-3), got {}",
@@ -3563,7 +3590,7 @@ poll_interval = 120
         // 4 zombies + cap of 4 = pre-fix would bail with "Chat cap
         // reached (4/4)". Post-fix the zombies don't count and creation
         // succeeds.
-        let result = create_chat_in_graph(dir, None, None, None, None);
+        let result = create_chat_in_graph(dir, None, None, None, None, None);
         assert!(
             result.is_ok(),
             "zombie supervisors must not block new chats; got: {:?}",
@@ -3805,8 +3832,7 @@ poll_interval = 120
     /// variant with safe-by-default semantics.
     #[test]
     fn test_purge_chats_ipc_defaults_to_safe_mode() {
-        let req: IpcRequest =
-            serde_json::from_str(r#"{"cmd":"purge_chats"}"#).unwrap();
+        let req: IpcRequest = serde_json::from_str(r#"{"cmd":"purge_chats"}"#).unwrap();
         match req {
             IpcRequest::PurgeChats {
                 include_active,
@@ -3867,7 +3893,9 @@ poll_interval = 120
             "delete-coordinator must mark task Abandoned"
         );
         assert!(
-            task.log.iter().any(|l| l.message.contains("deleted via IPC")),
+            task.log
+                .iter()
+                .any(|l| l.message.contains("deleted via IPC")),
             "delete-coordinator must append a log entry"
         );
     }

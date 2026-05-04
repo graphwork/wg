@@ -65,6 +65,33 @@ description = "Pins fix-nex-tui: the TUI's PTY reader thread must advance bytes_
 timeout_seconds = 360
 
 [[scenario]]
+name = "bash_chat"
+script = "scenarios/bash_chat.sh"
+owners = [
+    "implement-generalize-chat",
+]
+description = "Pins implement-generalize-chat: `wg chat new --command 'bash'` creates a generic command chat task with command_argv/working_dir metadata and no LLM preset."
+timeout_seconds = 30
+
+[[scenario]]
+name = "custom_command_chat"
+script = "scenarios/custom_command_chat.sh"
+owners = [
+    "implement-generalize-chat",
+]
+description = "Pins implement-generalize-chat: arbitrary command lines such as `tail -f /tmp/test.log` are stored as generic persistent chat pane commands."
+timeout_seconds = 30
+
+[[scenario]]
+name = "preset_shortcuts_still_work"
+script = "scenarios/preset_shortcuts_still_work.sh"
+owners = [
+    "implement-generalize-chat",
+]
+description = "Pins implement-generalize-chat: `--exec claude`, `--exec codex`, and `--exec nex` remain preset shortcuts while also writing command_argv/working_dir/executor_preset_name metadata."
+timeout_seconds = 30
+
+[[scenario]]
 name = "nex_two_message_against_lambda01"
 script = "scenarios/nex_two_message_against_lambda01.sh"
 owners = [

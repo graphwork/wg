@@ -636,9 +636,7 @@ fn maybe_print_subcommand_help() -> bool {
 
     if path.len() > 1 {
         let bin_name = path.join(" ");
-        let mut cmd = current_cmd
-            .disable_help_flag(false)
-            .bin_name(bin_name);
+        let mut cmd = current_cmd.disable_help_flag(false).bin_name(bin_name);
         cmd.print_help().ok();
         println!();
         std::process::exit(0);
@@ -660,11 +658,7 @@ fn rewrite_config_reset_argv(args: Vec<String>) -> Vec<String> {
     let mut i = 0;
     let mut rewrote = false;
     while i < args.len() {
-        if !rewrote
-            && i + 1 < args.len()
-            && args[i] == "config"
-            && args[i + 1] == "reset"
-        {
+        if !rewrote && i + 1 < args.len() && args[i] == "config" && args[i + 1] == "reset" {
             out.push("config".to_string());
             out.push("--reset".to_string());
             rewrote = true;
@@ -1837,30 +1831,26 @@ fn main() -> Result<()> {
                         executor,
                         model,
                         endpoint,
+                        command,
                     } => commands::chat_cmd::run_create(
                         &workgraph_dir,
                         name.as_deref(),
                         model.as_deref(),
                         executor.as_deref(),
                         endpoint.as_deref(),
+                        command.as_deref(),
                         cli.json,
                     ),
-                    ChatCommands::List => {
-                        commands::chat_cmd::run_list(&workgraph_dir, cli.json)
-                    }
+                    ChatCommands::List => commands::chat_cmd::run_list(&workgraph_dir, cli.json),
                     ChatCommands::Show { chat } => {
                         commands::chat_cmd::run_show(&workgraph_dir, &chat, cli.json)
                     }
-                    ChatCommands::Attach { chat, cli: force_cli } => {
-                        commands::chat_cmd::run_attach(&workgraph_dir, &chat, force_cli)
-                    }
+                    ChatCommands::Attach {
+                        chat,
+                        cli: force_cli,
+                    } => commands::chat_cmd::run_attach(&workgraph_dir, &chat, force_cli),
                     ChatCommands::Send { chat, message } => {
-                        commands::chat_cmd::run_send(
-                            &workgraph_dir,
-                            &chat,
-                            &message,
-                            cli.json,
-                        )
+                        commands::chat_cmd::run_send(&workgraph_dir, &chat, &message, cli.json)
                     }
                     ChatCommands::Stop { chat } => {
                         commands::chat_cmd::run_stop(&workgraph_dir, &chat, cli.json)
@@ -2418,12 +2408,23 @@ fn main() -> Result<()> {
                 name,
                 no_reload,
                 clear,
-            } => commands::profile_cmd::use_profile(&workgraph_dir, name.as_deref(), no_reload, clear),
+            } => commands::profile_cmd::use_profile(
+                &workgraph_dir,
+                name.as_deref(),
+                no_reload,
+                clear,
+            ),
             ProfileCommands::Show {
                 profile_name,
                 verbose,
                 diff_base,
-            } => commands::profile_cmd::show(&workgraph_dir, cli.json, verbose, profile_name.as_deref(), diff_base),
+            } => commands::profile_cmd::show(
+                &workgraph_dir,
+                cli.json,
+                verbose,
+                profile_name.as_deref(),
+                diff_base,
+            ),
             ProfileCommands::List { installed } => {
                 commands::profile_cmd::list(&workgraph_dir, cli.json, installed)
             }
@@ -2451,9 +2452,7 @@ fn main() -> Result<()> {
             ProfileCommands::Diff { a, b } => {
                 commands::profile_cmd::diff_profiles(&a, b.as_deref())
             }
-            ProfileCommands::InitStarters { force } => {
-                commands::profile_cmd::init_starters(force)
-            }
+            ProfileCommands::InitStarters { force } => commands::profile_cmd::init_starters(force),
             ProfileCommands::Refresh => commands::profile_cmd::refresh(&workgraph_dir),
         },
         Commands::Config {
@@ -2578,11 +2577,7 @@ fn main() -> Result<()> {
                             // Default: merged (lints both global and local).
                             commands::config_cmd::LintTarget::Merged
                         };
-                        return commands::config_cmd::lint_config(
-                            &workgraph_dir,
-                            target,
-                            cli.json,
-                        );
+                        return commands::config_cmd::lint_config(&workgraph_dir, target, cli.json);
                     }
                 }
             }
@@ -2598,8 +2593,7 @@ fn main() -> Result<()> {
 
             // Handle --reset (also reachable as positional `wg config reset`)
             if reset {
-                let reset_scope =
-                    scope.unwrap_or(commands::config_cmd::ConfigScope::Global);
+                let reset_scope = scope.unwrap_or(commands::config_cmd::ConfigScope::Global);
                 return commands::config_cmd::reset_to_route(
                     &workgraph_dir,
                     reset_scope,
@@ -2930,9 +2924,7 @@ fn main() -> Result<()> {
                     byline.as_deref(),
                     abstract_path.as_deref(),
                 ),
-                HtmlPublishCommands::List => {
-                    commands::publish::run_list(&workgraph_dir, cli.json)
-                }
+                HtmlPublishCommands::List => commands::publish::run_list(&workgraph_dir, cli.json),
                 HtmlPublishCommands::Show { name } => {
                     commands::publish::run_show(&workgraph_dir, &name, cli.json)
                 }
@@ -3125,6 +3117,7 @@ fn main() -> Result<()> {
                 model,
                 executor,
                 endpoint,
+                command,
             } => {
                 eprintln!(
                     "warning: 'wg service create-chat' is deprecated; use 'wg chat create' instead."
@@ -3135,6 +3128,7 @@ fn main() -> Result<()> {
                     model.as_deref(),
                     executor.as_deref(),
                     endpoint.as_deref(),
+                    command.as_deref(),
                     cli.json,
                 )
             }
@@ -3683,26 +3677,24 @@ fn main() -> Result<()> {
             commands::openrouter::run(&workgraph_dir, &command, cli.json)
         }
         Commands::Secret { command } => match command {
-            cli::SecretCommands::Set { name, value, from_stdin, backend } => {
-                commands::secret_cmd::run_set(
-                    &workgraph_dir,
-                    &name,
-                    value.as_deref(),
-                    backend.as_deref(),
-                    from_stdin,
-                )
-            }
-            cli::SecretCommands::Get { name, reveal, backend } => {
-                commands::secret_cmd::run_get(
-                    &workgraph_dir,
-                    &name,
-                    backend.as_deref(),
-                    reveal,
-                )
-            }
-            cli::SecretCommands::List => {
-                commands::secret_cmd::run_list(&workgraph_dir, cli.json)
-            }
+            cli::SecretCommands::Set {
+                name,
+                value,
+                from_stdin,
+                backend,
+            } => commands::secret_cmd::run_set(
+                &workgraph_dir,
+                &name,
+                value.as_deref(),
+                backend.as_deref(),
+                from_stdin,
+            ),
+            cli::SecretCommands::Get {
+                name,
+                reveal,
+                backend,
+            } => commands::secret_cmd::run_get(&workgraph_dir, &name, backend.as_deref(), reveal),
+            cli::SecretCommands::List => commands::secret_cmd::run_list(&workgraph_dir, cli.json),
             cli::SecretCommands::Rm { name, backend, yes } => {
                 commands::secret_cmd::run_rm(&workgraph_dir, &name, backend.as_deref(), yes)
             }
