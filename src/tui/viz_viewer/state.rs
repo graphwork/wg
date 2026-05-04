@@ -5603,6 +5603,14 @@ pub struct VizApp {
     /// Whether the TUI should render for a light terminal background.
     /// Set from `tui.color_theme = "light"` in config.
     pub is_light_theme: bool,
+
+    // ── Background filesystem service ──
+    /// Owns a worker thread that performs all heavy disk I/O (graph.jsonl
+    /// reads, stat() calls for the fs watcher, streaming-text reads, chat
+    /// interaction bumps). The main thread reads cached values and
+    /// dispatches refreshes via channels — it never blocks on disk, even
+    /// on a high-latency filesystem (NFS, sshfs). See task `fix-tui-must`.
+    pub async_fs: super::async_fs::AsyncFs,
 }
 
 /// Scroll state for a 2D viewport.
@@ -5873,14 +5881,21 @@ impl VizApp {
             key_feedback_enabled: false,
             key_feedback: VecDeque::new(),
             is_light_theme: config.tui.color_theme == "light",
+            async_fs: super::async_fs::AsyncFs::new(),
         };
         app.start_fs_watcher();
-        // Load graph once for both viz and stats on startup.
+        // Load graph once for both viz and stats on startup. This is the
+        // ONLY synchronous disk read in the TUI startup path — once the
+        // app is running, all graph reloads go through `app.async_fs`.
+        // Seeding the cache here means the first frame renders with real
+        // data instead of an empty placeholder.
         let graph_path = app.workgraph_dir.join("graph.jsonl");
+        app.async_fs.seed_stat(graph_path.clone(), graph_mtime);
         if let Ok(graph) = load_graph(&graph_path) {
             app.load_viz_from_graph(&graph);
             app.load_stats_from_graph(&graph);
             app.refresh_chat_tab_caches(&graph);
+            app.async_fs.seed_graph(graph, graph_mtime);
         } else {
             app.load_viz();
             app.load_stats();
@@ -7534,6 +7549,12 @@ impl VizApp {
         // pushing the flush forward indefinitely.
         self.maybe_flush_sort_apply();
 
+        // Drain any completed async-fs responses BEFORE deciding whether
+        // the main loop has work to do. This lets cached-graph and
+        // cached-stat values reflect the worker's most recent results
+        // without ever blocking on disk. (See `async_fs.rs`.)
+        let _async_changes = self.async_fs.drain_responses();
+
         // Check if the file watcher detected changes in .wg/.
         let fs_changed = self.fs_change_pending.swap(false, Ordering::Relaxed);
         // Drain messages_change_pending lazily — only when we actually plan to
@@ -7541,11 +7562,17 @@ impl VizApp {
         // message-indicator refresh.
 
         // Fast-path: when the streaming file changes (via fs watcher or polling),
-        // immediately read it so chat text appears token-by-token.
+        // immediately read it so chat text appears token-by-token. The actual
+        // disk read happens on the async-fs worker; here we only consult the
+        // cached value (and dispatch a refresh if needed).
         if self.chat.awaiting_response() {
+            let coord_id = self.active_coordinator_id;
+            let streaming_path =
+                workgraph::chat::streaming_path_ref(&self.workgraph_dir, &coord_id.to_string());
+            self.async_fs
+                .request_streaming(streaming_path, coord_id);
             let prev = self.chat.streaming_text.clone();
-            let streaming =
-                workgraph::chat::read_streaming(&self.workgraph_dir, self.active_coordinator_id);
+            let streaming = self.async_fs.cached_streaming(coord_id);
             if streaming != prev {
                 self.chat.streaming_text = streaming;
                 // Also check outbox in case the response just completed.
@@ -7565,9 +7592,9 @@ impl VizApp {
             // Graph-dependent content: check if graph.jsonl itself changed.
             // Log entries are stored in graph.jsonl, so we need to detect
             // graph changes here too for immediate log updates.
-            let current_mtime = std::fs::metadata(self.workgraph_dir.join("graph.jsonl"))
-                .and_then(|m| m.modified())
-                .ok();
+            let graph_path = self.workgraph_dir.join("graph.jsonl");
+            self.async_fs.request_stat(graph_path.clone());
+            let current_mtime = self.async_fs.cached_stat(&graph_path);
             // Heavy-reload throttle (fix-tui-perf-2 fix 4 / fix 5a):
             // - When graph.jsonl is mutating faster than `HEAVY_REFRESH_THROTTLE`,
             //   defer the heavy reload pipeline to the next tick. The
@@ -7601,11 +7628,14 @@ impl VizApp {
             if graph_mutated {
                 self.last_graph_mtime = current_mtime;
                 self.last_heavy_refresh_at = Some(Instant::now());
+                // Dispatch a background graph reload (no-op if one is in
+                // flight). The actual reload + parse runs on the async-fs
+                // worker thread; we apply the freshest cached graph below.
+                self.async_fs.request_graph_load(graph_path.clone());
                 // Full viz reload on every graph mutation — this catches
                 // transient states (assigning, evaluating) that would
                 // otherwise be missed by the 1-second slow-path tick.
-                let graph_path = self.workgraph_dir.join("graph.jsonl");
-                if let Ok(graph) = load_graph(&graph_path) {
+                if let Some((graph, _)) = self.async_fs.cached_graph() {
                     let prev_hud_task = self.hud_detail.as_ref().map(|d| d.task_id.clone());
                     let prev_hud_scroll = self.hud_scroll;
                     let prev_hud_follow = self.hud_follow;
@@ -7665,8 +7695,7 @@ impl VizApp {
                 // check above misses it. Reload viz + stats so the per-task
                 // ✉ indicator and the right-panel Msg tab indicator update
                 // promptly.
-                let graph_path = self.workgraph_dir.join("graph.jsonl");
-                if let Ok(graph) = load_graph(&graph_path) {
+                if let Some((graph, _)) = self.async_fs.cached_graph() {
                     self.load_viz_from_graph(&graph);
                     self.load_stats_from_graph(&graph);
                     content_updated = true;
@@ -7681,7 +7710,8 @@ impl VizApp {
                     .workgraph_dir
                     .join("messages")
                     .join(format!("{}.jsonl", task_id));
-                let msg_mtime = std::fs::metadata(&msg_path).and_then(|m| m.modified()).ok();
+                self.async_fs.request_stat(msg_path.clone());
+                let msg_mtime = self.async_fs.cached_stat(&msg_path);
                 if msg_mtime != self.last_messages_mtime {
                     self.last_messages_mtime = msg_mtime;
                     self.save_message_draft();
@@ -7694,14 +7724,16 @@ impl VizApp {
             // Coordinator log: check if daemon.log or operations.jsonl changed.
             if self.right_panel_tab == RightPanelTab::CoordLog {
                 let log_path = self.workgraph_dir.join("service").join("daemon.log");
-                let log_mtime = std::fs::metadata(&log_path).and_then(|m| m.modified()).ok();
+                self.async_fs.request_stat(log_path.clone());
+                let log_mtime = self.async_fs.cached_stat(&log_path);
                 if log_mtime != self.last_daemon_log_mtime {
                     self.last_daemon_log_mtime = log_mtime;
                     self.load_coord_log();
                     content_updated = true;
                 }
                 let ops_path = self.workgraph_dir.join("log").join("operations.jsonl");
-                let ops_mtime = std::fs::metadata(&ops_path).and_then(|m| m.modified()).ok();
+                self.async_fs.request_stat(ops_path.clone());
+                let ops_mtime = self.async_fs.cached_stat(&ops_path);
                 if ops_mtime != self.last_ops_log_mtime {
                     self.last_ops_log_mtime = ops_mtime;
                     self.load_activity_feed();
@@ -7715,9 +7747,8 @@ impl VizApp {
                     &self.workgraph_dir,
                     &self.active_coordinator_id.to_string(),
                 );
-                let outbox_mtime = std::fs::metadata(&outbox_path)
-                    .and_then(|m| m.modified())
-                    .ok();
+                self.async_fs.request_stat(outbox_path.clone());
+                let outbox_mtime = self.async_fs.cached_stat(&outbox_path);
                 if outbox_mtime != self.last_chat_outbox_mtime {
                     self.last_chat_outbox_mtime = outbox_mtime;
                     self.check_coordinator_status();
@@ -7755,11 +7786,17 @@ impl VizApp {
             // Detail tab: live-refresh when the agent output.log changes independently
             // of graph.jsonl (e.g. agent is actively writing output).
             if self.right_panel_tab == RightPanelTab::Detail {
-                let new_output_mtime = self
+                let output_path = self
                     .hud_detail
                     .as_ref()
                     .and_then(|d| d.output_path.as_ref())
-                    .and_then(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok());
+                    .cloned();
+                let new_output_mtime = if let Some(p) = output_path {
+                    self.async_fs.request_stat(p.clone());
+                    self.async_fs.cached_stat(&p)
+                } else {
+                    None
+                };
                 if new_output_mtime.is_some() && new_output_mtime != self.last_detail_output_mtime {
                     self.last_detail_output_mtime = new_output_mtime;
                     let prev_hud_follow = self.hud_follow;
@@ -7813,9 +7850,9 @@ impl VizApp {
             && !self.config_panel.adding_endpoint
             && !self.config_panel.adding_model
         {
-            let current_mtime = std::fs::metadata(self.workgraph_dir.join("config.toml"))
-                .and_then(|m| m.modified())
-                .ok();
+            let cfg_path = self.workgraph_dir.join("config.toml");
+            self.async_fs.request_stat(cfg_path.clone());
+            let current_mtime = self.async_fs.cached_stat(&cfg_path);
             if current_mtime != self.config_panel.last_config_mtime {
                 self.load_config_panel();
             }
@@ -7826,9 +7863,9 @@ impl VizApp {
         }
 
         // --- Heavy data refresh (graph-dependent) ---
-        let current_mtime = std::fs::metadata(self.workgraph_dir.join("graph.jsonl"))
-            .and_then(|m| m.modified())
-            .ok();
+        let graph_path = self.workgraph_dir.join("graph.jsonl");
+        self.async_fs.request_stat(graph_path.clone());
+        let current_mtime = self.async_fs.cached_stat(&graph_path);
 
         let graph_changed = current_mtime != self.last_graph_mtime || self.graph_viz_stale;
         let needs_token_refresh = self.task_counts.in_progress > 0;
@@ -7842,9 +7879,11 @@ impl VizApp {
 
         if graph_changed || needs_token_refresh || has_expiring_stickies {
             self.graph_viz_stale = false;
-            // Load graph once and share between viz and stats (avoids double read+parse).
-            let graph_path = self.workgraph_dir.join("graph.jsonl");
-            if let Ok(graph) = load_graph(&graph_path) {
+            // Dispatch a background graph reload (no-op if one is in flight)
+            // and use the cached graph (possibly stale by one frame) to
+            // refresh viz/stats. The fresh graph lands on the next tick.
+            self.async_fs.request_graph_load(graph_path.clone());
+            if let Some((graph, _)) = self.async_fs.cached_graph() {
                 // Capture HUD scroll state BEFORE load_viz(), because load_viz() ->
                 // recompute_trace() -> invalidate_hud() clears hud_detail.
                 let prev_hud_task = self.hud_detail.as_ref().map(|d| d.task_id.clone());
@@ -7923,14 +7962,17 @@ impl VizApp {
 
         // Re-check: if changes arrived during the refresh, reload once more
         // so rapid-fire changes don't require a full extra tick to propagate.
+        // All disk reads are dispatched to the async-fs worker; this branch
+        // applies the freshest cached graph if the mtime cache shows a
+        // change since the last application.
         if self.fs_change_pending.swap(false, Ordering::Relaxed) {
-            let fresh_mtime = std::fs::metadata(self.workgraph_dir.join("graph.jsonl"))
-                .and_then(|m| m.modified())
-                .ok();
+            let graph_path = self.workgraph_dir.join("graph.jsonl");
+            self.async_fs.request_stat(graph_path.clone());
+            let fresh_mtime = self.async_fs.cached_stat(&graph_path);
             if fresh_mtime != self.last_graph_mtime {
                 self.last_graph_mtime = fresh_mtime;
-                let graph_path = self.workgraph_dir.join("graph.jsonl");
-                if let Ok(graph) = load_graph(&graph_path) {
+                self.async_fs.request_graph_load(graph_path);
+                if let Some((graph, _)) = self.async_fs.cached_graph() {
                     self.load_viz_from_graph(&graph);
                     self.load_stats_from_graph(&graph);
                     self.refresh_chat_tab_caches(&graph);
@@ -8001,9 +8043,14 @@ impl VizApp {
             return;
         }
 
-        workgraph::chat::bump_chat_interaction(
-            &self.workgraph_dir,
-            &self.active_coordinator_id.to_string(),
+        // Fire-and-forget: the actual graph.jsonl read+write happens on
+        // the async-fs worker thread, so a slow filesystem can never
+        // block keystroke echo through this path. (See task fix-tui-must
+        // — the synchronous version blocked the chat-PTY render loop on
+        // every keystroke burst that crossed the debounce window.)
+        self.async_fs.bump_chat_interaction(
+            self.workgraph_dir.clone(),
+            self.active_coordinator_id.to_string(),
         );
         self.last_chat_pty_activity_bump = Some(std::time::Instant::now());
         self.fs_change_pending
@@ -10596,6 +10643,7 @@ impl VizApp {
             key_feedback_enabled: false,
             key_feedback: VecDeque::new(),
             is_light_theme: false,
+            async_fs: super::async_fs::AsyncFs::new(),
         }
     }
 
@@ -27494,6 +27542,15 @@ mod message_indicator_refresh_tests {
         app.last_graph_mtime = std::fs::metadata(&graph_path)
             .ok()
             .and_then(|m| m.modified().ok());
+        // Seed the async-fs cache with the on-disk graph so the first
+        // maybe_refresh() can use it without waiting for the worker.
+        // Production code seeds this in `VizApp::new`; tests that build
+        // an app via `from_viz_output_for_test` and then re-point
+        // `workgraph_dir` need to seed manually.
+        if let Ok(g) = workgraph::parser::load_graph(&graph_path) {
+            app.async_fs.seed_graph(g, app.last_graph_mtime);
+        }
+        app.async_fs.seed_stat(graph_path, app.last_graph_mtime);
         (app, tmp)
     }
 

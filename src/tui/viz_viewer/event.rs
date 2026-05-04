@@ -9489,12 +9489,24 @@ mod chat_tab_navigation_tests {
 
         handle_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
 
-        let after = load_graph(&graph_path)
-            .unwrap()
-            .get_task(".coordinator-1")
-            .unwrap()
-            .last_interaction_at
-            .clone();
+        // The bump runs on the async-fs worker thread (so it can't block
+        // keystroke echo on a slow filesystem). Poll briefly until the
+        // worker has applied the write — fail the assertion if it never
+        // does within a reasonable window.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let mut after = before.clone();
+        while std::time::Instant::now() < deadline {
+            after = load_graph(&graph_path)
+                .unwrap()
+                .get_task(".coordinator-1")
+                .unwrap()
+                .last_interaction_at
+                .clone();
+            if after != before {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
         assert_ne!(
             after, before,
             "TUI chat PTY Enter must bump last_interaction_at for the active chat task"

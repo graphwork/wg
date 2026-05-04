@@ -8214,6 +8214,24 @@ fn draw_status_bar(frame: &mut Frame, app: &VizApp, area: Rect) {
         ));
     }
 
+    // Slow-disk indicator: surfaced when an async-fs operation exceeds
+    // 500ms (network filesystem stalls, NFS hiccups, etc). The TUI never
+    // blocks on these operations — this banner just lets the user know
+    // their underlying storage is slow so they can attribute any
+    // perceived staleness to disk latency rather than a UI bug.
+    if let Some(slow) = app.async_fs.slow_disk_indicator() {
+        spans.push(Span::styled(
+            format!(
+                "| ⚠ disk slow ({} took {:.1}s) ",
+                slow.label,
+                slow.duration.as_secs_f64()
+            ),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+
     // Token breakdown: input/output/cache with view/total toggle
     let visible_usage;
     let (usage, label) = if app.show_total_tokens {

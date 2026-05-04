@@ -1030,6 +1030,17 @@ description = "Pins fix-tui-perf-2 fix 2: `parse_token_usage_live_cached` must h
 timeout_seconds = 180
 
 [[scenario]]
+name = "tui_responsive_under_500ms_latency"
+script = "scenarios/tui_responsive_under_500ms_latency.sh"
+owners = [
+    "fix-tui-must",
+    "fix-tui-perf",
+    "fix-tui-perf-2",
+]
+description = "Pins fix-tui-must: under simulated 500ms-latency filesystem (WG_ASYNC_FS_TEST_LATENCY_MS=500), the TUI's main-thread API on `AsyncFs` stays non-blocking — every request_*/cached_*/drain_responses/bump_chat_interaction call returns in < 50ms p99 even while the worker is stuck on a slow disk read. Regression here would re-expose the high-latency-FS freeze the user reported on 2026-05-04 ('TUI basically gets stuck')."
+timeout_seconds = 600
+
+[[scenario]]
 name = "publish_wcc_releases_paused_subgraph"
 script = "scenarios/publish_wcc_releases_paused_subgraph.sh"
 owners = [
