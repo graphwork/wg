@@ -26,6 +26,8 @@ pub struct ImportManifest {
     pub version: String,
     #[serde(default)]
     pub schema: Option<String>,
+    #[serde(default)]
+    pub agency_compat_version: Option<String>,
     pub imported_at: String,
     pub counts: ManifestCounts,
     pub content_hash: String,
@@ -60,7 +62,8 @@ pub fn write_manifest(
     let manifest = ImportManifest {
         source: source.to_string(),
         version: format!("v{}", env!("CARGO_PKG_VERSION")),
-        schema: Some("agency-12col-v1".to_string()),
+        schema: Some("agency-12col-v1.2.4".to_string()),
+        agency_compat_version: Some(agency::WG_AGENCY_COMPAT_VERSION.to_string()),
         imported_at: chrono::Utc::now().to_rfc3339(),
         counts: ManifestCounts {
             role_components: counts.role_components,

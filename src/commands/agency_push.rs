@@ -171,6 +171,12 @@ fn row_from_component(component: RoleComponent) -> Result<AgencyCsvRow> {
         "role_component",
         &component.name,
         &component.description,
+        component.quality,
+        component.domain_specificity,
+        &component.domain,
+        component.origin_instance_id.as_deref(),
+        component.parent_content_hash.as_deref(),
+        component.scope.as_deref(),
         &component.performance,
         &component.lineage,
         &component.domain_tags,
@@ -190,6 +196,12 @@ fn row_from_outcome(outcome: DesiredOutcome) -> Result<AgencyCsvRow> {
         "desired_outcome",
         &outcome.name,
         &outcome.description,
+        outcome.quality,
+        outcome.domain_specificity,
+        &outcome.domain,
+        outcome.origin_instance_id.as_deref(),
+        outcome.parent_content_hash.as_deref(),
+        outcome.scope.as_deref(),
         &outcome.performance,
         &outcome.lineage,
         &outcome.domain_tags,
@@ -209,6 +221,12 @@ fn row_from_tradeoff(tradeoff: TradeoffConfig) -> Result<AgencyCsvRow> {
         "trade_off_config",
         &tradeoff.name,
         &tradeoff.description,
+        tradeoff.quality,
+        tradeoff.domain_specificity,
+        &tradeoff.domain,
+        tradeoff.origin_instance_id.as_deref(),
+        tradeoff.parent_content_hash.as_deref(),
+        tradeoff.scope.as_deref(),
         &tradeoff.performance,
         &tradeoff.lineage,
         &tradeoff.domain_tags,
@@ -227,19 +245,33 @@ fn agency_csv_fields(
     type_name: &str,
     name: &str,
     description: &str,
+    quality_value: u8,
+    domain_specificity_value: u8,
+    domain: &[String],
+    origin_instance_id: Option<&str>,
+    parent_content_hash: Option<&str>,
+    scope: Option<&str>,
     performance: &workgraph::agency::PerformanceRecord,
     lineage: &workgraph::agency::Lineage,
     domain_tags: &[String],
     metadata: &std::collections::HashMap<String, String>,
 ) -> Result<[String; 12]> {
-    let quality = metadata
-        .get("agency_quality")
-        .cloned()
-        .unwrap_or_else(|| quality_from_score(performance.avg_score));
+    let quality = metadata.get("agency_quality").cloned().unwrap_or_else(|| {
+        if quality_value > 0 {
+            quality_value.to_string()
+        } else {
+            quality_from_score(performance.avg_score)
+        }
+    });
     let parent_ids = metadata
         .get("parent_ids")
         .cloned()
         .unwrap_or_else(|| parent_ids_json(&lineage.parent_ids));
+    let domain_values = if domain.is_empty() {
+        domain_tags
+    } else {
+        domain
+    };
 
     Ok([
         type_name.to_string(),
@@ -249,17 +281,23 @@ fn agency_csv_fields(
         metadata
             .get("domain_specificity")
             .cloned()
-            .unwrap_or_default(),
-        domain_tags.join(","),
+            .unwrap_or_else(|| domain_specificity_value.to_string()),
+        domain_values.join(","),
         metadata
             .get("origin_instance_id")
             .cloned()
+            .or_else(|| origin_instance_id.map(str::to_string))
             .unwrap_or_default(),
         metadata
             .get("parent_content_hash")
             .cloned()
+            .or_else(|| parent_content_hash.map(str::to_string))
             .unwrap_or_default(),
-        metadata.get("scope").cloned().unwrap_or_default(),
+        metadata
+            .get("scope")
+            .cloned()
+            .or_else(|| scope.map(str::to_string))
+            .unwrap_or_default(),
         parent_ids,
         lineage.generation.to_string(),
         lineage.created_by.clone(),
@@ -524,10 +562,12 @@ mod tests {
             },
         );
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("Unknown entity type"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Unknown entity type")
+        );
     }
 
     #[test]
@@ -542,10 +582,12 @@ mod tests {
 
         let result = run(&wg_dir, &default_opts(target_path.to_str().unwrap()));
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("No local agency store"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("No local agency store")
+        );
     }
 
     #[test]

@@ -12,6 +12,9 @@ pub(crate) mod starters;
 mod store;
 mod types;
 
+/// Agency federation compatibility surface implemented by this wg build.
+pub const WG_AGENCY_COMPAT_VERSION: &str = "1.2.4";
+
 // Re-export everything at the agency:: level for backward compatibility
 pub use agency_bridge::*;
 pub use constraint_fidelity::*;

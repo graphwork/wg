@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::path::Path;
 
-use workgraph::agency::{self, Evaluation, Role, TradeoffConfig};
+use workgraph::agency::{self, DesiredOutcome, Evaluation, Role, RoleComponent, TradeoffConfig};
 use workgraph::parser::load_graph;
 
 #[derive(Clone)]
@@ -162,9 +162,14 @@ pub fn run(
 ) -> Result<()> {
     let agency_dir = dir.join("agency");
     let roles_dir = agency_dir.join("cache/roles");
+    let components_dir = agency_dir.join("primitives/components");
+    let outcomes_dir = agency_dir.join("primitives/outcomes");
     let tradeoffs_dir = agency_dir.join("primitives/tradeoffs");
     let evals_dir = agency_dir.join("evaluations");
 
+    let components =
+        agency::load_all_components(&components_dir).context("Failed to load components")?;
+    let outcomes = agency::load_all_outcomes(&outcomes_dir).context("Failed to load outcomes")?;
     let roles = agency::load_all_roles(&roles_dir).context("Failed to load roles")?;
     let tradeoffs =
         agency::load_all_tradeoffs(&tradeoffs_dir).context("Failed to load tradeoffs")?;
@@ -202,6 +207,8 @@ pub fn run(
     if json {
         output_json(
             &roles,
+            &components,
+            &outcomes,
             &tradeoffs,
             &evaluations,
             &task_tags,
@@ -213,6 +220,8 @@ pub fn run(
     } else {
         output_text(
             &roles,
+            &components,
+            &outcomes,
             &tradeoffs,
             &evaluations,
             &task_tags,
@@ -457,6 +466,8 @@ fn find_underexplored(
 #[allow(clippy::too_many_arguments)]
 fn output_text(
     roles: &[Role],
+    components: &[RoleComponent],
+    outcomes: &[DesiredOutcome],
     tradeoffs: &[TradeoffConfig],
     evaluations: &[Evaluation],
     task_tags: &HashMap<String, Vec<String>>,
@@ -476,6 +487,8 @@ fn output_text(
     };
 
     println!("=== Agency Performance Stats ===\n");
+    println!("  Components:   {}", components.len());
+    println!("  Outcomes:     {}", outcomes.len());
     println!("  Roles:        {}", total_roles);
     println!("  TradeoffConfigs:  {}", total_tradeoffs);
     println!("  Evaluations:  {}", total_evaluations);
@@ -485,6 +498,7 @@ fn output_text(
             .map(|s| format!("{:.2}", s))
             .unwrap_or_else(|| "-".to_string())
     );
+    println!("  v1.2.4 fields: quality, domain_specificity, domain, scope, origin_instance_id");
 
     if evaluations.is_empty() {
         println!("\nNo evaluations recorded yet. Run 'wg evaluate <task-id>' to generate data.");
@@ -745,6 +759,8 @@ fn output_text(
 #[allow(clippy::too_many_arguments)]
 fn output_json(
     roles: &[Role],
+    components: &[RoleComponent],
+    outcomes: &[DesiredOutcome],
     tradeoffs: &[TradeoffConfig],
     evaluations: &[Evaluation],
     task_tags: &HashMap<String, Vec<String>>,
@@ -867,9 +883,19 @@ fn output_json(
     let mut output = serde_json::json!({
         "overview": {
             "total_roles": roles.len(),
+            "total_components": components.len(),
+            "total_outcomes": outcomes.len(),
             "total_tradeoffs": tradeoffs.len(),
             "total_evaluations": total_evaluations,
             "avg_score": overall_avg,
+            "agency_compat_version": agency::WG_AGENCY_COMPAT_VERSION,
+            "v1_2_4_fields": [
+                "quality",
+                "domain_specificity",
+                "domain",
+                "scope",
+                "origin_instance_id"
+            ],
         },
         "role_leaderboard": role_board,
         "tradeoff_leaderboard": mot_board,

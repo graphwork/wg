@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use super::WG_AGENCY_COMPAT_VERSION;
 use super::store::AgencyError;
 use super::types::Evaluation;
 use crate::config::AgencyConfig;
@@ -76,18 +77,24 @@ pub fn post_evaluation_to_agency(
         agency_task_id
     );
 
-    let dimensional_scores = serialize_dimensional_scores(evaluation);
+    let dimensional_text = serialize_dimensional_scores(evaluation);
+    let primitive_ids = vec![evaluation.role_id.clone(), evaluation.tradeoff_id.clone()];
 
     let payload = serde_json::json!({
+        "agency_compat_version": WG_AGENCY_COMPAT_VERSION,
         "score": evaluation.score,
+        "dimensional_scores": evaluation.dimensions,
         "dimensions": evaluation.dimensions,
-        "dimensional_text": dimensional_scores,
+        "dimensional_text": dimensional_text,
         "notes": evaluation.notes,
         "evaluator": evaluation.evaluator,
         "source": evaluation.source,
         "timestamp": evaluation.timestamp,
         "task_id": evaluation.task_id,
         "agent_id": evaluation.agent_id,
+        "primitive_ids": primitive_ids,
+        "role_id": &evaluation.role_id,
+        "tradeoff_id": &evaluation.tradeoff_id,
     });
 
     let client = reqwest::blocking::Client::builder()
@@ -181,6 +188,7 @@ pub fn request_agency_assignment(
     );
 
     let payload = serde_json::json!({
+        "agency_compat_version": WG_AGENCY_COMPAT_VERSION,
         "title": title,
         "description": description,
     });
@@ -389,5 +397,24 @@ mod tests {
         assert_eq!(resp.rendered_prompt, "You are a Programmer...");
         assert_eq!(resp.agency_task_id, "agency-42");
         assert_eq!(resp.primitive_ids, vec!["prim-a", "prim-b"]);
+    }
+
+    #[test]
+    fn test_agency_bridge_payload_shape_contains_v1_2_4_fields() {
+        let mut dims = HashMap::new();
+        dims.insert("correctness".to_string(), 0.85);
+        let eval = sample_evaluation(dims);
+
+        let payload = serde_json::json!({
+            "agency_compat_version": WG_AGENCY_COMPAT_VERSION,
+            "score": eval.score,
+            "dimensional_scores": eval.dimensions,
+            "primitive_ids": [eval.role_id, eval.tradeoff_id],
+        });
+
+        assert_eq!(payload["agency_compat_version"], "1.2.4");
+        assert_eq!(payload["dimensional_scores"]["correctness"], 0.85);
+        assert_eq!(payload["primitive_ids"][0], "role-1");
+        assert_eq!(payload["primitive_ids"][1], "tradeoff-1");
     }
 }

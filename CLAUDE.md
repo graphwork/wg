@@ -103,3 +103,4 @@ non-Anthropic provider for these roles can override per-role via
 overrides win, cascade does not. The agent registry records these as
 `executor=claude` (the legacy `eval` / `assign` labels are gone — they
 were always cosmetic).
+Agency federation compatibility is exposed as `WG_AGENCY_COMPAT_VERSION = "1.2.4"` and import manifests record that compat surface for CSV/hash handshakes.

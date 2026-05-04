@@ -105,7 +105,7 @@ pub fn run(root: &Path, json: bool, max_depth: usize) -> Result<()> {
     if stores.is_empty() {
         if json {
             println!(
-                "{{\"stores\":[],\"totals\":{{\"roles\":0,\"motivations\":0,\"agents\":0,\"evaluations\":0}}}}"
+                "{{\"stores\":[],\"totals\":{{\"components\":0,\"outcomes\":0,\"tradeoffs\":0,\"roles\":0,\"agents\":0,\"evaluations\":0}}}}"
             );
         } else {
             println!("No agency stores found under {}", root.display());
@@ -120,6 +120,8 @@ pub fn run(root: &Path, json: bool, max_depth: usize) -> Result<()> {
         let local = LocalStore::new(store_path);
         let counts = local.entity_counts();
         total.roles += counts.roles;
+        total.components += counts.components;
+        total.outcomes += counts.outcomes;
         total.tradeoffs += counts.tradeoffs;
         total.agents += counts.agents;
         total.evaluations += counts.evaluations;
@@ -155,9 +157,11 @@ pub fn run(root: &Path, json: bool, max_depth: usize) -> Result<()> {
         for store in &discovered {
             println!("  {}", store.path);
             println!(
-                "    Roles: {}  Motivations: {}  Agents: {}  Evaluations: {}",
-                store.counts.roles,
+                "    Components: {}  Outcomes: {}  Tradeoffs: {}  Roles: {}  Agents: {}  Evaluations: {}",
+                store.counts.components,
+                store.counts.outcomes,
                 store.counts.tradeoffs,
+                store.counts.roles,
                 store.counts.agents,
                 store.counts.evaluations,
             );
@@ -169,8 +173,13 @@ pub fn run(root: &Path, json: bool, max_depth: usize) -> Result<()> {
 
         if discovered.len() > 1 {
             println!(
-                "Totals: {} roles, {} motivations, {} agents, {} evaluations",
-                total.roles, total.tradeoffs, total.agents, total.evaluations,
+                "Totals: {} components, {} outcomes, {} tradeoffs, {} roles, {} agents, {} evaluations",
+                total.components,
+                total.outcomes,
+                total.tradeoffs,
+                total.roles,
+                total.agents,
+                total.evaluations,
             );
         }
     }

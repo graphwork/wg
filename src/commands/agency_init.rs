@@ -1,6 +1,9 @@
 use anyhow::{Context, Result};
+use std::collections::HashMap;
 use std::path::Path;
-use workgraph::agency::{self, Agent, Lineage, PerformanceRecord};
+use workgraph::agency::{
+    self, Agent, DesiredOutcome, Lineage, PerformanceRecord, RoleComponent, TradeoffConfig,
+};
 use workgraph::config::Config;
 use workgraph::graph::TrustLevel;
 
@@ -22,10 +25,14 @@ pub fn run(workgraph_dir: &Path) -> Result<()> {
         );
     }
 
-    // 1b. Auto-import bundled CSV if available and not already imported
+    // 1b. Ensure hardcoded starter primitives have the v1.2.4 federation
+    // fields before the bundled Agency CSV import becomes authoritative.
+    backfill_v1_2_4_primitive_fields(&agency_dir)?;
+
+    // 1c. Auto-import bundled CSV if available and not already imported
     try_csv_import(workgraph_dir)?;
 
-    // 1c. Pull from upstream bureau if configured (non-blocking)
+    // 1d. Pull from upstream bureau if configured (non-blocking)
     try_upstream_pull(workgraph_dir);
 
     // 2. Create a default agent: Programmer + Careful
@@ -293,6 +300,182 @@ fn try_upstream_pull(workgraph_dir: &Path) {
                 "  Init continues without upstream data. Run `wg agency import --upstream` later."
             );
         }
+    }
+}
+
+const WG_ORIGIN_INSTANCE_ID: &str = "00000000-0000-7000-8000-000000000001";
+
+fn backfill_v1_2_4_primitive_fields(agency_dir: &Path) -> Result<()> {
+    let components_dir = agency_dir.join("primitives/components");
+    let outcomes_dir = agency_dir.join("primitives/outcomes");
+    let tradeoffs_dir = agency_dir.join("primitives/tradeoffs");
+
+    for mut component in agency::load_all_components(&components_dir)
+        .context("Failed to load components for v1.2.4 backfill")?
+    {
+        if normalize_component_fields(&mut component) {
+            agency::save_component(&component, &components_dir)
+                .context("Failed to save v1.2.4-compatible component")?;
+        }
+    }
+    for mut outcome in agency::load_all_outcomes(&outcomes_dir)
+        .context("Failed to load outcomes for v1.2.4 backfill")?
+    {
+        if normalize_outcome_fields(&mut outcome) {
+            agency::save_outcome(&outcome, &outcomes_dir)
+                .context("Failed to save v1.2.4-compatible outcome")?;
+        }
+    }
+    for mut tradeoff in agency::load_all_tradeoffs(&tradeoffs_dir)
+        .context("Failed to load tradeoffs for v1.2.4 backfill")?
+    {
+        if normalize_tradeoff_fields(&mut tradeoff) {
+            agency::save_tradeoff(&tradeoff, &tradeoffs_dir)
+                .context("Failed to save v1.2.4-compatible tradeoff")?;
+        }
+    }
+
+    Ok(())
+}
+
+fn normalize_component_fields(component: &mut RoleComponent) -> bool {
+    let mut changed = normalize_common_fields(
+        &component.name,
+        &component.description,
+        &mut component.domain_specificity,
+        &mut component.domain,
+        &mut component.scope,
+        &mut component.origin_instance_id,
+        &mut component.domain_tags,
+        &mut component.metadata,
+    );
+    if component.quality == 0 {
+        component.quality = 100;
+        changed = true;
+    }
+    changed
+}
+
+fn normalize_outcome_fields(outcome: &mut DesiredOutcome) -> bool {
+    let mut changed = normalize_common_fields(
+        &outcome.name,
+        &outcome.description,
+        &mut outcome.domain_specificity,
+        &mut outcome.domain,
+        &mut outcome.scope,
+        &mut outcome.origin_instance_id,
+        &mut outcome.domain_tags,
+        &mut outcome.metadata,
+    );
+    if outcome.quality == 0 {
+        outcome.quality = 100;
+        changed = true;
+    }
+    changed
+}
+
+fn normalize_tradeoff_fields(tradeoff: &mut TradeoffConfig) -> bool {
+    let mut changed = normalize_common_fields(
+        &tradeoff.name,
+        &tradeoff.description,
+        &mut tradeoff.domain_specificity,
+        &mut tradeoff.domain,
+        &mut tradeoff.scope,
+        &mut tradeoff.origin_instance_id,
+        &mut tradeoff.domain_tags,
+        &mut tradeoff.metadata,
+    );
+    if tradeoff.quality == 0 {
+        tradeoff.quality = 100;
+        changed = true;
+    }
+    changed
+}
+
+#[allow(clippy::too_many_arguments)]
+fn normalize_common_fields(
+    name: &str,
+    description: &str,
+    domain_specificity: &mut u8,
+    domain: &mut Vec<String>,
+    scope: &mut Option<String>,
+    origin_instance_id: &mut Option<String>,
+    domain_tags: &mut Vec<String>,
+    metadata: &mut HashMap<String, String>,
+) -> bool {
+    let mut changed = false;
+
+    if *domain_specificity == 0 {
+        *domain_specificity = infer_domain_specificity(name, description);
+        changed = true;
+    }
+    if domain.is_empty() {
+        *domain = infer_domain(name, description);
+        changed = true;
+    }
+    if domain_tags.is_empty() {
+        *domain_tags = domain.clone();
+        changed = true;
+    }
+    if scope.as_deref().is_none_or(str::is_empty) {
+        *scope = Some("task".to_string());
+        changed = true;
+    }
+    if origin_instance_id.as_deref().is_none_or(str::is_empty) {
+        *origin_instance_id = Some(WG_ORIGIN_INSTANCE_ID.to_string());
+        changed = true;
+    }
+
+    changed |= mirror_metadata(
+        metadata,
+        "domain_specificity",
+        &domain_specificity.to_string(),
+    );
+    changed |= mirror_metadata(metadata, "scope", scope.as_deref().unwrap_or("task"));
+    changed |= mirror_metadata(
+        metadata,
+        "origin_instance_id",
+        origin_instance_id
+            .as_deref()
+            .unwrap_or(WG_ORIGIN_INSTANCE_ID),
+    );
+
+    changed
+}
+
+fn mirror_metadata(metadata: &mut HashMap<String, String>, key: &str, value: &str) -> bool {
+    if value.is_empty() || metadata.get(key).is_some_and(|existing| existing == value) {
+        return false;
+    }
+    metadata.insert(key.to_string(), value.to_string());
+    true
+}
+
+fn infer_domain(name: &str, description: &str) -> Vec<String> {
+    let haystack = format!("{} {}", name, description).to_lowercase();
+    if haystack.contains("code")
+        || haystack.contains("software")
+        || haystack.contains("test")
+        || haystack.contains("debug")
+        || haystack.contains("dependency")
+        || haystack.contains("architecture")
+    {
+        vec!["software".to_string()]
+    } else if haystack.contains("research") || haystack.contains("literature") {
+        vec!["research".to_string()]
+    } else if haystack.contains("document") || haystack.contains("writing") {
+        vec!["documentation".to_string()]
+    } else {
+        vec!["general".to_string()]
+    }
+}
+
+fn infer_domain_specificity(name: &str, description: &str) -> u8 {
+    match infer_domain(name, description).first().map(String::as_str) {
+        Some("software") => 70,
+        Some("research") => 55,
+        Some("documentation") => 45,
+        _ => 10,
     }
 }
 
@@ -629,6 +812,115 @@ trade_off_config,Test Tradeoff,Tradeoff description,70,0,,inst-4,,task
             serde_yaml::from_str(&std::fs::read_to_string(&manifest_path).unwrap()).unwrap();
 
         assert_eq!(manifest.content_hash, expected_hash);
+    }
+
+    #[test]
+    fn test_agency_init_seeds_v1_2_4_compatible_primitives() {
+        let tmp = tempfile::tempdir().unwrap();
+        let wg_dir = tmp.path().join(".wg");
+        std::fs::create_dir_all(&wg_dir).unwrap();
+
+        run(&wg_dir).unwrap();
+
+        let agency_dir = wg_dir.join("agency");
+        let components =
+            agency::load_all_components(&agency_dir.join("primitives/components")).unwrap();
+        let outcomes = agency::load_all_outcomes(&agency_dir.join("primitives/outcomes")).unwrap();
+        let tradeoffs =
+            agency::load_all_tradeoffs(&agency_dir.join("primitives/tradeoffs")).unwrap();
+
+        assert!(!components.is_empty(), "init should seed role components");
+        assert!(!outcomes.is_empty(), "init should seed desired outcomes");
+        assert!(!tradeoffs.is_empty(), "init should seed tradeoff configs");
+
+        let local_components = components
+            .iter()
+            .filter(|c| c.access_control.owner == "local")
+            .collect::<Vec<_>>();
+        let local_outcomes = outcomes
+            .iter()
+            .filter(|o| o.access_control.owner == "local")
+            .collect::<Vec<_>>();
+        let local_tradeoffs = tradeoffs
+            .iter()
+            .filter(|t| t.access_control.owner == "local")
+            .collect::<Vec<_>>();
+        assert!(
+            !local_components.is_empty()
+                && !local_outcomes.is_empty()
+                && !local_tradeoffs.is_empty(),
+            "init should leave hardcoded local primitives to verify"
+        );
+
+        for component in local_components {
+            assert_v1_2_4_fields(
+                "component",
+                &component.name,
+                component.quality,
+                component.domain_specificity,
+                &component.domain,
+                component.scope.as_deref(),
+                component.origin_instance_id.as_deref(),
+            );
+        }
+        for outcome in local_outcomes {
+            assert_v1_2_4_fields(
+                "outcome",
+                &outcome.name,
+                outcome.quality,
+                outcome.domain_specificity,
+                &outcome.domain,
+                outcome.scope.as_deref(),
+                outcome.origin_instance_id.as_deref(),
+            );
+        }
+        for tradeoff in local_tradeoffs {
+            assert_v1_2_4_fields(
+                "tradeoff",
+                &tradeoff.name,
+                tradeoff.quality,
+                tradeoff.domain_specificity,
+                &tradeoff.domain,
+                tradeoff.scope.as_deref(),
+                tradeoff.origin_instance_id.as_deref(),
+            );
+        }
+
+        let manifest_path = agency_dir.join("import-manifest.yaml");
+        let manifest: agency_import::ImportManifest =
+            serde_yaml::from_str(&std::fs::read_to_string(&manifest_path).unwrap()).unwrap();
+        assert_eq!(
+            manifest.agency_compat_version.as_deref(),
+            Some(agency::WG_AGENCY_COMPAT_VERSION)
+        );
+    }
+
+    fn assert_v1_2_4_fields(
+        kind: &str,
+        name: &str,
+        quality: u8,
+        domain_specificity: u8,
+        domain: &[String],
+        scope: Option<&str>,
+        origin_instance_id: Option<&str>,
+    ) {
+        assert!(
+            quality > 0,
+            "{kind} {name} should have a positive quality score"
+        );
+        assert!(
+            domain_specificity > 0,
+            "{kind} {name} should have domain_specificity"
+        );
+        assert!(!domain.is_empty(), "{kind} {name} should have a domain");
+        assert!(
+            scope.is_some_and(|value| !value.is_empty()),
+            "{kind} {name} should have scope"
+        );
+        assert!(
+            origin_instance_id.is_some_and(|id| !id.is_empty()),
+            "{kind} {name} should have origin_instance_id"
+        );
     }
 
     #[test]
