@@ -462,6 +462,16 @@ description = "Agency MUST honor explicit `[models.assigner]` / `[models.evaluat
 timeout_seconds = 60
 
 [[scenario]]
+name = "evolve_fanout_codex_route_no_bare_aliases"
+script = "scenarios/evolve_fanout_codex_route_no_bare_aliases.sh"
+owners = [
+    "bug-evolve-run-bypasses-codex-route",
+    "smoke-gate-is",
+]
+description = "`wg evolve run --force-fanout` MUST honor the project's [tiers] and [models.evolver] config. Regression for bug-evolve-run-bypasses-codex-route: analyzer / synthesize / apply / evaluate tasks were hard-coded to bare anthropic aliases (`sonnet`/`haiku`/`opus`), so on a `wg init --route codex-cli` repo every fan-out task dispatched through the claude CLI handler regardless of `[models.evolver].model = codex:gpt-5.5`. Asserts every fan-out task model is codex-prefixed (no bare anthropic alias, no `claude:` slipping through) on a codex-routed graph."
+timeout_seconds = 60
+
+[[scenario]]
 name = "evaluator_claude_slash_model_bypasses_openrouter"
 script = "scenarios/evaluator_claude_slash_model_bypasses_openrouter.sh"
 owners = [

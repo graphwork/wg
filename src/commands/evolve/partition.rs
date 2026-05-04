@@ -4,29 +4,61 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use workgraph::agency::{Evaluation, Role, TradeoffConfig};
+use workgraph::config::{Config, Tier};
 
 use super::strategy::Strategy;
 
 /// Maximum evaluations per analyzer slice (context budget guard).
 const MAX_EVALS_PER_SLICE: usize = 400;
 
-/// Model tier recommendation for an analyzer task.
+/// Quality-tier recommendation for an analyzer task.
+///
+/// This is a wrapper around the canonical `crate::config::Tier` so the per-strategy
+/// tier preference is recorded as a quality level (fast / standard / premium) rather
+/// than a provider-specific alias. The actual model string is derived by resolving
+/// this tier through the project's `[tiers]` config — which is what gives a
+/// codex-routed repo `codex:gpt-5.4` for standard, a claude-routed repo
+/// `claude:sonnet`, and so on.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ModelTier {
-    Haiku,
+    Fast,
     #[default]
-    Sonnet,
-    Opus,
+    Standard,
+    Premium,
 }
 
 impl ModelTier {
+    /// Tier label for display purposes (`fast` / `standard` / `premium`).
     pub fn label(self) -> &'static str {
         match self {
-            Self::Haiku => "haiku",
-            Self::Sonnet => "sonnet",
-            Self::Opus => "opus",
+            Self::Fast => "fast",
+            Self::Standard => "standard",
+            Self::Premium => "premium",
         }
+    }
+
+    /// Map to the canonical `Tier` enum for config lookup.
+    pub fn to_tier(self) -> Tier {
+        match self {
+            Self::Fast => Tier::Fast,
+            Self::Standard => Tier::Standard,
+            Self::Premium => Tier::Premium,
+        }
+    }
+
+    /// Resolve to a fully-qualified model spec (e.g. `codex:gpt-5.4`,
+    /// `claude:sonnet`) by reading the project's effective `[tiers]` config.
+    /// Falls back to the built-in claude alias if the tier is unset.
+    pub fn resolve_model(self, config: &Config) -> String {
+        let tiers = config.effective_tiers_public();
+        let tier = self.to_tier();
+        match tier {
+            Tier::Fast => tiers.fast,
+            Tier::Standard => tiers.standard,
+            Tier::Premium => tiers.premium,
+        }
+        .unwrap_or_else(|| format!("claude:{}", tier.default_alias()))
     }
 }
 
@@ -153,7 +185,7 @@ fn partition_mutation(
         roles: filtered_roles.clone(),
         tradeoffs: tradeoffs.to_vec(),
         summary,
-        model_tier: ModelTier::Sonnet,
+        model_tier: ModelTier::Standard,
         stats: SliceStats {
             total_evaluations_in_system: total_evals,
             evaluations_in_slice: filtered_evals.len(),
@@ -215,7 +247,7 @@ fn partition_crossover(
         roles: filtered_roles.clone(),
         tradeoffs: tradeoffs.to_vec(),
         summary,
-        model_tier: ModelTier::Sonnet,
+        model_tier: ModelTier::Standard,
         stats: SliceStats {
             total_evaluations_in_system: total_evals,
             evaluations_in_slice: filtered_evals.len(),
@@ -248,7 +280,7 @@ fn partition_gap_analysis(
         roles: roles.to_vec(),
         tradeoffs: tradeoffs.to_vec(),
         summary,
-        model_tier: ModelTier::Opus,
+        model_tier: ModelTier::Premium,
         stats: SliceStats {
             total_evaluations_in_system: total_evals,
             evaluations_in_slice: 0,
@@ -327,7 +359,7 @@ fn partition_retirement(
         roles: filtered_roles.clone(),
         tradeoffs: filtered_tradeoffs.clone(),
         summary,
-        model_tier: ModelTier::Haiku,
+        model_tier: ModelTier::Fast,
         stats: SliceStats {
             total_evaluations_in_system: total_evals,
             evaluations_in_slice: filtered_evals.len(),
@@ -383,7 +415,7 @@ fn partition_motivation_tuning(
         roles: roles.to_vec(),
         tradeoffs: filtered_tradeoffs.clone(),
         summary,
-        model_tier: ModelTier::Sonnet,
+        model_tier: ModelTier::Standard,
         stats: SliceStats {
             total_evaluations_in_system: total_evals,
             evaluations_in_slice: filtered_evals.len(),
@@ -438,7 +470,7 @@ fn partition_component_mutation(
         roles: filtered_roles.clone(),
         tradeoffs: tradeoffs.to_vec(),
         summary,
-        model_tier: ModelTier::Sonnet,
+        model_tier: ModelTier::Standard,
         stats: SliceStats {
             total_evaluations_in_system: total_evals,
             evaluations_in_slice: filtered_evals.len(),
@@ -471,7 +503,7 @@ fn partition_randomisation(
         roles: roles.to_vec(),
         tradeoffs: tradeoffs.to_vec(),
         summary,
-        model_tier: ModelTier::Haiku,
+        model_tier: ModelTier::Fast,
         stats: SliceStats {
             total_evaluations_in_system: total_evals,
             evaluations_in_slice: 0,
@@ -531,7 +563,7 @@ fn partition_bizarre_ideation(
         roles: context_roles.clone(),
         tradeoffs: tradeoffs.to_vec(),
         summary,
-        model_tier: ModelTier::Opus,
+        model_tier: ModelTier::Premium,
         stats: SliceStats {
             total_evaluations_in_system: total_evals,
             evaluations_in_slice: 0,
@@ -583,7 +615,7 @@ fn partition_coordinator_evolution(
         roles: roles.to_vec(),
         tradeoffs: tradeoffs.to_vec(),
         summary,
-        model_tier: ModelTier::Sonnet,
+        model_tier: ModelTier::Standard,
         stats: SliceStats {
             total_evaluations_in_system: total_evals,
             evaluations_in_slice: filtered_evals.len(),

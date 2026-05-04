@@ -42,10 +42,19 @@ fn wg_binary() -> PathBuf {
 }
 
 fn wg_cmd(wg_dir: &Path, args: &[&str]) -> std::process::Output {
+    // Isolate HOME / XDG_CONFIG_HOME so we don't inherit the developer's
+    // global config (e.g. codex-routed tier defaults) into integration tests.
+    let fake_home = wg_dir
+        .parent()
+        .map(|p| p.join("home"))
+        .unwrap_or_else(|| wg_dir.join("home"));
+    let _ = fs::create_dir_all(&fake_home);
     Command::new(wg_binary())
         .arg("--dir")
         .arg(wg_dir)
         .args(args)
+        .env("HOME", &fake_home)
+        .env("XDG_CONFIG_HOME", fake_home.join(".config"))
         .env_remove("WG_TASK_ID")
         .env_remove("WG_AGENT_ID")
         .stdin(Stdio::null())
@@ -805,6 +814,10 @@ fn test_evolver_e2e_analyzer_model_tiers() {
         .filter(|t| t.id.contains("evolve-analyze"))
         .collect();
 
+    // Default config (no global codex/openrouter override): built-in tiers
+    // resolve to claude-prefixed strings. Each analyzer must carry the
+    // provider-qualified spec so the dispatcher's handler_for_model can route
+    // it correctly — bare aliases are the bug this test now guards against.
     for a in &analyzers {
         assert!(
             a.model.is_some(),
@@ -813,33 +826,40 @@ fn test_evolver_e2e_analyzer_model_tiers() {
         );
         let model = a.model.as_ref().unwrap();
         assert!(
-            model == "haiku" || model == "sonnet" || model == "opus",
-            "Analyzer {} has unexpected model: {}",
+            model.starts_with("claude:"),
+            "Analyzer {} should be claude-prefixed under built-in defaults, got {:?}",
+            a.id,
+            model
+        );
+        assert!(
+            !matches!(model.as_str(), "haiku" | "sonnet" | "opus"),
+            "Analyzer {} must not emit a bare anthropic alias (regression: \
+             bug-evolve-run-bypasses-codex-route). got {:?}",
             a.id,
             model
         );
     }
 
-    // Verify specific strategy-model assignments if they exist
+    // Verify specific strategy-tier assignments resolve to the right tier model
     if let Some(gap) = analyzers.iter().find(|a| a.id.contains("gap-analysis")) {
         assert_eq!(
             gap.model.as_deref(),
-            Some("opus"),
-            "Gap analysis should use opus"
+            Some("claude:opus"),
+            "Gap analysis (premium tier) should resolve to claude:opus under default tiers"
         );
     }
     if let Some(retirement) = analyzers.iter().find(|a| a.id.contains("retirement")) {
         assert_eq!(
             retirement.model.as_deref(),
-            Some("haiku"),
-            "Retirement should use haiku"
+            Some("claude:haiku"),
+            "Retirement (fast tier) should resolve to claude:haiku under default tiers"
         );
     }
     if let Some(mutation) = analyzers.iter().find(|a| a.id.contains("mutation-")) {
         assert_eq!(
             mutation.model.as_deref(),
-            Some("sonnet"),
-            "Mutation should use sonnet"
+            Some("claude:sonnet"),
+            "Mutation (standard tier) should resolve to claude:sonnet under default tiers"
         );
     }
 }
@@ -972,6 +992,163 @@ fn test_evolver_e2e_specific_strategy() {
             analyzers[0].id.contains("mutation"),
             "Analyzer should be for mutation strategy, got: {}",
             analyzers[0].id
+        );
+    }
+}
+
+// ===========================================================================
+// 13. Regression: codex-routed config makes fanout emit codex-prefixed models
+// ===========================================================================
+//
+// Bug `bug-evolve-run-bypasses-codex-route`: a repo configured with
+// `wg init --route codex-cli` (or equivalent `[tiers]` codex defaults plus
+// `[models.evolver].model = "codex:gpt-5.5"`) was generating evolution tasks
+// with the bare anthropic aliases `sonnet` / `haiku` / `opus`, dispatching
+// them through the claude CLI handler regardless of the route. This test
+// pins the contract: every analyzer/synthesize/apply/evaluate task model
+// must reflect the project's codex routing — no bare aliases, no claude
+// prefix slipping through.
+//
+// CLI `--model <m>` must override every task in the run; an explicit
+// `[models.evolver].model` must override the synthesizer/apply/evaluate
+// triplet without affecting analyzer tier resolution.
+
+fn write_codex_config(wg_dir: &Path) {
+    let config = r#"
+[agent]
+model = "codex:gpt-5.5"
+
+[tiers]
+fast = "codex:gpt-5.4-mini"
+standard = "codex:gpt-5.4"
+premium = "codex:gpt-5.5"
+
+[models.evolver]
+model = "codex:gpt-5.5"
+
+[models.evaluator]
+model = "codex:gpt-5.4-mini"
+"#;
+    fs::write(wg_dir.join("config.toml"), config).unwrap();
+}
+
+#[test]
+fn test_evolver_fanout_codex_route_emits_codex_models() {
+    let tmp = TempDir::new().unwrap();
+    let wg_dir = setup_workgraph(&tmp);
+    let agency_dir = wg_dir.join("agency");
+    seed_agency_data(&agency_dir);
+    write_codex_config(&wg_dir);
+
+    wg_ok(&wg_dir, &["evolve", "run", "--force-fanout"]);
+
+    let graph = load_graph(&wg_dir.join("graph.jsonl")).unwrap();
+
+    let evolve_tasks: Vec<&Task> = graph
+        .tasks()
+        .filter(|t| t.id.starts_with(".evolve-"))
+        .collect();
+
+    let analyzers: Vec<&&Task> = evolve_tasks
+        .iter()
+        .filter(|t| t.id.contains("evolve-analyze"))
+        .collect();
+    assert!(!analyzers.is_empty(), "expected at least one analyzer");
+
+    // Every fan-out task that runs an LLM must be codex-prefixed under this
+    // routing. The partition task is pre-completed and has no LLM step, so
+    // skip it. No bare anthropic alias may leak through.
+    for t in &evolve_tasks {
+        if t.id.contains("evolve-partition") {
+            continue;
+        }
+        let model = t
+            .model
+            .as_ref()
+            .unwrap_or_else(|| panic!("evolve task {} missing model", t.id));
+        assert!(
+            model.starts_with("codex:"),
+            "evolve task {} should be codex-routed, got model={:?}",
+            t.id,
+            model
+        );
+        assert!(
+            !matches!(model.as_str(), "sonnet" | "haiku" | "opus"),
+            "evolve task {} must not emit a bare anthropic alias, got model={:?}",
+            t.id,
+            model
+        );
+        assert!(
+            !model.starts_with("claude:"),
+            "evolve task {} must not be claude-routed in a codex repo, got model={:?}",
+            t.id,
+            model
+        );
+    }
+
+    // Per-tier resolution: analyzer strategies map onto the [tiers] config.
+    // gap-analysis and bizarre-ideation are premium tier → codex:gpt-5.5
+    // mutation/crossover/etc are standard tier → codex:gpt-5.4
+    // retirement and randomisation are fast tier → codex:gpt-5.4-mini
+    if let Some(gap) = analyzers.iter().find(|a| a.id.contains("gap-analysis")) {
+        assert_eq!(gap.model.as_deref(), Some("codex:gpt-5.5"));
+    }
+    if let Some(retirement) = analyzers.iter().find(|a| a.id.contains("retirement")) {
+        assert_eq!(retirement.model.as_deref(), Some("codex:gpt-5.4-mini"));
+    }
+    if let Some(mutation) = analyzers.iter().find(|a| a.id.contains("mutation-")) {
+        assert_eq!(mutation.model.as_deref(), Some("codex:gpt-5.4"));
+    }
+
+    // Synthesize/apply/evaluate use [models.evolver].model override directly.
+    for kind in ["synthesize", "apply", "evaluate"] {
+        let task = evolve_tasks
+            .iter()
+            .find(|t| t.id.contains(&format!("evolve-{kind}")))
+            .unwrap_or_else(|| panic!("missing {kind} task"));
+        assert_eq!(
+            task.model.as_deref(),
+            Some("codex:gpt-5.5"),
+            "{kind} task should follow [models.evolver].model"
+        );
+    }
+}
+
+#[test]
+fn test_evolver_fanout_cli_model_override_wins() {
+    // CLI `--model openrouter:anthropic/claude-opus-4-7` must override every
+    // analyzer/synth/apply/evaluate task in the run, regardless of the
+    // project's `[tiers]` and `[models.evolver]` config.
+    let tmp = TempDir::new().unwrap();
+    let wg_dir = setup_workgraph(&tmp);
+    let agency_dir = wg_dir.join("agency");
+    seed_agency_data(&agency_dir);
+    write_codex_config(&wg_dir);
+
+    let override_model = "openrouter:anthropic/claude-opus-4-7";
+    wg_ok(
+        &wg_dir,
+        &["evolve", "run", "--force-fanout", "--model", override_model],
+    );
+
+    let graph = load_graph(&wg_dir.join("graph.jsonl")).unwrap();
+
+    let evolve_tasks: Vec<&Task> = graph
+        .tasks()
+        .filter(|t| t.id.starts_with(".evolve-") && !t.id.contains("evolve-partition"))
+        .collect();
+    assert!(
+        !evolve_tasks.is_empty(),
+        "expected fanout to produce evolve tasks"
+    );
+
+    for t in &evolve_tasks {
+        assert_eq!(
+            t.model.as_deref(),
+            Some(override_model),
+            "evolve task {} should honor --model override, got {:?}",
+            t.id,
+            t.model
         );
     }
 }
