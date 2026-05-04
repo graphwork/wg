@@ -1046,3 +1046,12 @@ owners = [
 ]
 description = "Pins fix-codex-agent-2: Codex `exec --json` `turn.completed` usage events with input_tokens/cached_input_tokens/output_tokens/reasoning_output_tokens must populate workgraph token usage and estimated cost, while Claude assistant-message and native turn parsing still regressions-test cleanly. No live LLM call required."
 timeout_seconds = 180
+
+[[scenario]]
+name = "nex_current_data_prompt"
+script = "scenarios/nex_current_data_prompt.sh"
+owners = [
+    "fix-nex-agent",
+]
+description = "Pins fix-nex-agent: real `wg nex --eval-mode` CLI invocations against a local OAI-compatible endpoint must send current-data prompt guidance, expose web_fetch/web_search/bash in the default tool surface, accept a non-coder model spec, and make --minimal-tools explicitly fall back to bash without web_fetch/web_search."
+timeout_seconds = 60

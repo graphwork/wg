@@ -198,19 +198,7 @@ pub fn run(
     };
 
     let now = chrono::Local::now();
-    let default_system = format!(
-        "You are an AI assistant in an interactive terminal session. You have tools for \
-         reading and writing files, running shell commands, searching and fetching from \
-         the web, and summarizing or delegating work.\n\
-         \n\
-         Working directory: {}\n\
-         Current date: {} ({})\n\
-         \n\
-         Use bash to run `wg` CLI commands when you need workgraph task management.",
-        working_dir.display(),
-        now.format("%Y-%m-%d %H:%M %Z"),
-        now.format("%A"),
-    );
+    let default_system = build_default_system_prompt(&working_dir, now, minimal_tools);
     let system_with_role = if let Some(ref addendum) = role_prompt_addendum {
         format!("{}\n\n## Role\n\n{}", default_system, addendum)
     } else {
@@ -644,6 +632,44 @@ fn record_nex_invocation(effective_model: &str, endpoint: Option<&str>, eval_mod
         ));
 }
 
+fn build_default_system_prompt(
+    working_dir: &Path,
+    now: chrono::DateTime<chrono::Local>,
+    minimal_tools: bool,
+) -> String {
+    let tool_summary = if minimal_tools {
+        "You have a minimal local-development tool set for reading and writing files, \
+         running shell commands, and searching local files. In this mode, web_search and \
+         web_fetch are not available; use bash with curl or wget for HTTP requests."
+    } else {
+        "You have tools for reading and writing files, running shell commands, searching \
+         and fetching from the web, and summarizing or delegating work."
+    };
+
+    format!(
+        "You are an AI assistant in an interactive terminal session. {tool_summary}\n\
+         \n\
+         Working directory: {}\n\
+         Current date: {} ({})\n\
+         \n\
+         Use bash to run `wg` CLI commands when you need workgraph task management.\n\
+         \n\
+         When asked to produce content that requires current real-world data \
+         (weather, news, prices, dates beyond your training cutoff, schedules, laws, \
+         company facts, etc.):\n\
+         - If a web search or web fetch tool is available, use it.\n\
+         - If bash is available, use curl or wget for known data endpoints; for weather, \
+         `curl https://wttr.in/<location>` is often a useful first check.\n\
+         - If you cannot fetch live data with the available tools, state that limitation \
+         explicitly and ask the user to provide the data or confirm they want a code \
+         skeleton or placeholder.\n\
+         - Do not write code or prose that fabricates current data.",
+        working_dir.display(),
+        now.format("%Y-%m-%d %H:%M %Z"),
+        now.format("%A"),
+    )
+}
+
 /// Load an agency role/skill component by name. Scans all YAML files
 /// in `.wg/agency/primitives/components/` for one whose `name`
 /// field matches (case-insensitive substring match). Returns the
@@ -741,5 +767,71 @@ mod tests {
                 "eval mode should not write to history"
             );
         });
+    }
+
+    #[test]
+    fn test_default_prompt_directs_current_data_to_fetch_before_code() {
+        let now = chrono::DateTime::parse_from_rfc3339("2026-05-04T12:00:00-05:00")
+            .unwrap()
+            .with_timezone(&chrono::Local);
+        let prompt = build_default_system_prompt(Path::new("/tmp/work"), now, false);
+
+        assert!(prompt.contains("requires current real-world data"));
+        assert!(prompt.contains("If a web search or web fetch tool is available, use it"));
+        assert!(prompt.contains("curl https://wttr.in/<location>"));
+        assert!(prompt.contains("Do not write code or prose that fabricates current data"));
+        assert!(prompt.contains("Current date: 2026-05-04"));
+    }
+
+    #[test]
+    fn test_minimal_prompt_names_bash_http_fallback_without_web_tools() {
+        let now = chrono::DateTime::parse_from_rfc3339("2026-05-04T12:00:00-05:00")
+            .unwrap()
+            .with_timezone(&chrono::Local);
+        let prompt = build_default_system_prompt(Path::new("/tmp/work"), now, true);
+
+        assert!(prompt.contains("minimal local-development tool set"));
+        assert!(prompt.contains("web_search and web_fetch are not available"));
+        assert!(prompt.contains("use bash with curl or wget for HTTP requests"));
+        assert!(prompt.contains("If you cannot fetch live data with the available tools"));
+    }
+
+    #[test]
+    fn test_nex_default_tool_surface_has_web_fetch_and_bash() {
+        let tmp = TempDir::new().unwrap();
+        let registry = ToolRegistry::default_all(tmp.path(), tmp.path());
+        let names: Vec<String> = registry
+            .definitions()
+            .into_iter()
+            .map(|definition| definition.name)
+            .collect();
+
+        assert!(names.contains(&"web_fetch".to_string()));
+        assert!(names.contains(&"web_search".to_string()));
+        assert!(names.contains(&"bash".to_string()));
+    }
+
+    #[test]
+    fn test_nex_minimal_tool_surface_keeps_bash_without_web_fetch() {
+        let tmp = TempDir::new().unwrap();
+        let mut registry = ToolRegistry::default_all(tmp.path(), tmp.path());
+        registry.keep_only_tools(&[
+            "read_file",
+            "edit_file",
+            "write_file",
+            "bash",
+            "grep",
+            "glob",
+            "todo_write",
+        ]);
+        let names: Vec<String> = registry
+            .definitions()
+            .into_iter()
+            .map(|definition| definition.name)
+            .collect();
+
+        assert!(names.contains(&"bash".to_string()));
+        assert!(!names.contains(&"web_fetch".to_string()));
+        assert!(!names.contains(&"web_search".to_string()));
     }
 }
