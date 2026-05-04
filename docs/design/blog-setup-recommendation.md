@@ -229,7 +229,7 @@ const blog = defineCollection({
     title: z.string(),
     description: z.string(),
     date: z.date(),
-    author: z.string().default('Workgraph Team'),
+    author: z.string().default('workgraph Team'),
     readTime: z.string().optional(),  // e.g., "8 min read"
     tags: z.array(z.string()).default([]),
     draft: z.boolean().default(false),
@@ -385,7 +385,7 @@ jobs:
 ## 9. Scope Confirmation
 
 This blog is for the **workgraph project** specifically:
-- The graphwork.github.io repo description is "Workgraph - Task coordination for humans and AI agents"
+- The graphwork.github.io repo description is "workgraph - Task coordination for humans and AI agents"
 - The existing landing page is the workgraph product page
 - Content will be workgraph-related posts (project updates, technical deep dives, design philosophy)
 

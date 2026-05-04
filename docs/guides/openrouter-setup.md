@@ -1,6 +1,6 @@
 # OpenRouter Setup Guide
 
-Use [OpenRouter](https://openrouter.ai/) to access hundreds of models from a single API key. Workgraph treats OpenRouter as an OpenAI-compatible provider, so any model available on OpenRouter works with the native executor.
+Use [OpenRouter](https://openrouter.ai/) to access hundreds of models from a single API key. workgraph treats OpenRouter as an OpenAI-compatible provider, so any model available on OpenRouter works with the native executor.
 
 ---
 
@@ -244,7 +244,7 @@ This sends a request to the `/models` endpoint and confirms that:
 
 ### Streaming vs non-streaming mode
 
-Workgraph uses **streaming mode** by default for all OpenAI-compatible providers, including OpenRouter. Streaming provides:
+workgraph uses **streaming mode** by default for all OpenAI-compatible providers, including OpenRouter. Streaming provides:
 - Real-time output as tokens are generated
 - Usage statistics in the final stream chunk (via `stream_options.include_usage`)
 
@@ -275,7 +275,7 @@ Models follow the `provider/model-name` pattern:
 
 ### Searching models from the CLI
 
-Workgraph includes built-in model browsing:
+workgraph includes built-in model browsing:
 
 ```bash
 # Search by name or description

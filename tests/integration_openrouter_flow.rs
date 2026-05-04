@@ -275,7 +275,7 @@ mod provider_env_var_tests {
     #[test]
     fn integration_openrouter_endpoint_url_resolution() {
         let config_endpoints = EndpointsConfig {
-        inherit_global: false,
+            inherit_global: false,
             endpoints: vec![EndpointConfig {
                 name: "my-or".to_string(),
                 provider: "openrouter".to_string(),
@@ -302,7 +302,7 @@ mod provider_env_var_tests {
     fn integration_openrouter_endpoint_name_resolution() {
         let mut config = Config::default();
         config.llm_endpoints = EndpointsConfig {
-        inherit_global: false,
+            inherit_global: false,
             endpoints: vec![EndpointConfig {
                 name: "or-for-agents".to_string(),
                 provider: "openrouter".to_string(),
@@ -531,7 +531,7 @@ mod agent_model_preference_tests {
     fn integration_openrouter_endpoint_cascade_from_agent_provider() {
         // Simulates endpoint resolution: agent.preferred_provider → find matching endpoint
         let endpoints = EndpointsConfig {
-        inherit_global: false,
+            inherit_global: false,
             endpoints: vec![
                 EndpointConfig {
                     name: "my-openrouter".to_string(),
@@ -594,7 +594,7 @@ mod agent_model_preference_tests {
     #[test]
     fn integration_openrouter_endpoint_task_endpoint_wins() {
         let endpoints = EndpointsConfig {
-        inherit_global: false,
+            inherit_global: false,
             endpoints: vec![
                 EndpointConfig {
                     name: "or-ep".to_string(),
@@ -657,7 +657,7 @@ mod agent_model_preference_tests {
         let mut config = Config::default();
 
         config.llm_endpoints = EndpointsConfig {
-        inherit_global: false,
+            inherit_global: false,
             endpoints: vec![EndpointConfig {
                 name: "or-eval".to_string(),
                 provider: "openrouter".to_string(),
@@ -714,7 +714,7 @@ mod config_roundtrip_tests {
         // Create a config with multiple endpoints
         let mut config = Config::default();
         config.llm_endpoints = EndpointsConfig {
-        inherit_global: false,
+            inherit_global: false,
             endpoints: vec![
                 EndpointConfig {
                     name: "or-main".to_string(),
@@ -788,7 +788,7 @@ mod config_roundtrip_tests {
 
         // Set up endpoint
         config.llm_endpoints = EndpointsConfig {
-        inherit_global: false,
+            inherit_global: false,
             endpoints: vec![EndpointConfig {
                 name: "or-prod".to_string(),
                 provider: "openrouter".to_string(),
@@ -849,7 +849,7 @@ mod config_roundtrip_tests {
 
         let mut config = Config::default();
         config.llm_endpoints = EndpointsConfig {
-        inherit_global: false,
+            inherit_global: false,
             endpoints: vec![EndpointConfig {
                 name: "or-keyfile".to_string(),
                 provider: "openrouter".to_string(),
@@ -883,7 +883,7 @@ mod config_roundtrip_tests {
 
         let mut config = Config::default();
         config.llm_endpoints = EndpointsConfig {
-        inherit_global: false,
+            inherit_global: false,
             endpoints: vec![
                 EndpointConfig {
                     name: "ep-a".to_string(),
@@ -1013,7 +1013,7 @@ mod error_case_tests {
     #[test]
     fn integration_openrouter_find_by_name_nonexistent() {
         let endpoints = EndpointsConfig {
-        inherit_global: false,
+            inherit_global: false,
             endpoints: vec![EndpointConfig {
                 name: "existing".to_string(),
                 provider: "openrouter".to_string(),
@@ -1036,7 +1036,10 @@ mod error_case_tests {
 
     #[test]
     fn integration_openrouter_find_for_provider_empty_list() {
-        let endpoints = EndpointsConfig { inherit_global: false, endpoints: vec![] };
+        let endpoints = EndpointsConfig {
+            inherit_global: false,
+            endpoints: vec![],
+        };
 
         assert!(
             endpoints.find_for_provider("openrouter").is_none(),

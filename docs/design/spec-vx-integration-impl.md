@@ -368,7 +368,7 @@ pub struct TraceExport {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ExportMetadata {
-    /// Workgraph version that produced this export
+    /// workgraph version that produced this export
     pub version: String,
     /// Timestamp of export
     pub exported_at: String,

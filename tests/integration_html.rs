@@ -84,7 +84,13 @@ fn renders_index_with_only_public_task_count() {
     let graph = build_graph(vec![t1, t2, t3, internal_a, internal_b]);
 
     let dir = TempDir::new().unwrap();
-    let summary = html::render_site(&graph, dir.path(), dir.path(), html::RenderOptions::default()).unwrap();
+    let summary = html::render_site(
+        &graph,
+        dir.path(),
+        dir.path(),
+        html::RenderOptions::default(),
+    )
+    .unwrap();
 
     assert_eq!(summary.public_count, 3, "expected 3 public tasks");
     assert_eq!(summary.total_in_graph, 5);
@@ -111,7 +117,13 @@ fn internal_tasks_excluded_from_all_output() {
     let graph = build_graph(vec![public, internal, peer]);
 
     let dir = TempDir::new().unwrap();
-    html::render_site(&graph, dir.path(), dir.path(), html::RenderOptions::default()).unwrap();
+    html::render_site(
+        &graph,
+        dir.path(),
+        dir.path(),
+        html::RenderOptions::default(),
+    )
+    .unwrap();
 
     // The internal-only id should not appear in any rendered file.
     let blob = read_all(dir.path());
@@ -154,7 +166,13 @@ fn per_task_links_resolve_within_output() {
     let graph = build_graph(vec![t1.clone(), t2, t3]);
 
     let dir = TempDir::new().unwrap();
-    html::render_site(&graph, dir.path(), dir.path(), html::RenderOptions::default()).unwrap();
+    html::render_site(
+        &graph,
+        dir.path(),
+        dir.path(),
+        html::RenderOptions::default(),
+    )
+    .unwrap();
 
     // Index should link to tasks/a.html, tasks/b.html, tasks/c.html.
     let index = fs::read_to_string(dir.path().join("index.html")).unwrap();
@@ -175,8 +193,14 @@ fn per_task_links_resolve_within_output() {
 
     // a's page should mention dependents (b and c) via "Required by".
     let a_page = fs::read_to_string(dir.path().join("tasks/a.html")).unwrap();
-    assert!(a_page.contains("./b.html"), "a page missing dependent link to b");
-    assert!(a_page.contains("./c.html"), "a page missing dependent link to c");
+    assert!(
+        a_page.contains("./b.html"),
+        "a page missing dependent link to b"
+    );
+    assert!(
+        a_page.contains("./c.html"),
+        "a page missing dependent link to c"
+    );
 
     // No file should reference a hashed/missing path.
     let _ = t1; // silence unused
@@ -188,7 +212,13 @@ fn empty_public_graph_renders_without_crashing() {
     let graph = build_graph(vec![internal]);
 
     let dir = TempDir::new().unwrap();
-    let summary = html::render_site(&graph, dir.path(), dir.path(), html::RenderOptions::default()).unwrap();
+    let summary = html::render_site(
+        &graph,
+        dir.path(),
+        dir.path(),
+        html::RenderOptions::default(),
+    )
+    .unwrap();
     assert_eq!(summary.public_count, 0);
     assert_eq!(summary.pages_written, 0);
 
@@ -210,9 +240,16 @@ fn show_all_overrides_visibility_filter() {
         &graph,
         dir.path(),
         dir.path(),
-        html::RenderOptions { show_all: true, ..Default::default() },
-    ).unwrap();
-    assert_eq!(summary.public_count, 2, "with --all both tasks should appear");
+        html::RenderOptions {
+            show_all: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        summary.public_count, 2,
+        "with --all both tasks should appear"
+    );
     assert_eq!(summary.pages_written, 2);
 
     let blob = read_all(dir.path());
@@ -234,7 +271,13 @@ fn dag_layout_renders_task_ids() {
 
     let graph = build_graph(vec![a, b, c]);
     let dir = TempDir::new().unwrap();
-    html::render_site(&graph, dir.path(), dir.path(), html::RenderOptions::default()).unwrap();
+    html::render_site(
+        &graph,
+        dir.path(),
+        dir.path(),
+        html::RenderOptions::default(),
+    )
+    .unwrap();
 
     let index = fs::read_to_string(dir.path().join("index.html")).unwrap();
     // viz-pre element present (ASCII viz, not SVG).
@@ -246,7 +289,10 @@ fn dag_layout_renders_task_ids() {
     // Status colors appear in the legend swatches.
     assert!(index.contains("rgb(80,220,100)"), "Done color missing");
     // In-progress = TUI Color::Yellow (render.rs `indexed_color_to_rgb`).
-    assert!(index.contains("rgb(229,229,16)"), "InProgress color missing");
+    assert!(
+        index.contains("rgb(229,229,16)"),
+        "InProgress color missing"
+    );
     assert!(index.contains("rgb(200,200,80)"), "Open color missing");
 }
 
@@ -257,7 +303,13 @@ fn description_html_is_escaped() {
 
     let graph = build_graph(vec![t]);
     let dir = TempDir::new().unwrap();
-    html::render_site(&graph, dir.path(), dir.path(), html::RenderOptions::default()).unwrap();
+    html::render_site(
+        &graph,
+        dir.path(),
+        dir.path(),
+        html::RenderOptions::default(),
+    )
+    .unwrap();
 
     let page = fs::read_to_string(dir.path().join("tasks/xss-test.html")).unwrap();
     assert!(
@@ -265,10 +317,7 @@ fn description_html_is_escaped() {
         "raw <script> tag leaked: {}",
         &page
     );
-    assert!(
-        page.contains("&lt;script&gt;"),
-        "expected escaped <script>"
-    );
+    assert!(page.contains("&lt;script&gt;"), "expected escaped <script>");
 }
 
 /// Render `desc` as a public task description through `wg html` and
@@ -279,7 +328,13 @@ fn render_description_page(desc: &str) -> String {
     t.description = Some(desc.into());
     let graph = build_graph(vec![t]);
     let dir = TempDir::new().unwrap();
-    html::render_site(&graph, dir.path(), dir.path(), html::RenderOptions::default()).unwrap();
+    html::render_site(
+        &graph,
+        dir.path(),
+        dir.path(),
+        html::RenderOptions::default(),
+    )
+    .unwrap();
     fs::read_to_string(dir.path().join("tasks/xss-test.html")).unwrap()
 }
 
@@ -308,9 +363,8 @@ fn description_sanitizer_strips_iframe() {
 
 #[test]
 fn description_sanitizer_strips_object_and_embed() {
-    let page = render_description_page(
-        "<object data=\"evil.swf\"></object><embed src=\"evil.swf\">",
-    );
+    let page =
+        render_description_page("<object data=\"evil.swf\"></object><embed src=\"evil.swf\">");
     let pretty = pretty_block(&page);
     assert!(
         !pretty.contains("<object"),
@@ -376,8 +430,14 @@ fn description_sanitizer_preserves_safe_markdown() {
     );
     let pretty = pretty_block(&page);
     assert!(pretty.contains("<h2>"), "heading dropped: {pretty}");
-    assert!(pretty.contains("<strong>bold</strong>"), "bold dropped: {pretty}");
-    assert!(pretty.contains("<code>code</code>"), "code dropped: {pretty}");
+    assert!(
+        pretty.contains("<strong>bold</strong>"),
+        "bold dropped: {pretty}"
+    );
+    assert!(
+        pretty.contains("<code>code</code>"),
+        "code dropped: {pretty}"
+    );
     assert!(
         pretty.contains("href=\"https://example.com/\""),
         "https link dropped: {pretty}"
@@ -398,7 +458,13 @@ fn dependency_on_internal_task_aggregates_as_count_no_id_leak() {
 
     let graph = build_graph(vec![pub_a, internal_assign, internal_other]);
     let dir = TempDir::new().unwrap();
-    html::render_site(&graph, dir.path(), dir.path(), html::RenderOptions::default()).unwrap();
+    html::render_site(
+        &graph,
+        dir.path(),
+        dir.path(),
+        html::RenderOptions::default(),
+    )
+    .unwrap();
 
     let page = fs::read_to_string(dir.path().join("tasks/pub-a.html")).unwrap();
     assert!(
@@ -426,7 +492,13 @@ fn output_files_layout_matches_expected() {
     let graph = build_graph(vec![p1, p2]);
 
     let dir = TempDir::new().unwrap();
-    html::render_site(&graph, dir.path(), dir.path(), html::RenderOptions::default()).unwrap();
+    html::render_site(
+        &graph,
+        dir.path(),
+        dir.path(),
+        html::RenderOptions::default(),
+    )
+    .unwrap();
 
     let files: HashSet<String> = paths_in(dir.path()).into_iter().collect();
     assert!(files.contains("index.html"));
@@ -460,17 +532,24 @@ fn since_filter_excludes_old_tasks_and_notes_in_footer() {
             since: Some("24h".into()),
             ..Default::default()
         },
-    ).unwrap();
+    )
+    .unwrap();
 
-    assert_eq!(summary.public_count, 1, "expected only 1 task within 24h window");
-    assert!(dir.path().join("tasks/recent-task.html").exists(), "recent-task page missing");
-    assert!(!dir.path().join("tasks/old-task.html").exists(), "old-task page should not exist");
+    assert_eq!(
+        summary.public_count, 1,
+        "expected only 1 task within 24h window"
+    );
+    assert!(
+        dir.path().join("tasks/recent-task.html").exists(),
+        "recent-task page missing"
+    );
+    assert!(
+        !dir.path().join("tasks/old-task.html").exists(),
+        "old-task page should not exist"
+    );
 
     let index = fs::read_to_string(dir.path().join("index.html")).unwrap();
-    assert!(
-        index.contains("last 24h"),
-        "footer must mention 'last 24h'"
-    );
+    assert!(index.contains("last 24h"), "footer must mention 'last 24h'");
 }
 
 #[test]
@@ -495,10 +574,20 @@ fn since_filter_composes_with_visibility() {
             since: Some("24h".into()),
             ..Default::default()
         },
-    ).unwrap();
-    assert_eq!(summary.public_count, 1, "public-only filter should keep 1 public task");
-    assert!(dir.path().join("tasks/pub-recent.html").exists(), "public recent task page missing");
-    assert!(!dir.path().join("tasks/int-recent.html").exists(), "internal task must not appear");
+    )
+    .unwrap();
+    assert_eq!(
+        summary.public_count, 1,
+        "public-only filter should keep 1 public task"
+    );
+    assert!(
+        dir.path().join("tasks/pub-recent.html").exists(),
+        "public recent task page missing"
+    );
+    assert!(
+        !dir.path().join("tasks/int-recent.html").exists(),
+        "internal task must not appear"
+    );
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -511,7 +600,7 @@ fn since_filter_composes_with_visibility() {
 
 #[test]
 fn declutter_index_has_clean_header_no_redundant_text() {
-    // Spec: top of page shows "Workgraph" + task count, no "click a task to
+    // Spec: top of page shows "workgraph" + task count, no "click a task to
     // inspect" subtitle, no "Dependency graph (...)" parenthetical, no
     // inline `<section class="legend-section">` (legend lives in panel only).
     let t = make_task("only", "Only", "public");
@@ -521,7 +610,10 @@ fn declutter_index_has_clean_header_no_redundant_text() {
         &graph,
         dir.path(),
         dir.path(),
-        html::RenderOptions { show_all: true, ..Default::default() },
+        html::RenderOptions {
+            show_all: true,
+            ..Default::default()
+        },
     )
     .unwrap();
 
@@ -566,7 +658,10 @@ fn declutter_index_includes_legend_toggle_button_and_template() {
         &graph,
         dir.path(),
         dir.path(),
-        html::RenderOptions { show_all: true, ..Default::default() },
+        html::RenderOptions {
+            show_all: true,
+            ..Default::default()
+        },
     )
     .unwrap();
 
@@ -627,8 +722,12 @@ fn v2_index_includes_theme_toggle_and_panel_assets() {
         &graph,
         dir.path(),
         dir.path(),
-        html::RenderOptions { show_all: true, ..Default::default() },
-    ).unwrap();
+        html::RenderOptions {
+            show_all: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
 
     let index = fs::read_to_string(dir.path().join("index.html")).unwrap();
 
@@ -673,26 +772,36 @@ fn v2_css_carries_tui_palette() {
         &graph,
         dir.path(),
         dir.path(),
-        html::RenderOptions { show_all: true, ..Default::default() },
-    ).unwrap();
+        html::RenderOptions {
+            show_all: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
 
     let css = fs::read_to_string(dir.path().join("style.css")).unwrap();
     // Status colors (TUI flash_color_for_status, state.rs:271; in-progress
     // overrides to TUI Color::Yellow to match the rendered badge).
     for needle in [
-        "rgb(80, 220, 100)",  // done
-        "rgb(220, 60, 60)",   // failed
-        "rgb(229, 229, 16)",  // in-progress = Color::Yellow (render.rs)
-        "rgb(200, 200, 80)",  // open
-        "rgb(60, 160, 220)",  // waiting
-        "rgb(140, 230, 80)",  // pending-eval
+        "rgb(80, 220, 100)", // done
+        "rgb(220, 60, 60)",  // failed
+        "rgb(229, 229, 16)", // in-progress = Color::Yellow (render.rs)
+        "rgb(200, 200, 80)", // open
+        "rgb(60, 160, 220)", // waiting
+        "rgb(140, 230, 80)", // pending-eval
     ] {
         assert!(css.contains(needle), "missing TUI status color {}", needle);
     }
     // Edge highlight colors (TUI render.rs:1500 — magenta/cyan/yellow)
-    assert!(css.contains("rgb(188, 63, 188)"), "missing magenta edge color");
+    assert!(
+        css.contains("rgb(188, 63, 188)"),
+        "missing magenta edge color"
+    );
     assert!(css.contains("rgb(17, 168, 205)"), "missing cyan edge color");
-    assert!(css.contains("rgb(229, 229, 16)"), "missing yellow edge color");
+    assert!(
+        css.contains("rgb(229, 229, 16)"),
+        "missing yellow edge color"
+    );
 }
 
 #[test]
@@ -703,8 +812,12 @@ fn v2_css_supports_dark_and_light_themes() {
         &graph,
         dir.path(),
         dir.path(),
-        html::RenderOptions { show_all: true, ..Default::default() },
-    ).unwrap();
+        html::RenderOptions {
+            show_all: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
 
     let css = fs::read_to_string(dir.path().join("style.css")).unwrap();
     // Dark theme is the default (no media query needed).
@@ -738,8 +851,12 @@ fn v2_inline_json_blobs_present_in_index() {
         &graph,
         dir.path(),
         dir.path(),
-        html::RenderOptions { show_all: true, ..Default::default() },
-    ).unwrap();
+        html::RenderOptions {
+            show_all: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
 
     let index = fs::read_to_string(dir.path().join("index.html")).unwrap();
     // Three JSON blobs feed the panel JS: tasks, edges (reachability), cycles.
@@ -783,8 +900,12 @@ fn v2_task_list_links_carry_data_task_id_for_panel_wiring() {
         &graph,
         dir.path(),
         dir.path(),
-        html::RenderOptions { show_all: true, ..Default::default() },
-    ).unwrap();
+        html::RenderOptions {
+            show_all: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
 
     let index = fs::read_to_string(dir.path().join("index.html")).unwrap();
     assert!(
@@ -822,8 +943,12 @@ fn v2_index_renders_static_when_viz_subprocess_unavailable() {
         &graph,
         dir.path(),
         dir.path(),
-        html::RenderOptions { show_all: true, ..Default::default() },
-    ).unwrap();
+        html::RenderOptions {
+            show_all: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
 
     let index = fs::read_to_string(dir.path().join("index.html")).unwrap();
     // Even without viz, the panel container must exist for clickability.
@@ -854,8 +979,12 @@ fn v2_inspector_panel_has_resize_handle() {
         &graph,
         dir.path(),
         dir.path(),
-        html::RenderOptions { show_all: true, ..Default::default() },
-    ).unwrap();
+        html::RenderOptions {
+            show_all: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
 
     let index = fs::read_to_string(dir.path().join("index.html")).unwrap();
     assert!(
@@ -973,11 +1102,23 @@ fn chat_default_no_chat_flag_omits_transcript_but_keeps_task_node() {
 
     let blob = read_rendered_html(dir.path());
     // Task node still appears.
-    assert!(blob.contains(".chat-9"), "chat task id missing from default-mode output");
+    assert!(
+        blob.contains(".chat-9"),
+        "chat task id missing from default-mode output"
+    );
     // But transcript content is absent.
-    assert!(!blob.contains("hello assistant"), "transcript leaked without --chat");
-    assert!(!blob.contains("hello back"), "transcript leaked without --chat");
-    assert!(!blob.contains("Conversation"), "Conversation header rendered without --chat");
+    assert!(
+        !blob.contains("hello assistant"),
+        "transcript leaked without --chat"
+    );
+    assert!(
+        !blob.contains("hello back"),
+        "transcript leaked without --chat"
+    );
+    assert!(
+        !blob.contains("Conversation"),
+        "Conversation header rendered without --chat"
+    );
 }
 
 #[test]
@@ -1001,7 +1142,10 @@ fn chat_flag_includes_public_transcripts_only() {
         },
     )
     .unwrap();
-    assert_eq!(summary.chat_transcripts_shown, 1, "expected 1 public transcript");
+    assert_eq!(
+        summary.chat_transcripts_shown, 1,
+        "expected 1 public transcript"
+    );
     assert_eq!(
         summary.chat_transcripts_hidden_by_visibility, 1,
         "expected 1 internal transcript hidden"
@@ -1009,8 +1153,14 @@ fn chat_flag_includes_public_transcripts_only() {
 
     // Public chat page contains transcript content.
     let pub_page = fs::read_to_string(dir.path().join("tasks/.chat-1.html")).unwrap();
-    assert!(pub_page.contains("Conversation"), "public chat page missing Conversation");
-    assert!(pub_page.contains("hello assistant"), "public chat msg missing");
+    assert!(
+        pub_page.contains("Conversation"),
+        "public chat page missing Conversation"
+    );
+    assert!(
+        pub_page.contains("hello assistant"),
+        "public chat msg missing"
+    );
     assert!(pub_page.contains("hello back"), "public chat reply missing");
 
     // Internal chat page exists but transcript is hidden behind a notice.
@@ -1019,7 +1169,10 @@ fn chat_flag_includes_public_transcripts_only() {
         int_page.contains("Chat transcript hidden"),
         "expected hidden marker on internal chat page, got: {int_page}"
     );
-    assert!(int_page.contains("visibility: internal"), "visibility label missing");
+    assert!(
+        int_page.contains("visibility: internal"),
+        "visibility label missing"
+    );
     assert!(int_page.contains("--all"), "remediation hint missing");
     assert!(
         !int_page.contains("hello assistant"),
@@ -1061,11 +1214,17 @@ fn chat_all_includes_internal_transcripts() {
         },
     )
     .unwrap();
-    assert_eq!(summary.chat_transcripts_shown, 2, "all chats should be rendered");
+    assert_eq!(
+        summary.chat_transcripts_shown, 2,
+        "all chats should be rendered"
+    );
     assert_eq!(summary.chat_transcripts_hidden_by_visibility, 0);
 
     let int_page = fs::read_to_string(dir.path().join("tasks/.chat-2.html")).unwrap();
-    assert!(int_page.contains("hello assistant"), "internal chat content not rendered with --all");
+    assert!(
+        int_page.contains("hello assistant"),
+        "internal chat content not rendered with --all"
+    );
     assert!(
         !int_page.contains("Chat transcript hidden"),
         "hidden marker should not appear with --all"
@@ -1136,7 +1295,10 @@ fn chat_zero_visible_with_chat_flag_message_when_all_internal() {
         "expected 'Showing 0 chat transcripts' message, got: {}",
         &index[..index.len().min(3000)],
     );
-    assert!(index.contains("--all"), "remediation hint missing for zero-shown case");
+    assert!(
+        index.contains("--all"),
+        "remediation hint missing for zero-shown case"
+    );
 }
 
 #[test]
@@ -1181,7 +1343,10 @@ fn chat_transcript_sanitizes_secrets_before_rendering() {
     );
     assert!(!page.contains("hunter2"), "env-var secret leaked: {page}");
     assert!(!page.contains("openai.key"), "secret path leaked: {page}");
-    assert!(page.contains("[redacted]"), "expected redaction marker: {page}");
+    assert!(
+        page.contains("[redacted]"),
+        "expected redaction marker: {page}"
+    );
 }
 
 #[test]
@@ -1208,8 +1373,14 @@ fn chat_transcript_renders_in_chronological_order() {
     let p1 = page.find("hello assistant").expect("first inbox missing");
     let p2 = page.find("hello back").expect("first outbox missing");
     let p3 = page.find("what is 2+2").expect("second inbox missing");
-    let p4 = page.find("4</pre>").or_else(|| page.find("4<")).expect("second outbox missing");
-    assert!(p1 < p2 && p2 < p3 && p3 < p4, "messages out of order in {page}");
+    let p4 = page
+        .find("4</pre>")
+        .or_else(|| page.find("4<"))
+        .expect("second outbox missing");
+    assert!(
+        p1 < p2 && p2 < p3 && p3 < p4,
+        "messages out of order in {page}"
+    );
 }
 
 #[test]
@@ -1361,8 +1532,7 @@ fn agency_tasks_get_dim_marker_class_when_visible() {
     // task-link spans for agency tasks must carry the is-agency class so the
     // CSS dim treatment applies.
     assert!(
-        index.contains(r#"class="task-link is-agency""#)
-            || index.contains(r#"is-agency"#),
+        index.contains(r#"class="task-link is-agency""#) || index.contains(r#"is-agency"#),
         "expected is-agency class somewhere in the rendered viz / list"
     );
 
@@ -1419,7 +1589,13 @@ fn css_pins_terminal_cell_invariants_on_viz_pre() {
     let dir = TempDir::new().unwrap();
     let t = make_task("alpha", "alpha", "public");
     let graph = build_graph(vec![t]);
-    html::render_site(&graph, dir.path(), dir.path(), html::RenderOptions::default()).unwrap();
+    html::render_site(
+        &graph,
+        dir.path(),
+        dir.path(),
+        html::RenderOptions::default(),
+    )
+    .unwrap();
 
     let css = fs::read_to_string(dir.path().join("style.css")).unwrap();
 
@@ -1533,7 +1709,13 @@ fn bundles_jetbrains_mono_webfont_for_box_drawing_alignment() {
     let dir = TempDir::new().unwrap();
     let t = make_task("alpha", "alpha", "public");
     let graph = build_graph(vec![t]);
-    html::render_site(&graph, dir.path(), dir.path(), html::RenderOptions::default()).unwrap();
+    html::render_site(
+        &graph,
+        dir.path(),
+        dir.path(),
+        html::RenderOptions::default(),
+    )
+    .unwrap();
 
     // (1) WOFF2 file present and non-empty.
     let woff2_path = dir.path().join("JetBrainsMono-viz.woff2");
@@ -1590,8 +1772,10 @@ fn bundles_jetbrains_mono_webfont_for_box_drawing_alignment() {
 
     // (5) Font stack: JetBrains Mono first + Android-friendly fallbacks.
     let viz_pre_start = css.find(".viz-pre {").expect("missing .viz-pre block");
-    let viz_pre_end =
-        viz_pre_start + css[viz_pre_start..].find('}').expect("unterminated .viz-pre block");
+    let viz_pre_end = viz_pre_start
+        + css[viz_pre_start..]
+            .find('}')
+            .expect("unterminated .viz-pre block");
     let viz_pre_block = &css[viz_pre_start..viz_pre_end];
 
     let font_family_start = viz_pre_block

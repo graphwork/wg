@@ -17,7 +17,7 @@ export OPENROUTER_API_KEY="sk-or-v1-your-key-here"
 wg service start
 ```
 
-That's it. Workgraph ships with built-in defaults for popular models via OpenRouter.
+That's it. workgraph ships with built-in defaults for popular models via OpenRouter.
 
 **Want to be more explicit?** Add a named endpoint:
 
@@ -104,7 +104,7 @@ No API key needed for local models.
 └─────────────────────────────────────────────────────────────┘
 ```
 
-**Model Registry** — A catalog of available models with metadata (cost, capabilities, tier). Workgraph ships with 13+ built-in models. You can add custom ones.
+**Model Registry** — A catalog of available models with metadata (cost, capabilities, tier). workgraph ships with 13+ built-in models. You can add custom ones.
 
 **Model Routing** — Maps dispatch roles (evaluator, triage, etc.) to specific models. Controls which model each type of agent uses.
 

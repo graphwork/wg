@@ -222,7 +222,13 @@ pub fn refresh(dir: &Path) -> Result<()> {
 }
 
 /// Show current profile and resolved model mappings.
-pub fn show(dir: &Path, json: bool, verbose: bool, profile_name: Option<&str>, _diff_base: bool) -> Result<()> {
+pub fn show(
+    dir: &Path,
+    json: bool,
+    verbose: bool,
+    profile_name: Option<&str>,
+    _diff_base: bool,
+) -> Result<()> {
     // If a specific named profile is requested, show its raw contents.
     if let Some(name) = profile_name {
         let prof = named_profile::load(name)?;
@@ -274,7 +280,12 @@ pub fn show(dir: &Path, json: bool, verbose: bool, profile_name: Option<&str>, _
             }
             if let Some(ref ep) = prof.llm_endpoints {
                 for endpoint in &ep.endpoints {
-                    println!("  endpoint: {} ({}) url={}", endpoint.name, endpoint.provider, endpoint.url.as_deref().unwrap_or("(none)"));
+                    println!(
+                        "  endpoint: {} ({}) url={}",
+                        endpoint.name,
+                        endpoint.provider,
+                        endpoint.url.as_deref().unwrap_or("(none)")
+                    );
                 }
             }
             let path = named_profile::profile_path(name)?;
@@ -337,7 +348,9 @@ pub fn show(dir: &Path, json: bool, verbose: bool, profile_name: Option<&str>, _
             }
             None => {
                 println!("Profile: (none)");
-                println!("  Using default config. Run `wg profile init-starters` and `wg profile use <name>`.");
+                println!(
+                    "  Using default config. Run `wg profile init-starters` and `wg profile use <name>`."
+                );
             }
         },
     }
@@ -488,9 +501,7 @@ pub fn list(dir: &Path, json: bool, installed_only: bool) -> Result<()> {
         // Installed user profiles
         for name in &installed {
             let is_active = active.as_deref() == Some(name.as_str());
-            let desc = named_profile::load(name)
-                .ok()
-                .and_then(|p| p.description);
+            let desc = named_profile::load(name).ok().and_then(|p| p.description);
             items.push(serde_json::json!({
                 "name": name,
                 "kind": "user",
@@ -578,7 +589,11 @@ pub fn list(dir: &Path, json: bool, installed_only: bool) -> Result<()> {
             for p in &legacy {
                 let config = Config::load_merged(dir)?;
                 let active_legacy = config.profile.as_deref();
-                let marker = if active_legacy == Some(p.name) { " *" } else { "" };
+                let marker = if active_legacy == Some(p.name) {
+                    " *"
+                } else {
+                    ""
+                };
                 println!("  {:<12} {}{}", p.name, p.description, marker);
             }
         }
@@ -662,8 +677,8 @@ pub fn use_profile(dir: &Path, name: Option<&str>, no_reload: bool, clear: bool)
 
 /// Send a Reconfigure IPC to the running daemon (if any), or silently continue.
 fn trigger_daemon_reload(dir: &Path, profile_name: Option<&str>) {
-    use crate::commands::service::{self, ServiceState};
     use crate::commands::service::ipc::IpcRequest;
+    use crate::commands::service::{self, ServiceState};
     use workgraph::service::is_process_alive;
 
     let running = match ServiceState::load(dir) {
@@ -695,7 +710,10 @@ fn trigger_daemon_reload(dir: &Path, profile_name: Option<&str>) {
             );
         }
         Err(e) => {
-            eprintln!("  Warning: could not reach daemon: {}. Profile will apply on next start.", e);
+            eprintln!(
+                "  Warning: could not reach daemon: {}. Profile will apply on next start.",
+                e
+            );
         }
     }
 }
@@ -709,8 +727,10 @@ pub fn create_profile(
     description: Option<&str>,
     force: bool,
 ) -> Result<()> {
-    use workgraph::profile::named::{NamedProfile, ProfileAgentSection, ProfileDispatcherSection, ProfileEndpointsSection};
     use workgraph::config::EndpointConfig;
+    use workgraph::profile::named::{
+        NamedProfile, ProfileAgentSection, ProfileDispatcherSection, ProfileEndpointsSection,
+    };
 
     let path = named_profile::profile_path(name)?;
     if path.exists() && !force {
@@ -726,7 +746,9 @@ pub fn create_profile(
             Ok(p) => p,
             Err(_) => {
                 if let Some(tmpl) = named_profile::starter_template(from_name) {
-                    toml::from_str(tmpl).with_context(|| format!("Failed to parse starter template '{}'", from_name))?
+                    toml::from_str(tmpl).with_context(|| {
+                        format!("Failed to parse starter template '{}'", from_name)
+                    })?
                 } else {
                     anyhow::bail!("Profile or starter '{}' not found", from_name);
                 }
@@ -740,8 +762,12 @@ pub fn create_profile(
         prof.description = Some(desc.to_string());
     }
     if let Some(m) = model {
-        prof.agent = Some(ProfileAgentSection { model: Some(m.to_string()) });
-        prof.dispatcher = Some(ProfileDispatcherSection { model: Some(m.to_string()) });
+        prof.agent = Some(ProfileAgentSection {
+            model: Some(m.to_string()),
+        });
+        prof.dispatcher = Some(ProfileDispatcherSection {
+            model: Some(m.to_string()),
+        });
     }
     if let Some(url) = endpoint {
         prof.llm_endpoints = Some(ProfileEndpointsSection {
@@ -797,9 +823,7 @@ pub fn edit_profile(dir: &Path, name: &str, no_reload: bool) -> Result<()> {
     })?;
     println!("Profile '{}' saved and validated.", name);
 
-    let is_active = named_profile::active()
-        .unwrap_or(None)
-        .as_deref() == Some(name);
+    let is_active = named_profile::active().unwrap_or(None).as_deref() == Some(name);
 
     if is_active && !no_reload {
         trigger_daemon_reload(dir, Some(name));
@@ -815,9 +839,7 @@ pub fn delete_profile(name: &str, force: bool) -> Result<()> {
         anyhow::bail!("Profile '{}' not found at {}", name, path.display());
     }
 
-    let is_active = named_profile::active()
-        .unwrap_or(None)
-        .as_deref() == Some(name);
+    let is_active = named_profile::active().unwrap_or(None).as_deref() == Some(name);
 
     if is_active && !force {
         anyhow::bail!(
@@ -855,8 +877,16 @@ pub fn diff_profiles(a: &str, b: Option<&str>) -> Result<()> {
     println!("+++ {}", label_b);
     println!();
 
-    let lines_a: Vec<&str> = if b.is_some() { toml_a.lines().collect() } else { vec![] };
-    let lines_b: Vec<&str> = if b.is_some() { toml_b.lines().collect() } else { toml_a.lines().collect() };
+    let lines_a: Vec<&str> = if b.is_some() {
+        toml_a.lines().collect()
+    } else {
+        vec![]
+    };
+    let lines_b: Vec<&str> = if b.is_some() {
+        toml_b.lines().collect()
+    } else {
+        toml_a.lines().collect()
+    };
     print_simple_diff(&lines_a, &lines_b);
 
     Ok(())
@@ -926,9 +956,7 @@ pub fn init_starters(force: bool) -> Result<()> {
     // `wgnext.toml -> nex.toml`) that still says `wg-next:` in its description.
     // The previous rename only updated the in-binary template; existing files
     // were untouched. Conservative: only the description line is rewritten.
-    if canonical_path.exists()
-        && named_profile::migrate_stale_description(&canonical_path)?
-    {
+    if canonical_path.exists() && named_profile::migrate_stale_description(&canonical_path)? {
         migrated += 1;
         println!(
             "  refreshed description in {} (was 'wg-next:', now 'wg nex:')",
@@ -943,7 +971,10 @@ pub fn init_starters(force: bool) -> Result<()> {
         let path = dir.join(format!("{}.toml", name));
         if path.exists() && !force {
             skipped += 1;
-            println!("  skip  {} (already exists; use --force to overwrite)", name);
+            println!(
+                "  skip  {} (already exists; use --force to overwrite)",
+                name
+            );
             continue;
         }
         let tmpl = named_profile::starter_template(name).expect("starter template must exist");

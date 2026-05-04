@@ -1,4 +1,4 @@
-# Current Validation Mechanisms in Workgraph
+# Current Validation Mechanisms in workgraph
 
 Research deliverable for task `research-current-validation`.
 

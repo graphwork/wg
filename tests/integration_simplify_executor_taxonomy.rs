@@ -27,8 +27,7 @@ fn wg_binary() -> std::path::PathBuf {
     if let Ok(p) = std::env::var("CARGO_BIN_EXE_wg") {
         return p.into();
     }
-    let manifest = std::env::var("CARGO_MANIFEST_DIR")
-        .unwrap_or_else(|_| ".".to_string());
+    let manifest = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string());
     Path::new(&manifest).join("target/debug/wg")
 }
 
@@ -45,8 +44,7 @@ fn wg_init(dir: &Path, args: &[&str]) -> std::process::Output {
 }
 
 fn read_config_toml(wg_dir: &Path) -> String {
-    std::fs::read_to_string(wg_dir.join("config.toml"))
-        .unwrap_or_else(|_| String::new())
+    std::fs::read_to_string(wg_dir.join("config.toml")).unwrap_or_else(|_| String::new())
 }
 
 // --------------------------------------------------------------------

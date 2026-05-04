@@ -31,6 +31,17 @@ fn make_tool_registry() -> ToolRegistry {
     registry
 }
 
+fn tempdir_in_cwd() -> TempDir {
+    let root = std::env::current_dir()
+        .unwrap()
+        .join(".tmp-test-edit-file-edge-cases");
+    fs::create_dir_all(&root).unwrap();
+    tempfile::Builder::new()
+        .prefix("case-")
+        .tempdir_in(root)
+        .unwrap()
+}
+
 /// Helper to execute the edit_file tool with given parameters
 async fn edit_file(
     registry: &ToolRegistry,
@@ -63,7 +74,7 @@ fn error_msg(output: &ToolOutput) -> String {
 /// Test: Unix line endings (\n) work correctly
 #[tokio::test]
 async fn test_edit_with_unix_line_endings() {
-    let dir = TempDir::new().unwrap();
+    let dir = tempdir_in_cwd();
     let file_path = dir.path().join("unix_lines.txt");
 
     fs::write(&file_path, "line1\nline2\nline3\n").unwrap();
@@ -89,7 +100,7 @@ async fn test_edit_with_unix_line_endings() {
 /// Test: Windows line endings (\r\n) work correctly
 #[tokio::test]
 async fn test_edit_with_windows_line_endings() {
-    let dir = TempDir::new().unwrap();
+    let dir = tempdir_in_cwd();
     let file_path = dir.path().join("windows_lines.txt");
 
     fs::write(&file_path, "line1\r\nline2\r\nline3\r\n").unwrap();
@@ -115,7 +126,7 @@ async fn test_edit_with_windows_line_endings() {
 /// Test: Mismatch between Unix search string and Windows file fails
 #[tokio::test]
 async fn test_edit_fails_on_line_ending_mismatch() {
-    let dir = TempDir::new().unwrap();
+    let dir = tempdir_in_cwd();
     let file_path = dir.path().join("mismatch.txt");
 
     fs::write(&file_path, "line1\r\nline2\r\nline3\r\n").unwrap();
@@ -141,7 +152,7 @@ async fn test_edit_fails_on_line_ending_mismatch() {
 /// Test: Mixed line endings in file content
 #[tokio::test]
 async fn test_edit_with_mixed_line_endings() {
-    let dir = TempDir::new().unwrap();
+    let dir = tempdir_in_cwd();
     let file_path = dir.path().join("mixed.txt");
 
     fs::write(&file_path, "unix\nwindows\r\nmixed\r\nunix2\n").unwrap();
@@ -166,7 +177,7 @@ async fn test_edit_with_mixed_line_endings() {
 /// Test: Extra spaces in search string causes failure
 #[tokio::test]
 async fn test_edit_fails_with_extra_spaces() {
-    let dir = TempDir::new().unwrap();
+    let dir = tempdir_in_cwd();
     let file_path = dir.path().join("spaces.txt");
 
     fs::write(&file_path, "hello world").unwrap();
@@ -186,7 +197,7 @@ async fn test_edit_fails_with_extra_spaces() {
 /// Test: Missing space in search string causes failure
 #[tokio::test]
 async fn test_edit_fails_with_missing_spaces() {
-    let dir = TempDir::new().unwrap();
+    let dir = tempdir_in_cwd();
     let file_path = dir.path().join("spaces2.txt");
 
     fs::write(&file_path, "hello   world").unwrap();
@@ -206,7 +217,7 @@ async fn test_edit_fails_with_missing_spaces() {
 /// Test: Tab vs space difference
 #[tokio::test]
 async fn test_edit_fails_with_tab_space_mismatch() {
-    let dir = TempDir::new().unwrap();
+    let dir = tempdir_in_cwd();
     let file_path = dir.path().join("tabs.txt");
 
     fs::write(&file_path, "function() {\n\tindent\n}").unwrap();
@@ -229,7 +240,7 @@ async fn test_edit_fails_with_tab_space_mismatch() {
 /// Test: Trailing whitespace difference
 #[tokio::test]
 async fn test_edit_fails_with_trailing_whitespace_difference() {
-    let dir = TempDir::new().unwrap();
+    let dir = tempdir_in_cwd();
     let file_path = dir.path().join("trailing.txt");
 
     fs::write(&file_path, "code   \nnext").unwrap();
@@ -252,7 +263,7 @@ async fn test_edit_fails_with_trailing_whitespace_difference() {
 /// Test: Leading whitespace difference (search string not a substring of file content)
 #[tokio::test]
 async fn test_edit_fails_with_leading_whitespace_difference() {
-    let dir = TempDir::new().unwrap();
+    let dir = tempdir_in_cwd();
     let file_path = dir.path().join("leading.txt");
 
     // File has "    alpha"
@@ -273,7 +284,7 @@ async fn test_edit_fails_with_leading_whitespace_difference() {
 /// Test: Matching partial content that spans lines
 #[tokio::test]
 async fn test_edit_partial_line_content() {
-    let dir = TempDir::new().unwrap();
+    let dir = tempdir_in_cwd();
     let file_path = dir.path().join("partial.txt");
 
     fs::write(&file_path, "START middle END").unwrap();
@@ -293,7 +304,7 @@ async fn test_edit_partial_line_content() {
 /// Test: Full line matching works
 #[tokio::test]
 async fn test_edit_full_line_match() {
-    let dir = TempDir::new().unwrap();
+    let dir = tempdir_in_cwd();
     let file_path = dir.path().join("full_line.txt");
 
     fs::write(&file_path, "line1\nline2\nline3\n").unwrap();
@@ -309,7 +320,7 @@ async fn test_edit_full_line_match() {
 /// Test: Empty line matching
 #[tokio::test]
 async fn test_edit_empty_line() {
-    let dir = TempDir::new().unwrap();
+    let dir = tempdir_in_cwd();
     let file_path = dir.path().join("empty.txt");
 
     fs::write(&file_path, "before\n\nafter").unwrap();
@@ -329,7 +340,7 @@ async fn test_edit_empty_line() {
 /// Test: Exact match required - substring match when unique works
 #[tokio::test]
 async fn test_edit_requires_exact_match() {
-    let dir = TempDir::new().unwrap();
+    let dir = tempdir_in_cwd();
     let file_path = dir.path().join("exact.txt");
 
     fs::write(&file_path, "foobar").unwrap();
@@ -348,7 +359,7 @@ async fn test_edit_requires_exact_match() {
 /// Test: Exact match with special characters
 #[tokio::test]
 async fn test_edit_exact_match_special_chars() {
-    let dir = TempDir::new().unwrap();
+    let dir = tempdir_in_cwd();
     let file_path = dir.path().join("special.txt");
 
     fs::write(&file_path, "fn main() {\n    println!(\"hello\");\n}").unwrap();
@@ -376,7 +387,7 @@ async fn test_edit_exact_match_special_chars() {
 /// Test: Unicode characters work correctly
 #[tokio::test]
 async fn test_edit_unicode_characters() {
-    let dir = TempDir::new().unwrap();
+    let dir = tempdir_in_cwd();
     let file_path = dir.path().join("unicode.txt");
 
     fs::write(&file_path, "Hello 世界 🌍").unwrap();
@@ -396,7 +407,7 @@ async fn test_edit_unicode_characters() {
 /// Test: Unicode with line endings
 #[tokio::test]
 async fn test_edit_unicode_with_line_endings() {
-    let dir = TempDir::new().unwrap();
+    let dir = tempdir_in_cwd();
     let file_path = dir.path().join("unicode_lines.txt");
 
     fs::write(&file_path, "English line\n日本語のライン\nEmoji line 🐱\n").unwrap();
@@ -422,7 +433,7 @@ async fn test_edit_unicode_with_line_endings() {
 /// Test: Mixed ASCII and non-ASCII
 #[tokio::test]
 async fn test_edit_mixed_ascii_unicode() {
-    let dir = TempDir::new().unwrap();
+    let dir = tempdir_in_cwd();
     let file_path = dir.path().join("mixed_unicode.txt");
 
     fs::write(&file_path, "/* Comment: café */\nlet x = 1;").unwrap();
@@ -448,7 +459,7 @@ async fn test_edit_mixed_ascii_unicode() {
 /// Test: Multiple matches cause failure
 #[tokio::test]
 async fn test_edit_fails_on_multiple_matches() {
-    let dir = TempDir::new().unwrap();
+    let dir = tempdir_in_cwd();
     let file_path = dir.path().join("multiple.txt");
 
     fs::write(&file_path, "foo bar foo baz foo").unwrap();
@@ -468,7 +479,7 @@ async fn test_edit_fails_on_multiple_matches() {
 /// Test: Single match succeeds
 #[tokio::test]
 async fn test_edit_succeeds_with_unique_match() {
-    let dir = TempDir::new().unwrap();
+    let dir = tempdir_in_cwd();
     let file_path = dir.path().join("unique.txt");
 
     fs::write(&file_path, "foo bar baz qux").unwrap();
@@ -482,7 +493,7 @@ async fn test_edit_succeeds_with_unique_match() {
 /// Test: Adding more context makes match unique
 #[tokio::test]
 async fn test_edit_with_context_is_unique() {
-    let dir = TempDir::new().unwrap();
+    let dir = tempdir_in_cwd();
     let file_path = dir.path().join("context.txt");
 
     fs::write(&file_path, "const x = 1;\nconst y = 2;\nconst z = 3;").unwrap();
@@ -513,7 +524,7 @@ async fn test_edit_with_context_is_unique() {
 /// Test: Error message for string not found
 #[tokio::test]
 async fn test_error_message_string_not_found() {
-    let dir = TempDir::new().unwrap();
+    let dir = tempdir_in_cwd();
     let file_path = dir.path().join("notfound.txt");
 
     fs::write(&file_path, "hello world").unwrap();
@@ -542,7 +553,7 @@ async fn test_error_message_string_not_found() {
 /// Test: Error message for non-unique match
 #[tokio::test]
 async fn test_error_message_multiple_matches() {
-    let dir = TempDir::new().unwrap();
+    let dir = tempdir_in_cwd();
     let file_path = dir.path().join("nonunique.txt");
 
     fs::write(&file_path, "item item item").unwrap();
@@ -566,9 +577,14 @@ async fn test_error_message_multiple_matches() {
 #[tokio::test]
 async fn test_error_message_missing_file() {
     let registry = make_tool_registry();
+    let file_path = std::env::current_dir()
+        .unwrap()
+        .join(".tmp-test-edit-file-edge-cases")
+        .join("missing")
+        .join("file.txt");
     let result = edit_file(
         &registry,
-        "/nonexistent/path/file.txt",
+        file_path.to_str().unwrap(),
         "text",
         "replacement",
     )
@@ -588,7 +604,7 @@ async fn test_error_message_missing_file() {
 /// Test: Very long line
 #[tokio::test]
 async fn test_edit_long_line() {
-    let dir = TempDir::new().unwrap();
+    let dir = tempdir_in_cwd();
     let file_path = dir.path().join("long.txt");
 
     let long_content = format!("short {}", "x".repeat(10000));
@@ -607,7 +623,7 @@ async fn test_edit_long_line() {
 /// Test: Empty file
 #[tokio::test]
 async fn test_edit_empty_file() {
-    let dir = TempDir::new().unwrap();
+    let dir = tempdir_in_cwd();
     let file_path = dir.path().join("empty_file.txt");
 
     fs::write(&file_path, "").unwrap();
@@ -627,7 +643,7 @@ async fn test_edit_empty_file() {
 /// Test: Newline at end of file vs not
 #[tokio::test]
 async fn test_edit_trailing_newline_vs_not() {
-    let dir = TempDir::new().unwrap();
+    let dir = tempdir_in_cwd();
     let file_path = dir.path().join("newline.txt");
 
     fs::write(&file_path, "line1\n").unwrap();
@@ -650,7 +666,7 @@ async fn test_edit_trailing_newline_vs_not() {
 /// Test: Replacement string is empty
 #[tokio::test]
 async fn test_edit_empty_replacement() {
-    let dir = TempDir::new().unwrap();
+    let dir = tempdir_in_cwd();
     let file_path = dir.path().join("remove.txt");
 
     fs::write(&file_path, "hello world").unwrap();
@@ -666,7 +682,7 @@ async fn test_edit_empty_replacement() {
 /// Test: Single character match
 #[tokio::test]
 async fn test_edit_single_character() {
-    let dir = TempDir::new().unwrap();
+    let dir = tempdir_in_cwd();
     let file_path = dir.path().join("single_char.txt");
 
     fs::write(&file_path, "abc").unwrap();
@@ -682,7 +698,7 @@ async fn test_edit_single_character() {
 /// Test: Binary-ish content (null bytes)
 #[tokio::test]
 async fn test_edit_with_null_bytes() {
-    let dir = TempDir::new().unwrap();
+    let dir = tempdir_in_cwd();
     let file_path = dir.path().join("binary.txt");
 
     let content = vec![
@@ -704,7 +720,7 @@ async fn test_edit_with_null_bytes() {
 /// Test: Common pattern - editing inside a function body
 #[tokio::test]
 async fn test_edit_inside_function() {
-    let dir = TempDir::new().unwrap();
+    let dir = tempdir_in_cwd();
     let file_path = dir.path().join("function.rs");
 
     fs::write(
@@ -732,7 +748,7 @@ async fn test_edit_inside_function() {
 /// Test: Common pattern - editing with indentation
 #[tokio::test]
 async fn test_edit_with_indentation() {
-    let dir = TempDir::new().unwrap();
+    let dir = tempdir_in_cwd();
     let file_path = dir.path().join("indented.txt");
 
     fs::write(&file_path, "    indented line\nnext line").unwrap();
@@ -754,7 +770,7 @@ async fn test_edit_with_indentation() {
 /// Test: JSON content (common real-world case)
 #[tokio::test]
 async fn test_edit_json_content() {
-    let dir = TempDir::new().unwrap();
+    let dir = tempdir_in_cwd();
     let file_path = dir.path().join("data.json");
 
     fs::write(&file_path, r#"{"name": "test", "value": 123}"#).unwrap();
@@ -776,7 +792,7 @@ async fn test_edit_json_content() {
 /// Test: Consecutive edits work correctly
 #[tokio::test]
 async fn test_consecutive_edits() {
-    let dir = TempDir::new().unwrap();
+    let dir = tempdir_in_cwd();
     let file_path = dir.path().join("consecutive.txt");
 
     fs::write(&file_path, "a b c d e").unwrap();
@@ -799,7 +815,7 @@ async fn test_consecutive_edits() {
 /// Test: Edit that creates duplicate matches succeeds (tool doesn't check post-edit)
 #[tokio::test]
 async fn test_edit_that_creates_duplicate() {
-    let dir = TempDir::new().unwrap();
+    let dir = tempdir_in_cwd();
     let file_path = dir.path().join("duplicate_test.txt");
 
     fs::write(&file_path, "foo bar").unwrap();

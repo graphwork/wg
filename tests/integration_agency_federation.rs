@@ -197,10 +197,7 @@ fn resolve_store_finds_project() {
     create_project_store_dirs(tmp.path());
 
     let store = federation::resolve_store(tmp.path().to_str().unwrap()).unwrap();
-    assert_eq!(
-        store.store_path(),
-        tmp.path().join(".wg").join("agency")
-    );
+    assert_eq!(store.store_path(), tmp.path().join(".wg").join("agency"));
     assert!(store.is_valid());
 }
 

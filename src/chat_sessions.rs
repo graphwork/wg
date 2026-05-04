@@ -339,7 +339,11 @@ pub fn register_coordinator_session(workgraph_dir: &Path, n: u32) -> Result<Stri
     // Register all three aliases. Swallow "already points to same session"
     // errors (steady-state on restart); propagate unexpected errors.
     let numeric_alias = n.to_string();
-    for alias in [new_canonical.as_str(), legacy_canonical.as_str(), numeric_alias.as_str()] {
+    for alias in [
+        new_canonical.as_str(),
+        legacy_canonical.as_str(),
+        numeric_alias.as_str(),
+    ] {
         match add_alias(workgraph_dir, &uuid, alias) {
             Ok(()) => {}
             Err(e) => {
@@ -610,8 +614,7 @@ pub fn archive_session(workgraph_dir: &Path, reference: &str) -> Result<String> 
         fs::create_dir_all(&archive)
             .with_context(|| format!("create archive dir {:?}", archive))?;
         let dst = archive.join(&uuid);
-        fs::rename(&src, &dst)
-            .with_context(|| format!("move {:?} -> {:?}", src, dst))?;
+        fs::rename(&src, &dst).with_context(|| format!("move {:?} -> {:?}", src, dst))?;
     }
     Ok(uuid)
 }

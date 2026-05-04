@@ -1,4 +1,4 @@
-# Context Transfer: Workgraph vs Amplifier
+# Context Transfer: workgraph vs Amplifier
 
 **Date**: 2026-02-18
 **Sources**: `CONTEXT-TRANSFER.md` (amplifier-bundle-workgraph), `docs/research/amplifier-architecture.md`, `src/commands/spawn.rs`, `src/service/executor.rs`, `src/commands/context.rs`, `src/commands/artifact.rs`, `src/graph.rs`

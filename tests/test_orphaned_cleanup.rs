@@ -277,8 +277,7 @@ fn simulate_cleanup_operations(project_root: &Path, agent_id: &str) -> Result<()
     // Remove .wg symlink/marker
     let wg_marker = worktree_path.join(".wg");
     if wg_marker.exists() {
-        fs::remove_file(&wg_marker)
-            .map_err(|e| format!("Failed to remove .wg marker: {}", e))?;
+        fs::remove_file(&wg_marker).map_err(|e| format!("Failed to remove .wg marker: {}", e))?;
     }
 
     // Remove target directory

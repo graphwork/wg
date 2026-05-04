@@ -462,7 +462,7 @@ fn detect_format(headers: &csv::StringRecord) -> CsvFormat {
     CsvFormat::Legacy
 }
 
-/// `wg agency import <csv-path>` -- import Agency's starter.csv primitives into WorkGraph.
+/// `wg agency import <csv-path>` -- import Agency's starter.csv primitives into workgraph.
 ///
 /// Supports two CSV formats:
 ///

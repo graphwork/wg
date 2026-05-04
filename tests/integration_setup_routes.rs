@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
 use workgraph::config::Config;
-use workgraph::config_defaults::{config_for_route, RouteParams, SetupRoute};
+use workgraph::config_defaults::{RouteParams, SetupRoute, config_for_route};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -160,10 +160,7 @@ fn test_setup_non_interactive_route_writes_config() {
     let fake_home = tmp.path().join("home");
     fs::create_dir_all(&fake_home).unwrap();
 
-    let output = run_wg_in_isolation(
-        &fake_home,
-        &["setup", "--route", "claude-cli", "--yes"],
-    );
+    let output = run_wg_in_isolation(&fake_home, &["setup", "--route", "claude-cli", "--yes"]);
     assert!(
         output.status.success(),
         "wg setup --route claude-cli --yes failed.\nstdout: {}\nstderr: {}",
@@ -258,8 +255,7 @@ fn test_setup_route_nex_custom_requires_url_and_model() {
     fs::create_dir_all(&fake_home).unwrap();
 
     // Missing --url
-    let output =
-        run_wg_in_isolation(&fake_home, &["setup", "--route", "nex-custom", "--yes"]);
+    let output = run_wg_in_isolation(&fake_home, &["setup", "--route", "nex-custom", "--yes"]);
     assert!(
         !output.status.success(),
         "should fail without --url: stdout {} stderr {}",
@@ -485,13 +481,7 @@ model = "claude:opus"
 
     let output = run_wg_in_isolation(
         &fake_home,
-        &[
-            "config",
-            "reset",
-            "--route",
-            "openrouter",
-            "--yes",
-        ],
+        &["config", "reset", "--route", "openrouter", "--yes"],
     );
     assert!(
         output.status.success(),
@@ -545,13 +535,7 @@ model = "claude:sonnet"
 
     let output = run_wg_in_isolation(
         &fake_home,
-        &[
-            "config",
-            "reset",
-            "--route",
-            "openrouter",
-            "--dry-run",
-        ],
+        &["config", "reset", "--route", "openrouter", "--dry-run"],
     );
     assert!(output.status.success());
 

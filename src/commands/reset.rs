@@ -111,7 +111,7 @@ pub fn run(dir: &Path, seeds: &[String], opts: ResetOptions) -> Result<ResetRepo
 
     let path = super::graph_path(dir);
     if !path.exists() {
-        anyhow::bail!("Workgraph not initialized. Run 'wg init' first.");
+        anyhow::bail!("workgraph not initialized. Run 'wg init' first.");
     }
 
     // First pass (read-only) to compute closure + meta tasks so we can
@@ -599,7 +599,10 @@ mod tests {
 
         let g = load_graph(&path).unwrap();
         let t = g.get_task("t").unwrap();
-        assert!(t.assigned.is_none(), "--also-strip-meta must also clear assigned");
+        assert!(
+            t.assigned.is_none(),
+            "--also-strip-meta must also clear assigned"
+        );
         assert!(t.started_at.is_none());
         // meta tasks gone (regression check on existing strip behavior)
         assert!(g.get_task(".flip-t").is_none());
@@ -660,7 +663,11 @@ mod tests {
 
         let g = load_graph(&super::super::graph_path(dir.path())).unwrap();
         let t = g.get_task("stuck").unwrap();
-        assert_eq!(t.status, Status::Open, "reset must move status back to Open");
+        assert_eq!(
+            t.status,
+            Status::Open,
+            "reset must move status back to Open"
+        );
         assert!(
             t.assigned.is_none(),
             "reset must clear the stale claim — dispatcher won't dispatch otherwise"

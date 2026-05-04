@@ -42,8 +42,7 @@ mod scroll_mode_tests {
     /// Insert a live PTY pane (spawns /bin/cat) under the active coordinator task_id.
     fn insert_test_pane(app: &mut VizApp) -> String {
         let task_id = workgraph::chat_id::format_chat_task_id(app.active_coordinator_id);
-        let pane =
-            PtyPane::spawn("/bin/cat", &[], &[], 24, 80).expect("spawn /bin/cat for test");
+        let pane = PtyPane::spawn("/bin/cat", &[], &[], 24, 80).expect("spawn /bin/cat for test");
         app.task_panes.insert(task_id.clone(), pane);
         task_id
     }
@@ -159,10 +158,7 @@ mod scroll_mode_tests {
         send_key(&mut app, KeyCode::PageUp, KeyModifiers::NONE);
 
         // Mode stays active after a nav key.
-        assert!(matches!(
-            app.input_mode,
-            InputMode::ScrollMode { .. }
-        ));
+        assert!(matches!(app.input_mode, InputMode::ScrollMode { .. }));
         // Pane should now be scrolled back (auto_follow disabled).
         let scrolled_back = app
             .task_panes

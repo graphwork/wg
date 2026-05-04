@@ -278,6 +278,11 @@ fn full_lifecycle_produces_ordered_operations() {
     let wg_dir = dir.path().join(".wg");
     fs::create_dir_all(&wg_dir).unwrap();
     fs::write(wg_dir.join("graph.jsonl"), "").unwrap();
+    fs::write(
+        wg_dir.join("config.toml"),
+        "[agency]\nauto_assign = false\nauto_evaluate = false\n",
+    )
+    .unwrap();
 
     // add -> claim -> pause -> resume -> done
     wg_ok(

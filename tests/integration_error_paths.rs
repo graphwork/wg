@@ -318,7 +318,8 @@ fn test_abandoned_task_unblocks_dependents() {
 
 #[test]
 fn test_failed_task_unblocks_dependents() {
-    // Failed is a terminal state — dependents should proceed
+    // Failed is terminal, but it does not satisfy dependency edges because the
+    // upstream produced no valid output.
     let mut graph = WorkGraph::new();
 
     let mut t1 = make_task("t1");
@@ -333,8 +334,8 @@ fn test_failed_task_unblocks_dependents() {
 
     let ready = ready_tasks(&graph);
     assert!(
-        ready.iter().any(|t| t.id == "t2"),
-        "Task blocked by Failed task should be ready (terminal state)"
+        !ready.iter().any(|t| t.id == "t2"),
+        "Task blocked by Failed task should not be ready"
     );
 }
 

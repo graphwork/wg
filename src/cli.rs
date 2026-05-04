@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 #[derive(Parser)]
 #[command(name = "wg")]
-#[command(about = "Workgraph - A lightweight work coordination graph")]
+#[command(about = "workgraph - A lightweight work coordination graph")]
 #[command(version)]
 #[command(disable_help_flag = true)]
 #[command(disable_help_subcommand = true)]
@@ -4030,7 +4030,7 @@ pub enum AgencyCommands {
         dry_run: bool,
     },
 
-    /// Import Agency's starter.csv primitives into WorkGraph
+    /// Import Agency's starter.csv primitives into workgraph
     Import {
         /// Path to the CSV file to import (omit when using --url or --upstream)
         csv_path: Option<String>,

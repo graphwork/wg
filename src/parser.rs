@@ -136,7 +136,7 @@ fn get_lock_path<P: AsRef<Path>>(graph_path: P) -> PathBuf {
     }
 }
 
-/// Load a work graph from a JSONL file (internal, no locking).
+/// Load a workgraph from a JSONL file (internal, no locking).
 ///
 /// Callers must hold the flock themselves or use [`load_graph`] which
 /// acquires it automatically.
@@ -175,7 +175,7 @@ fn load_graph_inner<P: AsRef<Path>>(path: P) -> Result<WorkGraph, ParseError> {
     Ok(graph)
 }
 
-/// Load a work graph from a JSONL file.
+/// Load a workgraph from a JSONL file.
 ///
 /// Uses a non-blocking shared lock (`LOCK_SH | LOCK_NB`). If another process
 /// holds an exclusive lock (e.g. `modify_graph` in the coordinator), the read
@@ -194,7 +194,7 @@ pub fn load_graph<P: AsRef<Path>>(path: P) -> Result<WorkGraph, ParseError> {
     // Lock (if acquired) is automatically released when _lock goes out of scope
 }
 
-/// Save a work graph to a JSONL file (internal, no locking).
+/// Save a workgraph to a JSONL file (internal, no locking).
 ///
 /// Callers must hold the flock themselves or use [`save_graph`] which
 /// acquires it automatically.
@@ -243,7 +243,7 @@ fn save_graph_inner<P: AsRef<Path>>(graph: &WorkGraph, path: P) -> Result<(), Pa
     result
 }
 
-/// Save a work graph to a JSONL file
+/// Save a workgraph to a JSONL file
 /// Uses advisory file locking and atomic write (temp file + rename) to
 /// prevent data loss on crash.
 pub fn save_graph<P: AsRef<Path>>(graph: &WorkGraph, path: P) -> Result<(), ParseError> {
@@ -279,10 +279,7 @@ where
     // tasks changed substantively (anything other than `last_interaction_at`)
     // and bump their interaction timestamp. This is the single helper that
     // wraps mutation + timestamp-bump for every modify_graph caller.
-    let before: HashMap<String, Task> = graph
-        .tasks()
-        .map(|t| (t.id.clone(), t.clone()))
-        .collect();
+    let before: HashMap<String, Task> = graph.tasks().map(|t| (t.id.clone(), t.clone())).collect();
     let modified = f(&mut graph);
     if modified {
         bump_interaction_timestamps(&mut graph, &before);

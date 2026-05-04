@@ -8,7 +8,7 @@
 
 ## Executive Summary
 
-Workgraph's architecture is surprisingly well-positioned for multi-user operation. The combination of file-based state (JSONL), flock-based locking, `modify_graph()` atomic transactions, filesystem watching, and existing federation/peer infrastructure means that multiple users SSH'ing into a shared server and each running their own TUI instance is **already largely functional today**. The main gaps are: (1) the TOCTOU race in commands that haven't migrated to `modify_graph()`, (2) no real-time cross-instance notification of graph changes beyond filesystem polling, and (3) federation is agency-only — no cross-workgraph task visibility yet.
+workgraph's architecture is surprisingly well-positioned for multi-user operation. The combination of file-based state (JSONL), flock-based locking, `modify_graph()` atomic transactions, filesystem watching, and existing federation/peer infrastructure means that multiple users SSH'ing into a shared server and each running their own TUI instance is **already largely functional today**. The main gaps are: (1) the TOCTOU race in commands that haven't migrated to `modify_graph()`, (2) no real-time cross-instance notification of graph changes beyond filesystem polling, and (3) federation is agency-only — no cross-workgraph task visibility yet.
 
 ---
 
@@ -122,7 +122,7 @@ This is more work but provides the most polished experience. The ttyd approach i
 | **Terminal emulation** | 256-color, true-color (some devices), Unicode |
 | **Touch interaction** | Volume keys as Ctrl/Alt modifiers, gesture support |
 | **Screen size** | Typically 40-80 cols on phone, 100+ on tablet |
-| **Workgraph TUI** | **Already detected** — `detect_termux_touch()` in `event.rs:48-50` enables mode 1003 for touch drag events |
+| **workgraph TUI** | **Already detected** — `detect_termux_touch()` in `event.rs:48-50` enables mode 1003 for touch drag events |
 | **Background execution** | `termux-wake-lock` prevents Android from killing sessions |
 
 **Key finding:** The TUI already has Termux-specific code. The `TERMUX_VERSION` env var detection and mosh-aware mouse mode switching (`event.rs:26-50`) show that mobile access has already been considered and partially implemented.
@@ -171,15 +171,15 @@ The **SSH/mosh → tmux → wg tui** stack works today on both platforms. The ma
 | **VS Code Live Share** | Editor-specific, WebSocket | Yes | Microsoft auth | Mature |
 | **Tuple** | Screen sharing + voice | Yes | Invite-based | Commercial |
 
-### 4.2 Workgraph's Model is Different
+### 4.2 workgraph's Model is Different
 
-The prior art above focuses on **screen sharing** — multiple users seeing the same terminal output. Workgraph's vision is fundamentally different: **independent sessions, shared state**.
+The prior art above focuses on **screen sharing** — multiple users seeing the same terminal output. workgraph's vision is fundamentally different: **independent sessions, shared state**.
 
 Each user runs their own TUI instance, seeing the full graph from their own perspective. They don't need to see each other's cursor or terminal — they see each other's *effects* (task completions, log entries, agent spawns) reflected in the shared graph state.
 
 This is architecturally simpler and more scalable than screen sharing:
 
-| Screen Sharing Model | Workgraph Model |
+| Screen Sharing Model | workgraph Model |
 |---------------------|-----------------|
 | N users share 1 terminal session | N users have N terminal sessions |
 | Single cursor, turn-taking | Independent cursors, parallel work |
@@ -216,7 +216,7 @@ The design document at `docs/design/cross-repo-communication.md` describes:
 - **`AddTask` and `QueryTask` IPC requests** — New IPC message types for remote task creation and status queries
 - **Peer resolution** — Named peers → path → socket discovery → IPC or file fallback
 
-### 5.3 What Cross-Workgraph Visibility Would Look Like
+### 5.3 What Cross-workgraph Visibility Would Look Like
 
 For the multi-user scenario on a single VPS, the key insight is that **all workgraph instances share a filesystem**. This means:
 
@@ -313,7 +313,7 @@ The pragmatic path:
 
 These decisions gate the multi-user roadmap and should be made before significant implementation:
 
-### Decision 1: Single Workgraph or Per-User Workgraphs?
+### Decision 1: Single workgraph or Per-User Workgraphs?
 
 **Option A: Shared single workgraph** — All users operate on one `.wg/graph.jsonl`. Simplest. Already works. Risk: coordinator conflicts if multiple users run coordinators simultaneously.
 

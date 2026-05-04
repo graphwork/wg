@@ -304,11 +304,8 @@ fn codex_cli_config(params: &RouteParams) -> Config {
     // Pin flip_inference + flip_comparison too so FLIP scoring doesn't
     // silently fall through to the built-in claude:haiku default on a
     // codex-only project.
-    config.models = split_role_models_routing(
-        &agent_model,
-        "codex:gpt-5.4-mini",
-        "codex:gpt-5.4-mini",
-    );
+    config.models =
+        split_role_models_routing(&agent_model, "codex:gpt-5.4-mini", "codex:gpt-5.4-mini");
     let flip_role = RoleModelConfig {
         provider: None,
         model: Some("codex:gpt-5.4-mini".to_string()),
@@ -555,10 +552,12 @@ fn split_role_models_routing(
 /// If `model` is already in `provider:model` form, return it unchanged.
 /// Otherwise, prepend the route's expected provider prefix.
 fn ensure_provider_prefix(model: &str, provider: &str) -> String {
-    if model.contains(':') && crate::config::KNOWN_PROVIDERS.iter().any(|p| {
-        let prefix = format!("{}:", p);
-        model.starts_with(&prefix)
-    }) {
+    if model.contains(':')
+        && crate::config::KNOWN_PROVIDERS.iter().any(|p| {
+            let prefix = format!("{}:", p);
+            model.starts_with(&prefix)
+        })
+    {
         model.to_string()
     } else {
         format!("{}:{}", provider, model)
@@ -622,7 +621,11 @@ mod tests {
 
         // Model registry has all three Claude tiers
         assert_eq!(config.model_registry.len(), 3);
-        let ids: Vec<&str> = config.model_registry.iter().map(|e| e.id.as_str()).collect();
+        let ids: Vec<&str> = config
+            .model_registry
+            .iter()
+            .map(|e| e.id.as_str())
+            .collect();
         assert!(ids.contains(&"haiku"));
         assert!(ids.contains(&"sonnet"));
         assert!(ids.contains(&"opus"));
@@ -932,10 +935,7 @@ mod tests {
         assert!(ep.is_default);
 
         assert_tiers_filled(&config);
-        assert_eq!(
-            config.tiers.fast.as_deref(),
-            Some("nex:my-special-model")
-        );
+        assert_eq!(config.tiers.fast.as_deref(), Some("nex:my-special-model"));
         assert_eq!(
             config.tiers.standard.as_deref(),
             Some("nex:my-special-model")
@@ -957,10 +957,7 @@ mod tests {
 
     #[test]
     fn test_route_from_name_accepts_aliases() {
-        assert_eq!(
-            SetupRoute::from_name("claude"),
-            Some(SetupRoute::ClaudeCli)
-        );
+        assert_eq!(SetupRoute::from_name("claude"), Some(SetupRoute::ClaudeCli));
         assert_eq!(
             SetupRoute::from_name("claude-cli"),
             Some(SetupRoute::ClaudeCli)
@@ -1073,7 +1070,10 @@ mod tests {
 
     #[test]
     fn test_ensure_provider_prefix_idempotent() {
-        assert_eq!(ensure_provider_prefix("claude:opus", "claude"), "claude:opus");
+        assert_eq!(
+            ensure_provider_prefix("claude:opus", "claude"),
+            "claude:opus"
+        );
         assert_eq!(
             ensure_provider_prefix("openrouter:anthropic/claude-haiku-4", "openrouter"),
             "openrouter:anthropic/claude-haiku-4"

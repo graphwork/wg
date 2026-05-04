@@ -1,4 +1,4 @@
-# Arena Evaluation Integration with Workgraph
+# Arena Evaluation Integration with workgraph
 
 Analysis of how FLIP (Wang et al., 2025, arXiv:2602.13551) integrates with workgraph's evaluation system.
 
@@ -38,7 +38,7 @@ Instead of asking an LLM "how good is this output?" (judgment), ask a small mode
 
 ### Mapping to workgraph concepts
 
-| FLIP concept | Workgraph equivalent |
+| FLIP concept | workgraph equivalent |
 |---|---|
 | Instruction `x` | Task description + title (`EvaluatorInput.task_description`) |
 | Response `y` | Agent output: log entries + artifact contents |

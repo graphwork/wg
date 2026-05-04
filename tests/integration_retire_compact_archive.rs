@@ -234,7 +234,9 @@ compaction_threshold_ratio = 0.5
         warnings
     );
     assert!(
-        warnings.iter().any(|w| w.contains("compactor_ops_threshold")),
+        warnings
+            .iter()
+            .any(|w| w.contains("compactor_ops_threshold")),
         "expected warning for compactor_ops_threshold; got {:?}",
         warnings
     );

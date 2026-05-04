@@ -98,7 +98,7 @@ pub fn run_cleanup(
     let path = graph_path(dir);
 
     if !path.exists() {
-        anyhow::bail!("Workgraph not initialized. Run 'wg init' first.");
+        anyhow::bail!("workgraph not initialized. Run 'wg init' first.");
     }
 
     let config = Config::load_or_default(dir);

@@ -1,10 +1,10 @@
 use anyhow::{Context, Result};
 use std::fs;
 use std::path::Path;
-use workgraph::config_defaults::{config_for_route, RouteParams, SetupRoute};
+use workgraph::config_defaults::{RouteParams, SetupRoute, config_for_route};
 
 /// Default content for .wg/.gitignore
-const GITIGNORE_CONTENT: &str = r#"# Workgraph gitignore
+const GITIGNORE_CONTENT: &str = r#"# workgraph gitignore
 # Agent output logs (can be large)
 agents/
 
@@ -82,8 +82,8 @@ pub fn run_with_route(
                 model: model.map(|s| s.to_string()),
             };
             let cfg = config_for_route(r, params);
-            let toml = toml::to_string_pretty(&cfg)
-                .map_err(|e| anyhow::anyhow!("serialize: {}", e))?;
+            let toml =
+                toml::to_string_pretty(&cfg).map_err(|e| anyhow::anyhow!("serialize: {}", e))?;
             println!("# wg init --dry-run (route: {})", r.as_name());
             println!("# Would create: {}", dir.display());
             println!("# Would write the following config.toml:");
@@ -104,7 +104,7 @@ pub fn run_with_route(
 
     // Route-driven init: create dir, write config from route defaults.
     if dir.exists() {
-        anyhow::bail!("Workgraph already initialized at {}", dir.display());
+        anyhow::bail!("workgraph already initialized at {}", dir.display());
     }
     if let Some(parent) = dir.parent()
         && let Some(target_name) = dir.file_name().and_then(|n| n.to_str())
@@ -116,7 +116,7 @@ pub fn run_with_route(
             let sibling_path = parent.join(sibling);
             if sibling_path.is_dir() {
                 anyhow::bail!(
-                    "Workgraph already initialized at {} (legacy dir name). \
+                    "workgraph already initialized at {} (legacy dir name). \
                      Either use it as-is, or remove/rename it before running `wg init`.",
                     sibling_path.display()
                 );
@@ -336,7 +336,7 @@ pub fn run(
     };
 
     if dir.exists() {
-        anyhow::bail!("Workgraph already initialized at {}", dir.display());
+        anyhow::bail!("workgraph already initialized at {}", dir.display());
     }
     // Refuse if the sibling legacy dir exists — we'd silently shadow it.
     // e.g. user asks for `.wg` but `.wg` already exists next to it.
@@ -350,7 +350,7 @@ pub fn run(
             let sibling_path = parent.join(sibling);
             if sibling_path.is_dir() {
                 anyhow::bail!(
-                    "Workgraph already initialized at {} (legacy dir name). \
+                    "workgraph already initialized at {} (legacy dir name). \
                      Either use it as-is, or remove/rename it before running `wg init`.",
                     sibling_path.display()
                 );
@@ -486,12 +486,7 @@ pub fn run(
         other => other,
     };
     let _ = workgraph::launcher_history::record_use(
-        &workgraph::launcher_history::HistoryEntry::new(
-            canonical_executor,
-            model,
-            endpoint,
-            "cli",
-        ),
+        &workgraph::launcher_history::HistoryEntry::new(canonical_executor, model, endpoint, "cli"),
     );
 
     Ok(())
@@ -711,7 +706,7 @@ mod tests {
 
         run(&wg_dir, true, Some("shell"), None, None).unwrap();
 
-        // Workgraph dir and graph.jsonl should exist
+        // workgraph dir and graph.jsonl should exist
         assert!(wg_dir.exists());
         assert!(wg_dir.join("graph.jsonl").exists());
 
@@ -809,8 +804,14 @@ mod tests {
     fn test_endpoint_rejects_non_http() {
         let tmp = TempDir::new().unwrap();
         let wg_dir = tmp.path().join(".wg");
-        let err = run(&wg_dir, true, Some("shell"), None, Some("definitely-not-a-url"))
-            .expect_err("non-http endpoint should be rejected");
+        let err = run(
+            &wg_dir,
+            true,
+            Some("shell"),
+            None,
+            Some("definitely-not-a-url"),
+        )
+        .expect_err("non-http endpoint should be rejected");
         // anyhow context wraps the inner bail, so format with `{:#}` to get the chain.
         let chain = format!("{:#}", err);
         assert!(

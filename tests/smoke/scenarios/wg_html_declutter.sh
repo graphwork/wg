@@ -2,7 +2,7 @@
 # Smoke: wg-html-declutter — clean header + clickable Legend in side panel.
 #
 # Pins the regressions that wg-html-declutter closed:
-#   1. The page header is just <h1>Workgraph</h1> + "<n> tasks shown" —
+#   1. The page header is just <h1>workgraph</h1> + "<n> tasks shown" —
 #      no "click a task id to inspect" subtitle, no "Dependency graph
 #      (click ... — magenta = upstream deps · cyan = downstream consumers)"
 #      parenthetical headline above the viz.

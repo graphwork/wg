@@ -91,7 +91,7 @@ pub fn show(dir: &Path, scope: Option<ConfigScope>, json: bool) -> Result<()> {
     if json {
         println!("{}", serde_json::to_string_pretty(&config)?);
     } else {
-        println!("Workgraph Configuration");
+        println!("workgraph Configuration");
         println!("========================");
         println!();
         println!("[agent]");
@@ -379,11 +379,12 @@ pub fn init_minimal(
     bare: bool,
     force: bool,
 ) -> Result<()> {
-    let route_enum = workgraph::config_defaults::SetupRoute::from_name(route)
-        .ok_or_else(|| anyhow::anyhow!(
+    let route_enum = workgraph::config_defaults::SetupRoute::from_name(route).ok_or_else(|| {
+        anyhow::anyhow!(
             "unknown route '{}'. Valid: claude-cli, codex-cli, openrouter, local, nex-custom",
             route,
-        ))?;
+        )
+    })?;
 
     let path = match scope {
         ConfigScope::Global => Config::global_config_path()?,
@@ -407,19 +408,22 @@ pub fn init_minimal(
     if path.exists() && force {
         let backup = path.with_extension("toml.bak");
         std::fs::copy(&path, &backup).map_err(|e| {
-            anyhow::anyhow!("failed to back up {} to {}: {}", path.display(), backup.display(), e)
+            anyhow::anyhow!(
+                "failed to back up {} to {}: {}",
+                path.display(),
+                backup.display(),
+                e
+            )
         })?;
         println!("Backed up existing config to {}", backup.display());
     }
 
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| {
-            anyhow::anyhow!("failed to create {}: {}", parent.display(), e)
-        })?;
+        std::fs::create_dir_all(parent)
+            .map_err(|e| anyhow::anyhow!("failed to create {}: {}", parent.display(), e))?;
     }
-    std::fs::write(&path, &body).map_err(|e| {
-        anyhow::anyhow!("failed to write {}: {}", path.display(), e)
-    })?;
+    std::fs::write(&path, &body)
+        .map_err(|e| anyhow::anyhow!("failed to write {}: {}", path.display(), e))?;
 
     println!(
         "Wrote minimal {} config at {} (route: {})",
@@ -430,9 +434,7 @@ pub fn init_minimal(
         path.display(),
         route_enum.as_name(),
     );
-    println!(
-        "Edit it directly, or run `wg config -m <model>` / `wg config -e <url>` to update.",
-    );
+    println!("Edit it directly, or run `wg config -m <model>` / `wg config -e <url>` to update.",);
     Ok(())
 }
 
@@ -1070,7 +1072,7 @@ pub fn list(dir: &Path, json: bool) -> Result<()> {
         let mut entries = Vec::new();
         collect_leaf_entries(&merged_val, "", &sources, &mut entries);
 
-        println!("Workgraph Configuration (merged)");
+        println!("workgraph Configuration (merged)");
         println!("=================================");
         println!();
         for entry in &entries {
@@ -2099,7 +2101,7 @@ pub fn reset_to_route(
     dry_run: bool,
     yes: bool,
 ) -> Result<()> {
-    use workgraph::config_defaults::{config_for_route, RouteParams, SetupRoute};
+    use workgraph::config_defaults::{RouteParams, SetupRoute, config_for_route};
 
     // Resolve the target path + load the existing config (if any).
     let (target_path, existing) = match scope {
@@ -2160,7 +2162,10 @@ pub fn reset_to_route(
         .map_err(|e| anyhow::anyhow!("serialize new config: {}", e))?;
 
     if dry_run {
-        println!("# wg config reset --dry-run (route: {})", resolved_route.as_name());
+        println!(
+            "# wg config reset --dry-run (route: {})",
+            resolved_route.as_name()
+        );
         println!("# Target: {}", target_path.display());
         if old_toml == new_toml {
             println!("# No changes.");
@@ -2528,9 +2533,7 @@ pub fn lint_config(workgraph_dir: &Path, target: LintTarget, json: bool) -> Resu
     let mut total_findings = 0usize;
     for r in &results {
         print_lint_one(r);
-        total_findings += r.removed_keys.len()
-            + r.renamed_keys.len()
-            + r.rewritten_values.len();
+        total_findings += r.removed_keys.len() + r.renamed_keys.len() + r.rewritten_values.len();
     }
 
     if total_findings == 0 {
@@ -2693,12 +2696,7 @@ mod tests {
     fn test_set_setting_value_unknown_key_errors() {
         let temp = TempDir::new().unwrap();
         Config::default().save(temp.path()).unwrap();
-        let res = set_setting_value(
-            temp.path(),
-            ConfigScope::Local,
-            "totally.unknown.key",
-            "x",
-        );
+        let res = set_setting_value(temp.path(), ConfigScope::Local, "totally.unknown.key", "x");
         assert!(res.is_err());
     }
 

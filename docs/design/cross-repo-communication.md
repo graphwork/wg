@@ -1,4 +1,4 @@
-# Cross-Repo Workgraph Communication
+# Cross-Repo workgraph Communication
 
 > Enable workgraph instances across repositories to dispatch tasks, share dependencies, observe state, and share trace functions.
 

@@ -1,10 +1,10 @@
-# Workgraph Analysis: Practical Perspectives on Task Coordination Graphs
+# workgraph Analysis: Practical Perspectives on Task Coordination Graphs
 
-This document explores what "analysis" and "verification" should mean for a task coordination system like Workgraph. The focus is on practical, useful analysis that engineers and project managers actually need, rather than academic formal verification.
+This document explores what "analysis" and "verification" should mean for a task coordination system like workgraph. The focus is on practical, useful analysis that engineers and project managers actually need, rather than academic formal verification.
 
 ## Table of Contents
 
-1. [Context: What Workgraph Is](#context-what-workgraph-is)
+1. [Context: What workgraph Is](#context-what-workgraph-is)
 2. [Structural Analysis](#1-structural-analysis)
 3. [Health Metrics](#2-health-metrics)
 4. [Temporal Analysis](#3-temporal-analysis)
@@ -14,14 +14,14 @@ This document explores what "analysis" and "verification" should mean for a task
 
 ---
 
-## Context: What Workgraph Is
+## Context: What workgraph Is
 
-Workgraph is a task coordination CLI with:
+workgraph is a task coordination CLI with:
 
 - **Tasks**: Work items with dependencies (`blocked_by`), estimates (hours/cost), status (open/in-progress/done/blocked), and assignments
 - **Actors**: Humans and AI agents who can be assigned to tasks
 - **Resources**: Budgets, compute capacity, and other constraints
-- **Cycles are allowed**: Unlike traditional acyclic task managers, Workgraph allows cycles for recurring tasks
+- **Cycles are allowed**: Unlike traditional acyclic task managers, workgraph allows cycles for recurring tasks
 
 The current implementation already provides:
 - `wg check` - Detects cycles (as warnings) and orphan references (as errors)
@@ -502,7 +502,7 @@ A comprehensive health report combining key metrics.
 ```
 $ wg analyze
 
-=== Workgraph Health Report ===
+=== workgraph Health Report ===
 
 SUMMARY
   Total tasks: 30 (15 open, 3 in-progress, 10 done, 2 blocked)

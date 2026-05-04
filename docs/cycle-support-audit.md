@@ -1,6 +1,6 @@
 # Cycle Support Audit
 
-> **Note:** Workgraph supports cycles as a first-class feature via `loops_to` edges with iteration guards and max counts. This document catalogs places where code was originally written with DAG assumptions that needed updating. It remains useful as a reference for understanding which subsystems are cycle-aware.
+> **Note:** workgraph supports cycles as a first-class feature via `loops_to` edges with iteration guards and max counts. This document catalogs places where code was originally written with DAG assumptions that needed updating. It remains useful as a reference for understanding which subsystems are cycle-aware.
 
 **Date:** 2026-02-14
 **Scope:** Entire workgraph codebase and documentation
@@ -10,7 +10,7 @@
 
 ## Executive Summary
 
-The workgraph codebase has a **mixed posture** toward cycles. Documentation explicitly states cycles are allowed ("Unlike traditional DAG-based task managers, Workgraph allows cycles for recurring tasks"), and several subsystems have been hardened with `visited` sets to tolerate cycles. However, the codebase retains significant DAG terminology (the `wg dag` command itself), uses the `ascii-dag` crate which requires acyclic input, and has several algorithms that would infinite-loop or produce incorrect results on cyclic graphs without their protective `visited` guards.
+The workgraph codebase has a **mixed posture** toward cycles. Documentation explicitly states cycles are allowed ("Unlike traditional DAG-based task managers, workgraph allows cycles for recurring tasks"), and several subsystems have been hardened with `visited` sets to tolerate cycles. However, the codebase retains significant DAG terminology (the `wg dag` command itself), uses the `ascii-dag` crate which requires acyclic input, and has several algorithms that would infinite-loop or produce incorrect results on cyclic graphs without their protective `visited` guards.
 
 **Finding count:** 42 distinct locations across 8 categories.
 
@@ -61,7 +61,7 @@ The workgraph codebase has a **mixed posture** toward cycles. Documentation expl
 
 ### 1.9 — docs/workgraph-analysis-research.md: DAG mention
 - **File:** `docs/workgraph-analysis-research.md:24`
-- **What:** "Cycles are allowed: Unlike traditional DAG-based task managers, Workgraph allows cycles for recurring tasks"
+- **What:** "Cycles are allowed: Unlike traditional DAG-based task managers, workgraph allows cycles for recurring tasks"
 - **Difficulty to change:** **N/A** — already cycle-aware documentation.
 
 ---

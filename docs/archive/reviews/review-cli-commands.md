@@ -49,7 +49,7 @@ Nearly every command follows this exact pattern:
 pub fn run(dir: &Path, ...) -> Result<()> {
     let path = graph_path(dir);
     if !path.exists() {
-        anyhow::bail!("Workgraph not initialized. Run 'wg init' first.");
+        anyhow::bail!("workgraph not initialized. Run 'wg init' first.");
     }
     let mut graph = load_graph(&path).context("Failed to load graph")?;
     let task = graph.get_task_mut(id)

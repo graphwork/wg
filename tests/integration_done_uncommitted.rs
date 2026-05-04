@@ -169,8 +169,8 @@ fn wg_done_refuses_staged_uncommitted_in_worktree() {
     );
 
     // 3. Error mentions `git commit` or "uncommitted" so the agent knows the fix.
-    let mentions_fix = stderr.to_lowercase().contains("commit")
-        || stderr.to_lowercase().contains("uncommitted");
+    let mentions_fix =
+        stderr.to_lowercase().contains("commit") || stderr.to_lowercase().contains("uncommitted");
     assert!(
         mentions_fix,
         "error must mention how to fix (commit / uncommitted).\nstderr: {}",

@@ -1,11 +1,11 @@
-#set document(title: "Workgraph: Task Coordination for Humans and AI Agents")
+#set document(title: "workgraph: Task Coordination for Humans and AI Agents")
 #set page(paper: "us-letter", margin: 1in)
 #set text(font: "New Computer Modern", size: 11pt)
 #set par(justify: true)
 #set heading(numbering: "1.1")
 
 #align(center)[
-  #text(size: 24pt, weight: "bold")[Workgraph]
+  #text(size: 24pt, weight: "bold")[workgraph]
 
   #text(size: 14pt)[Task Coordination for Humans and AI Agents]
 
@@ -18,7 +18,7 @@
 
 = Abstract
 
-Workgraph is a task coordination system designed for the emerging reality of hybrid teams---where human engineers, project managers, and AI agents collaborate on complex projects. Unlike traditional project management tools that assume human-only workflows, workgraph treats all actors uniformly, whether flesh or silicon. The system stores data in a simple JSONL format that is human-readable, git-friendly, and easily parsed by both scripts and language models. Workgraph's dependency graph supports cycles for recurring tasks, provides rich analysis commands for identifying bottlenecks and forecasting completion, and implements a claim/unclaim protocol that enables safe parallel execution by multiple agents.
+workgraph is a task coordination system designed for the emerging reality of hybrid teams---where human engineers, project managers, and AI agents collaborate on complex projects. Unlike traditional project management tools that assume human-only workflows, workgraph treats all actors uniformly, whether flesh or silicon. The system stores data in a simple JSONL format that is human-readable, git-friendly, and easily parsed by both scripts and language models. workgraph's dependency graph supports cycles for recurring tasks, provides rich analysis commands for identifying bottlenecks and forecasting completion, and implements a claim/unclaim protocol that enables safe parallel execution by multiple agents.
 
 = Introduction
 
@@ -26,13 +26,13 @@ The coordination of work has traditionally been a human endeavor. Project manage
 
 Modern AI agents can perform substantial programming work: implementing features, writing tests, fixing bugs, and refactoring code. But they need to coordinate with humans and with each other. They need to know what work is available, claim tasks to avoid conflicts, and signal when work is complete. Traditional project management tools---designed for human reaction times and manual updates---are poorly suited to this reality.
 
-Workgraph addresses this gap. It provides a minimal but complete model for task coordination that works equally well for humans and agents. The system is deliberately simple: tasks are stored as JSON lines in a file, dependencies are expressed as explicit references, and all operations are atomic file updates that integrate cleanly with git workflows.
+workgraph addresses this gap. It provides a minimal but complete model for task coordination that works equally well for humans and agents. The system is deliberately simple: tasks are stored as JSON lines in a file, dependencies are expressed as explicit references, and all operations are atomic file updates that integrate cleanly with git workflows.
 
 The design philosophy prioritizes machine-readability without sacrificing human usability. A human can open the graph file in any text editor and understand the project state. An agent can parse the same file, identify available work, and make updates. Both can use the `wg` command-line tool for common operations.
 
 = Design Philosophy
 
-Workgraph's design follows several core principles:
+workgraph's design follows several core principles:
 
 *Simplicity over features.* The data model contains only what is necessary: tasks, actors, resources, and their relationships. There are no sprints, story points, epics, or other project management abstractions. These can be layered on top if needed, but the core remains minimal.
 
@@ -103,7 +103,7 @@ Analysis commands compute transitive dependencies to provide deeper insights. Th
 
 == Cycle Handling
 
-Workgraph explicitly supports cycles in the dependency graph. This is intentional---many real workflows contain cycles:
+workgraph explicitly supports cycles in the dependency graph. This is intentional---many real workflows contain cycles:
 
 - Code review: implement -> review -> revise -> review -> approve
 - Iterative design: prototype -> test -> refine -> test
@@ -135,7 +135,7 @@ These fields power several analysis commands:
 
 = Analysis Commands
 
-Workgraph provides a rich set of analysis commands beyond basic task management:
+workgraph provides a rich set of analysis commands beyond basic task management:
 
 *ready*: Lists tasks that can be worked on now---no incomplete blockers, past any scheduling constraints.
 
@@ -260,8 +260,8 @@ Several extensions could enhance workgraph's capabilities:
 
 = Conclusion
 
-Workgraph occupies a specific niche: task coordination that is simple enough for AI agents to use reliably, yet expressive enough for real project management needs. By storing data in git-friendly JSONL, supporting dependency cycles, providing rich analysis commands, and implementing a clean claim/unclaim protocol, workgraph enables hybrid human-AI teams to coordinate effectively.
+workgraph occupies a specific niche: task coordination that is simple enough for AI agents to use reliably, yet expressive enough for real project management needs. By storing data in git-friendly JSONL, supporting dependency cycles, providing rich analysis commands, and implementing a clean claim/unclaim protocol, workgraph enables hybrid human-AI teams to coordinate effectively.
 
 The system does not try to replace sophisticated project management tools for large organizations. Instead, it provides a foundation for the emerging pattern of AI-assisted development: humans defining goals and constraints, agents executing work, and everyone coordinating through a shared, machine-readable task graph.
 
-As AI agents become more capable and autonomous, the need for such coordination infrastructure will only grow. Workgraph offers one pragmatic answer to the question: how do we organize work when some of the workers are artificial intelligences?
+As AI agents become more capable and autonomous, the need for such coordination infrastructure will only grow. workgraph offers one pragmatic answer to the question: how do we organize work when some of the workers are artificial intelligences?

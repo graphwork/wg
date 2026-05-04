@@ -592,7 +592,7 @@ pub fn resolve_api_key_from_dir(workgraph_dir: &Path) -> Result<String> {
         return Ok(key);
     }
 
-    // 2. Workgraph config (merged: global + local)
+    // 2. workgraph config (merged: global + local)
     if let Ok(merged_val) = crate::config::Config::load_merged_toml_value(workgraph_dir)
         && let Some(key) = merged_val
             .get("native_executor")

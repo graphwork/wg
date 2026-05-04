@@ -24,7 +24,7 @@ pub fn execute(workgraph_dir: &Path, command: &MatrixCommand, sender: &str) -> S
 
 /// Generate Telegram-formatted help text.
 pub fn help_text() -> String {
-    "📋 *Workgraph Commands*\n\n\
+    "📋 *workgraph commands*\n\n\
      • `claim <task>` \\- Claim a task\n\
      • `claim <task> as <actor>` \\- Claim for someone\n\
      • `done <task>` \\- Mark done\n\
@@ -62,6 +62,6 @@ mod tests {
     #[test]
     fn help_text_is_nonempty() {
         let text = help_text();
-        assert!(text.contains("Workgraph Commands"));
+        assert!(text.contains("workgraph commands"));
     }
 }

@@ -1,4 +1,4 @@
-# Amplifier × Workgraph Integration Proposal
+# Amplifier × workgraph Integration Proposal
 
 **Date**: 2026-02-18
 **Author**: analyst agent (synthesized from three research documents)

@@ -250,7 +250,7 @@ The key architectural question is: **should validation be advisory or enforcing?
 
 ## 8. Summary
 
-Workgraph already has strong structural validation through auto-evaluate (100% coverage). The main gaps are:
+workgraph already has strong structural validation through auto-evaluate (100% coverage). The main gaps are:
 
 1. **Evaluation is post-hoc and non-gating** — bad evaluations don't trigger remediation
 2. **Unused fields** (`verify`, `deliverables`) that could enable self-checking and file overlap detection

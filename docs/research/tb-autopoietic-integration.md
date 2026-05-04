@@ -1,4 +1,4 @@
-# Research: Autopoietic TB-Workgraph Integration
+# Research: Autopoietic TB-workgraph Integration
 
 ## Summary
 
@@ -40,7 +40,7 @@ the coordinator loop (`src/commands/service/coordinator.rs`).
 
 ---
 
-## Q2: Making TB Tasks Into Real Workgraph Tasks
+## Q2: Making TB Tasks Into Real workgraph Tasks
 
 **Goal**: Replace the adapter's custom agent loop with `wg service start`.
 

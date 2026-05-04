@@ -716,7 +716,7 @@ mod model_management_key_validation {
     #[test]
     fn find_for_provider_prefers_default() {
         let endpoints = EndpointsConfig {
-        inherit_global: false,
+            inherit_global: false,
             endpoints: vec![
                 EndpointConfig {
                     name: "staging".to_string(),
@@ -833,7 +833,7 @@ mod model_management_error_paths {
     #[test]
     fn find_by_name_nonexistent() {
         let endpoints = EndpointsConfig {
-        inherit_global: false,
+            inherit_global: false,
             endpoints: vec![EndpointConfig {
                 name: "existing".to_string(),
                 provider: "openrouter".to_string(),
@@ -853,7 +853,10 @@ mod model_management_error_paths {
 
     #[test]
     fn find_for_provider_empty_list() {
-        let endpoints = EndpointsConfig { inherit_global: false, endpoints: vec![] };
+        let endpoints = EndpointsConfig {
+            inherit_global: false,
+            endpoints: vec![],
+        };
         assert!(endpoints.find_for_provider("openrouter").is_none());
     }
 

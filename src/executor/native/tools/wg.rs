@@ -47,7 +47,7 @@ fn graph_path(dir: &Path) -> PathBuf {
 fn load_workgraph(dir: &Path) -> Result<(crate::graph::WorkGraph, PathBuf), String> {
     let path = graph_path(dir);
     if !path.exists() {
-        return Err("Workgraph not initialized".to_string());
+        return Err("workgraph not initialized".to_string());
     }
     let graph = load_graph(&path).map_err(|e| format!("Failed to load graph: {}", e))?;
     Ok((graph, path))
@@ -579,7 +579,7 @@ impl Tool for WgDoneTool {
 
         let path = graph_path(&self.dir);
         if !path.exists() {
-            return ToolOutput::error("Workgraph not initialized".to_string());
+            return ToolOutput::error("workgraph not initialized".to_string());
         }
 
         let mut result_msg: Option<String> = None;
@@ -677,7 +677,7 @@ impl Tool for WgFailTool {
 
         let path = graph_path(&self.dir);
         if !path.exists() {
-            return ToolOutput::error("Workgraph not initialized".to_string());
+            return ToolOutput::error("workgraph not initialized".to_string());
         }
 
         let reason_owned = reason.to_string();
@@ -899,7 +899,7 @@ impl Tool for WgLogTool {
 
         let path = graph_path(&self.dir);
         if !path.exists() {
-            return ToolOutput::error("Workgraph not initialized".to_string());
+            return ToolOutput::error("workgraph not initialized".to_string());
         }
 
         let message_owned = message.to_string();
@@ -977,7 +977,7 @@ impl Tool for WgArtifactTool {
 
         let gpath = graph_path(&self.dir);
         if !gpath.exists() {
-            return ToolOutput::error("Workgraph not initialized".to_string());
+            return ToolOutput::error("workgraph not initialized".to_string());
         }
 
         let path_owned = path.to_string();

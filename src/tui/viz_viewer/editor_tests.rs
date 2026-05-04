@@ -1159,7 +1159,9 @@ mod tui_editor_tests {
 
         let backend = TestBackend::new(120, 40);
         let mut terminal = Terminal::new(backend).unwrap();
-        terminal.draw(|frame| render::draw(frame, &mut app)).unwrap();
+        terminal
+            .draw(|frame| render::draw(frame, &mut app))
+            .unwrap();
         let buf = terminal.backend().buffer().clone();
 
         let area = app.last_chat_input_area;

@@ -33,11 +33,7 @@ fn wg_binary() -> PathBuf {
     path
 }
 
-fn wg_cmd_with_env(
-    wg_dir: &Path,
-    args: &[&str],
-    env: &[(&str, &str)],
-) -> std::process::Output {
+fn wg_cmd_with_env(wg_dir: &Path, args: &[&str], env: &[(&str, &str)]) -> std::process::Output {
     let mut cmd = Command::new(wg_binary());
     cmd.arg("--dir").arg(wg_dir).args(args);
     // Make sure no ambient WG_AGENT_ID leaks in (parent test runner may have
@@ -107,13 +103,7 @@ fn init_with_task(tmp: &Path, task_id: &str) -> PathBuf {
     );
     let claim_id = wg_cmd_with_env(
         &wg_dir,
-        &[
-            "add",
-            "Task under test",
-            "--id",
-            task_id,
-            "--immediate",
-        ],
+        &["add", "Task under test", "--id", task_id, "--immediate"],
         &[],
     );
     assert!(
@@ -139,7 +129,11 @@ fn test_done_blocks_when_smoke_scenario_fails() {
     // Set up manifest with a scenario owned by our task that always FAILS.
     let manifest_dir = tmp.path().join("smoke");
     fs::create_dir_all(&manifest_dir).unwrap();
-    make_fail_script(&manifest_dir, "always_fails.sh", "intentional smoke failure");
+    make_fail_script(
+        &manifest_dir,
+        "always_fails.sh",
+        "intentional smoke failure",
+    );
     let manifest_path = manifest_dir.join("manifest.toml");
     fs::write(
         &manifest_path,

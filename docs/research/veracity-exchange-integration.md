@@ -1,4 +1,4 @@
-# Veracity Exchange Integration with Workgraph
+# Veracity Exchange Integration with workgraph
 
 **Author:** scout (analyst)
 **Date:** 2026-02-18
@@ -172,7 +172,7 @@ How would a veracity exchange system interact with workgraph? Three options, fro
 
 ### 4.1 Option A: External Service with CLI Bridge
 
-The exchange runs as a separate service. Workgraph interacts with it via CLI commands or a thin adapter.
+The exchange runs as a separate service. workgraph interacts with it via CLI commands or a thin adapter.
 
 ```
 workgraph (local)           veracity exchange (remote)
@@ -188,7 +188,7 @@ workgraph (local)           veracity exchange (remote)
 **Implementation:** New `wg exchange` subcommand group. Exchange client library as a dependency. Outcome recording, visibility fields, and credibility tracking are local workgraph features. The exchange protocol is the only networked component.
 
 **Pros:**
-- Clear separation of concerns. Workgraph handles task management; the exchange handles the market.
+- Clear separation of concerns. workgraph handles task management; the exchange handles the market.
 - Exchange can evolve independently.
 - Local workgraph features (outcome scoring, visibility) are useful even without the exchange.
 
@@ -198,7 +198,7 @@ workgraph (local)           veracity exchange (remote)
 
 ### 4.2 Option B: Event Hooks
 
-Workgraph emits events that an exchange plugin can subscribe to. The provenance system's operation log is already an event stream.
+workgraph emits events that an exchange plugin can subscribe to. The provenance system's operation log is already an event stream.
 
 ```
 wg done task-x
@@ -258,7 +258,7 @@ Do not build native integration (Option C) until the exchange protocol is stable
 
 ## 5. What Requires Forking vs. Extensions
 
-### 5.1 Changes to Core Workgraph (Requires Modification)
+### 5.1 Changes to Core workgraph (Requires Modification)
 
 These changes affect fundamental data structures and must happen in the main codebase:
 
@@ -472,7 +472,7 @@ These features are useful independently of any exchange.
 
 4. **Scale of trust network.** The agency system's performance tracking works well for tens of agents. A trust network might have thousands of peers. The `PerformanceRecord` structure may need indexing or summarization for large peer sets.
 
-5. **Bootstrapping the trust market.** The trust market requires an initial set of public tasks with measurable outcomes. Workgraph's existing evaluation system could bootstrap this: tasks with high evaluation scores and public visibility become the initial "proven work" that attracts suggestions.
+5. **Bootstrapping the trust market.** The trust market requires an initial set of public tasks with measurable outcomes. workgraph's existing evaluation system could bootstrap this: tasks with high evaluation scores and public visibility become the initial "proven work" that attracts suggestions.
 
 6. **Incentive alignment.** Why would someone post good suggestions publicly? The answer is credibility → access to private paid tasks. But this only works if there are enough private paid tasks to make credibility valuable. Bootstrapping both sides of this market is a classic chicken-and-egg problem.
 

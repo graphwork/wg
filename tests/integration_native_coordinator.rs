@@ -98,7 +98,7 @@ fn wg_ok(wg_dir: &Path, args: &[&str]) -> String {
 
 fn init_workgraph(tmp: &TempDir) -> PathBuf {
     let wg_dir = tmp.path().join(".wg");
-    wg_ok(&wg_dir, &["init"]);
+    wg_ok(&wg_dir, &["init", "--route", "claude-cli"]);
     wg_dir
 }
 
@@ -359,8 +359,9 @@ fn native_coordinator_provider_routing_explicit_override() {
     assert_eq!(provider.name(), "openai");
 }
 
-/// Verify that the model-based heuristic routes slashed models to openai
-/// when no env var or config overrides are present.
+/// Verify that an explicit OpenAI-compatible provider override wins over
+/// ambient provider env vars. `openai` is a legacy spelling for the
+/// OpenAI-compatible protocol and canonicalizes to `oai-compat`.
 #[test]
 fn native_coordinator_provider_heuristic_slash_model() {
     let tmp = TempDir::new().unwrap();
@@ -385,8 +386,8 @@ provider = "openai"
     let provider = result.unwrap();
     assert_eq!(
         provider.name(),
-        "openai",
-        "Config provider=openai should override env var"
+        "oai-compat",
+        "Config provider=openai should canonicalize to oai-compat and override env var"
     );
 }
 
@@ -414,10 +415,7 @@ mod per_provider_key_resolution {
     }
     impl EnvSnapshot {
         fn new(vars: &[&'static str]) -> Self {
-            let saved = vars
-                .iter()
-                .map(|v| (*v, std::env::var(v).ok()))
-                .collect();
+            let saved = vars.iter().map(|v| (*v, std::env::var(v).ok())).collect();
             for v in vars {
                 unsafe { std::env::remove_var(v) };
             }
@@ -1357,14 +1355,18 @@ fn native_coordinator_service_startup_with_api_key() {
 
     wait_for_socket(&wg_dir);
 
-    // The native coordinator should initialize successfully
+    // With no chat-loop task present at boot, the daemon should start and
+    // retain the native coordinator configuration without spawning a chat
+    // supervisor yet.
     let initialized = wait_for(Duration::from_secs(10), 100, || {
         let log = read_daemon_log(&wg_dir);
-        log.contains("Native coordinator: initialized")
+        log.contains("Coordinator config:")
+            && log.contains("executor=native")
+            && log.contains("openrouter:deepseek/deepseek-chat")
     });
     assert!(
         initialized,
-        "Native coordinator should initialize when API key is set.\nDaemon log:\n{}",
+        "Native coordinator config should be loaded when API key is set.\nDaemon log:\n{}",
         read_daemon_log(&wg_dir)
     );
 
@@ -1422,14 +1424,16 @@ done
 
     wait_for_socket(&wg_dir);
 
-    // Wait for the Claude CLI coordinator to start
+    // With no chat-loop task present at boot, the daemon should start and
+    // retain the Claude coordinator configuration without spawning a chat
+    // supervisor yet.
     let started = wait_for(Duration::from_secs(10), 100, || {
         let log = read_daemon_log(&wg_dir);
-        log.contains("Claude CLI started") || log.contains("Coordinator agent 0 spawned")
+        log.contains("Coordinator config:") && log.contains("executor=claude")
     });
     assert!(
         started,
-        "Claude executor coordinator should start.\nDaemon log:\n{}",
+        "Claude executor coordinator config should load.\nDaemon log:\n{}",
         read_daemon_log(&wg_dir)
     );
 
@@ -1465,7 +1469,7 @@ fn native_coordinator_chat_routing() {
 
     let output = wg_cmd_env(
         &wg_dir,
-        &["service", "start", "--interval", "600", "--max-agents", "0"],
+        &["service", "start", "--interval", "600", "--max-agents", "1"],
         &env,
     );
     assert!(
@@ -1476,15 +1480,28 @@ fn native_coordinator_chat_routing() {
 
     wait_for_socket(&wg_dir);
 
-    // Wait for native coordinator to be initialized
+    // The daemon starts before any chat-loop task exists, so it should have
+    // loaded native coordinator config but not spawned the chat supervisor yet.
     let initialized = wait_for(Duration::from_secs(10), 100, || {
         let log = read_daemon_log(&wg_dir);
-        log.contains("Native coordinator: initialized")
+        log.contains("Coordinator config:")
+            && log.contains("executor=native")
+            && log.contains("openrouter:deepseek/deepseek-chat")
     });
     assert!(
         initialized,
-        "Native coordinator should initialize.\nLog:\n{}",
+        "Native coordinator config should initialize.\nLog:\n{}",
         read_daemon_log(&wg_dir)
+    );
+
+    // Create the persistent chat task first; direct `wg chat <msg>` targets
+    // chat 0 but no longer creates the graph task implicitly.
+    let create_output = wg_cmd_env(&wg_dir, &["chat", "create", "--name", "native"], &env);
+    assert!(
+        create_output.status.success(),
+        "Chat create should succeed.\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&create_output.stdout),
+        String::from_utf8_lossy(&create_output.stderr),
     );
 
     // Send a chat message. The API call will fail (fake key), but the native
@@ -1496,11 +1513,16 @@ fn native_coordinator_chat_routing() {
     );
     let stdout = String::from_utf8_lossy(&chat_output.stdout).to_string();
 
-    // The daemon log should show the native coordinator processed the request
+    // The daemon log should show the native chat supervisor received the
+    // request and launched the nex/native handler. With the fake key, the
+    // handler may exit on authentication before producing a normal
+    // "processing request" line.
     let log = read_daemon_log(&wg_dir);
     assert!(
-        log.contains("Native coordinator: processing request_id="),
-        "Log should show the coordinator processed a request.\nLog:\n{}",
+        log.contains("IPC UserChat:")
+            && log.contains("spawning via `wg spawn-task .chat-0`")
+            && log.contains("executor=native"),
+        "Log should show the native coordinator accepted and routed a request.\nLog:\n{}",
         log
     );
 
@@ -1794,14 +1816,13 @@ fn no_env_var_credential_lookups_in_credential_path() {
                     // path. Any NEW credential-path code must not
                     // re-introduce env vars.
                     let preceding: Vec<&str> = contents.lines().take(lineno).collect();
-                    let in_legacy =
-                        preceding.iter().rev().take(40).any(|l| {
-                            l.contains("pub fn from_env")
-                                || l.contains("fn resolve_api_key()")
-                                || l.contains("fn resolve_api_key_from_dir")
-                                || l.contains("fn resolve_openai_api_key")
-                                || l.contains("fn resolve_openai_api_key_from_dir")
-                        });
+                    let in_legacy = preceding.iter().rev().take(40).any(|l| {
+                        l.contains("pub fn from_env")
+                            || l.contains("fn resolve_api_key()")
+                            || l.contains("fn resolve_api_key_from_dir")
+                            || l.contains("fn resolve_openai_api_key")
+                            || l.contains("fn resolve_openai_api_key_from_dir")
+                    });
                     if !in_legacy {
                         panic!(
                             "Banned env-var lookup '{}' found in credential path:\n  \

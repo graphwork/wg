@@ -1,4 +1,4 @@
-# Workgraph Design Deliberation — Consensus Document
+# workgraph Design Deliberation — Consensus Document
 
 **Date:** 2026-03-10
 **Process:** 10 researchers × 3 rounds of structured deliberation + synthesis + facilitation

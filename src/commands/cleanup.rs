@@ -450,9 +450,7 @@ fn attempt_manual_worktree_cleanup(
                 if let Err(perm_err) = fix_permissions_and_retry_removal(&wg_symlink) {
                     cleanup_errors.push(format!("Permission fix also failed: {}", perm_err));
                 } else {
-                    eprintln!(
-                        "[cleanup] Successfully removed .wg symlink after permission fix"
-                    );
+                    eprintln!("[cleanup] Successfully removed .wg symlink after permission fix");
                 }
             }
         }

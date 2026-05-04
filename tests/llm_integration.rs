@@ -85,7 +85,7 @@ fn claude_cli_available() -> bool {
 /// Initialize a fresh workgraph in a temp directory.
 fn setup_workgraph(tmp_root: &Path) -> PathBuf {
     let wg_dir = tmp_root.join(".wg");
-    wg_ok(&wg_dir, &["init"]);
+    wg_ok(&wg_dir, &["init", "--route", "claude-cli"]);
 
     // Disable auto_assign and auto_evaluate for test isolation
     let config_content = "[agency]\nauto_assign = false\nauto_evaluate = false\n";

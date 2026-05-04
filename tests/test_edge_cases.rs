@@ -143,8 +143,7 @@ fn simulate_cleanup_with_error_handling(
     // Try to clean up .wg symlink
     let wg_marker = worktree_path.join(".wg");
     if wg_marker.exists() {
-        fs::remove_file(&wg_marker)
-            .map_err(|e| format!("Failed to remove .wg marker: {}", e))?;
+        fs::remove_file(&wg_marker).map_err(|e| format!("Failed to remove .wg marker: {}", e))?;
     }
 
     // Try to clean up target directory

@@ -1,4 +1,4 @@
-# Workgraph + Agency Manual — Document Plan
+# workgraph + Agency Manual — Document Plan
 
 This plan governs the structure, terminology, tone, and content of a conceptual manual for humans who want to understand and use workgraph and its agency system for their own projects. This is not an API reference or CLI cheat-sheet. It is a book — tight, precise prose that builds understanding from first principles.
 
@@ -313,7 +313,7 @@ Every writer must use these terms with these exact meanings. If a term is not in
 
 These rules apply to ALL writers across all five sections:
 
-1. **Never say "DAG."** Workgraph is a directed graph, not necessarily acyclic. Loop edges create intentional cycles. Use "directed graph" or "task graph."
+1. **Never say "DAG."** workgraph is a directed graph, not necessarily acyclic. Loop edges create intentional cycles. Use "directed graph" or "task graph."
 
 2. **"Ready" has a precise meaning.** A task is ready if and only if it satisfies the four readiness conditions (see glossary). Do not use "ready" loosely to mean "available" or "waiting."
 

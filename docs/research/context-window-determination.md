@@ -213,7 +213,7 @@ These three defaults are inconsistent and none of them attempt to discover the a
 
 ### 4.3 No Runtime Discovery
 
-The OpenAI-compatible `/models` endpoint typically returns `context_length` per model. Workgraph fetches this for OpenRouter (via `fetch_openrouter_models`) but only feeds it to the benchmark system. The provider creation path and compaction threshold path do not query `/models` at runtime to discover context window sizes.
+The OpenAI-compatible `/models` endpoint typically returns `context_length` per model. workgraph fetches this for OpenRouter (via `fetch_openrouter_models`) but only feeds it to the benchmark system. The provider creation path and compaction threshold path do not query `/models` at runtime to discover context window sizes.
 
 ### 4.4 Endpoint Config `context_window` Never Set by CLI
 

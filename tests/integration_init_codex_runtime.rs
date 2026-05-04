@@ -48,7 +48,12 @@ fn wg_binary() -> PathBuf {
 
 /// Run `wg <args>` with cwd, env, and inherited HOME redirected so that
 /// no global ~/.wg/config.toml leaks into the test.
-fn wg_in(cwd: &Path, fake_home: &Path, env: &[(&str, &str)], args: &[&str]) -> std::process::Output {
+fn wg_in(
+    cwd: &Path,
+    fake_home: &Path,
+    env: &[(&str, &str)],
+    args: &[&str],
+) -> std::process::Output {
     let mut cmd = Command::new(wg_binary());
     cmd.current_dir(cwd)
         .env_clear()
@@ -165,11 +170,7 @@ fn codex_init_with_wg_dir_at_project_root_runs_correctly() {
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     );
-    assert!(
-        out.status.success(),
-        "wg agent list failed: {}",
-        combined
-    );
+    assert!(out.status.success(), "wg agent list failed: {}", combined);
     assert!(
         !combined.contains("No agents defined"),
         "WG_DIR=<project_root> should resolve to <project>/.wg and find the default agent. \
@@ -238,8 +239,10 @@ fn codex_init_with_wg_dir_at_project_root_runs_correctly() {
 
     // Bug 4: graph watcher path must be inside .wg.
     let proper_graph = wg_dir.join("graph.jsonl");
-    let bogus_graph_marker =
-        format!("Graph watcher active on {}", project.join("graph.jsonl").display());
+    let bogus_graph_marker = format!(
+        "Graph watcher active on {}",
+        project.join("graph.jsonl").display()
+    );
     assert!(
         log.contains(&format!(
             "Graph watcher active on {}",

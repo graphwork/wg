@@ -79,7 +79,7 @@ pub fn run(
 
     let path = super::graph_path(dir);
     if !path.exists() {
-        bail!("Workgraph not initialized. Run `wg init` first.");
+        bail!("workgraph not initialized. Run `wg init` first.");
     }
 
     let graph = load_graph(&path)?;

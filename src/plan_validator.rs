@@ -162,7 +162,7 @@ fn check_forbidden_pattern(
     }
 }
 
-/// Build a temporary WorkGraph from TaskTemplates for cycle analysis.
+/// Build a temporary `WorkGraph` from TaskTemplates for cycle analysis.
 fn build_temp_graph(templates: &[TaskTemplate]) -> WorkGraph {
     let mut graph = WorkGraph::new();
     for t in templates {

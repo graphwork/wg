@@ -10,7 +10,7 @@
 
 ### 1.1 Executor Types
 
-Workgraph has four executor types, each providing a different level of tool access:
+workgraph has four executor types, each providing a different level of tool access:
 
 | Executor | Description | Tool Access | How Tools Work |
 |----------|-------------|-------------|----------------|
@@ -106,7 +106,7 @@ The native executor's bare bundle has in-process wg tools but is **missing key c
 
 Amplifier (Microsoft MADE:Explorations, MIT license) uses a **kernel + module** architecture inspired by the Linux kernel. Key components:
 
-| Component | Purpose | Analog in Workgraph |
+| Component | Purpose | Analog in workgraph |
 |-----------|---------|---------------------|
 | `amplifier-core` (~2600 LOC Python) | Session lifecycle, module loading, event bus | `executor/native/` |
 | `Orchestrator` protocol | Drives the LLM interaction loop | `AgentLoop` |
@@ -139,13 +139,13 @@ Amplifier's `provider-openai` module (`amplifier_module_provider_openai/__init__
 
 **OpenRouter-specific handling**: OpenRouter proxies tool-use calls transparently for most models. Models that support tool use (Claude, GPT-4, Gemini, etc.) work through OpenRouter without any special shim. The `_response_handling.py` module handles parsing tool calls from the response.
 
-### 2.4 What Workgraph Can Learn from Amplifier
+### 2.4 What workgraph Can Learn from Amplifier
 
-1. **Workgraph already has the right pattern.** The `AgentLoop` + `Provider` trait + `ToolRegistry` is structurally identical to Amplifier's `Orchestrator` + `Provider` + `Tool` pattern.
+1. **workgraph already has the right pattern.** The `AgentLoop` + `Provider` trait + `ToolRegistry` is structurally identical to Amplifier's `Orchestrator` + `Provider` + `Tool` pattern.
 
-2. **The gap is not architectural — it's feature completeness.** Workgraph's native executor already handles multi-turn tool use with both Anthropic and OpenAI-compatible providers. The gap is that bare-mode agents don't get enough tools.
+2. **The gap is not architectural — it's feature completeness.** workgraph's native executor already handles multi-turn tool use with both Anthropic and OpenAI-compatible providers. The gap is that bare-mode agents don't get enough tools.
 
-3. **Bundle-based tool filtering is the right approach.** Both systems use bundles/tiers to control tool access. Workgraph just needs to expand what's in the bare bundle.
+3. **Bundle-based tool filtering is the right approach.** Both systems use bundles/tiers to control tool access. workgraph just needs to expand what's in the bare bundle.
 
 ---
 
@@ -154,7 +154,7 @@ Amplifier's `provider-openai` module (`amplifier_module_provider_openai/__init__
 ### 3.1 Anthropic (Claude)
 
 - **Native tool use** via Messages API: `tools` array in request, `tool_use` content blocks in response
-- **Workgraph leverages this** via `AnthropicClient` (`src/executor/native/client.rs`) which serializes `ToolDefinition` as Anthropic tool schemas and parses `tool_use` content blocks
+- **workgraph leverages this** via `AnthropicClient` (`src/executor/native/client.rs`) which serializes `ToolDefinition` as Anthropic tool schemas and parses `tool_use` content blocks
 - **Multi-turn**: Fully supported. Agent loop sends tool results as `tool_result` content blocks in the next user message.
 - **All Claude models** support tool use (Haiku, Sonnet, Opus)
 
@@ -162,19 +162,19 @@ Amplifier's `provider-openai` module (`amplifier_module_provider_openai/__init__
 
 - **Transparent proxy** for tool use: If the underlying model supports function calling, OpenRouter passes tool definitions and tool calls through
 - **OpenAI-compatible format**: Uses `tools` array in request, `tool_calls` in response (same as OpenAI Chat Completions API)
-- **Workgraph leverages this** via `OpenAiClient` (`src/executor/native/openai_client.rs`) which translates between Anthropic-style canonical types and OpenAI wire format
+- **workgraph leverages this** via `OpenAiClient` (`src/executor/native/openai_client.rs`) which translates between Anthropic-style canonical types and OpenAI wire format
 - **Haiku on OpenRouter**: Yes, Claude Haiku via OpenRouter supports multi-turn tool use. The tool calls are proxied through the OpenAI-compatible format
-- **Non-tool-use models** (e.g., DeepSeek R1): Workgraph already handles this via `ModelRegistry.supports_tool_use()` — if false, tools are omitted from the request. These models get `supports_tools: false` in `AgentLoop`
+- **Non-tool-use models** (e.g., DeepSeek R1): workgraph already handles this via `ModelRegistry.supports_tool_use()` — if false, tools are omitted from the request. These models get `supports_tools: false` in `AgentLoop`
 
 ### 3.3 OpenAI
 
 - **Function calling / tool use**: `tools` array in request, `tool_calls` in assistant message
-- **Workgraph supports this** via the same `OpenAiClient` (OpenAI and OpenRouter use the same wire format)
+- **workgraph supports this** via the same `OpenAiClient` (OpenAI and OpenRouter use the same wire format)
 - **All GPT-4 variants** support tool use
 
 ### 3.4 Common Abstraction Layer
 
-Workgraph already has a provider-agnostic abstraction: the `Provider` trait (`src/executor/native/provider.rs`):
+workgraph already has a provider-agnostic abstraction: the `Provider` trait (`src/executor/native/provider.rs`):
 
 ```rust
 pub trait Provider: Send + Sync {
@@ -215,7 +215,7 @@ The fundamental problem is NOT "models can't do tool use" — they can, and work
 ### 4.3 Models Without Tool Use
 
 For models that don't support tool use (e.g., DeepSeek R1, some Ollama models):
-- Workgraph sets `supports_tools: false` and omits tools from the request
+- workgraph sets `supports_tools: false` and omits tools from the request
 - The model gets a pure text prompt and produces a text response
 - **No multi-turn interaction** is possible — the model can only reason and produce text
 - This is fine for truly text-only tasks, but placement/assignment tasks need to run commands
@@ -283,9 +283,9 @@ The current approach (placement tasks use exec_mode=bare with a tool-capable mod
 
 ---
 
-## 6. Architecture Comparison: Workgraph vs Amplifier
+## 6. Architecture Comparison: workgraph vs Amplifier
 
-| Aspect | Workgraph (native executor) | Amplifier |
+| Aspect | workgraph (native executor) | Amplifier |
 |--------|---------------------------|-----------|
 | Language | Rust | Python |
 | Provider abstraction | `Provider` trait | `Provider` protocol |
@@ -297,7 +297,7 @@ The current approach (placement tasks use exec_mode=bare with a tool-capable mod
 | Multi-turn | Yes (loop until EndTurn) | Yes (loop until no tool_calls) |
 | OpenRouter support | Yes (via OpenAiClient) | Yes (via provider-openai) |
 
-**Key takeaway**: Workgraph's native executor is architecturally complete. It already has a generic, provider-agnostic tool-use layer. The only gap is the bare bundle's tool set being too restrictive.
+**Key takeaway**: workgraph's native executor is architecturally complete. It already has a generic, provider-agnostic tool-use layer. The only gap is the bare bundle's tool set being too restrictive.
 
 ---
 

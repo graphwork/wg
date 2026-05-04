@@ -256,7 +256,7 @@ The glossary has 30 terms covering: task, status, dependency, blocked_by, blocks
    ```markdown
    ## Trace & Sharing
 
-   Workgraph records every operation in a trace log. Use it for introspection, sharing, and workflow reuse.
+   workgraph records every operation in a trace log. Use it for introspection, sharing, and workflow reuse.
 
    ### Watching events
    ```bash

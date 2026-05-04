@@ -106,7 +106,7 @@ mutation rather than by cycle completion. The `loop_iteration` field wouldn't ap
    has not validated against all its dependencies.
 
 2. **Consistency with build systems.** Users with Make/Bazel intuition expect
-   downstream invalidation when inputs change. Workgraph tasks, especially
+   downstream invalidation when inputs change. workgraph tasks, especially
    agent-executed ones, are closer to build targets than to Jira tickets.
 
 3. **Safety.** The coordinator dispatches work based on status. A `Done` task won't

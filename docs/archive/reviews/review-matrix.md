@@ -2,7 +2,7 @@
 
 ## Overview
 
-Workgraph has **two parallel Matrix client implementations** selected via Cargo feature flags:
+workgraph has **two parallel Matrix client implementations** selected via Cargo feature flags:
 
 | Feature | Module | Dependencies | Lines | Default? |
 |---------|--------|-------------|-------|----------|

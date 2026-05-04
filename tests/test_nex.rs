@@ -474,9 +474,7 @@ impl QueueSurface {
 
 #[async_trait]
 impl workgraph::executor::native::surface::ConversationSurface for QueueSurface {
-    async fn next_user_input(
-        &mut self,
-    ) -> Option<workgraph::executor::native::surface::UserTurn> {
+    async fn next_user_input(&mut self) -> Option<workgraph::executor::native::surface::UserTurn> {
         let msg = self.messages.lock().unwrap().pop_front()?;
         Some(workgraph::executor::native::surface::UserTurn::plain(msg))
     }
@@ -522,7 +520,9 @@ async fn test_nex_two_message_roundtrip() {
                 .rev()
                 .find_map(|m| {
                     m.content.iter().find_map(|b| match b {
-                        ContentBlock::Text { text } if m.role == workgraph::executor::native::client::Role::User => {
+                        ContentBlock::Text { text }
+                            if m.role == workgraph::executor::native::client::Role::User =>
+                        {
                             Some(text.clone())
                         }
                         _ => None,
@@ -538,8 +538,12 @@ async fn test_nex_two_message_roundtrip() {
                     // Tool results (role=User with ToolResult blocks) legitimately
                     // follow an assistant tool_use, but two text-only user messages
                     // back-to-back should never happen.
-                    let is_tool_result = msg.role == workgraph::executor::native::client::Role::User
-                        && msg.content.iter().any(|b| matches!(b, ContentBlock::ToolResult { .. }));
+                    let is_tool_result = msg.role
+                        == workgraph::executor::native::client::Role::User
+                        && msg
+                            .content
+                            .iter()
+                            .any(|b| matches!(b, ContentBlock::ToolResult { .. }));
                     if prev == workgraph::executor::native::client::Role::User
                         && msg.role == workgraph::executor::native::client::Role::User
                         && !is_tool_result
@@ -652,7 +656,10 @@ async fn test_nex_two_message_roundtrip_with_tool_use() {
             let mut prev_role: Option<workgraph::executor::native::client::Role> = None;
             for msg in &req.messages {
                 let is_tool_result = msg.role == workgraph::executor::native::client::Role::User
-                    && msg.content.iter().any(|b| matches!(b, ContentBlock::ToolResult { .. }));
+                    && msg
+                        .content
+                        .iter()
+                        .any(|b| matches!(b, ContentBlock::ToolResult { .. }));
                 if let Some(prev) = prev_role {
                     if prev == workgraph::executor::native::client::Role::User
                         && msg.role == workgraph::executor::native::client::Role::User
@@ -683,7 +690,11 @@ async fn test_nex_two_message_roundtrip_with_tool_use() {
                             },
                         ],
                         stop_reason: Some(StopReason::ToolUse),
-                        usage: Usage { input_tokens: 10, output_tokens: 20, ..Default::default() },
+                        usage: Usage {
+                            input_tokens: 10,
+                            output_tokens: 20,
+                            ..Default::default()
+                        },
                     })
                 }
                 1 => {
@@ -694,7 +705,11 @@ async fn test_nex_two_message_roundtrip_with_tool_use() {
                             text: "File not found. Done with first request.".to_string(),
                         }],
                         stop_reason: Some(StopReason::EndTurn),
-                        usage: Usage { input_tokens: 15, output_tokens: 25, ..Default::default() },
+                        usage: Usage {
+                            input_tokens: 15,
+                            output_tokens: 25,
+                            ..Default::default()
+                        },
                     })
                 }
                 2 => {
@@ -705,19 +720,21 @@ async fn test_nex_two_message_roundtrip_with_tool_use() {
                             text: "Got your second message!".to_string(),
                         }],
                         stop_reason: Some(StopReason::EndTurn),
-                        usage: Usage { input_tokens: 20, output_tokens: 30, ..Default::default() },
+                        usage: Usage {
+                            input_tokens: 20,
+                            output_tokens: 30,
+                            ..Default::default()
+                        },
                     })
                 }
-                _ => {
-                    Ok(MessagesResponse {
-                        id: format!("msg_{}", count),
-                        content: vec![ContentBlock::Text {
-                            text: "unexpected call".to_string(),
-                        }],
-                        stop_reason: Some(StopReason::EndTurn),
-                        usage: Usage::default(),
-                    })
-                }
+                _ => Ok(MessagesResponse {
+                    id: format!("msg_{}", count),
+                    content: vec![ContentBlock::Text {
+                        text: "unexpected call".to_string(),
+                    }],
+                    stop_reason: Some(StopReason::EndTurn),
+                    usage: Usage::default(),
+                }),
             }
         }
         async fn send_streaming(
@@ -1300,8 +1317,7 @@ url = "{}/v1"
     let captured = captured.lock().unwrap();
     let (request_line, _) = &captured[0];
     assert!(
-        request_line.starts_with("POST /v1/chat/completions")
-            && !request_line.contains("/v1/v1/"),
+        request_line.starts_with("POST /v1/chat/completions") && !request_line.contains("/v1/v1/"),
         "endpoint URL already ending in /v1 must not double the segment (got `{}`)",
         request_line
     );

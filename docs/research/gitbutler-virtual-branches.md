@@ -160,7 +160,7 @@ They do **not** help with concurrent agent isolation because:
 
 ---
 
-## 4. Integration with Workgraph: Assessment
+## 4. Integration with workgraph: Assessment
 
 ### The GitButler + Claude Code Blog Post
 
@@ -171,11 +171,11 @@ GitButler published a blog post titled ["Managing Multiple Claude Code Sessions 
 3. Result: one branch per session, one commit per chat round
 4. **Limitation acknowledged**: this is **sorting**, not isolation
 
-### Could This Work for Workgraph?
+### Could This Work for workgraph?
 
 **The blog post scenario differs critically from workgraph's:**
 
-| Dimension | Blog Post Scenario | Workgraph Scenario |
+| Dimension | Blog Post Scenario | workgraph Scenario |
 |-----------|-------------------|-------------------|
 | Agents | 2-3 Claude Code sessions | 5-10 concurrent agents |
 | File overlap | Carefully chosen non-overlapping tasks | Frequently overlapping (same codebase) |
@@ -183,7 +183,7 @@ GitButler published a blog post titled ["Managing Multiple Claude Code Sessions 
 | Duration | Short interactive sessions | Long autonomous tasks (10-30 min) |
 | Failure mode | Human notices and intervenes | Unattended — failures must be automated |
 
-### Why Virtual Branches Cannot Replace Worktrees for Workgraph
+### Why Virtual Branches Cannot Replace Worktrees for workgraph
 
 1. **No filesystem isolation**: Two agents writing `src/lib.rs` simultaneously will corrupt each other's work. GitButler sorts diffs after the fact — it cannot prevent concurrent writes.
 
@@ -282,7 +282,7 @@ GitButler's MCP server, commit management, and visual review capabilities could 
 - GitButler CLI reaches stable release
 - Linux support matures (no known compatibility issues)
 - MCP server gains full branch management (not just commit recording)
-- Workgraph has worktree isolation working and stable
+- workgraph has worktree isolation working and stable
 
 ### Decision Matrix
 

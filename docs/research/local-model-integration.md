@@ -84,7 +84,7 @@ Models rated on three dimensions:
 
 ---
 
-## 3. Quality Assessment for Workgraph Tasks
+## 3. Quality Assessment for workgraph Tasks
 
 ### What workgraph agents actually do (from tool gap analysis)
 

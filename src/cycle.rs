@@ -1787,7 +1787,7 @@ mod tests {
     }
 
     // ─────────────────────────────────────────────────────
-    // Workgraph-Specific Scenario Tests
+    // workgraph-specific Scenario Tests
     // ─────────────────────────────────────────────────────
 
     #[test]

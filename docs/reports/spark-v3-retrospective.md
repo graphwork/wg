@@ -268,11 +268,11 @@ Human intervention was needed for:
 
 ---
 
-## 5. Current State of Workgraph
+## 5. Current State of workgraph
 
 ### Capabilities
 
-Workgraph is a functional self-organizing task orchestration system:
+workgraph is a functional self-organizing task orchestration system:
 
 - **89 CLI commands** covering task management, query, analysis, agency, service, monitoring, and utilities
 - **2,730 passing tests** across unit, integration, doc-test, and smoke test suites

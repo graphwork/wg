@@ -10,7 +10,7 @@ use workgraph::parser::load_graph;
 fn load_workgraph(dir: &Path) -> Result<(WorkGraph, std::path::PathBuf)> {
     let graph_path = dir.join(".wg").join("graph.jsonl");
     if !graph_path.exists() {
-        anyhow::bail!("Workgraph not initialized. Run 'wg init' first.");
+        anyhow::bail!("workgraph not initialized. Run 'wg init' first.");
     }
     let graph = load_graph(&graph_path)?;
     Ok((graph, graph_path))
@@ -195,7 +195,7 @@ fn test_cli_verify_timeout_flag() -> Result<()> {
 
     // Initialize a workgraph project
     std::process::Command::new("wg")
-        .args(&["init"])
+        .args(["init", "--route", "claude-cli"])
         .current_dir(project_root)
         .output()?;
 
@@ -206,8 +206,8 @@ fn test_cli_verify_timeout_flag() -> Result<()> {
             "Test CLI verify timeout",
             "--verify-timeout",
             "1337s",
-            "--verify",
-            "echo test",
+            "-d",
+            "## Validation\n- [ ] echo test",
         ])
         .current_dir(project_root)
         .output()?;
@@ -231,7 +231,7 @@ fn test_cli_verify_timeout_flag() -> Result<()> {
         .ok_or_else(|| anyhow::anyhow!("Task not found"))?;
 
     assert_eq!(task.verify_timeout, Some("1337s".to_string()));
-    assert_eq!(task.verify, Some("echo test".to_string()));
+    assert_eq!(task.verify, None);
 
     Ok(())
 }
@@ -244,7 +244,7 @@ fn test_verify_timeout_in_task_serialization() -> Result<()> {
 
     // Initialize workgraph
     std::process::Command::new("wg")
-        .args(&["init"])
+        .args(["init", "--route", "claude-cli"])
         .current_dir(project_root)
         .output()?;
 
@@ -274,7 +274,7 @@ fn test_verify_timeout_different_duration_formats() -> Result<()> {
     let project_root = temp_dir.path();
 
     std::process::Command::new("wg")
-        .args(&["init"])
+        .args(["init", "--route", "claude-cli"])
         .current_dir(project_root)
         .output()?;
 
@@ -340,24 +340,26 @@ fn test_all_three_features_integration() -> Result<()> {
 }
 
 #[test]
-fn test_backward_compatibility_integration() -> Result<()> {
-    // Test existing verify strings work with new features
+fn test_deprecated_verify_flag_rejected() -> Result<()> {
+    // The legacy --verify flag is intentionally rejected in favor of ## Validation.
     let temp_dir = TempDir::new()?;
     std::process::Command::new("wg")
-        .args(&["init"])
+        .args(["init", "--route", "claude-cli"])
         .current_dir(temp_dir.path())
         .output()?;
 
-    // Legacy commands should still work
     let output = std::process::Command::new("wg")
         .args(&["add", "Legacy test", "--verify", "cargo test"])
         .current_dir(temp_dir.path())
         .output()?;
 
     assert!(
-        output.status.success(),
-        "Legacy verify commands should work"
+        !output.status.success(),
+        "Legacy verify commands should be rejected"
     );
-    println!("✓ Backward compatibility maintained");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("--verify is deprecated"),
+        "Error should explain the replacement path"
+    );
     Ok(())
 }

@@ -22,7 +22,7 @@ pub fn run(
 ) -> Result<()> {
     let path = super::graph_path(dir);
     if !path.exists() {
-        anyhow::bail!("Workgraph not initialized. Run 'wg init' first.");
+        anyhow::bail!("workgraph not initialized. Run 'wg init' first.");
     }
 
     // Look up the task's current status to decide which retry path to take.
@@ -66,9 +66,8 @@ pub fn run(
             if let Some((wt_path, _)) =
                 crate::commands::spawn::worktree::find_worktree_for_task(project_root, id)
             {
-                let marker = wt_path.join(
-                    crate::commands::service::worktree::CLEANUP_PENDING_MARKER,
-                );
+                let marker =
+                    wt_path.join(crate::commands::service::worktree::CLEANUP_PENDING_MARKER);
                 if marker.exists() {
                     let _ = std::fs::remove_file(&marker);
                     eprintln!(
@@ -305,8 +304,7 @@ fn retry_in_progress(
         let graph = workgraph::parser::load_graph(path).context("Failed to load graph")?;
         graph.get_task(id).cloned()
     };
-    let task = task_snapshot
-        .ok_or_else(|| anyhow::anyhow!("Task '{}' not found", id))?;
+    let task = task_snapshot.ok_or_else(|| anyhow::anyhow!("Task '{}' not found", id))?;
     let assigned = task.assigned.clone();
 
     let mut killed_agent: Option<(String, u32)> = None;
@@ -623,13 +621,20 @@ mod tests {
         setup_workgraph(dir_path, vec![task]);
 
         let result = run(dir_path, "t1", false, false, Some("hung 20min"));
-        assert!(result.is_ok(), "retry on in-progress should succeed: {:?}", result);
+        assert!(
+            result.is_ok(),
+            "retry on in-progress should succeed: {:?}",
+            result
+        );
 
         let path = graph_path(dir_path);
         let graph = load_graph(&path).unwrap();
         let task = graph.get_task("t1").unwrap();
         assert_eq!(task.status, Status::Open);
-        assert_eq!(task.retry_count, 1, "in-progress retry must increment retry_count");
+        assert_eq!(
+            task.retry_count, 1,
+            "in-progress retry must increment retry_count"
+        );
         assert_eq!(task.assigned, None);
         assert!(
             task.log.iter().any(|e| e.message.contains("hung 20min")),
@@ -876,11 +881,7 @@ mod tests {
 
     fn setup_config_with_escalation(dir: &Path) {
         let config_path = dir.join("config.toml");
-        fs::write(
-            config_path,
-            "[coordinator]\nescalate_on_retry = true\n",
-        )
-        .unwrap();
+        fs::write(config_path, "[coordinator]\nescalate_on_retry = true\n").unwrap();
     }
 
     #[test]
@@ -900,7 +901,9 @@ mod tests {
         let task = graph.get_task("t1").unwrap();
         assert_eq!(task.tier, Some("premium".to_string()));
         assert!(
-            task.log.iter().any(|e| e.message.contains("Tier escalated")),
+            task.log
+                .iter()
+                .any(|e| e.message.contains("Tier escalated")),
             "Should log tier escalation"
         );
     }
@@ -944,7 +947,10 @@ mod tests {
             "Premium should not escalate further"
         );
         assert!(
-            !task.log.iter().any(|e| e.message.contains("Tier escalated")),
+            !task
+                .log
+                .iter()
+                .any(|e| e.message.contains("Tier escalated")),
             "No escalation log when already at premium"
         );
     }
@@ -1097,10 +1103,7 @@ mod tests {
 
         // Default behavior: worktree dir SURVIVES.
         assert!(wt.exists(), "retry must NOT remove worktree by default");
-        assert!(
-            wt.join("wip.txt").exists(),
-            "uncommitted WIP must survive"
-        );
+        assert!(wt.join("wip.txt").exists(), "uncommitted WIP must survive");
         // Cleanup-pending marker should be cleared so the next sweep doesn't reap.
         assert!(
             !wt.join(crate::commands::service::worktree::CLEANUP_PENDING_MARKER)
@@ -1165,7 +1168,14 @@ mod tests {
         setup_workgraph(dir_path, vec![upstream, downstream]);
         write_dead_agent_registry(dir_path, "agent-dead-1");
 
-        run(dir_path, "upstream", false, false, Some("downstream-clear-test")).unwrap();
+        run(
+            dir_path,
+            "upstream",
+            false,
+            false,
+            Some("downstream-clear-test"),
+        )
+        .unwrap();
 
         let g = load_graph(&graph_path(dir_path)).unwrap();
         let down = g.get_task("downstream").unwrap();
@@ -1179,7 +1189,9 @@ mod tests {
             "started_at must also be cleared so dispatcher won't think it's mid-run"
         );
         assert!(
-            down.log.iter().any(|e| e.message.contains("stale-claim cleared via retry")),
+            down.log
+                .iter()
+                .any(|e| e.message.contains("stale-claim cleared via retry")),
             "downstream log must record the cause: {:?}",
             down.log.iter().map(|e| &e.message).collect::<Vec<_>>()
         );
@@ -1256,10 +1268,7 @@ mod tests {
         assert!(result.is_ok(), "retry --fresh should succeed: {:?}", result);
 
         // --fresh: worktree dir is REMOVED.
-        assert!(
-            !wt.exists(),
-            "retry --fresh must remove the prior worktree"
-        );
+        assert!(!wt.exists(), "retry --fresh must remove the prior worktree");
         // Branch is also deleted
         let branches = std::process::Command::new("git")
             .args(["branch", "--list", "wg/agent-prior/retry-fresh"])

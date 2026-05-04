@@ -686,7 +686,7 @@ fn generate_recommendations(
 
 /// Print human-readable output
 fn print_human_readable(output: &AnalysisOutput) {
-    println!("\n=== Workgraph Health Report ===\n");
+    println!("\n=== workgraph Health Report ===\n");
 
     // Summary
     println!("SUMMARY");

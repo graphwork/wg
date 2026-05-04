@@ -6,14 +6,14 @@
 **Inputs:**
 - [TUI Multiplexing & Concurrent Access](tui-multiplexing-concurrent-access.md) (mu-design-tui-concurrency)
 - [Terminal Wrapping Strategy](terminal-wrapping-strategy.md) (mu-design-terminal-wrapping)
-- [Federation & Cross-Workgraph Visibility](federation-architecture.md) (mu-design-federation)
+- [Federation & Cross-workgraph Visibility](federation-architecture.md) (mu-design-federation)
 - [Real-Time Sync & Liveness UX](live-sync-and-liveness.md) (mu-design-live-sync)
 
 ---
 
 ## Executive Summary
 
-Workgraph's multi-user platform extends the existing single-user tool into a shared workspace where multiple humans and AI agents coordinate through a common graph. The architecture is built on four principles:
+workgraph's multi-user platform extends the existing single-user tool into a shared workspace where multiple humans and AI agents coordinate through a common graph. The architecture is built on four principles:
 
 1. **The graph is the source of truth.** All coordination flows through `graph.jsonl`, serialized by flock.
 2. **The TUI is the universal interface.** Every platform (desktop, web, mobile) connects to the same TUI via terminal wrapping — no platform-specific frontends.
@@ -152,7 +152,7 @@ The four designs address authentication at different layers:
 
 **No contradiction.** Authentication is layered: transport auth gets you a session; IPC perms control daemon access; visibility filtering controls data exposure. Each layer is independent.
 
-**The reverse proxy is the auth gateway for web users.** Workgraph itself does not implement user authentication. This is deliberate — auth is a solved problem (Caddy, OAuth2 Proxy, Authelia). Workgraph delegates to external auth and trusts the `WG_USER` identity passed downstream.
+**The reverse proxy is the auth gateway for web users.** workgraph itself does not implement user authentication. This is deliberate — auth is a solved problem (Caddy, OAuth2 Proxy, Authelia). workgraph delegates to external auth and trusts the `WG_USER` identity passed downstream.
 
 ### 2.3 The Daemon as Central Hub
 
@@ -569,7 +569,7 @@ Layer 4: Write Protection
 
 ## 10. Architecture Decision Records
 
-### ADR-S1: Single Shared Workgraph per Project
+### ADR-S1: Single Shared workgraph per Project
 
 **Decision:** All users in a project operate on one `.wg/graph.jsonl`.
 **Sources:** TUI Concurrency ADR-1, Federation §6.

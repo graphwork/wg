@@ -21,11 +21,7 @@ pub fn run(dir: &Path, id: &str, only: bool) -> Result<()> {
 /// `only` and `wcc` are mutually exclusive at the CLI layer; here `wcc`
 /// wins if the caller passes both.
 pub fn publish(dir: &Path, id: &str, only: bool, wcc: bool) -> Result<()> {
-    let mode = if wcc {
-        Mode::Wcc
-    } else {
-        Mode::Subgraph(only)
-    };
+    let mode = if wcc { Mode::Wcc } else { Mode::Subgraph(only) };
     run_inner(dir, id, mode, true)
 }
 
@@ -46,7 +42,7 @@ enum Mode {
 fn run_inner(dir: &Path, id: &str, mode: Mode, is_publish: bool) -> Result<()> {
     let path = super::graph_path(dir);
     if !path.exists() {
-        anyhow::bail!("Workgraph not initialized. Run 'wg init' first.");
+        anyhow::bail!("workgraph not initialized. Run 'wg init' first.");
     }
 
     // Use modify_graph for atomic load-modify-save under a single exclusive
@@ -465,7 +461,12 @@ fn unpause_task(graph: &mut WorkGraph, task_id: &str, action: &str) {
 /// All tasks and their edges are written together into the same graph
 /// object before the caller saves — guaranteeing a single, atomic write.
 /// Idempotent: skips tasks that already have scaffold siblings.
-fn scaffold_eval_for_unpaused(dir: &Path, graph: &mut WorkGraph, task_ids: &[String], action: &str) {
+fn scaffold_eval_for_unpaused(
+    dir: &Path,
+    graph: &mut WorkGraph,
+    task_ids: &[String],
+    action: &str,
+) {
     let config = workgraph::config::Config::load_or_default(dir);
 
     // Collect (id, title) pairs, filtering out system tasks
@@ -1278,11 +1279,11 @@ mod tests {
             graph.add_node(workgraph::graph::Node::Task(t));
         }
         let _ = (a, b, c); // silence unused-mut lints from clones above
-        let sorted = topo_sort_subset(
-            &graph,
-            &["c".to_string(), "b".to_string(), "a".to_string()],
+        let sorted = topo_sort_subset(&graph, &["c".to_string(), "b".to_string(), "a".to_string()]);
+        assert_eq!(
+            sorted,
+            vec!["a".to_string(), "b".to_string(), "c".to_string()]
         );
-        assert_eq!(sorted, vec!["a".to_string(), "b".to_string(), "c".to_string()]);
     }
 
     #[test]

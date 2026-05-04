@@ -509,7 +509,11 @@ url = "http://127.0.0.1:8088"
 is_default = true
 "#;
         let result: Result<NamedProfile, _> = toml::from_str(toml);
-        assert!(result.is_ok(), "Should accept all allowed fields: {:?}", result);
+        assert!(
+            result.is_ok(),
+            "Should accept all allowed fields: {:?}",
+            result
+        );
     }
 
     #[test]
@@ -576,7 +580,11 @@ is_default = true
 
         let prof = NamedProfile {
             llm_endpoints: Some(ProfileEndpointsSection {
-                endpoints: vec![make_endpoint("default", "oai-compat", "http://127.0.0.1:8088")],
+                endpoints: vec![make_endpoint(
+                    "default",
+                    "oai-compat",
+                    "http://127.0.0.1:8088",
+                )],
             }),
             ..Default::default()
         };
@@ -630,10 +638,7 @@ is_default = true
             save("testprof", &prof).unwrap();
             let loaded = load("testprof").unwrap();
             assert_eq!(loaded.description.as_deref(), Some("test profile"));
-            assert_eq!(
-                loaded.agent.unwrap().model.as_deref(),
-                Some("claude:opus")
-            );
+            assert_eq!(loaded.agent.unwrap().model.as_deref(), Some("claude:opus"));
         });
     }
 
@@ -786,7 +791,10 @@ is_default = true
                 "fresh nex.toml from the current template must not be rewritten"
             );
             let after = std::fs::read_to_string(&path).unwrap();
-            assert_eq!(after, clean, "file must be byte-identical when no migration needed");
+            assert_eq!(
+                after, clean,
+                "file must be byte-identical when no migration needed"
+            );
         });
     }
 

@@ -1,4 +1,4 @@
-# Amplifier Bundle for Workgraph: Architectural Summary
+# Amplifier Bundle for workgraph: Architectural Summary
 
 **Source**: [ramparte/amplifier-bundle-workgraph](https://github.com/ramparte/amplifier-bundle-workgraph)
 **Date**: 2026-02-18
@@ -18,7 +18,7 @@
 bundle:
   name: workgraph
   version: 0.1.0
-  description: "Workgraph integration for Amplifier"
+  description: "workgraph integration for Amplifier"
 includes:
   - bundle: workgraph:behaviors/workgraph
 ---
@@ -36,7 +36,7 @@ The workgraph bundle provides: a behavior definition, a planner agent, and conte
 
 This is the core architectural insight. The integration works in **two independent directions**, and they compose:
 
-### Direction A: Amplifier → Workgraph
+### Direction A: Amplifier → workgraph
 
 Add workgraph awareness to Amplifier sessions. When an Amplifier agent encounters a task with non-linear dependencies (multiple parallel workstreams with ordering constraints), it decomposes it into a workgraph:
 
@@ -47,7 +47,7 @@ Add workgraph awareness to Amplifier sessions. When an Amplifier agent encounter
 
 This direction is enabled by installing the **behavior** (`behaviors/workgraph.yaml`) and its associated **context** (`context/workgraph-guide.md`) and **agent** (`agents/workgraph-planner.md`).
 
-### Direction B: Workgraph → Amplifier
+### Direction B: workgraph → Amplifier
 
 Install Amplifier as a workgraph executor so the service daemon spawns full Amplifier sessions for each task:
 
@@ -56,7 +56,7 @@ Install Amplifier as a workgraph executor so the service daemon spawns full Ampl
 3. When `wg service start` dispatches a task, it spawns an Amplifier session instead of (or alongside) a Claude CLI session
 4. Each task gets the full Amplifier ecosystem — bundles, tools, recipes, multi-agent delegation
 
-### Composed: Amplifier ↔ Workgraph
+### Composed: Amplifier ↔ workgraph
 
 When both directions are active, the architecture becomes recursive:
 
@@ -71,7 +71,7 @@ Amplifier Session (with workgraph behavior)
   |--> wg service start (launches daemon)
   |
   v
-Workgraph Service Daemon
+workgraph Service Daemon
   |
   |--> dispatches ready tasks
   |--> spawns Amplifier executor for each
@@ -112,7 +112,7 @@ timeout = 600                                      # Seconds (default 10 min)
 WG_TASK_ID = "{{task_id}}"
 ```
 
-Workgraph passes the task ID via environment variable so the wrapper script and agent can reference it.
+workgraph passes the task ID via environment variable so the wrapper script and agent can reference it.
 
 ### `[executor.prompt_template]` — Rendered Task Prompt
 
@@ -131,7 +131,7 @@ template = """
 ## Context from Completed Dependencies
 {{task_context}}
 
-## Workgraph Protocol
+## workgraph Protocol
 ...
 """
 ```
@@ -176,7 +176,7 @@ The artifact system (`wg artifact <id> <path>`) is the primary mechanism for int
 
 A key technical challenge documented in `CONTEXT-TRANSFER.md`:
 
-1. Workgraph pipes the rendered prompt to the executor command's **stdin** (but only for `type = "claude"`)
+1. workgraph pipes the rendered prompt to the executor command's **stdin** (but only for `type = "claude"`)
 2. `amplifier run --mode single` expects the prompt as a **positional argument**, not stdin
 3. The `amplifier-run.sh` wrapper bridges this gap: reads stdin into a variable, then passes it as the last positional arg to `amplifier run`
 
@@ -304,7 +304,7 @@ Resources within bundles are referenced by namespace: `workgraph:workgraph-plann
 
 Several bugs were discovered and fixed during development (commit `fbd612a`):
 
-1. **Executor type hack**: Workgraph only pipes stdin for `type = "claude"` executors. Custom types get `Stdio::null()`. The amplifier executor uses `type = "claude"` as a workaround, with a wrapper script that bridges stdin to positional args.
+1. **Executor type hack**: workgraph only pipes stdin for `type = "claude"` executors. Custom types get `Stdio::null()`. The amplifier executor uses `type = "claude"` as a workaround, with a wrapper script that bridges stdin to positional args.
 
 2. **Bundle YAML format**: Initial versions had incorrect YAML structure. The correct format uses `agents.include` and `context.include` as lists, and namespace paths without file extensions.
 
@@ -331,13 +331,13 @@ Several bugs were discovered and fixed during development (commit `fbd612a`):
 - **Bundle structure**: Verifies all expected files exist, bundle.md has YAML frontmatter, agent has meta frontmatter
 - **E2E lifecycle** (slow): Creates a project, installs executor, adds a trivial task, spawns Amplifier session, polls for completion (120s timeout), verifies artifact creation
 
-## 9. Key Takeaways for Workgraph Integration
+## 9. Key Takeaways for workgraph Integration
 
 1. **The executor interface is the integration point**: Any system can become a workgraph executor by providing a TOML config with `type = "claude"` (for stdin piping) and a wrapper that reads the rendered prompt. The executor receives full task context including dependency outputs.
 
 2. **Context-driven, not tool-driven**: The bundle adds value by teaching agents the workgraph mental model through context documents, not by providing custom tool integrations. Agents use `bash` to call `wg` CLI directly — "ruthless simplicity."
 
-3. **The `type = "claude"` constraint is a real limitation**: Workgraph currently has a hardcoded assumption that only Claude-type executors need stdin piping. This forces all custom executors to use `type = "claude"` and wrapper scripts. This should be addressed upstream.
+3. **The `type = "claude"` constraint is a real limitation**: workgraph currently has a hardcoded assumption that only Claude-type executors need stdin piping. This forces all custom executors to use `type = "claude"` and wrapper scripts. This should be addressed upstream.
 
 4. **Template variables provide the contract**: The set of `{{variables}}` in the prompt template defines the data contract between workgraph and its executors. Currently: `task_id`, `task_title`, `task_description`, `task_context`, `task_identity`, `working_dir`.
 

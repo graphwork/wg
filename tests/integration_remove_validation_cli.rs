@@ -30,8 +30,8 @@ fn test_cli_add_no_validation_flag() {
         .args(["add", "--help"])
         .output()
         .expect("run wg add --help");
-    let help = String::from_utf8_lossy(&out.stdout).to_string()
-        + &String::from_utf8_lossy(&out.stderr);
+    let help =
+        String::from_utf8_lossy(&out.stdout).to_string() + &String::from_utf8_lossy(&out.stderr);
 
     assert!(
         !help.contains("--validation"),
@@ -60,8 +60,8 @@ fn test_cli_edit_no_validation_flag() {
         .args(["edit", "--help"])
         .output()
         .expect("run wg edit --help");
-    let help = String::from_utf8_lossy(&out.stdout).to_string()
-        + &String::from_utf8_lossy(&out.stderr);
+    let help =
+        String::from_utf8_lossy(&out.stdout).to_string() + &String::from_utf8_lossy(&out.stderr);
 
     assert!(
         !help.contains("--validation"),
@@ -82,8 +82,8 @@ fn test_quickstart_no_validation_flag() {
         .arg("quickstart")
         .output()
         .expect("run wg quickstart");
-    let text = String::from_utf8_lossy(&out.stdout).to_string()
-        + &String::from_utf8_lossy(&out.stderr);
+    let text =
+        String::from_utf8_lossy(&out.stdout).to_string() + &String::from_utf8_lossy(&out.stderr);
 
     assert!(
         !text.contains("--validation"),
@@ -110,8 +110,12 @@ fn test_executor_prompt_no_validation_flag() {
         guide
     );
 
-    let guidance =
-        workgraph::service::executor::build_decomposition_guidance("multi-step task", "task-1", 10, 8);
+    let guidance = workgraph::service::executor::build_decomposition_guidance(
+        "multi-step task",
+        "task-1",
+        10,
+        8,
+    );
     assert!(
         !guidance.contains("--validation"),
         "build_decomposition_guidance output must not contain --validation flag, got:\n{}",
@@ -131,7 +135,7 @@ fn test_cli_add_validation_flag_is_noop_or_unknown() {
     }
     let tmp = tempfile::TempDir::new().unwrap();
     // Initialize workgraph so flag-acceptance path can succeed without
-    // hitting the "Workgraph not initialized" gate.
+    // hitting the "workgraph not initialized" gate.
     let init = Command::new(&bin)
         .current_dir(tmp.path())
         .args(["init", "--executor", "shell"])

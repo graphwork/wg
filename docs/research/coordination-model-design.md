@@ -1,4 +1,4 @@
-# Workgraph Coordination Model — Design Document
+# workgraph Coordination Model — Design Document
 
 **Date:** 2026-03-10
 **Status:** Approved Design (from 10-agent deliberation consensus)
@@ -9,7 +9,7 @@
 
 ## 1. Executive Summary
 
-Workgraph's coordination model will evolve from its current implicit conventions — where coordinators are special-cased tasks distinguished by string prefix heuristics and communication is split across ad hoc channels — into a **Layered Coordination Model** with three explicit architectural layers: (1) the task graph as a stigmergic medium (the primary coordination mechanism), (2) a typed node model with a minimal two-variant enum (`Task` | `Session`) replacing heuristic prefix matching, and (3) three formally declared interaction channels (stigmergic, message-queue, chat) with mandatory graph tracing. This design preserves workgraph's distinctive property — indirect coordination through traces in a shared graph — while resolving the fundamental tensions between persistent and ephemeral agents, fire-and-forget and conversational work, and human control versus system autonomy. The migration is incremental: each phase delivers value independently, the system remains backward-compatible at every step, and the most impactful changes (NodeKind enum, hard message gate, session renaming) ship first.
+workgraph's coordination model will evolve from its current implicit conventions — where coordinators are special-cased tasks distinguished by string prefix heuristics and communication is split across ad hoc channels — into a **Layered Coordination Model** with three explicit architectural layers: (1) the task graph as a stigmergic medium (the primary coordination mechanism), (2) a typed node model with a minimal two-variant enum (`Task` | `Session`) replacing heuristic prefix matching, and (3) three formally declared interaction channels (stigmergic, message-queue, chat) with mandatory graph tracing. This design preserves workgraph's distinctive property — indirect coordination through traces in a shared graph — while resolving the fundamental tensions between persistent and ephemeral agents, fire-and-forget and conversational work, and human control versus system autonomy. The migration is incremental: each phase delivers value independently, the system remains backward-compatible at every step, and the most impactful changes (NodeKind enum, hard message gate, session renaming) ship first.
 
 ---
 

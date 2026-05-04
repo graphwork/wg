@@ -176,10 +176,10 @@ pub fn run_show(workgraph_dir: &Path, name: &str, json: bool) -> Result<()> {
 
     match &resolved {
         Ok(wg_dir) => {
-            println!("  Workgraph:   {}", wg_dir.display());
+            println!("  workgraph:   {}", wg_dir.display());
         }
         Err(e) => {
-            println!("  Workgraph:   inaccessible ({})", e);
+            println!("  workgraph:   inaccessible ({})", e);
         }
     }
 
@@ -355,8 +355,9 @@ fn count_tasks_in_graph(graph_path: &Path) -> Result<TaskCounts> {
             | workgraph::graph::Status::Waiting
             | workgraph::graph::Status::PendingValidation
             | workgraph::graph::Status::Incomplete => {}
-            workgraph::graph::Status::PendingEval
-            | workgraph::graph::Status::FailedPendingEval => counts.in_progress += 1,
+            workgraph::graph::Status::PendingEval | workgraph::graph::Status::FailedPendingEval => {
+                counts.in_progress += 1
+            }
         }
     }
 

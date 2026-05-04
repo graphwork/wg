@@ -828,7 +828,7 @@ pub fn generate_systemd_service(dir: &Path) -> Result<()> {
     // ExecStart uses `wg service start` - the service daemon includes the coordinator
     let service_content = format!(
         r#"[Unit]
-Description=Workgraph Service ({project_name})
+Description=workgraph Service ({project_name})
 After=network.target
 
 [Service]
@@ -895,7 +895,7 @@ pub fn run_tick(
 
     let graph_path = graph_path(dir);
     if !graph_path.exists() {
-        anyhow::bail!("Workgraph not initialized. Run 'wg init' first.");
+        anyhow::bail!("workgraph not initialized. Run 'wg init' first.");
     }
 
     let model = model

@@ -23,14 +23,14 @@ current shape, not *how to use it*.
 
 ## Three documentation layers
 
-Workgraph documentation is organized into three layers; this directory is
+workgraph documentation is organized into three layers; this directory is
 layer 3:
 
 | Layer | Audience | Where it lives |
 |-------|----------|----------------|
 | **1. Universal role contract** | Every chat agent and worker agent in any project | Bundled in the `wg` binary; `wg agent-guide` |
 | **2. Project-specific context** | Agents working on a specific project | `CLAUDE.md` / `AGENTS.md` at each project root |
-| **3. Workgraph contributor docs** | People hacking on workgraph itself | `docs/designs/`, `docs/research/` (this directory) |
+| **3. workgraph contributor docs** | People hacking on workgraph itself | `docs/designs/`, `docs/research/` (this directory) |
 
 When in doubt: **users read `wg agent-guide` and project `CLAUDE.md`.
 Contributors additionally read `docs/`.**

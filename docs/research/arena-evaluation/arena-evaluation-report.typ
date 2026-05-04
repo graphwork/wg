@@ -4,7 +4,7 @@
 #set par(justify: true)
 
 #align(center)[
-  #text(size: 18pt, weight: "bold")[Arena Evaluation for Workgraph]
+  #text(size: 18pt, weight: "bold")[Arena Evaluation for workgraph]
   #v(0.5em)
   #text(size: 12pt)[Integrating FLIP Backward-Inference Scoring into Agent Evaluation, Selection, and Evolution]
   #v(1em)
@@ -110,7 +110,7 @@ FLIP maps directly onto workgraph concepts:
 #table(
   columns: (1fr, 1fr),
   inset: 8pt,
-  [*FLIP concept*], [*Workgraph equivalent*],
+  [*FLIP concept*], [*workgraph equivalent*],
   [Instruction $x$], [Task description + title],
   [Response $y$], [Agent log entries + artifact contents],
   [Model $phi$], [Any small LM (1B--12B), configurable],

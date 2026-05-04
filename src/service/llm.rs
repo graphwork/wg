@@ -11,7 +11,9 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 
-use crate::config::{CLAUDE_HAIKU_MODEL_ID, Config, DispatchRole, ModelRegistryEntry, parse_model_spec};
+use crate::config::{
+    CLAUDE_HAIKU_MODEL_ID, Config, DispatchRole, ModelRegistryEntry, parse_model_spec,
+};
 use crate::dispatch::{ExecutorKind, handler_for_model};
 use crate::graph::TokenUsage;
 
@@ -856,9 +858,10 @@ mod tests {
         // existing native HTTP dispatch path — they're real HTTP providers,
         // not CLI handlers.
         let mut config = Config::default();
-        config
-            .models
-            .set_model(DispatchRole::Assigner, "openrouter:anthropic/claude-sonnet-4-6");
+        config.models.set_model(
+            DispatchRole::Assigner,
+            "openrouter:anthropic/claude-sonnet-4-6",
+        );
 
         let dispatch = resolve_agency_dispatch(&config, DispatchRole::Assigner);
         assert_eq!(dispatch.handler, ExecutorKind::Native);

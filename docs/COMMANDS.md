@@ -1,4 +1,4 @@
-# Workgraph Command Reference
+# workgraph Command Reference
 
 Complete reference for all `wg` commands. Most query commands support `--json` for machine-readable output. All commands support `--dir <path>` to specify a custom workgraph directory.
 
@@ -1746,7 +1746,7 @@ wg agency create --dry-run
 
 ### `wg agency import`
 
-Import Agency's starter.csv primitives into WorkGraph.
+Import Agency's starter.csv primitives into workgraph.
 
 ```bash
 wg agency import <CSV_PATH> [OPTIONS]
@@ -4393,7 +4393,7 @@ All commands support these options:
 
 | Option | Description |
 |--------|-------------|
-| `--dir <PATH>` | Workgraph directory (default: .wg) |
+| `--dir <PATH>` | workgraph directory (default: .wg) |
 | `--json` | Output as JSON for machine consumption |
 | `-h, --help` | Show help (use `--help-all` for full command list) |
 | `--help-all` | Show all commands in help output (including less common ones) |

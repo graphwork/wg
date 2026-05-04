@@ -227,7 +227,7 @@ Benchmark scores: Updated as new models are added; methodology versions change p
 
 ---
 
-## 4. Metric Relevance for Workgraph Agent Tasks
+## 4. Metric Relevance for workgraph Agent Tasks
 
 ### 4.1 Relevance Ranking
 
@@ -247,7 +247,7 @@ Benchmark scores: Updated as new models are added; methodology versions change p
 | **12** | `request_count` (popularity) | **Low** | Popularity ≠ quality; can indicate reliability/availability |
 | **13** | `hle` | **Low** | Frontier academic knowledge — not typical agent work |
 
-### 4.2 Recommended Composite for Workgraph
+### 4.2 Recommended Composite for workgraph
 
 For a "workgraph agent quality score," weight:
 - **50%** coding_index — primary work is code

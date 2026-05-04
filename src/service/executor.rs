@@ -143,7 +143,7 @@ pub const GRAPH_PATTERNS_SECTION: &str = "\
 
 **Golden rule: same files = sequential edges.** NEVER parallelize tasks that modify the same files \u{2014} one will overwrite the other. When unsure, default to pipeline.
 
-**Cycles (back-edges):** Workgraph is a directed graph, NOT a DAG. For repeating workflows \
+**Cycles (back-edges):** workgraph is a directed graph, NOT a DAG. For repeating workflows \
 (cleanup\u{2192}commit\u{2192}verify, write\u{2192}review, etc.), create ONE cycle with `--max-iterations` \
 instead of duplicating tasks for each pass. Use `wg done --converged` to stop the cycle \
 when no more changes are needed. If you are inside a cycle, check `wg show` for your \
@@ -612,7 +612,7 @@ You are running inside a **workgraph-managed worktree**. Your working directory 
 3. Cause ALL your commits to go to the wrong branch
 4. Result in your work being LOST — the merge-back will find no commits
 
-If you see these tools available, **ignore them completely**. Workgraph already provides full git isolation.
+If you see these tools available, **ignore them completely**. workgraph already provides full git isolation.
 
 ### Prior WIP from a previous attempt
 
@@ -757,7 +757,7 @@ issues direct text-in/text-out LLM calls with no tool loop — cheap, predictabl
 and able to handle sources that would otherwise require many turns of manual \
 chunking. Hard ceiling 1 MB by default (raisable via `max_input_bytes`).
 
-### Workgraph task management (in-process, no CLI spawn)
+### workgraph task management (in-process, no CLI spawn)
 
 - `wg_show(task_id)`, `wg_list()`, `wg_log(task_id, message)` — inspect and \
 annotate tasks.
@@ -800,7 +800,7 @@ for text slicing (`sed -n 'A,Bp'`, `grep -n`, `wc -l`, `head`, `tail`).
 /// without CLAUDE.md context understand wg basics. Users can override this by placing
 /// a custom guide at `.wg/wg-guide.md`.
 pub const DEFAULT_WG_GUIDE: &str = "\
-**Workgraph (wg)** is a task coordination graph for AI agents. You are an agent \
+**workgraph (wg)** is a task coordination graph for AI agents. You are an agent \
 working on one task in this graph. Other agents work on other tasks concurrently.
 
 ### Task Lifecycle
@@ -965,7 +965,7 @@ pub struct ScopeContext {
     pub queued_messages: String,
     /// Context from a previous agent attempt (injected on retry)
     pub previous_attempt_context: String,
-    /// Workgraph usage guide for non-Claude models (injected when model lacks CLAUDE.md)
+    /// workgraph usage guide for non-Claude models (injected when model lacks CLAUDE.md)
     pub wg_guide_content: String,
     /// Discovered test files formatted for prompt injection (task+ scope)
     pub discovered_tests: String,
@@ -1080,7 +1080,7 @@ pub fn build_prompt(vars: &TemplateVars, scope: ContextScope, ctx: &ScopeContext
     // Task+ scope: wg usage guide for non-Claude models
     if scope >= ContextScope::Task && !ctx.wg_guide_content.is_empty() {
         parts.push(format!(
-            "## Workgraph Usage Guide\n\n{}",
+            "## workgraph Usage Guide\n\n{}",
             ctx.wg_guide_content
         ));
     }
@@ -2886,7 +2886,7 @@ args = ["--custom-flag"]
         let prompt = build_prompt(&vars, ContextScope::Task, &ctx);
 
         assert!(
-            prompt.contains("## Workgraph Usage Guide"),
+            prompt.contains("## workgraph Usage Guide"),
             "Task scope should include wg guide when content is present"
         );
         assert!(
@@ -2904,7 +2904,7 @@ args = ["--custom-flag"]
         let prompt = build_prompt(&vars, ContextScope::Task, &ctx);
 
         assert!(
-            !prompt.contains("## Workgraph Usage Guide"),
+            !prompt.contains("## workgraph Usage Guide"),
             "Task scope should NOT include wg guide when content is empty"
         );
     }
@@ -2920,7 +2920,7 @@ args = ["--custom-flag"]
         let prompt = build_prompt(&vars, ContextScope::Clean, &ctx);
 
         assert!(
-            !prompt.contains("## Workgraph Usage Guide"),
+            !prompt.contains("## workgraph Usage Guide"),
             "Clean scope should NOT include wg guide"
         );
     }

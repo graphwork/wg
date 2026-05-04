@@ -1,4 +1,4 @@
-# A2A (Agent-to-Agent) Protocol — Applicability to Workgraph
+# A2A (Agent-to-Agent) Protocol — Applicability to workgraph
 
 **Date:** 2026-03-04
 **Task:** research-a2a-agent
@@ -42,11 +42,11 @@ Three normative bindings: JSON-RPC 2.0, gRPC, and HTTP/REST — all functionally
 
 ---
 
-## Mapping to Workgraph Concepts
+## Mapping to workgraph Concepts
 
 ### Task Model Comparison
 
-| Aspect | A2A Task | Workgraph Task |
+| Aspect | A2A Task | workgraph Task |
 |--------|----------|----------------|
 | **Identity** | Server-generated UUID (`taskId`) | User-provided slug ID |
 | **Grouping** | `contextId` (conversation context) | Graph edges (`after`/`before`/`requires`) |
@@ -60,11 +60,11 @@ Three normative bindings: JSON-RPC 2.0, gRPC, and HTTP/REST — all functionally
 | **Verification** | Not in protocol | Built-in (`verify` field, eval system) |
 | **Scheduling** | Not in protocol | `not_before`, `delay_after` |
 
-**Key difference:** A2A tasks are flat RPC interactions between two agents. Workgraph tasks are nodes in a dependency graph with rich lifecycle management. A2A has no concept of task dependencies, cycles, or graph-mediated coordination.
+**Key difference:** A2A tasks are flat RPC interactions between two agents. workgraph tasks are nodes in a dependency graph with rich lifecycle management. A2A has no concept of task dependencies, cycles, or graph-mediated coordination.
 
 ### Agent Identity Comparison
 
-| Aspect | A2A Agent Card | Workgraph Agency |
+| Aspect | A2A Agent Card | workgraph Agency |
 |--------|---------------|-----------------|
 | **Discovery** | `.well-known/agent.json` on HTTP | `.wg/agency/{roles,tradeoffs,agents}/*.yaml` |
 | **Identity** | Name, description, URL, provider | Role + Tradeoff = Agent (content-hash ID) |
@@ -73,11 +73,11 @@ Three normative bindings: JSON-RPC 2.0, gRPC, and HTTP/REST — all functionally
 | **Performance** | Not tracked | Evaluation scores, lineage, evolution |
 | **Human support** | Not explicit | First-class (human executors: matrix, email, shell) |
 
-**Key difference:** A2A Agent Cards are static capability advertisements for HTTP-accessible services. Workgraph agents are composable identities with evolutionary tracking, performance evaluation, and multi-executor support (AI and human).
+**Key difference:** A2A Agent Cards are static capability advertisements for HTTP-accessible services. workgraph agents are composable identities with evolutionary tracking, performance evaluation, and multi-executor support (AI and human).
 
 ### Artifact Comparison
 
-| Aspect | A2A Artifact | Workgraph Artifact |
+| Aspect | A2A Artifact | workgraph Artifact |
 |--------|-------------|-------------------|
 | **Content** | Multi-part: text, files, structured JSON | File paths (references to files on disk) |
 | **Streaming** | Yes (SSE events) | No (file written, then path recorded) |
@@ -86,7 +86,7 @@ Three normative bindings: JSON-RPC 2.0, gRPC, and HTTP/REST — all functionally
 
 ### Communication Comparison
 
-| Aspect | A2A | Workgraph |
+| Aspect | A2A | workgraph |
 |--------|-----|-----------|
 | **Transport** | HTTP(S) + JSON-RPC/gRPC/REST | Filesystem (YAML/JSON) + CLI |
 | **Streaming** | SSE with typed events | JSONL stream events (for TUI/monitoring) |
@@ -106,7 +106,7 @@ MCP (Model Context Protocol) and A2A are **complementary, not competing:**
 | **Transport** | stdio / SSE | HTTP(S) |
 | **Use case** | Agent accesses databases, APIs, files | Agent delegates to specialist agent |
 
-**Workgraph's position:** Workgraph already has its own tool system (native executor tools) and its own inter-agent coordination (graph edges, messages, coordinator). MCP would add external tool access. A2A would add external agent interop. These are orthogonal concerns.
+**workgraph's position:** workgraph already has its own tool system (native executor tools) and its own inter-agent coordination (graph edges, messages, coordinator). MCP would add external tool access. A2A would add external agent interop. These are orthogonal concerns.
 
 ---
 
@@ -123,7 +123,7 @@ MCP (Model Context Protocol) and A2A are **complementary, not competing:**
 **Cons:**
 - Massive engineering effort: HTTP server, JSON-RPC handler, SSE streaming, auth, agent card serving
 - Impedance mismatch: A2A tasks are flat RPCs; workgraph tasks are graph nodes with dependencies. Translating between them loses workgraph's core value (graph structure, cycles, dependency tracking).
-- Workgraph agents don't have stable HTTP endpoints — they're ephemeral processes spawned by the coordinator
+- workgraph agents don't have stable HTTP endpoints — they're ephemeral processes spawned by the coordinator
 - Security surface: exposing agents over HTTP opens authentication, authorization, and DoS concerns
 - Maintenance burden: tracking A2A spec evolution (still pre-1.0)
 
@@ -131,7 +131,7 @@ MCP (Model Context Protocol) and A2A are **complementary, not competing:**
 
 ### Option 2: CONSUME A2A (call external A2A agents from workgraph)
 
-**What this means:** Workgraph tasks could delegate to external A2A-compatible agents (e.g., a specialized coding agent, a search agent, an enterprise knowledge base agent).
+**What this means:** workgraph tasks could delegate to external A2A-compatible agents (e.g., a specialized coding agent, a search agent, an enterprise knowledge base agent).
 
 **Pros:**
 - Enables workgraph to orchestrate external specialist agents
@@ -149,7 +149,7 @@ MCP (Model Context Protocol) and A2A are **complementary, not competing:**
 
 ### Option 3: IGNORE A2A
 
-**Verdict: Recommended for now, with a watching brief.** A2A is still pre-1.0 (v0.3) and the ecosystem is nascent. Workgraph's value is in graph-mediated coordination, not HTTP-based agent interop. The protocol should stabilize and demonstrate real adoption before workgraph invests in integration.
+**Verdict: Recommended for now, with a watching brief.** A2A is still pre-1.0 (v0.3) and the ecosystem is nascent. workgraph's value is in graph-mediated coordination, not HTTP-based agent interop. The protocol should stabilize and demonstrate real adoption before workgraph invests in integration.
 
 ---
 
@@ -163,7 +163,7 @@ MCP (Model Context Protocol) and A2A are **complementary, not competing:**
 
 ```
 ┌─────────────────────────────────────────────┐
-│ Workgraph                                    │
+│ workgraph                                    │
 │                                              │
 │  Coordinator                                 │
 │    │                                         │
@@ -192,7 +192,7 @@ MCP (Model Context Protocol) and A2A are **complementary, not competing:**
 
 **State mapping:**
 
-| A2A State | Workgraph Status |
+| A2A State | workgraph Status |
 |-----------|-----------------|
 | submitted | InProgress |
 | working | InProgress |

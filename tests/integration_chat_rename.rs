@@ -8,7 +8,7 @@
 //! - IPC accepts both create_chat and legacy create_coordinator commands
 
 use tempfile::TempDir;
-use workgraph::chat_id::{format_chat_task_id, is_chat_task_id, parse_chat_task_id, CHAT_LOOP_TAG};
+use workgraph::chat_id::{CHAT_LOOP_TAG, format_chat_task_id, is_chat_task_id, parse_chat_task_id};
 use workgraph::graph::{Status, Task, WorkGraph};
 
 #[test]
@@ -49,7 +49,10 @@ fn test_legacy_coordinator_prefix_still_loaded() {
     graph.add_node(workgraph::graph::Node::Task(legacy));
 
     let found = workgraph::chat_id::find_chat_task(&graph, 3);
-    assert!(found.is_some(), "find_chat_task must find legacy .coordinator-3");
+    assert!(
+        found.is_some(),
+        "find_chat_task must find legacy .coordinator-3"
+    );
     assert_eq!(found.unwrap().title, "Coordinator: alice");
 }
 
@@ -134,11 +137,8 @@ fn test_chat_loop_tag_constant_is_chat_dash_loop() {
 fn test_no_user_facing_coordinator_or_orchestrator_string() {
     // CLAUDE.md must NOT contain 'orchestrator' as a current role-noun.
     // It is allowed in deprecation notes / migration mentions.
-    let claude_md = std::fs::read_to_string(format!(
-        "{}/CLAUDE.md",
-        env!("CARGO_MANIFEST_DIR")
-    ))
-    .expect("CLAUDE.md must exist");
+    let claude_md = std::fs::read_to_string(format!("{}/CLAUDE.md", env!("CARGO_MANIFEST_DIR")))
+        .expect("CLAUDE.md must exist");
     assert!(
         !claude_md.contains("orchestrating agent"),
         "CLAUDE.md still uses 'orchestrating agent' — should be 'chat agent'"
@@ -223,7 +223,8 @@ fn test_migration_chat_rename_renames_legacy_ids() {
         for old_key in ids {
             if let Some(t) = g.get_task_mut(&old_key) {
                 for after in t.after.iter_mut() {
-                    if let Some(new_id) = renames.iter().find_map(|(o, n)| (o == after).then_some(n))
+                    if let Some(new_id) =
+                        renames.iter().find_map(|(o, n)| (o == after).then_some(n))
                     {
                         *after = new_id.clone();
                     }

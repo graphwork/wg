@@ -9,7 +9,7 @@ use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use workgraph::config::{Config, EndpointConfig, ModelRegistryEntry, Tier};
-use workgraph::config_defaults::{config_for_route, RouteParams, SetupRoute};
+use workgraph::config_defaults::{RouteParams, SetupRoute, config_for_route};
 use workgraph::models::ModelRegistry;
 use workgraph::notify::config as notify_config;
 
@@ -18,7 +18,7 @@ const CLAUDE_MD_MARKER: &str = "<!-- workgraph-managed -->";
 
 /// The workgraph directives block appended to CLAUDE.md.
 const CLAUDE_MD_DIRECTIVES: &str = r#"<!-- workgraph-managed -->
-# Workgraph
+# workgraph
 
 Use workgraph for task management.
 
@@ -250,10 +250,7 @@ pub fn format_delta_summary(config: &Config) -> String {
         lines.push(format!("  {}", line));
     }
     lines.push(String::new());
-    lines.push(format!(
-        "Will NOT write (built-in defaults): {} more",
-        same
-    ));
+    lines.push(format!("Will NOT write (built-in defaults): {} more", same));
     lines.join("\n")
 }
 
@@ -275,7 +272,14 @@ pub fn compute_delta(config: &Config) -> DeltaCounts {
     let mut diff = 0usize;
     let mut same = 0usize;
     let mut diff_lines = Vec::new();
-    walk_compare("", &new_val, &def_val, &mut diff, &mut same, &mut diff_lines);
+    walk_compare(
+        "",
+        &new_val,
+        &def_val,
+        &mut diff,
+        &mut same,
+        &mut diff_lines,
+    );
     DeltaCounts {
         diff,
         same,
@@ -887,10 +891,7 @@ pub fn build_model_picker_entries(
         }
         seen.insert(model.to_string());
         let label = match entry.endpoint.as_deref() {
-            Some(ep) => format!(
-                "{}  (recent — from {} via {})",
-                model, entry.source, ep
-            ),
+            Some(ep) => format!("{}  (recent — from {} via {})", model, entry.source, ep),
             None => format!("{}  (recent — from {})", model, entry.source),
         };
         out.push(PickerEntry {
@@ -929,14 +930,13 @@ pub fn recent_history(limit: usize) -> Vec<workgraph::launcher_history::HistoryE
 /// UIs can surface this combo as a one-click recall.
 fn record_setup_history(choices: &SetupChoices, source: &str) {
     let endpoint_url = choices.endpoint.as_ref().map(|e| e.url.as_str());
-    let _ = workgraph::launcher_history::record_use(
-        &workgraph::launcher_history::HistoryEntry::new(
+    let _ =
+        workgraph::launcher_history::record_use(&workgraph::launcher_history::HistoryEntry::new(
             &choices.executor,
             Some(&choices.model),
             endpoint_url,
             source,
-        ),
-    );
+        ));
 }
 
 /// Resolve an API key from SetupArgs (key file or env var).
@@ -1100,8 +1100,11 @@ fn run_route(args: &SetupArgs) -> Result<()> {
         .unwrap_or_else(|_| PathBuf::from(".wg/config.toml"));
 
     if args.dry_run {
-        println!("# wg setup --dry-run (route: {}, scope: {})",
-            route.as_name(), scope.as_name());
+        println!(
+            "# wg setup --dry-run (route: {}, scope: {})",
+            route.as_name(),
+            scope.as_name()
+        );
         for path in scope_paths(scope, &global_path, &local_path) {
             let existing = load_config_at(&path).unwrap_or_default();
             let diff = diff_summary(&existing, &new_config);
@@ -1122,8 +1125,8 @@ fn run_route(args: &SetupArgs) -> Result<()> {
         println!("---");
         println!("{}", format_delta_summary(&new_config));
         println!("---");
-        let toml_str = toml::to_string_pretty(&new_config)
-            .map_err(|e| anyhow::anyhow!("serialize: {}", e))?;
+        let toml_str =
+            toml::to_string_pretty(&new_config).map_err(|e| anyhow::anyhow!("serialize: {}", e))?;
         println!("{}", toml_str);
         return Ok(());
     }
@@ -2099,13 +2102,10 @@ pub fn format_detection_summary(det: &DetectionResult) -> String {
     }
 
     if det.tmux {
-        lines.push(
-            "  ✓ tmux — ready for chat persistence + `wg server`!".to_string(),
-        );
+        lines.push("  ✓ tmux — ready for chat persistence + `wg server`!".to_string());
     } else {
         lines.push(
-            "  · tmux — not installed (needed for chat persistence + `wg server`)"
-                .to_string(),
+            "  · tmux — not installed (needed for chat persistence + `wg server`)".to_string(),
         );
     }
 
@@ -2736,7 +2736,7 @@ mod tests {
         // Original content preserved
         assert!(content.contains("# My Existing Config"));
         assert!(content.contains("Some custom rules here."));
-        // Workgraph directives appended
+        // workgraph directives appended
         assert!(content.contains(CLAUDE_MD_MARKER));
         assert!(content.contains("Do NOT use built-in TaskCreate"));
     }
@@ -3507,7 +3507,11 @@ mod tests {
         let cfg = Config::default();
         let counts = compute_delta(&cfg);
         assert_eq!(counts.diff, 0);
-        assert!(counts.same > 10, "should have many same keys, got {}", counts.same);
+        assert!(
+            counts.same > 10,
+            "should have many same keys, got {}",
+            counts.same
+        );
         assert!(counts.diff_lines.is_empty());
     }
 
@@ -3516,8 +3520,16 @@ mod tests {
         let mut cfg = Config::default();
         cfg.agent.model = "claude:opus-9000".to_string();
         let counts = compute_delta(&cfg);
-        assert!(counts.diff >= 1, "expected at least 1 diff, got {}", counts.diff);
-        assert!(counts.same > 10, "expected many same keys, got {}", counts.same);
+        assert!(
+            counts.diff >= 1,
+            "expected at least 1 diff, got {}",
+            counts.diff
+        );
+        assert!(
+            counts.same > 10,
+            "expected many same keys, got {}",
+            counts.same
+        );
         // diff_lines should mention agent.model
         assert!(
             counts.diff_lines.iter().any(|l| l.contains("agent.model")),
@@ -3542,16 +3554,14 @@ mod tests {
 
     #[test]
     fn test_picker_entries_history_appears_first() {
-        let history = vec![
-            workgraph::launcher_history::HistoryEntry {
-                timestamp: "2026-04-27T12:00:00Z".to_string(),
-                executor: "claude".to_string(),
-                model: Some("claude:haiku".to_string()),
-                endpoint: None,
-                source: "wg config".to_string(),
-                project: None,
-            },
-        ];
+        let history = vec![workgraph::launcher_history::HistoryEntry {
+            timestamp: "2026-04-27T12:00:00Z".to_string(),
+            executor: "claude".to_string(),
+            model: Some("claude:haiku".to_string()),
+            endpoint: None,
+            source: "wg config".to_string(),
+            project: None,
+        }];
         let route_defaults = vec![
             ("claude:opus".to_string(), "premium".to_string()),
             ("claude:sonnet".to_string(), "standard".to_string()),
@@ -3571,16 +3581,14 @@ mod tests {
     fn test_picker_entries_dedupes_history_against_defaults() {
         // History entry shares a model with a route default — history wins,
         // default isn't duplicated.
-        let history = vec![
-            workgraph::launcher_history::HistoryEntry {
-                timestamp: "2026-04-27T12:00:00Z".to_string(),
-                executor: "claude".to_string(),
-                model: Some("claude:opus".to_string()),
-                endpoint: None,
-                source: "wg add".to_string(),
-                project: None,
-            },
-        ];
+        let history = vec![workgraph::launcher_history::HistoryEntry {
+            timestamp: "2026-04-27T12:00:00Z".to_string(),
+            executor: "claude".to_string(),
+            model: Some("claude:opus".to_string()),
+            endpoint: None,
+            source: "wg add".to_string(),
+            project: None,
+        }];
         let route_defaults = vec![
             ("claude:opus".to_string(), "premium".to_string()),
             ("claude:sonnet".to_string(), "standard".to_string()),
@@ -3595,32 +3603,28 @@ mod tests {
     #[test]
     fn test_picker_entries_skips_history_without_model() {
         // Entries with no model field are silently dropped.
-        let history = vec![
-            workgraph::launcher_history::HistoryEntry {
-                timestamp: "2026-04-27T12:00:00Z".to_string(),
-                executor: "claude".to_string(),
-                model: None,
-                endpoint: None,
-                source: "wg cli".to_string(),
-                project: None,
-            },
-        ];
+        let history = vec![workgraph::launcher_history::HistoryEntry {
+            timestamp: "2026-04-27T12:00:00Z".to_string(),
+            executor: "claude".to_string(),
+            model: None,
+            endpoint: None,
+            source: "wg cli".to_string(),
+            project: None,
+        }];
         let entries = build_model_picker_entries(&history, &[], 5);
         assert!(entries.is_empty());
     }
 
     #[test]
     fn test_picker_entries_history_label_includes_endpoint() {
-        let history = vec![
-            workgraph::launcher_history::HistoryEntry {
-                timestamp: "2026-04-27T12:00:00Z".to_string(),
-                executor: "native".to_string(),
-                model: Some("local:qwen3".to_string()),
-                endpoint: Some("http://lambda01:30000".to_string()),
-                source: "wg nex".to_string(),
-                project: None,
-            },
-        ];
+        let history = vec![workgraph::launcher_history::HistoryEntry {
+            timestamp: "2026-04-27T12:00:00Z".to_string(),
+            executor: "native".to_string(),
+            model: Some("local:qwen3".to_string()),
+            endpoint: Some("http://lambda01:30000".to_string()),
+            source: "wg nex".to_string(),
+            project: None,
+        }];
         let entries = build_model_picker_entries(&history, &[], 5);
         assert_eq!(entries.len(), 1);
         assert!(entries[0].label.contains("http://lambda01:30000"));

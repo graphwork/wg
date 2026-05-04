@@ -536,9 +536,9 @@ Loaded from `Config::load_or_default(workgraph_dir).project.description`. Alread
 A static string constant:
 
 ```rust
-const SYSTEM_AWARENESS_PREAMBLE: &str = r#"## About Workgraph
+const SYSTEM_AWARENESS_PREAMBLE: &str = r#"## About workgraph
 
-Workgraph is a directed-graph-based task orchestration system. Tasks have dependencies (edges),
+workgraph is a directed-graph-based task orchestration system. Tasks have dependencies (edges),
 statuses (open → in-progress → done/failed), and can be assigned to AI agents.
 
 **Coordinator:** A daemon that polls for ready tasks (all dependencies satisfied),

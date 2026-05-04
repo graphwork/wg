@@ -1,8 +1,8 @@
-# WorkGraph Operator Guide
+# workgraph Operator Guide
 
 This guide is the operator manual: configuration, the service daemon, agent
 management, models, the TUI, and troubleshooting. The [README](../README.md)
-explains *what* WorkGraph is; this document explains *how to drive it*.
+explains *what* workgraph is; this document explains *how to drive it*.
 
 For the agent-side contract (how agents themselves should behave), see
 [AGENT-GUIDE.md](AGENT-GUIDE.md). For the agency system (roles, tradeoffs,
@@ -378,7 +378,7 @@ wg service reload
 **Cost tips.** Use **haiku** for simple formatting/linting, **sonnet** for
 typical coding, **opus** for complex reasoning and architecture.
 
-**Alternative providers.** WorkGraph supports
+**Alternative providers.** workgraph supports
 [OpenRouter](https://openrouter.ai/) and any OpenAI-compatible API. Configure
 an endpoint with `wg endpoints add` and use full model IDs like
 `deepseek/deepseek-chat-v3`. See [guides/openrouter-setup.md](guides/openrouter-setup.md)
@@ -475,7 +475,7 @@ highlighting.
 
 ## Cycles (repeating workflows)
 
-Some workflows repeat: write → review → revise → write again. WorkGraph models
+Some workflows repeat: write → review → revise → write again. workgraph models
 these as **structural cycles** — `after` back-edges with a `CycleConfig` that
 controls iteration limits and behavior. Cycles are detected automatically using
 Tarjan's SCC algorithm.
@@ -529,7 +529,7 @@ wg viz                 # cycle edges appear as dashed lines
 
 ## Trace, replay, and functions
 
-WorkGraph records every operation in a trace log — the project's organizational
+workgraph records every operation in a trace log — the project's organizational
 memory.
 
 ### Watching events
@@ -625,7 +625,7 @@ so agents can build, test, and commit without interfering with each other.
 
 See [WORKTREE-ISOLATION.md](WORKTREE-ISOLATION.md) for the full design.
 
-WorkGraph also uses `flock`-based file locking on `.wg/graph.jsonl` to prevent
+workgraph also uses `flock`-based file locking on `.wg/graph.jsonl` to prevent
 concurrent modifications. This is automatic.
 
 ---
@@ -737,7 +737,7 @@ wg runs restore <snapshot>
 
 ## Using with AI coding assistants
 
-WorkGraph ships a skill that teaches AI assistants to use the service as a
+workgraph ships a skill that teaches AI assistants to use the service as a
 coordinator rather than working ad-hoc.
 
 ### Claude Code

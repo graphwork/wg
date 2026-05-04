@@ -88,7 +88,9 @@ pub(crate) fn build_task_context(
             let cycle = &ca.cycles[cycle_idx];
             let header_info = cycle.members.iter().find_map(|mid| {
                 graph.get_task(mid).and_then(|t| {
-                    t.cycle_config.as_ref().map(|cc| (t.loop_iteration, cc.max_iterations))
+                    t.cycle_config
+                        .as_ref()
+                        .map(|cc| (t.loop_iteration, cc.max_iterations))
                 })
             });
             if let Some((iter, max)) = header_info {
@@ -693,7 +695,7 @@ fn build_essential_guide(workgraph_dir: &Path) -> String {
     let memory_md = read_memory_md(workgraph_dir);
 
     format!(
-        r#"# Workgraph Agent Guide (Essential)
+        r#"# workgraph Agent Guide (Essential)
 
 **You are an AI agent working on one task in a workgraph project.** Other agents work on other tasks concurrently.
 
@@ -946,9 +948,9 @@ fn extract_project_context(memory_md: &str) -> String {
     context.push_str("\n## Project Context\n");
 
     // Extract key project facts - limit to essential info for Tier 1
-    if memory_md.contains("Workgraph") {
+    if memory_md.contains("workgraph") {
         context.push_str(
-            "**Project:** Workgraph - task coordination graph for humans and AI agents\n",
+            "**Project:** workgraph - task coordination graph for humans and AI agents\n",
         );
     }
 
@@ -989,7 +991,7 @@ fn build_graph_patterns_section() -> String {
     r#"## Advanced Graph Patterns
 
 ### Cycles and Loops
-Workgraph supports cycles for recurring work:
+workgraph supports cycles for recurring work:
 ```bash
 wg add 'Review code' --after implement-feature --max-iterations 3
 wg add 'Fix issues' --after review-code

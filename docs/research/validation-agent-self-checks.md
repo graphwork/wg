@@ -297,20 +297,20 @@ When `wg done` is called on a task with `verify` set, run the verification comma
 
 CI/CD pipelines are the closest analog — they enforce validation gates before deployment:
 
-| System | Validation Pattern | Lesson for Workgraph |
+| System | Validation Pattern | Lesson for workgraph |
 |--------|-------------------|---------------------|
 | **GitHub Actions** | Jobs define `steps` that must all pass before the workflow succeeds. Matrix strategies run parallel checks (build, test, lint). | Tasks could define a `checks` list that must pass before `wg done` is accepted. |
 | **GitLab CI** | `rules` and `needs` create DAG-based pipelines with explicit stage gates. Stages only proceed if all prior stage jobs pass. | The `after` dependency mechanism already provides this; what's missing is intra-task validation gates. |
 | **Jenkins** | `post { always { ... } success { ... } failure { ... } }` blocks run cleanup/validation after stages. | The wrapper script could implement `post`-style hooks. |
 | **Argo Workflows** | Each step can have `exit-handler` and `retry` strategies. Steps can define `outputs` that downstream steps validate. | Combine with artifact registration — downstream tasks validate upstream artifacts. |
 
-**Key lesson:** CI/CD systems separate "did it run" from "did it succeed." Workgraph currently conflates these — a clean agent exit = success. CI adds an explicit check phase.
+**Key lesson:** CI/CD systems separate "did it run" from "did it succeed." workgraph currently conflates these — a clean agent exit = success. CI adds an explicit check phase.
 
 ### 4.2 Multi-Agent Frameworks
 
 | Framework | Validation Approach | Lesson |
 |-----------|-------------------|--------|
-| **AutoGen (Microsoft)** | "Critic" agents review work before acceptance. Nested chat with validation loop. | Workgraph's evaluation system is similar but post-hoc. Could add pre-completion evaluation. |
+| **AutoGen (Microsoft)** | "Critic" agents review work before acceptance. Nested chat with validation loop. | workgraph's evaluation system is similar but post-hoc. Could add pre-completion evaluation. |
 | **CrewAI** | Tasks have `expected_output` field. Output is validated against expectations before proceeding. | The `verify` field could serve this purpose if revived. |
 | **LangGraph** | Nodes can have "conditional edges" — work flows to different nodes based on validation results. | Loop guards already implement this pattern for cycles. Extend to linear tasks? |
 | **MetaGPT** | Role-based agents with mandatory review stages (e.g., QA Engineer reviews Developer output). | Scatter-gather pattern already supports this. Task authors should add review tasks. |

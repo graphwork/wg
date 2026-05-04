@@ -114,7 +114,10 @@ fn test_rescued_field_serializes_round_trips() {
     task.meta_eval_attempts = 1;
 
     let json = serde_json::to_string(&task).unwrap();
-    assert!(json.contains("\"rescued\":true"), "rescued should serialize");
+    assert!(
+        json.contains("\"rescued\":true"),
+        "rescued should serialize"
+    );
     assert!(
         json.contains("\"meta_eval_attempts\":1"),
         "meta_eval_attempts should serialize"
@@ -237,7 +240,10 @@ fn test_shell_task_via_exec_mode_skips_failed_pending_eval() {
     let config_path = wg_dir.join("config.toml");
     std::fs::write(&config_path, "[agency]\nauto_evaluate = true\n").unwrap();
 
-    let out = wg_cmd(&wg_dir, &["fail", "shell-2", "--class", "agent-exit-nonzero"]);
+    let out = wg_cmd(
+        &wg_dir,
+        &["fail", "shell-2", "--class", "agent-exit-nonzero"],
+    );
     assert!(out.status.success(), "wg fail failed");
 
     let graph = load_graph(wg_dir.join("graph.jsonl")).unwrap();

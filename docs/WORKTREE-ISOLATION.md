@@ -257,7 +257,7 @@ This repo already has a Claude Code worktree at `.claude/worktrees/agent-a4f4340
 - `.git` file pointing to `.git/worktrees/agent-a4f43401`
 - **No `.wg` directory** — this is the shared state problem in action
 
-## 5. Integration Points in Workgraph
+## 5. Integration Points in workgraph
 
 ### 5.1 Where Worktree Creation Happens
 
@@ -617,7 +617,7 @@ wg add "Update .gitignore and docs" --after all -d "Add .wg-worktrees/ to .gitig
 
 ## Appendix B: Comparison with Claude Code's Approach
 
-| Aspect | Claude Code | Workgraph (Proposed) |
+| Aspect | Claude Code | workgraph (Proposed) |
 |--------|-------------|---------------------|
 | Trigger | User-initiated (`EnterWorktree` tool) | Automatic (coordinator config) |
 | Location | `.claude/worktrees/<name>` | `.wg-worktrees/<agent-id>` |

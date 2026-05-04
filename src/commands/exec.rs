@@ -26,7 +26,7 @@ use super::graph_path;
 pub fn run(dir: &Path, task_id: &str, actor: Option<&str>, dry_run: bool) -> Result<()> {
     let path = super::graph_path(dir);
     if !path.exists() {
-        anyhow::bail!("Workgraph not initialized. Run 'wg init' first.");
+        anyhow::bail!("workgraph not initialized. Run 'wg init' first.");
     }
 
     // Read task data and validate
@@ -176,7 +176,7 @@ pub fn run_interactive(
 ) -> Result<()> {
     let path = super::graph_path(dir);
     if !path.exists() {
-        anyhow::bail!("Workgraph not initialized. Run 'wg init' first.");
+        anyhow::bail!("workgraph not initialized. Run 'wg init' first.");
     }
 
     let graph = load_graph(&path).context("Failed to load graph")?;
@@ -517,7 +517,7 @@ pub fn run_interactive(
 pub fn set_exec(dir: &Path, task_id: &str, command: &str) -> Result<()> {
     let path = super::graph_path(dir);
     if !path.exists() {
-        anyhow::bail!("Workgraph not initialized. Run 'wg init' first.");
+        anyhow::bail!("workgraph not initialized. Run 'wg init' first.");
     }
 
     let mut error: Option<anyhow::Error> = None;
@@ -545,7 +545,7 @@ pub fn set_exec(dir: &Path, task_id: &str, command: &str) -> Result<()> {
 pub fn clear_exec(dir: &Path, task_id: &str) -> Result<()> {
     let path = super::graph_path(dir);
     if !path.exists() {
-        anyhow::bail!("Workgraph not initialized. Run 'wg init' first.");
+        anyhow::bail!("workgraph not initialized. Run 'wg init' first.");
     }
 
     let mut error: Option<anyhow::Error> = None;

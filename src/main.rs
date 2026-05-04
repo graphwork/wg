@@ -519,7 +519,7 @@ fn print_help(dir: &Path, show_all: bool, alphabetical: bool) {
     }
 
     println!("\nOptions:");
-    println!("  -d, --dir <PATH>    Workgraph directory [default: .wg]");
+    println!("  -d, --dir <PATH>    workgraph directory [default: .wg]");
     println!("  -h, --help          Print help (--help-all for all commands)");
     println!("      --alphabetical  Sort commands alphabetically");
     println!("      --json          Output as JSON");

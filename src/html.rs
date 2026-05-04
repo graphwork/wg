@@ -25,7 +25,7 @@
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Duration, Utc};
-use pulldown_cmark::{html as md_html, Options, Parser as MdParser};
+use pulldown_cmark::{Options, Parser as MdParser, html as md_html};
 use regex::Regex;
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -142,7 +142,7 @@ pub struct RenderOptions {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ProjectMeta {
     /// Page title (e.g. "Poietic Inc — Active Work"). When `None`, the
-    /// minimal "Workgraph" header is used.
+    /// minimal "workgraph" header is used.
     pub title: Option<String>,
     /// One-line byline / tagline shown under the title. Plain text.
     pub byline: Option<String>,
@@ -178,7 +178,11 @@ pub fn resolve_project_meta(workgraph_dir: &Path) -> ProjectMeta {
     // Project-level config.
     if let Ok(cfg) = crate::config::Config::load(workgraph_dir) {
         if meta.title.is_none() {
-            meta.title = cfg.project.title.clone().or_else(|| cfg.project.name.clone());
+            meta.title = cfg
+                .project
+                .title
+                .clone()
+                .or_else(|| cfg.project.name.clone());
         }
         if meta.byline.is_none() {
             meta.byline = cfg.project.byline.clone();
@@ -384,7 +388,7 @@ pub fn run(
     let graph_path = workgraph_dir.join("graph.jsonl");
     if !graph_path.exists() {
         anyhow::bail!(
-            "Workgraph not initialized at {}. Run `wg init` first.",
+            "workgraph not initialized at {}. Run `wg init` first.",
             workgraph_dir.display()
         );
     }
@@ -446,12 +450,19 @@ pub fn run(
                 println!(
                     "Showing {} chat transcript{} ({} omitted by visibility).",
                     summary.chat_transcripts_shown,
-                    if summary.chat_transcripts_shown == 1 { "" } else { "s" },
+                    if summary.chat_transcripts_shown == 1 {
+                        ""
+                    } else {
+                        "s"
+                    },
                     summary.chat_transcripts_hidden_by_visibility,
                 );
             }
         }
-        println!("Open {}/index.html in a browser.", summary.out_dir.display());
+        println!(
+            "Open {}/index.html in a browser.",
+            summary.out_dir.display()
+        );
     }
 
     Ok(())
@@ -583,9 +594,7 @@ fn task_filename(id: &str) -> String {
 ///   - Standard markdown tags (headings, lists, code, blockquote,
 ///     tables via the gfm tables option, links, images) survive.
 fn markdown_to_html(text: &str) -> String {
-    let opts = Options::ENABLE_STRIKETHROUGH
-        | Options::ENABLE_TABLES
-        | Options::ENABLE_TASKLISTS;
+    let opts = Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TABLES | Options::ENABLE_TASKLISTS;
     let parser = MdParser::new_ext(text, opts);
     let mut raw = String::with_capacity(text.len() * 2);
     md_html::push_html(&mut raw, parser);
@@ -776,10 +785,8 @@ fn render_viz_html(
     }
 
     // node_lines maps task_id → line index. We'll also need its status.
-    let task_status: HashMap<&str, Status> = graph
-        .tasks()
-        .map(|t| (t.id.as_str(), t.status))
-        .collect();
+    let task_status: HashMap<&str, Status> =
+        graph.tasks().map(|t| (t.id.as_str(), t.status)).collect();
     let task_paused: HashSet<&str> = graph
         .tasks()
         .filter(|t| t.paused)
@@ -874,7 +881,8 @@ fn render_viz_html(
         }
 
         // Resolve overlaps: prefer earlier start, longer end. Sort and dedupe.
-        task_ranges.sort_by(|a, b| (a.0, std::cmp::Reverse(a.2)).cmp(&(b.0, std::cmp::Reverse(b.2))));
+        task_ranges
+            .sort_by(|a, b| (a.0, std::cmp::Reverse(a.2)).cmp(&(b.0, std::cmp::Reverse(b.2))));
         let mut nonoverlapping: Vec<(usize, usize, usize, &str, Status, bool)> = Vec::new();
         for r in task_ranges {
             if let Some(last) = nonoverlapping.last() {
@@ -924,7 +932,11 @@ fn render_line(
             if col == *start {
                 let s_class = status_class(*status);
                 let agency_cls = if is_agency_task(id) { " is-agency" } else { "" };
-                let chat_class = if chat_id::is_chat_task_id(id) { " chat-agent" } else { "" };
+                let chat_class = if chat_id::is_chat_task_id(id) {
+                    " chat-agent"
+                } else {
+                    ""
+                };
                 let paused_cls = if *paused { " paused" } else { "" };
                 out.push_str("<span class=\"task-link");
                 out.push_str(agency_cls);
@@ -1217,13 +1229,22 @@ fn render_msg_indicator_inline(bundle: Option<&TaskMessages>, task_id: &str) -> 
     };
     let title = match bundle.status.as_ref() {
         Some(CoordinatorMessageStatus::Unseen) => {
-            format!("{} unread message(s) — click to open inspector", bundle.incoming)
+            format!(
+                "{} unread message(s) — click to open inspector",
+                bundle.incoming
+            )
         }
         Some(CoordinatorMessageStatus::Seen) => {
-            format!("{} message(s), all seen — click to open inspector", bundle.incoming)
+            format!(
+                "{} message(s), all seen — click to open inspector",
+                bundle.incoming
+            )
         }
         Some(CoordinatorMessageStatus::Replied) => {
-            format!("{} message(s), replied — click to open inspector", bundle.incoming)
+            format!(
+                "{} message(s), replied — click to open inspector",
+                bundle.incoming
+            )
         }
         None => format!(
             "{} message(s) — click to open inspector",
@@ -1616,8 +1637,8 @@ fn build_tasks_json(
             )
         })
         .collect();
-    let json_str = serde_json::to_string(&serde_json::Value::Object(map))
-        .unwrap_or_else(|_| "{}".to_string());
+    let json_str =
+        serde_json::to_string(&serde_json::Value::Object(map)).unwrap_or_else(|_| "{}".to_string());
     json_str.replace("</script>", "<\\/script>")
 }
 
@@ -1715,13 +1736,17 @@ fn render_legend_panel() -> String {
     s.push_str("<li>Click any task id or status glyph to open its detail panel.</li>\n");
     s.push_str("<li>Click links inside the panel to navigate between related tasks.</li>\n");
     s.push_str("<li>Press <kbd>Esc</kbd> or click outside the panel to close it.</li>\n");
-    s.push_str("<li>Use the <strong>theme toggle</strong> in the page header to switch dark/light.</li>\n");
+    s.push_str(
+        "<li>Use the <strong>theme toggle</strong> in the page header to switch dark/light.</li>\n",
+    );
     s.push_str("</ul>\n</details>\n");
 
     // Other CLI affordances — hint at flags users may not know about.
     s.push_str("<details><summary>CLI flags</summary>\n");
     s.push_str("<ul class=\"legend-text\">\n");
-    s.push_str("<li><code>wg html --chat</code> — include rendered chat transcripts in task pages.</li>\n");
+    s.push_str(
+        "<li><code>wg html --chat</code> — include rendered chat transcripts in task pages.</li>\n",
+    );
     s.push_str("<li><code>wg html --since 24h</code> — filter to recent tasks (e.g. <code>1h</code>, <code>7d</code>).</li>\n");
     s.push_str("<li><code>wg html --all</code> — include non-public tasks (default is public visibility).</li>\n");
     s.push_str("</ul>\n</details>\n");
@@ -1894,7 +1919,11 @@ fn render_index(
         String::new()
     };
 
-    let title_suffix = if show_all { "all tasks" } else { "public mirror" };
+    let title_suffix = if show_all {
+        "all tasks"
+    } else {
+        "public mirror"
+    };
 
     // Project-header block (above the dependency graph). Omitted entirely
     // when no fields are set — we don't want a useless empty block sitting
@@ -1902,11 +1931,11 @@ fn render_index(
     // behind a "show more" toggle when the body is taller than ~5 lines.
     let project_header_html = render_project_header(project_meta);
     // Browser title prefers the project title when set; otherwise falls
-    // back to the legacy "Workgraph — <suffix>" form so existing fixtures
+    // back to the legacy "workgraph — <suffix>" form so existing fixtures
     // keep matching.
     let browser_title = match project_meta.title.as_deref() {
-        Some(t) if !t.trim().is_empty() => format!("{} — Workgraph", t.trim()),
-        _ => format!("Workgraph — {}", title_suffix),
+        Some(t) if !t.trim().is_empty() => format!("{} — workgraph", t.trim()),
+        _ => format!("workgraph — {}", title_suffix),
     };
 
     // Agency toggle UI (button + body data attribute) — emitted only when
@@ -1968,7 +1997,7 @@ fn render_index(
          <body>\n\
          <header class=\"page-header\">\n\
          <div>\n\
-         <h1>Workgraph</h1>\n\
+         <h1>workgraph</h1>\n\
          <p class=\"subtitle\">{n} tasks shown</p>\n\
          {chat_banner}\
          </div>\n\
@@ -2023,7 +2052,7 @@ fn render_index(
 
 /// Render the project-header block. Returns an empty string when
 /// `meta.is_empty()` so the page falls back to the existing minimal
-/// "Workgraph / N tasks shown" header.
+/// "workgraph / N tasks shown" header.
 fn render_project_header(meta: &ProjectMeta) -> String {
     if meta.is_empty() {
         return String::new();
@@ -2214,7 +2243,10 @@ fn render_task_page(
         ),
     ));
     if let Some(a) = &task.assigned {
-        meta_rows.push(("Assigned".into(), format!("<code>{}</code>", escape_html(a))));
+        meta_rows.push((
+            "Assigned".into(),
+            format!("<code>{}</code>", escape_html(a)),
+        ));
     }
     if let Some(agent) = &task.agent {
         meta_rows.push((
@@ -2293,7 +2325,7 @@ fn render_task_page(
          <head>\n\
          <meta charset=\"utf-8\" />\n\
          <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />\n\
-         <title>{id} — Workgraph</title>\n\
+         <title>{id} — workgraph</title>\n\
          <link rel=\"stylesheet\" href=\"../style.css\" />\n\
          <script>\n\
          (function () {{\n\
@@ -2400,9 +2432,8 @@ fn sanitize_transcript(s: &str) -> String {
     static ENV_KEY: OnceLock<Regex> = OnceLock::new();
     static SECRET_PATH: OnceLock<Regex> = OnceLock::new();
 
-    let api_key = API_KEY.get_or_init(|| {
-        Regex::new(r"sk-[A-Za-z0-9]{20,}").expect("api-key regex")
-    });
+    let api_key =
+        API_KEY.get_or_init(|| Regex::new(r"sk-[A-Za-z0-9]{20,}").expect("api-key regex"));
     let env_key = ENV_KEY.get_or_init(|| {
         Regex::new(
             r"(?i)\b(OPENAI_API_KEY|ANTHROPIC_API_KEY|GITHUB_TOKEN|SECRET_KEY|ACCESS_TOKEN|API_KEY|AUTH_TOKEN|BEARER_TOKEN|PASSWORD|PASSWD)\s*=\s*\S+",
@@ -2497,15 +2528,9 @@ fn format_chat_block(text: &str, is_code: bool) -> String {
         return String::new();
     }
     if is_code {
-        format!(
-            "<pre class=\"chat-code\">{}</pre>\n",
-            escape_html(trimmed)
-        )
+        format!("<pre class=\"chat-code\">{}</pre>\n", escape_html(trimmed))
     } else {
-        format!(
-            "<pre class=\"chat-text\">{}</pre>\n",
-            escape_html(trimmed)
-        )
+        format!("<pre class=\"chat-text\">{}</pre>\n", escape_html(trimmed))
     }
 }
 
@@ -2693,7 +2718,10 @@ mod tests {
         let html = markdown_to_html(md);
         assert!(html.contains("<h2>"), "heading not rendered: {html}");
         assert!(html.contains("<li>"), "list items not rendered: {html}");
-        assert!(!html.contains("## Hello"), "raw heading leaked into output: {html}");
+        assert!(
+            !html.contains("## Hello"),
+            "raw heading leaked into output: {html}"
+        );
     }
 
     #[test]
@@ -2716,8 +2744,14 @@ mod tests {
         let desc_html = json.get("description_html").and_then(|v| v.as_str());
         assert!(desc_html.is_some(), "description_html field missing");
         let html = desc_html.unwrap();
-        assert!(html.contains("<h2>"), "heading not in description_html: {html}");
-        assert!(html.contains("<li>"), "list not in description_html: {html}");
+        assert!(
+            html.contains("<h2>"),
+            "heading not in description_html: {html}"
+        );
+        assert!(
+            html.contains("<li>"),
+            "list not in description_html: {html}"
+        );
     }
 
     // ────────────────────────────────────────────────────────────────────
@@ -2728,8 +2762,14 @@ mod tests {
     fn sanitizer_redacts_sk_api_key() {
         let s = "here is a key: sk-abcdefghijklmnopqrstuvwxyz1234 in text";
         let out = sanitize_transcript(s);
-        assert!(!out.contains("sk-abcdefghijklmnopqrstuvwxyz1234"), "raw sk key leaked: {out}");
-        assert!(out.contains("[redacted]"), "redaction marker missing: {out}");
+        assert!(
+            !out.contains("sk-abcdefghijklmnopqrstuvwxyz1234"),
+            "raw sk key leaked: {out}"
+        );
+        assert!(
+            out.contains("[redacted]"),
+            "redaction marker missing: {out}"
+        );
     }
 
     #[test]
@@ -2742,10 +2782,22 @@ mod tests {
             "PASSWORD=qwerty",
         ] {
             let out = sanitize_transcript(sample);
-            assert!(out.contains("[redacted]"), "no redaction for {sample:?}: {out}");
-            for secret in ["hunter2", "swordfish", "ghp_abcdefghijklmnopqrstuvwxyz12345678", "letmein", "qwerty"] {
+            assert!(
+                out.contains("[redacted]"),
+                "no redaction for {sample:?}: {out}"
+            );
+            for secret in [
+                "hunter2",
+                "swordfish",
+                "ghp_abcdefghijklmnopqrstuvwxyz12345678",
+                "letmein",
+                "qwerty",
+            ] {
                 if sample.contains(secret) {
-                    assert!(!out.contains(secret), "secret {secret:?} leaked from {sample:?}: {out}");
+                    assert!(
+                        !out.contains(secret),
+                        "secret {secret:?} leaked from {sample:?}: {out}"
+                    );
                 }
             }
         }
@@ -2760,11 +2812,26 @@ mod tests {
             "shell: $HOME/.wg/secrets/bot.json",
         ] {
             let out = sanitize_transcript(sample);
-            assert!(out.contains("[redacted]"), "no redaction for {sample:?}: {out}");
-            assert!(!out.contains("/secrets/openai.key"), "openai.key path leaked: {out}");
-            assert!(!out.contains("/secrets/anthropic.token"), "anthropic.token path leaked: {out}");
-            assert!(!out.contains("/secrets/github.pat"), "github.pat path leaked: {out}");
-            assert!(!out.contains("/secrets/bot.json"), "bot.json path leaked: {out}");
+            assert!(
+                out.contains("[redacted]"),
+                "no redaction for {sample:?}: {out}"
+            );
+            assert!(
+                !out.contains("/secrets/openai.key"),
+                "openai.key path leaked: {out}"
+            );
+            assert!(
+                !out.contains("/secrets/anthropic.token"),
+                "anthropic.token path leaked: {out}"
+            );
+            assert!(
+                !out.contains("/secrets/github.pat"),
+                "github.pat path leaked: {out}"
+            );
+            assert!(
+                !out.contains("/secrets/bot.json"),
+                "bot.json path leaked: {out}"
+            );
         }
     }
 
@@ -2788,7 +2855,10 @@ mod tests {
     #[test]
     fn decide_chat_render_off_when_chat_disabled() {
         let t = chat_task(".chat-1", "public");
-        assert!(matches!(decide_chat_render(&t, false, false), ChatRender::None));
+        assert!(matches!(
+            decide_chat_render(&t, false, false),
+            ChatRender::None
+        ));
     }
 
     #[test]
@@ -2796,7 +2866,10 @@ mod tests {
         let mut t = Task::default();
         t.id = "regular-task".into();
         t.visibility = "public".into();
-        assert!(matches!(decide_chat_render(&t, true, true), ChatRender::None));
+        assert!(matches!(
+            decide_chat_render(&t, true, true),
+            ChatRender::None
+        ));
     }
 
     #[test]
@@ -2922,10 +2995,7 @@ mod tests {
     fn msg_indicator_inline_replied_uses_check_glyph() {
         // 1 incoming + 1 outgoing — the "agent replied" pattern.
         let b = bundle_counts(
-            vec![
-                make_msg(1, "user", "hi"),
-                make_msg(2, "agent-x", "ack"),
-            ],
+            vec![make_msg(1, "user", "hi"), make_msg(2, "agent-x", "ack")],
             Some(CoordinatorMessageStatus::Replied),
             1,
             1,
@@ -2941,10 +3011,7 @@ mod tests {
     fn msg_indicator_count_format_incoming_only() {
         // Two incoming, zero outgoing → indicator shows "2", not "2/0".
         let b = bundle_counts(
-            vec![
-                make_msg(1, "user", "a"),
-                make_msg(2, "user", "b"),
-            ],
+            vec![make_msg(1, "user", "a"), make_msg(2, "user", "b")],
             Some(CoordinatorMessageStatus::Unseen),
             2,
             0,
@@ -2994,7 +3061,10 @@ mod tests {
             s.contains("id=\"messages-section\""),
             "missing scroll-target id: {s}"
         );
-        assert!(s.contains("class=\"messages-section msg-replied\""), "missing status class: {s}");
+        assert!(
+            s.contains("class=\"messages-section msg-replied\""),
+            "missing status class: {s}"
+        );
         assert!(s.contains("first"), "missing first message body: {s}");
         assert!(s.contains("reply"), "missing reply body: {s}");
         // The msg-incoming / msg-outgoing CSS classes are coordinator-perspective
@@ -3028,10 +3098,7 @@ mod tests {
     #[test]
     fn task_messages_to_json_round_trip() {
         let b = bundle_counts(
-            vec![
-                make_msg(1, "user", "hi"),
-                make_msg(2, "agent-x", "yo"),
-            ],
+            vec![make_msg(1, "user", "hi"), make_msg(2, "agent-x", "yo")],
             Some(CoordinatorMessageStatus::Replied),
             1,
             1,
@@ -3059,7 +3126,10 @@ mod tests {
 
         // Without bundle → no msg field.
         let json_no_msg = task_to_json(&task, &graph, None, None, &included);
-        assert!(json_no_msg.get("msg").is_none(), "msg field leaked when no bundle");
+        assert!(
+            json_no_msg.get("msg").is_none(),
+            "msg field leaked when no bundle"
+        );
 
         // With bundle → msg field present.
         let b = bundle_counts(

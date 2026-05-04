@@ -95,7 +95,7 @@ fn test_scope_context() -> ScopeContext {
     ScopeContext {
         downstream_info: "\n## Downstream Consumers\n\nTasks that depend on your work:\n- **verify-widgets**: \"Verify widget factory output\"".into(),
         tags_skills_info: "\n## Tags & Skills\n- Tags: implementation, rust\n- Skills: rust, testing".into(),
-        project_description: "Workgraph: A lightweight work coordination graph for humans and AI agents.".into(),
+        project_description: "workgraph: A lightweight work coordination graph for humans and AI agents.".into(),
         graph_summary: "\n## Graph Status\n\n50 tasks — 45 done, 2 in-progress, 3 open".into(),
         full_graph_summary: "\n## Full Graph\n\nDetailed graph with all 50 tasks and their relationships.".into(),
         claude_md_content: "Use workgraph for task management.\nAlways run tests before marking done.".into(),

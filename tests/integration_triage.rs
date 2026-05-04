@@ -53,11 +53,11 @@ fn wg_requeue(wg_dir: &Path, task_id: &str, reason: &str) -> std::process::Outpu
 }
 
 // ---------------------------------------------------------------------------
-// Test: Task with failed dep appears in ready tasks (terminal dep)
+// Test: Task with failed dep stays blocked
 // ---------------------------------------------------------------------------
 
 #[test]
-fn test_task_with_failed_dep_is_ready() {
+fn test_task_with_failed_dep_stays_blocked() {
     let mut graph = WorkGraph::new();
 
     let mut task_a = make_task("task-a", "Build parser");
@@ -71,8 +71,8 @@ fn test_task_with_failed_dep_is_ready() {
 
     let ready = ready_tasks(&graph);
     assert!(
-        ready.iter().any(|t| t.id == "task-b"),
-        "task-b should be ready since task-a is terminal (Failed)"
+        !ready.iter().any(|t| t.id == "task-b"),
+        "task-b should stay blocked because a failed dependency does not satisfy the edge"
     );
 }
 

@@ -1,4 +1,4 @@
-# Workgraph Manual
+# workgraph Manual
 
 A conceptual manual for humans who want to understand and use workgraph and its agency system. This is not an API reference or CLI cheat-sheet — it is a book of tight, precise prose that builds understanding from first principles.
 

@@ -8,7 +8,7 @@
 //!
 //! Tests are split into three groups:
 //! 1. Fresh repo: profile show, short name resolution, config defaults
-//! 2. Workgraph repo: real data integration
+//! 2. workgraph repo: real data integration
 //! 3. Profile ranking quality: non-alphabetical, meaningful score variance
 
 use std::collections::BTreeMap;
@@ -155,11 +155,8 @@ fn write_model_cache(wg_dir: &Path, model_ids: &[&str]) {
 fn init_fresh_wg() -> (TempDir, PathBuf) {
     let tmp = TempDir::new().unwrap();
     let wg_dir = tmp.path().join(".wg");
-    wg_ok(&wg_dir, &["init"]);
-    assert!(
-        wg_dir.exists(),
-        ".wg directory should exist after init"
-    );
+    wg_ok(&wg_dir, &["init", "--route", "claude-cli"]);
+    assert!(wg_dir.exists(), ".wg directory should exist after init");
     (tmp, wg_dir)
 }
 
@@ -428,7 +425,7 @@ fn smoke_no_silent_claude_fallback_on_add() {
 // (uses actual .wg if present, else synthetic data)
 // =========================================================================
 
-/// Workgraph repo: `wg profile show` succeeds with real data.
+/// workgraph repo: `wg profile show` succeeds with real data.
 #[test]
 fn smoke_workgraph_repo_profile_show() {
     let wg_dir = PathBuf::from(".wg");
@@ -454,7 +451,7 @@ fn smoke_workgraph_repo_profile_show() {
     );
 }
 
-/// Workgraph repo: `wg profile show -v` shows individual metric breakdown.
+/// workgraph repo: `wg profile show -v` shows individual metric breakdown.
 #[test]
 fn smoke_workgraph_repo_profile_show_verbose() {
     let wg_dir = PathBuf::from(".wg");

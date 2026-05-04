@@ -165,7 +165,7 @@ fi
 if grep -q 'class="project-header"' "$empty_dest/index.html"; then
     loud_fail "empty-meta case must OMIT the project-header block; instead got it in $empty_dest/index.html"
 fi
-# Sanity: minimal "Workgraph" header is still present.
+# Sanity: minimal "workgraph" header is still present.
 if ! grep -q 'class="page-header"' "$empty_dest/index.html"; then
     loud_fail "empty-meta case must STILL render the minimal page-header"
 fi

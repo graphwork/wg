@@ -100,14 +100,15 @@ fn test_init_with_executor_claude_succeeds() {
     let wg_dir = tmp.path().join(".wg");
     assert!(wg_dir.exists(), ".wg directory should be created");
 
-    let config =
-        workgraph::config::Config::load(&wg_dir).expect("config.toml should be loadable");
+    let config = workgraph::config::Config::load(&wg_dir).expect("config.toml should be loadable");
     // The handler is now derived from the model spec. The fresh config
     // should have claude:* set as the model — that's what the route
     // populates for `--executor claude`.
     let agent_model = &config.agent.model;
     assert!(
-        agent_model.starts_with("claude:") || agent_model == "claude" || agent_model.is_empty()
+        agent_model.starts_with("claude:")
+            || agent_model == "claude"
+            || agent_model.is_empty()
             || workgraph::dispatch::handler_for_model(agent_model)
                 == workgraph::dispatch::ExecutorKind::Claude,
         "agent.model must imply the claude handler, got: {:?}",
@@ -163,13 +164,7 @@ fn test_init_executor_and_endpoint_succeeds() {
 
     let output = wg_cmd_in(
         tmp.path(),
-        &[
-            "init",
-            "--executor",
-            "shell",
-            "-e",
-            "http://127.0.0.1:9999",
-        ],
+        &["init", "--executor", "shell", "-e", "http://127.0.0.1:9999"],
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -182,8 +177,7 @@ fn test_init_executor_and_endpoint_succeeds() {
     );
 
     let wg_dir = tmp.path().join(".wg");
-    let config =
-        workgraph::config::Config::load(&wg_dir).expect("config.toml should be loadable");
+    let config = workgraph::config::Config::load(&wg_dir).expect("config.toml should be loadable");
 
     assert_eq!(
         config.coordinator.executor.as_deref(),

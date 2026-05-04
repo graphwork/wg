@@ -323,10 +323,7 @@ fn find_constraint_related_concepts(constraint: &ConstraintPhrase) -> Vec<&'stat
 
     let mut concepts = Vec::new();
 
-    if combined.contains("draft")
-        || combined.contains("review")
-        || combined.contains("approv")
-    {
+    if combined.contains("draft") || combined.contains("review") || combined.contains("approv") {
         concepts.push("draft_review");
     }
     if combined.contains("publish")
@@ -407,7 +404,10 @@ mod tests {
         let desc = "Hold for review before merging.";
         let user_msg = "pause and wait for me before publishing";
         let result = lint_task_description(desc, Some(user_msg));
-        assert!(result.total_constraints > 0, "expected constraints, found none");
+        assert!(
+            result.total_constraints > 0,
+            "expected constraints, found none"
+        );
         assert!(result.anchored_constraints > 0);
     }
 
@@ -417,7 +417,10 @@ mod tests {
         let result = lint_task_description(desc, None);
         assert!(result.total_constraints > 0);
         assert!(
-            result.findings.iter().any(|f| f.constraint.pattern_type == "absolute_never"),
+            result
+                .findings
+                .iter()
+                .any(|f| f.constraint.pattern_type == "absolute_never"),
             "expected 'absolute_never' pattern"
         );
     }
@@ -428,7 +431,10 @@ mod tests {
         let result = lint_task_description(desc, None);
         assert!(result.total_constraints >= 1);
         assert!(
-            result.findings.iter().any(|f| f.constraint.pattern_type == "gating_action"),
+            result
+                .findings
+                .iter()
+                .any(|f| f.constraint.pattern_type == "gating_action"),
             "expected 'gating_action' pattern"
         );
     }
@@ -511,11 +517,12 @@ mod tests {
     #[test]
     fn test_standalone_mode_penalty_increases_with_constraints() {
         let one = lint_task_description("Do NOT auto-publish.", None);
-        let three = lint_task_description(
-            "Do NOT auto-publish. Never deploy. Leave as draft.",
-            None,
+        let three =
+            lint_task_description("Do NOT auto-publish. Never deploy. Leave as draft.", None);
+        assert!(
+            three.score < one.score,
+            "more constraints should lower the standalone score"
         );
-        assert!(three.score < one.score, "more constraints should lower the standalone score");
     }
 
     #[test]

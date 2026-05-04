@@ -70,7 +70,7 @@ fn smoke_test_full_lifecycle() {
     let wg_dir = tmp.path().join(".wg");
 
     // ── 1. wg init ──────────────────────────────────────────────────────
-    let output = wg_ok(&wg_dir, &["init"]);
+    let output = wg_ok(&wg_dir, &["init", "--route", "claude-cli"]);
     assert!(
         output.contains("Initialized workgraph"),
         "init should confirm initialization, got: {}",
@@ -245,7 +245,7 @@ fn smoke_test_dependency_chain() {
     let tmp = TempDir::new().unwrap();
     let wg_dir = tmp.path().join(".wg");
 
-    wg_ok(&wg_dir, &["init"]);
+    wg_ok(&wg_dir, &["init", "--route", "claude-cli"]);
 
     // Create parent task
     wg_ok(
@@ -309,7 +309,7 @@ fn smoke_test_fail_retry_lifecycle() {
     let tmp = TempDir::new().unwrap();
     let wg_dir = tmp.path().join(".wg");
 
-    wg_ok(&wg_dir, &["init"]);
+    wg_ok(&wg_dir, &["init", "--route", "claude-cli"]);
     wg_ok(
         &wg_dir,
         &["add", "Flaky task", "--id", "flaky", "--immediate"],

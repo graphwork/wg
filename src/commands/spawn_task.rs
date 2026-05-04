@@ -394,11 +394,7 @@ mod tests {
     /// `set_exec` / `set_model` configure the env for the duration of `f`.
     /// Env restoration runs even on panic via Drop, so failed assertions
     /// don't leak into other tests.
-    fn with_env<R>(
-        set_exec: Option<&str>,
-        set_model: Option<&str>,
-        f: impl FnOnce() -> R,
-    ) -> R {
+    fn with_env<R>(set_exec: Option<&str>, set_model: Option<&str>, f: impl FnOnce() -> R) -> R {
         struct EnvGuard {
             saved_exec: Option<String>,
             saved_model: Option<String>,
@@ -759,12 +755,9 @@ mod tests {
             other => panic!(
                 "expected Codex handler with codex:gpt-5 model, got {:?}",
                 match other {
-                    HandlerSpec::Claude { model, .. } =>
-                        format!("Claude {{ model: {:?} }}", model),
-                    HandlerSpec::Native { model, .. } =>
-                        format!("Native {{ model: {:?} }}", model),
-                    HandlerSpec::Codex { model, .. } =>
-                        format!("Codex {{ model: {:?} }}", model),
+                    HandlerSpec::Claude { model, .. } => format!("Claude {{ model: {:?} }}", model),
+                    HandlerSpec::Native { model, .. } => format!("Native {{ model: {:?} }}", model),
+                    HandlerSpec::Codex { model, .. } => format!("Codex {{ model: {:?} }}", model),
                     HandlerSpec::Gemini { .. } => "Gemini".to_string(),
                 }
             ),
@@ -792,8 +785,7 @@ mod tests {
             let mut task = mktask(".chat-32");
             task.tags = vec![workgraph::chat_id::CHAT_LOOP_TAG.to_string()];
             task.model = Some("nex:qwen3-coder".to_string());
-            task.endpoint =
-                Some("https://lambda01.tail334fe6.ts.net:30000".to_string());
+            task.endpoint = Some("https://lambda01.tail334fe6.ts.net:30000".to_string());
 
             let spec = resolve_handler(wg_dir, &task, None).unwrap();
             let preview = spec.command_preview();
@@ -806,7 +798,9 @@ mod tests {
                         endpoint.as_deref(),
                         Some("https://lambda01.tail334fe6.ts.net:30000"),
                         "Native handler MUST carry task.endpoint URL — got endpoint={:?}, model={:?}, preview={}",
-                        endpoint, model, preview
+                        endpoint,
+                        model,
+                        preview
                     );
                 }
                 other => panic!(

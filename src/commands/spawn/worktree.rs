@@ -95,10 +95,7 @@ pub fn create_worktree(
 /// Used by the retry-in-place path: if a previous attempt left a worktree
 /// behind, the next agent reuses it (preserving uncommitted WIP and prior
 /// commits) rather than allocating a fresh worktree off `HEAD`.
-pub fn find_worktree_for_task(
-    project_root: &Path,
-    task_id: &str,
-) -> Option<(PathBuf, String)> {
+pub fn find_worktree_for_task(project_root: &Path, task_id: &str) -> Option<(PathBuf, String)> {
     let worktrees_dir = project_root.join(".wg-worktrees");
     if !worktrees_dir.exists() {
         return None;

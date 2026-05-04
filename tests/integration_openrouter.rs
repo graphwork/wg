@@ -91,7 +91,7 @@ fn test_openrouter_minimax_tool_loop() {
     let tmp = TempDir::new().unwrap();
     let wg_dir = tmp.path().join(".wg");
 
-    wg_ok(&wg_dir, &["init"]);
+    wg_ok(&wg_dir, &["init", "--route", "claude-cli"]);
     wg_ok(&wg_dir, &["agency", "init"]);
 
     // ── 2. Configure OpenRouter endpoint ─────────────────────────────────
@@ -422,7 +422,7 @@ fn test_openrouter_bash_tool_execution() {
     let tmp = TempDir::new().unwrap();
     let wg_dir = tmp.path().join(".wg");
 
-    wg_ok(&wg_dir, &["init"]);
+    wg_ok(&wg_dir, &["init", "--route", "claude-cli"]);
     wg_ok(&wg_dir, &["agency", "init"]);
 
     // Configure endpoint
@@ -514,7 +514,7 @@ fn test_openrouter_journal_completeness() {
     let tmp = TempDir::new().unwrap();
     let wg_dir = tmp.path().join(".wg");
 
-    wg_ok(&wg_dir, &["init"]);
+    wg_ok(&wg_dir, &["init", "--route", "claude-cli"]);
     wg_ok(&wg_dir, &["agency", "init"]);
 
     // Configure endpoint
@@ -658,7 +658,7 @@ fn test_openrouter_file_read_write_tools() {
     let tmp = TempDir::new().unwrap();
     let wg_dir = tmp.path().join(".wg");
 
-    wg_ok(&wg_dir, &["init"]);
+    wg_ok(&wg_dir, &["init", "--route", "claude-cli"]);
     wg_ok(&wg_dir, &["agency", "init"]);
 
     // Configure endpoint

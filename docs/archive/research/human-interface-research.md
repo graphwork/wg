@@ -1,4 +1,4 @@
-# Human Interface Options for Workgraph
+# Human Interface Options for workgraph
 
 This document researches human interface options for workgraph, covering TUI, web interfaces, IDE integrations, and other integrations.
 
@@ -109,7 +109,7 @@ Dialog-based TUI library with a retained-mode API (more like traditional GUI pro
 
 The original library that ratatui forked from. No longer maintained - use ratatui instead.
 
-### 1.2 What Would a Workgraph TUI Look Like?
+### 1.2 What Would a workgraph TUI Look Like?
 
 **Core Views:**
 
@@ -201,7 +201,7 @@ use axum::{
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-type AppState = Arc<RwLock<Workgraph>>;
+type AppState = Arc<RwLock<workgraph>>;
 
 async fn list_tasks(State(state): State<AppState>) -> Json<Vec<Task>> {
     let wg = state.read().await;
@@ -232,7 +232,7 @@ async fn claim_task(
 
 #[tokio::main]
 async fn main() {
-    let state: AppState = Arc::new(RwLock::new(Workgraph::load(".")?));
+    let state: AppState = Arc::new(RwLock::new(workgraph::load(".")?));
 
     let app = Router::new()
         .route("/api/tasks", get(list_tasks))
@@ -286,13 +286,13 @@ static/
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Workgraph Dashboard</title>
+    <title>workgraph Dashboard</title>
     <link rel="stylesheet" href="/style.css">
     <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
 </head>
 <body x-data="workgraph()">
     <div class="container">
-        <h1>Workgraph</h1>
+        <h1>workgraph</h1>
 
         <div class="stats">
             <span x-text="stats.ready + ' ready'"></span>
@@ -448,11 +448,11 @@ let app = Router::new()
    - Click to quick-claim
 
 3. **Commands** (Command Palette)
-   - `Workgraph: List Ready Tasks`
-   - `Workgraph: Claim Task`
-   - `Workgraph: Mark Done`
-   - `Workgraph: Add Task`
-   - `Workgraph: Show Graph`
+   - `workgraph: List Ready Tasks`
+   - `workgraph: Claim Task`
+   - `workgraph: Mark Done`
+   - `workgraph: Add Task`
+   - `workgraph: Show Graph`
 
 4. **CodeLens** (optional)
    - Show task references in code comments
@@ -606,12 +606,12 @@ return M
 
 **Bidirectional sync possibilities:**
 
-1. **GitHub -> Workgraph**
+1. **GitHub -> workgraph**
    - Import issues as tasks
    - Map labels to metadata
    - Issue dependencies (if using project boards) map to blocked-by
 
-2. **Workgraph -> GitHub**
+2. **workgraph -> GitHub**
    - Create issues from tasks
    - Update issue status when task status changes
    - Add comments with progress updates
@@ -621,7 +621,7 @@ return M
 ```rust
 use octocrab::Octocrab;
 
-async fn sync_from_github(wg: &mut Workgraph, repo: &str) -> Result<()> {
+async fn sync_from_github(wg: &mut workgraph, repo: &str) -> Result<()> {
     let octocrab = Octocrab::builder()
         .personal_token(env::var("GITHUB_TOKEN")?)
         .build()?;
@@ -678,7 +678,7 @@ async fn notify_slack(webhook_url: &str, message: &str) -> Result<()> {
 }
 
 // Example usage
-async fn on_task_completed(task: &Task, wg: &Workgraph) {
+async fn on_task_completed(task: &Task, wg: &workgraph) {
     let unblocked = wg.get_unblocked_by(task.id);
     if !unblocked.is_empty() {
         let msg = format!(

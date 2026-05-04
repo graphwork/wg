@@ -88,7 +88,7 @@ pub fn run(dir: &Path, json: bool) -> Result<()> {
         });
         println!("{}", serde_json::to_string_pretty(&output)?);
     } else {
-        println!("Workgraph Time Statistics");
+        println!("workgraph Time Statistics");
         println!("=========================");
         println!();
 

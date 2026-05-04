@@ -120,8 +120,8 @@ capability we've discussed fits too.
 | **Single Ctrl-C**                   | Cooperative cancel. In-flight tool finishes; in-flight LLM request is aborted at the network level. Next turn-boundary returns to prompt. |
 | **Double Ctrl-C** (<500ms apart)    | Hard cancel. Tree-kill current subprocesses (bash children, headless Chrome, etc.). In-flight LLM request aborted. Immediate return to prompt. |
 | **`nohup`/`disown`'d children**     | Survive both forms of cancel. Standard Unix semantic — the user explicitly requested that the process outlive its parent. |
-| **Workgraph "stop" message**        | Equivalent to single Ctrl-C: cooperative cancel via the inbox. |
-| **Workgraph "kill" command**        | Equivalent to double Ctrl-C: hard cancel. |
+| **workgraph "stop" message**        | Equivalent to single Ctrl-C: cooperative cancel via the inbox. |
+| **workgraph "kill" command**        | Equivalent to double Ctrl-C: hard cancel. |
 
 Implementation note: a single `CancelToken` with two levels
 (`Cooperative`, `Hard`) fed from multiple sources (signal handler,
@@ -154,7 +154,7 @@ is a separate piece of render state: text typed into the buffer is
 contents are pushed into the inbox queue as `Note` (or `Interrupt`
 when a hotkey modifier is held) and the buffer clears.
 
-### Workgraph implementation
+### workgraph implementation
 
 A file-based inbox at `<workgraph>/inbox/<agent-id>.jsonl`. Writers
 (coordinator, `wg send`, other agents) append one line per message.
@@ -174,7 +174,7 @@ for lower latency in latency-critical flows. The trait stays the same.
 │  ← Read 214 lines, 7312 bytes.                                                │
 │                                                                               │
 │  > summarize README.md what does this project do?                             │
-│  ← Workgraph is a lightweight task coordination graph for humans and AI…      │
+│  ← workgraph is a lightweight task coordination graph for humans and AI…      │
 │                                                                               │
 │  [context compacted: 29100 → 14200 tokens via microcompact]                   │
 │                                                                               │
@@ -376,7 +376,7 @@ iterate.
 **Goal**: Implement the file-based `AgentInbox` at
 `<workgraph>/inbox/<agent-id>.jsonl`. Add a `wg send <agent-id>
 "message" [--interrupt]` CLI that appends to the target agent's
-inbox. Workgraph coordinator uses this to cooperatively steer
+inbox. workgraph coordinator uses this to cooperatively steer
 in-flight agents.
 
 **Verification**: Coordinator dispatches an agent. Before it

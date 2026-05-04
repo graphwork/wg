@@ -82,7 +82,7 @@ fn is_ready(wg_dir: &Path, id: &str) -> bool {
 fn setup() -> (TempDir, std::path::PathBuf) {
     let tmp = TempDir::new().unwrap();
     let wg_dir = tmp.path().join(".wg");
-    wg_ok(&wg_dir, &["init"]);
+    wg_ok(&wg_dir, &["init", "--route", "claude-cli"]);
     (tmp, wg_dir)
 }
 
@@ -92,8 +92,8 @@ fn setup() -> (TempDir, std::path::PathBuf) {
 
 /// Full triage lifecycle:
 ///   task-a → task-b → task-c
-///   task-a fails → task-b becomes ready (failed dep is terminal) →
-///   agent claims task-b, enters triage → creates fix-a → adds dep →
+///   task-a fails → task-b stays blocked on failed dep →
+///   agent claims task-b for triage → creates fix-a → adds dep →
 ///   retries task-a → requeues task-b → fix-a completes →
 ///   task-a re-runs and succeeds → task-b dispatches normally → task-c runs
 #[test]
@@ -135,10 +135,10 @@ fn smoke_triage_basic_chain_recovery() {
     );
     assert_eq!(task_status(&wg_dir, "task-a"), Status::Failed);
 
-    // ── Step 2: task-b becomes ready (failed dep is terminal) ───────────
+    // ── Step 2: task-b stays blocked on the failed dep ─────────────────
     assert!(
-        is_ready(&wg_dir, "task-b"),
-        "task-b should be ready when task-a is Failed (terminal)"
+        !is_ready(&wg_dir, "task-b"),
+        "task-b should stay blocked while task-a is Failed"
     );
     assert!(
         !is_ready(&wg_dir, "task-c"),
@@ -453,10 +453,10 @@ fn smoke_triage_multiple_failed_deps() {
     wg_ok(&wg_dir, &["claim", "task-y"]);
     wg_ok(&wg_dir, &["fail", "task-y", "--reason", "validation error"]);
 
-    // task-m should be ready (both deps are terminal)
+    // task-m should stay blocked while both deps are failed.
     assert!(
-        is_ready(&wg_dir, "task-m"),
-        "task-m should be ready when all deps are terminal (Failed)"
+        !is_ready(&wg_dir, "task-m"),
+        "task-m should stay blocked while all deps are Failed"
     );
 
     // ── Triage: agent claims task-m, creates fixes for both deps ────────
@@ -636,8 +636,8 @@ fn smoke_triage_regression_new_failure() {
 
     // ── Round 2: task-b triages again (different reason) ────────────────
     assert!(
-        is_ready(&wg_dir, "task-b"),
-        "task-b should be ready (task-a is Failed=terminal)"
+        !is_ready(&wg_dir, "task-b"),
+        "task-b should stay blocked while task-a is Failed"
     );
 
     wg_ok(&wg_dir, &["claim", "task-b"]);

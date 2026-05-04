@@ -347,7 +347,7 @@ If `WG_USER` is not set, fall back to:
 
 ## 9. Architecture Decision Records
 
-### ADR-1: Single Shared Workgraph (not per-user)
+### ADR-1: Single Shared workgraph (not per-user)
 
 **Decision:** All users operate on one `.wg/graph.jsonl`.
 **Rationale:** Simplest model, already works, matches "shared workspace" vision. Per-user workgraphs would require federation for basic task visibility.

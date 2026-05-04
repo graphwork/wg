@@ -659,6 +659,5 @@ mod tests {
         // native executor — same valid modes as claude
         assert_eq!(validate_exec_mode(Some("full"), "native"), "full");
         assert_eq!(validate_exec_mode(Some("shell"), "native"), "full");
-
     }
 }

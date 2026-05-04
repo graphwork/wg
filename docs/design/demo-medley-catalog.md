@@ -91,7 +91,7 @@ The medley below fills these gaps with 14 scenarios organized into 4 tiers.
 
 | Field | Value |
 |-------|-------|
-| **Teaching purpose** | Workgraph isn't just task execution — it's a thinking tool. Show `wg why-blocked`, `wg impact`, `wg bottlenecks`, `wg forecast`. |
+| **Teaching purpose** | workgraph isn't just task execution — it's a thinking tool. Show `wg why-blocked`, `wg impact`, `wg bottlenecks`, `wg forecast`. |
 | **Duration** | 25–30s compressed |
 | **Graph pattern** | Diamond: 1 root → 3 parallel → 1 integrator, with one task blocked |
 | **Graph setup** | Pre-create 5 tasks in diamond pattern. Mark root and one branch as done. One branch still in-progress (creating a bottleneck). |
@@ -111,7 +111,7 @@ The medley below fills these gaps with 14 scenarios organized into 4 tiers.
 
 | Field | Value |
 |-------|-------|
-| **Teaching purpose** | Workgraph supports cycles — not just DAGs. Show a write→review→revise loop that iterates until converged. |
+| **Teaching purpose** | workgraph supports cycles — not just DAGs. Show a write→review→revise loop that iterates until converged. |
 | **Duration** | 30–40s compressed |
 | **Graph pattern** | Cycle: `write-draft → review-draft → revise-draft → write-draft` with `--max-iterations 3` |
 | **Graph setup** | Create cycle with `wg add` + back-edge. Use `wg cycles` to show detected cycle. |
@@ -127,7 +127,7 @@ The medley below fills these gaps with 14 scenarios organized into 4 tiers.
 
 | Field | Value |
 |-------|-------|
-| **Teaching purpose** | Workgraph isn't just for AI. A human claims one task while agents handle others. Shows mixed coordination. |
+| **Teaching purpose** | workgraph isn't just for AI. A human claims one task while agents handle others. Shows mixed coordination. |
 | **Duration** | 30–40s compressed |
 | **Graph pattern** | Diamond: `research → [human: design-api, agent: write-scaffolding] → integrate` |
 | **Graph setup** | Pre-create 4 tasks. Start service with max_agents 2. |
@@ -207,7 +207,7 @@ The medley below fills these gaps with 14 scenarios organized into 4 tiers.
 
 ---
 
-#### 11. Workgraph Building Workgraph (Self-Hosting)
+#### 11. workgraph Building workgraph (Self-Hosting)
 
 | Field | Value |
 |-------|-------|
@@ -263,7 +263,7 @@ The medley below fills these gaps with 14 scenarios organized into 4 tiers.
 
 | Field | Value |
 |-------|-------|
-| **Teaching purpose** | Workgraph can notify humans via Matrix, Slack, email, or webhook when tasks complete or need attention. Shows the operational integration story. |
+| **Teaching purpose** | workgraph can notify humans via Matrix, Slack, email, or webhook when tasks complete or need attention. Shows the operational integration story. |
 | **Duration** | 20–25s compressed |
 | **Graph pattern** | Pipeline with a `--verify` gate that triggers a notification |
 | **Graph setup** | Configure notification backend (Matrix or webhook for demo). Create task with --verify. |

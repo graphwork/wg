@@ -340,16 +340,27 @@ async fn test_large_journal_compacted_on_resume() {
         resume_data.messages.len()
     );
 
-    // First message should be the compaction summary
-    match &resume_data.messages[0].content[0] {
-        ContentBlock::Text { text } => {
-            assert!(
-                text.contains("compacted"),
-                "Summary should mention compaction: {}",
-                text
-            );
+    if resume_data.was_truncated {
+        assert!(
+            resume_data.truncated_message_count > 0,
+            "Truncated resume data should report dropped messages"
+        );
+        assert!(
+            resume_data.final_estimated_tokens < resume_data.original_estimated_tokens,
+            "Truncation should reduce estimated tokens"
+        );
+    } else {
+        // Without hard truncation, the first message should be the compaction summary.
+        match &resume_data.messages[0].content[0] {
+            ContentBlock::Text { text } => {
+                assert!(
+                    text.contains("compacted"),
+                    "Summary should mention compaction: {}",
+                    text
+                );
+            }
+            _ => panic!("Expected text content in compaction summary"),
         }
-        _ => panic!("Expected text content in compaction summary"),
     }
 
     // Run the agent with resume to verify it works end-to-end

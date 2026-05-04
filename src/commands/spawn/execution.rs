@@ -38,7 +38,7 @@ pub(crate) fn spawn_agent_inner(
     let graph_path = graph_path(dir);
 
     if !graph_path.exists() {
-        anyhow::bail!("Workgraph not initialized. Run 'wg init' first.");
+        anyhow::bail!("workgraph not initialized. Run 'wg init' first.");
     }
 
     // Load the graph and get task info
@@ -346,9 +346,8 @@ pub(crate) fn spawn_agent_inner(
         {
             // Clear any cleanup-pending marker that the prior agent's
             // wrapper may have written so the next sweep doesn't reap it.
-            let marker = prior_path.join(
-                crate::commands::service::worktree::CLEANUP_PENDING_MARKER,
-            );
+            let marker =
+                prior_path.join(crate::commands::service::worktree::CLEANUP_PENDING_MARKER);
             if marker.exists() {
                 let _ = fs::remove_file(&marker);
             }
@@ -410,9 +409,7 @@ pub(crate) fn spawn_agent_inner(
     // Scope-based prompt assembly for built-in executors.
     // When no custom prompt_template is defined (built-in defaults),
     // use build_prompt() to assemble the prompt based on context scope.
-    if settings.prompt_template.is_none()
-        && executor_uses_auto_prompt(&settings.executor_type)
-    {
+    if settings.prompt_template.is_none() && executor_uses_auto_prompt(&settings.executor_type) {
         let prompt = build_prompt(&vars, scope, &scope_ctx);
 
         // Debug logging: capture spawn metadata if WG_DEBUG_PROMPTS is set
@@ -596,15 +593,14 @@ pub(crate) fn spawn_agent_inner(
         cmd.env("WG_MODEL", m);
     }
     {
-        let tier_str = task_tier
-            .as_deref()
-            .unwrap_or_else(|| {
-                match workgraph::config::DispatchRole::TaskAgent.default_tier() {
+        let tier_str =
+            task_tier.as_deref().unwrap_or_else(
+                || match workgraph::config::DispatchRole::TaskAgent.default_tier() {
                     workgraph::config::Tier::Fast => "fast",
                     workgraph::config::Tier::Standard => "standard",
                     workgraph::config::Tier::Premium => "premium",
-                }
-            });
+                },
+            );
         cmd.env("WG_TIER", tier_str);
     }
     if let Some(ref ep) = effective_endpoint {
@@ -964,9 +960,8 @@ fn build_inner_command(
             // Build a fresh-session fallback command (same as the full-mode
             // "claude" arm below) so the wrapper can retry if the session is
             // gone. Write prompt.txt alongside resume_message.txt.
-            let fallback = build_claude_fresh_command(
-                settings, exec_mode, output_dir, effective_model, vars,
-            )?;
+            let fallback =
+                build_claude_fresh_command(settings, exec_mode, output_dir, effective_model, vars)?;
 
             return Ok((resume_command, Some(fallback)));
         }
@@ -1197,7 +1192,10 @@ fn build_claude_fresh_command(
                 let prompt_file = output_dir.join("prompt.txt");
                 fs::write(&prompt_file, &prompt_template.template)
                     .with_context(|| format!("Failed to write prompt file: {:?}", prompt_file))?;
-                Ok(prompt_file_command(&prompt_file.to_string_lossy(), &claude_cmd))
+                Ok(prompt_file_command(
+                    &prompt_file.to_string_lossy(),
+                    &claude_cmd,
+                ))
             } else {
                 Ok(claude_cmd)
             }
@@ -1220,7 +1218,10 @@ fn build_claude_fresh_command(
                 let prompt_file = output_dir.join("prompt.txt");
                 fs::write(&prompt_file, &prompt_template.template)
                     .with_context(|| format!("Failed to write prompt file: {:?}", prompt_file))?;
-                Ok(prompt_file_command(&prompt_file.to_string_lossy(), &claude_cmd))
+                Ok(prompt_file_command(
+                    &prompt_file.to_string_lossy(),
+                    &claude_cmd,
+                ))
             } else {
                 Ok(claude_cmd)
             }
@@ -2755,7 +2756,10 @@ mod tests {
         )
         .unwrap();
 
-        assert!(fallback.is_none(), "Codex should not have a fallback command");
+        assert!(
+            fallback.is_none(),
+            "Codex should not have a fallback command"
+        );
         assert!(
             command.contains("cat "),
             "Expected prompt to be piped from a file: {}",

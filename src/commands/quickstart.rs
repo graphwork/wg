@@ -291,7 +291,7 @@ CONTEXT & ARTIFACTS
 
 CYCLES (repeating workflows)
 ─────────────────────────────────────────
-  Workgraph is a directed graph, NOT a DAG. It supports cycles natively.
+  workgraph is a directed graph, NOT a DAG. It supports cycles natively.
   Use cycles instead of duplicating tasks (e.g., don't create "pass 1",
   "pass 2", "pass 3" — create one cycle that iterates).
 

@@ -921,7 +921,7 @@ async fn scenario_6_compaction_on_resume() {
     // Load resume data with a tight budget to force compaction
     let config = ResumeConfig {
         budget_pct: 0.50,
-        context_window_tokens: 2000, // Very small to force compaction
+        context_window_tokens: 8000, // Small enough to force compaction without hard truncation
         ..Default::default()
     };
 

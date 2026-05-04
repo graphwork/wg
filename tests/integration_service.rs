@@ -104,7 +104,7 @@ fn wg_ok(wg_dir: &Path, args: &[&str]) -> String {
 /// so that the wrapper script's bare `wg` commands can find `.wg`.
 fn setup_workgraph(tmp_root: &Path) -> PathBuf {
     let wg_dir = tmp_root.join(".wg");
-    wg_ok(&wg_dir, &["init"]);
+    wg_ok(&wg_dir, &["init", "--route", "claude-cli"]);
 
     // Get the directory containing the test-built wg binary.
     // The wrapper script uses bare `wg` commands; we need those to resolve
@@ -797,8 +797,8 @@ fn test_service_start_on_bare_graph_does_not_create_daemon_tasks() {
 
     let status = wg_ok(&wg_dir, &["service", "status"]);
     assert!(
-        status.contains("Coordinator:"),
-        "service status should still report coordinator state:\n{}",
+        status.contains("Dispatcher: enabled"),
+        "service status should still report dispatcher state:\n{}",
         status
     );
 

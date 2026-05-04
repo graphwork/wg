@@ -499,8 +499,7 @@ impl OpenAiClient {
                                         && prev.role == "user"
                                         && prev.tool_call_id.is_none()
                                     {
-                                        let existing =
-                                            prev.content.get_or_insert_with(String::new);
+                                        let existing = prev.content.get_or_insert_with(String::new);
                                         existing.push('\n');
                                         existing.push_str(text);
                                     } else {
@@ -845,7 +844,9 @@ impl OpenAiClient {
             tool_choice,
             stream: true,
             stream_options: if self.supports_stream_options() {
-                Some(OaiStreamOptions { include_usage: true })
+                Some(OaiStreamOptions {
+                    include_usage: true,
+                })
             } else {
                 None
             },
@@ -1253,7 +1254,9 @@ impl OpenAiClient {
             tool_choice,
             stream: true,
             stream_options: if self.supports_stream_options() {
-                Some(OaiStreamOptions { include_usage: true })
+                Some(OaiStreamOptions {
+                    include_usage: true,
+                })
             } else {
                 None
             },

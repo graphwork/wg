@@ -302,7 +302,11 @@ fn os_keyring_get(name: &str) -> Result<Option<String>> {
     match entry.get_password() {
         Ok(v) => Ok(Some(v)),
         Err(keyring::Error::NoEntry) => Ok(None),
-        Err(e) => Err(anyhow::anyhow!("OS keyring read failed for '{}': {}", name, e)),
+        Err(e) => Err(anyhow::anyhow!(
+            "OS keyring read failed for '{}': {}",
+            name,
+            e
+        )),
     }
 }
 
@@ -653,9 +657,7 @@ pub fn backend_status(cfg: &SecretsConfig) -> String {
         }
     }
     parts.push(format!("Keyring (OS native): {}", os_keyring_status()));
-    parts.push(
-        "Keystore (file at ~/.wg/keystore/): always available (0600 perms)".to_string(),
-    );
+    parts.push("Keystore (file at ~/.wg/keystore/): always available (0600 perms)".to_string());
     if cfg.allow_plaintext {
         parts.push("Plaintext backend: enabled (allow_plaintext = true)".to_string());
     } else {
@@ -878,7 +880,11 @@ mod tests {
             let cfg = SecretsConfig::default();
             let status = backend_status(&cfg);
             // Honest naming: status mentions both keyring and keystore explicitly.
-            assert!(status.contains("Keyring"), "status missing 'Keyring': {}", status);
+            assert!(
+                status.contains("Keyring"),
+                "status missing 'Keyring': {}",
+                status
+            );
             assert!(
                 status.contains("Keystore"),
                 "status missing 'Keystore': {}",

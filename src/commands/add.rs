@@ -301,7 +301,7 @@ pub fn run(
 
     let path = graph_path(dir);
     if !path.exists() {
-        anyhow::bail!("Workgraph not initialized. Run 'wg init' first.");
+        anyhow::bail!("workgraph not initialized. Run 'wg init' first.");
     }
 
     // --- Autopoietic guardrails ---
@@ -1237,7 +1237,7 @@ mod tests {
         LOCK.get_or_init(|| Mutex::new(()))
     }
 
-    /// Helper: create a minimal task with the given ID for inserting into a WorkGraph.
+    /// Helper: create a minimal task with the given ID for inserting into a `WorkGraph`.
     fn stub_task(id: &str) -> Task {
         Task {
             id: id.to_string(),

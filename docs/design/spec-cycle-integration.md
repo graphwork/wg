@@ -25,7 +25,7 @@ This spec details four phases of work to integrate cycle detection into workgrap
 
 ---
 
-## Phase 1: Add CycleAnalysis to WorkGraph (non-breaking)
+## Phase 1: Add CycleAnalysis to workgraph (non-breaking)
 
 ### Goal
 Add `CycleAnalysis` as a cached, lazily-computed field on `WorkGraph`. Add `wg cycles` command. Integrate into `wg check`. **No behavioral changes** — `loops_to` continues to work exactly as before.
@@ -257,7 +257,7 @@ Implementation:
 
 | File | Type | Lines | Description |
 |------|------|-------|-------------|
-| `src/graph.rs` | Logic | ~80 | CycleAnalysis struct, compute fn, cache on WorkGraph |
+| `src/graph.rs` | Logic | ~80 | CycleAnalysis struct, compute fn, cache on workgraph |
 | `src/check.rs` | Logic | ~40 | Enhanced check_cycles, irreducible warning |
 | `src/commands/check.rs` | Mechanical | ~20 | Display enhanced cycle info |
 | `src/commands/cycles.rs` | **New file** | ~150 | `wg cycles` command |

@@ -1,4 +1,4 @@
-# Workgraph Code Review Synthesis
+# workgraph Code Review Synthesis
 
 > **Note:** This document synthesizes findings from a Feb 11, 2026 code review. Detailed review documents have been archived to `docs/archive/reviews/`. Some recommendations may be partially completed or outdated. Use the Top 10 Recommendations section below as a prioritized action list.
 
@@ -10,7 +10,7 @@
 
 ## 1. Executive Summary
 
-Workgraph is a well-engineered task graph coordinator with a clean core and ambitious feature set. The foundational layer — graph model, parser, query engine, validation — is solid at ~2,100 lines with good test coverage and few issues. The service daemon with IPC-based coordination is architecturally sound. The agency system (roles/motivations/agents) is the most thoroughly tested subsystem.
+workgraph is a well-engineered task graph coordinator with a clean core and ambitious feature set. The foundational layer — graph model, parser, query engine, validation — is solid at ~2,100 lines with good test coverage and few issues. The service daemon with IPC-based coordination is architecturally sound. The agency system (roles/motivations/agents) is the most thoroughly tested subsystem.
 
 **However, the codebase has grown organically to ~45,800 lines and shows signs of accumulated tech debt:**
 

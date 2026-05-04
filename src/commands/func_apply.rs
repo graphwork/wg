@@ -139,7 +139,7 @@ pub fn run(
     let mut graph = if graph_file.exists() {
         load_graph(&graph_file).context("Failed to load graph")?
     } else {
-        anyhow::bail!("Workgraph not initialized. Run 'wg init' first.");
+        anyhow::bail!("workgraph not initialized. Run 'wg init' first.");
     };
 
     // Validate external blocked-by references exist

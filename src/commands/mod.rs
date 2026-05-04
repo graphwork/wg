@@ -36,8 +36,8 @@ pub mod codex_handler;
 pub mod codex_oai_compat;
 pub mod config_cmd;
 pub mod context;
-pub mod coordinator_cmd;
 pub mod coordinate;
+pub mod coordinator_cmd;
 pub mod cost;
 pub mod critical_path;
 pub mod cycles;
@@ -154,7 +154,7 @@ use workgraph::parser::load_graph;
 pub fn load_workgraph(dir: &Path) -> Result<(workgraph::graph::WorkGraph, PathBuf)> {
     let path = graph_path(dir);
     if !path.exists() {
-        anyhow::bail!("Workgraph not initialized. Run 'wg init' first.");
+        anyhow::bail!("workgraph not initialized. Run 'wg init' first.");
     }
     let graph = load_graph(&path).context("Failed to load graph")?;
     Ok((graph, path))

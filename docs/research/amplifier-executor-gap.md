@@ -1,9 +1,9 @@
-# Amplifier–Workgraph Executor Gap Analysis
+# Amplifier–workgraph Executor Gap Analysis
 
 **Date**: 2026-02-18
 **Task**: `analyze-wg-executors`
 
-## 1. How Workgraph Currently Configures Executors
+## 1. How workgraph Currently Configures Executors
 
 Executor configuration lives in two places:
 

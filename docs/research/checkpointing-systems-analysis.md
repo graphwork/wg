@@ -7,7 +7,7 @@
 
 ## 1. Event Sourcing Analogy
 
-Workgraph's `stream.jsonl` is already an event log. Every tool call produces `ToolStart`/`ToolEnd` events, every LLM turn produces `Turn` events with token usage. The agent's observable state is the reduction of all stream events.
+workgraph's `stream.jsonl` is already an event log. Every tool call produces `ToolStart`/`ToolEnd` events, every LLM turn produces `Turn` events with token usage. The agent's observable state is the reduction of all stream events.
 
 **Can we replay events to restore state?**
 

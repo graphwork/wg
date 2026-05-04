@@ -1,4 +1,4 @@
-# Context Management Survey: WorkGraph
+# Context Management Survey: workgraph
 
 **Date**: 2026-02-05
 **Scope**: Full audit of context management, scoping, and information flow
@@ -7,7 +7,7 @@
 
 ## Executive Summary
 
-WorkGraph's context management is **conceptually sound but operationally minimal**. The system provides a clean pipeline: dependency artifacts → template variables → prompt injection, with optional identity context from the agency system. However, it lacks enforcement (context_limit is defined but never checked), size management (no truncation, summarization, or budgeting), and content awareness (artifacts are path strings, not content). The biggest risks are **unbounded skill content** from URL/file sources and **unused context_limit** on actors.
+workgraph's context management is **conceptually sound but operationally minimal**. The system provides a clean pipeline: dependency artifacts → template variables → prompt injection, with optional identity context from the agency system. However, it lacks enforcement (context_limit is defined but never checked), size management (no truncation, summarization, or budgeting), and content awareness (artifacts are path strings, not content). The biggest risks are **unbounded skill content** from URL/file sources and **unused context_limit** on actors.
 
 ---
 

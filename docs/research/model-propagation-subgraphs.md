@@ -6,7 +6,7 @@
 
 ## Executive Summary
 
-Workgraph currently supports per-task model selection (`--model`) and a global coordinator model, but has **no mechanism for automatic model inheritance** within subgraphs. When an agent creates subtasks via `wg add --after parent`, the child tasks receive no model unless explicitly set with `--model`. This research investigates five approaches to enabling per-subgraph model propagation, where different branches of the task graph can run simultaneously on different models.
+workgraph currently supports per-task model selection (`--model`) and a global coordinator model, but has **no mechanism for automatic model inheritance** within subgraphs. When an agent creates subtasks via `wg add --after parent`, the child tasks receive no model unless explicitly set with `--model`. This research investigates five approaches to enabling per-subgraph model propagation, where different branches of the task graph can run simultaneously on different models.
 
 ---
 

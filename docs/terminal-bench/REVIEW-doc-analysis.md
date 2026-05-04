@@ -31,7 +31,7 @@
 
 ### 2. REFERENCE-terminal-bench-campaign.md
 
-**Summary:** The comprehensive knowledge base for the Terminal Bench campaign. Covers the thesis (memory makes computation universal, arXiv:2412.17794), Terminal Bench overview (89 tasks, Docker containers, outcome-based tests), detailed ForgeCode competitive analysis (how they went 25% → 81.8%, with the critical insight that enforced planning was +28 points), architectural comparison (ForgeCode vs Workgraph), native executor state and bugs, full experiment design (Conditions A/B/C, metrics, expected results), Terminal Bench 2.0 integration approach (Harbor framework, Docker injection, adapter pseudocode, submission process), timeline, testing requirements, and strategic context. This is the single most important campaign document — it's both briefing and playbook.
+**Summary:** The comprehensive knowledge base for the Terminal Bench campaign. Covers the thesis (memory makes computation universal, arXiv:2412.17794), Terminal Bench overview (89 tasks, Docker containers, outcome-based tests), detailed ForgeCode competitive analysis (how they went 25% → 81.8%, with the critical insight that enforced planning was +28 points), architectural comparison (ForgeCode vs workgraph), native executor state and bugs, full experiment design (Conditions A/B/C, metrics, expected results), Terminal Bench 2.0 integration approach (Harbor framework, Docker injection, adapter pseudocode, submission process), timeline, testing requirements, and strategic context. This is the single most important campaign document — it's both briefing and playbook.
 
 **Changes vs existing version:**
 - Bug table: "Query Ollama `/api/show`" → "Look up from OpenRouter model metadata or config"; "check if Ollama returns native `tool_calls`" → "check if OpenRouter returns..."
@@ -73,15 +73,15 @@ All are factual references to Claude Code as a benchmark competitor. None reveal
 
 ### 4. REPORT-claude-code-vs-workgraph-architecture.md
 
-**Summary:** A deep architectural comparison of Claude Code TS and Workgraph as multi-agent orchestration systems. Covers architecture (conversation-first vs graph-first), executor comparison (Claude Code's single in-process QueryEngine vs Workgraph's four executor types), task/dependency systems (3-state flat model vs 60-field graph with cycles), coordinator patterns (conversation mode vs daemon tick loop), TUI/rendering approaches, embedding opportunities, messaging models, and concrete recommendations for each system. Key finding: each has critical capabilities the other lacks.
+**Summary:** A deep architectural comparison of Claude Code TS and workgraph as multi-agent orchestration systems. Covers architecture (conversation-first vs graph-first), executor comparison (Claude Code's single in-process QueryEngine vs workgraph's four executor types), task/dependency systems (3-state flat model vs 60-field graph with cycles), coordinator patterns (conversation mode vs daemon tick loop), TUI/rendering approaches, embedding opportunities, messaging models, and concrete recommendations for each system. Key finding: each has critical capabilities the other lacks.
 
 **Feedback:**
 
 **Valuable insights:**
 - The "conversation-first vs graph-first" framing is excellent — it precisely captures the fundamental architectural difference and why each system makes the tradeoffs it does.
 - The gap analysis tables (Section 3.3) are actionable. The native executor's missing capabilities are clearly prioritized.
-- Section 7.3 ("What Workgraph's Native Executor Needs to Replace the Claude Executor") is the most operationally useful part — the 93.8% tool call coverage figure and the 16-25 hour gap estimate are concrete planning inputs.
-- The coordinator comparison (Section 5) highlights a real weakness: Workgraph's coordinator doesn't synthesize. It dispatches and monitors but doesn't reason about task content. This is worth thinking about long-term.
+- Section 7.3 ("What workgraph's Native Executor Needs to Replace the Claude Executor") is the most operationally useful part — the 93.8% tool call coverage figure and the 16-25 hour gap estimate are concrete planning inputs.
+- The coordinator comparison (Section 5) highlights a real weakness: workgraph's coordinator doesn't synthesize. It dispatches and monitors but doesn't reason about task content. This is worth thinking about long-term.
 
 **Patterns that could inform workgraph development:**
 - **System-reminder injection pattern**: Claude Code's ephemeral per-turn context injection (Section 9.1 reference, detailed more in REFERENCE-executor-lessons.md) is exactly the pattern described in DESIGN doc #1. Validating that a production system at scale uses this approach increases confidence in the design.
@@ -96,7 +96,7 @@ All are factual references to Claude Code as a benchmark competitor. None reveal
 
 ### 5. REPORT-effort-and-valuation.md
 
-**Summary:** Compares the development economics of Claude Code (512K LOC TypeScript, ~20-40 engineers, ~18-24 months, est. $15-25M) vs Workgraph (216K LOC Rust, 1 person, 75 days, est. $100-150K actual / $2-3M traditional equivalent). Analyzes the 15-20x cost efficiency gain from AI-augmented development, breaks it down by work type (boilerplate 50-100x, architecture 1-2x), provides valuations (Claude Code $2-5B standalone; Workgraph $2-5M today, $50-150M at Series A if category creates), and identifies the core gap: the native executor needs 2-3 days to achieve independence from Claude Code.
+**Summary:** Compares the development economics of Claude Code (512K LOC TypeScript, ~20-40 engineers, ~18-24 months, est. $15-25M) vs workgraph (216K LOC Rust, 1 person, 75 days, est. $100-150K actual / $2-3M traditional equivalent). Analyzes the 15-20x cost efficiency gain from AI-augmented development, breaks it down by work type (boilerplate 50-100x, architecture 1-2x), provides valuations (Claude Code $2-5B standalone; workgraph $2-5M today, $50-150M at Series A if category creates), and identifies the core gap: the native executor needs 2-3 days to achieve independence from Claude Code.
 
 **Feedback:**
 

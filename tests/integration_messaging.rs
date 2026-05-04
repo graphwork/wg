@@ -77,7 +77,7 @@ fn wg_fail(wg_dir: &Path, args: &[&str]) -> String {
 fn init_wg() -> (TempDir, PathBuf) {
     let tmp = TempDir::new().unwrap();
     let wg_dir = tmp.path().join(".wg");
-    wg_ok(&wg_dir, &["init"]);
+    wg_ok(&wg_dir, &["init", "--route", "claude-cli"]);
     assert!(wg_dir.exists());
     (tmp, wg_dir)
 }

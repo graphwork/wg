@@ -54,7 +54,10 @@ pub(crate) fn generate_dot(
             .unwrap_or_default();
 
         let pause_prefix = if task.paused { "‖ " } else { "" };
-        let label = format!("{}{}\\n{}{}{}", pause_prefix, task.id, task.title, hours_str, phase_str);
+        let label = format!(
+            "{}{}\\n{}{}{}",
+            pause_prefix, task.id, task.title, hours_str, phase_str
+        );
 
         // Check if on critical path
         let node_style = if critical_path.contains(&task.id) {

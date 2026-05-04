@@ -401,7 +401,7 @@ fn streaming_flag_openrouter_enables_by_default() {
 #[test]
 fn streaming_flag_default_disabled() {
     let client = OpenAiClient::new("test-key".into(), "model", None).unwrap();
-    assert_eq!(client.name(), "openai"); // default name
+    assert_eq!(client.name(), "oai-compat"); // default name
 }
 
 #[test]

@@ -4,7 +4,7 @@
 
 ## Context
 
-Workgraph has 50+ subcommands. Reordering `--help` output by actual usage would improve discoverability for users who run `wg --help` frequently. This requires tracking which commands are invoked and how often.
+workgraph has 50+ subcommands. Reordering `--help` output by actual usage would improve discoverability for users who run `wg --help` frequently. This requires tracking which commands are invoked and how often.
 
 ### Current Dependencies (Relevant)
 

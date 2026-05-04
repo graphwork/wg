@@ -33,9 +33,7 @@ use serial_test::serial;
 
 use workgraph::chat_id::{CHAT_LOOP_TAG, LEGACY_COORDINATOR_LOOP_TAG};
 use workgraph::graph::{Node, Status, Task, WorkGraph};
-use workgraph::service::{
-    ChatSupervisorBootSpec, enumerate_chat_supervisors_from_graph,
-};
+use workgraph::service::{ChatSupervisorBootSpec, enumerate_chat_supervisors_from_graph};
 
 // ---------------------------------------------------------------------------
 // Pure-function tests — exercise the helper directly. These are the load-bearing
@@ -432,11 +430,7 @@ fn boot_path_must_call_enumerate_supervisors_helper() {
     // `CoordinatorAgent::spawn` followed by the daemon model arg. Match the
     // exact 2-line shape the rename agent reintroduced. (Spaces tolerated
     // around the comma so a lazy whitespace edit doesn't slip past.)
-    let normalized = src
-        .lines()
-        .map(|l| l.trim())
-        .collect::<Vec<_>>()
-        .join("\n");
+    let normalized = src.lines().map(|l| l.trim()).collect::<Vec<_>>().join("\n");
     assert!(
         !normalized.contains("CoordinatorAgent::spawn(\n&dir,\n0,"),
         "Bug A regression: src/commands/service/mod.rs hardcodes \

@@ -109,7 +109,7 @@ fn evaluate_warnings(
 }
 
 fn print_human(check: &DevCheck) {
-    println!("Workgraph dev check");
+    println!("workgraph dev check");
     println!("  repo: {}", check.repo_root.display());
     println!("  branch: {}", check.branch);
     println!("  current HEAD: {}", check.current_head);

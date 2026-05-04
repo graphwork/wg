@@ -1,10 +1,10 @@
-# Self-Hosting Workgraph: Architecture Design
+# Self-Hosting workgraph: Architecture Design
 
 ## Status: Design (March 2026)
 
 ## Vision
 
-Workgraph becomes its own primary interface. Users interact with the system through the system itself — no separate Claude Code window on top. Two complementary interaction modes: a persistent coordinator agent that lives inside the graph and accepts user messages, and a TUI that serves as a full control surface for viewing, creating, editing, and communicating.
+workgraph becomes its own primary interface. Users interact with the system through the system itself — no separate Claude Code window on top. Two complementary interaction modes: a persistent coordinator agent that lives inside the graph and accepts user messages, and a TUI that serves as a full control surface for viewing, creating, editing, and communicating.
 
 ## Current State
 

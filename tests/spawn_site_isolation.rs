@@ -210,6 +210,9 @@ fn test_no_independent_argv_executor_construction_outside_spawn_sites() {
         "src/commands/service/coordinator_agent.rs",
         "src/commands/service/ipc.rs",
         "src/commands/service/mod.rs",
+        // Lightweight one-shot LLM role dispatch selects a handler, but does
+        // not construct spawned agent argv.
+        "src/service/llm.rs",
     ]
     .into_iter()
     .collect();
