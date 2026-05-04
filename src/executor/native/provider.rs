@@ -246,9 +246,14 @@ pub fn create_provider_ext(
     // compatible endpoint. Purely additive; doesn't replace the full
     // endpoint lookup below which also handles provider-based and
     // default fallbacks.
+    //
+    // Endpoint config may contain the legacy "openai" alias; normalize
+    // through provider_to_native_provider so the canonical internal
+    // tag ("oai-compat") flows downstream and `provider.name()` reports
+    // it consistently.
     let endpoint_provider_override: Option<String> = endpoint_name
         .and_then(|name| config.llm_endpoints.find_by_name(name))
-        .map(|ep| ep.provider.clone());
+        .map(|ep| crate::config::provider_to_native_provider(&ep.provider).to_string());
 
     // Load merged TOML value (global + local) for legacy [native_executor] access
     let config_val: Option<toml::Value> =
@@ -290,10 +295,13 @@ pub fn create_provider_ext(
         .or_else(|| provider_override.map(String::from))
         .or_else(|| endpoint_provider_override.clone())
         .or_else(|| {
+            // Legacy [native_executor].provider may be the "openai" alias;
+            // normalize to the canonical "oai-compat" so downstream wiring
+            // and `provider.name()` are consistent.
             native_cfg
                 .and_then(|c| c.get("provider"))
                 .and_then(|v| v.as_str())
-                .map(String::from)
+                .map(|s| crate::config::provider_to_native_provider(s).to_string())
         })
         .or_else(|| {
             // Legacy heuristic takes precedence over env var for explicit model prefixes
