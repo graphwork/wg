@@ -230,13 +230,27 @@ fn truncate_to_fit(
     budget_tokens: usize,
     model: Option<&str>,
 ) -> Vec<Message> {
-    while messages.len() > RESUME_TRUNCATE_FLOOR
+    let preserve_summary = messages.first().is_some_and(is_resume_summary_message);
+    let min_len = RESUME_TRUNCATE_FLOOR + usize::from(preserve_summary);
+
+    while messages.len() > min_len
         && estimate_tokens_with_model(&messages, model) > budget_tokens
     {
-        messages.remove(0);
+        let drop_index = if preserve_summary { 1 } else { 0 };
+        messages.remove(drop_index);
     }
     ensure_valid_alternation(&mut messages);
     messages
+}
+
+fn is_resume_summary_message(message: &Message) -> bool {
+    message.role == Role::User
+        && message.content.iter().any(|block| match block {
+            ContentBlock::Text { text } => {
+                text.starts_with("[Resume:") && text.contains("compacted")
+            }
+            _ => false,
+        })
 }
 
 /// Reconstruct `Vec<Message>` from journal entries.

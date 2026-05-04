@@ -53,11 +53,11 @@ fn wg_requeue(wg_dir: &Path, task_id: &str, reason: &str) -> std::process::Outpu
 }
 
 // ---------------------------------------------------------------------------
-// Test: Task with failed dep appears in ready tasks (terminal dep)
+// Test: Task with failed dep remains blocked until triage resolves it
 // ---------------------------------------------------------------------------
 
 #[test]
-fn test_task_with_failed_dep_is_ready() {
+fn test_task_with_failed_dep_is_not_ready() {
     let mut graph = WorkGraph::new();
 
     let mut task_a = make_task("task-a", "Build parser");
@@ -71,8 +71,8 @@ fn test_task_with_failed_dep_is_ready() {
 
     let ready = ready_tasks(&graph);
     assert!(
-        ready.iter().any(|t| t.id == "task-b"),
-        "task-b should be ready since task-a is terminal (Failed)"
+        ready.iter().all(|t| t.id != "task-b"),
+        "task-b should remain blocked while task-a is Failed"
     );
 }
 

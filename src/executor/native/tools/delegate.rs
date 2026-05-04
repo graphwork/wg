@@ -188,7 +188,7 @@ pub fn build_child_registry(
     working_dir: &Path,
     exec_mode: &str,
 ) -> ToolRegistry {
-    use super::{bash, bg, file, web_fetch, web_search, wg};
+    use super::{bash, bg, file, web_fetch, web_search};
     use crate::executor::native::bundle::resolve_bundle;
 
     let mut registry = ToolRegistry::new();
@@ -196,7 +196,6 @@ pub fn build_child_registry(
     // Register all standard tools except delegate (prevents recursion)
     file::register_file_tools(&mut registry);
     bash::register_bash_tool(&mut registry, working_dir.to_path_buf());
-    wg::register_wg_tools(&mut registry, workgraph_dir.to_path_buf());
     web_search::register_web_search_tool(&mut registry);
     web_search::register_arxiv_search_tool(&mut registry);
     web_fetch::register_web_fetch_tool(&mut registry, workgraph_dir.to_path_buf());

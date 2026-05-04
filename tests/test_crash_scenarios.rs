@@ -82,7 +82,7 @@ fn wg_ok(wg_dir: &Path, args: &[&str]) -> String {
 /// so that the wrapper script's bare `wg` commands can find `.wg`.
 fn setup_workgraph(tmp_root: &Path) -> PathBuf {
     let wg_dir = tmp_root.join(".wg");
-    wg_ok(&wg_dir, &["init"]);
+    wg_ok(&wg_dir, &["init", "--route", "claude-cli"]);
 
     // Get the directory containing the test-built wg binary.
     let wg_bin_dir = wg_binary().parent().unwrap().to_string_lossy().to_string();

@@ -33,11 +33,7 @@ fn test_bundle_toml_roundtrip() {
     let bundle = Bundle {
         name: "custom".to_string(),
         description: "A custom test bundle".to_string(),
-        tools: vec![
-            "read_file".to_string(),
-            "wg_show".to_string(),
-            "wg_done".to_string(),
-        ],
+        tools: vec!["read_file".to_string(), "bash".to_string()],
         context_scope: "graph".to_string(),
         system_prompt_suffix: "Be helpful.".to_string(),
     };
@@ -48,7 +44,7 @@ fn test_bundle_toml_roundtrip() {
 
     let loaded = Bundle::load(&path).unwrap();
     assert_eq!(loaded.name, "custom");
-    assert_eq!(loaded.tools.len(), 3);
+    assert_eq!(loaded.tools.len(), 2);
     assert_eq!(loaded.context_scope, "graph");
     assert_eq!(loaded.system_prompt_suffix, "Be helpful.");
 }
@@ -72,7 +68,7 @@ fn test_ensure_default_bundles_creates_four_files() {
 
     assert_eq!(bare.name, "bare");
     assert!(!bare.allows_all());
-    assert!(bare.tools.contains(&"wg_done".to_string()));
+    assert_eq!(bare.tools, vec!["bash".to_string()]);
 
     assert_eq!(shell.name, "shell");
     assert!(!shell.allows_all());
@@ -94,13 +90,13 @@ fn test_exec_mode_bundle_mapping() {
     let shell = resolve_bundle("shell", tmp.path()).unwrap();
     assert_eq!(shell.name, "shell");
     assert!(shell.tools.contains(&"bash".to_string()));
-    assert!(shell.tools.contains(&"wg_show".to_string()));
+    assert!(!shell.tools.iter().any(|name| name.starts_with("wg_")));
 
     // bare → bare bundle
     let bare = resolve_bundle("bare", tmp.path()).unwrap();
     assert_eq!(bare.name, "bare");
     assert!(!bare.tools.contains(&"read_file".to_string()));
-    assert!(bare.tools.contains(&"wg_show".to_string()));
+    assert_eq!(bare.tools, vec!["bash".to_string()]);
 
     // light → research bundle
     let research = resolve_bundle("light", tmp.path()).unwrap();
@@ -125,7 +121,7 @@ fn test_bundle_file_overrides_builtin() {
     let content = r#"
 name = "research"
 description = "Minimal custom research bundle"
-tools = ["read_file", "wg_done"]
+tools = ["read_file", "bash"]
 context_scope = "task"
 system_prompt_suffix = "Custom research agent."
 "#;
@@ -139,7 +135,7 @@ system_prompt_suffix = "Custom research agent."
 }
 
 #[test]
-fn test_tool_registry_filtering_bare() {
+fn test_tool_registry_filtering_bare_keeps_bash_only() {
     let tmp = TempDir::new().unwrap();
     let working_dir = std::env::current_dir().unwrap();
 
@@ -151,16 +147,9 @@ fn test_tool_registry_filtering_bare() {
     let filtered = bundle.filter_registry(registry);
     let filtered_defs = filtered.definitions();
 
-    // All filtered tools should be wg_* tools
-    for def in &filtered_defs {
-        assert!(
-            def.name.starts_with("wg_"),
-            "Bare bundle should only have wg tools, found: {}",
-            def.name
-        );
-    }
+    assert_eq!(filtered_defs.len(), 1);
+    assert_eq!(filtered_defs[0].name, "bash");
     assert!(filtered_defs.len() < total_tools);
-    assert!(filtered_defs.len() >= 5); // At least wg_show, wg_list, wg_add, wg_done, wg_fail
 }
 
 #[test]
@@ -180,7 +169,8 @@ fn test_tool_registry_filtering_research() {
     assert!(names.contains(&"read_file"));
     assert!(names.contains(&"grep"));
     assert!(names.contains(&"glob"));
-    assert!(names.contains(&"wg_show"));
+    assert!(names.contains(&"bash"));
+    assert!(!names.iter().any(|name| name.starts_with("wg_")));
     assert!(!names.contains(&"write_file"));
     assert!(!names.contains(&"edit_file"));
     assert!(filtered_defs.len() < total_tools);
@@ -311,7 +301,7 @@ mod llm_tests {
         let mut task = make_task("test-native", "Read file and report answer");
         task.description = Some(format!(
             "Read the file at {} and report what number the answer is. \
-             Then mark this task as done using wg_done with task_id 'test-native'.",
+             Then mark this task as done by running `wg done test-native` with bash.",
             test_file.display()
         ));
         task.status = Status::InProgress;
@@ -329,7 +319,7 @@ mod llm_tests {
         let system_prompt = format!(
             "You are a test agent working on task 'test-native'. \
              Read the file at {} and report the answer. \
-             When done, use the wg_done tool with task_id 'test-native'.",
+             When done, run `wg done test-native` with bash.",
             test_file.display()
         );
 

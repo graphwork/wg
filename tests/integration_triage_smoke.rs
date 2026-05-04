@@ -82,7 +82,7 @@ fn is_ready(wg_dir: &Path, id: &str) -> bool {
 fn setup() -> (TempDir, std::path::PathBuf) {
     let tmp = TempDir::new().unwrap();
     let wg_dir = tmp.path().join(".wg");
-    wg_ok(&wg_dir, &["init"]);
+    wg_ok(&wg_dir, &["init", "--route", "claude-cli"]);
     (tmp, wg_dir)
 }
 
@@ -92,9 +92,8 @@ fn setup() -> (TempDir, std::path::PathBuf) {
 
 /// Full triage lifecycle:
 ///   task-a → task-b → task-c
-///   task-a fails → task-b becomes ready (failed dep is terminal) →
-///   agent claims task-b, enters triage → creates fix-a → adds dep →
-///   retries task-a → requeues task-b → fix-a completes →
+///   task-a fails → task-b remains blocked until task-a is repaired →
+///   triage creates fix-a → adds dep → retries task-a → fix-a completes →
 ///   task-a re-runs and succeeds → task-b dispatches normally → task-c runs
 #[test]
 fn smoke_triage_basic_chain_recovery() {
@@ -135,21 +134,17 @@ fn smoke_triage_basic_chain_recovery() {
     );
     assert_eq!(task_status(&wg_dir, "task-a"), Status::Failed);
 
-    // ── Step 2: task-b becomes ready (failed dep is terminal) ───────────
+    // ── Step 2: task-b remains blocked by the failed dep ────────────────
     assert!(
-        is_ready(&wg_dir, "task-b"),
-        "task-b should be ready when task-a is Failed (terminal)"
+        !is_ready(&wg_dir, "task-b"),
+        "task-b should remain blocked while task-a is Failed"
     );
     assert!(
         !is_ready(&wg_dir, "task-c"),
         "task-c should NOT be ready (task-b is still Open)"
     );
 
-    // ── Step 3: Agent claims task-b (would enter triage mode) ───────────
-    wg_ok(&wg_dir, &["claim", "task-b"]);
-    assert_eq!(task_status(&wg_dir, "task-b"), Status::InProgress);
-
-    // ── Step 4: Agent performs triage — create fix task ──────────────────
+    // ── Step 3: Triage creates a fix task for the failed dependency ──────
     wg_ok(
         &wg_dir,
         &[
@@ -163,22 +158,13 @@ fn smoke_triage_basic_chain_recovery() {
     // Wire fix-a as a dependency of task-a
     wg_ok(&wg_dir, &["add-dep", "task-a", "fix-a"]);
 
-    // ── Step 5: Agent retries task-a ────────────────────────────────────
+    // ── Step 4: Triage retries task-a ───────────────────────────────────
     wg_ok(&wg_dir, &["retry", "task-a"]);
     assert_eq!(task_status(&wg_dir, "task-a"), Status::Open);
 
-    // ── Step 6: Agent requeues itself ───────────────────────────────────
-    wg_ok(
-        &wg_dir,
-        &[
-            "requeue",
-            "task-b",
-            "--reason",
-            "Created fix for failed dep task-a",
-        ],
-    );
+    // task-b was never claimed; it stays open until task-a succeeds.
     assert_eq!(task_status(&wg_dir, "task-b"), Status::Open);
-    assert_eq!(task_triage_count(&wg_dir, "task-b"), 1);
+    assert_eq!(task_triage_count(&wg_dir, "task-b"), 0);
 
     // ── Step 7: Verify blocking — task-a blocked by fix-a ───────────────
     assert!(
@@ -211,7 +197,7 @@ fn smoke_triage_basic_chain_recovery() {
     wg_ok(&wg_dir, &["claim", "task-b"]);
     wg_ok(&wg_dir, &["done", "task-b"]);
     assert_eq!(task_status(&wg_dir, "task-b"), Status::Done);
-    assert_eq!(task_triage_count(&wg_dir, "task-b"), 1); // preserved
+    assert_eq!(task_triage_count(&wg_dir, "task-b"), 0);
 
     assert!(
         is_ready(&wg_dir, "task-c"),
@@ -453,16 +439,13 @@ fn smoke_triage_multiple_failed_deps() {
     wg_ok(&wg_dir, &["claim", "task-y"]);
     wg_ok(&wg_dir, &["fail", "task-y", "--reason", "validation error"]);
 
-    // task-m should be ready (both deps are terminal)
+    // task-m remains blocked until both failed deps are repaired.
     assert!(
-        is_ready(&wg_dir, "task-m"),
-        "task-m should be ready when all deps are terminal (Failed)"
+        !is_ready(&wg_dir, "task-m"),
+        "task-m should remain blocked while its deps are Failed"
     );
 
-    // ── Triage: agent claims task-m, creates fixes for both deps ────────
-    wg_ok(&wg_dir, &["claim", "task-m"]);
-
-    // Fix for task-x
+    // ── Triage creates fixes for both deps ──────────────────────────────
     wg_ok(
         &wg_dir,
         &[
@@ -490,17 +473,7 @@ fn smoke_triage_multiple_failed_deps() {
     wg_ok(&wg_dir, &["add-dep", "task-y", "fix-y"]);
     wg_ok(&wg_dir, &["retry", "task-y"]);
 
-    // Requeue task-m
-    wg_ok(
-        &wg_dir,
-        &[
-            "requeue",
-            "task-m",
-            "--reason",
-            "Created fixes for failed deps task-x and task-y",
-        ],
-    );
-    assert_eq!(task_triage_count(&wg_dir, "task-m"), 1);
+    assert_eq!(task_triage_count(&wg_dir, "task-m"), 0);
     assert_eq!(task_status(&wg_dir, "task-m"), Status::Open);
 
     // ── Both fixes should be ready ──────────────────────────────────────
@@ -634,13 +607,12 @@ fn smoke_triage_regression_new_failure() {
         "task-a should have the new failure reason"
     );
 
-    // ── Round 2: task-b triages again (different reason) ────────────────
+    // ── Round 2: task-b remains blocked until the new failure is repaired ─
     assert!(
-        is_ready(&wg_dir, "task-b"),
-        "task-b should be ready (task-a is Failed=terminal)"
+        !is_ready(&wg_dir, "task-b"),
+        "task-b should remain blocked while task-a is Failed"
     );
 
-    wg_ok(&wg_dir, &["claim", "task-b"]);
     wg_ok(
         &wg_dir,
         &[
@@ -653,16 +625,7 @@ fn smoke_triage_regression_new_failure() {
     );
     wg_ok(&wg_dir, &["add-dep", "task-a", "fix-schema"]);
     wg_ok(&wg_dir, &["retry", "task-a"]);
-    wg_ok(
-        &wg_dir,
-        &[
-            "requeue",
-            "task-b",
-            "--reason",
-            "Created fix-schema for task-a (new failure: schema validation)",
-        ],
-    );
-    assert_eq!(task_triage_count(&wg_dir, "task-b"), 2);
+    assert_eq!(task_triage_count(&wg_dir, "task-b"), 1);
 
     // Fix succeeds
     wg_ok(&wg_dir, &["claim", "fix-schema"]);
@@ -683,8 +646,8 @@ fn smoke_triage_regression_new_failure() {
     assert_eq!(task_status(&wg_dir, "task-b"), Status::Done);
     assert_eq!(
         task_triage_count(&wg_dir, "task-b"),
-        2,
-        "triage_count should reflect both triage rounds"
+        1,
+        "triage_count should reflect the triage round where task-b was claimed"
     );
 
     // ── Verify: all tasks done ──────────────────────────────────────────

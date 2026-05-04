@@ -155,7 +155,7 @@ fn write_model_cache(wg_dir: &Path, model_ids: &[&str]) {
 fn init_fresh_wg() -> (TempDir, PathBuf) {
     let tmp = TempDir::new().unwrap();
     let wg_dir = tmp.path().join(".wg");
-    wg_ok(&wg_dir, &["init"]);
+    wg_ok(&wg_dir, &["init", "--route", "claude-cli"]);
     assert!(
         wg_dir.exists(),
         ".wg directory should exist after init"

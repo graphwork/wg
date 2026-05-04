@@ -4185,7 +4185,7 @@ Done."#;
     fn test_extract_minimax_tool_call_no_panic_on_invoke_text() {
         // Regression test: text containing <invoke> XML format (used by some models)
         // with ':tool_call>' absent should not panic. Pattern 3 should not match.
-        let text = r#"<invoke name="wg_msg_read">
+        let text = r#"<invoke name="unknown_tool">
 <parameter name="task_id">some-task</parameter>
 </invoke>"#;
         // This should not panic — extract_tool_calls_from_text must handle

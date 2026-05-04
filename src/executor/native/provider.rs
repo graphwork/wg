@@ -268,8 +268,8 @@ pub fn create_provider_ext(
         .map(crate::config::provider_to_native_provider)
         .map(String::from);
 
-    // Resolve provider name: spec prefix > override > model heuristic >
-    // named-endpoint.provider > config > env var > openai default.
+    // Resolve provider name: spec prefix > override > named-endpoint.provider >
+    // config > model heuristic > env var > oai-compat default.
     //
     // Two key changes from legacy behavior:
     //
@@ -288,6 +288,13 @@ pub fn create_provider_ext(
     //    anthropic — see `looks_like_claude_model`.
     let provider_name = spec_provider
         .or_else(|| provider_override.map(String::from))
+        .or_else(|| endpoint_provider_override.clone())
+        .or_else(|| {
+            native_cfg
+                .and_then(|c| c.get("provider"))
+                .and_then(|v| v.as_str())
+                .map(String::from)
+        })
         .or_else(|| {
             // Legacy heuristic takes precedence over env var for explicit model prefixes
             if spec.model_id.starts_with("anthropic/") {
@@ -299,13 +306,6 @@ pub fn create_provider_ext(
             } else {
                 None
             }
-        })
-        .or_else(|| endpoint_provider_override.clone())
-        .or_else(|| {
-            native_cfg
-                .and_then(|c| c.get("provider"))
-                .and_then(|v| v.as_str())
-                .map(String::from)
         })
         .or_else(|| std::env::var("WG_LLM_PROVIDER").ok())
         .unwrap_or_else(|| {

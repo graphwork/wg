@@ -151,6 +151,19 @@ mod tests {
         f.sync_all().ok();
     }
 
+    fn append_burst(path: &Path, count: usize) {
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .expect("open graph file");
+        for i in 0..count {
+            writeln!(f, r#"{{"id":"t{}"}}"#, i).expect("write");
+        }
+        f.sync_all().ok();
+    }
+
     #[test]
     fn fires_on_graph_write() {
         let tmp = tempfile::tempdir().unwrap();
@@ -194,12 +207,10 @@ mod tests {
 
         std::thread::sleep(Duration::from_millis(50));
 
-        // Burst of 10 writes spaced by ~5ms each (well inside the debounce
-        // window). Total burst duration ~50ms.
-        for i in 0..10 {
-            append(&graph, &format!(r#"{{"id":"t{}"}}"#, i));
-            std::thread::sleep(Duration::from_millis(5));
-        }
+        // One logical graph rewrite can emit multiple low-level FS events.
+        // Write the burst through one file handle so the test measures
+        // debouncing, not scheduler/fsync variance across repeated opens.
+        append_burst(&graph, 10);
 
         // Wait long enough for the debounce window to expire and any followup
         // events to drain.

@@ -757,19 +757,16 @@ issues direct text-in/text-out LLM calls with no tool loop — cheap, predictabl
 and able to handle sources that would otherwise require many turns of manual \
 chunking. Hard ceiling 1 MB by default (raisable via `max_input_bytes`).
 
-### Workgraph task management (in-process, no CLI spawn)
+### Workgraph task management
 
-- `wg_show(task_id)`, `wg_list()`, `wg_log(task_id, message)` — inspect and \
+Use the `bash` tool to run `wg` CLI commands. The CLI is the source of truth for \
+task operations:
+
+- `wg show <task-id>`, `wg list`, `wg log <task-id> \"message\"` — inspect and \
 annotate tasks.
-- `wg_add(title, description?, after?, tags?, skills?)` — create follow-up tasks \
-(e.g., \"Verify: ...\" after your current task for fan-out).
-- `wg_done(task_id)`, `wg_fail(task_id, reason)`, `wg_artifact(task_id, path)` — \
-lifecycle operations.
-
-Prefer these over `bash: wg show ...` — they take structured input and return \
-structured results. For advanced flags not in the tool schemas \
-(`--subtask` for blocking subtask, `--cron \"expr\"` for scheduled tasks), fall \
-back to `bash: wg add --subtask ...` or `bash: wg add --cron ...`.
+- `wg add \"title\" --after <task-id>` — create follow-up tasks.
+- `wg done <task-id>`, `wg fail <task-id> --reason \"...\"`, \
+`wg artifact <task-id> <path>` — lifecycle operations.
 
 ### Channeled tool outputs
 

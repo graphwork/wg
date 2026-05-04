@@ -739,8 +739,10 @@ fn bundle_filtering_research_applied_to_registry() {
     assert!(names.contains("bash"), "Should keep bash");
     assert!(names.contains("web_search"), "Should keep web_search");
     assert!(names.contains("web_fetch"), "Should keep web_fetch");
-    assert!(names.contains("wg_show"), "Should keep wg_show");
-    assert!(names.contains("wg_done"), "Should keep wg_done");
+    assert!(
+        !names.iter().any(|name| name.starts_with("wg_")),
+        "Should not expose wg_* tools; use bash for wg CLI"
+    );
 
     // Research bundle should filter these out
     assert!(!names.contains("write_file"), "Should NOT keep write_file");
@@ -749,7 +751,7 @@ fn bundle_filtering_research_applied_to_registry() {
 }
 
 #[test]
-fn bundle_bare_filtering_only_wg_tools() {
+fn bundle_bare_filtering_only_bash() {
     let tmp = TempDir::new().unwrap();
     let registry = ToolRegistry::default_all(tmp.path(), &std::env::current_dir().unwrap());
 
@@ -762,20 +764,8 @@ fn bundle_bare_filtering_only_wg_tools() {
         .map(|d| d.name.clone())
         .collect();
 
-    // Bare should only have wg_ tools
-    for name in &names {
-        assert!(
-            name.starts_with("wg_"),
-            "Bare bundle should only contain wg_ tools, but found: {}",
-            name
-        );
-    }
-
-    assert!(names.contains("wg_show"), "Should have wg_show");
-    assert!(names.contains("wg_add"), "Should have wg_add");
-    assert!(names.contains("wg_done"), "Should have wg_done");
-    assert!(names.contains("wg_fail"), "Should have wg_fail");
-    assert!(names.contains("wg_log"), "Should have wg_log");
+    assert_eq!(names.len(), 1);
+    assert!(names.contains("bash"), "Should have bash for wg CLI");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -866,7 +856,7 @@ fn resolve_bundle_from_custom_toml_file() {
     let custom = r#"
 name = "research"
 description = "Custom research with only grep"
-tools = ["grep", "wg_show"]
+tools = ["grep", "bash"]
 context_scope = "task"
 "#;
     fs::write(bundles_dir.join("research.toml"), custom).unwrap();
@@ -879,7 +869,7 @@ context_scope = "task"
         "Custom bundle should have exactly 2 tools"
     );
     assert!(bundle.tools.contains(&"grep".to_string()));
-    assert!(bundle.tools.contains(&"wg_show".to_string()));
+    assert!(bundle.tools.contains(&"bash".to_string()));
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -897,6 +887,11 @@ fn default_registry_has_all_expected_tools() {
         .map(|d| d.name.clone())
         .collect();
 
+    assert!(
+        !names.iter().any(|name| name.starts_with("wg_")),
+        "Default registry should not expose wg_* tools; agents use bash for wg CLI"
+    );
+
     let expected = [
         "read_file",
         "write_file",
@@ -908,13 +903,11 @@ fn default_registry_has_all_expected_tools() {
         "web_search",
         "web_fetch",
         "delegate",
-        "wg_show",
-        "wg_list",
-        "wg_add",
-        "wg_done",
-        "wg_fail",
-        "wg_log",
-        "wg_artifact",
+        "research",
+        "deep_research",
+        "reader",
+        "map",
+        "chunk_map",
     ];
 
     for tool in &expected {

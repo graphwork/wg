@@ -191,6 +191,9 @@ fn test_no_independent_argv_executor_construction_outside_spawn_sites() {
     //   - src/commands/service/mod.rs (`wg service start` argv builder for
     //                                  the daemon — argv flows to `wg
     //                                  service`, NOT to a spawned agent)
+    //   - src/service/llm.rs          (one-shot lightweight LLM calls choose
+    //                                  between CLI/native handlers; they do
+    //                                  not spawn task agents)
     //   - src/tui/                    (the TUI builds `wg service start` argv
     //                                  for new chats; same as above —
     //                                  daemon launch, not agent spawn)
@@ -210,6 +213,7 @@ fn test_no_independent_argv_executor_construction_outside_spawn_sites() {
         "src/commands/service/coordinator_agent.rs",
         "src/commands/service/ipc.rs",
         "src/commands/service/mod.rs",
+        "src/service/llm.rs",
     ]
     .into_iter()
     .collect();

@@ -100,14 +100,6 @@ pub fn run(
             &working_dir,
             &config.native_executor,
         );
-        if is_coordinator {
-            // Coordinator mode: keep ALL wg tools — the agent manages
-            // the workgraph (add tasks, mark done, log, etc.).
-        } else {
-            // Interactive/skill mode: strip wg mutation tools — there's
-            // no task context. wg_show/wg_list kept for browsing.
-            reg.remove_tools(&["wg_done", "wg_add", "wg_fail", "wg_rescue", "wg_artifact"]);
-        }
         if minimal_tools {
             // Minimal tool surface: keep only the canonical local-dev set.
             // Dramatically reduces prefill cost for small local models.
@@ -177,8 +169,7 @@ pub fn run(
     };
 
     // Load role/skill content from the agency primitives directory.
-    // "coordinator" is a special-case role handled above (restores
-    // wg tools). Other role names are looked up by fuzzy match
+    // "coordinator" is a special-case role handled below. Other role names are looked up by fuzzy match
     // against component names in .wg/agency/primitives/components/.
     let role_prompt_addendum = if let Some(role_name) = role {
         if is_coordinator {
@@ -215,8 +206,7 @@ pub fn run(
          Working directory: {}\n\
          Current date: {} ({})\n\
          \n\
-         Note: workgraph mutation tools (wg_done, wg_add, wg_log, wg_fail) are not for \
-         this session — they belong to task-agent runs, not interactive conversations.",
+         Use bash to run `wg` CLI commands when you need workgraph task management.",
         working_dir.display(),
         now.format("%Y-%m-%d %H:%M %Z"),
         now.format("%A"),

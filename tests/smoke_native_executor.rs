@@ -251,7 +251,7 @@ fn smoke_native_streaming_agent() {
     let tmp = TempDir::new().unwrap();
     let wg_dir = tmp.path().join(".wg");
 
-    wg_ok(&wg_dir, &["init"]);
+    wg_ok(&wg_dir, &["init", "--route", "claude-cli"]);
     wg_ok(&wg_dir, &["agency", "init"]);
 
     // ── 2. Configure OpenRouter endpoint ─────────────────────────────────

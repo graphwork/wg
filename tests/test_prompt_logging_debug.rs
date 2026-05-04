@@ -112,7 +112,7 @@ fn init_wg() -> (TempDir, PathBuf) {
         .output()
         .expect("Failed to git commit");
 
-    wg_ok(&wg_dir, &["init"]);
+    wg_ok(&wg_dir, &["init", "--route", "claude-cli"]);
     (tmp, wg_dir)
 }
 
@@ -134,8 +134,8 @@ fn test_debug_prompt_logging_enabled() {
         &[
             "add",
             "Test debug logging",
-            "--verify",
-            "echo 'test complete'",
+            "-d",
+            "## Validation\n- [ ] echo 'test complete'",
         ],
     );
 
@@ -225,8 +225,8 @@ fn test_debug_prompt_logging_disabled() {
         &[
             "add",
             "Test no debug logging",
-            "--verify",
-            "echo 'test complete'",
+            "-d",
+            "## Validation\n- [ ] echo 'test complete'",
         ],
     );
 

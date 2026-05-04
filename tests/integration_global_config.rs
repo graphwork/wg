@@ -13,7 +13,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 
-use workgraph::config::{Config, ConfigSource};
+use workgraph::config::{Config, ConfigSource, normalize_legacy_tables};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -50,8 +50,11 @@ fn load_toml_or_empty(path: &Path) -> toml::Value {
 
 /// Load merged config using custom global/local paths (not relying on HOME).
 fn load_merged_custom(global_dir: &Path, local_dir: &Path) -> Config {
-    let global_val = load_toml_or_empty(&global_dir.join("config.toml"));
-    let local_val = load_toml_or_empty(&local_dir.join("config.toml"));
+    let mut global_val = load_toml_or_empty(&global_dir.join("config.toml"));
+    let mut local_val = load_toml_or_empty(&local_dir.join("config.toml"));
+    let mut warnings = Vec::new();
+    normalize_legacy_tables(&mut global_val, "global", &mut warnings);
+    normalize_legacy_tables(&mut local_val, "local", &mut warnings);
     let merged = workgraph::config::merge_toml(global_val, local_val);
     merged.try_into().expect("deserialize merged config")
 }
@@ -61,8 +64,11 @@ fn load_with_sources_custom(
     global_dir: &Path,
     local_dir: &Path,
 ) -> (Config, BTreeMap<String, ConfigSource>) {
-    let global_val = load_toml_or_empty(&global_dir.join("config.toml"));
-    let local_val = load_toml_or_empty(&local_dir.join("config.toml"));
+    let mut global_val = load_toml_or_empty(&global_dir.join("config.toml"));
+    let mut local_val = load_toml_or_empty(&local_dir.join("config.toml"));
+    let mut warnings = Vec::new();
+    normalize_legacy_tables(&mut global_val, "global", &mut warnings);
+    normalize_legacy_tables(&mut local_val, "local", &mut warnings);
 
     let mut sources = BTreeMap::new();
     record_sources(&global_val, "", &ConfigSource::Global, &mut sources);
@@ -284,12 +290,12 @@ executor = "native"
     let (_config, sources) = load_with_sources_custom(&global_dir, &local_dir);
 
     assert_eq!(
-        sources.get("coordinator.max_agents"),
+        sources.get("dispatcher.max_agents"),
         Some(&ConfigSource::Global),
         "max_agents should be global (only set in global)"
     );
     assert_eq!(
-        sources.get("coordinator.executor"),
+        sources.get("dispatcher.executor"),
         Some(&ConfigSource::Local),
         "executor should be local (local overrides global)"
     );
@@ -355,7 +361,7 @@ max_agents = 6
     assert_eq!(sources.get("agent.interval"), Some(&ConfigSource::Global));
     // Only in local
     assert_eq!(
-        sources.get("coordinator.max_agents"),
+        sources.get("dispatcher.max_agents"),
         Some(&ConfigSource::Local)
     );
     // Only in global
@@ -746,7 +752,7 @@ fn load_with_sources_uses_real_api() {
     let (loaded, sources) = Config::load_with_sources(&local_dir).unwrap();
     assert_eq!(loaded.coordinator.max_agents, 7);
     assert_eq!(
-        sources.get("coordinator.max_agents"),
+        sources.get("dispatcher.max_agents"),
         Some(&ConfigSource::Local)
     );
 }

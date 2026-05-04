@@ -34,10 +34,21 @@ fn wg_binary() -> PathBuf {
 }
 
 fn wg_cmd(wg_dir: &Path, args: &[&str]) -> std::process::Output {
+    let fake_home = wg_dir.parent().unwrap_or(wg_dir).join("fakehome");
+    let _ = fs::create_dir_all(&fake_home);
+    let config_path = wg_dir.join("config.toml");
+    if !config_path.exists() {
+        fs::write(
+            &config_path,
+            "[agency]\nauto_assign = false\nauto_evaluate = false\nauto_place = false\n",
+        )
+        .unwrap();
+    }
     Command::new(wg_binary())
         .arg("--dir")
         .arg(wg_dir)
         .args(args)
+        .env("HOME", &fake_home)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

@@ -17,7 +17,6 @@ pub mod research;
 pub mod summarize;
 pub mod web_fetch;
 pub mod web_search;
-pub mod wg;
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -209,9 +208,7 @@ impl ToolRegistry {
         filtered
     }
 
-    /// Remove tools by name. Used to strip workgraph mutation tools
-    /// (wg_done, wg_add, wg_fail) from the nex REPL registry where
-    /// there's no task context to mutate.
+    /// Remove tools by name.
     pub fn remove_tools(&mut self, names: &[&str]) {
         for name in names {
             self.tools.remove(*name);
@@ -434,9 +431,6 @@ impl ToolRegistry {
         // Bash tool
         bash::register_bash_tool(&mut registry, working_dir.to_path_buf());
 
-        // Workgraph tools
-        wg::register_wg_tools(&mut registry, workgraph_dir.to_path_buf());
-
         // Web search tool
         web_search::register_web_search_tool(&mut registry);
 
@@ -529,8 +523,6 @@ impl ToolTruncationConfig {
             "read_file" => 16_000,
             "grep" => 4_000,
             "glob" => 4_000,
-            "wg_show" => 2_000,
-            "wg_list" => 4_000,
             "web_search" => 16_000,
             "web_fetch" => 16_000,
             "delegate" => 8_000,
@@ -640,8 +632,6 @@ mod truncation_tests {
         );
         assert_eq!(ToolTruncationConfig::for_tool("grep").max_chars, 4_000);
         assert_eq!(ToolTruncationConfig::for_tool("glob").max_chars, 4_000);
-        assert_eq!(ToolTruncationConfig::for_tool("wg_show").max_chars, 2_000);
-        assert_eq!(ToolTruncationConfig::for_tool("wg_list").max_chars, 4_000);
         assert_eq!(
             ToolTruncationConfig::for_tool("unknown").max_chars,
             MAX_TOOL_OUTPUT_SIZE

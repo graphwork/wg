@@ -244,7 +244,7 @@ pub struct NativeExecutorConfig {
 /// Example `.wg/config.toml`:
 /// ```toml
 /// [native_executor.permissions]
-/// deny_tools = ["bash", "write_file", "wg_done"]
+/// deny_tools = ["bash", "write_file"]
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ToolPermissionsConfig {

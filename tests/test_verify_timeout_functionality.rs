@@ -195,7 +195,7 @@ fn test_cli_verify_timeout_flag() -> Result<()> {
 
     // Initialize a workgraph project
     std::process::Command::new("wg")
-        .args(&["init"])
+        .args(&["init", "--route", "claude-cli"])
         .current_dir(project_root)
         .output()?;
 
@@ -206,8 +206,8 @@ fn test_cli_verify_timeout_flag() -> Result<()> {
             "Test CLI verify timeout",
             "--verify-timeout",
             "1337s",
-            "--verify",
-            "echo test",
+            "-d",
+            "## Validation\n- [ ] echo test",
         ])
         .current_dir(project_root)
         .output()?;
@@ -231,7 +231,11 @@ fn test_cli_verify_timeout_flag() -> Result<()> {
         .ok_or_else(|| anyhow::anyhow!("Task not found"))?;
 
     assert_eq!(task.verify_timeout, Some("1337s".to_string()));
-    assert_eq!(task.verify, Some("echo test".to_string()));
+    assert_eq!(
+        task.description.as_deref(),
+        Some("## Validation\n- [ ] echo test")
+    );
+    assert_eq!(task.verify, None);
 
     Ok(())
 }
@@ -244,7 +248,7 @@ fn test_verify_timeout_in_task_serialization() -> Result<()> {
 
     // Initialize workgraph
     std::process::Command::new("wg")
-        .args(&["init"])
+        .args(&["init", "--route", "claude-cli"])
         .current_dir(project_root)
         .output()?;
 
@@ -274,7 +278,7 @@ fn test_verify_timeout_different_duration_formats() -> Result<()> {
     let project_root = temp_dir.path();
 
     std::process::Command::new("wg")
-        .args(&["init"])
+        .args(&["init", "--route", "claude-cli"])
         .current_dir(project_root)
         .output()?;
 
@@ -340,11 +344,12 @@ fn test_all_three_features_integration() -> Result<()> {
 }
 
 #[test]
-fn test_backward_compatibility_integration() -> Result<()> {
-    // Test existing verify strings work with new features
+fn test_legacy_verify_flag_is_rejected() -> Result<()> {
+    // The legacy --verify flag is intentionally hard-removed; validation now
+    // lives in the task description under a ## Validation section.
     let temp_dir = TempDir::new()?;
     std::process::Command::new("wg")
-        .args(&["init"])
+        .args(&["init", "--route", "claude-cli"])
         .current_dir(temp_dir.path())
         .output()?;
 
@@ -355,9 +360,11 @@ fn test_backward_compatibility_integration() -> Result<()> {
         .output()?;
 
     assert!(
-        output.status.success(),
-        "Legacy verify commands should work"
+        !output.status.success(),
+        "Legacy verify commands should be rejected"
     );
-    println!("✓ Backward compatibility maintained");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("--verify is deprecated and no longer accepted"));
+    assert!(stderr.contains("## Validation"));
     Ok(())
 }

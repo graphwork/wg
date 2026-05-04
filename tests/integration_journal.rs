@@ -553,7 +553,9 @@ async fn test_journal_max_turns_end_reason() {
     .with_journal(j_path.clone(), task_id.to_string());
 
     let result = agent.run("Go.").await.unwrap();
-    assert_eq!(result.final_text, "[max turns reached]");
+    assert_eq!(result.final_text, "");
+    assert_eq!(result.exit_reason, "max_turns");
+    assert!(!result.terminated_cleanly());
 
     let entries = Journal::read_all(&j_path).unwrap();
     let end_entry = entries.last().unwrap();

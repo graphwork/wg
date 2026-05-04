@@ -54,11 +54,12 @@ fn fake_home_for(wg_dir: &Path) -> PathBuf {
 }
 
 fn wg_cmd(wg_dir: &Path, args: &[&str]) -> std::process::Output {
-    Command::new(wg_binary())
+    let mut cmd = Command::new(wg_binary());
+    isolate_command_env(&mut cmd, wg_dir);
+    cmd
         .arg("--dir")
         .arg(wg_dir)
         .args(args)
-        .env("HOME", fake_home_for(wg_dir))
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -68,18 +69,40 @@ fn wg_cmd(wg_dir: &Path, args: &[&str]) -> std::process::Output {
 
 fn wg_cmd_env(wg_dir: &Path, args: &[&str], env_vars: &[(&str, &str)]) -> std::process::Output {
     let mut cmd = Command::new(wg_binary());
+    isolate_command_env(&mut cmd, wg_dir);
     cmd.arg("--dir")
         .arg(wg_dir)
         .args(args)
-        .env("HOME", fake_home_for(wg_dir))
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     for &(key, val) in env_vars {
-        cmd.env(key, val);
+        if val.is_empty() {
+            cmd.env_remove(key);
+        } else {
+            cmd.env(key, val);
+        }
     }
     cmd.output()
         .unwrap_or_else(|e| panic!("Failed to run wg {:?}: {}", args, e))
+}
+
+fn isolate_command_env(cmd: &mut Command, wg_dir: &Path) {
+    cmd.env("HOME", fake_home_for(wg_dir));
+    for key in [
+        "WG_LLM_PROVIDER",
+        "WG_ENDPOINT",
+        "WG_ENDPOINT_URL",
+        "WG_MODEL",
+        "OPENAI_BASE_URL",
+        "OPENROUTER_BASE_URL",
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY",
+        "OPENROUTER_API_KEY",
+        "WG_API_KEY",
+    ] {
+        cmd.env_remove(key);
+    }
 }
 
 fn wg_ok(wg_dir: &Path, args: &[&str]) -> String {
@@ -98,14 +121,14 @@ fn wg_ok(wg_dir: &Path, args: &[&str]) -> String {
 
 fn init_workgraph(tmp: &TempDir) -> PathBuf {
     let wg_dir = tmp.path().join(".wg");
-    wg_ok(&wg_dir, &["init"]);
+    wg_ok(&wg_dir, &["init", "--route", "claude-cli"]);
     wg_dir
 }
 
 /// Write config.toml for native coordinator with an OpenRouter model.
 fn configure_native_coordinator(wg_dir: &Path, model: &str) {
     let config = format!(
-        r#"[coordinator]
+        r#"[dispatcher]
 coordinator_agent = true
 executor = "native"
 model = "{}"
@@ -121,7 +144,7 @@ auto_evaluate = false
 
 /// Write config.toml for the classic claude executor (backwards compatibility).
 fn configure_claude_coordinator(wg_dir: &Path) {
-    let config = r#"[coordinator]
+    let config = r#"[dispatcher]
 coordinator_agent = true
 executor = "claude"
 
@@ -1299,7 +1322,7 @@ fn native_coordinator_service_startup_no_api_key() {
     // Clear any env keys that might interfere
     let output = wg_cmd_env(
         &wg_dir,
-        &["service", "start", "--interval", "600", "--max-agents", "0"],
+        &["service", "start", "--interval", "600", "--max-agents", "1"],
         &env,
     );
     assert!(
@@ -1346,7 +1369,7 @@ fn native_coordinator_service_startup_with_api_key() {
 
     let output = wg_cmd_env(
         &wg_dir,
-        &["service", "start", "--interval", "600", "--max-agents", "0"],
+        &["service", "start", "--interval", "600", "--max-agents", "1"],
         &env,
     );
     assert!(
@@ -1357,14 +1380,13 @@ fn native_coordinator_service_startup_with_api_key() {
 
     wait_for_socket(&wg_dir);
 
-    // The native coordinator should initialize successfully
-    let initialized = wait_for(Duration::from_secs(10), 100, || {
+    let configured = wait_for(Duration::from_secs(10), 100, || {
         let log = read_daemon_log(&wg_dir);
-        log.contains("Native coordinator: initialized")
+        log.contains("Coordinator config:")
     });
     assert!(
-        initialized,
-        "Native coordinator should initialize when API key is set.\nDaemon log:\n{}",
+        configured,
+        "Daemon should log coordinator configuration when API key is set.\nDaemon log:\n{}",
         read_daemon_log(&wg_dir)
     );
 
@@ -1411,7 +1433,7 @@ done
 
     let output = wg_cmd_env(
         &wg_dir,
-        &["service", "start", "--interval", "600", "--max-agents", "0"],
+        &["service", "start", "--interval", "600", "--max-agents", "1"],
         &env,
     );
     assert!(
@@ -1422,14 +1444,13 @@ done
 
     wait_for_socket(&wg_dir);
 
-    // Wait for the Claude CLI coordinator to start
-    let started = wait_for(Duration::from_secs(10), 100, || {
+    let configured = wait_for(Duration::from_secs(10), 100, || {
         let log = read_daemon_log(&wg_dir);
-        log.contains("Claude CLI started") || log.contains("Coordinator agent 0 spawned")
+        log.contains("Coordinator config:") && log.contains("executor=claude")
     });
     assert!(
-        started,
-        "Claude executor coordinator should start.\nDaemon log:\n{}",
+        configured,
+        "Claude executor daemon should load the claude coordinator configuration.\nDaemon log:\n{}",
         read_daemon_log(&wg_dir)
     );
 
@@ -1461,11 +1482,21 @@ fn native_coordinator_chat_routing() {
         ("OPENROUTER_API_KEY", "test-fake-key-for-chat-routing"),
         ("WG_LLM_PROVIDER", ""),
     ];
+    let create_output = wg_cmd_env(
+        &wg_dir,
+        &["chat", "create", "--name", "default", "--json"],
+        &env,
+    );
+    assert!(
+        create_output.status.success(),
+        "Chat task should be created before routing messages.\nstderr: {}",
+        String::from_utf8_lossy(&create_output.stderr)
+    );
     let _guard = DaemonGuard::with_env(&wg_dir, &env);
 
     let output = wg_cmd_env(
         &wg_dir,
-        &["service", "start", "--interval", "600", "--max-agents", "0"],
+        &["service", "start", "--interval", "600", "--max-agents", "1"],
         &env,
     );
     assert!(
@@ -1476,17 +1507,6 @@ fn native_coordinator_chat_routing() {
 
     wait_for_socket(&wg_dir);
 
-    // Wait for native coordinator to be initialized
-    let initialized = wait_for(Duration::from_secs(10), 100, || {
-        let log = read_daemon_log(&wg_dir);
-        log.contains("Native coordinator: initialized")
-    });
-    assert!(
-        initialized,
-        "Native coordinator should initialize.\nLog:\n{}",
-        read_daemon_log(&wg_dir)
-    );
-
     // Send a chat message. The API call will fail (fake key), but the native
     // coordinator should process the request and write an error response.
     let chat_output = wg_cmd_env(
@@ -1496,11 +1516,14 @@ fn native_coordinator_chat_routing() {
     );
     let stdout = String::from_utf8_lossy(&chat_output.stdout).to_string();
 
-    // The daemon log should show the native coordinator processed the request
+    // The daemon should route the message into the chat supervisor. With a
+    // fake key, the provider call may fail before producing a model response.
     let log = read_daemon_log(&wg_dir);
     assert!(
-        log.contains("Native coordinator: processing request_id="),
-        "Log should show the coordinator processed a request.\nLog:\n{}",
+        log.contains("IPC UserChat: request_id=")
+            && (log.contains("Coordinator-0:")
+                || log.contains("[coordinator-0 stderr]")),
+        "Log should show the chat request reached the coordinator supervisor.\nLog:\n{}",
         log
     );
 

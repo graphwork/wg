@@ -60,28 +60,19 @@ impl Bundle {
         }
     }
 
-    /// Built-in "bare" bundle: only workgraph CLI tools.
+    /// Built-in "bare" bundle: only bash, for minimal wg CLI task management.
     pub fn bare() -> Self {
         Bundle {
             name: "bare".to_string(),
-            description: "Minimal wg-only agent for synthesis and triage tasks.".to_string(),
-            tools: vec![
-                "wg_show".to_string(),
-                "wg_list".to_string(),
-                "wg_add".to_string(),
-                "wg_done".to_string(),
-                "wg_fail".to_string(),
-                "wg_log".to_string(),
-                "wg_artifact".to_string(),
-            ],
+            description: "Minimal bash-only agent for synthesis and triage tasks.".to_string(),
+            tools: vec!["bash".to_string()],
             context_scope: "task".to_string(),
-            system_prompt_suffix:
-                "You are a lightweight agent. Use only wg tools to inspect and manage tasks."
-                    .to_string(),
+            system_prompt_suffix: "You are a lightweight agent. Use bash to run wg CLI commands."
+                .to_string(),
         }
     }
 
-    /// Built-in "research" bundle: read-only file access + wg tools + bg + web (no delegate).
+    /// Built-in "research" bundle: read-only file access + bash + bg + web (no delegate).
     pub fn research() -> Self {
         Bundle {
             name: "research".to_string(),
@@ -95,13 +86,6 @@ impl Bundle {
                 "bg".to_string(),
                 "web_search".to_string(),
                 "web_fetch".to_string(),
-                "wg_show".to_string(),
-                "wg_list".to_string(),
-                "wg_add".to_string(),
-                "wg_done".to_string(),
-                "wg_fail".to_string(),
-                "wg_log".to_string(),
-                "wg_artifact".to_string(),
             ],
             context_scope: "graph".to_string(),
             system_prompt_suffix: "You are a research agent. Report findings, do not modify files."
@@ -109,22 +93,12 @@ impl Bundle {
         }
     }
 
-    /// Built-in "shell" bundle: bash + bg + wg tools only.
+    /// Built-in "shell" bundle: bash + bg only.
     pub fn shell() -> Self {
         Bundle {
             name: "shell".to_string(),
             description: "Shell executor agent with bash and background tasks.".to_string(),
-            tools: vec![
-                "bash".to_string(),
-                "bg".to_string(),
-                "wg_show".to_string(),
-                "wg_list".to_string(),
-                "wg_add".to_string(),
-                "wg_done".to_string(),
-                "wg_fail".to_string(),
-                "wg_log".to_string(),
-                "wg_artifact".to_string(),
-            ],
+            tools: vec!["bash".to_string(), "bg".to_string()],
             context_scope: "task".to_string(),
             system_prompt_suffix: "You are a shell agent. Use bash and bg for task execution."
                 .to_string(),
@@ -150,9 +124,9 @@ impl Bundle {
 /// 2. Fall back to built-in defaults.
 ///
 /// Exec mode → bundle mapping:
-/// - "shell" → shell bundle (bash + bg + wg)
-/// - "bare"  → bare bundle (wg tools only)
-/// - "light" → research bundle (read-only + bg + web + wg)
+/// - "shell" → shell bundle (bash + bg)
+/// - "bare"  → bare bundle (bash only)
+/// - "light" → research bundle (read-only + bash + bg + web)
 /// - "full"  → implementer bundle (all tools)
 pub fn resolve_bundle(exec_mode: &str, workgraph_dir: &Path) -> Option<Bundle> {
     let bundle_name = match exec_mode {
@@ -261,8 +235,7 @@ mod tests {
         let bundle = Bundle::bare();
         assert_eq!(bundle.name, "bare");
         assert!(!bundle.allows_all());
-        assert!(bundle.tools.contains(&"wg_show".to_string()));
-        assert!(bundle.tools.contains(&"wg_done".to_string()));
+        assert_eq!(bundle.tools, vec!["bash".to_string()]);
         assert!(!bundle.tools.contains(&"read_file".to_string()));
     }
 
@@ -273,7 +246,7 @@ mod tests {
         assert!(!bundle.allows_all());
         assert!(bundle.tools.contains(&"read_file".to_string()));
         assert!(bundle.tools.contains(&"grep".to_string()));
-        assert!(bundle.tools.contains(&"wg_show".to_string()));
+        assert!(bundle.tools.contains(&"bash".to_string()));
         assert!(!bundle.tools.contains(&"write_file".to_string()));
     }
 
@@ -327,7 +300,7 @@ mod tests {
         let content = r#"
 name = "custom"
 description = "Custom test bundle"
-tools = ["read_file", "wg_show"]
+tools = ["read_file", "bash"]
 context_scope = "task"
 system_prompt_suffix = "You are a custom agent."
 "#;
@@ -335,7 +308,7 @@ system_prompt_suffix = "You are a custom agent."
 
         let bundle = Bundle::load(&bundles_dir.join("custom.toml")).unwrap();
         assert_eq!(bundle.name, "custom");
-        assert_eq!(bundle.tools, vec!["read_file", "wg_show"]);
+        assert_eq!(bundle.tools, vec!["read_file", "bash"]);
         assert_eq!(bundle.context_scope, "task");
         assert_eq!(bundle.system_prompt_suffix, "You are a custom agent.");
     }
@@ -384,13 +357,13 @@ context_scope = "graph"
         // Write custom content to one file
         std::fs::write(
             tmp.path().join("bundles/bare.toml"),
-            "name = \"bare\"\ntools = [\"wg_done\"]\n",
+            "name = \"bare\"\ntools = [\"bash\"]\n",
         )
         .unwrap();
         // Second call should not overwrite
         ensure_default_bundles(tmp.path()).unwrap();
         let bare = Bundle::load(&tmp.path().join("bundles/bare.toml")).unwrap();
-        assert_eq!(bare.tools, vec!["wg_done"]); // Custom content preserved
+        assert_eq!(bare.tools, vec!["bash"]); // Custom content preserved
     }
 
     #[test]
@@ -404,14 +377,8 @@ context_scope = "graph"
         let filtered = bundle.filter_registry(registry);
         let defs_after = filtered.definitions().len();
         assert!(defs_after < defs_before);
-        // Should only have wg tools
-        for def in filtered.definitions() {
-            assert!(
-                def.name.starts_with("wg_"),
-                "Expected wg tool, got: {}",
-                def.name
-            );
-        }
+        assert_eq!(filtered.definitions().len(), 1);
+        assert_eq!(filtered.definitions()[0].name, "bash");
     }
 
     #[test]

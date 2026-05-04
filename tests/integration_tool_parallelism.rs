@@ -179,14 +179,6 @@ async fn test_tool_parallel_read_only_classification() {
     );
     assert!(registry.is_read_only("glob"), "glob should be read-only");
     assert!(registry.is_read_only("grep"), "grep should be read-only");
-    assert!(
-        registry.is_read_only("wg_show"),
-        "wg_show should be read-only"
-    );
-    assert!(
-        registry.is_read_only("wg_list"),
-        "wg_list should be read-only"
-    );
 
     // Mutating tools
     assert!(
@@ -198,26 +190,6 @@ async fn test_tool_parallel_read_only_classification() {
         "edit_file should be mutating"
     );
     assert!(!registry.is_read_only("bash"), "bash should be mutating");
-    assert!(
-        !registry.is_read_only("wg_add"),
-        "wg_add should be mutating"
-    );
-    assert!(
-        !registry.is_read_only("wg_done"),
-        "wg_done should be mutating"
-    );
-    assert!(
-        !registry.is_read_only("wg_fail"),
-        "wg_fail should be mutating"
-    );
-    assert!(
-        !registry.is_read_only("wg_log"),
-        "wg_log should be mutating"
-    );
-    assert!(
-        !registry.is_read_only("wg_artifact"),
-        "wg_artifact should be mutating"
-    );
 
     // Unknown tools default to mutating (conservative)
     assert!(

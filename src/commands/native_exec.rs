@@ -214,9 +214,9 @@ pub fn run(
     let rt = tokio::runtime::Runtime::new().context("Failed to create tokio runtime")?;
     let result = rt.block_on(agent.run(&format!(
         "You are working on task '{}'. Complete the task as described in your system prompt. \
-         When done, call wg_done with task_id '{}'. If you genuinely cannot complete the \
-         task, call wg_fail with what you tried and what blocked you.",
-        task_id, task_id
+         When done, run `wg done {}` with the bash tool. If you genuinely cannot complete the \
+         task, run `wg fail {} --reason <what you tried and what blocked you>` with bash.",
+        task_id, task_id, task_id
     )))?;
 
     eprintln!(

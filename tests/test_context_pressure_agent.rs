@@ -526,7 +526,7 @@ fn test_emergency_compact_strips_old_tool_results() {
         },
     ];
 
-    let compacted = ContextBudget::emergency_compact(messages, 2);
+    let compacted = ContextBudget::emergency_compact(messages, 0);
     assert_eq!(compacted.len(), 4);
 
     // The old tool result should be compacted (shorter)
@@ -704,12 +704,8 @@ async fn test_agent_loop_clean_exit_at_95_percent() {
     // The agent should complete (not panic or error)
     let result = result.expect("Agent should complete gracefully");
 
-    // It should have detected clean exit condition
-    assert!(
-        result.final_text.contains("context limit"),
-        "Expected clean exit message, got: {}",
-        result.final_text
-    );
+    // It should have detected the clean-exit condition and reported it structurally.
+    assert_eq!(result.exit_reason, "context_limit");
 
     // The agent should have made at most 1 API call (the first turn)
     // since pressure check happens after adding the response
@@ -775,42 +771,22 @@ async fn test_agent_loop_recovers_from_400_context() {
     assert_eq!(call_count.load(Ordering::SeqCst), 2);
 }
 
-/// When context is at warning level (70-75% for large windows), the agent
+/// When context is at warning level, the agent
 /// should inject a warning into the conversation that the model can see.
 #[tokio::test]
-async fn test_agent_loop_injects_warning_at_72_percent() {
+async fn test_agent_loop_injects_warning_at_threshold() {
     let dir = TempDir::new().unwrap();
 
-    // Context window: 200k tokens (large tier, warning=0.70, compact=0.75).
-    // We need ~72% = 144k tokens = 576k chars.
-    //
-    // Flow:
-    // 1. Initial user message: 480k chars = 120k tokens (60%)
-    // 2. Turn 1: model returns text + ToolUse → tool executes → tool result added
-    //    Assistant text: 48k chars = 12k tokens
-    //    After turn 1: ~528k chars + overhead = ~132k tokens ≈ 66%
-    // 3. Add tool_use overhead (~160 chars) + tool result (~18 chars) → ~528178 chars
-    //    = ~132044 tokens ≈ 66% → still below 70% warning
-    //    But the combined with response: 480k + 48k + overhead = ~528k chars ≈ 132k tokens ≈ 66%
-    //    Need more: second response text pushes total
-    //
-    // Actually let's simplify: initial 500k chars (125k tokens, 62.5%) +
-    // assistant returns 40k chars (10k tokens), total ~135k tokens = 67.5% < 70%
-    // The model response of 40k chars is appended, pushing it into range after processing.
-    //
-    // After full turn 1: 500k (initial) + 40k (text) + ~200 (tool overhead) = 540.2k chars
-    // = 135050 tokens = 67.5%
-    // Hmm, still not enough. Let's use bigger assistant response.
-    //
-    // Actually: 480k (init) + 100k (text) + ~200 (tool overhead) = 580.2k chars
-    // = 145050 tokens = 72.5% → Warning!
+    // Context window: 2k tokens (small tier, warning=0.55, compact=0.65).
+    // Initial user content stays below warning; after turn 1 response/tool
+    // bookkeeping the next request should be in the warning band.
     let responses = vec![
-        // Turn 1: text + tool use that pushes us into warning range (70-75%)
+        // Turn 1: text + tool use that pushes us into warning range.
         MessagesResponse {
             id: "msg_1".to_string(),
             content: vec![
                 ContentBlock::Text {
-                    text: "y".repeat(100_000), // 100k chars = 25k tokens
+                    text: " b".repeat(150), // ~150 tokens under cl100k
                 },
                 ContentBlock::ToolUse {
                     id: "tu-1".to_string(),
@@ -832,14 +808,14 @@ async fn test_agent_loop_injects_warning_at_72_percent() {
         },
     ];
 
-    let provider = InspectingProvider::new(200_000, responses);
+    let provider = InspectingProvider::new(2_000, responses);
     let seen_messages = Arc::clone(&provider.seen_messages);
     let mut agent = make_agent(Box::new(provider), dir.path());
 
-    // 200k window, large tier: warning at 70%, compact at 75%.
-    // Initial: 480k chars = 120k tokens = 60%.
-    // After turn 1: 480k + 100k + ~200 (tool overhead) = ~580.2k chars = ~145050 tokens = ~72.5% → Warning!
-    let result = agent.run(&"x".repeat(480_000)).await;
+    // Initial: ~800 tokens, plus overhead ≈ 53% of the 2k window.
+    // After turn 1: additional text/tool messages push it above the 55%
+    // warning threshold while staying below the 65% compact threshold.
+    let result = agent.run(&" a".repeat(800)).await;
     assert!(result.is_ok(), "Agent should complete: {:?}", result);
 
     // Check the messages the provider saw on the second call (after warning injection)

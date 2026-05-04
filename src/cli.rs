@@ -2335,9 +2335,9 @@ pub enum Commands {
         /// Load an agency role/skill by name to augment the session.
         /// Searches `.wg/agency/primitives/components/` for a
         /// matching component and appends its content to the system
-        /// prompt. Use "coordinator" to enable workgraph management
-        /// tools (wg_add, wg_done) which are otherwise stripped in
-        /// interactive mode.
+        /// prompt. Use "coordinator" to load the coordinator prompt;
+        /// workgraph management still happens through `wg` CLI
+        /// commands run with bash.
         #[arg(long)]
         role: Option<String>,
 
@@ -2352,7 +2352,7 @@ pub enum Commands {
         /// Primary use case: this is how `wg nex` serves as the
         /// coordinator (spawned by the service / a graph task with a
         /// chat tether to the TUI). Pair with `--role coordinator`
-        /// for the wg_* mutation tools.
+        /// for the coordinator prompt.
         #[arg(long = "chat-id")]
         chat_id: Option<u32>,
 

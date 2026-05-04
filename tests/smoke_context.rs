@@ -544,7 +544,7 @@ fn smoke_context_management_openrouter() {
     let tmp = TempDir::new().unwrap();
     let wg_dir = tmp.path().join(".wg");
 
-    wg_ok(&wg_dir, &["init"]);
+    wg_ok(&wg_dir, &["init", "--route", "claude-cli"]);
     wg_ok(&wg_dir, &["agency", "init"]);
 
     // Configure OpenRouter endpoint

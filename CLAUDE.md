@@ -35,6 +35,8 @@ both together.
 
 **At the start of each session, run `wg quickstart` in your terminal to orient yourself.**
 Use `wg service start` to dispatch work — do not manually claim tasks.
+Agents should run `wg` commands through bash/the terminal; there are no `wg_*`
+tool calls.
 
 ## Development
 

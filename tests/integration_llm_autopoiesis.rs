@@ -109,7 +109,7 @@ mod llm_autopoiesis {
     /// commands find the test binary and the workgraph.
     fn setup_llm_workgraph(tmp_root: &Path) -> PathBuf {
         let wg_dir = tmp_root.join(".wg");
-        wg_ok(&wg_dir, &["init"]);
+        wg_ok(&wg_dir, &["init", "--route", "claude-cli"]);
 
         let wg_bin_dir = wg_binary().parent().unwrap().to_string_lossy().to_string();
         let path_with_test_binary = format!(
