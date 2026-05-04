@@ -539,22 +539,22 @@ fn test_content_hash_motivation_different_descriptions() {
     );
 }
 
-/// Different tradeoffs produce different hashes.
+/// Tradeoff extension fields no longer affect the agency-compatible primitive hash.
 #[test]
-fn test_content_hash_motivation_different_tradeoffs() {
+fn test_content_hash_motivation_ignores_tradeoff_extensions() {
     let h1 = agency::content_hash_tradeoff(&["speed".to_string()], &[], "desc");
     let h2 = agency::content_hash_tradeoff(&["quality".to_string()], &[], "desc");
-    assert_ne!(h1, h2);
+    assert_eq!(h1, h2);
 }
 
-/// Swapping acceptable and unacceptable tradeoffs produces different hashes.
+/// Swapping acceptable and unacceptable tradeoffs preserves the agency-compatible hash.
 #[test]
-fn test_content_hash_motivation_swapped_tradeoff_categories() {
+fn test_content_hash_motivation_swapped_tradeoff_categories_ignored() {
     let h1 = agency::content_hash_tradeoff(&["X".to_string()], &["Y".to_string()], "desc");
     let h2 = agency::content_hash_tradeoff(&["Y".to_string()], &["X".to_string()], "desc");
-    assert_ne!(
+    assert_eq!(
         h1, h2,
-        "Swapping tradeoff categories must produce different hashes"
+        "Agency-compatible primitive hashes use only the description"
     );
 }
 

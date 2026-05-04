@@ -309,9 +309,9 @@ mod tests {
         let h1 = agency::content_hash_tradeoff(&["Slow".into()], &["Broken".into()], "desc");
         let h2 = agency::content_hash_tradeoff(&["Slow".into()], &["Broken".into()], "desc");
         assert_eq!(h1, h2);
-        // Different content produces different hash
+        // Agency-compatible primitive hashes ignore local tradeoff extension fields.
         let h3 = agency::content_hash_tradeoff(&["Fast".into()], &["Broken".into()], "desc");
-        assert_ne!(h1, h3);
+        assert_eq!(h1, h3);
     }
 
     #[test]

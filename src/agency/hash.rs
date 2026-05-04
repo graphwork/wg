@@ -11,67 +11,39 @@ pub fn short_hash(full_hash: &str) -> &str {
     &full_hash[..full_hash.len().min(SHORT_HASH_LEN)]
 }
 
+/// Compute the Agency-compatible SHA-256 hash for a primitive description.
+///
+/// Agency v1.2.4 hashes the raw description string bytes directly. This is
+/// intentionally not a serialized YAML envelope.
+pub fn description_hash(description: &str) -> String {
+    let digest = Sha256::digest(description.as_bytes());
+    format!("{:x}", digest)
+}
+
 /// Compute the SHA-256 content hash for a RoleComponent.
-/// Hashed fields: description, category, content.
+/// Hashed fields: description.
 pub fn content_hash_component(
     description: &str,
-    category: &ComponentCategory,
-    content: &ContentRef,
+    _category: &ComponentCategory,
+    _content: &ContentRef,
 ) -> String {
-    #[derive(Serialize)]
-    struct Input<'a> {
-        description: &'a str,
-        category: &'a ComponentCategory,
-        content: &'a ContentRef,
-    }
-    let input = Input {
-        description,
-        category,
-        content,
-    };
-    let yaml = serde_yaml::to_string(&input).expect("serialization of hash input cannot fail");
-    let digest = Sha256::digest(yaml.as_bytes());
-    format!("{:x}", digest)
+    description_hash(description)
 }
 
 /// Compute the SHA-256 content hash for a DesiredOutcome.
-/// Hashed fields: description, success_criteria.
-pub fn content_hash_outcome(description: &str, success_criteria: &[String]) -> String {
-    #[derive(Serialize)]
-    struct Input<'a> {
-        description: &'a str,
-        success_criteria: &'a [String],
-    }
-    let input = Input {
-        description,
-        success_criteria,
-    };
-    let yaml = serde_yaml::to_string(&input).expect("serialization of hash input cannot fail");
-    let digest = Sha256::digest(yaml.as_bytes());
-    format!("{:x}", digest)
+/// Hashed fields: description.
+pub fn content_hash_outcome(description: &str, _success_criteria: &[String]) -> String {
+    description_hash(description)
 }
 
 /// Compute the SHA-256 content hash for a TradeoffConfig (formerly Motivation).
-/// Hashed fields: description, acceptable_tradeoffs, unacceptable_tradeoffs.
+/// Hashed fields: description.
 pub fn content_hash_tradeoff(
-    acceptable_tradeoffs: &[String],
-    unacceptable_tradeoffs: &[String],
+    _acceptable_tradeoffs: &[String],
+    _unacceptable_tradeoffs: &[String],
     description: &str,
 ) -> String {
-    #[derive(Serialize)]
-    struct Input<'a> {
-        acceptable_tradeoffs: &'a [String],
-        unacceptable_tradeoffs: &'a [String],
-        description: &'a str,
-    }
-    let input = Input {
-        acceptable_tradeoffs,
-        unacceptable_tradeoffs,
-        description,
-    };
-    let yaml = serde_yaml::to_string(&input).expect("serialization of hash input cannot fail");
-    let digest = Sha256::digest(yaml.as_bytes());
-    format!("{:x}", digest)
+    description_hash(description)
 }
 
 /// Compute the SHA-256 content hash for a Role composition.

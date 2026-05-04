@@ -1889,17 +1889,17 @@ performance:
     }
 
     #[test]
-    fn test_build_tradeoff_different_acceptable_different_id() {
+    fn test_build_tradeoff_different_acceptable_same_id() {
         let m1 = build_tradeoff("M", "D", vec!["x".into()], vec![]);
         let m2 = build_tradeoff("M", "D", vec!["y".into()], vec![]);
-        assert_ne!(m1.id, m2.id);
+        assert_eq!(m1.id, m2.id);
     }
 
     #[test]
-    fn test_build_tradeoff_different_unacceptable_different_id() {
+    fn test_build_tradeoff_different_unacceptable_same_id() {
         let m1 = build_tradeoff("M", "D", vec![], vec!["x".into()]);
         let m2 = build_tradeoff("M", "D", vec![], vec!["y".into()]);
-        assert_ne!(m1.id, m2.id);
+        assert_eq!(m1.id, m2.id);
     }
 
     #[test]

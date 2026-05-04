@@ -7,9 +7,12 @@ use workgraph::agency::{
     self, AccessControl, Agent, ComponentCategory, ContentRef, DesiredOutcome, Lineage,
     PerformanceRecord, Role, RoleComponent, TradeoffConfig, content_hash_agent,
     content_hash_component, content_hash_outcome, content_hash_role, content_hash_tradeoff,
+    load_all_agents, load_all_components, load_all_outcomes, load_all_roles, load_all_tradeoffs,
     save_agent, save_component, save_outcome, save_role, save_tradeoff, short_hash,
 };
 use workgraph::graph::TrustLevel;
+
+const HASH_CUTOVER_SCHEMA_VERSION: &str = "agency-hash-v1.2.4-description-only";
 
 // ---------------------------------------------------------------------------
 // Old-format structs for deserialization
@@ -575,6 +578,365 @@ fn verify_migration(agency_dir: &Path) -> Result<Vec<String>> {
 }
 
 // ---------------------------------------------------------------------------
+// Primitive hash cutover migration
+// ---------------------------------------------------------------------------
+
+#[derive(Default)]
+struct RehashReport {
+    components_rehashed: usize,
+    outcomes_rehashed: usize,
+    tradeoffs_rehashed: usize,
+    roles_rehashed: usize,
+    agents_rehashed: usize,
+    references_rewritten: usize,
+}
+
+impl RehashReport {
+    fn total(&self) -> usize {
+        self.components_rehashed
+            + self.outcomes_rehashed
+            + self.tradeoffs_rehashed
+            + self.roles_rehashed
+            + self.agents_rehashed
+            + self.references_rewritten
+    }
+}
+
+fn ensure_unique_hash(
+    kind: &str,
+    new_id: &str,
+    name: &str,
+    seen: &mut HashMap<String, String>,
+) -> Result<()> {
+    if let Some(existing) = seen.insert(new_id.to_string(), name.to_string()) {
+        anyhow::bail!(
+            "{} description-hash collision: '{}' and '{}' both map to {}",
+            kind,
+            existing,
+            name,
+            short_hash(new_id)
+        );
+    }
+    Ok(())
+}
+
+fn rewrite_ids(ids: &mut [String], id_map: &HashMap<String, String>) -> usize {
+    let mut changed = 0;
+    for id in ids {
+        if let Some(new_id) = id_map.get(id) {
+            *id = new_id.clone();
+            changed += 1;
+        }
+    }
+    changed
+}
+
+fn rewrite_lineage(lineage: &mut Lineage, id_map: &HashMap<String, String>) -> usize {
+    rewrite_ids(&mut lineage.parent_ids, id_map)
+}
+
+fn rewrite_performance(
+    performance: &mut PerformanceRecord,
+    id_map: &HashMap<String, String>,
+) -> usize {
+    let mut changed = 0;
+    for evaluation in &mut performance.evaluations {
+        if let Some(new_id) = id_map.get(&evaluation.context_id) {
+            evaluation.context_id = new_id.clone();
+            changed += 1;
+        }
+    }
+    changed
+}
+
+fn rewrite_parent_content_hash(
+    metadata: &mut HashMap<String, String>,
+    id_map: &HashMap<String, String>,
+) -> usize {
+    if let Some(parent) = metadata.get_mut("parent_content_hash")
+        && let Some(new_id) = id_map.get(parent)
+    {
+        *parent = new_id.clone();
+        return 1;
+    }
+    0
+}
+
+fn remove_old_yaml(dir: &Path, old_id: &str, new_id: &str) -> Result<()> {
+    if old_id != new_id {
+        let old_path = dir.join(format!("{}.yaml", old_id));
+        if old_path.exists() {
+            fs::remove_file(&old_path)
+                .with_context(|| format!("Failed to remove old YAML {}", old_path.display()))?;
+        }
+    }
+    Ok(())
+}
+
+fn rehash_existing_agency(agency_dir: &Path, dry_run: bool) -> Result<RehashReport> {
+    let components_dir = agency_dir.join("primitives/components");
+    let outcomes_dir = agency_dir.join("primitives/outcomes");
+    let tradeoffs_dir = agency_dir.join("primitives/tradeoffs");
+    let roles_dir = agency_dir.join("cache/roles");
+    let agents_dir = agency_dir.join("cache/agents");
+
+    let mut components: Vec<(String, RoleComponent)> = load_all_components(&components_dir)
+        .with_context(|| {
+            format!(
+                "Failed to load components from {}",
+                components_dir.display()
+            )
+        })?
+        .into_iter()
+        .map(|c| (c.id.clone(), c))
+        .collect();
+    let mut outcomes: Vec<(String, DesiredOutcome)> = load_all_outcomes(&outcomes_dir)
+        .with_context(|| format!("Failed to load outcomes from {}", outcomes_dir.display()))?
+        .into_iter()
+        .map(|o| (o.id.clone(), o))
+        .collect();
+    let mut tradeoffs: Vec<(String, TradeoffConfig)> = load_all_tradeoffs(&tradeoffs_dir)
+        .with_context(|| format!("Failed to load tradeoffs from {}", tradeoffs_dir.display()))?
+        .into_iter()
+        .map(|t| (t.id.clone(), t))
+        .collect();
+    let mut roles: Vec<(String, Role)> = load_all_roles(&roles_dir)
+        .with_context(|| format!("Failed to load roles from {}", roles_dir.display()))?
+        .into_iter()
+        .map(|r| (r.id.clone(), r))
+        .collect();
+    let mut agents: Vec<(String, Agent)> = load_all_agents(&agents_dir)
+        .with_context(|| format!("Failed to load agents from {}", agents_dir.display()))?
+        .into_iter()
+        .map(|a| (a.id.clone(), a))
+        .collect();
+
+    let mut report = RehashReport::default();
+    let mut component_id_map = HashMap::new();
+    let mut outcome_id_map = HashMap::new();
+    let mut tradeoff_id_map = HashMap::new();
+    let mut role_id_map = HashMap::new();
+    let mut agent_id_map = HashMap::new();
+
+    let mut seen = HashMap::new();
+    for (old_id, component) in &mut components {
+        let new_id = content_hash_component(
+            &component.description,
+            &component.category,
+            &component.content,
+        );
+        ensure_unique_hash("component", &new_id, &component.name, &mut seen)?;
+        if *old_id != new_id {
+            component_id_map.insert(old_id.clone(), new_id.clone());
+            component.id = new_id;
+            report.components_rehashed += 1;
+        }
+    }
+
+    let mut seen = HashMap::new();
+    for (old_id, outcome) in &mut outcomes {
+        let new_id = content_hash_outcome(&outcome.description, &outcome.success_criteria);
+        ensure_unique_hash("outcome", &new_id, &outcome.name, &mut seen)?;
+        if *old_id != new_id {
+            outcome_id_map.insert(old_id.clone(), new_id.clone());
+            outcome.id = new_id;
+            report.outcomes_rehashed += 1;
+        }
+    }
+
+    let mut seen = HashMap::new();
+    for (old_id, tradeoff) in &mut tradeoffs {
+        let new_id = content_hash_tradeoff(
+            &tradeoff.acceptable_tradeoffs,
+            &tradeoff.unacceptable_tradeoffs,
+            &tradeoff.description,
+        );
+        ensure_unique_hash("tradeoff", &new_id, &tradeoff.name, &mut seen)?;
+        if *old_id != new_id {
+            tradeoff_id_map.insert(old_id.clone(), new_id.clone());
+            tradeoff.id = new_id;
+            report.tradeoffs_rehashed += 1;
+        }
+    }
+
+    for (_, component) in &mut components {
+        report.references_rewritten += rewrite_lineage(&mut component.lineage, &component_id_map);
+        report.references_rewritten +=
+            rewrite_parent_content_hash(&mut component.metadata, &component_id_map);
+    }
+    for (_, outcome) in &mut outcomes {
+        report.references_rewritten += rewrite_lineage(&mut outcome.lineage, &outcome_id_map);
+        report.references_rewritten +=
+            rewrite_parent_content_hash(&mut outcome.metadata, &outcome_id_map);
+    }
+    for (_, tradeoff) in &mut tradeoffs {
+        report.references_rewritten += rewrite_lineage(&mut tradeoff.lineage, &tradeoff_id_map);
+        report.references_rewritten +=
+            rewrite_parent_content_hash(&mut tradeoff.metadata, &tradeoff_id_map);
+    }
+
+    let mut seen = HashMap::new();
+    for (old_id, role) in &mut roles {
+        report.references_rewritten += rewrite_ids(&mut role.component_ids, &component_id_map);
+        if let Some(new_outcome_id) = outcome_id_map.get(&role.outcome_id) {
+            role.outcome_id = new_outcome_id.clone();
+            report.references_rewritten += 1;
+        }
+        let new_id = content_hash_role(&role.component_ids, &role.outcome_id);
+        ensure_unique_hash("role", &new_id, &role.name, &mut seen)?;
+        if *old_id != new_id {
+            role_id_map.insert(old_id.clone(), new_id.clone());
+            role.id = new_id;
+            report.roles_rehashed += 1;
+        }
+    }
+
+    for (_, role) in &mut roles {
+        report.references_rewritten += rewrite_lineage(&mut role.lineage, &role_id_map);
+    }
+
+    let mut seen = HashMap::new();
+    for (old_id, agent) in &mut agents {
+        if let Some(new_role_id) = role_id_map.get(&agent.role_id) {
+            agent.role_id = new_role_id.clone();
+            report.references_rewritten += 1;
+        }
+        if let Some(new_tradeoff_id) = tradeoff_id_map.get(&agent.tradeoff_id) {
+            agent.tradeoff_id = new_tradeoff_id.clone();
+            report.references_rewritten += 1;
+        }
+        let new_id = content_hash_agent(&agent.role_id, &agent.tradeoff_id);
+        ensure_unique_hash("agent", &new_id, &agent.name, &mut seen)?;
+        if *old_id != new_id {
+            agent_id_map.insert(old_id.clone(), new_id.clone());
+            agent.id = new_id;
+            report.agents_rehashed += 1;
+        }
+    }
+
+    for (_, agent) in &mut agents {
+        report.references_rewritten += rewrite_lineage(&mut agent.lineage, &agent_id_map);
+    }
+
+    let mut all_id_map = HashMap::new();
+    all_id_map.extend(component_id_map);
+    all_id_map.extend(outcome_id_map);
+    all_id_map.extend(tradeoff_id_map);
+    all_id_map.extend(role_id_map);
+    all_id_map.extend(agent_id_map);
+
+    for (_, component) in &mut components {
+        report.references_rewritten += rewrite_performance(&mut component.performance, &all_id_map);
+    }
+    for (_, outcome) in &mut outcomes {
+        report.references_rewritten += rewrite_performance(&mut outcome.performance, &all_id_map);
+    }
+    for (_, tradeoff) in &mut tradeoffs {
+        report.references_rewritten += rewrite_performance(&mut tradeoff.performance, &all_id_map);
+    }
+    for (_, role) in &mut roles {
+        report.references_rewritten += rewrite_performance(&mut role.performance, &all_id_map);
+    }
+    for (_, agent) in &mut agents {
+        report.references_rewritten += rewrite_performance(&mut agent.performance, &all_id_map);
+    }
+
+    if dry_run || report.total() == 0 {
+        return Ok(report);
+    }
+
+    for (old_id, component) in &components {
+        save_component(component, &components_dir)
+            .with_context(|| format!("Failed to save component {}", short_hash(&component.id)))?;
+        remove_old_yaml(&components_dir, old_id, &component.id)?;
+    }
+    for (old_id, outcome) in &outcomes {
+        save_outcome(outcome, &outcomes_dir)
+            .with_context(|| format!("Failed to save outcome {}", short_hash(&outcome.id)))?;
+        remove_old_yaml(&outcomes_dir, old_id, &outcome.id)?;
+    }
+    for (old_id, tradeoff) in &tradeoffs {
+        save_tradeoff(tradeoff, &tradeoffs_dir)
+            .with_context(|| format!("Failed to save tradeoff {}", short_hash(&tradeoff.id)))?;
+        remove_old_yaml(&tradeoffs_dir, old_id, &tradeoff.id)?;
+    }
+    for (old_id, role) in &roles {
+        save_role(role, &roles_dir)
+            .with_context(|| format!("Failed to save role {}", short_hash(&role.id)))?;
+        remove_old_yaml(&roles_dir, old_id, &role.id)?;
+    }
+    for (old_id, agent) in &agents {
+        save_agent(agent, &agents_dir)
+            .with_context(|| format!("Failed to save agent {}", short_hash(&agent.id)))?;
+        remove_old_yaml(&agents_dir, old_id, &agent.id)?;
+    }
+
+    Ok(report)
+}
+
+fn print_rehash_report(report: &RehashReport, dry_run: bool) {
+    if report.total() == 0 {
+        return;
+    }
+    if dry_run {
+        println!("\n[dry-run] Would rehash existing agency primitives:");
+    } else {
+        println!("\nPrimitive hash cutover complete:");
+    }
+    println!("  Components rehashed: {}", report.components_rehashed);
+    println!("  Outcomes rehashed:   {}", report.outcomes_rehashed);
+    println!("  Tradeoffs rehashed:  {}", report.tradeoffs_rehashed);
+    println!("  Roles rehashed:      {}", report.roles_rehashed);
+    println!("  Agents rehashed:     {}", report.agents_rehashed);
+    println!("  References rewritten: {}", report.references_rewritten);
+}
+
+fn mark_import_manifest_hash_cutover(agency_dir: &Path, dry_run: bool) -> Result<bool> {
+    let manifest_path = agency_dir.join("import-manifest.yaml");
+    if !manifest_path.exists() {
+        return Ok(false);
+    }
+
+    let contents = fs::read_to_string(&manifest_path)
+        .with_context(|| format!("Failed to read {}", manifest_path.display()))?;
+    let mut manifest: serde_yaml::Value = serde_yaml::from_str(&contents)
+        .with_context(|| format!("Failed to parse {}", manifest_path.display()))?;
+    let mapping = manifest.as_mapping_mut().ok_or_else(|| {
+        anyhow::anyhow!(
+            "Import manifest {} is not a YAML mapping",
+            manifest_path.display()
+        )
+    })?;
+
+    let key = serde_yaml::Value::String("schema_version".to_string());
+    let value = serde_yaml::Value::String(HASH_CUTOVER_SCHEMA_VERSION.to_string());
+    if mapping.get(&key) == Some(&value) {
+        return Ok(false);
+    }
+
+    mapping.insert(key, value);
+    if !dry_run {
+        fs::write(&manifest_path, serde_yaml::to_string(&manifest)?)
+            .with_context(|| format!("Failed to write {}", manifest_path.display()))?;
+    }
+    Ok(true)
+}
+
+fn print_manifest_cutover(dry_run: bool) {
+    if dry_run {
+        println!(
+            "  Import manifest schema_version would be set to {}",
+            HASH_CUTOVER_SCHEMA_VERSION
+        );
+    } else {
+        println!(
+            "  Import manifest schema_version set to {}",
+            HASH_CUTOVER_SCHEMA_VERSION
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Public entry point
 // ---------------------------------------------------------------------------
 
@@ -602,6 +964,32 @@ pub fn run(workgraph_dir: &Path, dry_run: bool) -> Result<()> {
         });
 
     if !has_old_roles && !has_old_motivations && !has_old_agents {
+        let rehash_report = rehash_existing_agency(&agency_dir, dry_run)?;
+        let manifest_changed = mark_import_manifest_hash_cutover(&agency_dir, dry_run)?;
+        if rehash_report.total() > 0 || manifest_changed {
+            print_rehash_report(&rehash_report, dry_run);
+            if manifest_changed {
+                print_manifest_cutover(dry_run);
+            }
+            if !dry_run {
+                let errors = verify_migration(&agency_dir)?;
+                if errors.is_empty() {
+                    println!(
+                        "\nVerification: ✓ all primitive references resolve, hashes are deterministic"
+                    );
+                } else {
+                    println!("\nVerification errors:");
+                    for e in &errors {
+                        println!("  ✗ {}", e);
+                    }
+                    anyhow::bail!(
+                        "Migration verification failed with {} error(s).",
+                        errors.len()
+                    );
+                }
+            }
+            return Ok(());
+        }
         println!("Nothing to migrate — no old-format agency data found.");
         println!(
             "  Looked for: {}/roles/, {}/motivations/, {}/agents/",
@@ -694,7 +1082,11 @@ pub fn run(workgraph_dir: &Path, dry_run: bool) -> Result<()> {
     // Step 3: Migrate agents -> cache agents (uses role_id_map and tradeoff_id_map)
     migrate_agents(&old_agents, &agency_dir, &mut report).context("Failed to migrate agents")?;
 
-    // Step 4: Verification
+    // Step 4: Rehash any pre-existing new-format primitives to the agency-compatible cutover.
+    let rehash_report = rehash_existing_agency(&agency_dir, false)?;
+    let manifest_changed = mark_import_manifest_hash_cutover(&agency_dir, false)?;
+
+    // Step 5: Verification
     let errors = verify_migration(&agency_dir)?;
 
     // Report
@@ -719,6 +1111,10 @@ pub fn run(workgraph_dir: &Path, dry_run: bool) -> Result<()> {
         "  Agents created:     {} (cache compositions, from {} old agents)",
         report.agents_created, report.old_agents_read
     );
+    print_rehash_report(&rehash_report, false);
+    if manifest_changed {
+        print_manifest_cutover(false);
+    }
 
     if !report.warnings.is_empty() {
         println!("\nWarnings:");
