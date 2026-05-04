@@ -42,6 +42,12 @@ pub fn build_component(
         id,
         name: name.into(),
         description,
+        quality: 100,
+        domain_specificity: 0,
+        domain: vec![],
+        scope: None,
+        origin_instance_id: None,
+        parent_content_hash: None,
         category,
         content,
         performance: PerformanceRecord::default(),
@@ -66,6 +72,12 @@ pub fn build_outcome(
         id,
         name: name.into(),
         description,
+        quality: 100,
+        domain_specificity: 0,
+        domain: vec![],
+        scope: None,
+        origin_instance_id: None,
+        parent_content_hash: None,
         success_criteria,
         performance: PerformanceRecord::default(),
         lineage: Lineage::default(),
@@ -91,6 +103,12 @@ pub fn build_tradeoff(
         id,
         name: name.into(),
         description,
+        quality: 100,
+        domain_specificity: 0,
+        domain: vec![],
+        scope: None,
+        origin_instance_id: None,
+        parent_content_hash: None,
         acceptable_tradeoffs,
         unacceptable_tradeoffs,
         performance: PerformanceRecord::default(),
@@ -938,6 +956,12 @@ pub(crate) fn crossover_tradeoffs(
         id,
         name: name.to_string(),
         description: description.to_string(),
+        quality: 100,
+        domain_specificity: 0,
+        domain: vec![],
+        scope: None,
+        origin_instance_id: None,
+        parent_content_hash: None,
         acceptable_tradeoffs: acceptable,
         unacceptable_tradeoffs: unacceptable,
         performance: PerformanceRecord::default(),
@@ -1274,7 +1298,7 @@ mod tests {
         let lineage = Lineage::mutation("parent-role", 2, "run-42");
         assert_eq!(lineage.parent_ids, vec!["parent-role"]);
         assert_eq!(lineage.generation, 3);
-        assert_eq!(lineage.created_by, "evolver-run-42");
+        assert_eq!(lineage.created_by, "evolver");
     }
 
     #[test]
@@ -1282,7 +1306,7 @@ mod tests {
         let lineage = Lineage::crossover(&["parent-a", "parent-b"], 5, "run-99");
         assert_eq!(lineage.parent_ids, vec!["parent-a", "parent-b"]);
         assert_eq!(lineage.generation, 6);
-        assert_eq!(lineage.created_by, "evolver-run-99");
+        assert_eq!(lineage.created_by, "evolver");
     }
 
     #[test]
@@ -1294,7 +1318,7 @@ mod tests {
         let loaded = load_role(&path).unwrap();
         assert_eq!(loaded.lineage.parent_ids, vec!["old-role"]);
         assert_eq!(loaded.lineage.generation, 2);
-        assert_eq!(loaded.lineage.created_by, "evolver-test-run");
+        assert_eq!(loaded.lineage.created_by, "evolver");
     }
 
     #[test]
@@ -1306,7 +1330,7 @@ mod tests {
         let loaded = load_tradeoff(&path).unwrap();
         assert_eq!(loaded.lineage.parent_ids, vec!["m-a", "m-b"]);
         assert_eq!(loaded.lineage.generation, 4);
-        assert_eq!(loaded.lineage.created_by, "evolver-xover-1");
+        assert_eq!(loaded.lineage.created_by, "evolver");
     }
 
     #[test]
@@ -1380,7 +1404,7 @@ performance:
         // Lineage tracks the parent
         assert_eq!(child.lineage.parent_ids, vec![parent.id.clone()]);
         assert_eq!(child.lineage.generation, parent.lineage.generation + 1);
-        assert_eq!(child.lineage.created_by, "evolver-evo-run-1");
+        assert_eq!(child.lineage.created_by, "evolver");
         // Performance starts fresh
         assert_eq!(child.performance.task_count, 0);
         assert!(child.performance.avg_score.is_none());
@@ -1473,7 +1497,7 @@ performance:
         assert!(child.lineage.parent_ids.contains(&parent_a.id));
         assert!(child.lineage.parent_ids.contains(&parent_b.id));
         assert_eq!(child.lineage.generation, 1); // max(0,0) + 1
-        assert_eq!(child.lineage.created_by, "evolver-xover-run");
+        assert_eq!(child.lineage.created_by, "evolver");
 
         // Name and description match what was passed in
         assert_eq!(child.name, "Careful-Fast Hybrid");

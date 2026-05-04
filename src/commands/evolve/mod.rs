@@ -413,6 +413,7 @@ pub fn run(
                     generation: 0,
                     created_by: format!("evolver-auto-pair-{}", actual_run_id),
                     created_at: Utc::now(),
+                    reframing_potential: None,
                 },
                 capabilities: vec![],
                 rate: None,
@@ -845,6 +846,12 @@ mod tests {
             id: "m1".into(),
             name: "Mot 1".into(),
             description: "Test motivation".into(),
+            quality: 100,
+            domain_specificity: 0,
+            domain: vec![],
+            scope: None,
+            origin_instance_id: None,
+            parent_content_hash: None,
             acceptable_tradeoffs: vec![],
             unacceptable_tradeoffs: vec![],
             performance: PerformanceRecord {
@@ -913,7 +920,7 @@ mod tests {
         assert_eq!(role.name, "New Role");
         assert_eq!(role.component_ids.len(), 2);
         assert_eq!(role.lineage.generation, 0);
-        assert!(role.lineage.created_by.contains("test-run"));
+        assert_eq!(role.lineage.created_by, "evolver");
     }
 
     #[test]
@@ -1322,7 +1329,7 @@ Let me know if you'd like me to adjust anything."#;
             vec!["Known vulnerabilities"]
         );
         assert_eq!(motivation.lineage.generation, 0);
-        assert!(motivation.lineage.created_by.contains("test-run"));
+        assert_eq!(motivation.lineage.created_by, "evolver");
         assert!(motivation.lineage.parent_ids.is_empty());
     }
 
@@ -1370,6 +1377,12 @@ Let me know if you'd like me to adjust anything."#;
             id: "parent-mot".into(),
             name: "Careful".into(),
             description: "Prioritizes reliability".into(),
+            quality: 100,
+            domain_specificity: 0,
+            domain: vec![],
+            scope: None,
+            origin_instance_id: None,
+            parent_content_hash: None,
             acceptable_tradeoffs: vec!["Slow".into()],
             unacceptable_tradeoffs: vec!["Untested code".into()],
             performance: PerformanceRecord {
@@ -1382,6 +1395,7 @@ Let me know if you'd like me to adjust anything."#;
                 generation: 0,
                 created_by: "human".into(),
                 created_at: chrono::Utc::now(),
+                reframing_potential: None,
             },
             access_control: AccessControl::default(),
             domain_tags: vec![],
@@ -1438,7 +1452,7 @@ Let me know if you'd like me to adjust anything."#;
         assert_eq!(mot.name, "Carefully Fast");
         assert_eq!(mot.lineage.generation, 1);
         assert_eq!(mot.lineage.parent_ids, vec!["parent-mot"]);
-        assert!(mot.lineage.created_by.contains("test-run"));
+        assert_eq!(mot.lineage.created_by, "evolver");
     }
 
     #[test]
@@ -1524,6 +1538,12 @@ Let me know if you'd like me to adjust anything."#;
             id: "mot-careful".into(),
             name: "Careful".into(),
             description: "Prioritizes reliability".into(),
+            quality: 100,
+            domain_specificity: 0,
+            domain: vec![],
+            scope: None,
+            origin_instance_id: None,
+            parent_content_hash: None,
             acceptable_tradeoffs: vec!["Slow".into()],
             unacceptable_tradeoffs: vec!["Untested".into()],
             performance: PerformanceRecord {
@@ -1536,6 +1556,7 @@ Let me know if you'd like me to adjust anything."#;
                 generation: 2,
                 created_by: "run-1".into(),
                 created_at: chrono::Utc::now(),
+                reframing_potential: None,
             },
             access_control: AccessControl::default(),
             domain_tags: vec![],
@@ -1548,6 +1569,12 @@ Let me know if you'd like me to adjust anything."#;
             id: "mot-fast".into(),
             name: "Fast".into(),
             description: "Prioritizes speed".into(),
+            quality: 100,
+            domain_specificity: 0,
+            domain: vec![],
+            scope: None,
+            origin_instance_id: None,
+            parent_content_hash: None,
             acceptable_tradeoffs: vec!["Verbose".into()],
             unacceptable_tradeoffs: vec!["Unreliable".into()],
             performance: PerformanceRecord {
@@ -1560,6 +1587,7 @@ Let me know if you'd like me to adjust anything."#;
                 generation: 1,
                 created_by: "run-0".into(),
                 created_at: chrono::Utc::now(),
+                reframing_potential: None,
             },
             access_control: AccessControl::default(),
             domain_tags: vec![],
@@ -1628,6 +1656,12 @@ Let me know if you'd like me to adjust anything."#;
             id: "mot-a".into(),
             name: "A".into(),
             description: "".into(),
+            quality: 100,
+            domain_specificity: 0,
+            domain: vec![],
+            scope: None,
+            origin_instance_id: None,
+            parent_content_hash: None,
             acceptable_tradeoffs: vec![],
             unacceptable_tradeoffs: vec![],
             performance: PerformanceRecord::default(),
@@ -1682,6 +1716,12 @@ Let me know if you'd like me to adjust anything."#;
             id: "mot-a".into(),
             name: "A".into(),
             description: "".into(),
+            quality: 100,
+            domain_specificity: 0,
+            domain: vec![],
+            scope: None,
+            origin_instance_id: None,
+            parent_content_hash: None,
             acceptable_tradeoffs: vec![],
             unacceptable_tradeoffs: vec![],
             performance: PerformanceRecord::default(),
@@ -1696,6 +1736,12 @@ Let me know if you'd like me to adjust anything."#;
             id: "mot-b".into(),
             name: "B".into(),
             description: "".into(),
+            quality: 100,
+            domain_specificity: 0,
+            domain: vec![],
+            scope: None,
+            origin_instance_id: None,
+            parent_content_hash: None,
             acceptable_tradeoffs: vec![],
             unacceptable_tradeoffs: vec![],
             performance: PerformanceRecord::default(),
@@ -1753,6 +1799,12 @@ Let me know if you'd like me to adjust anything."#;
             id: "only-mot".into(),
             name: "Only".into(),
             description: "".into(),
+            quality: 100,
+            domain_specificity: 0,
+            domain: vec![],
+            scope: None,
+            origin_instance_id: None,
+            parent_content_hash: None,
             acceptable_tradeoffs: vec![],
             unacceptable_tradeoffs: vec![],
             performance: PerformanceRecord::default(),
@@ -1808,6 +1860,12 @@ Let me know if you'd like me to adjust anything."#;
             id: "mot-x".into(),
             name: "X".into(),
             description: "".into(),
+            quality: 100,
+            domain_specificity: 0,
+            domain: vec![],
+            scope: None,
+            origin_instance_id: None,
+            parent_content_hash: None,
             acceptable_tradeoffs: vec![],
             unacceptable_tradeoffs: vec![],
             performance: PerformanceRecord::default(),
@@ -1873,6 +1931,7 @@ Let me know if you'd like me to adjust anything."#;
                 generation: 2,
                 created_by: "evolver-run-1".into(),
                 created_at: chrono::Utc::now(),
+                reframing_potential: None,
             },
             default_context_scope: None,
             default_exec_mode: None,
@@ -1894,6 +1953,7 @@ Let me know if you'd like me to adjust anything."#;
                 generation: 1,
                 created_by: "evolver-run-0".into(),
                 created_at: chrono::Utc::now(),
+                reframing_potential: None,
             },
             default_context_scope: None,
             default_exec_mode: None,
@@ -1948,7 +2008,7 @@ Let me know if you'd like me to adjust anything."#;
         assert_eq!(role.component_ids.len(), 3);
         assert_eq!(role.lineage.generation, 3);
         assert_eq!(role.lineage.parent_ids, vec!["parent-a", "parent-b"]);
-        assert!(role.lineage.created_by.contains("test-run"));
+        assert_eq!(role.lineage.created_by, "evolver");
     }
 
     #[test]
@@ -2230,6 +2290,12 @@ Let me know if you'd like me to adjust anything."#;
             id: "test-mot".into(),
             name: "Test Motivation".into(),
             description: "A test motivation".into(),
+            quality: 100,
+            domain_specificity: 0,
+            domain: vec![],
+            scope: None,
+            origin_instance_id: None,
+            parent_content_hash: None,
             acceptable_tradeoffs: vec!["Slow".into()],
             unacceptable_tradeoffs: vec!["Broken".into()],
             performance: PerformanceRecord {
@@ -2485,6 +2551,12 @@ Let me know if you'd like me to adjust anything."#;
             id: "m1".into(),
             name: "Careful".into(),
             description: "Be careful".into(),
+            quality: 100,
+            domain_specificity: 0,
+            domain: vec![],
+            scope: None,
+            origin_instance_id: None,
+            parent_content_hash: None,
             acceptable_tradeoffs: vec!["Slow".into()],
             unacceptable_tradeoffs: vec!["Broken".into()],
             performance: PerformanceRecord {
@@ -2598,6 +2670,7 @@ Let me know if you'd like me to adjust anything."#;
                 generation: 5,
                 created_by: "evolver-run-old".into(),
                 created_at: chrono::Utc::now(),
+                reframing_potential: None,
             },
             default_context_scope: None,
             default_exec_mode: None,
@@ -2657,6 +2730,7 @@ Let me know if you'd like me to adjust anything."#;
                 generation: 3,
                 created_by: "x".into(),
                 created_at: chrono::Utc::now(),
+                reframing_potential: None,
             },
             default_context_scope: None,
             default_exec_mode: None,
@@ -2673,6 +2747,7 @@ Let me know if you'd like me to adjust anything."#;
                 generation: 7,
                 created_by: "x".into(),
                 created_at: chrono::Utc::now(),
+                reframing_potential: None,
             },
             default_context_scope: None,
             default_exec_mode: None,
@@ -2758,6 +2833,12 @@ Let me know if you'd like me to adjust anything."#;
             id: "tradeoff-1".into(),
             name: "Careful".into(),
             description: "Prioritize correctness".into(),
+            quality: 100,
+            domain_specificity: 0,
+            domain: vec![],
+            scope: None,
+            origin_instance_id: None,
+            parent_content_hash: None,
             acceptable_tradeoffs: vec!["Slow".into()],
             unacceptable_tradeoffs: vec!["Incomplete analysis".into()],
             performance: PerformanceRecord {
@@ -2836,6 +2917,7 @@ Let me know if you'd like me to adjust anything."#;
                     generation: 0,
                     created_by: "evolver-auto-pair-test-run".to_string(),
                     created_at: chrono::Utc::now(),
+                    reframing_potential: None,
                 },
                 capabilities: vec![],
                 rate: None,
@@ -2857,7 +2939,7 @@ Let me know if you'd like me to adjust anything."#;
         assert_eq!(agents_after.len(), 1, "Expected one auto-created agent");
         assert_eq!(agents_after[0].role_id, new_role_id);
         assert_eq!(agents_after[0].tradeoff_id, "tradeoff-1");
-        assert!(agents_after[0].lineage.created_by.contains("auto-pair"));
+        assert_eq!(agents_after[0].lineage.created_by, "evolver");
     }
 
     /// Roles that already have an agent should not get a duplicate.

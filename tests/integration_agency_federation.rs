@@ -47,6 +47,12 @@ fn make_motivation(id: &str, name: &str) -> TradeoffConfig {
         id: id.to_string(),
         name: name.to_string(),
         description: format!("{} description", name),
+        quality: 100,
+        domain_specificity: 0,
+        domain: vec![],
+        scope: None,
+        origin_instance_id: None,
+        parent_content_hash: None,
         acceptable_tradeoffs: Vec::new(),
         unacceptable_tradeoffs: Vec::new(),
         performance: PerformanceRecord::default(),
@@ -197,10 +203,7 @@ fn resolve_store_finds_project() {
     create_project_store_dirs(tmp.path());
 
     let store = federation::resolve_store(tmp.path().to_str().unwrap()).unwrap();
-    assert_eq!(
-        store.store_path(),
-        tmp.path().join(".wg").join("agency")
-    );
+    assert_eq!(store.store_path(), tmp.path().join(".wg").join("agency"));
     assert!(store.is_valid());
 }
 
@@ -1229,6 +1232,7 @@ fn lineage_merge_prefers_richer() {
         generation: 2,
         created_by: "evolver".to_string(),
         created_at: chrono::Utc::now(),
+        reframing_potential: None,
     };
     // Give source a unique eval so the merge triggers an update
     source_role.performance = make_perf(vec![(0.9, "task-src", "2026-02-01T00:00:00Z")]);
@@ -1240,6 +1244,7 @@ fn lineage_merge_prefers_richer() {
         generation: 1,
         created_by: "human".to_string(),
         created_at: chrono::Utc::now(),
+        reframing_potential: None,
     };
     target_role.performance = make_perf(vec![(0.8, "task-tgt", "2026-01-01T00:00:00Z")]);
     target.save_role(&target_role).unwrap();
@@ -2499,6 +2504,7 @@ fn lineage_merge_higher_generation_wins_on_equal_parents() {
         generation: 5,
         created_by: "evolver".to_string(),
         created_at: chrono::Utc::now(),
+        reframing_potential: None,
     };
     source_role.performance = make_perf(vec![(0.9, "task-src", "2026-02-01T00:00:00Z")]);
     source.save_role(&source_role).unwrap();
@@ -2509,6 +2515,7 @@ fn lineage_merge_higher_generation_wins_on_equal_parents() {
         generation: 3,
         created_by: "human".to_string(),
         created_at: chrono::Utc::now(),
+        reframing_potential: None,
     };
     target_role.performance = make_perf(vec![(0.8, "task-tgt", "2026-01-01T00:00:00Z")]);
     target.save_role(&target_role).unwrap();

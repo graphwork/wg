@@ -85,7 +85,7 @@ fn test_role_mutation_single_parent() {
 
     assert_eq!(child.lineage.parent_ids, vec![parent.id.clone()]);
     assert_eq!(child.lineage.generation, 1);
-    assert_eq!(child.lineage.created_by, "evolver-run-1");
+    assert_eq!(child.lineage.created_by, "evolver");
 
     let ancestry = agency::role_ancestry(&child.id, &roles_dir).unwrap();
     assert_eq!(ancestry.len(), 2);
@@ -228,7 +228,7 @@ fn test_role_crossover_two_parents() {
 
     assert_eq!(crossover.lineage.parent_ids.len(), 2);
     assert_eq!(crossover.lineage.generation, 1);
-    assert_eq!(crossover.lineage.created_by, "evolver-cross-run-1");
+    assert_eq!(crossover.lineage.created_by, "evolver");
 
     let ancestry = agency::role_ancestry(&crossover.id, &roles_dir).unwrap();
     assert_eq!(ancestry.len(), 3, "Crossover + 2 parents");
@@ -345,6 +345,7 @@ fn test_crossover_generation_from_mixed_gen_parents() {
         generation: 2,
         created_by: "evolver-test".to_string(),
         created_at: chrono::Utc::now(),
+        reframing_potential: None,
     };
     agency::save_role(&parent_b, &roles_dir).unwrap();
 
@@ -506,7 +507,7 @@ fn test_ancestry_node_fields_populated() {
     assert_eq!(child_node.id, child.id);
     assert_eq!(child_node.name, "Evolved Role");
     assert_eq!(child_node.generation, 1);
-    assert_eq!(child_node.created_by, "evolver-evo-42");
+    assert_eq!(child_node.created_by, "evolver");
     assert_eq!(child_node.parent_ids, vec![parent.id.clone()]);
     // created_at should be a valid timestamp (not zero/default)
     assert!(child_node.created_at.timestamp() > 0);
@@ -543,7 +544,7 @@ fn test_ancestry_node_crossover_parent_ids() {
     assert_eq!(cross_node.parent_ids.len(), 2);
     assert!(cross_node.parent_ids.contains(&pa.id));
     assert!(cross_node.parent_ids.contains(&pb.id));
-    assert_eq!(cross_node.created_by, "evolver-cross-99");
+    assert_eq!(cross_node.created_by, "evolver");
 }
 
 // ---------------------------------------------------------------------------
@@ -564,7 +565,7 @@ fn test_lineage_mutation_constructor() {
     let lineage = Lineage::mutation("parent-abc", 3, "run-xyz");
     assert_eq!(lineage.parent_ids, vec!["parent-abc".to_string()]);
     assert_eq!(lineage.generation, 4);
-    assert_eq!(lineage.created_by, "evolver-run-xyz");
+    assert_eq!(lineage.created_by, "evolver");
 }
 
 #[test]
@@ -575,7 +576,7 @@ fn test_lineage_crossover_constructor() {
         vec!["id-1".to_string(), "id-2".to_string()]
     );
     assert_eq!(lineage.generation, 6);
-    assert_eq!(lineage.created_by, "evolver-run-cross");
+    assert_eq!(lineage.created_by, "evolver");
 }
 
 #[test]

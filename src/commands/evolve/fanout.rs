@@ -540,7 +540,10 @@ Evaluate the results of the evolution run.
                 analyzer_model_spec(config, model, slice),
             );
         }
-        println!("  Synthesizer: {} (model: {})", synthesize_task_id, coord_model);
+        println!(
+            "  Synthesizer: {} (model: {})",
+            synthesize_task_id, coord_model
+        );
         println!("  Apply: {} (model: {})", apply_task_id, coord_model);
         println!("  Evaluate: {} (model: {})", evaluate_task_id, coord_model);
         if autopoietic {
@@ -775,6 +778,12 @@ mod tests {
             id: id.to_string(),
             name: format!("Tradeoff {}", id),
             description: "test tradeoff".to_string(),
+            quality: 100,
+            domain_specificity: 0,
+            domain: vec![],
+            scope: None,
+            origin_instance_id: None,
+            parent_content_hash: None,
             acceptable_tradeoffs: vec![],
             unacceptable_tradeoffs: vec![],
             performance: PerformanceRecord {

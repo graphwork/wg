@@ -655,6 +655,12 @@ mod tests {
             id: id.to_string(),
             name: format!("Tradeoff {}", id),
             description: "test tradeoff".to_string(),
+            quality: 100,
+            domain_specificity: 0,
+            domain: vec![],
+            scope: None,
+            origin_instance_id: None,
+            parent_content_hash: None,
             acceptable_tradeoffs: vec![],
             unacceptable_tradeoffs: vec![],
             performance: PerformanceRecord {

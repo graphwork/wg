@@ -503,7 +503,8 @@ fn test_custom_provenance_tag() {
                     entry.path()
                 );
 
-                // Also verify lineage.created_by contains the custom tag
+                // Custom provenance remains on access_control.owner; lineage.created_by
+                // is constrained to the agency v1.2.4 enum domain.
                 let lineage = map
                     .get(&serde_yaml::Value::String("lineage".to_string()))
                     .unwrap();
@@ -512,11 +513,7 @@ fn test_custom_provenance_tag() {
                     .unwrap()
                     .get(&serde_yaml::Value::String("created_by".to_string()))
                     .unwrap();
-                assert!(
-                    created_by.as_str().unwrap().starts_with("custom-source"),
-                    "lineage.created_by should start with 'custom-source', got: {}",
-                    created_by.as_str().unwrap()
-                );
+                assert_eq!(created_by.as_str().unwrap(), "import");
 
                 checked += 1;
             }
