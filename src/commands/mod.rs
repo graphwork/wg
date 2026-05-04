@@ -42,6 +42,7 @@ pub mod cost;
 pub mod critical_path;
 pub mod cycles;
 pub mod dead_agents;
+pub mod dev_check;
 pub mod discover;
 pub mod done;
 pub mod edit;

@@ -2151,6 +2151,9 @@ pub enum Commands {
     /// Print a concise cheat sheet for agent onboarding
     Quickstart,
 
+    /// Check local development checkout and installed wg binary freshness
+    DevCheck,
+
     /// Print the universal agent / chat-agent role contract bundled with this binary
     AgentGuide,
 
@@ -5234,6 +5237,7 @@ pub fn command_name(cmd: &Commands) -> &'static str {
         Commands::TuiDump { .. } => "tui-dump",
         Commands::Setup { .. } => "setup",
         Commands::Quickstart => "quickstart",
+        Commands::DevCheck => "dev-check",
         Commands::AgentGuide => "agent-guide",
         Commands::Status { .. } => "status",
         Commands::Stats => "stats",
@@ -5332,6 +5336,7 @@ pub fn supports_json(cmd: &Commands) -> bool {
             | Commands::Cycles
             | Commands::Viz { .. }
             | Commands::Quickstart
+            | Commands::DevCheck
             | Commands::Status { .. }
             | Commands::Stats
             | Commands::Metrics { .. }

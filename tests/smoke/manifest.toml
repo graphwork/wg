@@ -17,6 +17,15 @@
 # introduced the regression and the task that fixed it.
 
 [[scenario]]
+name = "dev_check_branch_and_binary_freshness"
+script = "scenarios/dev_check_branch_and_binary_freshness.sh"
+owners = [
+    "fix-cargo-install",
+]
+description = "Pins fix-cargo-install: `wg dev-check` reports branch, main HEAD, and current wg binary mtime; clean main reports OK, while a non-main checkout with a binary older than main HEAD reports WARN for both branch and stale-binary drift."
+timeout_seconds = 30
+
+[[scenario]]
 name = "integrate_nex_chat_end_to_end"
 script = "scenarios/integrate_nex_chat_end_to_end.sh"
 owners = [

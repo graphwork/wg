@@ -14,6 +14,7 @@ GETTING STARTED
   wg service start            # Start the dispatcher daemon
   wg add "My first task"      # Add work — the service dispatches automatically
   wg status                   # Quick one-screen overview of your project
+  wg dev-check                # Check branch and installed wg binary freshness
 
 SKILL & BUNDLE SETUP (required for agents to use wg)
 ─────────────────────────────────────────
