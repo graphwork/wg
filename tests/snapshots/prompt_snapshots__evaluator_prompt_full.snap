@@ -29,7 +29,7 @@ Builds features from specifications with clean, tested code.
 
 **Desired Outcome:** Working, tested code merged to main.
 
-**Motivation:** Quality First (6cf38ebb124246101daa33f66143e2e25616daaca56886e2ddb06995113a86b2)
+**Motivation:** Quality First (39e5ec0b23c5a5bc8d772028cd4bdce84ca17af76812a34b7312f163a297a5c2)
 Prioritise correctness and maintainability over speed.
 
 **Acceptable Trade-offs:**

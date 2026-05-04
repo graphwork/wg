@@ -572,6 +572,15 @@ description = "Pins fix-wg-init-2: every fresh `wg init` route must write both C
 timeout_seconds = 30
 
 [[scenario]]
+name = "agent_guide_warns_off_wg_nex"
+script = "scenarios/agent_guide_warns_off_wg_nex.sh"
+owners = [
+    "fix-agent-prompting",
+]
+description = "Pins fix-agent-prompting: the bundled universal `wg agent-guide` must explicitly tell chat and worker agents that `wg nex` is an interactive REPL, hangs on stdin when invoked from bash, and that one-shot LLM work should be represented as `wg add` subtasks or batch-mode agency commands instead."
+timeout_seconds = 30
+
+[[scenario]]
 name = "codex_init_route_has_correct_defaults"
 script = "scenarios/codex_init_route_has_correct_defaults.sh"
 owners = [

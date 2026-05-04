@@ -117,6 +117,14 @@ mod tests {
         }
     }
 
+    #[test]
+    fn guide_text_warns_not_to_run_wg_nex_from_bash() {
+        assert!(AGENT_GUIDE_TEXT.contains("Don't run wg nex from bash"));
+        assert!(AGENT_GUIDE_TEXT.contains("interactive REPL"));
+        assert!(AGENT_GUIDE_TEXT.contains("hang on stdin"));
+        assert!(AGENT_GUIDE_TEXT.contains("wg evaluate run"));
+    }
+
     /// Regression lock: AGENTS.md and CLAUDE.md must stay in lock-step.
     /// Pre-fix, AGENTS.md had inline universal-role-contract content while
     /// CLAUDE.md was layer-2-only — codex chat agents (which read AGENTS.md)

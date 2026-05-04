@@ -60,6 +60,22 @@ That is a worker's job. Use `wg add` instead.
 The ONLY files a chat agent reads are workgraph state files via the `wg`
 CLI. Everything else is a worker's job.
 
+### Don't run wg nex from bash
+
+`wg nex` is an interactive REPL that needs a terminal. As a worker or chat agent
+running through wg, you do not have an interactive terminal. Invoking `wg nex`
+from bash will hang on stdin and block your task.
+
+If you need to dispatch additional LLM work:
+
+- File a sub-task with `wg add "description" --after <current-task-id>` —
+  let the dispatcher spawn an agent for it
+- For evaluation / scoring, use `wg evaluate run <task>` or related agency
+  commands that are batch-mode and won't hang
+
+If you need an interactive REPL for development, run `wg nex` from your own
+shell, not from inside an agent run.
+
 ### Anti-pattern: "Let me look at the code first..."
 
 Wrong:
